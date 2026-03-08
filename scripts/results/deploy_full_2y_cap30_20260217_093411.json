@@ -1,0 +1,251 @@
+{
+  "campaign_name": "deploy_full_2y_cap30_20260217_093411",
+  "started_at": "2026-02-17T09:34:13.253557",
+  "criteria": {
+    "max_drawdown_pct_lt": 15.0,
+    "sharpe_gt": 1.0,
+    "profit_factor_gt": 1.3,
+    "win_rate_gt": 40.0,
+    "net_profit_gt": 5000.0
+  },
+  "scenarios": [
+    {
+      "name": "orb_advanced_aggressive_xau",
+      "strategy_id": "orb_strategy",
+      "seed_preset": "advanced_aggressive",
+      "symbol": "XAUUSD",
+      "timeframe": "M1",
+      "start": "2023-01-02",
+      "end": "2024-12-31",
+      "csv_file": null
+    },
+    {
+      "name": "orb_nas100_tuned",
+      "strategy_id": "orb_strategy",
+      "seed_preset": "nas100_tuned",
+      "symbol": "NAS100",
+      "timeframe": "M1",
+      "start": "2024-01-02",
+      "end": "2026-01-30",
+      "csv_file": null
+    },
+    {
+      "name": "advanced_orb_us500_tuned",
+      "strategy_id": "advanced_orb_strategy",
+      "seed_preset": "us500_tuned",
+      "symbol": "US500",
+      "timeframe": "M1",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": null
+    },
+    {
+      "name": "liq_conservative_nas_m15",
+      "strategy_id": "liquidity_sweep_strategy",
+      "seed_preset": "conservative",
+      "symbol": "NAS100",
+      "timeframe": "M15",
+      "start": "2024-01-02",
+      "end": "2026-01-30",
+      "csv_file": null
+    },
+    {
+      "name": "liq_nas100_m15_safe",
+      "strategy_id": "liquidity_sweep_strategy",
+      "seed_preset": "nas100_m15_safe",
+      "symbol": "NAS100",
+      "timeframe": "M15",
+      "start": "2024-01-02",
+      "end": "2026-01-30",
+      "csv_file": null
+    },
+    {
+      "name": "keltner_xau_scaled",
+      "strategy_id": "keltner_breakout_strategy",
+      "seed_preset": "xauusd_scaled",
+      "symbol": "XAUUSD",
+      "timeframe": "M15",
+      "start": "2023-01-02",
+      "end": "2024-12-31",
+      "csv_file": null
+    },
+    {
+      "name": "earnings_aapl_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "AAPL",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "AAPL_M15_20230101_20260216_earnings.csv"
+    },
+    {
+      "name": "earnings_msft_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "MSFT",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "MSFT_M15_20230101_20260217_earnings.csv"
+    },
+    {
+      "name": "earnings_nvda_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "NVDA",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "NVDA_M15_20230101_20260217_earnings.csv"
+    },
+    {
+      "name": "earnings_amzn_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "AMZN",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "AMZN_M15_20230101_20260217_earnings.csv"
+    },
+    {
+      "name": "earnings_meta_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "META",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "META_M15_20230101_20260217_earnings.csv"
+    },
+    {
+      "name": "earnings_tsla_default",
+      "strategy_id": "earnings_volatility_strategy",
+      "seed_preset": "default",
+      "symbol": "TSLA",
+      "timeframe": "M15",
+      "start": "2024-01-01",
+      "end": "2025-12-31",
+      "csv_file": "TSLA_M15_20230101_20260217_earnings.csv"
+    }
+  ],
+  "runs": [
+    {
+      "strategy_id": "orb_strategy",
+      "preset": "advanced_aggressive",
+      "scenario_name": "orb_advanced_aggressive_xau",
+      "symbol": "XAUUSD",
+      "timeframe": "M1",
+      "period": "2023-01-02 to 2024-12-31",
+      "elapsed_sec": 152.79,
+      "total_trades": 95.0,
+      "win_rate": 42.11,
+      "profit_factor": 1.27,
+      "sharpe_ratio": 1.508,
+      "max_drawdown_pct": 8.14,
+      "net_profit": 776.25,
+      "final_balance": 10744.73,
+      "data_hash": "6c8d44a14895f53210916d74d45584d0373bbe781542af316b6ffd5aeaa1932b",
+      "engine_status": "RUNNING",
+      "engine_error": "",
+      "passed": false,
+      "fail_reasons": [
+        "PF 1.270 <= 1.300",
+        "Net $776.25 <= $5000.00"
+      ],
+      "score": 6.752750000000001,
+      "stage": "baseline",
+      "overrides": {}
+    },
+    {
+      "strategy_id": "orb_strategy",
+      "preset": "conservative",
+      "scenario_name": "orb_advanced_aggressive_xau",
+      "symbol": "XAUUSD",
+      "timeframe": "M1",
+      "period": "2023-01-02 to 2024-12-31",
+      "elapsed_sec": 355.3,
+      "total_trades": 219.0,
+      "win_rate": 37.44,
+      "profit_factor": 0.92,
+      "sharpe_ratio": -0.7012,
+      "max_drawdown_pct": 16.71,
+      "net_profit": -534.37,
+      "final_balance": 9397.88,
+      "data_hash": "6c8d44a14895f53210916d74d45584d0373bbe781542af316b6ffd5aeaa1932b",
+      "engine_status": "RUNNING",
+      "engine_error": "",
+      "passed": false,
+      "fail_reasons": [
+        "DD 16.71% >= 15.00%",
+        "Sharpe -0.701 <= 1.000",
+        "PF 0.920 <= 1.300",
+        "WR 37.44% <= 40.00%",
+        "Net $-534.37 <= $5000.00"
+      ],
+      "score": 0.4602299999999995,
+      "stage": "preset_sweep",
+      "overrides": {}
+    },
+    {
+      "strategy_id": "orb_strategy",
+      "preset": "default",
+      "scenario_name": "orb_advanced_aggressive_xau",
+      "symbol": "XAUUSD",
+      "timeframe": "M1",
+      "period": "2023-01-02 to 2024-12-31",
+      "elapsed_sec": 1171.26,
+      "total_trades": 371.0,
+      "win_rate": 35.85,
+      "profit_factor": 0.87,
+      "sharpe_ratio": -0.9101,
+      "max_drawdown_pct": 36.01,
+      "net_profit": -2406.62,
+      "final_balance": 7381.29,
+      "data_hash": "6c8d44a14895f53210916d74d45584d0373bbe781542af316b6ffd5aeaa1932b",
+      "engine_status": "RUNNING",
+      "engine_error": "",
+      "passed": false,
+      "fail_reasons": [
+        "DD 36.01% >= 15.00%",
+        "Sharpe -0.910 <= 1.000",
+        "PF 0.870 <= 1.300",
+        "WR 35.85% <= 40.00%",
+        "Net $-2406.62 <= $5000.00"
+      ],
+      "score": -11.634319999999999,
+      "stage": "preset_sweep",
+      "overrides": {}
+    }
+  ],
+  "best_by_scenario": {
+    "orb_advanced_aggressive_xau": {
+      "strategy_id": "orb_strategy",
+      "preset": "advanced_aggressive",
+      "scenario_name": "orb_advanced_aggressive_xau",
+      "symbol": "XAUUSD",
+      "timeframe": "M1",
+      "period": "2023-01-02 to 2024-12-31",
+      "elapsed_sec": 152.79,
+      "total_trades": 95.0,
+      "win_rate": 42.11,
+      "profit_factor": 1.27,
+      "sharpe_ratio": 1.508,
+      "max_drawdown_pct": 8.14,
+      "net_profit": 776.25,
+      "final_balance": 10744.73,
+      "data_hash": "6c8d44a14895f53210916d74d45584d0373bbe781542af316b6ffd5aeaa1932b",
+      "engine_status": "RUNNING",
+      "engine_error": "",
+      "passed": false,
+      "fail_reasons": [
+        "PF 1.270 <= 1.300",
+        "Net $776.25 <= $5000.00"
+      ],
+      "score": 6.752750000000001,
+      "stage": "baseline",
+      "overrides": {}
+    }
+  }
+}

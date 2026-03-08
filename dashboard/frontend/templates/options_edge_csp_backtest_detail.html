@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}CSP Backtest #{{ run.id }} - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">CSP Backtest #{{ run.id }}</h2>
+        <p class="text-muted mb-0">
+            {{ run.run_date|datetime }} | {{ run.start_date }} → {{ run.end_date }} | {{ run.status }}
+        </p>
+    </div>
+    <div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('options_edge_csp_dashboard') }}">
+            <i class="bi bi-arrow-left me-1"></i>Back
+        </a>
+    </div>
+</div>
+
+{% set metrics = run.results or {} %}
+<div class="row g-3 mb-4">
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Initial</div><div class="stat-value">${{ "%.2f"|format(metrics.get('initial_capital', run.initial_capital or 0)) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Final</div><div class="stat-value">${{ "%.2f"|format(metrics.get('final_capital', run.final_capital or 0)) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Net Profit</div><div class="stat-value {% if metrics.get('net_profit', 0) >= 0 %}text-success{% else %}text-danger{% endif %}">${{ "%.2f"|format(metrics.get('net_profit', 0)) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Events</div><div class="stat-value">{{ metrics.get('total_events', 0) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Rolls</div><div class="stat-value">{{ metrics.get('roll_count', 0) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Assigned</div><div class="stat-value">{{ metrics.get('assigned_count', 0) }}</div></div></div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Total Return</div><div class="stat-value {% if metrics.get('total_return_pct', 0) >= 0 %}text-success{% else %}text-danger{% endif %}">{{ "%.2f"|format(metrics.get('total_return_pct', 0)) }}%</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Win Rate</div><div class="stat-value">{{ "%.1f"|format(metrics.get('win_rate_pct', 0)) }}%</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Max Drawdown</div><div class="stat-value text-danger">{{ "%.2f"|format(metrics.get('max_drawdown_pct', 0)) }}%</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Sharpe</div><div class="stat-value">{{ "%.2f"|format(metrics.get('sharpe_ratio', 0)) }}</div></div></div>
+</div>
+
+{% if metrics.get('portfolio_mode') or metrics.get('selected_symbol_count', 0) > 1 %}
+<div class="alert alert-info">
+    <strong>Portfolio Mode:</strong>
+    selected={{ metrics.get('selected_symbol_count', 0) }},
+    symbols={{ (metrics.get('selected_symbols', []) or [])|join(', ') }},
+    per-symbol-capital=${{ "%.2f"|format(metrics.get('per_symbol_capital', 0)) }},
+    outside-cash=${{ "%.2f"|format(metrics.get('cash_outside_csp', 0)) }}
+</div>
+{% endif %}
+
+{% if (metrics.get('symbol_reports') or {}) %}
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>Per-Symbol Metrics</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Net</th>
+                        <th>Return %</th>
+                        <th>Events</th>
+                        <th>Rolls</th>
+                        <th>Assigned</th>
+                        <th>Win Rate %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sym, sm in (metrics.get('symbol_reports') or {}).items() %}
+                    <tr>
+                        <td><strong>{{ sym }}</strong></td>
+                        <td class="{% if (sm.get('net_profit', 0) >= 0) %}text-success{% else %}text-danger{% endif %}">
+                            ${{ "%.2f"|format(sm.get('net_profit', 0)) }}
+                        </td>
+                        <td>{{ "%.2f"|format(sm.get('total_return_pct', 0)) }}%</td>
+                        <td>{{ sm.get('total_events', 0) }}</td>
+                        <td>{{ sm.get('roll_count', 0) }}</td>
+                        <td>{{ sm.get('assigned_count', 0) }}</td>
+                        <td>{{ "%.1f"|format(sm.get('win_rate_pct', 0)) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-graph-up me-2"></i>Equity Curve</div>
+    <div class="card-body">
+        <canvas id="cspEquityChart" height="120"></canvas>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-journal-text me-2"></i>Trade Lifecycle Log ({{ (run.trades or [])|length }})</div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Event</th>
+                                <th>Symbol</th>
+                                <th>Strike</th>
+                                <th>Premium</th>
+                                <th>Regime</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for t in (run.trades or []) %}
+                            <tr>
+                                <td>{{ t.get('date', '-') }}</td>
+                                <td><span class="badge bg-secondary">{{ t.get('event', '-') }}</span></td>
+                                <td><strong>{{ t.get('symbol', '-') }}</strong></td>
+                                <td>{{ "%.2f"|format(t.get('strike', 0) or 0) if t.get('strike') is not none else '-' }}</td>
+                                <td>
+                                    {% if t.get('premium_total') is not none %}
+                                        ${{ "%.2f"|format(t.get('premium_total', 0)) }}
+                                    {% elif t.get('net_credit') is not none %}
+                                        ${{ "%.2f"|format(t.get('net_credit', 0)) }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ t.get('regime', '-') }}</td>
+                                <td class="small text-muted">
+                                    {% if t.get('assignment_cost') is not none %}assignment=${{ "%.2f"|format(t.get('assignment_cost', 0)) }}{% endif %}
+                                    {% if t.get('new_strike') is not none %} new_strike={{ "%.2f"|format(t.get('new_strike', 0)) }}{% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not run.trades %}
+                            <tr><td colspan="7" class="text-center text-muted py-4">No lifecycle events generated.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-plug me-2"></i>Execution Bridge (Scaffold)</div>
+            <div class="card-body">
+                <p class="small text-muted mb-3">
+                    Previews CSP order intents for future NautilusTrader + IB execution.
+                    Current phase is dry-run only.
+                </p>
+                <button class="btn btn-outline-primary btn-sm" onclick="cspPreviewExecution()">
+                    <i class="bi bi-eye me-1"></i>Preview Intents
+                </button>
+                <button class="btn btn-outline-success btn-sm ms-2" onclick="cspDispatchDryRun()">
+                    <i class="bi bi-send me-1"></i>Dispatch Dry-Run
+                </button>
+                <pre id="cspExecOutput" class="small mt-3 mb-0 p-2 bg-light border rounded" style="max-height: 260px; overflow-y:auto;">No preview yet.</pre>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="bi bi-sliders me-2"></i>Backtest Config</div>
+            <div class="card-body">
+                <pre class="small mb-0 text-wrap">{{ (run.config or {})|tojson(indent=2) }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const eq = {{ (run.equity_curve or [])|tojson }};
+    const canvas = document.getElementById('cspEquityChart');
+    if (!canvas || !eq || eq.length === 0) return;
+    const color = (eq[eq.length - 1].equity || 0) >= (eq[0].equity || 0) ? '#16a34a' : '#dc2626';
+    new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: eq.map(e => e.date || e.i),
+            datasets: [{
+                label: 'Equity',
+                data: eq.map(e => e.equity || 0),
+                borderColor: color,
+                pointRadius: 0,
+                borderWidth: 2,
+                tension: 0.15,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: false },
+                y: { ticks: { callback: value => '$' + Number(value).toLocaleString() } }
+            }
+        }
+    });
+})();
+
+async function cspPreviewExecution() {
+    const out = document.getElementById('cspExecOutput');
+    out.textContent = 'Loading execution preview...';
+    try {
+        const resp = await fetch('{{ url_for("options_edge_csp_execution_preview", run_id=run.id) }}');
+        const data = await resp.json();
+        out.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+        out.textContent = 'Preview failed: ' + String(err);
+    }
+}
+
+async function cspDispatchDryRun() {
+    const out = document.getElementById('cspExecOutput');
+    out.textContent = 'Preparing dispatch...';
+    try {
+        const p = await fetch('{{ url_for("options_edge_csp_execution_preview", run_id=run.id) }}');
+        const preview = await p.json();
+        const intents = (preview && preview.intents) ? preview.intents : [];
+        if (!intents.length) {
+            out.textContent = 'No intents available to dispatch.';
+            return;
+        }
+        const d = await fetch('{{ url_for("options_edge_csp_execution_dispatch") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({provider: 'nautilus_ib', dry_run: true, intents: intents}),
+        });
+        const result = await d.json();
+        out.textContent = JSON.stringify(result, null, 2);
+    } catch (err) {
+        out.textContent = 'Dispatch failed: ' + String(err);
+    }
+}
+</script>
+{% endblock %}

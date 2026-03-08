@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "keltner_breakout_strategy",
+    "preset": "aggressive",
+    "symbol": "XAUUSD",
+    "timeframe": "M5",
+    "period": "2023-01-01 to 2024-12-31",
+    "elapsed_sec": 2645.8,
+    "total_trades": 86,
+    "winning_trades": 21,
+    "losing_trades": 65,
+    "win_rate": 24.42,
+    "net_profit": -4112.29,
+    "profit_factor": 0.5,
+    "sharpe_ratio": -4.9508,
+    "sortino_ratio": -10.8216,
+    "max_drawdown_pct": 43.99,
+    "avg_rr": 1.54,
+    "expectancy": -47.82,
+    "final_balance": 5820.3,
+    "largest_win": 408.28,
+    "largest_loss": -240.96,
+    "data_hash": "f14b3ba8226a02f5a3bd51f7b66c69e856cd1a886306209d6c529a03573f730d"
+  }
+]

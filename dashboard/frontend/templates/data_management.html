@@ -1,0 +1,1011 @@
+{% extends "base.html" %}
+
+{% block title %}Data Management - ProTrading Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2><i class="bi bi-database-up me-2"></i>Data Management</h2>
+        <p class="text-muted mb-0">Import historical data from CSV files for extended backtesting</p>
+    </div>
+</div>
+
+<!-- Upload Card -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-cloud-upload me-2"></i>Import CSV Data
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('upload_data_file') }}" enctype="multipart/form-data" id="uploadForm">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">Symbol</label>
+                    <select class="form-select" name="symbol">
+                        <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                        <option value="EURUSD">EURUSD</option>
+                        <option value="GBPUSD">GBPUSD</option>
+                        <option value="USDJPY">USDJPY</option>
+                        <option value="US500">US500 (S&P 500)</option>
+                        <option value="NAS100">NAS100 (NASDAQ 100)</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Timeframe</label>
+                    <select class="form-select" name="timeframe">
+                        <option value="M1" selected>M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15">M15</option>
+                        <option value="H1">H1</option>
+                        <option value="H4">H4</option>
+                        <option value="D1">D1</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">CSV File</label>
+                    <input type="file" class="form-control" name="file" accept=".csv" required id="csvFile">
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-primary" id="uploadBtn">
+                        <i class="bi bi-upload me-2"></i>Upload
+                    </button>
+                </div>
+            </div>
+        </form>
+
+        <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>How to get historical data:</strong>
+            <ol class="mb-0 mt-2">
+                <li><strong>MT5 History Center:</strong> Open MT5 &rarr; Tools &rarr; History Center &rarr; Select XAUUSD M1 &rarr; Click "Export"</li>
+                <li><strong>MT5 Chart Export:</strong> Open M1 chart &rarr; File &rarr; Save As &rarr; CSV</li>
+                <li><strong>Third-party:</strong> Download from data providers (Dukascopy, HistData.com, etc.)</li>
+            </ol>
+            <hr class="my-2">
+            <strong>Supported formats:</strong> MT5 export (tab/comma separated), or any CSV with Date, Time, Open, High, Low, Close, Volume columns.
+            Files are auto-detected. UTC timezone is assumed if not specified.
+            <br><strong>Naming:</strong> Files are saved as <code>SYMBOL_TIMEFRAME_yourname.csv</code> and automatically merged with MT5 live data during backtests.
+        </div>
+    </div>
+</div>
+
+<!-- Download from MT5 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-cloud-download me-2"></i>Download from MT5
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Try to download all available history from your MT5 broker. This uses a different fetching method
+            (<code>copy_rates_from_pos</code>) that may access more data than the standard range request.
+        </p>
+        <form method="POST" action="{{ url_for('download_mt5_data') }}" id="downloadForm">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">Symbol</label>
+                    <select class="form-select" name="symbol">
+                        <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                        <option value="EURUSD">EURUSD</option>
+                        <option value="GBPUSD">GBPUSD</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Timeframe</label>
+                    <select class="form-select" name="timeframe">
+                        <option value="M1" selected>M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15">M15</option>
+                        <option value="H1">H1</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-outline-primary" id="downloadBtn">
+                        <i class="bi bi-download me-2"></i>Download from MT5
+                    </button>
+                </div>
+            </div>
+        </form>
+        <div class="alert alert-warning mt-3 mb-0">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <strong>Note:</strong> MetaQuotes-Demo typically limits M1 data to ~90 days.
+            If this doesn't provide enough data, use the CSV import above to load data from external sources
+            (MT5 History Center export, Dukascopy, HistData.com, etc.).
+        </div>
+    </div>
+</div>
+
+<!-- Extract from IBKR -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-bank me-2"></i>Extract from IBKR (Interactive Brokers)
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Download historical data directly from your IBKR TWS or Gateway.
+            Supports XAUUSD (Gold), EURUSD, GBPUSD, USDJPY. Auto-detects contract type.
+        </p>
+
+        <!-- Connection Test -->
+        <div class="mb-3">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="ibkrTestBtn" onclick="testIBKRConnection()">
+                <i class="bi bi-plug me-1"></i>Test Connection
+            </button>
+            <span id="ibkrTestResult" class="ms-2 small"></span>
+        </div>
+
+        <!-- Download Form -->
+        <div class="row g-3 align-items-end">
+            <div class="col-md-2">
+                <label class="form-label">Symbol</label>
+                <select class="form-select" id="ibkrSymbol">
+                    <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                    <option value="EURUSD">EURUSD</option>
+                    <option value="GBPUSD">GBPUSD</option>
+                    <option value="USDJPY">USDJPY</option>
+                    <option value="US500">US500 (S&P 500)</option>
+                    <option value="NAS100">NAS100 (NASDAQ 100)</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Timeframe</label>
+                <select class="form-select" id="ibkrTimeframe">
+                    <option value="M1" selected>M1</option>
+                    <option value="M5">M5</option>
+                    <option value="M15">M15</option>
+                    <option value="H1">H1</option>
+                    <option value="H4">H4</option>
+                    <option value="D1">D1</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" id="ibkrStartDate">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">End Date</label>
+                <input type="date" class="form-control" id="ibkrEndDate">
+            </div>
+            <div class="col-md-1">
+                <label class="form-label">Port</label>
+                <input type="number" class="form-control" id="ibkrPort" value="7497">
+            </div>
+            <div class="col-md-3">
+                <button type="button" class="btn btn-success" id="ibkrDownloadBtn" onclick="startIBKRDownload()">
+                    <i class="bi bi-cloud-arrow-down me-2"></i>Extract from IBKR
+                </button>
+            </div>
+        </div>
+
+        <!-- Progress Section (hidden by default) -->
+        <div id="ibkrProgressSection" class="mt-3" style="display:none;">
+            <div class="progress mb-2" style="height: 24px;">
+                <div id="ibkrProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: 0%">0%</div>
+            </div>
+            <small id="ibkrProgressMsg" class="text-muted"></small>
+        </div>
+
+        <!-- Result Section (hidden by default) -->
+        <div id="ibkrResultSection" class="mt-3" style="display:none;"></div>
+
+        <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>Setup:</strong>
+            <ul class="mb-0 mt-1">
+                <li><strong>TWS Paper Trading:</strong> port <code>7497</code> (default) | <strong>TWS Live:</strong> port <code>7496</code></li>
+                <li><strong>IB Gateway Paper:</strong> port <code>4002</code> | <strong>IB Gateway Live:</strong> port <code>4001</code></li>
+                <li>Enable <em>API connections</em> in TWS: File &rarr; Global Configuration &rarr; API &rarr; Settings &rarr; check "Enable ActiveX and Socket Clients"</li>
+                <li>Gold contract is auto-detected: tries Forex (IDEALPRO) &rarr; CFD (SMART) &rarr; Futures GC (COMEX)</li>
+            </ul>
+            <hr class="my-2">
+            <strong>Estimated times (M1):</strong> 1 month ~45s | 3 months ~2.5 min | 6 months ~5 min | 12 months ~9 min
+        </div>
+    </div>
+</div>
+
+<!-- Download from Dukascopy -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-globe2 me-2"></i>Download from Dukascopy (Free Data Feed)
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Download free historical M1 tick data from Dukascopy's public data feed.
+            Tick data is aggregated into M1 candles. Supports XAUUSD, EURUSD, GBPUSD, USDJPY, XAGUSD, US500.
+            <strong>VPN may be required</strong> in some regions (e.g. Turkey).
+        </p>
+
+        <!-- Connection Test -->
+        <div class="mb-3">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="dukasTestBtn" onclick="testDukascopyConnection()">
+                <i class="bi bi-plug me-1"></i>Test Connection
+            </button>
+            <span id="dukasTestResult" class="ms-2 small"></span>
+        </div>
+
+        <!-- Download Form -->
+        <div class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Symbol</label>
+                <select class="form-select" id="dukasSymbol">
+                    <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                    <option value="EURUSD">EURUSD</option>
+                    <option value="GBPUSD">GBPUSD</option>
+                    <option value="USDJPY">USDJPY</option>
+                    <option value="XAGUSD">XAGUSD (Silver)</option>
+                    <option value="US500">US500 (S&P 500)</option>
+                    <option value="NAS100">NAS100 (NASDAQ 100)</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Timeframe</label>
+                <select class="form-select" disabled>
+                    <option value="M1" selected>M1 (tick → M1)</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" id="dukasStartDate">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">End Date</label>
+                <input type="date" class="form-control" id="dukasEndDate">
+            </div>
+            <div class="col-md-3">
+                <button type="button" class="btn btn-info text-white" id="dukasDownloadBtn" onclick="startDukascopyDownload()">
+                    <i class="bi bi-cloud-arrow-down me-2"></i>Download from Dukascopy
+                </button>
+            </div>
+        </div>
+
+        <!-- Progress Section (hidden by default) -->
+        <div id="dukasProgressSection" class="mt-3" style="display:none;">
+            <div class="progress mb-2" style="height: 24px;">
+                <div id="dukasProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                     role="progressbar" style="width: 0%">0%</div>
+            </div>
+            <small id="dukasProgressMsg" class="text-muted"></small>
+        </div>
+
+        <!-- Result Section (hidden by default) -->
+        <div id="dukasResultSection" class="mt-3" style="display:none;"></div>
+
+        <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>Notes:</strong>
+            <ul class="mb-0 mt-1">
+                <li>Dukascopy provides <strong>free tick data</strong> going back to ~2003 for major pairs and ~2012 for Gold</li>
+                <li>Data is downloaded as ticks and aggregated into <strong>M1 candles</strong> (mid price = (ask+bid)/2)</li>
+                <li>Higher timeframes (M5, M15, H1, H4) are <strong>auto-resampled from M1</strong> during backtests</li>
+                <li>Dukascopy may be blocked in some countries &mdash; use a <strong>VPN</strong> if the connection test fails</li>
+            </ul>
+            <hr class="my-2">
+            <strong>Estimated times:</strong> 1 month ~5 min | 6 months ~30 min | 1 year ~1 hour | 4 years ~4 hours
+        </div>
+    </div>
+</div>
+
+<!-- Download from Databento -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-graph-up-arrow me-2"></i>Download from Databento (Earnings IV Crush)
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Fetch equity OHLCV plus earnings schedule features for the Earnings IV Crush strategy.
+            Output is saved directly to <code>data/historical</code>.
+        </p>
+
+        <div class="row g-3 align-items-end">
+            <div class="col-md-2">
+                <label class="form-label">Symbol</label>
+                <select class="form-select" id="dbSymbol">
+                    <option value="AAPL" selected>AAPL</option>
+                    <option value="MSFT">MSFT</option>
+                    <option value="NVDA">NVDA</option>
+                    <option value="AMZN">AMZN</option>
+                    <option value="META">META</option>
+                    <option value="TSLA">TSLA</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Timeframe</label>
+                <select class="form-select" id="dbTimeframe">
+                    <option value="M15" selected>M15</option>
+                    <option value="M5">M5</option>
+                    <option value="M1">M1</option>
+                    <option value="M30">M30</option>
+                    <option value="H1">H1</option>
+                    <option value="D1">D1</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" id="dbStartDate">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">End Date</label>
+                <input type="date" class="form-control" id="dbEndDate">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Earnings CSV (Optional)</label>
+                <input type="text" class="form-control" id="dbEarningsCsv" value="data/earnings_calendar.csv" placeholder="data/earnings_calendar.csv">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">API Key (Optional)</label>
+                <input type="password" class="form-control" id="dbApiKey" placeholder="from .env if empty">
+            </div>
+            <div class="col-md-3">
+                <button type="button" class="btn btn-dark" id="dbDownloadBtn" onclick="startDatabentoDownload()">
+                    <i class="bi bi-cloud-arrow-down me-2"></i>Download from Databento
+                </button>
+            </div>
+        </div>
+
+        <div id="dbProgressSection" class="mt-3" style="display:none;">
+            <div class="progress mb-2" style="height: 24px;">
+                <div id="dbProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-dark"
+                     role="progressbar" style="width: 0%">0%</div>
+            </div>
+            <small id="dbProgressMsg" class="text-muted"></small>
+        </div>
+
+        <div id="dbResultSection" class="mt-3" style="display:none;"></div>
+
+        <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>Best practice:</strong> provide <code>Earnings CSV</code> for reproducible known-ahead schedules.
+            If left empty, the fetcher tries yfinance and then a limited static fallback.
+        </div>
+    </div>
+</div>
+
+<!-- Available Data Files -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-file-earmark-spreadsheet me-2"></i>Imported Data Files</span>
+        <span class="badge bg-primary">{{ files|length }} file{{ 's' if files|length != 1 }}</span>
+    </div>
+    <div class="card-body">
+        {% if files %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Filename</th>
+                        <th>Symbol</th>
+                        <th>Timeframe</th>
+                        <th>Size</th>
+                        <th>Bars</th>
+                        <th>Date Range</th>
+                        <th>Trading Days</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for file in files %}
+                    <tr>
+                        <td>
+                            <i class="bi bi-file-earmark-spreadsheet text-success me-1"></i>
+                            <strong>{{ file.filename }}</strong>
+                        </td>
+                        <td>{{ file.get('symbol', '?') }}</td>
+                        <td><span class="badge bg-secondary">{{ file.get('timeframe', '?') }}</span></td>
+                        <td>{{ "%.1f"|format(file.get('size_mb', 0)) }} MB</td>
+                        <td>
+                            {% if file.get('bars', 0) > 0 %}
+                                <strong>{{ "{:,}".format(file.get('bars', 0)) }}</strong>
+                            {% else %}
+                                <span class="text-danger">Error</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if file.get('start_date') %}
+                                {{ file.start_date[:10] }} &rarr; {{ file.end_date[:10] }}
+                            {% elif file.get('error') %}
+                                <small class="text-danger">{{ file.error }}</small>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>{{ file.get('trading_days', '-') }}</td>
+                        <td>
+                            <form method="POST" action="{{ url_for('delete_data_file', filename=file.filename) }}"
+                                  style="display:inline" onsubmit="return confirm('Delete this data file?')">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-database display-4 text-muted"></i>
+            <h5 class="mt-3">No Data Files Imported</h5>
+            <p class="text-muted">
+                Upload CSV files with historical price data to extend your backtesting range.<br>
+                Your MetaQuotes-Demo broker provides ~90 days of M1 data. For ML training, you need 6+ months.
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- How It Works Card -->
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-question-circle me-2"></i>How Data Merging Works
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <div class="text-center mb-3">
+                    <i class="bi bi-file-earmark-spreadsheet display-5 text-primary"></i>
+                </div>
+                <h6 class="text-center">1. CSV Data (Historical)</h6>
+                <p class="text-muted small">
+                    Upload CSV files with older historical data (e.g., Jan-Sep 2025).
+                    This extends your data beyond the broker's ~90 day limit.
+                </p>
+            </div>
+            <div class="col-md-4">
+                <div class="text-center mb-3">
+                    <i class="bi bi-plus-circle display-5 text-success"></i>
+                </div>
+                <h6 class="text-center">2. Auto-Merge</h6>
+                <p class="text-muted small">
+                    When you run a backtest, the system automatically merges CSV data with live MT5 data.
+                    Overlapping bars are deduplicated (MT5 preferred for recent data).
+                </p>
+            </div>
+            <div class="col-md-4">
+                <div class="text-center mb-3">
+                    <i class="bi bi-graph-up display-5 text-warning"></i>
+                </div>
+                <h6 class="text-center">3. Extended Backtests</h6>
+                <p class="text-muted small">
+                    Now you can run 6-12 month backtests with 200+ trades,
+                    enough data to train reliable ML models.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Set default dates for IBKR (6 months ago → today) and Dukascopy (3 years ago → today)
+(function() {
+    const today = new Date();
+    const sixMonthsAgo = new Date(today);
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    document.getElementById('ibkrEndDate').value = today.toISOString().split('T')[0];
+    document.getElementById('ibkrStartDate').value = sixMonthsAgo.toISOString().split('T')[0];
+
+    // Dukascopy defaults: 3 years ago → today
+    const threeYearsAgo = new Date(today);
+    threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+    document.getElementById('dukasEndDate').value = today.toISOString().split('T')[0];
+    document.getElementById('dukasStartDate').value = threeYearsAgo.toISOString().split('T')[0];
+
+    // Databento defaults: 2 years ago → today
+    const twoYearsAgo = new Date(today);
+    twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+    document.getElementById('dbEndDate').value = today.toISOString().split('T')[0];
+    document.getElementById('dbStartDate').value = twoYearsAgo.toISOString().split('T')[0];
+})();
+
+// Show upload progress
+document.getElementById('uploadForm').addEventListener('submit', function() {
+    const btn = document.getElementById('uploadBtn');
+    const file = document.getElementById('csvFile').files[0];
+    if (file) {
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Uploading ${sizeMB} MB...`;
+    }
+});
+
+// Show download progress
+document.getElementById('downloadForm').addEventListener('submit', function() {
+    const btn = document.getElementById('downloadBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading from MT5...';
+});
+
+// ==================== IBKR Functions ====================
+
+let ibkrPollTimer = null;
+
+function testIBKRConnection() {
+    const btn = document.getElementById('ibkrTestBtn');
+    const result = document.getElementById('ibkrTestResult');
+    const port = document.getElementById('ibkrPort').value;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
+    result.innerHTML = '';
+
+    fetch(`/api/ibkr/test-connection?port=${port}`)
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-plug me-1"></i>Test Connection';
+
+            if (data.connected) {
+                result.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>'
+                    + `Connected! Accounts: ${(data.accounts || []).join(', ')} | Server v${data.server_version}</span>`;
+            } else {
+                result.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>'
+                    + `Failed: ${data.error || 'Unknown error'}</span>`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-plug me-1"></i>Test Connection';
+            result.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+        });
+}
+
+function startIBKRDownload() {
+    const btn = document.getElementById('ibkrDownloadBtn');
+    const startDate = document.getElementById('ibkrStartDate').value;
+    const endDate = document.getElementById('ibkrEndDate').value;
+
+    if (!startDate || !endDate) {
+        alert('Please select start and end dates.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+
+    // Show progress section
+    document.getElementById('ibkrProgressSection').style.display = 'block';
+    document.getElementById('ibkrResultSection').style.display = 'none';
+    document.getElementById('ibkrResultSection').innerHTML = '';
+
+    const formData = new FormData();
+    formData.append('symbol', document.getElementById('ibkrSymbol').value);
+    formData.append('timeframe', document.getElementById('ibkrTimeframe').value);
+    formData.append('start_date', startDate);
+    formData.append('end_date', endDate);
+    formData.append('port', document.getElementById('ibkrPort').value);
+
+    fetch('/data-management/download-ibkr', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                showIBKRError(data.error);
+                return;
+            }
+            if (data.task_id) {
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
+                pollIBKRStatus(data.task_id);
+            }
+        })
+        .catch(err => {
+            showIBKRError(err.message);
+        });
+}
+
+function pollIBKRStatus(taskId) {
+    if (ibkrPollTimer) clearInterval(ibkrPollTimer);
+
+    ibkrPollTimer = setInterval(() => {
+        fetch(`/api/ibkr/status/${taskId}`)
+            .then(r => r.json())
+            .then(data => {
+                updateIBKRProgress(data);
+
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearInterval(ibkrPollTimer);
+                    ibkrPollTimer = null;
+
+                    const btn = document.getElementById('ibkrDownloadBtn');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Extract from IBKR';
+
+                    if (data.status === 'completed') {
+                        showIBKRSuccess(data);
+                    } else {
+                        showIBKRError(data.error || data.message || 'Unknown error');
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('Poll error:', err);
+            });
+    }, 2000);
+}
+
+function updateIBKRProgress(data) {
+    const bar = document.getElementById('ibkrProgressBar');
+    const msg = document.getElementById('ibkrProgressMsg');
+    const pct = Math.round(data.progress || 0);
+
+    bar.style.width = pct + '%';
+    bar.textContent = pct + '%';
+    msg.textContent = data.message || '';
+
+    if (data.status === 'completed') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+        bar.classList.add('bg-success');
+    } else if (data.status === 'error') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+        bar.classList.add('bg-danger');
+    }
+}
+
+function showIBKRSuccess(data) {
+    const section = document.getElementById('ibkrResultSection');
+    const r = data.result || {};
+    section.style.display = 'block';
+    section.innerHTML = `
+        <div class="alert alert-success">
+            <i class="bi bi-check-circle-fill me-2"></i>
+            <strong>Download Complete!</strong>
+            <ul class="mb-0 mt-2">
+                <li><strong>File:</strong> ${r.filename || '?'}</li>
+                <li><strong>Bars:</strong> ${(r.bars || 0).toLocaleString()}</li>
+                <li><strong>Range:</strong> ${r.start_date || '?'} &rarr; ${r.end_date || '?'}</li>
+                <li><strong>Trading Days:</strong> ${r.trading_days || '?'}</li>
+                <li><strong>Size:</strong> ${r.size_mb || '?'} MB</li>
+            </ul>
+            <hr class="my-2">
+            <small>The file is saved and will be automatically merged with other data when you run a backtest.
+            <a href="${window.location.href}">Refresh</a> to see it in the files table below.</small>
+        </div>`;
+}
+
+function showIBKRError(message) {
+    const section = document.getElementById('ibkrResultSection');
+    const progressSection = document.getElementById('ibkrProgressSection');
+    section.style.display = 'block';
+    progressSection.style.display = 'none';
+    section.innerHTML = `
+        <div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            <strong>Download Failed</strong><br>
+            ${message}
+        </div>`;
+
+    const btn = document.getElementById('ibkrDownloadBtn');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Extract from IBKR';
+
+    // Reset progress bar
+    const bar = document.getElementById('ibkrProgressBar');
+    bar.style.width = '0%';
+    bar.textContent = '0%';
+    bar.className = 'progress-bar progress-bar-striped progress-bar-animated';
+}
+
+// ==================== Dukascopy Functions ====================
+
+let dukasPollTimer = null;
+
+function testDukascopyConnection() {
+    const btn = document.getElementById('dukasTestBtn');
+    const result = document.getElementById('dukasTestResult');
+    const symbol = document.getElementById('dukasSymbol').value;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
+    result.innerHTML = '';
+
+    fetch(`/api/dukascopy/test-connection?symbol=${symbol}`)
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-plug me-1"></i>Test Connection';
+
+            if (data.connected) {
+                result.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>'
+                    + `Connected to Dukascopy! ${data.message || ''}</span>`;
+            } else {
+                result.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>'
+                    + `Failed: ${data.error || 'Unknown error'}</span>`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-plug me-1"></i>Test Connection';
+            result.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+        });
+}
+
+function startDukascopyDownload() {
+    const btn = document.getElementById('dukasDownloadBtn');
+    const startDate = document.getElementById('dukasStartDate').value;
+    const endDate = document.getElementById('dukasEndDate').value;
+
+    if (!startDate || !endDate) {
+        alert('Please select start and end dates.');
+        return;
+    }
+
+    // Warn about long downloads
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+    if (months > 12) {
+        if (!confirm(`This will download ${months} months of tick data.\nEstimated time: ~${Math.round(months/12)} hour(s).\n\nMake sure your VPN is active. Continue?`)) {
+            return;
+        }
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+
+    // Show progress section
+    document.getElementById('dukasProgressSection').style.display = 'block';
+    document.getElementById('dukasResultSection').style.display = 'none';
+    document.getElementById('dukasResultSection').innerHTML = '';
+
+    const formData = new FormData();
+    formData.append('symbol', document.getElementById('dukasSymbol').value);
+    formData.append('start_date', startDate);
+    formData.append('end_date', endDate);
+
+    fetch('/data-management/download-dukascopy', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                showDukascopyError(data.error);
+                return;
+            }
+            if (data.task_id) {
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
+                pollDukascopyStatus(data.task_id);
+            }
+        })
+        .catch(err => {
+            showDukascopyError(err.message);
+        });
+}
+
+function pollDukascopyStatus(taskId) {
+    if (dukasPollTimer) clearInterval(dukasPollTimer);
+
+    dukasPollTimer = setInterval(() => {
+        fetch(`/api/dukascopy/status/${taskId}`)
+            .then(r => r.json())
+            .then(data => {
+                updateDukascopyProgress(data);
+
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearInterval(dukasPollTimer);
+                    dukasPollTimer = null;
+
+                    const btn = document.getElementById('dukasDownloadBtn');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Download from Dukascopy';
+
+                    if (data.status === 'completed') {
+                        showDukascopySuccess(data);
+                    } else {
+                        showDukascopyError(data.error || data.message || 'Unknown error');
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('Dukascopy poll error:', err);
+            });
+    }, 3000);  // Poll every 3 seconds (downloads are slower)
+}
+
+function updateDukascopyProgress(data) {
+    const bar = document.getElementById('dukasProgressBar');
+    const msg = document.getElementById('dukasProgressMsg');
+    const pct = Math.round(data.progress || 0);
+
+    bar.style.width = pct + '%';
+    bar.textContent = pct + '%';
+    msg.textContent = data.message || '';
+
+    if (data.status === 'completed') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-info');
+        bar.classList.add('bg-success');
+    } else if (data.status === 'error') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-info');
+        bar.classList.add('bg-danger');
+    }
+}
+
+function showDukascopySuccess(data) {
+    const section = document.getElementById('dukasResultSection');
+    const r = data.result || {};
+    section.style.display = 'block';
+    section.innerHTML = `
+        <div class="alert alert-success">
+            <i class="bi bi-check-circle-fill me-2"></i>
+            <strong>Download Complete!</strong>
+            <ul class="mb-0 mt-2">
+                <li><strong>File:</strong> ${r.filename || '?'}</li>
+                <li><strong>Bars:</strong> ${(r.bars || 0).toLocaleString()}</li>
+                <li><strong>Range:</strong> ${r.start_date || '?'} &rarr; ${r.end_date || '?'}</li>
+                <li><strong>Trading Days:</strong> ${r.trading_days || '?'}</li>
+                <li><strong>Size:</strong> ${r.size_mb || '?'} MB</li>
+            </ul>
+            <hr class="my-2">
+            <small>The file is saved and will be automatically merged with other data when you run a backtest.
+            Higher timeframes (M5, M15, H1, H4) are auto-resampled from this M1 data.
+            <a href="${window.location.href}">Refresh</a> to see it in the files table below.</small>
+        </div>`;
+}
+
+function showDukascopyError(message) {
+    const section = document.getElementById('dukasResultSection');
+    const progressSection = document.getElementById('dukasProgressSection');
+    section.style.display = 'block';
+    progressSection.style.display = 'none';
+    section.innerHTML = `
+        <div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            <strong>Download Failed</strong><br>
+            ${message}
+            <hr class="my-2">
+            <small><strong>Tip:</strong> If you see a connection error, make sure your VPN is active.
+            Dukascopy's data feed may be blocked in some regions.</small>
+        </div>`;
+
+    const btn = document.getElementById('dukasDownloadBtn');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Download from Dukascopy';
+
+    // Reset progress bar
+    const bar = document.getElementById('dukasProgressBar');
+    bar.style.width = '0%';
+    bar.textContent = '0%';
+    bar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-info';
+}
+
+// ==================== Databento Functions ====================
+
+let dbPollTimer = null;
+
+function startDatabentoDownload() {
+    const btn = document.getElementById('dbDownloadBtn');
+    const startDate = document.getElementById('dbStartDate').value;
+    const endDate = document.getElementById('dbEndDate').value;
+
+    if (!startDate || !endDate) {
+        alert('Please select start and end dates.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+
+    document.getElementById('dbProgressSection').style.display = 'block';
+    document.getElementById('dbResultSection').style.display = 'none';
+    document.getElementById('dbResultSection').innerHTML = '';
+
+    const formData = new FormData();
+    formData.append('symbol', document.getElementById('dbSymbol').value);
+    formData.append('timeframe', document.getElementById('dbTimeframe').value);
+    formData.append('start_date', startDate);
+    formData.append('end_date', endDate);
+    formData.append('earnings_csv', document.getElementById('dbEarningsCsv').value || '');
+    formData.append('api_key', document.getElementById('dbApiKey').value || '');
+
+    fetch('/data-management/download-databento', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                showDatabentoError(data.error);
+                return;
+            }
+            if (data.task_id) {
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
+                pollDatabentoStatus(data.task_id);
+            } else {
+                showDatabentoError('Unexpected response from server');
+            }
+        })
+        .catch(err => {
+            showDatabentoError(err.message || 'Network error');
+        });
+}
+
+function pollDatabentoStatus(taskId) {
+    if (dbPollTimer) clearInterval(dbPollTimer);
+
+    dbPollTimer = setInterval(() => {
+        fetch(`/api/databento/status/${taskId}`)
+            .then(async r => {
+                const data = await r.json();
+                if (!r.ok) {
+                    throw new Error(data.error || `Status poll failed (${r.status})`);
+                }
+                return data;
+            })
+            .then(data => {
+                updateDatabentoProgress(data);
+
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearInterval(dbPollTimer);
+                    dbPollTimer = null;
+
+                    const btn = document.getElementById('dbDownloadBtn');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Download from Databento';
+
+                    if (data.status === 'completed') {
+                        showDatabentoSuccess(data);
+                    } else {
+                        showDatabentoError(data.error || data.message || 'Unknown error');
+                    }
+                }
+            })
+            .catch(err => {
+                clearInterval(dbPollTimer);
+                dbPollTimer = null;
+                showDatabentoError(err.message || 'Status poll failed');
+            });
+    }, 2000);
+}
+
+function updateDatabentoProgress(data) {
+    const bar = document.getElementById('dbProgressBar');
+    const msg = document.getElementById('dbProgressMsg');
+    const pct = Math.round(data.progress || 0);
+
+    bar.style.width = pct + '%';
+    bar.textContent = pct + '%';
+    msg.textContent = data.message || '';
+
+    if (data.status === 'completed') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-dark');
+        bar.classList.add('bg-success');
+    } else if (data.status === 'error') {
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-dark');
+        bar.classList.add('bg-danger');
+    }
+}
+
+function showDatabentoSuccess(data) {
+    const section = document.getElementById('dbResultSection');
+    const r = data.result || {};
+    section.style.display = 'block';
+    section.innerHTML = `
+        <div class="alert alert-success">
+            <i class="bi bi-check-circle-fill me-2"></i>
+            <strong>Databento Download Complete!</strong>
+            <ul class="mb-0 mt-2">
+                <li><strong>Output:</strong> ${r.output_file || '?'}</li>
+            </ul>
+            <hr class="my-2">
+            <small>File is saved to <code>data/historical</code>. <a href="${window.location.href}">Refresh</a> to see it in the files table below.</small>
+        </div>`;
+}
+
+function showDatabentoError(message) {
+    const section = document.getElementById('dbResultSection');
+    const progressSection = document.getElementById('dbProgressSection');
+    section.style.display = 'block';
+    progressSection.style.display = 'none';
+    section.innerHTML = `
+        <div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            <strong>Databento Download Failed</strong><br>
+            ${message}
+        </div>`;
+
+    const btn = document.getElementById('dbDownloadBtn');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-arrow-down me-2"></i>Download from Databento';
+
+    const bar = document.getElementById('dbProgressBar');
+    bar.style.width = '0%';
+    bar.textContent = '0%';
+    bar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-dark';
+}
+</script>
+{% endblock %}

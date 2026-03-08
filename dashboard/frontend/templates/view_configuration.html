@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.name }} - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('configurations') }}">Configurations</a></li>
+                <li class="breadcrumb-item active">{{ config.name }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0">{{ config.name }}</h2>
+        <p class="text-muted mb-0">
+            Created: {{ config.created_at }}
+            {% if config.preset_name %}
+                &bull;
+                {% if config.preset_name == 'conservative' %}
+                <span class="badge bg-success">Conservative</span>
+                {% elif config.preset_name == 'aggressive' %}
+                <span class="badge bg-danger">Aggressive</span>
+                {% else %}
+                <span class="badge bg-primary">Default</span>
+                {% endif %}
+            {% endif %}
+        </p>
+    </div>
+    <div>
+        <a href="{{ url_for('configurations') }}" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-arrow-left me-1"></i>Back
+        </a>
+        <a href="{{ url_for('run_backtest') }}?config={{ config.id }}" class="btn btn-primary">
+            <i class="bi bi-play-fill me-1"></i>Run Backtest
+        </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- General Settings -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-gear me-2"></i>General Settings
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">Strategy</dt>
+                    <dd class="col-sm-6"><span class="badge bg-primary">{{ config.strategy_id }}</span></dd>
+                    <dt class="col-sm-6">Symbol</dt>
+                    <dd class="col-sm-6">{{ config.symbol }}</dd>
+                    <dt class="col-sm-6">Timeframe</dt>
+                    <dd class="col-sm-6">{{ config.timeframe }}</dd>
+                    <dt class="col-sm-6">Date Range</dt>
+                    <dd class="col-sm-6 small">{{ config.start_date[:10] if config.start_date else '-' }} to {{ config.end_date[:10] if config.end_date else '-' }}</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Risk Management -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-shield-check me-2"></i>Risk Management
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">Initial Balance</dt>
+                    <dd class="col-sm-6">${{ config.initial_balance|default(10000)|round(0)|int }}</dd>
+                    <dt class="col-sm-6">Risk per Trade</dt>
+                    <dd class="col-sm-6">{{ config.risk_percent|default(1.0) }}%</dd>
+                    <dt class="col-sm-6">Max Spread</dt>
+                    <dd class="col-sm-6">${{ config.max_spread_usd|default(0.4) }}</dd>
+                    <dt class="col-sm-6">Daily Loss Limit</dt>
+                    <dd class="col-sm-6">${{ config.max_daily_loss_usd|default(-150) }}</dd>
+                    <dt class="col-sm-6">Max Total Risk</dt>
+                    <dd class="col-sm-6">${{ config.max_total_risk_usd|default(200) }}</dd>
+                    <dt class="col-sm-6">Max Daily Trades</dt>
+                    <dd class="col-sm-6">{{ config.max_daily_trades|default(2) }}</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stop Loss / Take Profit -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-stoplights me-2"></i>SL / TP
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">Min SL</dt>
+                    <dd class="col-sm-6">${{ config.min_sl_usd|default(1.0) }}</dd>
+                    <dt class="col-sm-6">Max SL</dt>
+                    <dd class="col-sm-6">${{ config.max_sl_usd|default(10.0) }}</dd>
+                    <dt class="col-sm-6">R:R Threshold</dt>
+                    <dd class="col-sm-6">{{ config.gold_rr_threshold|default(3.0) }}:1</dd>
+                    {% if config.bias_min_strength is defined and config.bias_min_strength %}
+                    <dt class="col-sm-6">Min Bias Strength</dt>
+                    <dd class="col-sm-6">{{ config.bias_min_strength }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Session Times -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-clock me-2"></i>Session Times
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    {% if config.orb_start_time %}
+                    <dt class="col-sm-6">ORB Window</dt>
+                    <dd class="col-sm-6">{{ config.orb_start_time }} - {{ config.orb_end_time }}</dd>
+                    {% endif %}
+                    <dt class="col-sm-6">Trade Window</dt>
+                    <dd class="col-sm-6">{{ config.trade_start_time|default('09:45') }} - {{ config.trade_end_time|default('16:00') }}</dd>
+                    {% if config.asian_start %}
+                    <dt class="col-sm-6">Asian</dt>
+                    <dd class="col-sm-6">{{ config.asian_start }} - {{ config.asian_end }}</dd>
+                    {% endif %}
+                    {% if config.london_start %}
+                    <dt class="col-sm-6">London</dt>
+                    <dd class="col-sm-6">{{ config.london_start }} - {{ config.london_end }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Simulation Settings -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-sliders me-2"></i>Simulation
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">Contract Size</dt>
+                    <dd class="col-sm-6">{{ config.contract_size|default(100) }}</dd>
+                    <dt class="col-sm-6">Spread Sim</dt>
+                    <dd class="col-sm-6">
+                        {% if config.simulate_spread %}<span class="badge bg-success">On</span>{% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+                        {% if config.use_variable_spread %} (Variable){% endif %}
+                    </dd>
+                    <dt class="col-sm-6">Slippage Sim</dt>
+                    <dd class="col-sm-6">
+                        {% if config.simulate_slippage %}<span class="badge bg-success">On</span>{% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+                    </dd>
+                    <dt class="col-sm-6">Commission</dt>
+                    <dd class="col-sm-6">${{ config.commission_per_lot|default(3.5) }}/lot</dd>
+                    <dt class="col-sm-6">Swap Sim</dt>
+                    <dd class="col-sm-6">
+                        {% if config.simulate_swap %}<span class="badge bg-success">On</span>{% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+                    </dd>
+                    <dt class="col-sm-6">Weekend Close</dt>
+                    <dd class="col-sm-6">
+                        {% if config.close_before_weekend %}<span class="badge bg-success">On</span>{% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+                    </dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trailing Stop -->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-arrow-down-up me-2"></i>Trailing Stop
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">Enabled</dt>
+                    <dd class="col-sm-6">
+                        {% if config.use_trailing %}<span class="badge bg-success">Yes</span>{% else %}<span class="badge bg-secondary">No</span>{% endif %}
+                    </dd>
+                    {% if config.use_trailing %}
+                    <dt class="col-sm-6">ATR Period</dt>
+                    <dd class="col-sm-6">{{ config.trailing_atr_period|default(14) }}</dd>
+                    <dt class="col-sm-6">ATR Multiplier</dt>
+                    <dd class="col-sm-6">{{ config.trailing_atr_multiplier|default(1.5) }}x</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- ML Settings (only for ML strategies) -->
+    {% if config.use_ml_filter %}
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-cpu me-2"></i>ML Filter
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">ML Filter</dt>
+                    <dd class="col-sm-6"><span class="badge bg-success">Active</span></dd>
+                    <dt class="col-sm-6">Min Win Prob</dt>
+                    <dd class="col-sm-6">{{ (config.ml_min_win_probability * 100)|round(0)|int }}%</dd>
+                    <dt class="col-sm-6">Dynamic R:R</dt>
+                    <dd class="col-sm-6">
+                        {% if config.use_ml_dynamic_rr %}<span class="badge bg-success">Yes</span>{% else %}<span class="badge bg-secondary">No</span>{% endif %}
+                    </dd>
+                    {% if config.ml_base_strategy_id %}
+                    <dt class="col-sm-6">Base Strategy</dt>
+                    <dd class="col-sm-6">{{ config.ml_base_strategy_id }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ICT Parameters (for ORB strategies) -->
+    {% if config.strategy_id in ['orb_strategy', 'advanced_orb_strategy', 'orb_ml_strategy', 'advanced_orb_ml_strategy'] %}
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-diagram-3 me-2"></i>ICT Parameters
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-6">FVG Min Gap</dt>
+                    <dd class="col-sm-6">${{ config.min_fvg_gap|default(0.3) }}</dd>
+                    <dt class="col-sm-6">FVG Lookback</dt>
+                    <dd class="col-sm-6">{{ config.fvg_lookback|default(50) }} bars</dd>
+                    <dt class="col-sm-6">Displacement %ile</dt>
+                    <dd class="col-sm-6">{{ config.displacement_percentile|default(75) }}th</dd>
+                    <dt class="col-sm-6">OB Lookback</dt>
+                    <dd class="col-sm-6">{{ config.ob_lookback|default(100) }} bars</dd>
+                    <dt class="col-sm-6">OB Min Body</dt>
+                    <dd class="col-sm-6">{{ config.ob_min_body_percent|default(60) }}%</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if config.description %}
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>Description
+            </div>
+            <div class="card-body">
+                <p class="mb-0">{{ config.description }}</p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

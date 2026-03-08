@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}Strategy Presets - ProTrading{% endblock %}
+
+{% block extra_css %}
+<style>
+    .strategy-card .card-header {
+        transition: background-color 0.15s;
+    }
+    .strategy-card .card-header:hover {
+        background-color: rgba(var(--bs-primary-rgb), 0.05);
+    }
+    .preset-table td {
+        vertical-align: middle;
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+    }
+    .preset-table th {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.5rem 0.75rem;
+    }
+    .instrument-group td {
+        border-top: 2px solid var(--bs-border-color);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-sliders me-2"></i>Strategy Presets</h2>
+        <p class="text-muted mb-0">
+            All strategies &times; 3 risk levels &times; supported instruments
+            &mdash; <strong>{{ matrix|length }}</strong> preset configurations
+        </p>
+    </div>
+    <a href="{{ url_for('run_backtest') }}" class="btn btn-primary">
+        <i class="bi bi-play-circle me-2"></i>Run Backtest
+    </a>
+</div>
+
+{% if matrix %}
+{% set strategies = matrix | groupby('strategy_id') %}
+{% for strategy_id, presets in strategies %}
+{% set first = presets[0] %}
+{% set symbols = presets | map(attribute='symbol') | unique | list %}
+<div class="card mb-3 strategy-card">
+    <div class="card-header py-2" data-bs-toggle="collapse" data-bs-target="#strat-{{ loop.index }}"
+         role="button" style="cursor: pointer;">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <i class="bi bi-chevron-down me-2 text-muted"></i>
+                <strong>{{ first.strategy_name }}</strong>
+                <small class="text-muted ms-2">
+                    {{ symbols | length }} instrument{{ 's' if symbols | length > 1 else '' }}
+                </small>
+            </div>
+            <span class="badge bg-primary">{{ presets|length }} presets</span>
+        </div>
+    </div>
+    <div id="strat-{{ loop.index }}" class="collapse show">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0 preset-table">
+                    <thead>
+                        <tr>
+                            <th>Instrument</th>
+                            <th>Preset</th>
+                            <th>Timeframe</th>
+                            <th class="text-end">Risk %</th>
+                            <th class="text-end">R:R</th>
+                            <th>SL Range</th>
+                            <th>Spread Limit</th>
+                            <th>Trading Hours</th>
+                            <th class="text-center">Max Daily</th>
+                            <th class="text-end">Commission</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% set prev_symbol = namespace(val='') %}
+                        {% for p in presets %}
+                        <tr{% if p.symbol != prev_symbol.val and not loop.first %} class="instrument-group"{% endif %}>
+                            <td>
+                                {% if p.symbol != prev_symbol.val %}
+                                <span class="badge bg-secondary">{{ p.symbol }}</span>
+                                {% set prev_symbol.val = p.symbol %}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if p.preset_id == 'conservative' %}
+                                <span class="badge bg-success">Conservative</span>
+                                {% elif p.preset_id == 'aggressive' %}
+                                <span class="badge bg-danger">Aggressive</span>
+                                {% else %}
+                                <span class="badge bg-primary">Default</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ p.timeframe }}</td>
+                            <td class="text-end">{{ p.risk_percent }}%</td>
+                            <td class="text-end">{{ p.rr_ratio }}:1</td>
+                            <td>{{ p.min_sl }} &ndash; {{ p.max_sl }}</td>
+                            <td>{{ p.max_spread }}</td>
+                            <td>{{ p.trade_start }} &ndash; {{ p.trade_end }}</td>
+                            <td class="text-center">{{ p.max_daily_trades if p.max_daily_trades else '&mdash;' }}</td>
+                            <td class="text-end">${{ p.commission }}</td>
+                            <td>
+                                <a href="{{ url_for('run_backtest') }}?strategy={{ p.strategy_id }}&preset={{ p.preset_id }}&symbol={{ p.symbol }}"
+                                   class="btn btn-outline-success btn-sm" title="Run Backtest with this preset">
+                                    <i class="bi bi-play"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+    <div class="card-body text-center py-5">
+        <i class="bi bi-exclamation-triangle text-warning" style="font-size: 3rem;"></i>
+        <h4 class="mt-3 text-muted">Could not load preset matrix</h4>
+        <p class="text-muted">Make sure the backend API is running at port 8000.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

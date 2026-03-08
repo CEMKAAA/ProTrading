@@ -1,0 +1,21 @@
+[
+  {
+    "strategy_id": "orb_strategy",
+    "preset": "aggressive",
+    "symbol": "XAUUSD",
+    "timeframe": "M1",
+    "error": "unsupported operand type(s) for -: 'NoneType' and 'NoneType'",
+    "total_trades": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "sharpe_ratio": 0,
+    "max_drawdown_pct": 0,
+    "net_profit": 0,
+    "avg_rr": 0,
+    "elapsed_sec": 0,
+    "expectancy": 0,
+    "final_balance": 10000,
+    "largest_win": 0,
+    "largest_loss": 0
+  }
+]

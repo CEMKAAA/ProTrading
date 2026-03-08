@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+
+{% block title %}Live Trading - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">Live Trading Monitor</h2>
+        <p class="text-muted mb-0">Real-time trading status and market conditions</p>
+    </div>
+    <button class="btn btn-outline-primary" onclick="location.reload()">
+        <i class="bi bi-arrow-clockwise me-2"></i>Refresh
+    </button>
+</div>
+
+{% if status %}
+<div class="row g-4">
+    <!-- Connection Status -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-wifi me-2"></i>Connection Status
+            </div>
+            <div class="card-body text-center py-4">
+                {% if status.is_connected %}
+                <div class="mb-3">
+                    <span class="status-dot online" style="width: 16px; height: 16px;"></span>
+                </div>
+                <h4 class="text-success mb-2">Connected</h4>
+                <p class="text-muted mb-0">Trading Bot is running</p>
+                {% else %}
+                <div class="mb-3">
+                    <span class="status-dot offline" style="width: 16px; height: 16px;"></span>
+                </div>
+                <h4 class="text-danger mb-2">Disconnected</h4>
+                <p class="text-muted mb-0">{{ status.error_message or 'Bot not running or MT5 not connected' }}</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Account Info -->
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-wallet2 me-2"></i>Account Information
+            </div>
+            <div class="card-body">
+                {% if status.is_connected %}
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <div class="metric-card">
+                            <div class="label">Balance</div>
+                            <div class="value">${{ "%.2f"|format(status.balance or 0) }}</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="metric-card">
+                            <div class="label">Equity</div>
+                            <div class="value {% if (status.equity or 0) >= (status.balance or 0) %}text-success{% else %}text-danger{% endif %}">
+                                ${{ "%.2f"|format(status.equity or 0) }}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="metric-card">
+                            <div class="label">Daily P/L</div>
+                            <div class="value {% if (status.daily_pnl or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                ${{ "%.2f"|format(status.daily_pnl or 0) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-exclamation-triangle text-warning" style="font-size: 2rem;"></i>
+                    <p class="text-muted mt-2 mb-0">Start the trading bot to view account information</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Market Data -->
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-currency-exchange me-2"></i>Market Data - XAUUSD
+            </div>
+            <div class="card-body">
+                {% if status.is_connected %}
+                <div class="row g-3">
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Current Price</div>
+                            <div class="value">{{ "%.2f"|format(status.current_price or 0) }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Spread</div>
+                            <div class="value {% if (status.spread or 0) <= 0.50 %}text-success{% else %}text-danger{% endif %}">
+                                ${{ "%.2f"|format(status.spread or 0) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="my-3">
+
+                <div class="row g-3">
+                    <div class="col-6">
+                        <small class="text-muted d-block">NY Time</small>
+                        <strong>{{ status.current_time_ny[:19] if status.current_time_ny else 'N/A' }}</strong>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-muted d-block">Trading Status</small>
+                        <strong class="{% if status.is_trading %}text-success{% else %}text-muted{% endif %}">
+                            {{ 'In Position' if status.is_trading else 'No Position' }}
+                        </strong>
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-graph-down text-muted" style="font-size: 2rem;"></i>
+                    <p class="text-muted mt-2 mb-0">No market data available</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Session Analysis -->
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-compass me-2"></i>Session Analysis
+            </div>
+            <div class="card-body">
+                {% if status.is_connected %}
+                <div class="row g-3 mb-3">
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Session Bias</div>
+                            <div class="value {% if status.session_bias == 'bullish' %}text-success{% elif status.session_bias == 'bearish' %}text-danger{% else %}text-muted{% endif %}">
+                                {{ (status.session_bias or 'NEUTRAL')|upper }}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Trending</div>
+                            <div class="value">
+                                {% if status.is_trending %}
+                                <span class="text-success"><i class="bi bi-check-circle"></i> Yes</span>
+                                {% else %}
+                                <span class="text-muted"><i class="bi bi-dash-circle"></i> No</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <h6 class="section-title">Key Levels</h6>
+                <div class="row g-2">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small py-1 border-bottom">
+                            <span class="text-muted">ORB High</span>
+                            <strong>{{ "%.2f"|format(status.orb_high or 0) if status.orb_high else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small py-1 border-bottom">
+                            <span class="text-muted">ORB Low</span>
+                            <strong>{{ "%.2f"|format(status.orb_low or 0) if status.orb_low else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small py-1 border-bottom">
+                            <span class="text-muted">Asian High</span>
+                            <strong>{{ "%.2f"|format(status.asian_high or 0) if status.asian_high else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small py-1 border-bottom">
+                            <span class="text-muted">Asian Low</span>
+                            <strong>{{ "%.2f"|format(status.asian_low or 0) if status.asian_low else 'N/A' }}</strong>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-clock-history text-muted" style="font-size: 2rem;"></i>
+                    <p class="text-muted mt-2 mb-0">Session data unavailable</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Trading Rules -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-check2-square me-2"></i>Trading Rules Status
+            </div>
+            <div class="card-body">
+                {% if status.is_connected %}
+                {% set spread_ok = (status.spread or 0) <= 0.50 %}
+                {% set can_trade = status.can_trade %}
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <div class="d-flex align-items-center p-3 rounded {% if spread_ok %}bg-success bg-opacity-10{% else %}bg-danger bg-opacity-10{% endif %}">
+                            <i class="bi {% if spread_ok %}bi-check-circle text-success{% else %}bi-x-circle text-danger{% endif %} me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <strong>Spread Check</strong>
+                                <small class="d-block text-muted">${{ "%.2f"|format(status.spread or 0) }} / $0.50 max</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="d-flex align-items-center p-3 rounded {% if (status.daily_pnl or 0) > -150 %}bg-success bg-opacity-10{% else %}bg-danger bg-opacity-10{% endif %}">
+                            <i class="bi {% if (status.daily_pnl or 0) > -150 %}bi-check-circle text-success{% else %}bi-x-circle text-danger{% endif %} me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <strong>Daily P/L</strong>
+                                <small class="d-block text-muted">${{ "%.2f"|format(status.daily_pnl or 0) }} / -$150 limit</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="d-flex align-items-center p-3 rounded {% if (status.daily_trades or 0) < 3 %}bg-success bg-opacity-10{% else %}bg-warning bg-opacity-10{% endif %}">
+                            <i class="bi {% if (status.daily_trades or 0) < 3 %}bi-check-circle text-success{% else %}bi-pause-circle text-warning{% endif %} me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <strong>Daily Trades</strong>
+                                <small class="d-block text-muted">{{ status.daily_trades or 0 }} trades today</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="d-flex align-items-center p-3 rounded {% if can_trade %}bg-success bg-opacity-10{% else %}bg-warning bg-opacity-10{% endif %}">
+                            <i class="bi {% if can_trade %}bi-check-circle text-success{% else %}bi-pause-circle text-warning{% endif %} me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <strong>Can Trade</strong>
+                                <small class="d-block text-muted">{% if can_trade %}Ready{% else %}Waiting{% endif %}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <p class="text-muted mb-0">Start the trading bot to check trading rules</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    Unable to fetch live trading status. Make sure the backend is running and MT5 is connected.
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Auto refresh every 30 seconds
+setTimeout(function() {
+    location.reload();
+}, 30000);
+</script>
+{% endblock %}

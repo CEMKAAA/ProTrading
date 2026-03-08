@@ -1,0 +1,234 @@
+import json
+from datetime import datetime
+
+import pandas as pd
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from dashboard.backend.api import simulation_routes as sim_routes
+from dashboard.backend.core.workbench.mean_rev_tool import MeanRevTool
+from dashboard.backend.models.database import (
+    Base,
+    SimulationSession,
+    SimulationTrade,
+    WorkbenchCopilotAdviceModel,
+    WorkbenchCopilotSessionModel,
+)
+
+
+def _db_session():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    return SessionLocal()
+
+
+def _make_mean_rev_df() -> pd.DataFrame:
+    idx = pd.date_range("2026-01-01", periods=120, freq="5min", tz="UTC")
+    vals = []
+    for i in range(120):
+        base = 100.0 + (i * 0.02)
+        if 40 <= i <= 45:
+            base -= 4.0
+        if 70 <= i <= 74:
+            base += 4.5
+        vals.append(base)
+    close = pd.Series(vals, index=idx)
+    return pd.DataFrame(
+        {
+            "open": close.shift(1).fillna(close),
+            "high": close + 0.2,
+            "low": close - 0.2,
+            "close": close,
+            "volume": 1.0,
+        },
+        index=idx,
+    )
+
+
+def test_mean_rev_signal_sequence_and_no_same_bar_conflicts():
+    tool = MeanRevTool()
+    df = _make_mean_rev_df()
+    zones = tool.scan(
+        df,
+        {
+            "sma_period": 20,
+            "deviation": 2.0,
+            "show_exit_signals": True,
+            "strictness": 3,
+        },
+    )
+    types = [z["type"] for z in zones]
+    assert types == ["buy_zone", "mean_cross", "sell_zone", "mean_cross"]
+
+    bar_to_types = {}
+    for z in zones:
+        bar_to_types.setdefault(int(z["bar_index"]), []).append(str(z["type"]))
+    assert not any(len(v) > 1 for v in bar_to_types.values())
+
+
+def test_mean_rev_compute_current_state_handles_duplicate_index():
+    tool = MeanRevTool()
+    df = _make_mean_rev_df().copy()
+    # Create duplicate timestamps intentionally.
+    duplicated = pd.concat([df.iloc[:80], df.iloc[79:]], axis=0)
+    state = tool.compute_current_state(
+        duplicated,
+        {"sma_period": 20, "deviation": 2.0, "strictness": 3},
+    )
+    assert isinstance(state, dict)
+    assert "state" in state
+    assert "z_score" in state or state.get("reason") == "insufficient_bars"
+
+
+class _FakeEngine:
+    def __init__(self, entry_price: float = 100.0):
+        self.current_bar = 0
+        self.total_bars = 10
+        idx = pd.date_range("2026-01-01", periods=10, freq="5min", tz="UTC")
+        self.df = pd.DataFrame({"close": [entry_price] * 10}, index=idx)
+        self.balance = 10000.0
+        self.closed_trades = []
+        self.open_positions = []
+
+    def execute_trade(self, direction, sl, tp, lot_size, entry_price_override=None):
+        px = float(entry_price_override if entry_price_override is not None else self.df.iloc[self.current_bar]["close"])
+        self.open_positions.append({"id": None, "direction": direction, "entry_price": px})
+        return {
+            "entry_price": px,
+            "entry_bar": int(self.current_bar),
+            "entry_time": self.df.index[self.current_bar].isoformat(),
+        }
+
+
+def _run_auto_paper_entry_with_zone(monkeypatch, zone_type: str, sl: float, tp: float, expected_dir: str):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M5",
+            mode="replay",
+            current_bar=0,
+            total_bars=10,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"cost_model": {"enabled": False}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        copilot = WorkbenchCopilotSessionModel(
+            simulation_session_id=int(sim.id),
+            mode="AUTO_PAPER",
+            status="ACTIVE",
+            provider="deterministic",
+            config_json={},
+            last_snapshot_json={},
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(copilot)
+        db.flush()
+
+        advice = WorkbenchCopilotAdviceModel(
+            copilot_session_id=int(copilot.id),
+            advice_type="SUGGEST_ENTRY",
+            summary="test entry",
+            confidence=0.99,
+            source_event_priority=100,
+            delivery="ACTIONABLE",
+            evidence_json={"zones_preview": [{"type": zone_type}]},
+            action_json={
+                "action_type": "SUGGEST_ENTRY",
+                "stop_loss": sl,
+                "take_profit": tp,
+                "lot_size": 0.01,
+            },
+            status="NEW",
+            created_at=datetime.utcnow(),
+        )
+        db.add(advice)
+        db.commit()
+
+        fake_engine = _FakeEngine(entry_price=100.0)
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda session, db_sess: fake_engine)
+        monkeypatch.setattr(sim_routes, "_emit_copilot_event", lambda *args, **kwargs: None)
+        monkeypatch.setattr(sim_routes, "_is_cost_model_enabled", lambda session: False)
+
+        executed = sim_routes._maybe_apply_auto_paper_actions(
+            copilot=copilot,
+            session=sim,
+            db=db,
+            max_actions=1,
+        )
+        db.flush()
+        db.refresh(advice)
+
+        trade = db.query(SimulationTrade).filter(SimulationTrade.session_id == int(sim.id)).first()
+        assert executed == 1
+        assert advice.status == "EXECUTED"
+        assert trade is not None
+        assert trade.direction == expected_dir
+    finally:
+        db.close()
+
+
+def test_auto_paper_direction_fallback_from_buy_zone(monkeypatch):
+    _run_auto_paper_entry_with_zone(
+        monkeypatch=monkeypatch,
+        zone_type="buy_zone",
+        sl=99.0,
+        tp=102.0,
+        expected_dir="BUY",
+    )
+
+
+def test_auto_paper_direction_fallback_from_sell_zone(monkeypatch):
+    _run_auto_paper_entry_with_zone(
+        monkeypatch=monkeypatch,
+        zone_type="sell_zone",
+        sl=101.0,
+        tp=98.0,
+        expected_dir="SELL",
+    )
+
+
+def test_session_cost_model_spread_source_resolution(monkeypatch):
+    session = SimulationSession(
+        strategy_id="_workbench",
+        symbol="XAUUSD",
+        timeframe="M5",
+        config_json=json.dumps({"cost_model": {"enabled": True, "spread": 0.4, "tc_rate": 0.0002, "spread_source": "manual"}}),
+    )
+
+    manual_model = sim_routes._session_cost_model(session=session, spread_source_override="manual")
+    assert manual_model.spread == 0.4
+    assert manual_model.tc_rate == 0.0002
+    assert manual_model.spread_source == "manual"
+
+    class _SvcNone:
+        def get_live_spread(self, symbol: str):
+            return None
+
+    monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _SvcNone())
+    fallback_model = sim_routes._session_cost_model(session=session, spread_source_override="mt5_live")
+    assert fallback_model.spread == 0.4
+    assert fallback_model.spread_source == "manual_fallback"
+
+    class _SvcLive:
+        def get_live_spread(self, symbol: str):
+            return 0.55
+
+    monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _SvcLive())
+    mt5_model = sim_routes._session_cost_model(session=session, spread_source_override="mt5_live")
+    assert mt5_model.spread == 0.55
+    assert mt5_model.spread_source == "mt5_live"
+

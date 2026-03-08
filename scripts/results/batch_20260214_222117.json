@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "vwap_reversion_strategy",
+    "preset": "aggressive",
+    "symbol": "XAUUSD",
+    "timeframe": "M15",
+    "period": "2022-01-01 to 2024-12-31",
+    "elapsed_sec": 1500.7,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0.0,
+    "net_profit": 0.0,
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "max_drawdown_pct": 0.0,
+    "avg_rr": 0.0,
+    "expectancy": 0.0,
+    "final_balance": 10000.0,
+    "largest_win": 0.0,
+    "largest_loss": 0.0,
+    "data_hash": "8dc9e53c54f8d3a94150518c2b7ba704b2c96be442ac7eeb32897a2dbef2f8f7"
+  }
+]

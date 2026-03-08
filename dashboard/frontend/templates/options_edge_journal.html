@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Options Journal - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">Options Journal</h2>
+        <p class="text-muted mb-0">Track manual entries/exits for options-edge trade candidates.</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{{ url_for('options_edge_dashboard') }}">
+            <i class="bi bi-arrow-left me-1"></i>Back
+        </a>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Total</div><div class="stat-value">{{ stats.total or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Open</div><div class="stat-value">{{ stats.open or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Closed</div><div class="stat-value">{{ stats.closed or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Win Rate</div><div class="stat-value">{{ "%.1f"|format(stats.win_rate or 0) }}%</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Total PnL</div><div class="stat-value {% if (stats.total_pnl or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">${{ "%.2f"|format(stats.total_pnl or 0) }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Avg Hold</div><div class="stat-value">{{ "%.1f"|format(stats.avg_hold_days or 0) }}d</div></div></div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-folder2-open me-2"></i>Open Trades</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Journal</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Contracts</th>
+                        <th>Entry Credit</th>
+                        <th>Max Loss</th>
+                        <th>POP</th>
+                        <th>Created</th>
+                        <th>Close</th>
+                        <th>Delete</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set open_rows = entries|selectattr('status', 'equalto', 'OPEN')|list %}
+                    {% for e in open_rows %}
+                    <tr>
+                        <td><code>{{ e.journal_id }}</code></td>
+                        <td><strong>{{ e.symbol }}</strong></td>
+                        <td>{{ e.structure_type }}</td>
+                        <td>{{ e.contracts }}</td>
+                        <td>${{ "%.2f"|format(e.entry_credit or 0) }}</td>
+                        <td class="text-danger">${{ "%.2f"|format(e.max_loss or 0) }}</td>
+                        <td>{{ "%.1f"|format((e.pop_est or 0) * 100) }}%</td>
+                        <td>{{ e.created_at|datetime }}</td>
+                        <td>
+                            <form method="POST" action="{{ url_for('options_edge_journal_close', journal_id=e.journal_id) }}" class="d-flex gap-1 align-items-center">
+                                <input class="form-control form-control-sm" style="width:90px" name="actual_pnl" placeholder="PnL" required>
+                                <select class="form-select form-select-sm" style="width:120px" name="exit_reason">
+                                    <option value="manual">manual</option>
+                                    <option value="profit_target">profit_target</option>
+                                    <option value="stop_loss">stop_loss</option>
+                                    <option value="expiry">expiry</option>
+                                </select>
+                                <button class="btn btn-sm btn-success" type="submit">Close</button>
+                            </form>
+                        </td>
+                        <td>
+                            <form method="POST" action="{{ url_for('options_edge_journal_delete', journal_id=e.journal_id) }}">
+                                <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not open_rows %}
+                    <tr><td colspan="10" class="text-center text-muted py-3">No open journal trades.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-check2-circle me-2"></i>Closed Trades</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Journal</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Contracts</th>
+                        <th>Exit Reason</th>
+                        <th>Hold Days</th>
+                        <th>PnL / Contract</th>
+                        <th>Total PnL</th>
+                        <th>Closed</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set closed_rows = entries|rejectattr('status', 'equalto', 'OPEN')|list %}
+                    {% for e in closed_rows %}
+                    <tr>
+                        <td><code>{{ e.journal_id }}</code></td>
+                        <td><strong>{{ e.symbol }}</strong></td>
+                        <td>{{ e.structure_type }}</td>
+                        <td>{{ e.contracts }}</td>
+                        <td>{{ e.exit_reason or '-' }}</td>
+                        <td>{{ e.hold_days if e.hold_days is not none else '-' }}</td>
+                        <td class="{% if (e.actual_pnl or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            ${{ "%.2f"|format(e.actual_pnl or 0) }}
+                        </td>
+                        <td class="{% if (e.actual_pnl_total or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            ${{ "%.2f"|format(e.actual_pnl_total or 0) }}
+                        </td>
+                        <td>{{ e.closed_at|datetime if e.closed_at else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not closed_rows %}
+                    <tr><td colspan="9" class="text-center text-muted py-3">No closed journal trades.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

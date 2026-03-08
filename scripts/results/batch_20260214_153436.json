@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "advanced_orb_strategy",
+    "preset": "default",
+    "symbol": "US500",
+    "timeframe": "M1",
+    "period": "2024-01-01 to 2025-12-31",
+    "elapsed_sec": 735.1,
+    "total_trades": 204,
+    "winning_trades": 102,
+    "losing_trades": 102,
+    "win_rate": 50.0,
+    "net_profit": -3087.63,
+    "profit_factor": 0.67,
+    "sharpe_ratio": -2.531,
+    "sortino_ratio": -3.587,
+    "max_drawdown_pct": 47.31,
+    "avg_rr": 0.67,
+    "expectancy": -15.14,
+    "final_balance": 5547.61,
+    "largest_win": 340.44,
+    "largest_loss": -636.04,
+    "data_hash": "b9eb1ec6a9cff585ac47793de4a1823f4eacb4000078c38f76cda74edb256a38"
+  }
+]

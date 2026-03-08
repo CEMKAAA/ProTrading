@@ -1,0 +1,19 @@
+# WhatsApp Agentic AI Bot - Environment Variables
+# =================================================
+# Add these to your .env file in the project root
+
+# Twilio Configuration (for WhatsApp)
+# Sign up at https://www.twilio.com/console
+# Use Twilio Sandbox for WhatsApp during development
+TWILIO_ACCOUNT_SID=your_account_sid_here
+TWILIO_AUTH_TOKEN=your_auth_token_here
+TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
+
+# Pushover Configuration (for notifications)
+# Sign up at https://pushover.net/
+PUSHOVER_USER=your_pushover_user_key
+PUSHOVER_TOKEN=your_pushover_app_token
+
+# Note: Ollama runs locally - no API key needed
+# Make sure Ollama is running: ollama serve
+# And llama3.2 model is pulled: ollama pull llama3.2

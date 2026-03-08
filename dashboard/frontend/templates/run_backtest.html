@@ -1,0 +1,1406 @@
+{% extends "base.html" %}
+
+{% block title %}Run Backtest - ProTrading{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h2 class="mb-1">Run Backtest</h2>
+    <p class="text-muted mb-0">Configure and execute a new backtest with your trading strategies</p>
+</div>
+
+<form method="POST" action="{{ url_for('run_backtest') }}" id="backtestForm">
+    <div class="row g-4">
+        <!-- Left Column - Main Settings -->
+        <div class="col-lg-8">
+            <!-- Strategy Selection -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-robot me-2"></i>Strategy Selection
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Trading Strategy</label>
+                            <select class="form-select" name="strategy_id" id="strategySelect">
+                                <option value="">Loading strategies...</option>
+                            </select>
+                            <div class="form-text" id="strategyDescription">
+                                Select a trading strategy to see its description and parameters.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Load Saved Config -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-lightning me-2"></i>Quick Load
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Strategy Preset</label>
+                            <select class="form-select" id="presetSelect" onchange="loadStrategyPreset(this.value)">
+                                <option value="">Loading presets...</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label">Load Saved Config</label>
+                            <select class="form-select" id="configSelect" onchange="loadConfig(this.value)">
+                                <option value="">Select a saved config...</option>
+                                {% for config in configs %}
+                                <option value="{{ config.id }}" data-strategy="{{ config.strategy_id }}" data-preset="{{ config.preset_name or '' }}">{{ config.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- General Settings (Static) -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-gear me-2"></i>General Settings
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Configuration Name</label>
+                            <input type="text" class="form-control" name="name" id="config_name" value="Backtest {{ now().strftime('%Y-%m-%d %H:%M') if now else '' }}" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Start Date</label>
+                            <input type="date" class="form-control" name="start_date" id="start_date" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">End Date</label>
+                            <input type="date" class="form-control" name="end_date" id="end_date" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Data Source</label>
+                            <select class="form-select" name="data_source" id="data_source" onchange="onDataSourceChange()">
+                                <option value="auto">MT5 + Imported CSV</option>
+                                <option value="csv_only">CSV Only (IBKR / Uploaded)</option>
+                            </select>
+                            <div class="form-text">CSV Only uses pre-imported data without MT5 connection</div>
+                        </div>
+                    </div>
+
+                    <!-- CSV File Selector (shown when csv_only is selected) -->
+                    <div id="csvFileSelector" class="mt-3" style="display: none;">
+                        <label class="form-label fw-semibold">Select Data Files</label>
+                        <div id="csvFileList" class="border rounded p-2" style="max-height: 280px; overflow-y: auto;">
+                            <div class="text-center text-muted py-3">
+                                <div class="spinner-border spinner-border-sm" role="status"></div>
+                                <span class="ms-2">Loading available files...</span>
+                            </div>
+                        </div>
+                        <div class="form-text d-flex justify-content-between">
+                            <span id="csvSelectionInfo">Select files to use for backtesting</span>
+                            <a href="#" onclick="toggleAllCsvFiles(event)" class="text-decoration-none" id="csvToggleAll">Select all</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dynamic Parameter Sections -->
+            <div id="dynamicParameters">
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Loading strategy parameters...</p>
+                </div>
+            </div>
+
+            <!-- ML Model Selector (shown only for ML strategies) -->
+            <div id="mlModelSelector" style="display: none;">
+                <div class="card mb-4 border-info">
+                    <div class="card-header bg-info bg-opacity-10">
+                        <i class="bi bi-cpu me-2"></i>ML Model Selection
+                    </div>
+                    <div class="card-body">
+                        <div id="mlModelContent">
+                            <div class="text-center text-muted py-3">
+                                <div class="spinner-border spinner-border-sm" role="status"></div>
+                                <span class="ms-2">Searching for matching ML models...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <input type="hidden" name="ml_model_id" id="ml_model_id" value="">
+            <input type="hidden" name="preset_name" id="preset_name" value="default">
+            <input type="hidden" name="loaded_config_id" id="loaded_config_id" value="">
+            <input type="hidden" name="engine_mode" id="engine_mode" value="legacy">
+        </div>
+
+        <!-- Right Column - Summary & Actions -->
+        <div class="col-lg-4">
+            <div class="card sticky-top" style="top: 24px;">
+                <div class="card-header">
+                    <i class="bi bi-play-circle me-2"></i>Run Backtest
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <h6 class="section-title">Summary</h6>
+                        <ul class="list-unstyled mb-0">
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Strategy:</span>
+                                <strong id="summaryStrategy">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Preset:</span>
+                                <strong id="summaryPreset"><span class="badge bg-primary">Default</span></strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Symbol:</span>
+                                <strong id="summarySymbol">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Timeframe:</span>
+                                <strong id="summaryTimeframe">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Date Range:</span>
+                                <strong id="summaryDateRange">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Initial Balance:</span>
+                                <strong id="summaryBalance">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2">
+                                <span class="text-muted">Risk per Trade:</span>
+                                <strong id="summaryRisk">-</strong>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="alert alert-info mb-4" id="strategyInfoAlert">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <small id="strategyInfoText">Select a strategy to see configuration options.</small>
+                    </div>
+
+                    <!-- Engine mode locked to legacy (single engine for reproducibility) -->
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn" disabled>
+                            <i class="bi bi-play-fill me-2"></i>Run Backtest
+                        </button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                            Cancel
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Global state
+let currentStrategy = null;
+let strategyDefinitions = {};
+let csvFilesCache = null;  // Cache for CSV file data
+let mlBaseStrategyId = null;  // Base strategy for ML filtering
+
+// Extra per-run simulation tuning fields.
+// These are rendered into the "Simulation" group if they are not already
+// provided by the selected strategy definition.
+const simulationTuningFields = [
+    // Risk
+    { name: 'risk_percent', label: 'Risk Per Trade (%)', type: 'number', min: 0.1, max: 10, step: 0.1, description: 'Percentage of balance risked per trade.' },
+    { name: 'max_spread_usd', label: 'Max Spread ($)', type: 'number', min: 0.01, max: 5, step: 0.01, description: 'Skip entries when spread exceeds this value.' },
+    { name: 'max_daily_loss_usd', label: 'Max Daily Loss ($)', type: 'number', min: -1000000, max: 0, step: 1, description: 'Stop trading for day after this drawdown.' },
+    { name: 'max_total_risk_usd', label: 'Max Total Risk ($)', type: 'number', min: 10, max: 100000, step: 10, description: 'Portfolio heat cap for concurrent exposure.' },
+    { name: 'min_sl_usd', label: 'Min SL ($)', type: 'number', min: 0.01, max: 50, step: 0.01, description: 'Minimum allowed stop distance.' },
+    { name: 'max_sl_usd', label: 'Max SL ($)', type: 'number', min: 0.01, max: 100, step: 0.01, description: 'Maximum allowed stop distance.' },
+    { name: 'gold_rr_threshold', label: 'RR Threshold', type: 'number', min: 0.5, max: 20, step: 0.1, description: 'SL threshold used by dynamic R:R logic.' },
+    // ICT
+    { name: 'min_fvg_gap', label: 'Min FVG Gap ($)', type: 'number', min: 0.01, max: 5, step: 0.01, description: 'Minimum imbalance gap size.' },
+    { name: 'fvg_lookback', label: 'FVG Lookback', type: 'integer', min: 10, max: 500, step: 1, description: 'Bars scanned for FVG detection.' },
+    { name: 'displacement_percentile', label: 'Displacement %ile', type: 'integer', min: 50, max: 99, step: 1, description: 'Body-size percentile threshold for displacement.' },
+    { name: 'displacement_lookback', label: 'Displacement Lookback', type: 'integer', min: 5, max: 100, step: 1, description: 'Bars used for displacement baseline.' },
+    { name: 'max_opposing_wick_ratio', label: 'Max Opposing Wick', type: 'number', min: 0.1, max: 1.0, step: 0.01, description: 'Maximum opposing wick/body ratio.' },
+    { name: 'ob_lookback', label: 'OB Lookback', type: 'integer', min: 20, max: 500, step: 1, description: 'Bars scanned for order blocks.' },
+    { name: 'ob_min_body_percent', label: 'OB Min Body %', type: 'integer', min: 30, max: 90, step: 1, description: 'Minimum body percentage for order block candle.' },
+    { name: 'ob_validation_bars', label: 'OB Validation Bars', type: 'integer', min: 1, max: 10, step: 1, description: 'Validation bars after OB candle.' },
+    { name: 'liquidity_wick_ratio', label: 'Liquidity Wick Ratio', type: 'number', min: 0.2, max: 1.0, step: 0.01, description: 'Wick/body threshold for sweep detection.' },
+    { name: 'sweep_tolerance_usd', label: 'Sweep Tolerance ($)', type: 'number', min: 0.05, max: 2.0, step: 0.01, description: 'Tolerance over/under level to classify sweep.' },
+    // Trade limits
+    { name: 'bias_min_strength', label: 'Bias Min Strength', type: 'integer', min: 0, max: 100, step: 1, description: 'Minimum bias score required to trade.' },
+    { name: 'max_daily_trades', label: 'Max Daily Trades', type: 'integer', min: 1, max: 10, step: 1, description: 'Daily trade cap.' },
+    { name: 'min_adr_for_trend', label: 'Min ADR For Trend', type: 'number', min: 1, max: 100, step: 0.1, description: 'Trend filter ADR threshold.' },
+    { name: 'adr_period', label: 'ADR Period', type: 'integer', min: 1, max: 20, step: 1, description: 'ADR averaging period.' },
+    // Trailing
+    { name: 'trailing_atr_period', label: 'Trailing ATR Period', type: 'integer', min: 5, max: 50, step: 1, description: 'ATR period for trailing stop.' },
+    { name: 'trailing_atr_multiplier', label: 'Trailing ATR Multiplier', type: 'number', min: 0.5, max: 5.0, step: 0.1, description: 'ATR multiple for trailing stop.' },
+    // Costs
+    { name: 'slippage_atr_factor', label: 'Slippage ATR Factor', type: 'number', min: 0.0, max: 1.0, step: 0.001, description: 'ATR multiplier used for slippage simulation.' },
+    { name: 'swap_long_per_lot', label: 'Swap Long / Lot', type: 'number', min: -100, max: 100, step: 0.1, description: 'Overnight swap applied to long positions.' },
+    { name: 'swap_short_per_lot', label: 'Swap Short / Lot', type: 'number', min: -100, max: 100, step: 0.1, description: 'Overnight swap applied to short positions.' },
+    { name: 'friday_close_hour', label: 'Friday Close Hour', type: 'integer', min: 0, max: 23, step: 1, description: 'Auto-close hour before weekend.' },
+    { name: 'friday_close_minute', label: 'Friday Close Minute', type: 'integer', min: 0, max: 59, step: 1, description: 'Auto-close minute before weekend.' },
+    // Session times
+    { name: 'orb_start_time', label: 'ORB Start Time', type: 'time', description: 'Opening range start (NY).' },
+    { name: 'orb_end_time', label: 'ORB End Time', type: 'time', description: 'Opening range end (NY).' },
+    { name: 'trade_start_time', label: 'Trade Start Time', type: 'time', description: 'Trading window start (NY).' },
+    { name: 'trade_end_time', label: 'Trade End Time', type: 'time', description: 'Trading window end (NY).' },
+    { name: 'asian_start', label: 'Asian Start', type: 'time', description: 'Asian session start (NY).' },
+    { name: 'asian_end', label: 'Asian End', type: 'time', description: 'Asian session end (NY).' },
+    { name: 'london_start', label: 'London Start', type: 'time', description: 'London session start (NY).' },
+    { name: 'london_end', label: 'London End', type: 'time', description: 'London session end (NY).' },
+    // Booleans
+    { name: 'use_trailing', label: 'Use Trailing Stop', type: 'boolean_select', description: 'Enable ATR-based trailing stop logic.' },
+    { name: 'stop_after_first_win', label: 'Stop After First Win', type: 'boolean_select', description: 'Stop new entries after first winning trade.' },
+    { name: 'enable_cross_asset_filter', label: 'Enable Cross-Asset Filter', type: 'boolean_select', description: 'Use macro regime gate on entries.' },
+    // Cross-asset regime
+    { name: 'regime_signal_threshold', label: 'Regime Signal Threshold', type: 'number', min: 0.05, max: 1.0, step: 0.01, description: 'Minimum absolute regime score to act.' },
+    { name: 'regime_strong_threshold', label: 'Regime Strong Threshold', type: 'number', min: 0.1, max: 1.0, step: 0.01, description: 'Threshold for strong headwind/tailwind.' },
+    { name: 'regime_tailwind_risk_multiplier', label: 'Tailwind Risk Mult', type: 'number', min: 0.1, max: 3.0, step: 0.01, description: 'Risk multiplier under macro tailwind.' },
+    { name: 'regime_headwind_risk_multiplier', label: 'Headwind Risk Mult', type: 'number', min: 0.05, max: 2.0, step: 0.01, description: 'Risk multiplier under macro headwind.' },
+    { name: 'regime_neutral_risk_multiplier', label: 'Neutral Risk Mult', type: 'number', min: 0.1, max: 3.0, step: 0.01, description: 'Risk multiplier under neutral regime.' },
+];
+
+// Icon mapping for parameter groups
+const groupIcons = {
+    'general': 'bi-gear',
+    'risk': 'bi-shield-check',
+    'sessions': 'bi-clock',
+    'simulation': 'bi-flask',
+    'ict': 'bi-diagram-3',
+    'trailing': 'bi-arrow-down-up',
+    'mtf': 'bi-layers',
+    'ml': 'bi-cpu'
+};
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', async function() {
+    await loadStrategies();
+    setupEventListeners();
+    setDefaultDates();
+
+    // Auto-load from URL params
+    const urlParams = new URLSearchParams(window.location.search);
+    const configId = urlParams.get('config');
+    const preStrategy = urlParams.get('strategy');
+
+    if (configId) {
+        // Load saved config by ID
+        await loadConfig(configId);
+        document.getElementById('configSelect').value = configId;
+    } else if (preStrategy) {
+        // Pre-fill from preset matrix (?strategy=X&preset=Y&symbol=Z)
+        const prePreset = urlParams.get('preset') || 'default';
+        const preSymbol = urlParams.get('symbol') || '';
+
+        document.getElementById('strategySelect').value = preStrategy;
+        await loadStrategyDefinition(preStrategy);
+
+        // Set preset after definition is loaded (dropdown is now populated)
+        const presetSelect = document.getElementById('presetSelect');
+        if (presetSelect) presetSelect.value = prePreset;
+
+        // Set symbol in the dynamically rendered form field
+        const symbolField = document.getElementById('symbol');
+        if (symbolField && preSymbol) symbolField.value = preSymbol;
+
+        // Load preset values with the selected symbol
+        await loadStrategyPreset(prePreset);
+    }
+});
+
+// Load available strategies
+async function loadStrategies() {
+    try {
+        const response = await fetch('/api/strategies/list');
+        const strategies = await response.json();
+
+        const select = document.getElementById('strategySelect');
+        select.innerHTML = '';
+
+        if (strategies.length === 0) {
+            select.innerHTML = '<option value="">No strategies available</option>';
+            return;
+        }
+
+        strategies.forEach((strategy, index) => {
+            const option = document.createElement('option');
+            option.value = strategy.id;
+            option.textContent = strategy.name;
+            if (index === 0) option.selected = true;
+            select.appendChild(option);
+        });
+
+        // Load the first strategy's parameters
+        if (strategies.length > 0) {
+            await loadStrategyDefinition(strategies[0].id);
+        }
+    } catch (error) {
+        console.error('Error loading strategies:', error);
+        document.getElementById('strategySelect').innerHTML =
+            '<option value="">Error loading strategies</option>';
+    }
+}
+
+// Load full strategy definition with parameters
+async function loadStrategyDefinition(strategyId) {
+    try {
+        if (!strategyDefinitions[strategyId]) {
+            const response = await fetch(`/api/strategies/${strategyId}/definition`);
+            strategyDefinitions[strategyId] = await response.json();
+        }
+        currentStrategy = strategyDefinitions[strategyId];
+        renderStrategyParameters(currentStrategy);
+
+        // Auto-load currently selected preset for this strategy
+        const currentPreset = document.getElementById('presetSelect').value || 'default';
+        await loadStrategyPreset(currentPreset);
+
+        // Check if this is an ML strategy and load matching models
+        await checkAndLoadMLModels(strategyId);
+    } catch (error) {
+        console.error('Error loading strategy definition:', error);
+        document.getElementById('dynamicParameters').innerHTML =
+            '<div class="alert alert-danger">Error loading strategy parameters</div>';
+    }
+}
+
+// Render parameter form fields
+function renderStrategyParameters(definition) {
+    const container = document.getElementById('dynamicParameters');
+
+    // Update description
+    document.getElementById('strategyDescription').textContent = definition.description || '';
+    document.getElementById('strategyInfoText').textContent =
+        `${definition.name} v${definition.version} - Configure the parameters below.`;
+    document.getElementById('summaryStrategy').textContent = definition.name;
+
+    // Group parameters
+    const groups = {};
+    definition.parameters.forEach(param => {
+        const groupId = param.group || 'general';
+        if (!groups[groupId]) {
+            groups[groupId] = [];
+        }
+        groups[groupId].push(param);
+    });
+
+    // Create group info map from definition
+    const groupInfo = {};
+    if (definition.parameter_groups) {
+        definition.parameter_groups.forEach(g => {
+            groupInfo[g.id] = g;
+        });
+    }
+
+    // Build HTML
+    let html = '';
+
+    for (const [groupId, params] of Object.entries(groups)) {
+        const info = groupInfo[groupId] || { label: groupId, icon: 'Settings' };
+        const icon = groupIcons[groupId] || 'bi-gear';
+
+        html += `
+            <div class="card mb-4" data-group="${groupId}">
+                <div class="card-header">
+                    <i class="${icon} me-2"></i>${info.label || groupId}
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        ${params.map(param => renderParameterField(param)).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    container.innerHTML = html;
+
+    // Populate preset dropdown from strategy definition
+    renderPresetDropdown(definition);
+    renderSimulationTuningFields();
+
+    // Enable submit button
+    document.getElementById('submitBtn').disabled = false;
+
+    // Update summary with initial values
+    updateSummary();
+
+    // Setup listeners for dynamic fields
+    setupDynamicFieldListeners();
+}
+
+function renderSimulationTuningFields() {
+    const simCard = document.querySelector('#dynamicParameters .card[data-group="simulation"]');
+    if (!simCard) return;
+    const row = simCard.querySelector('.row');
+    if (!row) return;
+
+    // Add search bar above tuning fields
+    if (!document.getElementById('tuningSearch')) {
+        row.insertAdjacentHTML('beforebegin', `
+            <div class="mb-3 px-2">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" id="tuningSearch"
+                           placeholder="Search tuning fields... (e.g. daily, trailing, risk, fvg)">
+                </div>
+            </div>
+        `);
+        document.getElementById('tuningSearch').addEventListener('input', function() {
+            const query = this.value.toLowerCase();
+            row.querySelectorAll('.col-md-4[data-tuning]').forEach(col => {
+                const label = col.getAttribute('data-tuning');
+                col.style.display = label.includes(query) ? '' : 'none';
+            });
+        });
+    }
+
+    simulationTuningFields.forEach(field => {
+        if (document.getElementById(field.name)) return;
+        row.insertAdjacentHTML('beforeend', renderSimulationTuningField(field));
+    });
+}
+
+function renderSimulationTuningField(field) {
+    const desc = field.description ? `<small class="text-muted">${field.description}</small>` : '';
+    const searchable = `${field.name} ${field.label} ${field.description || ''}`.toLowerCase();
+    if (field.type === 'boolean_select') {
+        return `
+            <div class="col-md-4" data-tuning="${searchable}">
+                <label class="form-label">${field.label}</label>
+                <select class="form-select" name="${field.name}" id="${field.name}">
+                    <option value="" selected>Use Preset Default</option>
+                    <option value="true">True</option>
+                    <option value="false">False</option>
+                </select>
+                ${desc}
+            </div>
+        `;
+    }
+
+    if (field.type === 'time') {
+        return `
+            <div class="col-md-4" data-tuning="${searchable}">
+                <label class="form-label">${field.label}</label>
+                <input type="time" class="form-control" name="${field.name}" id="${field.name}">
+                ${desc}
+            </div>
+        `;
+    }
+
+    const inputType = 'number';
+    // Use 'any' for float fields to prevent browser step-alignment errors
+    // (e.g. min=0.05 + step=0.01 rejects 0.40). Integer fields keep step=1.
+    const step = field.type === 'integer' ? '1' : 'any';
+    const min = field.min !== undefined ? `min="${field.min}"` : '';
+    const max = field.max !== undefined ? `max="${field.max}"` : '';
+    return `
+        <div class="col-md-4" data-tuning="${searchable}">
+            <label class="form-label">${field.label}</label>
+            <input type="${inputType}" class="form-control" name="${field.name}" id="${field.name}"
+                   ${min} ${max} step="${step}">
+            ${desc}
+        </div>
+    `;
+}
+
+// Populate preset dropdown from strategy definition
+function renderPresetDropdown(definition) {
+    const select = document.getElementById('presetSelect');
+    select.innerHTML = '';
+
+    const presets = definition.presets || [];
+    if (presets.length === 0) {
+        select.innerHTML = '<option value="default">Default</option>';
+        return;
+    }
+
+    presets.forEach(preset => {
+        const option = document.createElement('option');
+        option.value = preset.id;
+        option.textContent = preset.name + ' \u2014 ' + preset.description;
+        if (preset.id === 'default') option.selected = true;
+        select.appendChild(option);
+    });
+}
+
+// Render a single parameter field
+function renderParameterField(param) {
+    const colSize = getColumnSize(param);
+    let inputHtml = '';
+
+    switch (param.type) {
+        case 'boolean':
+            inputHtml = `
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox"
+                           name="${param.name}" id="${param.name}"
+                           ${param.default ? 'checked' : ''}>
+                    <label class="form-check-label" for="${param.name}">${param.label}</label>
+                </div>
+            `;
+            break;
+
+        case 'select':
+            const options = (param.options || []).map(opt =>
+                `<option value="${opt.value}" ${opt.value === param.default ? 'selected' : ''}>${opt.label}</option>`
+            ).join('');
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <select class="form-select" name="${param.name}" id="${param.name}">
+                    ${options}
+                </select>
+            `;
+            break;
+
+        case 'time':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="text" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default || ''}" pattern="[0-9]{2}:[0-9]{2}"
+                       placeholder="HH:MM">
+            `;
+            break;
+
+        case 'integer':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="number" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default !== undefined ? param.default : ''}"
+                       ${param.min_value !== null ? `min="${param.min_value}"` : ''}
+                       ${param.max_value !== null ? `max="${param.max_value}"` : ''}
+                       step="1">
+            `;
+            break;
+
+        case 'number':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="number" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default !== undefined ? param.default : ''}"
+                       ${param.min_value !== null ? `min="${param.min_value}"` : ''}
+                       ${param.max_value !== null ? `max="${param.max_value}"` : ''}
+                       ${param.step !== null ? `step="${param.step}"` : 'step="any"'}>
+            `;
+            break;
+
+        default: // string
+            // Render symbol as dropdown if strategy defines supported symbols
+            if (param.name === 'symbol' && currentStrategy && currentStrategy.symbols && currentStrategy.symbols.length > 0) {
+                const symbolOptions = currentStrategy.symbols.map(s =>
+                    `<option value="${s}" ${s === param.default ? 'selected' : ''}>${s}</option>`
+                ).join('');
+                inputHtml = `
+                    <label class="form-label">${param.label}</label>
+                    <select class="form-select" name="${param.name}" id="${param.name}">
+                        ${symbolOptions}
+                    </select>
+                `;
+            } else {
+                inputHtml = `
+                    <label class="form-label">${param.label}</label>
+                    <input type="text" class="form-control" name="${param.name}" id="${param.name}"
+                           value="${param.default || ''}">
+                `;
+            }
+    }
+
+    // Add description as small text if available
+    const description = param.description ?
+        `<small class="text-muted">${param.description}</small>` : '';
+
+    return `
+        <div class="${colSize}">
+            ${inputHtml}
+            ${description}
+        </div>
+    `;
+}
+
+// Determine column size based on parameter type
+function getColumnSize(param) {
+    if (param.type === 'boolean') return 'col-md-12';
+    if (param.type === 'time') return 'col-md-6';
+    if (param.name.includes('description')) return 'col-md-12';
+    return 'col-md-4';
+}
+
+// Setup event listeners
+function setupEventListeners() {
+    // Strategy selection change
+    document.getElementById('strategySelect').addEventListener('change', async function() {
+        await loadStrategyDefinition(this.value);
+    });
+
+    // Date change listeners
+    document.getElementById('start_date').addEventListener('change', updateDateSummary);
+    document.getElementById('end_date').addEventListener('change', updateDateSummary);
+}
+
+// Setup listeners for dynamically created fields
+function setupDynamicFieldListeners() {
+    // Symbol change — re-fetch preset for instrument-aware values
+    const symbolField = document.getElementById('symbol');
+    if (symbolField) {
+        symbolField.addEventListener('change', async function() {
+            document.getElementById('summarySymbol').textContent = this.value;
+            // Re-fetch preset with new symbol for instrument-aware values
+            const strategyId = document.getElementById('strategySelect').value;
+            const presetId = document.getElementById('presetSelect').value;
+            if (strategyId && presetId) {
+                await loadStrategyPreset(presetId);
+            }
+            // Refresh ML models when symbol changes
+            if (mlBaseStrategyId) refreshMLModels();
+            // Re-filter CSV files for new symbol
+            if (csvFilesCache) renderCsvFiles();
+        });
+    }
+
+    // Timeframe change
+    const timeframeField = document.getElementById('timeframe');
+    if (timeframeField) {
+        timeframeField.addEventListener('change', function() {
+            const option = this.options[this.selectedIndex];
+            document.getElementById('summaryTimeframe').textContent = option ? option.text : this.value;
+            // Refresh ML models when timeframe changes
+            if (mlBaseStrategyId) refreshMLModels();
+            // Re-filter CSV files for new timeframe
+            if (csvFilesCache) renderCsvFiles();
+        });
+    }
+
+    // Initial balance change
+    const balanceField = document.getElementById('initial_balance');
+    if (balanceField) {
+        balanceField.addEventListener('change', function() {
+            document.getElementById('summaryBalance').textContent = '$' + Number(this.value).toLocaleString();
+        });
+    }
+
+    // Risk percent change
+    const riskField = document.getElementById('risk_percent');
+    if (riskField) {
+        riskField.addEventListener('change', function() {
+            document.getElementById('summaryRisk').textContent = this.value + '%';
+        });
+    }
+
+    // Preset change (from dynamic parameters section)
+    const presetField = document.getElementById('preset');
+    if (presetField) {
+        presetField.addEventListener('change', function() {
+            document.getElementById('presetSelect').value = this.value;
+            loadStrategyPreset(this.value);
+        });
+    }
+}
+
+// Update symbol dropdown when preset changes
+function updateSymbolDropdownForPreset(presetId) {
+    const symbolField = document.getElementById('symbol');
+    if (!symbolField || symbolField.tagName !== 'SELECT' || !currentStrategy) return;
+
+    // Find the preset's symbol restrictions
+    const preset = (currentStrategy.presets || []).find(p => p.id === presetId);
+    const presetSymbols = preset && preset.symbols && preset.symbols.length > 0
+        ? preset.symbols : null;
+    // Use preset symbols if restricted, otherwise use full strategy symbols
+    const symbols = presetSymbols || currentStrategy.symbols || [];
+    if (symbols.length === 0) return;
+
+    const currentValue = symbolField.value;
+    symbolField.innerHTML = symbols.map(s =>
+        `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`
+    ).join('');
+
+    // If current value isn't in the new list, select the first option
+    if (!symbols.includes(currentValue)) {
+        symbolField.value = symbols[0];
+        symbolField.dispatchEvent(new Event('change'));
+    }
+}
+
+// Update summary display
+function updateSummary() {
+    const symbol = document.getElementById('symbol');
+    const timeframe = document.getElementById('timeframe');
+    const balance = document.getElementById('initial_balance');
+    const risk = document.getElementById('risk_percent');
+
+    if (symbol) {
+        document.getElementById('summarySymbol').textContent = symbol.value;
+    }
+    if (timeframe) {
+        const option = timeframe.options[timeframe.selectedIndex];
+        document.getElementById('summaryTimeframe').textContent = option ? option.text : timeframe.value;
+    }
+    if (balance) {
+        document.getElementById('summaryBalance').textContent = '$' + Number(balance.value).toLocaleString();
+    }
+    if (risk) {
+        document.getElementById('summaryRisk').textContent = risk.value + '%';
+    }
+
+    updateDateSummary();
+}
+
+// Update date summary
+function updateDateSummary() {
+    const start = document.getElementById('start_date').value;
+    const end = document.getElementById('end_date').value;
+    if (start && end) {
+        document.getElementById('summaryDateRange').textContent = start + ' to ' + end;
+    }
+}
+
+// Set default dates (last 30 days)
+function setDefaultDates() {
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    document.getElementById('start_date').value = thirtyDaysAgo.toISOString().split('T')[0];
+    document.getElementById('end_date').value = today.toISOString().split('T')[0];
+    updateDateSummary();
+}
+
+// Load strategy-specific preset configuration
+async function loadStrategyPreset(presetId) {
+    if (!presetId) return;
+
+    const strategyId = document.getElementById('strategySelect').value;
+    if (!strategyId) return;
+
+    try {
+        const symbol = document.getElementById('symbol')?.value || '';
+        let url = `/api/strategies/${strategyId}/preset/${presetId}`;
+        if (symbol) url += `?symbol=${encodeURIComponent(symbol)}`;
+
+        const response = await fetch(url);
+        const config = await response.json();
+        // Preset selection should not implicitly reuse any saved configuration.
+        document.getElementById('loaded_config_id').value = '';
+        const configSelect = document.getElementById('configSelect');
+        if (configSelect) configSelect.value = '';
+
+        await applyConfig(config);
+
+        // Auto-detect timeframe from preset name (e.g., "nas100_m15_safe" → M15)
+        const timeframeHint = extractTimeframeFromPresetName(presetId);
+        if (timeframeHint) {
+            const tfSelect = document.getElementById('timeframe');
+            if (tfSelect) {
+                // Try to match the timeframe option (case-insensitive)
+                const matchingOption = Array.from(tfSelect.options).find(opt =>
+                    opt.value.toUpperCase() === timeframeHint.toUpperCase()
+                );
+                if (matchingOption) {
+                    tfSelect.value = matchingOption.value;
+                    // Trigger change event to update summary
+                    const event = new Event('change');
+                    tfSelect.dispatchEvent(event);
+                }
+            }
+        }
+
+        // Update symbol dropdown based on preset's symbol restrictions
+        updateSymbolDropdownForPreset(presetId);
+
+        // Update summary fields that have no form elements
+        if (config.risk_percent !== undefined) {
+            document.getElementById('summaryRisk').textContent = config.risk_percent + '%';
+        }
+        // Directly set symbol/timeframe in summary from config (in case form elements lag)
+        if (config.symbol) {
+            document.getElementById('summarySymbol').textContent = config.symbol;
+        }
+        if (config.timeframe) {
+            const tfEl = document.getElementById('timeframe');
+            if (tfEl) {
+                const opt = tfEl.options[tfEl.selectedIndex];
+                document.getElementById('summaryTimeframe').textContent = opt ? opt.text : config.timeframe;
+            } else {
+                document.getElementById('summaryTimeframe').textContent = config.timeframe;
+            }
+        }
+
+        // Store preset name for DB
+        document.getElementById('preset_name').value = presetId;
+
+        // Sync dynamic preset dropdown if it exists
+        const dynamicPreset = document.getElementById('preset');
+        if (dynamicPreset) dynamicPreset.value = presetId;
+
+        updatePresetBadge(presetId);
+    } catch (error) {
+        console.error('Error loading strategy preset:', error);
+    }
+}
+
+// Extract timeframe hint from preset name (e.g., "nas100_m15_safe" → "M15")
+function extractTimeframeFromPresetName(presetName) {
+    if (!presetName) return null;
+    const lower = presetName.toLowerCase();
+    // Match common timeframe patterns: m1, m5, m15, m30, h1, h4, d1
+    const match = lower.match(/_(m\d+|h\d+|d\d+)_|_(m\d+|h\d+|d\d+)$/);
+    if (match) {
+        const tf = match[1] || match[2];
+        return tf.toUpperCase();  // "m15" → "M15"
+    }
+    return null;
+}
+
+// Update preset badge in summary
+function updatePresetBadge(presetId) {
+    const el = document.getElementById('summaryPreset');
+    if (!el) return;
+
+    // Try to get label from the preset dropdown option text
+    const presetSelect = document.getElementById('presetSelect');
+    let label = presetId;
+    if (presetSelect) {
+        const opt = presetSelect.querySelector(`option[value="${presetId}"]`);
+        if (opt) label = opt.textContent.split(' \u2014 ')[0] || presetId;
+    }
+    const colors = {'default': 'bg-primary', 'conservative': 'bg-success', 'aggressive': 'bg-danger'};
+
+    el.innerHTML = `<span class="badge ${colors[presetId] || 'bg-secondary'}">${label}</span>`;
+}
+
+// Load saved configuration
+async function loadConfig(configId) {
+    if (!configId) return;
+
+    try {
+        const response = await fetch(`/api/config/${configId}`);
+        const config = await response.json();
+
+        // If config has different strategy, load that strategy first
+        if (config.strategy_id && config.strategy_id !== document.getElementById('strategySelect').value) {
+            document.getElementById('strategySelect').value = config.strategy_id;
+            await loadStrategyDefinition(config.strategy_id);
+        }
+
+        // Track loaded config so we reuse it instead of creating a new one
+        document.getElementById('loaded_config_id').value = configId;
+        // Use the saved config's name
+        document.getElementById('config_name').value = config.name || '';
+
+        await applyConfig(config);
+
+        // Auto-detect timeframe from preset name (overrides stale DB value)
+        // If a saved config references a preset with a timeframe hint like
+        // "nas100_m15_safe", prioritize that over the saved timeframe value.
+        if (config.preset_name) {
+            const timeframeHint = extractTimeframeFromPresetName(config.preset_name);
+            if (timeframeHint) {
+                const tfSelect = document.getElementById('timeframe');
+                if (tfSelect) {
+                    const matchingOption = Array.from(tfSelect.options).find(opt =>
+                        opt.value.toUpperCase() === timeframeHint.toUpperCase()
+                    );
+                    if (matchingOption) {
+                        tfSelect.value = matchingOption.value;
+                        const event = new Event('change');
+                        tfSelect.dispatchEvent(event);
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error loading config:', error);
+    }
+}
+
+// Apply configuration to form
+async function applyConfig(config) {
+    // Apply each config value to its corresponding form field
+    for (const [key, value] of Object.entries(config)) {
+        const element = document.getElementById(key);
+        if (!element) continue;
+
+        if (element.type === 'checkbox') {
+            element.checked = Boolean(value);
+        } else if (element.tagName === 'SELECT') {
+            element.value = value;
+        } else {
+            element.value = value;
+        }
+    }
+
+    // Handle date fields specially (extract date from datetime)
+    if (config.start_date) {
+        const startDate = config.start_date.split('T')[0];
+        document.getElementById('start_date').value = startDate;
+    }
+    if (config.end_date) {
+        const endDate = config.end_date.split('T')[0];
+        document.getElementById('end_date').value = endDate;
+    }
+
+    // Handle data source + CSV files
+    if (config.data_source) {
+        document.getElementById('data_source').value = config.data_source;
+        await onDataSourceChange();
+        // If csv_files were saved, check them after files are loaded
+        if (config.csv_files && config.csv_files.length > 0) {
+            config.csv_files.forEach(fname => {
+                const cb = document.querySelector(`input[name="csv_files"][value="${fname}"]`);
+                if (cb) cb.checked = true;
+            });
+            updateCsvSelectionInfo();
+        }
+    }
+
+    // Sync preset selectors when loading a saved config
+    if (config.preset_name) {
+        document.getElementById('presetSelect').value = config.preset_name;
+        const presetHidden = document.getElementById('preset_name');
+        if (presetHidden) presetHidden.value = config.preset_name;
+        updatePresetBadge(config.preset_name);
+    }
+
+    // Update risk summary badge
+    if (config.risk_percent !== undefined) {
+        document.getElementById('summaryRisk').textContent = config.risk_percent + '%';
+    }
+
+    // Update summary
+    updateSummary();
+}
+
+// ========================================================================
+// CSV File Selector
+// ========================================================================
+
+async function onDataSourceChange() {
+    const dataSource = document.getElementById('data_source').value;
+    const selector = document.getElementById('csvFileSelector');
+
+    if (dataSource === 'csv_only') {
+        selector.style.display = 'block';
+        if (csvFilesCache) {
+            renderCsvFiles();  // Use cached data, re-filtered for current symbol/timeframe
+        } else {
+            await loadCsvFiles();
+        }
+    } else {
+        selector.style.display = 'none';
+    }
+}
+
+async function loadCsvFiles() {
+    const container = document.getElementById('csvFileList');
+
+    // Show loading
+    container.innerHTML = `
+        <div class="text-center text-muted py-3">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <span class="ms-2">Loading available files...</span>
+        </div>
+    `;
+
+    try {
+        const response = await fetch('/api/data/files');
+        const files = await response.json();
+        csvFilesCache = files;
+        renderCsvFiles();
+    } catch (error) {
+        console.error('Error loading CSV files:', error);
+        container.innerHTML = `
+            <div class="text-center text-danger py-3">
+                <i class="bi bi-exclamation-circle me-2"></i>Failed to load files.
+                Make sure the backend is running.
+            </div>
+        `;
+    }
+}
+
+function renderCsvFiles() {
+    const container = document.getElementById('csvFileList');
+    if (!csvFilesCache || csvFilesCache.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-3">
+                <i class="bi bi-inbox text-muted" style="font-size: 1.5rem;"></i>
+                <p class="text-muted mb-1 mt-2">No CSV data files found</p>
+                <a href="/data-management" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-upload me-1"></i>Upload Data
+                </a>
+            </div>
+        `;
+        return;
+    }
+
+    // Get current symbol and timeframe for filtering
+    const symbolEl = document.getElementById('symbol');
+    const timeframeEl = document.getElementById('timeframe');
+    const currentSymbol = symbolEl ? symbolEl.value.toUpperCase() : '';
+    const currentTimeframe = timeframeEl ? timeframeEl.value.toUpperCase() : '';
+
+    // Filter files: match symbol AND timeframe (from file metadata or filename)
+    const matchingFiles = [];
+    const otherFiles = [];
+
+    csvFilesCache.forEach(file => {
+        const fileSymbol = (file.symbol || '').toUpperCase();
+        const fileTimeframe = (file.timeframe || '').toUpperCase();
+        // Also try to extract from filename (e.g., XAUUSD_M1_...)
+        const fnUpper = (file.filename || '').toUpperCase();
+
+        const symbolMatch = !currentSymbol || fileSymbol === currentSymbol || fnUpper.includes(currentSymbol);
+        const timeframeMatch = !currentTimeframe || fileTimeframe === currentTimeframe || fnUpper.includes('_' + currentTimeframe + '_');
+
+        if (symbolMatch && timeframeMatch) {
+            matchingFiles.push(file);
+        } else {
+            otherFiles.push(file);
+        }
+    });
+
+    let html = '';
+
+    if (matchingFiles.length > 0) {
+        html += `<div class="px-2 py-1 bg-light border-bottom"><small class="fw-semibold text-success"><i class="bi bi-check-circle me-1"></i>Matching files (${currentSymbol} / ${currentTimeframe})</small></div>`;
+        matchingFiles.forEach((file, idx) => {
+            html += renderCsvFileRow(file, idx, false);
+        });
+    }
+
+    if (otherFiles.length > 0) {
+        html += `<div class="px-2 py-1 bg-light border-bottom"><small class="fw-semibold text-muted"><i class="bi bi-dash-circle me-1"></i>Other files (different symbol/timeframe)</small></div>`;
+        otherFiles.forEach((file, idx) => {
+            html += renderCsvFileRow(file, matchingFiles.length + idx, true);
+        });
+    }
+
+    if (matchingFiles.length === 0 && otherFiles.length === 0) {
+        html = `<div class="text-center py-3 text-muted">No CSV files available</div>`;
+    } else if (matchingFiles.length === 0) {
+        html = `<div class="px-2 py-2 bg-warning bg-opacity-10 border-bottom"><small class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>No files match ${currentSymbol} / ${currentTimeframe}. Showing all files below.</small></div>` + html;
+    }
+
+    container.innerHTML = html;
+    updateCsvSelectionInfo();
+}
+
+function renderCsvFileRow(file, idx, dimmed) {
+    const hasError = file.error && file.bars === 0;
+    const dateRange = file.start_date && file.end_date
+        ? formatCsvDate(file.start_date) + ' - ' + formatCsvDate(file.end_date)
+        : 'Unknown range';
+    const barCount = file.bars ? file.bars.toLocaleString() : '0';
+    const sizeMb = file.size_mb ? file.size_mb.toFixed(1) : '0';
+    const days = file.trading_days || '?';
+
+    return `
+        <div class="form-check py-2 border-top ${dimmed ? 'opacity-50' : ''}">
+            <input class="form-check-input" type="checkbox" name="csv_files"
+                   value="${file.filename}" id="csv_${idx}"
+                   onchange="updateCsvSelectionInfo()"
+                   ${hasError ? 'disabled' : ''}>
+            <label class="form-check-label w-100 ${hasError ? 'text-muted' : ''}" for="csv_${idx}">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <strong>${file.filename}</strong>
+                        ${file.symbol ? `<span class="badge bg-primary ms-1">${file.symbol}</span>` : ''}
+                        ${file.timeframe ? `<span class="badge bg-secondary ms-1">${file.timeframe}</span>` : ''}
+                    </div>
+                    <span class="badge bg-light text-dark">${sizeMb} MB</span>
+                </div>
+                ${hasError ? `
+                    <small class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>${file.error}</small>
+                ` : `
+                    <small class="text-muted">
+                        <i class="bi bi-calendar-range me-1"></i>${dateRange}
+                        <span class="mx-2">|</span>
+                        <i class="bi bi-bar-chart me-1"></i>${barCount} bars
+                        <span class="mx-2">|</span>
+                        <i class="bi bi-calendar3 me-1"></i>${days} trading days
+                    </small>
+                `}
+            </label>
+        </div>
+    `;
+}
+
+function formatCsvDate(dateStr) {
+    // Parse "2024-01-15 00:00:00-05:00" → "2024-01-15"
+    if (!dateStr) return '?';
+    return dateStr.substring(0, 10);
+}
+
+function updateCsvSelectionInfo() {
+    const checkboxes = document.querySelectorAll('input[name="csv_files"]');
+    const checked = document.querySelectorAll('input[name="csv_files"]:checked');
+    const info = document.getElementById('csvSelectionInfo');
+    const toggleLink = document.getElementById('csvToggleAll');
+
+    if (checked.length === 0) {
+        info.textContent = 'No files selected — all matching files will be used automatically';
+    } else {
+        info.textContent = `${checked.length} of ${checkboxes.length} file(s) selected`;
+    }
+
+    // Update toggle link text
+    if (toggleLink) {
+        toggleLink.textContent = checked.length === checkboxes.length ? 'Deselect all' : 'Select all';
+    }
+
+    // Auto-fill date fields from selected files
+    updateDatesFromCsvSelection();
+}
+
+function updateDatesFromCsvSelection() {
+    if (!csvFilesCache) return;
+
+    const checked = document.querySelectorAll('input[name="csv_files"]:checked');
+    if (checked.length === 0) return;
+
+    // Collect date ranges from selected files
+    const selectedFilenames = Array.from(checked).map(cb => cb.value);
+    let earliest = null;
+    let latest = null;
+
+    for (const file of csvFilesCache) {
+        if (!selectedFilenames.includes(file.filename)) continue;
+        if (!file.start_date || !file.end_date) continue;
+
+        const fileStart = formatCsvDate(file.start_date);
+        const fileEnd = formatCsvDate(file.end_date);
+
+        if (!earliest || fileStart < earliest) earliest = fileStart;
+        if (!latest || fileEnd > latest) latest = fileEnd;
+    }
+
+    if (earliest && latest) {
+        document.getElementById('start_date').value = earliest;
+        document.getElementById('end_date').value = latest;
+        updateDateSummary();
+    }
+}
+
+function toggleAllCsvFiles(event) {
+    event.preventDefault();
+    const checkboxes = document.querySelectorAll('input[name="csv_files"]:not(:disabled)');
+    const checked = document.querySelectorAll('input[name="csv_files"]:checked');
+    const shouldCheck = checked.length < checkboxes.length;
+
+    checkboxes.forEach(cb => cb.checked = shouldCheck);
+    updateCsvSelectionInfo();
+}
+
+// ========================================================================
+// ML Model Selector
+// ========================================================================
+
+async function checkAndLoadMLModels(strategyId) {
+    const selector = document.getElementById('mlModelSelector');
+    const hiddenInput = document.getElementById('ml_model_id');
+
+    try {
+        // Ask the backend if this strategy has an ML base
+        const response = await fetch(`/api/strategies/${strategyId}/ml-base`);
+        const data = await response.json();
+
+        if (data.ml_base_strategy_id) {
+            mlBaseStrategyId = data.ml_base_strategy_id;
+            selector.style.display = 'block';
+            await refreshMLModels();
+        } else {
+            // Not an ML strategy - hide selector and clear selection
+            mlBaseStrategyId = null;
+            selector.style.display = 'none';
+            hiddenInput.value = '';
+        }
+    } catch (error) {
+        console.error('Error checking ML base strategy:', error);
+        mlBaseStrategyId = null;
+        selector.style.display = 'none';
+        hiddenInput.value = '';
+    }
+}
+
+async function refreshMLModels() {
+    const content = document.getElementById('mlModelContent');
+    const hiddenInput = document.getElementById('ml_model_id');
+
+    if (!mlBaseStrategyId) return;
+
+    // Get current symbol and timeframe from form
+    const symbolField = document.getElementById('symbol');
+    const timeframeField = document.getElementById('timeframe');
+    const symbol = symbolField ? symbolField.value : 'XAUUSD';
+    const timeframe = timeframeField ? timeframeField.value : 'M1';
+
+    // Show loading
+    content.innerHTML = `
+        <div class="text-center text-muted py-3">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <span class="ms-2">Searching for ML models (${mlBaseStrategyId} / ${symbol} / ${timeframe})...</span>
+        </div>
+    `;
+
+    try {
+        const params = new URLSearchParams({
+            strategy_id: mlBaseStrategyId,
+            symbol: symbol,
+            timeframe: timeframe
+        });
+        const response = await fetch(`/api/ml/models/matching?${params}`);
+        const models = await response.json();
+
+        renderMLModelSelector(models, symbol, timeframe);
+    } catch (error) {
+        console.error('Error loading ML models:', error);
+        content.innerHTML = `
+            <div class="alert alert-warning mb-0">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                Failed to load ML models. Make sure the backend is running.
+            </div>
+        `;
+        hiddenInput.value = '';
+    }
+}
+
+function renderMLModelSelector(models, symbol, timeframe) {
+    const content = document.getElementById('mlModelContent');
+    const hiddenInput = document.getElementById('ml_model_id');
+
+    if (!models || models.length === 0) {
+        content.innerHTML = `
+            <div class="alert alert-warning mb-0">
+                <i class="bi bi-info-circle me-2"></i>
+                <strong>No trained ML models found</strong> for
+                <span class="badge bg-secondary">${mlBaseStrategyId}</span>
+                <span class="badge bg-primary">${symbol}</span>
+                <span class="badge bg-dark">${timeframe}</span>
+                <br><small class="mt-1 d-block">
+                    Train a model first on the <a href="/ml-models" class="alert-link">ML Models</a> page,
+                    then come back to select it here.
+                </small>
+            </div>
+        `;
+        hiddenInput.value = '';
+        return;
+    }
+
+    // Build radio button cards for each model
+    let html = `
+        <p class="text-muted mb-3">
+            <small>Found <strong>${models.length}</strong> trained model(s) for
+            <span class="badge bg-secondary">${mlBaseStrategyId}</span>
+            <span class="badge bg-primary">${symbol}</span>
+            <span class="badge bg-dark">${timeframe}</span>.
+            Select which model to use for filtering trades:</small>
+        </p>
+    `;
+
+    // Auto (latest) option
+    html += `
+        <div class="form-check border rounded p-3 mb-2 bg-light">
+            <input class="form-check-input" type="radio" name="ml_model_select"
+                   id="ml_model_auto" value="" checked
+                   onchange="document.getElementById('ml_model_id').value = ''">
+            <label class="form-check-label w-100" for="ml_model_auto">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>Auto (Latest Model)</strong>
+                        <span class="badge bg-success ms-2">Recommended</span>
+                    </div>
+                </div>
+                <small class="text-muted">Automatically use the most recently trained model</small>
+            </label>
+        </div>
+    `;
+
+    // Individual model options
+    models.forEach((model, idx) => {
+        const modelType = (model.model_type || 'xgboost').toUpperCase();
+        const accuracy = model.avg_accuracy ? (model.avg_accuracy * 100).toFixed(1) : 'N/A';
+        const aucRoc = model.avg_auc_roc ? model.avg_auc_roc.toFixed(3) : 'N/A';
+        const f1 = model.avg_f1 ? model.avg_f1.toFixed(3) : 'N/A';
+        const trades = model.total_trades || 0;
+        const trainedAt = model.trained_at ? formatTrainedAt(model.trained_at) : 'Unknown';
+
+        // Color badge based on model type
+        const typeBadgeClass = getModelTypeBadge(model.model_type);
+
+        // Quality indicator based on AUC-ROC
+        let qualityBadge = '';
+        if (model.avg_auc_roc >= 0.7) {
+            qualityBadge = '<span class="badge bg-success ms-1">Good</span>';
+        } else if (model.avg_auc_roc >= 0.6) {
+            qualityBadge = '<span class="badge bg-warning text-dark ms-1">Fair</span>';
+        } else if (model.avg_auc_roc > 0) {
+            qualityBadge = '<span class="badge bg-danger ms-1">Weak</span>';
+        }
+
+        html += `
+            <div class="form-check border rounded p-3 mb-2">
+                <input class="form-check-input" type="radio" name="ml_model_select"
+                       id="ml_model_${model.id}" value="${model.id}"
+                       onchange="document.getElementById('ml_model_id').value = '${model.id}'">
+                <label class="form-check-label w-100" for="ml_model_${model.id}">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div>
+                            <strong>Model #${model.id}</strong>
+                            <span class="badge ${typeBadgeClass} ms-2">${modelType}</span>
+                            ${qualityBadge}
+                        </div>
+                        <small class="text-muted">${trainedAt}</small>
+                    </div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-3">
+                            <small class="text-muted d-block">Accuracy</small>
+                            <strong class="text-primary">${accuracy}%</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">AUC-ROC</small>
+                            <strong class="text-primary">${aucRoc}</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">F1 Score</small>
+                            <strong class="text-primary">${f1}</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">Trades</small>
+                            <strong class="text-primary">${trades}</strong>
+                        </div>
+                    </div>
+                </label>
+            </div>
+        `;
+    });
+
+    content.innerHTML = html;
+    hiddenInput.value = '';  // Default to auto
+}
+
+function getModelTypeBadge(modelType) {
+    const badges = {
+        'xgboost': 'bg-info',
+        'lightgbm': 'bg-success',
+        'lstm': 'bg-warning text-dark',
+        'cnn': 'bg-danger',
+        'transformer': 'bg-dark',
+        'ensemble': 'bg-primary',
+    };
+    return badges[(modelType || '').toLowerCase()] || 'bg-secondary';
+}
+
+function formatTrainedAt(isoString) {
+    try {
+        const d = new Date(isoString);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    } catch {
+        return isoString;
+    }
+}
+</script>
+{% endblock %}

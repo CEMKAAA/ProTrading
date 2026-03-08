@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "orb_strategy",
+    "preset": "advanced_aggressive",
+    "symbol": "XAUUSD",
+    "timeframe": "M1",
+    "period": "2022-01-01 to 2024-12-31",
+    "elapsed_sec": 1085.0,
+    "total_trades": 332,
+    "winning_trades": 127,
+    "losing_trades": 205,
+    "win_rate": 38.25,
+    "net_profit": 915.89,
+    "profit_factor": 1.09,
+    "sharpe_ratio": 0.4611,
+    "sortino_ratio": 1.5762,
+    "max_drawdown_pct": 10.68,
+    "avg_rr": 1.76,
+    "expectancy": 2.76,
+    "final_balance": 10801.32,
+    "largest_win": 776.65,
+    "largest_loss": -145.53,
+    "data_hash": "65ffe1953a6bc68c26b5d4f51ee41c13822fedb63ac94dd8b1efdee0168004b0"
+  }
+]

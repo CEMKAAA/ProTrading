@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "orb_strategy",
+    "preset": "conservative",
+    "symbol": "XAUUSD",
+    "timeframe": "M1",
+    "period": "2024-01-01 to 2024-12-31",
+    "elapsed_sec": 213.8,
+    "total_trades": 162,
+    "winning_trades": 58,
+    "losing_trades": 104,
+    "win_rate": 35.8,
+    "net_profit": -1552.89,
+    "profit_factor": 0.67,
+    "sharpe_ratio": -2.9993,
+    "sortino_ratio": -13.9788,
+    "max_drawdown_pct": 16.49,
+    "avg_rr": 1.21,
+    "expectancy": -9.59,
+    "final_balance": 8408.03,
+    "largest_win": 112.0,
+    "largest_loss": -58.95,
+    "data_hash": "4bd6a0993128a6ef28f26b81e878cf891373073b30b28eb3e270336123344afc"
+  }
+]

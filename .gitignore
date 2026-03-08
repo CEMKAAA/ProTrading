@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime/state
+.env
+.env.*
+!.env.example
+dashboard/data/
+data/
+logs/
+*.log
+bot_state.py
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build/artifacts
+dist/
+build/
+*.egg-info/
+
+# Local LLM model weights
+*.gguf
+GeminiExamples/models/

@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+
+{% block title %}CSP Screen #{{ screen.id }} - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">CSP Screen #{{ screen.id }}</h2>
+        <p class="text-muted mb-0">
+            {{ screen.run_date|datetime }} | screened={{ screen.total_symbols_screened }} | passed={{ screen.candidates_passed }}
+        </p>
+    </div>
+    <div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('options_edge_csp_dashboard') }}">
+            <i class="bi bi-arrow-left me-1"></i>Back
+        </a>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-table me-2"></i>Qualified Candidates</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Regime</th>
+                                <th>IV Rank</th>
+                                <th>Option Vol (30d)</th>
+                                <th>P/E</th>
+                                <th>P/E 5Y</th>
+                                <th>Price vs SMA200</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for c in (screen.candidates or []) %}
+                            <tr>
+                                <td><strong>{{ c.symbol }}</strong></td>
+                                <td>
+                                    <span class="badge {% if c.regime == 'aggressive' %}bg-warning text-dark{% else %}bg-info{% endif %}">
+                                        {{ c.regime }}
+                                    </span>
+                                </td>
+                                <td>{{ "%.2f"|format(c.iv_rank or 0) }}</td>
+                                <td>{{ "{:,.0f}".format(c.option_volume or 0) }}</td>
+                                <td>
+                                    {% if c.pe_current is not none %}
+                                        {{ "%.2f"|format(c.pe_current) }}
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if c.pe_5y_avg is not none %}
+                                        {{ "%.2f"|format(c.pe_5y_avg) }}
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if c.price_vs_sma200 is not none %}
+                                        {{ "%.2f"|format(c.price_vs_sma200) }}%
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not screen.candidates %}
+                            <tr><td colspan="7" class="text-center text-muted py-4">No candidates passed this run.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-play-circle me-2"></i>Run Backtest From This Screen</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('options_edge_csp_run_backtest') }}" class="row g-3">
+                    <input type="hidden" name="screen_run_id" value="{{ screen.id }}">
+                    <div class="col-12">
+                        <label class="form-label">Symbol (optional)</label>
+                        <input class="form-control" name="symbol" placeholder="leave blank = latest candidate">
+                    </div>
+                    <div class="col-6">
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" name="portfolio_mode" id="detailPortfolioMode" checked>
+                            <label class="form-check-label" for="detailPortfolioMode">Portfolio mode</label>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Max Symbols</label>
+                        <input class="form-control" type="number" name="max_symbols" value="10" min="1" max="200">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Start</label>
+                        <input class="form-control" type="date" name="start_date" value="2025-01-01" required>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">End</label>
+                        <input class="form-control" type="date" name="end_date" value="2026-01-01" required>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Initial Capital</label>
+                        <input class="form-control" type="number" name="initial_capital" value="100000">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">IV Floor</label>
+                        <input class="form-control" type="number" name="iv_floor" value="0.40" step="0.01">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Max CSP Slots</label>
+                        <input class="form-control" type="number" name="max_concurrent_csps" value="2" min="1" max="20">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Portfolio Allocation %</label>
+                        <input class="form-control" type="number" name="max_portfolio_allocation_pct" value="100" step="1" min="1" max="100">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Single Stock Cap %</label>
+                        <input class="form-control" type="number" name="max_single_stock_pct" value="50" step="1" min="1" max="100">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Normal Yield Min %</label>
+                        <input class="form-control" type="number" name="normal_yield_min_pct" value="0.8" step="0.1" min="0">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Normal Yield Max %</label>
+                        <input class="form-control" type="number" name="normal_yield_max_pct" value="4.0" step="0.1" min="0.1">
+                    </div>
+                    <div class="col-12">
+                        <small class="text-muted">
+                            CSP opens require cash-secured capital of roughly strike × 100. If this run returns 0 trades,
+                            increase allocation caps or disable portfolio mode.
+                        </small>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-success w-100" type="submit">
+                            <i class="bi bi-play-fill me-1"></i>Run CSP Backtest
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header"><i class="bi bi-info-circle me-2"></i>Screen Summary</div>
+            <div class="card-body">
+                {% set summary = screen.summary or {} %}
+                {% set regime_counts = summary.get('regime_counts', {}) %}
+                {% set top_reasons = summary.get('top_rejection_reasons', []) %}
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <div class="border rounded p-2">
+                            <div class="small text-muted">Provider</div>
+                            <div class="fw-semibold">{{ summary.get('provider', '-') }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="border rounded p-2">
+                            <div class="small text-muted">Fundamentals Loaded</div>
+                            <div class="fw-semibold">{{ summary.get('auto_fundamentals_loaded', 0) }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="border rounded p-2">
+                            <div class="small text-muted">Passed / Rejected</div>
+                            <div class="fw-semibold">{{ screen.candidates_passed }} / {{ summary.get('rejected_count', 0) }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="border rounded p-2">
+                            <div class="small text-muted">VIX Input</div>
+                            <div class="fw-semibold">
+                                {% if summary.get('vix_value') is not none %}
+                                    {{ "%.2f"|format(summary.get('vix_value')) }}
+                                {% else %}
+                                    Auto / N-A
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <div class="small text-muted mb-1">Regime Split</div>
+                    <span class="badge bg-info me-1">Normal: {{ regime_counts.get('normal', 0) }}</span>
+                    <span class="badge bg-warning text-dark">Aggressive: {{ regime_counts.get('aggressive', 0) }}</span>
+                </div>
+
+                <div>
+                    <div class="small text-muted mb-1">Top Rejection Reasons</div>
+                    {% if top_reasons %}
+                        <ul class="list-group list-group-flush small">
+                            {% for item in top_reasons %}
+                                <li class="list-group-item px-0 py-1 d-flex justify-content-between">
+                                    <span>{{ item[0] }}</span>
+                                    <span class="badge bg-secondary">{{ item[1] }}</span>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="small text-muted">No rejection reason stats.</div>
+                    {% endif %}
+                </div>
+
+                <details class="mt-3">
+                    <summary class="small text-muted" style="cursor:pointer;">Raw JSON</summary>
+                    <pre class="small mb-0 text-wrap mt-2">{{ summary|tojson(indent=2) }}</pre>
+                </details>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-x-octagon me-2"></i>Rejected Symbols ({{ (screen.summary or {}).get('rejected_rows', [])|length }})</div>
+    <div class="card-body p-0">
+        <div class="table-responsive" style="max-height: 360px; overflow-y: auto;">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Sector</th>
+                        <th>IV Rank</th>
+                        <th>Liquidity</th>
+                        <th>Reasons</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in ((screen.summary or {}).get('rejected_rows', [])) %}
+                    <tr>
+                        <td><strong>{{ r.get('symbol', '-') }}</strong></td>
+                        <td>{{ r.get('sector', '-') }}</td>
+                        <td>{{ "%.2f"|format(r.get('iv_rank', 0) or 0) }}</td>
+                        <td>{{ "{:,.0f}".format(r.get('option_volume_30d', 0) or 0) }}</td>
+                        <td class="small text-muted">{{ (r.get('reasons', []) or [])|join(', ') }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not (screen.summary or {}).get('rejected_rows') %}
+                    <tr><td colspan="5" class="text-center text-muted py-3">No rejected symbol diagnostics saved for this run.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

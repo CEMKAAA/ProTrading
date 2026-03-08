@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "orb_strategy",
+    "preset": "nas100_tuned",
+    "symbol": "NAS100",
+    "timeframe": "M1",
+    "period": "2023-01-01 to 2025-12-31",
+    "elapsed_sec": 386.0,
+    "total_trades": 193,
+    "winning_trades": 89,
+    "losing_trades": 104,
+    "win_rate": 46.11,
+    "net_profit": 4909.91,
+    "profit_factor": 1.36,
+    "sharpe_ratio": 1.9645,
+    "sortino_ratio": 4.3993,
+    "max_drawdown_pct": 12.05,
+    "avg_rr": 1.59,
+    "expectancy": 25.44,
+    "final_balance": 14092.65,
+    "largest_win": 723.05,
+    "largest_loss": -1054.65,
+    "data_hash": "8b140bfac6a2874db4c93d440d3a00c1efed33d10054734610904dd35f048956"
+  }
+]

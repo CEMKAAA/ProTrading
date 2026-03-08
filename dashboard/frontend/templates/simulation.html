@@ -1,0 +1,793 @@
+{% extends "base.html" %}
+
+{% block title %}Simulate: {{ strategy.name or strategy_id }} - ProTrading{% endblock %}
+
+{% block extra_css %}
+<!-- TradingView Lightweight Charts -->
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/simulation.css') }}">
+<style>
+.sim-action-btn {
+    box-shadow: 0 4px 0 rgba(15, 23, 42, 0.6);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.18s ease;
+    border-radius: 10px;
+    border: 1px solid;
+}
+.sim-action-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 1px 0 rgba(15, 23, 42, 0.6);
+}
+#btn-toggle-fullscreen {
+    background: rgba(139, 92, 246, 0.18);
+    border-color: rgba(139, 92, 246, 0.5);
+    color: #c4b5fd;
+}
+#btn-open-tools {
+    background: rgba(37, 99, 235, 0.18);
+    border-color: rgba(37, 99, 235, 0.5);
+    color: #93c5fd;
+}
+#btn-open-indicators {
+    background: rgba(6, 182, 212, 0.18);
+    border-color: rgba(6, 182, 212, 0.5);
+    color: #67e8f9;
+}
+
+.simulation-fs-dock {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px 16px;
+    max-width: calc(100vw - 24px);
+    border-radius: 18px;
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.96));
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 18px 35px rgba(2, 6, 23, 0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+    z-index: 1400;
+    backdrop-filter: blur(12px);
+}
+.simulation-fs-dock .dock-btn {
+    min-width: 84px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 14px;
+    background: linear-gradient(160deg, #334155, #1f2937);
+    color: #e2e8f0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    box-shadow: 0 5px 0 rgba(15, 23, 42, 0.85), 0 8px 18px rgba(2, 6, 23, 0.35);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.18s ease;
+}
+.simulation-fs-dock .dock-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 2px 0 rgba(15, 23, 42, 0.85), 0 4px 10px rgba(2, 6, 23, 0.35);
+}
+.simulation-fs-dock .dock-btn.dock-steps {
+    border-color: rgba(96, 165, 250, 0.45);
+    background: linear-gradient(160deg, #1e2d4a, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-steps i { color: #60a5fa; }
+.simulation-fs-dock .dock-btn.dock-trade {
+    border-color: rgba(74, 222, 128, 0.45);
+    background: linear-gradient(160deg, #1a3a2a, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-trade i { color: #4ade80; }
+.simulation-fs-dock .dock-btn.dock-tools {
+    border-color: rgba(59, 130, 246, 0.45);
+    background: linear-gradient(160deg, #1e2d4a, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-tools i { color: #93c5fd; }
+.simulation-fs-dock .dock-btn.dock-indicators {
+    border-color: rgba(34, 211, 238, 0.45);
+    background: linear-gradient(160deg, #143342, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-indicators i { color: #22d3ee; }
+.simulation-fs-dock .dock-btn.dock-market {
+    border-color: rgba(167, 139, 250, 0.45);
+    background: linear-gradient(160deg, #2e1f4d, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-market i { color: #c4b5fd; }
+.simulation-fs-dock .dock-btn.dock-exit {
+    border-color: rgba(248, 113, 113, 0.45);
+    background: linear-gradient(160deg, #3e1f26, #1f2937);
+}
+.simulation-fs-dock .dock-btn.dock-exit i { color: #f87171; }
+
+.tool-card {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 10px;
+    padding: 10px;
+    background: rgba(30, 41, 59, 0.7);
+    margin-bottom: 8px;
+}
+.tool-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.tool-name { color: #e2e8f0; font-weight: 600; font-size: 0.82rem; }
+.tool-desc { color: #94a3b8; font-size: 0.72rem; margin-bottom: 8px; }
+.tool-settings { display: none; }
+.tool-settings.active { display: block; }
+.tool-actions { display: flex; gap: 8px; }
+
+.chart-zones-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+}
+.fvg-zone {
+    position: absolute;
+    border-radius: 4px;
+    border: 1px dashed rgba(255,255,255,0.35);
+}
+.fvg-zone.bullish_fvg { background: rgba(38, 166, 91, 0.15); border-color: rgba(38, 166, 91, 0.55); }
+.fvg-zone.bearish_fvg { background: rgba(239, 83, 80, 0.15); border-color: rgba(239, 83, 80, 0.55); }
+.fvg-zone.buy_zone { background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.55); }
+.fvg-zone.sell_zone { background: rgba(249, 115, 22, 0.14); border-color: rgba(249, 115, 22, 0.55); }
+.fvg-zone.mean_cross { background: rgba(168, 85, 247, 0.12); border-color: rgba(168, 85, 247, 0.5); }
+
+.workbench-panel-modal {
+    background: linear-gradient(160deg, #0f172a, #111827);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: #e2e8f0;
+}
+.workbench-panel-modal .modal-header { border-bottom: 1px solid rgba(148, 163, 184, 0.15); }
+
+body.simulation-fullscreen #simulation-sidebar { display: none !important; }
+body.simulation-fullscreen #simulation-chart-col { flex: 0 0 100%; max-width: 100%; }
+body.simulation-fullscreen #simulation-top-actions { display: none !important; }
+body.simulation-fullscreen #sim-config-panel,
+body.simulation-fullscreen .info-card,
+body.simulation-fullscreen #simulation-trade-log-card { display: none !important; }
+body.simulation-fullscreen .stats-bar { margin-bottom: 96px !important; }
+@media (max-width: 991px) {
+    body.simulation-fullscreen .stats-bar { margin-bottom: 136px !important; }
+}
+
+.indicator-modal .modal-content {
+    background: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.indicator-option {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: rgba(30, 41, 59, 0.6);
+}
+.indicator-option + .indicator-option { margin-top: 8px; }
+.indicator-option .hint { display: block; color: #94a3b8; font-size: 0.72rem; margin-left: 24px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<input type="hidden" id="sim-strategy-id" value="{{ strategy_id }}">
+
+<!-- Header -->
+<div class="sim-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div class="d-flex align-items-center gap-3">
+        <a href="{{ url_for('trading_systems') }}" class="text-muted"><i class="bi bi-arrow-left fs-5"></i></a>
+        <div>
+            <h1 class="strategy-name">{{ strategy.name or strategy_id | replace('_', ' ') | title }}</h1>
+            <small class="text-muted">{{ steps.description or 'Interactive Trading Simulation' }}</small>
+        </div>
+        <span class="strategy-badge">SIMULATION</span>
+        <span id="bias-display" class="bias-badge neutral"><i class="bi bi-dash"></i> neutral (0)</span>
+    </div>
+    <div>
+        <span id="sim-status" style="font-size: 0.8rem;"></span>
+    </div>
+</div>
+
+<!-- Configuration Panel (shown before session starts) -->
+<div id="sim-config-panel" class="mb-3">
+    <div class="card">
+        <div class="card-body">
+            <div class="sim-config-row">
+                <div class="form-group">
+                    <label>Symbol</label>
+                    <select id="sim-symbol" class="form-select form-select-sm">
+                        <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                        <option value="NAS100">NAS100</option>
+                        <option value="US500">US500</option>
+                        <option value="GBPUSD">GBPUSD</option>
+                        <option value="EURUSD">EURUSD</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Timeframe</label>
+                    <select id="sim-timeframe" class="form-select form-select-sm">
+                        <option value="M1">M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15" selected>M15</option>
+                        <option value="M30">M30</option>
+                        <option value="H1">H1</option>
+                        <option value="H4">H4</option>
+                        <option value="D1">D1</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Data File</label>
+                    <select id="sim-datafile" class="form-select form-select-sm">
+                        <option value="">Auto-detect</option>
+                        {% for f in data_files %}
+                        <option value="{{ f.filename }}">{{ f.filename }} ({{ f.size_mb }}MB)</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Balance ($)</label>
+                    <input type="number" id="sim-balance" class="form-control form-control-sm" value="10000" min="100" step="1000">
+                </div>
+                <div class="form-group">
+                    <button id="btn-start-session" class="btn btn-primary btn-sm">
+                        <i class="bi bi-play-fill me-1"></i>Start Replay
+                    </button>
+                </div>
+                <div class="form-group">
+                    <label>Live Source</label>
+                    <select id="live-source" class="form-select form-select-sm">
+                        <option value="mt5" selected>MT5</option>
+                        <option value="databento">Databento</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Window (Days)</label>
+                    <input
+                        id="live-history-days"
+                        class="form-control form-control-sm"
+                        type="number"
+                        min="0.1"
+                        max="60"
+                        step="0.1"
+                        value="2"
+                        title="How many recent days of candles to load for live chart snapshot"
+                    >
+                </div>
+                <div class="form-group">
+                    <label>Databento Key (Optional)</label>
+                    <input
+                        id="live-databento-key"
+                        class="form-control form-control-sm"
+                        type="password"
+                        placeholder="Uses backend env if empty"
+                    >
+                </div>
+                <div class="form-group">
+                    <button id="btn-live-feed" class="btn btn-outline-success btn-sm">
+                        <i class="bi bi-broadcast me-1"></i>Start Live Feed
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Layout: Chart + Sidebar -->
+<div class="row g-3" id="simulation-main-row">
+    <!-- Chart Column -->
+    <div class="col-lg-9" id="simulation-chart-col">
+        <div class="d-flex justify-content-end mb-2" id="simulation-top-actions">
+            <button id="btn-toggle-fullscreen" class="btn btn-sm sim-action-btn me-2" type="button" title="Fullscreen focus mode">
+                <i class="bi bi-arrows-fullscreen me-1"></i>Focus Mode
+            </button>
+            <button id="btn-open-tools" class="btn btn-sm sim-action-btn me-2" type="button" data-bs-toggle="modal" data-bs-target="#analysisToolsModal">
+                <i class="bi bi-tools me-1"></i>Tools
+            </button>
+            <button id="btn-open-indicators" class="btn btn-sm sim-action-btn" type="button" data-bs-toggle="modal" data-bs-target="#indicatorModal">
+                <i class="bi bi-graph-up me-1"></i>Indicators
+            </button>
+        </div>
+        <!-- Chart -->
+        <div class="chart-container">
+            <div id="suggestion-badge" class="suggestion-badge"></div>
+            <div id="chart-main" class="chart-main"></div>
+            <div id="chart-sub" class="chart-sub-panel"></div>
+        </div>
+
+        <!-- Playback Controls -->
+        <div id="playback-controls" class="playback-bar mt-2 d-none">
+            <button class="btn-playback" id="btn-rewind" title="Back 10 bars">
+                <i class="bi bi-skip-backward-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-prev" title="Back 1 bar (Left Arrow)">
+                <i class="bi bi-caret-left-fill"></i>
+            </button>
+            <button class="btn-playback btn-play" id="btn-play" title="Play/Pause (Space)">
+                <i class="bi bi-play-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-next" title="Forward 1 bar (Right Arrow)">
+                <i class="bi bi-caret-right-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-forward" title="Forward 10 bars">
+                <i class="bi bi-skip-forward-fill"></i>
+            </button>
+
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+            </div>
+
+            <span class="bar-counter" id="bar-counter">Bar 0 / 0</span>
+
+            <div class="speed-selector">
+                <button class="speed-btn active" data-speed="1">1x</button>
+                <button class="speed-btn" data-speed="2">2x</button>
+                <button class="speed-btn" data-speed="5">5x</button>
+                <button class="speed-btn" data-speed="10">10x</button>
+                <button class="speed-btn active" id="btn-auto-speed" title="Adaptive speed control">AUTO</button>
+            </div>
+
+            <button class="btn btn-sm btn-outline-secondary" id="btn-reset" title="Reset session">
+                <i class="bi bi-arrow-counterclockwise"></i>
+            </button>
+        </div>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar mt-2">
+            <div class="stat-item">
+                <span class="stat-label">Balance</span>
+                <span class="stat-value" id="stat-balance">$10,000</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">P&L</span>
+                <span class="stat-value" id="stat-pnl">$0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Trades</span>
+                <span class="stat-value" id="stat-trades">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Win Rate</span>
+                <span class="stat-value" id="stat-winrate">0%</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Transport</span>
+                <span class="stat-value" id="stat-transport">IDLE</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Speed</span>
+                <span class="stat-value" id="stat-barsps">0.0 bars/s</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">P95 Latency</span>
+                <span class="stat-value" id="stat-p95-latency">0 ms</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Dropped Ticks</span>
+                <span class="stat-value" id="stat-dropped-ticks">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Reconnects</span>
+                <span class="stat-value" id="stat-reconnects">0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar Column -->
+    <div class="col-lg-3" id="simulation-sidebar">
+        <!-- Tools Panel -->
+        <div class="step-tracker mb-3" id="analysis-tools-panel">
+            <div class="step-tracker-header">
+                <i class="bi bi-tools me-1"></i> Analysis Tools
+            </div>
+            <div class="p-2">
+                <div class="tool-card">
+                    <div class="tool-toggle">
+                        <span class="tool-name"><i class="bi bi-layers-half me-1"></i>FVG Scanner</span>
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="tool-fvg-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Detects Fair Value Gaps from current chart/replay bars.</div>
+                    <div class="tool-settings" id="fvg-settings">
+                        <div class="mb-2">
+                            <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Strictness</label>
+                            <select id="tool-fvg-strictness" class="form-select form-select-sm">
+                                <option value="1">1 - Loose</option>
+                                <option value="2">2 - Mild Loose</option>
+                                <option value="3" selected>3 - Normal</option>
+                                <option value="4">4 - Strict</option>
+                                <option value="5">5 - Very Strict</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Lookback Days</label>
+                            <input type="number" id="fvg-lookback-days" class="form-control form-control-sm" value="2" min="0.1" max="30" step="0.5">
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-fvg-scan"><i class="bi bi-search me-1"></i>Scan</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-fvg-clear"><i class="bi bi-x-circle me-1"></i>Clear</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-toggle">
+                        <span class="tool-name"><i class="bi bi-arrow-left-right me-1"></i>Mean Reversion</span>
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="tool-mean-rev-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Finds overextension zones and mean-cross signals.</div>
+                    <div class="tool-settings" id="mean-rev-settings">
+                        <div class="mb-2">
+                            <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Strictness</label>
+                            <select id="tool-mean-rev-strictness" class="form-select form-select-sm">
+                                <option value="1">1 - Loose</option>
+                                <option value="2">2 - Mild Loose</option>
+                                <option value="3" selected>3 - Normal</option>
+                                <option value="4">4 - Strict</option>
+                                <option value="5">5 - Very Strict</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">SMA Period</label>
+                            <input type="number" id="mean-rev-sma-period" class="form-control form-control-sm" value="30" min="5" max="400" step="1">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Deviation</label>
+                            <input type="number" id="mean-rev-deviation" class="form-control form-control-sm" value="2.0" min="0.5" max="8" step="0.1">
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-mean-rev-scan"><i class="bi bi-search me-1"></i>Scan</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-mean-rev-clear"><i class="bi bi-x-circle me-1"></i>Clear</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-toggle">
+                        <span class="tool-name"><i class="bi bi-pencil-square me-1"></i>Drawing Tools</span>
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="tool-draw-fvg-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Manual 2-bar picker: click two candles, then scan only that selected window for FVG.</div>
+                    <div class="tool-settings" id="draw-fvg-settings">
+                        <div class="mb-2">
+                            <small id="draw-fvg-status" style="color:#94a3b8;font-size:0.72rem;">Pick two bars on chart to begin.</small>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-draw-fvg-scan"><i class="bi bi-search me-1"></i>Scan Selection</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-draw-fvg-reset"><i class="bi bi-x-circle me-1"></i>Reset Picks</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step Tracker -->
+        <div class="step-tracker mb-3" id="step-tracker-panel">
+            <div class="step-tracker-header">
+                <i class="bi bi-list-check me-1"></i> Step-by-Step Guide
+            </div>
+            <div id="step-list">
+                {% if steps and steps.steps %}
+                    {% for step in steps.steps %}
+                    <div class="step-item pending">
+                        <div class="step-icon">
+                            <i class="{{ step.icon or 'bi-circle' }}"></i>
+                        </div>
+                        <div class="step-content">
+                            <div class="step-title">{{ step.title }}</div>
+                            <div class="step-desc">{{ step.description }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="p-3 text-muted text-center" style="font-size: 0.8rem;">
+                        Start a session to see strategy steps
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Trade Panel -->
+        <div class="trade-panel mb-3" id="trade-exec-panel">
+            <div class="trade-panel-header">
+                <i class="bi bi-currency-exchange me-1"></i> Trade Execution
+            </div>
+            <div class="trade-panel-body" id="trade-panel-body">
+                <div id="trade-buttons" class="d-flex justify-content-between mb-3">
+                    <button class="btn-buy" id="btn-buy">BUY</button>
+                    <button class="btn-sell" id="btn-sell">SELL</button>
+                </div>
+                <div class="mb-2" style="font-size:0.72rem;color:#94a3b8;">
+                    BUY = Long, SELL = Short
+                </div>
+
+                <div class="trade-input-group">
+                    <label>Stop Loss</label>
+                    <input type="number" id="trade-sl" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2840.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Long TP (BUY)</label>
+                    <input type="number" id="trade-tp-long" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2870.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Short TP (SELL)</label>
+                    <input type="number" id="trade-tp-short" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2810.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Lot Size</label>
+                    <input type="number" id="trade-lots" class="form-control form-control-sm" value="0.01" min="0.01" step="0.01">
+                </div>
+
+                <!-- Open Position -->
+                <div id="open-pos-id" data-trade-id=""></div>
+                <div id="open-position-display" class="d-none"></div>
+                <button class="btn btn-sm btn-outline-danger w-100 mt-2 d-none" id="btn-close-pos">
+                    <i class="bi bi-x-circle me-1"></i>Close Position
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="simulation-fs-dock" class="simulation-fs-dock d-none" aria-label="Simulation quick actions">
+    <button class="dock-btn dock-steps" type="button" data-panel-launch="steps" title="Guide">
+        <i class="bi bi-list-check"></i><span>Guide</span>
+    </button>
+    <button class="dock-btn dock-trade" type="button" data-panel-launch="trade" title="Trade Execution">
+        <i class="bi bi-currency-exchange"></i><span>Trade</span>
+    </button>
+    <button class="dock-btn dock-tools" type="button" data-panel-launch="tools" title="Analysis Tools">
+        <i class="bi bi-tools"></i><span>Tools</span>
+    </button>
+    <button class="dock-btn dock-indicators" type="button" id="dock-open-indicators" title="Indicators">
+        <i class="bi bi-graph-up"></i><span>Indicators</span>
+    </button>
+    <button class="dock-btn dock-market" type="button" id="dock-open-market" title="Market Switch">
+        <i class="bi bi-sliders2"></i><span>Market</span>
+    </button>
+    <button class="dock-btn dock-exit" type="button" id="dock-exit-focus" title="Exit Focus">
+        <i class="bi bi-fullscreen-exit"></i><span>Exit</span>
+    </button>
+</div>
+
+<div class="modal fade" id="stepsPanelModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-list-check me-1"></i>Step-by-Step Guide</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="steps-panel-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="tradeExecModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-currency-exchange me-1"></i>Trade Execution</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="trade-exec-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="analysisToolsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-tools me-1"></i>Analysis Tools</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="analysis-tools-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade indicator-modal" id="indicatorModal" tabindex="-1" aria-labelledby="indicatorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="indicatorModalLabel"><i class="bi bi-graph-up me-1"></i>Indicator Visibility</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-vis-trend" checked>
+                        <label class="form-check-label" for="ind-vis-trend">Trend Lines</label>
+                        <span class="hint">EMA/SMA/VWAP style lines from strategy outputs</span>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-vis-osc" checked>
+                        <label class="form-check-label" for="ind-vis-osc">Oscillators</label>
+                        <span class="hint">MACD, RSI, ADX, ROC, bandwidth on sub-panel</span>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-vis-volatility" checked>
+                        <label class="form-check-label" for="ind-vis-volatility">Volatility Bands</label>
+                        <span class="hint">Bollinger/Keltner/VWAP band-style overlays</span>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-vis-overlays" checked>
+                        <label class="form-check-label" for="ind-vis-overlays">Session/Level Overlays</label>
+                        <span class="hint">ORB/session levels and strategy generated horizontal lines</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-outline-secondary" id="btn-indicators-reset" type="button">Reset</button>
+                <button class="btn btn-sm btn-primary" data-bs-dismiss="modal" type="button">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="marketSwitchModal" tabindex="-1" aria-labelledby="marketSwitchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="marketSwitchModalLabel"><i class="bi bi-sliders2 me-1"></i>Market Switch</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-symbol" style="font-size:0.74rem;color:#94a3b8;">Symbol</label>
+                        <select id="fs-market-symbol" class="form-select form-select-sm">
+                            <option value="XAUUSD">XAUUSD (Gold)</option>
+                            <option value="NAS100">NAS100</option>
+                            <option value="US500">US500</option>
+                            <option value="GBPUSD">GBPUSD</option>
+                            <option value="EURUSD">EURUSD</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-timeframe" style="font-size:0.74rem;color:#94a3b8;">Timeframe</label>
+                        <select id="fs-market-timeframe" class="form-select form-select-sm">
+                            <option value="M1">M1</option>
+                            <option value="M5">M5</option>
+                            <option value="M15">M15</option>
+                            <option value="M30">M30</option>
+                            <option value="H1">H1</option>
+                            <option value="H4">H4</option>
+                            <option value="D1">D1</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-source" style="font-size:0.74rem;color:#94a3b8;">Live Source</label>
+                        <select id="fs-market-source" class="form-select form-select-sm">
+                            <option value="mt5">MT5</option>
+                            <option value="databento">Databento</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-days" style="font-size:0.74rem;color:#94a3b8;">Window (Days)</label>
+                        <input id="fs-market-days" class="form-control form-control-sm" type="number" min="0.1" max="60" step="0.1" value="2">
+                    </div>
+                </div>
+                <small class="d-block mt-2" style="color:#94a3b8;font-size:0.72rem;">
+                    Applies chart context immediately. If live feed is running, it will switch source/timeframe automatically.
+                </small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-sm btn-primary" type="button" id="btn-fs-market-apply">Apply</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Info Card -->
+{% if steps and steps.info %}
+<div class="info-card mt-3">
+    <div class="accordion" id="infoAccordion">
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoWhat">
+                    <i class="bi bi-question-circle me-2"></i> What is this strategy?
+                </button>
+            </h2>
+            <div id="infoWhat" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">{{ steps.info.what }}</div>
+            </div>
+        </div>
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoBest">
+                    <i class="bi bi-star me-2"></i> When does this strategy work best?
+                </button>
+            </h2>
+            <div id="infoBest" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">{{ steps.info.best_conditions }}</div>
+            </div>
+        </div>
+        {% if steps.info.common_mistakes %}
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoMistakes">
+                    <i class="bi bi-exclamation-triangle me-2"></i> Common mistakes to avoid
+                </button>
+            </h2>
+            <div id="infoMistakes" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">
+                    <ul>
+                        {% for mistake in steps.info.common_mistakes %}
+                        <li>{{ mistake }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% if steps.info.glossary %}
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoGlossary">
+                    <i class="bi bi-book me-2"></i> Key terms glossary
+                </button>
+            </h2>
+            <div id="infoGlossary" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">
+                    <dl class="mb-0">
+                        {% for term, definition in steps.info.glossary.items() %}
+                        <dt class="glossary-term">{{ term }}</dt>
+                        <dd>{{ definition }}</dd>
+                        {% endfor %}
+                    </dl>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Trade Log -->
+<div class="card mt-3" id="simulation-trade-log-card">
+    <div class="card-header">
+        <i class="bi bi-journal-text me-1"></i> Trade Log
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm trade-log-table mb-0">
+                <thead>
+                    <tr>
+                        <th>Dir</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>SL</th>
+                        <th>TP</th>
+                        <th>P&L</th>
+                        <th>R</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody id="trade-log-body">
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-3">
+                            <small>No trades yet. Start a session and practice the strategy!</small>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/simulation.js') }}"></script>
+{% endblock %}

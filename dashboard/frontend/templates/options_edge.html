@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+
+{% block title %}Options Edge - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">Options Edge</h2>
+        <p class="text-muted mb-0">Phase 1-3: Live scan, strategy build, and walk-forward backtest</p>
+    </div>
+    <div class="text-end">
+        <div class="small text-muted">Provider</div>
+        <span class="badge {% if provider_status.configured %}bg-success{% else %}bg-danger{% endif %}">
+            Polygon {% if provider_status.configured %}Configured{% else %}Not Configured{% endif %}
+        </span>
+        <div class="mt-2">
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('options_edge_csp_dashboard') }}">
+                <i class="bi bi-cash-coin me-1"></i>Open CSP Strategy
+            </a>
+        </div>
+    </div>
+</div>
+
+{% if journal_stats %}
+<div class="row g-3 mb-4">
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Journal Total</div><div class="stat-value">{{ journal_stats.total or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Open</div><div class="stat-value">{{ journal_stats.open or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Closed</div><div class="stat-value">{{ journal_stats.closed or 0 }}</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Win Rate</div><div class="stat-value">{{ "%.1f"|format(journal_stats.win_rate or 0) }}%</div></div></div>
+    <div class="col-md-2"><div class="stat-card text-center"><div class="stat-label">Total PnL</div><div class="stat-value {% if (journal_stats.total_pnl or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">${{ "%.2f"|format(journal_stats.total_pnl or 0) }}</div></div></div>
+    <div class="col-md-2"><a class="btn btn-outline-primary w-100 h-100 d-flex align-items-center justify-content-center" href="{{ url_for('options_edge_journal') }}"><i class="bi bi-journal-text me-2"></i>Open Journal</a></div>
+</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-broadcast me-2"></i>Run Live Scan</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('options_edge_run_live_scan') }}" class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Symbols (comma-separated)</label>
+                        <input class="form-control" name="symbols" value="AAPL,MSFT,NVDA,TSLA,AMZN,META">
+                        <small class="text-muted">Optional if S&P500 auto-load is enabled.</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" name="use_sp500" id="useSp500">
+                            <label class="form-check-label" for="useSp500">Auto-load S&P500 universe</label>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">S&P500 Limit</label>
+                        <input class="form-control" type="number" name="sp500_limit" value="475" min="1" max="600">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Top N</label>
+                        <input class="form-control" type="number" name="top_n" value="8" min="1" max="100">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Max Sector Fraction</label>
+                        <input class="form-control" type="number" step="0.01" name="max_sector_fraction" value="0.35">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Min DTE</label>
+                        <input class="form-control" type="number" name="min_dte" value="21">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Max DTE</label>
+                        <input class="form-control" type="number" name="max_dte" value="55">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">LLM Provider</label>
+                        <select class="form-select" name="llm_provider">
+                            <option value="deterministic" selected>deterministic</option>
+                            <option value="local_gptoss_http">local_gptoss_http</option>
+                            <option value="anthropic_claude">anthropic_claude</option>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">LLM Model Label</label>
+                        <input class="form-control" name="llm_model_label" value="gpt-oss-20b">
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check mt-1">
+                            <input class="form-check-input" type="checkbox" name="bounded_risk_only" id="boundedRiskOnly" checked>
+                            <label class="form-check-label" for="boundedRiskOnly">
+                                Bounded risk only (disable short strangle/straddle)
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <details>
+                            <summary class="text-primary" style="cursor:pointer;">Advanced Gates</summary>
+                            <div class="row g-2 mt-2">
+                                <div class="col-6"><input class="form-control" name="min_iv_rank" value="0.40" placeholder="min_iv_rank"></div>
+                                <div class="col-6"><input class="form-control" name="min_iv_hv_spread" value="0.03" placeholder="min_iv_hv_spread"></div>
+                                <div class="col-6"><input class="form-control" name="min_option_volume_30d" value="1000" placeholder="min_option_volume_30d"></div>
+                                <div class="col-6"><input class="form-control" name="min_option_oi_30d" value="2000" placeholder="min_option_oi_30d"></div>
+                                <div class="col-6"><input class="form-control" name="max_bid_ask_pct" value="0.015" placeholder="max_bid_ask_pct"></div>
+                                <div class="col-6"><input class="form-control" name="min_days_to_earnings" value="10" placeholder="min_days_to_earnings"></div>
+                                <div class="col-6"><input class="form-control" name="max_borrow_rate" value="0.08" placeholder="max_borrow_rate"></div>
+                                <div class="col-6"><input class="form-control" name="lookback_days" value="45" placeholder="lookback_days"></div>
+                                <div class="col-6"><input class="form-control" name="news_limit" value="3" placeholder="news_limit"></div>
+                                <div class="col-6 d-flex align-items-center">
+                                    <div class="form-check me-3">
+                                        <input class="form-check-input" type="checkbox" name="include_news" id="includeNews">
+                                        <label class="form-check-label" for="includeNews">Attach news</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="include_analyst" id="includeAnalyst">
+                                        <label class="form-check-label" for="includeAnalyst">Attach analyst summary</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-primary" type="submit">
+                            <i class="bi bi-lightning-charge me-1"></i>Run Live Scan
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-graph-up-arrow me-2"></i>Run Phase 3 Backtest</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('options_edge_run_backtest') }}" class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Use Scans (multi-select)</label>
+                        <select class="form-select" name="scan_ids" multiple size="6">
+                            {% for s in scans %}
+                            <option value="{{ s.scan_id }}">
+                                {{ s.scan_id }} | {{ s.scan_ts|datetime }} | selected={{ s.selected_count }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <small class="text-muted">Leave empty to use all eligible completed scans.</small>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Initial Balance</label>
+                        <input class="form-control" name="initial_balance" value="10000">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Allocation / Trade</label>
+                        <input class="form-control" name="allocation_per_trade_usd" value="1000">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Max Trades/Scan</label>
+                        <input class="form-control" name="max_trades_per_scan" value="8">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Max Contracts/Trade</label>
+                        <input class="form-control" name="max_contracts_per_trade" value="3">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">WF Folds</label>
+                        <input class="form-control" name="walk_forward_folds" value="4">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Min POP</label>
+                        <input class="form-control" name="min_pop" value="0.0">
+                    </div>
+                    <div class="col-12">
+                        <details>
+                            <summary class="text-primary" style="cursor:pointer;">Advanced Backtest Settings</summary>
+                            <div class="row g-2 mt-2">
+                                <div class="col-4">
+                                    <label class="form-label">Take Profit %</label>
+                                    <input class="form-control" name="take_profit_frac" value="0.50" step="0.05" type="number" min="0.05" max="1.00">
+                                    <small class="text-muted">0.50 means close winners at 50% of max profit.</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label">Stop Loss Mult</label>
+                                    <input class="form-control" name="stop_loss_credit_mult" value="1.75" step="0.25" type="number" min="0.50" max="5.00">
+                                    <small class="text-muted">Stop at N x credit received.</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label">Commission/Leg ($)</label>
+                                    <input class="form-control" name="commission_per_leg" value="0.65" step="0.01" type="number" min="0">
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label">Slippage %</label>
+                                    <input class="form-control" name="slippage_pct" value="0.01" step="0.005" type="number" min="0" max="1">
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label">Spread %</label>
+                                    <input class="form-control" name="spread_pct" value="0.005" step="0.001" type="number" min="0" max="1">
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label">Stress Fill Prob.</label>
+                                    <input class="form-control" name="stress_fill_probability" value="0.90" step="0.01" type="number" min="0.1" max="1.0">
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-success" type="submit">
+                            <i class="bi bi-play-fill me-1"></i>Run Backtest
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-list-check me-2"></i>Recent Scans</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Scan ID</th>
+                                <th>Time</th>
+                                <th>Selected</th>
+                                <th>Trades Built</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in scans %}
+                            <tr>
+                                <td><code>{{ s.scan_id }}</code></td>
+                                <td>{{ s.scan_ts|datetime }}</td>
+                                <td>{{ s.selected_count }}</td>
+                                <td>{{ (s.summary or {}).get('trade_candidates_built', 0) }}</td>
+                                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('options_edge_scan_detail', scan_id=s.scan_id) }}"><i class="bi bi-eye"></i></a></td>
+                            </tr>
+                            {% endfor %}
+                            {% if not scans %}
+                            <tr><td colspan="5" class="text-center text-muted py-4">No scans yet.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-clock-history me-2"></i>Recent Backtests</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Run ID</th>
+                                <th>Trades</th>
+                                <th>Net</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in backtests %}
+                            <tr>
+                                <td><code>{{ r.run_id }}</code></td>
+                                <td>{{ r.trades_simulated }}</td>
+                                <td class="{% if (r.metrics or {}).get('net_profit', 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    ${{ "%.2f"|format((r.metrics or {}).get('net_profit', 0)) }}
+                                </td>
+                                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('options_edge_backtest_detail', run_id=r.run_id) }}"><i class="bi bi-eye"></i></a></td>
+                            </tr>
+                            {% endfor %}
+                            {% if not backtests %}
+                            <tr><td colspan="4" class="text-center text-muted py-4">No backtests yet.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+"""
+Liquidity Sweep Strategy Entry Point
+Run this file to start the Session Liquidity Sweep Reversal Strategy
+"""
+
+import sys
+import os
+import traceback
+
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_root)
+
+print("=" * 60)
+print("Session Liquidity Sweep Reversal Strategy")
+print("=" * 60)
+
+
+def main():
+    try:
+        from Strategies.LiquiditySweepStrategy.strategy import LiquiditySweepLiveStrategy
+        strategy = LiquiditySweepLiveStrategy()
+        strategy.start()
+    except ImportError as e:
+        print(f"\n[ERROR] Import error: {e}")
+        traceback.print_exc()
+    except Exception as e:
+        print(f"\n[ERROR] Fatal error: {e}")
+        traceback.print_exc()
+        try:
+            import MetaTrader5 as mt5
+            mt5.shutdown()
+        except:
+            pass
+    finally:
+        print("\nStrategy stopped. Press Enter to close...")
+        input()
+
+
+if __name__ == "__main__":
+    main()

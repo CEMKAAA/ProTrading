@@ -1,0 +1,760 @@
+{% extends "base.html" %}
+
+{% block title %}Monitoring - ProTrading{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Pulsing connection dot */
+    .pulse-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        display: inline-block; vertical-align: middle;
+    }
+    .pulse-dot.online { background: #16a34a; animation: pulse 2s infinite; }
+    .pulse-dot.offline { background: #dc2626; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    /* Strategy table density */
+    #strategyTableBody td { padding: 6px 10px; vertical-align: middle; font-size: 0.85rem; }
+    #strategyTableBody .strategy-stopped { opacity: 0.4; }
+    #strategyTableBody tr.strategy-error { background: #fef2f2; }
+
+    /* Risk progress bars */
+    .risk-bar { height: 22px; border-radius: 6px; background: #e2e8f0; overflow: hidden; position: relative; }
+    .risk-bar-fill { height: 100%; border-radius: 6px; transition: width 0.5s ease; }
+    .risk-bar-fill.green { background: #16a34a; }
+    .risk-bar-fill.yellow { background: #d97706; }
+    .risk-bar-fill.red { background: #dc2626; }
+    .risk-bar-label {
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.75rem; font-weight: 600; color: #1e293b;
+    }
+
+    /* Compact KPI */
+    .kpi-value { font-size: 1.6rem; font-weight: 700; line-height: 1.2; }
+    .kpi-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; }
+    .kpi-icon { width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+
+    /* Trade feed */
+    #tradeFeed { max-height: 320px; overflow-y: auto; }
+    #tradeFeed .list-group-item { border-left: none; border-right: none; }
+
+    /* Refresh button active state */
+    .btn-group-sm .btn.active-interval { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+
+    /* Chart containers */
+    .chart-container { position: relative; height: 220px; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Section 1: Header Bar -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h2 class="mb-0"><i class="bi bi-display me-2"></i>Monitoring</h2>
+        <small class="text-muted">Enterprise Operations Dashboard</small>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+        <span class="pulse-dot offline" id="connectionDot"></span>
+        <small class="text-muted" id="lastRefresh">Connecting...</small>
+        <div class="btn-group btn-group-sm" id="refreshBtnGroup">
+            <button class="btn btn-outline-secondary" onclick="setRefreshInterval(3)">3s</button>
+            <button class="btn btn-outline-secondary active-interval" onclick="setRefreshInterval(5)">5s</button>
+            <button class="btn btn-outline-secondary" onclick="setRefreshInterval(10)">10s</button>
+        </div>
+        <button class="btn btn-outline-primary btn-sm" onclick="refreshNow()" title="Refresh Now">
+            <i class="bi bi-arrow-clockwise"></i>
+        </button>
+    </div>
+</div>
+
+<!-- Section 2: Alert Banner -->
+<div id="alertBanner" class="mb-3" style="display:none;"></div>
+
+<!-- Section 3: Portfolio KPI Cards -->
+<div class="row g-3 mb-4" id="kpiRow">
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Account Balance</div>
+                    <div class="kpi-value" id="kpiBalance">--</div>
+                </div>
+                <div class="kpi-icon bg-primary bg-opacity-10 text-primary"><i class="bi bi-wallet2"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Net Daily P&L</div>
+                    <div class="kpi-value" id="kpiDailyPnl">--</div>
+                </div>
+                <div class="kpi-icon bg-success bg-opacity-10 text-success"><i class="bi bi-cash-stack"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Portfolio Heat</div>
+                    <div class="kpi-value" id="kpiHeat">--</div>
+                </div>
+                <div class="kpi-icon bg-warning bg-opacity-10 text-warning"><i class="bi bi-thermometer-half"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Daily Drawdown</div>
+                    <div class="kpi-value" id="kpiDrawdown">--</div>
+                </div>
+                <div class="kpi-icon bg-danger bg-opacity-10 text-danger"><i class="bi bi-graph-down-arrow"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Active Positions</div>
+                    <div class="kpi-value" id="kpiPositions">--</div>
+                </div>
+                <div class="kpi-icon bg-primary bg-opacity-10 text-primary"><i class="bi bi-crosshair"></i></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-2 col-md-4">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="kpi-label">Available Capital</div>
+                    <div class="kpi-value" id="kpiAvailable">--</div>
+                </div>
+                <div class="kpi-icon bg-success bg-opacity-10 text-success"><i class="bi bi-safe"></i></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section 4: Strategy Monitor Table -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-robot me-2"></i>Strategy Monitor</span>
+        <span class="badge bg-primary" id="runningCount">0 / 0</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th style="width:30px"></th>
+                        <th>Strategy</th>
+                        <th>Instrument</th>
+                        <th class="text-end">Price</th>
+                        <th class="text-end">Daily P&L</th>
+                        <th class="text-end">Balance</th>
+                        <th class="text-center">Pos</th>
+                        <th class="text-center">Trades</th>
+                        <th>Bias</th>
+                        <th>Last Signal</th>
+                        <th>Updated</th>
+                    </tr>
+                </thead>
+                <tbody id="strategyTableBody">
+                    <tr><td colspan="11" class="text-center text-muted py-3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Section 5: Risk & Exposure + Capital Allocation -->
+<div class="row g-4 mb-4">
+    <!-- Risk Gauges -->
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-shield-lock me-2"></i>Risk & Exposure</span>
+                <span class="badge" id="governorBadge">--</span>
+            </div>
+            <div class="card-body">
+                <!-- Portfolio Heat -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small class="fw-semibold">Portfolio Heat</small>
+                        <small class="text-muted" id="heatLabel">-- / --%</small>
+                    </div>
+                    <div class="risk-bar">
+                        <div class="risk-bar-fill green" id="heatBar" style="width:0%"></div>
+                        <div class="risk-bar-label" id="heatBarLabel"></div>
+                    </div>
+                </div>
+                <!-- Daily Drawdown -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small class="fw-semibold">Daily Drawdown</small>
+                        <small class="text-muted" id="ddLabel">-- / --%</small>
+                    </div>
+                    <div class="risk-bar">
+                        <div class="risk-bar-fill green" id="ddBar" style="width:0%"></div>
+                        <div class="risk-bar-label" id="ddBarLabel"></div>
+                    </div>
+                </div>
+                <!-- Directional Exposure -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small class="fw-semibold">Directional Exposure</small>
+                        <small class="text-muted" id="expLabel">-- / -- lots</small>
+                    </div>
+                    <div class="risk-bar">
+                        <div class="risk-bar-fill green" id="expBar" style="width:0%"></div>
+                        <div class="risk-bar-label" id="expBarLabel"></div>
+                    </div>
+                </div>
+                <!-- Governor Breaches -->
+                <div id="breachList" style="display:none;" class="mt-3">
+                    <small class="fw-semibold text-danger">Active Breaches:</small>
+                    <div id="breachItems" class="mt-1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Capital Allocation Chart -->
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-pie-chart me-2"></i>Capital Allocation
+            </div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <div class="chart-container" style="width:100%; height:240px;">
+                    <canvas id="capitalChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section 6: Performance Charts -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Strategy Daily P&L</div>
+            <div class="card-body">
+                <div class="chart-container"><canvas id="pnlChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-graph-up me-2"></i>Balance Tracker</div>
+            <div class="card-body">
+                <div class="chart-container"><canvas id="balanceChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section 7: Execution Quality + Recent Trades -->
+<div class="row g-4 mb-4">
+    <!-- Execution Summary -->
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-speedometer me-2"></i>Execution Quality (30d)</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Avg Spread</div>
+                            <div class="value" id="eqSpread">--</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Avg Slippage</div>
+                            <div class="value" id="eqSlippage">--</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Cost/Trade</div>
+                            <div class="value" id="eqCost">--</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="metric-card">
+                            <div class="label">Total Trades</div>
+                            <div class="value" id="eqTrades">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Recent Trades Feed -->
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between">
+                <span><i class="bi bi-clock-history me-2"></i>Recent Trades</span>
+                <small class="text-muted" id="tradeCount">0 trades</small>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush" id="tradeFeed">
+                    <div class="list-group-item text-center text-muted py-4">No trades yet</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const API_BASE = '/api';
+let currentRefreshMs = 5000;
+let refreshTimer = null;
+let balanceHistory = {};   // strategyId -> [{time, value}]
+const MAX_HISTORY = 60;    // ~5 min at 5s refresh
+
+// Chart instances (reused for smooth updates)
+let capitalChartInstance = null;
+let pnlChartInstance = null;
+let balanceChartInstance = null;
+
+// Strategy color palette
+const STRATEGY_COLORS = [
+    '#2563eb', '#16a34a', '#dc2626', '#d97706', '#7c3aed',
+    '#0891b2', '#be185d', '#65a30d', '#ea580c', '#6366f1', '#0d9488'
+];
+
+document.addEventListener('DOMContentLoaded', () => {
+    initCharts();
+    refreshNow();
+    startAutoRefresh();
+});
+
+// ======================== Refresh Logic ========================
+
+function startAutoRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(refreshNow, currentRefreshMs);
+}
+
+function setRefreshInterval(seconds) {
+    currentRefreshMs = seconds * 1000;
+    // Update button states
+    document.querySelectorAll('#refreshBtnGroup .btn').forEach(btn => {
+        btn.classList.remove('active-interval');
+        if (btn.textContent.trim() === seconds + 's') btn.classList.add('active-interval');
+    });
+    startAutoRefresh();
+}
+
+async function refreshNow() {
+    try {
+        const resp = await fetch(`${API_BASE}/monitoring/snapshot`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderDashboard(data);
+    } catch (err) {
+        console.error('Monitoring refresh error:', err);
+        updateConnectionStatus(false);
+    }
+}
+
+// ======================== Master Render ========================
+
+function renderDashboard(data) {
+    updateConnectionStatus(true);
+    updateLastRefresh(data.timestamp);
+    renderAlerts(data.alerts || []);
+    renderKPIs(data.portfolio || {});
+    renderStrategyTable(data.strategies || []);
+    renderRiskPanel(data.risk || {}, data.portfolio || {});
+    renderCharts(data.strategies || [], data.portfolio || {});
+    renderExecution(data.execution || {});
+    renderTradeFeed(data.recent_trades || []);
+}
+
+// ======================== Connection Status ========================
+
+function updateConnectionStatus(connected) {
+    const dot = document.getElementById('connectionDot');
+    dot.className = connected ? 'pulse-dot online' : 'pulse-dot offline';
+}
+
+function updateLastRefresh(timestamp) {
+    const el = document.getElementById('lastRefresh');
+    if (timestamp) {
+        el.textContent = 'Updated ' + timeAgo(timestamp);
+    }
+}
+
+// ======================== Alerts ========================
+
+function renderAlerts(alerts) {
+    const banner = document.getElementById('alertBanner');
+    if (!alerts.length) {
+        banner.style.display = 'none';
+        return;
+    }
+    banner.style.display = 'block';
+    banner.innerHTML = alerts.map(a => `
+        <div class="alert alert-${a.level} alert-dismissible fade show py-2 mb-2" role="alert">
+            <i class="bi ${a.level === 'danger' ? 'bi-exclamation-octagon' : 'bi-exclamation-triangle'} me-2"></i>
+            <strong>${a.source}:</strong> ${a.message}
+            <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert"></button>
+        </div>
+    `).join('');
+}
+
+// ======================== KPI Cards ========================
+
+function renderKPIs(p) {
+    const balance = p.account_balance;
+    document.getElementById('kpiBalance').textContent = balance != null ? formatUSD(balance) : '--';
+
+    const pnl = p.net_daily_pnl || 0;
+    const pnlEl = document.getElementById('kpiDailyPnl');
+    pnlEl.textContent = formatPnl(pnl);
+    pnlEl.className = 'kpi-value ' + (pnl >= 0 ? 'text-success' : 'text-danger');
+
+    const heat = p.portfolio_heat_pct || 0;
+    const heatEl = document.getElementById('kpiHeat');
+    heatEl.textContent = heat.toFixed(1) + '%';
+    heatEl.className = 'kpi-value ' + (heat > 8 ? 'text-danger' : heat > 5 ? 'text-warning' : 'text-success');
+
+    const dd = p.daily_drawdown_pct || 0;
+    const ddEl = document.getElementById('kpiDrawdown');
+    ddEl.textContent = dd.toFixed(2) + '%';
+    ddEl.className = 'kpi-value ' + (dd > 3 ? 'text-danger' : dd > 1.5 ? 'text-warning' : 'text-success');
+
+    document.getElementById('kpiPositions').textContent = p.total_open_positions || 0;
+
+    const avail = p.available_capital;
+    document.getElementById('kpiAvailable').textContent = avail != null ? formatUSD(avail) : '--';
+}
+
+// ======================== Strategy Table ========================
+
+function renderStrategyTable(strategies) {
+    const tbody = document.getElementById('strategyTableBody');
+    const running = strategies.filter(s => s.status !== 'stopped');
+    const stopped = strategies.filter(s => s.status === 'stopped');
+
+    // Sort running by P&L descending
+    running.sort((a, b) => (b.daily_pnl || 0) - (a.daily_pnl || 0));
+
+    document.getElementById('runningCount').textContent = `${running.length} / ${strategies.length}`;
+
+    if (!strategies.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">No strategies registered</td></tr>';
+        return;
+    }
+
+    let html = '';
+    [...running, ...stopped].forEach(s => {
+        const isStopped = s.status === 'stopped';
+        const isError = s.status === 'error';
+        const rowClass = isStopped ? 'strategy-stopped' : (isError ? 'strategy-error' : '');
+        const dotClass = isStopped ? 'offline' : (isError ? 'pending' : 'online');
+
+        const pnl = s.daily_pnl || 0;
+        const pnlClass = pnl > 0 ? 'text-success' : (pnl < 0 ? 'text-danger' : '');
+
+        const biasMap = { bullish: 'bg-success', bearish: 'bg-danger', neutral: 'bg-secondary' };
+        const biasClass = biasMap[(s.session_bias || '').toLowerCase()] || 'bg-secondary';
+        const biasText = s.session_bias || '--';
+
+        html += `
+            <tr class="${rowClass}">
+                <td><span class="status-dot ${dotClass}"></span></td>
+                <td><strong>${s.name}</strong></td>
+                <td>
+                    ${s.symbol ? `<span class="badge bg-secondary">${s.symbol}</span>` : ''}
+                    <small class="text-muted">${s.timeframe || ''}</small>
+                </td>
+                <td class="text-end">${s.current_price != null ? '$' + Number(s.current_price).toFixed(2) : '--'}</td>
+                <td class="text-end ${pnlClass}">${!isStopped ? formatPnl(pnl) : '--'}</td>
+                <td class="text-end">${s.balance != null ? formatUSD(s.balance) : '--'}</td>
+                <td class="text-center">${!isStopped ? (s.open_positions || 0) : '--'}</td>
+                <td class="text-center">${!isStopped ? (s.daily_trades || 0) : '--'}</td>
+                <td>${!isStopped ? `<span class="badge ${biasClass}">${biasText.toUpperCase()}</span>` : '--'}</td>
+                <td><small>${s.last_signal || '--'}</small></td>
+                <td><small class="text-muted">${s.last_update ? timeAgo(s.last_update) : '--'}</small></td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+}
+
+// ======================== Risk Panel ========================
+
+function renderRiskPanel(risk, portfolio) {
+    // Governor badge
+    const badge = document.getElementById('governorBadge');
+    const statusMap = {
+        ok: ['bg-success', 'OK'], breached: ['bg-danger', 'BREACHED'],
+        disabled: ['bg-secondary', 'DISABLED'], unknown: ['bg-secondary', 'UNKNOWN']
+    };
+    const st = risk.governor_status || 'unknown';
+    const [badgeClass, badgeText] = statusMap[st] || (st.startsWith('degraded') ? ['bg-warning text-dark', 'DEGRADED'] : ['bg-secondary', st.toUpperCase()]);
+    badge.className = 'badge ' + badgeClass;
+    badge.textContent = badgeText;
+
+    // Progress bars
+    updateRiskBar('heat', portfolio.portfolio_heat_pct || 0, risk.heat_limit_pct || 10);
+    updateRiskBar('dd', portfolio.daily_drawdown_pct || 0, risk.dd_kill_pct || 5);
+
+    const maxLots = risk.exposure_limit_lots || 5;
+    const curLots = Math.max(portfolio.long_lots || 0, portfolio.short_lots || 0);
+    updateRiskBar('exp', curLots, maxLots);
+    document.getElementById('expLabel').textContent = `${curLots.toFixed(2)} / ${maxLots.toFixed(1)} lots`;
+
+    // Breaches
+    const breachList = document.getElementById('breachList');
+    const breachItems = document.getElementById('breachItems');
+    if (risk.breaches && risk.breaches.length > 0) {
+        breachList.style.display = 'block';
+        breachItems.innerHTML = risk.breaches.map(b =>
+            `<span class="badge bg-danger me-1 mb-1">${b}</span>`
+        ).join('');
+    } else {
+        breachList.style.display = 'none';
+    }
+
+    // Capital allocation chart
+    updateCapitalChart(portfolio);
+}
+
+function updateRiskBar(prefix, value, limit) {
+    const pct = limit > 0 ? Math.min(100, (value / limit) * 100) : 0;
+    const bar = document.getElementById(prefix + 'Bar');
+    const label = document.getElementById(prefix + 'Label');
+    const barLabel = document.getElementById(prefix + 'BarLabel');
+
+    bar.style.width = pct + '%';
+    bar.className = 'risk-bar-fill ' + (pct > 80 ? 'red' : pct > 50 ? 'yellow' : 'green');
+    barLabel.textContent = `${typeof value === 'number' ? value.toFixed(1) : value}`;
+
+    if (prefix !== 'exp') {
+        label.textContent = `${typeof value === 'number' ? value.toFixed(1) : '--'}% / ${limit}%`;
+    }
+}
+
+// ======================== Charts ========================
+
+function initCharts() {
+    // Capital Allocation Donut
+    capitalChartInstance = new Chart(document.getElementById('capitalChart'), {
+        type: 'doughnut',
+        data: { labels: ['Available'], datasets: [{ data: [1], backgroundColor: ['#e2e8f0'] }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            cutout: '65%',
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
+            }
+        }
+    });
+
+    // Daily P&L Bar Chart
+    pnlChartInstance = new Chart(document.getElementById('pnlChart'), {
+        type: 'bar',
+        data: { labels: [], datasets: [] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                x: { display: true, grid: { display: false } },
+                y: { display: true, grid: { color: '#f1f5f9' }, ticks: { callback: v => '$' + v } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+
+    // Balance Line Chart
+    balanceChartInstance = new Chart(document.getElementById('balanceChart'), {
+        type: 'line',
+        data: { labels: [], datasets: [] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                x: { display: true, grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+                y: { display: true, grid: { color: '#f1f5f9' }, ticks: { callback: v => '$' + Math.round(v) } }
+            },
+            plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+            elements: { point: { radius: 0 }, line: { tension: 0.3 } },
+            animation: { duration: 300 }
+        }
+    });
+}
+
+function updateCapitalChart(portfolio) {
+    if (!capitalChartInstance) return;
+
+    // Use the per-strategy allocation data from the strategy table
+    // We get it from the strategies list instead
+    const available = portfolio.available_capital || 0;
+    const allocated = portfolio.total_allocated || 0;
+
+    if (allocated === 0 && available === 0) {
+        capitalChartInstance.data.labels = ['No Data'];
+        capitalChartInstance.data.datasets[0].data = [1];
+        capitalChartInstance.data.datasets[0].backgroundColor = ['#e2e8f0'];
+    } else {
+        capitalChartInstance.data.labels = ['Allocated', 'Available'];
+        capitalChartInstance.data.datasets[0].data = [allocated, available];
+        capitalChartInstance.data.datasets[0].backgroundColor = ['#2563eb', '#e2e8f0'];
+    }
+    capitalChartInstance.update('none');
+}
+
+function renderCharts(strategies, portfolio) {
+    const running = strategies.filter(s => s.status !== 'stopped' && s.daily_pnl !== undefined);
+
+    // -- Daily P&L Bar Chart --
+    const labels = running.map(s => s.name.length > 15 ? s.name.substring(0, 15) + '...' : s.name);
+    const pnlData = running.map(s => s.daily_pnl || 0);
+    const bgColors = pnlData.map(v => v >= 0 ? 'rgba(22, 163, 74, 0.7)' : 'rgba(220, 38, 38, 0.7)');
+    const borderColors = pnlData.map(v => v >= 0 ? '#16a34a' : '#dc2626');
+
+    pnlChartInstance.data.labels = labels;
+    pnlChartInstance.data.datasets = [{
+        label: 'Daily P&L',
+        data: pnlData,
+        backgroundColor: bgColors,
+        borderColor: borderColors,
+        borderWidth: 1,
+        borderRadius: 4,
+    }];
+    pnlChartInstance.update('none');
+
+    // -- Balance Line Chart (rolling history) --
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    running.forEach((s, idx) => {
+        if (s.balance == null) return;
+        if (!balanceHistory[s.id]) balanceHistory[s.id] = { name: s.name, color: STRATEGY_COLORS[idx % STRATEGY_COLORS.length], points: [] };
+        balanceHistory[s.id].points.push({ time: now, value: s.balance });
+        if (balanceHistory[s.id].points.length > MAX_HISTORY) {
+            balanceHistory[s.id].points.shift();
+        }
+    });
+
+    // Clean up strategies that are no longer running
+    const runningIds = new Set(running.map(s => s.id));
+    Object.keys(balanceHistory).forEach(id => {
+        if (!runningIds.has(id)) delete balanceHistory[id];
+    });
+
+    // Find the longest time series for labels
+    let maxLen = 0;
+    let timeLabels = [];
+    Object.values(balanceHistory).forEach(h => {
+        if (h.points.length > maxLen) {
+            maxLen = h.points.length;
+            timeLabels = h.points.map(p => p.time);
+        }
+    });
+
+    balanceChartInstance.data.labels = timeLabels;
+    balanceChartInstance.data.datasets = Object.values(balanceHistory).map(h => ({
+        label: h.name,
+        data: h.points.map(p => p.value),
+        borderColor: h.color,
+        backgroundColor: h.color + '20',
+        fill: false,
+        borderWidth: 2,
+    }));
+    balanceChartInstance.update('none');
+}
+
+// ======================== Execution Quality ========================
+
+function renderExecution(eq) {
+    document.getElementById('eqSpread').textContent = eq.avg_spread != null ? '$' + Number(eq.avg_spread).toFixed(4) : '--';
+    document.getElementById('eqSlippage').textContent = eq.avg_slippage != null ? '$' + Number(eq.avg_slippage).toFixed(4) : '--';
+    document.getElementById('eqCost').textContent = eq.cost_per_trade != null ? '$' + Number(eq.cost_per_trade).toFixed(2) : '--';
+    document.getElementById('eqTrades').textContent = eq.total_live_trades || 0;
+}
+
+// ======================== Trade Feed ========================
+
+function renderTradeFeed(trades) {
+    const feed = document.getElementById('tradeFeed');
+    document.getElementById('tradeCount').textContent = `${trades.length} trade${trades.length !== 1 ? 's' : ''}`;
+
+    if (!trades.length) {
+        feed.innerHTML = '<div class="list-group-item text-center text-muted py-4">No closed trades yet</div>';
+        return;
+    }
+
+    feed.innerHTML = trades.map(t => {
+        const isBuy = (t.direction || '').toUpperCase() === 'BUY';
+        const dirBadge = isBuy ? 'bg-success' : 'bg-danger';
+        const dirLabel = isBuy ? 'BUY' : 'SELL';
+        const pnl = t.pnl || 0;
+        const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+        return `
+            <div class="list-group-item py-2 d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="badge ${dirBadge}" style="width:40px">${dirLabel}</span>
+                    <strong class="ms-2">${t.symbol || '--'}</strong>
+                    <small class="text-muted ms-2">${t.setup_type || ''}</small>
+                    <small class="text-muted ms-1">${t.lot_size ? t.lot_size.toFixed(2) + ' lots' : ''}</small>
+                </div>
+                <div class="text-end">
+                    <span class="${pnlClass} fw-semibold">${formatPnl(pnl)}</span>
+                    <small class="text-muted ms-2">${t.exit_time ? timeAgo(t.exit_time) : '--'}</small>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ======================== Utilities ========================
+
+function formatUSD(val) {
+    if (val == null) return '--';
+    const n = Number(val);
+    if (isNaN(n)) return '--';
+    return n >= 0 ? '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  : '-$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatPnl(val) {
+    if (val == null) return '--';
+    const n = Number(val);
+    if (isNaN(n)) return '--';
+    const sign = n >= 0 ? '+' : '-';
+    return sign + '$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function timeAgo(isoString) {
+    if (!isoString) return '--';
+    try {
+        const then = new Date(isoString);
+        const now = new Date();
+        const diffSec = Math.floor((now - then) / 1000);
+        if (diffSec < 0) return 'just now';
+        if (diffSec < 5) return 'just now';
+        if (diffSec < 60) return diffSec + 's ago';
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return diffMin + 'm ago';
+        const diffHr = Math.floor(diffMin / 60);
+        if (diffHr < 24) return diffHr + 'h ago';
+        const diffDay = Math.floor(diffHr / 24);
+        return diffDay + 'd ago';
+    } catch {
+        return '--';
+    }
+}
+</script>
+{% endblock %}

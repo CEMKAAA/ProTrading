@@ -1,0 +1,28 @@
+[
+  {
+    "strategy_id": "b_profile_reversion_strategy",
+    "preset": "databento_edge",
+    "symbol": "NAS100",
+    "timeframe": "M30",
+    "period": "2025-01-02 to 2025-01-15",
+    "elapsed_sec": 2.5,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0.0,
+    "net_profit": 0.0,
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "max_drawdown_pct": 0.0,
+    "avg_rr": 0.0,
+    "expectancy": 0.0,
+    "final_balance": 10000.0,
+    "largest_win": 0.0,
+    "largest_loss": 0.0,
+    "data_hash": "7df595390089eab03363944892e47b3ad90571c901247df7f809a3ed5060135c",
+    "micro_trade_count": 0,
+    "micro_avg_fill_probability": 0.0,
+    "micro_total_impact_usd": 0.0
+  }
+]

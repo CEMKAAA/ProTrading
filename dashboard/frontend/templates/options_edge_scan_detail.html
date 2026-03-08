@@ -1,0 +1,586 @@
+{% extends "base.html" %}
+
+{% block title %}Options Edge Scan {{ scan.scan_id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('options_edge_dashboard') }}">Options Edge</a></li>
+                <li class="breadcrumb-item active">Scan {{ scan.scan_id }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0">Scan <code>{{ scan.scan_id }}</code></h2>
+        <p class="text-muted mb-0">{{ scan.scan_ts|datetime }} | Status: {{ scan.status }}</p>
+        <div class="btn-group btn-group-sm mt-2" role="group" aria-label="Report Provider">
+            <a class="btn {% if llm_provider == 'local_gptoss_http' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+               href="{{ url_for('options_edge_scan_detail', scan_id=scan.scan_id, llm_provider='local_gptoss_http') }}">
+                GPT-OSS Report
+            </a>
+            <a class="btn {% if llm_provider == 'anthropic_claude' %}btn-info{% else %}btn-outline-info{% endif %}"
+               href="{{ url_for('options_edge_scan_detail', scan_id=scan.scan_id, llm_provider='anthropic_claude') }}">
+                Claude Report
+            </a>
+            <a class="btn {% if llm_provider == 'deterministic' %}btn-secondary{% else %}btn-outline-secondary{% endif %}"
+               href="{{ url_for('options_edge_scan_detail', scan_id=scan.scan_id, llm_provider='deterministic') }}">
+                Deterministic Report
+            </a>
+        </div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('options_edge_dashboard') }}">
+        <i class="bi bi-arrow-left me-1"></i>Back
+    </a>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="stat-card text-center"><div class="stat-label">Universe</div><div class="stat-value">{{ scan.universe_size }}</div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card text-center"><div class="stat-label">Passed Gates</div><div class="stat-value">{{ scan.passed_gate_count }}</div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card text-center"><div class="stat-label">Selected</div><div class="stat-value">{{ scan.selected_count }}</div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card text-center"><div class="stat-label">Trades Built</div><div class="stat-value">{{ (scan.summary or {}).get('trade_candidates_built', 0) }}</div></div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-chat-square-text me-2"></i>Numeric Report</div>
+    <div class="card-body" id="numericReportBody">
+        <div class="d-flex align-items-center text-muted">
+            <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+            Loading report...
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-cpu me-2"></i>AI Trader Bot Plan</div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('options_edge_run_ai_plan', scan_id=scan.scan_id) }}" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Provider</label>
+                <select class="form-select" name="provider">
+                    <option value="deterministic" {% if (ai_run.provider or '') == 'deterministic' %}selected{% endif %}>deterministic</option>
+                    <option value="local_gptoss_http" {% if (ai_run.provider or '') == 'local_gptoss_http' %}selected{% endif %}>local_gptoss_http</option>
+                    <option value="anthropic_claude" {% if (ai_run.provider or '') == 'anthropic_claude' %}selected{% endif %}>anthropic_claude</option>
+                    <option value="openai_compat" {% if (ai_run.provider or '') == 'openai_compat' %}selected{% endif %}>openai_compat</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Model Label</label>
+                <input class="form-control" name="llm_model_label" value="{{ ai_run.llm_model_label or 'gpt-oss-20b' }}" placeholder="gpt-oss-20b / gpt-4.1-mini">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Account Balance ($)</label>
+                <input class="form-control" type="number" step="0.01" min="1" name="account_balance" value="10000">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Risk %</label>
+                <input class="form-control" type="number" step="0.1" min="0.1" max="100" name="risk_pct" value="1.0">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Max Contracts Cap</label>
+                <input class="form-control" type="number" min="1" max="1000" name="max_contracts_cap" value="5">
+            </div>
+            <div class="col-md-5">
+                <label class="form-label">Provider URL (optional)</label>
+                <input class="form-control" name="llm_url" placeholder="https://api.openai.com/v1 or https://api.anthropic.com/v1/messages">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">API Key (optional)</label>
+                <input class="form-control" type="password" name="api_key" placeholder="for openai_compat / anthropic_claude">
+            </div>
+            <div class="col-md-12">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dryRunCheck" name="dry_run" checked>
+                    <label class="form-check-label" for="dryRunCheck">
+                        Dry run (paper intents only)
+                    </label>
+                </div>
+            </div>
+            <div class="col-md-12">
+                <button class="btn btn-primary" type="submit">
+                    <i class="bi bi-cpu me-1"></i>Generate AI Plan
+                </button>
+            </div>
+        </form>
+        {% if ai_run and ai_run.run_id %}
+        <hr>
+        <p class="mb-2">
+            <strong>Latest Run:</strong>
+            <code>{{ ai_run.run_id }}</code>
+            <span class="badge {% if ai_run.status in ['COMPLETED', 'COMPLETED_FALLBACK'] %}bg-success{% else %}bg-danger{% endif %} ms-2">{{ ai_run.status }}</span>
+            <span class="badge bg-secondary ms-1">{{ ai_run.provider }}</span>
+            {% if ai_run.llm_model_label %}<span class="badge bg-info text-dark ms-1">{{ ai_run.llm_model_label }}</span>{% endif %}
+            {% if ai_run.report and ai_run.report.get('report_version') %}
+            <span class="badge bg-light text-dark ms-1">{{ ai_run.report.get('report_version') }}</span>
+            {% endif %}
+            {% if ai_run.report %}
+            <span class="badge {% if ai_run.report.get('llm_used') %}bg-success{% else %}bg-warning text-dark{% endif %} ms-1">
+                llm_used={{ ai_run.report.get('llm_used') }}
+            </span>
+            {% endif %}
+        </p>
+        {% if ai_run.report and ai_run.report.get('warnings') %}
+        <div class="alert alert-warning">
+            <strong>Report warnings</strong>
+            <ul class="mb-0 mt-1">
+                {% for w in ai_run.report.get('warnings') %}
+                <li>{{ w }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        {% if ai_run.notes %}
+        <ul class="mb-3">
+            {% for n in ai_run.notes %}
+            <li>{{ n }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% if ai_run.execution_plan %}
+        <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Structure</th>
+                        <th>Contracts</th>
+                        <th>Confidence</th>
+                        <th>Reason</th>
+                        <th>Evidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in ai_run.execution_plan %}
+                    <tr>
+                        <td><strong>{{ p.symbol }}</strong></td>
+                        <td>
+                            {% set pa = (p.action or 'SKIP') %}
+                            <span class="badge {% if pa.startswith('OPEN') %}bg-success{% elif pa == 'WATCH' %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                                {{ pa }}
+                            </span>
+                        </td>
+                        <td>{{ p.structure_type or 'n/a' }}</td>
+                        <td>{{ p.contracts or 0 }}</td>
+                        <td>{{ "%.2f"|format(p.confidence or 0) }}</td>
+                        <td>{{ p.reason or '' }}</td>
+                        <td><code>{{ p.evidence|tojson }}</code></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% if ai_run.error %}
+        <div class="alert alert-danger mt-3 mb-0">{{ ai_run.error }}</div>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-trophy me-2"></i>Selected Candidates ({{ candidates|length }})</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Sector</th>
+                        <th>Rank</th>
+                        <th>Total Score</th>
+                        <th>Vol</th>
+                        <th>Liq</th>
+                        <th>Event</th>
+                        <th>Risk</th>
+                        <th>Builder</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in candidates %}
+                    <tr>
+                        <td><strong>{{ c.symbol }}</strong></td>
+                        <td>{{ c.sector }}</td>
+                        <td>{{ c.rank_global }}</td>
+                        <td>{{ "%.2f"|format(c.score_total) }}</td>
+                        <td>{{ "%.2f"|format(c.score_vol_edge) }}</td>
+                        <td>{{ "%.2f"|format(c.score_liquidity) }}</td>
+                        <td>{{ "%.2f"|format(c.score_event_timing) }}</td>
+                        <td>{{ "%.2f"|format(c.score_risk) }}</td>
+                        <td>
+                            <span class="badge {% if c.builder_status == 'built' %}bg-success{% elif c.builder_status == 'rejected' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                {{ c.builder_status or 'n/a' }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not candidates %}
+                    <tr><td colspan="9" class="text-center text-muted py-4">No selected candidates.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>Built Trade Candidates ({{ trades|length }})</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Action</th>
+                        <th>Symbol</th>
+                        <th>Structure</th>
+                        <th>DTE</th>
+                        <th>Credit</th>
+                        <th>Max Profit</th>
+                        <th>Max Loss</th>
+                        <th>POP</th>
+                        <th>Payoff</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in trades %}
+                    <tr>
+                        <td>
+                            <form method="POST" action="{{ url_for('options_edge_journal_track') }}" class="d-inline">
+                                <input type="hidden" name="scan_id" value="{{ scan.scan_id }}">
+                                <input type="hidden" name="trade_candidate_id" value="{{ t.id or 0 }}">
+                                <input type="hidden" name="contracts" value="1">
+                                <button class="btn btn-sm btn-outline-success" type="submit" {% if not t.id %}disabled{% endif %}>
+                                    <i class="bi bi-journal-plus"></i> Track
+                                </button>
+                            </form>
+                        </td>
+                        <td><strong>{{ t.symbol }}</strong></td>
+                        <td>{{ t.structure_type }}</td>
+                        <td>{{ t.dte }}</td>
+                        <td>${{ "%.2f"|format(t.net_credit or 0) }}</td>
+                        <td class="text-success">${{ "%.2f"|format(t.max_profit or 0) }}</td>
+                        <td class="text-danger">
+                            ${{ "%.2f"|format(t.max_loss or 0) }}
+                            {% if t.quality_flags and ('max_loss_proxy_unbounded' in t.quality_flags) %}
+                            <span class="badge bg-warning text-dark">proxy</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ "%.1f"|format((t.pop_est or 0) * 100) }}%</td>
+                        <td>
+                            {% if t.payoff_curve %}
+                            <button class="btn btn-sm btn-outline-primary payoff-btn" type="button" data-idx="{{ loop.index0 }}">
+                                View ({{ t.payoff_curve|length }})
+                            </button>
+                            {% else %}
+                            <span class="text-muted">n/a</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not trades %}
+                    <tr><td colspan="9" class="text-center text-muted py-4">No trade candidates built for this scan.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="payoffModal" tabindex="-1" aria-labelledby="payoffModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="payoffModalLabel">Payoff Curve</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <canvas id="payoffChartCanvas" height="220"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-calculator me-2"></i>Position Sizing Calculator
+    </div>
+    <div class="card-body">
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <label class="form-label">Account Balance ($)</label>
+                <input type="number" class="form-control" id="psAccountBalance" value="10000" min="0">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Risk Per Trade (%)</label>
+                <input type="number" class="form-control" id="psRiskPct" value="2.0" min="0.1" max="100" step="0.1">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Commission/Leg ($)</label>
+                <input type="number" class="form-control" id="psCommission" value="0.65" min="0" step="0.01">
+            </div>
+        </div>
+        <button class="btn btn-primary mb-3" type="button" onclick="calculatePositionSizes()">
+            <i class="bi bi-calculator me-1"></i>Calculate
+        </button>
+        <div id="psResults" style="display:none;">
+            <div class="alert alert-info mb-3">
+                <strong>Portfolio Risk:</strong> <span id="psPortfolioRisk"></span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Structure</th>
+                            <th>Risk/Contract</th>
+                            <th>Contracts</th>
+                            <th>Total Risk</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="psTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const tradesData = {{ trades|tojson }};
+let payoffChart = null;
+
+function _escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('\"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function _badgeClassForAction(action) {
+    if (action === 'ENTER') return 'bg-success';
+    if (action === 'SKIP') return 'bg-danger';
+    return 'bg-warning text-dark';
+}
+
+function renderNumericReport(reportPayload) {
+    const body = document.getElementById('numericReportBody');
+    if (!body) return;
+
+    if (!reportPayload || reportPayload.ok !== true || !reportPayload.report) {
+        const err = _escapeHtml((reportPayload && reportPayload.error) || 'report unavailable');
+        body.innerHTML = `<div class="alert alert-danger mb-0">Failed to load report: ${err}</div>`;
+        return;
+    }
+
+    const report = reportPayload.report || {};
+    const providerBadge = report.llm_used ? 'bg-success' : 'bg-secondary';
+    const warningList = [];
+    if (Array.isArray(report.warnings)) {
+        for (const w of report.warnings) warningList.push(_escapeHtml(w));
+    }
+    if (reportPayload.warning) warningList.push(_escapeHtml(reportPayload.warning));
+
+    const notes = Array.isArray(report.candidate_notes) ? report.candidate_notes : [];
+    const decisions = Array.isArray(report.trade_decisions) ? report.trade_decisions : [];
+
+    const notesHtml = notes.length > 0
+        ? `<div><strong>Candidate Notes</strong><ul class="mb-0 mt-1">${notes.map(n => `<li>${_escapeHtml(n.text || '')}</li>`).join('')}</ul></div>`
+        : '';
+
+    const warningHtml = warningList.length > 0
+        ? `<div class="alert alert-warning mb-3"><strong>Warnings:</strong><ul class="mb-0 mt-1">${warningList.map(w => `<li>${w}</li>`).join('')}</ul></div>`
+        : '';
+
+    const rowsHtml = decisions.length > 0
+        ? decisions.map(d => {
+            const action = (d.action || 'WATCH').toUpperCase();
+            const reasons = Array.isArray(d.reasons) && d.reasons.length > 0
+                ? `<ul class="mb-0">${d.reasons.map(r => `<li>${_escapeHtml(r)}</li>`).join('')}</ul>`
+                : '<span class="text-muted">n/a</span>';
+            const evidence = d.scan_evidence
+                ? `<code>${_escapeHtml(JSON.stringify(d.scan_evidence))}</code>`
+                : '<span class="text-muted">n/a</span>';
+            const conf = Number(d.confidence || 0).toFixed(2);
+            return `<tr>
+                <td><strong>${_escapeHtml(d.symbol || '')}</strong></td>
+                <td><span class="badge ${_badgeClassForAction(action)}">${_escapeHtml(action)}</span></td>
+                <td>${_escapeHtml(d.structure || 'none')}</td>
+                <td>${conf}</td>
+                <td>${reasons}</td>
+                <td>${evidence}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="6" class="text-center text-muted py-3">No trade decisions.</td></tr>`;
+
+    body.innerHTML = `
+        <p class="mb-2">
+            <strong>Provider:</strong>
+            <span class="badge ${providerBadge}">${_escapeHtml(report.llm_model || 'deterministic')}</span>
+        </p>
+        <p class="mb-2"><strong>Market:</strong> ${_escapeHtml(report.market_summary || '')}</p>
+        <p class="mb-2"><strong>Risk:</strong> ${_escapeHtml(report.risk_summary || '')}</p>
+        ${warningHtml}
+        ${notesHtml}
+        <div class="mt-3">
+            <strong>Trade Decisions</strong>
+            <div class="table-responsive mt-2">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Action</th>
+                            <th>Structure</th>
+                            <th>Confidence</th>
+                            <th>Reasons</th>
+                            <th>Scan Evidence</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function loadNumericReport() {
+    const provider = {{ llm_provider|tojson }};
+    const url = {{ url_for("options_edge_scan_report_json", scan_id=scan.scan_id)|tojson }};
+    fetch(`${url}?llm_provider=${encodeURIComponent(provider)}`)
+        .then(r => r.json())
+        .then(renderNumericReport)
+        .catch(err => {
+            renderNumericReport({ ok: false, error: String(err || 'network error') });
+        });
+}
+
+document.addEventListener('DOMContentLoaded', loadNumericReport);
+
+function renderPayoffChart(tradeIndex) {
+    const t = tradesData[tradeIndex];
+    if (!t || !Array.isArray(t.payoff_curve) || t.payoff_curve.length === 0) return;
+
+    const labels = t.payoff_curve.map(p => Number(p.price || 0).toFixed(2));
+    const values = t.payoff_curve.map(p => Number(p.pnl || 0));
+    const title = `${t.symbol || ''} ${t.structure_type || ''} | DTE ${t.dte || ''}`;
+    const modalTitle = document.getElementById('payoffModalLabel');
+    if (modalTitle) modalTitle.textContent = title.trim() || 'Payoff Curve';
+
+    const canvas = document.getElementById('payoffChartCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (payoffChart) {
+        payoffChart.destroy();
+        payoffChart = null;
+    }
+
+    payoffChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'P&L',
+                    data: values,
+                    borderColor: '#0d6efd',
+                    backgroundColor: 'rgba(13,110,253,0.15)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.15,
+                    fill: true,
+                },
+                {
+                    label: 'Break-even',
+                    data: values.map(() => 0),
+                    borderColor: '#6c757d',
+                    borderDash: [6, 6],
+                    borderWidth: 1,
+                    pointRadius: 0,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: { title: { display: true, text: 'Underlying Price at Expiry' } },
+                y: { title: { display: true, text: 'P&L ($)' } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+document.addEventListener('click', (evt) => {
+    const btn = evt.target.closest('.payoff-btn');
+    if (!btn) return;
+    const idx = Number(btn.getAttribute('data-idx'));
+    if (!Number.isFinite(idx)) return;
+    renderPayoffChart(idx);
+    const modalEl = document.getElementById('payoffModal');
+    if (!modalEl) return;
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+});
+
+function calculatePositionSizes() {
+    const account = parseFloat(document.getElementById('psAccountBalance').value) || 0;
+    const riskPct = parseFloat(document.getElementById('psRiskPct').value) || 2;
+    const commission = parseFloat(document.getElementById('psCommission').value) || 0.65;
+    fetch('{{ url_for("options_edge_position_size_proxy") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            account_balance: account,
+            risk_pct: riskPct,
+            commission_per_leg: commission,
+            trades: tradesData.map(t => ({
+                symbol: t.symbol,
+                structure_type: t.structure_type,
+                max_loss: t.max_loss || 0,
+                legs_count: (t.legs_json || []).length || 2
+            }))
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data || data.ok === false) {
+            alert('Position sizing failed: ' + ((data && data.error) || 'unknown error'));
+            return;
+        }
+        document.getElementById('psResults').style.display = 'block';
+        document.getElementById('psPortfolioRisk').textContent =
+            `$${(data.portfolio_total_risk_usd || 0).toFixed(2)} (${(data.portfolio_risk_pct || 0).toFixed(2)}% of account)`;
+        const tbody = document.getElementById('psTableBody');
+        tbody.innerHTML = '';
+        (data.sizing || []).forEach(s => {
+            const status = s.skip_reason
+                ? `<span class=\"badge bg-danger\">SKIP: ${s.skip_reason}</span>`
+                : '<span class=\"badge bg-success\">OK</span>';
+            const row = `<tr>
+                <td><strong>${s.symbol || ''}</strong></td>
+                <td>${s.structure_type || ''}</td>
+                <td>$${(s.risk_per_contract_usd || 0).toFixed(2)}</td>
+                <td><strong>${s.max_contracts || 0}</strong></td>
+                <td>$${(s.total_risk_usd || 0).toFixed(2)}</td>
+                <td>${status}</td>
+            </tr>`;
+            tbody.innerHTML += row;
+        });
+    })
+    .catch(err => {
+        alert('Position sizing request failed: ' + err);
+    });
+}
+</script>
+{% endblock %}

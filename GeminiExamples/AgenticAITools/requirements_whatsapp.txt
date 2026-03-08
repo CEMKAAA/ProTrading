@@ -1,0 +1,21 @@
+# WhatsApp Agentic AI Bot Requirements
+# =====================================
+
+# Core
+python-dotenv>=1.0.0
+openai>=1.0.0
+
+# PDF Processing (RAG placeholder)
+pypdf>=3.0.0
+
+# Web Framework
+flask>=3.0.0
+
+# Twilio WhatsApp Integration
+twilio>=8.0.0
+
+# HTTP Requests (for Pushover notifications)
+requests>=2.31.0
+
+# Production WSGI Server (optional)
+gunicorn>=21.0.0

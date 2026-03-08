@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "liquidity_sweep_strategy",
+    "preset": "nas100_tuned_v3",
+    "symbol": "NAS100",
+    "timeframe": "M5",
+    "period": "2023-01-01 to 2025-12-31",
+    "elapsed_sec": 553.8,
+    "total_trades": 404,
+    "winning_trades": 163,
+    "losing_trades": 241,
+    "win_rate": 40.35,
+    "net_profit": 7188.32,
+    "profit_factor": 1.18,
+    "sharpe_ratio": 1.1799,
+    "sortino_ratio": 4.4369,
+    "max_drawdown_pct": 17.65,
+    "avg_rr": 1.74,
+    "expectancy": 17.79,
+    "final_balance": 15891.82,
+    "largest_win": 2526.16,
+    "largest_loss": -719.03,
+    "data_hash": "657cc916ace6762e5925ca6559ac3ceeb53f9040629ac19bfdf0d3fd50775014"
+  }
+]

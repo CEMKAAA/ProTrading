@@ -1,0 +1,7 @@
+# Root installer for the full ProTradingSystem stack.
+# Includes dashboard backend requirements + core runtime connectors.
+-r dashboard/backend/requirements.txt
+
+# Live trading / broker connectors used by root scripts and backend services
+MetaTrader5>=5.0.45
+ib_async>=1.0.0

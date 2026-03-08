@@ -1,0 +1,2718 @@
+{% extends "base.html" %}
+
+{% block title %}Trader's Workbench - ProTrading{% endblock %}
+
+{% block extra_css %}
+<!-- TradingView Lightweight Charts -->
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/simulation.css') }}">
+<style>
+/* Workbench-specific styles */
+.tools-panel {
+    background: #1e293b;
+    border-radius: 10px;
+    overflow: hidden;
+}
+.tools-panel-header {
+    background: rgba(37, 99, 235, 0.15);
+    color: #93c5fd;
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.tool-card {
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.tool-card:last-child {
+    border-bottom: none;
+}
+.tool-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+}
+.tool-toggle .tool-name {
+    font-weight: 600;
+    color: #e2e8f0;
+    font-size: 0.85rem;
+}
+.tool-toggle .tool-name i {
+    margin-right: 6px;
+    color: #60a5fa;
+}
+.tool-desc {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    margin-top: 4px;
+}
+.tool-settings {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    display: none;
+}
+.tool-settings.active {
+    display: block;
+}
+.tool-settings label {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    margin-bottom: 2px;
+}
+.tool-settings .form-control-sm,
+.tool-settings .form-select-sm {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+    font-size: 0.8rem;
+}
+.tool-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+.tool-actions .btn {
+    font-size: 0.75rem;
+    padding: 3px 10px;
+}
+.zone-count-badge {
+    background: rgba(37, 99, 235, 0.3);
+    color: #93c5fd;
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-left: 6px;
+}
+.fvg-inspector {
+    margin-top: 10px;
+    padding: 8px;
+    background: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+}
+.fvg-inspector-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #cbd5e1;
+    font-size: 0.74rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+.fvg-inspector-source {
+    color: #94a3b8;
+    font-size: 0.68rem;
+    font-weight: 500;
+}
+.fvg-strength-badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.66rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    color: #cbd5e1;
+    background: rgba(15, 23, 42, 0.7);
+}
+.fvg-strength-badge.strong {
+    color: #86efac;
+    border-color: rgba(74, 222, 128, 0.35);
+}
+.fvg-strength-badge.steady {
+    color: #bfdbfe;
+    border-color: rgba(96, 165, 250, 0.35);
+}
+.fvg-strength-badge.weakening,
+.fvg-strength-badge.exhausted {
+    color: #fca5a5;
+    border-color: rgba(248, 113, 113, 0.35);
+}
+.fvg-zone-list {
+    max-height: 210px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.fvg-zone-item {
+    border-radius: 6px;
+    background: rgba(30, 41, 59, 0.75);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    padding: 6px 7px;
+    cursor: pointer;
+}
+.fvg-zone-item.selected {
+    box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.9), 0 0 14px rgba(59, 130, 246, 0.22);
+}
+.fvg-zone-item.bullish_fvg {
+    border-left: 3px solid rgba(38, 166, 91, 0.8);
+}
+.fvg-zone-item.bearish_fvg {
+    border-left: 3px solid rgba(239, 83, 80, 0.85);
+}
+.fvg-zone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.fvg-zone-title {
+    color: #e2e8f0;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.fvg-zone-range {
+    color: #cbd5e1;
+    font-size: 0.72rem;
+}
+.fvg-zone-meta {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.fvg-jump-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.fvg-jump-btn {
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.8);
+    color: #cbd5e1;
+    font-size: 0.66rem;
+    border-radius: 6px;
+    padding: 1px 6px;
+    line-height: 1.2;
+}
+.fvg-jump-btn:hover {
+    border-color: rgba(96, 165, 250, 0.55);
+    color: #dbeafe;
+}
+.fvg-jump-index {
+    font-size: 0.66rem;
+    color: #94a3b8;
+    min-width: 44px;
+    text-align: center;
+}
+.fvg-pill {
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.66rem;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: #cbd5e1;
+    background: rgba(15, 23, 42, 0.7);
+}
+.fvg-pill.active {
+    border-color: rgba(74, 222, 128, 0.35);
+    color: #86efac;
+}
+.fvg-pill.filled {
+    border-color: rgba(248, 113, 113, 0.35);
+    color: #fca5a5;
+}
+.fvg-empty {
+    color: #94a3b8;
+    font-size: 0.72rem;
+    padding: 4px 2px;
+}
+/* FVG zone overlays */
+.chart-zones-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 2;
+}
+.fvg-zone {
+    position: absolute;
+    border-radius: 2px;
+    pointer-events: none;
+    box-shadow: 0 0 8px rgba(15, 23, 42, 0.35);
+}
+.fvg-zone.bullish_fvg {
+    background: rgba(38, 166, 91, 0.18);
+    border: 1px solid rgba(38, 166, 91, 0.58);
+}
+.fvg-zone.bearish_fvg {
+    background: rgba(239, 83, 80, 0.18);
+    border: 1px solid rgba(239, 83, 80, 0.58);
+}
+.fvg-zone-line {
+    position: absolute;
+    height: 0;
+    border-top: 1px dashed rgba(148, 163, 184, 0.6);
+    pointer-events: none;
+    opacity: 0.95;
+}
+.fvg-zone.buy_zone {
+    background: rgba(74, 222, 128, 0.14);
+    border: 1px solid rgba(74, 222, 128, 0.45);
+}
+.fvg-zone.sell_zone {
+    background: rgba(248, 113, 113, 0.14);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+}
+.fvg-zone.mean_cross {
+    background: rgba(250, 204, 21, 0.14);
+    border: 1px solid rgba(250, 204, 21, 0.5);
+}
+.fvg-zone.filled {
+    opacity: 0.45;
+    border-style: dashed;
+}
+.fvg-zone-item.buy_zone {
+    border-left: 3px solid rgba(74, 222, 128, 0.85);
+}
+.fvg-zone-item.sell_zone {
+    border-left: 3px solid rgba(248, 113, 113, 0.85);
+}
+.fvg-zone-item.mean_cross {
+    border-left: 3px solid rgba(250, 204, 21, 0.9);
+}
+.mean-rev-zscore-badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.66rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    color: #cbd5e1;
+    background: rgba(15, 23, 42, 0.7);
+}
+.mean-rev-zscore-badge.overextended-up {
+    color: #fca5a5;
+    border-color: rgba(248, 113, 113, 0.4);
+}
+.mean-rev-zscore-badge.overextended-down {
+    color: #86efac;
+    border-color: rgba(74, 222, 128, 0.4);
+}
+/* Toggle switch */
+.form-check-input:checked {
+    background-color: #2563eb;
+    border-color: #2563eb;
+}
+.coach-panel {
+    background: #111827;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 10px;
+}
+.coach-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    font-size: 0.82rem;
+    color: #c7d2fe;
+    font-weight: 600;
+}
+.coach-header.panel-toggle {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.coach-body {
+    padding: 12px 14px;
+}
+#agent-panel .coach-body {
+    max-height: 68vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+}
+#agent-panel-modal-body {
+    max-height: 72vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+}
+.coach-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.agent-status {
+    font-size: 0.76rem;
+    color: #cbd5e1;
+    margin-top: 6px;
+}
+.agent-usage-meter {
+    margin-top: 6px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.55);
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+.agent-watchdog-box {
+    margin-top: 6px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(120, 53, 15, 0.20);
+    color: #fde68a;
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+.agent-watchdog-box .watchdog-item {
+    margin-bottom: 2px;
+}
+.agent-watchdog-box .watchdog-item:last-child {
+    margin-bottom: 0;
+}
+.agent-feed {
+    margin: 8px 0 0 0;
+    padding-left: 16px;
+    max-height: 180px;
+    overflow-y: auto;
+    font-size: 0.76rem;
+    color: #cbd5e1;
+}
+.agent-feed li {
+    margin-bottom: 5px;
+}
+.workbench-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.workbench-sidebar .sidebar-trade { order: 1; }
+.workbench-sidebar .sidebar-tools { order: 2; }
+.workbench-sidebar .sidebar-agent { order: 3; }
+.trade-direction-hint {
+    margin-bottom: 8px;
+    color: #94a3b8;
+    font-size: 0.72rem;
+}
+.panel-mini-label {
+    color: #94a3b8;
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+@media (min-width: 992px) {
+    .workbench-sidebar {
+        max-height: calc(100vh - 88px);
+        overflow-y: auto;
+        padding-right: 2px;
+    }
+}
+/* ── Dock bar ────────────────────────────── */
+.workbench-fs-dock {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px 16px;
+    max-width: calc(100vw - 24px);
+    border-radius: 18px;
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.96));
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 18px 35px rgba(2, 6, 23, 0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+    z-index: 1400;
+    backdrop-filter: blur(12px);
+    animation: dockSlideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes dockSlideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.workbench-fs-dock .dock-btn {
+    min-width: 82px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 14px;
+    background: linear-gradient(160deg, #334155, #1f2937);
+    color: #e2e8f0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    box-shadow: 0 5px 0 rgba(15, 23, 42, 0.85), 0 8px 18px rgba(2, 6, 23, 0.35);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.18s ease, border-color 0.2s ease;
+    position: relative;
+    overflow: hidden;
+}
+.workbench-fs-dock .dock-btn i {
+    font-size: 1.05rem;
+    transition: transform 0.2s ease;
+}
+.workbench-fs-dock .dock-btn:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 10px 22px rgba(2, 6, 23, 0.4);
+}
+.workbench-fs-dock .dock-btn:hover i {
+    transform: scale(1.12);
+}
+.workbench-fs-dock .dock-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 2px 0 rgba(15, 23, 42, 0.85), 0 4px 10px rgba(2, 6, 23, 0.35);
+}
+/* ── Dock per-panel colors ──────────────── */
+.dock-btn.dock-trade {
+    border-color: rgba(22, 163, 74, 0.45);
+    background: linear-gradient(160deg, #1a3a2a, #1f2937);
+}
+.dock-btn.dock-trade i { color: #4ade80; }
+.dock-btn.dock-trade:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(74, 222, 128, 0.18);
+}
+.dock-btn.dock-tools {
+    border-color: rgba(59, 130, 246, 0.45);
+    background: linear-gradient(160deg, #1e2d4a, #1f2937);
+}
+.dock-btn.dock-tools i { color: #60a5fa; }
+.dock-btn.dock-tools:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(96, 165, 250, 0.18);
+}
+.dock-btn.dock-agent {
+    border-color: rgba(167, 139, 250, 0.45);
+    background: linear-gradient(160deg, #2a1f4a, #1f2937);
+}
+.dock-btn.dock-agent i { color: #a78bfa; }
+.dock-btn.dock-agent:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(167, 139, 250, 0.18);
+}
+.dock-btn.dock-research {
+    border-color: rgba(251, 191, 36, 0.45);
+    background: linear-gradient(160deg, #3a3020, #1f2937);
+}
+.dock-btn.dock-research i { color: #fbbf24; }
+.dock-btn.dock-research:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(251, 191, 36, 0.18);
+}
+.dock-btn.dock-indicators {
+    border-color: rgba(34, 211, 238, 0.45);
+    background: linear-gradient(160deg, #143342, #1f2937);
+}
+.dock-btn.dock-indicators i { color: #22d3ee; }
+.dock-btn.dock-indicators:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(34, 211, 238, 0.18);
+}
+.dock-btn.dock-market {
+    border-color: rgba(129, 140, 248, 0.45);
+    background: linear-gradient(160deg, #262a48, #1f2937);
+}
+.dock-btn.dock-market i { color: #a5b4fc; }
+.dock-btn.dock-market:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(129, 140, 248, 0.2);
+}
+.dock-btn.dock-exit-focus {
+    border-color: rgba(248, 113, 113, 0.45);
+    background: linear-gradient(160deg, #3e1f26, #1f2937);
+}
+.dock-btn.dock-exit-focus i { color: #f87171; }
+.dock-btn.dock-exit-focus:hover {
+    box-shadow: 0 6px 0 rgba(15, 23, 42, 0.85), 0 0 16px rgba(248, 113, 113, 0.2);
+}
+.dock-divider {
+    width: 1px;
+    margin: 2px 2px;
+    background: rgba(148, 163, 184, 0.25);
+}
+/* ── Dock active indicator ──────────────── */
+.dock-btn.dock-active {
+    border-width: 2px;
+}
+.dock-btn.dock-active::after {
+    content: '';
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.8;
+}
+/* ── Panel modals ────────────────────────── */
+.workbench-panel-modal {
+    background: linear-gradient(160deg, #0f172a, #111827);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: #e2e8f0;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55);
+}
+.workbench-panel-modal .modal-header {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    padding: 12px 16px;
+}
+.workbench-panel-modal .modal-header .modal-title {
+    font-size: 0.92rem;
+    font-weight: 600;
+}
+.modal-bottom-sheet {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 12px;
+    width: min(860px, 96vw);
+    margin: 0;
+    max-width: none;
+    top: auto;          /* override modal-dialog-centered */
+}
+.modal-bottom-sheet .modal-content {
+    border-radius: 16px;
+    overflow: hidden;
+}
+/* ── Fullscreen layout ──────────────────── */
+body.workbench-fullscreen #workbench-sidebar {
+    display: none !important;
+}
+body.workbench-fullscreen #workbench-chart-col {
+    flex: 0 0 100%;
+    max-width: 100%;
+}
+body.workbench-fullscreen #workbench-top-actions {
+    display: none !important;
+}
+body.workbench-fullscreen .chart-container {
+    min-height: calc(100vh - 260px);
+}
+body.workbench-fullscreen #sim-config-panel,
+body.workbench-fullscreen .info-card,
+body.workbench-fullscreen #trade-log-card {
+    display: none !important;
+}
+body.workbench-fullscreen .stats-bar {
+    margin-bottom: 92px !important;
+}
+@media (max-width: 991px) {
+    body.workbench-fullscreen .stats-bar {
+        margin-bottom: 136px !important;
+    }
+}
+/* ── 3D BUY / SELL / Focus buttons ─────── */
+.btn-buy,
+.btn-sell {
+    box-shadow: 0 5px 0 rgba(15, 23, 42, 0.75);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.18s ease;
+    letter-spacing: 0.5px;
+    position: relative;
+}
+.btn-buy:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 5px 0 rgba(15, 23, 42, 0.75), 0 0 18px rgba(74, 222, 128, 0.25);
+}
+.btn-sell:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 5px 0 rgba(15, 23, 42, 0.75), 0 0 18px rgba(248, 113, 113, 0.25);
+}
+.btn-buy:active:not(:disabled),
+.btn-sell:active:not(:disabled) {
+    transform: translateY(3px);
+    box-shadow: 0 2px 0 rgba(15, 23, 42, 0.75);
+}
+#workbench-top-actions .wb-action-btn {
+    box-shadow: 0 4px 0 rgba(15, 23, 42, 0.6);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.18s ease, background 0.2s ease;
+    border-radius: 10px;
+    border-width: 1px;
+    border-style: solid;
+    font-weight: 600;
+    text-shadow: 0 1px 0 rgba(2, 6, 23, 0.55);
+}
+#workbench-top-actions .wb-action-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 1px 0 rgba(15, 23, 42, 0.6);
+}
+#workbench-top-actions .wb-action-btn:hover {
+    filter: brightness(1.1);
+}
+#btn-toggle-fullscreen {
+    background: linear-gradient(160deg, rgba(109, 40, 217, 0.72), rgba(76, 29, 149, 0.82));
+    border-color: rgba(167, 139, 250, 0.78);
+    color: #f3e8ff;
+}
+#btn-open-research {
+    background: linear-gradient(160deg, rgba(217, 119, 6, 0.72), rgba(146, 64, 14, 0.84));
+    border-color: rgba(251, 191, 36, 0.78);
+    color: #fffbeb;
+}
+#btn-open-indicators {
+    background: linear-gradient(160deg, rgba(8, 145, 178, 0.72), rgba(14, 116, 144, 0.84));
+    border-color: rgba(103, 232, 249, 0.78);
+    color: #ecfeff;
+}
+.agent-identity-box {
+    margin: 10px 0;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 10px;
+    padding: 8px;
+    background: rgba(15, 23, 42, 0.45);
+}
+.agent-identity-collapse-toggle {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    background: rgba(15, 23, 42, 0.65);
+    color: #cbd5e1;
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 0.74rem;
+    font-weight: 600;
+}
+.agent-identity-collapse-toggle:hover {
+    border-color: rgba(96, 165, 250, 0.45);
+    color: #dbeafe;
+}
+.agent-identity-collapse-toggle i {
+    transition: transform 0.2s ease;
+}
+.agent-identity-collapse-toggle.expanded i {
+    transform: rotate(180deg);
+}
+.agent-memory-collapse-toggle {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    background: rgba(15, 23, 42, 0.65);
+    color: #cbd5e1;
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 0.74rem;
+    font-weight: 600;
+}
+.agent-memory-collapse-toggle:hover {
+    border-color: rgba(96, 165, 250, 0.45);
+    color: #dbeafe;
+}
+.agent-memory-collapse-toggle i {
+    transition: transform 0.2s ease;
+}
+.agent-memory-collapse-toggle.expanded i {
+    transform: rotate(180deg);
+}
+.agent-identity-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    color: #cbd5e1;
+    font-size: 0.74rem;
+}
+.agent-identity-hint {
+    font-size: 0.68rem;
+    color: #94a3b8;
+}
+.agent-identity-box .form-label {
+    font-size: 0.7rem;
+    color: #94a3b8;
+    margin-bottom: 2px;
+}
+.agent-identity-box textarea,
+.agent-identity-box input {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+.agent-identity-status {
+    margin-top: 6px;
+    color: #94a3b8;
+    font-size: 0.7rem;
+}
+.agent-chat-shell {
+    display: grid;
+    grid-template-columns: 1fr minmax(250px, 300px);
+    gap: 12px;
+}
+.agent-chat-main {
+    min-width: 0;
+}
+.agent-chat-side {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.agent-chat-card {
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.55);
+    padding: 10px;
+}
+.agent-trace-launch {
+    width: 100%;
+    border: 1px solid rgba(96, 165, 250, 0.4);
+    background: linear-gradient(160deg, rgba(30, 58, 138, 0.42), rgba(15, 23, 42, 0.7));
+    color: #dbeafe;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.agent-trace-launch:hover {
+    border-color: rgba(125, 211, 252, 0.58);
+    color: #eff6ff;
+}
+.agent-trigger-launch {
+    width: 100%;
+    border: 1px solid rgba(251, 191, 36, 0.46);
+    background: linear-gradient(160deg, rgba(120, 53, 15, 0.42), rgba(15, 23, 42, 0.7));
+    color: #fef3c7;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.agent-trigger-launch:hover {
+    border-color: rgba(253, 224, 71, 0.62);
+    color: #fffbeb;
+}
+.agent-chat-title {
+    color: #cbd5e1;
+    font-size: 0.74rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.agent-chat-avatar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 12px;
+    background: radial-gradient(circle at 20% 10%, rgba(56, 189, 248, 0.18), rgba(15, 23, 42, 0.9) 58%);
+}
+.agent-orb {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #e0f2fe;
+    background: radial-gradient(circle at 30% 20%, rgba(125, 211, 252, 0.96), rgba(30, 64, 175, 0.88));
+    box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.4), 0 0 18px rgba(56, 189, 248, 0.35);
+    animation: orbPulse 2.7s ease-in-out infinite;
+}
+.agent-orb i {
+    font-size: 1.08rem;
+}
+.agent-orb-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.agent-orb-name {
+    color: #f8fafc;
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.agent-orb-sub {
+    color: #93c5fd;
+    font-size: 0.68rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+@keyframes orbPulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.4), 0 0 14px rgba(56, 189, 248, 0.26); }
+    50% { transform: scale(1.04); box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.55), 0 0 24px rgba(56, 189, 248, 0.4); }
+}
+.consultant-chat-log {
+    max-height: 52vh;
+    min-height: 360px;
+    overflow-y: auto;
+    background: radial-gradient(circle at 12% 8%, rgba(59, 130, 246, 0.2), rgba(11, 18, 32, 0.98) 55%);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 14px;
+    padding: 12px;
+}
+.agent-chat-msg {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.agent-chat-msg.role-user {
+    flex-direction: row-reverse;
+}
+.agent-chat-msg-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: 1px solid rgba(148, 163, 184, 0.32);
+}
+.agent-chat-msg.role-assistant .agent-chat-msg-avatar {
+    color: #bbf7d0;
+    background: rgba(5, 150, 105, 0.18);
+}
+.agent-chat-msg.role-user .agent-chat-msg-avatar {
+    color: #bfdbfe;
+    background: rgba(37, 99, 235, 0.2);
+}
+.agent-chat-bubble {
+    max-width: min(78%, 640px);
+    border-radius: 12px;
+    padding: 9px 11px;
+    font-size: 0.79rem;
+    line-height: 1.38;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.agent-chat-msg.role-user .agent-chat-bubble {
+    background: rgba(37, 99, 235, 0.18);
+    border: 1px solid rgba(59, 130, 246, 0.32);
+    color: #bfdbfe;
+}
+.agent-chat-msg.role-assistant .agent-chat-bubble {
+    background: rgba(5, 150, 105, 0.16);
+    border: 1px solid rgba(16, 185, 129, 0.28);
+    color: #bbf7d0;
+}
+.agent-chat-msg-meta {
+    margin-top: 4px;
+    font-size: 0.64rem;
+    color: #93a3b8;
+}
+.agent-chat-typing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #93c5fd;
+    font-size: 0.72rem;
+    padding: 6px 4px 0 4px;
+}
+.agent-chat-typing-dots {
+    display: inline-flex;
+    gap: 4px;
+}
+.agent-chat-typing-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: #60a5fa;
+    opacity: 0.35;
+    animation: typingDot 1.1s ease-in-out infinite;
+}
+.agent-chat-typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+.agent-chat-typing-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes typingDot {
+    0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-2px); }
+}
+.agent-chat-composer {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    margin-top: 8px;
+}
+.agent-chat-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.agent-inline-approval {
+    border: 1px solid rgba(251, 191, 36, 0.42);
+    border-radius: 10px;
+    background: rgba(30, 27, 14, 0.82);
+    padding: 8px 10px;
+    margin-top: 8px;
+}
+.agent-inline-approval .title {
+    color: #fcd34d;
+    font-size: 0.73rem;
+    font-weight: 700;
+}
+.agent-inline-approval .meta {
+    color: #e2e8f0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    margin-top: 3px;
+    white-space: pre-wrap;
+}
+.agent-inline-approval .actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 7px;
+}
+.agent-chat-section-shell {
+    position: relative;
+}
+.agent-trace-window {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: min(420px, 88vw);
+    max-height: 54vh;
+    z-index: 25;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 12px;
+    background: rgba(2, 6, 23, 0.95);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+}
+.agent-trigger-window {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: min(460px, 92vw);
+    max-height: 58vh;
+    z-index: 25;
+    border: 1px solid rgba(251, 191, 36, 0.34);
+    border-radius: 12px;
+    background: rgba(2, 6, 23, 0.96);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+}
+.agent-trigger-window .agent-trigger-list {
+    max-height: 44vh;
+    padding: 8px;
+}
+.agent-trace-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+    background: rgba(15, 23, 42, 0.85);
+}
+.agent-trace-title {
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+.agent-trace-actions {
+    display: flex;
+    gap: 6px;
+}
+.agent-trace-list {
+    max-height: 44vh;
+    overflow-y: auto;
+    padding: 8px;
+}
+.agent-trace-item {
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 9px;
+    background: rgba(15, 23, 42, 0.7);
+    padding: 7px 8px;
+    margin-bottom: 8px;
+}
+.agent-trace-item .top {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 4px;
+}
+.agent-trace-item .tool {
+    color: #dbeafe;
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+.agent-trace-item .status {
+    font-size: 0.64rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+    padding: 1px 6px;
+}
+.agent-trace-item .status.executed { color: #86efac; border-color: rgba(74, 222, 128, 0.42); }
+.agent-trace-item .status.pending { color: #fcd34d; border-color: rgba(251, 191, 36, 0.42); }
+.agent-trace-item .status.blocked { color: #fca5a5; border-color: rgba(248, 113, 113, 0.42); }
+.agent-trace-item .status.error { color: #fca5a5; border-color: rgba(248, 113, 113, 0.42); }
+.agent-trace-item .meta {
+    color: #94a3b8;
+    font-size: 0.66rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+.agent-approval-item {
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.62);
+    padding: 8px;
+    margin-bottom: 8px;
+}
+.agent-approval-item .title {
+    color: #fcd34d;
+    font-size: 0.72rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+.agent-approval-item .meta {
+    color: #cbd5e1;
+    font-size: 0.69rem;
+    line-height: 1.4;
+    margin-bottom: 6px;
+    white-space: pre-wrap;
+}
+.agent-approval-actions {
+    display: flex;
+    gap: 6px;
+}
+.agent-memory-box {
+    margin-top: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 10px;
+    padding: 8px;
+    background: rgba(15, 23, 42, 0.45);
+}
+.agent-triggers-box {
+    margin-top: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 10px;
+    padding: 8px;
+    background: rgba(15, 23, 42, 0.45);
+}
+.agent-trigger-list {
+    max-height: 210px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.agent-trigger-item {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 6px;
+    background: rgba(15, 23, 42, 0.55);
+    font-size: 0.74rem;
+}
+.agent-trigger-item .meta {
+    color: #94a3b8;
+    font-size: 0.68rem;
+    white-space: pre-wrap;
+}
+.agent-trigger-item .actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 5px;
+}
+.agent-trigger-item .actions button {
+    padding: 1px 6px;
+    font-size: 0.68rem;
+}
+.agent-memory-list {
+    max-height: 290px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.agent-memory-item {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 6px;
+    background: rgba(15, 23, 42, 0.55);
+    font-size: 0.74rem;
+}
+.agent-memory-item .meta {
+    color: #94a3b8;
+    font-size: 0.68rem;
+}
+.agent-memory-item .actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 5px;
+}
+.agent-memory-item .actions button {
+    padding: 1px 6px;
+    font-size: 0.68rem;
+}
+.agent-chat-modal .modal-dialog {
+    max-width: min(1100px, 94vw);
+}
+.agent-chat-modal .modal-content {
+    background: linear-gradient(170deg, #0b1220, #101a31);
+    border: 1px solid rgba(96, 165, 250, 0.28);
+    box-shadow: 0 22px 56px rgba(2, 6, 23, 0.68);
+}
+.agent-chat-modal #consultant-input {
+    min-height: 96px;
+    border-radius: 12px;
+}
+@media (max-width: 991px) {
+    #agent-panel .coach-body {
+        max-height: 62vh;
+    }
+    #agent-panel-modal-body {
+        max-height: 66vh;
+    }
+    .agent-chat-shell {
+        grid-template-columns: 1fr;
+    }
+}
+.indicator-modal .modal-content {
+    background: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.indicator-modal .modal-header,
+.indicator-modal .modal-footer {
+    border-color: rgba(148, 163, 184, 0.15);
+}
+.indicator-option {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: rgba(30, 41, 59, 0.6);
+}
+.indicator-option + .indicator-option {
+    margin-top: 8px;
+}
+.indicator-option .form-check-label {
+    color: #e2e8f0;
+    font-size: 0.86rem;
+}
+.indicator-option .hint {
+    display: block;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    margin-left: 24px;
+}
+/* ── Panel collapse animation ───────────── */
+.coach-body,
+.tool-settings {
+    transition: opacity 0.2s ease, max-height 0.25s ease;
+}
+/* ── Tool card hover ────────────────────── */
+.tool-card {
+    transition: background 0.2s ease;
+}
+.tool-card:hover {
+    background: rgba(30, 41, 59, 0.5);
+}
+/* ── Trade direction hint ───────────────── */
+.trade-direction-hint {
+    margin-bottom: 8px;
+    color: #94a3b8;
+    font-size: 0.74rem;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+.trade-direction-hint .dir-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.72rem;
+}
+.trade-direction-hint .dir-tag.buy-tag {
+    background: rgba(22, 163, 74, 0.12);
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.25);
+}
+.trade-direction-hint .dir-tag.sell-tag {
+    background: rgba(220, 38, 38, 0.12);
+    color: #fca5a5;
+    border: 1px solid rgba(248, 113, 113, 0.25);
+}
+/* ── Stats bar dark theme polish ────────── */
+.stats-bar {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+.stat-item .stat-label {
+    color: #64748b !important;
+}
+.stat-item .stat-value {
+    color: #e2e8f0 !important;
+}
+.stat-value.positive { color: #4ade80 !important; }
+.stat-value.negative { color: #f87171 !important; }
+/* ── Header dark theme ──────────────────── */
+.sim-header {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+}
+.sim-header .strategy-name {
+    color: #f1f5f9 !important;
+}
+.sim-header .text-muted {
+    color: #94a3b8 !important;
+}
+/* ── Trade panel dark theme ─────────────── */
+.trade-panel {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+}
+.trade-panel-header {
+    color: #93c5fd !important;
+    background: rgba(37, 99, 235, 0.1);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1) !important;
+    font-size: 0.82rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.trade-panel-body {
+    padding: 14px 16px;
+}
+.trade-input-group label {
+    color: #94a3b8;
+    font-size: 0.76rem;
+}
+.trade-input-group .form-control-sm {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+/* ── Info card dark theme ───────────────── */
+.info-card {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+.info-card .accordion-button {
+    background: #1e293b;
+    color: #94a3b8;
+}
+.info-card .accordion-button:not(.collapsed) {
+    background: rgba(37, 99, 235, 0.08);
+    color: #93c5fd;
+}
+.info-card .accordion-body {
+    background: #0f172a;
+    color: #cbd5e1;
+}
+/* ── Trade log dark theme ───────────────── */
+#trade-log-card .card-header,
+.card.mt-3 .card-header {
+    background: #1e293b;
+    color: #93c5fd;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+#trade-log-card,
+.card.mt-3:last-child {
+    background: #1e293b;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+/* ── Config panel dark theme ────────────── */
+#sim-config-panel .card {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+#sim-config-panel .card-body {
+    background: #1e293b;
+}
+#sim-config-panel label {
+    color: #94a3b8;
+}
+#sim-config-panel .form-select,
+#sim-config-panel .form-control {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+/* ── Playback controls dark harmony ────── */
+.playback-bar {
+    background: #1e293b !important;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+/* ── Modal open/close animation ─────────── */
+.modal.fade .modal-dialog {
+    transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
+.modal.fade.show .modal-dialog {
+    transform: none;
+}
+.modal.fade .modal-bottom-sheet {
+    transform: translateX(-50%) translateY(30px);
+}
+.modal.fade.show .modal-bottom-sheet {
+    transform: translateX(-50%) translateY(0);
+}
+/* ── Open position highlight ────────────── */
+#open-position-display:not(.d-none) {
+    background: rgba(37, 99, 235, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: #bfdbfe;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<input type="hidden" id="sim-strategy-id" value="_workbench">
+
+<!-- Header -->
+<div class="sim-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div class="d-flex align-items-center gap-3">
+        <a href="{{ url_for('simulations_dashboard') }}" class="text-muted"><i class="bi bi-arrow-left fs-5"></i></a>
+        <div>
+            <h1 class="strategy-name">Trader's Workbench</h1>
+            <small class="text-muted">Strategy-free chart analysis with professional tools</small>
+        </div>
+        <span class="strategy-badge" style="background: rgba(139, 92, 246, 0.15); color: #a78bfa;">WORKBENCH</span>
+    </div>
+    <div>
+        <span id="sim-status" style="font-size: 0.8rem;"></span>
+    </div>
+</div>
+
+<!-- Configuration Panel -->
+<div id="sim-config-panel" class="mb-3">
+    <div class="card">
+        <div class="card-body">
+            <div class="sim-config-row">
+                <div class="form-group">
+                    <label>Mode</label>
+                    <select id="workbench-mode" class="form-select form-select-sm">
+                        <option value="live" selected>Normal (Live Feed)</option>
+                        <option value="replay">Playback Trading (CSV)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Symbol</label>
+                    <select id="sim-symbol" class="form-select form-select-sm">
+                        <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                        <option value="NAS100">NAS100</option>
+                        <option value="US500">US500</option>
+                        <option value="GBPUSD">GBPUSD</option>
+                        <option value="EURUSD">EURUSD</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Timeframe</label>
+                    <select id="sim-timeframe" class="form-select form-select-sm">
+                        <option value="M1">M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15" selected>M15</option>
+                        <option value="M30">M30</option>
+                        <option value="H1">H1</option>
+                        <option value="H4">H4</option>
+                        <option value="D1">D1</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Balance ($)</label>
+                    <input type="number" id="sim-balance" class="form-control form-control-sm" value="10000" min="100" step="1000">
+                </div>
+                <div id="replay-config-fields" class="d-none d-flex flex-wrap gap-2">
+                    <div class="form-group">
+                        <label>Data File</label>
+                        <select id="sim-datafile" class="form-select form-select-sm">
+                            <option value="">Auto-detect</option>
+                            {% for f in data_files %}
+                            <option value="{{ f.filename }}">{{ f.filename }} ({{ f.size_mb }}MB)</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <button id="btn-start-session" class="btn btn-primary btn-sm">
+                            <i class="bi bi-play-fill me-1"></i>Start Replay
+                        </button>
+                    </div>
+                </div>
+                <div id="live-config-fields" class="d-flex flex-wrap gap-2">
+                    <div class="form-group">
+                        <label>Live Source</label>
+                        <select id="live-source" class="form-select form-select-sm">
+                            <option value="mt5" selected>MT5</option>
+                            <option value="databento">Databento</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Window (Days)</label>
+                        <input
+                            id="live-history-days"
+                            class="form-control form-control-sm"
+                            type="number"
+                            min="0.1"
+                            max="60"
+                            step="0.1"
+                            value="2"
+                            title="How many recent days of candles to load for live chart snapshot"
+                        >
+                    </div>
+                    <div class="form-group">
+                        <label>Databento Key (Optional)</label>
+                        <input
+                            id="live-databento-key"
+                            class="form-control form-control-sm"
+                            type="password"
+                            placeholder="Uses backend env if empty"
+                        >
+                    </div>
+                    <div class="form-group">
+                        <button id="btn-live-feed" class="btn btn-outline-success btn-sm">
+                            <i class="bi bi-broadcast me-1"></i>Start Live Feed
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Layout: Chart + Sidebar -->
+<div class="row g-3" id="workbench-main-row">
+    <!-- Chart Column -->
+    <div class="col-lg-9" id="workbench-chart-col">
+        <div class="d-flex justify-content-end mb-2" id="workbench-top-actions">
+            <button
+                id="btn-toggle-fullscreen"
+                class="btn btn-sm wb-action-btn me-2"
+                type="button"
+                title="Fullscreen focus mode"
+            >
+                <i class="bi bi-arrows-fullscreen me-1"></i>Focus Mode
+            </button>
+            <button
+                id="btn-open-research"
+                class="btn btn-sm wb-action-btn me-2"
+                type="button"
+                data-bs-toggle="modal"
+                data-bs-target="#researchModal"
+            >
+                <i class="bi bi-search me-1"></i>Research
+            </button>
+            <button
+                id="btn-open-indicators"
+                class="btn btn-sm wb-action-btn"
+                type="button"
+                data-bs-toggle="modal"
+                data-bs-target="#indicatorModal"
+            >
+                <i class="bi bi-graph-up me-1"></i>Indicators
+            </button>
+        </div>
+        <!-- Chart -->
+        <div class="chart-container">
+            <div id="chart-main" class="chart-main"></div>
+        </div>
+
+        <!-- Playback Controls -->
+        <div id="playback-controls" class="playback-bar mt-2 d-none">
+            <button class="btn-playback" id="btn-rewind" title="Back 10 bars">
+                <i class="bi bi-skip-backward-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-prev" title="Back 1 bar (Left Arrow)">
+                <i class="bi bi-caret-left-fill"></i>
+            </button>
+            <button class="btn-playback btn-play" id="btn-play" title="Play/Pause (Space)">
+                <i class="bi bi-play-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-next" title="Forward 1 bar (Right Arrow)">
+                <i class="bi bi-caret-right-fill"></i>
+            </button>
+            <button class="btn-playback" id="btn-forward" title="Forward 10 bars">
+                <i class="bi bi-skip-forward-fill"></i>
+            </button>
+
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+            </div>
+
+            <span class="bar-counter" id="bar-counter">Bar 0 / 0</span>
+
+            <div class="speed-selector">
+                <button class="speed-btn active" data-speed="1">1x</button>
+                <button class="speed-btn" data-speed="2">2x</button>
+                <button class="speed-btn" data-speed="5">5x</button>
+                <button class="speed-btn" data-speed="10">10x</button>
+                <button class="speed-btn active" id="btn-auto-speed" title="Adaptive speed control">AUTO</button>
+            </div>
+
+            <button class="btn btn-sm btn-outline-secondary" id="btn-reset" title="Reset session">
+                <i class="bi bi-arrow-counterclockwise"></i>
+            </button>
+        </div>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar mt-2">
+            <div class="stat-item">
+                <span class="stat-label">Balance</span>
+                <span class="stat-value" id="stat-balance">$10,000</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">P&L</span>
+                <span class="stat-value" id="stat-pnl">$0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Trades</span>
+                <span class="stat-value" id="stat-trades">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Win Rate</span>
+                <span class="stat-value" id="stat-winrate">0%</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Transport</span>
+                <span class="stat-value" id="stat-transport">IDLE</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Session</span>
+                <span class="stat-value" id="stat-session-id">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Speed</span>
+                <span class="stat-value" id="stat-barsps">0.0 bars/s</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar Column -->
+    <div class="col-lg-3 workbench-sidebar" id="workbench-sidebar">
+        <!-- Tools Panel (replaces Step Tracker) -->
+        <div class="tools-panel mb-0 sidebar-tools" id="analysis-tools-panel">
+            <div class="tools-panel-header">
+                <i class="bi bi-tools me-1"></i> Analysis Tools
+            </div>
+            <div id="tools-list">
+                <!-- FVG Tool Card -->
+                <div class="tool-card" data-tool-id="fvg">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-layers-half"></i> FVG Scanner</span>
+                            <span class="zone-count-badge d-none" id="fvg-zone-count">0</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-fvg-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Finds 3-candle imbalance gaps where institutions left unfilled orders.</div>
+                    <div class="tool-settings" id="fvg-settings">
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="fvg-trend-filter" checked>
+                                <label class="form-check-label" for="fvg-trend-filter" style="color: #94a3b8; font-size: 0.75rem;">
+                                    Trend aligned only (HTF bias)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-2">
+                            <label>Trend Multiplier</label>
+                            <input type="number" id="fvg-trend-multiplier" class="form-control form-control-sm" value="3" min="2" max="12" step="1">
+                            <small style="color:#94a3b8;font-size:0.7rem;">Example: M5 x 3 => trend from M15.</small>
+                        </div>
+                        <div class="mb-2">
+                            <label>Trend Mode</label>
+                            <select id="fvg-trend-alignment-mode" class="form-select form-select-sm">
+                                <option value="prefer" selected>Prefer (filter only when trend is clear)</option>
+                                <option value="strict">Strict (no clear trend => no zones)</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label>Scan Lookback (Days)</label>
+                            <input type="number" id="fvg-lookback-days" class="form-control form-control-sm" value="2" min="0.1" max="30" step="0.5">
+                            <small style="color:#94a3b8;font-size:0.7rem;">Scans the latest N days instead of only current on-screen context.</small>
+                        </div>
+                        <div class="mb-2">
+                            <label>Scan Scope</label>
+                            <select id="fvg-scan-scope" class="form-select form-select-sm">
+                                <option value="last_n_days" selected>Last N Days</option>
+                                <option value="visible">Visible Bars</option>
+                            </select>
+                            <small style="color:#94a3b8;font-size:0.7rem;">Visible Bars = current replay context; Last N Days = rolling lookback window.</small>
+                        </div>
+                        <div class="mb-2">
+                            <label>Detection Timeframe</label>
+                            <select id="fvg-detect-timeframe" class="form-select form-select-sm">
+                                <option value="chart" selected>Current Chart TF</option>
+                                <option value="M5">M5</option>
+                                <option value="M15">M15</option>
+                                <option value="M30">M30</option>
+                                <option value="H1">H1</option>
+                                <option value="H4">H4</option>
+                                <option value="D1">D1</option>
+                            </select>
+                            <small style="color:#94a3b8;font-size:0.7rem;">Use HTF for zone detection while trading lower TF entries.</small>
+                        </div>
+                        <div class="mb-2">
+                            <label>Min Gap Size</label>
+                            <input type="number" id="fvg-min-gap" class="form-control form-control-sm" placeholder="Auto" step="0.01">
+                        </div>
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="fvg-show-filled">
+                                <label class="form-check-label" for="fvg-show-filled" style="color: #94a3b8; font-size: 0.75rem;">Show filled gaps</label>
+                            </div>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-fvg-scan">
+                                <i class="bi bi-search me-1"></i>Scan Now
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-fvg-clear">
+                                <i class="bi bi-x-circle me-1"></i>Clear
+                            </button>
+                        </div>
+                        <div class="fvg-inspector" id="fvg-inspector">
+                            <div class="fvg-inspector-header">
+                                <span><i class="bi bi-list-ul me-1"></i>Detected Zones</span>
+                                <span>
+                                    <span class="fvg-jump-controls me-1">
+                                        <button class="fvg-jump-btn" id="btn-fvg-prev" type="button" title="Previous zone"><i class="bi bi-chevron-left"></i></button>
+                                        <span class="fvg-jump-index" id="fvg-jump-index">0/0</span>
+                                        <button class="fvg-jump-btn" id="btn-fvg-next" type="button" title="Next zone"><i class="bi bi-chevron-right"></i></button>
+                                    </span>
+                                    <span class="fvg-inspector-source" id="fvg-inspector-source">idle</span>
+                                    <span class="fvg-strength-badge" id="fvg-strength-badge">strength n/a</span>
+                                </span>
+                            </div>
+                            <div class="fvg-zone-list" id="fvg-zone-list">
+                                <div class="fvg-empty" id="fvg-zone-empty">Run a scan to list active FVG zones.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Mean Reversion Tool Card -->
+                <div class="tool-card" data-tool-id="mean_rev">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-arrow-left-right"></i> Mean Reversion Lens</span>
+                            <span class="zone-count-badge d-none" id="mean-rev-zone-count">0</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-mean-rev-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Finds Bollinger overextensions and mean-cross flatten signals.</div>
+                    <div class="tool-settings" id="mean-rev-settings">
+                        <div class="mb-2">
+                            <label>Strictness</label>
+                            <select id="tool-mean-rev-strictness" class="form-select form-select-sm">
+                                <option value="1">1 - Loose</option>
+                                <option value="2">2 - Mild Loose</option>
+                                <option value="3" selected>3 - Normal (Default)</option>
+                                <option value="4">4 - Strict</option>
+                                <option value="5">5 - Very Strict</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label>SMA Period</label>
+                            <input type="number" id="mean-rev-sma-period" class="form-control form-control-sm" value="30" min="5" max="400" step="1">
+                        </div>
+                        <div class="mb-2">
+                            <label>Deviation (Std Dev)</label>
+                            <input type="number" id="mean-rev-deviation" class="form-control form-control-sm" value="2.0" min="0.5" max="8" step="0.1">
+                        </div>
+                        <div class="mb-2">
+                            <label>Scan Lookback (Days)</label>
+                            <input type="number" id="mean-rev-lookback-days" class="form-control form-control-sm" value="2" min="0.1" max="30" step="0.5">
+                        </div>
+                        <div class="mb-2">
+                            <label>Scan Scope</label>
+                            <select id="mean-rev-scan-scope" class="form-select form-select-sm">
+                                <option value="last_n_days" selected>Last N Days</option>
+                                <option value="visible">Visible Bars</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="mean-rev-show-exit-signals" checked>
+                                <label class="form-check-label" for="mean-rev-show-exit-signals" style="color: #94a3b8; font-size: 0.75rem;">
+                                    Show mean-cross flatten signals
+                                </label>
+                            </div>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-mean-rev-scan">
+                                <i class="bi bi-search me-1"></i>Scan Now
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-mean-rev-clear">
+                                <i class="bi bi-x-circle me-1"></i>Clear
+                            </button>
+                        </div>
+                        <div class="fvg-inspector" id="mean-rev-inspector">
+                            <div class="fvg-inspector-header">
+                                <span><i class="bi bi-list-ul me-1"></i>Detected Signals</span>
+                                <span>
+                                    <span class="fvg-inspector-source" id="mean-rev-inspector-source">idle</span>
+                                    <span class="mean-rev-zscore-badge" id="mean-rev-zscore-badge">z n/a</span>
+                                </span>
+                            </div>
+                            <div class="fvg-zone-list" id="mean-rev-zone-list">
+                                <div class="fvg-empty" id="mean-rev-zone-empty">Run a scan to list mean-reversion signals.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-card" data-tool-id="draw_fvg">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-pencil-square"></i> Drawing Tools</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-draw-fvg-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Manual 2-bar picker: click two candles on chart, then run FVG detection only inside that selected window.</div>
+                    <div class="tool-settings" id="draw-fvg-settings">
+                        <div class="mb-2">
+                            <small id="draw-fvg-status" style="color:#94a3b8;font-size:0.72rem;">Pick two bars on chart to begin.</small>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-draw-fvg-scan">
+                                <i class="bi bi-search me-1"></i>Scan Selection
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-draw-fvg-reset">
+                                <i class="bi bi-x-circle me-1"></i>Reset Picks
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Placeholder for future tools -->
+                <div class="tool-card" style="opacity: 0.5;">
+                    <div class="tool-toggle">
+                        <span class="tool-name"><i class="bi bi-water"></i> Order Blocks</span>
+                        <span class="badge bg-secondary" style="font-size: 0.65rem;">Coming Soon</span>
+                    </div>
+                    <div class="tool-desc">Identifies institutional supply/demand zones from price action.</div>
+                    <div class="tool-settings active">
+                        <div class="mb-1">
+                            <label>Strictness</label>
+                            <select class="form-select form-select-sm" disabled>
+                                <option>3 - Normal (Default)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Unified Agent Panel -->
+        <div class="coach-panel mb-0 sidebar-agent" id="agent-panel">
+            <div class="coach-header panel-toggle" data-target="#agent-panel-body">
+                <span><i class="bi bi-stars me-1"></i> Agent</span>
+                <span class="panel-mini-label">Chat + Loop + Actions</span>
+            </div>
+            <div class="coach-body d-none" id="agent-panel-body">
+                <div class="coach-grid mb-2">
+                    <div>
+                        <label for="consultant-provider" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Provider</label>
+                        <select id="consultant-provider" class="form-select form-select-sm">
+                            <option value="claude" selected>Claude</option>
+                            <option value="local_gptoss_http">Local GPT-OSS</option>
+                            <option value="openai_compat">OpenAI Compatible</option>
+                            <option value="deterministic">Deterministic</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="consultant-model" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Model</label>
+                        <input id="consultant-model" class="form-control form-control-sm" list="consultant-model-options" value="claude-sonnet-4-5-20250929">
+                        <datalist id="consultant-model-options"></datalist>
+                    </div>
+                    <div>
+                        <label for="consultant-url" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM URL</label>
+                        <input id="consultant-url" class="form-control form-control-sm" value="https://api.anthropic.com">
+                    </div>
+                    <div>
+                        <label for="consultant-api-key" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">API Key (optional)</label>
+                        <input id="consultant-api-key" type="password" class="form-control form-control-sm" placeholder="Optional. Leave empty to use .env key">
+                        <small id="consultant-key-hint" style="font-size:0.68rem;color:#94a3b8;">If empty, backend uses environment key for selected provider.</small>
+                    </div>
+                    <div>
+                        <label for="agent-timeout" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM Timeout (sec)</label>
+                        <input id="agent-timeout" class="form-control form-control-sm" type="number" min="10" step="5" value="45">
+                    </div>
+                    <div>
+                        <label for="agent-loop-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Loop Interval (sec)</label>
+                        <input id="agent-loop-interval" class="form-control form-control-sm" type="number" min="1" max="120" step="1" value="5">
+                    </div>
+                    <div>
+                        <label for="agent-watchdog-mode" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Watchdog Mode</label>
+                        <select id="agent-watchdog-mode" class="form-select form-select-sm">
+                            <option value="deterministic" selected>Deterministic (cheap)</option>
+                            <option value="local_gptoss_http">GPT-OSS 20B (local)</option>
+                            <option value="claude">Claude Haiku</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="agent-watchdog-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Watchdog Interval (sec)</label>
+                        <input id="agent-watchdog-interval" class="form-control form-control-sm" type="number" min="5" max="300" step="1" value="30">
+                    </div>
+                    <div>
+                        <label for="agent-watchdog-llm-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM Min Interval (sec)</label>
+                        <input id="agent-watchdog-llm-interval" class="form-control form-control-sm" type="number" min="10" max="3600" step="5" value="180">
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
+                            <input class="form-check-input me-1" type="checkbox" id="agent-watchdog-trigger-require-approval">
+                            Trigger Requires Approval
+                        </label>
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
+                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-enabled" checked>
+                            Execution Guardrails Enabled
+                            <span style="color:#94a3b8;"> - Master switch for execution filters below.</span>
+                        </label>
+                    </div>
+                    <div id="agent-guardrail-effective-status" style="font-size:0.72rem;color:#94a3b8;">
+                        Guardrails: disabled.
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
+                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-session-filter">
+                            Session Filter (execution)
+                            <span style="color:#94a3b8;"> - Block entries outside configured liquid session hours.</span>
+                        </label>
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
+                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-news-filter">
+                            News Filter (execution)
+                            <span style="color:#94a3b8;"> - Block entries when high-impact headlines are detected.</span>
+                        </label>
+                    </div>
+                    <div>
+                        <label for="agent-guardrail-news-lookback" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Lookback (min)</label>
+                        <input id="agent-guardrail-news-lookback" class="form-control form-control-sm" type="number" min="15" max="1440" step="15" value="120">
+                    </div>
+                    <div>
+                        <label for="agent-news-provider" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Provider</label>
+                        <select id="agent-news-provider" class="form-select form-select-sm">
+                            <option value="polygon" selected>Polygon</option>
+                            <option value="ibkr">IBKR (TWS/Gateway)</option>
+                        </select>
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
+                            <input class="form-check-input me-1" type="checkbox" id="agent-news-llm-summary">
+                            LLM News Summary (cached first call)
+                            <span style="color:#94a3b8;"> - Creates a short risk brief once, then reuses cache.</span>
+                        </label>
+                    </div>
+                    <div id="agent-news-llm-summary-warning" class="d-none" style="font-size:0.72rem;color:#fca5a5;">
+                        LLM summary requires backend ANTHROPIC_API_KEY.
+                    </div>
+                    <div>
+                        <label for="agent-news-summary-model" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Summary Model</label>
+                        <input id="agent-news-summary-model" class="form-control form-control-sm" value="claude-haiku-4-5-20251001">
+                    </div>
+                    <div>
+                        <label for="agent-news-ibkr-host" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">IBKR News Host</label>
+                        <input id="agent-news-ibkr-host" class="form-control form-control-sm" value="127.0.0.1">
+                    </div>
+                    <div>
+                        <label for="agent-news-ibkr-port" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">IBKR News Port</label>
+                        <input id="agent-news-ibkr-port" class="form-control form-control-sm" type="number" min="1" max="65535" step="1" value="7497">
+                    </div>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Permissions</label>
+                    <div class="d-flex flex-wrap gap-2" style="font-size:0.75rem;color:#cbd5e1;">
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-scan-tools" checked>Scan tools</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-use-research">Research</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-manage-indicators" checked>Indicators</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-place-trades">Place trades</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-close-trades">Close trades</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-auto-execute">Auto execute</label>
+                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-require-confirm" checked>User confirm</label>
+                    </div>
+                </div>
+
+                <div class="agent-identity-box">
+                    <div class="agent-identity-title">
+                        <strong><i class="bi bi-person-badge me-1"></i>Identity (Locked Core)</strong>
+                        <span class="agent-identity-hint" id="agent-identity-version-label">v1</span>
+                    </div>
+                    <button class="agent-identity-collapse-toggle" id="btn-agent-identity-toggle" type="button">
+                        <span><i class="bi bi-sliders2 me-1"></i>Persona & Doctrine Settings</span>
+                        <i class="bi bi-chevron-down"></i>
+                    </button>
+                    <div id="agent-identity-fields" class="d-none mt-2">
+                        <div class="d-flex flex-wrap gap-2 mb-2" style="font-size:0.74rem;color:#cbd5e1;">
+                            <label class="form-check m-0">
+                                <input class="form-check-input me-1" type="checkbox" id="agent-identity-enabled" checked>Enabled
+                            </label>
+                            <label class="form-check m-0">
+                                <input class="form-check-input me-1" type="checkbox" id="agent-identity-lock" checked>Lock personality
+                            </label>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Identity Profile</label>
+                            <select id="agent-identity-preset" class="form-select form-select-sm">
+                                <option value="master_quant">Master Trader / Quant</option>
+                                <option value="apprentice">Current (Apprentice)</option>
+                            </select>
+                            <small style="font-size:0.68rem;color:#94a3b8;">Choose a profile, then click Save to persist it for this session.</small>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Persona</label>
+                            <input id="agent-identity-persona" class="form-control form-control-sm" maxlength="300" placeholder="Apprentice day-trading analyst...">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Tone</label>
+                            <input id="agent-identity-tone" class="form-control form-control-sm" maxlength="300" placeholder="Direct, concise, risk-first...">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Risk Doctrine (1 line per rule)</label>
+                            <textarea id="agent-identity-risk" class="form-control form-control-sm" rows="3" maxlength="2600" placeholder="Protect capital first&#10;Require invalidation before trade"></textarea>
+                        </div>
+                        <div class="mb-1">
+                            <label class="form-label">Immutable Rules (1 line per rule)</label>
+                            <textarea id="agent-identity-rules" class="form-control form-control-sm" rows="2" maxlength="2200" placeholder="Do not bypass permissions or risk constraints"></textarea>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-outline-secondary w-100" id="btn-agent-identity-refresh" type="button">
+                            <i class="bi bi-arrow-repeat me-1"></i>Load
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary w-100" id="btn-agent-identity-save" type="button">
+                            <i class="bi bi-check2-circle me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="agent-identity-status" id="agent-identity-status">Identity ready.</div>
+                </div>
+
+                <div class="d-flex gap-2 align-items-center mb-2">
+                    <div id="agent-chat-gate" class="fvg-empty mb-0 flex-grow-1">Start a Workbench session first, then chat becomes available.</div>
+                    <button class="btn btn-sm btn-outline-info" id="btn-open-agent-chat" type="button" data-bs-toggle="modal" data-bs-target="#agentChatModal">
+                        <i class="bi bi-chat-dots me-1"></i>Open Chat
+                    </button>
+                </div>
+
+                <div class="d-flex gap-2 mb-2">
+                    <button class="btn btn-sm btn-primary w-100" id="btn-agent-run-once">
+                        <i class="bi bi-lightning-charge me-1"></i>Run Once
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" id="btn-agent-refresh" title="Refresh state">
+                        <i class="bi bi-arrow-repeat"></i>
+                    </button>
+                </div>
+
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-success w-100" id="btn-agent-start">
+                        <i class="bi bi-play-circle me-1"></i>Start Agent Loop
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning w-100" id="btn-agent-stop">
+                        <i class="bi bi-stop-circle me-1"></i>Stop
+                    </button>
+                </div>
+                <div class="d-flex gap-2 mt-2">
+                    <button class="btn btn-sm btn-outline-danger w-100" id="btn-agent-pause-auto">
+                        <i class="bi bi-pause-circle me-1"></i>Pause Auto
+                    </button>
+                    <button class="btn btn-sm btn-outline-success w-100" id="btn-agent-resume-auto">
+                        <i class="bi bi-play-circle me-1"></i>Resume Auto
+                    </button>
+                </div>
+
+                <div id="agent-status" class="agent-status">Status: not started</div>
+                <div id="agent-usage-meter" class="agent-usage-meter">Usage today: 0 tokens | ~$0.0000</div>
+                <div id="agent-watchdog-box" class="agent-watchdog-box d-none"></div>
+                <ul id="agent-feed" class="agent-feed d-none"></ul>
+                <div class="agent-triggers-box">
+                    <div class="d-flex gap-2 align-items-center mb-2">
+                        <strong style="font-size:0.74rem;color:#cbd5e1;"><i class="bi bi-broadcast-pin me-1"></i>Active Triggers</strong>
+                        <button class="btn btn-sm btn-outline-secondary" id="btn-agent-trigger-refresh" type="button"><i class="bi bi-arrow-repeat"></i></button>
+                        <button class="btn btn-sm btn-outline-danger ms-auto" id="btn-agent-trigger-cancel-all" type="button"><i class="bi bi-x-octagon me-1"></i>Cancel All</button>
+                    </div>
+                    <div id="agent-trigger-list" class="agent-trigger-list">
+                        <div class="fvg-empty">No scheduled triggers.</div>
+                    </div>
+                </div>
+                <div class="agent-memory-box">
+                    <button class="agent-memory-collapse-toggle mb-2" id="btn-agent-memory-toggle" type="button">
+                        <span><i class="bi bi-journal-text me-1"></i>Memory</span>
+                        <i class="bi bi-chevron-down"></i>
+                    </button>
+                    <div id="agent-memory-fields" class="d-none">
+                        <div class="d-flex gap-2 align-items-center mb-2">
+                            <input id="agent-memory-query" class="form-control form-control-sm" placeholder="Search memory..." style="max-width:180px;">
+                            <button class="btn btn-sm btn-outline-info" id="btn-agent-memory-search" type="button"><i class="bi bi-search"></i></button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-agent-memory-refresh" type="button"><i class="bi bi-arrow-repeat"></i></button>
+                        </div>
+                        <div class="d-flex gap-2 mb-2">
+                            <select id="agent-memory-scope" class="form-select form-select-sm" style="max-width:90px;">
+                                <option value="GLOBAL" selected>GLOBAL</option>
+                                <option value="SESSION">SESSION</option>
+                                <option value="SYMBOL">SYMBOL</option>
+                            </select>
+                            <input id="agent-memory-new" class="form-control form-control-sm" placeholder="Add memory note...">
+                            <button class="btn btn-sm btn-success" id="btn-agent-memory-add" type="button"><i class="bi bi-bookmark-plus"></i></button>
+                        </div>
+                        <div id="agent-memory-list" class="agent-memory-list">
+                            <div class="fvg-empty">No memory loaded yet.</div>
+                        </div>
+                        <div class="mt-2 pt-2" style="border-top:1px solid rgba(148,163,184,0.18);">
+                            <div class="d-flex gap-2 align-items-center mb-1">
+                                <strong style="font-size:0.72rem;color:#cbd5e1;">Policy</strong>
+                                <label class="form-check m-0" style="font-size:0.68rem;color:#cbd5e1;">
+                                    <input class="form-check-input me-1" type="checkbox" id="agent-memory-policy-enabled" checked title="Enable or disable memory retrieval and retention.">Enabled
+                                </label>
+                                <label class="form-check m-0" style="font-size:0.68rem;color:#cbd5e1;">
+                                    <input class="form-check-input me-1" type="checkbox" id="agent-memory-policy-pinned" checked title="When enabled, pinned memories are exempt from TTL expiration.">Pinned no-expire
+                                </label>
+                            </div>
+                            <div class="d-flex gap-2 align-items-center">
+                                <input id="agent-memory-policy-ttl" class="form-control form-control-sm" type="number" min="1" max="3650" step="1" value="180" placeholder="TTL days" style="max-width:92px;" title="Default retention in days for non-pinned memories.">
+                                <input id="agent-memory-policy-min-imp" class="form-control form-control-sm" type="number" min="0" max="1" step="0.05" value="0.10" placeholder="Min imp" style="max-width:90px;" title="Minimum importance score to include memory in retrieval.">
+                                <input id="agent-memory-policy-max-hits" class="form-control form-control-sm" type="number" min="1" max="50" step="1" value="12" placeholder="Max hits" style="max-width:90px;" title="Maximum number of memory hits returned to the agent.">
+                                <button class="btn btn-sm btn-outline-warning" id="btn-agent-memory-policy-apply" type="button"><i class="bi bi-sliders2"></i> Apply</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trade Panel -->
+        <div class="trade-panel mb-0 sidebar-trade" id="trade-exec-panel">
+            <div class="trade-panel-header">
+                <i class="bi bi-currency-exchange me-1"></i> Trade Execution
+            </div>
+            <div class="trade-panel-body" id="trade-panel-body">
+                <div class="trade-direction-hint">
+                    <span class="dir-tag buy-tag">BUY = Long</span>
+                    <span class="dir-tag sell-tag">SELL = Short</span>
+                </div>
+                <div id="trade-buttons" class="d-flex justify-content-between mb-3">
+                    <button class="btn-buy" id="btn-buy">BUY</button>
+                    <button class="btn-sell" id="btn-sell">SELL</button>
+                </div>
+
+                <div class="trade-input-group">
+                    <label>Stop Loss</label>
+                    <input type="number" id="trade-sl" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2840.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Long TP (BUY)</label>
+                    <input type="number" id="trade-tp-long" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2870.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Short TP (SELL)</label>
+                    <input type="number" id="trade-tp-short" class="form-control form-control-sm" step="0.01" placeholder="e.g. 2810.00">
+                </div>
+                <div class="trade-input-group">
+                    <label>Lot Size</label>
+                    <input type="number" id="trade-lots" class="form-control form-control-sm" value="0.01" min="0.01" step="0.01">
+                </div>
+                <div class="trade-input-group">
+                    <label class="d-flex justify-content-between align-items-center">
+                        <span>Cost Model (Paper)</span>
+                        <span style="font-size:0.7rem;color:#94a3b8;">spread + turnover</span>
+                    </label>
+                    <div class="form-check mb-1">
+                        <input class="form-check-input" type="checkbox" id="cost-model-enabled" checked>
+                        <label class="form-check-label" for="cost-model-enabled" style="font-size:0.75rem;color:#cbd5e1;">
+                            Enable realistic execution costs
+                        </label>
+                    </div>
+                    <div class="row g-1">
+                        <div class="col-6">
+                            <select id="cost-model-spread-source" class="form-select form-select-sm">
+                                <option value="manual" selected>Manual spread</option>
+                                <option value="mt5_live">MT5 live spread</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <input type="number" id="cost-model-spread" class="form-control form-control-sm" step="0.00001" placeholder="Spread">
+                        </div>
+                        <div class="col-12">
+                            <input type="number" id="cost-model-tc-rate" class="form-control form-control-sm" step="0.00001" placeholder="TC rate">
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center justify-content-between mt-1">
+                        <small id="cost-model-hint" style="color:#94a3b8;font-size:0.7rem;">Defaults by symbol</small>
+                        <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="btn-cost-model-apply" type="button">Apply</button>
+                    </div>
+                    <small id="cost-model-summary" style="color:#94a3b8;font-size:0.72rem;display:block;margin-top:3px;">Net P&L will include costs.</small>
+                </div>
+
+                <!-- Open Position -->
+                <div id="open-pos-id" data-trade-id=""></div>
+                <div id="open-position-display" class="d-none"></div>
+                <button class="btn btn-sm btn-outline-danger w-100 mt-2 d-none" id="btn-close-pos">
+                    <i class="bi bi-x-circle me-1"></i>Close Position
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="workbench-fs-dock" class="workbench-fs-dock d-none" aria-label="Workbench quick actions">
+    <button class="dock-btn dock-trade" type="button" data-panel-launch="trade" title="Trade Execution">
+        <i class="bi bi-currency-exchange"></i><span>Trade</span>
+    </button>
+    <button class="dock-btn dock-tools" type="button" data-panel-launch="tools" title="Analysis Tools">
+        <i class="bi bi-tools"></i><span>Tools</span>
+    </button>
+    <button class="dock-btn dock-agent" type="button" data-panel-launch="agent" title="AI Trading Agent">
+        <i class="bi bi-stars"></i><span>Agent</span>
+    </button>
+    <div class="dock-divider" aria-hidden="true"></div>
+    <button class="dock-btn dock-research" type="button" id="dock-open-research" title="Open Research">
+        <i class="bi bi-search"></i><span>Research</span>
+    </button>
+    <button class="dock-btn dock-indicators" type="button" id="dock-open-indicators" title="Open Indicators">
+        <i class="bi bi-graph-up"></i><span>Indicators</span>
+    </button>
+    <button class="dock-btn dock-market" type="button" id="dock-open-market" title="Symbol / Timeframe">
+        <i class="bi bi-sliders2"></i><span>Market</span>
+    </button>
+    <button class="dock-btn dock-exit-focus" type="button" id="dock-exit-focus" title="Exit Focus Mode">
+        <i class="bi bi-fullscreen-exit"></i><span>Exit</span>
+    </button>
+</div>
+
+<div class="modal fade" id="tradeExecModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-bottom-sheet">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-currency-exchange me-1"></i>Trade Execution</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="trade-exec-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="analysisToolsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-tools me-1"></i>Analysis Tools</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="analysis-tools-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="agentPanelModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-bottom-sheet">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-stars me-1"></i>AI Trading Agent</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="agent-panel-modal-body"></div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade agent-chat-modal" id="agentChatModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-chat-dots me-1"></i>Agent Chat</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="agent-chat-section" class="d-none agent-chat-section-shell">
+                    <div class="agent-chat-shell">
+                        <div class="agent-chat-main">
+                            <div id="consultant-chat-log" class="consultant-chat-log mb-1">
+                                <div class="fvg-empty">Agent ready. Ask anything about setup, tools, or trade planning.</div>
+                            </div>
+                            <div id="agent-chat-typing" class="agent-chat-typing d-none">
+                                <div class="agent-chat-typing-dots"><span></span><span></span><span></span></div>
+                                <span>Agent is thinking...</span>
+                            </div>
+                            <div id="agent-inline-approval" class="agent-inline-approval d-none">
+                                <div class="title"><i class="bi bi-shield-check me-1"></i>Pending Approval</div>
+                                <div id="agent-inline-approval-meta" class="meta"></div>
+                                <div class="actions">
+                                    <button class="btn btn-sm btn-success" id="btn-inline-approval-approve" type="button">
+                                        <i class="bi bi-check2-circle me-1"></i>Approve
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-inline-approval-cancel" type="button">
+                                        <i class="bi bi-x-circle me-1"></i>Cancel
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="agent-chat-composer">
+                                <textarea id="consultant-input" class="form-control form-control-sm" rows="3" placeholder="Ask Agent... Use /remember global: <rule> to save memory, /memory <query> to recall."></textarea>
+                                <div class="agent-chat-actions">
+                                    <button class="btn btn-sm btn-success" id="btn-consultant-send" type="button">
+                                        <i class="bi bi-send me-1"></i>Send
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-info" id="btn-remember-last-reply" type="button" title="Save last assistant reply to memory">
+                                        <i class="bi bi-bookmark-plus me-1"></i>Remember
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <aside class="agent-chat-side">
+                            <div class="agent-chat-avatar-wrap">
+                                <div class="agent-orb"><i class="bi bi-stars"></i></div>
+                                <div class="agent-orb-meta">
+                                    <div class="agent-orb-name" id="agent-orb-name">Trader Apprentice</div>
+                                    <div class="agent-orb-sub" id="agent-orb-sub">Context-aware assistant</div>
+                                </div>
+                            </div>
+                            <button class="agent-trace-launch" id="btn-open-agent-trace" type="button">
+                                <i class="bi bi-window-stack me-1"></i>Execution Trace
+                            </button>
+                            <button class="agent-trigger-launch" id="btn-open-agent-triggers" type="button">
+                                <i class="bi bi-bullseye me-1"></i>Scheduled Triggers
+                            </button>
+                            <div class="agent-chat-card">
+                                <div class="agent-chat-title"><i class="bi bi-chat-left-text me-1"></i>Conversations</div>
+                                <div class="d-flex gap-2 align-items-center">
+                                    <select id="consultant-session-select" class="form-select form-select-sm"></select>
+                                    <button class="btn btn-sm btn-outline-secondary" id="btn-consultant-new-session" type="button" title="New chat session">
+                                        <i class="bi bi-plus-lg"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" id="btn-consultant-delete-session" type="button" title="Delete selected session">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="agent-chat-card">
+                                <div class="agent-chat-title"><i class="bi bi-lightbulb me-1"></i>Quick Commands</div>
+                                <div style="font-size:0.72rem;color:#94a3b8;line-height:1.45;">
+                                    <div><code>/remember global: your rule</code></div>
+                                    <div><code>/remember session: current lesson</code></div>
+                                    <div><code>/memory fvg mitigation</code></div>
+                                </div>
+                            </div>
+                            <div class="agent-chat-card" id="agent-approval-card">
+                                <div class="agent-chat-title"><i class="bi bi-shield-check me-1"></i>Pending Approvals</div>
+                                <div id="agent-approval-list" style="font-size:0.72rem;color:#94a3b8;line-height:1.45;">
+                                    <div class="fvg-empty mb-0">No pending trade approvals.</div>
+                                </div>
+                            </div>
+                        </aside>
+                    </div>
+                    <div id="agent-trace-window" class="agent-trace-window d-none">
+                        <div class="agent-trace-header">
+                            <div class="agent-trace-title"><i class="bi bi-terminal me-1"></i>Agent Execution Trace</div>
+                            <div class="agent-trace-actions">
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="btn-clear-agent-trace" type="button">Clear</button>
+                                <button class="btn btn-sm btn-outline-danger py-0 px-2" id="btn-close-agent-trace" type="button">Close</button>
+                            </div>
+                        </div>
+                        <div id="agent-trace-list" class="agent-trace-list">
+                            <div class="fvg-empty mb-0">No tool execution yet.</div>
+                        </div>
+                    </div>
+                    <div id="agent-trigger-window" class="agent-trigger-window d-none">
+                        <div class="agent-trace-header">
+                            <div class="agent-trace-title"><i class="bi bi-bullseye me-1"></i>Scheduled Triggers</div>
+                            <div class="agent-trace-actions">
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="btn-refresh-agent-triggers-window" type="button">Refresh</button>
+                                <button class="btn btn-sm btn-outline-danger py-0 px-2" id="btn-cancel-all-agent-triggers-window" type="button">Cancel All</button>
+                                <button class="btn btn-sm btn-outline-danger py-0 px-2" id="btn-close-agent-triggers" type="button">Close</button>
+                            </div>
+                        </div>
+                        <div id="agent-trigger-list-modal" class="agent-trigger-list">
+                            <div class="fvg-empty mb-0">No scheduled triggers.</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="agent-chat-gate-modal" class="fvg-empty">Start a Workbench session first, then open chat.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="agentMemoryEditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil-square me-1"></i>Edit Memory</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <textarea id="agent-memory-edit-content" class="form-control form-control-sm" rows="5" maxlength="2000" placeholder="Update memory content..."></textarea>
+                <small class="d-block mt-2" style="color:#94a3b8;font-size:0.72rem;">
+                    Keep it concise and actionable. Minimum 8 characters.
+                </small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-sm btn-primary" type="button" id="btn-agent-memory-edit-save">
+                    <i class="bi bi-check2-circle me-1"></i>Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="marketSwitchModal" tabindex="-1" aria-labelledby="marketSwitchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="marketSwitchModalLabel"><i class="bi bi-sliders2 me-1"></i>Market Switch</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-symbol" style="font-size:0.74rem;color:#94a3b8;">Symbol</label>
+                        <select id="fs-market-symbol" class="form-select form-select-sm">
+                            <option value="XAUUSD">XAUUSD (Gold)</option>
+                            <option value="NAS100">NAS100</option>
+                            <option value="US500">US500</option>
+                            <option value="GBPUSD">GBPUSD</option>
+                            <option value="EURUSD">EURUSD</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-timeframe" style="font-size:0.74rem;color:#94a3b8;">Timeframe</label>
+                        <select id="fs-market-timeframe" class="form-select form-select-sm">
+                            <option value="M1">M1</option>
+                            <option value="M5">M5</option>
+                            <option value="M15">M15</option>
+                            <option value="M30">M30</option>
+                            <option value="H1">H1</option>
+                            <option value="H4">H4</option>
+                            <option value="D1">D1</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-source" style="font-size:0.74rem;color:#94a3b8;">Live Source</label>
+                        <select id="fs-market-source" class="form-select form-select-sm">
+                            <option value="mt5">MT5</option>
+                            <option value="databento">Databento</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="fs-market-days" style="font-size:0.74rem;color:#94a3b8;">Window (Days)</label>
+                        <input id="fs-market-days" class="form-control form-control-sm" type="number" min="0.1" max="60" step="0.1" value="2">
+                    </div>
+                </div>
+                <small class="d-block mt-2" style="color:#94a3b8;font-size:0.72rem;">
+                    Apply updates chart context immediately. If live feed is running, it will switch source/TF automatically.
+                </small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-sm btn-primary" type="button" id="btn-fs-market-apply">
+                    <i class="bi bi-check2-circle me-1"></i>Apply
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Info Card -->
+<div class="info-card mt-3">
+    <div class="accordion" id="infoAccordion">
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoWhat">
+                    <i class="bi bi-question-circle me-2"></i> What is the Trader's Workbench?
+                </button>
+            </h2>
+            <div id="infoWhat" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">
+                    A strategy-free chart analysis environment. Replay any historical data, use professional analysis tools to spot patterns, and practice manual trading without following a preset strategy. Your canvas, your rules.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoFVG">
+                    <i class="bi bi-layers-half me-2"></i> What is a Fair Value Gap (FVG)?
+                </button>
+            </h2>
+            <div id="infoFVG" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">
+                    A Fair Value Gap is a 3-candle pattern where the middle candle moves so aggressively that it creates a gap between the first and third candles' wicks. This gap represents an area where price moved too fast for fair value to be established. Price often returns to fill these gaps. <strong>Bullish FVG</strong> (green) = gap below price, potential support. <strong>Bearish FVG</strong> (red) = gap above price, potential resistance.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#infoGlossary">
+                    <i class="bi bi-book me-2"></i> Key terms glossary
+                </button>
+            </h2>
+            <div id="infoGlossary" class="accordion-collapse collapse" data-bs-parent="#infoAccordion">
+                <div class="accordion-body">
+                    <dl class="mb-0">
+                        <dt class="glossary-term">FVG (Fair Value Gap)</dt>
+                        <dd>A 3-candle imbalance zone. Institutions often return to fill these.</dd>
+                        <dt class="glossary-term">Bullish FVG</dt>
+                        <dd>Gap below price (candle 3 low > candle 1 high). Potential buying zone.</dd>
+                        <dt class="glossary-term">Bearish FVG</dt>
+                        <dd>Gap above price (candle 1 low > candle 3 high). Potential selling zone.</dd>
+                        <dt class="glossary-term">Filled Gap</dt>
+                        <dd>An FVG that price has since traded through, invalidating the zone.</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade indicator-modal" id="researchModal" tabindex="-1" aria-labelledby="researchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="researchModalLabel">
+                    <i class="bi bi-search me-1"></i>Research Optimizer (Sandbox)
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning py-2 mb-3" style="font-size:0.82rem;">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    Research only. Results do not change live/paper execution parameters automatically.
+                </div>
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <label class="form-label mb-1">Strategy</label>
+                        <select id="research-strategy-type" class="form-select form-select-sm">
+                            <option value="sma_crossover" selected>SMA Crossover</option>
+                            <option value="mean_reversion">Mean Reversion</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">TC Rate (%)</label>
+                        <input id="research-tc-rate-pct" type="number" class="form-control form-control-sm" value="0.01" min="0" max="10" step="0.001">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Top Results</label>
+                        <input id="research-top-n" type="number" class="form-control form-control-sm" value="30" min="5" max="200" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Max Combos</label>
+                        <input id="research-max-combos" type="number" class="form-control form-control-sm" value="2500" min="50" max="20000" step="50">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label mb-1">Lookback (Days)</label>
+                        <input id="research-lookback-days" type="number" class="form-control form-control-sm" value="20" min="0.5" max="365" step="0.5">
+                    </div>
+                </div>
+
+                <div id="research-sma-fields" class="row g-2 mt-2">
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Fast Start</label>
+                        <input id="research-fast-start" type="number" class="form-control form-control-sm" value="10" min="2" max="300" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Fast Stop</label>
+                        <input id="research-fast-stop" type="number" class="form-control form-control-sm" value="65" min="3" max="400" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Fast Step</label>
+                        <input id="research-fast-step" type="number" class="form-control form-control-sm" value="5" min="1" max="100" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Slow Start</label>
+                        <input id="research-slow-start" type="number" class="form-control form-control-sm" value="40" min="3" max="700" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Slow Stop</label>
+                        <input id="research-slow-stop" type="number" class="form-control form-control-sm" value="255" min="4" max="800" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Slow Step</label>
+                        <input id="research-slow-step" type="number" class="form-control form-control-sm" value="10" min="1" max="120" step="1">
+                    </div>
+                </div>
+
+                <div id="research-meanrev-fields" class="row g-2 mt-2 d-none">
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">SMA Start</label>
+                        <input id="research-sma-start" type="number" class="form-control form-control-sm" value="15" min="5" max="300" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">SMA Stop</label>
+                        <input id="research-sma-stop" type="number" class="form-control form-control-sm" value="85" min="6" max="500" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">SMA Step</label>
+                        <input id="research-sma-step" type="number" class="form-control form-control-sm" value="5" min="1" max="100" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Dev Start</label>
+                        <input id="research-dev-start" type="number" class="form-control form-control-sm" value="1.2" min="0.2" max="6" step="0.1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Dev Stop</label>
+                        <input id="research-dev-stop" type="number" class="form-control form-control-sm" value="3.1" min="0.3" max="8" step="0.1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Dev Step</label>
+                        <input id="research-dev-step" type="number" class="form-control form-control-sm" value="0.2" min="0.01" max="2" step="0.01">
+                    </div>
+                </div>
+
+                <div class="mt-3 d-flex align-items-center gap-2">
+                    <button type="button" id="btn-research-run" class="btn btn-sm btn-warning">
+                        <i class="bi bi-play-fill me-1"></i>Run Optimization
+                    </button>
+                    <span id="research-status" style="font-size:0.8rem;color:#cbd5e1;">Ready</span>
+                </div>
+
+                <div class="mt-3" id="research-result-wrap">
+                    <div id="research-summary" style="font-size:0.82rem;color:#cbd5e1;">No results yet.</div>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm trade-log-table mb-0">
+                            <thead id="research-results-head"></thead>
+                            <tbody id="research-results-body">
+                                <tr><td class="text-center text-muted py-3"><small>Run optimization to see ranked parameter combinations.</small></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <hr class="my-3" style="border-color: rgba(148, 163, 184, 0.2);">
+                <div id="ml-diagnostic-wrap">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <h6 class="mb-0" style="color:#f8fafc;">
+                            <i class="bi bi-cpu me-1"></i>ML Diagnostic (Data Hygiene)
+                        </h6>
+                        <span id="ml-diagnostic-badge" class="badge bg-secondary">Not run</span>
+                    </div>
+                    <div class="mt-2 text-muted" style="font-size:0.78rem;">
+                        Data quality check only. This is not a direct trading signal.
+                    </div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-3">
+                            <label class="form-label mb-1">Lags</label>
+                            <input id="ml-diag-lags" type="number" class="form-control form-control-sm" value="5" min="1" max="50" step="1">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label mb-1">Train Split</label>
+                            <input id="ml-diag-split-ratio" type="number" class="form-control form-control-sm" value="0.7" min="0.5" max="0.9" step="0.01">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label mb-1">Warn Drift (%)</label>
+                            <input id="ml-diag-warn-pct" type="number" class="form-control form-control-sm" value="50" min="5" max="500" step="1">
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="button" id="btn-ml-diagnostic-run" class="btn btn-sm btn-outline-warning w-100">
+                                <i class="bi bi-play-fill me-1"></i>Run Diagnostic
+                            </button>
+                        </div>
+                    </div>
+                    <div id="ml-diagnostic-summary" class="mt-2" style="font-size:0.8rem;color:#cbd5e1;">
+                        No diagnostic yet.
+                    </div>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm trade-log-table mb-0">
+                            <thead id="ml-diagnostic-head"></thead>
+                            <tbody id="ml-diagnostic-body">
+                                <tr><td class="text-center text-muted py-3"><small>Run ML diagnostic to inspect feature drift.</small></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade indicator-modal" id="indicatorModal" tabindex="-1" aria-labelledby="indicatorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="indicatorModalLabel">
+                    <i class="bi bi-graph-up-arrow me-1"></i>Indicator Selection
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-sma-ema">
+                        <label class="form-check-label" for="ind-sma-ema">SMA / EMA</label>
+                        <small class="hint">SMA20, SMA50, EMA20, EMA50 overlay lines on candles.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-bollinger">
+                        <label class="form-check-label" for="ind-bollinger">Bollinger Bands</label>
+                        <small class="hint">BB(14, 2) upper, middle, lower bands.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-rsi">
+                        <label class="form-check-label" for="ind-rsi">RSI</label>
+                        <small class="hint">RSI(10) oscillator line (0-100).</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-adx">
+                        <label class="form-check-label" for="ind-adx">ADX</label>
+                        <small class="hint">ADX(14) trend strength oscillator (0-100).</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-stoch">
+                        <label class="form-check-label" for="ind-stoch">Stochastic Oscillator</label>
+                        <small class="hint">Stoch(14,3,3): %K and %D lines.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-golden-cross">
+                        <label class="form-check-label" for="ind-golden-cross">Golden / Death Cross Detector</label>
+                        <small class="hint">Marks SMA50 crossing above SMA200 (Golden) and below SMA200 (Death).</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="btn-indicators-reset" class="btn btn-sm btn-outline-secondary">Reset</button>
+                <button type="button" class="btn btn-sm btn-primary" data-bs-dismiss="modal">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trade Log -->
+<div class="card mt-3" id="trade-log-card">
+    <div class="card-header">
+        <i class="bi bi-journal-text me-1"></i> Trade Log
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm trade-log-table mb-0">
+                <thead>
+                    <tr>
+                        <th>Dir</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>SL</th>
+                        <th>TP</th>
+                        <th>P&L</th>
+                        <th>R</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody id="trade-log-body">
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-3">
+                            <small>No trades yet. Start a session and practice your analysis!</small>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/workbench.js') }}"></script>
+{% endblock %}

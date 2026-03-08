@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}Options Edge Backtest {{ run.run_id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('options_edge_dashboard') }}">Options Edge</a></li>
+                <li class="breadcrumb-item active">Backtest {{ run.run_id }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0">Backtest <code>{{ run.run_id }}</code></h2>
+        <p class="text-muted mb-0">{{ run.created_at|datetime }} | {{ run.status }} | scans={{ run.scans_used }} trades={{ run.trades_simulated }}</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('options_edge_dashboard') }}">
+        <i class="bi bi-arrow-left me-1"></i>Back
+    </a>
+</div>
+
+{% set m = run.metrics or {} %}
+<div class="row g-4 mb-4">
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Net Profit</div><div class="stat-value {% if (m.net_profit or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">${{ "%.2f"|format(m.net_profit or 0) }}</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Win Rate</div><div class="stat-value">{{ "%.1f"|format(m.win_rate or 0) }}%</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Profit Factor</div><div class="stat-value">{{ "%.2f"|format(m.profit_factor or 0) }}</div></div></div>
+    <div class="col-md-3"><div class="stat-card text-center"><div class="stat-label">Max DD</div><div class="stat-value text-danger">{{ "%.2f"|format(m.max_drawdown_pct or 0) }}%</div></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Core Metrics</div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-6"><div class="metric-card"><div class="label">Sharpe</div><div class="value">{{ "%.2f"|format(m.sharpe_ratio or 0) }}</div></div></div>
+                    <div class="col-6"><div class="metric-card"><div class="label">Sortino</div><div class="value">{{ "%.2f"|format(m.sortino_ratio or 0) }}</div></div></div>
+                    <div class="col-6"><div class="metric-card"><div class="label">Calmar</div><div class="value">{{ "%.2f"|format(m.calmar_ratio or 0) }}</div></div></div>
+                    <div class="col-6"><div class="metric-card"><div class="label">Expectancy</div><div class="value">${{ "%.2f"|format(m.expectancy or 0) }}</div></div></div>
+                    <div class="col-6"><div class="metric-card"><div class="label">Avg Win</div><div class="value text-success">${{ "%.2f"|format(m.avg_win or 0) }}</div></div></div>
+                    <div class="col-6"><div class="metric-card"><div class="label">Avg Loss</div><div class="value text-danger">${{ "%.2f"|format(m.avg_loss or 0) }}</div></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-bezier2 me-2"></i>Walk-Forward</div>
+            <div class="card-body p-0">
+                {% set wf = run.walk_forward or {} %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead>
+                            <tr><th>Fold</th><th>Scans</th><th>Trades</th><th>Net</th><th>PF</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for f in (wf.folds or []) %}
+                            <tr>
+                                <td>{{ f.fold }}</td>
+                                <td>{{ f.scan_count }}</td>
+                                <td>{{ (f.metrics or {}).get('total_trades', 0) }}</td>
+                                <td class="{% if (f.metrics or {}).get('net_profit', 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    ${{ "%.2f"|format((f.metrics or {}).get('net_profit', 0)) }}
+                                </td>
+                                <td>{{ "%.2f"|format((f.metrics or {}).get('profit_factor', 0)) }}</td>
+                            </tr>
+                            {% endfor %}
+                            {% if not (wf.folds or []) %}
+                            <tr><td colspan="5" class="text-center text-muted py-3">No walk-forward folds.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-graph-up me-2"></i>Equity Curve</div>
+    <div class="card-body">
+        {% if run.equity_curve %}
+        <canvas id="equityCurveChart" height="220"></canvas>
+        {% else %}
+        <div class="text-muted">No equity curve data available.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-journal-text me-2"></i>Trade Log ({{ (run.trade_log or [])|length }})</div>
+    <div class="card-body p-0">
+        <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Scan</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Qty</th>
+                        <th>POP</th>
+                        <th>Win</th>
+                        <th>Gross</th>
+                        <th>Costs</th>
+                        <th>Net</th>
+                        <th>Equity</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in (run.trade_log or []) %}
+                    <tr class="{% if t.win %}table-success{% else %}table-danger{% endif %}">
+                        <td>{{ t.i }}</td>
+                        <td><code>{{ t.scan_id }}</code></td>
+                        <td><strong>{{ t.symbol }}</strong></td>
+                        <td>{{ t.structure_type }}</td>
+                        <td>{{ t.qty }}</td>
+                        <td>{{ "%.1f"|format((t.pop_est or 0) * 100) }}%</td>
+                        <td>{% if t.win %}<i class="bi bi-check-circle text-success"></i>{% else %}<i class="bi bi-x-circle text-danger"></i>{% endif %}</td>
+                        <td>${{ "%.2f"|format(t.gross_pnl or 0) }}</td>
+                        <td class="text-muted">${{ "%.2f"|format(t.costs or 0) }}</td>
+                        <td class="{% if (t.net_pnl or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            ${{ "%.2f"|format(t.net_pnl or 0) }}
+                        </td>
+                        <td>${{ "%.2f"|format(t.equity_after or 0) }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not (run.trade_log or []) %}
+                    <tr><td colspan="11" class="text-center text-muted py-3">No trade log entries.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-exclamation-triangle me-2"></i>Stress Scenarios</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr><th>Scenario</th><th>Trades</th><th>Win Rate</th><th>PF</th><th>Net</th><th>DD%</th></tr>
+                </thead>
+                <tbody>
+                    {% for name, sm in (run.stress or {}).items() %}
+                    <tr>
+                        <td><code>{{ name }}</code></td>
+                        <td>{{ sm.total_trades or 0 }}</td>
+                        <td>{{ "%.1f"|format(sm.win_rate or 0) }}%</td>
+                        <td>{{ "%.2f"|format(sm.profit_factor or 0) }}</td>
+                        <td class="{% if (sm.net_profit or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">${{ "%.2f"|format(sm.net_profit or 0) }}</td>
+                        <td class="text-danger">{{ "%.2f"|format(sm.max_drawdown_pct or 0) }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not (run.stress or {}) %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">No stress results.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-sliders me-2"></i>Request Config</div>
+    <div class="card-body">
+        <pre class="mb-0"><code>{{ (run.request or {})|tojson(indent=2) }}</code></pre>
+    </div>
+</div>
+
+{% if run.equity_curve %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(() => {
+    const eq = {{ (run.equity_curve or [])|tojson }};
+    if (!eq || eq.length === 0) return;
+    const canvas = document.getElementById('equityCurveChart');
+    if (!canvas) return;
+    const first = Number(eq[0].equity || 0);
+    const last = Number(eq[eq.length - 1].equity || 0);
+    const color = last >= first ? '#198754' : '#dc3545';
+    new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: eq.map(e => e.i),
+            datasets: [{
+                label: 'Equity',
+                data: eq.map(e => e.equity),
+                borderColor: color,
+                fill: false,
+                tension: 0.12,
+                pointRadius: 1.5
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { title: { display: true, text: 'Trade Index' } },
+                y: { title: { display: true, text: 'Equity ($)' } }
+            }
+        }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

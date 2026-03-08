@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+
+{% block title %}CSP Strategy - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1">Cash-Secured Put (CSP)</h2>
+        <p class="text-muted mb-0">Fundamental screening + CSP lifecycle backtest</p>
+    </div>
+    <div class="text-end">
+        <div class="small text-muted">Provider</div>
+        <span class="badge {% if provider_status.configured %}bg-success{% else %}bg-danger{% endif %}">
+            Polygon {% if provider_status.configured %}Configured{% else %}Not Configured{% endif %}
+        </span>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-funnel me-2"></i>Run CSP Screener</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('options_edge_csp_run_screen') }}" class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Symbols (comma-separated)</label>
+                        <input class="form-control" name="symbols" value="AAPL,MSFT,NVDA,AMZN,META,TSLA">
+                        <small class="text-muted">Optional if S&P 500 auto-load is enabled.</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" name="use_sp500" id="cspUseSp500">
+                            <label class="form-check-label" for="cspUseSp500">Auto-load S&P500 universe</label>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">S&P500 Limit</label>
+                        <input class="form-control" type="number" name="sp500_limit" value="475" min="1" max="600">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Revenue Growth %</label>
+                        <input class="form-control" type="number" name="min_revenue_growth_pct" value="5" step="0.1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">EPS 5Y Growth %</label>
+                        <input class="form-control" type="number" name="min_eps_growth_5y_pct" value="5" step="0.1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">EPS FWD Growth %</label>
+                        <input class="form-control" type="number" name="min_eps_growth_fwd_pct" value="0" step="0.1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Profit Margin %</label>
+                        <input class="form-control" type="number" name="min_profit_margin_pct" value="10" step="0.1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Min IV Rank</label>
+                        <input class="form-control" type="number" name="min_iv_rank" value="0.30" step="0.01" min="0" max="1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Min Option Vol (30d)</label>
+                        <input class="form-control" type="number" name="min_option_volume_30d" value="5000000">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">VIX (optional)</label>
+                        <input class="form-control" type="number" name="vix_value" step="0.1" placeholder="leave blank to auto mode">
+                    </div>
+                    <div class="col-3">
+                        <label class="form-label">VIX Aggressive</label>
+                        <input class="form-control" type="number" name="vix_aggressive_threshold" value="30" step="0.5">
+                    </div>
+                    <div class="col-3">
+                        <label class="form-label">SMA200 Touch %</label>
+                        <input class="form-control" type="number" name="sma200_touch_pct" value="2.0" step="0.1">
+                    </div>
+                    <div class="col-6 d-flex align-items-center">
+                        <div class="form-check me-3">
+                            <input class="form-check-input" type="checkbox" name="fetch_fundamentals" id="fetchFundamentals" checked>
+                            <label class="form-check-label" for="fetchFundamentals">Fetch fundamentals from Polygon</label>
+                        </div>
+                    </div>
+                    <div class="col-6 d-flex align-items-center">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="include_price_vs_sma200" id="includeSma200">
+                            <label class="form-check-label" for="includeSma200">Compute price vs SMA200 (slower)</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Excluded Industries (comma/newline)</label>
+                        <textarea class="form-control" name="excluded_industries" rows="2" placeholder="Drug Manufacturers, Tobacco"></textarea>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-primary" type="submit">
+                            <i class="bi bi-lightning-charge me-1"></i>Run CSP Screen
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-graph-up-arrow me-2"></i>Run CSP Backtest</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('options_edge_csp_run_backtest') }}" class="row g-3">
+                    <div class="col-6">
+                        <label class="form-label">Symbol (optional)</label>
+                        <input class="form-control" name="symbol" placeholder="AAPL">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Screen Run ID (optional)</label>
+                        <input class="form-control" type="number" name="screen_run_id" placeholder="latest candidate if blank">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Symbols List (optional, comma-separated)</label>
+                        <input class="form-control" name="symbols" placeholder="AAPL,MSFT,NVDA">
+                        <small class="text-muted">If provided, portfolio mode can run across multiple symbols.</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" name="portfolio_mode" id="cspPortfolioMode" checked>
+                            <label class="form-check-label" for="cspPortfolioMode">Portfolio mode</label>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Max Symbols</label>
+                        <input class="form-control" type="number" name="max_symbols" value="10" min="1" max="200">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">Start Date</label>
+                        <input class="form-control" type="date" name="start_date" value="2025-01-01" required>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label">End Date</label>
+                        <input class="form-control" type="date" name="end_date" value="2026-01-01" required>
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Initial Capital</label>
+                        <input class="form-control" type="number" name="initial_capital" value="100000">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Max CSPs</label>
+                        <input class="form-control" type="number" name="max_concurrent_csps" value="5" min="1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">Max Portfolio %</label>
+                        <input class="form-control" type="number" name="max_portfolio_allocation_pct" value="20" step="0.1">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">DTE Min</label>
+                        <input class="form-control" type="number" name="target_dte_min" value="30">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">DTE Max</label>
+                        <input class="form-control" type="number" name="target_dte_max" value="45">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label">IV Floor</label>
+                        <input class="form-control" type="number" name="iv_floor" value="0.40" step="0.01">
+                    </div>
+                    <div class="col-12">
+                        <details>
+                            <summary class="text-primary" style="cursor:pointer;">Advanced Parameters</summary>
+                            <div class="row g-2 mt-2">
+                                <div class="col-3"><input class="form-control" name="normal_pop_min" value="0.70" placeholder="normal_pop_min"></div>
+                                <div class="col-3"><input class="form-control" name="normal_pop_max" value="0.80" placeholder="normal_pop_max"></div>
+                                <div class="col-3"><input class="form-control" name="normal_yield_min_pct" value="1.5" placeholder="normal_yield_min_pct"></div>
+                                <div class="col-3"><input class="form-control" name="normal_yield_max_pct" value="3.0" placeholder="normal_yield_max_pct"></div>
+                                <div class="col-3"><input class="form-control" name="hard_min_yield_pct" value="1.0" placeholder="hard_min_yield_pct"></div>
+                                <div class="col-3"><input class="form-control" name="aggressive_yield_min_pct" value="4.0" placeholder="aggressive_yield_min_pct"></div>
+                                <div class="col-3"><input class="form-control" name="aggressive_yield_max_pct" value="6.0" placeholder="aggressive_yield_max_pct"></div>
+                                <div class="col-3"><input class="form-control" name="risk_free_rate" value="0.03" placeholder="risk_free_rate"></div>
+                                <div class="col-3"><input class="form-control" name="vix_aggressive_threshold" value="30.0" placeholder="vix_aggressive_threshold"></div>
+                                <div class="col-3"><input class="form-control" name="sma200_touch_pct" value="2.0" placeholder="sma200_touch_pct"></div>
+                                <div class="col-3"><input class="form-control" name="iv_premium_factor" value="1.2" placeholder="iv_premium_factor"></div>
+                                <div class="col-3"><input class="form-control" name="max_single_stock_pct" value="5.0" placeholder="max_single_stock_pct"></div>
+                                <div class="col-3"><input class="form-control" name="max_sector_concentration" value="2" placeholder="max_sector_concentration"></div>
+                            </div>
+                        </details>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-success" type="submit">
+                            <i class="bi bi-play-fill me-1"></i>Run CSP Backtest
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-list-check me-2"></i>Recent CSP Screens</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Run Date</th>
+                                <th>Screened</th>
+                                <th>Passed</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in screens %}
+                            <tr>
+                                <td><code>#{{ s.id }}</code></td>
+                                <td>{{ s.run_date|datetime }}</td>
+                                <td>{{ s.total_symbols_screened }}</td>
+                                <td>{{ s.candidates_passed }}</td>
+                                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('options_edge_csp_screen_detail', screen_id=s.id) }}"><i class="bi bi-eye"></i></a></td>
+                            </tr>
+                            {% endfor %}
+                            {% if not screens %}
+                            <tr><td colspan="5" class="text-center text-muted py-4">No CSP screens yet.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-clock-history me-2"></i>Recent CSP Backtests</div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Period</th>
+                                <th>Net</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in backtests %}
+                            <tr>
+                                <td><code>#{{ r.id }}</code></td>
+                                <td>{{ r.start_date }} → {{ r.end_date }}</td>
+                                <td class="{% if (r.results or {}).get('net_profit', 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    ${{ "%.2f"|format((r.results or {}).get('net_profit', 0)) }}
+                                </td>
+                                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('options_edge_csp_backtest_detail', run_id=r.id) }}"><i class="bi bi-eye"></i></a></td>
+                            </tr>
+                            {% endfor %}
+                            {% if not backtests %}
+                            <tr><td colspan="4" class="text-center text-muted py-4">No CSP backtests yet.</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

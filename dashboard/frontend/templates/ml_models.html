@@ -1,0 +1,744 @@
+{% extends "base.html" %}
+
+{% block title %}ML Models - ProTrading Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2><i class="bi bi-cpu me-2"></i>ML Models</h2>
+        <p class="text-muted mb-0">Train and manage machine learning trade filters</p>
+    </div>
+</div>
+
+<!-- Train New Model Card -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-plus-circle me-2"></i>Train New Model
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('train_ml_model') }}" id="trainForm">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Source Backtest</label>
+                    <select class="form-select" name="result_id" required id="backtestSelect">
+                        <option value="" data-strategy="" data-symbol="" data-timeframe="">Select a completed backtest...</option>
+                        {% for bt in backtests %}
+                        <option value="{{ bt.id }}"
+                                data-strategy="{{ bt.strategy_id }}"
+                                data-symbol="{{ bt.symbol }}"
+                                data-timeframe="{{ bt.timeframe }}">
+                            #{{ bt.id }} - {{ bt.config_name }} | {{ bt.strategy_id }} | {{ bt.symbol }}/{{ bt.timeframe }} ({{ bt.total_trades }} trades, {{ "%.1f"|format(bt.win_rate) }}% WR, ${{ "%.2f"|format(bt.net_profit) }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">Needs 10+ trades (30+ recommended). Model scoped to backtest's strategy/symbol/timeframe.</div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Base Strategy <small class="text-muted">(auto-set from backtest)</small></label>
+                    <select class="form-select" name="strategy_id" required id="strategySelect">
+                        {% for s in strategies %}
+                        <option value="{{ s.id }}">{{ s.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text" id="scopeInfo">Model will be scoped to selected strategy + symbol/timeframe</div>
+                </div>
+                <div class="col-md-3">
+                    <label for="model_type" class="form-label">Model Type</label>
+                    <select name="model_type" id="model_type" class="form-select">
+                        <option value="xgboost" selected>XGBoost (Fast, Interpretable)</option>
+                        <option value="lightgbm">LightGBM (Fast, High Accuracy)</option>
+                        <option value="lstm">LSTM (Temporal Patterns, needs 500+ trades)</option>
+                        <option value="cnn">1D-CNN (Local Patterns, needs 500+ trades)</option>
+                        <option value="transformer">Transformer (Attention-based, needs 500+ trades)</option>
+                        <option value="ensemble">Ensemble (XGBoost + LightGBM Stack)</option>
+                    </select>
+                    <div class="form-text">Algorithm for the trade filter model</div>
+                </div>
+                <div class="col-md-2 d-flex flex-column justify-content-end">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" name="use_hpo" id="use_hpo">
+                        <label class="form-check-label" for="use_hpo">
+                            Auto-tune hyperparameters <small class="text-muted">(slower, better results)</small>
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="trainBtn">
+                        <i class="bi bi-cpu me-2"></i>Train Model
+                    </button>
+                </div>
+            </div>
+        </form>
+        <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>How it works:</strong> Training uses walk-forward validation (expanding window) to prevent overfitting.
+            The model learns which trade setups are likely to win based on 27 features (bias, indicators, time, session context, etc.).
+            <strong>Important:</strong> Trained models are scoped to a specific strategy + symbol + timeframe combination.
+            A model trained on MACD+EMA / XAUUSD / M5 will only be used when backtesting with those same settings.
+        </div>
+    </div>
+</div>
+
+<!-- Auto-Retrain Settings Card -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-arrow-repeat me-2"></i>Auto-Retrain Settings</span>
+        <span class="badge" id="retrainStatusBadge">Loading...</span>
+    </div>
+    <div class="card-body">
+        <div class="row g-3 align-items-center">
+            <div class="col-md-3">
+                <small class="text-muted d-block">Status</small>
+                <span id="retrainStatusText">Loading...</span>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label mb-0">Interval</label>
+                <select class="form-select form-select-sm" id="retrainInterval">
+                    <option value="24">Daily</option>
+                    <option value="168" selected>Weekly</option>
+                    <option value="336">Bi-weekly</option>
+                    <option value="720">Monthly</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label mb-0">Quality Gate (AUC tolerance)</label>
+                <select class="form-select form-select-sm" id="retrainTolerance">
+                    <option value="0.01">1% (strict)</option>
+                    <option value="0.02" selected>2% (default)</option>
+                    <option value="0.05">5% (lenient)</option>
+                </select>
+            </div>
+            <div class="col-md-3 d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" onclick="toggleRetrain()" id="toggleRetrainBtn">
+                    Enable
+                </button>
+                <button class="btn btn-sm btn-primary" onclick="saveRetrainConfig()">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </div>
+        </div>
+
+        <!-- Retrain Logs -->
+        <div class="mt-3">
+            <h6 class="mb-2">Recent Retrain Log</h6>
+            <div id="retrainLogsLoading" class="text-center py-2">
+                <span class="spinner-border spinner-border-sm"></span>
+            </div>
+            <div class="table-responsive" id="retrainLogsTable" style="display:none">
+                <table class="table table-sm table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Model</th>
+                            <th>Type</th>
+                            <th>Trigger</th>
+                            <th class="text-end">Old AUC</th>
+                            <th class="text-end">New AUC</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="retrainLogsBody">
+                    </tbody>
+                </table>
+            </div>
+            <div id="retrainLogsEmpty" class="text-center py-2 text-muted" style="display:none">
+                <small>No retrain logs yet. Retrain will run on schedule or can be triggered manually.</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- RL Online Learning Card -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-robot me-2"></i>RL Online Learning</span>
+        <span class="badge" id="rlStatusBadge">Loading...</span>
+    </div>
+    <div class="card-body">
+        <div class="row g-3 align-items-center">
+            <div class="col-md-3">
+                <small class="text-muted d-block">Buffer Status</small>
+                <span id="rlBufferStatus">Loading...</span>
+            </div>
+            <div class="col-md-3">
+                <small class="text-muted d-block">Last Update</small>
+                <span id="rlLastUpdate">Never</span>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label mb-0">Update Interval</label>
+                <select class="form-select form-select-sm" id="rlUpdateInterval">
+                    <option value="12">Every 12 hours</option>
+                    <option value="24" selected>Every 24 hours</option>
+                    <option value="48">Every 48 hours</option>
+                    <option value="168">Weekly</option>
+                </select>
+            </div>
+            <div class="col-md-3 d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" onclick="toggleRLOnline()" id="toggleRLBtn">
+                    Enable
+                </button>
+                <button class="btn btn-sm btn-primary" onclick="saveRLConfig()">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </div>
+        </div>
+
+        <!-- RL Online Logs -->
+        <div class="mt-3">
+            <h6 class="mb-2">Recent Online Updates</h6>
+            <div id="rlLogsLoading" class="text-center py-2">
+                <span class="spinner-border spinner-border-sm"></span>
+            </div>
+            <div class="table-responsive" id="rlLogsTable" style="display:none">
+                <table class="table table-sm table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th class="text-end">Experiences</th>
+                            <th class="text-end">Avg Reward</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rlLogsBody">
+                    </tbody>
+                </table>
+            </div>
+            <div id="rlLogsEmpty" class="text-center py-2 text-muted" style="display:none">
+                <small>No online updates yet. Enable online learning and trade live to accumulate experiences.</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trained Models List -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-collection me-2"></i>Trained Models</span>
+        <span class="badge bg-primary">{{ models|length }} model{{ 's' if models|length != 1 }}</span>
+    </div>
+    <div class="card-body">
+        {% if models %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Strategy / Scope</th>
+                        <th>Model Type</th>
+                        <th>Trained</th>
+                        <th>Trades</th>
+                        <th>Accuracy</th>
+                        <th>AUC-ROC</th>
+                        <th>F1 Score</th>
+                        <th>R:R MAE</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for model in models %}
+                    <tr>
+                        <td><span class="badge bg-secondary">#{{ model.id }}</span></td>
+                        <td>
+                            <strong>{{ model.strategy_id }}</strong>
+                            <br><small class="text-muted">{{ model.symbol|default('XAUUSD') }} / {{ model.timeframe|default('M1') }} | backtest #{{ model.base_result_id }}</small>
+                        </td>
+                        <td>
+                            <span class="badge bg-info">{{ model.model_type or 'xgboost' }}</span>
+                        </td>
+                        <td>
+                            {% if model.trained_at %}
+                                {{ model.trained_at[:16].replace('T', ' ') }}
+                            {% endif %}
+                        </td>
+                        <td>{{ model.total_trades }}</td>
+                        <td>
+                            <span class="badge {% if model.avg_accuracy >= 0.55 %}bg-success{% elif model.avg_accuracy >= 0.50 %}bg-warning{% else %}bg-danger{% endif %}">
+                                {{ "%.1f"|format(model.avg_accuracy * 100) }}%
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge {% if model.avg_auc_roc >= 0.60 %}bg-success{% elif model.avg_auc_roc >= 0.55 %}bg-warning{% else %}bg-danger{% endif %}">
+                                {{ "%.3f"|format(model.avg_auc_roc) }}
+                            </span>
+                        </td>
+                        <td>{{ "%.3f"|format(model.avg_f1) }}</td>
+                        <td>{{ "%.3f"|format(model.avg_rr_mae) }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary" onclick="showModelDetails({{ model|tojson }})">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-warning" onclick="triggerRetrain({{ model.id }})" title="Retrain this model">
+                                <i class="bi bi-arrow-repeat"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-success" onclick="retrainWithLiveData({{ model.id }})" title="Retrain with live trade data">
+                                <i class="bi bi-activity"></i>
+                            </button>
+                            <form method="POST" action="{{ url_for('delete_ml_model', model_id=model.id) }}" style="display:inline" onsubmit="return confirm('Delete this model?')">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-cpu display-4 text-muted"></i>
+            <h5 class="mt-3">No Models Trained</h5>
+            <p class="text-muted">
+                Train your first ML model by selecting a completed backtest above.<br>
+                The backtest needs at least 30 trades (6+ months of data recommended).
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Model Details Modal -->
+<div class="modal fade" id="modelDetailsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-cpu me-2"></i>Model Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modelDetailsBody">
+                <!-- Filled by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Auto-populate strategy_id when a backtest is selected
+document.getElementById('backtestSelect').addEventListener('change', function() {
+    const selected = this.options[this.selectedIndex];
+    const strategyId = selected.getAttribute('data-strategy');
+    const symbol = selected.getAttribute('data-symbol');
+    const timeframe = selected.getAttribute('data-timeframe');
+
+    if (strategyId) {
+        const strategySelect = document.getElementById('strategySelect');
+        // Try to select the matching strategy
+        for (let opt of strategySelect.options) {
+            if (opt.value === strategyId) {
+                opt.selected = true;
+                break;
+            }
+        }
+        document.getElementById('scopeInfo').innerHTML =
+            `Model scoped to: <strong>${strategyId}</strong> / <strong>${symbol}</strong> / <strong>${timeframe}</strong>`;
+    } else {
+        document.getElementById('scopeInfo').textContent = 'Model will be scoped to selected strategy + symbol/timeframe';
+    }
+});
+
+// Filter backtests when a strategy is selected
+document.getElementById('strategySelect').addEventListener('change', function() {
+    const selectedStrategy = this.value;
+    const backtestSelect = document.getElementById('backtestSelect');
+    let hasVisible = false;
+    for (let opt of backtestSelect.options) {
+        if (opt.value === '') continue;  // skip placeholder
+        const optStrategy = opt.getAttribute('data-strategy');
+        if (!selectedStrategy || optStrategy === selectedStrategy) {
+            opt.style.display = '';
+            opt.hidden = false;
+            hasVisible = true;
+        } else {
+            opt.style.display = 'none';
+            opt.hidden = true;
+            if (opt.selected) backtestSelect.value = '';
+        }
+    }
+    if (!hasVisible && selectedStrategy) {
+        document.getElementById('scopeInfo').innerHTML =
+            `<span class="text-warning">No completed backtests found for this strategy. Run a backtest first.</span>`;
+    }
+});
+
+// Show training spinner with model type info
+document.getElementById('trainForm').addEventListener('submit', function() {
+    const btn = document.getElementById('trainBtn');
+    const modelType = document.getElementById('model_type').value.toUpperCase();
+    const useHpo = document.getElementById('use_hpo').checked;
+    const hpoText = useHpo ? ' + HPO' : '';
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Training ${modelType}${hpoText}... (this may take ${useHpo ? 'several minutes' : 'a minute'})`;
+});
+
+function showModelDetails(model) {
+    let html = '';
+
+    // Model type header
+    const modelType = model.model_type || 'xgboost';
+    html += `<div class="mb-3"><span class="badge bg-info fs-6">${modelType.toUpperCase()}</span></div>`;
+
+    // Metrics summary
+    html += `
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card bg-light">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">Accuracy</h6>
+                    <h4>${(model.avg_accuracy * 100).toFixed(1)}%</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-light">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">AUC-ROC</h6>
+                    <h4>${model.avg_auc_roc.toFixed(3)}</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-light">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">F1 Score</h6>
+                    <h4>${model.avg_f1.toFixed(3)}</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-light">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">Trades</h6>
+                    <h4>${model.total_trades}</h4>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    // Feature importance
+    if (model.feature_importance) {
+        html += '<h6>Feature Importance</h6>';
+        html += '<div class="mb-4">';
+        const features = Object.entries(model.feature_importance)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10);
+        const maxImp = features[0] ? features[0][1] : 1;
+
+        for (const [name, imp] of features) {
+            const pct = (imp / maxImp * 100).toFixed(0);
+            html += `
+            <div class="d-flex align-items-center mb-1">
+                <div style="width: 180px" class="text-truncate"><small>${name}</small></div>
+                <div class="flex-grow-1 mx-2">
+                    <div class="progress" style="height: 16px">
+                        <div class="progress-bar bg-primary" style="width: ${pct}%">${imp.toFixed(3)}</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Walk-forward folds
+    if (model.folds && model.folds.length > 0) {
+        html += '<h6>Walk-Forward Validation Folds</h6>';
+        html += '<div class="table-responsive"><table class="table table-sm">';
+        html += '<thead><tr><th>Fold</th><th>Train</th><th>Test</th><th>Acc</th><th>AUC</th><th>F1</th></tr></thead><tbody>';
+        for (const fold of model.folds) {
+            html += `<tr>
+                <td>${fold.fold_number}</td>
+                <td>${fold.train_size} trades</td>
+                <td>${fold.test_size} trades</td>
+                <td>${(fold.accuracy * 100).toFixed(1)}%</td>
+                <td>${fold.auc_roc.toFixed(3)}</td>
+                <td>${fold.f1.toFixed(3)}</td>
+            </tr>`;
+        }
+        html += '</tbody></table></div>';
+    }
+
+    document.getElementById('modelDetailsBody').innerHTML = html;
+    new bootstrap.Modal(document.getElementById('modelDetailsModal')).show();
+}
+
+// ==================== Auto-Retrain Functions ====================
+
+let retrainEnabled = false;
+
+function loadRetrainStatus() {
+    fetch('/api/ml/retrain/status')
+        .then(r => r.json())
+        .then(data => {
+            retrainEnabled = data.enabled || false;
+            const badge = document.getElementById('retrainStatusBadge');
+            const text = document.getElementById('retrainStatusText');
+            const btn = document.getElementById('toggleRetrainBtn');
+
+            if (data.is_running && data.enabled) {
+                badge.className = 'badge bg-success';
+                badge.textContent = 'Running';
+                let nextRun = data.next_run_time ? new Date(data.next_run_time).toLocaleString() : 'Not scheduled';
+                text.innerHTML = `<span class="text-success fw-bold">Running</span> <small class="text-muted">(next: ${nextRun})</small>`;
+                btn.textContent = 'Disable';
+                btn.className = 'btn btn-sm btn-outline-danger';
+            } else {
+                badge.className = 'badge bg-secondary';
+                badge.textContent = 'Stopped';
+                text.innerHTML = '<span class="text-muted">Disabled</span>';
+                btn.textContent = 'Enable';
+                btn.className = 'btn btn-sm btn-outline-primary';
+            }
+
+            // Set interval dropdown
+            if (data.interval_hours) {
+                document.getElementById('retrainInterval').value = data.interval_hours;
+            }
+            if (data.quality_gate_tolerance) {
+                document.getElementById('retrainTolerance').value = data.quality_gate_tolerance;
+            }
+        })
+        .catch(err => {
+            console.error('Retrain status error:', err);
+            document.getElementById('retrainStatusBadge').textContent = 'Error';
+            document.getElementById('retrainStatusBadge').className = 'badge bg-danger';
+        });
+}
+
+function loadRetrainLogs() {
+    const loading = document.getElementById('retrainLogsLoading');
+    const table = document.getElementById('retrainLogsTable');
+    const empty = document.getElementById('retrainLogsEmpty');
+
+    fetch('/api/ml/retrain/logs?limit=10')
+        .then(r => r.json())
+        .then(logs => {
+            loading.style.display = 'none';
+
+            if (!logs || logs.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+
+            table.style.display = 'block';
+            const body = document.getElementById('retrainLogsBody');
+            body.innerHTML = logs.map(log => {
+                const time = log.triggered_at ? log.triggered_at.slice(0, 16).replace('T', ' ') : '';
+                const statusBadge = log.accepted
+                    ? '<span class="badge bg-success">Accepted</span>'
+                    : (log.status === 'failed'
+                        ? '<span class="badge bg-danger">Failed</span>'
+                        : '<span class="badge bg-warning">Rejected</span>');
+                return `<tr>
+                    <td><small>${time}</small></td>
+                    <td>#${log.model_id} <small class="text-muted">${log.strategy_id}</small></td>
+                    <td><span class="badge bg-info">${log.model_type || 'xgboost'}</span></td>
+                    <td><small>${log.trigger_type || ''}</small></td>
+                    <td class="text-end">${(log.old_auc_roc || 0).toFixed(3)}</td>
+                    <td class="text-end">${(log.new_auc_roc || 0).toFixed(3)}</td>
+                    <td>${statusBadge}</td>
+                </tr>`;
+            }).join('');
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+        });
+}
+
+function toggleRetrain() {
+    retrainEnabled = !retrainEnabled;
+    saveRetrainConfig();
+}
+
+function saveRetrainConfig() {
+    const config = {
+        interval_hours: parseInt(document.getElementById('retrainInterval').value),
+        enabled: retrainEnabled,
+        quality_gate_tolerance: parseFloat(document.getElementById('retrainTolerance').value),
+    };
+
+    fetch('/api/ml/retrain/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(config),
+    })
+    .then(r => r.json())
+    .then(() => {
+        loadRetrainStatus();
+    })
+    .catch(err => console.error('Save config error:', err));
+}
+
+function triggerRetrain(modelId) {
+    if (!confirm(`Retrain model #${modelId}? This will train a new model and compare against the current one.`)) {
+        return;
+    }
+
+    const btn = event.target.closest('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    fetch(`/api/ml/retrain/trigger/${modelId}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+
+            if (data.status === 'accepted') {
+                alert(`Retrain accepted! New model #${data.new_model_id} (AUC: ${data.old_auc.toFixed(3)} -> ${data.new_auc.toFixed(3)}). Refreshing page...`);
+                location.reload();
+            } else if (data.status === 'rejected') {
+                alert(`Retrain rejected: ${data.reason}`);
+            } else {
+                alert(`Retrain result: ${data.message || data.status}`);
+            }
+            loadRetrainLogs();
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+            alert('Retrain failed: ' + err);
+        });
+}
+
+// ==================== Retrain with Live Data ====================
+
+function retrainWithLiveData(modelId) {
+    if (!confirm(`Retrain model #${modelId} with live trade data?\nThis combines backtest + live trades for retraining.`)) {
+        return;
+    }
+
+    const btn = event.target.closest('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    fetch(`/api/ml/retrain-live/${modelId}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-activity"></i>';
+
+            if (data.status === 'accepted') {
+                alert(`Live retrain accepted! New model #${data.new_model_id}\nAUC: ${data.old_auc.toFixed(3)} -> ${data.new_auc.toFixed(3)}\nBacktest trades: ${data.backtest_trades}, Live trades: ${data.live_trades}`);
+                location.reload();
+            } else if (data.status === 'rejected') {
+                alert(`Live retrain rejected: ${data.reason}`);
+            } else {
+                alert(`Live retrain: ${data.message || data.error || data.status}`);
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-activity"></i>';
+            alert('Live retrain failed: ' + err);
+        });
+}
+
+// ==================== RL Online Learning ====================
+
+let rlOnlineEnabled = false;
+
+function loadRLOnlineStatus() {
+    fetch('/api/rl/online-status')
+        .then(r => r.json())
+        .then(data => {
+            rlOnlineEnabled = data.enabled || false;
+            const badge = document.getElementById('rlStatusBadge');
+            const bufferStatus = document.getElementById('rlBufferStatus');
+            const btn = document.getElementById('toggleRLBtn');
+
+            if (rlOnlineEnabled) {
+                badge.className = 'badge bg-success';
+                badge.textContent = 'Enabled';
+                btn.textContent = 'Disable';
+                btn.className = 'btn btn-sm btn-outline-danger';
+            } else {
+                badge.className = 'badge bg-secondary';
+                badge.textContent = 'Disabled';
+                btn.textContent = 'Enable';
+                btn.className = 'btn btn-sm btn-outline-primary';
+            }
+
+            bufferStatus.innerHTML = `<strong>${data.buffer_size || 0}</strong> / ${data.max_buffer_size || 200} experiences` +
+                (data.has_pending ? ' <span class="badge bg-warning">Trade open</span>' : '');
+
+            if (data.update_interval_hours) {
+                document.getElementById('rlUpdateInterval').value = data.update_interval_hours;
+            }
+        })
+        .catch(err => {
+            document.getElementById('rlStatusBadge').textContent = 'Error';
+            document.getElementById('rlStatusBadge').className = 'badge bg-danger';
+        });
+}
+
+function loadRLOnlineLogs() {
+    const loading = document.getElementById('rlLogsLoading');
+    const table = document.getElementById('rlLogsTable');
+    const empty = document.getElementById('rlLogsEmpty');
+
+    fetch('/api/rl/online-logs?limit=10')
+        .then(r => r.json())
+        .then(logs => {
+            loading.style.display = 'none';
+
+            if (!logs || logs.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+
+            table.style.display = 'block';
+            const body = document.getElementById('rlLogsBody');
+            body.innerHTML = logs.map(log => {
+                const time = log.updated_at ? log.updated_at.slice(0, 16).replace('T', ' ') : '';
+                const statusBadge = log.status === 'success'
+                    ? '<span class="badge bg-success">Success</span>'
+                    : '<span class="badge bg-danger">' + (log.status || 'Error') + '</span>';
+                return `<tr>
+                    <td><small>${time}</small></td>
+                    <td class="text-end">${log.experiences_count || 0}</td>
+                    <td class="text-end">${(log.avg_reward || 0).toFixed(3)}</td>
+                    <td>${statusBadge}</td>
+                </tr>`;
+            }).join('');
+
+            // Update "Last Update" text
+            if (logs.length > 0 && logs[0].updated_at) {
+                document.getElementById('rlLastUpdate').textContent = logs[0].updated_at.slice(0, 16).replace('T', ' ');
+            }
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+        });
+}
+
+function toggleRLOnline() {
+    rlOnlineEnabled = !rlOnlineEnabled;
+    saveRLConfig();
+}
+
+function saveRLConfig() {
+    const config = {
+        enabled: rlOnlineEnabled,
+        update_interval: parseInt(document.getElementById('rlUpdateInterval').value),
+    };
+
+    fetch('/api/rl/online-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(config),
+    })
+    .then(r => r.json())
+    .then(() => loadRLOnlineStatus())
+    .catch(err => console.error('RL config save error:', err));
+}
+
+// Load retrain data on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadRetrainStatus();
+    loadRetrainLogs();
+    loadRLOnlineStatus();
+    loadRLOnlineLogs();
+});
+</script>
+{% endblock %}

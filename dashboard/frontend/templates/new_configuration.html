@@ -1,0 +1,496 @@
+{% extends "base.html" %}
+
+{% block title %}New Configuration - ProTrading{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb mb-1">
+            <li class="breadcrumb-item"><a href="{{ url_for('configurations') }}">Configurations</a></li>
+            <li class="breadcrumb-item active">New Configuration</li>
+        </ol>
+    </nav>
+    <h2 class="mb-0">Create New Configuration</h2>
+    <p class="text-muted mb-0">Each strategy supports up to 3 presets: Default, Conservative, Aggressive</p>
+</div>
+
+<form method="POST" action="{{ url_for('new_configuration') }}" id="configForm">
+    <div class="row g-4">
+        <div class="col-lg-8">
+            <!-- Strategy Selection -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-robot me-2"></i>Strategy Selection
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-8">
+                            <label class="form-label">Trading Strategy</label>
+                            <select class="form-select" name="strategy_id" id="strategySelect">
+                                <option value="">Loading strategies...</option>
+                            </select>
+                            <div class="form-text" id="strategyDescription">
+                                Select a trading strategy to see its description and parameters.
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Preset Level</label>
+                            <select class="form-select" name="preset_name" id="presetSelect">
+                                <option value="">Loading presets...</option>
+                            </select>
+                            <div class="form-text">Saving replaces existing preset</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- General Settings -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-gear me-2"></i>General Settings
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Configuration Name</label>
+                            <input type="text" class="form-control" name="name" id="config_name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Date</label>
+                            <input type="date" class="form-control" name="start_date" id="start_date" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Date</label>
+                            <input type="date" class="form-control" name="end_date" id="end_date" required>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dynamic Parameter Sections -->
+            <div id="dynamicParameters">
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Loading strategy parameters...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column - Actions -->
+        <div class="col-lg-4">
+            <div class="card sticky-top" style="top: 24px;">
+                <div class="card-header">
+                    <i class="bi bi-save me-2"></i>Save Configuration
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <h6 class="section-title">Summary</h6>
+                        <ul class="list-unstyled mb-0">
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Strategy:</span>
+                                <strong id="summaryStrategy">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Preset:</span>
+                                <strong id="summaryPreset"><span class="badge bg-primary">Default</span></strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2 border-bottom">
+                                <span class="text-muted">Symbol:</span>
+                                <strong id="summarySymbol">-</strong>
+                            </li>
+                            <li class="d-flex justify-content-between py-2">
+                                <span class="text-muted">Timeframe:</span>
+                                <strong id="summaryTimeframe">-</strong>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="alert alert-info mb-3">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <small>If a config with the same strategy + preset already exists, it will be <strong>replaced</strong>.</small>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn" disabled>
+                            <i class="bi bi-save me-2"></i>Save Configuration
+                        </button>
+                        <a href="{{ url_for('configurations') }}" class="btn btn-outline-secondary">
+                            Cancel
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Global state
+let currentStrategy = null;
+let strategyDefinitions = {};
+
+// Icon mapping for parameter groups
+const groupIcons = {
+    'general': 'bi-gear',
+    'risk': 'bi-shield-check',
+    'sessions': 'bi-clock',
+    'simulation': 'bi-flask',
+    'ict': 'bi-diagram-3',
+    'trailing': 'bi-arrow-down-up',
+    'mtf': 'bi-layers',
+    'ml': 'bi-cpu'
+};
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', async function() {
+    await loadStrategies();
+    setupEventListeners();
+    setDefaultDates();
+});
+
+// Load available strategies
+async function loadStrategies() {
+    try {
+        const response = await fetch('/api/strategies/list');
+        const strategies = await response.json();
+
+        const select = document.getElementById('strategySelect');
+        select.innerHTML = '';
+
+        if (strategies.length === 0) {
+            select.innerHTML = '<option value="">No strategies available</option>';
+            return;
+        }
+
+        strategies.forEach((strategy, index) => {
+            const option = document.createElement('option');
+            option.value = strategy.id;
+            option.textContent = strategy.name;
+            if (index === 0) option.selected = true;
+            select.appendChild(option);
+        });
+
+        // Load the first strategy's parameters
+        if (strategies.length > 0) {
+            await loadStrategyDefinition(strategies[0].id);
+            updateConfigName();
+        }
+    } catch (error) {
+        console.error('Error loading strategies:', error);
+        document.getElementById('strategySelect').innerHTML =
+            '<option value="">Error loading strategies</option>';
+    }
+}
+
+// Load full strategy definition with parameters
+async function loadStrategyDefinition(strategyId) {
+    try {
+        if (strategyDefinitions[strategyId]) {
+            currentStrategy = strategyDefinitions[strategyId];
+            renderStrategyParameters(currentStrategy);
+        } else {
+            const response = await fetch(`/api/strategies/${strategyId}/definition`);
+            const definition = await response.json();
+            strategyDefinitions[strategyId] = definition;
+            currentStrategy = definition;
+            renderStrategyParameters(definition);
+        }
+
+        // Load preset values
+        await loadPresetValues(strategyId, document.getElementById('presetSelect').value);
+    } catch (error) {
+        console.error('Error loading strategy definition:', error);
+        document.getElementById('dynamicParameters').innerHTML =
+            '<div class="alert alert-danger">Error loading strategy parameters</div>';
+    }
+}
+
+// Render parameter form fields (same approach as run_backtest.html)
+function renderStrategyParameters(definition) {
+    const container = document.getElementById('dynamicParameters');
+
+    // Update description
+    document.getElementById('strategyDescription').textContent = definition.description || '';
+    document.getElementById('summaryStrategy').textContent = definition.name || '';
+
+    // Group parameters
+    const groups = {};
+    definition.parameters.forEach(param => {
+        const groupId = param.group || 'general';
+        if (!groups[groupId]) groups[groupId] = [];
+        groups[groupId].push(param);
+    });
+
+    // Create group info map
+    const groupInfo = {};
+    if (definition.parameter_groups) {
+        definition.parameter_groups.forEach(g => {
+            groupInfo[g.id] = g;
+        });
+    }
+
+    // Build HTML
+    let html = '';
+    for (const [groupId, params] of Object.entries(groups)) {
+        const info = groupInfo[groupId] || { label: groupId, icon: 'Settings' };
+        const icon = groupIcons[groupId] || 'bi-gear';
+
+        html += `
+            <div class="card mb-4" data-group="${groupId}">
+                <div class="card-header">
+                    <i class="${icon} me-2"></i>${info.label || groupId}
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        ${params.map(param => renderParameterField(param)).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    container.innerHTML = html;
+    document.getElementById('submitBtn').disabled = false;
+    renderPresetDropdown(definition);
+    updateSummary();
+    setupDynamicFieldListeners();
+}
+
+// Populate preset dropdown from strategy definition
+function renderPresetDropdown(definition) {
+    const select = document.getElementById('presetSelect');
+    select.innerHTML = '';
+
+    const presets = definition.presets || [];
+    if (presets.length === 0) {
+        select.innerHTML = '<option value="default">Default</option>';
+        return;
+    }
+
+    presets.forEach(preset => {
+        const option = document.createElement('option');
+        option.value = preset.id;
+        option.textContent = preset.name + ' \u2014 ' + preset.description;
+        if (preset.id === 'default') option.selected = true;
+        select.appendChild(option);
+    });
+}
+
+// Render a single parameter field
+function renderParameterField(param) {
+    const colSize = getColumnSize(param);
+    let inputHtml = '';
+
+    switch (param.type) {
+        case 'boolean':
+            inputHtml = `
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox"
+                           name="${param.name}" id="${param.name}"
+                           ${param.default ? 'checked' : ''}>
+                    <label class="form-check-label" for="${param.name}">${param.label}</label>
+                </div>
+            `;
+            break;
+
+        case 'select':
+            const options = (param.options || []).map(opt =>
+                `<option value="${opt.value}" ${opt.value === param.default ? 'selected' : ''}>${opt.label}</option>`
+            ).join('');
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <select class="form-select" name="${param.name}" id="${param.name}">
+                    ${options}
+                </select>
+            `;
+            break;
+
+        case 'time':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="text" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default || ''}" pattern="[0-9]{2}:[0-9]{2}"
+                       placeholder="HH:MM">
+            `;
+            break;
+
+        case 'integer':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="number" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default !== undefined ? param.default : ''}"
+                       ${param.min_value !== null ? `min="${param.min_value}"` : ''}
+                       ${param.max_value !== null ? `max="${param.max_value}"` : ''}
+                       step="1">
+            `;
+            break;
+
+        case 'number':
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="number" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default !== undefined ? param.default : ''}"
+                       ${param.min_value !== null ? `min="${param.min_value}"` : ''}
+                       ${param.max_value !== null ? `max="${param.max_value}"` : ''}
+                       ${param.step !== null ? `step="${param.step}"` : 'step="any"'}>
+            `;
+            break;
+
+        default:
+            inputHtml = `
+                <label class="form-label">${param.label}</label>
+                <input type="text" class="form-control" name="${param.name}" id="${param.name}"
+                       value="${param.default || ''}">
+            `;
+    }
+
+    const description = param.description ?
+        `<small class="text-muted">${param.description}</small>` : '';
+
+    return `
+        <div class="${colSize}">
+            ${inputHtml}
+            ${description}
+        </div>
+    `;
+}
+
+function getColumnSize(param) {
+    if (param.type === 'boolean') return 'col-md-12';
+    if (param.type === 'time') return 'col-md-6';
+    if (param.name.includes('description')) return 'col-md-12';
+    return 'col-md-4';
+}
+
+// Load preset values from registry (instrument-aware)
+async function loadPresetValues(strategyId, presetId) {
+    if (!strategyId || !presetId) return;
+
+    try {
+        const symbol = document.getElementById('symbol')?.value || '';
+        let url = `/api/strategies/${strategyId}/preset/${presetId}`;
+        if (symbol) url += `?symbol=${encodeURIComponent(symbol)}`;
+
+        const response = await fetch(url);
+        const config = await response.json();
+
+        // Apply preset values to form fields
+        for (const [key, value] of Object.entries(config)) {
+            const element = document.getElementById(key);
+            if (!element) continue;
+
+            if (element.type === 'checkbox') {
+                element.checked = Boolean(value);
+            } else if (element.tagName === 'SELECT') {
+                element.value = value;
+            } else {
+                element.value = value;
+            }
+        }
+
+        updateSummary();
+    } catch (error) {
+        console.error('Error loading preset values:', error);
+    }
+}
+
+// Auto-generate config name
+function updateConfigName() {
+    const strategySelect = document.getElementById('strategySelect');
+    const presetSelect = document.getElementById('presetSelect');
+    const nameInput = document.getElementById('config_name');
+
+    if (!strategySelect || !presetSelect || !nameInput) return;
+
+    const strategyName = strategySelect.options[strategySelect.selectedIndex]?.text || 'Strategy';
+    const presetName = presetSelect.options[presetSelect.selectedIndex]?.text || 'Default';
+
+    nameInput.value = `${strategyName} - ${presetName}`;
+}
+
+// Setup event listeners
+function setupEventListeners() {
+    document.getElementById('strategySelect').addEventListener('change', async function() {
+        await loadStrategyDefinition(this.value);
+        updateConfigName();
+    });
+
+    document.getElementById('presetSelect').addEventListener('change', async function() {
+        const strategyId = document.getElementById('strategySelect').value;
+        await loadPresetValues(strategyId, this.value);
+        updateConfigName();
+        updatePresetBadge();
+    });
+}
+
+// Setup listeners for dynamically created fields
+function setupDynamicFieldListeners() {
+    const symbolField = document.getElementById('symbol');
+    if (symbolField) {
+        symbolField.addEventListener('change', async function() {
+            document.getElementById('summarySymbol').textContent = this.value;
+            // Re-fetch preset with new symbol for instrument-aware values
+            const strategyId = document.getElementById('strategySelect').value;
+            const presetId = document.getElementById('presetSelect').value;
+            if (strategyId && presetId) {
+                await loadPresetValues(strategyId, presetId);
+            }
+        });
+    }
+
+    const timeframeField = document.getElementById('timeframe');
+    if (timeframeField) {
+        timeframeField.addEventListener('change', function() {
+            const option = this.options[this.selectedIndex];
+            document.getElementById('summaryTimeframe').textContent = option ? option.text : this.value;
+        });
+    }
+}
+
+// Update summary display
+function updateSummary() {
+    const symbol = document.getElementById('symbol');
+    const timeframe = document.getElementById('timeframe');
+
+    if (symbol) document.getElementById('summarySymbol').textContent = symbol.value;
+    if (timeframe) {
+        const option = timeframe.options[timeframe.selectedIndex];
+        document.getElementById('summaryTimeframe').textContent = option ? option.text : timeframe.value;
+    }
+
+    updatePresetBadge();
+}
+
+// Update preset badge in summary
+function updatePresetBadge() {
+    const presetSelect = document.getElementById('presetSelect');
+    const summaryPreset = document.getElementById('summaryPreset');
+    if (!presetSelect || !summaryPreset) return;
+
+    const value = presetSelect.value;
+    const label = presetSelect.options[presetSelect.selectedIndex]?.text || value;
+
+    const badgeColors = {
+        'default': 'bg-primary',
+        'conservative': 'bg-success',
+        'aggressive': 'bg-danger'
+    };
+    const color = badgeColors[value] || 'bg-secondary';
+    summaryPreset.innerHTML = `<span class="badge ${color}">${label}</span>`;
+}
+
+// Set default dates
+function setDefaultDates() {
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    document.getElementById('start_date').value = thirtyDaysAgo.toISOString().split('T')[0];
+    document.getElementById('end_date').value = today.toISOString().split('T')[0];
+}
+</script>
+{% endblock %}

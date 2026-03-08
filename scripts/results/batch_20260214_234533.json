@@ -1,0 +1,25 @@
+[
+  {
+    "strategy_id": "liquidity_sweep_strategy",
+    "preset": "aggressive",
+    "symbol": "XAUUSD",
+    "timeframe": "M5",
+    "period": "2022-01-01 to 2024-12-31",
+    "elapsed_sec": 451.0,
+    "total_trades": 797,
+    "winning_trades": 226,
+    "losing_trades": 571,
+    "win_rate": 28.36,
+    "net_profit": -7395.92,
+    "profit_factor": 0.89,
+    "sharpe_ratio": -0.9154,
+    "sortino_ratio": -2.3962,
+    "max_drawdown_pct": 88.46,
+    "avg_rr": 2.24,
+    "expectancy": -9.28,
+    "final_balance": 1713.52,
+    "largest_win": 1782.57,
+    "largest_loss": -345.27,
+    "data_hash": "376f350597de0a93fd16ed3ea8afb648db913b15950bc4e0c589c10ed9f4bfcf"
+  }
+]

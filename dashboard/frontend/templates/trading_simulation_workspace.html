@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+
+{% block title %}Guided Simulation: {{ strategy.name or strategy_id }} - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h2 class="mb-1">{{ strategy.name or strategy_id }}</h2>
+        <p class="text-muted mb-0">Guided Trading Simulation Control Plane</p>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-outline-info" data-bs-toggle="modal" data-bs-target="#guideModal">
+            <i class="bi bi-info-circle me-1"></i> Beginner Guide
+        </button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('trading_systems') }}">
+            <i class="bi bi-arrow-left me-1"></i> Trading Systems
+        </a>
+    </div>
+</div>
+
+<input type="hidden" id="tsim-strategy-id" value="{{ strategy_id }}">
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-2">
+                <label class="form-label">Symbol</label>
+                <input id="tsim-symbol" class="form-control" value="{{ (strategy.symbols[0] if strategy and strategy.symbols else 'XAUUSD') }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Timeframe</label>
+                <input id="tsim-timeframe" class="form-control" value="{{ (strategy.timeframes[0] if strategy and strategy.timeframes else 'M1') }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Mode</label>
+                <select id="tsim-mode" class="form-select">
+                    <option value="demo" selected>Demo</option>
+                    <option value="live">Live (confirm)</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <div class="small text-muted">
+                    Session:
+                    <span id="tsim-session-status" class="badge bg-secondary">Not Started</span>
+                    <span id="tsim-mode-badge" class="badge bg-info ms-1">demo</span>
+                </div>
+                <div class="small text-muted mt-1" id="tsim-session-id"></div>
+            </div>
+            <div class="col-md-2 text-end">
+                <button class="btn btn-primary w-100" id="tsim-start-btn">
+                    <i class="bi bi-play-fill me-1"></i> Start Session
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-list-check me-1"></i> Step Timeline</div>
+            <div class="card-body" id="tsim-steps">
+                <div class="text-muted">Start a session to load step statuses.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-8">
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-lightning-charge me-1"></i> Do This Now</div>
+            <div class="card-body">
+                <div class="mb-2"><strong>Current Step:</strong> <span id="tsim-current-title">-</span></div>
+                <div class="mb-2"><strong>Why:</strong> <span id="tsim-current-why">-</span></div>
+                <div class="mb-2"><strong>Wait For:</strong> <span id="tsim-current-wait">-</span></div>
+                <div class="mb-2"><strong>Invalidates:</strong> <span id="tsim-current-invalidate">-</span></div>
+                <div class="mb-0"><strong>Action:</strong> <span id="tsim-current-action">-</span></div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-bar-chart-line me-1"></i> Evidence Panel</div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6 class="text-muted">Step Inputs</h6>
+                        <div id="tsim-step-inputs" class="small"></div>
+                    </div>
+                    <div class="col-md-6">
+                        <h6 class="text-muted">Threshold Checks</h6>
+                        <div id="tsim-signals" class="small"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-grid-3x3-gap me-1"></i> Strategy Visual Panel</div>
+            <div class="card-body">
+                <div id="tsim-visual-panel" class="small text-muted">No telemetry yet.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header"><i class="bi bi-journal-text me-1"></i> Action Journal</div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap gap-2 mb-3">
+            <button class="btn btn-outline-primary btn-sm" onclick="tsimAction('confirm_condition')">I see condition</button>
+            <button class="btn btn-outline-success btn-sm" onclick="tsimAction('paper_enter')">I entered paper trade</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="tsimAction('skip_setup')">I skipped</button>
+            <button class="btn btn-outline-dark btn-sm" onclick="tsimAction('paper_close')">I closed paper trade</button>
+            <button class="btn btn-outline-info btn-sm" onclick="tsimRefreshState()">Refresh State</button>
+        </div>
+        <textarea class="form-control mb-3" id="tsim-note" rows="2" placeholder="Optional note"></textarea>
+        <div id="tsim-actions" class="small text-muted">No actions logged yet.</div>
+    </div>
+</div>
+
+<div class="modal fade" id="guideModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Beginner Guide</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p><strong>What this strategy is:</strong> {{ guide.what_this_strategy_is or 'N/A' }}</p>
+                <p><strong>When not to trade:</strong></p>
+                <ul>
+                    {% for row in (guide.when_not_to_trade or []) %}
+                    <li>{{ row }}</li>
+                    {% endfor %}
+                </ul>
+                <p><strong>Step by step:</strong></p>
+                <ol>
+                    {% for row in (guide.step_by_step or []) %}
+                    <li>{{ row }}</li>
+                    {% endfor %}
+                </ol>
+                <p><strong>Common mistakes:</strong></p>
+                <ul>
+                    {% for row in (guide.common_mistakes or []) %}
+                    <li>{{ row }}</li>
+                    {% endfor %}
+                </ul>
+                <p><strong>Risk rules:</strong></p>
+                <ul>
+                    {% for row in (guide.risk_rules or []) %}
+                    <li>{{ row }}</li>
+                    {% endfor %}
+                </ul>
+                <p><strong>Example scenario:</strong> {{ guide.example_scenario or 'N/A' }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let tsimSessionId = null;
+let tsimCurrentState = null;
+
+function badgeClass(status) {
+    const s = (status || '').toUpperCase();
+    if (s === 'DONE') return 'bg-success';
+    if (s === 'ACTIONABLE') return 'bg-primary';
+    if (s === 'BLOCKED') return 'bg-danger';
+    if (s === 'READY') return 'bg-warning text-dark';
+    return 'bg-secondary';
+}
+
+async function tsimStartSession() {
+    const strategyId = document.getElementById('tsim-strategy-id').value;
+    const symbol = document.getElementById('tsim-symbol').value;
+    const timeframe = document.getElementById('tsim-timeframe').value;
+    const mode = document.getElementById('tsim-mode').value;
+    if (mode === 'live') {
+        const ok = confirm('Live mode was selected. This workspace is still simulation-only. Continue?');
+        if (!ok) return;
+    }
+    const payload = {
+        strategy_id: strategyId,
+        symbol: symbol,
+        timeframe: timeframe,
+        mode: mode,
+        confirm_live_mode: mode === 'live'
+    };
+    const res = await fetch('/api/trading-simulation/sessions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+        alert(data.error || data.detail || 'Failed to start session');
+        return;
+    }
+    tsimSessionId = data.id;
+    document.getElementById('tsim-session-id').textContent = `Session #${data.id} (${data.session_uid})`;
+    renderState(data);
+}
+
+async function tsimRefreshState() {
+    if (!tsimSessionId) return;
+    const res = await fetch(`/api/trading-simulation/sessions/${tsimSessionId}/state`);
+    const data = await res.json();
+    if (!res.ok || data.error) return;
+    renderState(data);
+}
+
+async function tsimAction(actionType) {
+    if (!tsimSessionId) return;
+    const note = document.getElementById('tsim-note').value || '';
+    const currentStep = (tsimCurrentState && tsimCurrentState.current_step) ? tsimCurrentState.current_step.id : null;
+    const payload = { action_type: actionType, step_id: currentStep, note: note, payload: {} };
+    const res = await fetch(`/api/trading-simulation/sessions/${tsimSessionId}/action`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+        alert(data.error || data.detail || 'Action failed');
+        return;
+    }
+    renderState(data.state);
+    document.getElementById('tsim-note').value = '';
+}
+
+function renderState(data) {
+    tsimCurrentState = data;
+    document.getElementById('tsim-session-status').className = `badge ${data.status === 'ACTIVE' ? 'bg-success' : 'bg-secondary'}`;
+    document.getElementById('tsim-session-status').textContent = data.status || 'ACTIVE';
+    document.getElementById('tsim-mode-badge').textContent = data.mode || 'demo';
+
+    const current = data.current_step || {};
+    document.getElementById('tsim-current-title').textContent = current.title || '-';
+    document.getElementById('tsim-current-why').textContent = current.why || '-';
+    document.getElementById('tsim-current-wait').textContent = current.wait_for || '-';
+    document.getElementById('tsim-current-invalidate').textContent = current.invalidates || '-';
+    document.getElementById('tsim-current-action').textContent = current.action_now || '-';
+
+    const steps = data.step_states || [];
+    document.getElementById('tsim-steps').innerHTML = steps.map(s => `
+        <div class="border rounded p-2 mb-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <strong>${s.title}</strong>
+                <span class="badge ${badgeClass(s.status)}">${s.status}</span>
+            </div>
+            <div class="small text-muted">${s.reason || ''}</div>
+        </div>
+    `).join('') || '<div class="text-muted">No steps available.</div>';
+
+    const stepInputs = (data.telemetry && data.telemetry.step_inputs) ? data.telemetry.step_inputs : {};
+    const signals = (data.telemetry && data.telemetry.signals) ? data.telemetry.signals : {};
+    document.getElementById('tsim-step-inputs').innerHTML = Object.entries(stepInputs).slice(0, 20).map(([k,v]) => `<div><strong>${k}:</strong> ${String(v)}</div>`).join('') || 'No inputs';
+    document.getElementById('tsim-signals').innerHTML = Object.entries(signals).slice(0, 20).map(([k,v]) => `<div><strong>${k}:</strong> ${String(v)}</div>`).join('') || 'No checks';
+
+    renderVisualPanel(data);
+    renderActions(data.actions || []);
+}
+
+function renderVisualPanel(data) {
+    const strategyId = data.strategy_id || document.getElementById('tsim-strategy-id').value;
+    const i = (data.telemetry && data.telemetry.step_inputs) ? data.telemetry.step_inputs : {};
+    const market = (data.telemetry && data.telemetry.market) ? data.telemetry.market : {};
+    let html = '';
+    if (strategyId === 'orb_strategy' || strategyId === 'advanced_orb_strategy' || strategyId.endsWith('_orb_ml_strategy') || strategyId.includes('orb_ml')) {
+        html = `
+            <div><strong>NY ORB High:</strong> ${i.orb_high ?? 'N/A'}</div>
+            <div><strong>NY ORB Low:</strong> ${i.orb_low ?? 'N/A'}</div>
+            <div><strong>Breakout Side:</strong> ${i.breakout_side || 'none'}</div>
+            <div><strong>Displacement:</strong> ${String(i.displacement_detected)}</div>
+            <div><strong>FVG Confirmed:</strong> ${String(i.fvg_detected)}</div>`;
+    } else if (strategyId === 'liquidity_sweep_strategy' || strategyId === 'liquidity_sweep_ml_strategy') {
+        html = `
+            <div><strong>Liquidity Sweep:</strong> ${String(i.sweep_detected || false)}</div>
+            <div><strong>Rejection Confirmed:</strong> ${String(i.rejection_confirmed || false)}</div>
+            <div><strong>Sweep Side:</strong> ${i.sweep_side || 'N/A'}</div>
+            <div><strong>Liquidity Level:</strong> ${i.liquidity_level ?? 'N/A'}</div>
+            <div><strong>Setup Invalidation:</strong> ${i.invalidation_reason || '-'}</div>`;
+    } else if (strategyId === 'keltner_breakout_strategy' || strategyId === 'keltner_breakout_ml_strategy') {
+        html = `
+            <div><strong>Squeeze On:</strong> ${String(i.squeeze_on || false)}</div>
+            <div><strong>Squeeze Fired:</strong> ${String(i.squeeze_fired || false)}</div>
+            <div><strong>Trend OK:</strong> ${String(i.trend_ok || false)}</div>
+            <div><strong>Momentum OK:</strong> ${String(i.momentum_ok || false)}</div>
+            <div><strong>ADX:</strong> ${i.adx_value ?? 'N/A'}</div>`;
+    } else if (strategyId === 'b_profile_reversion_strategy') {
+        html = `
+            <div><strong>Profile Setup Detected:</strong> ${String(i.setup_detected || false)}</div>
+            <div><strong>Bias:</strong> ${i.bias || 'neutral'}</div>
+            <div><strong>Invalidation:</strong> ${i.invalidation_reason || '-'}</div>`;
+    } else if (strategyId === 'earnings_volatility_strategy') {
+        html = `
+            <div><strong>Event Setup Detected:</strong> ${String(i.setup_detected || false)}</div>
+            <div><strong>Risk Defined:</strong> ${String((data.telemetry && data.telemetry.signals && data.telemetry.signals.risk_defined) || false)}</div>
+            <div><strong>Invalidation:</strong> ${i.invalidation_reason || '-'}</div>`;
+    } else {
+        html = `
+            <div><strong>Price:</strong> ${market.price ?? 'N/A'}</div>
+            <div><strong>Spread:</strong> ${market.spread ?? 'N/A'}</div>
+            <div><strong>Setup Detected:</strong> ${String(i.setup_detected || false)}</div>`;
+    }
+    if (strategyId.includes('_ml_') || strategyId.endsWith('_ml_strategy')) {
+        const raw = (data.telemetry && data.telemetry.raw_state) ? data.telemetry.raw_state : {};
+        html += `
+            <hr class="my-2">
+            <div><strong>ML Probability:</strong> ${raw.ml_probability ?? 'N/A'}</div>
+            <div><strong>ML Threshold:</strong> ${raw.ml_threshold ?? 'N/A'}</div>
+            <div><strong>ML Pass:</strong> ${String((data.telemetry && data.telemetry.signals && data.telemetry.signals.ml_pass) || false)}</div>
+        `;
+    }
+    document.getElementById('tsim-visual-panel').innerHTML = html;
+}
+
+function renderActions(actions) {
+    const rows = (actions || []).map(a => `<div>[${a.created_at || ''}] <strong>${a.action_type}</strong> ${a.step_id ? '(' + a.step_id + ')' : ''} ${a.note || ''}</div>`);
+    document.getElementById('tsim-actions').innerHTML = rows.join('') || 'No actions logged yet.';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('tsim-start-btn').addEventListener('click', tsimStartSession);
+    setInterval(() => { if (tsimSessionId) tsimRefreshState(); }, 10000);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,405 @@
+{% extends "base.html" %}
+
+{% block title %}Live Performance - ProTrading Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2><i class="bi bi-graph-up-arrow me-2"></i>Live Execution Quality</h2>
+        <p class="text-muted mb-0">Track real execution costs and compare against backtest assumptions</p>
+    </div>
+    <div>
+        <label class="form-label mb-0 me-2">Period:</label>
+        <select class="form-select form-select-sm d-inline-block" style="width:auto" id="periodSelect" onchange="loadData()">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last year</option>
+        </select>
+    </div>
+</div>
+
+<!-- Summary Stats -->
+<div class="row g-3 mb-4" id="summaryCards">
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between">
+                <div>
+                    <small class="text-muted">Avg Spread</small>
+                    <h3 id="avgSpread">$0.00</h3>
+                </div>
+                <div class="stat-icon bg-primary bg-opacity-10 text-primary">
+                    <i class="bi bi-arrows-expand"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between">
+                <div>
+                    <small class="text-muted">Avg Slippage</small>
+                    <h3 id="avgSlippage">$0.00</h3>
+                </div>
+                <div class="stat-icon bg-warning bg-opacity-10 text-warning">
+                    <i class="bi bi-lightning"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between">
+                <div>
+                    <small class="text-muted">Avg Cost/Trade</small>
+                    <h3 id="avgCost">$0.00</h3>
+                </div>
+                <div class="stat-icon bg-danger bg-opacity-10 text-danger">
+                    <i class="bi bi-cash-stack"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between">
+                <div>
+                    <small class="text-muted">Tracked Trades</small>
+                    <h3 id="totalTrades">0</h3>
+                </div>
+                <div class="stat-icon bg-success bg-opacity-10 text-success">
+                    <i class="bi bi-bar-chart"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Cost Comparison -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-arrow-left-right me-2"></i>Backtest vs Live Cost Comparison
+    </div>
+    <div class="card-body">
+        <div id="comparisonLoading" class="text-center py-3">
+            <span class="spinner-border spinner-border-sm me-2"></span>Loading comparison data...
+        </div>
+        <div class="table-responsive" id="comparisonTable" style="display:none">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Cost Type</th>
+                        <th class="text-end">Backtest Assumption</th>
+                        <th class="text-end">Live Actual</th>
+                        <th class="text-end">Delta</th>
+                    </tr>
+                </thead>
+                <tbody id="comparisonBody">
+                </tbody>
+                <tfoot>
+                    <tr class="table-active fw-bold">
+                        <td>Total Impact per Trade</td>
+                        <td></td>
+                        <td></td>
+                        <td class="text-end" id="totalImpact">$0.00</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <div id="comparisonEmpty" class="text-center py-3 text-muted" style="display:none">
+            No live trades with execution data found. Start live trading to see cost comparison.
+        </div>
+    </div>
+</div>
+
+<!-- Adaptive Filter Status -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-funnel me-2"></i>Adaptive Filter Status</span>
+        <button class="btn btn-sm btn-outline-danger" onclick="resetAdaptiveFilter()" title="Reset all filters">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Reset All
+        </button>
+    </div>
+    <div class="card-body">
+        <div id="adaptiveFilterLoading" class="text-center py-3">
+            <span class="spinner-border spinner-border-sm me-2"></span>Loading adaptive filter data...
+        </div>
+        <div class="table-responsive" id="adaptiveFilterTable" style="display:none">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Setup Type</th>
+                        <th class="text-end">Last N Trades</th>
+                        <th class="text-end">Win Rate</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="adaptiveFilterBody">
+                </tbody>
+            </table>
+        </div>
+        <div id="adaptiveFilterEmpty" class="text-center py-3 text-muted" style="display:none">
+            <i class="bi bi-funnel display-4"></i>
+            <h5 class="mt-3">No Adaptive Filter Data</h5>
+            <p>Setup types will appear here as live trades execute with the ML wrapper.</p>
+        </div>
+        <div class="mt-3">
+            <small class="text-muted">
+                <strong>How it works:</strong> Setup types with win rate below 35% are automatically blocked.
+                They re-enable at 45% win rate (hysteresis). Trades are tracked over a rolling window of 30 trades.
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Trades with Execution Detail -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list-ul me-2"></i>Recent Trades (Execution Detail)</span>
+        <span class="badge bg-secondary" id="tradeCount">0 trades</span>
+    </div>
+    <div class="card-body">
+        <div id="tradesLoading" class="text-center py-3">
+            <span class="spinner-border spinner-border-sm me-2"></span>Loading trades...
+        </div>
+        <div class="table-responsive" id="tradesTable" style="display:none">
+            <table class="table table-hover table-sm">
+                <thead>
+                    <tr>
+                        <th>Ticket</th>
+                        <th>Symbol</th>
+                        <th>Dir</th>
+                        <th>Time</th>
+                        <th class="text-end">Intended</th>
+                        <th class="text-end">Actual</th>
+                        <th class="text-end">Slippage</th>
+                        <th class="text-end">Spread</th>
+                        <th class="text-end">Commission</th>
+                        <th class="text-end">Swap</th>
+                        <th class="text-end">P&L</th>
+                    </tr>
+                </thead>
+                <tbody id="tradesBody">
+                </tbody>
+            </table>
+        </div>
+        <div id="tradesEmpty" class="text-center py-5 text-muted" style="display:none">
+            <i class="bi bi-graph-up-arrow display-4"></i>
+            <h5 class="mt-3">No Execution Data Yet</h5>
+            <p>Live trades will appear here once the TradeJournal records execution quality data.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function loadData() {
+    const days = document.getElementById('periodSelect').value;
+    loadSummary(days);
+    loadComparison(days);
+    loadTrades(days);
+    loadAdaptiveFilter();
+}
+
+function loadSummary(days) {
+    fetch(`/api/live/execution-quality?days=${days}`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('avgSpread').textContent = '$' + (data.avg_spread || 0).toFixed(2);
+            document.getElementById('avgSlippage').textContent = '$' + (data.avg_slippage || 0).toFixed(2);
+            document.getElementById('avgCost').textContent = '$' + (data.cost_per_trade || 0).toFixed(2);
+            document.getElementById('totalTrades').textContent = data.total_trades || 0;
+        })
+        .catch(err => console.error('Summary fetch error:', err));
+}
+
+function loadComparison(days) {
+    const loading = document.getElementById('comparisonLoading');
+    const table = document.getElementById('comparisonTable');
+    const empty = document.getElementById('comparisonEmpty');
+
+    loading.style.display = 'block';
+    table.style.display = 'none';
+    empty.style.display = 'none';
+
+    fetch(`/api/live/cost-comparison?days=${days}`)
+        .then(r => r.json())
+        .then(data => {
+            loading.style.display = 'none';
+
+            if (!data.total_live_trades || data.total_live_trades === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+
+            table.style.display = 'block';
+            const body = document.getElementById('comparisonBody');
+            const bt = data.backtest || {};
+            const live = data.live || {};
+            const delta = data.delta || {};
+
+            const rows = [
+                { label: 'Spread', bt: bt.avg_spread, live: live.avg_spread, d: delta.spread },
+                { label: 'Slippage', bt: bt.avg_slippage, live: live.avg_slippage, d: delta.slippage },
+                { label: 'Commission/lot', bt: bt.commission_per_lot, live: live.avg_commission, d: delta.commission },
+                { label: 'Swap (avg)', bt: ((bt.swap_long_per_lot || 0) + (bt.swap_short_per_lot || 0)) / 2, live: live.avg_swap, d: delta.swap },
+            ];
+
+            body.innerHTML = rows.map(r => {
+                const deltaClass = r.d > 0.01 ? 'text-danger' : r.d < -0.01 ? 'text-success' : '';
+                const sign = r.d > 0 ? '+' : '';
+                return `<tr>
+                    <td>${r.label}</td>
+                    <td class="text-end">$${(r.bt || 0).toFixed(2)}</td>
+                    <td class="text-end">$${(r.live || 0).toFixed(2)}</td>
+                    <td class="text-end ${deltaClass}">${sign}$${(r.d || 0).toFixed(2)}</td>
+                </tr>`;
+            }).join('');
+
+            const totalImpact = delta.total_impact || 0;
+            const impactEl = document.getElementById('totalImpact');
+            const impactSign = totalImpact > 0 ? '+' : '';
+            impactEl.textContent = `${impactSign}$${totalImpact.toFixed(2)}/trade vs backtest`;
+            impactEl.className = 'text-end ' + (totalImpact > 0.01 ? 'text-danger' : totalImpact < -0.01 ? 'text-success' : '');
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+            console.error('Comparison fetch error:', err);
+        });
+}
+
+function loadTrades(days) {
+    const loading = document.getElementById('tradesLoading');
+    const table = document.getElementById('tradesTable');
+    const empty = document.getElementById('tradesEmpty');
+
+    loading.style.display = 'block';
+    table.style.display = 'none';
+    empty.style.display = 'none';
+
+    fetch(`/api/live/execution-quality/trades?days=${days}&limit=50`)
+        .then(r => r.json())
+        .then(trades => {
+            loading.style.display = 'none';
+
+            if (!trades || trades.length === 0) {
+                empty.style.display = 'block';
+                document.getElementById('tradeCount').textContent = '0 trades';
+                return;
+            }
+
+            table.style.display = 'block';
+            document.getElementById('tradeCount').textContent = trades.length + ' trades';
+
+            const body = document.getElementById('tradesBody');
+            body.innerHTML = trades.map(t => {
+                const dirClass = t.direction === 'BUY' ? 'text-success' : 'text-danger';
+                const pnlClass = (t.pnl || 0) >= 0 ? 'text-success' : 'text-danger';
+                const entryTime = t.entry_time ? t.entry_time.slice(0, 16).replace('T', ' ') : '';
+                return `<tr>
+                    <td><small>${t.ticket}</small></td>
+                    <td>${t.symbol || ''}</td>
+                    <td class="${dirClass}">${t.direction || ''}</td>
+                    <td><small>${entryTime}</small></td>
+                    <td class="text-end">${(t.intended_entry || 0).toFixed(2)}</td>
+                    <td class="text-end">${(t.actual_entry || 0).toFixed(2)}</td>
+                    <td class="text-end text-warning">$${(t.slippage_entry || 0).toFixed(2)}</td>
+                    <td class="text-end">$${(t.spread_entry || 0).toFixed(2)}</td>
+                    <td class="text-end">$${(t.commission || 0).toFixed(2)}</td>
+                    <td class="text-end">$${(t.swap || 0).toFixed(2)}</td>
+                    <td class="text-end ${pnlClass}">$${(t.pnl || 0).toFixed(2)}</td>
+                </tr>`;
+            }).join('');
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+            console.error('Trades fetch error:', err);
+        });
+}
+
+// ==================== Adaptive Filter ====================
+
+function loadAdaptiveFilter() {
+    const loading = document.getElementById('adaptiveFilterLoading');
+    const table = document.getElementById('adaptiveFilterTable');
+    const empty = document.getElementById('adaptiveFilterEmpty');
+
+    loading.style.display = 'block';
+    table.style.display = 'none';
+    empty.style.display = 'none';
+
+    fetch('/api/adaptive-filter/state')
+        .then(r => r.json())
+        .then(data => {
+            loading.style.display = 'none';
+
+            const setupTypes = data.setup_types || {};
+            const entries = Object.entries(setupTypes);
+
+            if (entries.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+
+            table.style.display = 'block';
+            const body = document.getElementById('adaptiveFilterBody');
+            body.innerHTML = entries.map(([name, info]) => {
+                const winRate = info.win_rate !== null ? (info.win_rate * 100).toFixed(0) + '%' : 'N/A';
+                const wrClass = info.disabled ? 'text-danger' : (info.win_rate >= 0.5 ? 'text-success' : 'text-warning');
+                const statusBadge = info.disabled
+                    ? '<span class="badge bg-danger">Blocked</span>'
+                    : '<span class="badge bg-success">Active</span>';
+                return `<tr>
+                    <td><strong>${name}</strong></td>
+                    <td class="text-end">${info.trades || 0} trades</td>
+                    <td class="text-end ${wrClass}"><strong>${winRate}</strong></td>
+                    <td>${statusBadge}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="resetSetupType('${name.replace(/'/g, "\\'")}')" title="Reset this filter">
+                            <i class="bi bi-arrow-counterclockwise"></i>
+                        </button>
+                    </td>
+                </tr>`;
+            }).join('');
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+            console.error('Adaptive filter fetch error:', err);
+        });
+}
+
+function resetAdaptiveFilter() {
+    if (!confirm('Reset all adaptive filter data? All setup types will be re-enabled.')) return;
+
+    fetch('/api/adaptive-filter/reset', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+    })
+    .then(r => r.json())
+    .then(() => loadAdaptiveFilter())
+    .catch(err => console.error('Reset error:', err));
+}
+
+function resetSetupType(name) {
+    if (!confirm(`Reset filter data for "${name}"?`)) return;
+
+    fetch('/api/adaptive-filter/reset', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({setup_type: name}),
+    })
+    .then(r => r.json())
+    .then(() => loadAdaptiveFilter())
+    .catch(err => console.error('Reset error:', err));
+}
+
+// Load data on page load
+document.addEventListener('DOMContentLoaded', loadData);
+</script>
+{% endblock %}

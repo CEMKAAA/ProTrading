@@ -1,0 +1,1329 @@
+{% extends "base.html" %}
+
+{% block title %}Trading Systems - ProTrading{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-0">Trading Systems</h2>
+        <p class="text-muted mb-0">Start, stop, and monitor your trading strategies</p>
+    </div>
+    <button class="btn btn-outline-primary" onclick="refreshStrategies()">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+    </button>
+</div>
+
+<!-- Capital Allocation Card -->
+<div class="card mb-4" id="capital-allocation-card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-wallet2 me-2"></i>Capital Allocation</h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Account Balance</div>
+                    <div class="value text-primary" id="account-balance">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Allocated Capital</div>
+                    <div class="value text-warning" id="allocated-capital">$0</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Available Capital</div>
+                    <div class="value text-success" id="available-capital">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">MT5 Status</div>
+                    <div class="value" id="mt5-status">
+                        <span class="badge bg-secondary">Checking...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Allocation breakdown -->
+        <div class="mt-3" id="allocation-details" style="display: none;">
+            <small class="text-muted">Allocation breakdown:</small>
+            <div id="allocation-breakdown" class="mt-1"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Portfolio Governor Card -->
+<div class="card mb-4" id="portfolio-governor-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>Portfolio Risk Governor</h5>
+        <span class="badge bg-secondary" id="governor-status-badge">Checking...</span>
+    </div>
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Portfolio Heat</div>
+                    <div class="value" id="governor-heat">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Directional Exposure</div>
+                    <div class="value" id="governor-directional">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">Daily Drawdown</div>
+                    <div class="value" id="governor-dd">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card text-center">
+                    <div class="label">New Starts</div>
+                    <div class="value" id="governor-starts">--</div>
+                </div>
+            </div>
+        </div>
+        <div class="mt-3" id="governor-breaches" style="display:none;">
+            <small class="text-muted">Active Breaches:</small>
+            <div id="governor-breaches-list" class="mt-1"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Strategy Cards -->
+<div class="row g-4" id="strategies-container">
+    {% for strategy in strategies %}
+    <div class="col-lg-6">
+        <div class="card h-100" id="strategy-card-{{ strategy.id }}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 class="mb-0 d-flex align-items-center gap-2">
+                        <span>{{ strategy.name }}</span>
+                        <button class="btn btn-sm btn-outline-info py-0 px-1" title="Beginner Guide"
+                                onclick="openGuideModal('{{ strategy.id }}', '{{ strategy.name }}')">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
+                    </h5>
+                    <small class="text-muted">v{{ strategy.version }}</small>
+                    <div class="mt-1">
+                        <span class="badge bg-secondary" id="sim-cap-{{ strategy.id }}">Checking simulation...</span>
+                    </div>
+                </div>
+                <span class="badge bg-secondary" id="status-{{ strategy.id }}">
+                    STOPPED
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">{{ strategy.description }}</p>
+
+                <div class="row mb-3">
+                    <div class="col-6">
+                        <small class="text-muted d-block">Timeframes</small>
+                        <strong>{{ strategy.timeframes|join(', ') }}</strong>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-muted d-block">Symbols</small>
+                        <strong>{{ strategy.symbols|join(', ') }}</strong>
+                    </div>
+                </div>
+
+                <!-- Strategy State (shown when running) -->
+                <div class="strategy-state mb-3" id="state-{{ strategy.id }}" style="display: none;">
+                    <hr>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <div class="metric-card">
+                                <div class="label">Price</div>
+                                <div class="value" id="price-{{ strategy.id }}">--</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="metric-card">
+                                <div class="label">Daily P&L</div>
+                                <div class="value" id="pnl-{{ strategy.id }}">--</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="metric-card">
+                                <div class="label">Balance</div>
+                                <div class="value" id="balance-{{ strategy.id }}">--</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="metric-card">
+                                <div class="label">Positions</div>
+                                <div class="value" id="positions-{{ strategy.id }}">--</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="d-flex gap-2">
+                    <button class="btn btn-success flex-grow-1" onclick="showConfigModal('{{ strategy.id }}')" id="btn-{{ strategy.id }}">
+                        <i class="bi bi-play-fill me-1"></i>Start
+                    </button>
+                    <a class="btn btn-outline-info" id="sim-btn-{{ strategy.id }}" href="/trading-simulation/{{ strategy.id }}" title="Open guided simulation">
+                        <i class="bi bi-joystick me-1"></i>Open Trading Simulation
+                    </a>
+                    <a class="btn btn-outline-primary" id="chart-sim-btn-{{ strategy.id }}" href="/simulation/{{ strategy.id }}" title="Open chart replay simulation">
+                        <i class="bi bi-graph-up me-1"></i>Chart Simulation
+                    </a>
+                    <button class="btn btn-outline-secondary" onclick="viewStrategyDetails('{{ strategy.id }}')">
+                        <i class="bi bi-info-circle"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Strategy Configuration Modal -->
+<div class="modal fade" id="configModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-rocket-takeoff me-2"></i>Launch Strategy</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="configStrategyId">
+                <input type="hidden" id="configMlModelId" value="">
+                <input type="hidden" id="configSelectedPreset" value="default">
+
+                <!-- Capital Allocation Warning -->
+                <div class="alert alert-info mb-3" id="capitalInfo">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <span id="capitalInfoText">Loading capital info...</span>
+                </div>
+                <div class="alert alert-danger mb-3" id="capitalError" style="display: none;">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <span id="capitalErrorText"></span>
+                </div>
+
+                <!-- Risk Profile (Preset Cards) -->
+                <h6 class="section-title">Risk Profile</h6>
+                <div class="row g-3 mb-4" id="presetCards">
+                    <!-- Populated by showConfigModal() -->
+                    <div class="text-center py-3 text-muted">
+                        <div class="spinner-border spinner-border-sm"></div>
+                        <span class="ms-2">Loading presets...</span>
+                    </div>
+                </div>
+
+                <!-- Instrument -->
+                <h6 class="section-title">Instrument</h6>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">Symbol</label>
+                        <select class="form-select" id="configSymbol" onchange="onSymbolTimeframeChange()">
+                            <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Timeframe</label>
+                        <select class="form-select" id="configTimeframe" onchange="onSymbolTimeframeChange()">
+                            <option value="M1">M1 (1 Minute)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Capital Allocation -->
+                <h6 class="section-title">Capital Allocation</h6>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">Initial Balance ($)</label>
+                        <input type="number" class="form-control" id="configAllocation"
+                               min="100" step="100" value="10000"
+                               oninput="onAllocationInputChange()">
+                        <div class="form-text" id="allocationHelpText">
+                            Default comes from selected preset. You can adjust before start.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ML Model Selection (only shown for ML strategies) -->
+                <div id="mlModelSection" style="display: none;">
+                    <h6 class="section-title"><i class="bi bi-cpu me-1"></i>ML Model Selection</h6>
+                    <div id="mlModelContent">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+
+                <!-- Mode Selection -->
+                <h6 class="section-title">Trading Mode</h6>
+                <div class="row g-3">
+                    <div class="col-md-12">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="tradingMode" id="modeLive" value="live">
+                            <label class="form-check-label" for="modeLive">
+                                <i class="bi bi-broadcast text-success me-1"></i>Live Trading
+                            </label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="tradingMode" id="modeDemo" value="demo" checked>
+                            <label class="form-check-label" for="modeDemo">
+                                <i class="bi bi-cup-hot text-warning me-1"></i>Demo Mode
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="startStrategyWithConfig()">
+                    <i class="bi bi-play-fill me-1"></i>Start Strategy
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Strategy Details Modal -->
+<div class="modal fade" id="strategyModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="strategyModalTitle">Strategy Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="strategyModalBody">
+                <!-- Populated by JavaScript -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Guided Simulation Beginner Guide Modal -->
+<div class="modal fade" id="guideModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="guideModalTitle">Beginner Guide</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="guideModalBody">
+                <div class="text-muted">Loading guide...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const API_BASE = 'http://localhost:8000/api/v1';
+let configModal = null;
+let guideModal = null;
+let capitalAllocation = {
+    account_balance: null,
+    allocations: {},
+    total_allocated: 0,
+    available: null,
+    mt5_connected: false
+};
+let cachedStrategies = {};  // id -> {name, ...} from API
+let guideSummaries = {};  // strategy_id -> guide object
+let currentMlBaseStrategyId = null;  // set when opening config for an ML strategy
+let modalStrategyDefinitions = {};  // cache: strategyId -> definition from registry
+let currentPresetConfig = null;  // full preset config loaded for modal
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    configModal = new bootstrap.Modal(document.getElementById('configModal'));
+    guideModal = new bootstrap.Modal(document.getElementById('guideModal'));
+
+    // Check status of all strategies on page load
+    checkAllStrategiesStatus();
+    loadCapitalAllocation();
+    loadPortfolioGovernor();
+    loadSimulationCapabilities();
+    preloadGuideSummaries();
+
+    // Refresh status every 5 seconds
+    setInterval(checkAllStrategiesStatus, 5000);
+    setInterval(loadCapitalAllocation, 10000);
+    setInterval(loadPortfolioGovernor, 10000);
+});
+
+async function loadSimulationCapabilities() {
+    try {
+        const response = await fetch('/api/trading-simulation/capabilities');
+        const caps = await response.json();
+        const map = {};
+        for (const c of (caps || [])) {
+            map[c.strategy_id] = c;
+        }
+        Object.keys(cachedStrategies).forEach(() => {});
+        document.querySelectorAll('[id^="sim-cap-"]').forEach(el => {
+            const sid = el.id.replace('sim-cap-', '');
+            const cap = map[sid];
+            if (!cap) {
+                el.className = 'badge bg-secondary';
+                el.textContent = 'Coming Soon';
+                const btn = document.getElementById(`sim-btn-${sid}`);
+                if (btn) {
+                    btn.classList.add('disabled');
+                    btn.setAttribute('aria-disabled', 'true');
+                }
+                return;
+            }
+            const label = cap.status_label || 'Replay Only';
+            if (label === 'Live Runnable') {
+                el.className = 'badge bg-success';
+            } else if (label === 'Replay Only') {
+                el.className = 'badge bg-warning text-dark';
+            } else {
+                el.className = 'badge bg-secondary';
+            }
+            el.textContent = label;
+            const btn = document.getElementById(`sim-btn-${sid}`);
+            if (btn && label === 'Coming Soon') {
+                btn.classList.add('disabled');
+                btn.setAttribute('aria-disabled', 'true');
+            }
+        });
+    } catch (error) {
+        console.error('Error loading simulation capabilities:', error);
+        document.querySelectorAll('[id^="sim-cap-"]').forEach(el => {
+            el.className = 'badge bg-danger';
+            el.textContent = 'Capability Error';
+        });
+    }
+}
+
+async function openGuideModal(strategyId, strategyName) {
+    const titleEl = document.getElementById('guideModalTitle');
+    const bodyEl = document.getElementById('guideModalBody');
+    titleEl.textContent = `${strategyName} - Beginner Guide`;
+    bodyEl.innerHTML = '<div class="text-muted">Loading guide...</div>';
+    guideModal.show();
+    try {
+        let guide = guideSummaries[strategyId];
+        if (!guide) {
+            const response = await fetch(`/api/trading-simulation/strategies/${strategyId}/guide`);
+            guide = await response.json();
+            guideSummaries[strategyId] = guide;
+        }
+        bodyEl.innerHTML = `
+            <p><strong>What this strategy is:</strong> ${guide.what_this_strategy_is || '-'}</p>
+            <p><strong>When not to trade:</strong></p>
+            <ul>${(guide.when_not_to_trade || []).map(x => `<li>${x}</li>`).join('')}</ul>
+            <p><strong>Step by step:</strong></p>
+            <ol>${(guide.step_by_step || []).map(x => `<li>${x}</li>`).join('')}</ol>
+            <p><strong>Common mistakes:</strong></p>
+            <ul>${(guide.common_mistakes || []).map(x => `<li>${x}</li>`).join('')}</ul>
+            <p><strong>Risk rules:</strong></p>
+            <ul>${(guide.risk_rules || []).map(x => `<li>${x}</li>`).join('')}</ul>
+            <p><strong>Example scenario:</strong> ${guide.example_scenario || '-'}</p>
+        `;
+    } catch (error) {
+        bodyEl.innerHTML = `<div class="alert alert-warning mb-0">Failed to load guide: ${error.message}</div>`;
+    }
+}
+
+async function preloadGuideSummaries() {
+    const ids = Array.from(document.querySelectorAll('[id^="sim-cap-"]'))
+        .map(el => el.id.replace('sim-cap-', ''));
+    await Promise.all(ids.map(async (sid) => {
+        try {
+            const response = await fetch(`/api/trading-simulation/strategies/${sid}/guide`);
+            const guide = await response.json();
+            if (!guide.error) {
+                guideSummaries[sid] = guide;
+                const btn = document.querySelector(`button[onclick*="openGuideModal('${sid}'"]`);
+                if (btn && guide.what_this_strategy_is) {
+                    btn.title = guide.what_this_strategy_is;
+                }
+            }
+        } catch (_) {
+            // Ignore preload failures; modal fetch can retry later.
+        }
+    }));
+}
+
+// Load capital allocation info
+async function loadCapitalAllocation() {
+    try {
+        const response = await fetch(`${API_BASE}/strategies/capital/allocation`);
+        capitalAllocation = await response.json();
+
+        updateCapitalDisplay();
+    } catch (error) {
+        console.error('Error loading capital allocation:', error);
+        document.getElementById('mt5-status').innerHTML = '<span class="badge bg-danger">Error</span>';
+    }
+}
+
+// Update capital display
+function updateCapitalDisplay() {
+    const balanceEl = document.getElementById('account-balance');
+    const allocatedEl = document.getElementById('allocated-capital');
+    const availableEl = document.getElementById('available-capital');
+    const mt5StatusEl = document.getElementById('mt5-status');
+    const allocationDetails = document.getElementById('allocation-details');
+    const allocationBreakdown = document.getElementById('allocation-breakdown');
+
+    if (capitalAllocation.mt5_connected && capitalAllocation.account_balance !== null) {
+        balanceEl.textContent = `$${capitalAllocation.account_balance.toFixed(2)}`;
+        allocatedEl.textContent = `$${capitalAllocation.total_allocated.toFixed(2)}`;
+        availableEl.textContent = `$${capitalAllocation.available.toFixed(2)}`;
+        mt5StatusEl.innerHTML = '<span class="badge bg-success">Connected</span>';
+
+        // Show allocation breakdown if there are allocations
+        if (Object.keys(capitalAllocation.allocations).length > 0) {
+            allocationDetails.style.display = 'block';
+            let breakdownHtml = '';
+            for (const [strategyId, amount] of Object.entries(capitalAllocation.allocations)) {
+                const strategyName = (cachedStrategies[strategyId] && cachedStrategies[strategyId].name) || strategyId;
+                breakdownHtml += `<span class="badge bg-primary me-2">${strategyName}: $${amount.toFixed(0)}</span>`;
+            }
+            allocationBreakdown.innerHTML = breakdownHtml;
+        } else {
+            allocationDetails.style.display = 'none';
+        }
+    } else {
+        balanceEl.textContent = '--';
+        allocatedEl.textContent = '$0';
+        availableEl.textContent = '--';
+        mt5StatusEl.innerHTML = '<span class="badge bg-warning">Disconnected</span>';
+        allocationDetails.style.display = 'none';
+    }
+}
+
+async function loadPortfolioGovernor() {
+    try {
+        const response = await fetch(`${API_BASE}/strategies/portfolio/governor`);
+        const data = await response.json();
+        updatePortfolioGovernorDisplay(data);
+    } catch (error) {
+        console.error('Error loading portfolio governor:', error);
+        document.getElementById('governor-status-badge').className = 'badge bg-danger';
+        document.getElementById('governor-status-badge').textContent = 'Error';
+    }
+}
+
+function updatePortfolioGovernorDisplay(data) {
+    const status = data.status || 'unknown';
+    const badge = document.getElementById('governor-status-badge');
+    const snapshot = data.snapshot || {};
+    const breaches = data.breaches || [];
+
+    if (status === 'ok') {
+        badge.className = 'badge bg-success';
+        badge.textContent = 'OK';
+    } else if (status === 'breached') {
+        badge.className = 'badge bg-danger';
+        badge.textContent = 'BREACHED';
+    } else if (status.startsWith('degraded')) {
+        badge.className = 'badge bg-warning';
+        badge.textContent = 'DEGRADED';
+    } else if (status === 'disabled') {
+        badge.className = 'badge bg-secondary';
+        badge.textContent = 'DISABLED';
+    } else {
+        badge.className = 'badge bg-secondary';
+        badge.textContent = status.toUpperCase();
+    }
+
+    const heatPct = snapshot.portfolio_heat_pct;
+    const directional = snapshot.directional_exposure_lots;
+    const dd = snapshot.daily_drawdown_pct;
+    document.getElementById('governor-heat').textContent =
+        (typeof heatPct === 'number') ? `${heatPct.toFixed(2)}%` : '--';
+    document.getElementById('governor-directional').textContent =
+        (typeof directional === 'number') ? `${directional.toFixed(2)} lots` : '--';
+    document.getElementById('governor-dd').textContent =
+        (typeof dd === 'number') ? `${dd.toFixed(2)}%` : '--';
+    document.getElementById('governor-starts').innerHTML =
+        data.allow_new_starts ? '<span class="badge bg-success">Allowed</span>' : '<span class="badge bg-danger">Blocked</span>';
+
+    const breachesWrap = document.getElementById('governor-breaches');
+    const breachesList = document.getElementById('governor-breaches-list');
+    if (breaches.length > 0) {
+        breachesWrap.style.display = 'block';
+        breachesList.innerHTML = breaches
+            .map(b => `<span class="badge bg-danger me-2 mb-1">${b}</span>`)
+            .join('');
+    } else {
+        breachesWrap.style.display = 'none';
+        breachesList.innerHTML = '';
+    }
+}
+
+// Check status of all strategies
+async function checkAllStrategiesStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/strategies`);
+        const strategies = await response.json();
+
+        // Cache strategy data for name lookups
+        for (const strategy of strategies) {
+            cachedStrategies[strategy.id] = strategy;
+        }
+
+        for (const strategy of strategies) {
+            updateStrategyUI(strategy.id, strategy.status, strategy.state);
+        }
+    } catch (error) {
+        console.error('Error checking strategies status:', error);
+    }
+}
+
+// Update UI for a strategy based on status
+function updateStrategyUI(strategyId, status, state) {
+    const statusEl = document.getElementById(`status-${strategyId}`);
+    const stateEl = document.getElementById(`state-${strategyId}`);
+    const btn = document.getElementById(`btn-${strategyId}`);
+
+    if (!statusEl || !btn) return;
+
+    const isRunning = status === 'running' || (state && state.is_running);
+
+    if (isRunning) {
+        statusEl.className = 'badge bg-success';
+        statusEl.textContent = 'RUNNING';
+        stateEl.style.display = 'block';
+
+        btn.className = 'btn btn-danger flex-grow-1';
+        btn.innerHTML = '<i class="bi bi-stop-fill me-1"></i>Stop';
+        btn.onclick = () => stopStrategy(strategyId);
+
+        // Update state values
+        if (state) {
+            updateStrategyState(strategyId, state);
+        }
+    } else {
+        statusEl.className = 'badge bg-secondary';
+        statusEl.textContent = 'STOPPED';
+        stateEl.style.display = 'none';
+
+        btn.className = 'btn btn-success flex-grow-1';
+        btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Start';
+        btn.onclick = () => showConfigModal(strategyId);
+    }
+}
+
+// Show configuration modal before starting
+async function showConfigModal(strategyId) {
+    document.getElementById('configStrategyId').value = strategyId;
+    document.getElementById('configMlModelId').value = '';
+    document.getElementById('configSelectedPreset').value = 'default';
+    currentMlBaseStrategyId = null;
+    currentPresetConfig = null;
+
+    // Load latest capital allocation
+    await loadCapitalAllocation();
+
+    const infoTextEl = document.getElementById('capitalInfoText');
+    const errorEl = document.getElementById('capitalError');
+    const startBtn = document.querySelector('.modal-footer .btn-success');
+
+    errorEl.style.display = 'none';
+    startBtn.disabled = false;
+
+    if (capitalAllocation.mt5_connected && capitalAllocation.available !== null) {
+        const otherAllocated = Object.entries(capitalAllocation.allocations)
+            .filter(([id]) => id !== strategyId)
+            .reduce((sum, [, amount]) => sum + amount, 0);
+        const availableForStrategy = capitalAllocation.account_balance - otherAllocated;
+
+        infoTextEl.textContent = `Account Balance: $${capitalAllocation.account_balance.toFixed(2)} | Already Allocated: $${otherAllocated.toFixed(2)} | Available: $${availableForStrategy.toFixed(2)}`;
+    } else {
+        infoTextEl.textContent = 'MT5 not connected. Capital validation unavailable - be careful with allocation.';
+    }
+
+    // Populate symbol & timeframe from strategy's registry data
+    const strategyData = cachedStrategies[strategyId];
+    populateSymbolTimeframe(strategyData);
+
+    // Fetch strategy definition and render preset cards
+    await renderPresetCards(strategyId);
+
+    // Check if this is an ML strategy
+    const mlSection = document.getElementById('mlModelSection');
+    if (strategyData && strategyData.ml_base_strategy_id) {
+        currentMlBaseStrategyId = strategyData.ml_base_strategy_id;
+        mlSection.style.display = 'block';
+        await refreshMLModelsForLive();
+    } else {
+        currentMlBaseStrategyId = null;
+        mlSection.style.display = 'none';
+        document.getElementById('mlModelContent').innerHTML = '';
+    }
+
+    configModal.show();
+}
+
+// Fetch strategy definition and render ALL preset cards
+async function renderPresetCards(strategyId) {
+    const container = document.getElementById('presetCards');
+
+    // Check cache first
+    let definition = modalStrategyDefinitions[strategyId];
+    if (!definition) {
+        try {
+            const response = await fetch(`${API_BASE}/strategy-definitions/${strategyId}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            definition = await response.json();
+            modalStrategyDefinitions[strategyId] = definition;
+        } catch (error) {
+            console.error('Error loading strategy definition:', error);
+            container.innerHTML = `
+                <div class="alert alert-warning mb-0">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Failed to load strategy presets. Please try again.
+                </div>
+            `;
+            return;
+        }
+    }
+
+    const allPresets = definition.presets || [];
+    const selectedSymbol = document.getElementById('configSymbol')?.value || '';
+    const presetMeta = {
+        conservative:        { icon: 'bi-shield-check',     color: '#198754', badgeClass: 'bg-success',            label: 'Conservative' },
+        default:             { icon: 'bi-lightning-charge',  color: '#0d6efd', badgeClass: 'bg-primary',            label: 'Default' },
+        aggressive:          { icon: 'bi-fire',              color: '#fd7e14', badgeClass: 'bg-warning text-dark',   label: 'Aggressive' },
+        advanced_aggressive: { icon: 'bi-trophy-fill',       color: '#dc3545', badgeClass: 'bg-danger',             label: 'Advanced Aggressive' },
+        nas100_tuned:        { icon: 'bi-trophy-fill',       color: '#6f42c1', badgeClass: 'bg-info',               label: 'NAS100 Tuned' },
+        us500_tuned:         { icon: 'bi-trophy-fill',       color: '#20c997', badgeClass: 'bg-dark',               label: 'US500 Tuned' },
+    };
+
+    // Filter presets by selected symbol:
+    // - Standard presets (no symbols field) are always shown
+    // - Tuned presets are only shown if their symbols list includes the selected instrument
+    const presets = allPresets.filter(p => {
+        if (!p.symbols || p.symbols.length === 0) return true;  // universal preset
+        if (!selectedSymbol) return true;  // no symbol selected yet, show all
+        return p.symbols.includes(selectedSymbol);
+    });
+
+    // Standard presets first, then custom/tuned presets
+    const standardOrder = ['conservative', 'default', 'aggressive'];
+    const standardPresets = standardOrder.map(id => presets.find(p => p.id === id)).filter(Boolean);
+    const customPresets = presets.filter(p => !standardOrder.includes(p.id));
+    const sortedPresets = [...standardPresets, ...customPresets];
+
+    let html = '';
+    sortedPresets.forEach(preset => {
+        const meta = presetMeta[preset.id] || { icon: 'bi-gear-fill', color: '#6c757d', badgeClass: 'bg-secondary', label: preset.name };
+        const isTuned = !standardOrder.includes(preset.id);
+        const isDefault = preset.id === 'default';
+        const borderColor = isTuned ? meta.color : (isDefault ? meta.color : 'transparent');
+        const borderStyle = `border: 2px solid ${borderColor};`;
+        const shadowClass = (isDefault || isTuned) ? 'shadow' : '';
+        const colClass = isTuned ? 'col-md-4' : 'col-md-4';
+
+        // Extract key info from description
+        const riskMatch = preset.description ? preset.description.match(/(\d+\.?\d*)%\s*risk/i) : null;
+        const riskLabel = riskMatch ? `${riskMatch[1]}% Risk` : '';
+        const tradesMatch = preset.description ? preset.description.match(/(\d+)\s*trade/i) : null;
+        const tradesLabel = tradesMatch ? `${tradesMatch[1]} trade/day` : '';
+
+        // Tuned presets get a "DEPLOY" badge
+        const deployBadge = isTuned ? `<span class="badge bg-success mb-1"><i class="bi bi-check-circle me-1"></i>DEPLOY</span>` : '';
+
+        html += `
+            <div class="${colClass}">
+                <div class="card preset-card h-100 ${shadowClass}" id="preset-${preset.id}"
+                     onclick="selectPreset('${preset.id}')"
+                     style="cursor: pointer; ${borderStyle} transition: all 0.2s;">
+                    <div class="card-body text-center py-3">
+                        ${deployBadge}
+                        <i class="bi ${meta.icon} display-6" style="color: ${meta.color};"></i>
+                        <h6 class="mt-2 mb-1">${preset.name || meta.label}</h6>
+                        <small class="text-muted d-block mb-2">${preset.description || ''}</small>
+                        <div class="d-flex justify-content-center gap-1 flex-wrap">
+                            ${riskLabel ? `<span class="badge ${meta.badgeClass}">${riskLabel}</span>` : ''}
+                            ${tradesLabel ? `<span class="badge bg-secondary">${tradesLabel}</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
+
+    // If there's exactly one tuned preset for this instrument, pre-select it
+    // Otherwise, keep current selection if still visible, or fall back to default
+    const currentPreset = document.getElementById('configSelectedPreset').value;
+    const tunedForSymbol = customPresets.length === 1 ? customPresets[0] : null;
+
+    if (tunedForSymbol && selectedSymbol) {
+        selectPreset(tunedForSymbol.id);
+    } else if (sortedPresets.find(p => p.id === currentPreset)) {
+        selectPreset(currentPreset);
+    } else {
+        selectPreset('default');
+    }
+}
+
+// Select a preset card
+async function selectPreset(presetId) {
+    document.getElementById('configSelectedPreset').value = presetId;
+
+    // Remove highlight from all cards
+    document.querySelectorAll('.preset-card').forEach(card => {
+        card.style.borderColor = 'transparent';
+        card.classList.remove('shadow');
+    });
+
+    // Highlight selected
+    const card = document.getElementById(`preset-${presetId}`);
+    if (!card) return;
+
+    const colors = {
+        conservative: '#198754', default: '#0d6efd', aggressive: '#fd7e14',
+        advanced_aggressive: '#dc3545', nas100_tuned: '#6f42c1', us500_tuned: '#20c997'
+    };
+    card.style.borderColor = colors[presetId] || '#0d6efd';
+    card.classList.add('shadow');
+
+    // Load full preset config (instrument-aware) and prefill allocation
+    const strategyId = document.getElementById('configStrategyId').value;
+    if (!strategyId) return;
+    try {
+        const symbol = document.getElementById('configSymbol').value || '';
+        let presetUrl = `${API_BASE}/strategy-definitions/${strategyId}/preset/${presetId}`;
+        if (symbol) presetUrl += `?symbol=${encodeURIComponent(symbol)}`;
+        const resp = await fetch(presetUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        currentPresetConfig = await resp.json();
+
+        // Apply timeframe from preset config to dropdown (if available as an option)
+        if (currentPresetConfig.timeframe) {
+            const tfSelect = document.getElementById('configTimeframe');
+            const tfOption = tfSelect.querySelector(`option[value="${currentPresetConfig.timeframe}"]`);
+            if (tfOption) tfSelect.value = currentPresetConfig.timeframe;
+        }
+
+        // Apply symbol from preset config to dropdown (if available as an option)
+        if (currentPresetConfig.symbol) {
+            const symSelect = document.getElementById('configSymbol');
+            const symOption = symSelect.querySelector(`option[value="${currentPresetConfig.symbol}"]`);
+            if (symOption) symSelect.value = currentPresetConfig.symbol;
+        }
+
+        const presetBalance = Number(currentPresetConfig.initial_balance || 10000);
+        const allocInput = document.getElementById('configAllocation');
+        if (allocInput) allocInput.value = String(Math.max(100, Math.round(presetBalance)));
+    } catch (error) {
+        console.error('Error loading preset config for allocation:', error);
+        currentPresetConfig = null;
+    }
+    validateAllocationInput(strategyId);
+}
+
+function onAllocationInputChange() {
+    const strategyId = document.getElementById('configStrategyId').value;
+    if (!strategyId) return;
+    validateAllocationInput(strategyId);
+}
+
+function validateAllocationInput(strategyId) {
+    const infoTextEl = document.getElementById('capitalInfoText');
+    const errorEl = document.getElementById('capitalError');
+    const errorTextEl = document.getElementById('capitalErrorText');
+    const startBtn = document.querySelector('.modal-footer .btn-success');
+    const allocationInput = document.getElementById('configAllocation');
+    const helpEl = document.getElementById('allocationHelpText');
+
+    errorEl.style.display = 'none';
+    startBtn.disabled = false;
+
+    const requested = Math.max(100, Number(allocationInput.value || 0));
+    if (!Number.isFinite(requested)) {
+        errorEl.style.display = 'block';
+        errorTextEl.textContent = 'Please enter a valid allocation amount.';
+        startBtn.disabled = true;
+        return false;
+    }
+    allocationInput.value = String(Math.round(requested));
+
+    if (capitalAllocation.mt5_connected && capitalAllocation.account_balance !== null) {
+        const otherAllocated = Object.entries(capitalAllocation.allocations)
+            .filter(([id]) => id !== strategyId)
+            .reduce((sum, [, amount]) => sum + amount, 0);
+        const available = capitalAllocation.account_balance - otherAllocated;
+        if (helpEl) {
+            helpEl.textContent = `Available for this strategy: $${available.toFixed(2)} (other running allocations excluded).`;
+        }
+        if (requested > available) {
+            errorEl.style.display = 'block';
+            errorTextEl.textContent = `Requested $${requested.toFixed(0)} but only $${available.toFixed(0)} available.`;
+            startBtn.disabled = true;
+            return false;
+        }
+        infoTextEl.textContent = `Account Balance: $${capitalAllocation.account_balance.toFixed(2)} | Requested: $${requested.toFixed(2)} | Available: $${available.toFixed(2)}`;
+    } else {
+        if (helpEl) {
+            helpEl.textContent = 'MT5 not connected. Allocation cannot be validated against account balance.';
+        }
+    }
+    return true;
+}
+
+// Populate symbol and timeframe dropdowns from strategy data
+function populateSymbolTimeframe(strategyData) {
+    const symbolSelect = document.getElementById('configSymbol');
+    const timeframeSelect = document.getElementById('configTimeframe');
+
+    // Populate symbols
+    const symbols = (strategyData && strategyData.symbols) || ['XAUUSD'];
+    symbolSelect.innerHTML = '';
+    symbols.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        symbolSelect.appendChild(opt);
+    });
+
+    // Populate timeframes
+    const timeframes = (strategyData && strategyData.timeframes) || ['M1'];
+    const tfLabels = {
+        'M1': 'M1 (1 Minute)', 'M5': 'M5 (5 Minutes)', 'M15': 'M15 (15 Minutes)',
+        'M30': 'M30 (30 Minutes)', 'H1': 'H1 (1 Hour)', 'H4': 'H4 (4 Hours)',
+        'D1': 'D1 (Daily)', 'W1': 'W1 (Weekly)', 'MN1': 'MN1 (Monthly)'
+    };
+    timeframeSelect.innerHTML = '';
+    timeframes.forEach(tf => {
+        const opt = document.createElement('option');
+        opt.value = tf;
+        opt.textContent = tfLabels[tf] || tf;
+        timeframeSelect.appendChild(opt);
+    });
+}
+
+// Called when symbol or timeframe changes in the config modal
+async function onSymbolTimeframeChange() {
+    // Re-render preset cards filtered by new symbol
+    const strategyId = document.getElementById('configStrategyId').value;
+    if (strategyId) {
+        await renderPresetCards(strategyId);
+    }
+    if (currentMlBaseStrategyId) {
+        await refreshMLModelsForLive();
+    }
+}
+
+// Fetch and render ML models matching the selected strategy/symbol/timeframe
+async function refreshMLModelsForLive() {
+    const content = document.getElementById('mlModelContent');
+    const hiddenInput = document.getElementById('configMlModelId');
+
+    if (!currentMlBaseStrategyId) return;
+
+    const symbol = document.getElementById('configSymbol').value;
+    const timeframe = document.getElementById('configTimeframe').value;
+
+    content.innerHTML = `
+        <div class="text-center text-muted py-3">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <span class="ms-2">Searching for ML models (${currentMlBaseStrategyId} / ${symbol} / ${timeframe})...</span>
+        </div>
+    `;
+
+    try {
+        const params = new URLSearchParams({
+            strategy_id: currentMlBaseStrategyId,
+            symbol: symbol,
+            timeframe: timeframe
+        });
+        const response = await fetch(`${API_BASE}/ml/models/matching?${params}`);
+        const models = await response.json();
+
+        renderLiveMLModelSelector(models, symbol, timeframe);
+    } catch (error) {
+        console.error('Error loading ML models:', error);
+        content.innerHTML = `
+            <div class="alert alert-warning mb-0">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                Failed to load ML models. Make sure the backend is running.
+            </div>
+        `;
+        hiddenInput.value = '';
+    }
+}
+
+// Render ML model selection cards
+function renderLiveMLModelSelector(models, symbol, timeframe) {
+    const content = document.getElementById('mlModelContent');
+    const hiddenInput = document.getElementById('configMlModelId');
+
+    if (!models || models.length === 0) {
+        content.innerHTML = `
+            <div class="alert alert-warning mb-0">
+                <i class="bi bi-info-circle me-2"></i>
+                <strong>No trained ML models found</strong> for
+                <span class="badge bg-secondary">${currentMlBaseStrategyId}</span>
+                <span class="badge bg-primary">${symbol}</span>
+                <span class="badge bg-dark">${timeframe}</span>
+                <br><small class="mt-1 d-block">
+                    Train a model first on the <a href="/ml-models" class="alert-link">ML Models</a> page,
+                    then come back here. The strategy will run <strong>without ML filtering</strong> if started now.
+                </small>
+            </div>
+        `;
+        hiddenInput.value = '';
+        return;
+    }
+
+    let html = `
+        <p class="text-muted mb-3">
+            <small>Found <strong>${models.length}</strong> trained model(s) for
+            <span class="badge bg-secondary">${currentMlBaseStrategyId}</span>
+            <span class="badge bg-primary">${symbol}</span>
+            <span class="badge bg-dark">${timeframe}</span>.
+            Select which model to use for filtering trades:</small>
+        </p>
+    `;
+
+    // Auto (latest) option
+    html += `
+        <div class="form-check border rounded p-3 mb-2 bg-light">
+            <input class="form-check-input" type="radio" name="live_ml_model_select"
+                   id="live_ml_model_auto" value="" checked
+                   onchange="document.getElementById('configMlModelId').value = ''">
+            <label class="form-check-label w-100" for="live_ml_model_auto">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>Auto (Latest Model)</strong>
+                        <span class="badge bg-success ms-2">Recommended</span>
+                    </div>
+                </div>
+                <small class="text-muted">Automatically use the most recently trained model</small>
+            </label>
+        </div>
+    `;
+
+    // Individual model options
+    models.forEach((model) => {
+        const modelType = (model.model_type || 'xgboost').toUpperCase();
+        const accuracy = model.avg_accuracy ? (model.avg_accuracy * 100).toFixed(1) : 'N/A';
+        const aucRoc = model.avg_auc_roc ? model.avg_auc_roc.toFixed(3) : 'N/A';
+        const f1 = model.avg_f1 ? model.avg_f1.toFixed(3) : 'N/A';
+        const trades = model.total_trades || 0;
+        const trainedAt = model.trained_at ? formatLiveTrainedAt(model.trained_at) : 'Unknown';
+
+        const typeBadges = {
+            'xgboost': 'bg-info', 'lightgbm': 'bg-success',
+            'lstm': 'bg-warning text-dark', 'cnn': 'bg-danger',
+            'transformer': 'bg-dark', 'ensemble': 'bg-primary'
+        };
+        const typeBadgeClass = typeBadges[(model.model_type || '').toLowerCase()] || 'bg-secondary';
+
+        let qualityBadge = '';
+        if (model.avg_auc_roc >= 0.7) {
+            qualityBadge = '<span class="badge bg-success ms-1">Good</span>';
+        } else if (model.avg_auc_roc >= 0.6) {
+            qualityBadge = '<span class="badge bg-warning text-dark ms-1">Fair</span>';
+        } else if (model.avg_auc_roc > 0) {
+            qualityBadge = '<span class="badge bg-danger ms-1">Weak</span>';
+        }
+
+        html += `
+            <div class="form-check border rounded p-3 mb-2">
+                <input class="form-check-input" type="radio" name="live_ml_model_select"
+                       id="live_ml_model_${model.id}" value="${model.id}"
+                       onchange="document.getElementById('configMlModelId').value = '${model.id}'">
+                <label class="form-check-label w-100" for="live_ml_model_${model.id}">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div>
+                            <strong>Model #${model.id}</strong>
+                            <span class="badge ${typeBadgeClass} ms-2">${modelType}</span>
+                            ${qualityBadge}
+                        </div>
+                        <small class="text-muted">${trainedAt}</small>
+                    </div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-3">
+                            <small class="text-muted d-block">Accuracy</small>
+                            <strong class="text-primary">${accuracy}%</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">AUC-ROC</small>
+                            <strong class="text-primary">${aucRoc}</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">F1 Score</small>
+                            <strong class="text-primary">${f1}</strong>
+                        </div>
+                        <div class="col-3">
+                            <small class="text-muted d-block">Trades</small>
+                            <strong class="text-primary">${trades}</strong>
+                        </div>
+                    </div>
+                </label>
+            </div>
+        `;
+    });
+
+    content.innerHTML = html;
+    hiddenInput.value = '';  // Default to auto
+}
+
+function formatLiveTrainedAt(isoString) {
+    try {
+        const d = new Date(isoString);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    } catch {
+        return isoString;
+    }
+}
+
+// Start strategy with configuration
+async function startStrategyWithConfig() {
+    const strategyId = document.getElementById('configStrategyId').value;
+    const presetId = document.getElementById('configSelectedPreset').value;
+    const errorEl = document.getElementById('capitalError');
+    const errorTextEl = document.getElementById('capitalErrorText');
+
+    try {
+        // Fetch FULL preset config from backend (instrument-aware: defaults + optimal + preset + instrument overrides)
+        let config = currentPresetConfig;
+        if (!config) {
+            const symbol = document.getElementById('configSymbol').value || '';
+            let presetUrl = `${API_BASE}/strategy-definitions/${strategyId}/preset/${presetId}`;
+            if (symbol) presetUrl += `?symbol=${encodeURIComponent(symbol)}`;
+            const presetResp = await fetch(presetUrl);
+            if (!presetResp.ok) throw new Error(`Failed to load preset config: HTTP ${presetResp.status}`);
+            config = await presetResp.json();
+        } else {
+            // defensive copy
+            config = { ...config };
+        }
+
+        // Override with user's instrument/mode selections
+        config.symbol = document.getElementById('configSymbol').value;
+        config.timeframe = document.getElementById('configTimeframe').value;
+        config.mode = document.querySelector('input[name="tradingMode"]:checked').value;
+        config.initial_balance = Math.max(100, Number(document.getElementById('configAllocation').value || 10000));
+
+        // ML model if applicable
+        const mlModelId = document.getElementById('configMlModelId').value;
+        if (mlModelId) config.ml_model_id = parseInt(mlModelId);
+
+        // Validate capital
+        if (capitalAllocation.mt5_connected && capitalAllocation.available !== null) {
+            const balance = config.initial_balance || 10000;
+            const otherAllocated = Object.entries(capitalAllocation.allocations)
+                .filter(([id]) => id !== strategyId)
+                .reduce((sum, [, amt]) => sum + amt, 0);
+            const available = capitalAllocation.account_balance - otherAllocated;
+            if (balance > available) {
+                errorEl.style.display = 'block';
+                errorTextEl.textContent = `Preset requires $${balance} but only $${available.toFixed(0)} available`;
+                return;
+            }
+        }
+
+        configModal.hide();
+        await startStrategy(strategyId, config);
+        setTimeout(loadCapitalAllocation, 1000);
+    } catch (error) {
+        showAlert('danger', `Error: ${error.message}`);
+    }
+}
+
+// Refresh strategies list
+function refreshStrategies() {
+    checkAllStrategiesStatus();
+    loadCapitalAllocation();
+    showAlert('info', 'Strategies refreshed');
+}
+
+// Start a strategy
+async function startStrategy(strategyId, config = null) {
+    const btn = document.getElementById(`btn-${strategyId}`);
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/strategies/${strategyId}/start`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: config ? JSON.stringify(config) : null,
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            // Update UI
+            updateStrategyUI(strategyId, 'running', null);
+            btn.disabled = false;
+            showAlert('success', `Strategy ${strategyId} started successfully`);
+        } else {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            showAlert('danger', data.detail || data.message || 'Failed to start strategy');
+        }
+    } catch (error) {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        showAlert('danger', `Error: ${error.message}`);
+    }
+}
+
+// Stop a strategy
+async function stopStrategy(strategyId) {
+    const btn = document.getElementById(`btn-${strategyId}`);
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/strategies/${strategyId}/stop`, {
+            method: 'POST',
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            // Update UI
+            updateStrategyUI(strategyId, 'stopped', null);
+            btn.disabled = false;
+            showAlert('success', `Strategy ${strategyId} stopped`);
+
+            // Reload capital allocation after stopping
+            setTimeout(loadCapitalAllocation, 1000);
+        } else {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            showAlert('danger', data.detail || data.message || 'Failed to stop strategy');
+        }
+    } catch (error) {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        showAlert('danger', `Error: ${error.message}`);
+    }
+}
+
+function updateStrategyState(strategyId, state) {
+    const priceEl = document.getElementById(`price-${strategyId}`);
+    const pnlEl = document.getElementById(`pnl-${strategyId}`);
+    const balanceEl = document.getElementById(`balance-${strategyId}`);
+    const positionsEl = document.getElementById(`positions-${strategyId}`);
+
+    if (priceEl && state.current_price) {
+        priceEl.textContent = `$${state.current_price.toFixed(2)}`;
+    }
+
+    if (pnlEl && state.daily_pnl !== undefined) {
+        const pnl = state.daily_pnl;
+        pnlEl.textContent = `$${pnl.toFixed(2)}`;
+        pnlEl.className = `value ${pnl >= 0 ? 'text-success' : 'text-danger'}`;
+    }
+
+    if (balanceEl && state.balance) {
+        balanceEl.textContent = `$${state.balance.toFixed(0)}`;
+    }
+
+    if (positionsEl && state.open_positions !== undefined) {
+        positionsEl.textContent = state.open_positions;
+    }
+}
+
+// View strategy details
+async function viewStrategyDetails(strategyId) {
+    try {
+        const response = await fetch(`${API_BASE}/strategies/${strategyId}`);
+        const strategy = await response.json();
+
+        document.getElementById('strategyModalTitle').textContent = strategy.name;
+
+        let stateHtml = '';
+        if (strategy.state && strategy.state.is_running) {
+            stateHtml = `
+                <h6 class="section-title">Current State</h6>
+                <div class="row g-3 mb-4">
+                    <div class="col-4">
+                        <div class="metric-card">
+                            <div class="label">Price</div>
+                            <div class="value">$${strategy.state.current_price?.toFixed(2) || '--'}</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="metric-card">
+                            <div class="label">Balance</div>
+                            <div class="value">$${strategy.state.balance?.toFixed(0) || '--'}</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="metric-card">
+                            <div class="label">Daily P&L</div>
+                            <div class="value ${(strategy.state.daily_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">
+                                $${strategy.state.daily_pnl?.toFixed(2) || '0.00'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        document.getElementById('strategyModalBody').innerHTML = `
+            <p>${strategy.description}</p>
+
+            <h6 class="section-title">Configuration</h6>
+            <dl class="row">
+                <dt class="col-sm-4">Strategy ID</dt>
+                <dd class="col-sm-8"><code>${strategy.id}</code></dd>
+                <dt class="col-sm-4">Version</dt>
+                <dd class="col-sm-8">${strategy.version}</dd>
+                <dt class="col-sm-4">Status</dt>
+                <dd class="col-sm-8">
+                    <span class="badge ${strategy.status === 'running' ? 'bg-success' : 'bg-secondary'}">
+                        ${strategy.status.toUpperCase()}
+                    </span>
+                </dd>
+                <dt class="col-sm-4">Timeframes</dt>
+                <dd class="col-sm-8">${strategy.timeframes.join(', ')}</dd>
+                <dt class="col-sm-4">Symbols</dt>
+                <dd class="col-sm-8">${strategy.symbols.join(', ')}</dd>
+            </dl>
+
+            ${stateHtml}
+        `;
+
+        const modal = new bootstrap.Modal(document.getElementById('strategyModal'));
+        modal.show();
+    } catch (error) {
+        showAlert('danger', `Error loading strategy details: ${error.message}`);
+    }
+}
+
+// Show alert message
+function showAlert(type, message) {
+    const alertHtml = `
+        <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+
+    const container = document.querySelector('.main-content');
+    container.insertAdjacentHTML('afterbegin', alertHtml);
+
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+        const alert = container.querySelector('.alert');
+        if (alert) {
+            alert.remove();
+        }
+    }, 5000);
+}
+</script>
+{% endblock %}
