@@ -28,6 +28,50 @@ def test_send_text_uses_post(monkeypatch):
     assert seen[0]["http_method"] == "POST"
 
 
+def test_start_prepares_polling_with_delete_webhook(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    seen = []
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs):
+            self._alive = False
+
+        def start(self):
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            self._alive = False
+
+    def _fake_tg_request(method, *, params=None, timeout_sec=0, http_method="GET"):
+        seen.append(
+            {
+                "method": method,
+                "params": dict(params or {}),
+                "timeout_sec": timeout_sec,
+                "http_method": http_method,
+            }
+        )
+        if method == "getMe":
+            return {"ok": True, "result": {"id": 123, "username": "prod_optimizer_bot"}}
+        return {"ok": True}
+
+    monkeypatch.setattr(svc, "_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_token", lambda: "dummy")
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: 7119946313)
+    monkeypatch.setattr(svc, "_tg_request", _fake_tg_request)
+    monkeypatch.setattr(tbs.threading, "Thread", _FakeThread)
+
+    svc.start()
+    assert len(seen) >= 2
+    assert seen[0]["method"] == "deleteWebhook"
+    assert seen[0]["http_method"] == "POST"
+    assert seen[1]["method"] == "getMe"
+    svc.stop()
+
+
 def test_approve_uses_agent_execute_tool_with_confirm_off(monkeypatch):
     svc = tbs.TelegramBridgeService()
     chat_id = 7119946313

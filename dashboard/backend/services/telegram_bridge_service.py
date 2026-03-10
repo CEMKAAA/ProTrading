@@ -1745,6 +1745,32 @@ class TelegramBridgeService:
                 pass
             self._process_update(row)
 
+    def _prepare_polling(self) -> None:
+        """
+        Prepare Telegram endpoint for long-polling mode.
+
+        If a webhook is configured on the token, Telegram rejects getUpdates with
+        conflict errors. We explicitly clear webhook to make polling reliable.
+        """
+        try:
+            self._tg_request(
+                "deleteWebhook",
+                params={"drop_pending_updates": False},
+                timeout_sec=15.0,
+                http_method="POST",
+            )
+            logger.info("Telegram polling bootstrap: webhook cleared")
+        except Exception as exc:
+            logger.warning("Telegram polling bootstrap failed (deleteWebhook): %s", str(exc)[:220])
+        try:
+            me = self._tg_request("getMe", timeout_sec=15.0, http_method="GET")
+            result = me.get("result") if isinstance(me.get("result"), dict) else {}
+            uname = str(result.get("username") or "").strip()
+            bid = result.get("id")
+            logger.info("Telegram polling bootstrap: bot=%s id=%s", (f"@{uname}" if uname else "(unknown)"), str(bid or ""))
+        except Exception as exc:
+            logger.warning("Telegram polling bootstrap failed (getMe): %s", str(exc)[:220])
+
     def _loop(self) -> None:
         logger.info("Telegram bridge service loop started")
         while not self._stop.is_set():
@@ -1775,6 +1801,7 @@ class TelegramBridgeService:
         if allowed is None:
             logger.warning("Telegram bridge not started: TELEGRAM_ALLOWED_CHAT_ID missing/invalid")
             return
+        self._prepare_polling()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="telegram-bridge")
         self._thread.start()
