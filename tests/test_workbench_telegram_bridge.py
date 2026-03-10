@@ -361,6 +361,69 @@ def test_resolve_provider_falls_back_to_env_api_key_when_runtime_has_none(monkey
     )
 
 
+def test_toolmode_command_show_and_set(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_provider_and_permissions",
+        lambda _sid: ({"provider": "claude"}, {}, {"strategy_tool_access_mode": "parent"}),
+    )
+    out_show = svc._handle_text(chat_id, "/toolmode")
+    assert "strategy tool mode: parent" in out_show.lower()
+
+    seen = {}
+    def _fake_set_mode(sid, mode):
+        seen["value"] = (sid, mode)
+        return "ok"
+
+    monkeypatch.setattr(svc, "_set_tool_access_mode", _fake_set_mode)
+    svc._handle_text(chat_id, "/toolmode child")
+    assert seen.get("value") == (97, "child")
+
+
+def test_toolmode_command_usage_on_invalid_mode(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    assert "Usage: /toolmode <all|parent|child> [session_id]" == svc._set_tool_access_mode(1, "invalid_mode")
+
+
+def test_toolselect_command_show_and_set(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_provider_and_permissions",
+        lambda _sid: ({"provider": "claude"}, {}, {"tool_selection_mode": "guided"}),
+    )
+    out_show = svc._handle_text(chat_id, "/toolselect")
+    assert "tool selection mode: guided" in out_show.lower()
+
+    seen = {}
+
+    def _fake_set_mode(sid, mode):
+        seen["value"] = (sid, mode)
+        return "ok"
+
+    monkeypatch.setattr(svc, "_set_tool_selection_mode", _fake_set_mode)
+    out_set = svc._handle_text(chat_id, "/toolselect minimal")
+    assert out_set == "ok"
+    assert seen.get("value") == (97, "minimal")
+
+
+def test_toolselect_command_usage_on_invalid_mode(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    assert "Usage: /toolselect <autonomous|guided|minimal> [session_id]" == svc._set_tool_selection_mode(1, "invalid_mode")
+
+
+def test_help_includes_tool_modes():
+    svc = tbs.TelegramBridgeService()
+    out = svc._handle_text(7119946313, "/help")
+    assert "/toolmode [all|parent|child] [session_id]" in out
+    assert "/toolselect [autonomous|guided|minimal] [session_id]" in out
+
+
 def test_resolve_provider_falls_back_to_claude_alias_env_key(monkeypatch):
     svc = tbs.TelegramBridgeService()
     session_id = 92

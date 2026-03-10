@@ -336,6 +336,57 @@
     grid-template-columns: 1fr 1fr;
     gap: 8px;
 }
+/* ── Agent Config Accordion ── */
+.agent-section {
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    background: rgba(15, 23, 42, 0.5);
+    transition: border-color 0.2s;
+}
+.agent-section:hover { border-color: rgba(148, 163, 184, 0.25); }
+.agent-section-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    background: transparent; border: none; width: 100%; color: #e2e8f0;
+    font-size: 0.82rem; font-weight: 600; transition: background 0.15s;
+}
+.agent-section-toggle:hover { background: rgba(99, 102, 241, 0.08); }
+.agent-section-toggle .section-icon { font-size: 1rem; margin-right: 8px; opacity: 0.8; }
+.agent-section-toggle .section-chevron { transition: transform 0.2s; font-size: 0.8rem; color: #94a3b8; }
+.agent-section-toggle[aria-expanded="true"] .section-chevron { transform: rotate(180deg); }
+.agent-section-hint {
+    font-size: 0.7rem; color: #94a3b8; font-weight: 400; margin-left: 8px;
+}
+.agent-section-body { padding: 4px 14px 14px; }
+.agent-section-body .coach-grid { gap: 10px; }
+.agent-field-hint {
+    display: block; font-size: 0.68rem; color: #64748b; margin-top: 3px; line-height: 1.3;
+}
+.agent-field-label {
+    font-size: 0.76rem; color: #cbd5e1; margin-bottom: 4px; font-weight: 500;
+}
+.agent-perm-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+}
+.agent-perm-item {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-radius: 8px; background: rgba(30, 41, 59, 0.6);
+    font-size: 0.76rem; color: #cbd5e1; transition: background 0.15s;
+}
+.agent-perm-item:hover { background: rgba(30, 41, 59, 0.9); }
+.agent-perm-item .form-check-input { margin: 0; }
+.agent-perm-icon { font-size: 0.85rem; opacity: 0.7; }
+.agent-quick-actions {
+    display: flex; gap: 8px; flex-wrap: wrap;
+}
+.agent-quick-actions .btn { flex: 1 1 0; min-width: 100px; border-radius: 10px; font-weight: 500; }
+.agent-status-bar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    border-radius: 8px; background: rgba(30, 41, 59, 0.5);
+    font-size: 0.76rem; color: #94a3b8; margin-top: 8px;
+}
 .agent-status {
     font-size: 0.76rem;
     color: #cbd5e1;
@@ -1804,220 +1855,331 @@ body.workbench-fullscreen .stats-bar {
                 <span class="panel-mini-label">Chat + Loop + Actions</span>
             </div>
             <div class="coach-body d-none" id="agent-panel-body">
-                <div class="coach-grid mb-2">
-                    <div>
-                        <label for="consultant-provider" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Provider</label>
-                        <select id="consultant-provider" class="form-select form-select-sm">
-                            <option value="claude" selected>Claude</option>
-                            <option value="local_gptoss_http">Local GPT-OSS</option>
-                            <option value="openai_compat">OpenAI Compatible</option>
-                            <option value="deterministic">Deterministic</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label for="consultant-model" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Model</label>
-                        <input id="consultant-model" class="form-control form-control-sm" list="consultant-model-options" value="claude-sonnet-4-5-20250929">
-                        <datalist id="consultant-model-options"></datalist>
-                    </div>
-                    <div>
-                        <label for="consultant-url" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM URL</label>
-                        <input id="consultant-url" class="form-control form-control-sm" value="https://api.anthropic.com">
-                    </div>
-                    <div>
-                        <label for="consultant-api-key" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">API Key (optional)</label>
-                        <input id="consultant-api-key" type="password" class="form-control form-control-sm" placeholder="Optional. Leave empty to use .env key">
-                        <small id="consultant-key-hint" style="font-size:0.68rem;color:#94a3b8;">If empty, backend uses environment key for selected provider.</small>
-                    </div>
-                    <div>
-                        <label for="agent-timeout" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM Timeout (sec)</label>
-                        <input id="agent-timeout" class="form-control form-control-sm" type="number" min="10" step="5" value="45">
-                    </div>
-                    <div>
-                        <label for="agent-loop-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Loop Interval (sec)</label>
-                        <input id="agent-loop-interval" class="form-control form-control-sm" type="number" min="1" max="120" step="1" value="5">
-                    </div>
-                    <div>
-                        <label for="agent-watchdog-mode" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Watchdog Mode</label>
-                        <select id="agent-watchdog-mode" class="form-select form-select-sm">
-                            <option value="deterministic" selected>Deterministic (cheap)</option>
-                            <option value="local_gptoss_http">GPT-OSS 20B (local)</option>
-                            <option value="claude">Claude Haiku</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label for="agent-watchdog-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Watchdog Interval (sec)</label>
-                        <input id="agent-watchdog-interval" class="form-control form-control-sm" type="number" min="5" max="300" step="1" value="30">
-                    </div>
-                    <div>
-                        <label for="agent-watchdog-llm-interval" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">LLM Min Interval (sec)</label>
-                        <input id="agent-watchdog-llm-interval" class="form-control form-control-sm" type="number" min="10" max="3600" step="5" value="180">
-                    </div>
-                    <div class="d-flex align-items-end">
-                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
-                            <input class="form-check-input me-1" type="checkbox" id="agent-watchdog-trigger-require-approval">
-                            Trigger Requires Approval
-                        </label>
-                    </div>
-                    <div class="d-flex align-items-end">
-                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
-                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-enabled" checked>
-                            Execution Guardrails Enabled
-                            <span style="color:#94a3b8;"> - Master switch for execution filters below.</span>
-                        </label>
-                    </div>
-                    <div id="agent-guardrail-effective-status" style="font-size:0.72rem;color:#94a3b8;">
-                        Guardrails: disabled.
-                    </div>
-                    <div class="d-flex align-items-end">
-                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
-                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-session-filter">
-                            Session Filter (execution)
-                            <span style="color:#94a3b8;"> - Block entries outside configured liquid session hours.</span>
-                        </label>
-                    </div>
-                    <div class="d-flex align-items-end">
-                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
-                            <input class="form-check-input me-1" type="checkbox" id="agent-guardrail-news-filter">
-                            News Filter (execution)
-                            <span style="color:#94a3b8;"> - Block entries when high-impact headlines are detected.</span>
-                        </label>
-                    </div>
-                    <div>
-                        <label for="agent-guardrail-news-lookback" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Lookback (min)</label>
-                        <input id="agent-guardrail-news-lookback" class="form-control form-control-sm" type="number" min="15" max="1440" step="15" value="120">
-                    </div>
-                    <div>
-                        <label for="agent-news-provider" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Provider</label>
-                        <select id="agent-news-provider" class="form-select form-select-sm">
-                            <option value="polygon" selected>Polygon</option>
-                            <option value="ibkr">IBKR (TWS/Gateway)</option>
-                        </select>
-                    </div>
-                    <div class="d-flex align-items-end">
-                        <label class="form-check m-0" style="font-size:0.72rem;color:#cbd5e1;">
-                            <input class="form-check-input me-1" type="checkbox" id="agent-news-llm-summary">
-                            LLM News Summary (cached first call)
-                            <span style="color:#94a3b8;"> - Creates a short risk brief once, then reuses cache.</span>
-                        </label>
-                    </div>
-                    <div id="agent-news-llm-summary-warning" class="d-none" style="font-size:0.72rem;color:#fca5a5;">
-                        LLM summary requires backend ANTHROPIC_API_KEY.
-                    </div>
-                    <div>
-                        <label for="agent-news-summary-model" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">News Summary Model</label>
-                        <input id="agent-news-summary-model" class="form-control form-control-sm" value="claude-haiku-4-5-20251001">
-                    </div>
-                    <div>
-                        <label for="agent-news-ibkr-host" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">IBKR News Host</label>
-                        <input id="agent-news-ibkr-host" class="form-control form-control-sm" value="127.0.0.1">
-                    </div>
-                    <div>
-                        <label for="agent-news-ibkr-port" class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">IBKR News Port</label>
-                        <input id="agent-news-ibkr-port" class="form-control form-control-sm" type="number" min="1" max="65535" step="1" value="7497">
-                    </div>
-                </div>
 
-                <div class="mb-2">
-                    <label class="form-label mb-1" style="font-size:0.72rem;color:#94a3b8;">Permissions</label>
-                    <div class="d-flex flex-wrap gap-2" style="font-size:0.75rem;color:#cbd5e1;">
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-scan-tools" checked>Scan tools</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-use-research">Research</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-manage-indicators" checked>Indicators</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-place-trades">Place trades</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-close-trades">Close trades</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-can-auto-execute">Auto execute</label>
-                        <label class="form-check m-0"><input class="form-check-input me-1" type="checkbox" id="agent-require-confirm" checked>User confirm</label>
-                    </div>
-                </div>
-
-                <div class="agent-identity-box">
-                    <div class="agent-identity-title">
-                        <strong><i class="bi bi-person-badge me-1"></i>Identity (Locked Core)</strong>
-                        <span class="agent-identity-hint" id="agent-identity-version-label">v1</span>
-                    </div>
-                    <button class="agent-identity-collapse-toggle" id="btn-agent-identity-toggle" type="button">
-                        <span><i class="bi bi-sliders2 me-1"></i>Persona & Doctrine Settings</span>
-                        <i class="bi bi-chevron-down"></i>
-                    </button>
-                    <div id="agent-identity-fields" class="d-none mt-2">
-                        <div class="d-flex flex-wrap gap-2 mb-2" style="font-size:0.74rem;color:#cbd5e1;">
-                            <label class="form-check m-0">
-                                <input class="form-check-input me-1" type="checkbox" id="agent-identity-enabled" checked>Enabled
-                            </label>
-                            <label class="form-check m-0">
-                                <input class="form-check-input me-1" type="checkbox" id="agent-identity-lock" checked>Lock personality
-                            </label>
-                        </div>
-                        <div class="mb-2">
-                            <label class="form-label">Identity Profile</label>
-                            <select id="agent-identity-preset" class="form-select form-select-sm">
-                                <option value="master_quant">Master Trader / Quant</option>
-                                <option value="apprentice">Current (Apprentice)</option>
-                            </select>
-                            <small style="font-size:0.68rem;color:#94a3b8;">Choose a profile, then click Save to persist it for this session.</small>
-                        </div>
-                        <div class="mb-2">
-                            <label class="form-label">Persona</label>
-                            <input id="agent-identity-persona" class="form-control form-control-sm" maxlength="300" placeholder="Apprentice day-trading analyst...">
-                        </div>
-                        <div class="mb-2">
-                            <label class="form-label">Tone</label>
-                            <input id="agent-identity-tone" class="form-control form-control-sm" maxlength="300" placeholder="Direct, concise, risk-first...">
-                        </div>
-                        <div class="mb-2">
-                            <label class="form-label">Risk Doctrine (1 line per rule)</label>
-                            <textarea id="agent-identity-risk" class="form-control form-control-sm" rows="3" maxlength="2600" placeholder="Protect capital first&#10;Require invalidation before trade"></textarea>
-                        </div>
-                        <div class="mb-1">
-                            <label class="form-label">Immutable Rules (1 line per rule)</label>
-                            <textarea id="agent-identity-rules" class="form-control form-control-sm" rows="2" maxlength="2200" placeholder="Do not bypass permissions or risk constraints"></textarea>
-                        </div>
-                    </div>
-                    <div class="d-flex gap-2 mt-2">
-                        <button class="btn btn-sm btn-outline-secondary w-100" id="btn-agent-identity-refresh" type="button">
-                            <i class="bi bi-arrow-repeat me-1"></i>Load
-                        </button>
-                        <button class="btn btn-sm btn-outline-primary w-100" id="btn-agent-identity-save" type="button">
-                            <i class="bi bi-check2-circle me-1"></i>Save
-                        </button>
-                    </div>
-                    <div class="agent-identity-status" id="agent-identity-status">Identity ready.</div>
-                </div>
-
-                <div class="d-flex gap-2 align-items-center mb-2">
-                    <div id="agent-chat-gate" class="fvg-empty mb-0 flex-grow-1">Start a Workbench session first, then chat becomes available.</div>
+                <!-- ═══ Quick Actions (always visible) ═══ -->
+                <div class="agent-quick-actions mb-2">
                     <button class="btn btn-sm btn-outline-info" id="btn-open-agent-chat" type="button" data-bs-toggle="modal" data-bs-target="#agentChatModal">
-                        <i class="bi bi-chat-dots me-1"></i>Open Chat
+                        <i class="bi bi-chat-dots me-1"></i>Chat
                     </button>
-                </div>
-
-                <div class="d-flex gap-2 mb-2">
-                    <button class="btn btn-sm btn-primary w-100" id="btn-agent-run-once">
+                    <button class="btn btn-sm btn-primary" id="btn-agent-run-once">
                         <i class="bi bi-lightning-charge me-1"></i>Run Once
+                    </button>
+                    <button class="btn btn-sm btn-success" id="btn-agent-start">
+                        <i class="bi bi-play-circle me-1"></i>Start Loop
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning" id="btn-agent-stop">
+                        <i class="bi bi-stop-circle me-1"></i>Stop
                     </button>
                     <button class="btn btn-sm btn-outline-secondary" id="btn-agent-refresh" title="Refresh state">
                         <i class="bi bi-arrow-repeat"></i>
                     </button>
                 </div>
-
-                <div class="d-flex gap-2">
-                    <button class="btn btn-sm btn-success w-100" id="btn-agent-start">
-                        <i class="bi bi-play-circle me-1"></i>Start Agent Loop
-                    </button>
-                    <button class="btn btn-sm btn-outline-warning w-100" id="btn-agent-stop">
-                        <i class="bi bi-stop-circle me-1"></i>Stop
-                    </button>
-                </div>
-                <div class="d-flex gap-2 mt-2">
-                    <button class="btn btn-sm btn-outline-danger w-100" id="btn-agent-pause-auto">
+                <div class="d-flex gap-2 mb-2">
+                    <button class="btn btn-sm btn-outline-danger w-50" id="btn-agent-pause-auto">
                         <i class="bi bi-pause-circle me-1"></i>Pause Auto
                     </button>
-                    <button class="btn btn-sm btn-outline-success w-100" id="btn-agent-resume-auto">
+                    <button class="btn btn-sm btn-outline-success w-50" id="btn-agent-resume-auto">
                         <i class="bi bi-play-circle me-1"></i>Resume Auto
                     </button>
                 </div>
+                <div id="agent-chat-gate" class="fvg-empty mb-2">Start a Workbench session first, then chat becomes available.</div>
 
-                <div id="agent-status" class="agent-status">Status: not started</div>
+                <!-- Status Bar -->
+                <div class="agent-status-bar mb-2">
+                    <div id="agent-status" style="font-size:0.76rem;color:#e2e8f0;">Status: not started</div>
+                    <span style="color:#334155;">|</span>
+                    <small style="color:#94a3b8;">Mode:</small>
+                    <span id="agent-tool-mode-badge" class="badge" style="font-size:0.68rem;background:#334155;color:#e2e8f0;">ALL</span>
+                    <span id="agent-usage-meter" class="agent-usage-meter" style="margin:0;padding:0;border:none;font-size:0.7rem;">0 tok | ~$0.00</span>
+                </div>
+
+                <!-- ═══ 1. AI Provider ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="true" data-agent-section="agent-sec-provider">
+                        <span><i class="bi bi-robot section-icon"></i>AI Provider<span class="agent-section-hint">Which AI powers your agent</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body" id="agent-sec-provider">
+                        <div class="coach-grid">
+                            <div>
+                                <label for="consultant-provider" class="agent-field-label">Provider</label>
+                                <select id="consultant-provider" class="form-select form-select-sm">
+                                    <option value="claude" selected>Claude (Anthropic)</option>
+                                    <option value="local_gptoss_http">Local GPT-OSS</option>
+                                    <option value="openai_compat">OpenAI Compatible</option>
+                                    <option value="deterministic">Deterministic (free)</option>
+                                </select>
+                                <span class="agent-field-hint">Claude is recommended for best results. Deterministic is free but rule-based only.</span>
+                            </div>
+                            <div>
+                                <label for="consultant-model" class="agent-field-label">Model</label>
+                                <input id="consultant-model" class="form-control form-control-sm" list="consultant-model-options" value="claude-sonnet-4-5-20250929">
+                                <datalist id="consultant-model-options"></datalist>
+                                <span class="agent-field-hint">Sonnet = balanced cost/quality. Haiku = cheaper but less reliable.</span>
+                            </div>
+                            <div>
+                                <label for="consultant-url" class="agent-field-label">LLM URL</label>
+                                <input id="consultant-url" class="form-control form-control-sm" value="https://api.anthropic.com">
+                            </div>
+                            <div>
+                                <label for="consultant-api-key" class="agent-field-label">API Key</label>
+                                <input id="consultant-api-key" type="password" class="form-control form-control-sm" placeholder="Leave empty to use .env key">
+                                <small id="consultant-key-hint" class="agent-field-hint">If empty, the backend uses the key from your environment file.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ 2. Agent Behavior ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="false" data-agent-section="agent-sec-behavior">
+                        <span><i class="bi bi-sliders section-icon"></i>Agent Behavior<span class="agent-section-hint">How the agent thinks & acts</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body d-none" id="agent-sec-behavior">
+                        <div class="coach-grid">
+                            <div>
+                                <label for="agent-tool-selection-mode" class="agent-field-label">Tool Selection</label>
+                                <select id="agent-tool-selection-mode" class="form-select form-select-sm">
+                                    <option value="autonomous" selected>Autonomous</option>
+                                    <option value="guided">Guided</option>
+                                    <option value="minimal">Minimal</option>
+                                </select>
+                                <span class="agent-field-hint"><b>Autonomous</b> = AI picks its own tools (recommended). <b>Guided</b> = filtered by conversation context. <b>Minimal</b> = only core tools, saves tokens.</span>
+                            </div>
+                            <div>
+                                <label for="agent-strategy-tool-access" class="agent-field-label">Strategy Tools</label>
+                                <select id="agent-strategy-tool-access" class="form-select form-select-sm">
+                                    <option value="all" selected>All Tools</option>
+                                    <option value="parent">Parent Only</option>
+                                    <option value="child">Child Only</option>
+                                </select>
+                                <span class="agent-field-hint"><b>All</b> = full flexibility. <b>Parent</b> = one-call MTF analysis (best for Haiku). <b>Child</b> = granular scan tools.</span>
+                            </div>
+                            <div>
+                                <label for="agent-watchdog-mode" class="agent-field-label">Watchdog AI</label>
+                                <select id="agent-watchdog-mode" class="form-select form-select-sm">
+                                    <option value="deterministic" selected>Deterministic (free)</option>
+                                    <option value="local_gptoss_http">Local GPT-OSS</option>
+                                    <option value="claude">Claude Haiku</option>
+                                </select>
+                                <span class="agent-field-hint">The watchdog monitors your trades in the background. Deterministic is free and reliable.</span>
+                            </div>
+                            <div>
+                                <label for="agent-timeout" class="agent-field-label">AI Timeout (sec)</label>
+                                <input id="agent-timeout" class="form-control form-control-sm" type="number" min="10" step="5" value="45">
+                                <span class="agent-field-hint">How long to wait for AI response. Increase for local models.</span>
+                            </div>
+                            <div>
+                                <label for="agent-loop-interval" class="agent-field-label">Loop Interval (sec)</label>
+                                <input id="agent-loop-interval" class="form-control form-control-sm" type="number" min="1" max="120" step="1" value="5">
+                                <span class="agent-field-hint">How often the agent checks for new signals when looping.</span>
+                            </div>
+                            <div>
+                                <label for="agent-watchdog-interval" class="agent-field-label">Watchdog Interval (sec)</label>
+                                <input id="agent-watchdog-interval" class="form-control form-control-sm" type="number" min="5" max="300" step="1" value="30">
+                                <span class="agent-field-hint">How often the watchdog scans for trigger conditions.</span>
+                            </div>
+                            <div>
+                                <label for="agent-watchdog-llm-interval" class="agent-field-label">LLM Min Interval (sec)</label>
+                                <input id="agent-watchdog-llm-interval" class="form-control form-control-sm" type="number" min="10" max="3600" step="5" value="180">
+                                <span class="agent-field-hint">Minimum time between paid AI calls to control costs.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ 3. Safety & Guardrails ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="false" data-agent-section="agent-sec-safety">
+                        <span><i class="bi bi-shield-check section-icon"></i>Safety & Guardrails<span class="agent-section-hint">Protect your capital</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body d-none" id="agent-sec-safety">
+                        <div class="agent-perm-grid mb-3">
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-watchdog-trigger-require-approval">
+                                <i class="bi bi-hand-index agent-perm-icon"></i>
+                                <span>Require Approval<br><small style="color:#64748b;">You must approve each trigger before it arms.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-guardrail-enabled" checked>
+                                <i class="bi bi-shield-lock agent-perm-icon"></i>
+                                <span>Guardrails Active<br><small style="color:#64748b;">Master switch for all safety filters below.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-guardrail-session-filter">
+                                <i class="bi bi-clock agent-perm-icon"></i>
+                                <span>Session Hours Filter<br><small style="color:#64748b;">Block trades outside liquid market hours.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-guardrail-news-filter">
+                                <i class="bi bi-newspaper agent-perm-icon"></i>
+                                <span>News Filter<br><small style="color:#64748b;">Block trades during high-impact news events.</small></span>
+                            </label>
+                        </div>
+                        <div id="agent-guardrail-effective-status" style="font-size:0.72rem;color:#94a3b8;margin-bottom:8px;">
+                            Guardrails: disabled.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ 4. Permissions ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="false" data-agent-section="agent-sec-perms">
+                        <span><i class="bi bi-key section-icon"></i>Permissions<span class="agent-section-hint">What the agent can do</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body d-none" id="agent-sec-perms">
+                        <div class="agent-perm-grid">
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-scan-tools" checked>
+                                <i class="bi bi-search agent-perm-icon"></i>
+                                <span>Scan Tools<br><small style="color:#64748b;">Run FVG/liquidity/indicator scans.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-use-research">
+                                <i class="bi bi-graph-up agent-perm-icon"></i>
+                                <span>Research<br><small style="color:#64748b;">Optimization and ML diagnostics.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-manage-indicators" checked>
+                                <i class="bi bi-bar-chart agent-perm-icon"></i>
+                                <span>Indicators<br><small style="color:#64748b;">Toggle chart overlays and indicators.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-place-trades">
+                                <i class="bi bi-arrow-left-right agent-perm-icon"></i>
+                                <span>Place Trades<br><small style="color:#64748b;">Open new paper trade positions.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-close-trades">
+                                <i class="bi bi-x-circle agent-perm-icon"></i>
+                                <span>Close Trades<br><small style="color:#64748b;">Close open positions early.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-can-auto-execute">
+                                <i class="bi bi-lightning agent-perm-icon"></i>
+                                <span>Auto Execute<br><small style="color:#64748b;">Let agent execute without asking.</small></span>
+                            </label>
+                            <label class="agent-perm-item">
+                                <input class="form-check-input" type="checkbox" id="agent-require-confirm" checked>
+                                <i class="bi bi-check2-square agent-perm-icon"></i>
+                                <span>User Confirm<br><small style="color:#64748b;">You approve each action first.</small></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ 5. News Settings ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="false" data-agent-section="agent-sec-news">
+                        <span><i class="bi bi-newspaper section-icon"></i>News Settings<span class="agent-section-hint">Market news awareness</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body d-none" id="agent-sec-news">
+                        <div class="coach-grid">
+                            <div>
+                                <label for="agent-guardrail-news-lookback" class="agent-field-label">News Lookback (min)</label>
+                                <input id="agent-guardrail-news-lookback" class="form-control form-control-sm" type="number" min="15" max="1440" step="15" value="120">
+                                <span class="agent-field-hint">How far back to check for high-impact headlines (default: 2 hours).</span>
+                            </div>
+                            <div>
+                                <label for="agent-news-provider" class="agent-field-label">News Source</label>
+                                <select id="agent-news-provider" class="form-select form-select-sm">
+                                    <option value="polygon" selected>Polygon</option>
+                                    <option value="ibkr">IBKR (TWS/Gateway)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="agent-perm-item" style="margin:0;">
+                                    <input class="form-check-input" type="checkbox" id="agent-news-llm-summary">
+                                    <i class="bi bi-cpu agent-perm-icon"></i>
+                                    <span>AI News Summary<br><small style="color:#64748b;">Creates a brief risk summary using AI (cached).</small></span>
+                                </label>
+                                <div id="agent-news-llm-summary-warning" class="d-none" style="font-size:0.72rem;color:#fca5a5;margin-top:4px;">
+                                    Requires ANTHROPIC_API_KEY in .env.
+                                </div>
+                            </div>
+                            <div>
+                                <label for="agent-news-summary-model" class="agent-field-label">Summary Model</label>
+                                <input id="agent-news-summary-model" class="form-control form-control-sm" value="claude-haiku-4-5-20251001">
+                                <span class="agent-field-hint">Which AI model generates news summaries. Haiku is cheap and fast.</span>
+                            </div>
+                            <div>
+                                <label for="agent-news-ibkr-host" class="agent-field-label">IBKR Host</label>
+                                <input id="agent-news-ibkr-host" class="form-control form-control-sm" value="127.0.0.1">
+                            </div>
+                            <div>
+                                <label for="agent-news-ibkr-port" class="agent-field-label">IBKR Port</label>
+                                <input id="agent-news-ibkr-port" class="form-control form-control-sm" type="number" min="1" max="65535" step="1" value="7497">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ 6. Identity & Persona ═══ -->
+                <div class="agent-section">
+                    <button class="agent-section-toggle" type="button" aria-expanded="false" data-agent-section="agent-sec-identity">
+                        <span><i class="bi bi-person-badge section-icon"></i>Identity & Persona<span class="agent-section-hint">Agent personality</span></span>
+                        <i class="bi bi-chevron-down section-chevron"></i>
+                    </button>
+                    <div class="agent-section-body d-none" id="agent-sec-identity">
+                        <div class="agent-identity-box" style="border:none;padding:0;margin:0;background:transparent;">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="agent-identity-hint" id="agent-identity-version-label">v1</span>
+                            </div>
+                            <div id="agent-identity-fields" class="mt-0">
+                                <div class="d-flex flex-wrap gap-2 mb-2">
+                                    <label class="agent-perm-item" style="flex:0 0 auto;">
+                                        <input class="form-check-input" type="checkbox" id="agent-identity-enabled" checked>
+                                        <span>Enabled</span>
+                                    </label>
+                                    <label class="agent-perm-item" style="flex:0 0 auto;">
+                                        <input class="form-check-input" type="checkbox" id="agent-identity-lock" checked>
+                                        <span>Lock Personality</span>
+                                    </label>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="agent-identity-preset" class="agent-field-label">Identity Profile</label>
+                                    <select id="agent-identity-preset" class="form-select form-select-sm">
+                                        <option value="master_quant">Master Trader / Quant</option>
+                                        <option value="apprentice">Apprentice</option>
+                                    </select>
+                                    <span class="agent-field-hint">Master = strict risk-first professional. Apprentice = learning mode.</span>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="agent-identity-persona" class="agent-field-label">Persona</label>
+                                    <input id="agent-identity-persona" class="form-control form-control-sm" maxlength="300" placeholder="Apprentice day-trading analyst...">
+                                </div>
+                                <div class="mb-2">
+                                    <label for="agent-identity-tone" class="agent-field-label">Tone</label>
+                                    <input id="agent-identity-tone" class="form-control form-control-sm" maxlength="300" placeholder="Direct, concise, risk-first...">
+                                </div>
+                                <div class="mb-2">
+                                    <label for="agent-identity-risk" class="agent-field-label">Risk Doctrine</label>
+                                    <textarea id="agent-identity-risk" class="form-control form-control-sm" rows="3" maxlength="2600" placeholder="Protect capital first&#10;Require invalidation before trade"></textarea>
+                                    <span class="agent-field-hint">One rule per line. These guide the agent's risk management behavior.</span>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="agent-identity-rules" class="agent-field-label">Immutable Rules</label>
+                                    <textarea id="agent-identity-rules" class="form-control form-control-sm" rows="2" maxlength="2200" placeholder="Do not bypass permissions or risk constraints"></textarea>
+                                    <span class="agent-field-hint">Hard rules the agent can never break, regardless of context.</span>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-sm btn-outline-secondary w-100" id="btn-agent-identity-refresh" type="button">
+                                    <i class="bi bi-arrow-repeat me-1"></i>Load
+                                </button>
+                                <button class="btn btn-sm btn-outline-primary w-100" id="btn-agent-identity-save" type="button">
+                                    <i class="bi bi-check2-circle me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="agent-identity-status" id="agent-identity-status">Identity ready.</div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="agent-usage-meter" class="agent-usage-meter">Usage today: 0 tokens | ~$0.0000</div>
                 <div id="agent-watchdog-box" class="agent-watchdog-box d-none"></div>
                 <ul id="agent-feed" class="agent-feed d-none"></ul>

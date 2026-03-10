@@ -140,24 +140,16 @@ class WorkbenchCoach:
         mean_cross = int(sum(1 for z in mean_rev_sample if isinstance(z, dict) and str(z.get("type") or "") == "mean_cross"))
 
         return (
-            "Workbench FVG doctrine:\n"
-            "1) FVG detection uses wick highs/lows only (not close).\n"
-            "2) Bullish FVG: candle3.low > candle1.high. Bearish FVG: candle1.low > candle3.high.\n"
-            "3) Mitigation rule: if a later wick enters gap without full cross, update breached boundary and shrink current gap.\n"
-            "4) Cancellation rule: if wick fully crosses the far boundary, FVG is filled/cancelled.\n"
-            "5) Always keep both original_gap_size and current_gap_size in analysis; current gap drives execution quality.\n"
-            "6) Trend doctrine: prefer/chase FVG direction aligned with higher-timeframe trend bias.\n"
-            f"7) Current setup: symbol={session.get('symbol')}, timeframe={session.get('timeframe')}, strictness={strictness}, "
-            f"trend_filter_enabled={trend_filter}, trend_mode={trend_mode}, trend_multiplier={trend_mult}, show_filled={show_filled}.\n"
-            f"8) Zone sample stats: sample_count={len(zones_sample)}, aligned={aligned}, countertrend={counter}, mitigated={mitigated}, filled={filled}.\n"
-            f"9) Movement strength: score={_safe_float(movement.get('score'), -1.0):.2f}, state={str(movement.get('state') or 'unknown')}, gas_low={bool(movement.get('gas_low', False))}.\n"
-            "10) If trend is unclear and trend mode is strict, recommend wait/review rather than forcing entries.\n"
-            "11) Never advise entries that violate trend-alignment policy defined by current tool configuration.\n"
-            "Workbench Mean-Reversion doctrine:\n"
-            f"12) Mean-rev setup: sma_period={mean_sma_period}, deviation={mean_dev:.2f}, strictness={mean_strictness}, show_exit_signals={mean_show_exit}.\n"
-            f"13) Current mean-rev state: state={mean_state_name}, z_score={mean_z:.3f}, sample_buy={mean_buy}, sample_sell={mean_sell}, sample_mean_cross={mean_cross}.\n"
-            "14) If z>=+2, price is overextended up (avoid chasing new longs). If z<=-2, overextended down (avoid chasing new shorts).\n"
-            "15) Mean-cross markers imply flatten/review context, not immediate continuation entries.\n"
+            "FVG strategy context:\n"
+            f"Symbol={session.get('symbol')}, TF={session.get('timeframe')}, strictness={strictness}, "
+            f"trend_filter={trend_filter}, trend_mode={trend_mode}.\n"
+            f"Zones: {len(zones_sample)} total, {aligned} aligned, {counter} countertrend, {mitigated} mitigated, {filled} filled.\n"
+            f"Movement: score={_safe_float(movement.get('score'), -1.0):.2f}, state={str(movement.get('state') or 'unknown')}, gas_low={bool(movement.get('gas_low', False))}.\n"
+            "FVG rules: only trade FVGs aligned with HTF trend bias. If trend unclear and strict mode, wait.\n"
+            "Mean-reversion context:\n"
+            f"State={mean_state_name}, z_score={mean_z:.3f}, sma={mean_sma_period}, dev={mean_dev:.2f}.\n"
+            f"Zones: {mean_buy} buy, {mean_sell} sell, {mean_cross} mean-cross.\n"
+            "Mean-rev rules: z>=+2 = overextended up (no new longs), z<=-2 = overextended down (no new shorts). Mean-cross = flatten/review.\n"
         )
 
     def evaluate(

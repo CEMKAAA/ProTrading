@@ -198,6 +198,30 @@ class TelegramBridgeService:
             raw = 10
         return max(1, min(12, raw))
 
+    @staticmethod
+    def _normalize_tool_access_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"all", "parent", "child"}:
+            return raw
+        if raw in {"parents", "collected", "aggregate", "aggregated", "master"}:
+            return "parent"
+        if raw in {"children", "granular", "detailed", "childs"}:
+            return "child"
+        return "all"
+
+    @staticmethod
+    def _normalize_tool_selection_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"autonomous", "guided", "minimal"}:
+            return raw
+        if raw in {"auto", "full", "all_tools"}:
+            return "autonomous"
+        if raw in {"default", "intent", "intent_history", "guided_intent"}:
+            return "guided"
+        if raw in {"min", "least", "strict_minimal"}:
+            return "minimal"
+        return "autonomous"
+
     def _base_url(self) -> str:
         return f"https://api.telegram.org/bot{self._token()}"
 
@@ -596,11 +620,15 @@ class TelegramBridgeService:
             model = str(provider.get("model_label") or "").strip() or "default"
             llm_url = str(provider.get("llm_url") or "").strip()
             has_api_key = bool(provider.get("api_key"))
+            tool_mode = self._normalize_tool_access_mode((_cfg if isinstance(_cfg, dict) else {}).get("strategy_tool_access_mode"))
+            selection_mode = self._normalize_tool_selection_mode((_cfg if isinstance(_cfg, dict) else {}).get("tool_selection_mode"))
             lines = [
                 f"Runtime | Session #{int(session.id)} | {str(session.symbol or '').upper()} {str(session.timeframe or '').upper()}",
                 f"Provider: {p} | Model: {model}",
                 f"LLM URL: {llm_url if llm_url else '(provider default)'}",
                 f"API key: {'YES' if has_api_key else 'MISSING'}",
+                f"Tool mode: {tool_mode}",
+                f"Tool selection: {selection_mode}",
                 f"Identity: {profile}",
                 (
                     "Perms: "
@@ -1081,6 +1109,158 @@ class TelegramBridgeService:
             except Exception:
                 pass
 
+    def _set_tool_access_mode(self, session_id: int, mode_raw: Any) -> str:
+        mode = self._normalize_tool_access_mode(mode_raw)
+        raw = str(mode_raw or "").strip().lower()
+        if raw and raw not in {"all", "parent", "child", "parents", "children", "childs", "collected", "aggregate", "aggregated", "master", "granular", "detailed"}:
+            return "Usage: /toolmode <all|parent|child> [session_id]"
+        db = SessionLocal()
+        try:
+            session = db.query(SimulationSession).get(int(session_id))
+            if session is None:
+                return f"Session #{int(session_id)} not found."
+            if str(session.strategy_id or "") != "_workbench":
+                return f"Session #{int(session_id)} is not a Workbench session."
+
+            row = (
+                db.query(WorkbenchAgentSessionModel)
+                .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                .filter(WorkbenchAgentSessionModel.status == "ACTIVE")
+                .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                .first()
+            )
+            if row is None:
+                row = (
+                    db.query(WorkbenchAgentSessionModel)
+                    .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                    .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                    .first()
+                )
+            if row is None:
+                row = WorkbenchAgentSessionModel(
+                    simulation_session_id=int(session_id),
+                    mode="CHAT",
+                    status="ACTIVE",
+                    provider="deterministic",
+                    model_label=None,
+                    permissions_json={
+                        "can_chat": True,
+                        "can_scan_tools": True,
+                        "can_use_research": False,
+                        "can_manage_indicators": True,
+                        "can_place_trades": True,
+                        "can_close_trades": True,
+                        "can_auto_execute": False,
+                        "requires_user_confirm_for_trade": True,
+                    },
+                    config_json={},
+                    runtime_json={},
+                    last_snapshot_json={},
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(row)
+                db.flush()
+
+            cfg = _json_obj(row.config_json)
+            cfg["strategy_tool_access_mode"] = mode
+            row.config_json = cfg
+            row.updated_at = datetime.utcnow()
+            db.add(row)
+            db.commit()
+            return f"Strategy tool access mode set to '{mode}' for session #{int(session_id)}."
+        except Exception as exc:
+            db.rollback()
+            return f"Tool mode update failed: {type(exc).__name__}: {str(exc)[:180]}"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _set_tool_selection_mode(self, session_id: int, mode_raw: Any) -> str:
+        mode = self._normalize_tool_selection_mode(mode_raw)
+        raw = str(mode_raw or "").strip().lower()
+        if raw and raw not in {
+            "autonomous",
+            "guided",
+            "minimal",
+            "auto",
+            "full",
+            "all_tools",
+            "default",
+            "intent",
+            "intent_history",
+            "guided_intent",
+            "min",
+            "least",
+            "strict_minimal",
+        }:
+            return "Usage: /toolselect <autonomous|guided|minimal> [session_id]"
+        db = SessionLocal()
+        try:
+            session = db.query(SimulationSession).get(int(session_id))
+            if session is None:
+                return f"Session #{int(session_id)} not found."
+            if str(session.strategy_id or "") != "_workbench":
+                return f"Session #{int(session_id)} is not a Workbench session."
+
+            row = (
+                db.query(WorkbenchAgentSessionModel)
+                .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                .filter(WorkbenchAgentSessionModel.status == "ACTIVE")
+                .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                .first()
+            )
+            if row is None:
+                row = (
+                    db.query(WorkbenchAgentSessionModel)
+                    .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                    .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                    .first()
+                )
+            if row is None:
+                row = WorkbenchAgentSessionModel(
+                    simulation_session_id=int(session_id),
+                    mode="CHAT",
+                    status="ACTIVE",
+                    provider="deterministic",
+                    model_label=None,
+                    permissions_json={
+                        "can_chat": True,
+                        "can_scan_tools": True,
+                        "can_use_research": False,
+                        "can_manage_indicators": True,
+                        "can_place_trades": True,
+                        "can_close_trades": True,
+                        "can_auto_execute": False,
+                        "requires_user_confirm_for_trade": True,
+                    },
+                    config_json={},
+                    runtime_json={},
+                    last_snapshot_json={},
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(row)
+                db.flush()
+
+            cfg = _json_obj(row.config_json)
+            cfg["tool_selection_mode"] = mode
+            row.config_json = cfg
+            row.updated_at = datetime.utcnow()
+            db.add(row)
+            db.commit()
+            return f"Tool selection mode set to '{mode}' for session #{int(session_id)}."
+        except Exception as exc:
+            db.rollback()
+            return f"Tool selection update failed: {type(exc).__name__}: {str(exc)[:180]}"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def _set_provider_profile(
         self,
         session_id: int,
@@ -1287,6 +1467,14 @@ class TelegramBridgeService:
                 "- Purpose: Switch agent personality preset.\n"
                 "- Params: profile (required), optional session_id\n"
                 "- Example: /identity master\n\n"
+                "/toolmode [all|parent|child] [session_id]\n"
+                "- Purpose: Choose strategy tool mode (all=parent+child, parent=collected tool, child=granular tools).\n"
+                "- Params: optional mode, optional session_id\n"
+                "- Example: /toolmode parent\n\n"
+                "/toolselect [autonomous|guided|minimal] [session_id]\n"
+                "- Purpose: Choose tool-selection policy (autonomous=LLM decides, guided=intent-aware prune, minimal=core tools only).\n"
+                "- Params: optional mode, optional session_id\n"
+                "- Example: /toolselect guided\n\n"
                 "/convo list\n"
                 "- Purpose: List available Telegram conversation slots for current session.\n"
                 "- Params: none\n"
@@ -1393,6 +1581,62 @@ class TelegramBridgeService:
             if len(args) >= 2 and str(args[1]).isdigit():
                 target_sid = int(args[1])
             return self._set_identity_profile(target_sid, profile)
+
+        if cmd_l == "/toolmode":
+            sid = self._resolve_default_session_id(chat_id)
+            if sid is None:
+                return "No active Workbench session found. Start one in dashboard, or use /use <session_id>."
+            if not args:
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(sid))
+                mode = self._normalize_tool_access_mode((cfg if isinstance(cfg, dict) else {}).get("strategy_tool_access_mode"))
+                return (
+                    f"Session #{int(sid)} strategy tool mode: {mode}\n"
+                    "Usage: /toolmode <all|parent|child> [session_id]"
+                )
+            mode_raw = str(args[0] or "").strip().lower()
+            target_sid = int(sid)
+            if mode_raw in {"show", "status"}:
+                if len(args) >= 2 and str(args[1]).isdigit():
+                    target_sid = int(args[1])
+                    _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                mode = self._normalize_tool_access_mode((cfg if isinstance(cfg, dict) else {}).get("strategy_tool_access_mode"))
+                return f"Session #{int(target_sid)} strategy tool mode: {mode}"
+            if mode_raw.isdigit():
+                target_sid = int(mode_raw)
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                mode = self._normalize_tool_access_mode((cfg if isinstance(cfg, dict) else {}).get("strategy_tool_access_mode"))
+                return f"Session #{int(target_sid)} strategy tool mode: {mode}"
+            if len(args) >= 2 and str(args[1]).isdigit():
+                target_sid = int(args[1])
+            return self._set_tool_access_mode(target_sid, mode_raw)
+
+        if cmd_l in {"/toolselect", "/toolselection"}:
+            sid = self._resolve_default_session_id(chat_id)
+            if sid is None:
+                return "No active Workbench session found. Start one in dashboard, or use /use <session_id>."
+            if not args:
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(sid))
+                mode = self._normalize_tool_selection_mode((cfg if isinstance(cfg, dict) else {}).get("tool_selection_mode"))
+                return (
+                    f"Session #{int(sid)} tool selection mode: {mode}\n"
+                    "Usage: /toolselect <autonomous|guided|minimal> [session_id]"
+                )
+            mode_raw = str(args[0] or "").strip().lower()
+            target_sid = int(sid)
+            if mode_raw in {"show", "status"}:
+                if len(args) >= 2 and str(args[1]).isdigit():
+                    target_sid = int(args[1])
+                    _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                mode = self._normalize_tool_selection_mode((cfg if isinstance(cfg, dict) else {}).get("tool_selection_mode"))
+                return f"Session #{int(target_sid)} tool selection mode: {mode}"
+            if mode_raw.isdigit():
+                target_sid = int(mode_raw)
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                mode = self._normalize_tool_selection_mode((cfg if isinstance(cfg, dict) else {}).get("tool_selection_mode"))
+                return f"Session #{int(target_sid)} tool selection mode: {mode}"
+            if len(args) >= 2 and str(args[1]).isdigit():
+                target_sid = int(args[1])
+            return self._set_tool_selection_mode(target_sid, mode_raw)
 
         if cmd_l == "/convo":
             sid = self._resolve_default_session_id(chat_id)

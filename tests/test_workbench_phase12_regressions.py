@@ -1,4 +1,5 @@
 import json
+import types
 from datetime import datetime
 
 import pandas as pd
@@ -232,3 +233,115 @@ def test_session_cost_model_spread_source_resolution(monkeypatch):
     assert mt5_model.spread == 0.55
     assert mt5_model.spread_source == "mt5_live"
 
+
+def test_strategy_tool_access_mode_normalization():
+    assert sim_routes._normalize_strategy_tool_access_mode("all") == "all"
+    assert sim_routes._normalize_strategy_tool_access_mode("parent") == "parent"
+    assert sim_routes._normalize_strategy_tool_access_mode("child") == "child"
+    assert sim_routes._normalize_strategy_tool_access_mode("collected") == "parent"
+    assert sim_routes._normalize_strategy_tool_access_mode("children") == "child"
+    assert sim_routes._normalize_strategy_tool_access_mode("unknown_mode") == "all"
+
+
+def test_tool_selection_mode_normalization():
+    assert sim_routes._normalize_tool_selection_mode("autonomous") == "autonomous"
+    assert sim_routes._normalize_tool_selection_mode("guided") == "guided"
+    assert sim_routes._normalize_tool_selection_mode("minimal") == "minimal"
+    assert sim_routes._normalize_tool_selection_mode("auto") == "autonomous"
+    assert sim_routes._normalize_tool_selection_mode("strict") == "minimal"
+    assert sim_routes._normalize_tool_selection_mode("unknown_mode") == "autonomous"
+
+
+def test_agent_select_allowed_tool_names_modes():
+    msg = "can you explain why you entered that position?"
+    hist = [{"role": "user", "content": "run_mtf_analysis schedule_trade_entry get_scheduled_triggers"}]
+
+    guided = sim_routes._agent_select_allowed_tool_names(
+        message=msg,
+        conversation_history=hist,
+        cfg={"tool_selection_mode": "guided", "strategy_tool_access_mode": "all"},
+    )
+    minimal = sim_routes._agent_select_allowed_tool_names(
+        message=msg,
+        conversation_history=hist,
+        cfg={"tool_selection_mode": "minimal", "strategy_tool_access_mode": "all"},
+    )
+    autonomous = sim_routes._agent_select_allowed_tool_names(
+        message=msg,
+        conversation_history=hist,
+        cfg={"tool_selection_mode": "autonomous", "strategy_tool_access_mode": "all"},
+    )
+
+    assert "run_mtf_analysis" in guided
+    assert "schedule_trade_entry" in guided
+    assert "run_mtf_analysis" not in minimal
+    assert "schedule_trade_entry" not in minimal
+    assert "run_mtf_analysis" in autonomous
+    assert "scan_tool" in autonomous
+
+
+def test_strategy_tool_access_mode_filters_parent_and_child_tools():
+    base = [
+        "get_positions_detail",
+        "get_market_snapshot",
+        "set_market_context",
+        "scan_tool",
+        "run_mtf_analysis",
+        "schedule_trade_entry",
+    ]
+    parent_only = sim_routes._agent_apply_strategy_tool_access_mode(
+        base,
+        {"strategy_tool_access_mode": "parent"},
+    )
+    child_only = sim_routes._agent_apply_strategy_tool_access_mode(
+        base,
+        {"strategy_tool_access_mode": "child"},
+    )
+    assert "run_mtf_analysis" in parent_only
+    assert "scan_tool" not in parent_only
+    assert "set_market_context" in parent_only
+    assert "get_market_snapshot" in parent_only
+    assert "schedule_trade_entry" in parent_only
+
+    assert "run_mtf_analysis" not in child_only
+    assert "scan_tool" in child_only
+    assert "set_market_context" in child_only
+    assert "get_market_snapshot" in child_only
+    assert "schedule_trade_entry" in child_only
+
+
+def test_strategy_tool_access_mode_allows_non_strategy_tools():
+    cfg_parent = {"strategy_tool_access_mode": "parent"}
+    assert sim_routes._agent_tool_allowed_by_access_mode("get_positions_detail", cfg_parent) is True
+    assert sim_routes._agent_tool_allowed_by_access_mode("schedule_trade_entry", cfg_parent) is True
+    assert sim_routes._agent_tool_allowed_by_access_mode("scan_tool", cfg_parent) is False
+    assert sim_routes._agent_tool_allowed_by_access_mode("run_mtf_analysis", cfg_parent) is True
+
+
+def test_strategy_tool_access_mode_injects_parent_when_children_requested():
+    out = sim_routes._agent_apply_strategy_tool_access_mode(
+        ["scan_tool", "get_positions_detail"],
+        {"strategy_tool_access_mode": "parent"},
+    )
+    assert "scan_tool" not in out
+    assert "run_mtf_analysis" in out
+    assert "get_positions_detail" in out
+
+
+def test_execute_tool_blocks_strategy_child_in_parent_mode(monkeypatch):
+    monkeypatch.setattr(
+        sim_routes,
+        "_agent_effective_tool_config",
+        lambda **kwargs: {"strategy_tool_access_mode": "parent"},
+    )
+    res = sim_routes._agent_execute_tool(
+        session=types.SimpleNamespace(id=1, symbol="XAUUSD", timeframe="M15"),
+        db=None,
+        permissions={},
+        context_snapshot={},
+        tool_name="scan_tool",
+        args={},
+        atomic=False,
+    )
+    assert bool(res.get("ok")) is False
+    assert str(res.get("error") or "").startswith("tool_blocked_by_access_mode:parent:scan_tool")

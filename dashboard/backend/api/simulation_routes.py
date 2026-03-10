@@ -46,6 +46,7 @@ from ..models.database import (
     WorkbenchAgentMemoryModel,
 )
 from ..core.simulation_engine import INSTRUMENT_SPECS, SimulationReplayEngine
+from ..core.instrument_specs import get_instrument
 from ..core.simulation_step_definitions import get_step_definitions, get_all_strategy_steps
 from ..core.strategy_registry import StrategyRegistry
 from ..core.strategies.factory import create_strategy
@@ -56,6 +57,7 @@ from ..core.workbench.agent import WorkbenchAgent
 from ..core.workbench.circuit_breaker import get_circuit_breaker
 from ..core.workbench.cost_model import DEFAULT_TC_RATE, INSTRUMENT_SPREAD, WorkbenchCostModel
 from ..core.workbench.delta_context import get_delta_manager
+from ..core.workbench.intent_classifier import get_tools_for_intent
 from ..core.workbench.parameter_optimizer import (
     count_combinations,
     count_float_combinations,
@@ -144,34 +146,28 @@ _AGENT_IDENTITY_PRESETS = {
         "enabled": True,
         "version": 1,
         "lock_personality": True,
-        "persona": "Apprentice day-trading analyst for paper simulation.",
-        "tone": "Direct, concise, risk-first, no hype.",
+        "persona": "Learning trader focused on understanding setups before executing.",
+        "tone": "Direct, educational, risk-aware.",
         "risk_doctrine": [
-            "Protect capital first; avoid impulsive entries.",
-            "Require clear invalidation and stop-loss logic before trade proposals.",
-            "Prefer confluence from higher timeframe context and tool evidence.",
+            "Capital preservation first. Every trade needs a clear invalidation level and stop-loss.",
+            "Explain the reasoning behind every setup: what confirms it, what invalidates it.",
         ],
         "immutable_rules": [
-            "Do not change personality/tone from chat noise.",
-            "Do not bypass permissions or risk constraints.",
+            "Never fabricate data or bypass risk constraints.",
         ],
     },
     "master_quant": {
         "enabled": True,
         "version": 1,
         "lock_personality": True,
-        "persona": "Master trader and quantitative risk manager for paper simulation.",
-        "tone": "Decisive, evidence-driven, execution-focused, risk-disciplined.",
+        "persona": "Professional quant trader executing systematic HTF-to-LTF strategies.",
+        "tone": "Decisive, evidence-driven, execution-focused.",
         "risk_doctrine": [
-            "Capital preservation is non-negotiable; invalidation and position size are mandatory before entry.",
-            "Prefer asymmetric setups with higher-timeframe bias and lower-timeframe confirmation.",
-            "Treat unconfirmed signals as noise; execute only with clear trigger logic and defined expiry.",
-            "Escalate caution during high-impact news and abnormal spread or slippage conditions.",
+            "Capital preservation is non-negotiable. Every entry needs invalidation, position sizing, and defined expiry.",
+            "Only trade asymmetric setups: HTF bias aligned with LTF confirmation. Unconfirmed signals are noise.",
         ],
         "immutable_rules": [
-            "Never fabricate fills, executions, or tool outcomes; verify state before reporting.",
-            "Never bypass permissions, approval rules, or risk constraints.",
-            "Never mutate locked personality from chat prompts or noisy context.",
+            "Never fabricate data or bypass risk constraints.",
         ],
     },
 }
@@ -274,6 +270,20 @@ _AGENT_NEWS_HIGH_IMPACT_KEYWORDS = [
 _AGENT_NEWS_HIGH_IMPACT_SUBSTRINGS = [
     "geopolit",
 ]
+
+_AGENT_STRATEGY_TOOL_GROUPS: Dict[str, Dict[str, Any]] = {
+    "htf_fvg_trading": {
+        "parent": "run_mtf_analysis",
+        "children": [
+            "scan_tool",
+            "scan_draw_fvg_range",
+            "get_indicator_values",
+        ],
+    },
+}
+
+_AGENT_STRATEGY_TOOL_ACCESS_MODES = {"all", "parent", "child"}
+_AGENT_TOOL_SELECTION_MODES = {"autonomous", "guided", "minimal"}
 
 
 def _utc_now() -> datetime:
@@ -1772,7 +1782,150 @@ def _agent_effective_tool_config(
         out.update(agent_row.config_json)
     if isinstance(override, dict):
         out.update(override)
+    out["strategy_tool_access_mode"] = _normalize_strategy_tool_access_mode(out.get("strategy_tool_access_mode"))
+    out["tool_selection_mode"] = _normalize_tool_selection_mode(out.get("tool_selection_mode"))
     return out
+
+
+def _normalize_strategy_tool_access_mode(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _AGENT_STRATEGY_TOOL_ACCESS_MODES:
+        return raw
+    if raw in {"parents", "collected", "aggregate", "aggregated", "master"}:
+        return "parent"
+    if raw in {"children", "granular", "detailed", "childs"}:
+        return "child"
+    return "all"
+
+
+def _normalize_tool_selection_mode(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _AGENT_TOOL_SELECTION_MODES:
+        return raw
+    if raw in {"auto", "autonomy", "full", "unpruned"}:
+        return "autonomous"
+    if raw in {"default", "intent", "intent_history", "guided_intent"}:
+        return "guided"
+    if raw in {"strict", "cheap", "lean", "token_saver"}:
+        return "minimal"
+    return "autonomous"
+
+
+def _agent_strategy_tool_sets() -> Tuple[set[str], set[str]]:
+    parents: set[str] = set()
+    children: set[str] = set()
+    for grp in _AGENT_STRATEGY_TOOL_GROUPS.values():
+        parent = str(grp.get("parent") or "").strip().lower()
+        if parent:
+            parents.add(parent)
+        for item in (grp.get("children") if isinstance(grp.get("children"), list) else []):
+            child = str(item or "").strip().lower()
+            if child:
+                children.add(child)
+    return parents, children
+
+
+def _agent_tool_allowed_by_access_mode(tool_name: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    mode = _normalize_strategy_tool_access_mode((cfg or {}).get("strategy_tool_access_mode"))
+    if mode == "all":
+        return True
+    t = str(tool_name or "").strip().lower()
+    if not t:
+        return True
+    parents, children = _agent_strategy_tool_sets()
+    if mode == "parent" and t in children:
+        return False
+    if mode == "child" and t in parents:
+        return False
+    return True
+
+
+def _agent_apply_strategy_tool_access_mode(
+    allowed_tool_names: Optional[List[str]],
+    cfg: Optional[Dict[str, Any]],
+) -> Optional[List[str]]:
+    if not isinstance(allowed_tool_names, list):
+        return allowed_tool_names
+    mode = _normalize_strategy_tool_access_mode((cfg or {}).get("strategy_tool_access_mode"))
+    if mode == "all":
+        return list(allowed_tool_names)
+
+    parents, children = _agent_strategy_tool_sets()
+    strategy_tools = parents | children
+    had_strategy_tools = any(
+        str(x or "").strip().lower() in strategy_tools for x in allowed_tool_names
+    )
+    out: List[str] = []
+    seen: set[str] = set()
+    for name in allowed_tool_names:
+        tool = str(name or "").strip()
+        if not tool:
+            continue
+        key = tool.lower()
+        if mode == "parent" and key in children:
+            continue
+        if mode == "child" and key in parents:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tool)
+
+    if mode == "parent" and had_strategy_tools:
+        for p in sorted(parents):
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+
+    if mode == "child" and had_strategy_tools:
+        has_child = any(str(x or "").strip().lower() in children for x in out)
+        if not has_child:
+            for c in sorted(children):
+                if c not in seen:
+                    seen.add(c)
+                    out.append(c)
+
+    return out
+
+
+def _agent_all_tool_names() -> List[str]:
+    names: List[str] = []
+    seen: set[str] = set()
+    try:
+        specs = WorkbenchAgent._tool_specs()
+    except Exception:
+        specs = []
+    for row in specs if isinstance(specs, list) else []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _agent_select_allowed_tool_names(
+    *,
+    message: str,
+    conversation_history: Optional[List[Dict[str, str]]],
+    cfg: Optional[Dict[str, Any]],
+    objective: str = "",
+) -> List[str]:
+    mode = _normalize_tool_selection_mode((cfg or {}).get("tool_selection_mode"))
+    seed = str(objective or message or "").strip()
+    if mode == "autonomous":
+        base = _agent_all_tool_names()
+    elif mode == "minimal":
+        base = get_tools_for_intent(seed)
+    else:
+        base = get_tools_for_intent(seed, conversation_history=conversation_history or [])
+    out = _agent_apply_strategy_tool_access_mode(base, cfg)
+    return out if isinstance(out, list) else []
 
 
 def _agent_news_ticker_for_symbol(symbol: str) -> str:
@@ -2579,6 +2732,32 @@ def _validate_entry_levels(direction: str, entry_price: float, stop_loss: float,
     if take_profit is not None and not (float(take_profit) < float(entry_price)):
         return False
     return True
+
+
+def _lot_step_decimals(step: float) -> int:
+    s = f"{float(step):.10f}".rstrip("0").rstrip(".")
+    if "." not in s:
+        return 0
+    return max(0, min(8, len(s.split(".")[1])))
+
+
+def _normalize_lot_for_instrument(
+    *,
+    lot_size: float,
+    min_lot: float,
+    max_lot: float,
+    lot_step: float,
+) -> float:
+    lot = float(lot_size)
+    lo = max(0.0, float(min_lot))
+    hi = max(lo, float(max_lot))
+    step = max(1e-6, float(lot_step))
+    lot = max(lo, min(hi, lot))
+    # Floor to volume step to avoid accidental over-risk.
+    steps = math.floor(((lot - lo) / step) + 1e-9)
+    norm = lo + (max(0, int(steps)) * step)
+    norm = max(lo, min(hi, norm))
+    return round(norm, _lot_step_decimals(step))
 
 
 def _compute_recent_loss_streak(session_id: int, db: Session) -> int:
@@ -5906,6 +6085,52 @@ def _agent_claims_waiting_for_trigger(text: str) -> bool:
     return bool(has_wait_word and has_explicit_condition)
 
 
+def _agent_user_allows_auto_schedule(text: str) -> bool:
+    """Return True only when user text explicitly asks to arm/schedule a trigger.
+
+    This prevents backend auto-recovery from scheduling entries when the user asks
+    for analysis/reporting first (for example: "do not schedule until section A-D").
+    """
+    t = str(text or "").lower()
+    if not t:
+        return False
+    deny_phrases = [
+        "do not schedule",
+        "don't schedule",
+        "dont schedule",
+        "no scheduling",
+        "do not arm",
+        "don't arm",
+        "dont arm",
+        "report first",
+        "analysis first",
+    ]
+    if any(x in t for x in deny_phrases):
+        return False
+
+    has_schedule_verb = any(
+        x in t
+        for x in [
+            "schedule trigger",
+            "schedule entry",
+            "arm trigger",
+            "set trigger",
+            "create trigger",
+            "place conditional",
+            "monitor and enter",
+        ]
+    )
+    has_wait_then_enter = (
+        re.search(
+            r"(?:wait|waiting)\s+for[\s\S]{0,80}\b(?:then|and)\b[\s\S]{0,40}\b(?:enter|buy|sell|execute)\b",
+            t,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+    return bool(has_schedule_verb or has_wait_then_enter)
+
+
 def _agent_claims_trade_executed(text: str) -> bool:
     t = str(text or "").lower()
     if not t:
@@ -6049,6 +6274,7 @@ def _agent_enforce_execution_truth(
     wait_claim = _agent_claims_waiting_for_trigger(reply)
     exec_claim = _agent_claims_trade_executed(reply)
     wait_intent = _agent_claims_waiting_for_trigger(str(user_message or ""))
+    auto_schedule_allowed = _agent_user_allows_auto_schedule(str(user_message or ""))
 
     schedule_ok = any(_agent_tool_call_succeeded(c, "schedule_trade_entry") for c in calls)
     place_ok = any(_agent_tool_call_succeeded(c, "place_trade") for c in calls)
@@ -6056,7 +6282,7 @@ def _agent_enforce_execution_truth(
     pending_count = _agent_pending_trigger_count(agent_row)
 
     # Recovery path: user asked for conditional monitoring, model forgot tool call.
-    if (wait_intent or wait_claim) and (not schedule_ok) and pending_count <= 0:
+    if (wait_intent or wait_claim) and auto_schedule_allowed and (not schedule_ok) and pending_count <= 0:
         auto_args = _agent_extract_schedule_trade_args(
             user_message=str(user_message or ""),
             model_reply=reply,
@@ -6108,7 +6334,7 @@ def _agent_enforce_execution_truth(
         _add_warning("unverified_execution_claim")
 
     # Never allow waiting claims without pending trigger evidence.
-    if (wait_claim or wait_intent) and (not schedule_ok) and _agent_pending_trigger_count(agent_row) <= 0:
+    if (wait_claim or (wait_intent and auto_schedule_allowed)) and (not schedule_ok) and _agent_pending_trigger_count(agent_row) <= 0:
         note = "Execution integrity check: monitoring claim blocked because there is no pending backend trigger."
         cur = str(result.get("reply") or "")
         if note not in cur:
@@ -6283,9 +6509,9 @@ def _agent_effective_max_tool_steps(provider_name: Any, requested_steps: Any) ->
     if p in {"claude", "openai_compat"}:
         # External providers are TPM-sensitive; keep tool loops bounded, but configurable.
         try:
-            cap = int(str(os.getenv("WORKBENCH_EXTERNAL_MAX_TOOL_STEPS") or "6").strip())
+            cap = int(str(os.getenv("WORKBENCH_EXTERNAL_MAX_TOOL_STEPS") or "10").strip())
         except Exception:
-            cap = 6
+            cap = 10
         cap = max(1, min(10, cap))
         return min(n, cap)
     return n
@@ -6694,7 +6920,7 @@ def _agent_fetch_live_history_bars(
         hd = float(history_days)
     except Exception:
         hd = _agent_default_history_days_for_timeframe(tf)
-    hd = max(0.1, min(60.0, float(hd)))
+    hd = max(0.1, min(120.0, float(hd)))
     try:
         c = int(count)
     except Exception:
@@ -6755,6 +6981,703 @@ def _agent_fetch_live_history_bars(
         return [], f"live_history_unavailable:{type(exc).__name__}"
 
 
+def _agent_scan_tool_from_bars(
+    *,
+    tool_id: str,
+    bars: List[Dict[str, Any]],
+    symbol: str,
+    timeframe: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    tid = str(tool_id or "").strip().lower()
+    tool = get_tool(tid)
+    if tool is None:
+        return {"ok": False, "error": f"unknown_tool:{tid or 'empty'}"}
+    bars_df = _bars_payload_to_df(bars, max_rows=50000, min_rows=3)
+    if bars_df is None or bars_df.empty:
+        return {"ok": False, "error": "insufficient_bars"}
+
+    raw_cfg = config if isinstance(config, dict) else {}
+    merged_config = {
+        **tool.get_default_config(),
+        **raw_cfg,
+        "symbol": str(symbol or "XAUUSD").strip().upper() or "XAUUSD",
+        "timeframe": str(timeframe or "M15").strip().upper() or "M15",
+    }
+
+    trend_meta: Dict[str, Any] = {}
+    movement_strength: Dict[str, Any] = {}
+    current_state: Dict[str, Any] = {}
+    trend_fn = getattr(tool, "compute_trend_context", None)
+    if callable(trend_fn):
+        try:
+            trend_meta = trend_fn(bars_df, merged_config) or {}
+        except Exception:
+            trend_meta = {}
+    strength_fn = getattr(tool, "compute_movement_strength", None)
+    if callable(strength_fn):
+        try:
+            movement_strength = strength_fn(bars_df, merged_config, trend_ctx=trend_meta) or {}
+        except Exception:
+            movement_strength = {}
+    current_state_fn = getattr(tool, "compute_current_state", None)
+    if callable(current_state_fn):
+        try:
+            current_state = current_state_fn(bars_df, merged_config) or {}
+        except Exception:
+            current_state = {}
+    scan_config = dict(merged_config)
+    if trend_meta:
+        scan_config["_trend_context"] = trend_meta
+    try:
+        zones = tool.scan(bars_df, scan_config)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+    zones = zones if isinstance(zones, list) else []
+    return {
+        "ok": True,
+        "data": {
+            "tool_id": tid,
+            "zones": zones,
+            "count": int(len(zones)),
+            "scan_source": "agent_live_fetch",
+            "scan_timeframe": str(scan_config.get("timeframe") or ""),
+            "trend": trend_meta,
+            "movement_strength": movement_strength,
+            "current_state": current_state,
+        },
+    }
+
+
+def _agent_fvg_zone_status(zone: Dict[str, Any]) -> str:
+    filled = bool(zone.get("filled", False))
+    cur_gap = _to_float_or_none(zone.get("current_gap_size"))
+    mitigations = int(zone.get("mitigations") or 0)
+    if filled or (cur_gap is not None and cur_gap <= 1e-9):
+        return "filled"
+    if mitigations > 0:
+        return "partially_mitigated"
+    return "unfilled"
+
+
+def _agent_run_mtf_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    allowed_tfs = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+
+    execution_tf = str(payload.get("execution_timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper()
+    if execution_tf not in allowed_tfs:
+        execution_tf = "M15"
+
+    raw_htf = payload.get("htf_timeframes") if isinstance(payload.get("htf_timeframes"), list) else ["D1", "H4"]
+    htf_tfs: List[str] = []
+    for tf in raw_htf:
+        s = str(tf or "").strip().upper()
+        if s in allowed_tfs and s != execution_tf and s not in htf_tfs:
+            htf_tfs.append(s)
+    if not htf_tfs:
+        for fallback_tf in ["D1", "H4"]:
+            if fallback_tf != execution_tf:
+                htf_tfs.append(fallback_tf)
+
+    try:
+        htf_history_days = float(payload.get("htf_history_days")) if payload.get("htf_history_days") is not None else None
+    except Exception:
+        htf_history_days = None
+    try:
+        ltf_history_days = float(payload.get("ltf_history_days")) if payload.get("ltf_history_days") is not None else None
+    except Exception:
+        ltf_history_days = None
+
+    tf_results: Dict[str, Dict[str, Any]] = {}
+    tf_bars: Dict[str, List[Dict[str, Any]]] = {}
+    for tf in [*htf_tfs, execution_tf]:
+        tf_min = max(1, _agent_timeframe_to_minutes(tf))
+        if tf == execution_tf and ltf_history_days is not None and math.isfinite(ltf_history_days) and ltf_history_days > 0:
+            days = float(max(0.5, min(60.0, ltf_history_days)))
+        elif tf != execution_tf and htf_history_days is not None and math.isfinite(htf_history_days) and htf_history_days > 0:
+            days = float(max(0.5, min(120.0, htf_history_days)))
+        elif tf == execution_tf:
+            base_days = _agent_default_history_days_for_timeframe(tf)
+            days = float(max(10.0 if tf_min <= 30 else 5.0, min(30.0, base_days * 2.0)))
+        else:
+            days = _agent_default_history_days_for_timeframe(tf)
+
+        est_count = int((float(days) * 1440.0) / float(tf_min)) + 30
+        bars_live, live_err = _agent_fetch_live_history_bars(
+            source=source,
+            symbol=symbol,
+            timeframe=tf,
+            history_days=days,
+            count=max(120, min(5000, est_count)),
+            databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+        )
+        tf_bars[tf] = bars_live if isinstance(bars_live, list) else []
+        if len(tf_bars[tf]) < 20:
+            tf_results[tf] = {
+                "timeframe": tf,
+                "bars_count": int(len(tf_bars[tf])),
+                "history_days": float(round(days, 3)),
+                "scan_error": str(live_err or "live_history_unavailable"),
+                "fallback_used": False,
+                "zones": [],
+                "zones_count": 0,
+                "active_zones_count": 0,
+                "trend": {"direction": "unknown"},
+                "movement_strength": {"state": "insufficient_data", "score": 0.0, "gas_low": True},
+            }
+            continue
+
+        scan_out = _agent_scan_tool_from_bars(
+            tool_id="fvg",
+            bars=tf_bars[tf],
+            symbol=symbol,
+            timeframe=tf,
+            config={
+                "timeframe": tf,
+                "show_filled": True,
+                "trend_filter_enabled": False,
+            },
+        )
+        if not bool(scan_out.get("ok")):
+            tf_results[tf] = {
+                "timeframe": tf,
+                "bars_count": int(len(tf_bars[tf])),
+                "history_days": float(round(days, 3)),
+                "scan_error": str(scan_out.get("error") or "scan_failed"),
+                "fallback_used": False,
+                "zones": [],
+                "zones_count": 0,
+                "active_zones_count": 0,
+                "trend": {"direction": "unknown"},
+                "movement_strength": {"state": "insufficient_data", "score": 0.0, "gas_low": True},
+            }
+            continue
+
+        scan_data = scan_out.get("data") if isinstance(scan_out.get("data"), dict) else {}
+        zones_raw = scan_data.get("zones") if isinstance(scan_data.get("zones"), list) else []
+        fallback_used = False
+        if tf in htf_tfs and htf_history_days is None and len(zones_raw) == 0:
+            fallback_days_map = {"D1": 90.0, "H4": 45.0}
+            fallback_days = float(fallback_days_map.get(tf, 0.0))
+            if fallback_days > float(days) + 0.5:
+                est_fb_count = int((fallback_days * 1440.0) / float(tf_min)) + 30
+                fb_bars, fb_err = _agent_fetch_live_history_bars(
+                    source=source,
+                    symbol=symbol,
+                    timeframe=tf,
+                    history_days=fallback_days,
+                    count=max(120, min(5000, est_fb_count)),
+                    databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+                )
+                if len(fb_bars) >= 20:
+                    fb_scan_out = _agent_scan_tool_from_bars(
+                        tool_id="fvg",
+                        bars=fb_bars,
+                        symbol=symbol,
+                        timeframe=tf,
+                        config={
+                            "timeframe": tf,
+                            "show_filled": True,
+                            "trend_filter_enabled": False,
+                        },
+                    )
+                    if bool(fb_scan_out.get("ok")):
+                        fb_scan_data = fb_scan_out.get("data") if isinstance(fb_scan_out.get("data"), dict) else {}
+                        fb_zones_raw = fb_scan_data.get("zones") if isinstance(fb_scan_data.get("zones"), list) else []
+                        if len(fb_zones_raw) > 0:
+                            tf_bars[tf] = fb_bars
+                            days = float(fallback_days)
+                            scan_data = fb_scan_data
+                            zones_raw = fb_zones_raw
+                            fallback_used = True
+                elif fb_err:
+                    logger.info(
+                        "agent_mtf_fallback_fetch_failed tf=%s symbol=%s err=%s",
+                        str(tf),
+                        str(symbol),
+                        str(fb_err)[:180],
+                    )
+        zones: List[Dict[str, Any]] = []
+        for z in zones_raw:
+            if not isinstance(z, dict):
+                continue
+            top = _to_float_or_none(z.get("top"))
+            bottom = _to_float_or_none(z.get("bottom"))
+            if top is None or bottom is None:
+                continue
+            z_top = float(max(top, bottom))
+            z_bottom = float(min(top, bottom))
+            z_type = str(z.get("type") or "").strip().lower()
+            direction = "bullish" if z_type.startswith("bullish") else ("bearish" if z_type.startswith("bearish") else "unknown")
+            status = _agent_fvg_zone_status(z)
+            zones.append(
+                {
+                    "type": z_type,
+                    "direction": direction,
+                    "top": z_top,
+                    "bottom": z_bottom,
+                    "gap_size": _to_float_or_none(z.get("gap_size")) or abs(z_top - z_bottom),
+                    "current_gap_size": _to_float_or_none(z.get("current_gap_size")),
+                    "mitigations": int(z.get("mitigations") or 0),
+                    "filled": bool(z.get("filled", False)),
+                    "status": status,
+                    "trend_aligned": bool(z.get("trend_aligned", False)),
+                    "bar_index": int(z.get("bar_index") or 0),
+                    "start_time_unix": int(z.get("start_time_unix") or 0),
+                    "end_time_unix": int(z.get("end_time_unix") or 0),
+                }
+            )
+        active_count = sum(1 for z in zones if str(z.get("status") or "") in {"unfilled", "partially_mitigated"})
+        tf_results[tf] = {
+            "timeframe": tf,
+            "bars_count": int(len(tf_bars[tf])),
+            "history_days": float(round(days, 3)),
+            "scan_error": None,
+            "fallback_used": bool(fallback_used),
+            "zones": zones,
+            "zones_count": int(len(zones)),
+            "active_zones_count": int(active_count),
+            "trend": scan_data.get("trend") if isinstance(scan_data.get("trend"), dict) else {"direction": "unknown"},
+            "movement_strength": scan_data.get("movement_strength") if isinstance(scan_data.get("movement_strength"), dict) else {},
+        }
+
+    ltf_bars = tf_bars.get(execution_tf) if isinstance(tf_bars.get(execution_tf), list) else []
+    current_price = None
+    if ltf_bars:
+        current_price = _to_float_or_none(ltf_bars[-1].get("close") if isinstance(ltf_bars[-1], dict) else None)
+    if current_price is None:
+        for tf in [execution_tf, *htf_tfs]:
+            bars_try = tf_bars.get(tf) if isinstance(tf_bars.get(tf), list) else []
+            if bars_try:
+                current_price = _to_float_or_none(bars_try[-1].get("close") if isinstance(bars_try[-1], dict) else None)
+                if current_price is not None:
+                    break
+
+    def _avg_true_range_proxy(rows: List[Dict[str, Any]], max_rows: int = 30) -> Optional[float]:
+        if not isinstance(rows, list) or not rows:
+            return None
+        sample = rows[-max(3, int(max_rows)) :]
+        vals: List[float] = []
+        for r in sample:
+            if not isinstance(r, dict):
+                continue
+            hi = _to_float_or_none(r.get("high"))
+            lo = _to_float_or_none(r.get("low"))
+            if hi is None or lo is None:
+                continue
+            rng = abs(float(hi) - float(lo))
+            if math.isfinite(rng) and rng > 0:
+                vals.append(float(rng))
+        if len(vals) < 3:
+            return None
+        return float(sum(vals) / float(len(vals)))
+
+    ltf_indicators = _agent_indicator_values_from_bars(ltf_bars, max_rows=1200) if len(ltf_bars) >= 30 else {}
+    ltf_scan = tf_results.get(execution_tf) if isinstance(tf_results.get(execution_tf), dict) else {}
+    inst_for_limits = get_instrument(symbol)
+    ltf_atr14 = _to_float_or_none(ltf_indicators.get("atr14"))
+    if ltf_atr14 is None or ltf_atr14 <= 0:
+        ltf_atr14 = _avg_true_range_proxy(ltf_bars, max_rows=30)
+    if ltf_atr14 is None or ltf_atr14 <= 0:
+        ltf_atr14 = float(max(float(inst_for_limits.point_value) * 20.0, 0.01))
+    if isinstance(ltf_indicators, dict) and (ltf_indicators.get("atr14") is None):
+        ltf_indicators["atr14"] = float(ltf_atr14)
+
+    pos = _agent_positions_detail_payload(session=session, db=db, open_limit=10, recent_limit=10)
+    open_positions = pos.get("open_positions") if isinstance(pos.get("open_positions"), list) else []
+    trigger_payload = _agent_scheduled_triggers_payload(
+        session=session,
+        db=db,
+        include_non_pending=False,
+        limit=100,
+    )
+    pending_triggers = trigger_payload.get("triggers") if isinstance(trigger_payload.get("triggers"), list) else []
+
+    d1_dir = str((tf_results.get("D1") or {}).get("trend", {}).get("direction") or "").strip().lower()
+    h4_dir = str((tf_results.get("H4") or {}).get("trend", {}).get("direction") or "").strip().lower()
+    bias = "unknown"
+    if d1_dir in {"bullish", "bearish"}:
+        bias = d1_dir
+    elif h4_dir in {"bullish", "bearish"}:
+        bias = h4_dir
+
+    anchors: List[Dict[str, Any]] = []
+    counter_bias_zones: List[Dict[str, Any]] = []
+    for tf in htf_tfs:
+        tfr = tf_results.get(tf) if isinstance(tf_results.get(tf), dict) else {}
+        for z in (tfr.get("zones") if isinstance(tfr.get("zones"), list) else []):
+            if not isinstance(z, dict):
+                continue
+            status = str(z.get("status") or "")
+            if status not in {"unfilled", "partially_mitigated"}:
+                continue
+            top = _to_float_or_none(z.get("top"))
+            bottom = _to_float_or_none(z.get("bottom"))
+            if top is None or bottom is None:
+                continue
+            distance = None
+            if current_price is not None:
+                distance = float(min(abs(float(current_price) - float(top)), abs(float(current_price) - float(bottom))))
+            row = {
+                "timeframe": tf,
+                "type": str(z.get("type") or ""),
+                "direction": str(z.get("direction") or ""),
+                "top": float(top),
+                "bottom": float(bottom),
+                "status": status,
+                "mitigations": int(z.get("mitigations") or 0),
+                "gap_size": _to_float_or_none(z.get("gap_size")),
+                "distance_from_price": distance,
+            }
+            if bias in {"bullish", "bearish"} and str(row.get("direction") or "") != bias:
+                counter_bias_zones.append(row)
+            else:
+                anchors.append(row)
+    tf_rank = {"D1": 0, "H4": 1, "H1": 2, "M30": 3, "M15": 4, "M5": 5, "M1": 6}
+    anchors.sort(key=lambda z: (float(z.get("distance_from_price") if z.get("distance_from_price") is not None else 10**12), int(tf_rank.get(str(z.get("timeframe") or ""), 9))))
+    counter_bias_zones.sort(key=lambda z: (float(z.get("distance_from_price") if z.get("distance_from_price") is not None else 10**12), int(tf_rank.get(str(z.get("timeframe") or ""), 9))))
+
+    # ── Fix 1: Filter anchors by execution relevance (ATR-based proximity). ──
+    # Zones beyond 8x ATR from current price are context-only, not trigger-worthy.
+    _anchor_proximity_limit = float(ltf_atr14) * 8.0 if (ltf_atr14 is not None and ltf_atr14 > 0) else None
+    execution_anchors: List[Dict[str, Any]] = []
+    context_only_anchors: List[Dict[str, Any]] = []
+    for _a in anchors:
+        _dist = _a.get("distance_from_price")
+        if _anchor_proximity_limit is not None and _dist is not None and float(_dist) > _anchor_proximity_limit:
+            _a["execution_relevant"] = False
+            context_only_anchors.append(_a)
+        else:
+            _a["execution_relevant"] = True
+            execution_anchors.append(_a)
+
+    blockers: List[str] = []
+    soft_blockers: List[str] = []
+    confidence_warnings: List[str] = []
+    if len(open_positions) > 0:
+        blockers.append("open_position_exists")
+    if current_price is None:
+        blockers.append("current_price_unavailable")
+    if not execution_anchors:
+        if anchors:
+            soft_blockers.append("no_execution_relevant_anchor")
+            confidence_warnings.append("all_anchors_too_distant")
+            # Keep a proposal path for operator-reviewed setups instead of hard-blocking.
+            execution_anchors = anchors[:1]
+        else:
+            blockers.append("no_htf_anchor_zone")
+    if bias not in {"bullish", "bearish"}:
+        confidence_warnings.append("htf_bias_unknown")
+    if d1_dir in {"bullish", "bearish"} and h4_dir in {"bullish", "bearish"} and d1_dir != h4_dir:
+        confidence_warnings.append("htf_bias_conflict")
+
+    # ── Fix 2: Detect LTF exhaustion and add confidence warnings. ──
+    ltf_movement = ltf_scan.get("movement_strength") if isinstance(ltf_scan.get("movement_strength"), dict) else {}
+    ltf_gas_low = bool(ltf_movement.get("gas_low", False))
+    ltf_mov_state = str(ltf_movement.get("state") or "").strip().lower()
+    if ltf_gas_low or ltf_mov_state == "exhausted":
+        confidence_warnings.append("ltf_movement_exhausted")
+
+    best_setup: Optional[Dict[str, Any]] = None
+    duplicate_pending = False
+    if not blockers:
+        anchor = execution_anchors[0]
+        inst = get_instrument(symbol)
+        rr_target = _to_float_or_none(payload.get("rr_target"))
+        if rr_target is None or (not math.isfinite(rr_target)) or rr_target <= 0:
+            rr_target = 2.0
+        rr_target = float(max(1.0, min(6.0, rr_target)))
+        risk_percent = _to_float_or_none(payload.get("risk_percent"))
+        if risk_percent is None or (not math.isfinite(risk_percent)) or risk_percent <= 0:
+            risk_percent = 0.5
+        risk_percent = float(max(0.1, min(5.0, risk_percent)))
+        requested_risk_percent = float(risk_percent)
+        risk_derated = False
+        if ltf_gas_low or ltf_mov_state == "exhausted":
+            capped_risk = float(min(risk_percent, 0.25))
+            if capped_risk < float(risk_percent):
+                risk_percent = capped_risk
+                risk_derated = True
+                confidence_warnings.append("risk_derated_for_exhaustion")
+
+        top = float(anchor["top"])
+        bottom = float(anchor["bottom"])
+        atr14 = _to_float_or_none(ltf_indicators.get("atr14"))
+        gap = abs(top - bottom)
+        min_buffer = max(float(inst.point_value) * 2.0, gap * 0.10)
+        if atr14 is not None and atr14 > 0:
+            min_buffer = max(min_buffer, float(atr14) * 0.05)
+
+        setup_direction = bias if bias in {"bullish", "bearish"} else str(anchor.get("direction") or "").strip().lower()
+        if setup_direction not in {"bullish", "bearish"}:
+            blockers.append("anchor_direction_unknown")
+            setup_direction = "bullish"
+
+        if setup_direction == "bullish":
+            entry_ref = float(top)
+            direction = "BUY"
+            precondition = {"condition": "close_below", "trigger_price": float(top)}
+            condition = {"condition": "close_above", "trigger_price": float(top)}
+            cancel_rule = {"condition": "close_below", "trigger_price": float(bottom)}
+            stop_loss = float(bottom - min_buffer)
+        else:
+            entry_ref = float(bottom)
+            direction = "SELL"
+            precondition = {"condition": "close_above", "trigger_price": float(bottom)}
+            condition = {"condition": "close_below", "trigger_price": float(bottom)}
+            cancel_rule = {"condition": "close_above", "trigger_price": float(top)}
+            stop_loss = float(top + min_buffer)
+
+        risk_distance = abs(float(entry_ref) - float(stop_loss))
+        if risk_distance <= 0 or not math.isfinite(risk_distance):
+            blockers.append("invalid_risk_distance")
+        else:
+            reward_distance = float(risk_distance * rr_target)
+            take_profit_rr = float(entry_ref + reward_distance) if direction == "BUY" else float(entry_ref - reward_distance)
+            take_profit = float(take_profit_rr)
+            tp_basis = "rr_multiple"
+
+            # Optional structural target from the nearest opposite-direction active zone on LTF.
+            ltf_zones = ltf_scan.get("zones") if isinstance(ltf_scan.get("zones"), list) else []
+            structure_candidates: List[float] = []
+            for z in ltf_zones:
+                if not isinstance(z, dict):
+                    continue
+                if str(z.get("status") or "") not in {"unfilled", "partially_mitigated"}:
+                    continue
+                z_dir = str(z.get("direction") or "")
+                z_top = _to_float_or_none(z.get("top"))
+                z_bottom = _to_float_or_none(z.get("bottom"))
+                if z_top is None or z_bottom is None:
+                    continue
+                if direction == "BUY":
+                    if z_dir == "bearish" and float(z_bottom) > float(entry_ref):
+                        structure_candidates.append(float(z_bottom))
+                else:
+                    if z_dir == "bullish" and float(z_top) < float(entry_ref):
+                        structure_candidates.append(float(z_top))
+            structural_tp = None
+            if structure_candidates:
+                structural_tp = min(structure_candidates) if direction == "BUY" else max(structure_candidates)
+                struct_reward = abs(float(structural_tp) - float(entry_ref))
+                struct_rr = struct_reward / float(risk_distance) if risk_distance > 0 else 0.0
+                if struct_rr >= 1.20:
+                    take_profit = float(structural_tp)
+                    reward_distance = float(struct_reward)
+                    tp_basis = "structure"
+            rr = reward_distance / risk_distance if risk_distance > 0 else None
+
+            balance = _to_float_or_none(session.current_balance)
+            if balance is None or balance <= 0:
+                balance = _to_float_or_none(session.initial_balance) or 10000.0
+            risk_amount = float(balance * (risk_percent / 100.0))
+            value_per_1lot = float(inst.contract_size)
+            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(inst.min_lot)
+            lot_size = _normalize_lot_for_instrument(
+                lot_size=float(lot_raw),
+                min_lot=float(inst.min_lot),
+                max_lot=min(100.0, float(inst.max_lot)),
+                lot_step=float(inst.lot_step),
+            )
+
+            tf_min = max(1, _agent_timeframe_to_minutes(execution_tf))
+            atr_eff = float(atr14) if (atr14 is not None and atr14 > 0) else max(float(inst.point_value) * 10.0, risk_distance * 1.5)
+            pullback_bars_est = abs(float(current_price) - float(entry_ref)) / max(atr_eff, float(inst.point_value))
+            expiry_hours = max(6.0, min(24.0, (pullback_bars_est * float(tf_min) / 60.0) * 4.0))
+            expires_sec = int(max(6 * 3600, min(24 * 3600, int(round(expiry_hours * 3600.0)))))
+
+            for tr in pending_triggers:
+                if not isinstance(tr, dict):
+                    continue
+                if str(tr.get("status") or "").lower() != "pending":
+                    continue
+                tr_cond = str(tr.get("condition") or "").lower()
+                tr_price = _to_float_or_none(tr.get("trigger_price"))
+                tr_pre = tr.get("precondition") if isinstance(tr.get("precondition"), dict) else {}
+                tr_ta = tr.get("trade_args") if isinstance(tr.get("trade_args"), dict) else {}
+                if (
+                    tr_cond == str(condition["condition"])
+                    and tr_price is not None
+                    and abs(float(tr_price) - float(condition["trigger_price"])) <= (float(inst.point_value) * 2.0)
+                    and str(tr_ta.get("direction") or "").upper() == direction
+                    and str(tr.get("timeframe") or "").upper() == str(execution_tf)
+                    and str(tr_pre.get("condition") or "").lower() == str(precondition["condition"])
+                    and _to_float_or_none(tr_pre.get("trigger_price")) is not None
+                    and abs(float(_to_float_or_none(tr_pre.get("trigger_price")) or 0.0) - float(precondition["trigger_price"])) <= (float(inst.point_value) * 2.0)
+                ):
+                    duplicate_pending = True
+                    break
+            if duplicate_pending:
+                blockers.append("duplicate_pending_trigger")
+
+            # ── Fix 3: Compute verified risk_usd from instrument spec. ──
+            actual_risk_usd = float(risk_distance * value_per_1lot * lot_size)
+
+            # ── Fix 4: Build calc_trace so LLM (and user) can verify math. ──
+            calc_trace = {
+                "contract_size": float(inst.contract_size),
+                "price_increment": float(inst.point_value),
+                "money_per_price_unit_per_1lot": float(value_per_1lot),
+                "lot_step": float(inst.lot_step),
+                "balance": float(balance),
+                "risk_percent": float(round(risk_percent, 4)),
+                "risk_percent_requested": float(round(requested_risk_percent, 4)),
+                "risk_amount_target": float(round(risk_amount, 2)),
+                "risk_amount_actual": float(round(actual_risk_usd, 2)),
+                "lot_raw": float(round(lot_raw, 6)),
+                "lot_normalized": float(lot_size),
+                "unit": "price_units",
+                "risk_formula": "abs(entry_ref - stop_loss) * money_per_price_unit_per_1lot * lot_size",
+            }
+
+            # ── Fix 5: Setup-level warnings for LLM to cite. ──
+            setup_warnings: List[str] = []
+            if ltf_gas_low or ltf_mov_state == "exhausted":
+                setup_warnings.append("LTF movement exhausted — impulse may be fading. Consider smaller size or waiting for fresh momentum.")
+            if risk_derated:
+                setup_warnings.append(
+                    f"Risk derated for exhausted movement: requested {requested_risk_percent:.2f}% -> effective {risk_percent:.2f}%."
+                )
+            if abs(actual_risk_usd - risk_amount) > (risk_amount * 0.05):
+                setup_warnings.append(f"Lot rounding causes actual risk ${actual_risk_usd:.2f} vs target ${risk_amount:.2f}.")
+            anchor_dist = anchor.get("distance_from_price")
+            if anchor_dist is not None and ltf_atr14 is not None and ltf_atr14 > 0 and float(anchor_dist) > float(ltf_atr14) * 5.0:
+                setup_warnings.append(f"Anchor is {float(anchor_dist):.2f} price units away ({float(anchor_dist) / float(ltf_atr14):.1f}x ATR) — pullback required.")
+
+            best_setup = {
+                "direction": direction,
+                "anchor_timeframe": str(anchor.get("timeframe") or ""),
+                "entry_ref": float(round(entry_ref, 5)),
+                "stop_loss": float(round(stop_loss, 5)),
+                "take_profit": float(round(take_profit, 5)),
+                "take_profit_rr": float(round(take_profit_rr, 5)),
+                "risk_distance": float(round(risk_distance, 5)),
+                "reward_distance": float(round(reward_distance, 5)),
+                "rr": float(round(rr or 0.0, 4)),
+                "tp_basis": tp_basis,
+                "risk_percent": float(round(risk_percent, 4)),
+                "requested_risk_percent": float(round(requested_risk_percent, 4)),
+                "risk_derated": bool(risk_derated),
+                "risk_amount": float(round(risk_amount, 4)),
+                "risk_amount_actual": float(round(actual_risk_usd, 2)),
+                "lot_size": float(lot_size),
+                "timeframe": str(execution_tf),
+                "expires_sec": int(expires_sec),
+                "precondition": precondition,
+                "condition": condition,
+                "cancel_rule": cancel_rule,
+                "calc_trace": calc_trace,
+                "warnings": setup_warnings,
+            }
+
+    include_news = bool(payload.get("include_news", False))
+    news_payload: Optional[Dict[str, Any]] = None
+    if include_news:
+        try:
+            news_limit = int(payload.get("news_limit") or 5)
+        except Exception:
+            news_limit = 5
+        try:
+            news_lookback_min = int(payload.get("news_lookback_min") or effective_cfg.get("guardrail_news_lookback_min") or 240)
+        except Exception:
+            news_lookback_min = 240
+        news_provider = str(payload.get("provider") or effective_cfg.get("market_news_provider") or "polygon").strip().lower()
+        news_payload = _agent_fetch_market_news(
+            symbol=symbol,
+            limit=max(1, min(10, int(news_limit))),
+            lookback_min=max(15, min(24 * 60, int(news_lookback_min))),
+            provider=news_provider,
+            include_summary=True,
+            summary_model=str(effective_cfg.get("market_news_summary_model") or "claude-haiku-4-5-20251001").strip(),
+            summary_timeout_sec=max(4, min(30, int(effective_cfg.get("market_news_llm_timeout_sec") or 8))),
+            ibkr_host=str(effective_cfg.get("market_news_ibkr_host") or "127.0.0.1").strip() or "127.0.0.1",
+            ibkr_port=max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
+        )
+
+    manual_confirmation_required = bool(
+        len(soft_blockers) > 0
+        or ("ltf_movement_exhausted" in confidence_warnings)
+        or ("risk_derated_for_exhaustion" in confidence_warnings)
+    )
+
+    summary: Dict[str, Any] = {
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "current_price": current_price,
+        "position_state": {
+            "open_positions_count": int(len(open_positions)),
+            "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
+        },
+        "htf_bias": {
+            "direction": bias,
+            "d1_direction": d1_dir or "unknown",
+            "h4_direction": h4_dir or "unknown",
+            "conflict": bool(d1_dir in {"bullish", "bearish"} and h4_dir in {"bullish", "bearish"} and d1_dir != h4_dir),
+        },
+        "scan_summary": {
+            tf: {
+                "bars_count": int((tf_results.get(tf) or {}).get("bars_count") or 0),
+                "history_days": float((tf_results.get(tf) or {}).get("history_days") or 0.0),
+                "fallback_used": bool((tf_results.get(tf) or {}).get("fallback_used", False)),
+                "zones_count": int((tf_results.get(tf) or {}).get("zones_count") or 0),
+                "active_zones_count": int((tf_results.get(tf) or {}).get("active_zones_count") or 0),
+                "trend_direction": str(((tf_results.get(tf) or {}).get("trend") or {}).get("direction") or "unknown"),
+                "movement_strength": (tf_results.get(tf) or {}).get("movement_strength") if isinstance((tf_results.get(tf) or {}).get("movement_strength"), dict) else {},
+                "error": (tf_results.get(tf) or {}).get("scan_error"),
+            }
+            for tf in [*htf_tfs, execution_tf]
+        },
+        "htf_anchors": execution_anchors[:20],
+        "htf_context_only_anchors": context_only_anchors[:10],
+        "counter_bias_zones": counter_bias_zones[:20],
+        "ltf_confirmation": {
+            "timeframe": execution_tf,
+            "trend_direction": str((ltf_scan.get("trend") or {}).get("direction") or "unknown"),
+            "movement_strength": ltf_scan.get("movement_strength") if isinstance(ltf_scan.get("movement_strength"), dict) else {},
+            "indicators": ltf_indicators,
+        },
+        "best_setup": best_setup,
+        "duplicate_pending_trigger": bool(duplicate_pending),
+        "trigger_ready": bool(best_setup is not None and not blockers),
+        "manual_confirmation_required": bool(manual_confirmation_required),
+        "blockers": blockers[:12],
+        "soft_blockers": soft_blockers[:12],
+        "confidence_warnings": confidence_warnings[:12],
+        "tool_state_patch": {
+            "mtf_analysis": {
+                "generated_at": _utc_now().isoformat(),
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "bias": bias,
+                "trigger_ready": bool(best_setup is not None and not blockers),
+                "manual_confirmation_required": bool(manual_confirmation_required),
+                "blockers": blockers[:6],
+                "soft_blockers": soft_blockers[:6],
+                "warnings": confidence_warnings[:6],
+                "best_setup": best_setup,
+            }
+        },
+    }
+    if news_payload is not None:
+        summary["news"] = news_payload
+    return summary
+
+
 def _agent_execute_tool(
     *,
     session: SimulationSession,
@@ -6770,6 +7693,9 @@ def _agent_execute_tool(
     payload = args if isinstance(args, dict) else {}
     perms = permissions if isinstance(permissions, dict) else {}
     effective_cfg = _agent_effective_tool_config(session=session, db=db, override=tool_config)
+    if not _agent_tool_allowed_by_access_mode(tname, effective_cfg):
+        mode = _normalize_strategy_tool_access_mode(effective_cfg.get("strategy_tool_access_mode"))
+        return {"ok": False, "error": f"tool_blocked_by_access_mode:{mode}:{tname}"}
 
     if tname == "scan_tool":
         if not bool(perms.get("can_scan_tools", True)):
@@ -6786,10 +7712,17 @@ def _agent_execute_tool(
             lb_days = None
         if lb_days is not None and math.isfinite(lb_days) and lb_days > 0:
             cfg["lookback_days"] = max(0.1, min(60.0, float(lb_days)))
-        bars = payload.get("bars") if isinstance(payload.get("bars"), list) else (context_snapshot.get("bars") if isinstance(context_snapshot.get("bars"), list) else [])
+        bars_from_payload = isinstance(payload.get("bars"), list)
+        bars = payload.get("bars") if bars_from_payload else (context_snapshot.get("bars") if isinstance(context_snapshot.get("bars"), list) else [])
+        mctx = _agent_market_context_from_snapshot(session=session, context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {})
+        tf_scan = str(cfg.get("timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper()
+        ctx_tf = str(mctx.get("timeframe") or session.timeframe or "M15").strip().upper()
+        # Important: context bars are usually chart-timeframe bars. If agent explicitly asks another
+        # timeframe (e.g., D1/H4 from M15 session), force timeframe-specific fetch instead of scanning
+        # mismatched bars and returning false "0 zone" negatives.
+        if (not bars_from_payload) and len(bars) >= 20 and tf_scan != ctx_tf:
+            bars = []
         if len(bars) < 20:
-            mctx = _agent_market_context_from_snapshot(session=session, context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {})
-            tf_scan = str(cfg.get("timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper()
             src = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower()
             sym = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper()
             try:
@@ -6843,6 +7776,21 @@ def _agent_execute_tool(
             return {"ok": True, "data": data, "selection": {"start_index": lo, "end_index": hi, "bars": len(selected)}}
         except HTTPException as exc:
             return {"ok": False, "error": str(exc.detail)}
+
+    if tname == "run_mtf_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_mtf_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
 
     if tname == "get_market_snapshot":
         if not bool(perms.get("can_chat", True)):
@@ -7150,6 +8098,99 @@ def _agent_execute_tool(
             lot_value = 0.01
         if lot_value > 100.0:
             lot_value = 100.0
+        # Server-side math validation and lot normalization.
+        # This guards against LLM arithmetic errors before persisting trigger state.
+        entry_ref = _to_float_or_none(payload.get("entry_ref"))
+        if entry_ref is None:
+            entry_ref = float(trigger_price)
+        if entry_ref is None or (not math.isfinite(float(entry_ref))) or float(entry_ref) <= 0:
+            return {"ok": False, "error": "invalid_entry_ref"}
+        entry_ref = float(entry_ref)
+        if not _validate_entry_levels(direction, float(entry_ref), float(stop_loss), take_profit):
+            return {"ok": False, "error": "invalid_levels_for_entry_ref"}
+        risk_distance = abs(float(entry_ref) - float(stop_loss))
+        if (not math.isfinite(risk_distance)) or risk_distance <= 0.0:
+            return {"ok": False, "error": "invalid_risk_distance"}
+        reward_distance: Optional[float] = None
+        rr_calc: Optional[float] = None
+        if take_profit is not None:
+            reward_distance = abs(float(take_profit) - float(entry_ref))
+            if (not math.isfinite(float(reward_distance))) or float(reward_distance) <= 0.0:
+                return {"ok": False, "error": "invalid_reward_distance"}
+            rr_calc = float(reward_distance) / float(risk_distance)
+        expected_rr = _to_float_or_none(payload.get("expected_rr"))
+        if expected_rr is not None:
+            if rr_calc is None:
+                return {"ok": False, "error": "expected_rr_requires_take_profit"}
+            if (not math.isfinite(float(expected_rr))) or float(expected_rr) <= 0.0:
+                return {"ok": False, "error": "invalid_expected_rr"}
+            if abs(float(rr_calc) - float(expected_rr)) > 0.10:
+                return {
+                    "ok": False,
+                    "error": "rr_mismatch",
+                    "details": {
+                        "expected_rr": round(float(expected_rr), 4),
+                        "calculated_rr": round(float(rr_calc), 4),
+                    },
+                }
+        min_rr = _to_float_or_none(payload.get("min_rr"))
+        if min_rr is not None:
+            if rr_calc is None:
+                return {"ok": False, "error": "min_rr_requires_take_profit"}
+            if float(rr_calc) + 1e-9 < float(min_rr):
+                return {
+                    "ok": False,
+                    "error": "rr_below_min",
+                    "details": {
+                        "min_rr": round(float(min_rr), 4),
+                        "calculated_rr": round(float(rr_calc), 4),
+                    },
+                }
+        inst = get_instrument(str(session.symbol or "XAUUSD").upper())
+        lot_value = _normalize_lot_for_instrument(
+            lot_size=float(lot_value),
+            min_lot=float(inst.min_lot),
+            max_lot=min(100.0, float(inst.max_lot)),
+            lot_step=float(inst.lot_step),
+        )
+        risk_amount = _to_float_or_none(payload.get("risk_amount"))
+        risk_percent = _to_float_or_none(payload.get("risk_percent"))
+        account_balance = _to_float_or_none(payload.get("account_balance"))
+        if account_balance is None:
+            account_balance = _to_float_or_none(session.current_balance)
+        if account_balance is None:
+            account_balance = _to_float_or_none(session.initial_balance)
+        if risk_amount is None and risk_percent is not None and account_balance is not None and account_balance > 0:
+            # risk_percent is interpreted as percent (e.g. 0.5 => 0.5%).
+            risk_amount = float(account_balance) * (float(risk_percent) / 100.0)
+        if risk_amount is not None:
+            if (not math.isfinite(float(risk_amount))) or float(risk_amount) <= 0.0:
+                return {"ok": False, "error": "invalid_risk_amount"}
+            value_per_1lot = _to_float_or_none(payload.get("point_value_per_1lot"))
+            if value_per_1lot is None:
+                value_per_1lot = float(inst.contract_size)
+            if (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+                return {"ok": False, "error": "invalid_point_value_per_1lot"}
+            expected_lot_raw = float(risk_amount) / (float(risk_distance) * float(value_per_1lot))
+            expected_lot = _normalize_lot_for_instrument(
+                lot_size=expected_lot_raw,
+                min_lot=float(inst.min_lot),
+                max_lot=min(100.0, float(inst.max_lot)),
+                lot_step=float(inst.lot_step),
+            )
+            lot_tol = max(float(inst.lot_step) * 1.01, 0.01)
+            if abs(float(lot_value) - float(expected_lot)) > float(lot_tol):
+                return {
+                    "ok": False,
+                    "error": "lot_size_mismatch_with_risk_model",
+                    "details": {
+                        "provided_lot_size": round(float(lot_value), 4),
+                        "expected_lot_size": round(float(expected_lot), 4),
+                        "risk_amount": round(float(risk_amount), 4),
+                        "risk_distance": round(float(risk_distance), 5),
+                        "value_per_1lot": round(float(value_per_1lot), 6),
+                    },
+                }
         if not _validate_entry_levels(direction, float(trigger_price), float(stop_loss), take_profit):
             return {"ok": False, "error": "invalid_levels_for_trigger_price"}
         timeframe = str(payload.get("timeframe") or session.timeframe or "M15").strip().upper()
@@ -7231,6 +8272,17 @@ def _agent_execute_tool(
                 "take_profit": float(take_profit) if take_profit is not None else None,
                 "lot_size": float(lot_value),
                 "entry_price": None,
+            },
+            "validation": {
+                "entry_ref": float(entry_ref),
+                "risk_distance": float(risk_distance),
+                "reward_distance": float(reward_distance) if reward_distance is not None else None,
+                "rr": float(rr_calc) if rr_calc is not None else None,
+                "symbol": str(inst.symbol),
+                "contract_size": float(inst.contract_size),
+                "min_lot": float(inst.min_lot),
+                "max_lot": float(inst.max_lot),
+                "lot_step": float(inst.lot_step),
             },
             "guardrails": schedule_guardrail_policy,
         }
@@ -7643,6 +8695,10 @@ def _agent_tool_state_from_tool_calls(tool_calls: Any) -> Dict[str, Any]:
                         "end_index": int(selection.get("end_index") or 0),
                         "bars": int(selection.get("bars") or 0),
                     }
+        elif tool_name == "run_mtf_analysis":
+            tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
+            if tsp:
+                patch.update(tsp)
 
         if tool_name == "set_indicator_visibility":
             vis = data.get("visibility") if isinstance(data.get("visibility"), dict) else {}
@@ -8666,6 +9722,14 @@ def workbench_agent_admin_status(
             "anthropic_api_key_configured": bool(str(os.getenv("ANTHROPIC_API_KEY") or "").strip()),
             "trigger_requires_approval": bool(cfg.get("watchdog_trigger_requires_approval", False)),
         },
+        "tool_access": {
+            "tool_selection_mode": _normalize_tool_selection_mode(
+                cfg.get("tool_selection_mode")
+            ),
+            "strategy_tool_access_mode": _normalize_strategy_tool_access_mode(
+                cfg.get("strategy_tool_access_mode")
+            )
+        },
         "news_cache": _agent_news_cache_stats(),
     }
 
@@ -8853,6 +9917,7 @@ def workbench_agent_chat(
     merged_ctx: Dict[str, Any] = {}
     perms: Dict[str, Any] = {}
     provider_cfg: Dict[str, Any] = {}
+    effective_tool_cfg: Dict[str, Any] = {}
     try:
         session = db.query(SimulationSession).get(session_id)
         if not session:
@@ -8889,6 +9954,15 @@ def workbench_agent_chat(
             raise HTTPException(403, "permission_denied:can_chat")
 
         copilot = _get_active_copilot(simulation_session_id=int(session.id), db=db)
+        merged_cfg = {
+            **(copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else {}),
+            **(req.config if isinstance(req.config, dict) else {}),
+        }
+        effective_tool_cfg = _agent_effective_tool_config(
+            session=session,
+            db=db,
+            override=merged_cfg,
+        )
         agent_row = _ensure_agent_session(
             simulation_session_id=int(session.id),
             db=db,
@@ -8896,10 +9970,7 @@ def workbench_agent_chat(
             provider=str(provider_cfg.get("provider") or "deterministic"),
             model_label=str(provider_cfg.get("model_label") or "").strip() or None,
             permissions=perms,
-            config={
-                **(copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else {}),
-                **(req.config if isinstance(req.config, dict) else {}),
-            },
+            config=merged_cfg,
             runtime={
                 "llm_url": provider_cfg.get("llm_url"),
                 "timeout_sec": int(provider_cfg.get("timeout_sec") or 45),
@@ -8916,6 +9987,14 @@ def workbench_agent_chat(
             db.close()
         except Exception:
             pass
+
+    allowed_tool_names: Optional[List[str]] = []
+    if bool(req.allow_tools):
+        allowed_tool_names = _agent_select_allowed_tool_names(
+            message=str(req.message or ""),
+            conversation_history=req.conversation_history or [],
+            cfg=effective_tool_cfg,
+        )
 
     def _executor(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         tool_db = SessionLocal()
@@ -8936,8 +10015,25 @@ def workbench_agent_chat(
                 context_snapshot=merged_ctx,
                 tool_name=name,
                 args=args,
+                tool_config=effective_tool_cfg,
                 atomic=False,
             )
+            if isinstance(out, dict) and bool(out.get("ok", False)):
+                tsp = _agent_tool_state_from_tool_calls(
+                    [{"tool_id": str(name or ""), "args": (args if isinstance(args, dict) else {}), "result": out}]
+                )
+                if isinstance(tsp, dict) and tsp:
+                    cur_ts = merged_ctx.get("tool_state") if isinstance(merged_ctx.get("tool_state"), dict) else {}
+                    merged_ctx["tool_state"] = {**cur_ts, **tsp}
+                # set_market_context only returns sanitized intent (frontend_apply_required);
+                # clear stale bars so subsequent tool calls in this same chat turn re-fetch
+                # timeframe-correct history instead of reusing old chart bars.
+                if str(name or "").strip().lower() == "set_market_context":
+                    merged_ctx["bars"] = []
+                # If snapshot returned bars, keep them available for follow-up tools in this turn.
+                data_obj = out.get("data") if isinstance(out.get("data"), dict) else {}
+                if isinstance(data_obj.get("bars"), list) and len(data_obj.get("bars")) >= 20:
+                    merged_ctx["bars"] = data_obj.get("bars")
             logger.info(
                 "agent_chat_tool_result session=%s tool=%s ok=%s error=%s",
                 int(session_id),
@@ -9014,6 +10110,7 @@ def workbench_agent_chat(
         tool_executor=_executor,
         allow_tools=bool(req.allow_tools),
         max_tool_steps=max_steps_eff,
+        allowed_tool_names=allowed_tool_names,
         objective="chat",
     )
     if provider_for_call == provider_name:
@@ -9182,6 +10279,7 @@ def workbench_agent_run_once(
     merged_ctx: Dict[str, Any] = {}
     perms: Dict[str, Any] = {}
     provider_cfg: Dict[str, Any] = {}
+    effective_tool_cfg: Dict[str, Any] = {}
     try:
         session = db.query(SimulationSession).get(session_id)
         if not session:
@@ -9218,6 +10316,15 @@ def workbench_agent_run_once(
         perms = _model_to_dict(req.permissions)
         provider_cfg = _model_to_dict(req.provider)
         copilot = _get_active_copilot(simulation_session_id=int(session.id), db=db)
+        merged_cfg = {
+            **(copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else {}),
+            **(req.config if isinstance(req.config, dict) else {}),
+        }
+        effective_tool_cfg = _agent_effective_tool_config(
+            session=session,
+            db=db,
+            override=merged_cfg,
+        )
         agent_row = _ensure_agent_session(
             simulation_session_id=int(session.id),
             db=db,
@@ -9225,10 +10332,7 @@ def workbench_agent_run_once(
             provider=str(provider_cfg.get("provider") or "deterministic"),
             model_label=str(provider_cfg.get("model_label") or "").strip() or None,
             permissions=perms,
-            config={
-                **(copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else {}),
-                **(req.config if isinstance(req.config, dict) else {}),
-            },
+            config=merged_cfg,
             runtime={
                 "llm_url": provider_cfg.get("llm_url"),
                 "timeout_sec": int(provider_cfg.get("timeout_sec") or 45),
@@ -9245,6 +10349,16 @@ def workbench_agent_run_once(
             db.close()
         except Exception:
             pass
+
+    allowed_tool_names: Optional[List[str]] = []
+    if bool(req.allow_tools):
+        objective_for_intent = str(req.objective or "").strip() or "review setup and propose next actions"
+        allowed_tool_names = _agent_select_allowed_tool_names(
+            message="",
+            conversation_history=[],
+            cfg=effective_tool_cfg,
+            objective=objective_for_intent,
+        )
 
     def _executor(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         tool_db = SessionLocal()
@@ -9265,8 +10379,21 @@ def workbench_agent_run_once(
                 context_snapshot=merged_ctx,
                 tool_name=name,
                 args=args,
+                tool_config=effective_tool_cfg,
                 atomic=False,
             )
+            if isinstance(out, dict) and bool(out.get("ok", False)):
+                tsp = _agent_tool_state_from_tool_calls(
+                    [{"tool_id": str(name or ""), "args": (args if isinstance(args, dict) else {}), "result": out}]
+                )
+                if isinstance(tsp, dict) and tsp:
+                    cur_ts = merged_ctx.get("tool_state") if isinstance(merged_ctx.get("tool_state"), dict) else {}
+                    merged_ctx["tool_state"] = {**cur_ts, **tsp}
+                if str(name or "").strip().lower() == "set_market_context":
+                    merged_ctx["bars"] = []
+                data_obj = out.get("data") if isinstance(out.get("data"), dict) else {}
+                if isinstance(data_obj.get("bars"), list) and len(data_obj.get("bars")) >= 20:
+                    merged_ctx["bars"] = data_obj.get("bars")
             logger.info(
                 "agent_run_once_tool_result session=%s tool=%s ok=%s error=%s",
                 int(session_id),
@@ -9341,6 +10468,7 @@ def workbench_agent_run_once(
         tool_executor=_executor,
         allow_tools=bool(req.allow_tools),
         max_tool_steps=max_steps_eff,
+        allowed_tool_names=allowed_tool_names,
     )
     if provider_for_call == provider_name:
         if bool(out.get("ok", False)):

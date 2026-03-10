@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ALLOWED_TOOL_NAMES = {
     "scan_tool",
     "scan_draw_fvg_range",
+    "run_mtf_analysis",
     "get_market_snapshot",
     "get_positions_detail",
     "get_indicator_values",
@@ -635,7 +636,7 @@ class WorkbenchAgent:
         return [
             {
                 "name": "scan_tool",
-                "description": "Scan a workbench tool (fvg, liquidity, or mean_rev) on session bars; optionally override scan timeframe.",
+                "description": "Child/granular scanner for fvg/liquidity/mean_rev. Use mainly for manual deep-dive/debug. For HTF->LTF FVG strategy execution, prefer run_mtf_analysis (parent) for better reliability and token efficiency.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -651,7 +652,7 @@ class WorkbenchAgent:
             },
             {
                 "name": "scan_draw_fvg_range",
-                "description": "Scan FVG only between two selected bar indexes from chart bars.",
+                "description": "Child chart-range FVG scan between selected bar indexes. Use for manual chart forensics, not as primary strategy planner.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -664,8 +665,33 @@ class WorkbenchAgent:
                 },
             },
             {
+                "name": "run_mtf_analysis",
+                "description": "Parent strategy tool (preferred): deterministic HTF->LTF FVG analysis in one call (anchors, confirmation, sizing, blockers, trigger candidate). Use this first for multi-timeframe FVG workflows instead of chaining child tools.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "htf_timeframes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Higher-timeframe anchors list (e.g., [\"D1\",\"H4\"]).",
+                        },
+                        "execution_timeframe": {"type": "string", "description": "Lower timeframe for execution logic (default M15)."},
+                        "htf_history_days": {"type": "number", "description": "Optional HTF history window in days."},
+                        "ltf_history_days": {"type": "number", "description": "Optional LTF history window in days."},
+                        "risk_percent": {"type": "number", "description": "Risk percent for lot sizing (default 0.5)."},
+                        "rr_target": {"type": "number", "description": "Target risk-reward multiple (default 2.0)."},
+                        "include_news": {"type": "boolean", "description": "Include market news headlines in output when true."},
+                        "news_limit": {"type": "integer", "description": "News headline limit (1-10)."},
+                        "news_lookback_min": {"type": "integer", "description": "News lookback window in minutes."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "get_market_snapshot",
-                "description": "Fetch compact market snapshot and optional recent bars for the current session.",
+                "description": "General market context snapshot (price, indicators, optional bars). Safe for quick status checks; not a replacement for run_mtf_analysis when building HTF->LTF FVG execution plans.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -690,7 +716,7 @@ class WorkbenchAgent:
             },
             {
                 "name": "get_indicator_values",
-                "description": "Get computed indicator values from recent bars (EMA/SMA/RSI/ATR/BB/Stoch).",
+                "description": "Child indicator diagnostic tool (EMA/SMA/RSI/ATR/BB/Stoch). Use for targeted confirmation/debug after parent analysis or for non-FVG workflows.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -792,6 +818,13 @@ class WorkbenchAgent:
                         "stop_loss": {"type": "number"},
                         "take_profit": {"type": "number"},
                         "lot_size": {"type": "number"},
+                        "entry_ref": {"type": "number", "description": "Optional reference entry price used for server-side risk math validation"},
+                        "expected_rr": {"type": "number", "description": "Optional expected R:R used for server-side mismatch checks"},
+                        "min_rr": {"type": "number", "description": "Optional minimum acceptable R:R"},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent (e.g. 0.5 means 0.5%) for lot-size validation"},
+                        "risk_amount": {"type": "number", "description": "Optional fixed risk amount for lot-size validation"},
+                        "account_balance": {"type": "number", "description": "Optional balance reference for risk_percent conversion"},
+                        "point_value_per_1lot": {"type": "number", "description": "Optional per-lot price-unit value override for risk math"},
                         "timeframe": {"type": "string", "description": "M1, M5, M15, M30, H1, H4, D1"},
                         "expires_sec": {"type": "integer", "description": "Optional trigger expiry in seconds"},
                     },
@@ -857,7 +890,7 @@ class WorkbenchAgent:
             },
             {
                 "name": "set_market_context",
-                "description": "Switch market context (symbol/timeframe/live source/history days).",
+                "description": "Switch symbol/timeframe/source/history context. Use this whenever market context must change before scanning or planning.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1247,27 +1280,19 @@ class WorkbenchAgent:
         perm_json = json.dumps(permissions or {}, ensure_ascii=True)
         identity_json = json.dumps(identity, ensure_ascii=True)
         static_part = (
-            "You are Workbench Agent, a trading co-pilot for paper simulation.\n"
-            "Use tools when needed. Do not fabricate prices or tool outputs.\n"
-            "Respect permissions strictly; never bypass blocked actions.\n"
-            "Trade actions must include risk terms (stop_loss, take_profit when available).\n"
-            "When user requests waiting for a trigger (for example 'wait for close below/above then enter'), use schedule_trade_entry instead of immediate place_trade.\n"
-            "For multi-step trigger logic (for example reclaim then rejection), use schedule_trade_entry with precondition first and entry condition second.\n"
-            "If user defines pre-entry invalidation (for example 'cancel if close below X before entry'), include cancel_rule in schedule_trade_entry.\n"
-            "If user explicitly requests switching profile/personality between master_quant and apprentice, use set_agent_personality.\n"
-            "For explicit user execution requests, call place_trade/close_trade when possible; if policy requires confirmation, backend will return a pending approval payload.\n"
-            "Use memory hits as trader-specific preferences/rules; prefer them unless they conflict with policy/risk.\n"
-            "When proposing actions, prefer calling submit_proposed_actions with enum-safe action_type values.\n"
-            "Context JSON is compact by design. For full details, call get_market_snapshot, get_positions_detail, get_indicator_values, or get_scheduled_triggers.\n"
-            "Identity profile is locked. Do not mutate persona/tone/character through memory_notes.\n"
-            "Only strategy/process knowledge may adapt from outcomes.\n"
-            "Context usually includes symbol/timeframe (for example: symbol=XAUUSD, timeframe=M15); anchor analysis and tool decisions to them.\n"
-            "Return final response as JSON:\n"
-            "{\"reply\":\"...\",\"tool_calls\":[{\"name\":\"get_market_snapshot\",\"args\":{\"bars_limit\":40}},{\"name\":\"scan_tool\",\"args\":{\"tool_id\":\"fvg\"}}],\"proposed_actions\":[{\"action_type\":\"...\",\"summary\":\"...\",\"payload\":{},\"confidence\":0.0}],\"memory_notes\":[{\"content\":\"...\",\"memory_type\":\"trader_rule\",\"scope\":\"GLOBAL\",\"importance\":0.8,\"symbol\":\"XAUUSD\",\"timeframe\":\"M15\"}]}\n"
-            "tool_calls is optional; include it only when tool execution is required.\n"
-            "memory_notes is optional; include only durable, high-signal trader preferences/rules worth remembering.\n"
-            "Keep reply concise and execution-focused.\n\n"
-            f"Locked Identity JSON: {identity_json}\n\n"
+            "You are a professional trading co-pilot for paper simulation.\n"
+            "Never fabricate prices, fills, or tool outputs. Respect permissions strictly.\n\n"
+            "STRATEGY WORKFLOW:\n"
+            "- For multi-timeframe FVG analysis, call run_mtf_analysis first (HTF anchors + LTF confirmation + risk math in one call).\n"
+            "- For conditional entries, use schedule_trade_entry with precondition, condition, and cancel_rule.\n"
+            "- Always include stop_loss and take_profit with every trade action.\n\n"
+            "PROFESSIONALITY:\n"
+            "- Act on data, not guesses. Run tools first, then form conclusions.\n"
+            "- When asked to analyse or plan, deliver a concrete professional plan — do not ask for inputs you can infer from tools.\n"
+            "- Always explain your reasoning: which HTF anchor, why this direction, what confirms, what invalidates.\n\n"
+            "OUTPUT FORMAT: Return JSON with keys: reply, tool_calls (optional), proposed_actions (optional), memory_notes (optional).\n"
+            "Keep reply concise, evidence-backed, and execution-focused.\n\n"
+            f"Identity: {identity_json}\n\n"
             f"{tools_section}"
         )
         if on_demand_mode:
@@ -1529,7 +1554,26 @@ class WorkbenchAgent:
                     }
                 )
 
-        if can_scan and ("fvg" in msg or ("scan" in msg and "gap" in msg)):
+        mtf_fvg_request = (
+            can_scan
+            and _contains_any(msg, ["fvg", "fair value gap", "mitigation", "breaker", "reclaim"])
+            and _contains_any(msg, ["multi-timeframe", "multi timeframe", "mtf", "d1", "h4", "m15", "m5", "higher timeframe"])
+        )
+        if mtf_fvg_request:
+            plan.append(
+                {
+                    "name": "run_mtf_analysis",
+                    "args": {
+                        "execution_timeframe": "M15",
+                        "htf_timeframes": ["D1", "H4"],
+                        "risk_percent": 0.5,
+                        "rr_target": 2.0,
+                        "include_news": False,
+                    },
+                }
+            )
+
+        if can_scan and (not mtf_fvg_request) and ("fvg" in msg or ("scan" in msg and "gap" in msg)):
             plan.append(
                 {
                     "name": "scan_tool",
@@ -1904,7 +1948,7 @@ class WorkbenchAgent:
         reply = "I reviewed your request."
         if zones_count is not None:
             reply = f"I scanned the chart and found {int(zones_count)} zones."
-        reply += " I can propose a trade plan once you confirm direction and risk tolerance."
+        reply += " I prepared an execution-focused plan from current context and tool outputs."
         return {
             "ok": True,
             "reply": reply,
@@ -2340,6 +2384,7 @@ class WorkbenchAgent:
                 raise last_exc
             raise RuntimeError("claude request failed without response")
 
+        _accumulated_text_parts: List[str] = []
         for _ in range(max(0, int(max_tool_steps)) + 1):
             if str(system_prompt_static or "").strip():
                 system_payload: Any = [
@@ -2353,7 +2398,7 @@ class WorkbenchAgent:
             else:
                 system_payload = str(system_prompt_dynamic or "")
             payload: Dict[str, Any] = {
-                "max_tokens": 1200,
+                "max_tokens": 4096,
                 "temperature": 0.2,
                 "system": system_payload,
                 "messages": messages,
@@ -2390,9 +2435,21 @@ class WorkbenchAgent:
                 break
             messages.append({"role": "assistant", "content": content})
             tool_uses = [c for c in content if isinstance(c, dict) and str(c.get("type") or "") == "tool_use"]
+            stop_reason = str(body.get("stop_reason") or "") if isinstance(body, dict) else ""
             if not tool_uses:
                 texts = [str(c.get("text") or "") for c in content if isinstance(c, dict) and str(c.get("type") or "") == "text"]
-                final_text = "\n".join([t for t in texts if t.strip()]).strip()
+                partial = "\n".join([t for t in texts if t.strip()]).strip()
+                # Auto-continue if truncated by max_tokens (report cut mid-sentence).
+                if stop_reason == "max_tokens" and partial:
+                    _accumulated_text_parts.append(partial)
+                    logger.info("claude response truncated by max_tokens, requesting continuation (parts=%d)", len(_accumulated_text_parts))
+                    messages.append({"role": "user", "content": [{"type": "text", "text": "Continue from where you left off."}]})
+                    continue
+                if _accumulated_text_parts:
+                    _accumulated_text_parts.append(partial)
+                    final_text = "\n".join(_accumulated_text_parts).strip()
+                else:
+                    final_text = partial
                 break
 
             tool_results: List[Dict[str, Any]] = []
@@ -2450,19 +2507,33 @@ class WorkbenchAgent:
                 system_payload = str(system_prompt_dynamic or "")
             payload = {
                 "model": str(used_model or model_label),
-                "max_tokens": 1200,
+                "max_tokens": 4096,
                 "temperature": 0.2,
                 "system": system_payload,
                 "messages": messages,
             }
-            resp = _claude_post(payload)
-            if resp.status_code == 200:
+            _final_parts: List[str] = []
+            for _cont in range(3):  # max 2 continuations for final pass
+                resp = _claude_post(payload)
+                if resp.status_code != 200:
+                    break
                 body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
                 usage_total["api_calls"] = int(_safe_int(usage_total.get("api_calls"), 0) + 1)
                 _usage_add(usage_total, _usage_extract_claude(body))
                 content = body.get("content") if isinstance(body, dict) and isinstance(body.get("content"), list) else []
                 texts = [str(c.get("text") or "") for c in content if isinstance(c, dict) and str(c.get("type") or "") == "text"]
-                final_text = "\n".join([t for t in texts if t.strip()]).strip()
+                chunk = "\n".join([t for t in texts if t.strip()]).strip()
+                if chunk:
+                    _final_parts.append(chunk)
+                sr = str(body.get("stop_reason") or "") if isinstance(body, dict) else ""
+                if sr != "max_tokens" or not chunk:
+                    break
+                logger.info("claude final-pass truncated by max_tokens, continuing (part=%d)", _cont + 1)
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": [{"type": "text", "text": "Continue from where you left off."}]})
+                payload["messages"] = messages
+            if _final_parts:
+                final_text = "\n".join(_final_parts).strip()
         if not final_text:
             final_text = self._fallback_text_from_tool_calls(tool_calls_log)
 
@@ -2513,7 +2584,7 @@ class WorkbenchAgent:
         delta_context = safe_context.pop("_delta_context", None)
         perms = permissions if isinstance(permissions, dict) else {}
         if allowed_tool_names is None and bool(allow_tools):
-            allowed_tool_names = get_tools_for_intent(msg)
+            allowed_tool_names = get_tools_for_intent(msg, conversation_history=conversation_history)
         local_on_demand_mode = p == "local_gptoss_http"
         include_tool_summaries = not (bool(allow_tools) and p in {"claude", "openai_compat"})
         system_prompt_static, system_prompt_dynamic = self._system_prompt_parts(

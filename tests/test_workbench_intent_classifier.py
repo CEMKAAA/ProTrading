@@ -35,6 +35,7 @@ def test_liquidity_language_maps_to_analysis_tools():
     assert "analysis" in intents
     tools = get_tools_for_intent("scan liquidity sweeps and equal highs on M15")
     assert "scan_tool" in tools
+    assert "run_mtf_analysis" in tools
 
 
 def test_identity_intent_includes_personality_switch_tool():

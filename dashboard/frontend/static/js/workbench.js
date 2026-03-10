@@ -1118,6 +1118,28 @@ function renderAgentWatchdogBox(eventsLike) {
     box.classList.remove('d-none');
 }
 
+function setAgentToolModeBadge(modeLike) {
+    const badgeEl = document.getElementById('agent-tool-mode-badge');
+    if (!badgeEl) return;
+    const raw = String(modeLike || '').trim().toLowerCase();
+    const mode = ['all', 'parent', 'child'].includes(raw) ? raw : 'all';
+    if (mode === 'parent') {
+        badgeEl.textContent = 'PARENT';
+        badgeEl.style.background = '#1d4ed8';
+        badgeEl.style.color = '#dbeafe';
+        return;
+    }
+    if (mode === 'child') {
+        badgeEl.textContent = 'CHILD';
+        badgeEl.style.background = '#7c3aed';
+        badgeEl.style.color = '#ede9fe';
+        return;
+    }
+    badgeEl.textContent = 'ALL';
+    badgeEl.style.background = '#334155';
+    badgeEl.style.color = '#e2e8f0';
+}
+
 function renderAgentState(state) {
     const rawState = state;
     state = _normalizeAgentStatePayload(state);
@@ -1346,6 +1368,17 @@ function renderAgentState(state) {
     if (watchdogModeEl && ['deterministic', 'local_gptoss_http', 'claude'].includes(watchdogMode)) {
         watchdogModeEl.value = watchdogMode;
     }
+    const strategyToolAccessEl = document.getElementById('agent-strategy-tool-access');
+    const strategyToolAccess = String(cfg.strategy_tool_access_mode || '').trim().toLowerCase();
+    if (strategyToolAccessEl && ['all', 'parent', 'child'].includes(strategyToolAccess)) {
+        strategyToolAccessEl.value = strategyToolAccess;
+    }
+    const toolSelectionModeEl = document.getElementById('agent-tool-selection-mode');
+    const toolSelectionMode = String(cfg.tool_selection_mode || '').trim().toLowerCase();
+    if (toolSelectionModeEl && ['autonomous', 'guided', 'minimal'].includes(toolSelectionMode)) {
+        toolSelectionModeEl.value = toolSelectionMode;
+    }
+    setAgentToolModeBadge(strategyToolAccess);
     const watchdogIntervalEl = document.getElementById('agent-watchdog-interval');
     const watchdogInt = Number(cfg.watchdog_interval_sec);
     if (watchdogIntervalEl && Number.isFinite(watchdogInt)) {
@@ -3183,6 +3216,8 @@ function getAgentRecommendedMaxToolSteps(mode = 'chat') {
 
 function getAgentWatchdogConfigFromUI() {
     const modeEl = document.getElementById('agent-watchdog-mode');
+    const strategyToolAccessEl = document.getElementById('agent-strategy-tool-access');
+    const toolSelectionModeEl = document.getElementById('agent-tool-selection-mode');
     const intervalEl = document.getElementById('agent-watchdog-interval');
     const llmIntervalEl = document.getElementById('agent-watchdog-llm-interval');
     const triggerApprovalEl = document.getElementById('agent-watchdog-trigger-require-approval');
@@ -3197,6 +3232,10 @@ function getAgentWatchdogConfigFromUI() {
     const newsIbkrPortEl = document.getElementById('agent-news-ibkr-port');
     const modeRaw = String(modeEl?.value || 'deterministic').trim().toLowerCase();
     const mode = ['deterministic', 'local_gptoss_http', 'claude'].includes(modeRaw) ? modeRaw : 'deterministic';
+    const strategyToolAccessRaw = String(strategyToolAccessEl?.value || 'all').trim().toLowerCase();
+    const strategyToolAccess = ['all', 'parent', 'child'].includes(strategyToolAccessRaw) ? strategyToolAccessRaw : 'all';
+    const toolSelectionRaw = String(toolSelectionModeEl?.value || 'autonomous').trim().toLowerCase();
+    const toolSelectionMode = ['autonomous', 'guided', 'minimal'].includes(toolSelectionRaw) ? toolSelectionRaw : 'autonomous';
     const intervalRaw = Number(intervalEl?.value || 30);
     const intervalSec = Number.isFinite(intervalRaw) ? Math.max(5, Math.min(300, Math.round(intervalRaw))) : 30;
     const llmIntervalRaw = Number(llmIntervalEl?.value || 180);
@@ -3211,6 +3250,8 @@ function getAgentWatchdogConfigFromUI() {
     const newsIbkrPort = Number.isFinite(newsIbkrPortRaw) ? Math.max(1, Math.min(65535, Math.round(newsIbkrPortRaw))) : 7497;
     const out = {
         watchdog_mode: mode,
+        tool_selection_mode: toolSelectionMode,
+        strategy_tool_access_mode: strategyToolAccess,
         watchdog_interval_sec: intervalSec,
         watchdog_llm_min_interval_sec: llmMinIntervalSec,
         watchdog_trigger_requires_approval: Boolean(triggerApprovalEl?.checked),
@@ -5421,6 +5462,17 @@ function bindEvents() {
             body.classList.toggle('d-none');
         });
     });
+    // Agent config accordion sections
+    document.querySelectorAll('.agent-section-toggle[data-agent-section]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const secId = btn.getAttribute('data-agent-section');
+            const body = document.getElementById(secId);
+            if (!body) return;
+            const isOpen = !body.classList.contains('d-none');
+            body.classList.toggle('d-none', isOpen);
+            btn.setAttribute('aria-expanded', String(!isOpen));
+        });
+    });
     document.getElementById('workbench-mode')?.addEventListener('change', () => {
         applyWorkbenchModeUI();
         const mode = getWorkbenchMode();
@@ -5619,6 +5671,7 @@ function bindEvents() {
     syncAgentPermissionDependencies();
     syncAgentGuardrailControls();
     syncAgentNewsProviderControls();
+    setAgentToolModeBadge(document.getElementById('agent-strategy-tool-access')?.value || 'all');
     toggleAgentIdentityFields(false);
     toggleAgentMemoryFields(false);
     document.getElementById('agent-guardrail-enabled')?.addEventListener('change', () => {
@@ -5632,6 +5685,9 @@ function bindEvents() {
     });
     document.getElementById('agent-news-llm-summary')?.addEventListener('change', () => {
         syncAgentNewsProviderControls();
+    });
+    document.getElementById('agent-strategy-tool-access')?.addEventListener('change', (e) => {
+        setAgentToolModeBadge(String(e?.target?.value || 'all'));
     });
     ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
@@ -7370,4 +7426,3 @@ async function refreshAgentState(showStatusErrors = false) {
         if (showStatusErrors) showStatus(`Agent state error: ${err.message}`, 'warning');
     }
 }
-

@@ -10,3 +10,8 @@ def test_agent_effective_max_tool_steps_external_provider_uses_configurable_cap(
 def test_agent_effective_max_tool_steps_non_external_provider_unclamped_by_external_cap(monkeypatch):
     monkeypatch.setenv("WORKBENCH_EXTERNAL_MAX_TOOL_STEPS", "2")
     assert routes._agent_effective_max_tool_steps("deterministic", 9) == 9
+
+
+def test_agent_effective_max_tool_steps_external_provider_default_cap_is_ten(monkeypatch):
+    monkeypatch.delenv("WORKBENCH_EXTERNAL_MAX_TOOL_STEPS", raising=False)
+    assert routes._agent_effective_max_tool_steps("claude", 10) == 10
