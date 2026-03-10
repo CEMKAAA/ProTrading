@@ -3,6 +3,7 @@ import types
 from datetime import datetime
 
 import pandas as pd
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -22,6 +23,13 @@ def _db_session():
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     return SessionLocal()
+
+
+class _ZeroBarsEngine:
+    def __init__(self):
+        self.total_bars = 0
+        self.current_bar = 0
+        self.df = pd.DataFrame()
 
 
 def _make_mean_rev_df() -> pd.DataFrame:
@@ -66,6 +74,53 @@ def test_mean_rev_signal_sequence_and_no_same_bar_conflicts():
     for z in zones:
         bar_to_types.setdefault(int(z["bar_index"]), []).append(str(z["type"]))
     assert not any(len(v) > 1 for v in bar_to_types.values())
+
+
+def test_create_session_allows_empty_replay_when_live_bootstrap_enabled(monkeypatch):
+    db = _db_session()
+    try:
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda session, db_sess: _ZeroBarsEngine())
+        monkeypatch.setattr(sim_routes, "_clear_cached_engine", lambda _sid: None)
+        req = sim_routes.CreateSessionRequest(
+            strategy_id=sim_routes.WORKBENCH_ID,
+            symbol="XAUUSD",
+            timeframe="M15",
+            initial_balance=10000.0,
+            allow_empty_replay=True,
+        )
+        out = sim_routes.create_session(req, db)
+        assert int(out.get("id") or 0) > 0
+        assert int(out.get("total_bars") or 0) == 0
+        row = db.query(SimulationSession).get(int(out["id"]))
+        assert row is not None
+        assert int(row.total_bars or 0) == 0
+    finally:
+        db.close()
+
+
+def test_create_session_still_rejects_empty_replay_without_live_bootstrap(monkeypatch):
+    db = _db_session()
+    try:
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda session, db_sess: _ZeroBarsEngine())
+        monkeypatch.setattr(sim_routes, "_clear_cached_engine", lambda _sid: None)
+        req = sim_routes.CreateSessionRequest(
+            strategy_id=sim_routes.WORKBENCH_ID,
+            symbol="XAUUSD",
+            timeframe="M15",
+            initial_balance=10000.0,
+            allow_empty_replay=False,
+        )
+        try:
+            sim_routes.create_session(req, db)
+            assert False, "Expected HTTPException for empty replay data"
+        except HTTPException as exc:
+            assert int(exc.status_code) == 400
+            assert "No replay data loaded" in str(exc.detail or "")
+        # Session row is rolled back/deleted on create failure.
+        rows = db.query(SimulationSession).all()
+        assert len(rows) == 0
+    finally:
+        db.close()
 
 
 def test_mean_rev_compute_current_state_handles_duplicate_index():

@@ -392,6 +392,7 @@ class CreateSessionRequest(BaseModel):
     data_file: Optional[str] = None
     initial_balance: float = 10000.0
     config: Optional[Dict[str, Any]] = None
+    allow_empty_replay: bool = False
 
 
 class AdvanceRequest(BaseModel):
@@ -4290,13 +4291,27 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
     try:
         engine = _get_or_create_engine(session, db)
         if engine.total_bars <= 0:
-            raise HTTPException(
-                400,
-                f"No replay data loaded for {req.symbol} {req.timeframe}. "
-                "Check data files and CSV format.",
-            )
-        session.total_bars = engine.total_bars
-        db.commit()
+            # Live-mode bootstrap path: allow session creation with no replay CSV bars.
+            # MT5/Databento live feeds can populate runtime bars after session start.
+            if bool(req.allow_empty_replay) and str(req.strategy_id or "") == WORKBENCH_ID:
+                session.total_bars = 0
+                session.current_bar = 0
+                db.commit()
+                logger.info(
+                    "create_session live bootstrap without replay data: session=%s symbol=%s timeframe=%s",
+                    int(session.id),
+                    str(req.symbol or "").upper(),
+                    str(req.timeframe or "").upper(),
+                )
+            else:
+                raise HTTPException(
+                    400,
+                    f"No replay data loaded for {req.symbol} {req.timeframe}. "
+                    "Check data files and CSV format.",
+                )
+        else:
+            session.total_bars = engine.total_bars
+            db.commit()
     except HTTPException:
         _clear_cached_engine(session.id)
         db.delete(session)

@@ -753,6 +753,7 @@ async function ensureSessionForLive(symbol, timeframe) {
                 timeframe,
                 data_file: dataFile || null,
                 initial_balance: balance,
+                allow_empty_replay: true,
             }),
         });
         const data = await res.json();
