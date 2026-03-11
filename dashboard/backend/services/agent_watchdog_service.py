@@ -174,7 +174,20 @@ class AgentWatchdogService:
             close = float(live_bar.get("close"))
             if ts <= 0 or not math.isfinite(close):
                 return None
-            return {"time": int(ts), "close": float(close)}
+            out: Dict[str, Any] = {"time": int(ts), "close": float(close)}
+            try:
+                hi = float(live_bar.get("high"))
+                if math.isfinite(hi):
+                    out["high"] = float(hi)
+            except Exception:
+                pass
+            try:
+                lo = float(live_bar.get("low"))
+                if math.isfinite(lo):
+                    out["low"] = float(lo)
+            except Exception:
+                pass
+            return out
         except Exception:
             return None
 
@@ -482,6 +495,7 @@ class AgentWatchdogService:
         now: datetime,
         current_price: float,
         closed_bar: Optional[Dict[str, Any]],
+        current_live_bar: Optional[Dict[str, Any]] = None,
     ) -> List[WorkbenchAgentEventModel]:
         event_rows: List[WorkbenchAgentEventModel] = []
         snap = agent.last_snapshot_json if isinstance(agent.last_snapshot_json, dict) else {}
@@ -584,15 +598,39 @@ class AgentWatchdogService:
                     if eval_px is None:
                         return ("no_eval", None, None)
                 else:
-                    eval_px = float(current_price)
+                    # price_* conditions are touch-based: use live bar extremes when available
+                    # so brief intrabar touches are not missed between watchdog polls.
+                    if isinstance(current_live_bar, dict):
+                        try:
+                            ltm = int(current_live_bar.get("time") or 0)
+                            if ltm > 0:
+                                eval_tm = ltm
+                        except Exception:
+                            eval_tm = None
+                        if cond_name == "price_below":
+                            try:
+                                lo = float(current_live_bar.get("low"))
+                                if math.isfinite(lo):
+                                    eval_px = float(lo)
+                            except Exception:
+                                eval_px = None
+                        elif cond_name == "price_above":
+                            try:
+                                hi = float(current_live_bar.get("high"))
+                                if math.isfinite(hi):
+                                    eval_px = float(hi)
+                            except Exception:
+                                eval_px = None
+                    if eval_px is None:
+                        eval_px = float(current_price)
                 if cond_name == "close_below":
                     return ("hit" if bool(eval_px < level_value) else "miss", eval_px, eval_tm)
                 if cond_name == "close_above":
                     return ("hit" if bool(eval_px > level_value) else "miss", eval_px, eval_tm)
                 if cond_name == "price_below":
-                    return ("hit" if bool(eval_px < level_value) else "miss", eval_px, eval_tm)
+                    return ("hit" if bool(eval_px <= level_value) else "miss", eval_px, eval_tm)
                 if cond_name == "price_above":
-                    return ("hit" if bool(eval_px > level_value) else "miss", eval_px, eval_tm)
+                    return ("hit" if bool(eval_px >= level_value) else "miss", eval_px, eval_tm)
                 return ("invalid_condition", eval_px, eval_tm)
 
             cond = str(t.get("condition") or "").strip().lower()
@@ -1226,6 +1264,7 @@ class AgentWatchdogService:
                     now=now,
                     current_price=float(price),
                     closed_bar=closed_bar,
+                    current_live_bar=live_bar,
                 )
                 if trigger_events:
                     event_rows.extend(trigger_events)

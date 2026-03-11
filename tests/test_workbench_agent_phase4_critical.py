@@ -1253,6 +1253,87 @@ def test_watchdog_cancel_applies_during_waiting_precondition_state():
         db.close()
 
 
+def test_watchdog_price_below_precondition_uses_live_low_touch():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=datetime.now(timezone.utc),
+            current_price=5189.35,  # sampled price is above level
+            closed_bar={"time": 1772522400, "close": 5189.35},
+            current_live_bar={"time": 1772522460, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+        )
+        assert isinstance(events, list)
+        assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+        pre = first.get("precondition") if isinstance(first.get("precondition"), dict) else {}
+        assert abs(float(pre.get("hit_price")) - 5184.58) < 1e-9
+    finally:
+        db.close()
+
+
 def test_schedule_trade_entry_rejects_incomplete_cancel_fields():
     db = _db_session()
     try:
