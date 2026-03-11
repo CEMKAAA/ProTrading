@@ -827,10 +827,6 @@ class WorkbenchAgent:
                         "point_value_per_1lot": {"type": "number", "description": "Optional per-lot price-unit value override for risk math"},
                         "timeframe": {"type": "string", "description": "M1, M5, M15, M30, H1, H4, D1"},
                         "expires_sec": {"type": "integer", "description": "Optional trigger expiry in seconds"},
-                        "allow_proposal_mismatch": {
-                            "type": "boolean",
-                            "description": "Optional operator override. True allows scheduling even when args differ from the latest run_mtf_analysis proposal.",
-                        },
                     },
                     "required": ["condition", "trigger_price", "direction", "stop_loss"],
                     "additionalProperties": False,

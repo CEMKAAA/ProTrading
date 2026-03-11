@@ -174,24 +174,47 @@ def test_allowed_chat_id_reads_env_file_fallback(monkeypatch):
 
 
 def test_profile_scoped_env_keys_are_used_when_active_profile_set(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "SERVER")
-    monkeypatch.setenv("TELEGRAM_SERVER_ALLOWED_CHAT_ID", "111")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "222")
-    monkeypatch.setenv("TELEGRAM_SERVER_BOT_TOKEN", "server-token")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "global-token")
+    # TELEGRAM_* keys resolve from dashboard/.env only, so mock _read_env_file_value
+    env_file = {
+        "TELEGRAM_ACTIVE_PROFILE": "SERVER",
+        "TELEGRAM_SERVER_ALLOWED_CHAT_ID": "111",
+        "TELEGRAM_ALLOWED_CHAT_ID": "222",
+        "TELEGRAM_SERVER_BOT_TOKEN": "server-token",
+        "TELEGRAM_BOT_TOKEN": "global-token",
+    }
+    monkeypatch.setattr(
+        tbs.TelegramBridgeService,
+        "_read_env_file_value",
+        staticmethod(lambda key: env_file.get(str(key))),
+    )
     assert tbs.TelegramBridgeService._allowed_chat_id() == 111
     assert tbs.TelegramBridgeService._token() == "server-token"
 
 
 def test_profile_scoped_env_falls_back_to_global_when_missing(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "MAIN")
-    monkeypatch.delenv("TELEGRAM_MAIN_ALLOWED_CHAT_ID", raising=False)
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "333")
+    # Scoped key missing, should fall back to global key in .env
+    env_file = {
+        "TELEGRAM_ACTIVE_PROFILE": "MAIN",
+        "TELEGRAM_ALLOWED_CHAT_ID": "333",
+    }
+    monkeypatch.setattr(
+        tbs.TelegramBridgeService,
+        "_read_env_file_value",
+        staticmethod(lambda key: env_file.get(str(key))),
+    )
     assert tbs.TelegramBridgeService._allowed_chat_id() == 333
 
 
 def test_agent_max_tool_steps_from_env(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_AGENT_MAX_TOOL_STEPS", "8")
+    # TELEGRAM_AGENT_MAX_TOOL_STEPS is a TELEGRAM_* key, so uses .env
+    env_file = {
+        "TELEGRAM_AGENT_MAX_TOOL_STEPS": "8",
+    }
+    monkeypatch.setattr(
+        tbs.TelegramBridgeService,
+        "_read_env_file_value",
+        staticmethod(lambda key: env_file.get(str(key))),
+    )
     assert tbs.TelegramBridgeService._agent_max_tool_steps() == 8
 
 
@@ -488,8 +511,15 @@ def test_help_includes_tool_modes():
 
 def test_botprofile_command_outputs_active_profile(monkeypatch):
     svc = tbs.TelegramBridgeService()
-    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "SERVER")
-    monkeypatch.setenv("TELEGRAM_SERVER_ALLOWED_CHAT_ID", "7119946313")
+    env_file = {
+        "TELEGRAM_ACTIVE_PROFILE": "SERVER",
+        "TELEGRAM_SERVER_ALLOWED_CHAT_ID": "7119946313",
+    }
+    monkeypatch.setattr(
+        tbs.TelegramBridgeService,
+        "_read_env_file_value",
+        staticmethod(lambda key: env_file.get(str(key))),
+    )
     out = svc._handle_text(7119946313, "/botprofile")
     assert "Telegram profile: SERVER" in out
     assert "TELEGRAM_SERVER_BOT_TOKEN" in out

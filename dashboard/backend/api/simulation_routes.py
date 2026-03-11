@@ -7825,6 +7825,8 @@ def _agent_run_mtf_analysis(
         or ("ltf_movement_exhausted" in confidence_warnings)
         or ("risk_derated_for_exhaustion" in confidence_warnings)
     )
+    trigger_ready = bool(best_setup is not None and not blockers)
+    auto_schedule_allowed = bool(trigger_ready and (not manual_confirmation_required))
 
     summary: Dict[str, Any] = {
         "symbol": symbol,
@@ -7865,7 +7867,8 @@ def _agent_run_mtf_analysis(
         },
         "best_setup": best_setup,
         "duplicate_pending_trigger": bool(duplicate_pending),
-        "trigger_ready": bool(best_setup is not None and not blockers),
+        "trigger_ready": bool(trigger_ready),
+        "auto_schedule_allowed": bool(auto_schedule_allowed),
         "manual_confirmation_required": bool(manual_confirmation_required),
         "blockers": blockers[:12],
         "soft_blockers": soft_blockers[:12],
@@ -7876,7 +7879,8 @@ def _agent_run_mtf_analysis(
                 "symbol": symbol,
                 "execution_timeframe": execution_tf,
                 "bias": bias,
-                "trigger_ready": bool(best_setup is not None and not blockers),
+                "trigger_ready": bool(trigger_ready),
+                "auto_schedule_allowed": bool(auto_schedule_allowed),
                 "manual_confirmation_required": bool(manual_confirmation_required),
                 "blockers": blockers[:6],
                 "soft_blockers": soft_blockers[:6],
@@ -8479,7 +8483,9 @@ def _agent_execute_tool(
         # This prevents drift between "proposed trigger" and actual persisted trigger.
         enforce_proposal_match = bool(effective_cfg.get("enforce_proposed_schedule_match", True))
         require_mtf_proposal = bool(effective_cfg.get("require_mtf_proposal_before_schedule", False))
-        allow_mismatch = bool(payload.get("allow_proposal_mismatch", False))
+        # Never allow model-supplied mismatch bypass. Proposal lock must remain server-enforced.
+        # Optional override can only come from trusted server-side config.
+        allow_mismatch = bool(effective_cfg.get("allow_proposal_mismatch_override", False))
         if enforce_proposal_match and (not allow_mismatch):
             best_setup, setup_source = _agent_resolve_mtf_best_setup_for_schedule(
                 context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
@@ -8523,7 +8529,7 @@ def _agent_execute_tool(
                         "details": {
                             "proposal_source": str(setup_source or ""),
                             "mismatches": mismatches[:16],
-                            "hint": "Re-run run_mtf_analysis and schedule exactly the proposed setup, or set allow_proposal_mismatch=true.",
+                            "hint": "Re-run run_mtf_analysis and schedule exactly the proposed setup.",
                         },
                     }
 
@@ -8533,6 +8539,7 @@ def _agent_execute_tool(
             "state": "waiting_precondition" if isinstance(precondition, dict) else "waiting_entry",
             "created_at": _utc_now().isoformat(),
             "expires_at": (_utc_now() + timedelta(seconds=int(expires_sec))).isoformat(),
+            "expires_sec": int(expires_sec),
             "condition": str(condition),
             "trigger_price": float(trigger_price),
             "timeframe": str(timeframe),
@@ -8572,7 +8579,7 @@ def _agent_execute_tool(
         sem = (
             f"{condition}|{round(float(trigger_price), 5)}|{direction}|"
             f"{round(float(stop_loss), 5)}|{round(float(take_profit), 5) if take_profit is not None else 'none'}|"
-            f"{round(float(lot_value), 3)}|{timeframe}|pre={pre_sem}|cancel={cancel_sem}"
+            f"{round(float(lot_value), 3)}|{timeframe}|exp={int(expires_sec)}|pre={pre_sem}|cancel={cancel_sem}"
         )
         for t in triggers:
             if not isinstance(t, dict):
@@ -8595,11 +8602,24 @@ def _agent_execute_tool(
                     f"{str(tp_cancel.get('condition') or '').lower()}@"
                     f"{round(_to_float_or_none(tp_cancel.get('trigger_price')) or 0.0, 5)}"
                 )
+            t_expires_sec = _agent_usage_safe_int(t.get("expires_sec"), 0)
+            if t_expires_sec <= 0:
+                try:
+                    t_created = datetime.fromisoformat(str(t.get("created_at") or "").replace("Z", "+00:00"))
+                    t_expires = datetime.fromisoformat(str(t.get("expires_at") or "").replace("Z", "+00:00"))
+                    if t_created.tzinfo is None:
+                        t_created = t_created.replace(tzinfo=timezone.utc)
+                    if t_expires.tzinfo is None:
+                        t_expires = t_expires.replace(tzinfo=timezone.utc)
+                    t_expires_sec = max(0, int((t_expires - t_created).total_seconds()))
+                except Exception:
+                    t_expires_sec = 0
             sem_t = (
                 f"{str(t.get('condition') or '').lower()}|{round(_to_float_or_none(t.get('trigger_price')) or 0.0, 5)}|"
                 f"{str(ta.get('direction') or '').upper()}|{round(_to_float_or_none(ta.get('stop_loss')) or 0.0, 5)}|"
                 f"{round(float(tpv), 5) if tpv is not None else 'none'}|"
                 f"{round(_to_float_or_none(ta.get('lot_size')) or 0.01, 3)}|{str(t.get('timeframe') or '').upper()}|"
+                f"exp={int(t_expires_sec)}|"
                 f"pre={tp_pre_sem}|cancel={tp_cancel_sem}"
             )
             if sem_t == sem:

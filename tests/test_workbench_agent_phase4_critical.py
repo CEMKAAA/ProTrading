@@ -57,6 +57,19 @@ def test_tool_specs_include_run_mtf_analysis():
     assert "run_mtf_analysis" in names
 
 
+def test_schedule_trade_entry_tool_spec_does_not_expose_proposal_bypass_flag():
+    specs = WorkbenchAgent._tool_specs()
+    schedule = None
+    for row in specs:
+        if isinstance(row, dict) and str(row.get("name") or "") == "schedule_trade_entry":
+            schedule = row
+            break
+    assert isinstance(schedule, dict)
+    params = schedule.get("parameters") if isinstance(schedule.get("parameters"), dict) else {}
+    props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+    assert "allow_proposal_mismatch" not in props
+
+
 def test_agent_user_allows_auto_schedule_requires_explicit_schedule_request():
     assert sim_routes._agent_user_allows_auto_schedule(
         "waiting for close above 5154.37"
@@ -606,6 +619,7 @@ def test_run_mtf_analysis_uses_atr_proxy_when_indicators_unavailable(monkeypatch
         assert out.get("ok") is True
         data = out.get("data") if isinstance(out.get("data"), dict) else {}
         assert data.get("trigger_ready") is True
+        assert data.get("auto_schedule_allowed") is False
         assert data.get("manual_confirmation_required") is True
         soft_blockers = data.get("soft_blockers") if isinstance(data.get("soft_blockers"), list) else []
         assert "no_execution_relevant_anchor" in soft_blockers
@@ -1311,14 +1325,16 @@ def test_watchdog_price_below_precondition_uses_live_low_touch():
         assert out.get("ok") is True
 
         svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
         events = svc._process_entry_triggers(
             db=db,
             agent=agent_row,
             session=sim,
-            now=datetime.now(timezone.utc),
+            now=now_utc,
             current_price=5189.35,  # sampled price is above level
-            closed_bar={"time": 1772522400, "close": 5189.35},
-            current_live_bar={"time": 1772522460, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+            closed_bar={"time": fresh_ts - 60, "close": 5189.35},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5190.10, "close": 5189.35},
         )
         assert isinstance(events, list)
         assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
@@ -1330,6 +1346,176 @@ def test_watchdog_price_below_precondition_uses_live_low_touch():
         assert str(first.get("state") or "").lower() == "waiting_entry"
         pre = first.get("precondition") if isinstance(first.get("precondition"), dict) else {}
         assert abs(float(pre.get("hit_price")) - 5184.58) < 1e-9
+    finally:
+        db.close()
+
+
+def test_watchdog_does_not_arm_price_precondition_from_stale_live_bar():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        stale_bar_ts = int((datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp())
+        svc = AgentWatchdogService()
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=datetime.now(timezone.utc),
+            current_price=5189.35,
+            closed_bar={"time": stale_bar_ts - 60, "close": 5189.35},
+            current_live_bar={"time": stale_bar_ts, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+            live_bar_max_age_sec=120.0,
+        )
+        assert isinstance(events, list)
+        assert not any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_precondition"
+    finally:
+        db.close()
+
+
+def test_watchdog_close_condition_recovers_after_restart_from_trigger_last_live_bar():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5200.0,
+                "direction": "BUY",
+                "stop_loss": 5190.0,
+                "take_profit": 5230.0,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        snap = agent_row.last_snapshot_json if isinstance(agent_row.last_snapshot_json, dict) else {}
+        tr = snap.get("agent_trade_triggers") if isinstance(snap.get("agent_trade_triggers"), list) else []
+        assert len(tr) >= 1
+        now_utc = datetime.now(timezone.utc)
+        prev_ts = int(now_utc.timestamp()) - 60
+        tr[0]["_last_live_bar"] = {"time": int(prev_ts), "close": 5205.0}
+        snap["agent_trade_triggers"] = tr
+        agent_row.last_snapshot_json = snap
+        db.add(agent_row)
+        db.flush()
+
+        svc = AgentWatchdogService()
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5210.0,
+            closed_bar=None,  # simulates restart: in-memory previous bar cache empty
+            current_live_bar={"time": int(prev_ts + 60), "low": 5208.0, "high": 5212.0, "close": 5210.0},
+            live_bar_max_age_sec=120.0,
+        )
+        assert isinstance(events, list)
+        assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_EXECUTED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "executed"
     finally:
         db.close()
 
@@ -1659,6 +1845,90 @@ def test_schedule_trade_entry_rejects_when_payload_differs_from_recent_mtf_propo
         db.close()
 
 
+def test_schedule_trade_entry_ignores_payload_allow_proposal_mismatch_flag():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        mtf_best_setup = {
+            "direction": "BUY",
+            "condition": {"condition": "close_above", "trigger_price": 5154.37},
+            "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+            "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            "stop_loss": 5144.293,
+            "take_profit": 5271.904,
+            "lot_size": 0.01,
+            "timeframe": "M15",
+            "expires_sec": 21600,
+        }
+        ctx = {
+            "tool_state": {
+                "mtf_analysis": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "best_setup": mtf_best_setup,
+                }
+            }
+        }
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot=ctx,
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5154.37,
+                "direction": "BUY",
+                "stop_loss": 5144.293,
+                "take_profit": 5200.00,  # intentionally mismatched vs proposal
+                "lot_size": 0.01,
+                "timeframe": "M15",
+                "expires_sec": 21600,
+                "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+                "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+                "allow_proposal_mismatch": True,  # must be ignored
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is False
+        assert str(out.get("error") or "") == "scheduled_trigger_mismatch_with_proposal"
+    finally:
+        db.close()
+
+
 def test_schedule_trade_entry_accepts_when_payload_matches_recent_mtf_proposal():
     db = _db_session()
     try:
@@ -1737,6 +2007,85 @@ def test_schedule_trade_entry_accepts_when_payload_matches_recent_mtf_proposal()
             atomic=True,
         )
         assert out.get("ok") is True
+    finally:
+        db.close()
+
+
+def test_schedule_trade_entry_dedup_semantics_include_expiry():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        base_args = {
+            "condition": "close_above",
+            "trigger_price": 5154.37,
+            "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+            "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            "direction": "BUY",
+            "stop_loss": 5144.293,
+            "take_profit": 5271.904,
+            "lot_size": 0.01,
+            "timeframe": "M15",
+        }
+        out1 = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={**base_args, "expires_sec": 21600},
+            atomic=True,
+        )
+        assert out1.get("ok") is True
+        d1 = out1.get("data") if isinstance(out1.get("data"), dict) else {}
+        assert bool(d1.get("deduped")) is False
+        assert int(d1.get("pending_count") or 0) == 1
+
+        out2 = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={**base_args, "expires_sec": 43200},  # changed expiry only
+            atomic=True,
+        )
+        assert out2.get("ok") is True
+        d2 = out2.get("data") if isinstance(out2.get("data"), dict) else {}
+        assert bool(d2.get("deduped")) is False
+        assert int(d2.get("pending_count") or 0) == 2
     finally:
         db.close()
 

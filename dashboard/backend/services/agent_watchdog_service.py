@@ -46,6 +46,7 @@ class AgentWatchdogService:
         self._last_llm_at_by_agent: Dict[int, datetime] = {}
         self._pending_decisions: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self._last_live_bar_by_agent: Dict[int, Dict[str, Any]] = {}
+        self._last_stale_live_warn_at_by_agent: Dict[int, datetime] = {}
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -113,6 +114,11 @@ class AgentWatchdogService:
         except Exception:
             decision_window_sec = 90
         decision_window_sec = max(30, min(300, decision_window_sec))
+        try:
+            live_bar_max_age_sec = float(cfg.get("watchdog_live_bar_max_age_sec") or max(interval * 3.0, 120.0))
+        except Exception:
+            live_bar_max_age_sec = max(interval * 3.0, 120.0)
+        live_bar_max_age_sec = max(15.0, min(3600.0, float(live_bar_max_age_sec)))
         return {
             "mode": mode_raw,
             "interval_sec": interval,
@@ -122,7 +128,32 @@ class AgentWatchdogService:
             "allow_tools": bool(allow_tools),
             "tool_max_steps": int(tool_steps),
             "decision_window_sec": int(decision_window_sec),
+            "live_bar_max_age_sec": float(live_bar_max_age_sec),
         }
+
+    @staticmethod
+    def _is_live_bar_fresh(
+        *,
+        now: datetime,
+        live_bar: Optional[Dict[str, Any]],
+        max_age_sec: float,
+        max_future_skew_sec: float = 5.0,
+    ) -> bool:
+        if not isinstance(live_bar, dict):
+            return False
+        try:
+            bar_time = int(live_bar.get("time") or 0)
+        except Exception:
+            return False
+        if bar_time <= 0:
+            return False
+        try:
+            age_sec = float(now.timestamp()) - float(bar_time)
+        except Exception:
+            return False
+        if age_sec < -float(max_future_skew_sec):
+            return False
+        return bool(age_sec <= float(max_age_sec))
 
     @staticmethod
     def _segment_for_trade(trade: SimulationTrade, price: float) -> Optional[int]:
@@ -496,6 +527,7 @@ class AgentWatchdogService:
         current_price: float,
         closed_bar: Optional[Dict[str, Any]],
         current_live_bar: Optional[Dict[str, Any]] = None,
+        live_bar_max_age_sec: float = 120.0,
     ) -> List[WorkbenchAgentEventModel]:
         event_rows: List[WorkbenchAgentEventModel] = []
         snap = agent.last_snapshot_json if isinstance(agent.last_snapshot_json, dict) else {}
@@ -507,6 +539,19 @@ class AgentWatchdogService:
         trigger_requires_approval_default = bool(cfg.get("watchdog_trigger_requires_approval", False))
         changed = False
         next_triggers: List[Dict[str, Any]] = []
+
+        def _extract_last_live_bar(trigger_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            lb = trigger_row.get("_last_live_bar") if isinstance(trigger_row.get("_last_live_bar"), dict) else None
+            if not isinstance(lb, dict):
+                return None
+            try:
+                ts = int(lb.get("time") or 0)
+                close = float(lb.get("close"))
+                if ts <= 0 or (not math.isfinite(close)):
+                    return None
+                return {"time": int(ts), "close": float(close)}
+            except Exception:
+                return None
 
         for raw in raw_triggers[:200]:
             t = dict(raw) if isinstance(raw, dict) else {}
@@ -582,14 +627,57 @@ class AgentWatchdogService:
                 next_triggers.append(t)
                 continue
 
+            live_bar_fresh = self._is_live_bar_fresh(
+                now=now,
+                live_bar=current_live_bar if isinstance(current_live_bar, dict) else None,
+                max_age_sec=float(max(5.0, float(live_bar_max_age_sec))),
+            )
+            eval_closed_bar = closed_bar if isinstance(closed_bar, dict) else None
+            cur_live_ts: int = 0
+            cur_live_close: Optional[float] = None
+            if live_bar_fresh and isinstance(current_live_bar, dict):
+                try:
+                    cur_live_ts = int(current_live_bar.get("time") or 0)
+                    cur_live_close_val = float(current_live_bar.get("close"))
+                    if cur_live_ts > 0 and math.isfinite(cur_live_close_val):
+                        cur_live_close = float(cur_live_close_val)
+                    else:
+                        cur_live_ts = 0
+                        cur_live_close = None
+                except Exception:
+                    cur_live_ts = 0
+                    cur_live_close = None
+
+            # Restart resilience for close_* conditions:
+            # when in-memory prev live bar cache is empty, recover last closed bar
+            # from persisted per-trigger marker.
+            if eval_closed_bar is None and cur_live_ts > 0 and cur_live_close is not None:
+                last_live = _extract_last_live_bar(t)
+                if isinstance(last_live, dict):
+                    try:
+                        prev_ts = int(last_live.get("time") or 0)
+                        prev_close = float(last_live.get("close"))
+                        if prev_ts > 0 and math.isfinite(prev_close) and cur_live_ts > prev_ts:
+                            eval_closed_bar = {"time": int(prev_ts), "close": float(prev_close)}
+                    except Exception:
+                        pass
+
+            if cur_live_ts > 0 and cur_live_close is not None:
+                prev_live_marker = _extract_last_live_bar(t)
+                prev_ts = int(prev_live_marker.get("time") or 0) if isinstance(prev_live_marker, dict) else 0
+                prev_close = float(prev_live_marker.get("close")) if isinstance(prev_live_marker, dict) else None
+                if (cur_live_ts != prev_ts) or (prev_close is None) or (abs(float(prev_close) - float(cur_live_close)) > 1e-9):
+                    t["_last_live_bar"] = {"time": int(cur_live_ts), "close": float(cur_live_close)}
+                    changed = True
+
             def _evaluate_condition(cond_name: str, level_value: float) -> Tuple[str, Optional[float], Optional[int]]:
                 eval_px: Optional[float] = None
                 eval_tm: Optional[int] = None
                 if cond_name in {"close_below", "close_above"}:
-                    if isinstance(closed_bar, dict):
+                    if isinstance(eval_closed_bar, dict):
                         try:
-                            cpx = float(closed_bar.get("close"))
-                            ctm = int(closed_bar.get("time") or 0)
+                            cpx = float(eval_closed_bar.get("close"))
+                            ctm = int(eval_closed_bar.get("time") or 0)
                             if math.isfinite(cpx) and ctm > 0:
                                 eval_px = cpx
                                 eval_tm = ctm
@@ -601,6 +689,8 @@ class AgentWatchdogService:
                     # price_* conditions are touch-based: use live bar extremes when available
                     # so brief intrabar touches are not missed between watchdog polls.
                     if isinstance(current_live_bar, dict):
+                        if not live_bar_fresh:
+                            return ("no_eval", None, None)
                         try:
                             ltm = int(current_live_bar.get("time") or 0)
                             if ltm > 0:
@@ -1243,6 +1333,23 @@ class AgentWatchdogService:
                 live_bar = self._live_bar_from_agent_snapshot(agent)
                 if live_bar is None:
                     continue
+                live_bar_max_age_sec = float(cfg.get("live_bar_max_age_sec") or max(interval_sec * 3.0, 120.0))
+                if not self._is_live_bar_fresh(
+                    now=now,
+                    live_bar=live_bar,
+                    max_age_sec=float(live_bar_max_age_sec),
+                ):
+                    prev_warn = self._last_stale_live_warn_at_by_agent.get(agent_id)
+                    if prev_warn is None or (now - prev_warn).total_seconds() >= 300.0:
+                        logger.warning(
+                            "Agent watchdog skipped stale live bar: agent_id=%s sim_id=%s bar_time=%s max_age_sec=%.1f",
+                            int(agent_id),
+                            int(sim_id),
+                            int(live_bar.get("time") or 0),
+                            float(live_bar_max_age_sec),
+                        )
+                        self._last_stale_live_warn_at_by_agent[int(agent_id)] = now
+                    continue
                 price = float(live_bar["close"])
                 prev_live = self._last_live_bar_by_agent.get(agent_id)
                 closed_bar: Optional[Dict[str, Any]] = None
@@ -1265,6 +1372,7 @@ class AgentWatchdogService:
                     current_price=float(price),
                     closed_bar=closed_bar,
                     current_live_bar=live_bar,
+                    live_bar_max_age_sec=float(live_bar_max_age_sec),
                 )
                 if trigger_events:
                     event_rows.extend(trigger_events)
@@ -1500,6 +1608,9 @@ class AgentWatchdogService:
             for aid in list(self._last_live_bar_by_agent.keys()):
                 if aid not in active_agent_ids:
                     self._last_live_bar_by_agent.pop(aid, None)
+            for aid in list(self._last_stale_live_warn_at_by_agent.keys()):
+                if aid not in active_agent_ids:
+                    self._last_stale_live_warn_at_by_agent.pop(aid, None)
 
             needs_commit = bool(event_rows) or bool(db.new) or bool(db.dirty) or bool(db.deleted)
             if needs_commit:

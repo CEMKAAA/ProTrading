@@ -87,11 +87,7 @@ class TelegramBridgeService:
 
     @classmethod
     def _active_profile(cls) -> str:
-        raw = str(os.getenv("TELEGRAM_ACTIVE_PROFILE") or "").strip()
-        if not raw:
-            raw = str(os.getenv("TELEGRAM_BOT_PROFILE") or "").strip()
-        if not raw:
-            raw = str(cls._read_env_file_value("TELEGRAM_ACTIVE_PROFILE") or "").strip()
+        raw = str(cls._read_env_file_value("TELEGRAM_ACTIVE_PROFILE") or "").strip()
         if not raw:
             raw = str(cls._read_env_file_value("TELEGRAM_BOT_PROFILE") or "").strip()
         return cls._normalize_profile_name(raw)
@@ -116,7 +112,19 @@ class TelegramBridgeService:
         key = str(name or "").strip()
         if not key:
             return str(default or "")
+        is_telegram_key = key.upper().startswith("TELEGRAM_")
         scoped = cls._profile_scoped_key(key)
+        if is_telegram_key:
+            # Telegram bridge must be configured only from dashboard/.env to avoid
+            # host-level env var collisions across different machines/services.
+            if scoped:
+                sf = str(cls._read_env_file_value(scoped) or "").strip()
+                if sf:
+                    return sf
+            fv = str(cls._read_env_file_value(key) or "").strip()
+            if fv:
+                return fv
+            return str(default or "")
         if scoped:
             sv = str(os.getenv(scoped) or "").strip()
             if sv:
@@ -276,9 +284,9 @@ class TelegramBridgeService:
         scoped_enabled_key = self._profile_scoped_key("TELEGRAM_ENABLED", profile)
         lines = [
             f"Telegram profile: {profile}",
-            "Resolution order:",
-            f"1) {scoped_token_key or 'TELEGRAM_BOT_TOKEN'} / {scoped_chat_key or 'TELEGRAM_ALLOWED_CHAT_ID'} / {scoped_enabled_key or 'TELEGRAM_ENABLED'}",
-            "2) TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_CHAT_ID / TELEGRAM_ENABLED",
+            "Resolution source: dashboard/.env only",
+            f"Keys checked: {scoped_token_key or 'TELEGRAM_BOT_TOKEN'} / {scoped_chat_key or 'TELEGRAM_ALLOWED_CHAT_ID'} / {scoped_enabled_key or 'TELEGRAM_ENABLED'}",
+            "Fallback keys: TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_CHAT_ID / TELEGRAM_ENABLED",
             f"Enabled: {'YES' if self._enabled() else 'NO'}",
             f"Allowed chat id: {str(self._allowed_chat_id() or 'MISSING')}",
             (
