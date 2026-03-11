@@ -569,8 +569,10 @@ class LiveTradingService:
             return []
 
         try:
-            symbol_req = str(symbol or "XAUUSD").upper()
-            symbol_resolved = self.resolve_symbol_name(symbol_req) if bool(resolve_symbol) else symbol_req
+            symbol_raw = str(symbol or "XAUUSD").strip()
+            symbol_req = symbol_raw.upper()
+            # When resolve_symbol=False (hot WS path), keep broker-native casing exactly as passed.
+            symbol_resolved = self.resolve_symbol_name(symbol_req) if bool(resolve_symbol) else symbol_raw
             if not symbol_resolved:
                 return []
             timeframe_map = {

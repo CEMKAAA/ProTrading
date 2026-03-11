@@ -182,6 +182,11 @@ def _options_edge_journal_response(row: OptionsEdgeTradeJournalModel) -> Options
         contracts=int(row.contracts or 1),
         account_balance_at_entry=_safe_optional_float(row.account_balance_at_entry),
         risk_pct_at_entry=_safe_optional_float(row.risk_pct_at_entry),
+        portfolio_scope_key=str(row.portfolio_scope_key or "").strip() or None,
+        portfolio_scope_profile=str(row.portfolio_scope_profile or "").strip() or None,
+        portfolio_scope_broker=str(row.portfolio_scope_broker or "").strip() or None,
+        portfolio_scope_account_login=str(row.portfolio_scope_account_login or "").strip() or None,
+        portfolio_scope_account_server=str(row.portfolio_scope_account_server or "").strip() or None,
         exit_credit=_safe_optional_float(row.exit_credit),
         actual_pnl=_safe_optional_float(row.actual_pnl),
         actual_pnl_total=_safe_optional_float(row.actual_pnl_total),
@@ -1101,6 +1106,8 @@ async def options_edge_journal_track(
     request: OptionsEdgeJournalTrackRequest,
     db: Session = Depends(get_db),
 ):
+    from Strategies.strategy_manager import StrategyManager
+
     trade = (
         db.query(OptionsEdgeTradeCandidateModel)
         .filter(OptionsEdgeTradeCandidateModel.id == int(request.trade_candidate_id))
@@ -1112,6 +1119,7 @@ async def options_edge_journal_track(
         raise HTTPException(status_code=400, detail="trade_candidate_id does not belong to scan_id")
 
     journal_id = uuid.uuid4().hex[:16]
+    scope = StrategyManager.current_portfolio_scope()
     row = OptionsEdgeTradeJournalModel(
         journal_id=journal_id,
         status="OPEN",
@@ -1129,6 +1137,11 @@ async def options_edge_journal_track(
         contracts=int(request.contracts),
         account_balance_at_entry=_safe_optional_float(request.account_balance_at_entry),
         risk_pct_at_entry=_safe_optional_float(request.risk_pct_at_entry),
+        portfolio_scope_key=str(scope.get("scope_key") or "").strip() or None,
+        portfolio_scope_profile=str(scope.get("profile") or "").strip() or None,
+        portfolio_scope_broker=str(scope.get("broker_name") or "").strip() or None,
+        portfolio_scope_account_login=str(scope.get("account_login") or "").strip() or None,
+        portfolio_scope_account_server=str(scope.get("account_server") or "").strip() or None,
         notes=request.notes,
     )
     db.add(row)

@@ -997,8 +997,21 @@ def trading_simulation_workspace(strategy_id):
 
 
 # Simulation API proxy routes
-@app.route('/api/simulation/sessions', methods=['POST'])
-def sim_create_session():
+@app.route('/api/simulation/sessions', methods=['GET', 'POST'])
+def sim_sessions():
+    if request.method == 'GET':
+        params = {}
+        if request.args.get('strategy_id') is not None:
+            params['strategy_id'] = request.args.get('strategy_id')
+        if request.args.get('status') is not None:
+            params['status'] = request.args.get('status')
+        if request.args.get('limit') is not None:
+            params['limit'] = request.args.get('limit')
+        res, err = api_request('GET', '/api/v1/simulation/sessions', params=params, return_error=True, timeout_sec=30)
+        if not res:
+            return jsonify({'error': err or 'Failed to load sessions'}), 500
+        return jsonify(res)
+
     data = request.get_json(silent=True) or {}
     res, err = api_request('POST', '/api/v1/simulation/sessions', data=data, return_error=True, timeout_sec=30)
     if not res:
@@ -1129,6 +1142,27 @@ def sim_mt5_status():
     res, err = api_request('GET', '/api/v1/simulation/mt5/status', params=params, return_error=True, timeout_sec=15)
     if not res:
         return jsonify({'ok': False, 'mt5_connected': False, 'error': err or 'MT5 status unavailable'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/mt5/symbols')
+def sim_mt5_symbols():
+    params = {}
+    if request.args.get('search') is not None:
+        params['search'] = request.args.get('search', '')
+    if request.args.get('limit'):
+        params['limit'] = request.args.get('limit')
+    if request.args.get('include_hidden') is not None:
+        params['include_hidden'] = request.args.get('include_hidden')
+    res, err = api_request(
+        'GET',
+        '/api/v1/simulation/mt5/symbols',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'count': 0, 'symbols': [], 'error': err or 'MT5 symbols unavailable'}), 500
     return jsonify(res)
 
 
@@ -1805,6 +1839,19 @@ def sim_agent_identity_set(session_id):
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Agent identity update failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/agent/admin')
+def sim_agent_admin_get(session_id):
+    res, err = api_request(
+        'GET',
+        f'/api/v1/simulation/sessions/{session_id}/agent/admin',
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Agent admin status unavailable'}), 500
     return jsonify(res)
 
 

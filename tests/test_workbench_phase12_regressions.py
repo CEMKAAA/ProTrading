@@ -187,6 +187,63 @@ def test_mt5_symbols_endpoint_returns_service_catalog(monkeypatch):
     assert str(rows[0].get("name") or "") == "XAUUSDm"
 
 
+def test_mt5_status_requires_recent_history(monkeypatch):
+    class _FakeService:
+        def get_status(self, symbol="XAUUSD"):
+            return {"mt5_available": True, "symbol_resolved": "XAUUSDm"}
+
+        def get_current_candle(self, symbol="XAUUSD", timeframe="M15"):
+            return {
+                "requested_symbol": symbol,
+                "resolved_symbol": "XAUUSDm",
+                "time": "2026-03-11T10:00:00+00:00",
+                "open": 1.0,
+                "high": 2.0,
+                "low": 0.5,
+                "close": 1.5,
+                "volume": 100,
+            }
+
+        def get_recent_candles(self, symbol="XAUUSD", timeframe="M15", count=20):
+            return []
+
+        def get_symbol_info(self, symbol="XAUUSD"):
+            return {"name": "XAUUSDm", "resolved_symbol": "XAUUSDm"}
+
+    monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeService())
+    out = sim_routes.simulation_mt5_status(symbol="XAUUSDm", timeframe="M15")
+    assert out.get("ok") is True
+    assert out.get("mt5_connected") is False
+    assert out.get("history_ready") is False
+    assert int(out.get("recent_bars_count") or 0) == 0
+    assert "No recent candle history" in str(out.get("error") or "")
+
+
+def test_mt5_live_bootstrap_fetch_bars_falls_back_to_smaller_history():
+    calls = []
+
+    class _FakeService:
+        def get_recent_candles(self, symbol="XAUUSD", timeframe="M15", count=300, resolve_symbol=False):
+            calls.append(int(count))
+            if int(count) >= 100:
+                return []
+            return [
+                {
+                    "time_unix": 1,
+                    "open": 1.0,
+                    "high": 2.0,
+                    "low": 0.5,
+                    "close": 1.5,
+                    "volume": 10,
+                }
+            ]
+
+    bars, used = sim_routes._mt5_live_bootstrap_fetch_bars(_FakeService(), "XAUUSDm", "M15", 1923)
+    assert len(bars) == 1
+    assert int(used) == 50
+    assert calls[:5] == [1923, 1500, 1000, 800, 500]
+
+
 def test_mean_rev_compute_current_state_handles_duplicate_index():
     tool = MeanRevTool()
     df = _make_mean_rev_df().copy()

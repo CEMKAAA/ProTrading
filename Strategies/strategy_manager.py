@@ -35,6 +35,7 @@ PORTFOLIO_GOVERNOR_STATE_FILE = Path(__file__).parent.parent / "dashboard" / "da
 _STRATEGIES_DIR = Path(__file__).parent
 _DATA_DIR = Path(__file__).parent.parent / "dashboard" / "data"
 _DASHBOARD_DB_PATH = _DATA_DIR / "trading.db"
+_REPO_ROOT = Path(__file__).parent.parent
 
 STRATEGY_PATHS = {
     # === Base strategies ===
@@ -117,6 +118,77 @@ class StrategyManager:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    @staticmethod
+    def _read_env_file_value(var_name: str) -> Optional[str]:
+        candidates = [
+            _REPO_ROOT / "dashboard" / ".env",
+            _REPO_ROOT / ".env",
+        ]
+        for p in candidates:
+            if not p.exists():
+                continue
+            try:
+                for raw in p.read_text(encoding="utf-8").splitlines():
+                    line = str(raw or "").strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    if str(k).strip() != str(var_name):
+                        continue
+                    out = str(v).strip().strip('"').strip("'")
+                    if out:
+                        return out
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def _portfolio_scope_profile(cls) -> str:
+        raw = str(os.getenv("PORTFOLIO_SCOPE_PROFILE") or "").strip()
+        if not raw:
+            raw = str(cls._read_env_file_value("PORTFOLIO_SCOPE_PROFILE") or "").strip()
+        if not raw:
+            raw = str(os.getenv("TELEGRAM_ACTIVE_PROFILE") or "").strip()
+        if not raw:
+            raw = str(cls._read_env_file_value("TELEGRAM_ACTIVE_PROFILE") or "").strip()
+        return str(raw or "").strip().upper()
+
+    @classmethod
+    def _build_portfolio_scope(cls, account: Any = None) -> Dict[str, Any]:
+        profile = cls._portfolio_scope_profile()
+        login = str(getattr(account, "login", "") or "").strip()
+        server = str(getattr(account, "server", "") or "").strip()
+        company = str(getattr(account, "company", "") or "").strip()
+        broker = company or server
+
+        parts: List[str] = []
+        if profile:
+            parts.append(f"profile:{profile}")
+        if login:
+            parts.append(f"login:{login}")
+        if server:
+            parts.append(f"server:{server}")
+        elif broker:
+            parts.append(f"broker:{broker}")
+
+        return {
+            "scope_key": "|".join(parts) if parts else "",
+            "profile": profile or None,
+            "account_login": login or None,
+            "account_server": server or None,
+            "broker_name": broker or None,
+        }
+
+    @classmethod
+    def current_portfolio_scope(cls) -> Dict[str, Any]:
+        account = None
+        try:
+            if HAS_MT5 and mt5 is not None and mt5.initialize():
+                account = mt5.account_info()
+        except Exception:
+            account = None
+        return cls._build_portfolio_scope(account)
+
     def get_portfolio_governor_config(self) -> Dict[str, Any]:
         cfg = self._default_governor_config()
         try:
@@ -137,33 +209,48 @@ class StrategyManager:
             json.dump(current, f, indent=2)
         return current
 
-    def _get_portfolio_governor_state(self) -> Dict[str, Any]:
+    def _get_portfolio_governor_state(self, scope_key: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             state = self._default_governor_state()
             try:
                 if PORTFOLIO_GOVERNOR_STATE_FILE.exists():
                     with open(PORTFOLIO_GOVERNOR_STATE_FILE, "r") as f:
                         raw = json.load(f)
-                        if isinstance(raw, dict):
+                        if isinstance(raw, dict) and isinstance(raw.get("by_scope"), dict):
+                            scoped = raw.get("by_scope", {}).get(str(scope_key or ""), {})
+                            if isinstance(scoped, dict):
+                                state.update(scoped)
+                        elif isinstance(raw, dict):
                             state.update(raw)
             except Exception:
                 pass
             return state
 
-    def _save_portfolio_governor_state(self, state: Dict[str, Any]):
+    def _save_portfolio_governor_state(self, state: Dict[str, Any], scope_key: Optional[str] = None):
         with self._lock:
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
             PORTFOLIO_GOVERNOR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload: Dict[str, Any] = {"version": 2, "by_scope": {}}
+            try:
+                if PORTFOLIO_GOVERNOR_STATE_FILE.exists():
+                    with open(PORTFOLIO_GOVERNOR_STATE_FILE, "r") as f:
+                        raw = json.load(f)
+                        if isinstance(raw, dict) and isinstance(raw.get("by_scope"), dict):
+                            payload = raw
+            except Exception:
+                pass
+            payload.setdefault("by_scope", {})
+            payload["by_scope"][str(scope_key or "")] = dict(state)
+            payload["updated_at"] = state["updated_at"]
             with open(PORTFOLIO_GOVERNOR_STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
+                json.dump(payload, f, indent=2)
 
     def evaluate_portfolio_governor(self, enforce: bool = False) -> Dict[str, Any]:
         cfg = self.get_portfolio_governor_config()
-        state = self._get_portfolio_governor_state()
 
         result = {
             "config": cfg,
-            "state": state,
+            "state": {},
             "snapshot": {},
             "breaches": [],
             "status": "ok",
@@ -174,18 +261,20 @@ class StrategyManager:
         if not cfg.get("enabled", True):
             result["status"] = "disabled"
             result["allow_new_starts"] = True
+            state = self._get_portfolio_governor_state("")
             state["status"] = "disabled"
             state["allow_new_starts"] = True
-            self._save_portfolio_governor_state(state)
+            self._save_portfolio_governor_state(state, "")
             result["state"] = state
             return result
 
         if not self._ensure_mt5():
             result["status"] = "degraded_mt5_disconnected"
             result["allow_new_starts"] = False  # Fail-safe: block new starts when MT5 is down
+            state = self._get_portfolio_governor_state("")
             state["status"] = result["status"]
             state["allow_new_starts"] = False
-            self._save_portfolio_governor_state(state)
+            self._save_portfolio_governor_state(state, "")
             result["state"] = state
             return result
 
@@ -193,11 +282,17 @@ class StrategyManager:
         if account is None:
             result["status"] = "degraded_no_account_info"
             result["allow_new_starts"] = False  # Fail-safe: block without account verification
+            state = self._get_portfolio_governor_state("")
             state["status"] = result["status"]
             state["allow_new_starts"] = False
-            self._save_portfolio_governor_state(state)
+            self._save_portfolio_governor_state(state, "")
             result["state"] = state
             return result
+
+        scope = self._build_portfolio_scope(account)
+        scope_key = str(scope.get("scope_key") or "")
+        state = self._get_portfolio_governor_state(scope_key)
+        result["scope"] = scope
 
         running = self.get_all_running()
         alloc = self.get_allocated_capital()
@@ -212,7 +307,7 @@ class StrategyManager:
                 continue
         # Cross-system guard: include open Options Edge journal risk
         # so MT5 strategy starts are aware of options exposure too.
-        options_open_risk_usd = self._get_options_journal_open_risk_usd()
+        options_open_risk_usd = self._get_options_journal_open_risk_usd(scope_key=scope_key)
         heat_usd += float(options_open_risk_usd)
 
         positions = mt5.positions_get() or []
@@ -272,13 +367,14 @@ class StrategyManager:
             except Exception:
                 cooldown_active = False
 
-        breaches = []
+        hard_breaches = []
         if heat_pct > float(cfg.get("max_portfolio_heat_pct", 6.0)):
-            breaches.append(f"portfolio_heat_exceeded:{heat_pct:.2f}%")
+            hard_breaches.append(f"portfolio_heat_exceeded:{heat_pct:.2f}%")
         if directional_exposure_lots > float(cfg.get("max_directional_exposure_lots", 0.30)):
-            breaches.append(f"directional_exposure_exceeded:{directional_exposure_lots:.2f} lots")
+            hard_breaches.append(f"directional_exposure_exceeded:{directional_exposure_lots:.2f} lots")
         if daily_dd_pct > float(cfg.get("daily_drawdown_kill_pct", 3.0)):
-            breaches.append(f"daily_drawdown_exceeded:{daily_dd_pct:.2f}%")
+            hard_breaches.append(f"daily_drawdown_exceeded:{daily_dd_pct:.2f}%")
+        breaches = list(hard_breaches)
         if cooldown_active:
             breaches.append("cooldown_active")
 
@@ -297,11 +393,12 @@ class StrategyManager:
             "short_lots": short_lots,
             "directional_exposure_lots": directional_exposure_lots,
             "daily_drawdown_pct": daily_dd_pct,
+            "scope": scope,
         }
         result["breaches"] = breaches
         result["allow_new_starts"] = allow_new_starts
 
-        if breaches:
+        if hard_breaches:
             result["status"] = "breached"
             state["status"] = "breached"
             state["last_breach_time"] = now.isoformat()
@@ -316,6 +413,9 @@ class StrategyManager:
                         "action": "stop",
                         "result": stop_res,
                     })
+        elif cooldown_active:
+            result["status"] = "breached"
+            state["status"] = "breached"
         else:
             result["status"] = "ok"
             state["status"] = "ok"
@@ -324,16 +424,20 @@ class StrategyManager:
 
         state["allow_new_starts"] = allow_new_starts
         state["last_snapshot"] = result["snapshot"]
-        self._save_portfolio_governor_state(state)
+        self._save_portfolio_governor_state(state, scope_key)
         result["state"] = state
         return result
 
     def clear_portfolio_governor_cooldown(self) -> Dict[str, Any]:
-        state = self._get_portfolio_governor_state()
+        scope_key = ""
+        if self._ensure_mt5():
+            account = mt5.account_info()
+            scope_key = str(self._build_portfolio_scope(account).get("scope_key") or "")
+        state = self._get_portfolio_governor_state(scope_key)
         state["cooldown_until"] = None
         state["status"] = "ok"
         state["allow_new_starts"] = True
-        self._save_portfolio_governor_state(state)
+        self._save_portfolio_governor_state(state, scope_key)
         return state
 
     def _ensure_directory(self):
@@ -388,13 +492,17 @@ class StrategyManager:
         # Cross-system conservative proxy:
         # map open options journal risk into allocation ledger so new starts
         # cannot silently exceed combined account risk.
-        options_open_risk_usd = self._get_options_journal_open_risk_usd()
+        scope_key = ""
+        if self._ensure_mt5():
+            account = mt5.account_info()
+            scope_key = str(self._build_portfolio_scope(account).get("scope_key") or "")
+        options_open_risk_usd = self._get_options_journal_open_risk_usd(scope_key=scope_key)
         if options_open_risk_usd > 0:
             allocations["options_edge_manual"] = float(options_open_risk_usd)
 
         return allocations
 
-    def _get_options_journal_open_risk_usd(self) -> float:
+    def _get_options_journal_open_risk_usd(self, scope_key: Optional[str] = None) -> float:
         """
         Sum open options-edge journal risk as a conservative risk proxy.
 
@@ -406,13 +514,24 @@ class StrategyManager:
                 return 0.0
             conn = sqlite3.connect(str(_DASHBOARD_DB_PATH))
             cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(COALESCE(max_loss, 0) * COALESCE(contracts, 1)), 0)
-                FROM options_trade_journal
-                WHERE UPPER(COALESCE(status, '')) = 'OPEN'
-                """
-            )
+            if str(scope_key or "").strip():
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(COALESCE(max_loss, 0) * COALESCE(contracts, 1)), 0)
+                    FROM options_trade_journal
+                    WHERE UPPER(COALESCE(status, '')) = 'OPEN'
+                      AND COALESCE(portfolio_scope_key, '') = ?
+                    """,
+                    (str(scope_key),),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(COALESCE(max_loss, 0) * COALESCE(contracts, 1)), 0)
+                    FROM options_trade_journal
+                    WHERE 1 = 0
+                    """
+                )
             row = cur.fetchone()
             conn.close()
             if not row:

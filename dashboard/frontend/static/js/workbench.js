@@ -6,6 +6,8 @@
 
 // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let sessionId = null;
+let sessionCreateNewRequested = false;
+let sessionSwitchSeq = 0;
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;
@@ -464,6 +466,24 @@ function updateSessionIdStat() {
     }
 }
 
+function setSelectValueCaseInsensitive(selectEl, rawValue) {
+    if (!selectEl) return false;
+    const desired = String(rawValue || '').trim();
+    if (!desired) return false;
+    const direct = Array.from(selectEl.options || []).find((o) => String(o.value || '') === desired);
+    if (direct) {
+        selectEl.value = desired;
+        return true;
+    }
+    const lower = desired.toLowerCase();
+    const matched = Array.from(selectEl.options || []).find((o) => String(o.value || '').trim().toLowerCase() === lower);
+    if (matched) {
+        selectEl.value = String(matched.value || '');
+        return true;
+    }
+    return false;
+}
+
 function _sessionLabel(row) {
     const sid = Number(row?.id || 0);
     const sym = String(row?.symbol || '').toUpperCase() || '?';
@@ -486,7 +506,9 @@ function renderSessionSelector() {
         html += `<option value="${sid}">${escapeHtml(_sessionLabel(row))}</option>`;
     }
     selectEl.innerHTML = html;
-    const target = (sessionId && Number.isFinite(Number(sessionId))) ? String(Number(sessionId)) : prev;
+    const target = sessionCreateNewRequested
+        ? ''
+        : ((sessionId && Number.isFinite(Number(sessionId))) ? String(Number(sessionId)) : prev);
     if (target && Array.from(selectEl.options).some((o) => String(o.value) === target)) {
         selectEl.value = target;
     } else {
@@ -519,6 +541,7 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
         showStatus('Invalid session id', 'warning');
         return false;
     }
+    const switchSeq = ++sessionSwitchSeq;
     const wasLive = liveFeedActive || liveFeedRequested;
     stopPlay();
     stopAgentPoller();
@@ -526,6 +549,9 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
     try {
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sid}`);
         const data = await res.json().catch(() => ({}));
+        if (switchSeq !== sessionSwitchSeq) {
+            return false;
+        }
         if (!res.ok || data?.error || !data?.id) {
             if (Number(res.status) === 404 || String(data?.error || '').toLowerCase().includes('not found')) {
                 if (Number(sessionId) === sid) {
@@ -538,15 +564,17 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
             return false;
         }
         sessionId = Number(data.id);
+        sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
         setAgentChatAvailability(true);
 
-        const symbol = String(data.symbol || '').toUpperCase();
+        const symbolRaw = String(data.symbol || '').trim();
+        const symbol = symbolRaw.toUpperCase();
         const timeframe = normalizeTimeframeLabel(data.timeframe || 'M15', 'M15');
         const symEl = document.getElementById('sim-symbol');
         const tfEl = document.getElementById('sim-timeframe');
-        if (symEl) symEl.value = symbol;
+        if (symEl && !setSelectValueCaseInsensitive(symEl, symbolRaw)) symEl.value = symbolRaw || symbol;
         if (tfEl) tfEl.value = timeframe;
         const balEl = document.getElementById('sim-balance');
         if (balEl && Number.isFinite(Number(data.initial_balance))) {
@@ -586,6 +614,9 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
                 { method: 'POST' },
             );
             const seekData = await seekRes.json().catch(() => ({}));
+            if (switchSeq !== sessionSwitchSeq) {
+                return false;
+            }
             if (seekRes.ok && !seekData?.error && Array.isArray(seekData?.bars)) {
                 allBars = [];
                 applyAdvancePayload(seekData);
@@ -594,12 +625,19 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
 
         if (getWorkbenchMode() === 'live' && (wasLive || restartLive)) {
             await startLiveFeed(false);
+            if (switchSeq !== sessionSwitchSeq) {
+                return false;
+            }
         }
         await refreshSessionCatalog(false);
         await refreshAgentState(false);
         await refreshAgentMemoryList('');
         await refreshAgentIdentity(false);
         await refreshAgentTriggerList(false);
+        if (switchSeq !== sessionSwitchSeq) {
+            return false;
+        }
+        renderSessionSelector();
         showStatus(`Switched to session #${sessionId} (${symbol} ${timeframe})`, 'success');
         return true;
     } catch (err) {
@@ -5492,7 +5530,9 @@ class ChartZoneRenderer {
 // â”€â”€ Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 document.addEventListener('DOMContentLoaded', () => {
-    sessionId = getPersistedSessionId();
+    const restoredSessionId = getPersistedSessionId();
+    sessionId = null;
+    sessionCreateNewRequested = true;
     tickMs = getTickMsForSpeed(playSpeed);
     setTransportMode('IDLE');
     updateSessionIdStat();
@@ -5505,8 +5545,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setWorkbenchFullscreenUI(!!document.fullscreenElement);
     void refreshSessionCatalog(false);
     void refreshBrokerSymbols(false);
-    if (sessionId) {
-        void switchToSession(sessionId, { restartLive: false });
+    if (restoredSessionId) {
+        showStatus(`Saved session #${restoredSessionId} is available in the Session list.`, 'info');
     }
 });
 
@@ -5760,7 +5800,14 @@ function bindEvents() {
     });
     document.getElementById('sim-session-select')?.addEventListener('change', (e) => {
         const val = String(e?.target?.value || '').trim();
-        if (!val) return;
+        if (!val) {
+            sessionCreateNewRequested = true;
+            clearPersistedSessionId();
+            renderSessionSelector();
+            showStatus('New session mode selected. Starting replay/live will create a fresh session.', 'info');
+            return;
+        }
+        sessionCreateNewRequested = false;
         void switchToSession(Number(val), { restartLive: true });
     });
     document.getElementById('btn-start-session')?.addEventListener('click', startSession);
@@ -6362,6 +6409,12 @@ function stopLiveFeed() {
     }
 }
 
+function _shouldCreateFreshSession() {
+    const selectEl = document.getElementById('sim-session-select');
+    if (sessionCreateNewRequested) return true;
+    return String(selectEl?.value || '').trim() === '';
+}
+
 async function _checkLiveSourceReady(source, symbol, timeframe) {
     const params = new URLSearchParams({ symbol, timeframe });
     if (source === 'databento') {
@@ -6385,9 +6438,36 @@ async function _checkLiveSourceReady(source, symbol, timeframe) {
     }
     const statusRes = await fetch(`${API_BASE}/api/simulation/mt5/status?${params.toString()}`);
     const status = await statusRes.json().catch(() => ({}));
+    const candle = (status && typeof status === 'object' && status.current_candle && typeof status.current_candle === 'object')
+        ? status.current_candle
+        : {};
+    const candleHasTime = Number.isFinite(Number(candle?.time)) || String(candle?.time || '').trim().length > 0;
+    const candleOk = !candle?.error && Number.isFinite(Number(candle?.close)) && candleHasTime;
+    // Accept MT5 source when either backend marks connected OR we already have a valid candle.
+    // Some brokers expose a valid current candle even when large history windows are not yet available.
+    const connected = !!status?.mt5_connected || candleOk;
+    const historyOk = status?.history_ready !== false;
+    let error = status?.error || '';
+    let warning = '';
+    if (!connected) {
+        error = error || (candle?.error ? String(candle.error) : 'mt5 unavailable');
+    } else if (!historyOk) {
+        warning = `limited history for ${symbol} ${timeframe}; starting stream with reduced bootstrap`;
+    }
+    console.info('[LiveWS] preflight', {
+        symbol,
+        timeframe,
+        connected,
+        historyOk,
+        mt5Connected: !!status?.mt5_connected,
+        candleOk,
+        error: error || null,
+        warning: warning || null,
+    });
     return {
-        ok: !!statusRes.ok && status?.ok !== false && !!status?.mt5_connected,
-        error: status?.error || 'mt5 unavailable',
+        ok: !!statusRes.ok && status?.ok !== false && connected,
+        error: error || 'mt5 unavailable',
+        warning,
     };
 }
 
@@ -6438,6 +6518,9 @@ async function startLiveFeed(isReconnect = false) {
             if (!isReconnect) liveFeedRequested = false;
             return;
         }
+        if (chk.warning) {
+            showStatus(chk.warning, 'warning');
+        }
     } catch (err) {
         showStatus(`${sourceLabel} status check failed: ${err.message}`, 'warning');
         if (!isReconnect) liveFeedRequested = false;
@@ -6448,7 +6531,10 @@ async function startLiveFeed(isReconnect = false) {
     try {
         const ws = new WebSocket(wsUrl);
         liveFeedSocket = ws;
+        let receivedStreamPayload = false;
+        let lastStreamError = '';
         ws.onopen = () => {
+            console.info('[LiveWS] open', { source, symbol, timeframe, sessionId, wsUrl });
             if (source === 'databento') {
                 const apiKey = getDatabentoApiKey();
                 if (apiKey) {
@@ -6470,59 +6556,90 @@ async function startLiveFeed(isReconnect = false) {
             applyWorkbenchModeUI();
         };
         ws.onmessage = (event) => {
-            let msg;
-            try { msg = JSON.parse(event.data); } catch (_) { return; }
-            if (!msg || !msg.type) return;
-            if (msg.type === 'snapshot') {
-                const bars = Array.isArray(msg.bars) ? msg.bars : [];
-                allBars = bars.slice();
-                currentBar = Math.max(0, allBars.length - 1);
-                totalBars = allBars.length;
-                candleSeries.setData(allBars);
-                volumeSeries.setData(allBars.map(b => ({
-                    time: b.time,
-                    value: b.volume || 0,
-                    color: b.close >= b.open ? '#26a69a44' : '#ef535044',
-                })));
-                updateIndicatorsOnChart();
-                updateBarCounter();
-                updateStats({ balance: initialBalance, total_pnl: 0, trades_count: 0, wins: 0 });
-                void maybePushLiveAgentTick(true);
-                return;
-            }
-            if (msg.type === 'tick') {
-                const bars = Array.isArray(msg.bars) ? msg.bars : [];
-                for (const b of bars) {
-                    upsertLiveBar(b);
-                    candleSeries.update(b);
-                    volumeSeries.update({
+            try {
+                let msg;
+                try { msg = JSON.parse(event.data); } catch (_) { return; }
+                if (!msg || !msg.type) return;
+                if (msg.type === 'snapshot') {
+                    receivedStreamPayload = true;
+                    const bars = Array.isArray(msg.bars) ? msg.bars : [];
+                    console.info('[LiveWS] snapshot', {
+                        symbol: msg.symbol || symbol,
+                        resolvedSymbol: msg.resolved_symbol || '',
+                        bars: bars.length,
+                        requestedHistory: msg.requested_history,
+                        returnedBars: msg.returned_bars,
+                    });
+                    allBars = bars.slice();
+                    currentBar = Math.max(0, allBars.length - 1);
+                    totalBars = allBars.length;
+                    candleSeries.setData(allBars);
+                    volumeSeries.setData(allBars.map(b => ({
                         time: b.time,
                         value: b.volume || 0,
                         color: b.close >= b.open ? '#26a69a44' : '#ef535044',
-                    });
+                    })));
+                    updateIndicatorsOnChart();
+                    updateBarCounter();
+                    updateStats({ balance: initialBalance, total_pnl: 0, trades_count: 0, wins: 0 });
+                    try { chart?.timeScale()?.fitContent(); } catch (_) { /* ignore */ }
+                    void maybePushLiveAgentTick(true);
+                    return;
                 }
-                updateIndicatorsOnChart();
-                updateBarCounter();
-                void maybePushLiveAgentTick(false);
-                return;
-            }
-            if (msg.type === 'warning') {
-                showStatus(String(msg.message || `${sourceLabel} warning`), 'warning');
-                return;
-            }
-            if (msg.type === 'error') {
-                showStatus(String(msg.message || `${sourceLabel} stream error`), 'danger');
+                if (msg.type === 'tick') {
+                    receivedStreamPayload = true;
+                    const bars = Array.isArray(msg.bars) ? msg.bars : [];
+                    for (const b of bars) {
+                        upsertLiveBar(b);
+                        candleSeries.update(b);
+                        volumeSeries.update({
+                            time: b.time,
+                            value: b.volume || 0,
+                            color: b.close >= b.open ? '#26a69a44' : '#ef535044',
+                        });
+                    }
+                    updateIndicatorsOnChart();
+                    updateBarCounter();
+                    try { chart?.timeScale()?.scrollToRealTime(); } catch (_) { /* ignore */ }
+                    void maybePushLiveAgentTick(false);
+                    return;
+                }
+                if (msg.type === 'warning') {
+                    console.warn('[LiveWS] warning', msg.message || `${sourceLabel} warning`);
+                    showStatus(String(msg.message || `${sourceLabel} warning`), 'warning');
+                    return;
+                }
+                if (msg.type === 'error') {
+                    lastStreamError = String(msg.message || `${sourceLabel} stream error`);
+                    console.error('[LiveWS] error', lastStreamError);
+                    showStatus(lastStreamError, 'danger');
+                }
+            } catch (err) {
+                console.error('[LiveWS] onmessage failed', err);
+                showStatus(`Live chart render failed: ${err?.message || err}`, 'danger');
             }
         };
-        ws.onclose = () => {
+        ws.onclose = (event) => {
             const wasRequested = liveFeedRequested && !liveFeedManualStop;
             liveFeedActive = false;
             if (liveFeedSocket === ws) liveFeedSocket = null;
             setLiveFeedButtonState(false, source);
+            const closeCode = Number(event?.code || 0);
+            const closeReason = String(event?.reason || '').trim();
+            const closeDetail = lastStreamError || closeReason || (closeCode ? `close code ${closeCode}` : 'socket closed');
+            const immediateFailure = !receivedStreamPayload;
+            const retryable = !immediateFailure && ![4404, 4408].includes(closeCode);
+            console.warn('[LiveWS] close', { closeCode, closeReason, closeDetail, immediateFailure, retryable, wasRequested, manualStop: liveFeedManualStop });
             if (wasRequested) {
+                if (!retryable) {
+                    liveFeedRequested = false;
+                    showStatus(`${sourceLabel} live feed failed: ${closeDetail}`, 'danger');
+                    if (!isPlaying) setTransportMode(sessionId ? 'READY' : 'IDLE');
+                    return;
+                }
                 const backoffMs = Math.min(8000, 500 * Math.pow(2, liveFeedReconnectAttempts));
                 liveFeedReconnectAttempts += 1;
-                showStatus(`${sourceLabel} live feed disconnected, reconnecting...`, 'warning');
+                showStatus(`${sourceLabel} live feed disconnected (${closeDetail}), reconnecting...`, 'warning');
                 setTimeout(() => {
                     if (liveFeedRequested && !liveFeedActive) void startLiveFeed(true);
                 }, backoffMs);
@@ -6532,6 +6649,7 @@ async function startLiveFeed(isReconnect = false) {
             showStatus(`${sourceLabel} live feed stopped`, 'info');
         };
         ws.onerror = () => {
+            console.error('[LiveWS] socket error', { source, symbol, timeframe, sessionId });
             showStatus(`${sourceLabel} live feed socket error`, 'danger');
         };
     } catch (err) {
@@ -6541,7 +6659,7 @@ async function startLiveFeed(isReconnect = false) {
 }
 
 async function ensureSessionForLive(symbol, timeframe) {
-    if (sessionId) {
+    if (sessionId && !_shouldCreateFreshSession()) {
         try {
             const existingRes = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}`);
             const existing = await existingRes.json().catch(() => ({}));
@@ -6567,6 +6685,8 @@ async function ensureSessionForLive(symbol, timeframe) {
     const dataFile = document.getElementById('sim-datafile')?.value || '';
     const balance = parseFloat(document.getElementById('sim-balance')?.value) || 10000;
     try {
+        // New live session creation invalidates any in-flight async session switch.
+        sessionSwitchSeq += 1;
         const costModelCfg = getCostModelConfigFromUI();
         const res = await fetch(`${API_BASE}/api/simulation/sessions`, {
             method: 'POST',
@@ -6587,6 +6707,7 @@ async function ensureSessionForLive(symbol, timeframe) {
             return false;
         }
         sessionId = data.id;
+        sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
         await refreshSessionCatalog(false);
@@ -6646,6 +6767,8 @@ async function startSession() {
     const costModelCfg = getCostModelConfigFromUI();
 
     try {
+        // New replay session creation invalidates any in-flight async session switch.
+        sessionSwitchSeq += 1;
         showStatus('Creating session...');
         const res = await fetch(`${API_BASE}/api/simulation/sessions`, {
             method: 'POST',
@@ -6663,6 +6786,7 @@ async function startSession() {
         if (data.error) { showStatus(`Error: ${data.error}`, 'danger'); return; }
 
         sessionId = data.id;
+        sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
         await refreshSessionCatalog(false);

@@ -5116,17 +5116,21 @@ def simulation_mt5_status(
         service = _get_mt5_service_singleton()
         status = service.get_status(symbol=symbol)
         candle = service.get_current_candle(symbol=symbol, timeframe=timeframe)
+        recent_bars = service.get_recent_candles(symbol=symbol, timeframe=timeframe, count=20)
         sym_info = service.get_symbol_info(symbol=symbol)
         resolved_symbol = (
             candle.get("resolved_symbol")
             if isinstance(candle.get("resolved_symbol"), str)
             else status.get("symbol_resolved")
         )
-        connected = bool(status.get("mt5_available")) and ("error" not in candle)
+        history_ready = bool(recent_bars)
+        connected = bool(status.get("mt5_available")) and ("error" not in candle) and history_ready
         status_error = None
         if not connected:
             if isinstance(candle, dict) and str(candle.get("error") or "").strip():
                 status_error = str(candle.get("error") or "").strip()
+            elif not history_ready:
+                status_error = f"No recent candle history for {str(symbol).upper()} {str(timeframe).upper()}"
             elif isinstance(sym_info, dict) and str(sym_info.get("error") or "").strip():
                 status_error = str(sym_info.get("error") or "").strip()
         return {
@@ -5135,6 +5139,8 @@ def simulation_mt5_status(
             "resolved_symbol": str(resolved_symbol or ""),
             "timeframe": str(timeframe).upper(),
             "mt5_connected": connected,
+            "history_ready": history_ready,
+            "recent_bars_count": int(len(recent_bars)),
             "error": status_error,
             "status": status,
             "current_candle": candle,
@@ -5174,6 +5180,36 @@ def simulation_mt5_symbols(
         }
 
 
+def _mt5_live_bootstrap_history_counts(requested: int) -> List[int]:
+    counts: List[int] = []
+    req = max(2, min(int(requested or 300), 10000))
+    for c in [req, 1500, 1000, 800, 500, 300, 200, 100, 50, 20, 2]:
+        ci = max(2, min(int(c), 10000))
+        if ci not in counts and ci <= req:
+            counts.append(ci)
+    if 2 not in counts:
+        counts.append(2)
+    return counts
+
+
+def _mt5_live_bootstrap_fetch_bars(
+    service: Any,
+    resolved_symbol: str,
+    timeframe: str,
+    history: int,
+) -> Tuple[List[Dict[str, Any]], int]:
+    for count in _mt5_live_bootstrap_history_counts(history):
+        bars = service.get_recent_candles(
+            symbol=resolved_symbol,
+            timeframe=timeframe,
+            count=count,
+            resolve_symbol=False,
+        )
+        if bars:
+            return bars, int(count)
+    return [], 0
+
+
 @router.websocket("/ws/mt5/live")
 async def ws_mt5_live(
     websocket: WebSocket,
@@ -5196,21 +5232,24 @@ async def ws_mt5_live(
         service = _get_mt5_service_singleton()
         symbol_u = str(symbol or "XAUUSD").upper()
         tf_u = str(timeframe or "M15").upper()
-        resolved_symbol = service.resolve_symbol_name(symbol_u)
+
+        # Run blocking MT5 calls in thread pool to avoid blocking the event loop.
+        resolved_symbol = await asyncio.to_thread(service.resolve_symbol_name, symbol_u)
         if not resolved_symbol:
             await websocket.send_json({"type": "error", "message": f"Symbol not found in MT5 broker list: {symbol_u}"})
-            await websocket.close(code=4404)
+            await websocket.close(code=4404, reason="symbol_not_found")
             return
 
-        bars = service.get_recent_candles(
-            symbol=resolved_symbol,
-            timeframe=tf_u,
-            count=history,
-            resolve_symbol=False,
+        bars, bootstrap_count = await asyncio.to_thread(
+            _mt5_live_bootstrap_fetch_bars,
+            service,
+            resolved_symbol,
+            tf_u,
+            history,
         )
         if not bars:
             await websocket.send_json({"type": "error", "message": f"No MT5 candle data for {resolved_symbol} {tf_u}"})
-            await websocket.close(code=4404)
+            await websocket.close(code=4404, reason="no_candle_data")
             return
 
         snapshot_bars = [
@@ -5230,13 +5269,27 @@ async def ws_mt5_live(
                 "symbol": symbol_u,
                 "resolved_symbol": str(resolved_symbol),
                 "timeframe": tf_u,
+                "requested_history": int(history),
+                "returned_bars": int(len(snapshot_bars)),
                 "bars": snapshot_bars,
             }
         )
+        if int(bootstrap_count or 0) and int(bootstrap_count) < int(history):
+            await websocket.send_json(
+                {
+                    "type": "warning",
+                    "message": (
+                        f"MT5 returned only {int(len(snapshot_bars))} bars for {resolved_symbol} {tf_u} "
+                        f"(requested {int(history)}). Live stream continues with reduced bootstrap history."
+                    ),
+                }
+            )
 
         last_sig = None
+        poll_sec = max(0.25, float(poll_ms) / 1000.0)
         while True:
-            latest = service.get_recent_candles(
+            latest = await asyncio.to_thread(
+                service.get_recent_candles,
                 symbol=resolved_symbol,
                 timeframe=tf_u,
                 count=2,
@@ -5249,7 +5302,7 @@ async def ws_mt5_live(
                         "message": f"No MT5 update for {resolved_symbol} {tf_u}; retrying...",
                     }
                 )
-                await asyncio.sleep(max(0.25, float(poll_ms) / 1000.0))
+                await asyncio.sleep(poll_sec)
                 continue
 
             lb = latest[-1]
@@ -5281,10 +5334,11 @@ async def ws_mt5_live(
                 )
                 last_sig = sig
 
-            await asyncio.sleep(max(0.25, float(poll_ms) / 1000.0))
+            await asyncio.sleep(poll_sec)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
+        logger.exception("ws_mt5_live unhandled error for %s %s: %s", symbol, timeframe, exc)
         try:
             await websocket.send_json({"type": "error", "message": f"{type(exc).__name__}: {str(exc)}"})
         except Exception:

@@ -679,6 +679,11 @@ class OptionsEdgeTradeJournalModel(Base):
     contracts = Column(Integer, default=1)
     account_balance_at_entry = Column(Float, nullable=True)
     risk_pct_at_entry = Column(Float, nullable=True)
+    portfolio_scope_key = Column(String(255), nullable=True, index=True)
+    portfolio_scope_profile = Column(String(64), nullable=True)
+    portfolio_scope_broker = Column(String(128), nullable=True)
+    portfolio_scope_account_login = Column(String(64), nullable=True)
+    portfolio_scope_account_server = Column(String(128), nullable=True)
 
     exit_credit = Column(Float, nullable=True)
     actual_pnl = Column(Float, nullable=True)       # per contract
@@ -1195,6 +1200,11 @@ def _run_migrations():
         ("simulation_trades", "total_cost", "REAL"),
         ("simulation_trades", "cost_breakdown_json", "TEXT"),
         ("workbench_agent_memories", "pinned", "BOOLEAN DEFAULT 0"),
+        ("options_trade_journal", "portfolio_scope_key", "TEXT"),
+        ("options_trade_journal", "portfolio_scope_profile", "TEXT"),
+        ("options_trade_journal", "portfolio_scope_broker", "TEXT"),
+        ("options_trade_journal", "portfolio_scope_account_login", "TEXT"),
+        ("options_trade_journal", "portfolio_scope_account_server", "TEXT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1280,6 +1290,11 @@ def _run_migrations():
             contracts INTEGER,
             account_balance_at_entry REAL,
             risk_pct_at_entry REAL,
+            portfolio_scope_key TEXT,
+            portfolio_scope_profile TEXT,
+            portfolio_scope_broker TEXT,
+            portfolio_scope_account_login TEXT,
+            portfolio_scope_account_server TEXT,
             exit_credit REAL,
             actual_pnl REAL,
             actual_pnl_total REAL,
@@ -1296,6 +1311,7 @@ def _run_migrations():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_trade_journal_status ON options_trade_journal(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_trade_journal_scan_id ON options_trade_journal(scan_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_trade_journal_symbol ON options_trade_journal(symbol)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_trade_journal_scope ON options_trade_journal(portfolio_scope_key)")
     # Table-level migration for generic AI bot runs.
     cursor.execute(
         """

@@ -56,3 +56,34 @@ def test_resolve_symbol_uses_short_ttl_cache(monkeypatch):
     assert r1 == "XAUUSDm"
     assert r2 == "XAUUSDm"
     assert calls["list"] == 1, "second resolve should hit in-memory alias cache"
+
+
+def test_get_recent_candles_preserves_symbol_case_when_resolution_disabled(monkeypatch):
+    service = ls.LiveTradingService()
+    service._mt5_initialized = True
+
+    seen = {}
+
+    monkeypatch.setattr(ls.mt5, "TIMEFRAME_M15", 15, raising=False)
+
+    def _fake_copy_rates_from_pos(symbol, timeframe, start_pos, count):
+        seen["symbol"] = symbol
+        seen["timeframe"] = timeframe
+        seen["count"] = count
+        return [
+            {
+                "time": 1773234000,
+                "open": 1.0,
+                "high": 2.0,
+                "low": 0.5,
+                "close": 1.5,
+                "tick_volume": 42,
+            }
+        ]
+
+    monkeypatch.setattr(ls.mt5, "copy_rates_from_pos", _fake_copy_rates_from_pos, raising=False)
+
+    bars = service.get_recent_candles(symbol="XAUUSDm", timeframe="M15", count=2, resolve_symbol=False)
+    assert len(bars) == 1
+    assert seen.get("symbol") == "XAUUSDm"
+    assert bars[0]["symbol"] == "XAUUSDm"

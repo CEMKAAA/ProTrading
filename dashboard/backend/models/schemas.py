@@ -893,6 +893,11 @@ class OptionsEdgeJournalEntryResponse(BaseModel):
     contracts: int
     account_balance_at_entry: Optional[float] = None
     risk_pct_at_entry: Optional[float] = None
+    portfolio_scope_key: Optional[str] = None
+    portfolio_scope_profile: Optional[str] = None
+    portfolio_scope_broker: Optional[str] = None
+    portfolio_scope_account_login: Optional[str] = None
+    portfolio_scope_account_server: Optional[str] = None
     exit_credit: Optional[float] = None
     actual_pnl: Optional[float] = None
     actual_pnl_total: Optional[float] = None
