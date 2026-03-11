@@ -107,6 +107,13 @@ const COST_MODEL_DEFAULTS = {
     EURUSD: 0.00012,
 };
 const COST_MODEL_DEFAULT_TC_RATE = 0.0001;
+const CURATED_SYMBOL_OPTIONS = [
+    { value: 'XAUUSD', label: 'XAUUSD (Gold)' },
+    { value: 'NAS100', label: 'NAS100' },
+    { value: 'US500', label: 'US500' },
+    { value: 'GBPUSD', label: 'GBPUSD' },
+    { value: 'EURUSD', label: 'EURUSD' },
+];
 const AGENT_CHAT_STORAGE_KEY = 'workbench:agent:chat:sessions:v1';
 const LEGACY_CONSULTANT_STORAGE_KEY = 'workbench:consultant:sessions:v1';
 const AGENT_PROVIDER_PREFS_KEY = 'workbench:agent:provider:prefs:v1';
@@ -601,6 +608,48 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
     }
 }
 
+async function closeSelectedSession() {
+    const selectEl = document.getElementById('sim-session-select');
+    const sid = Number(selectEl?.value || 0);
+    if (!Number.isFinite(sid) || sid <= 0) {
+        showStatus('Select a session to close', 'warning');
+        return;
+    }
+    if (!window.confirm(`Close session #${sid}? This deletes its runtime state.`)) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sid}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false || data?.error) {
+            showStatus(`Close session failed: ${data?.error || res.status}`, 'danger');
+            return;
+        }
+        const wasCurrent = Number(sessionId) === sid;
+        if (wasCurrent) {
+            stopLiveFeed();
+            stopPlay();
+            stopAgentPoller();
+            sessionId = null;
+            clearPersistedSessionId();
+            updateSessionIdStat();
+            setAgentChatAvailability(false);
+            allBars = [];
+            currentBar = 0;
+            totalBars = 0;
+            candleSeries.setData([]);
+            volumeSeries.setData([]);
+            updateBarCounter();
+            updateStats({ balance: initialBalance, total_pnl: 0, trades_count: 0, wins: 0, losses: 0 });
+            renderTradeLog([]);
+            renderAgentTriggerList([]);
+            renderPendingAgentApprovals();
+        }
+        await refreshSessionCatalog(false);
+        showStatus(`Session #${sid} closed`, 'success');
+    } catch (err) {
+        showStatus(`Close session failed: ${err.message}`, 'danger');
+    }
+}
+
 function applyBrokerSymbolsToUI(rows) {
     const selectEl = document.getElementById('sim-symbol');
     const metaEl = document.getElementById('sim-symbol-meta');
@@ -608,20 +657,32 @@ function applyBrokerSymbolsToUI(rows) {
     const current = String(selectEl.value || '').trim();
     const list = Array.isArray(rows) ? rows : [];
     if (list.length === 0) {
-        if (metaEl) metaEl.textContent = 'No symbols returned from MT5.';
+        if (metaEl) metaEl.textContent = 'No symbols returned from MT5; using curated defaults.';
         return;
     }
     brokerSymbolCatalog = list.slice();
-    let html = '';
+    const seen = new Set();
+    let html = '<optgroup label="Curated">';
+    for (const opt of CURATED_SYMBOL_OPTIONS) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        if (!value) continue;
+        seen.add(value.toUpperCase());
+        html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    html += '<optgroup label="Broker (MT5)">';
     for (const row of list) {
         const name = String(row?.name || '').trim();
         if (!name) continue;
+        if (seen.has(name.toUpperCase())) continue;
         const desc = String(row?.description || '').trim();
         const vis = row?.visible ? 'visible' : 'hidden';
         const label = desc ? `${name} - ${desc}` : `${name} (${vis})`;
         html += `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
     }
-    if (html) selectEl.innerHTML = html;
+    html += '</optgroup>';
+    selectEl.innerHTML = html;
     if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === current.toUpperCase())) {
         selectEl.value = current;
     } else if (selectEl.options.length > 0) {
@@ -5693,6 +5754,9 @@ function bindEvents() {
     });
     document.getElementById('btn-session-refresh')?.addEventListener('click', () => {
         void refreshSessionCatalog(true);
+    });
+    document.getElementById('btn-session-close')?.addEventListener('click', () => {
+        void closeSelectedSession();
     });
     document.getElementById('sim-session-select')?.addEventListener('change', (e) => {
         const val = String(e?.target?.value || '').trim();

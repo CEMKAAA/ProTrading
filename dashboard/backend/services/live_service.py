@@ -33,6 +33,8 @@ class LiveTradingService:
         self._mt5_initialized = False
         self._symbols_cache: List[Dict[str, Any]] = []
         self._symbols_cache_ts: float = 0.0
+        self._resolved_symbol_cache: Dict[str, Dict[str, Any]] = {}
+        self._resolved_symbol_cache_ttl_sec: float = 30.0
 
     def _ensure_mt5(self) -> bool:
         """Ensure MT5 is initialized"""
@@ -89,6 +91,8 @@ class LiveTradingService:
             rows.sort(key=lambda r: (0 if bool(r.get("visible")) else 1, str(r.get("name") or "")))
             self._symbols_cache = list(rows)
             self._symbols_cache_ts = now
+            # Symbol universe changed; reset alias-resolution cache.
+            self._resolved_symbol_cache = {}
         q = str(search or "").strip().upper()
         if q:
             rows = [
@@ -113,6 +117,15 @@ class LiveTradingService:
         req_tok = self._symbol_token(req_u)
         if not req_tok:
             return None
+
+        now = time.time()
+        cached = self._resolved_symbol_cache.get(req_tok)
+        if isinstance(cached, dict):
+            age = float(now - float(cached.get("ts") or 0.0))
+            cached_name = str(cached.get("name") or "").strip()
+            if cached_name and age <= float(self._resolved_symbol_cache_ttl_sec):
+                return cached_name
+
         rows = self.list_symbols(limit=5000, include_hidden=True, refresh=False)
         if not rows:
             return req_u
@@ -126,6 +139,7 @@ class LiveTradingService:
                         mt5.symbol_select(n, True)
                     except Exception:
                         pass
+                self._resolved_symbol_cache[req_tok] = {"name": n, "ts": now}
                 return n
 
         best_name: Optional[str] = None
@@ -162,6 +176,7 @@ class LiveTradingService:
                 mt5.symbol_select(best_name, True)
             except Exception:
                 pass
+            self._resolved_symbol_cache[req_tok] = {"name": best_name, "ts": now}
             return best_name
         return None
 
@@ -547,6 +562,7 @@ class LiveTradingService:
         symbol: str = "XAUUSD",
         timeframe: str = "M1",
         count: int = 300,
+        resolve_symbol: bool = True,
     ) -> List[Dict[str, Any]]:
         """Get recent candles ordered oldest -> newest for chart streaming."""
         if not self._ensure_mt5():
@@ -554,7 +570,7 @@ class LiveTradingService:
 
         try:
             symbol_req = str(symbol or "XAUUSD").upper()
-            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            symbol_resolved = self.resolve_symbol_name(symbol_req) if bool(resolve_symbol) else symbol_req
             if not symbol_resolved:
                 return []
             timeframe_map = {

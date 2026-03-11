@@ -5196,10 +5196,20 @@ async def ws_mt5_live(
         service = _get_mt5_service_singleton()
         symbol_u = str(symbol or "XAUUSD").upper()
         tf_u = str(timeframe or "M15").upper()
+        resolved_symbol = service.resolve_symbol_name(symbol_u)
+        if not resolved_symbol:
+            await websocket.send_json({"type": "error", "message": f"Symbol not found in MT5 broker list: {symbol_u}"})
+            await websocket.close(code=4404)
+            return
 
-        bars = service.get_recent_candles(symbol=symbol_u, timeframe=tf_u, count=history)
+        bars = service.get_recent_candles(
+            symbol=resolved_symbol,
+            timeframe=tf_u,
+            count=history,
+            resolve_symbol=False,
+        )
         if not bars:
-            await websocket.send_json({"type": "error", "message": f"No MT5 candle data for {symbol_u} {tf_u}"})
+            await websocket.send_json({"type": "error", "message": f"No MT5 candle data for {resolved_symbol} {tf_u}"})
             await websocket.close(code=4404)
             return
 
@@ -5218,7 +5228,7 @@ async def ws_mt5_live(
             {
                 "type": "snapshot",
                 "symbol": symbol_u,
-                "resolved_symbol": str(bars[-1].get("symbol") or ""),
+                "resolved_symbol": str(resolved_symbol),
                 "timeframe": tf_u,
                 "bars": snapshot_bars,
             }
@@ -5226,12 +5236,17 @@ async def ws_mt5_live(
 
         last_sig = None
         while True:
-            latest = service.get_recent_candles(symbol=symbol_u, timeframe=tf_u, count=2)
+            latest = service.get_recent_candles(
+                symbol=resolved_symbol,
+                timeframe=tf_u,
+                count=2,
+                resolve_symbol=False,
+            )
             if not latest:
                 await websocket.send_json(
                     {
                         "type": "warning",
-                        "message": f"No MT5 update for {symbol_u} {tf_u}; retrying...",
+                        "message": f"No MT5 update for {resolved_symbol} {tf_u}; retrying...",
                     }
                 )
                 await asyncio.sleep(max(0.25, float(poll_ms) / 1000.0))
@@ -5259,7 +5274,7 @@ async def ws_mt5_live(
                     {
                         "type": "tick",
                         "symbol": symbol_u,
-                        "resolved_symbol": str(lb.get("symbol") or ""),
+                        "resolved_symbol": str(resolved_symbol),
                         "timeframe": tf_u,
                         "bars": [bar],
                     }
