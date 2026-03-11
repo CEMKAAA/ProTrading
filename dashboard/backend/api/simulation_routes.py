@@ -4335,6 +4335,42 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/sessions")
+def list_sessions(
+    strategy_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """List recent simulation sessions for session switching/multi-session workflows."""
+    q = db.query(SimulationSession)
+    if strategy_id is not None and str(strategy_id).strip():
+        q = q.filter(SimulationSession.strategy_id == str(strategy_id).strip())
+    if status is not None and str(status).strip():
+        q = q.filter(SimulationSession.status == str(status).strip().lower())
+    rows = q.order_by(desc(SimulationSession.updated_at), desc(SimulationSession.id)).limit(int(limit)).all()
+    out = []
+    for s in rows:
+        out.append(
+            {
+                "id": int(s.id),
+                "strategy_id": str(s.strategy_id or ""),
+                "symbol": str(s.symbol or ""),
+                "timeframe": str(s.timeframe or ""),
+                "mode": str(s.mode or ""),
+                "status": str(s.status or ""),
+                "current_bar": int(s.current_bar or 0),
+                "total_bars": int(s.total_bars or 0),
+                "initial_balance": float(s.initial_balance or 0.0),
+                "current_balance": float(s.current_balance or 0.0),
+                "total_pnl": float(s.total_pnl or 0.0),
+                "trades_count": int(s.trades_count or 0),
+                "updated_at": s.updated_at.isoformat() if getattr(s, "updated_at", None) else None,
+            }
+        )
+    return {"ok": True, "count": len(out), "sessions": out}
+
+
 @router.get("/sessions/{session_id}")
 def get_session(session_id: int, db: Session = Depends(get_db)):
     """Get session state."""
@@ -5081,12 +5117,25 @@ def simulation_mt5_status(
         status = service.get_status(symbol=symbol)
         candle = service.get_current_candle(symbol=symbol, timeframe=timeframe)
         sym_info = service.get_symbol_info(symbol=symbol)
-        connected = bool(status.get("mt5_available")) or ("error" not in candle)
+        resolved_symbol = (
+            candle.get("resolved_symbol")
+            if isinstance(candle.get("resolved_symbol"), str)
+            else status.get("symbol_resolved")
+        )
+        connected = bool(status.get("mt5_available")) and ("error" not in candle)
+        status_error = None
+        if not connected:
+            if isinstance(candle, dict) and str(candle.get("error") or "").strip():
+                status_error = str(candle.get("error") or "").strip()
+            elif isinstance(sym_info, dict) and str(sym_info.get("error") or "").strip():
+                status_error = str(sym_info.get("error") or "").strip()
         return {
             "ok": True,
             "symbol": str(symbol).upper(),
+            "resolved_symbol": str(resolved_symbol or ""),
             "timeframe": str(timeframe).upper(),
             "mt5_connected": connected,
+            "error": status_error,
             "status": status,
             "current_candle": candle,
             "symbol_info": sym_info,
@@ -5097,6 +5146,30 @@ def simulation_mt5_status(
             "symbol": str(symbol).upper(),
             "timeframe": str(timeframe).upper(),
             "mt5_connected": False,
+            "error": f"{type(exc).__name__}: {str(exc)}",
+        }
+
+
+@router.get("/mt5/symbols")
+def simulation_mt5_symbols(
+    search: str = Query(default=""),
+    limit: int = Query(default=800, ge=1, le=5000),
+    include_hidden: bool = Query(default=True),
+):
+    """Return broker symbols from active MT5 terminal for broker-independent symbol selection."""
+    try:
+        service = _get_mt5_service_singleton()
+        rows = service.list_symbols(search=search, limit=limit, include_hidden=include_hidden)
+        return {
+            "ok": True,
+            "count": int(len(rows)),
+            "symbols": rows,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "count": 0,
+            "symbols": [],
             "error": f"{type(exc).__name__}: {str(exc)}",
         }
 
@@ -5145,6 +5218,7 @@ async def ws_mt5_live(
             {
                 "type": "snapshot",
                 "symbol": symbol_u,
+                "resolved_symbol": str(bars[-1].get("symbol") or ""),
                 "timeframe": tf_u,
                 "bars": snapshot_bars,
             }
@@ -5185,6 +5259,7 @@ async def ws_mt5_live(
                     {
                         "type": "tick",
                         "symbol": symbol_u,
+                        "resolved_symbol": str(lb.get("symbol") or ""),
                         "timeframe": tf_u,
                         "bars": [bar],
                     }

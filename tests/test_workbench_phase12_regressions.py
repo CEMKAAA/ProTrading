@@ -123,6 +123,70 @@ def test_create_session_still_rejects_empty_replay_without_live_bootstrap(monkey
         db.close()
 
 
+def test_list_sessions_filters_workbench_and_sorts_recent_first():
+    db = _db_session()
+    try:
+        older = datetime(2026, 3, 1, 12, 0, 0)
+        newer = datetime(2026, 3, 2, 12, 0, 0)
+        s1 = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            status="active",
+            current_balance=10010.0,
+            total_pnl=10.0,
+            updated_at=older,
+            created_at=older,
+        )
+        s2 = SimulationSession(
+            strategy_id="_workbench",
+            symbol="NAS100",
+            timeframe="M5",
+            status="active",
+            current_balance=9990.0,
+            total_pnl=-10.0,
+            updated_at=newer,
+            created_at=newer,
+        )
+        s3 = SimulationSession(
+            strategy_id="some_other_strategy",
+            symbol="EURUSD",
+            timeframe="M15",
+            status="active",
+            updated_at=newer,
+            created_at=newer,
+        )
+        db.add_all([s1, s2, s3])
+        db.commit()
+
+        out = sim_routes.list_sessions(strategy_id="_workbench", status=None, limit=10, db=db)
+        assert out.get("ok") is True
+        rows = out.get("sessions") if isinstance(out.get("sessions"), list) else []
+        assert len(rows) == 2
+        assert int(rows[0].get("id") or 0) == int(s2.id)
+        assert int(rows[1].get("id") or 0) == int(s1.id)
+    finally:
+        db.close()
+
+
+def test_mt5_symbols_endpoint_returns_service_catalog(monkeypatch):
+    fake_rows = [
+        {"name": "XAUUSDm", "description": "Gold", "visible": True},
+        {"name": "US500m", "description": "S&P 500", "visible": True},
+    ]
+
+    class _FakeService:
+        def list_symbols(self, search="", limit=500, include_hidden=True):
+            return fake_rows[: int(limit)]
+
+    monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeService())
+    out = sim_routes.simulation_mt5_symbols(search="", limit=5, include_hidden=True)
+    assert out.get("ok") is True
+    assert int(out.get("count") or 0) == 2
+    rows = out.get("symbols") if isinstance(out.get("symbols"), list) else []
+    assert str(rows[0].get("name") or "") == "XAUUSDm"
+
+
 def test_mean_rev_compute_current_state_handles_duplicate_index():
     tool = MeanRevTool()
     df = _make_mean_rev_df().copy()

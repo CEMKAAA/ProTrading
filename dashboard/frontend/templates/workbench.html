@@ -1437,14 +1437,31 @@ body.workbench-fullscreen .stats-bar {
                     </select>
                 </div>
                 <div class="form-group">
+                    <label>Session</label>
+                    <div class="input-group input-group-sm">
+                        <select id="sim-session-select" class="form-select form-select-sm">
+                            <option value="">(new session)</option>
+                        </select>
+                        <button id="btn-session-refresh" class="btn btn-outline-secondary" type="button" title="Refresh sessions">
+                            <i class="bi bi-arrow-repeat"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
                     <label>Symbol</label>
-                    <select id="sim-symbol" class="form-select form-select-sm">
-                        <option value="XAUUSD" selected>XAUUSD (Gold)</option>
-                        <option value="NAS100">NAS100</option>
-                        <option value="US500">US500</option>
-                        <option value="GBPUSD">GBPUSD</option>
-                        <option value="EURUSD">EURUSD</option>
-                    </select>
+                    <div class="input-group input-group-sm">
+                        <select id="sim-symbol" class="form-select form-select-sm">
+                            <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                            <option value="NAS100">NAS100</option>
+                            <option value="US500">US500</option>
+                            <option value="GBPUSD">GBPUSD</option>
+                            <option value="EURUSD">EURUSD</option>
+                        </select>
+                        <button id="btn-refresh-symbols" class="btn btn-outline-secondary" type="button" title="Load symbols from active MT5 broker">
+                            <i class="bi bi-cloud-download"></i>
+                        </button>
+                    </div>
+                    <small id="sim-symbol-meta" class="text-muted">Broker symbols can be loaded from MT5.</small>
                 </div>
                 <div class="form-group">
                     <label>Timeframe</label>

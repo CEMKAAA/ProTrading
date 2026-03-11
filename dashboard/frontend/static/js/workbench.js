@@ -9,6 +9,8 @@ let sessionId = null;
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;
+let sessionCatalog = [];
+let brokerSymbolCatalog = [];
 
 let isPlaying = false;
 let playInterval = null;
@@ -76,6 +78,7 @@ const STRATEGY_ID = '_workbench';
 const API_BASE = '';
 const WS_BACKEND_PORT = 8000;
 const SESSION_STORAGE_KEY = 'sim:lastSession:_workbench';
+const SESSION_LIST_LIMIT = 200;
 const SPEED_STEPS = [1, 2, 5, 10];
 const ADAPTIVE_TUNE_INTERVAL_MS = 4000;
 const WS_STALL_FACTOR = 8;
@@ -438,14 +441,210 @@ function setTransportMode(mode) {
 
 function updateSessionIdStat() {
     const el = document.getElementById('stat-session-id');
+    const sel = document.getElementById('sim-session-select');
     if (!el) return;
     if (sessionId && Number.isFinite(Number(sessionId)) && Number(sessionId) > 0) {
         const sid = Number(sessionId);
         el.textContent = `#${sid}`;
         el.title = `Telegram: /use ${sid}`;
+        if (sel && Array.from(sel.options || []).some((o) => String(o.value) === String(sid))) {
+            sel.value = String(sid);
+        }
     } else {
         el.textContent = '-';
         el.title = 'No active session';
+        if (sel) sel.value = '';
+    }
+}
+
+function _sessionLabel(row) {
+    const sid = Number(row?.id || 0);
+    const sym = String(row?.symbol || '').toUpperCase() || '?';
+    const tf = String(row?.timeframe || '').toUpperCase() || '?';
+    const st = String(row?.status || '').toUpperCase() || '?';
+    const pnl = Number(row?.total_pnl || 0);
+    const pnlTxt = Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}` : '0.00';
+    return `#${sid} ${sym} ${tf} | ${st} | PnL ${pnlTxt}`;
+}
+
+function renderSessionSelector() {
+    const selectEl = document.getElementById('sim-session-select');
+    if (!selectEl) return;
+    const prev = String(selectEl.value || '');
+    const rows = Array.isArray(sessionCatalog) ? sessionCatalog : [];
+    let html = '<option value="">(new session)</option>';
+    for (const row of rows) {
+        const sid = Number(row?.id || 0);
+        if (!Number.isFinite(sid) || sid <= 0) continue;
+        html += `<option value="${sid}">${escapeHtml(_sessionLabel(row))}</option>`;
+    }
+    selectEl.innerHTML = html;
+    const target = (sessionId && Number.isFinite(Number(sessionId))) ? String(Number(sessionId)) : prev;
+    if (target && Array.from(selectEl.options).some((o) => String(o.value) === target)) {
+        selectEl.value = target;
+    } else {
+        selectEl.value = '';
+    }
+}
+
+async function refreshSessionCatalog(showToast = false) {
+    try {
+        const q = new URLSearchParams();
+        q.set('strategy_id', STRATEGY_ID);
+        q.set('limit', String(SESSION_LIST_LIMIT));
+        const res = await fetch(`${API_BASE}/api/simulation/sessions?${q.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false || !Array.isArray(data?.sessions)) {
+            if (showToast) showStatus(`Session list load failed: ${data?.error || res.status}`, 'warning');
+            return;
+        }
+        sessionCatalog = data.sessions || [];
+        renderSessionSelector();
+        if (showToast) showStatus(`Loaded ${sessionCatalog.length} session(s)`, 'info');
+    } catch (err) {
+        if (showToast) showStatus(`Session list load failed: ${err.message}`, 'warning');
+    }
+}
+
+async function switchToSession(nextSessionId, { restartLive = false } = {}) {
+    const sid = Number(nextSessionId);
+    if (!Number.isFinite(sid) || sid <= 0) {
+        showStatus('Invalid session id', 'warning');
+        return false;
+    }
+    const wasLive = liveFeedActive || liveFeedRequested;
+    stopPlay();
+    stopAgentPoller();
+    stopLiveFeed();
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sid}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error || !data?.id) {
+            if (Number(res.status) === 404 || String(data?.error || '').toLowerCase().includes('not found')) {
+                if (Number(sessionId) === sid) {
+                    sessionId = null;
+                    clearPersistedSessionId();
+                    updateSessionIdStat();
+                }
+            }
+            showStatus(`Session switch failed: ${data?.error || res.status}`, 'danger');
+            return false;
+        }
+        sessionId = Number(data.id);
+        persistSessionId(sessionId);
+        updateSessionIdStat();
+        setAgentChatAvailability(true);
+
+        const symbol = String(data.symbol || '').toUpperCase();
+        const timeframe = normalizeTimeframeLabel(data.timeframe || 'M15', 'M15');
+        const symEl = document.getElementById('sim-symbol');
+        const tfEl = document.getElementById('sim-timeframe');
+        if (symEl) symEl.value = symbol;
+        if (tfEl) tfEl.value = timeframe;
+        const balEl = document.getElementById('sim-balance');
+        if (balEl && Number.isFinite(Number(data.initial_balance))) {
+            balEl.value = String(Number(data.initial_balance));
+        }
+
+        initialBalance = Number(data.initial_balance || 10000);
+        currentBar = Number(data.current_bar || 0);
+        totalBars = Number(data.total_bars || 0);
+        allBars = [];
+        pendingAdvance = 0;
+        isAdvancing = false;
+        candleSeries.setData([]);
+        volumeSeries.setData([]);
+        if (zoneRenderer) zoneRenderer.clearAll();
+        tradeMarkers = [];
+        goldenCrossMarkers = [];
+        fvgCreatorMarkers = [];
+        clearAllIndicatorSeries();
+        syncCandleMarkers();
+        updateBarCounter();
+        renderTradeLog(Array.isArray(data.trades) ? data.trades : []);
+        updateStats({
+            balance: Number(data.current_balance || initialBalance),
+            total_pnl: Number(data.total_pnl || 0),
+            trades_count: Number(data.trades_count || 0),
+            wins: Number(data.wins || 0),
+            losses: Number(data.losses || 0),
+        });
+        applyCostModelToUI(data?.cost_model || null);
+        renderCostModelSummary(null);
+        applyWorkbenchModeUI();
+
+        if (getWorkbenchMode() === 'replay' && Number(totalBars || 0) > 0) {
+            const seekRes = await fetch(
+                `${API_BASE}/api/simulation/sessions/${sessionId}/seek?bar=${Math.max(0, currentBar)}&include_bars=1&bars_limit=1500`,
+                { method: 'POST' },
+            );
+            const seekData = await seekRes.json().catch(() => ({}));
+            if (seekRes.ok && !seekData?.error && Array.isArray(seekData?.bars)) {
+                allBars = [];
+                applyAdvancePayload(seekData);
+            }
+        }
+
+        if (getWorkbenchMode() === 'live' && (wasLive || restartLive)) {
+            await startLiveFeed(false);
+        }
+        await refreshSessionCatalog(false);
+        await refreshAgentState(false);
+        await refreshAgentMemoryList('');
+        await refreshAgentIdentity(false);
+        await refreshAgentTriggerList(false);
+        showStatus(`Switched to session #${sessionId} (${symbol} ${timeframe})`, 'success');
+        return true;
+    } catch (err) {
+        showStatus(`Session switch failed: ${err.message}`, 'danger');
+        return false;
+    }
+}
+
+function applyBrokerSymbolsToUI(rows) {
+    const selectEl = document.getElementById('sim-symbol');
+    const metaEl = document.getElementById('sim-symbol-meta');
+    if (!selectEl) return;
+    const current = String(selectEl.value || '').trim();
+    const list = Array.isArray(rows) ? rows : [];
+    if (list.length === 0) {
+        if (metaEl) metaEl.textContent = 'No symbols returned from MT5.';
+        return;
+    }
+    brokerSymbolCatalog = list.slice();
+    let html = '';
+    for (const row of list) {
+        const name = String(row?.name || '').trim();
+        if (!name) continue;
+        const desc = String(row?.description || '').trim();
+        const vis = row?.visible ? 'visible' : 'hidden';
+        const label = desc ? `${name} - ${desc}` : `${name} (${vis})`;
+        html += `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
+    }
+    if (html) selectEl.innerHTML = html;
+    if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === current.toUpperCase())) {
+        selectEl.value = current;
+    } else if (selectEl.options.length > 0) {
+        selectEl.selectedIndex = 0;
+    }
+    if (metaEl) metaEl.textContent = `Loaded ${list.length} MT5 symbols from active broker.`;
+}
+
+async function refreshBrokerSymbols(showToast = false) {
+    try {
+        const q = new URLSearchParams();
+        q.set('include_hidden', 'true');
+        q.set('limit', '2000');
+        const res = await fetch(`${API_BASE}/api/simulation/mt5/symbols?${q.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false || !Array.isArray(data?.symbols)) {
+            if (showToast) showStatus(`MT5 symbols load failed: ${data?.error || res.status}`, 'warning');
+            return;
+        }
+        applyBrokerSymbolsToUI(data.symbols || []);
+        if (showToast) showStatus(`Loaded ${Number(data.count || 0)} broker symbols`, 'success');
+    } catch (err) {
+        if (showToast) showStatus(`MT5 symbols load failed: ${err.message}`, 'warning');
     }
 }
 
@@ -472,6 +671,15 @@ function recordLatencySample(ms) {
 
 function persistSessionId(id) {
     try { if (id) localStorage.setItem(SESSION_STORAGE_KEY, String(id)); } catch (_) {}
+}
+function getPersistedSessionId() {
+    try {
+        const raw = String(localStorage.getItem(SESSION_STORAGE_KEY) || '').trim();
+        const sid = Number(raw);
+        return Number.isFinite(sid) && sid > 0 ? Math.floor(sid) : null;
+    } catch (_) {
+        return null;
+    }
 }
 function clearPersistedSessionId() {
     try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (_) {}
@@ -5223,6 +5431,7 @@ class ChartZoneRenderer {
 // â”€â”€ Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 document.addEventListener('DOMContentLoaded', () => {
+    sessionId = getPersistedSessionId();
     tickMs = getTickMsForSpeed(playSpeed);
     setTransportMode('IDLE');
     updateSessionIdStat();
@@ -5231,9 +5440,13 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     bindEvents();
     initWorkbenchState();
-    clearPersistedSessionId();
     applyWorkbenchModeUI();
     setWorkbenchFullscreenUI(!!document.fullscreenElement);
+    void refreshSessionCatalog(false);
+    void refreshBrokerSymbols(false);
+    if (sessionId) {
+        void switchToSession(sessionId, { restartLive: false });
+    }
 });
 
 function initWorkbenchState() {
@@ -5478,8 +5691,19 @@ function bindEvents() {
         const mode = getWorkbenchMode();
         showStatus(mode === 'replay' ? 'Playback trading mode selected.' : 'Normal live mode selected.', 'info');
     });
+    document.getElementById('btn-session-refresh')?.addEventListener('click', () => {
+        void refreshSessionCatalog(true);
+    });
+    document.getElementById('sim-session-select')?.addEventListener('change', (e) => {
+        const val = String(e?.target?.value || '').trim();
+        if (!val) return;
+        void switchToSession(Number(val), { restartLive: true });
+    });
     document.getElementById('btn-start-session')?.addEventListener('click', startSession);
     document.getElementById('btn-live-feed')?.addEventListener('click', toggleLiveFeed);
+    document.getElementById('btn-refresh-symbols')?.addEventListener('click', () => {
+        void refreshBrokerSymbols(true);
+    });
     document.getElementById('sim-symbol')?.addEventListener('change', () => {
         updateCostModelHint();
         const spreadEl = document.getElementById('cost-model-spread');
@@ -6261,16 +6485,16 @@ async function ensureSessionForLive(symbol, timeframe) {
                 const sameSymbol = String(existing.symbol || '').toUpperCase() === String(symbol || '').toUpperCase();
                 const sameTimeframe = String(existing.timeframe || '').toUpperCase() === String(timeframe || '').toUpperCase();
                 applyCostModelToUI(existing?.cost_model || null);
-                if (!sameSymbol || !sameTimeframe) {
-                    showStatus(
-                        `Live feed context switched to ${symbol} ${timeframe}. Current paper-trading session is preserved.`,
-                        'info'
-                    );
+                if (sameSymbol && sameTimeframe) {
+                    updateSessionIdStat();
+                    void refreshAgentMemoryList('');
+                    void refreshAgentIdentity(false);
+                    return true;
                 }
-                updateSessionIdStat();
-                void refreshAgentMemoryList('');
-                void refreshAgentIdentity(false);
-                return true;
+                showStatus(
+                    `Creating a new live session for ${symbol} ${timeframe} (existing session #${existing.id} is preserved).`,
+                    'info'
+                );
             }
         } catch (_) {
             // Fall through and recreate session.
@@ -6301,6 +6525,7 @@ async function ensureSessionForLive(symbol, timeframe) {
         sessionId = data.id;
         persistSessionId(sessionId);
         updateSessionIdStat();
+        await refreshSessionCatalog(false);
         setAgentChatAvailability(true);
         totalBars = Number(data.total_bars || 0);
         currentBar = 0;
@@ -6376,6 +6601,7 @@ async function startSession() {
         sessionId = data.id;
         persistSessionId(sessionId);
         updateSessionIdStat();
+        await refreshSessionCatalog(false);
         setAgentChatAvailability(true);
         totalBars = data.total_bars || 0;
         currentBar = 0;
@@ -6442,6 +6668,7 @@ async function resetSession() {
         updateOpenPosition(null);
         showStatus('Session reset', 'info');
         await advanceBars(50);
+        await refreshSessionCatalog(false);
         await refreshAgentState(false);
     } catch (err) {
         showStatus(`Reset error: ${err.message}`, 'danger');
@@ -6496,6 +6723,7 @@ async function advanceBars(count) {
                 sessionId = null;
                 updateSessionIdStat();
                 stopAgentPoller();
+                void refreshSessionCatalog(false);
                 document.getElementById('sim-config-panel')?.classList.remove('d-none');
             }
             showStatus(`Error: ${data.error}`, 'danger');

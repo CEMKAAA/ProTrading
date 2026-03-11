@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 import json
+import re
+import time
 import pytz
 import logging
 
@@ -29,6 +31,8 @@ class LiveTradingService:
     def __init__(self):
         self.ny_tz = pytz.timezone('America/New_York')
         self._mt5_initialized = False
+        self._symbols_cache: List[Dict[str, Any]] = []
+        self._symbols_cache_ts: float = 0.0
 
     def _ensure_mt5(self) -> bool:
         """Ensure MT5 is initialized"""
@@ -41,6 +45,125 @@ class LiveTradingService:
 
         self._mt5_initialized = True
         return True
+
+    @staticmethod
+    def _symbol_token(v: Any) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "", str(v or "")).upper()
+
+    def list_symbols(
+        self,
+        search: str = "",
+        limit: int = 500,
+        include_hidden: bool = True,
+        refresh: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """List broker symbols from currently connected MT5 terminal."""
+        if not self._ensure_mt5():
+            return []
+        now = time.time()
+        if (not refresh) and self._symbols_cache and (now - self._symbols_cache_ts) < 10.0:
+            rows = list(self._symbols_cache)
+        else:
+            raw = mt5.symbols_get()
+            rows = []
+            if raw:
+                for s in raw:
+                    name = str(getattr(s, "name", "") or "").strip()
+                    if not name:
+                        continue
+                    visible = bool(getattr(s, "visible", False))
+                    if (not include_hidden) and (not visible):
+                        continue
+                    rows.append(
+                        {
+                            "name": name,
+                            "description": str(getattr(s, "description", "") or "").strip(),
+                            "path": str(getattr(s, "path", "") or "").strip(),
+                            "visible": visible,
+                            "digits": int(getattr(s, "digits", 0) or 0),
+                            "point": float(getattr(s, "point", 0.0) or 0.0),
+                            "trade_mode": int(getattr(s, "trade_mode", 0) or 0),
+                            "spread": int(getattr(s, "spread", 0) or 0),
+                        }
+                    )
+            rows.sort(key=lambda r: (0 if bool(r.get("visible")) else 1, str(r.get("name") or "")))
+            self._symbols_cache = list(rows)
+            self._symbols_cache_ts = now
+        q = str(search or "").strip().upper()
+        if q:
+            rows = [
+                r
+                for r in rows
+                if q in str(r.get("name") or "").upper()
+                or q in str(r.get("description") or "").upper()
+            ]
+        lim = max(1, min(int(limit or 500), 5000))
+        return rows[:lim]
+
+    def resolve_symbol_name(self, symbol: str) -> Optional[str]:
+        """
+        Resolve user symbol to an actual broker symbol.
+
+        Handles common broker suffix/prefix variants like XAUUSDm, XAUUSD.r, etc.
+        """
+        req_raw = str(symbol or "").strip()
+        if not req_raw:
+            return None
+        req_u = req_raw.upper()
+        req_tok = self._symbol_token(req_u)
+        if not req_tok:
+            return None
+        rows = self.list_symbols(limit=5000, include_hidden=True, refresh=False)
+        if not rows:
+            return req_u
+
+        # Exact name match first.
+        for r in rows:
+            n = str(r.get("name") or "").strip()
+            if n.upper() == req_u:
+                if not bool(r.get("visible", False)):
+                    try:
+                        mt5.symbol_select(n, True)
+                    except Exception:
+                        pass
+                return n
+
+        best_name: Optional[str] = None
+        best_score: Optional[tuple] = None
+        for r in rows:
+            n = str(r.get("name") or "").strip()
+            if not n:
+                continue
+            nu = n.upper()
+            nt = self._symbol_token(nu)
+            if not nt:
+                continue
+            score = None
+            if nt == req_tok:
+                score = (0, 0, len(n))
+            elif nu.startswith(req_u):
+                # e.g. XAUUSDm for XAUUSD
+                score = (1, len(nu) - len(req_u), len(n))
+            elif nt.startswith(req_tok):
+                # e.g. XAUUSD.r where token still starts with XAUUSD
+                score = (2, len(nt) - len(req_tok), len(n))
+            elif req_tok in nt:
+                score = (3, nt.find(req_tok), len(n))
+            if score is None:
+                continue
+            visibility_penalty = 0 if bool(r.get("visible", False)) else 1
+            score_full = (score[0], visibility_penalty, score[1], score[2])
+            if best_score is None or score_full < best_score:
+                best_score = score_full
+                best_name = n
+
+        if best_name:
+            try:
+                mt5.symbol_select(best_name, True)
+            except Exception:
+                pass
+            return best_name
+        return None
 
     def _read_single_bot_state(self, state_file: Path) -> Dict[str, Any]:
         """Read a single bot state file"""
@@ -87,11 +210,14 @@ class LiveTradingService:
 
     def get_status(self, symbol: str = "XAUUSD") -> Dict[str, Any]:
         """Get current live trading status"""
+        symbol_req = str(symbol or "XAUUSD").upper()
         default_status = {
             "is_connected": False,  # True only when a bot is running
             "is_trading": False,
             "is_running": False,
             "mt5_available": False,  # True when MT5 terminal is connected
+            "symbol_requested": symbol_req,
+            "symbol_resolved": None,
             "active_strategy": None,
             "current_time_ny": None,
             "current_price": None,
@@ -149,6 +275,11 @@ class LiveTradingService:
             return default_status
 
         try:
+            resolved_symbol = self.resolve_symbol_name(symbol_req)
+            default_status["symbol_resolved"] = resolved_symbol
+            if not resolved_symbol:
+                return default_status
+
             # Connection status - MT5 terminal is available but no bot running
             terminal_info = mt5.terminal_info()
             if terminal_info is None:
@@ -161,7 +292,7 @@ class LiveTradingService:
                 return default_status
 
             # Get tick data
-            tick = mt5.symbol_info_tick(symbol)
+            tick = mt5.symbol_info_tick(resolved_symbol)
             if tick:
                 default_status["current_price"] = tick.bid
                 default_status["spread"] = round(tick.ask - tick.bid, 3)
@@ -179,7 +310,7 @@ class LiveTradingService:
                     default_status["margin_level"] = round(account.equity / account.margin * 100, 2)
 
             # Check open positions
-            positions = mt5.positions_get(symbol=symbol)
+            positions = mt5.positions_get(symbol=resolved_symbol)
             if positions:
                 default_status["is_trading"] = True
 
@@ -195,18 +326,23 @@ class LiveTradingService:
             return []
 
         try:
-            positions = mt5.positions_get(symbol=symbol)
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return []
+            positions = mt5.positions_get(symbol=symbol_resolved)
             if not positions:
                 return []
 
             result = []
             for pos in positions:
-                tick = mt5.symbol_info_tick(symbol)
+                tick = mt5.symbol_info_tick(symbol_resolved)
                 current_price = tick.bid if pos.type == 0 else tick.ask if tick else pos.price_current
 
                 result.append({
                     "ticket": pos.ticket,
                     "direction": "BUY" if pos.type == 0 else "SELL",
+                    "symbol": symbol_resolved,
                     "entry_time": datetime.fromtimestamp(pos.time, tz=timezone.utc).isoformat(),
                     "entry_price": pos.price_open,
                     "current_price": current_price,
@@ -261,6 +397,10 @@ class LiveTradingService:
 
         try:
             from datetime import timedelta
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return []
 
             # Get deals from last N days
             to_time = datetime.now()
@@ -272,12 +412,14 @@ class LiveTradingService:
 
             result = []
             for deal in deals:
-                if deal.symbol != symbol:
+                if str(deal.symbol or "").upper() != str(symbol_resolved).upper():
                     continue
 
                 result.append({
                     "ticket": deal.ticket,
                     "order": deal.order,
+                    "requested_symbol": symbol_req,
+                    "symbol": symbol_resolved,
                     "time": datetime.fromtimestamp(deal.time, tz=timezone.utc).isoformat(),
                     "type": "BUY" if deal.type in [0, 2] else "SELL",
                     "entry": "IN" if deal.entry == 0 else "OUT",
@@ -302,12 +444,18 @@ class LiveTradingService:
             return {"error": "MT5 not connected"}
 
         try:
-            info = mt5.symbol_info(symbol)
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return {"error": f"Symbol {symbol_req} not found in broker symbol list"}
+            info = mt5.symbol_info(symbol_resolved)
             if not info:
-                return {"error": f"Symbol {symbol} not found"}
+                return {"error": f"Symbol {symbol_resolved} not found"}
 
             return {
                 "name": info.name,
+                "requested_symbol": symbol_req,
+                "resolved_symbol": symbol_resolved,
                 "description": info.description,
                 "point": info.point,
                 "digits": info.digits,
@@ -329,20 +477,24 @@ class LiveTradingService:
         if not self._ensure_mt5():
             return None
         try:
-            tick = mt5.symbol_info_tick(symbol)
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return None
+            tick = mt5.symbol_info_tick(symbol_resolved)
             if tick and tick.ask is not None and tick.bid is not None:
                 spread = float(tick.ask) - float(tick.bid)
                 if spread >= 0:
                     if spread == 0:
-                        logger.debug(f"MT5 returned zero spread from tick for {symbol}")
+                        logger.debug(f"MT5 returned zero spread from tick for {symbol_resolved}")
                     return float(spread)
 
-            info = mt5.symbol_info(symbol)
+            info = mt5.symbol_info(symbol_resolved)
             if info and info.spread is not None and info.point is not None:
                 spread = float(info.spread) * float(info.point)
                 if spread >= 0:
                     if spread == 0:
-                        logger.debug(f"MT5 returned zero spread from symbol_info for {symbol}")
+                        logger.debug(f"MT5 returned zero spread from symbol_info for {symbol_resolved}")
                     return float(spread)
         except Exception as e:
             logger.debug(f"Error getting live spread for {symbol}: {e}")
@@ -354,6 +506,10 @@ class LiveTradingService:
             return {"error": "MT5 not connected"}
 
         try:
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return {"error": f"Symbol {symbol_req} not found in broker symbol list"}
             timeframe_map = {
                 "M1": mt5.TIMEFRAME_M1,
                 "M5": mt5.TIMEFRAME_M5,
@@ -365,13 +521,15 @@ class LiveTradingService:
             }
 
             mt5_tf = timeframe_map.get(timeframe, mt5.TIMEFRAME_M1)
-            rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 1)
+            rates = mt5.copy_rates_from_pos(symbol_resolved, mt5_tf, 0, 1)
 
             if rates is None or len(rates) == 0:
                 return {"error": "No data"}
 
             candle = rates[0]
             return {
+                "requested_symbol": symbol_req,
+                "resolved_symbol": symbol_resolved,
                 "time": datetime.fromtimestamp(candle['time'], tz=timezone.utc).isoformat(),
                 "open": candle['open'],
                 "high": candle['high'],
@@ -395,6 +553,10 @@ class LiveTradingService:
             return []
 
         try:
+            symbol_req = str(symbol or "XAUUSD").upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return []
             timeframe_map = {
                 "M1": mt5.TIMEFRAME_M1,
                 "M5": mt5.TIMEFRAME_M5,
@@ -408,7 +570,7 @@ class LiveTradingService:
             tfu = str(timeframe or "M1").upper()
             mt5_tf = timeframe_map.get(tfu, mt5.TIMEFRAME_M1)
             n = max(1, min(int(count), 10000))
-            rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, n)
+            rates = mt5.copy_rates_from_pos(symbol_resolved, mt5_tf, 0, n)
             if rates is None or len(rates) == 0:
                 return []
 
@@ -419,6 +581,8 @@ class LiveTradingService:
                     {
                         "time_unix": ts,
                         "time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                        "symbol": symbol_resolved,
+                        "requested_symbol": symbol_req,
                         "open": float(r["open"]),
                         "high": float(r["high"]),
                         "low": float(r["low"]),
