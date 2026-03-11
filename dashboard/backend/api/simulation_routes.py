@@ -8478,6 +8478,7 @@ def _agent_execute_tool(
         # Proposal lock: when a recent run_mtf_analysis proposal exists, schedule args must match.
         # This prevents drift between "proposed trigger" and actual persisted trigger.
         enforce_proposal_match = bool(effective_cfg.get("enforce_proposed_schedule_match", True))
+        require_mtf_proposal = bool(effective_cfg.get("require_mtf_proposal_before_schedule", False))
         allow_mismatch = bool(payload.get("allow_proposal_mismatch", False))
         if enforce_proposal_match and (not allow_mismatch):
             best_setup, setup_source = _agent_resolve_mtf_best_setup_for_schedule(
@@ -8485,7 +8486,16 @@ def _agent_execute_tool(
                 agent_row=agent_row,
                 max_age_sec=6 * 3600,
             )
-            if isinstance(best_setup, dict):
+            if not isinstance(best_setup, dict):
+                if require_mtf_proposal:
+                    return {
+                        "ok": False,
+                        "error": "missing_mtf_proposal_for_schedule",
+                        "details": {
+                            "hint": "Run run_mtf_analysis first (same session), then schedule the proposed trigger.",
+                        },
+                    }
+            else:
                 provided_setup = {
                     "direction": str(direction),
                     "stop_loss": float(stop_loss),

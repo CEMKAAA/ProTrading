@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -76,10 +77,53 @@ class TelegramBridgeService:
         return None
 
     @classmethod
+    def _normalize_profile_name(cls, value: Any) -> str:
+        raw = str(value or "").strip().upper()
+        if not raw:
+            return "DEFAULT"
+        raw = re.sub(r"[^A-Z0-9_]+", "_", raw)
+        raw = re.sub(r"_+", "_", raw).strip("_")
+        return raw or "DEFAULT"
+
+    @classmethod
+    def _active_profile(cls) -> str:
+        raw = str(os.getenv("TELEGRAM_ACTIVE_PROFILE") or "").strip()
+        if not raw:
+            raw = str(os.getenv("TELEGRAM_BOT_PROFILE") or "").strip()
+        if not raw:
+            raw = str(cls._read_env_file_value("TELEGRAM_ACTIVE_PROFILE") or "").strip()
+        if not raw:
+            raw = str(cls._read_env_file_value("TELEGRAM_BOT_PROFILE") or "").strip()
+        return cls._normalize_profile_name(raw)
+
+    @classmethod
+    def _profile_scoped_key(cls, key: str, profile: Optional[str] = None) -> Optional[str]:
+        base = str(key or "").strip().upper()
+        if not base.startswith("TELEGRAM_"):
+            return None
+        if base in {"TELEGRAM_ACTIVE_PROFILE", "TELEGRAM_BOT_PROFILE"}:
+            return None
+        suffix = base[len("TELEGRAM_") :].strip()
+        if not suffix:
+            return None
+        prof = cls._normalize_profile_name(profile if profile is not None else cls._active_profile())
+        if prof == "DEFAULT":
+            return None
+        return f"TELEGRAM_{prof}_{suffix}"
+
+    @classmethod
     def _get_env_value(cls, name: str, default: str = "") -> str:
         key = str(name or "").strip()
         if not key:
             return str(default or "")
+        scoped = cls._profile_scoped_key(key)
+        if scoped:
+            sv = str(os.getenv(scoped) or "").strip()
+            if sv:
+                return sv
+            sf = str(cls._read_env_file_value(scoped) or "").strip()
+            if sf:
+                return sf
         v = str(os.getenv(key) or "").strip()
         if v:
             return v
@@ -224,6 +268,25 @@ class TelegramBridgeService:
 
     def _base_url(self) -> str:
         return f"https://api.telegram.org/bot{self._token()}"
+
+    def _format_botprofile(self) -> str:
+        profile = self._active_profile()
+        scoped_token_key = self._profile_scoped_key("TELEGRAM_BOT_TOKEN", profile)
+        scoped_chat_key = self._profile_scoped_key("TELEGRAM_ALLOWED_CHAT_ID", profile)
+        scoped_enabled_key = self._profile_scoped_key("TELEGRAM_ENABLED", profile)
+        lines = [
+            f"Telegram profile: {profile}",
+            "Resolution order:",
+            f"1) {scoped_token_key or 'TELEGRAM_BOT_TOKEN'} / {scoped_chat_key or 'TELEGRAM_ALLOWED_CHAT_ID'} / {scoped_enabled_key or 'TELEGRAM_ENABLED'}",
+            "2) TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_CHAT_ID / TELEGRAM_ENABLED",
+            f"Enabled: {'YES' if self._enabled() else 'NO'}",
+            f"Allowed chat id: {str(self._allowed_chat_id() or 'MISSING')}",
+            (
+                "To switch bot system-wide set TELEGRAM_ACTIVE_PROFILE in dashboard/.env "
+                "and define TELEGRAM_<PROFILE>_BOT_TOKEN + TELEGRAM_<PROFILE>_ALLOWED_CHAT_ID, then restart backend."
+            ),
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def _now_iso() -> str:
@@ -1431,6 +1494,10 @@ class TelegramBridgeService:
         if cmd_l in {"/start", "/help"}:
             return (
                 "NexusTrader Telegram Commands\n\n"
+                "/botprofile\n"
+                "- Purpose: Show active Telegram bot profile (system-wide) and env resolution order.\n"
+                "- Params: none\n"
+                "- Example: /botprofile\n\n"
                 "/latest\n"
                 "- Purpose: Show latest active Workbench session.\n"
                 "- Params: none\n"
@@ -1505,6 +1572,9 @@ class TelegramBridgeService:
                 "- Example: /cancel 1\n\n"
                 "Tip: Non-command text is treated as /ask."
             )
+
+        if cmd_l in {"/botprofile", "/bot"}:
+            return self._format_botprofile()
 
         if cmd_l in {"/latest", "/latestsession"}:
             return self._format_latest_session(chat_id)
@@ -1795,17 +1865,32 @@ class TelegramBridgeService:
             return
         token = self._token()
         allowed = self._allowed_chat_id()
+        profile = self._active_profile()
         if not token:
-            logger.warning("Telegram bridge not started: TELEGRAM_BOT_TOKEN missing")
+            scoped = self._profile_scoped_key("TELEGRAM_BOT_TOKEN", profile)
+            logger.warning(
+                "Telegram bridge not started: TELEGRAM_BOT_TOKEN missing (profile=%s, scoped_key=%s)",
+                str(profile),
+                str(scoped or "none"),
+            )
             return
         if allowed is None:
-            logger.warning("Telegram bridge not started: TELEGRAM_ALLOWED_CHAT_ID missing/invalid")
+            scoped = self._profile_scoped_key("TELEGRAM_ALLOWED_CHAT_ID", profile)
+            logger.warning(
+                "Telegram bridge not started: TELEGRAM_ALLOWED_CHAT_ID missing/invalid (profile=%s, scoped_key=%s)",
+                str(profile),
+                str(scoped or "none"),
+            )
             return
         self._prepare_polling()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="telegram-bridge")
         self._thread.start()
-        logger.info("Telegram bridge service started")
+        logger.info(
+            "Telegram bridge service started (profile=%s, allowed_chat_id=%s)",
+            str(profile),
+            str(allowed),
+        )
 
     def stop(self) -> None:
         self._stop.set()

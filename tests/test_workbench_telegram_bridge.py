@@ -173,6 +173,23 @@ def test_allowed_chat_id_reads_env_file_fallback(monkeypatch):
     assert tbs.TelegramBridgeService._allowed_chat_id() == 7119946313
 
 
+def test_profile_scoped_env_keys_are_used_when_active_profile_set(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "SERVER")
+    monkeypatch.setenv("TELEGRAM_SERVER_ALLOWED_CHAT_ID", "111")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "222")
+    monkeypatch.setenv("TELEGRAM_SERVER_BOT_TOKEN", "server-token")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "global-token")
+    assert tbs.TelegramBridgeService._allowed_chat_id() == 111
+    assert tbs.TelegramBridgeService._token() == "server-token"
+
+
+def test_profile_scoped_env_falls_back_to_global_when_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "MAIN")
+    monkeypatch.delenv("TELEGRAM_MAIN_ALLOWED_CHAT_ID", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "333")
+    assert tbs.TelegramBridgeService._allowed_chat_id() == 333
+
+
 def test_agent_max_tool_steps_from_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_AGENT_MAX_TOOL_STEPS", "8")
     assert tbs.TelegramBridgeService._agent_max_tool_steps() == 8
@@ -464,8 +481,18 @@ def test_toolselect_command_usage_on_invalid_mode(monkeypatch):
 def test_help_includes_tool_modes():
     svc = tbs.TelegramBridgeService()
     out = svc._handle_text(7119946313, "/help")
+    assert "/botprofile" in out
     assert "/toolmode [all|parent|child] [session_id]" in out
     assert "/toolselect [autonomous|guided|minimal] [session_id]" in out
+
+
+def test_botprofile_command_outputs_active_profile(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    monkeypatch.setenv("TELEGRAM_ACTIVE_PROFILE", "SERVER")
+    monkeypatch.setenv("TELEGRAM_SERVER_ALLOWED_CHAT_ID", "7119946313")
+    out = svc._handle_text(7119946313, "/botprofile")
+    assert "Telegram profile: SERVER" in out
+    assert "TELEGRAM_SERVER_BOT_TOKEN" in out
 
 
 def test_resolve_provider_falls_back_to_claude_alias_env_key(monkeypatch):
