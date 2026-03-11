@@ -1492,6 +1492,174 @@ def test_schedule_trade_entry_rejects_lot_size_mismatch_with_risk_model():
         db.close()
 
 
+def test_schedule_trade_entry_rejects_when_payload_differs_from_recent_mtf_proposal():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        mtf_best_setup = {
+            "direction": "BUY",
+            "condition": {"condition": "close_above", "trigger_price": 5154.37},
+            "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+            "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            "stop_loss": 5144.293,
+            "take_profit": 5271.904,
+            "lot_size": 0.01,
+            "timeframe": "M15",
+            "expires_sec": 21600,
+        }
+        ctx = {
+            "tool_state": {
+                "mtf_analysis": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "best_setup": mtf_best_setup,
+                }
+            }
+        }
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot=ctx,
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5154.37,
+                "direction": "BUY",
+                "stop_loss": 5144.293,
+                "take_profit": 5200.00,  # intentionally mismatched vs proposal
+                "lot_size": 0.01,
+                "timeframe": "M15",
+                "expires_sec": 21600,
+                "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+                "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is False
+        assert str(out.get("error") or "") == "scheduled_trigger_mismatch_with_proposal"
+        details = out.get("details") if isinstance(out.get("details"), dict) else {}
+        mm = details.get("mismatches") if isinstance(details.get("mismatches"), list) else []
+        assert any(str(r.get("field") or "") == "take_profit" for r in mm if isinstance(r, dict))
+    finally:
+        db.close()
+
+
+def test_schedule_trade_entry_accepts_when_payload_matches_recent_mtf_proposal():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        mtf_best_setup = {
+            "direction": "BUY",
+            "condition": {"condition": "close_above", "trigger_price": 5154.37},
+            "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+            "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            "stop_loss": 5144.293,
+            "take_profit": 5271.904,
+            "lot_size": 0.01,
+            "timeframe": "M15",
+            "expires_sec": 21600,
+        }
+        ctx = {
+            "tool_state": {
+                "mtf_analysis": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "best_setup": mtf_best_setup,
+                }
+            }
+        }
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot=ctx,
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5154.37,
+                "direction": "BUY",
+                "stop_loss": 5144.293,
+                "take_profit": 5271.904,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+                "expires_sec": 21600,
+                "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+                "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+    finally:
+        db.close()
+
+
 def test_agent_tool_state_patch_from_tool_calls_includes_draw_selection():
     zones = [
         {

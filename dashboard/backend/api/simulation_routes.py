@@ -6604,6 +6604,113 @@ def _normalize_agent_trigger_condition(v: Any) -> Optional[str]:
     return aliases.get(c)
 
 
+def _agent_parse_iso_utc(v: Any) -> Optional[datetime]:
+    raw = str(v or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _agent_resolve_mtf_best_setup_for_schedule(
+    *,
+    context_snapshot: Dict[str, Any],
+    agent_row: Optional[WorkbenchAgentSessionModel],
+    max_age_sec: int = 6 * 3600,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    sources: List[Tuple[Dict[str, Any], str]] = []
+    if isinstance(context_snapshot, dict):
+        tool_state = context_snapshot.get("tool_state") if isinstance(context_snapshot.get("tool_state"), dict) else {}
+        mtf = tool_state.get("mtf_analysis") if isinstance(tool_state.get("mtf_analysis"), dict) else {}
+        if mtf:
+            sources.append((mtf, "context_snapshot.tool_state.mtf_analysis"))
+    if isinstance(agent_row, WorkbenchAgentSessionModel) and isinstance(agent_row.last_snapshot_json, dict):
+        ts = agent_row.last_snapshot_json.get("tool_state") if isinstance(agent_row.last_snapshot_json.get("tool_state"), dict) else {}
+        mtf = ts.get("mtf_analysis") if isinstance(ts.get("mtf_analysis"), dict) else {}
+        if mtf:
+            sources.append((mtf, "agent_snapshot.tool_state.mtf_analysis"))
+
+    for mtf, src in sources:
+        best_setup = mtf.get("best_setup") if isinstance(mtf.get("best_setup"), dict) else {}
+        if not best_setup:
+            continue
+        generated_at = _agent_parse_iso_utc(mtf.get("generated_at"))
+        if generated_at is not None:
+            age_sec = (_utc_now() - generated_at).total_seconds()
+            if age_sec > float(max(60, int(max_age_sec))):
+                continue
+        return best_setup, src
+    return None, ""
+
+
+def _agent_schedule_mismatch_report(
+    *,
+    best_setup: Dict[str, Any],
+    provided: Dict[str, Any],
+    price_tol: float,
+    lot_tol: float,
+    expires_tol_sec: int = 300,
+) -> List[Dict[str, Any]]:
+    mismatches: List[Dict[str, Any]] = []
+
+    def _eq_str(field: str, expected: Any, actual: Any) -> None:
+        exp = str(expected or "").strip().lower()
+        act = str(actual or "").strip().lower()
+        if exp and act and exp != act:
+            mismatches.append({"field": field, "expected": expected, "provided": actual})
+
+    def _eq_num(field: str, expected: Any, actual: Any, tol: float) -> None:
+        exp = _to_float_or_none(expected)
+        act = _to_float_or_none(actual)
+        if exp is None or act is None:
+            return
+        if abs(float(exp) - float(act)) > float(max(1e-9, tol)):
+            mismatches.append({"field": field, "expected": float(exp), "provided": float(act)})
+
+    _eq_str("direction", best_setup.get("direction"), provided.get("direction"))
+    _eq_num("stop_loss", best_setup.get("stop_loss"), provided.get("stop_loss"), price_tol)
+    _eq_num("lot_size", best_setup.get("lot_size"), provided.get("lot_size"), lot_tol)
+    _eq_str("timeframe", best_setup.get("timeframe"), provided.get("timeframe"))
+
+    exp_tp = _to_float_or_none(best_setup.get("take_profit"))
+    got_tp = _to_float_or_none(provided.get("take_profit"))
+    if exp_tp is not None and got_tp is not None:
+        _eq_num("take_profit", exp_tp, got_tp, price_tol)
+    elif exp_tp is None and got_tp is not None:
+        mismatches.append({"field": "take_profit", "expected": None, "provided": float(got_tp)})
+    elif exp_tp is not None and got_tp is None:
+        mismatches.append({"field": "take_profit", "expected": float(exp_tp), "provided": None})
+
+    exp_expires = _agent_usage_safe_int(best_setup.get("expires_sec"), 0)
+    got_expires = _agent_usage_safe_int(provided.get("expires_sec"), 0)
+    if exp_expires > 0 and got_expires > 0 and abs(int(exp_expires) - int(got_expires)) > int(max(1, int(expires_tol_sec))):
+        mismatches.append({"field": "expires_sec", "expected": int(exp_expires), "provided": int(got_expires)})
+
+    exp_condition = best_setup.get("condition") if isinstance(best_setup.get("condition"), dict) else {}
+    got_condition = provided.get("condition") if isinstance(provided.get("condition"), dict) else {}
+    _eq_str("condition.condition", exp_condition.get("condition"), got_condition.get("condition"))
+    _eq_num("condition.trigger_price", exp_condition.get("trigger_price"), got_condition.get("trigger_price"), price_tol)
+
+    exp_pre = best_setup.get("precondition") if isinstance(best_setup.get("precondition"), dict) else {}
+    got_pre = provided.get("precondition") if isinstance(provided.get("precondition"), dict) else {}
+    if exp_pre:
+        _eq_str("precondition.condition", exp_pre.get("condition"), got_pre.get("condition"))
+        _eq_num("precondition.trigger_price", exp_pre.get("trigger_price"), got_pre.get("trigger_price"), price_tol)
+
+    exp_cancel = best_setup.get("cancel_rule") if isinstance(best_setup.get("cancel_rule"), dict) else {}
+    got_cancel = provided.get("cancel_rule") if isinstance(provided.get("cancel_rule"), dict) else {}
+    if exp_cancel:
+        _eq_str("cancel_rule.condition", exp_cancel.get("condition"), got_cancel.get("condition"))
+        _eq_num("cancel_rule.trigger_price", exp_cancel.get("trigger_price"), got_cancel.get("trigger_price"), price_tol)
+
+    return mismatches
+
+
 def _agent_effective_max_tool_steps(provider_name: Any, requested_steps: Any) -> int:
     try:
         n = int(requested_steps)
@@ -8362,6 +8469,54 @@ def _agent_execute_tool(
                 "trigger_price": float(cancel_price),
             }
 
+        agent_row = _get_active_agent(simulation_session_id=int(session.id), db=db)
+        if agent_row is None:
+            agent_row = _get_latest_agent(simulation_session_id=int(session.id), db=db)
+        if agent_row is None:
+            return {"ok": False, "error": "agent_session_not_found"}
+
+        # Proposal lock: when a recent run_mtf_analysis proposal exists, schedule args must match.
+        # This prevents drift between "proposed trigger" and actual persisted trigger.
+        enforce_proposal_match = bool(effective_cfg.get("enforce_proposed_schedule_match", True))
+        allow_mismatch = bool(payload.get("allow_proposal_mismatch", False))
+        if enforce_proposal_match and (not allow_mismatch):
+            best_setup, setup_source = _agent_resolve_mtf_best_setup_for_schedule(
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                agent_row=agent_row,
+                max_age_sec=6 * 3600,
+            )
+            if isinstance(best_setup, dict):
+                provided_setup = {
+                    "direction": str(direction),
+                    "stop_loss": float(stop_loss),
+                    "take_profit": float(take_profit) if take_profit is not None else None,
+                    "lot_size": float(lot_value),
+                    "timeframe": str(timeframe),
+                    "expires_sec": int(expires_sec),
+                    "condition": {"condition": str(condition), "trigger_price": float(trigger_price)},
+                    "precondition": dict(precondition) if isinstance(precondition, dict) else {},
+                    "cancel_rule": dict(cancel_rule) if isinstance(cancel_rule, dict) else {},
+                }
+                price_tol = max(float(inst.point_value) * 2.0, 1e-5)
+                lot_tol = max(float(inst.lot_step) * 1.01, 0.01)
+                mismatches = _agent_schedule_mismatch_report(
+                    best_setup=best_setup,
+                    provided=provided_setup,
+                    price_tol=price_tol,
+                    lot_tol=lot_tol,
+                    expires_tol_sec=300,
+                )
+                if mismatches:
+                    return {
+                        "ok": False,
+                        "error": "scheduled_trigger_mismatch_with_proposal",
+                        "details": {
+                            "proposal_source": str(setup_source or ""),
+                            "mismatches": mismatches[:16],
+                            "hint": "Re-run run_mtf_analysis and schedule exactly the proposed setup, or set allow_proposal_mismatch=true.",
+                        },
+                    }
+
         trigger = {
             "id": f"trg_{uuid.uuid4().hex[:10]}",
             "status": "pending",
@@ -8395,12 +8550,6 @@ def _agent_execute_tool(
             trigger["precondition"] = dict(precondition)
         if isinstance(cancel_rule, dict):
             trigger["cancel_rule"] = dict(cancel_rule)
-
-        agent_row = _get_active_agent(simulation_session_id=int(session.id), db=db)
-        if agent_row is None:
-            agent_row = _get_latest_agent(simulation_session_id=int(session.id), db=db)
-        if agent_row is None:
-            return {"ok": False, "error": "agent_session_not_found"}
         triggers = _get_agent_trade_triggers(agent_row)
 
         # Keep unique pending triggers for the same semantic setup.
