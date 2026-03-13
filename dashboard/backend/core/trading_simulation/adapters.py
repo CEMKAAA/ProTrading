@@ -48,7 +48,7 @@ def _is_orb_strategy(strategy_id: str) -> bool:
 
 def _is_liquidity_strategy(strategy_id: str) -> bool:
     sid = (strategy_id or "").lower()
-    return "liquidity_sweep" in sid
+    return ("liquidity_sweep" in sid) or ("htf_fvg_liquidity_reclaim" in sid)
 
 
 def _is_keltner_strategy(strategy_id: str) -> bool:
@@ -101,11 +101,47 @@ def _extract_orb_inputs(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_liquidity_inputs(state: Dict[str, Any]) -> Dict[str, Any]:
+    sweep_gate = state.get("sweep_gate") if isinstance(state.get("sweep_gate"), dict) else {}
     return {
-        "sweep_detected": bool(state.get("sweep_detected") or state.get("liquidity_sweep_detected")),
-        "rejection_confirmed": bool(state.get("rejection_confirmed") or state.get("reversal_confirmed")),
-        "sweep_side": str(state.get("sweep_side") or state.get("sweep_direction") or ""),
-        "liquidity_level": _to_float(state.get("liquidity_level"), 0.0),
+        "sweep_detected": bool(
+            state.get("sweep_detected")
+            or state.get("liquidity_sweep_detected")
+            or sweep_gate.get("sweep_found")
+        ),
+        "rejection_confirmed": bool(
+            state.get("rejection_confirmed")
+            or state.get("reversal_confirmed")
+            or str(state.get("sweep_quality") or "").lower() in {"moderate", "strong"}
+            or str(sweep_gate.get("rejection_quality") or "").lower() in {"moderate", "strong"}
+        ),
+        "sweep_side": str(
+            state.get("sweep_side")
+            or state.get("sweep_direction")
+            or sweep_gate.get("expected_direction")
+            or ""
+        ),
+        "liquidity_level": _to_float(
+            state.get("liquidity_level", sweep_gate.get("liquidity_level")),
+            0.0,
+        ),
+        "sweep_quality": str(
+            state.get("sweep_quality")
+            or sweep_gate.get("rejection_quality")
+            or ""
+        ),
+        "fvg_detected": bool(state.get("fvg_detected") or state.get("active_fvg") or state.get("setup_detected")),
+        "fvg_quality": str(
+            state.get("fvg_quality")
+            or state.get("fvg_quality_label")
+            or state.get("anchor_quality")
+            or ""
+        ),
+        "htf_timeframe": str(
+            state.get("htf_timeframe")
+            or state.get("anchor_timeframe")
+            or state.get("fvg_timeframe")
+            or ""
+        ),
     }
 
 
@@ -154,6 +190,8 @@ def _compute_signals(strategy_id: str, step_inputs: Dict[str, Any], state: Dict[
         "momentum_ok": bool(step_inputs.get("momentum_ok")),
         "adx_ok": _to_float(step_inputs.get("adx_value"), 0.0) >= 20.0,
         "setup_detected": setup_detected,
+        "fvg_detected": bool(step_inputs.get("fvg_detected")) or setup_detected,
+        "fvg_quality_strong": str(step_inputs.get("fvg_quality") or "").lower() == "strong",
         "risk_defined": risk_defined,
         "setup_invalidated": bool(invalidation_reason),
         "review_ready": bool(state.get("last_closed_trade") or state.get("last_trade_result")),

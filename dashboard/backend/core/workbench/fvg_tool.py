@@ -1,29 +1,17 @@
 """FVG (Fair Value Gap) detection tool for the Trader's Workbench."""
 
 import re
-import math
 from typing import Any, Dict, List
 import pandas as pd
 
 from .tool_base import WorkbenchTool
-
-# Per-instrument minimum gap size defaults (from production strategies)
-INSTRUMENT_MIN_GAP: Dict[str, float] = {
-    "XAUUSD": 0.15,
-    "NAS100": 1.0,
-    "US500": 1.0,
-    "GBPUSD": 0.0001,
-    "EURUSD": 0.0001,
-}
-
-DEFAULT_MIN_GAP = 0.15
-STRICTNESS_GAP_MULTIPLIER: Dict[int, float] = {
-    1: 0.70,  # loose
-    2: 0.85,
-    3: 1.00,  # balanced
-    4: 1.20,
-    5: 1.45,  # strict
-}
+from .analysis_utils import (
+    DEFAULT_MIN_GAP,
+    INSTRUMENT_MIN_GAP,
+    STRICTNESS_GAP_MULTIPLIER,
+    detect_fvg_zones,
+    instrument_min_gap,
+)
 
 
 class FVGTool(WorkbenchTool):
@@ -325,198 +313,12 @@ class FVGTool(WorkbenchTool):
         if df is None or len(df) < 3:
             return []
 
-        symbol = config.get("symbol", "XAUUSD")
-        min_gap = config.get("min_gap")
-        if min_gap is None:
-            min_gap = INSTRUMENT_MIN_GAP.get(symbol, DEFAULT_MIN_GAP)
-        strictness = self.normalize_strictness(config.get("strictness"), 3)
-        min_gap = float(min_gap) * float(STRICTNESS_GAP_MULTIPLIER.get(strictness, 1.0))
-
-        show_filled = config.get("show_filled", False)
-        trend_filter_enabled = bool(config.get("trend_filter_enabled", True))
-        trend_alignment_mode = str(config.get("trend_alignment_mode") or "prefer").strip().lower()
-        if trend_alignment_mode not in {"prefer", "strict"}:
-            trend_alignment_mode = "prefer"
         precomputed_trend = config.get("_trend_context")
         if isinstance(precomputed_trend, dict):
             trend_ctx = precomputed_trend
         else:
             trend_ctx = self.compute_trend_context(df=df, config=config)
-        trend_direction = str(trend_ctx.get("direction") or "unknown").strip().lower()
-
-        n = len(df)
-        zones_active_bull: List[Dict[str, Any]] = []
-        zones_active_bear: List[Dict[str, Any]] = []
-        zones_filled: List[Dict[str, Any]] = []
-
-        def _refresh_current_gap_size(zone: Dict[str, Any]) -> None:
-            top = float(zone.get("top") or 0.0)
-            bottom = float(zone.get("bottom") or 0.0)
-            zone["current_gap_size"] = round(max(0.0, abs(top - bottom)), 5)
-
-        def _normalize_zone_bounds(zone: Dict[str, Any]) -> None:
-            """Clamp zone bounds to physically valid FVG geometry."""
-            z_type = str(zone.get("type") or "").lower()
-            top = float(zone.get("top") or 0.0)
-            bottom = float(zone.get("bottom") or 0.0)
-            origin_top = float(zone.get("origin_top") if zone.get("origin_top") is not None else top)
-            origin_bottom = float(zone.get("origin_bottom") if zone.get("origin_bottom") is not None else bottom)
-            filled = bool(zone.get("filled", False))
-
-            if not (math.isfinite(top) and math.isfinite(bottom)):
-                return
-
-            if z_type == "bullish_fvg":
-                # Bullish geometry: bottom is anchored to c1.high, top can only move downward with mitigation.
-                bottom = origin_bottom
-                top = min(top, origin_top)
-                top = max(top, bottom)
-                if filled:
-                    top = bottom
-            elif z_type == "bearish_fvg":
-                # Bearish geometry: top is anchored to c1.low, bottom can only move upward with mitigation.
-                top = origin_top
-                bottom = max(bottom, origin_bottom)
-                bottom = min(bottom, top)
-                if filled:
-                    bottom = top
-            else:
-                hi = max(top, bottom)
-                lo = min(top, bottom)
-                top, bottom = hi, lo
-                if filled:
-                    top = bottom
-
-            zone["top"] = float(top)
-            zone["bottom"] = float(bottom)
-            _refresh_current_gap_size(zone)
-
-        for i in range(2, n):
-            c1 = df.iloc[i - 2]  # First candle
-            c3 = df.iloc[i]      # Third candle
-            ts = df.index[i]
-            ts_unix = int(ts.timestamp()) if hasattr(ts, "timestamp") else 0
-
-            # 1) Update existing zones with this candle first.
-            # Bullish FVG:
-            # - if candle low <= bottom => fully filled/cancelled
-            # - if bottom < candle low < top => partial mitigation, top moves down to candle low
-            if zones_active_bull:
-                next_bull: List[Dict[str, Any]] = []
-                low_i = float(c3["low"])
-                for z in zones_active_bull:
-                    z_bottom = float(z["bottom"])
-                    z_top = float(z["top"])
-                    if low_i <= z_bottom:
-                        z["filled"] = True
-                        z["current_gap_size"] = 0.0
-                        z["filled_at_unix"] = ts_unix
-                        _normalize_zone_bounds(z)
-                        if show_filled:
-                            zones_filled.append(z)
-                        continue
-                    if z_bottom < low_i < z_top:
-                        z["top"] = float(low_i)
-                        z["mitigations"] = int(z.get("mitigations", 0)) + 1
-                        z["last_mitigated_unix"] = ts_unix
-                        _normalize_zone_bounds(z)
-                    next_bull.append(z)
-                zones_active_bull = next_bull
-
-            # Bearish FVG:
-            # - if candle high >= top => fully filled/cancelled
-            # - if bottom < candle high < top => partial mitigation, bottom moves up to candle high
-            if zones_active_bear:
-                next_bear: List[Dict[str, Any]] = []
-                high_i = float(c3["high"])
-                for z in zones_active_bear:
-                    z_bottom = float(z["bottom"])
-                    z_top = float(z["top"])
-                    if high_i >= z_top:
-                        z["filled"] = True
-                        z["current_gap_size"] = 0.0
-                        z["filled_at_unix"] = ts_unix
-                        _normalize_zone_bounds(z)
-                        if show_filled:
-                            zones_filled.append(z)
-                        continue
-                    if z_bottom < high_i < z_top:
-                        z["bottom"] = float(high_i)
-                        z["mitigations"] = int(z.get("mitigations", 0)) + 1
-                        z["last_mitigated_unix"] = ts_unix
-                        _normalize_zone_bounds(z)
-                    next_bear.append(z)
-                zones_active_bear = next_bear
-
-            # --- Bullish FVG: candle3.low > candle1.high ---
-            bull_gap = c3["low"] - c1["high"]
-            if bull_gap > min_gap:
-                start_ts = df.index[i - 2]
-                end_ts = df.index[i]
-                zones_active_bull.append({
-                    "type": "bullish_fvg",
-                    "top": float(c3["low"]),
-                    "bottom": float(c1["high"]),
-                    "origin_top": float(c3["low"]),
-                    "origin_bottom": float(c1["high"]),
-                    "start_time": str(start_ts),
-                    "end_time": str(end_ts),
-                    "start_time_unix": int(start_ts.timestamp()) if hasattr(start_ts, "timestamp") else 0,
-                    "end_time_unix": int(end_ts.timestamp()) if hasattr(end_ts, "timestamp") else 0,
-                    "bar_index": i,
-                    "original_gap_size": round(bull_gap, 5),
-                    "current_gap_size": round(bull_gap, 5),
-                    "gap_size": round(bull_gap, 5),
-                    "mitigations": 0,
-                    "filled": False,
-                })
-
-            # --- Bearish FVG: candle1.low > candle3.high ---
-            bear_gap = c1["low"] - c3["high"]
-            if bear_gap > min_gap:
-                start_ts = df.index[i - 2]
-                end_ts = df.index[i]
-                zones_active_bear.append({
-                    "type": "bearish_fvg",
-                    "top": float(c1["low"]),
-                    "bottom": float(c3["high"]),
-                    "origin_top": float(c1["low"]),
-                    "origin_bottom": float(c3["high"]),
-                    "start_time": str(start_ts),
-                    "end_time": str(end_ts),
-                    "start_time_unix": int(start_ts.timestamp()) if hasattr(start_ts, "timestamp") else 0,
-                    "end_time_unix": int(end_ts.timestamp()) if hasattr(end_ts, "timestamp") else 0,
-                    "bar_index": i,
-                    "original_gap_size": round(bear_gap, 5),
-                    "current_gap_size": round(bear_gap, 5),
-                    "gap_size": round(bear_gap, 5),
-                    "mitigations": 0,
-                    "filled": False,
-                })
-
-        zones: List[Dict[str, Any]] = [*zones_active_bull, *zones_active_bear]
-        if show_filled and zones_filled:
-            zones.extend(zones_filled)
-
-        for z in zones:
-            _normalize_zone_bounds(z)
-            ztype = str(z.get("type") or "")
-            aligned = (
-                (trend_direction == "bullish" and ztype == "bullish_fvg")
-                or (trend_direction == "bearish" and ztype == "bearish_fvg")
-            )
-            z["trend_direction"] = trend_direction
-            z["trend_timeframe"] = str(trend_ctx.get("trend_timeframe") or "")
-            z["trend_base_timeframe"] = str(trend_ctx.get("base_timeframe") or "")
-            z["trend_aligned"] = bool(aligned)
-
-        if trend_filter_enabled:
-            if trend_direction == "bullish":
-                zones = [z for z in zones if str(z.get("type") or "") == "bullish_fvg"]
-            elif trend_direction == "bearish":
-                zones = [z for z in zones if str(z.get("type") or "") == "bearish_fvg"]
-            elif trend_alignment_mode == "strict":
-                zones = []
-
-        zones.sort(key=lambda z: int(z.get("bar_index") or 0))
-        return zones
+        scan_cfg = dict(config or {})
+        scan_cfg["_trend_context"] = trend_ctx
+        scan_cfg["trend_direction"] = str(trend_ctx.get("direction") or "unknown").strip().lower()
+        return detect_fvg_zones(df=df, config=scan_cfg)

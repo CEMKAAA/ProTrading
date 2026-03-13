@@ -740,8 +740,15 @@ async function refreshBrokerSymbols(showToast = false) {
             if (showToast) showStatus(`MT5 symbols load failed: ${data?.error || res.status}`, 'warning');
             return;
         }
-        applyBrokerSymbolsToUI(data.symbols || []);
-        if (showToast) showStatus(`Loaded ${Number(data.count || 0)} broker symbols`, 'success');
+        const rows = Array.isArray(data?.symbols) ? data.symbols : [];
+        applyBrokerSymbolsToUI(rows);
+        if (showToast) {
+            if (rows.length > 0) {
+                showStatus(`Loaded ${Number(data.count || 0)} broker symbols`, 'success');
+            } else {
+                showStatus(`MT5 symbols load failed: ${data?.error || 'no symbols returned'}`, 'warning');
+            }
+        }
     } catch (err) {
         if (showToast) showStatus(`MT5 symbols load failed: ${err.message}`, 'warning');
     }
@@ -1685,6 +1692,52 @@ function renderAgentState(state) {
     if (toolSelectionModeEl && ['autonomous', 'guided', 'minimal'].includes(toolSelectionMode)) {
         toolSelectionModeEl.value = toolSelectionMode;
     }
+    const strategyProfileEl = document.getElementById('agent-strategy-profile');
+    const strategyProfile = String(cfg.agent_strategy_profile || '').trim().toLowerCase();
+    if (strategyProfileEl && ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2'].includes(strategyProfile)) {
+        strategyProfileEl.value = strategyProfile;
+    }
+    const strategyPresetEl = document.getElementById('agent-strategy-preset');
+    const strategyPreset = String(cfg.agent_strategy_preset || '').trim().toLowerCase();
+    if (strategyPresetEl && ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15'].includes(strategyPreset)) {
+        strategyPresetEl.value = strategyPreset;
+    }
+    const liqGateModeEl = document.getElementById('agent-liq-gate-mode');
+    const liqGateMode = String(cfg.mtf_liquidity_gate_mode || cfg.liquidity_gate_mode || '').trim().toLowerCase();
+    if (liqGateModeEl && ['hybrid', 'strict', 'assist'].includes(liqGateMode)) {
+        liqGateModeEl.value = liqGateMode;
+    }
+    const liqSweepFreshHoursEl = document.getElementById('agent-liq-sweep-fresh-hours');
+    const liqSweepFreshHours = Number(cfg.mtf_liquidity_sweep_freshness_hours ?? cfg.liquidity_sweep_freshness_hours);
+    if (liqSweepFreshHoursEl && Number.isFinite(liqSweepFreshHours)) {
+        liqSweepFreshHoursEl.value = String(Math.max(0.5, Math.min(24, liqSweepFreshHours)));
+    }
+    const liqSweepMinBarsEl = document.getElementById('agent-liq-sweep-min-bars');
+    const liqSweepMinBars = Number(cfg.mtf_liquidity_sweep_freshness_min_bars ?? cfg.liquidity_sweep_freshness_min_bars);
+    if (liqSweepMinBarsEl && Number.isFinite(liqSweepMinBars)) {
+        liqSweepMinBarsEl.value = String(Math.max(1, Math.min(200, Math.round(liqSweepMinBars))));
+    }
+    const liqSweepDistGoldEl = document.getElementById('agent-liq-sweep-dist-gold');
+    const liqSweepDistGold = Number(cfg.mtf_liquidity_sweep_distance_atr_gold ?? cfg.liquidity_sweep_distance_atr_gold);
+    if (liqSweepDistGoldEl && Number.isFinite(liqSweepDistGold)) {
+        liqSweepDistGoldEl.value = String(Math.max(0.05, Math.min(3, liqSweepDistGold)));
+    }
+    const liqSweepDistIndicesEl = document.getElementById('agent-liq-sweep-dist-indices');
+    const liqSweepDistIndices = Number(cfg.mtf_liquidity_sweep_distance_atr_indices ?? cfg.liquidity_sweep_distance_atr_indices);
+    if (liqSweepDistIndicesEl && Number.isFinite(liqSweepDistIndices)) {
+        liqSweepDistIndicesEl.value = String(Math.max(0.05, Math.min(3, liqSweepDistIndices)));
+    }
+    const liqSweepDistFxEl = document.getElementById('agent-liq-sweep-dist-fx');
+    const liqSweepDistFx = Number(cfg.mtf_liquidity_sweep_distance_atr_fx ?? cfg.liquidity_sweep_distance_atr_fx);
+    if (liqSweepDistFxEl && Number.isFinite(liqSweepDistFx)) {
+        liqSweepDistFxEl.value = String(Math.max(0.05, Math.min(3, liqSweepDistFx)));
+    }
+    const liqSweepDistDefaultEl = document.getElementById('agent-liq-sweep-dist-default');
+    const liqSweepDistDefault = Number(cfg.mtf_liquidity_sweep_distance_atr_default ?? cfg.liquidity_sweep_distance_atr_default);
+    if (liqSweepDistDefaultEl && Number.isFinite(liqSweepDistDefault)) {
+        liqSweepDistDefaultEl.value = String(Math.max(0.05, Math.min(3, liqSweepDistDefault)));
+    }
+    syncAgentStrategyControls();
     setAgentToolModeBadge(strategyToolAccess);
     const watchdogIntervalEl = document.getElementById('agent-watchdog-interval');
     const watchdogInt = Number(cfg.watchdog_interval_sec);
@@ -3525,6 +3578,8 @@ function getAgentWatchdogConfigFromUI() {
     const modeEl = document.getElementById('agent-watchdog-mode');
     const strategyToolAccessEl = document.getElementById('agent-strategy-tool-access');
     const toolSelectionModeEl = document.getElementById('agent-tool-selection-mode');
+    const strategyProfileEl = document.getElementById('agent-strategy-profile');
+    const strategyPresetEl = document.getElementById('agent-strategy-preset');
     const intervalEl = document.getElementById('agent-watchdog-interval');
     const llmIntervalEl = document.getElementById('agent-watchdog-llm-interval');
     const triggerApprovalEl = document.getElementById('agent-watchdog-trigger-require-approval');
@@ -3537,12 +3592,23 @@ function getAgentWatchdogConfigFromUI() {
     const newsSummaryModelEl = document.getElementById('agent-news-summary-model');
     const newsIbkrHostEl = document.getElementById('agent-news-ibkr-host');
     const newsIbkrPortEl = document.getElementById('agent-news-ibkr-port');
+    const liqGateModeEl = document.getElementById('agent-liq-gate-mode');
+    const liqSweepFreshHoursEl = document.getElementById('agent-liq-sweep-fresh-hours');
+    const liqSweepMinBarsEl = document.getElementById('agent-liq-sweep-min-bars');
+    const liqSweepDistGoldEl = document.getElementById('agent-liq-sweep-dist-gold');
+    const liqSweepDistIndicesEl = document.getElementById('agent-liq-sweep-dist-indices');
+    const liqSweepDistFxEl = document.getElementById('agent-liq-sweep-dist-fx');
+    const liqSweepDistDefaultEl = document.getElementById('agent-liq-sweep-dist-default');
     const modeRaw = String(modeEl?.value || 'deterministic').trim().toLowerCase();
     const mode = ['deterministic', 'local_gptoss_http', 'claude'].includes(modeRaw) ? modeRaw : 'deterministic';
     const strategyToolAccessRaw = String(strategyToolAccessEl?.value || 'all').trim().toLowerCase();
     const strategyToolAccess = ['all', 'parent', 'child'].includes(strategyToolAccessRaw) ? strategyToolAccessRaw : 'all';
     const toolSelectionRaw = String(toolSelectionModeEl?.value || 'autonomous').trim().toLowerCase();
     const toolSelectionMode = ['autonomous', 'guided', 'minimal'].includes(toolSelectionRaw) ? toolSelectionRaw : 'autonomous';
+    const strategyProfileRaw = String(strategyProfileEl?.value || 'classic_htf_fvg').trim().toLowerCase();
+    const strategyProfile = ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2'].includes(strategyProfileRaw) ? strategyProfileRaw : 'classic_htf_fvg';
+    const strategyPresetRaw = String(strategyPresetEl?.value || 'default').trim().toLowerCase();
+    const strategyPreset = ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15'].includes(strategyPresetRaw) ? strategyPresetRaw : 'default';
     const intervalRaw = Number(intervalEl?.value || 30);
     const intervalSec = Number.isFinite(intervalRaw) ? Math.max(5, Math.min(300, Math.round(intervalRaw))) : 30;
     const llmIntervalRaw = Number(llmIntervalEl?.value || 180);
@@ -3555,10 +3621,33 @@ function getAgentWatchdogConfigFromUI() {
     const newsIbkrHost = String(newsIbkrHostEl?.value || '').trim() || '127.0.0.1';
     const newsIbkrPortRaw = Number(newsIbkrPortEl?.value || 7497);
     const newsIbkrPort = Number.isFinite(newsIbkrPortRaw) ? Math.max(1, Math.min(65535, Math.round(newsIbkrPortRaw))) : 7497;
+    const liqGateModeRaw = String(liqGateModeEl?.value || 'hybrid').trim().toLowerCase();
+    const liqGateMode = ['hybrid', 'strict', 'assist'].includes(liqGateModeRaw) ? liqGateModeRaw : 'hybrid';
+    const liqSweepFreshHoursRaw = Number(liqSweepFreshHoursEl?.value || 4);
+    const liqSweepFreshHours = Number.isFinite(liqSweepFreshHoursRaw) ? Math.max(0.5, Math.min(24, liqSweepFreshHoursRaw)) : 4;
+    const liqSweepMinBarsRaw = Number(liqSweepMinBarsEl?.value || 4);
+    const liqSweepMinBars = Number.isFinite(liqSweepMinBarsRaw) ? Math.max(1, Math.min(200, Math.round(liqSweepMinBarsRaw))) : 4;
+    const liqSweepDistGoldRaw = Number(liqSweepDistGoldEl?.value || 0.5);
+    const liqSweepDistGold = Number.isFinite(liqSweepDistGoldRaw) ? Math.max(0.05, Math.min(3, liqSweepDistGoldRaw)) : 0.5;
+    const liqSweepDistIndicesRaw = Number(liqSweepDistIndicesEl?.value || 0.3);
+    const liqSweepDistIndices = Number.isFinite(liqSweepDistIndicesRaw) ? Math.max(0.05, Math.min(3, liqSweepDistIndicesRaw)) : 0.3;
+    const liqSweepDistFxRaw = Number(liqSweepDistFxEl?.value || 0.25);
+    const liqSweepDistFx = Number.isFinite(liqSweepDistFxRaw) ? Math.max(0.05, Math.min(3, liqSweepDistFxRaw)) : 0.25;
+    const liqSweepDistDefaultRaw = Number(liqSweepDistDefaultEl?.value || 0.3);
+    const liqSweepDistDefault = Number.isFinite(liqSweepDistDefaultRaw) ? Math.max(0.05, Math.min(3, liqSweepDistDefaultRaw)) : 0.3;
     const out = {
         watchdog_mode: mode,
         tool_selection_mode: toolSelectionMode,
         strategy_tool_access_mode: strategyToolAccess,
+        agent_strategy_profile: strategyProfile,
+        agent_strategy_preset: strategyPreset,
+        mtf_liquidity_gate_mode: liqGateMode,
+        mtf_liquidity_sweep_freshness_hours: liqSweepFreshHours,
+        mtf_liquidity_sweep_freshness_min_bars: liqSweepMinBars,
+        mtf_liquidity_sweep_distance_atr_gold: liqSweepDistGold,
+        mtf_liquidity_sweep_distance_atr_indices: liqSweepDistIndices,
+        mtf_liquidity_sweep_distance_atr_fx: liqSweepDistFx,
+        mtf_liquidity_sweep_distance_atr_default: liqSweepDistDefault,
         watchdog_interval_sec: intervalSec,
         watchdog_llm_min_interval_sec: llmMinIntervalSec,
         watchdog_trigger_requires_approval: Boolean(triggerApprovalEl?.checked),
@@ -3638,6 +3727,21 @@ function syncAgentNewsProviderControls() {
     renderAgentNewsSummaryWarning();
     if (Boolean(llmSummaryEl?.checked) && agentAdminNewsHealth.anthropicApiKeyConfigured !== true) {
         void refreshAgentNewsHealth(false);
+    }
+}
+
+function syncAgentStrategyControls() {
+    const profileEl = document.getElementById('agent-strategy-profile');
+    const presetEl = document.getElementById('agent-strategy-preset');
+    if (!profileEl || !presetEl) return;
+    const profile = String(profileEl.value || 'classic_htf_fvg').trim().toLowerCase();
+    const isLiquidityProfile = profile === 'htf_fvg_liquidity_reclaim_v2';
+    presetEl.disabled = !isLiquidityProfile;
+    const hintEl = presetEl.parentElement?.querySelector('.agent-field-hint');
+    if (hintEl) {
+        hintEl.textContent = isLiquidityProfile
+            ? 'Used by the liquidity-reclaim strategy profile. Classic HTF FVG ignores this.'
+            : 'Classic HTF FVG is selected, so this preset is currently ignored.';
     }
 }
 
@@ -6006,6 +6110,7 @@ function bindEvents() {
     syncAgentPermissionDependencies();
     syncAgentGuardrailControls();
     syncAgentNewsProviderControls();
+    syncAgentStrategyControls();
     setAgentToolModeBadge(document.getElementById('agent-strategy-tool-access')?.value || 'all');
     toggleAgentIdentityFields(false);
     toggleAgentMemoryFields(false);
@@ -6023,6 +6128,9 @@ function bindEvents() {
     });
     document.getElementById('agent-strategy-tool-access')?.addEventListener('change', (e) => {
         setAgentToolModeBadge(String(e?.target?.value || 'all'));
+    });
+    document.getElementById('agent-strategy-profile')?.addEventListener('change', () => {
+        syncAgentStrategyControls();
     });
     ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
@@ -6388,6 +6496,10 @@ async function toggleLiveFeed() {
 }
 
 function stopLiveFeed() {
+    const activeSource = getSelectedLiveSource();
+    if (sessionId) {
+        void setSessionLiveControl(false, activeSource);
+    }
     liveFeedRequested = false;
     liveFeedManualStop = true;
     liveFeedActive = false;
@@ -6505,7 +6617,7 @@ async function startLiveFeed(isReconnect = false) {
         liveFeedReconnectAttempts = 0;
     }
 
-    const hasSession = await ensureSessionForLive(symbol, timeframe);
+    const hasSession = await ensureSessionForLive(symbol, timeframe, source);
     if (!hasSession) {
         if (!isReconnect) liveFeedRequested = false;
         return;
@@ -6525,6 +6637,11 @@ async function startLiveFeed(isReconnect = false) {
         showStatus(`${sourceLabel} status check failed: ${err.message}`, 'warning');
         if (!isReconnect) liveFeedRequested = false;
         return;
+    }
+
+    const liveCtl = await setSessionLiveControl(true, source);
+    if (!liveCtl.ok) {
+        showStatus(`Backend live trigger relay warning: ${liveCtl.error}`, 'warning');
     }
 
     const wsUrl = _buildLiveWsUrl(source, symbol, timeframe, historyBars);
@@ -6658,7 +6775,7 @@ async function startLiveFeed(isReconnect = false) {
     }
 }
 
-async function ensureSessionForLive(symbol, timeframe) {
+async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
     if (sessionId && !_shouldCreateFreshSession()) {
         try {
             const existingRes = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}`);
@@ -6695,10 +6812,18 @@ async function ensureSessionForLive(symbol, timeframe) {
                 strategy_id: STRATEGY_ID,
                 symbol,
                 timeframe,
+                mode: 'live',
                 data_file: dataFile || null,
                 initial_balance: balance,
                 allow_empty_replay: true,
-                config: { cost_model: costModelCfg },
+                config: {
+                    cost_model: costModelCfg,
+                    live_control: {
+                        enabled: true,
+                        source: String(source || 'mt5').toLowerCase(),
+                        backend_native: String(source || 'mt5').toLowerCase() === 'mt5',
+                    },
+                },
             }),
         });
         const data = await res.json();
@@ -7637,6 +7762,51 @@ function showStatus(msg, type) {
     setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 5000);
 }
 
+async function setSessionLiveControl(enabled, source = 'mt5') {
+    if (!sessionId) return { ok: false, error: 'No active session' };
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/live-control`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                enabled: !!enabled,
+                source: String(source || 'mt5').toLowerCase(),
+                backend_native: String(source || 'mt5').toLowerCase() === 'mt5' && !!enabled,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+            return { ok: false, error: String(data?.detail || data?.error || `HTTP ${res.status}`) };
+        }
+        return { ok: true, data };
+    } catch (err) {
+        return { ok: false, error: String(err?.message || err || 'live control update failed') };
+    }
+}
+
+async function handleAgentToolStateResponse(response, eventType = 'TOOL_SIGNAL_CHANGED') {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.ok === false) {
+        const msg = String(data?.detail || data?.error || `HTTP ${response.status}`);
+        showStatus(`Agent ${String(eventType || '').toUpperCase()} sync failed: ${msg}`, 'warning');
+        return data;
+    }
+    const tick = data?.live_tick_trigger && typeof data.live_tick_trigger === 'object' ? data.live_tick_trigger : null;
+    const eventTypes = Array.isArray(tick?.trigger_event_types) ? tick.trigger_event_types.map(v => String(v || '').toUpperCase()) : [];
+    if (tick && tick.ok === false) {
+        showStatus(`Trigger processing failed: ${String(tick.error || 'unknown error')}`, 'danger');
+    } else if (tick && Number(tick.trigger_events_count || 0) > 0) {
+        let type = 'info';
+        if (eventTypes.some(v => v.includes('FAILED'))) type = 'danger';
+        else if (eventTypes.some(v => v.includes('CANCELED'))) type = 'warning';
+        else if (eventTypes.some(v => v.includes('EXECUTED'))) type = 'success';
+        const label = eventTypes.join(', ') || 'TRIGGER_EVENT';
+        showStatus(`Trigger update: ${label}`, type);
+        void refreshAgentTriggerList(false);
+    }
+    return data;
+}
+
 async function maybePushLiveAgentTick(force = false) {
     if (!sessionId || !agentLoopActive || !liveFeedActive) return;
     if (!Array.isArray(allBars) || allBars.length === 0) return;
@@ -7678,11 +7848,12 @@ async function maybePushLiveAgentTick(force = false) {
     };
 
     try {
-        await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/tool-state`, {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/tool-state`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+        await handleAgentToolStateResponse(res, 'LIVE_TICK');
         lastAgentLivePushAtMs = nowMs;
         lastAgentLiveBarTime = barTime;
     } catch (_) {
@@ -7698,11 +7869,12 @@ async function pushAgentToolState(eventType = 'TOOL_SIGNAL_CHANGED') {
         tool_state: getToolStatePayload(),
     };
     try {
-        await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/tool-state`, {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/tool-state`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+        await handleAgentToolStateResponse(res, eventType);
     } catch (_) {
         // non-blocking best-effort
     }

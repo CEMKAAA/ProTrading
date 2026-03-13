@@ -3,12 +3,14 @@ ProTrading Dashboard - FastAPI Application
 Enterprise-level trading dashboard with backtesting capabilities
 """
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 import logging
 import os
+from typing import Optional
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router as api_router
 from .api.websocket import websocket_router
@@ -16,14 +18,16 @@ from .models.database import init_db
 from .services.ml_auto_retrain import AutoRetrainService
 from .services.portfolio_risk_service import PortfolioRiskGovernorService
 from .services.workbench_copilot_worker import WorkbenchCopilotWorkerService
-from .services.agent_watchdog_service import AgentWatchdogService
+from .services.agent_live_tick_service import AgentLiveTickService
+from .services.agent_watchdog_service import get_agent_watchdog_service
 from .services.telegram_bridge_service import TelegramBridgeService
 
 # Auto-retrain service singleton
 auto_retrain_service = AutoRetrainService()
 portfolio_risk_service = PortfolioRiskGovernorService()
 workbench_copilot_worker = WorkbenchCopilotWorkerService()
-agent_watchdog_service = AgentWatchdogService()
+agent_watchdog_service: Optional[object] = None
+agent_live_tick_service = AgentLiveTickService()
 telegram_bridge_service = TelegramBridgeService()
 
 # Configure logging
@@ -72,6 +76,7 @@ app.include_router(trading_simulation_router, prefix="/api/v1", tags=["TradingSi
 @app.on_event("startup")
 async def startup_event():
     """Initialize database and other resources on startup"""
+    global agent_watchdog_service
     logger.info("Starting ProTrading Dashboard...")
 
     # Create data directory
@@ -104,10 +109,18 @@ async def startup_event():
 
     # Start deterministic trade watchdog for unified agent
     try:
+        agent_watchdog_service = get_agent_watchdog_service()
         agent_watchdog_service.start()
         logger.info("Agent watchdog service initialized")
     except Exception:
         logger.exception("Agent watchdog service failed to start")
+
+    # Start backend-native MT5 live tick relay for trigger execution.
+    try:
+        agent_live_tick_service.start()
+        logger.info("Backend MT5 live tick relay initialized")
+    except Exception:
+        logger.exception("Backend MT5 live tick relay failed to start")
 
     # Start Telegram bridge (optional, env-gated)
     try:
@@ -122,8 +135,12 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup resources on shutdown"""
+    global agent_watchdog_service
     telegram_bridge_service.stop()
-    agent_watchdog_service.stop()
+    agent_live_tick_service.stop()
+    if agent_watchdog_service is not None:
+        agent_watchdog_service.stop()
+        agent_watchdog_service = None
     workbench_copilot_worker.stop()
     portfolio_risk_service.stop()
     auto_retrain_service.stop()

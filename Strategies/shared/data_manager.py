@@ -7,29 +7,37 @@ import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime
 
-# Seconds per bar for each MT5 timeframe constant
+# Seconds per bar for each MT5 timeframe constant.
+# Some tests monkeypatch a partial MetaTrader5 stub, so build this table
+# defensively instead of assuming every timeframe constant exists.
+_TIMEFRAME_NAME_TO_SECONDS = {
+    "TIMEFRAME_M1": 60,
+    "TIMEFRAME_M2": 120,
+    "TIMEFRAME_M3": 180,
+    "TIMEFRAME_M4": 240,
+    "TIMEFRAME_M5": 300,
+    "TIMEFRAME_M6": 360,
+    "TIMEFRAME_M10": 600,
+    "TIMEFRAME_M12": 720,
+    "TIMEFRAME_M15": 900,
+    "TIMEFRAME_M20": 1200,
+    "TIMEFRAME_M30": 1800,
+    "TIMEFRAME_H1": 3600,
+    "TIMEFRAME_H2": 7200,
+    "TIMEFRAME_H3": 10800,
+    "TIMEFRAME_H4": 14400,
+    "TIMEFRAME_H6": 21600,
+    "TIMEFRAME_H8": 28800,
+    "TIMEFRAME_H12": 43200,
+    "TIMEFRAME_D1": 86400,
+    "TIMEFRAME_W1": 604800,
+    "TIMEFRAME_MN1": 2592000,
+}
 TIMEFRAME_SECONDS = {
-    mt5.TIMEFRAME_M1: 60,
-    mt5.TIMEFRAME_M2: 120,
-    mt5.TIMEFRAME_M3: 180,
-    mt5.TIMEFRAME_M4: 240,
-    mt5.TIMEFRAME_M5: 300,
-    mt5.TIMEFRAME_M6: 360,
-    mt5.TIMEFRAME_M10: 600,
-    mt5.TIMEFRAME_M12: 720,
-    mt5.TIMEFRAME_M15: 900,
-    mt5.TIMEFRAME_M20: 1200,
-    mt5.TIMEFRAME_M30: 1800,
-    mt5.TIMEFRAME_H1: 3600,
-    mt5.TIMEFRAME_H2: 7200,
-    mt5.TIMEFRAME_H3: 10800,
-    mt5.TIMEFRAME_H4: 14400,
-    mt5.TIMEFRAME_H6: 21600,
-    mt5.TIMEFRAME_H8: 28800,
-    mt5.TIMEFRAME_H12: 43200,
-    mt5.TIMEFRAME_D1: 86400,
-    mt5.TIMEFRAME_W1: 604800,
-    mt5.TIMEFRAME_MN1: 2592000,
+    tf_value: seconds
+    for tf_name, seconds in _TIMEFRAME_NAME_TO_SECONDS.items()
+    for tf_value in [getattr(mt5, tf_name, None)]
+    if tf_value is not None
 }
 
 

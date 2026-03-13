@@ -168,6 +168,32 @@ GUIDES: Dict[str, Dict[str, Any]] = {
         ],
         "example_scenario": "A sweep occurs above a level, rejection confirms, and only then the setup becomes actionable.",
     },
+    "htf_fvg_liquidity_reclaim_strategy": {
+        "strategy_id": "htf_fvg_liquidity_reclaim_strategy",
+        "what_this_strategy_is": "Uses higher-timeframe fair value gaps as the structural anchor, then waits for a lower-timeframe liquidity sweep and reclaim before considering entry.",
+        "when_not_to_trade": [
+            "No valid HTF FVG is active near price.",
+            "Liquidity is swept but the rejection is weak or absent.",
+            "Risk is undefined or the setup invalidates before entry.",
+        ],
+        "step_by_step": [
+            "Confirm the active HTF FVG and directional bias.",
+            "Wait for liquidity to be taken near the FVG boundary.",
+            "Require reclaim or strong rejection after the sweep.",
+            "Only paper execute when entry, SL, and TP are fully defined.",
+        ],
+        "common_mistakes": [
+            "Trading the FVG before a real sweep occurs.",
+            "Treating a breakdown candle as a sweep rejection.",
+            "Ignoring that HTF structure changed before entry.",
+        ],
+        "risk_rules": [
+            "No sweep confirmation, no trade.",
+            "Stop loss belongs behind the sweep extreme / invalidation structure.",
+            "If the FVG is invalidated first, the setup is dead.",
+        ],
+        "example_scenario": "Price taps a bullish H4 FVG, sweeps sell-side liquidity below it, reclaims the level, and only then the setup becomes actionable.",
+    },
     "keltner_breakout_strategy": {
         "strategy_id": "keltner_breakout_strategy",
         "what_this_strategy_is": "Trades volatility expansion after compression, using Keltner/ADX-style quality checks.",

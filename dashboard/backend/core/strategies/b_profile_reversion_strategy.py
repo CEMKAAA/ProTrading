@@ -28,6 +28,12 @@ class BProfileReversionStrategy(BacktestStrategy):
         super().__init__(config)
         self._traded_days: set = set()
         self._profile_cache: Dict[datetime.date, Dict[str, float]] = {}
+        # Explicit config reads keep registry/runtime parity checks honest for
+        # constituent column overrides that are consumed dynamically later.
+        self._nvda_return_col = self.config.get("nvda_return_col")
+        self._tsla_return_col = self.config.get("tsla_return_col")
+        self._nvda_close_col = self.config.get("nvda_close_col")
+        self._tsla_close_col = self.config.get("tsla_close_col")
 
     def initialize_day(
         self,

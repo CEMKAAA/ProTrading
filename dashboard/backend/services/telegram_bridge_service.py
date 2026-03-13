@@ -693,11 +693,25 @@ class TelegramBridgeService:
             has_api_key = bool(provider.get("api_key"))
             tool_mode = self._normalize_tool_access_mode((_cfg if isinstance(_cfg, dict) else {}).get("strategy_tool_access_mode"))
             selection_mode = self._normalize_tool_selection_mode((_cfg if isinstance(_cfg, dict) else {}).get("tool_selection_mode"))
+            strategy_profile = "classic_htf_fvg"
+            strategy_preset = "default"
+            try:
+                from ..api import simulation_routes as sim_routes
+
+                strategy_profile = sim_routes._normalize_agent_strategy_profile(
+                    (_cfg if isinstance(_cfg, dict) else {}).get("agent_strategy_profile")
+                )
+                strategy_preset = sim_routes._normalize_agent_strategy_preset(
+                    (_cfg if isinstance(_cfg, dict) else {}).get("agent_strategy_preset")
+                )
+            except Exception:
+                pass
             lines = [
                 f"Runtime | Session #{int(session.id)} | {str(session.symbol or '').upper()} {str(session.timeframe or '').upper()}",
                 f"Provider: {p} | Model: {model}",
                 f"LLM URL: {llm_url if llm_url else '(provider default)'}",
                 f"API key: {'YES' if has_api_key else 'MISSING'}",
+                f"Strategy: {strategy_profile} | Preset: {strategy_preset}",
                 f"Tool mode: {tool_mode}",
                 f"Tool selection: {selection_mode}",
                 f"Identity: {profile}",
@@ -1332,6 +1346,116 @@ class TelegramBridgeService:
             except Exception:
                 pass
 
+    def _strategy_profile_choices(self) -> List[Tuple[str, str]]:
+        return [
+            ("classic_htf_fvg", "classic"),
+            ("htf_fvg_liquidity_reclaim_v2", "liquidity"),
+        ]
+
+    def _format_strategy_help(self) -> str:
+        choices = ", ".join(f"{label} ({profile})" for profile, label in self._strategy_profile_choices())
+        return (
+            "Usage: /strategy [name] [session_id]\n"
+            f"Available: {choices}"
+        )
+
+    def _set_strategy_profile(self, session_id: int, profile_raw: Any, preset_raw: Optional[Any] = None) -> str:
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            raw = str(profile_raw or "").strip().lower()
+            allowed_raw = {p for p, _label in self._strategy_profile_choices()}
+            allowed_raw.update(label for _p, label in self._strategy_profile_choices())
+            allowed_raw.update(
+                {
+                    "classic",
+                    "legacy",
+                    "mtf",
+                    "htf_fvg",
+                    "classic_fvg",
+                    "liquidity",
+                    "liq",
+                    "liquidity_reclaim",
+                    "htf_fvg_liquidity_reclaim",
+                    "htf_fvg_liquidity_reclaim_strategy",
+                    "liquidity_reclaim_v2",
+                    "v2",
+                }
+            )
+            if raw and raw not in allowed_raw:
+                return self._format_strategy_help()
+            profile = sim_routes._normalize_agent_strategy_profile(profile_raw)
+            preset = sim_routes._normalize_agent_strategy_preset(preset_raw)
+
+            session = db.query(SimulationSession).get(int(session_id))
+            if session is None:
+                return f"Session #{int(session_id)} not found."
+            if str(session.strategy_id or "") != "_workbench":
+                return f"Session #{int(session_id)} is not a Workbench session."
+
+            row = (
+                db.query(WorkbenchAgentSessionModel)
+                .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                .filter(WorkbenchAgentSessionModel.status == "ACTIVE")
+                .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                .first()
+            )
+            if row is None:
+                row = (
+                    db.query(WorkbenchAgentSessionModel)
+                    .filter(WorkbenchAgentSessionModel.simulation_session_id == int(session_id))
+                    .order_by(WorkbenchAgentSessionModel.updated_at.desc())
+                    .first()
+                )
+            if row is None:
+                row = WorkbenchAgentSessionModel(
+                    simulation_session_id=int(session_id),
+                    mode="CHAT",
+                    status="ACTIVE",
+                    provider="deterministic",
+                    model_label=None,
+                    permissions_json={
+                        "can_chat": True,
+                        "can_scan_tools": True,
+                        "can_use_research": False,
+                        "can_manage_indicators": True,
+                        "can_place_trades": True,
+                        "can_close_trades": True,
+                        "can_auto_execute": False,
+                        "requires_user_confirm_for_trade": True,
+                    },
+                    config_json={},
+                    runtime_json={},
+                    last_snapshot_json={},
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(row)
+                db.flush()
+
+            cfg = _json_obj(row.config_json)
+            cfg["agent_strategy_profile"] = profile
+            if preset_raw is not None and str(preset_raw).strip():
+                cfg["agent_strategy_preset"] = preset
+            row.config_json = cfg
+            row.updated_at = datetime.utcnow()
+            db.add(row)
+            db.commit()
+            return (
+                f"Strategy set to '{profile}'"
+                f"{f' with preset {preset}' if preset_raw is not None and str(preset_raw).strip() else ''}"
+                f" for session #{int(session_id)}."
+            )
+        except Exception as exc:
+            db.rollback()
+            return f"Strategy update failed: {type(exc).__name__}: {str(exc)[:180]}"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def _set_provider_profile(
         self,
         session_id: int,
@@ -1542,8 +1666,12 @@ class TelegramBridgeService:
                 "- Purpose: Switch agent personality preset.\n"
                 "- Params: profile (required), optional session_id\n"
                 "- Example: /identity master\n\n"
+                "/strategy [name] [session_id]\n"
+                "- Purpose: Show or set the active trading strategy profile used by Telegram /ask.\n"
+                "- Params: optional strategy name, optional session_id\n"
+                "- Example: /strategy liquidity\n\n"
                 "/toolmode [all|parent|child] [session_id]\n"
-                "- Purpose: Choose strategy tool mode (all=parent+child, parent=collected tool, child=granular tools).\n"
+                "- Purpose: Choose strategy tool mode (all=parent+child, parent=parent tool plus raw verification scans, child=granular tools).\n"
                 "- Params: optional mode, optional session_id\n"
                 "- Example: /toolmode parent\n\n"
                 "/toolselect [autonomous|guided|minimal] [session_id]\n"
@@ -1659,6 +1787,70 @@ class TelegramBridgeService:
             if len(args) >= 2 and str(args[1]).isdigit():
                 target_sid = int(args[1])
             return self._set_identity_profile(target_sid, profile)
+
+        if cmd_l == "/strategy":
+            sid = self._resolve_default_session_id(chat_id)
+            if sid is None:
+                return "No active Workbench session found. Start one in dashboard, or use /use <session_id>."
+            if not args:
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(sid))
+                try:
+                    from ..api import simulation_routes as sim_routes
+
+                    profile = sim_routes._normalize_agent_strategy_profile(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_profile")
+                    )
+                    preset = sim_routes._normalize_agent_strategy_preset(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_preset")
+                    )
+                except Exception:
+                    profile = "classic_htf_fvg"
+                    preset = "default"
+                return (
+                    f"Session #{int(sid)} strategy: {profile} | preset: {preset}\n"
+                    f"{self._format_strategy_help()}"
+                )
+            profile_raw = str(args[0] or "").strip().lower()
+            target_sid = int(sid)
+            if profile_raw in {"show", "status"}:
+                if len(args) >= 2 and str(args[1]).isdigit():
+                    target_sid = int(args[1])
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                try:
+                    from ..api import simulation_routes as sim_routes
+
+                    profile = sim_routes._normalize_agent_strategy_profile(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_profile")
+                    )
+                    preset = sim_routes._normalize_agent_strategy_preset(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_preset")
+                    )
+                except Exception:
+                    profile = "classic_htf_fvg"
+                    preset = "default"
+                return f"Session #{int(target_sid)} strategy: {profile} | preset: {preset}"
+            if profile_raw.isdigit():
+                target_sid = int(profile_raw)
+                _provider, _perms, cfg = self._resolve_provider_and_permissions(int(target_sid))
+                try:
+                    from ..api import simulation_routes as sim_routes
+
+                    profile = sim_routes._normalize_agent_strategy_profile(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_profile")
+                    )
+                    preset = sim_routes._normalize_agent_strategy_preset(
+                        (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_preset")
+                    )
+                except Exception:
+                    profile = "classic_htf_fvg"
+                    preset = "default"
+                return f"Session #{int(target_sid)} strategy: {profile} | preset: {preset}"
+            preset_raw = None
+            if len(args) >= 2 and not str(args[1]).isdigit():
+                preset_raw = args[1]
+            if len(args) >= 2 and str(args[-1]).isdigit():
+                target_sid = int(args[-1])
+            return self._set_strategy_profile(target_sid, profile_raw, preset_raw)
 
         if cmd_l == "/toolmode":
             sid = self._resolve_default_session_id(chat_id)

@@ -32,6 +32,7 @@ _ALLOWED_TOOL_NAMES = {
     "scan_tool",
     "scan_draw_fvg_range",
     "run_mtf_analysis",
+    "run_htf_fvg_liquidity_reclaim_analysis",
     "get_market_snapshot",
     "get_positions_detail",
     "get_indicator_values",
@@ -690,6 +691,27 @@ class WorkbenchAgent:
                 },
             },
             {
+                "name": "run_htf_fvg_liquidity_reclaim_analysis",
+                "description": "Separate parent strategy tool: backtest-aligned HTF FVG + liquidity reclaim analysis. Uses sweep confirmation near HTF FVGs, then builds a schedule-ready reclaim setup with deterministic server-side logic.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "preset": {"type": "string", "description": "Optional preset override: default, conservative, aggressive, xauusd_m15, nas100_m15."},
+                        "execution_timeframe": {"type": "string", "description": "Optional execution timeframe override (default from preset/session, usually M15)."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for lot sizing."},
+                        "min_rr_ratio": {"type": "number", "description": "Optional minimum risk-reward override."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                        "include_news": {"type": "boolean", "description": "Include market news headlines in output when true."},
+                        "news_limit": {"type": "integer", "description": "News headline limit (1-10)."},
+                        "news_lookback_min": {"type": "integer", "description": "News lookback window in minutes."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "get_market_snapshot",
                 "description": "General market context snapshot (price, indicators, optional bars). Safe for quick status checks; not a replacement for run_mtf_analysis when building HTF->LTF FVG execution plans.",
                 "parameters": {
@@ -790,13 +812,13 @@ class WorkbenchAgent:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "condition": {"type": "string", "description": "close_below, close_above, price_below, or price_above"},
+                        "condition": {"type": "string", "description": "close_below, close_above, price_below, price_above, sweep_below, or sweep_above"},
                         "trigger_price": {"type": "number"},
                         "precondition": {
                             "type": "object",
                             "description": "Optional first step. Trigger is armed only after this condition is hit.",
                             "properties": {
-                                "condition": {"type": "string", "description": "close_below, close_above, price_below, or price_above"},
+                                "condition": {"type": "string", "description": "close_below, close_above, price_below, price_above, sweep_below, or sweep_above"},
                                 "trigger_price": {"type": "number"},
                             },
                             "required": ["condition", "trigger_price"],
@@ -806,7 +828,7 @@ class WorkbenchAgent:
                             "type": "object",
                             "description": "Optional invalidation guard. Trigger is cancelled if this condition is hit before entry.",
                             "properties": {
-                                "condition": {"type": "string", "description": "close_below, close_above, price_below, or price_above"},
+                                "condition": {"type": "string", "description": "close_below, close_above, price_below, price_above, sweep_below, or sweep_above"},
                                 "trigger_price": {"type": "number"},
                             },
                             "required": ["condition", "trigger_price"],
@@ -1283,13 +1305,17 @@ class WorkbenchAgent:
             "You are a professional trading co-pilot for paper simulation.\n"
             "Never fabricate prices, fills, or tool outputs. Respect permissions strictly.\n\n"
             "STRATEGY WORKFLOW:\n"
-            "- For multi-timeframe FVG analysis, call run_mtf_analysis first (HTF anchors + LTF confirmation + risk math in one call).\n"
+            "- For classic multi-timeframe FVG analysis, call run_mtf_analysis first (HTF anchors + LTF confirmation + risk math in one call).\n"
+            "- For the separate HTF FVG + Liquidity Reclaim strategy, call run_htf_fvg_liquidity_reclaim_analysis first.\n"
+            "- If a parent strategy returns NO_TRIGGER, zero HTF candidates, or sparse negative output, verify before concluding: run raw scan_tool checks on HTF FVG structure and execution-timeframe liquidity, then explain whether the structure truly does not exist or was filtered out by strategy rules.\n"
             "- For conditional entries, use schedule_trade_entry with precondition, condition, and cancel_rule.\n"
             "- Always include stop_loss and take_profit with every trade action.\n\n"
             "PROFESSIONALITY:\n"
             "- Act on data, not guesses. Run tools first, then form conclusions.\n"
             "- When asked to analyse or plan, deliver a concrete professional plan — do not ask for inputs you can infer from tools.\n"
-            "- Always explain your reasoning: which HTF anchor, why this direction, what confirms, what invalidates.\n\n"
+            "- Always explain your reasoning: which HTF anchor, why this direction, what confirms, what invalidates.\n"
+            "- When a parent strategy returns NO_TRIGGER, still report the technical read: HTF anchors, selected anchor, LTF confirmation, blockers, and unlock condition.\n"
+            "- When a parent strategy returns a valid setup, include the exact schedule_trade_entry args block, but do not execute unless the operator explicitly asks.\n\n"
             "OUTPUT FORMAT: Return JSON with keys: reply, tool_calls (optional), proposed_actions (optional), memory_notes (optional).\n"
             "Keep reply concise, evidence-backed, and execution-focused.\n\n"
             f"Identity: {identity_json}\n\n"
@@ -1425,19 +1451,166 @@ class WorkbenchAgent:
         return "Tool execution finished (" + ", ".join(parts) + "). Ask me to continue and I will summarize."
 
     @staticmethod
+    def _parent_result_needs_auto_verification(tool_name: str, result: Dict[str, Any]) -> bool:
+        name = str(tool_name or "").strip().lower()
+        if name not in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis"}:
+            return False
+        if not isinstance(result, dict) or bool(result.get("ok")) is False:
+            return False
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if not isinstance(data, dict) or not data:
+            return False
+        best_setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        if best_setup:
+            return False
+        trace = data.get("analysis_trace") if isinstance(data.get("analysis_trace"), dict) else {}
+        stage = str(trace.get("stage") or "").strip().lower()
+        if stage in {
+            "trigger_ready",
+            "manual_confirmation_required",
+            "open_position_exists",
+            "duplicate_pending_trigger",
+            "current_price_unavailable",
+        }:
+            return False
+        if stage:
+            return True
+        return bool(data.get("trigger_ready") is False)
+
+    @staticmethod
+    def _run_auto_parent_verification(
+        *,
+        tool_calls_log: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        tool_executor: ToolExecutor,
+        allowed_tool_names: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(tool_calls_log, list) or not tool_calls_log:
+            return []
+        allow: Optional[set[str]] = None
+        if isinstance(allowed_tool_names, list):
+            allow = {
+                str(name or "").strip().lower()
+                for name in allowed_tool_names
+                if str(name or "").strip()
+            }
+
+        def _tool_allowed(name: str) -> bool:
+            if allow is None:
+                return True
+            return str(name or "").strip().lower() in allow
+
+        if not _tool_allowed("scan_tool"):
+            return []
+
+        latest = tool_calls_log[-1] if isinstance(tool_calls_log[-1], dict) else {}
+        tool_name = str(latest.get("tool_id") or "").strip()
+        result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
+        if not WorkbenchAgent._parent_result_needs_auto_verification(tool_name, result):
+            return []
+
+        existing_keys = {
+            f"{str((row if isinstance(row, dict) else {}).get('tool_id') or '').strip()}:{json.dumps(((row if isinstance(row, dict) else {}).get('args') if isinstance((row if isinstance(row, dict) else {}).get('args'), dict) else {}), sort_keys=True, ensure_ascii=True)}"
+            for row in tool_calls_log
+            if isinstance(row, dict)
+        }
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        symbol = str(data.get("symbol") or context.get("symbol") or "XAUUSD").strip().upper() or "XAUUSD"
+        execution_tf = str(data.get("execution_timeframe") or context.get("timeframe") or "M15").strip().upper() or "M15"
+        scan_summary = data.get("scan_summary") if isinstance(data.get("scan_summary"), dict) else {}
+        htf_tfs: List[str] = [tf for tf in ["D1", "H4"] if tf in scan_summary]
+        if not htf_tfs:
+            htf_tfs = ["D1", "H4"]
+
+        candidates: List[Dict[str, Any]] = []
+        for tf in htf_tfs:
+            candidates.append(
+                {
+                    "name": "scan_tool",
+                    "args": {
+                        "tool_id": "fvg",
+                        "timeframe": str(tf),
+                        "lookback_days": 30,
+                        "config": {
+                            "timeframe": str(tf),
+                            "show_filled": True,
+                            "trend_filter_enabled": False,
+                            "symbol": symbol,
+                        },
+                    },
+                }
+            )
+        candidates.append(
+            {
+                "name": "scan_tool",
+                "args": {
+                    "tool_id": "liquidity",
+                    "timeframe": execution_tf,
+                    "lookback_days": 30,
+                    "config": {
+                        "timeframe": execution_tf,
+                        "symbol": symbol,
+                    },
+                },
+            }
+        )
+        if _tool_allowed("get_indicator_values"):
+            candidates.append(
+                {
+                    "name": "get_indicator_values",
+                    "args": {
+                        "bars_limit": 300,
+                        "timeframe": execution_tf,
+                        "symbol": symbol,
+                    },
+                }
+            )
+
+        out: List[Dict[str, Any]] = []
+        for row in candidates:
+            name = str(row.get("name") or "").strip()
+            args = row.get("args") if isinstance(row.get("args"), dict) else {}
+            key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=True)}"
+            if key in existing_keys:
+                continue
+            try:
+                res = tool_executor(name, args)
+            except Exception as exc:
+                logger.warning("auto parent verification failed tool=%s err=%s", name, str(exc)[:180])
+                res = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+            existing_keys.add(key)
+            out.append({"tool_id": name, "args": args, "result": res})
+        return out
+
+    @staticmethod
     def _heuristic_tool_plan(
         message: str,
         context: Dict[str, Any],
         permissions: Dict[str, Any],
+        allowed_tool_names: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         plan: List[Dict[str, Any]] = []
         msg = str(message or "").lower()
+        strategy_profile = str(context.get("agent_strategy_profile") or "").strip().lower()
         can_scan = bool(permissions.get("can_scan_tools", True))
         can_research = bool(permissions.get("can_use_research", False))
         can_manage_ind = bool(permissions.get("can_manage_indicators", True))
         can_place = bool(permissions.get("can_place_trades", False))
         can_close = bool(permissions.get("can_close_trades", False))
         requires_confirm = bool(permissions.get("requires_user_confirm_for_trade", True))
+        allow: Optional[set[str]] = None
+        if isinstance(allowed_tool_names, list):
+            allow = {
+                str(name or "").strip().lower()
+                for name in allowed_tool_names
+                if str(name or "").strip()
+            }
+
+        def _tool_allowed(name: str) -> bool:
+            if allow is None:
+                return True
+            return str(name or "").strip().lower() in allow
 
         bars = context.get("bars") if isinstance(context.get("bars"), list) else []
         tool_state = context.get("tool_state") if isinstance(context.get("tool_state"), dict) else {}
@@ -1559,21 +1732,100 @@ class WorkbenchAgent:
             and _contains_any(msg, ["fvg", "fair value gap", "mitigation", "breaker", "reclaim"])
             and _contains_any(msg, ["multi-timeframe", "multi timeframe", "mtf", "d1", "h4", "m15", "m5", "higher timeframe"])
         )
+        if can_scan and strategy_profile == "classic_htf_fvg" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy"]):
+            mtf_fvg_request = True
+        liquidity_reclaim_request = (
+            can_scan
+            and _contains_any(msg, ["fvg", "fair value gap", "reclaim"])
+            and _contains_any(msg, ["liquidity", "sweep", "liquidity reclaim", "sweep reclaim", "liq reclaim"])
+        )
+        if can_scan and strategy_profile == "htf_fvg_liquidity_reclaim_v2" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy"]):
+            liquidity_reclaim_request = True
+        classic_parent_allowed = can_scan and _tool_allowed("run_mtf_analysis")
+        liquidity_parent_allowed = can_scan and _tool_allowed("run_htf_fvg_liquidity_reclaim_analysis")
+        raw_verify_request = can_scan and _contains_any(
+            msg,
+            [
+                "verify",
+                "audit",
+                "raw scan",
+                "why blocked",
+                "why no trigger",
+                "block or not",
+                "technical detail",
+                "technical analysis",
+            ],
+        )
         if mtf_fvg_request:
+            if liquidity_reclaim_request and liquidity_parent_allowed:
+                plan.append(
+                    {
+                        "name": "run_htf_fvg_liquidity_reclaim_analysis",
+                        "args": {
+                            "execution_timeframe": "M15",
+                            "preset": str(context.get("agent_strategy_preset") or "default"),
+                            "include_news": False,
+                        },
+                    }
+                )
+            elif classic_parent_allowed:
+                plan.append(
+                    {
+                        "name": "run_mtf_analysis",
+                        "args": {
+                            "execution_timeframe": "M15",
+                            "htf_timeframes": ["D1", "H4"],
+                            "risk_percent": 0.5,
+                            "rr_target": 2.0,
+                            "include_news": False,
+                        },
+                    }
+                )
+            elif liquidity_parent_allowed:
+                plan.append(
+                    {
+                        "name": "run_htf_fvg_liquidity_reclaim_analysis",
+                        "args": {
+                            "execution_timeframe": "M15",
+                            "preset": str(context.get("agent_strategy_preset") or "default"),
+                            "include_news": False,
+                        },
+                    }
+                )
+        elif liquidity_reclaim_request and liquidity_parent_allowed:
             plan.append(
                 {
-                    "name": "run_mtf_analysis",
+                    "name": "run_htf_fvg_liquidity_reclaim_analysis",
                     "args": {
                         "execution_timeframe": "M15",
-                        "htf_timeframes": ["D1", "H4"],
-                        "risk_percent": 0.5,
-                        "rr_target": 2.0,
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
                         "include_news": False,
                     },
                 }
             )
-
-        if can_scan and (not mtf_fvg_request) and ("fvg" in msg or ("scan" in msg and "gap" in msg)):
+        if raw_verify_request and can_scan and _tool_allowed("scan_tool"):
+            for tf in ["D1", "H4"]:
+                plan.append(
+                    {
+                        "name": "scan_tool",
+                        "args": {
+                            "tool_id": "fvg",
+                            "timeframe": tf,
+                            "config": {"timeframe": tf, "show_filled": True, "trend_filter_enabled": False},
+                        },
+                    }
+                )
+            plan.append(
+                {
+                    "name": "scan_tool",
+                    "args": {
+                        "tool_id": "liquidity",
+                        "timeframe": str(context.get("timeframe") or "M15"),
+                        "config": {"timeframe": str(context.get("timeframe") or "M15")},
+                    },
+                }
+            )
+        if can_scan and (not mtf_fvg_request) and (not liquidity_reclaim_request) and ("fvg" in msg or ("scan" in msg and "gap" in msg)):
             plan.append(
                 {
                     "name": "scan_tool",
@@ -1910,6 +2162,8 @@ class WorkbenchAgent:
                 continue
             name = str(row.get("name") or "").strip()
             args = row.get("args") if isinstance(row.get("args"), dict) else {}
+            if not name or (not _tool_allowed(name)):
+                continue
             key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=True)}"
             if key in seen:
                 continue
@@ -1925,10 +2179,16 @@ class WorkbenchAgent:
         tool_executor: ToolExecutor,
         allow_tools: bool,
         max_tool_steps: int,
+        allowed_tool_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         tool_calls_log: List[Dict[str, Any]] = []
         if allow_tools and int(max_tool_steps) > 0:
-            plan = self._heuristic_tool_plan(message=message, context=context, permissions=permissions)
+            plan = self._heuristic_tool_plan(
+                message=message,
+                context=context,
+                permissions=permissions,
+                allowed_tool_names=allowed_tool_names,
+            )
             for row in plan[: int(max_tool_steps)]:
                 name = str(row.get("name") or "")
                 args = row.get("args") if isinstance(row.get("args"), dict) else {}
@@ -1938,6 +2198,14 @@ class WorkbenchAgent:
                     logger.warning("deterministic tool execution failed tool=%s err=%s", name, str(exc)[:180])
                     result = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
                 tool_calls_log.append({"tool_id": name, "args": args, "result": result})
+                extra_rows = self._run_auto_parent_verification(
+                    tool_calls_log=tool_calls_log,
+                    context=context,
+                    tool_executor=tool_executor,
+                    allowed_tool_names=allowed_tool_names,
+                )
+                if extra_rows:
+                    tool_calls_log.extend(extra_rows)
 
         latest = tool_calls_log[-1]["result"] if tool_calls_log else {}
         zones_count = None
@@ -2031,6 +2299,7 @@ class WorkbenchAgent:
         self,
         *,
         message: str,
+        context: Dict[str, Any],
         history: List[Dict[str, str]],
         system_prompt: str,
         model_label: str,
@@ -2128,6 +2397,16 @@ class WorkbenchAgent:
                         result = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
                 tool_calls_log.append({"tool_id": name, "args": args, "result": result})
 
+            extra_rows = self._run_auto_parent_verification(
+                tool_calls_log=tool_calls_log,
+                context=context,
+                tool_executor=tool_executor,
+                allowed_tool_names=allowed_tool_names,
+            )
+            if extra_rows:
+                tool_calls_log.extend(extra_rows)
+                used_external_tools = True
+
             if used_external_tools:
                 # Pass 2: provide tool results and ask for final response/proposals.
                 tool_result_json = json.dumps(tool_calls_log, ensure_ascii=True)
@@ -2168,6 +2447,7 @@ class WorkbenchAgent:
         self,
         *,
         message: str,
+        context: Dict[str, Any],
         system_prompt: str,
         history: List[Dict[str, str]],
         model_label: str,
@@ -2257,6 +2537,24 @@ class WorkbenchAgent:
                             "content": json.dumps(result, ensure_ascii=True),
                         }
                     )
+                extra_rows = self._run_auto_parent_verification(
+                    tool_calls_log=tool_calls_log,
+                    context=context,
+                    tool_executor=tool_executor,
+                    allowed_tool_names=allowed_tool_names,
+                )
+                if extra_rows:
+                    tool_calls_log.extend(extra_rows)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Automatic verification scans were executed because the parent strategy returned a negative "
+                                "or sparse result. Treat these tool outputs as authoritative evidence for the final analysis.\n\n"
+                                + json.dumps(extra_rows, ensure_ascii=True)
+                            ),
+                        }
+                    )
             if not final_text and tool_calls_log:
                 messages.append(
                     {
@@ -2305,6 +2603,7 @@ class WorkbenchAgent:
         self,
         *,
         message: str,
+        context: Dict[str, Any],
         system_prompt_static: str,
         system_prompt_dynamic: str,
         history: List[Dict[str, str]],
@@ -2482,6 +2781,30 @@ class WorkbenchAgent:
                     }
                 )
             messages.append({"role": "user", "content": tool_results})
+            extra_rows = self._run_auto_parent_verification(
+                tool_calls_log=tool_calls_log,
+                context=context,
+                tool_executor=tool_executor,
+                allowed_tool_names=allowed_tool_names,
+            )
+            if extra_rows:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Automatic verification scans were executed because the parent strategy returned a "
+                                    "negative or sparse result. Treat these tool outputs as authoritative evidence for the "
+                                    "final analysis.\n\n"
+                                    + json.dumps(extra_rows, ensure_ascii=True)
+                                ),
+                            }
+                        ],
+                    }
+                )
+                tool_calls_log.extend(extra_rows)
         if not final_text and tool_calls_log:
             messages.append(
                 {
@@ -2607,11 +2930,13 @@ class WorkbenchAgent:
                     tool_executor=tool_executor,
                     allow_tools=allow_tools,
                     max_tool_steps=max_tool_steps,
+                    allowed_tool_names=allowed_tool_names,
                 )
             elif p == "local_gptoss_http":
                 # Local GPT-OSS now supports tool planning via two-pass JSON protocol.
                 out = self._chat_local_gptoss_with_tools(
                     message=msg,
+                    context=safe_context,
                     history=history,
                     system_prompt=system_prompt,
                     model_label=model,
@@ -2628,6 +2953,7 @@ class WorkbenchAgent:
                     return {"ok": False, "error": "openai_compat selected but API key is missing"}
                 out = self._chat_openai_with_tools(
                     message=msg,
+                    context=safe_context,
                     system_prompt=system_prompt,
                     history=history,
                     model_label=model,
@@ -2649,6 +2975,7 @@ class WorkbenchAgent:
                     return {"ok": False, "error": "claude selected but API key is missing"}
                 out = self._chat_claude_with_tools(
                     message=msg,
+                    context=safe_context,
                     system_prompt_static=system_prompt_static,
                     system_prompt_dynamic=system_prompt_dynamic,
                     history=history,

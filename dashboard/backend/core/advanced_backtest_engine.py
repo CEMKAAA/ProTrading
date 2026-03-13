@@ -434,6 +434,10 @@ class AdvancedEventBacktestEngine(BacktestEngine):
                 )
                 self.day_state.bias = self.day_context.bias
                 self.day_state.bias_strength = self.day_context.bias_strength
+            try:
+                self.day_context.levels["execution_open"] = float(bar["open"])
+            except Exception:
+                pass
             signal_bar = signal_bars.iloc[-1]
             # Wrap with FutureDataGuard unless strategy opts in to using
             # known-ahead event calendars (e.g., earnings schedule metadata).

@@ -18,7 +18,11 @@
       "Bash(cmd //c:*)",
       "Bash(grep:*)",
       "Bash(wc:*)",
-      "Bash(python3 -m py_compile:*)"
+      "Bash(python3 -m py_compile:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(find /c/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem -name \"*htf*fvg*\" -type f 2>/dev/null | head -20)",
+      "Bash(find \"C:\\\\Users\\\\Cem\\\\Desktop\\\\projeler\\\\YapayZekaUygulamalari\\\\ProTradingSystem\\\\Strategies\\\\shared\" -name \"*.py\" -type f 2>/dev/null | head -10)",
+      "Bash(find \"C:\\\\Users\\\\Cem\\\\Desktop\\\\projeler\\\\YapayZekaUygulamalari\\\\ProTradingSystem\\\\tests\" -name \"*htf*\" -o -name \"*liquidity*reclaim*\" 2>/dev/null | head -5)"
     ]
   }
 }

@@ -22,7 +22,7 @@ def test_strategy_manager_allocations_include_options_proxy(monkeypatch):
     manager = StrategyManager()
 
     monkeypatch.setattr(manager, "_is_process_running", lambda _sid: False)
-    monkeypatch.setattr(manager, "_get_options_journal_open_risk_usd", lambda: 1234.5)
+    monkeypatch.setattr(manager, "_get_options_journal_open_risk_usd", lambda *args, **kwargs: 1234.5)
 
     alloc = manager.get_allocated_capital()
     assert "options_edge_manual" in alloc
@@ -110,4 +110,3 @@ def test_unified_portfolio_overview_aggregates_live_and_options(monkeypatch):
     assert resp["options_edge"]["open_risk_usd"] == 500.0
     assert resp["options_edge"]["closed_pnl_total_usd"] == 75.0
     assert resp["combined"]["known_open_risk_usd"] == 3100.0
-

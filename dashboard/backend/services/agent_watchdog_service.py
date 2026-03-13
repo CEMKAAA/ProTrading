@@ -47,10 +47,46 @@ class AgentWatchdogService:
         self._pending_decisions: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self._last_live_bar_by_agent: Dict[int, Dict[str, Any]] = {}
         self._last_stale_live_warn_at_by_agent: Dict[int, datetime] = {}
+        self._live_bar_cache_lock = threading.RLock()
+        self._agent_eval_locks: Dict[int, threading.RLock] = {}
+        self._agent_eval_locks_guard = threading.RLock()
 
     @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
+
+    def _get_agent_eval_lock(self, agent_id: int) -> threading.RLock:
+        key = int(agent_id)
+        with self._agent_eval_locks_guard:
+            lock = self._agent_eval_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._agent_eval_locks[key] = lock
+            return lock
+
+    @staticmethod
+    def _backend_live_relay_enabled(session: SimulationSession) -> bool:
+        cfg = getattr(session, "config_json", None)
+        cfg_obj: Dict[str, Any] = {}
+        if isinstance(cfg, dict):
+            cfg_obj = dict(cfg)
+        elif isinstance(cfg, str):
+            raw = str(cfg).strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        cfg_obj = parsed
+                except Exception:
+                    cfg_obj = {}
+        live = cfg_obj.get("live_control") if isinstance(cfg_obj.get("live_control"), dict) else {}
+        source = str(live.get("source") or "").strip().lower()
+        return (
+            str(getattr(session, "mode", "") or "").strip().lower() == "live"
+            and bool(live.get("enabled", False))
+            and bool(live.get("backend_native", False))
+            and source == "mt5"
+        )
 
     @staticmethod
     def _interval_sec() -> float:
@@ -147,8 +183,17 @@ class AgentWatchdogService:
             return False
         if bar_time <= 0:
             return False
+        # Prefer feed update timestamp when present (keepalive/tick push time).
+        # Bar open time can be minutes old on M15+ while feed is still healthy.
+        freshness_ref = bar_time
         try:
-            age_sec = float(now.timestamp()) - float(bar_time)
+            asof_time = int(live_bar.get("asof_time") or 0)
+            if asof_time > 0:
+                freshness_ref = asof_time
+        except Exception:
+            pass
+        try:
+            age_sec = float(now.timestamp()) - float(freshness_ref)
         except Exception:
             return False
         if age_sec < -float(max_future_skew_sec):
@@ -218,7 +263,79 @@ class AgentWatchdogService:
                     out["low"] = float(lo)
             except Exception:
                 pass
+            # Feed freshness timestamp:
+            # prefer live_stream.pushed_at_ms, fallback to snapshot ts.
+            asof_time = 0
+            live_stream = tool_state.get("live_stream") if isinstance(tool_state.get("live_stream"), dict) else {}
+            if isinstance(live_stream, dict):
+                try:
+                    pushed_at_ms = float(live_stream.get("pushed_at_ms") or 0.0)
+                    if math.isfinite(pushed_at_ms) and pushed_at_ms > 0:
+                        asof_time = int(pushed_at_ms / 1000.0)
+                except Exception:
+                    asof_time = 0
+            if asof_time <= 0:
+                ts_raw = str(snap.get("ts") or "").strip()
+                if ts_raw:
+                    try:
+                        ts_dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                        if ts_dt.tzinfo is None:
+                            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                        asof_time = int(ts_dt.timestamp())
+                    except Exception:
+                        asof_time = 0
+            if asof_time > 0:
+                out["asof_time"] = int(asof_time)
             return out
+        except Exception:
+            return None
+
+    @staticmethod
+    def _live_bar_fallback_from_provider(
+        *,
+        session: SimulationSession,
+        now: datetime,
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback live-bar source when agent snapshot has no fresh LIVE_TICK.
+
+        This keeps trigger scheduling functional even when agent loop/tool-state
+        pushes are temporarily unavailable.
+        """
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            service = sim_routes._get_mt5_service_singleton()
+            symbol = str(session.symbol or "").strip() or "XAUUSD"
+            timeframe = str(session.timeframe or "M15").strip().upper() or "M15"
+            bars = service.get_recent_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                count=2,
+            )
+            if not isinstance(bars, list) or len(bars) == 0:
+                return None
+            lb = bars[-1] if isinstance(bars[-1], dict) else None
+            if not isinstance(lb, dict):
+                return None
+            t = int(lb.get("time_unix") or lb.get("time") or 0)
+            o = float(lb.get("open"))
+            h = float(lb.get("high"))
+            l = float(lb.get("low"))
+            c = float(lb.get("close"))
+            v = float(lb.get("volume") or 0.0)
+            if t <= 0:
+                return None
+            if not all(math.isfinite(x) for x in (o, h, l, c, v)):
+                return None
+            return {
+                "time": int(t),
+                "open": float(o),
+                "high": float(h),
+                "low": float(l),
+                "close": float(c),
+                "volume": float(v),
+                "asof_time": int(now.timestamp()),
+            }
         except Exception:
             return None
 
@@ -534,6 +651,10 @@ class AgentWatchdogService:
         raw_triggers = snap.get("agent_trade_triggers") if isinstance(snap.get("agent_trade_triggers"), list) else []
         if not raw_triggers:
             return event_rows
+        try:
+            from ..api.simulation_routes import _normalize_agent_trigger_condition
+        except Exception:
+            _normalize_agent_trigger_condition = None
         cfg = agent.config_json if isinstance(agent.config_json, dict) else {}
         perms = cfg.get("agent_permissions") if isinstance(cfg.get("agent_permissions"), dict) else {}
         trigger_requires_approval_default = bool(cfg.get("watchdog_trigger_requires_approval", False))
@@ -552,6 +673,86 @@ class AgentWatchdogService:
                 return {"time": int(ts), "close": float(close)}
             except Exception:
                 return None
+
+        def _condition_side(cond_name: Any) -> Optional[str]:
+            c = _canonical_condition(cond_name)
+            if c in {"close_below", "price_below", "sweep_below"}:
+                return "below"
+            if c in {"close_above", "price_above", "sweep_above"}:
+                return "above"
+            return None
+
+        def _canonical_condition(cond_name: Any) -> str:
+            raw = cond_name
+            if callable(_normalize_agent_trigger_condition):
+                try:
+                    norm = _normalize_agent_trigger_condition(raw)
+                    if norm:
+                        raw = norm
+                except Exception:
+                    raw = cond_name
+            return str(raw or "").strip().lower()
+
+        def _is_reclaim_pair(pre_cond_name: Any, cond_name: Any) -> bool:
+            pre_side = _condition_side(pre_cond_name)
+            cond_side = _condition_side(cond_name)
+            return pre_side in {"above", "below"} and cond_side in {"above", "below"} and pre_side != cond_side
+
+        def _evaluate_live_touch(cond_name: str, level_value: float) -> Tuple[str, Optional[float], Optional[int]]:
+            if not math.isfinite(level_value):
+                return ("no_eval", None, None)
+            if not (live_bar_fresh and isinstance(current_live_bar, dict)):
+                return ("no_eval", None, None)
+            eval_tm: Optional[int] = None
+            try:
+                ltm = int(current_live_bar.get("time") or 0)
+                if ltm > 0:
+                    eval_tm = ltm
+            except Exception:
+                eval_tm = None
+            side = _condition_side(cond_name)
+            live_close: Optional[float] = None
+            try:
+                lc = float(current_live_bar.get("close"))
+                if math.isfinite(lc):
+                    live_close = float(lc)
+            except Exception:
+                live_close = None
+            if cond_name == "sweep_below":
+                try:
+                    lo = float(current_live_bar.get("low"))
+                    if math.isfinite(lo) and live_close is not None:
+                        hit = bool(lo <= level_value and live_close >= level_value)
+                        return ("hit" if hit else "miss", float(lo), eval_tm)
+                except Exception:
+                    return ("no_eval", None, eval_tm)
+                return ("no_eval", None, eval_tm)
+            if cond_name == "sweep_above":
+                try:
+                    hi = float(current_live_bar.get("high"))
+                    if math.isfinite(hi) and live_close is not None:
+                        hit = bool(hi >= level_value and live_close <= level_value)
+                        return ("hit" if hit else "miss", float(hi), eval_tm)
+                except Exception:
+                    return ("no_eval", None, eval_tm)
+                return ("no_eval", None, eval_tm)
+            if side == "below":
+                try:
+                    lo = float(current_live_bar.get("low"))
+                    if math.isfinite(lo):
+                        return ("hit" if bool(lo <= level_value) else "miss", float(lo), eval_tm)
+                except Exception:
+                    return ("no_eval", None, eval_tm)
+                return ("no_eval", None, eval_tm)
+            if side == "above":
+                try:
+                    hi = float(current_live_bar.get("high"))
+                    if math.isfinite(hi):
+                        return ("hit" if bool(hi >= level_value) else "miss", float(hi), eval_tm)
+                except Exception:
+                    return ("no_eval", None, eval_tm)
+                return ("no_eval", None, eval_tm)
+            return ("invalid_condition", None, eval_tm)
 
         for raw in raw_triggers[:200]:
             t = dict(raw) if isinstance(raw, dict) else {}
@@ -721,9 +922,15 @@ class AgentWatchdogService:
                     return ("hit" if bool(eval_px <= level_value) else "miss", eval_px, eval_tm)
                 if cond_name == "price_above":
                     return ("hit" if bool(eval_px >= level_value) else "miss", eval_px, eval_tm)
+                if cond_name == "sweep_below":
+                    touch_state, touch_px, touch_tm = _evaluate_live_touch(cond_name, level_value)
+                    return (touch_state, touch_px, touch_tm)
+                if cond_name == "sweep_above":
+                    touch_state, touch_px, touch_tm = _evaluate_live_touch(cond_name, level_value)
+                    return (touch_state, touch_px, touch_tm)
                 return ("invalid_condition", eval_px, eval_tm)
 
-            cond = str(t.get("condition") or "").strip().lower()
+            cond = _canonical_condition(t.get("condition"))
             try:
                 level = float(t.get("trigger_price"))
             except Exception:
@@ -753,7 +960,7 @@ class AgentWatchdogService:
 
             cancel_rule = t.get("cancel_rule") if isinstance(t.get("cancel_rule"), dict) else None
             if isinstance(cancel_rule, dict):
-                cancel_cond = str(cancel_rule.get("condition") or "").strip().lower()
+                cancel_cond = _canonical_condition(cancel_rule.get("condition"))
                 try:
                     cancel_level = float(cancel_rule.get("trigger_price"))
                 except Exception:
@@ -819,6 +1026,7 @@ class AgentWatchdogService:
 
             pre = t.get("precondition") if isinstance(t.get("precondition"), dict) else None
             state = str(t.get("state") or ("waiting_precondition" if isinstance(pre, dict) else "waiting_entry")).strip().lower()
+            pre_hit_this_cycle = False
             if state not in {"waiting_precondition", "waiting_entry"}:
                 state = "waiting_precondition" if isinstance(pre, dict) else "waiting_entry"
                 t["state"] = state
@@ -829,7 +1037,7 @@ class AgentWatchdogService:
                     t["state"] = "waiting_entry"
                     changed = True
                 else:
-                    pcond = str(pre.get("condition") or "").strip().lower()
+                    pcond = _canonical_condition(pre.get("condition"))
                     try:
                         plevel = float(pre.get("trigger_price"))
                     except Exception:
@@ -865,6 +1073,15 @@ class AgentWatchdogService:
                         changed = True
                         next_triggers.append(t)
                         continue
+                    # Reclaim-touch assist:
+                    # if precondition/entry forms a reclaim pair, arm precondition on
+                    # intrabar touch so brief sweeps are not missed between scans.
+                    if p_state in {"no_eval", "miss"} and _is_reclaim_pair(pcond, cond):
+                        touch_state, touch_px, touch_tm = _evaluate_live_touch(pcond, float(plevel))
+                        if touch_state == "hit":
+                            p_state = "hit"
+                            p_eval_px = float(touch_px) if touch_px is not None else None
+                            _p_eval_tm = int(touch_tm) if (touch_tm is not None and touch_tm > 0) else _p_eval_tm
                     if p_state in {"no_eval", "miss"}:
                         next_triggers.append(t)
                         continue
@@ -874,6 +1091,7 @@ class AgentWatchdogService:
                     t["precondition"] = pre2
                     t["state"] = "waiting_entry"
                     t["armed_at"] = self._safe_iso(now)
+                    pre_hit_this_cycle = True
                     changed = True
                     event_rows.append(
                         WorkbenchAgentEventModel(
@@ -892,10 +1110,24 @@ class AgentWatchdogService:
                             created_at=self._utc_now(),
                         )
                     )
-                    next_triggers.append(t)
-                    continue
 
-            c_state, eval_price, eval_time = _evaluate_condition(cond, float(level))
+            entry_eval_mode = str(t.get("entry_evaluation_mode") or "").strip().lower()
+            reclaim_touch_entry = bool(entry_eval_mode == "reclaim_touch")
+            if (not reclaim_touch_entry) and isinstance(t.get("precondition"), dict):
+                reclaim_touch_entry = _is_reclaim_pair((t.get("precondition") or {}).get("condition"), cond)
+            if pre_hit_this_cycle and cond in {"close_below", "close_above"}:
+                # Entry cannot be satisfied by the already-closed prior bar once the
+                # precondition has just armed on the current scan. Same-scan execution
+                # must come from the live reclaim/touch, not a stale historical close.
+                c_state, eval_price, eval_time = ("no_eval", None, None)
+            else:
+                c_state, eval_price, eval_time = _evaluate_condition(cond, float(level))
+            if c_state in {"no_eval", "miss"} and reclaim_touch_entry:
+                touch_state, touch_px, touch_tm = _evaluate_live_touch(cond, float(level))
+                if touch_state == "hit":
+                    c_state = "hit"
+                    eval_price = float(touch_px) if touch_px is not None else eval_price
+                    eval_time = int(touch_tm) if (touch_tm is not None and touch_tm > 0) else eval_time
             if c_state == "invalid_condition":
                 t["status"] = "failed"
                 t["failed_at"] = self._safe_iso(now)
@@ -911,6 +1143,53 @@ class AgentWatchdogService:
             place_args = dict(trade_args)
             if place_args.get("bar_time_unix") is None and eval_time is not None:
                 place_args["bar_time_unix"] = int(eval_time)
+            dynamic_stop_meta: Optional[Dict[str, Any]] = None
+            if bool(place_args.get("dynamic_stop_from_precondition", False)):
+                pre_obj = t.get("precondition") if isinstance(t.get("precondition"), dict) else {}
+                hit_price_val = pre_obj.get("hit_price")
+                hit_price = None
+                try:
+                    hp = float(hit_price_val)
+                    if math.isfinite(hp) and hp > 0:
+                        hit_price = float(hp)
+                except Exception:
+                    hit_price = None
+                stop_buffer = 0.0
+                try:
+                    stop_buffer = float(place_args.get("dynamic_stop_buffer_points") or 0.0)
+                    if not math.isfinite(stop_buffer):
+                        stop_buffer = 0.0
+                except Exception:
+                    stop_buffer = 0.0
+                stop_buffer = max(0.0, float(stop_buffer))
+                if hit_price is not None:
+                    direction = str(place_args.get("direction") or t.get("direction") or "").strip().upper()
+                    base_stop = None
+                    try:
+                        base = float(place_args.get("stop_loss"))
+                        if math.isfinite(base) and base > 0:
+                            base_stop = float(base)
+                    except Exception:
+                        base_stop = None
+                    resolved_stop: Optional[float] = None
+                    if direction == "BUY":
+                        candidate = float(hit_price) - float(stop_buffer)
+                        if math.isfinite(candidate) and candidate > 0:
+                            resolved_stop = float(candidate if base_stop is None else min(base_stop, candidate))
+                    elif direction == "SELL":
+                        candidate = float(hit_price) + float(stop_buffer)
+                        if math.isfinite(candidate) and candidate > 0:
+                            resolved_stop = float(candidate if base_stop is None else max(base_stop, candidate))
+                    if resolved_stop is not None:
+                        place_args["stop_loss"] = float(resolved_stop)
+                        dynamic_stop_meta = {
+                            "enabled": True,
+                            "resolved_at": self._safe_iso(now),
+                            "from_precondition_hit_price": float(hit_price),
+                            "buffer_points": float(stop_buffer),
+                            "base_stop_loss": float(base_stop) if base_stop is not None else None,
+                            "resolved_stop_loss": float(resolved_stop),
+                        }
 
             try:
                 from ..api.simulation_routes import _agent_execute_tool
@@ -932,6 +1211,8 @@ class AgentWatchdogService:
                 t["executed_at"] = self._safe_iso(now)
                 t["executed_price"] = float(eval_price)
                 t["result"] = result.get("data") if isinstance(result.get("data"), dict) else {}
+                if isinstance(dynamic_stop_meta, dict):
+                    t["dynamic_stop"] = dict(dynamic_stop_meta)
                 changed = True
                 event_rows.append(
                     WorkbenchAgentEventModel(
@@ -944,6 +1225,7 @@ class AgentWatchdogService:
                             "condition": cond,
                             "trigger_price": float(level),
                             "hit_price": float(eval_price),
+                            "dynamic_stop": dict(dynamic_stop_meta) if isinstance(dynamic_stop_meta, dict) else None,
                             "trade": result.get("data") if isinstance(result.get("data"), dict) else {},
                         },
                         created_at=self._utc_now(),
@@ -953,6 +1235,8 @@ class AgentWatchdogService:
                 t["status"] = "pending_approval"
                 t["pending_at"] = self._safe_iso(now)
                 t["pending_action"] = result.get("pending_action")
+                if isinstance(dynamic_stop_meta, dict):
+                    t["dynamic_stop"] = dict(dynamic_stop_meta)
                 changed = True
                 event_rows.append(
                     WorkbenchAgentEventModel(
@@ -975,6 +1259,8 @@ class AgentWatchdogService:
                 t["status"] = "failed"
                 t["failed_at"] = self._safe_iso(now)
                 t["error"] = str(result.get("error") or "trigger_execution_failed")[:280]
+                if isinstance(dynamic_stop_meta, dict):
+                    t["dynamic_stop"] = dict(dynamic_stop_meta)
                 changed = True
                 event_rows.append(
                     WorkbenchAgentEventModel(
@@ -1308,7 +1594,6 @@ class AgentWatchdogService:
                     latest_by_sim[sid] = row
 
             active_keys: set[Tuple[int, int]] = set()
-            next_live_updates: Dict[int, Dict[str, Any]] = {}
             event_rows = []
 
             now = datetime.now(timezone.utc)
@@ -1319,6 +1604,8 @@ class AgentWatchdogService:
                     continue
                 session = db.get(SimulationSession, sim_id)
                 if session is None or str(session.strategy_id or "") != "_workbench":
+                    continue
+                if self._backend_live_relay_enabled(session):
                     continue
                 agent_id = int(agent.id)
                 cfg = self._watchdog_cfg(agent)
@@ -1332,6 +1619,8 @@ class AgentWatchdogService:
 
                 live_bar = self._live_bar_from_agent_snapshot(agent)
                 if live_bar is None:
+                    live_bar = self._live_bar_fallback_from_provider(session=session, now=now)
+                if live_bar is None:
                     continue
                 live_bar_max_age_sec = float(cfg.get("live_bar_max_age_sec") or max(interval_sec * 3.0, 120.0))
                 if not self._is_live_bar_fresh(
@@ -1339,41 +1628,56 @@ class AgentWatchdogService:
                     live_bar=live_bar,
                     max_age_sec=float(live_bar_max_age_sec),
                 ):
-                    prev_warn = self._last_stale_live_warn_at_by_agent.get(agent_id)
-                    if prev_warn is None or (now - prev_warn).total_seconds() >= 300.0:
-                        logger.warning(
-                            "Agent watchdog skipped stale live bar: agent_id=%s sim_id=%s bar_time=%s max_age_sec=%.1f",
-                            int(agent_id),
-                            int(sim_id),
-                            int(live_bar.get("time") or 0),
-                            float(live_bar_max_age_sec),
-                        )
-                        self._last_stale_live_warn_at_by_agent[int(agent_id)] = now
-                    continue
+                    # Snapshot may be stale while provider feed is healthy; retry via provider.
+                    fallback_live = self._live_bar_fallback_from_provider(session=session, now=now)
+                    if isinstance(fallback_live, dict) and self._is_live_bar_fresh(
+                        now=now,
+                        live_bar=fallback_live,
+                        max_age_sec=float(live_bar_max_age_sec),
+                    ):
+                        live_bar = fallback_live
+                    else:
+                        with self._live_bar_cache_lock:
+                            prev_warn = self._last_stale_live_warn_at_by_agent.get(agent_id)
+                        if prev_warn is None or (now - prev_warn).total_seconds() >= 300.0:
+                            logger.warning(
+                                "Agent watchdog skipped stale live bar: agent_id=%s sim_id=%s bar_time=%s asof_time=%s max_age_sec=%.1f",
+                                int(agent_id),
+                                int(sim_id),
+                                int(live_bar.get("time") or 0),
+                                int(live_bar.get("asof_time") or 0),
+                                float(live_bar_max_age_sec),
+                            )
+                            with self._live_bar_cache_lock:
+                                self._last_stale_live_warn_at_by_agent[int(agent_id)] = now
+                        continue
                 price = float(live_bar["close"])
-                prev_live = self._last_live_bar_by_agent.get(agent_id)
-                closed_bar: Optional[Dict[str, Any]] = None
-                if isinstance(prev_live, dict):
-                    try:
-                        prev_t = int(prev_live.get("time") or 0)
-                        prev_c = float(prev_live.get("close"))
-                        cur_t = int(live_bar.get("time") or 0)
-                        if cur_t > prev_t and prev_t > 0 and math.isfinite(prev_c):
-                            closed_bar = {"time": int(prev_t), "close": float(prev_c)}
-                    except Exception:
-                        closed_bar = None
-                next_live_updates[int(agent_id)] = dict(live_bar)
+                with self._get_agent_eval_lock(agent_id):
+                    closed_bar: Optional[Dict[str, Any]] = None
+                    with self._live_bar_cache_lock:
+                        prev_live = self._last_live_bar_by_agent.get(agent_id)
+                    if isinstance(prev_live, dict):
+                        try:
+                            prev_t = int(prev_live.get("time") or 0)
+                            prev_c = float(prev_live.get("close"))
+                            cur_t = int(live_bar.get("time") or 0)
+                            if cur_t > prev_t and prev_t > 0 and math.isfinite(prev_c):
+                                closed_bar = {"time": int(prev_t), "close": float(prev_c)}
+                        except Exception:
+                            closed_bar = None
 
-                trigger_events = self._process_entry_triggers(
-                    db=db,
-                    agent=agent,
-                    session=session,
-                    now=now,
-                    current_price=float(price),
-                    closed_bar=closed_bar,
-                    current_live_bar=live_bar,
-                    live_bar_max_age_sec=float(live_bar_max_age_sec),
-                )
+                    trigger_events = self._process_entry_triggers(
+                        db=db,
+                        agent=agent,
+                        session=session,
+                        now=now,
+                        current_price=float(price),
+                        closed_bar=closed_bar,
+                        current_live_bar=live_bar,
+                        live_bar_max_age_sec=float(live_bar_max_age_sec),
+                    )
+                    with self._live_bar_cache_lock:
+                        self._last_live_bar_by_agent[int(agent_id)] = dict(live_bar)
                 if trigger_events:
                     event_rows.extend(trigger_events)
 
@@ -1605,20 +1909,23 @@ class AgentWatchdogService:
             for aid in list(self._last_llm_at_by_agent.keys()):
                 if aid not in active_agent_ids:
                     self._last_llm_at_by_agent.pop(aid, None)
-            for aid in list(self._last_live_bar_by_agent.keys()):
-                if aid not in active_agent_ids:
-                    self._last_live_bar_by_agent.pop(aid, None)
-            for aid in list(self._last_stale_live_warn_at_by_agent.keys()):
-                if aid not in active_agent_ids:
-                    self._last_stale_live_warn_at_by_agent.pop(aid, None)
+            with self._live_bar_cache_lock:
+                for aid in list(self._last_live_bar_by_agent.keys()):
+                    if aid not in active_agent_ids:
+                        self._last_live_bar_by_agent.pop(aid, None)
+                for aid in list(self._last_stale_live_warn_at_by_agent.keys()):
+                    if aid not in active_agent_ids:
+                        self._last_stale_live_warn_at_by_agent.pop(aid, None)
+            with self._agent_eval_locks_guard:
+                for aid in list(self._agent_eval_locks.keys()):
+                    if aid not in active_agent_ids:
+                        self._agent_eval_locks.pop(aid, None)
 
             needs_commit = bool(event_rows) or bool(db.new) or bool(db.dirty) or bool(db.deleted)
             if needs_commit:
                 for ev in event_rows:
                     db.add(ev)
                 db.commit()
-            if next_live_updates:
-                self._last_live_bar_by_agent.update(next_live_updates)
         except Exception as exc:
             try:
                 db.rollback()
@@ -1633,6 +1940,70 @@ class AgentWatchdogService:
             self._process_once()
             self._stop.wait(self._interval_sec())
 
+    def process_live_tick(
+        self,
+        *,
+        db,
+        agent: WorkbenchAgentSessionModel,
+        session: SimulationSession,
+        live_bar: Dict[str, Any],
+        now: Optional[datetime] = None,
+        auto_commit: bool = True,
+    ) -> Dict[str, Any]:
+        if not isinstance(live_bar, dict):
+            return {"ok": False, "error": "invalid_live_bar"}
+        try:
+            price = float(live_bar.get("close"))
+        except Exception:
+            return {"ok": False, "error": "invalid_live_bar_close"}
+        if not math.isfinite(price):
+            return {"ok": False, "error": "invalid_live_bar_close"}
+
+        now_utc = now if isinstance(now, datetime) else self._utc_now()
+        agent_id = int(agent.id)
+        cfg = self._watchdog_cfg(agent)
+
+        with self._get_agent_eval_lock(agent_id):
+            closed_bar: Optional[Dict[str, Any]] = None
+            with self._live_bar_cache_lock:
+                prev_live = self._last_live_bar_by_agent.get(agent_id)
+            if isinstance(prev_live, dict):
+                try:
+                    prev_t = int(prev_live.get("time") or 0)
+                    prev_c = float(prev_live.get("close"))
+                    cur_t = int(live_bar.get("time") or 0)
+                    if cur_t > prev_t and prev_t > 0 and math.isfinite(prev_c):
+                        closed_bar = {"time": int(prev_t), "close": float(prev_c)}
+                except Exception:
+                    closed_bar = None
+
+            event_rows = self._process_entry_triggers(
+                db=db,
+                agent=agent,
+                session=session,
+                now=now_utc,
+                current_price=float(price),
+                closed_bar=closed_bar,
+                current_live_bar=live_bar,
+                live_bar_max_age_sec=float(cfg.get("live_bar_max_age_sec") or 120.0),
+            )
+            with self._live_bar_cache_lock:
+                self._last_live_bar_by_agent[agent_id] = dict(live_bar)
+
+        if event_rows:
+            for ev in event_rows:
+                db.add(ev)
+        if auto_commit:
+            needs_commit = bool(event_rows) or bool(db.new) or bool(db.dirty) or bool(db.deleted)
+            if needs_commit:
+                db.commit()
+        return {
+            "ok": True,
+            "trigger_events_count": int(len(event_rows)),
+            "trigger_event_types": [str(getattr(ev, "event_type", "")).upper() for ev in event_rows],
+            "closed_bar_used": bool(isinstance(closed_bar, dict)),
+        }
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -1646,3 +2017,25 @@ class AgentWatchdogService:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         logger.info("Agent watchdog service stopped")
+
+
+_WATCHDOG_SINGLETON: Optional[AgentWatchdogService] = None
+_WATCHDOG_SINGLETON_PID: Optional[int] = None
+_WATCHDOG_SINGLETON_GUARD = threading.RLock()
+
+
+def get_agent_watchdog_service() -> AgentWatchdogService:
+    global _WATCHDOG_SINGLETON, _WATCHDOG_SINGLETON_PID
+    current_pid = int(os.getpid())
+    with _WATCHDOG_SINGLETON_GUARD:
+        if _WATCHDOG_SINGLETON is not None and _WATCHDOG_SINGLETON_PID != current_pid:
+            try:
+                _WATCHDOG_SINGLETON.stop()
+            except Exception:
+                pass
+            _WATCHDOG_SINGLETON = None
+            _WATCHDOG_SINGLETON_PID = None
+        if _WATCHDOG_SINGLETON is None:
+            _WATCHDOG_SINGLETON = AgentWatchdogService()
+            _WATCHDOG_SINGLETON_PID = current_pid
+    return _WATCHDOG_SINGLETON

@@ -51,6 +51,7 @@ from ..core.simulation_step_definitions import get_step_definitions, get_all_str
 from ..core.strategy_registry import StrategyRegistry
 from ..core.strategies.factory import create_strategy
 from ..core.workbench import WORKBENCH_ID, get_tool, list_tools as list_workbench_tools
+from ..core.workbench.symbol_utils import normalize_strategy_symbol
 from ..core.workbench.coach import WorkbenchCoach, build_workbench_context
 from ..core.workbench.consultant import WorkbenchConsultant
 from ..core.workbench.agent import WorkbenchAgent
@@ -78,6 +79,7 @@ from ..services.workbench_copilot_runtime import (
     get_runtime as get_copilot_runtime,
     clear_runtime as clear_copilot_runtime,
 )
+from ..services.agent_watchdog_service import get_agent_watchdog_service
 
 logger = logging.getLogger(__name__)
 
@@ -280,10 +282,31 @@ _AGENT_STRATEGY_TOOL_GROUPS: Dict[str, Dict[str, Any]] = {
             "get_indicator_values",
         ],
     },
+    "htf_fvg_liquidity_reclaim_v2": {
+        "parent": "run_htf_fvg_liquidity_reclaim_analysis",
+        "children": [
+            "scan_tool",
+            "scan_draw_fvg_range",
+            "get_indicator_values",
+        ],
+    },
+}
+_AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS: set[str] = {
+    "scan_tool",
+    "get_indicator_values",
 }
 
 _AGENT_STRATEGY_TOOL_ACCESS_MODES = {"all", "parent", "child"}
 _AGENT_TOOL_SELECTION_MODES = {"autonomous", "guided", "minimal"}
+_AGENT_STRATEGY_PROFILES = {"classic_htf_fvg", "htf_fvg_liquidity_reclaim_v2"}
+_AGENT_STRATEGY_PROFILE_PARENT_TOOL = {
+    "classic_htf_fvg": "run_mtf_analysis",
+    "htf_fvg_liquidity_reclaim_v2": "run_htf_fvg_liquidity_reclaim_analysis",
+}
+_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS = {
+    "run_mtf_analysis": "mtf_analysis",
+    "run_htf_fvg_liquidity_reclaim_analysis": "htf_fvg_liquidity_reclaim_analysis",
+}
 
 
 def _utc_now() -> datetime:
@@ -389,10 +412,17 @@ class CreateSessionRequest(BaseModel):
     strategy_id: str
     symbol: str = "XAUUSD"
     timeframe: str = "M1"
+    mode: str = "replay"
     data_file: Optional[str] = None
     initial_balance: float = 10000.0
     config: Optional[Dict[str, Any]] = None
     allow_empty_replay: bool = False
+
+
+class LiveControlRequest(BaseModel):
+    enabled: bool = True
+    source: str = "mt5"
+    backend_native: bool = True
 
 
 class AdvanceRequest(BaseModel):
@@ -1785,6 +1815,8 @@ def _agent_effective_tool_config(
         out.update(override)
     out["strategy_tool_access_mode"] = _normalize_strategy_tool_access_mode(out.get("strategy_tool_access_mode"))
     out["tool_selection_mode"] = _normalize_tool_selection_mode(out.get("tool_selection_mode"))
+    out["agent_strategy_profile"] = _normalize_agent_strategy_profile(out.get("agent_strategy_profile"))
+    out["agent_strategy_preset"] = _normalize_agent_strategy_preset(out.get("agent_strategy_preset"))
     return out
 
 
@@ -1812,6 +1844,69 @@ def _normalize_tool_selection_mode(value: Any) -> str:
     return "autonomous"
 
 
+def _normalize_agent_strategy_profile(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in _AGENT_STRATEGY_PROFILES:
+        return raw
+    if raw in {"classic", "legacy", "mtf", "htf_fvg", "classic_fvg"}:
+        return "classic_htf_fvg"
+    if raw in {
+        "liquidity",
+        "liq",
+        "liquidity_reclaim",
+        "htf_fvg_liquidity_reclaim",
+        "htf_fvg_liquidity_reclaim_strategy",
+        "liquidity_reclaim_v2",
+        "v2",
+    }:
+        return "htf_fvg_liquidity_reclaim_v2"
+    return "classic_htf_fvg"
+
+
+def _normalize_agent_strategy_preset(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "default"
+    return raw
+
+
+def _agent_selected_parent_tool(cfg: Optional[Dict[str, Any]]) -> str:
+    profile = _normalize_agent_strategy_profile((cfg or {}).get("agent_strategy_profile"))
+    return str(_AGENT_STRATEGY_PROFILE_PARENT_TOOL.get(profile) or "run_mtf_analysis")
+
+
+def _agent_tool_allowed_by_strategy_profile(tool_name: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    t = str(tool_name or "").strip().lower()
+    if not t:
+        return True
+    parents, _children = _agent_strategy_tool_sets()
+    if t not in parents:
+        return True
+    return t == _agent_selected_parent_tool(cfg).strip().lower()
+
+
+def _agent_apply_strategy_profile_tool_filter(
+    allowed_tool_names: Optional[List[str]],
+    cfg: Optional[Dict[str, Any]],
+) -> Optional[List[str]]:
+    if not isinstance(allowed_tool_names, list):
+        return allowed_tool_names
+    out: List[str] = []
+    seen: set[str] = set()
+    for name in allowed_tool_names:
+        tool = str(name or "").strip()
+        if not tool:
+            continue
+        key = tool.lower()
+        if not _agent_tool_allowed_by_strategy_profile(tool, cfg):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tool)
+    return out
+
+
 def _agent_strategy_tool_sets() -> Tuple[set[str], set[str]]:
     parents: set[str] = set()
     children: set[str] = set()
@@ -1834,7 +1929,7 @@ def _agent_tool_allowed_by_access_mode(tool_name: str, cfg: Optional[Dict[str, A
     if not t:
         return True
     parents, children = _agent_strategy_tool_sets()
-    if mode == "parent" and t in children:
+    if mode == "parent" and t in children and t not in _AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS:
         return False
     if mode == "child" and t in parents:
         return False
@@ -1863,7 +1958,7 @@ def _agent_apply_strategy_tool_access_mode(
         if not tool:
             continue
         key = tool.lower()
-        if mode == "parent" and key in children:
+        if mode == "parent" and key in children and key not in _AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS:
             continue
         if mode == "child" and key in parents:
             continue
@@ -1877,6 +1972,10 @@ def _agent_apply_strategy_tool_access_mode(
             if p not in seen:
                 seen.add(p)
                 out.append(p)
+        for v in sorted(_AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS):
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
 
     if mode == "child" and had_strategy_tools:
         has_child = any(str(x or "").strip().lower() in children for x in out)
@@ -1926,6 +2025,7 @@ def _agent_select_allowed_tool_names(
     else:
         base = get_tools_for_intent(seed, conversation_history=conversation_history or [])
     out = _agent_apply_strategy_tool_access_mode(base, cfg)
+    out = _agent_apply_strategy_profile_tool_filter(out, cfg)
     return out if isinstance(out, list) else []
 
 
@@ -4262,6 +4362,9 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
 
     config = req.config or {}
     config["initial_balance"] = req.initial_balance
+    mode = str(req.mode or "replay").strip().lower()
+    if mode not in {"replay", "live"}:
+        mode = "replay"
     if req.strategy_id == WORKBENCH_ID:
         cm = config.get("cost_model") if isinstance(config.get("cost_model"), dict) else {}
         spread_source = str(cm.get("spread_source") or _COST_SPREAD_SOURCE_MANUAL).strip().lower()
@@ -4273,11 +4376,21 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
             "tc_rate": float(cm.get("tc_rate") if cm.get("tc_rate") is not None else DEFAULT_TC_RATE),
             "spread_source": spread_source,
         }
+        live_cfg = config.get("live_control") if isinstance(config.get("live_control"), dict) else {}
+        source = str(live_cfg.get("source") or "mt5").strip().lower() or "mt5"
+        if source not in {"mt5", "databento"}:
+            source = "mt5"
+        config["live_control"] = {
+            "enabled": bool(live_cfg.get("enabled", mode == "live")),
+            "source": source,
+            "backend_native": bool(live_cfg.get("backend_native", source == "mt5")),
+        }
 
     session = SimulationSession(
         strategy_id=req.strategy_id,
         symbol=req.symbol,
         timeframe=req.timeframe,
+        mode=mode,
         data_file=req.data_file,
         initial_balance=req.initial_balance,
         current_balance=req.initial_balance,
@@ -4328,6 +4441,7 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         "strategy_id": session.strategy_id,
         "symbol": session.symbol,
         "timeframe": session.timeframe,
+        "mode": session.mode,
         "total_bars": session.total_bars,
         "initial_balance": session.initial_balance,
         "status": session.status,
@@ -4466,6 +4580,43 @@ def update_session_cost_model(session_id: int, req: CostModelUpdateRequest, db: 
         "ok": True,
         "session_id": int(session.id),
         "cost_model": cfg["cost_model"],
+    }
+
+
+@router.post("/sessions/{session_id}/live-control")
+def update_session_live_control(session_id: int, req: LiveControlRequest, db: Session = Depends(get_db)):
+    """Persist live-feed execution source for backend-native MT5 trigger relaying."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    cfg = _session_config_dict(session)
+    live = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+    source = str(req.source or live.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    enabled = bool(req.enabled)
+    live["enabled"] = enabled
+    live["source"] = source
+    live["backend_native"] = bool(req.backend_native and source == "mt5" and enabled)
+    live["updated_at"] = datetime.utcnow().isoformat()
+    cfg["live_control"] = live
+    session.config_json = json.dumps(cfg)
+    if enabled:
+        session.mode = "live"
+    session.updated_at = datetime.utcnow()
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return {
+        "ok": True,
+        "session_id": int(session.id),
+        "mode": str(session.mode or ""),
+        "live_control": {
+            "enabled": bool(live.get("enabled", False)),
+            "source": str(live.get("source") or ""),
+            "backend_native": bool(live.get("backend_native", False)),
+        },
     }
 
 
@@ -5166,6 +5317,14 @@ def simulation_mt5_symbols(
     try:
         service = _get_mt5_service_singleton()
         rows = service.list_symbols(search=search, limit=limit, include_hidden=include_hidden)
+        if not rows:
+            err = str(getattr(service, "_last_symbols_error", "") or "").strip()
+            return {
+                "ok": False,
+                "count": 0,
+                "symbols": [],
+                "error": err or "No MT5 symbols returned from terminal",
+            }
         return {
             "ok": True,
             "count": int(len(rows)),
@@ -5963,7 +6122,7 @@ class AgentChatRequest(BaseModel):
     provider: AgentProviderConfig = Field(default_factory=AgentProviderConfig)
     permissions: AgentPermissionConfig = Field(default_factory=AgentPermissionConfig)
     config: Dict[str, Any] = Field(default_factory=dict)
-    message: str = Field(min_length=1, max_length=6000)
+    message: str = Field(min_length=1, max_length=20000)
     conversation_history: List[Dict[str, str]] = Field(default_factory=list, max_length=40)
     context_snapshot: AgentContextSnapshot = Field(default_factory=AgentContextSnapshot)
     allow_tools: bool = True
@@ -6324,6 +6483,8 @@ def _agent_extract_schedule_trade_args(*, user_message: str, model_reply: str) -
         (r"(?:if|when)\s+price\s+(?:is\s+)?above\s+(\d+(?:\.\d+)?)", "price_above"),
         (r"(?:wait|waiting)\s+for\s+price\s+(?:to\s+be\s+|to\s+go\s+|to\s+)?below\s+(\d+(?:\.\d+)?)", "price_below"),
         (r"(?:wait|waiting)\s+for\s+price\s+(?:to\s+be\s+|to\s+go\s+|to\s+)?above\s+(\d+(?:\.\d+)?)", "price_above"),
+        (r"(?:wait|waiting)\s+for\s+(?:a\s+)?sweep\s+below\s+(\d+(?:\.\d+)?)", "sweep_below"),
+        (r"(?:wait|waiting)\s+for\s+(?:a\s+)?sweep\s+above\s+(\d+(?:\.\d+)?)", "sweep_above"),
         (r"(?:wait|waiting)\s+for\s+(?:a\s+)?close\s+below\s+(\d+(?:\.\d+)?)", "close_below"),
         (r"(?:wait|waiting)\s+for\s+(?:a\s+)?close\s+above\s+(\d+(?:\.\d+)?)", "close_above"),
         (r"(?:break(?:s|ing)?\s+below)\s+(\d+(?:\.\d+)?)", "price_below"),
@@ -6645,7 +6806,7 @@ def _agent_merge_context(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[st
 
 def _normalize_agent_trigger_condition(v: Any) -> Optional[str]:
     c = str(v or "").strip().lower()
-    if c in {"close_below", "close_above", "price_below", "price_above"}:
+    if c in {"close_below", "close_above", "price_below", "price_above", "sweep_below", "sweep_above"}:
         return c
     aliases = {
         "below_close": "close_below",
@@ -6654,8 +6815,23 @@ def _normalize_agent_trigger_condition(v: Any) -> Optional[str]:
         "candle_close_above": "close_above",
         "cross_below": "price_below",
         "cross_above": "price_above",
+        "liquidity_sweep_below": "sweep_below",
+        "liquidity_sweep_above": "sweep_above",
+        "bullish_sweep_below": "sweep_below",
+        "bearish_sweep_above": "sweep_above",
+        "sweep_low": "sweep_below",
+        "sweep_high": "sweep_above",
     }
     return aliases.get(c)
+
+
+def _agent_trigger_condition_side(v: Any) -> Optional[str]:
+    c = _normalize_agent_trigger_condition(v)
+    if c in {"close_below", "price_below", "sweep_below"}:
+        return "below"
+    if c in {"close_above", "price_above", "sweep_above"}:
+        return "above"
+    return None
 
 
 def _agent_parse_iso_utc(v: Any) -> Optional[datetime]:
@@ -6675,30 +6851,49 @@ def _agent_resolve_mtf_best_setup_for_schedule(
     *,
     context_snapshot: Dict[str, Any],
     agent_row: Optional[WorkbenchAgentSessionModel],
+    strategy_profile: Optional[str] = None,
     max_age_sec: int = 6 * 3600,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
+    profile = _normalize_agent_strategy_profile(strategy_profile)
+    selected_tool = str(_AGENT_STRATEGY_PROFILE_PARENT_TOOL.get(profile) or "run_mtf_analysis")
+    ordered_tool_names: List[str] = [selected_tool]
+
     sources: List[Tuple[Dict[str, Any], str]] = []
     if isinstance(context_snapshot, dict):
         tool_state = context_snapshot.get("tool_state") if isinstance(context_snapshot.get("tool_state"), dict) else {}
-        mtf = tool_state.get("mtf_analysis") if isinstance(tool_state.get("mtf_analysis"), dict) else {}
-        if mtf:
-            sources.append((mtf, "context_snapshot.tool_state.mtf_analysis"))
+        for tool_name in ordered_tool_names:
+            state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get(tool_name) or "").strip()
+            if not state_key:
+                continue
+            mtf = tool_state.get(state_key) if isinstance(tool_state.get(state_key), dict) else {}
+            if mtf:
+                sources.append((mtf, f"context_snapshot.tool_state.{state_key}"))
     if isinstance(agent_row, WorkbenchAgentSessionModel) and isinstance(agent_row.last_snapshot_json, dict):
         ts = agent_row.last_snapshot_json.get("tool_state") if isinstance(agent_row.last_snapshot_json.get("tool_state"), dict) else {}
-        mtf = ts.get("mtf_analysis") if isinstance(ts.get("mtf_analysis"), dict) else {}
-        if mtf:
-            sources.append((mtf, "agent_snapshot.tool_state.mtf_analysis"))
+        for tool_name in ordered_tool_names:
+            state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get(tool_name) or "").strip()
+            if not state_key:
+                continue
+            mtf = ts.get(state_key) if isinstance(ts.get(state_key), dict) else {}
+            if mtf:
+                sources.append((mtf, f"agent_snapshot.tool_state.{state_key}"))
 
     for mtf, src in sources:
-        best_setup = mtf.get("best_setup") if isinstance(mtf.get("best_setup"), dict) else {}
-        if not best_setup:
-            continue
         generated_at = _agent_parse_iso_utc(mtf.get("generated_at"))
         if generated_at is not None:
             age_sec = (_utc_now() - generated_at).total_seconds()
             if age_sec > float(max(60, int(max_age_sec))):
                 continue
-        return best_setup, src
+
+        best_setup = mtf.get("best_setup") if isinstance(mtf.get("best_setup"), dict) else {}
+        if best_setup:
+            return best_setup, src
+
+        # Watch-mode proposals (waiting for sweep unlock) must be proposal-locked
+        # the same way as executable best_setup proposals.
+        watch_setup = mtf.get("watch_setup") if isinstance(mtf.get("watch_setup"), dict) else {}
+        if watch_setup:
+            return watch_setup, f"{src}.watch_setup"
     return None, ""
 
 
@@ -7326,6 +7521,272 @@ def _agent_fvg_zone_status(zone: Dict[str, Any]) -> str:
     return "unfilled"
 
 
+def _agent_sweep_cfg_float(
+    *,
+    payload: Optional[Dict[str, Any]],
+    effective_cfg: Optional[Dict[str, Any]],
+    payload_keys: List[str],
+    cfg_keys: List[str],
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    p = payload if isinstance(payload, dict) else {}
+    cfg = effective_cfg if isinstance(effective_cfg, dict) else {}
+    for key in payload_keys:
+        if key in p:
+            val = _to_float_or_none(p.get(key))
+            if val is not None and math.isfinite(val):
+                return float(max(minimum, min(maximum, float(val))))
+    for key in cfg_keys:
+        if key in cfg:
+            val = _to_float_or_none(cfg.get(key))
+            if val is not None and math.isfinite(val):
+                return float(max(minimum, min(maximum, float(val))))
+    return float(max(minimum, min(maximum, float(default))))
+
+
+def _agent_sweep_symbol_overrides(
+    *,
+    payload: Optional[Dict[str, Any]],
+    effective_cfg: Optional[Dict[str, Any]],
+) -> Dict[str, float]:
+    p = payload if isinstance(payload, dict) else {}
+    cfg = effective_cfg if isinstance(effective_cfg, dict) else {}
+    raw = p.get("liquidity_sweep_distance_atr_by_symbol")
+    if raw is None:
+        raw = p.get("mtf_liquidity_sweep_distance_atr_by_symbol")
+    if raw is None:
+        raw = cfg.get("mtf_liquidity_sweep_distance_atr_by_symbol")
+    parsed: Dict[str, Any] = {}
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                parsed = obj
+        except Exception:
+            parsed = {}
+    out: Dict[str, float] = {}
+    for k, v in parsed.items():
+        n = _to_float_or_none(v)
+        if n is None or (not math.isfinite(n)):
+            continue
+        sym = normalize_strategy_symbol(k)
+        if not sym:
+            continue
+        out[sym] = float(max(0.05, min(3.0, float(n))))
+    return out
+
+
+def _agent_sweep_distance_multiplier(
+    symbol: str,
+    *,
+    payload: Optional[Dict[str, Any]] = None,
+    effective_cfg: Optional[Dict[str, Any]] = None,
+) -> float:
+    overrides = _agent_sweep_symbol_overrides(payload=payload, effective_cfg=effective_cfg)
+    base = normalize_strategy_symbol(symbol)
+    if base in overrides:
+        return float(overrides[base])
+
+    mult_gold = _agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_distance_atr_gold", "mtf_liquidity_sweep_distance_atr_gold"],
+        cfg_keys=["mtf_liquidity_sweep_distance_atr_gold"],
+        default=0.50,
+        minimum=0.05,
+        maximum=3.0,
+    )
+    mult_indices = _agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_distance_atr_indices", "mtf_liquidity_sweep_distance_atr_indices"],
+        cfg_keys=["mtf_liquidity_sweep_distance_atr_indices"],
+        default=0.30,
+        minimum=0.05,
+        maximum=3.0,
+    )
+    mult_fx = _agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_distance_atr_fx", "mtf_liquidity_sweep_distance_atr_fx"],
+        cfg_keys=["mtf_liquidity_sweep_distance_atr_fx"],
+        default=0.25,
+        minimum=0.05,
+        maximum=3.0,
+    )
+    mult_default = _agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_distance_atr_default", "mtf_liquidity_sweep_distance_atr_default"],
+        cfg_keys=["mtf_liquidity_sweep_distance_atr_default"],
+        default=0.30,
+        minimum=0.05,
+        maximum=3.0,
+    )
+
+    if base == "XAUUSD":
+        return float(mult_gold)
+    if base in {"NAS100", "US500"}:
+        return float(mult_indices)
+    raw = str(symbol or "").strip().upper()
+    fx_pair = base if (len(base) >= 6 and base[:6].isalpha()) else raw
+    if len(fx_pair) >= 6 and fx_pair[:3].isalpha() and fx_pair[3:6].isalpha():
+        return float(mult_fx)
+    return float(mult_default)
+
+
+def _agent_sweep_freshness_bars(
+    timeframe: str,
+    *,
+    payload: Optional[Dict[str, Any]] = None,
+    effective_cfg: Optional[Dict[str, Any]] = None,
+) -> int:
+    tf_min = max(1, _agent_timeframe_to_minutes(timeframe))
+    fresh_hours = _agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_freshness_hours", "mtf_liquidity_sweep_freshness_hours"],
+        cfg_keys=["mtf_liquidity_sweep_freshness_hours"],
+        default=4.0,
+        minimum=0.5,
+        maximum=24.0,
+    )
+    min_bars = int(round(_agent_sweep_cfg_float(
+        payload=payload,
+        effective_cfg=effective_cfg,
+        payload_keys=["liquidity_sweep_freshness_min_bars", "mtf_liquidity_sweep_freshness_min_bars"],
+        cfg_keys=["mtf_liquidity_sweep_freshness_min_bars"],
+        default=4.0,
+        minimum=1.0,
+        maximum=200.0,
+    )))
+    # Configurable consistency window across timeframes.
+    return int(max(min_bars, int(math.ceil((float(fresh_hours) * 60.0) / float(tf_min)))))
+
+
+def _agent_sweep_quality_label(rejection_ratio: Optional[float]) -> str:
+    rr = _to_float_or_none(rejection_ratio)
+    if rr is None or (not math.isfinite(rr)):
+        return "unknown"
+    if rr > 0.60:
+        return "strong"
+    if rr > 0.30:
+        return "moderate"
+    return "weak"
+
+
+def _agent_sweep_quality_rank(label: str) -> int:
+    raw = str(label or "").strip().lower()
+    if raw == "strong":
+        return 2
+    if raw == "moderate":
+        return 1
+    if raw == "weak":
+        return 0
+    return -1
+
+
+def _agent_liquidity_gate_mode(
+    *,
+    payload: Optional[Dict[str, Any]] = None,
+    effective_cfg: Optional[Dict[str, Any]] = None,
+) -> str:
+    p = payload if isinstance(payload, dict) else {}
+    cfg = effective_cfg if isinstance(effective_cfg, dict) else {}
+    raw = (
+        p.get("liquidity_gate_mode")
+        or p.get("mtf_liquidity_gate_mode")
+        or cfg.get("mtf_liquidity_gate_mode")
+        or cfg.get("liquidity_gate_mode")
+        or "hybrid"
+    )
+    mode = str(raw or "").strip().lower() or "hybrid"
+    if mode not in {"assist", "hybrid", "strict"}:
+        return "hybrid"
+    return mode
+
+
+def _agent_apply_risk_derate(current_risk_percent: float, factor: float) -> float:
+    cur = float(max(0.0, current_risk_percent))
+    mul = float(max(0.0, factor))
+    if cur <= 0.0 or mul <= 0.0:
+        return cur
+    return float(max(0.1, cur * mul))
+
+
+def _agent_fvg_quality(
+    anchor: Dict[str, Any],
+    *,
+    atr14: Optional[float],
+    point_value: float,
+) -> Dict[str, Any]:
+    top = _to_float_or_none(anchor.get("top")) or 0.0
+    bottom = _to_float_or_none(anchor.get("bottom")) or 0.0
+    gap_size = abs(float(top) - float(bottom))
+    original_gap = _to_float_or_none(anchor.get("original_gap_size"))
+    if original_gap is None or original_gap <= 0:
+        original_gap = _to_float_or_none(anchor.get("gap_size")) or gap_size
+    current_gap = _to_float_or_none(anchor.get("current_gap_size"))
+    if current_gap is None:
+        current_gap = 0.0 if str(anchor.get("status") or "") == "filled" else float(original_gap)
+    original_gap = max(float(original_gap), max(gap_size, 1e-9))
+    current_gap = max(0.0, min(float(original_gap), float(current_gap)))
+    retention_ratio = max(0.0, min(1.0, float(current_gap) / float(original_gap)))
+
+    atr_eff = _to_float_or_none(atr14)
+    if atr_eff is None or atr_eff <= 0:
+        atr_eff = max(float(point_value) * 20.0, float(original_gap) * 4.0, float(point_value))
+    gap_score = max(0.0, min(1.0, float(original_gap) / max(float(point_value) * 4.0, float(atr_eff) * 0.25)))
+
+    distance = abs(float(_to_float_or_none(anchor.get("distance_from_price")) or 0.0))
+    distance_score = max(0.0, min(1.0, 1.0 - (distance / max(float(atr_eff) * 5.0, float(point_value) * 20.0))))
+
+    mitigations = max(0, int(anchor.get("mitigations") or 0))
+    mitigation_score = max(0.0, 1.0 - (0.25 * float(mitigations)))
+
+    timeframe = str(anchor.get("timeframe") or "")
+    tf_min = max(1, _agent_timeframe_to_minutes(timeframe))
+    age_bars = max(0, int(anchor.get("age_bars") or 0))
+    age_hours = float(age_bars * tf_min) / 60.0
+    age_score = float(1.0 / (1.0 + (age_hours / 168.0)))
+
+    score = float(
+        100.0
+        * (
+            (0.35 * retention_ratio)
+            + (0.25 * gap_score)
+            + (0.20 * distance_score)
+            + (0.10 * age_score)
+            + (0.10 * mitigation_score)
+        )
+    )
+    score = max(0.0, min(100.0, score))
+    if score >= 65.0:
+        label = "strong"
+    elif score >= 45.0:
+        label = "moderate"
+    else:
+        label = "weak"
+    return {
+        "score": float(round(score, 2)),
+        "label": label,
+        "retention_ratio": float(round(retention_ratio, 5)),
+        "gap_score": float(round(gap_score, 5)),
+        "distance_score": float(round(distance_score, 5)),
+        "mitigation_score": float(round(mitigation_score, 5)),
+        "age_score": float(round(age_score, 5)),
+        "age_hours": float(round(age_hours, 2)),
+        "gap_size": float(round(original_gap, 5)),
+        "current_gap_size": float(round(current_gap, 5)),
+        "distance_from_price": float(round(distance, 5)),
+        "mitigations": int(mitigations),
+    }
+
+
 def _agent_run_mtf_analysis(
     *,
     session: SimulationSession,
@@ -7402,6 +7863,7 @@ def _agent_run_mtf_analysis(
                 "zones": [],
                 "zones_count": 0,
                 "active_zones_count": 0,
+                "liquidity": {"zones_count": 0, "sweeps_count": 0, "sweeps": []},
                 "trend": {"direction": "unknown"},
                 "movement_strength": {"state": "insufficient_data", "score": 0.0, "gas_low": True},
             }
@@ -7428,6 +7890,7 @@ def _agent_run_mtf_analysis(
                 "zones": [],
                 "zones_count": 0,
                 "active_zones_count": 0,
+                "liquidity": {"zones_count": 0, "sweeps_count": 0, "sweeps": []},
                 "trend": {"direction": "unknown"},
                 "movement_strength": {"state": "insufficient_data", "score": 0.0, "gas_low": True},
             }
@@ -7477,6 +7940,46 @@ def _agent_run_mtf_analysis(
                         str(symbol),
                         str(fb_err)[:180],
                     )
+        liq_scan_out = _agent_scan_tool_from_bars(
+            tool_id="liquidity",
+            bars=tf_bars[tf],
+            symbol=symbol,
+            timeframe=tf,
+            config={
+                "timeframe": tf,
+            },
+        )
+        liq_scan_data = liq_scan_out.get("data") if isinstance(liq_scan_out.get("data"), dict) else {}
+        liq_zones_raw = liq_scan_data.get("zones") if isinstance(liq_scan_data.get("zones"), list) else []
+        liq_sweeps: List[Dict[str, Any]] = []
+        for lz in liq_zones_raw:
+            if not isinstance(lz, dict):
+                continue
+            lz_type = str(lz.get("type") or "").strip().lower()
+            if lz_type not in {"liquidity_sweep_high", "liquidity_sweep_low"}:
+                continue
+            lz_dir = "bearish" if lz_type == "liquidity_sweep_high" else "bullish"
+            liq_sweeps.append(
+                {
+                    "type": lz_type,
+                    "direction": lz_dir,
+                    "bar_index": int(lz.get("bar_index") or 0),
+                    "start_time_unix": int(lz.get("start_time_unix") or 0),
+                    "end_time_unix": int(lz.get("end_time_unix") or 0),
+                    "liquidity_level": _to_float_or_none(lz.get("liquidity_level")),
+                    "ref_price": _to_float_or_none(lz.get("ref_price")),
+                    "pool_boundary": _to_float_or_none(lz.get("pool_boundary")),
+                    "swept_price": _to_float_or_none(lz.get("swept_price")),
+                    "rejection_ratio": _to_float_or_none(lz.get("rejection_ratio")),
+                    "rejection_quality": str(lz.get("rejection_quality") or ""),
+                    "top": _to_float_or_none(lz.get("top")),
+                    "bottom": _to_float_or_none(lz.get("bottom")),
+                    "sweep_bar_open": _to_float_or_none(lz.get("sweep_bar_open")),
+                    "sweep_bar_close": _to_float_or_none(lz.get("sweep_bar_close")),
+                    "sweep_bar_high": _to_float_or_none(lz.get("sweep_bar_high")),
+                    "sweep_bar_low": _to_float_or_none(lz.get("sweep_bar_low")),
+                }
+            )
         zones: List[Dict[str, Any]] = []
         for z in zones_raw:
             if not isinstance(z, dict):
@@ -7497,6 +8000,7 @@ def _agent_run_mtf_analysis(
                     "top": z_top,
                     "bottom": z_bottom,
                     "gap_size": _to_float_or_none(z.get("gap_size")) or abs(z_top - z_bottom),
+                    "original_gap_size": _to_float_or_none(z.get("original_gap_size")) or _to_float_or_none(z.get("gap_size")) or abs(z_top - z_bottom),
                     "current_gap_size": _to_float_or_none(z.get("current_gap_size")),
                     "mitigations": int(z.get("mitigations") or 0),
                     "filled": bool(z.get("filled", False)),
@@ -7517,6 +8021,12 @@ def _agent_run_mtf_analysis(
             "zones": zones,
             "zones_count": int(len(zones)),
             "active_zones_count": int(active_count),
+            "liquidity": {
+                "zones_count": int(len(liq_zones_raw)),
+                "sweeps_count": int(len(liq_sweeps)),
+                "sweeps": liq_sweeps,
+                "scan_error": (str(liq_scan_out.get("error") or "") if not bool(liq_scan_out.get("ok")) else None),
+            },
             "trend": scan_data.get("trend") if isinstance(scan_data.get("trend"), dict) else {"direction": "unknown"},
             "movement_strength": scan_data.get("movement_strength") if isinstance(scan_data.get("movement_strength"), dict) else {},
         }
@@ -7554,7 +8064,7 @@ def _agent_run_mtf_analysis(
 
     ltf_indicators = _agent_indicator_values_from_bars(ltf_bars, max_rows=1200) if len(ltf_bars) >= 30 else {}
     ltf_scan = tf_results.get(execution_tf) if isinstance(tf_results.get(execution_tf), dict) else {}
-    inst_for_limits = get_instrument(symbol)
+    inst_for_limits = get_instrument(normalize_strategy_symbol(symbol) or symbol)
     ltf_atr14 = _to_float_or_none(ltf_indicators.get("atr14"))
     if ltf_atr14 is None or ltf_atr14 <= 0:
         ltf_atr14 = _avg_true_range_proxy(ltf_bars, max_rows=30)
@@ -7598,6 +8108,9 @@ def _agent_run_mtf_analysis(
             distance = None
             if current_price is not None:
                 distance = float(min(abs(float(current_price) - float(top)), abs(float(current_price) - float(bottom))))
+            bars_tf = tf_bars.get(tf) if isinstance(tf_bars.get(tf), list) else []
+            z_bar_index = int(z.get("bar_index") or 0)
+            latest_tf_index = max(0, len(bars_tf) - 1)
             row = {
                 "timeframe": tf,
                 "type": str(z.get("type") or ""),
@@ -7607,6 +8120,11 @@ def _agent_run_mtf_analysis(
                 "status": status,
                 "mitigations": int(z.get("mitigations") or 0),
                 "gap_size": _to_float_or_none(z.get("gap_size")),
+                "original_gap_size": _to_float_or_none(z.get("original_gap_size")) or _to_float_or_none(z.get("gap_size")),
+                "current_gap_size": _to_float_or_none(z.get("current_gap_size")),
+                "trend_aligned": bool(z.get("trend_aligned", False)),
+                "bar_index": int(z_bar_index),
+                "age_bars": int(max(0, latest_tf_index - z_bar_index)),
                 "distance_from_price": distance,
             }
             if bias in {"bullish", "bearish"} and str(row.get("direction") or "") != bias:
@@ -7653,16 +8171,22 @@ def _agent_run_mtf_analysis(
 
     # ── Fix 2: Detect LTF exhaustion and add confidence warnings. ──
     ltf_movement = ltf_scan.get("movement_strength") if isinstance(ltf_scan.get("movement_strength"), dict) else {}
+    ltf_liquidity = ltf_scan.get("liquidity") if isinstance(ltf_scan.get("liquidity"), dict) else {}
     ltf_gas_low = bool(ltf_movement.get("gas_low", False))
     ltf_mov_state = str(ltf_movement.get("state") or "").strip().lower()
     if ltf_gas_low or ltf_mov_state == "exhausted":
         confidence_warnings.append("ltf_movement_exhausted")
 
     best_setup: Optional[Dict[str, Any]] = None
+    schedule_trade_entry_args: Optional[Dict[str, Any]] = None
+    selected_anchor_candidate: Optional[Dict[str, Any]] = None
+    sweep_candidates: List[Dict[str, Any]] = []
     duplicate_pending = False
     if not blockers:
         anchor = execution_anchors[0]
-        inst = get_instrument(symbol)
+        selected_anchor_candidate = dict(anchor)
+        inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
+        gate_mode = _agent_liquidity_gate_mode(payload=payload, effective_cfg=effective_cfg)
         rr_target = _to_float_or_none(payload.get("rr_target"))
         if rr_target is None or (not math.isfinite(rr_target)) or rr_target <= 0:
             rr_target = 2.0
@@ -7683,10 +8207,15 @@ def _agent_run_mtf_analysis(
         top = float(anchor["top"])
         bottom = float(anchor["bottom"])
         atr14 = _to_float_or_none(ltf_indicators.get("atr14"))
+        fvg_quality = _agent_fvg_quality(anchor, atr14=atr14, point_value=float(inst.point_value))
+        fvg_quality_label = str(fvg_quality.get("label") or "weak")
         gap = abs(top - bottom)
-        min_buffer = max(float(inst.point_value) * 2.0, gap * 0.10)
+        # Looser structural buffer to avoid fragile ultra-tight stops.
+        # Previous floor (2 ticks / 10% gap / 5% ATR) was too tight for live XAU
+        # reclaim setups and produced frequent noise stop-outs.
+        min_buffer = max(float(inst.point_value) * 4.0, gap * 0.20)
         if atr14 is not None and atr14 > 0:
-            min_buffer = max(min_buffer, float(atr14) * 0.05)
+            min_buffer = max(min_buffer, float(atr14) * 0.20)
 
         setup_direction = bias if bias in {"bullish", "bearish"} else str(anchor.get("direction") or "").strip().lower()
         if setup_direction not in {"bullish", "bearish"}:
@@ -7699,14 +8228,133 @@ def _agent_run_mtf_analysis(
             precondition = {"condition": "close_below", "trigger_price": float(top)}
             condition = {"condition": "close_above", "trigger_price": float(top)}
             cancel_rule = {"condition": "close_below", "trigger_price": float(bottom)}
-            stop_loss = float(bottom - min_buffer)
+            stop_anchor = float(bottom)
+            stop_loss = float(stop_anchor - min_buffer)
         else:
             entry_ref = float(bottom)
             direction = "SELL"
             precondition = {"condition": "close_above", "trigger_price": float(bottom)}
             condition = {"condition": "close_below", "trigger_price": float(bottom)}
             cancel_rule = {"condition": "close_above", "trigger_price": float(top)}
-            stop_loss = float(top + min_buffer)
+            stop_anchor = float(top)
+            stop_loss = float(stop_anchor + min_buffer)
+
+        tf_min = max(1, _agent_timeframe_to_minutes(execution_tf))
+        latest_bar_index = max(0, len(ltf_bars) - 1)
+        sweep_age_max = _agent_sweep_freshness_bars(
+            execution_tf,
+            payload=payload,
+            effective_cfg=effective_cfg,
+        )
+        sweep_dist_mult = _agent_sweep_distance_multiplier(
+            symbol,
+            payload=payload,
+            effective_cfg=effective_cfg,
+        )
+        sweep_dist_limit = float(max(float(inst.point_value) * 2.0, float(ltf_atr14 or 0.0) * sweep_dist_mult))
+        expected_sweep_dir = "bullish" if setup_direction == "bullish" else "bearish"
+        sweep_candidates_raw = ltf_liquidity.get("sweeps") if isinstance(ltf_liquidity.get("sweeps"), list) else []
+        sweep_candidates = []
+        for sw in sweep_candidates_raw:
+            if not isinstance(sw, dict):
+                continue
+            if str(sw.get("direction") or "").strip().lower() != expected_sweep_dir:
+                continue
+            sw_idx = int(sw.get("bar_index") or 0)
+            age_bars = int(max(0, latest_bar_index - sw_idx))
+            if age_bars > int(sweep_age_max):
+                continue
+            sw_ref = _to_float_or_none(sw.get("swept_price"))
+            if sw_ref is None:
+                sw_ref = _to_float_or_none(sw.get("liquidity_level"))
+            if sw_ref is None:
+                continue
+            dist = abs(float(sw_ref) - float(entry_ref))
+            if dist > float(sweep_dist_limit):
+                continue
+            rr = _to_float_or_none(sw.get("rejection_ratio"))
+            qual = str(sw.get("rejection_quality") or "").strip().lower() or _agent_sweep_quality_label(rr)
+            sweep_candidates.append(
+                {
+                    **sw,
+                    "age_bars": int(age_bars),
+                    "distance_to_entry": float(round(dist, 5)),
+                    "sweep_ref": float(sw_ref),
+                    "rejection_ratio": rr,
+                    "rejection_quality": qual,
+                    "quality_rank": int(_agent_sweep_quality_rank(qual)),
+                }
+            )
+        sweep_candidates.sort(
+            key=lambda x: (
+                -int(x.get("quality_rank") if x.get("quality_rank") is not None else -1),
+                -float(x.get("rejection_ratio") if x.get("rejection_ratio") is not None else -1.0),
+                float(x.get("distance_to_entry") if x.get("distance_to_entry") is not None else 10**9),
+                int(x.get("age_bars") if x.get("age_bars") is not None else 10**9),
+            )
+        )
+        sweep_pick = sweep_candidates[0] if sweep_candidates else None
+        sweep_gate: Dict[str, Any] = {
+            "mode": gate_mode,
+            "timeframe": str(execution_tf),
+            "expected_direction": expected_sweep_dir,
+            "sweep_age_max_bars": int(sweep_age_max),
+            "sweep_distance_limit": float(round(sweep_dist_limit, 5)),
+            "sweep_distance_multiplier_atr": float(round(sweep_dist_mult, 4)),
+            "candidates_count": int(len(sweep_candidates)),
+            "passed": False,
+            "reason": "no_recent_sweep",
+            "selected": sweep_pick,
+        }
+        if sweep_pick is not None:
+            rr_val = _to_float_or_none(sweep_pick.get("rejection_ratio"))
+            sweep_quality = str(sweep_pick.get("rejection_quality") or "").strip().lower() or _agent_sweep_quality_label(rr_val)
+            sweep_gate["selected_quality"] = sweep_quality
+            if sweep_quality == "weak" or (rr_val is not None and rr_val <= 0.30):
+                blockers.append("weak_liquidity_sweep_rejection")
+                confidence_warnings.append("weak_liquidity_sweep_rejection")
+                sweep_gate["passed"] = False
+                sweep_gate["reason"] = "weak_rejection_ratio"
+            else:
+                sweep_gate["passed"] = True
+                sweep_gate["reason"] = "moderate_sweep_confirmed" if sweep_quality == "moderate" else "sweep_confirmed"
+                if sweep_quality == "moderate":
+                    capped_risk = _agent_apply_risk_derate(float(risk_percent), 0.75)
+                    if capped_risk < float(risk_percent):
+                        risk_percent = capped_risk
+                        risk_derated = True
+                        confidence_warnings.append("risk_derated_for_moderate_sweep")
+                # Stop-loss anchor extends behind liquidity sweep extremum.
+                sw_px = _to_float_or_none(sweep_pick.get("swept_price"))
+                if sw_px is not None:
+                    if setup_direction == "bullish":
+                        stop_anchor = float(min(float(stop_anchor), float(sw_px)))
+                        stop_loss = float(stop_anchor - min_buffer)
+                    else:
+                        stop_anchor = float(max(float(stop_anchor), float(sw_px)))
+                        stop_loss = float(stop_anchor + min_buffer)
+        else:
+            # No recent sweep found — apply gate mode + FVG quality model:
+            # strict => hard block
+            # hybrid/assist + weak FVG => hard block
+            # hybrid/assist + non-weak FVG => 50% risk derate
+            if gate_mode == "strict":
+                blockers.append("strict_requires_liquidity_sweep")
+                confidence_warnings.append("no_recent_liquidity_sweep")
+                sweep_gate["reason"] = "strict_requires_sweep"
+            elif fvg_quality_label == "weak":
+                blockers.append("no_sweep_weak_fvg")
+                confidence_warnings.append("no_sweep_weak_fvg")
+                sweep_gate["reason"] = "no_sweep_weak_fvg"
+            else:
+                soft_blockers.append("no_recent_liquidity_sweep")
+                confidence_warnings.append("no_recent_liquidity_sweep")
+                if gate_mode in {"assist", "hybrid"}:
+                    capped_risk = _agent_apply_risk_derate(float(risk_percent), 0.50)
+                    if capped_risk < float(risk_percent):
+                        risk_percent = capped_risk
+                        risk_derated = True
+                        confidence_warnings.append("risk_derated_for_missing_sweep")
 
         risk_distance = abs(float(entry_ref) - float(stop_loss))
         if risk_distance <= 0 or not math.isfinite(risk_distance):
@@ -7746,6 +8394,18 @@ def _agent_run_mtf_analysis(
                     reward_distance = float(struct_reward)
                     tp_basis = "structure"
             rr = reward_distance / risk_distance if risk_distance > 0 else None
+            rr_cap = _to_float_or_none(payload.get("rr_max_cap"))
+            if rr_cap is None or (not math.isfinite(rr_cap)):
+                rr_cap = 8.0
+            rr_cap = float(max(rr_target, min(12.0, rr_cap)))
+            rr_capped = False
+            if rr is not None and rr > rr_cap:
+                reward_distance = float(risk_distance * rr_cap)
+                take_profit = float(entry_ref + reward_distance) if direction == "BUY" else float(entry_ref - reward_distance)
+                rr = float(rr_cap)
+                rr_capped = True
+                tp_basis = "structure_capped" if tp_basis == "structure" else "rr_capped"
+                confidence_warnings.append("rr_capped_for_realism")
 
             balance = _to_float_or_none(session.current_balance)
             if balance is None or balance <= 0:
@@ -7774,6 +8434,7 @@ def _agent_run_mtf_analysis(
                 tr_cond = str(tr.get("condition") or "").lower()
                 tr_price = _to_float_or_none(tr.get("trigger_price"))
                 tr_pre = tr.get("precondition") if isinstance(tr.get("precondition"), dict) else {}
+                tr_cancel = tr.get("cancel_rule") if isinstance(tr.get("cancel_rule"), dict) else {}
                 tr_ta = tr.get("trade_args") if isinstance(tr.get("trade_args"), dict) else {}
                 if (
                     tr_cond == str(condition["condition"])
@@ -7784,6 +8445,15 @@ def _agent_run_mtf_analysis(
                     and str(tr_pre.get("condition") or "").lower() == str(precondition["condition"])
                     and _to_float_or_none(tr_pre.get("trigger_price")) is not None
                     and abs(float(_to_float_or_none(tr_pre.get("trigger_price")) or 0.0) - float(precondition["trigger_price"])) <= (float(inst.point_value) * 2.0)
+                    and str(tr_cancel.get("condition") or "").lower() == str(cancel_rule.get("condition") or "").lower()
+                    and _to_float_or_none(tr_cancel.get("trigger_price")) is not None
+                    and abs(float(_to_float_or_none(tr_cancel.get("trigger_price")) or 0.0) - float(cancel_rule["trigger_price"])) <= (float(inst.point_value) * 2.0)
+                    and _to_float_or_none(tr_ta.get("stop_loss")) is not None
+                    and abs(float(_to_float_or_none(tr_ta.get("stop_loss")) or 0.0) - float(stop_loss)) <= (float(inst.point_value) * 4.0)
+                    and _to_float_or_none(tr_ta.get("take_profit")) is not None
+                    and abs(float(_to_float_or_none(tr_ta.get("take_profit")) or 0.0) - float(take_profit)) <= (float(inst.point_value) * 4.0)
+                    and _to_float_or_none(tr_ta.get("lot_size")) is not None
+                    and abs(float(_to_float_or_none(tr_ta.get("lot_size")) or 0.0) - float(lot_size)) <= max(float(inst.lot_step), 1e-9)
                 ):
                     duplicate_pending = True
                     break
@@ -7815,14 +8485,44 @@ def _agent_run_mtf_analysis(
             if ltf_gas_low or ltf_mov_state == "exhausted":
                 setup_warnings.append("LTF movement exhausted — impulse may be fading. Consider smaller size or waiting for fresh momentum.")
             if risk_derated:
-                setup_warnings.append(
-                    f"Risk derated for exhausted movement: requested {requested_risk_percent:.2f}% -> effective {risk_percent:.2f}%."
-                )
+                if "risk_derated_for_exhaustion" in confidence_warnings:
+                    setup_warnings.append(
+                        f"Risk derated for exhausted movement: requested {requested_risk_percent:.2f}% -> effective {risk_percent:.2f}%."
+                    )
+                if "risk_derated_for_moderate_sweep" in confidence_warnings:
+                    setup_warnings.append(
+                        f"Risk derated for moderate liquidity sweep confirmation: requested {requested_risk_percent:.2f}% -> effective {risk_percent:.2f}%."
+                    )
+                if "risk_derated_for_missing_sweep" in confidence_warnings:
+                    setup_warnings.append(
+                        f"Risk derated due to missing liquidity sweep confirmation: requested {requested_risk_percent:.2f}% -> effective {risk_percent:.2f}%."
+                    )
             if abs(actual_risk_usd - risk_amount) > (risk_amount * 0.05):
                 setup_warnings.append(f"Lot rounding causes actual risk ${actual_risk_usd:.2f} vs target ${risk_amount:.2f}.")
             anchor_dist = anchor.get("distance_from_price")
             if anchor_dist is not None and ltf_atr14 is not None and ltf_atr14 > 0 and float(anchor_dist) > float(ltf_atr14) * 5.0:
                 setup_warnings.append(f"Anchor is {float(anchor_dist):.2f} price units away ({float(anchor_dist) / float(ltf_atr14):.1f}x ATR) — pullback required.")
+            if fvg_quality_label == "weak":
+                setup_warnings.append(
+                    f"FVG quality is weak (score {float(fvg_quality.get('score') or 0.0):.2f}) — small/aged/mitigated anchor."
+                )
+            elif fvg_quality_label == "moderate":
+                setup_warnings.append(
+                    f"FVG quality is moderate (score {float(fvg_quality.get('score') or 0.0):.2f}) — usable, but not premium."
+                )
+
+            if rr_capped:
+                setup_warnings.append(f"R:R capped to {rr_cap:.2f}:1 for execution realism.")
+            if str(sweep_gate.get("reason") or "") == "weak_rejection_ratio":
+                setup_warnings.append("Liquidity sweep rejected: rejection_ratio <= 0.30 indicates breakdown through pool.")
+            if str(sweep_gate.get("reason") or "") == "moderate_sweep_confirmed":
+                setup_warnings.append("Liquidity sweep confirmation is moderate, not strong — size reduced to reflect weaker rejection quality.")
+            if str(sweep_gate.get("reason") or "") == "no_recent_sweep":
+                setup_warnings.append("No fresh liquidity sweep confirmation near entry; risk may be derated by mode.")
+            if str(sweep_gate.get("reason") or "") == "strict_requires_sweep":
+                setup_warnings.append("Strict gate mode requires a fresh liquidity sweep confirmation before any trigger can be armed.")
+            if str(sweep_gate.get("reason") or "") == "no_sweep_weak_fvg":
+                setup_warnings.append("No liquidity sweep + weak FVG momentum — setup blocked per hybrid gate.")
 
             best_setup = {
                 "direction": direction,
@@ -7838,6 +8538,8 @@ def _agent_run_mtf_analysis(
                 "risk_percent": float(round(risk_percent, 4)),
                 "requested_risk_percent": float(round(requested_risk_percent, 4)),
                 "risk_derated": bool(risk_derated),
+                "rr_capped": bool(rr_capped),
+                "rr_cap": float(round(rr_cap, 4)),
                 "risk_amount": float(round(risk_amount, 4)),
                 "risk_amount_actual": float(round(actual_risk_usd, 2)),
                 "lot_size": float(lot_size),
@@ -7846,9 +8548,96 @@ def _agent_run_mtf_analysis(
                 "precondition": precondition,
                 "condition": condition,
                 "cancel_rule": cancel_rule,
+                "fvg_quality": fvg_quality,
+                "sweep_gate": sweep_gate,
                 "calc_trace": calc_trace,
                 "warnings": setup_warnings,
             }
+            schedule_trade_entry_args = {
+                "condition": str(condition.get("condition") or ""),
+                "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+                "direction": direction,
+                "stop_loss": float(round(stop_loss, 5)),
+                "take_profit": float(round(take_profit, 5)),
+                "lot_size": float(lot_size),
+                "timeframe": str(execution_tf),
+                "expires_sec": int(expires_sec),
+                "precondition": precondition,
+                "cancel_rule": cancel_rule,
+                "entry_ref": float(round(entry_ref, 5)),
+                "expected_rr": float(round(rr or 0.0, 4)),
+                "risk_percent": float(round(risk_percent, 4)),
+            }
+
+    if selected_anchor_candidate is None:
+        if execution_anchors:
+            selected_anchor_candidate = dict(execution_anchors[0])
+        elif anchors:
+            selected_anchor_candidate = dict(anchors[0])
+
+    manual_confirmation_preview = bool(
+        len(soft_blockers) > 0
+        or ("ltf_movement_exhausted" in confidence_warnings)
+        or ("risk_derated_for_exhaustion" in confidence_warnings)
+        or ("risk_derated_for_moderate_sweep" in confidence_warnings)
+        or ("risk_derated_for_missing_sweep" in confidence_warnings)
+    )
+    analysis_stage = "trigger_ready"
+    if blockers:
+        if "open_position_exists" in blockers:
+            analysis_stage = "open_position_exists"
+        elif "duplicate_pending_trigger" in blockers:
+            analysis_stage = "duplicate_pending_trigger"
+        elif "current_price_unavailable" in blockers:
+            analysis_stage = "current_price_unavailable"
+        elif "no_htf_anchor_zone" in blockers:
+            analysis_stage = "no_htf_anchor_zone"
+        elif "anchor_direction_unknown" in blockers:
+            analysis_stage = "anchor_direction_unknown"
+        elif "invalid_risk_distance" in blockers:
+            analysis_stage = "invalid_risk_distance"
+        elif "weak_liquidity_sweep_rejection" in blockers:
+            analysis_stage = "weak_liquidity_sweep_rejection"
+        elif "strict_requires_liquidity_sweep" in blockers:
+            analysis_stage = "strict_requires_liquidity_sweep"
+        elif "no_sweep_weak_fvg" in blockers:
+            analysis_stage = "no_sweep_weak_fvg"
+        elif selected_anchor_candidate is not None:
+            analysis_stage = "reclaim_or_rr_validation_failed"
+        else:
+            analysis_stage = "no_setup"
+    elif best_setup is None:
+        if "no_execution_relevant_anchor" in soft_blockers:
+            analysis_stage = "manual_review_anchor_distance"
+        elif selected_anchor_candidate is not None:
+            analysis_stage = "reclaim_or_rr_validation_failed"
+        else:
+            analysis_stage = "no_setup"
+    elif manual_confirmation_preview:
+        analysis_stage = "manual_confirmation_required"
+
+    liquidity_context = {
+        "timeframe": execution_tf,
+        "zones_count": int(ltf_liquidity.get("zones_count") or 0),
+        "sweeps_count": int(ltf_liquidity.get("sweeps_count") or 0),
+        "matching_sweeps_count": int(len(sweep_candidates)),
+        "sweeps": (ltf_liquidity.get("sweeps") if isinstance(ltf_liquidity.get("sweeps"), list) else [])[:12],
+        "matching_sweeps": sweep_candidates[:8],
+        "selected_matching_sweep": (
+            ((best_setup or {}).get("sweep_gate") or {}).get("selected")
+            if isinstance(((best_setup or {}).get("sweep_gate") or {}), dict)
+            else None
+        ),
+        "scan_error": ltf_liquidity.get("scan_error"),
+    }
+    analysis_trace = {
+        "stage": analysis_stage,
+        "selected_anchor_found": bool(selected_anchor_candidate is not None),
+        "execution_anchor_count": int(len(execution_anchors)),
+        "context_anchor_count": int(len(context_only_anchors)),
+        "matching_sweeps_count": int(len(sweep_candidates)),
+        "best_setup_ready": bool(best_setup is not None),
+    }
 
     include_news = bool(payload.get("include_news", False))
     news_payload: Optional[Dict[str, Any]] = None
@@ -7874,11 +8663,7 @@ def _agent_run_mtf_analysis(
             ibkr_port=max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
         )
 
-    manual_confirmation_required = bool(
-        len(soft_blockers) > 0
-        or ("ltf_movement_exhausted" in confidence_warnings)
-        or ("risk_derated_for_exhaustion" in confidence_warnings)
-    )
+    manual_confirmation_required = bool(manual_confirmation_preview)
     trigger_ready = bool(best_setup is not None and not blockers)
     auto_schedule_allowed = bool(trigger_ready and (not manual_confirmation_required))
 
@@ -7904,15 +8689,21 @@ def _agent_run_mtf_analysis(
                 "fallback_used": bool((tf_results.get(tf) or {}).get("fallback_used", False)),
                 "zones_count": int((tf_results.get(tf) or {}).get("zones_count") or 0),
                 "active_zones_count": int((tf_results.get(tf) or {}).get("active_zones_count") or 0),
+                "liquidity_zones_count": int((((tf_results.get(tf) or {}).get("liquidity") or {}).get("zones_count") or 0)),
+                "liquidity_sweeps_count": int((((tf_results.get(tf) or {}).get("liquidity") or {}).get("sweeps_count") or 0)),
                 "trend_direction": str(((tf_results.get(tf) or {}).get("trend") or {}).get("direction") or "unknown"),
                 "movement_strength": (tf_results.get(tf) or {}).get("movement_strength") if isinstance((tf_results.get(tf) or {}).get("movement_strength"), dict) else {},
                 "error": (tf_results.get(tf) or {}).get("scan_error"),
+                "liquidity_error": ((tf_results.get(tf) or {}).get("liquidity") or {}).get("scan_error"),
             }
             for tf in [*htf_tfs, execution_tf]
         },
+        "selected_htf_anchor_candidate": selected_anchor_candidate,
         "htf_anchors": execution_anchors[:20],
         "htf_context_only_anchors": context_only_anchors[:10],
         "counter_bias_zones": counter_bias_zones[:20],
+        "liquidity_context": liquidity_context,
+        "analysis_trace": analysis_trace,
         "ltf_confirmation": {
             "timeframe": execution_tf,
             "trend_direction": str((ltf_scan.get("trend") or {}).get("direction") or "unknown"),
@@ -7920,6 +8711,7 @@ def _agent_run_mtf_analysis(
             "indicators": ltf_indicators,
         },
         "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_trade_entry_args,
         "duplicate_pending_trigger": bool(duplicate_pending),
         "trigger_ready": bool(trigger_ready),
         "auto_schedule_allowed": bool(auto_schedule_allowed),
@@ -7939,7 +8731,919 @@ def _agent_run_mtf_analysis(
                 "blockers": blockers[:6],
                 "soft_blockers": soft_blockers[:6],
                 "warnings": confidence_warnings[:6],
+                "analysis_trace": analysis_trace,
+                "selected_htf_anchor_candidate": selected_anchor_candidate,
+                "liquidity_context": {
+                    "sweeps_count": int(liquidity_context.get("sweeps_count") or 0),
+                    "matching_sweeps_count": int(liquidity_context.get("matching_sweeps_count") or 0),
+                    "selected_matching_sweep": liquidity_context.get("selected_matching_sweep"),
+                },
                 "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_trade_entry_args,
+            }
+        },
+    }
+    if news_payload is not None:
+        summary["news"] = news_payload
+    return summary
+
+
+def _agent_run_htf_fvg_liquidity_reclaim_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "htf_fvg_liquidity_reclaim_strategy"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_htf_fvg_liquidity_reclaim_analysis") or "htf_fvg_liquidity_reclaim_analysis")
+    allowed_tfs = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+    preset_id = requested_preset
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+        preset_id = "default"
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        raise RuntimeError("strategy_preset_not_found")
+
+    strategy_cfg = dict(preset_cfg)
+    strategy_cfg["symbol"] = symbol
+    execution_tf = str(
+        payload.get("execution_timeframe")
+        or strategy_cfg.get("timeframe")
+        or mctx.get("timeframe")
+        or session.timeframe
+        or "M15"
+    ).strip().upper()
+    if execution_tf not in allowed_tfs:
+        execution_tf = "M15"
+    strategy_cfg["timeframe"] = execution_tf
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(strategy_cfg.get("risk_percent"))
+    if risk_percent is None or (not math.isfinite(float(risk_percent))) or float(risk_percent) <= 0.0:
+        risk_percent = 0.75
+    risk_percent = float(max(0.1, min(5.0, float(risk_percent))))
+    strategy_cfg["risk_percent"] = float(risk_percent)
+
+    min_rr_ratio = _to_float_or_none(payload.get("min_rr_ratio"))
+    if min_rr_ratio is not None and math.isfinite(float(min_rr_ratio)) and float(min_rr_ratio) > 0:
+        strategy_cfg["min_rr_ratio"] = float(max(1.0, min(12.0, float(min_rr_ratio))))
+
+    required_bars = max(120, int(strategy_cfg.get("required_lookback_bars") or 500))
+    tf_min = max(1, _agent_timeframe_to_minutes(execution_tf))
+    required_days = (float(required_bars + 40) * float(tf_min)) / 1440.0
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or (not math.isfinite(history_days)) or history_days <= 0:
+        history_days = max(float(mctx.get("history_days") or 0.0), float(required_days), _agent_default_history_days_for_timeframe(execution_tf))
+    history_days = float(max(2.0, min(60.0, history_days)))
+    fetch_count = max(required_bars + 40, int((history_days * 1440.0) / float(tf_min)) + 20)
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=execution_tf,
+        history_days=history_days,
+        count=max(120, min(5000, fetch_count)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=max(200, min(5000, fetch_count)),
+        min_rows=max(80, min(required_bars, 120)),
+    )
+    if bars_df is None or len(bars_df) < max(40, min(required_bars, 120)):
+        summary = {
+            "strategy_id": strategy_id,
+            "strategy_name": "HTF FVG + Liquidity Reclaim",
+            "preset_id": preset_id,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": execution_tf,
+            "history_days": float(round(history_days, 3)),
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": True,
+            "blockers": [str(live_err or "live_history_unavailable")],
+            "soft_blockers": [],
+            "confidence_warnings": ["insufficient_live_history"],
+            "best_setup": None,
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": preset_id,
+                    "symbol": symbol,
+                    "execution_timeframe": execution_tf,
+                    "trigger_ready": False,
+                    "auto_schedule_allowed": False,
+                    "manual_confirmation_required": True,
+                    "blockers": [str(live_err or "live_history_unavailable")],
+                    "soft_blockers": [],
+                    "warnings": ["insufficient_live_history"],
+                    "best_setup": None,
+                }
+            },
+        }
+        return summary
+
+    if len(bars_df) < 2:
+        raise RuntimeError("insufficient_bars_after_parse")
+
+    signal_df = bars_df.iloc[:-1].copy()
+    execution_bar = bars_df.iloc[-1]
+    signal_bar = signal_df.iloc[-1]
+    daily_df = (
+        signal_df.resample("1D")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+    strategy = create_strategy(strategy_id, strategy_cfg)
+    if strategy is None:
+        raise RuntimeError("strategy_factory_returned_none")
+
+    signal_dt = signal_bar.name.to_pydatetime() if hasattr(signal_bar.name, "to_pydatetime") else signal_bar.name
+    day_context = strategy.initialize_day(signal_dt, daily_df, signal_df)
+    day_context.levels = dict(day_context.levels or {})
+    day_context.levels["execution_open"] = float(execution_bar["open"])
+    guardrail_state = _agent_trade_guardrails(session=session, db=db, override_config=effective_cfg)
+    guardrail_reasons = guardrail_state.get("reasons") if isinstance(guardrail_state.get("reasons"), list) else []
+    guardrail_details = guardrail_state.get("details") if isinstance(guardrail_state.get("details"), dict) else {}
+    guardrail_news_payload = guardrail_state.get("news_payload") if isinstance(guardrail_state.get("news_payload"), dict) else None
+    if guardrail_reasons:
+        day_context.levels["guardrail_reasons"] = list(guardrail_reasons)
+    day_context.levels["news_high_impact"] = bool("high_impact_news" in guardrail_reasons)
+    if isinstance(guardrail_details.get("session_window_utc"), dict):
+        day_context.levels["session_window_utc"] = dict(guardrail_details.get("session_window_utc") or {})
+    current_price = _to_float_or_none(execution_bar.get("close"))
+    execution_open = _to_float_or_none(execution_bar.get("open"))
+    inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
+    atr_val = _to_float_or_none(day_context.atr) or _to_float_or_none(strategy_cfg.get("min_sl_usd")) or float(max(inst.point_value, 0.01))
+
+    htf_fvg_candidates: List[Dict[str, Any]] = []
+    selected_htf_fvg_candidate: Optional[Dict[str, Any]] = None
+    liquidity_pools: List[Dict[str, Any]] = []
+    liquidity_sweeps: List[Dict[str, Any]] = []
+    matched_sweep_candidates: List[Dict[str, Any]] = []
+    liquidity_scan_debug: Dict[str, Any] = {}
+    htf_scan_detail: List[Dict[str, Any]] = []
+    htf_raw_fvg_zones_count = 0
+    selected_raw: Optional[Dict[str, Any]] = None
+    analysis_stage = "unknown"
+    try:
+        htf_scan = (
+            strategy._scan_htf_fvgs_detailed(signal_df, float(max(atr_val, 1e-9)))
+            if hasattr(strategy, "_scan_htf_fvgs_detailed")
+            else {"candidates": strategy._scan_htf_fvgs(signal_df, float(max(atr_val, 1e-9)))}
+        )
+        raw_fvgs = htf_scan.get("candidates") if isinstance(htf_scan, dict) and isinstance(htf_scan.get("candidates"), list) else []
+        htf_scan_detail = htf_scan.get("scan_detail") if isinstance(htf_scan, dict) and isinstance(htf_scan.get("scan_detail"), list) else []
+        if isinstance(htf_scan, dict) and htf_scan.get("raw_zones_count") is not None:
+            htf_raw_fvg_zones_count = int(htf_scan.get("raw_zones_count") or 0)
+        else:
+            htf_raw_fvg_zones_count = int(len(raw_fvgs))
+        for zone in raw_fvgs[:20]:
+            if not isinstance(zone, dict):
+                continue
+            top = _to_float_or_none(zone.get("top"))
+            bottom = _to_float_or_none(zone.get("bottom"))
+            if top is None or bottom is None:
+                continue
+            fill_ratio = float(max(0.0, min(1.0, float(zone.get("fill_ratio") or 0.0))))
+            htf_fvg_candidates.append(
+                {
+                    "timeframe": str(zone.get("timeframe") or ""),
+                    "type": str(zone.get("type") or ""),
+                    "direction": "bullish" if str(zone.get("type") or "").startswith("bullish") else ("bearish" if str(zone.get("type") or "").startswith("bearish") else "unknown"),
+                    "top": float(max(top, bottom)),
+                    "bottom": float(min(top, bottom)),
+                    "distance_from_price": _to_float_or_none(zone.get("distance_from_price")),
+                    "distance_price_reference": float(current_price) if current_price is not None else None,
+                    "current_gap_size": _to_float_or_none(zone.get("current_gap_size")),
+                    "original_gap_size": _to_float_or_none(zone.get("original_gap_size") or zone.get("gap_size")),
+                    "fill_ratio": float(round(fill_ratio, 5)),
+                    "status": "unfilled" if fill_ratio <= 0.001 else "partially_mitigated",
+                    "mitigations": int(zone.get("mitigations") or 0),
+                    "age_bars": int(zone.get("age_bars") or 0),
+                    "quality_score": _to_float_or_none(zone.get("quality_score")),
+                    "quality_label": str(zone.get("quality_label") or ""),
+                    "trend_aligned": bool(zone.get("trend_aligned", False)),
+                }
+            )
+        selected_raw = strategy._select_active_fvg(
+            raw_fvgs,
+            float(current_price or signal_bar.get("close") or 0.0),
+            float(max(atr_val, 1e-9)),
+            str(day_context.bias or "neutral"),
+            int(day_context.bias_strength or 0),
+        )
+        if isinstance(selected_raw, dict):
+            selected_htf_fvg_candidate = next(
+                (
+                    row
+                    for row in htf_fvg_candidates
+                    if str(row.get("timeframe") or "") == str(selected_raw.get("timeframe") or "")
+                    and str(row.get("type") or "") == str(selected_raw.get("type") or "")
+                    and abs(float(_to_float_or_none(row.get("top")) or 0.0) - float(_to_float_or_none(selected_raw.get("top")) or 0.0)) <= 1e-9
+                    and abs(float(_to_float_or_none(row.get("bottom")) or 0.0) - float(_to_float_or_none(selected_raw.get("bottom")) or 0.0)) <= 1e-9
+                ),
+                None,
+            )
+
+        liq_df = signal_df.tail(max(60, int(strategy.config.get("ltf_pool_lookback_bars", 420))))
+        strict_cfg = {
+            "symbol": strategy.config.get("symbol"),
+            "strictness": int(strategy.config.get("liquidity_strictness", 3)),
+            "pivot_span": int(strategy.config.get("ltf_pool_pivot_span", 3)),
+            "min_touches": int(strategy.config.get("min_pool_touches", 2)),
+            "lookback_bars": int(strategy.config.get("ltf_pool_lookback_bars", 420)),
+            "sweep_lookahead": int(strategy.config.get("sweep_lookahead_bars", 120)),
+            "tolerance_atr_mult": float(strategy.config.get("pool_tolerance_atr_mult", 0.12)),
+        }
+        raw_liquidity = strategy._scan_liquidity_map(liq_df)
+        for zone in raw_liquidity[:40]:
+            if not isinstance(zone, dict):
+                continue
+            ztype = str(zone.get("type") or "").strip().lower()
+            level = _to_float_or_none(zone.get("liquidity_level"))
+            boundary = _to_float_or_none(zone.get("pool_boundary"))
+            swept = _to_float_or_none(zone.get("swept_price"))
+            row = {
+                "type": str(zone.get("type") or ""),
+                "direction": "bearish" if ztype == "liquidity_sweep_high" else ("bullish" if ztype == "liquidity_sweep_low" else ""),
+                "liquidity_level": level,
+                "pool_boundary": boundary,
+                "swept_price": swept,
+                "top": _to_float_or_none(zone.get("top")),
+                "bottom": _to_float_or_none(zone.get("bottom")),
+                "touches": int(zone.get("touches") or zone.get("swept_pool_touches") or 0),
+                "distance_from_price": (
+                    float(min(abs(float(current_price) - float(level)), abs(float(current_price) - float(boundary))))
+                    if (current_price is not None and level is not None and boundary is not None)
+                    else (float(abs(float(current_price) - float(level))) if (current_price is not None and level is not None) else None)
+                ),
+                "rejection_ratio": _to_float_or_none(zone.get("rejection_ratio")),
+                "rejection_quality": str(zone.get("rejection_quality") or ""),
+                "age_bars": max(0, int(len(liq_df) - 1 - int(zone.get("bar_index") or 0))),
+                "end_time_unix": int(zone.get("end_time_unix") or 0),
+            }
+            if ztype.startswith("liquidity_sweep_"):
+                liquidity_sweeps.append(row)
+            else:
+                liquidity_pools.append(row)
+
+        liquidity_pools.sort(
+            key=lambda x: (
+                float(x.get("distance_from_price") if x.get("distance_from_price") is not None else 10**9),
+                -int(x.get("touches") if x.get("touches") is not None else 0),
+                int(x.get("age_bars") if x.get("age_bars") is not None else 10**9),
+            )
+        )
+        liquidity_sweeps.sort(
+            key=lambda x: (
+                -_agent_sweep_quality_rank(str(x.get("rejection_quality") or "").strip().lower()),
+                -float(x.get("rejection_ratio") if x.get("rejection_ratio") is not None else -1.0),
+                float(x.get("distance_from_price") if x.get("distance_from_price") is not None else 10**9),
+                int(x.get("age_bars") if x.get("age_bars") is not None else 10**9),
+            )
+        )
+        strict_pool_count = int(len(liquidity_pools))
+        strict_sweep_count = int(len(liquidity_sweeps))
+        strict_total_count = int(strict_pool_count + strict_sweep_count)
+        relaxed_cfg = {
+            "symbol": strict_cfg.get("symbol"),
+            "strictness": max(1, int(strict_cfg.get("strictness") or 3) - 1),
+            "pivot_span": max(2, int(strict_cfg.get("pivot_span") or 3) - 1),
+            "min_touches": 2,
+            "lookback_bars": int(max(120, min(2000, int(strict_cfg.get("lookback_bars") or 420) + 180))),
+            "sweep_lookahead": int(max(40, min(400, int(strict_cfg.get("sweep_lookahead") or 120) + 40))),
+            "tolerance_atr_mult": float(max(0.08, min(0.60, float(strict_cfg.get("tolerance_atr_mult") or 0.12) * 1.5))),
+        }
+        relaxed_pool_count = 0
+        relaxed_sweep_count = 0
+        relaxed_scan_error: Optional[str] = None
+        try:
+            from ..core.workbench.analysis_utils import detect_liquidity_zones as _detect_liquidity_zones
+
+            relaxed_raw = _detect_liquidity_zones(liq_df, relaxed_cfg)
+            relaxed_pool_count = int(
+                sum(
+                    1
+                    for z in relaxed_raw
+                    if isinstance(z, dict) and not str(z.get("type") or "").startswith("liquidity_sweep_")
+                )
+            )
+            relaxed_sweep_count = int(
+                sum(
+                    1
+                    for z in relaxed_raw
+                    if isinstance(z, dict) and str(z.get("type") or "").startswith("liquidity_sweep_")
+                )
+            )
+        except Exception as exc:
+            relaxed_scan_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        relaxed_total_count = int(relaxed_pool_count + relaxed_sweep_count)
+        if strict_total_count > 0:
+            liq_status = "strict_has_structure"
+        elif relaxed_total_count > 0:
+            liq_status = "strict_zero_relaxed_nonzero"
+        elif relaxed_scan_error:
+            liq_status = "relaxed_scan_error"
+        else:
+            liq_status = "no_liquidity_even_relaxed"
+        liquidity_scan_debug = {
+            "status": liq_status,
+            "strict": {
+                "config": strict_cfg,
+                "pools_count": strict_pool_count,
+                "sweeps_count": strict_sweep_count,
+                "zones_count": strict_total_count,
+            },
+            "relaxed": {
+                "config": relaxed_cfg,
+                "pools_count": int(relaxed_pool_count),
+                "sweeps_count": int(relaxed_sweep_count),
+                "zones_count": int(relaxed_total_count),
+                "scan_error": relaxed_scan_error,
+            },
+        }
+
+        if selected_raw is not None:
+            try:
+                from ..core.workbench.analysis_utils import (
+                    atr_last as _atr_last,
+                    filter_sweep_candidates as _filter_sweep_candidates,
+                    resample_ohlcv as _resample_ohlcv,
+                )
+
+                bullish_selected = str(selected_raw.get("type") or "") == "bullish_fvg"
+                sweep_ref_price = float(selected_raw.get("bottom") if bullish_selected else selected_raw.get("top") or current_price or 0.0)
+                fvg_tf = str(selected_raw.get("timeframe") or strategy.config.get("htf_timeframe", "H4"))
+                tf_rule = None
+                try:
+                    tf_rule_fn = getattr(strategy, "_timeframe_rule", None)
+                    if callable(tf_rule_fn):
+                        tf_rule = tf_rule_fn(fvg_tf)
+                except Exception:
+                    tf_rule = None
+                if not tf_rule:
+                    tf_rule = {
+                        "M1": "1T",
+                        "M5": "5T",
+                        "M15": "15T",
+                        "M30": "30T",
+                        "H1": "1H",
+                        "H4": "4H",
+                        "D1": "1D",
+                    }.get(str(fvg_tf).upper(), "4H")
+                htf_df_for_atr = _resample_ohlcv(signal_df, str(tf_rule))
+                htf_atr_for_sweep = _atr_last(htf_df_for_atr, 14) or atr_val or 0.0
+                htf_atr_for_sweep = float(max(float(htf_atr_for_sweep), 1e-9))
+                matched_raw = _filter_sweep_candidates(
+                    [z for z in raw_liquidity if isinstance(z, dict) and str(z.get("type") or "").startswith("liquidity_sweep_")],
+                    entry_price=sweep_ref_price,
+                    direction=("bullish" if bullish_selected else "bearish"),
+                    atr=float(htf_atr_for_sweep),
+                    max_age_bars=int(strategy._sweep_freshness_bars()),
+                    max_distance_atr=float(strategy.config.get("sweep_distance_atr", strategy._default_sweep_distance_atr())),
+                    min_rejection_ratio=float(strategy.config.get("min_rejection_ratio", 0.30)),
+                    current_bar_index=len(liq_df) - 1,
+                )
+                structural_atr = float(strategy.config.get("sweep_fvg_structural_atr", 0.75))
+                structural_tol = float(max(float(htf_atr_for_sweep) * float(max(0.0, structural_atr)), 0.0))
+                fvg_near_edge = float(selected_raw.get("bottom") if bullish_selected else selected_raw.get("top") or sweep_ref_price)
+                for zone in matched_raw[:10]:
+                    if not isinstance(zone, dict):
+                        continue
+                    pool_boundary = _to_float_or_none(zone.get("pool_boundary"))
+                    if pool_boundary is None:
+                        pool_boundary = _to_float_or_none(zone.get("swept_price"))
+                    if structural_tol > 0.0 and pool_boundary is not None:
+                        if abs(float(pool_boundary) - float(fvg_near_edge)) > float(structural_tol):
+                            continue
+                    matched_sweep_candidates.append(
+                        {
+                            "type": str(zone.get("type") or ""),
+                            "direction": str(zone.get("direction") or ""),
+                            "liquidity_level": _to_float_or_none(zone.get("liquidity_level")),
+                            "pool_boundary": _to_float_or_none(zone.get("pool_boundary")),
+                            "swept_price": _to_float_or_none(zone.get("swept_price")),
+                            "distance_to_entry": _to_float_or_none(zone.get("distance_to_entry")),
+                            "age_bars": int(zone.get("age_bars") or 0),
+                            "rejection_ratio": _to_float_or_none(zone.get("rejection_ratio")),
+                            "rejection_quality": str(zone.get("rejection_quality") or ""),
+                            "quality_rank": int(zone.get("quality_rank") or 0),
+                            "structural_distance_to_fvg_edge": (
+                                float(abs(float(pool_boundary) - float(fvg_near_edge)))
+                                if pool_boundary is not None
+                                else None
+                            ),
+                            "structural_tolerance": float(structural_tol),
+                        }
+                    )
+            except Exception:
+                logger.exception("run_htf_fvg_liquidity_reclaim_analysis: matched sweep diagnostics failed")
+                matched_sweep_candidates = []
+    except Exception:
+        htf_fvg_candidates = []
+        selected_htf_fvg_candidate = None
+        liquidity_pools = []
+        liquidity_sweeps = []
+        matched_sweep_candidates = []
+        htf_scan_detail = []
+        htf_raw_fvg_zones_count = 0
+        liquidity_scan_debug = {"status": "scan_failed"}
+
+    setup = strategy.find_setup(signal_bar, signal_df, day_context, len(signal_df) - 1)
+
+    pos = _agent_positions_detail_payload(session=session, db=db, open_limit=10, recent_limit=10)
+    open_positions = pos.get("open_positions") if isinstance(pos.get("open_positions"), list) else []
+    trigger_payload = _agent_scheduled_triggers_payload(
+        session=session,
+        db=db,
+        include_non_pending=False,
+        limit=100,
+    )
+    pending_triggers = trigger_payload.get("triggers") if isinstance(trigger_payload.get("triggers"), list) else []
+
+    blockers: List[str] = []
+    soft_blockers: List[str] = []
+    confidence_warnings: List[str] = []
+    if len(open_positions) > 0:
+        blockers.append("open_position_exists")
+    if "high_impact_news" in guardrail_reasons:
+        blockers.append("high_impact_news")
+        confidence_warnings.append("news_guardrail_high_impact")
+    if "outside_session_window" in guardrail_reasons:
+        soft_blockers.append("outside_session_window")
+        confidence_warnings.append("outside_session_window")
+    if setup is None:
+        blockers.append("no_strategy_setup")
+    balance = _to_float_or_none(session.current_balance)
+    if balance is None or balance <= 0:
+        balance = _to_float_or_none(session.initial_balance) or 10000.0
+
+    duplicate_pending = False
+    best_setup: Optional[Dict[str, Any]] = None
+    watch_setup: Optional[Dict[str, Any]] = None
+    schedule_trade_entry_args: Optional[Dict[str, Any]] = None
+    if setup is not None:
+        meta = setup.metadata if isinstance(setup.metadata, dict) else {}
+        fvg_meta = meta.get("fvg") if isinstance(meta.get("fvg"), dict) else {}
+        bullish = str(setup.direction or "").upper() == "BUY"
+        anchor_top = _to_float_or_none(fvg_meta.get("top"))
+        anchor_bottom = _to_float_or_none(fvg_meta.get("bottom"))
+        sweep_extreme = _to_float_or_none(meta.get("sweep_extreme"))
+        if anchor_top is None:
+            anchor_top = _to_float_or_none(meta.get("fvg_top"))
+        if anchor_bottom is None:
+            anchor_bottom = _to_float_or_none(meta.get("fvg_bottom"))
+        if anchor_top is None or anchor_bottom is None:
+            blockers.append("invalid_strategy_anchor")
+        else:
+            raw_top = float(anchor_top)
+            raw_bottom = float(anchor_bottom)
+            anchor_top = float(max(raw_top, raw_bottom))
+            anchor_bottom = float(min(raw_top, raw_bottom))
+            entry_ref = float(anchor_top if bullish else anchor_bottom)
+            cancel_level = float(min(anchor_bottom, sweep_extreme) if bullish and sweep_extreme is not None else anchor_bottom)
+            if not bullish:
+                cancel_level = float(max(anchor_top, sweep_extreme) if sweep_extreme is not None else anchor_top)
+            precondition = {
+                "condition": "price_below" if bullish else "price_above",
+                "trigger_price": float(entry_ref),
+            }
+            condition = {
+                "condition": "close_above" if bullish else "close_below",
+                "trigger_price": float(entry_ref),
+            }
+            cancel_rule = {
+                "condition": "close_below" if bullish else "close_above",
+                "trigger_price": float(cancel_level),
+            }
+
+            stop_loss = float(setup.stop_loss)
+            take_profit = float(setup.take_profit) if setup.take_profit is not None else None
+            risk_distance = abs(float(entry_ref) - float(stop_loss))
+            reward_distance = abs(float(take_profit) - float(entry_ref)) if take_profit is not None else None
+            rr = (float(reward_distance) / float(risk_distance)) if (reward_distance is not None and risk_distance > 0) else None
+            risk_amount = float(balance) * (float(risk_percent) / 100.0)
+            value_per_1lot = float(inst.contract_size)
+            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(inst.min_lot)
+            lot_size = _normalize_lot_for_instrument(
+                lot_size=float(lot_raw),
+                min_lot=float(inst.min_lot),
+                max_lot=min(100.0, float(inst.max_lot)),
+                lot_step=float(inst.lot_step),
+            )
+            expires_sec = _agent_usage_safe_int(payload.get("expires_sec"), 6 * 3600)
+            expires_sec = max(4 * 3600, min(24 * 3600, int(expires_sec)))
+
+            price_tol = max(float(inst.point_value) * 2.0, 1e-5)
+            lot_tol = max(float(inst.lot_step) * 1.01, 0.01)
+            for tr in pending_triggers:
+                if not isinstance(tr, dict):
+                    continue
+                if str(tr.get("status") or "").lower() != "pending":
+                    continue
+                tr_ta = tr.get("trade_args") if isinstance(tr.get("trade_args"), dict) else {}
+                tr_pre = tr.get("precondition") if isinstance(tr.get("precondition"), dict) else {}
+                tr_cancel = tr.get("cancel_rule") if isinstance(tr.get("cancel_rule"), dict) else {}
+                tr_tp = _to_float_or_none(tr_ta.get("take_profit"))
+                same_semantics = (
+                    str(tr.get("condition") or "").lower() == str(condition["condition"]).lower()
+                    and abs(float(_to_float_or_none(tr.get("trigger_price")) or 0.0) - float(entry_ref)) <= price_tol
+                    and str(tr_ta.get("direction") or "").upper() == str(setup.direction or "").upper()
+                    and abs(float(_to_float_or_none(tr_ta.get("stop_loss")) or 0.0) - float(stop_loss)) <= price_tol
+                    and ((take_profit is None and tr_tp is None) or (take_profit is not None and tr_tp is not None and abs(float(tr_tp) - float(take_profit)) <= price_tol))
+                    and abs(float(_to_float_or_none(tr_ta.get("lot_size")) or 0.0) - float(lot_size)) <= lot_tol
+                    and str(tr.get("timeframe") or "").upper() == execution_tf
+                    and str(tr_pre.get("condition") or "").lower() == str(precondition["condition"]).lower()
+                    and abs(float(_to_float_or_none(tr_pre.get("trigger_price")) or 0.0) - float(precondition["trigger_price"])) <= price_tol
+                    and str(tr_cancel.get("condition") or "").lower() == str(cancel_rule["condition"]).lower()
+                    and abs(float(_to_float_or_none(tr_cancel.get("trigger_price")) or 0.0) - float(cancel_rule["trigger_price"])) <= price_tol
+                )
+                if same_semantics:
+                    duplicate_pending = True
+                    blockers.append("duplicate_pending_trigger")
+                    break
+
+            sweep_quality = str(meta.get("sweep_quality") or "").strip().lower() or "unknown"
+            fvg_quality = str(fvg_meta.get("quality_label") or "").strip().lower() or "unknown"
+            if sweep_quality == "moderate":
+                confidence_warnings.append("moderate_sweep_quality")
+                soft_blockers.append("moderate_sweep_quality")
+            elif sweep_quality not in {"strong", "moderate"}:
+                confidence_warnings.append("unknown_sweep_quality")
+            if fvg_quality == "moderate":
+                confidence_warnings.append("moderate_fvg_quality")
+                soft_blockers.append("moderate_fvg_quality")
+            elif fvg_quality == "weak":
+                confidence_warnings.append("weak_fvg_quality")
+                soft_blockers.append("weak_fvg_quality")
+
+            setup_warnings: List[str] = []
+            if sweep_quality == "moderate":
+                setup_warnings.append("Sweep rejection quality is moderate, not strong.")
+            if fvg_quality == "moderate":
+                setup_warnings.append("HTF FVG quality is moderate, not premium.")
+            if fvg_quality == "weak":
+                setup_warnings.append("HTF FVG quality is weak; setup relies on weaker structural context.")
+
+            actual_risk_usd = float(risk_distance * value_per_1lot * lot_size)
+            calc_trace = {
+                "execution_open": float(execution_open if execution_open is not None else entry_ref),
+                "entry_ref": float(round(entry_ref, 5)),
+                "contract_size": float(inst.contract_size),
+                "price_increment": float(inst.point_value),
+                "money_per_price_unit_per_1lot": float(value_per_1lot),
+                "lot_step": float(inst.lot_step),
+                "balance": float(balance),
+                "risk_percent": float(round(risk_percent, 4)),
+                "risk_amount_target": float(round(risk_amount, 2)),
+                "risk_amount_actual": float(round(actual_risk_usd, 2)),
+                "lot_raw": float(round(lot_raw, 6)),
+                "lot_normalized": float(lot_size),
+                "risk_formula": "abs(entry_ref - stop_loss) * money_per_price_unit_per_1lot * lot_size",
+            }
+
+            best_setup = {
+                "direction": str(setup.direction or "").upper(),
+                "strategy_id": strategy_id,
+                "setup_type": str(setup.setup_type or ""),
+                "anchor_timeframe": str(fvg_meta.get("timeframe") or ""),
+                "entry_ref": float(round(entry_ref, 5)),
+                "execution_open": float(round(float(execution_open if execution_open is not None else entry_ref), 5)),
+                "stop_loss": float(round(stop_loss, 5)),
+                "take_profit": float(round(take_profit, 5)) if take_profit is not None else None,
+                "risk_distance": float(round(risk_distance, 5)),
+                "reward_distance": float(round(reward_distance, 5)) if reward_distance is not None else None,
+                "rr": float(round(rr or 0.0, 4)) if rr is not None else None,
+                "risk_percent": float(round(risk_percent, 4)),
+                "risk_amount": float(round(risk_amount, 4)),
+                "risk_amount_actual": float(round(actual_risk_usd, 2)),
+                "lot_size": float(lot_size),
+                "timeframe": execution_tf,
+                "expires_sec": int(expires_sec),
+                "precondition": precondition,
+                "condition": condition,
+                "cancel_rule": cancel_rule,
+                "fvg_quality": {
+                    "score": float(round(float(fvg_meta.get("quality_score") or 0.0), 2)),
+                    "label": fvg_quality,
+                },
+                "sweep_gate": {
+                    "mode": "strict",
+                    "expected_direction": "bullish" if bullish else "bearish",
+                    "reason": "sweep_confirmed",
+                    "sweep_quality": sweep_quality,
+                    "rejection_ratio": _to_float_or_none(meta.get("sweep_rejection_ratio")),
+                    "pool_boundary": _to_float_or_none(meta.get("sweep_pool_boundary")),
+                    "swept_price": sweep_extreme,
+                },
+                "confidence": float(round(float(setup.confidence or 0.0), 2)),
+                "warnings": setup_warnings,
+                "calc_trace": calc_trace,
+            }
+            schedule_trade_entry_args = {
+                "condition": str(condition["condition"]),
+                "trigger_price": float(round(float(condition["trigger_price"]), 5)),
+                "direction": str(setup.direction or "").upper(),
+                "stop_loss": float(round(stop_loss, 5)),
+                "take_profit": float(round(take_profit, 5)) if take_profit is not None else None,
+                "lot_size": float(lot_size),
+                "timeframe": execution_tf,
+                "expires_sec": int(expires_sec),
+                "precondition": dict(precondition),
+                "cancel_rule": dict(cancel_rule),
+                "entry_ref": float(round(entry_ref, 5)),
+                "expected_rr": float(round(rr, 4)) if rr is not None else None,
+                "risk_percent": float(round(risk_percent, 4)),
+                "account_balance": float(round(balance, 2)),
+            }
+
+    if (
+        best_setup is None
+        and isinstance(selected_htf_fvg_candidate, dict)
+        and isinstance(selected_raw, dict)
+        and len(matched_sweep_candidates) == 0
+    ):
+        bullish_watch = str(selected_htf_fvg_candidate.get("type") or "").strip().lower() == "bullish_fvg"
+        anchor_top = _to_float_or_none(selected_htf_fvg_candidate.get("top"))
+        anchor_bottom = _to_float_or_none(selected_htf_fvg_candidate.get("bottom"))
+        if anchor_top is not None and anchor_bottom is not None:
+            raw_top = float(max(anchor_top, anchor_bottom))
+            raw_bottom = float(min(anchor_top, anchor_bottom))
+            gap = float(max(raw_top - raw_bottom, 1e-9))
+            reclaim_depth = float(strategy.config.get("fvg_reclaim_depth", 0.30))
+            reclaim_level = float(raw_bottom + (gap * reclaim_depth)) if bullish_watch else float(raw_top - (gap * reclaim_depth))
+            sweep_watch_level = float(raw_bottom if bullish_watch else raw_top)
+            cancel_level = float(raw_bottom if bullish_watch else raw_top)
+            stop_buffer = float(max(day_context.atr or 0.0, atr_val or 0.0, inst.point_value)) * float(strategy.config.get("sl_buffer_atr", 0.25))
+            stop_loss = float((raw_bottom - stop_buffer) if bullish_watch else (raw_top + stop_buffer))
+            risk_distance = abs(float(reclaim_level) - float(stop_loss))
+            take_profit: Optional[float] = None
+            rr: Optional[float] = None
+            if risk_distance > 0.0 and math.isfinite(risk_distance):
+                try:
+                    tp_val, _tp_source = strategy._compute_take_profit(
+                        entry_estimate=float(reclaim_level),
+                        fvg=dict(selected_raw),
+                        liquidity_zones=[*liquidity_pools, *liquidity_sweeps],
+                        risk=float(risk_distance),
+                        bullish=bool(bullish_watch),
+                    )
+                    take_profit = float(tp_val) if tp_val is not None else None
+                except Exception:
+                    take_profit = None
+                if take_profit is not None:
+                    reward_distance = abs(float(take_profit) - float(reclaim_level))
+                    if reward_distance > 0.0:
+                        rr = float(reward_distance / float(risk_distance))
+                risk_amount = float(balance) * (float(risk_percent) / 100.0)
+                value_per_1lot = float(inst.contract_size)
+                lot_raw = risk_amount / (risk_distance * value_per_1lot) if value_per_1lot > 0.0 else float(inst.min_lot)
+                lot_size = _normalize_lot_for_instrument(
+                    lot_size=float(lot_raw),
+                    min_lot=float(inst.min_lot),
+                    max_lot=min(100.0, float(inst.max_lot)),
+                    lot_step=float(inst.lot_step),
+                )
+                expires_sec = _agent_usage_safe_int(payload.get("expires_sec"), 12 * 3600)
+                expires_sec = max(4 * 3600, min(48 * 3600, int(expires_sec)))
+                precondition = {
+                    "condition": "sweep_below" if bullish_watch else "sweep_above",
+                    "trigger_price": float(sweep_watch_level),
+                }
+                condition = {
+                    "condition": "close_above" if bullish_watch else "close_below",
+                    "trigger_price": float(reclaim_level),
+                }
+                cancel_rule = {
+                    "condition": "close_below" if bullish_watch else "close_above",
+                    "trigger_price": float(cancel_level),
+                }
+                watch_setup = {
+                    "direction": "BUY" if bullish_watch else "SELL",
+                    "strategy_id": strategy_id,
+                    "setup_type": "HTF FVG Liquidity Reclaim Watch",
+                    "anchor_timeframe": str(selected_htf_fvg_candidate.get("timeframe") or ""),
+                    "entry_ref": float(round(reclaim_level, 5)),
+                    "stop_loss": float(round(stop_loss, 5)),
+                    "take_profit": float(round(take_profit, 5)) if take_profit is not None else None,
+                    "risk_distance": float(round(risk_distance, 5)),
+                    "reward_distance": float(round(abs(float(take_profit) - float(reclaim_level)), 5)) if take_profit is not None else None,
+                    "rr": float(round(rr, 4)) if rr is not None else None,
+                    "risk_percent": float(round(risk_percent, 4)),
+                    "lot_size": float(lot_size),
+                    "timeframe": execution_tf,
+                    "expires_sec": int(expires_sec),
+                    "precondition": precondition,
+                    "condition": condition,
+                    "cancel_rule": cancel_rule,
+                    "status": "waiting_for_sweep_unlock",
+                    "warnings": [
+                        "HTF anchor is valid but not executable yet: waiting for sweep confirmation.",
+                        "Stop-loss is provisional until a real sweep extreme exists.",
+                    ],
+                    "unlock_event": {
+                        "condition": str(precondition["condition"]),
+                        "trigger_price": float(round(float(precondition["trigger_price"]), 5)),
+                    },
+                }
+                schedule_trade_entry_args = {
+                    "condition": str(condition["condition"]),
+                    "trigger_price": float(round(float(condition["trigger_price"]), 5)),
+                    "direction": "BUY" if bullish_watch else "SELL",
+                    "stop_loss": float(round(stop_loss, 5)),
+                    "take_profit": float(round(take_profit, 5)) if take_profit is not None else None,
+                    "lot_size": float(lot_size),
+                    "timeframe": execution_tf,
+                    "expires_sec": int(expires_sec),
+                    "precondition": dict(precondition),
+                    "cancel_rule": dict(cancel_rule),
+                    "entry_ref": float(round(reclaim_level, 5)),
+                    "expected_rr": float(round(rr, 4)) if rr is not None else None,
+                    "risk_percent": float(round(risk_percent, 4)),
+                    "account_balance": float(round(balance, 2)),
+                    "dynamic_stop_from_precondition": True,
+                    "dynamic_stop_buffer_points": float(round(float(stop_buffer), 5)),
+                }
+                soft_blockers.append("awaiting_liquidity_sweep_confirmation")
+                confidence_warnings.append("watch_setup_waiting_for_sweep")
+
+    if len(open_positions) > 0:
+        analysis_stage = "open_position_exists"
+    elif "high_impact_news" in guardrail_reasons:
+        analysis_stage = "high_impact_news_guardrail"
+    elif int(htf_raw_fvg_zones_count) <= 0:
+        analysis_stage = "no_htf_fvg_detected"
+    elif not htf_fvg_candidates:
+        analysis_stage = "htf_fvg_candidates_filtered_out"
+    elif selected_htf_fvg_candidate is None:
+        analysis_stage = "no_bias_aligned_htf_fvg"
+    elif (len(liquidity_pools) + len(liquidity_sweeps)) == 0:
+        analysis_stage = "no_liquidity_context"
+    elif len(matched_sweep_candidates) == 0:
+        analysis_stage = "no_matching_liquidity_sweep"
+    elif duplicate_pending:
+        analysis_stage = "duplicate_pending_trigger"
+    elif best_setup is None:
+        analysis_stage = "reclaim_or_rr_validation_failed"
+    else:
+        analysis_stage = "setup_ready"
+
+    include_news = bool(payload.get("include_news", False))
+    news_payload: Optional[Dict[str, Any]] = guardrail_news_payload
+    if include_news and news_payload is None:
+        try:
+            news_limit = int(payload.get("news_limit") or 5)
+        except Exception:
+            news_limit = 5
+        try:
+            news_lookback_min = int(payload.get("news_lookback_min") or effective_cfg.get("guardrail_news_lookback_min") or 240)
+        except Exception:
+            news_lookback_min = 240
+        news_provider = str(payload.get("provider") or effective_cfg.get("market_news_provider") or "polygon").strip().lower()
+        news_payload = _agent_fetch_market_news(
+            symbol=symbol,
+            limit=max(1, min(10, int(news_limit))),
+            lookback_min=max(15, min(24 * 60, int(news_lookback_min))),
+            provider=news_provider,
+            include_summary=True,
+            summary_model=str(effective_cfg.get("market_news_summary_model") or "claude-haiku-4-5-20251001").strip(),
+            summary_timeout_sec=max(4, min(30, int(effective_cfg.get("market_news_llm_timeout_sec") or 8))),
+            ibkr_host=str(effective_cfg.get("market_news_ibkr_host") or "127.0.0.1").strip() or "127.0.0.1",
+            ibkr_port=max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
+        )
+
+    manual_confirmation_required = bool(
+        (
+            best_setup is not None
+            or watch_setup is not None
+        )
+        and (
+            len(soft_blockers) > 0
+            or "moderate_sweep_quality" in confidence_warnings
+            or "moderate_fvg_quality" in confidence_warnings
+            or "weak_fvg_quality" in confidence_warnings
+        )
+    )
+    trigger_ready = bool(best_setup is not None and not blockers)
+    auto_schedule_allowed = bool(trigger_ready and (not manual_confirmation_required))
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "HTF FVG + Liquidity Reclaim",
+        "preset_id": preset_id,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "current_price": current_price,
+        "execution_reference_open": execution_open,
+        "position_state": {
+            "open_positions_count": int(len(open_positions)),
+            "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
+        },
+        "day_context": {
+            "bias": str(day_context.bias or "neutral"),
+            "bias_strength": int(day_context.bias_strength or 0),
+            "atr": float(round(float(day_context.atr or 0.0), 5)),
+            "levels": dict(day_context.levels or {}),
+        },
+        "guardrails": {
+            "ok": bool(guardrail_state.get("ok", True)),
+            "reasons": list(guardrail_reasons)[:12],
+            "details": guardrail_details,
+        },
+        "htf_scan_detail": htf_scan_detail[:8],
+        "htf_fvg_candidates": htf_fvg_candidates[:12],
+        "selected_htf_fvg_candidate": selected_htf_fvg_candidate,
+        "liquidity_context": {
+            "pools_count": int(len(liquidity_pools)),
+            "sweeps_count": int(len(liquidity_sweeps)),
+            "matching_sweeps_count": int(len(matched_sweep_candidates)),
+            "pools": liquidity_pools[:12],
+            "sweeps": liquidity_sweeps[:12],
+            "matching_sweeps": matched_sweep_candidates[:10],
+            "scan_debug": liquidity_scan_debug,
+        },
+        "analysis_trace": {
+            "stage": analysis_stage,
+            "htf_raw_fvg_zones_count": int(htf_raw_fvg_zones_count),
+            "htf_fvg_candidates_count": int(len(htf_fvg_candidates)),
+            "selected_htf_fvg_found": bool(selected_htf_fvg_candidate is not None),
+            "liquidity_pools_count": int(len(liquidity_pools)),
+            "liquidity_sweeps_count": int(len(liquidity_sweeps)),
+            "matching_sweeps_count": int(len(matched_sweep_candidates)),
+            "setup_found": bool(setup is not None),
+            "best_setup_ready": bool(best_setup is not None),
+            "watch_setup_ready": bool(watch_setup is not None),
+        },
+        "best_setup": best_setup,
+        "watch_setup": watch_setup,
+        "schedule_trade_entry_args": schedule_trade_entry_args,
+        "duplicate_pending_trigger": bool(duplicate_pending),
+        "trigger_ready": bool(trigger_ready),
+        "auto_schedule_allowed": bool(auto_schedule_allowed),
+        "manual_confirmation_required": bool(manual_confirmation_required),
+        "blockers": blockers[:12],
+        "soft_blockers": soft_blockers[:12],
+        "confidence_warnings": confidence_warnings[:12],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": preset_id,
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "bias": str(day_context.bias or "neutral"),
+                "current_price": _to_float_or_none(current_price),
+                "trigger_ready": bool(trigger_ready),
+                "auto_schedule_allowed": bool(auto_schedule_allowed),
+                "manual_confirmation_required": bool(manual_confirmation_required),
+                "position_state": {
+                    "open_positions_count": int(len(open_positions)),
+                    "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
+                },
+                "blockers": blockers[:6],
+                "soft_blockers": soft_blockers[:6],
+                "warnings": confidence_warnings[:6],
+                "analysis_trace": {
+                    "stage": analysis_stage,
+                    "htf_raw_fvg_zones_count": int(htf_raw_fvg_zones_count),
+                    "htf_fvg_candidates_count": int(len(htf_fvg_candidates)),
+                    "selected_htf_fvg_found": bool(selected_htf_fvg_candidate is not None),
+                    "liquidity_sweeps_count": int(len(liquidity_sweeps)),
+                    "matching_sweeps_count": int(len(matched_sweep_candidates)),
+                    "watch_setup_ready": bool(watch_setup is not None),
+                },
+                "liquidity_scan_debug": liquidity_scan_debug,
+                "htf_scan_detail": htf_scan_detail[:8],
+                "selected_htf_fvg_candidate": selected_htf_fvg_candidate,
+                "best_setup": best_setup,
+                "watch_setup": watch_setup,
+                "schedule_trade_entry_args": schedule_trade_entry_args,
             }
         },
     }
@@ -7966,6 +9670,9 @@ def _agent_execute_tool(
     if not _agent_tool_allowed_by_access_mode(tname, effective_cfg):
         mode = _normalize_strategy_tool_access_mode(effective_cfg.get("strategy_tool_access_mode"))
         return {"ok": False, "error": f"tool_blocked_by_access_mode:{mode}:{tname}"}
+    if not _agent_tool_allowed_by_strategy_profile(tname, effective_cfg):
+        profile = _normalize_agent_strategy_profile(effective_cfg.get("agent_strategy_profile"))
+        return {"ok": False, "error": f"tool_blocked_by_strategy_profile:{profile}:{tname}"}
 
     if tname == "scan_tool":
         if not bool(perms.get("can_scan_tools", True)):
@@ -8052,6 +9759,21 @@ def _agent_execute_tool(
             return {"ok": False, "error": "permission_denied:can_scan_tools"}
         try:
             data = _agent_run_mtf_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "run_htf_fvg_liquidity_reclaim_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_htf_fvg_liquidity_reclaim_analysis(
                 session=session,
                 db=db,
                 context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
@@ -8340,7 +10062,10 @@ def _agent_execute_tool(
             "news_provider": str(effective_cfg.get("market_news_provider") or "polygon").strip().lower() or "polygon",
             "news_ibkr_host": str(effective_cfg.get("market_news_ibkr_host") or "127.0.0.1").strip() or "127.0.0.1",
             "news_ibkr_port": max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
-            "trigger_requires_approval": bool(effective_cfg.get("watchdog_trigger_requires_approval", False)),
+            "trigger_requires_approval": bool(
+                effective_cfg.get("watchdog_trigger_requires_approval", False)
+                or perms.get("requires_user_confirm_for_trade", False)
+            ),
         }
         condition = _normalize_agent_trigger_condition(payload.get("condition"))
         if condition is None:
@@ -8416,7 +10141,8 @@ def _agent_execute_tool(
                         "calculated_rr": round(float(rr_calc), 4),
                     },
                 }
-        inst = get_instrument(str(session.symbol or "XAUUSD").upper())
+        session_symbol = str(session.symbol or "XAUUSD").upper()
+        inst = get_instrument(normalize_strategy_symbol(session_symbol) or session_symbol)
         lot_value = _normalize_lot_for_instrument(
             lot_size=float(lot_value),
             min_lot=float(inst.min_lot),
@@ -8544,6 +10270,7 @@ def _agent_execute_tool(
             best_setup, setup_source = _agent_resolve_mtf_best_setup_for_schedule(
                 context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
                 agent_row=agent_row,
+                strategy_profile=effective_cfg.get("agent_strategy_profile"),
                 max_age_sec=6 * 3600,
             )
             if not isinstance(best_setup, dict):
@@ -8552,7 +10279,7 @@ def _agent_execute_tool(
                         "ok": False,
                         "error": "missing_mtf_proposal_for_schedule",
                         "details": {
-                            "hint": "Run run_mtf_analysis first (same session), then schedule the proposed trigger.",
+                            "hint": "Run the selected parent analysis tool first (same session), then schedule exactly the proposed trigger.",
                         },
                     }
             else:
@@ -8583,7 +10310,7 @@ def _agent_execute_tool(
                         "details": {
                             "proposal_source": str(setup_source or ""),
                             "mismatches": mismatches[:16],
-                            "hint": "Re-run run_mtf_analysis and schedule exactly the proposed setup.",
+                            "hint": "Re-run the selected parent analysis tool and schedule exactly the proposed setup.",
                         },
                     }
 
@@ -8617,6 +10344,19 @@ def _agent_execute_tool(
             },
             "guardrails": schedule_guardrail_policy,
         }
+        dyn_stop_enabled = bool(payload.get("dynamic_stop_from_precondition", False))
+        dyn_stop_buffer = _to_float_or_none(payload.get("dynamic_stop_buffer_points"))
+        if dyn_stop_enabled and dyn_stop_buffer is not None and math.isfinite(float(dyn_stop_buffer)):
+            trigger_trade_args = trigger.get("trade_args") if isinstance(trigger.get("trade_args"), dict) else {}
+            trigger_trade_args["dynamic_stop_from_precondition"] = True
+            trigger_trade_args["dynamic_stop_buffer_points"] = float(max(0.0, float(dyn_stop_buffer)))
+            trigger["trade_args"] = trigger_trade_args
+        pre_side = _agent_trigger_condition_side(precondition.get("condition")) if isinstance(precondition, dict) else None
+        cond_side = _agent_trigger_condition_side(condition)
+        if pre_side in {"above", "below"} and cond_side in {"above", "below"} and pre_side != cond_side:
+            # Persist reclaim-style semantics so the watchdog can execute on the
+            # live bar without waiting for a later close-only scan.
+            trigger["entry_evaluation_mode"] = "reclaim_touch"
         if isinstance(precondition, dict):
             trigger["precondition"] = dict(precondition)
         if isinstance(cancel_rule, dict):
@@ -9033,7 +10773,7 @@ def _agent_tool_state_from_tool_calls(tool_calls: Any) -> Dict[str, Any]:
                         "end_index": int(selection.get("end_index") or 0),
                         "bars": int(selection.get("bars") or 0),
                     }
-        elif tool_name == "run_mtf_analysis":
+        elif tool_name in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis"}:
             tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
             if tsp:
                 patch.update(tsp)
@@ -9295,7 +11035,26 @@ def workbench_scan_tool(
     scan_config = dict(merged_config)
     if trend_meta:
         scan_config["_trend_context"] = trend_meta
-    zones = tool.scan(scan_df, scan_config)
+    try:
+        zones = tool.scan(scan_df, scan_config)
+    except Exception as exc:
+        logger.warning(
+            "workbench_scan_tool_failed session=%s tool=%s err=%s",
+            int(session.id or 0),
+            str(tool_id or ""),
+            f"{type(exc).__name__}: {str(exc)[:180]}",
+        )
+        return {
+            "tool_id": tool_id,
+            "zones": [],
+            "count": 0,
+            "scan_source": scan_source,
+            "scan_timeframe": str(merged_config.get("timeframe") or ""),
+            "trend": trend_meta,
+            "movement_strength": movement_strength,
+            "current_state": current_state,
+            "error": f"scan_failed:{type(exc).__name__}",
+        }
     zones_preview = _build_tool_zone_preview(zones)
     tool_state_patch = _build_tool_state_patch(
         tool_id=str(tool_id),
@@ -9972,6 +11731,7 @@ def workbench_agent_tool_state(
 ):
     """Agent alias for tool state/tick pushes (backed by copilot runtime)."""
     payload = req.tool_state if isinstance(req.tool_state, dict) else {}
+    event_type = str(req.event_type or "TOOL_SIGNAL_CHANGED").strip().upper()
     try:
         raw = json.dumps(payload, ensure_ascii=True, sort_keys=True)
     except Exception:
@@ -9984,20 +11744,43 @@ def workbench_agent_tool_state(
         raise HTTPException(404, "Session not found")
     out = _workbench_copilot_tool_state_impl(session_id=session_id, req=req, db=db, auto_commit=False)
     copilot = _get_active_copilot(simulation_session_id=int(session_id), db=db)
+    existing_agent = _get_active_agent(simulation_session_id=int(session_id), db=db)
+    agent_provider = (
+        str(copilot.provider or "").strip()
+        if copilot is not None
+        else str(existing_agent.provider or "").strip() if existing_agent is not None else ""
+    ) or "deterministic"
+    agent_model_label = (
+        str(copilot.model_label or "").strip() or None
+        if copilot is not None
+        else (str(existing_agent.model_label or "").strip() or None if existing_agent is not None else None)
+    )
+    agent_permissions = (
+        (copilot.config_json or {}).get("agent_permissions", {})
+        if (copilot is not None and isinstance(copilot.config_json, dict))
+        else None
+    )
+    agent_config = copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else None
+    agent_runtime = _runtime_summary(get_copilot_runtime(int(copilot.id))) if copilot is not None else None
+    agent_copilot_session_id = (
+        int(copilot.id)
+        if copilot is not None
+        else (int(existing_agent.copilot_session_id) if (existing_agent is not None and existing_agent.copilot_session_id is not None) else None)
+    )
     agent = _ensure_agent_session(
         simulation_session_id=int(session_id),
         db=db,
         mode="LOOP",
-        provider=str(copilot.provider or "deterministic") if copilot is not None else "deterministic",
-        model_label=str(copilot.model_label or "") if copilot is not None else None,
-        permissions=(copilot.config_json or {}).get("agent_permissions", {}) if (copilot is not None and isinstance(copilot.config_json, dict)) else {},
-        config=copilot.config_json if (copilot is not None and isinstance(copilot.config_json, dict)) else {},
-        runtime=_runtime_summary(get_copilot_runtime(int(copilot.id))) if copilot is not None else {},
-        copilot_session_id=int(copilot.id) if copilot is not None else None,
+        provider=agent_provider,
+        model_label=agent_model_label,
+        permissions=agent_permissions,
+        config=agent_config,
+        runtime=agent_runtime,
+        copilot_session_id=agent_copilot_session_id,
     )
     _agent_emit_event(
         agent=agent,
-        event_type=str(req.event_type or "TOOL_SIGNAL_CHANGED"),
+        event_type=event_type,
         payload={
             "severity": str(req.severity or "info"),
             "tool_state_keys": sorted(list((req.tool_state or {}).keys())) if isinstance(req.tool_state, dict) else [],
@@ -10012,13 +11795,41 @@ def workbench_agent_tool_state(
         source="tool_state",
         patch={"tool_state": req.tool_state if isinstance(req.tool_state, dict) else {}},
     )
+
+    tick_trigger_out: Optional[Dict[str, Any]] = None
+    if event_type == "LIVE_TICK":
+        live_bar = _normalize_live_bar(payload.get("live_bar"))
+        if isinstance(live_bar, dict):
+            try:
+                tick_trigger_out = get_agent_watchdog_service().process_live_tick(
+                    db=db,
+                    agent=agent,
+                    session=session,
+                    live_bar=live_bar,
+                    auto_commit=False,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "LIVE_TICK immediate trigger processing failed for session=%s agent=%s: %s",
+                    int(session_id),
+                    int(agent.id),
+                    exc,
+                )
+                tick_trigger_out = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
     db.commit()
     if isinstance(out, dict):
+        out = dict(out)
         msg = str(out.get("message") or "")
         if msg:
-            out = dict(out)
             out["message"] = msg.replace("Copilot", "Agent").replace("copilot", "agent")
+        if not bool(out.get("active")):
+            out["active"] = True
+        if not bool(out.get("ok")) and (not msg or "not active" in msg.lower()):
+            out["ok"] = True
+            out["message"] = "LIVE_TICK processed" if event_type == "LIVE_TICK" else "Agent tool state stored"
         out["agent_session_id"] = int(agent.id)
+        if isinstance(tick_trigger_out, dict):
+            out["live_tick_trigger"] = tick_trigger_out
     return out
 
 
@@ -10066,7 +11877,13 @@ def workbench_agent_admin_status(
             ),
             "strategy_tool_access_mode": _normalize_strategy_tool_access_mode(
                 cfg.get("strategy_tool_access_mode")
-            )
+            ),
+            "agent_strategy_profile": _normalize_agent_strategy_profile(
+                cfg.get("agent_strategy_profile")
+            ),
+            "agent_strategy_preset": _normalize_agent_strategy_preset(
+                cfg.get("agent_strategy_preset")
+            ),
         },
         "news_cache": _agent_news_cache_stats(),
     }
@@ -10301,6 +12118,8 @@ def workbench_agent_chat(
             db=db,
             override=merged_cfg,
         )
+        merged_ctx["agent_strategy_profile"] = _normalize_agent_strategy_profile(effective_tool_cfg.get("agent_strategy_profile"))
+        merged_ctx["agent_strategy_preset"] = _normalize_agent_strategy_preset(effective_tool_cfg.get("agent_strategy_preset"))
         agent_row = _ensure_agent_session(
             simulation_session_id=int(session.id),
             db=db,
@@ -10663,6 +12482,8 @@ def workbench_agent_run_once(
             db=db,
             override=merged_cfg,
         )
+        merged_ctx["agent_strategy_profile"] = _normalize_agent_strategy_profile(effective_tool_cfg.get("agent_strategy_profile"))
+        merged_ctx["agent_strategy_preset"] = _normalize_agent_strategy_preset(effective_tool_cfg.get("agent_strategy_preset"))
         agent_row = _ensure_agent_session(
             simulation_session_id=int(session.id),
             db=db,

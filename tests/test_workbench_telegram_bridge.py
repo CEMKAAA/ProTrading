@@ -505,8 +505,103 @@ def test_help_includes_tool_modes():
     svc = tbs.TelegramBridgeService()
     out = svc._handle_text(7119946313, "/help")
     assert "/botprofile" in out
+    assert "/strategy [name] [session_id]" in out
     assert "/toolmode [all|parent|child] [session_id]" in out
     assert "/toolselect [autonomous|guided|minimal] [session_id]" in out
+
+
+def test_strategy_command_show_and_set(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_provider_and_permissions",
+        lambda _sid: (
+            {"provider": "claude"},
+            {},
+            {"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2", "agent_strategy_preset": "xauusd_m15"},
+        ),
+    )
+    out_show = svc._handle_text(chat_id, "/strategy")
+    assert "strategy: htf_fvg_liquidity_reclaim_v2 | preset: xauusd_m15" in out_show.lower()
+
+    seen = {}
+
+    def _fake_set_strategy_profile(sid, profile, preset=None):
+        seen["value"] = (sid, profile, preset)
+        return "ok"
+
+    monkeypatch.setattr(svc, "_set_strategy_profile", _fake_set_strategy_profile)
+    out_set = svc._handle_text(chat_id, "/strategy liquidity nas100_m15")
+    assert out_set == "ok"
+    assert seen.get("value") == (97, "liquidity", "nas100_m15")
+
+
+def test_set_strategy_profile_persists_normalized_value(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    session_id = 97
+    session_row = types.SimpleNamespace(id=session_id, strategy_id="_workbench")
+    agent_row = types.SimpleNamespace(
+        simulation_session_id=session_id,
+        status="ACTIVE",
+        config_json={},
+        updated_at=None,
+    )
+
+    class _FakeQuery:
+        def __init__(self, db, model):
+            self.db = db
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            if self.model is tbs.WorkbenchAgentSessionModel:
+                return self.db.agent_row
+            return None
+
+        def get(self, _sid):
+            if self.model is tbs.SimulationSession:
+                return self.db.session_row
+            return None
+
+    class _FakeDB:
+        def __init__(self):
+            self.session_row = session_row
+            self.agent_row = agent_row
+            self.did_commit = False
+
+        def query(self, model):
+            return _FakeQuery(self, model)
+
+        def add(self, _row):
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            self.did_commit = True
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    fake_db = _FakeDB()
+    monkeypatch.setattr(tbs, "SessionLocal", lambda: fake_db)
+    out = svc._set_strategy_profile(session_id, "liq", "xauusd_m15")
+    assert "Strategy set to 'htf_fvg_liquidity_reclaim_v2' with preset xauusd_m15" in out
+    assert fake_db.did_commit is True
+    cfg = fake_db.agent_row.config_json if isinstance(fake_db.agent_row.config_json, dict) else {}
+    assert cfg.get("agent_strategy_profile") == "htf_fvg_liquidity_reclaim_v2"
+    assert cfg.get("agent_strategy_preset") == "xauusd_m15"
 
 
 def test_botprofile_command_outputs_active_profile(monkeypatch):
@@ -646,10 +741,15 @@ def test_runtime_identity_detects_master_from_json_string(monkeypatch):
     monkeypatch.setattr(
         svc,
         "_resolve_provider_and_permissions",
-        lambda _sid: ({"provider": "claude", "model_label": "claude-haiku-4-5-20251001"}, {"can_chat": True}, {}),
+        lambda _sid: (
+            {"provider": "claude", "model_label": "claude-haiku-4-5-20251001"},
+            {"can_chat": True},
+            {"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2", "agent_strategy_preset": "default"},
+        ),
     )
     out = svc._format_runtime(session_id)
     assert "Identity: master_quant" in out
+    assert "Strategy: htf_fvg_liquidity_reclaim_v2 | Preset: default" in out
 
 
 def test_latest_command_formats_latest_active_session(monkeypatch):

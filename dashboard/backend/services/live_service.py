@@ -22,6 +22,7 @@ BOT_STATE_FILES = {
     "advanced_orb_ml_strategy": Path(__file__).parent.parent.parent / "data" / "advanced_orb_ml_state.json",
     "liquidity_sweep_strategy": Path(__file__).parent.parent.parent / "data" / "liquidity_sweep_state.json",
     "keltner_breakout_strategy": Path(__file__).parent.parent.parent / "data" / "keltner_breakout_state.json",
+    "htf_fvg_liquidity_reclaim_strategy": Path(__file__).parent.parent.parent / "data" / "htf_fvg_liquidity_reclaim_strategy_state.json",
 }
 
 
@@ -35,11 +36,57 @@ class LiveTradingService:
         self._symbols_cache_ts: float = 0.0
         self._resolved_symbol_cache: Dict[str, Dict[str, Any]] = {}
         self._resolved_symbol_cache_ttl_sec: float = 30.0
+        self._last_symbols_error: str = ""
 
-    def _ensure_mt5(self) -> bool:
+    @staticmethod
+    def _extract_strategy_diagnostics(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(state, dict):
+            return {}
+        keys = [
+            "strategy_preset",
+            "base_symbol",
+            "timeframe",
+            "bias",
+            "bias_strength",
+            "setup_detected",
+            "fvg_detected",
+            "fvg_quality",
+            "sweep_detected",
+            "sweep_quality",
+            "rejection_confirmed",
+            "entry_price",
+            "stop_loss",
+            "take_profit",
+            "rr",
+            "invalidation_reason",
+            "last_signal",
+        ]
+        out: Dict[str, Any] = {}
+        for key in keys:
+            if key in state and state.get(key) is not None:
+                out[str(key)] = state.get(key)
+        return out
+
+    def _reset_mt5(self) -> None:
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+        self._mt5_initialized = False
+
+    def _ensure_mt5(self, *, force_reconnect: bool = False) -> bool:
         """Ensure MT5 is initialized"""
+        if force_reconnect:
+            self._reset_mt5()
+
         if self._mt5_initialized:
-            return True
+            try:
+                terminal_info = mt5.terminal_info()
+                if terminal_info is not None and bool(getattr(terminal_info, "connected", True)):
+                    return True
+            except Exception:
+                pass
+            self._reset_mt5()
 
         if not mt5.initialize():
             logger.warning(f"MT5 not available: {mt5.last_error()}")
@@ -60,34 +107,54 @@ class LiveTradingService:
         refresh: bool = False,
     ) -> List[Dict[str, Any]]:
         """List broker symbols from currently connected MT5 terminal."""
+        self._last_symbols_error = ""
         if not self._ensure_mt5():
+            self._last_symbols_error = f"MT5 initialize failed: {mt5.last_error()}"
             return []
         now = time.time()
         if (not refresh) and self._symbols_cache and (now - self._symbols_cache_ts) < 10.0:
             rows = list(self._symbols_cache)
         else:
             raw = mt5.symbols_get()
+            if not raw:
+                logger.warning("MT5 symbols_get returned no symbols; retrying after fresh initialize")
+                if self._ensure_mt5(force_reconnect=True):
+                    raw = mt5.symbols_get()
+            if not raw:
+                terminal_info = None
+                try:
+                    terminal_info = mt5.terminal_info()
+                except Exception:
+                    terminal_info = None
+                connected = bool(getattr(terminal_info, "connected", False)) if terminal_info is not None else False
+                self._last_symbols_error = (
+                    f"MT5 symbol catalog unavailable (connected={connected}, last_error={mt5.last_error()})"
+                )
+                logger.warning(self._last_symbols_error)
+                self._symbols_cache = []
+                self._symbols_cache_ts = 0.0
+                self._resolved_symbol_cache = {}
+                return []
             rows = []
-            if raw:
-                for s in raw:
-                    name = str(getattr(s, "name", "") or "").strip()
-                    if not name:
-                        continue
-                    visible = bool(getattr(s, "visible", False))
-                    if (not include_hidden) and (not visible):
-                        continue
-                    rows.append(
-                        {
-                            "name": name,
-                            "description": str(getattr(s, "description", "") or "").strip(),
-                            "path": str(getattr(s, "path", "") or "").strip(),
-                            "visible": visible,
-                            "digits": int(getattr(s, "digits", 0) or 0),
-                            "point": float(getattr(s, "point", 0.0) or 0.0),
-                            "trade_mode": int(getattr(s, "trade_mode", 0) or 0),
-                            "spread": int(getattr(s, "spread", 0) or 0),
-                        }
-                    )
+            for s in raw:
+                name = str(getattr(s, "name", "") or "").strip()
+                if not name:
+                    continue
+                visible = bool(getattr(s, "visible", False))
+                if (not include_hidden) and (not visible):
+                    continue
+                rows.append(
+                    {
+                        "name": name,
+                        "description": str(getattr(s, "description", "") or "").strip(),
+                        "path": str(getattr(s, "path", "") or "").strip(),
+                        "visible": visible,
+                        "digits": int(getattr(s, "digits", 0) or 0),
+                        "point": float(getattr(s, "point", 0.0) or 0.0),
+                        "trade_mode": int(getattr(s, "trade_mode", 0) or 0),
+                        "spread": int(getattr(s, "spread", 0) or 0),
+                    }
+                )
             rows.sort(key=lambda r: (0 if bool(r.get("visible")) else 1, str(r.get("name") or "")))
             self._symbols_cache = list(rows)
             self._symbols_cache_ts = now
@@ -249,6 +316,7 @@ class LiveTradingService:
             "balance": 0.0,
             "equity": 0.0,
             "margin_level": None,
+            "strategy_diagnostics": {},
             "running_strategies": [],
         }
 
@@ -265,6 +333,8 @@ class LiveTradingService:
                 "is_running": True,
                 "mt5_available": True,
                 "is_trading": bot_state.get("is_trading", False),
+                "symbol_requested": symbol_req,
+                "symbol_resolved": bot_state.get("symbol") or bot_state.get("base_symbol") or symbol_req,
                 "active_strategy": bot_state.get("active_strategy"),
                 "current_time_ny": bot_state.get("current_time_ny"),
                 "current_price": bot_state.get("current_price"),
@@ -281,6 +351,7 @@ class LiveTradingService:
                 "balance": bot_state.get("balance", 0.0),
                 "equity": bot_state.get("equity", 0.0),
                 "margin_level": bot_state.get("margin_level"),
+                "strategy_diagnostics": self._extract_strategy_diagnostics(bot_state),
                 "running_strategies": running_strategies,
             }
 

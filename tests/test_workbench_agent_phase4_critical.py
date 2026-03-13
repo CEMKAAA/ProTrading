@@ -1,5 +1,7 @@
 import json
+import math
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -7,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from dashboard.backend.api import simulation_routes as sim_routes
 from dashboard.backend.core.workbench.agent import WorkbenchAgent
+from dashboard.backend.services.agent_live_tick_service import AgentLiveTickService
 from dashboard.backend.services.agent_watchdog_service import AgentWatchdogService
 from dashboard.backend.models.database import (
     Base,
@@ -55,6 +58,922 @@ def test_tool_specs_include_run_mtf_analysis():
     specs = WorkbenchAgent._tool_specs()
     names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
     assert "run_mtf_analysis" in names
+
+
+def test_tool_specs_include_run_htf_fvg_liquidity_reclaim_analysis():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "run_htf_fvg_liquidity_reclaim_analysis" in names
+
+
+def test_update_session_live_control_enables_backend_mt5_relay():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        out = sim_routes.update_session_live_control(
+            session_id=int(sim.id),
+            req=sim_routes.LiveControlRequest(enabled=True, source="mt5", backend_native=True),
+            db=db,
+        )
+        assert out.get("ok") is True
+        assert str(out.get("mode") or "").lower() == "live"
+        live = out.get("live_control") if isinstance(out.get("live_control"), dict) else {}
+        assert bool(live.get("enabled")) is True
+        assert str(live.get("source") or "") == "mt5"
+        assert bool(live.get("backend_native")) is True
+
+        db.refresh(sim)
+        cfg = sim_routes._session_config_dict(sim)
+        live_cfg = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+        assert bool(live_cfg.get("enabled")) is True
+        assert bool(live_cfg.get("backend_native")) is True
+        assert str(sim.mode or "").lower() == "live"
+    finally:
+        db.close()
+
+
+def test_agent_live_tick_service_processes_live_enabled_mt5_session(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSDm",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"live_control": {"enabled": True, "source": "mt5", "backend_native": True}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": True}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "price_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+        db.commit()
+
+        class _FakeMt5Service:
+            def get_recent_candles(self, **kwargs):
+                return [
+                    {
+                        "time_unix": 1770000000,
+                        "open": 5185.0,
+                        "high": 5190.0,
+                        "low": 5184.5,
+                        "close": 5189.3,
+                        "volume": 100.0,
+                    }
+                ]
+
+        seen = {"calls": 0}
+
+        class _FakeWatchdog:
+            def process_live_tick(self, **kwargs):
+                seen["calls"] += 1
+                return {"ok": True, "trigger_events_count": 1, "trigger_event_types": ["WATCHDOG_ENTRY_PENDING"]}
+
+        TestSessionLocal = sessionmaker(bind=db.bind, autocommit=False, autoflush=False)
+        monkeypatch.setattr("dashboard.backend.services.agent_live_tick_service.SessionLocal", TestSessionLocal)
+        monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeMt5Service())
+        monkeypatch.setattr(
+            "dashboard.backend.services.agent_live_tick_service.get_agent_watchdog_service",
+            lambda: _FakeWatchdog(),
+        )
+
+        svc = AgentLiveTickService()
+        svc._process_once()
+
+        assert seen["calls"] == 1
+        db.refresh(agent_row)
+        snap = agent_row.last_snapshot_json if isinstance(agent_row.last_snapshot_json, dict) else {}
+        tool_state = snap.get("tool_state") if isinstance(snap.get("tool_state"), dict) else {}
+        assert str(tool_state.get("live_source") or "") == "mt5"
+        live_bar = tool_state.get("live_bar") if isinstance(tool_state.get("live_bar"), dict) else {}
+        assert int(live_bar.get("time") or 0) == 1770000000
+    finally:
+        db.close()
+
+
+def test_watchdog_skips_backend_native_mt5_live_sessions(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSDm",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"live_control": {"enabled": True, "source": "mt5", "backend_native": True}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.commit()
+
+        TestSessionLocal = sessionmaker(bind=db.bind, autocommit=False, autoflush=False)
+        monkeypatch.setattr("dashboard.backend.services.agent_watchdog_service.SessionLocal", TestSessionLocal)
+
+        svc = AgentWatchdogService()
+        seen = {"trigger_calls": 0}
+        monkeypatch.setattr(svc, "_process_pending_decisions", lambda **kwargs: None)
+        monkeypatch.setattr(
+            svc,
+            "_process_entry_triggers",
+            lambda **kwargs: seen.__setitem__("trigger_calls", int(seen["trigger_calls"]) + 1) or [],
+        )
+
+        svc._process_once()
+
+        assert seen["trigger_calls"] == 0
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_liquidity_reclaim_parent_tool(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=180, start=1700000000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.04 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.30, 5),
+                        "high": round(px + 0.90, 5),
+                        "low": round(px - 0.90, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_mk_bars(), None),
+        )
+
+        class _FakeStrategy:
+            def initialize_day(self, date, daily_df, intraday_df):
+                return SimpleNamespace(date=date, bias="bullish", bias_strength=72, atr=1.25, levels={})
+
+            def find_setup(self, bar, df, day_context, current_bar_index):
+                return SimpleNamespace(
+                    direction="BUY",
+                    entry_price=125.1,
+                    stop_loss=123.8,
+                    take_profit=129.6,
+                    setup_type="HTF FVG Liquidity Reclaim (Long)",
+                    confidence=84.0,
+                    metadata={
+                        "fvg": {
+                            "timeframe": "H4",
+                            "top": 125.0,
+                            "bottom": 124.0,
+                            "quality_score": 81.0,
+                            "quality_label": "strong",
+                        },
+                        "sweep_quality": "strong",
+                        "sweep_rejection_ratio": 0.72,
+                        "sweep_pool_boundary": 124.2,
+                        "sweep_extreme": 123.9,
+                        "fvg_top": 125.0,
+                        "fvg_bottom": 124.0,
+                    },
+                )
+
+        monkeypatch.setattr(sim_routes, "create_strategy", lambda *_args, **_kwargs: _FakeStrategy())
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_htf_fvg_liquidity_reclaim_analysis",
+            args={"preset": "default"},
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"},
+            atomic=False,
+        )
+
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("strategy_id") == "htf_fvg_liquidity_reclaim_strategy"
+        assert data.get("trigger_ready") is True
+        tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
+        assert "htf_fvg_liquidity_reclaim_analysis" in tsp
+        best_setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        assert best_setup.get("direction") == "BUY"
+        assert isinstance(best_setup.get("precondition"), dict)
+        assert isinstance(best_setup.get("condition"), dict)
+        assert isinstance(best_setup.get("cancel_rule"), dict)
+    finally:
+        db.close()
+
+
+def test_liquidity_reclaim_parent_tool_returns_diagnostics_when_no_setup(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=260, start=1700200000, step=900, base=125.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.04 if (i % 2) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.10, 5),
+                        "high": round(px + 0.80, 5),
+                        "low": round(px - 0.80, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        class _FakeDayContext:
+            def __init__(self):
+                self.bias = "bullish"
+                self.bias_strength = 42
+                self.atr = 1.8
+                self.levels = {}
+
+        class _FakeStrategy:
+            config = {
+                "ltf_pool_lookback_bars": 200,
+                "sweep_distance_atr": 0.5,
+                "min_rejection_ratio": 0.30,
+            }
+
+            def initialize_day(self, date, daily_df, intraday_df):
+                return _FakeDayContext()
+
+            def _scan_htf_fvgs(self, df, atr):
+                return [
+                    {
+                        "timeframe": "H4",
+                        "type": "bullish_fvg",
+                        "top": 125.40,
+                        "bottom": 124.90,
+                        "current_gap_size": 0.35,
+                        "original_gap_size": 0.50,
+                        "gap_size": 0.50,
+                        "fill_ratio": 0.30,
+                        "mitigations": 1,
+                        "age_bars": 8,
+                        "distance_from_price": 0.40,
+                        "quality_score": 74.0,
+                        "quality_label": "strong",
+                        "trend_aligned": True,
+                    }
+                ]
+
+            def _select_active_fvg(self, fvgs, current_price, atr, bias, bias_strength):
+                return fvgs[0] if fvgs else None
+
+            def _scan_liquidity_map(self, df):
+                return [
+                    {
+                        "type": "liquidity_pool_low",
+                        "liquidity_level": 124.95,
+                        "top": 125.00,
+                        "bottom": 124.90,
+                        "touches": 3,
+                        "bar_index": 190,
+                        "end_time_unix": 1700200000 + (190 * 900),
+                    },
+                    {
+                        "type": "liquidity_sweep_low",
+                        "liquidity_level": 124.95,
+                        "ref_price": 124.95,
+                        "pool_boundary": 124.90,
+                        "swept_price": 124.70,
+                        "rejection_ratio": 0.72,
+                        "rejection_quality": "strong",
+                        "swept_pool_touches": 3,
+                        "bar_index": 198,
+                        "top": 124.90,
+                        "bottom": 124.70,
+                        "end_time_unix": 1700200000 + (198 * 900),
+                    },
+                ]
+
+            def _sweep_freshness_bars(self):
+                return 16
+
+            def _default_sweep_distance_atr(self):
+                return 0.5
+
+            def find_setup(self, bar, df, day_context, current_bar_index):
+                return None
+
+        monkeypatch.setattr(sim_routes, "create_strategy", lambda *_args, **_kwargs: _FakeStrategy())
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_htf_fvg_liquidity_reclaim_analysis",
+            args={"preset": "xauusd_m15"},
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"},
+            atomic=False,
+        )
+
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is False
+        assert data.get("best_setup") is None
+
+        htf = data.get("htf_fvg_candidates") if isinstance(data.get("htf_fvg_candidates"), list) else []
+        assert len(htf) >= 1
+        assert str(htf[0].get("type") or "") == "bullish_fvg"
+
+        selected = data.get("selected_htf_fvg_candidate") if isinstance(data.get("selected_htf_fvg_candidate"), dict) else {}
+        assert str(selected.get("quality_label") or "") == "strong"
+
+        liq = data.get("liquidity_context") if isinstance(data.get("liquidity_context"), dict) else {}
+        sweeps = liq.get("sweeps") if isinstance(liq.get("sweeps"), list) else []
+        matching = liq.get("matching_sweeps") if isinstance(liq.get("matching_sweeps"), list) else []
+        assert len(sweeps) >= 1
+        assert len(matching) >= 1
+        assert str(matching[0].get("rejection_quality") or "") == "strong"
+        scan_debug = liq.get("scan_debug") if isinstance(liq.get("scan_debug"), dict) else {}
+        strict_dbg = scan_debug.get("strict") if isinstance(scan_debug.get("strict"), dict) else {}
+        relaxed_dbg = scan_debug.get("relaxed") if isinstance(scan_debug.get("relaxed"), dict) else {}
+        assert str(scan_debug.get("status") or "") in {"strict_has_structure", "strict_zero_relaxed_nonzero", "no_liquidity_even_relaxed", "relaxed_scan_error"}
+        assert int(strict_dbg.get("zones_count") or 0) >= 1
+        assert "zones_count" in relaxed_dbg
+
+        trace = data.get("analysis_trace") if isinstance(data.get("analysis_trace"), dict) else {}
+        assert str(trace.get("stage") or "") == "reclaim_or_rr_validation_failed"
+    finally:
+        db.close()
+
+
+def test_liquidity_reclaim_parent_tool_reports_filtered_htf_candidates(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=260, start=1700200000, step=900, base=125.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.04 if (i % 2) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.10, 5),
+                        "high": round(px + 0.80, 5),
+                        "low": round(px - 0.80, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        class _FakeDayContext:
+            def __init__(self):
+                self.bias = "bearish"
+                self.bias_strength = 60
+                self.atr = 1.8
+                self.levels = {}
+
+        class _FakeStrategy:
+            config = {
+                "ltf_pool_lookback_bars": 200,
+                "sweep_distance_atr": 0.5,
+                "min_rejection_ratio": 0.30,
+            }
+
+            def initialize_day(self, date, daily_df, intraday_df):
+                return _FakeDayContext()
+
+            def _scan_htf_fvgs_detailed(self, df, atr):
+                return {
+                    "candidates": [],
+                    "raw_zones_count": 2,
+                    "scan_detail": [
+                        {
+                            "timeframe": "H4",
+                            "bars_scanned": 100,
+                            "raw_zones_count": 2,
+                            "candidate_count": 0,
+                            "rejected_age_count": 0,
+                            "rejected_fill_count": 1,
+                            "rejected_distance_count": 1,
+                        }
+                    ],
+                }
+
+            def _scan_htf_fvgs(self, df, atr):
+                return []
+
+            def _select_active_fvg(self, fvgs, current_price, atr, bias, bias_strength):
+                return None
+
+            def _scan_liquidity_map(self, df):
+                return []
+
+            def find_setup(self, bar, df, day_context, current_bar_index):
+                return None
+
+        monkeypatch.setattr(sim_routes, "create_strategy", lambda *_args, **_kwargs: _FakeStrategy())
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_htf_fvg_liquidity_reclaim_analysis",
+            args={"preset": "default"},
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"},
+            atomic=False,
+        )
+
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        trace = data.get("analysis_trace") if isinstance(data.get("analysis_trace"), dict) else {}
+        assert str(trace.get("stage") or "") == "htf_fvg_candidates_filtered_out"
+        assert int(trace.get("htf_raw_fvg_zones_count") or 0) == 2
+        scan_detail = data.get("htf_scan_detail") if isinstance(data.get("htf_scan_detail"), list) else []
+        assert len(scan_detail) == 1
+        assert int(scan_detail[0].get("raw_zones_count") or 0) == 2
+        assert int(scan_detail[0].get("candidate_count") or 0) == 0
+        assert int(scan_detail[0].get("rejected_fill_count") or 0) == 1
+        assert int(scan_detail[0].get("rejected_distance_count") or 0) == 1
+    finally:
+        db.close()
+
+
+def test_liquidity_reclaim_parent_tool_surfaces_high_impact_news_guardrail(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=260, start=1700200000, step=900, base=125.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.04 if (i % 2) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.10, 5),
+                        "high": round(px + 0.80, 5),
+                        "low": round(px - 0.80, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_trade_guardrails",
+            lambda **kwargs: {
+                "ok": False,
+                "reasons": ["high_impact_news"],
+                "details": {"news": {"ok": True, "items": 1}},
+                "news_payload": {
+                    "ok": True,
+                    "provider": "polygon",
+                    "symbol": "XAUUSD",
+                    "items": [{"title": "CPI surprise", "impact": "high"}],
+                },
+            },
+        )
+
+        class _FakeDayContext:
+            def __init__(self):
+                self.bias = "bearish"
+                self.bias_strength = 55
+                self.atr = 1.8
+                self.levels = {}
+
+        class _FakeStrategy:
+            config = {
+                "ltf_pool_lookback_bars": 200,
+                "sweep_distance_atr": 0.5,
+                "min_rejection_ratio": 0.30,
+            }
+
+            def initialize_day(self, date, daily_df, intraday_df):
+                return _FakeDayContext()
+
+            def _scan_htf_fvgs_detailed(self, df, atr):
+                return {
+                    "candidates": [
+                        {
+                            "timeframe": "H4",
+                            "type": "bearish_fvg",
+                            "top": 126.0,
+                            "bottom": 125.0,
+                            "current_gap_size": 1.0,
+                            "original_gap_size": 1.0,
+                            "gap_size": 1.0,
+                            "fill_ratio": 0.0,
+                            "mitigations": 0,
+                            "age_bars": 2,
+                            "distance_from_price": 0.5,
+                            "quality_score": 81.0,
+                            "quality_label": "strong",
+                            "trend_aligned": True,
+                        }
+                    ],
+                    "raw_zones_count": 1,
+                    "scan_detail": [{"timeframe": "H4", "bars_scanned": 100, "raw_zones_count": 1, "candidate_count": 1}],
+                }
+
+            def _scan_htf_fvgs(self, df, atr):
+                return self._scan_htf_fvgs_detailed(df, atr)["candidates"]
+
+            def _select_active_fvg(self, fvgs, current_price, atr, bias, bias_strength):
+                return fvgs[0] if fvgs else None
+
+            def _scan_liquidity_map(self, df):
+                return []
+
+            def find_setup(self, bar, df, day_context, current_bar_index):
+                return None
+
+        monkeypatch.setattr(sim_routes, "create_strategy", lambda *_args, **_kwargs: _FakeStrategy())
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_htf_fvg_liquidity_reclaim_analysis",
+            args={"preset": "default"},
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2", "guardrail_news_filter_enabled": True},
+            atomic=False,
+        )
+
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        trace = data.get("analysis_trace") if isinstance(data.get("analysis_trace"), dict) else {}
+        guardrails = data.get("guardrails") if isinstance(data.get("guardrails"), dict) else {}
+        assert str(trace.get("stage") or "") == "high_impact_news_guardrail"
+        assert "high_impact_news" in list(data.get("blockers") or [])
+        assert "news_guardrail_high_impact" in list(data.get("confidence_warnings") or [])
+        assert "high_impact_news" in list(guardrails.get("reasons") or [])
+        news = data.get("news") if isinstance(data.get("news"), dict) else {}
+        assert bool(news.get("ok")) is True
+    finally:
+        db.close()
+
+
+def test_liquidity_reclaim_parent_tool_builds_watch_schedule_when_waiting_for_sweep(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=260, start=1700200000, step=900, base=125.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.04 if (i % 2) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.10, 5),
+                        "high": round(px + 0.80, 5),
+                        "low": round(px - 0.80, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        class _FakeDayContext:
+            def __init__(self):
+                self.bias = "bullish"
+                self.bias_strength = 55
+                self.atr = 1.8
+                self.levels = {}
+
+        selected = {
+            "timeframe": "H4",
+            "type": "bullish_fvg",
+            "top": 125.40,
+            "bottom": 124.90,
+            "current_gap_size": 0.50,
+            "original_gap_size": 0.50,
+            "gap_size": 0.50,
+            "fill_ratio": 0.0,
+            "mitigations": 0,
+            "age_bars": 4,
+            "distance_from_price": 0.40,
+            "quality_score": 78.0,
+            "quality_label": "strong",
+            "trend_aligned": True,
+        }
+
+        class _FakeStrategy:
+            config = {
+                "ltf_pool_lookback_bars": 200,
+                "sweep_distance_atr": 0.5,
+                "min_rejection_ratio": 0.30,
+                "fvg_reclaim_depth": 0.30,
+                "sl_buffer_atr": 0.25,
+            }
+
+            def initialize_day(self, date, daily_df, intraday_df):
+                return _FakeDayContext()
+
+            def _scan_htf_fvgs_detailed(self, df, atr):
+                return {
+                    "candidates": [dict(selected)],
+                    "raw_zones_count": 1,
+                    "scan_detail": [
+                        {
+                            "timeframe": "H4",
+                            "bars_scanned": 100,
+                            "raw_zones_count": 1,
+                            "candidate_count": 1,
+                            "rejected_age_count": 0,
+                            "rejected_fill_count": 0,
+                            "rejected_distance_count": 0,
+                        }
+                    ],
+                }
+
+            def _scan_htf_fvgs(self, df, atr):
+                return [dict(selected)]
+
+            def _select_active_fvg(self, fvgs, current_price, atr, bias, bias_strength):
+                return dict(selected)
+
+            def _scan_liquidity_map(self, df):
+                return [
+                    {
+                        "type": "liquidity_pool_high",
+                        "liquidity_level": 126.0,
+                        "top": 126.1,
+                        "bottom": 125.9,
+                        "touches": 2,
+                        "bar_index": 195,
+                        "end_time_unix": 1700200000 + (195 * 900),
+                    }
+                ]
+
+            def _compute_take_profit(self, **kwargs):
+                return 126.0, "liquidity"
+
+            def find_setup(self, bar, df, day_context, current_bar_index):
+                return None
+
+        monkeypatch.setattr(sim_routes, "create_strategy", lambda *_args, **_kwargs: _FakeStrategy())
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_htf_fvg_liquidity_reclaim_analysis",
+            args={"preset": "default"},
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"},
+            atomic=False,
+        )
+
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("best_setup") is None
+        watch_setup = data.get("watch_setup") if isinstance(data.get("watch_setup"), dict) else {}
+        assert str(watch_setup.get("status") or "") == "waiting_for_sweep_unlock"
+        unlock = watch_setup.get("unlock_event") if isinstance(watch_setup.get("unlock_event"), dict) else {}
+        assert str(unlock.get("condition") or "") == "sweep_below"
+        schedule_args = data.get("schedule_trade_entry_args") if isinstance(data.get("schedule_trade_entry_args"), dict) else {}
+        pre = schedule_args.get("precondition") if isinstance(schedule_args.get("precondition"), dict) else {}
+        assert str(pre.get("condition") or "") == "sweep_below"
+        assert str(schedule_args.get("condition") or "") == "close_above"
+        assert bool(schedule_args.get("dynamic_stop_from_precondition")) is True
+        assert float(schedule_args.get("dynamic_stop_buffer_points") or 0.0) > 0.0
+        selected_out = data.get("selected_htf_fvg_candidate") if isinstance(data.get("selected_htf_fvg_candidate"), dict) else {}
+        assert selected_out.get("distance_price_reference") is not None
+        tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
+        htf_state = tsp.get("htf_fvg_liquidity_reclaim_analysis") if isinstance(tsp.get("htf_fvg_liquidity_reclaim_analysis"), dict) else {}
+        assert htf_state.get("current_price") is not None
+        pos_state = htf_state.get("position_state") if isinstance(htf_state.get("position_state"), dict) else {}
+        assert int(pos_state.get("open_positions_count") or 0) == 0
+        assert int(pos_state.get("pending_triggers_count") or 0) == 0
+    finally:
+        db.close()
+
+
+def test_sweep_freshness_defaults_follow_timeframe():
+    assert int(sim_routes._agent_sweep_freshness_bars("M15")) == 16
+    assert int(sim_routes._agent_sweep_freshness_bars("H1")) == 4
+    assert int(sim_routes._agent_sweep_freshness_bars("H4")) == 4
+
+
+def test_sweep_freshness_respects_config_overrides():
+    cfg = {
+        "mtf_liquidity_sweep_freshness_hours": 2.0,
+        "mtf_liquidity_sweep_freshness_min_bars": 3,
+    }
+    assert int(sim_routes._agent_sweep_freshness_bars("H1", effective_cfg=cfg)) == 3
+    assert int(sim_routes._agent_sweep_freshness_bars("M15", effective_cfg=cfg)) == 8
+    assert int(sim_routes._agent_sweep_freshness_bars("M15", payload={"liquidity_sweep_freshness_hours": 1.0}, effective_cfg=cfg)) == 4
+
+
+def test_sweep_distance_multiplier_respects_symbol_and_overrides():
+    assert float(sim_routes._agent_sweep_distance_multiplier("XAUUSDm")) == 0.5
+    assert float(sim_routes._agent_sweep_distance_multiplier("NAS100.r")) == 0.3
+    assert float(sim_routes._agent_sweep_distance_multiplier("EURUSD")) == 0.25
+    cfg = {"mtf_liquidity_sweep_distance_atr_gold": 0.7}
+    assert float(sim_routes._agent_sweep_distance_multiplier("XAUUSDm", effective_cfg=cfg)) == 0.7
+    cfg_map = {"mtf_liquidity_sweep_distance_atr_by_symbol": {"XAUUSD": 0.9}}
+    assert float(sim_routes._agent_sweep_distance_multiplier("XAUUSDm", effective_cfg=cfg_map)) == 0.9
+    assert float(sim_routes._agent_sweep_distance_multiplier("XAUUSDm", payload={"liquidity_sweep_distance_atr_gold": 0.8}, effective_cfg=cfg)) == 0.8
 
 
 def test_schedule_trade_entry_tool_spec_does_not_expose_proposal_bypass_flag():
@@ -116,6 +1035,106 @@ def test_tool_call_log_uses_tool_id_key():
     assert "tool_name" not in calls[0]
 
 
+def test_deterministic_chat_respects_allowed_parent_tool_for_liquidity_profile():
+    agent = WorkbenchAgent()
+
+    def _exec(name, args):
+        return {"ok": True, "count": 1, "name": name, "args": args}
+
+    out = agent.chat(
+        message="show H4 and M15 fair value gap reclaim levels",
+        context={
+            "agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2",
+            "agent_strategy_preset": "default",
+        },
+        conversation_history=[],
+        provider="deterministic",
+        model_label=None,
+        llm_url=None,
+        api_key=None,
+        timeout_sec=30,
+        permissions={"can_scan_tools": True},
+        tool_executor=_exec,
+        allow_tools=True,
+        max_tool_steps=2,
+        allowed_tool_names=["run_htf_fvg_liquidity_reclaim_analysis"],
+        objective="chat",
+    )
+    assert out.get("ok") is True
+    calls = out.get("tool_calls") if isinstance(out.get("tool_calls"), list) else []
+    assert calls
+    assert str(calls[0].get("tool_id") or "") == "run_htf_fvg_liquidity_reclaim_analysis"
+
+
+def test_deterministic_chat_auto_verifies_negative_parent_result():
+    agent = WorkbenchAgent()
+
+    def _exec(name, args):
+        if name == "run_htf_fvg_liquidity_reclaim_analysis":
+            return {
+                "ok": True,
+                "data": {
+                    "symbol": "XAUUSD",
+                    "execution_timeframe": "M15",
+                    "analysis_trace": {"stage": "no_htf_fvg_candidates"},
+                    "best_setup": None,
+                },
+            }
+        if name == "scan_tool":
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": str(args.get("tool_id") or ""),
+                    "timeframe": str(args.get("timeframe") or ""),
+                },
+            }
+        if name == "get_indicator_values":
+            return {"ok": True, "data": {"rsi14": 48.2, "atr14": 7.1}}
+        return {"ok": True, "data": {}}
+
+    out = agent.chat(
+        message="Run the active strategy on this session and tell me if there is a valid setup.",
+        context={
+            "agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2",
+            "agent_strategy_preset": "xauusd_m15",
+            "symbol": "XAUUSD",
+            "timeframe": "M15",
+        },
+        conversation_history=[],
+        provider="deterministic",
+        model_label=None,
+        llm_url=None,
+        api_key=None,
+        timeout_sec=30,
+        permissions={"can_scan_tools": True},
+        tool_executor=_exec,
+        allow_tools=True,
+        max_tool_steps=2,
+        allowed_tool_names=[
+            "run_htf_fvg_liquidity_reclaim_analysis",
+            "scan_tool",
+            "get_indicator_values",
+        ],
+        objective="chat",
+    )
+
+    assert out.get("ok") is True
+    calls = out.get("tool_calls") if isinstance(out.get("tool_calls"), list) else []
+    assert len(calls) >= 5
+    assert str(calls[0].get("tool_id") or "") == "run_htf_fvg_liquidity_reclaim_analysis"
+
+    scan_calls = [row for row in calls if str(row.get("tool_id") or "") == "scan_tool"]
+    scan_keys = {
+        (str((row.get("args") or {}).get("tool_id") or ""), str((row.get("args") or {}).get("timeframe") or ""))
+        for row in scan_calls
+        if isinstance(row, dict)
+    }
+    assert ("fvg", "D1") in scan_keys
+    assert ("fvg", "H4") in scan_keys
+    assert ("liquidity", "M15") in scan_keys
+    assert any(str(row.get("tool_id") or "") == "get_indicator_values" for row in calls)
+
+
 def test_normalize_tool_calls_supports_name_and_tool_id():
     rows = WorkbenchAgent._normalize_tool_calls(
         [
@@ -138,7 +1157,7 @@ def test_run_mtf_analysis_builds_trigger_candidate_from_deterministic_scans(monk
             strategy_id="_workbench",
             symbol="XAUUSD",
             timeframe="M15",
-            mode="live",
+            mode="replay",
             current_bar=0,
             total_bars=1,
             initial_balance=10000.0,
@@ -163,9 +1182,9 @@ def test_run_mtf_analysis_builds_trigger_candidate_from_deterministic_scans(monk
                 rows.append(
                     {
                         "time": int(start + (i * step)),
-                        "open": round(px - 0.05, 5),
-                        "high": round(px + 0.20, 5),
-                        "low": round(px - 0.20, 5),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
                         "close": round(px, 5),
                         "volume": 100.0 + i,
                     }
@@ -258,6 +1277,10 @@ def test_run_mtf_analysis_builds_trigger_candidate_from_deterministic_scans(monk
         assert str((setup.get("cancel_rule") or {}).get("condition") or "") == "close_below"
         assert float(setup.get("rr") or 0.0) >= 1.9
         assert float(setup.get("lot_size") or 0.0) > 0.0
+        schedule_args = data.get("schedule_trade_entry_args") if isinstance(data.get("schedule_trade_entry_args"), dict) else {}
+        assert str(schedule_args.get("condition") or "") == "close_above"
+        assert isinstance(schedule_args.get("precondition"), dict)
+        assert isinstance(schedule_args.get("cancel_rule"), dict)
     finally:
         db.close()
 
@@ -269,7 +1292,7 @@ def test_run_mtf_analysis_does_not_hard_block_on_unknown_htf_bias(monkeypatch):
             strategy_id="_workbench",
             symbol="XAUUSD",
             timeframe="M15",
-            mode="live",
+            mode="replay",
             current_bar=0,
             total_bars=1,
             initial_balance=10000.0,
@@ -355,7 +1378,7 @@ def test_run_mtf_analysis_does_not_hard_block_on_unknown_htf_bias(monkeypatch):
         db.close()
 
 
-def test_run_mtf_analysis_blocks_when_all_htf_anchors_are_too_distant(monkeypatch):
+def test_run_mtf_analysis_returns_diagnostics_when_no_trigger(monkeypatch):
     db = _db_session()
     try:
         sim = SimulationSession(
@@ -363,6 +1386,119 @@ def test_run_mtf_analysis_blocks_when_all_htf_anchors_are_too_distant(monkeypatc
             symbol="XAUUSD",
             timeframe="M15",
             mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700130000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_no_trigger(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": [],
+                        "count": 0,
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": 0},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.95, "bottom": 124.85, "gap_size": 0.10, "original_gap_size": 0.10, "current_gap_size": 0.01, "mitigations": 3, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.00, "bottom": 124.90, "gap_size": 0.10, "original_gap_size": 0.10, "current_gap_size": 0.01, "mitigations": 3, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "original_gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_no_trigger)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is False
+        assert isinstance(data.get("best_setup"), dict)
+        assert isinstance(data.get("schedule_trade_entry_args"), dict)
+
+        selected = data.get("selected_htf_anchor_candidate") if isinstance(data.get("selected_htf_anchor_candidate"), dict) else {}
+        assert str(selected.get("direction") or "") == "bullish"
+
+        liq = data.get("liquidity_context") if isinstance(data.get("liquidity_context"), dict) else {}
+        assert int(liq.get("sweeps_count") or 0) == 0
+        assert int(liq.get("matching_sweeps_count") or 0) == 0
+
+        trace = data.get("analysis_trace") if isinstance(data.get("analysis_trace"), dict) else {}
+        assert str(trace.get("stage") or "") == "no_sweep_weak_fvg"
+        blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+        assert "no_sweep_weak_fvg" in blockers
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_blocks_when_all_htf_anchors_are_too_distant(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
             current_bar=0,
             total_bars=1,
             initial_balance=10000.0,
@@ -456,7 +1592,7 @@ def test_run_mtf_analysis_derates_risk_when_ltf_is_exhausted(monkeypatch):
             strategy_id="_workbench",
             symbol="XAUUSD",
             timeframe="M15",
-            mode="live",
+            mode="replay",
             current_bar=0,
             total_bars=1,
             initial_balance=10000.0,
@@ -481,9 +1617,9 @@ def test_run_mtf_analysis_derates_risk_when_ltf_is_exhausted(monkeypatch):
                 rows.append(
                     {
                         "time": int(start + (i * step)),
-                        "open": round(px - 0.05, 5),
-                        "high": round(px + 0.20, 5),
-                        "low": round(px - 0.20, 5),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
                         "close": round(px, 5),
                         "volume": 100.0 + i,
                     }
@@ -494,6 +1630,38 @@ def test_run_mtf_analysis_derates_risk_when_ltf_is_exhausted(monkeypatch):
 
         def _fake_scan_exhausted(**kwargs):
             tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            # Return a strong sweep on M15 so the sweep gate passes
+            # and the exhaustion derate path is still exercised.
+            if tool_id == "liquidity":
+                zones = []
+                if tf == "M15":
+                    zones = [
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.0,
+                            "swept_price": 124.5,
+                            "rejection_ratio": 0.70,
+                            "rejection_quality": "strong",
+                            "bar_index": 316,
+                            "start_time_unix": 1700300000 + (315 * 900),
+                            "end_time_unix": 1700300000 + (316 * 900),
+                            "filled": False,
+                        }
+                    ]
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": zones,
+                        "count": len(zones),
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 58.0, "state": "steady", "gas_low": False},
+                        "current_state": {},
+                    },
+                }
             zones = []
             if tf == "D1":
                 zones = [{"type": "bullish_fvg", "top": 124.6, "bottom": 123.6, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
@@ -539,6 +1707,709 @@ def test_run_mtf_analysis_derates_risk_when_ltf_is_exhausted(monkeypatch):
         assert "money_per_price_unit_per_1lot" in calc_trace
         warnings = setup.get("warnings") if isinstance(setup.get("warnings"), list) else []
         assert any("Risk derated for exhausted movement" in str(w) for w in warnings)
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_blocks_on_weak_liquidity_sweep(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700350000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_with_weak_sweep(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                zones = []
+                if tf == "M15":
+                    zones = [
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.05,
+                            "swept_price": 124.7,
+                            "rejection_ratio": 0.20,
+                            "rejection_quality": "weak",
+                            "bar_index": 316,
+                            "start_time_unix": 1700350000 + (315 * 900),
+                            "end_time_unix": 1700350000 + (316 * 900),
+                            "filled": False,
+                        }
+                    ]
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": zones,
+                        "count": len(zones),
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": len(zones)},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.6, "bottom": 123.6, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.1, "bottom": 124.2, "gap_size": 0.9, "current_gap_size": 0.9, "mitigations": 0, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_with_weak_sweep)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is False
+        blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+        assert "weak_liquidity_sweep_rejection" in blockers
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_uses_sweep_extreme_for_stop_anchor(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700360000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_with_strong_sweep(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                zones = []
+                if tf == "M15":
+                    zones = [
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.05,
+                            "swept_price": 123.6,
+                            "rejection_ratio": 0.72,
+                            "rejection_quality": "strong",
+                            "bar_index": 316,
+                            "start_time_unix": 1700360000 + (315 * 900),
+                            "end_time_unix": 1700360000 + (316 * 900),
+                            "filled": False,
+                        }
+                    ]
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": zones,
+                        "count": len(zones),
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": len(zones)},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.6, "bottom": 123.6, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.1, "bottom": 124.2, "gap_size": 0.9, "current_gap_size": 0.9, "mitigations": 0, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_with_strong_sweep)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is True
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        assert float(setup.get("stop_loss") or 0.0) < 123.8
+        sweep_gate = setup.get("sweep_gate") if isinstance(setup.get("sweep_gate"), dict) else {}
+        assert bool(sweep_gate.get("passed")) is True
+        assert str(sweep_gate.get("reason") or "") == "sweep_confirmed"
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_prefers_stronger_sweep_over_merely_closer_one(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700365000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_with_competing_sweeps(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                zones = []
+                if tf == "M15":
+                    zones = [
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.05,
+                            "ref_price": 125.05,
+                            "pool_boundary": 124.85,
+                            "swept_price": 124.78,
+                            "rejection_ratio": 0.31,
+                            "rejection_quality": "moderate",
+                            "bar_index": 317,
+                            "start_time_unix": 1700365000 + (316 * 900),
+                            "end_time_unix": 1700365000 + (317 * 900),
+                            "filled": False,
+                        },
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.05,
+                            "ref_price": 125.05,
+                            "pool_boundary": 124.85,
+                            "swept_price": 124.45,
+                            "rejection_ratio": 0.85,
+                            "rejection_quality": "strong",
+                            "bar_index": 315,
+                            "start_time_unix": 1700365000 + (314 * 900),
+                            "end_time_unix": 1700365000 + (315 * 900),
+                            "filled": False,
+                        },
+                    ]
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": zones,
+                        "count": len(zones),
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": len(zones)},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.6, "bottom": 123.6, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.1, "bottom": 124.2, "gap_size": 0.9, "current_gap_size": 0.9, "mitigations": 0, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_with_competing_sweeps)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is True
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        sweep_gate = setup.get("sweep_gate") if isinstance(setup.get("sweep_gate"), dict) else {}
+        selected = sweep_gate.get("selected") if isinstance(sweep_gate.get("selected"), dict) else {}
+        assert str(selected.get("rejection_quality") or "") == "strong"
+        assert math.isclose(float(selected.get("swept_price") or 0.0), 124.45, rel_tol=1e-9, abs_tol=1e-9)
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_derates_risk_for_moderate_liquidity_sweep(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700367000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_with_moderate_sweep(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                zones = []
+                if tf == "M15":
+                    zones = [
+                        {
+                            "type": "liquidity_sweep_low",
+                            "liquidity_level": 125.05,
+                            "ref_price": 125.05,
+                            "pool_boundary": 124.85,
+                            "swept_price": 124.55,
+                            "rejection_ratio": 0.45,
+                            "rejection_quality": "moderate",
+                            "bar_index": 316,
+                            "start_time_unix": 1700367000 + (315 * 900),
+                            "end_time_unix": 1700367000 + (316 * 900),
+                            "filled": False,
+                        }
+                    ]
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": zones,
+                        "count": len(zones),
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": len(zones)},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.6, "bottom": 123.6, "gap_size": 1.0, "original_gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.1, "bottom": 124.2, "gap_size": 0.9, "original_gap_size": 0.9, "current_gap_size": 0.9, "mitigations": 0, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "original_gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_with_moderate_sweep)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is True
+        assert bool(data.get("manual_confirmation_required")) is True
+        warnings = data.get("confidence_warnings") if isinstance(data.get("confidence_warnings"), list) else []
+        assert "risk_derated_for_moderate_sweep" in warnings
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        assert bool(setup.get("risk_derated")) is True
+        assert math.isclose(float(setup.get("requested_risk_percent") or 0.0), 0.5, rel_tol=1e-9, abs_tol=1e-9)
+        assert math.isclose(float(setup.get("risk_percent") or 0.0), 0.375, rel_tol=1e-9, abs_tol=1e-9)
+        sweep_gate = setup.get("sweep_gate") if isinstance(setup.get("sweep_gate"), dict) else {}
+        assert str(sweep_gate.get("reason") or "") == "moderate_sweep_confirmed"
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_strict_gate_blocks_without_sweep(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700369000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_no_sweep_strong_anchor(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": [],
+                        "count": 0,
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": 0},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.9, "bottom": 123.8, "gap_size": 1.1, "original_gap_size": 1.1, "current_gap_size": 1.1, "mitigations": 0, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.05, "bottom": 124.15, "gap_size": 0.9, "original_gap_size": 0.9, "current_gap_size": 0.9, "mitigations": 0, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "original_gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_no_sweep_strong_anchor)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False, "liquidity_gate_mode": "strict"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is False
+        blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+        assert "strict_requires_liquidity_sweep" in blockers
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        sweep_gate = setup.get("sweep_gate") if isinstance(setup.get("sweep_gate"), dict) else {}
+        assert str(sweep_gate.get("mode") or "") == "strict"
+        assert str(sweep_gate.get("reason") or "") == "strict_requires_sweep"
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_blocks_no_sweep_when_fvg_quality_is_weak(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700371000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.50, 5),
+                        "high": round(px + 2.00, 5),
+                        "low": round(px - 2.00, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_no_sweep_weak_anchor(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            tool_id = str(kwargs.get("tool_id") or "").lower()
+            if tool_id == "liquidity":
+                return {
+                    "ok": True,
+                    "data": {
+                        "tool_id": "liquidity",
+                        "zones": [],
+                        "count": 0,
+                        "scan_source": "agent_live_fetch",
+                        "scan_timeframe": tf,
+                        "trend": {"direction": "bullish"},
+                        "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                        "current_state": {"sweeps_count": 0},
+                    },
+                }
+            zones = []
+            if tf == "D1":
+                zones = [{"type": "bullish_fvg", "top": 124.95, "bottom": 124.85, "gap_size": 0.10, "original_gap_size": 0.10, "current_gap_size": 0.01, "mitigations": 3, "filled": False}]
+            elif tf == "H4":
+                zones = [{"type": "bullish_fvg", "top": 125.00, "bottom": 124.90, "gap_size": 0.10, "original_gap_size": 0.10, "current_gap_size": 0.01, "mitigations": 3, "filled": False}]
+            elif tf == "M15":
+                zones = [{"type": "bullish_fvg", "top": 125.0, "bottom": 124.8, "gap_size": 0.2, "original_gap_size": 0.2, "current_gap_size": 0.2, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_no_sweep_weak_anchor)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert data.get("trigger_ready") is False
+        blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+        assert "no_sweep_weak_fvg" in blockers
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        fvg_quality = setup.get("fvg_quality") if isinstance(setup.get("fvg_quality"), dict) else {}
+        assert str(fvg_quality.get("label") or "") == "weak"
     finally:
         db.close()
 
@@ -816,6 +2687,14 @@ def test_agent_chat_request_max_tool_steps_guard():
         pass
 
 
+def test_agent_chat_request_allows_long_master_prompt():
+    req = sim_routes.AgentChatRequest(
+        message=("You are NexusTrader in MASTER mode. " * 300),
+        max_tool_steps=4,
+    )
+    assert len(str(req.message or "")) > 6000
+
+
 def test_agent_tool_state_route_rejects_oversized_payload():
     db = _db_session()
     try:
@@ -829,6 +2708,252 @@ def test_agent_tool_state_route_rejects_oversized_payload():
             assert False, "Expected HTTPException for oversized payload"
         except HTTPException as exc:
             assert int(exc.status_code) == 413
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_caps_extreme_rr_for_execution_realism(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700500000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.05, 5),
+                        "high": round(px + 0.20, 5),
+                        "low": round(px - 0.20, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan_far_structure_tp(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            if tf in {"D1", "H4"}:
+                zones = [{"type": "bullish_fvg", "top": 124.8, "bottom": 123.8, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            else:
+                zones = [
+                    {"type": "bullish_fvg", "top": 125.1, "bottom": 124.7, "gap_size": 0.4, "current_gap_size": 0.4, "mitigations": 0, "filled": False},
+                    {"type": "bearish_fvg", "top": 250.0, "bottom": 240.0, "gap_size": 10.0, "current_gap_size": 10.0, "mitigations": 0, "filled": False},
+                ]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan_far_structure_tp)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "risk_percent": 0.5, "rr_target": 2.0, "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+        assert float(setup.get("rr") or 0.0) <= 8.0
+        assert bool(setup.get("rr_capped")) is True
+        assert str(setup.get("tp_basis") or "") in {"structure_capped", "rr_capped"}
+        warns = data.get("confidence_warnings") if isinstance(data.get("confidence_warnings"), list) else []
+        assert "rr_capped_for_realism" in warns
+    finally:
+        db.close()
+
+
+def test_run_mtf_analysis_duplicate_check_requires_full_semantic_match(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        # Existing pending trigger with same entry/precondition but different cancel rule.
+        agent_row.last_snapshot_json = {
+            "agent_trade_triggers": [
+                {
+                    "id": "trg_existing",
+                    "status": "pending",
+                    "timeframe": "M15",
+                    "condition": "close_above",
+                    "trigger_price": 124.8,
+                    "precondition": {"condition": "close_below", "trigger_price": 124.8},
+                    "cancel_rule": {"condition": "close_below", "trigger_price": 120.0},
+                    "trade_args": {
+                        "direction": "BUY",
+                        "stop_loss": 119.0,
+                        "take_profit": 130.0,
+                        "lot_size": 0.01,
+                    },
+                }
+            ]
+        }
+        db.add(agent_row)
+        db.flush()
+
+        def _mk_bars(count=320, start=1700600000, step=900, base=120.0):
+            rows = []
+            px = float(base)
+            for i in range(count):
+                px = px + (0.03 if (i % 3) else -0.01)
+                rows.append(
+                    {
+                        "time": int(start + (i * step)),
+                        "open": round(px - 0.05, 5),
+                        "high": round(px + 0.20, 5),
+                        "low": round(px - 0.20, 5),
+                        "close": round(px, 5),
+                        "volume": 100.0 + i,
+                    }
+                )
+            return rows
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_mk_bars(), None))
+
+        def _fake_scan(**kwargs):
+            tf = str(kwargs.get("timeframe") or "").upper()
+            zones = [{"type": "bullish_fvg", "top": 124.8, "bottom": 123.8, "gap_size": 1.0, "current_gap_size": 1.0, "mitigations": 0, "filled": False}]
+            return {
+                "ok": True,
+                "data": {
+                    "tool_id": "fvg",
+                    "zones": zones,
+                    "count": len(zones),
+                    "scan_source": "agent_live_fetch",
+                    "scan_timeframe": tf,
+                    "trend": {"direction": "bullish"},
+                    "movement_strength": {"score": 64.0, "state": "steady", "gas_low": False},
+                    "current_state": {},
+                },
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_scan_tool_from_bars", _fake_scan)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True, "can_chat": True},
+            context_snapshot={"tool_state": {"market_context": {"symbol": "XAUUSD", "timeframe": "M15", "source": "mt5"}}},
+            tool_name="run_mtf_analysis",
+            args={"htf_timeframes": ["D1", "H4"], "execution_timeframe": "M15", "include_news": False},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+        assert "duplicate_pending_trigger" not in blockers
+        assert data.get("trigger_ready") is True
+    finally:
+        db.close()
+
+
+def test_watchdog_live_bar_fallback_from_provider(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSDm",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        class _Svc:
+            def get_recent_candles(self, **kwargs):
+                return [
+                    {"time_unix": 1772600000, "time": "2026-03-02T10:13:20+00:00", "open": 5200.0, "high": 5205.0, "low": 5198.0, "close": 5201.0, "volume": 10.0}
+                ]
+
+        monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _Svc())
+        out = AgentWatchdogService._live_bar_fallback_from_provider(
+            session=sim,
+            now=datetime.now(timezone.utc),
+        )
+        assert isinstance(out, dict)
+        assert int(out.get("time") or 0) == 1772600000
+        assert float(out.get("low") or 0.0) == 5198.0
+        assert int(out.get("asof_time") or 0) > 0
     finally:
         db.close()
 
@@ -1332,9 +3457,92 @@ def test_watchdog_price_below_precondition_uses_live_low_touch():
             agent=agent_row,
             session=sim,
             now=now_utc,
-            current_price=5189.35,  # sampled price is above level
-            closed_bar={"time": fresh_ts - 60, "close": 5189.35},
-            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+            current_price=5185.40,
+            closed_bar={"time": fresh_ts - 60, "close": 5185.40},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5185.90, "close": 5185.40},
+        )
+        assert isinstance(events, list)
+        assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+        pre = first.get("precondition") if isinstance(first.get("precondition"), dict) else {}
+        assert abs(float(pre.get("hit_price")) - 5184.58) < 1e-9
+    finally:
+        db.close()
+
+
+def test_watchdog_sweep_below_precondition_arms_on_live_rejection():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5200.0,
+                "precondition": {"condition": "sweep_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5187.20,
+            closed_bar={"time": fresh_ts - 60, "close": 5187.20},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5188.10, "close": 5187.20},
         )
         assert isinstance(events, list)
         assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
@@ -1427,6 +3635,1308 @@ def test_watchdog_does_not_arm_price_precondition_from_stale_live_bar():
         first = rows[0]
         assert str(first.get("status") or "").lower() == "pending"
         assert str(first.get("state") or "").lower() == "waiting_precondition"
+    finally:
+        db.close()
+
+
+def test_watchdog_reclaim_close_precondition_arms_on_live_touch_fallback():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "close_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        # Closed-bar close is above precondition level (strict close_below would miss),
+        # but live low touched below level and should arm reclaim precondition.
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5185.40,
+            closed_bar={"time": fresh_ts - 60, "close": 5189.35},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5185.90, "close": 5185.40},
+        )
+        assert isinstance(events, list)
+        assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+        pre = first.get("precondition") if isinstance(first.get("precondition"), dict) else {}
+        assert abs(float(pre.get("hit_price")) - 5184.58) < 1e-9
+    finally:
+        db.close()
+
+
+def test_schedule_trade_entry_marks_reclaim_triggers_for_touch_execution():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+        trigger = out.get("data", {}).get("trigger") if isinstance(out.get("data"), dict) else {}
+        assert str(trigger.get("entry_evaluation_mode") or "") == "reclaim_touch"
+    finally:
+        db.close()
+
+
+def test_watchdog_reclaim_executes_same_scan_on_live_touch_after_precondition():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5189.35,
+            closed_bar={"time": fresh_ts - 60, "close": 5183.20},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+        )
+        event_types = {str(getattr(e, "event_type", "")).upper() for e in events}
+        assert "WATCHDOG_ENTRY_STAGE_ADVANCED" in event_types
+        assert "WATCHDOG_ENTRY_EXECUTED" in event_types
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "executed"
+        assert abs(float(first.get("executed_price")) - 5190.10) < 1e-9
+    finally:
+        db.close()
+
+
+def test_watchdog_dynamic_stop_from_precondition_hit_price_is_applied_on_execution():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_below",
+                "trigger_price": 5103.0,
+                "precondition": {"condition": "sweep_above", "trigger_price": 5109.0},
+                "direction": "SELL",
+                "stop_loss": 5110.0,
+                "take_profit": 5082.0,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+                "dynamic_stop_from_precondition": True,
+                "dynamic_stop_buffer_points": 0.5,
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        captured = {}
+        orig_exec = sim_routes._agent_execute_tool
+
+        def _fake_exec(**kwargs):
+            if str(kwargs.get("tool_name") or "") == "place_trade":
+                captured["args"] = dict(kwargs.get("args") or {})
+                return {"ok": True, "data": {"id": 777, "direction": "SELL", "stop_loss": captured["args"].get("stop_loss")}}
+            return orig_exec(**kwargs)
+
+        sim_routes._agent_execute_tool = _fake_exec  # type: ignore[assignment]
+        try:
+            svc = AgentWatchdogService()
+            now_utc = datetime.now(timezone.utc)
+            fresh_ts = int(now_utc.timestamp())
+            events = svc._process_entry_triggers(
+                db=db,
+                agent=agent_row,
+                session=sim,
+                now=now_utc,
+                current_price=5103.0,
+                closed_bar={"time": fresh_ts - 60, "close": 5104.0},
+                current_live_bar={"time": fresh_ts, "low": 5102.0, "high": 5111.0, "close": 5103.0},
+            )
+        finally:
+            sim_routes._agent_execute_tool = orig_exec  # type: ignore[assignment]
+
+        assert "args" in captured
+        # precondition hit at high=5111.0, SELL dynamic stop should resolve to high+0.5 => 5111.5
+        assert abs(float(captured["args"].get("stop_loss")) - 5111.5) < 1e-9
+        event_types = {str(getattr(e, "event_type", "")).upper() for e in events}
+        assert "WATCHDOG_ENTRY_EXECUTED" in event_types
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        dyn = first.get("dynamic_stop") if isinstance(first.get("dynamic_stop"), dict) else {}
+        assert abs(float(dyn.get("resolved_stop_loss") or 0.0) - 5111.5) < 1e-9
+        assert abs(float(dyn.get("from_precondition_hit_price") or 0.0) - 5111.0) < 1e-9
+    finally:
+        db.close()
+
+
+def test_watchdog_non_reclaim_close_entry_still_waits_for_closed_bar():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5184.50,
+            closed_bar={"time": fresh_ts - 60, "close": 5184.50},
+            current_live_bar={"time": fresh_ts, "low": 5180.00, "high": 5190.10, "close": 5184.50},
+        )
+        assert isinstance(events, list)
+        assert not any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_EXECUTED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+    finally:
+        db.close()
+
+
+def test_agent_tool_state_live_tick_executes_reclaim_trigger_immediately(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        monkeypatch.setattr(sim_routes, "get_agent_watchdog_service", lambda: svc)
+
+        req = sim_routes.CopilotToolStateRequest(
+            event_type="LIVE_TICK",
+            severity="info",
+            tool_state={
+                "live_stream": {"bar_index": 12, "total_bars": 120, "pushed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000)},
+                "live_bar": {
+                    "time": int(datetime.now(timezone.utc).timestamp()),
+                    "open": 5188.20,
+                    "high": 5190.10,
+                    "low": 5184.58,
+                    "close": 5189.35,
+                    "volume": 100.0,
+                },
+            },
+        )
+        route_out = sim_routes.workbench_agent_tool_state(session_id=int(sim.id), req=req, db=db)
+        tick_info = route_out.get("live_tick_trigger") if isinstance(route_out, dict) else {}
+        assert isinstance(tick_info, dict)
+        assert tick_info.get("ok") is True
+        assert "WATCHDOG_ENTRY_EXECUTED" in set(tick_info.get("trigger_event_types") or [])
+
+        agent_row = db.query(WorkbenchAgentSessionModel).filter(WorkbenchAgentSessionModel.simulation_session_id == int(sim.id)).first()
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "executed"
+        assert abs(float(first.get("executed_price")) - 5190.10) < 1e-9
+    finally:
+        db.close()
+
+
+def test_agent_tool_state_live_tick_keeps_close_only_trigger_pending_intrabar(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        monkeypatch.setattr(sim_routes, "get_agent_watchdog_service", lambda: svc)
+
+        req = sim_routes.CopilotToolStateRequest(
+            event_type="LIVE_TICK",
+            severity="info",
+            tool_state={
+                "live_stream": {"bar_index": 12, "total_bars": 120, "pushed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000)},
+                "live_bar": {
+                    "time": int(datetime.now(timezone.utc).timestamp()),
+                    "open": 5188.20,
+                    "high": 5190.10,
+                    "low": 5180.00,
+                    "close": 5184.50,
+                    "volume": 100.0,
+                },
+            },
+        )
+        route_out = sim_routes.workbench_agent_tool_state(session_id=int(sim.id), req=req, db=db)
+        tick_info = route_out.get("live_tick_trigger") if isinstance(route_out, dict) else {}
+        assert isinstance(tick_info, dict)
+        assert tick_info.get("ok") is True
+        assert "WATCHDOG_ENTRY_EXECUTED" not in set(tick_info.get("trigger_event_types") or [])
+
+        agent_row = db.query(WorkbenchAgentSessionModel).filter(WorkbenchAgentSessionModel.simulation_session_id == int(sim.id)).first()
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+    finally:
+        db.close()
+
+
+def test_watchdog_normalizes_legacy_reclaim_condition_aliases():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        legacy = dict(rows[0])
+        legacy["condition"] = "above_close"
+        legacy["entry_evaluation_mode"] = None
+        pre = legacy.get("precondition") if isinstance(legacy.get("precondition"), dict) else {}
+        pre["condition"] = "cross_below"
+        legacy["precondition"] = pre
+        snap = agent_row.last_snapshot_json if isinstance(agent_row.last_snapshot_json, dict) else {}
+        snap = dict(snap)
+        snap["agent_trade_triggers"] = [legacy]
+        agent_row.last_snapshot_json = snap
+        db.add(agent_row)
+        db.commit()
+        db.refresh(agent_row)
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5189.35,
+            closed_bar={"time": fresh_ts - 60, "close": 5183.20},
+            current_live_bar={"time": fresh_ts, "low": 5184.58, "high": 5190.10, "close": 5189.35},
+        )
+        event_types = {str(getattr(e, "event_type", "")).upper() for e in events}
+        assert "WATCHDOG_ENTRY_EXECUTED" in event_types
+    finally:
+        db.close()
+
+
+def test_agent_tool_state_live_tick_cancel_rule_wins_over_entry(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "cancel_rule": {"condition": "price_below", "trigger_price": 5185.50},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        monkeypatch.setattr(sim_routes, "get_agent_watchdog_service", lambda: svc)
+        req = sim_routes.CopilotToolStateRequest(
+            event_type="LIVE_TICK",
+            severity="info",
+            tool_state={
+                "live_stream": {"bar_index": 12, "total_bars": 120, "pushed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000)},
+                "live_bar": {
+                    "time": int(datetime.now(timezone.utc).timestamp()),
+                    "open": 5188.20,
+                    "high": 5190.10,
+                    "low": 5184.58,
+                    "close": 5189.35,
+                    "volume": 100.0,
+                },
+            },
+        )
+        route_out = sim_routes.workbench_agent_tool_state(session_id=int(sim.id), req=req, db=db)
+        tick_info = route_out.get("live_tick_trigger") if isinstance(route_out, dict) else {}
+        assert isinstance(tick_info, dict)
+        assert "WATCHDOG_ENTRY_CANCELED" in set(tick_info.get("trigger_event_types") or [])
+
+        agent_row = db.query(WorkbenchAgentSessionModel).filter(WorkbenchAgentSessionModel.simulation_session_id == int(sim.id)).first()
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "canceled"
+        assert str(first.get("cancel_reason") or "") == "cancel_rule_hit"
+    finally:
+        db.close()
+
+
+def test_process_live_tick_rejects_stale_live_bar_for_touch_evaluation():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={
+                "agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False},
+                "watchdog_live_bar_max_age_sec": 120.0,
+            },
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "price_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        now_utc = datetime.now(timezone.utc)
+        stale_ts = int((now_utc - timedelta(minutes=5)).timestamp())
+        svc = AgentWatchdogService()
+        tick_out = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={
+                "time": stale_ts,
+                "open": 5188.20,
+                "high": 5190.10,
+                "low": 5184.58,
+                "close": 5189.35,
+                "volume": 100.0,
+            },
+            now=now_utc,
+            auto_commit=False,
+        )
+        assert tick_out.get("ok") is True
+        assert int(tick_out.get("trigger_events_count") or 0) == 0
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending"
+        assert str(first.get("state") or "").lower() == "waiting_entry"
+    finally:
+        db.close()
+
+
+def test_agent_tool_state_live_tick_preserves_requires_approval_without_copilot(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": True}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "price_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        monkeypatch.setattr(sim_routes, "get_agent_watchdog_service", lambda: svc)
+        req = sim_routes.CopilotToolStateRequest(
+            event_type="LIVE_TICK",
+            severity="info",
+            tool_state={
+                "live_stream": {"bar_index": 12, "total_bars": 120, "pushed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000)},
+                "live_bar": {
+                    "time": int(datetime.now(timezone.utc).timestamp()),
+                    "open": 5188.20,
+                    "high": 5190.10,
+                    "low": 5184.58,
+                    "close": 5189.35,
+                    "volume": 100.0,
+                },
+            },
+        )
+        route_out = sim_routes.workbench_agent_tool_state(session_id=int(sim.id), req=req, db=db)
+        tick_info = route_out.get("live_tick_trigger") if isinstance(route_out, dict) else {}
+        assert isinstance(tick_info, dict)
+        assert "WATCHDOG_ENTRY_PENDING" in set(tick_info.get("trigger_event_types") or [])
+
+        agent_row = db.query(WorkbenchAgentSessionModel).filter(WorkbenchAgentSessionModel.simulation_session_id == int(sim.id)).first()
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending_approval"
+    finally:
+        db.close()
+
+
+def test_agent_tool_state_live_tick_executes_reverse_reclaim_short(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_below",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_above", "trigger_price": 5186.83},
+                "direction": "SELL",
+                "stop_loss": 5192.10,
+                "take_profit": 5148.16,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        monkeypatch.setattr(sim_routes, "get_agent_watchdog_service", lambda: svc)
+        req = sim_routes.CopilotToolStateRequest(
+            event_type="LIVE_TICK",
+            severity="info",
+            tool_state={
+                "live_stream": {"bar_index": 18, "total_bars": 120, "pushed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000)},
+                "live_bar": {
+                    "time": int(datetime.now(timezone.utc).timestamp()),
+                    "open": 5187.90,
+                    "high": 5189.60,
+                    "low": 5184.20,
+                    "close": 5185.10,
+                    "volume": 120.0,
+                },
+            },
+        )
+        route_out = sim_routes.workbench_agent_tool_state(session_id=int(sim.id), req=req, db=db)
+        tick_info = route_out.get("live_tick_trigger") if isinstance(route_out, dict) else {}
+        assert "WATCHDOG_ENTRY_EXECUTED" in set(tick_info.get("trigger_event_types") or [])
+
+        agent_row = db.query(WorkbenchAgentSessionModel).filter(WorkbenchAgentSessionModel.simulation_session_id == int(sim.id)).first()
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "executed"
+        assert str(first.get("condition") or "").lower() == "close_below"
+    finally:
+        db.close()
+
+
+def test_process_live_tick_executes_multiple_triggers_in_one_pass():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": True}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        for trigger_price in (5186.83, 5187.40):
+            out = sim_routes._agent_execute_tool(
+                session=sim,
+                db=db,
+                permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+                context_snapshot={},
+                tool_name="schedule_trade_entry",
+                args={
+                    "condition": "price_above",
+                    "trigger_price": trigger_price,
+                    "direction": "BUY",
+                    "stop_loss": 5148.16,
+                    "take_profit": 5226.77,
+                    "lot_size": 0.01,
+                    "timeframe": "M15",
+                },
+                atomic=True,
+            )
+            assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        tick_out = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={
+                "time": int(datetime.now(timezone.utc).timestamp()),
+                "open": 5185.10,
+                "high": 5190.25,
+                "low": 5184.90,
+                "close": 5189.35,
+                "volume": 140.0,
+            },
+            auto_commit=False,
+        )
+        assert tick_out.get("ok") is True
+        assert int(tick_out.get("trigger_events_count") or 0) == 2
+        event_types = list(tick_out.get("trigger_event_types") or [])
+        assert event_types.count("WATCHDOG_ENTRY_PENDING") == 2
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 2
+        pending = [r for r in rows if str(r.get("status") or "").lower() == "pending_approval"]
+        assert len(pending) == 2
+    finally:
+        db.close()
+
+
+def test_process_live_tick_uses_latest_same_bar_close_for_next_closed_bar():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        first = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={"time": 100, "open": 5184.0, "high": 5186.0, "low": 5183.5, "close": 5185.0, "volume": 10.0},
+            auto_commit=False,
+        )
+        second = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={"time": 100, "open": 5184.0, "high": 5188.2, "low": 5183.2, "close": 5187.5, "volume": 12.0},
+            auto_commit=False,
+        )
+        third = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={"time": 200, "open": 5187.1, "high": 5188.0, "low": 5186.4, "close": 5187.0, "volume": 9.0},
+            auto_commit=False,
+        )
+        assert first.get("ok") is True
+        assert second.get("ok") is True
+        assert third.get("ok") is True
+        assert bool(third.get("closed_bar_used")) is True
+        assert "WATCHDOG_ENTRY_EXECUTED" in set(third.get("trigger_event_types") or [])
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first_row = rows[0]
+        assert str(first_row.get("status") or "").lower() == "executed"
+    finally:
+        db.close()
+
+
+def test_watchdog_uses_asof_time_for_live_bar_freshness():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5186.83,
+                "precondition": {"condition": "price_below", "trigger_price": 5186.83},
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        now_utc = datetime.now(timezone.utc)
+        fresh_ts = int(now_utc.timestamp())
+        stale_bar_ts = int((now_utc - timedelta(minutes=30)).timestamp())
+
+        svc = AgentWatchdogService()
+        events = svc._process_entry_triggers(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            now=now_utc,
+            current_price=5185.40,
+            closed_bar={"time": stale_bar_ts - 60, "close": 5185.40},
+            current_live_bar={
+                "time": stale_bar_ts,  # old bar-open timestamp (M15/H1 can be old)
+                "asof_time": fresh_ts,  # fresh feed update timestamp
+                "low": 5184.58,
+                "high": 5185.90,
+                "close": 5185.40,
+            },
+            live_bar_max_age_sec=120.0,
+        )
+        assert isinstance(events, list)
+        assert any(str(getattr(e, "event_type", "")).upper() == "WATCHDOG_ENTRY_STAGE_ADVANCED" for e in events)
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("state") or "").lower() == "waiting_entry"
     finally:
         db.close()
 
@@ -2146,6 +5656,93 @@ def test_schedule_trade_entry_can_require_recent_mtf_proposal(monkeypatch):
                 "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
             },
             tool_config={"require_mtf_proposal_before_schedule": True},
+            atomic=True,
+        )
+        assert out.get("ok") is False
+        assert str(out.get("error") or "") == "missing_mtf_proposal_for_schedule"
+    finally:
+        db.close()
+
+
+def test_schedule_trade_entry_requires_matching_profile_parent_proposal():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True},
+            config={},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        classic_setup = {
+            "direction": "BUY",
+            "condition": {"condition": "close_above", "trigger_price": 5154.37},
+            "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+            "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            "stop_loss": 5144.293,
+            "take_profit": 5271.904,
+            "lot_size": 0.01,
+            "timeframe": "M15",
+            "expires_sec": 21600,
+        }
+        ctx = {
+            "tool_state": {
+                "mtf_analysis": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "best_setup": classic_setup,
+                }
+            }
+        }
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot=ctx,
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "close_above",
+                "trigger_price": 5154.37,
+                "direction": "BUY",
+                "stop_loss": 5144.293,
+                "take_profit": 5271.904,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+                "expires_sec": 21600,
+                "precondition": {"condition": "close_below", "trigger_price": 5154.37},
+                "cancel_rule": {"condition": "close_below", "trigger_price": 5148.16},
+            },
+            tool_config={
+                "agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2",
+                "require_mtf_proposal_before_schedule": True,
+            },
             atomic=True,
         )
         assert out.get("ok") is False

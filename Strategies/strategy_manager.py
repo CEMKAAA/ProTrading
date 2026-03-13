@@ -55,6 +55,10 @@ STRATEGY_PATHS = {
         "main": _STRATEGIES_DIR / "KeltnerBreakoutStrategy" / "main.py",
         "state": _DATA_DIR / "keltner_breakout_state.json",
     },
+    "htf_fvg_liquidity_reclaim_strategy": {
+        "main": _STRATEGIES_DIR / "HTFFVGLiquidityReclaimStrategy" / "main.py",
+        "state": _DATA_DIR / "htf_fvg_liquidity_reclaim_strategy_state.json",
+    },
     # === ML wrapper strategies (each needs its OWN state file) ===
     "orb_ml_strategy": {
         "main": _STRATEGIES_DIR / "MLWrapper" / "orb_ml_main.py",
@@ -654,6 +658,7 @@ class StrategyManager:
             ("Strategies.LiquiditySweepStrategy", "LiquiditySweepLiveStrategy"),
             ("Strategies.VWAPReversionStrategy", "VWAPReversionLiveStrategy"),
             ("Strategies.KeltnerBreakoutStrategy", "KeltnerBreakoutLiveStrategy"),
+            ("Strategies.HTFFVGLiquidityReclaimStrategy", "HTFFVGLiquidityReclaimLiveStrategy"),
             ("Strategies.BBSqueezeStrategy", "BBSqueezeLiveStrategy"),
         ]
 

@@ -550,6 +550,11 @@ class LiveStatus(BaseModel):
     """Schema for live bot status"""
     is_connected: bool = False
     is_trading: bool = False
+    is_running: bool = False
+    mt5_available: bool = False
+    symbol_requested: Optional[str] = None
+    symbol_resolved: Optional[str] = None
+    active_strategy: Optional[str] = None
     current_time_ny: Optional[datetime] = None
     current_price: Optional[float] = None
     spread: Optional[float] = None
@@ -571,6 +576,8 @@ class LiveStatus(BaseModel):
     balance: float = 0.0
     equity: float = 0.0
     margin_level: Optional[float] = None
+    strategy_diagnostics: Dict[str, Any] = Field(default_factory=dict)
+    running_strategies: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ========================== Chart Data Schemas ==========================

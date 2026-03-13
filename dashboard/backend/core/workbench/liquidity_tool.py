@@ -8,54 +8,11 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .tool_base import WorkbenchTool
-
-
-STRICTNESS_TOLERANCE_MULTIPLIER: Dict[int, float] = {
-    1: 1.50,
-    2: 1.25,
-    3: 1.00,
-    4: 0.80,
-    5: 0.65,
-}
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
+from .analysis_utils import detect_liquidity_zones, symbol_tick_size
 
 
 def _symbol_tick_size(symbol: str) -> float:
-    s = str(symbol or "").upper()
-    if s in {"XAUUSD"}:
-        return 0.05
-    if s in {"US500", "NAS100"}:
-        return 0.25
-    if s.endswith("USD") and (s.startswith("EUR") or s.startswith("GBP")):
-        return 0.0001
-    return 0.01
-
-
-def _ts_iso(ts: Any) -> str:
-    try:
-        return pd.Timestamp(ts).isoformat()
-    except Exception:
-        return ""
-
-
-def _ts_unix(ts: Any) -> int:
-    try:
-        return int(pd.Timestamp(ts).timestamp())
-    except Exception:
-        return 0
+    return symbol_tick_size(symbol)
 
 
 class LiquidityTool(WorkbenchTool):
@@ -179,103 +136,7 @@ class LiquidityTool(WorkbenchTool):
         return out
 
     def scan(self, df: pd.DataFrame, config: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if df is None or len(df) < 20:
-            return []
-        if not {"open", "high", "low", "close"}.issubset(set(df.columns)):
-            return []
-
-        strictness = self.normalize_strictness(config.get("strictness"), 3)
-        lookback_bars = max(30, min(5000, _safe_int(config.get("lookback_bars"), 420)))
-        work = df.tail(lookback_bars).copy()
-        highs = [float(x) for x in work["high"].astype(float).tolist()]
-        lows = [float(x) for x in work["low"].astype(float).tolist()]
-        closes = [float(x) for x in work["close"].astype(float).tolist()]
-        index_vals = list(work.index)
-        n = len(work)
-        if n < 20:
-            return []
-
-        pivot_span_default = 2 + (strictness // 2)
-        pivot_span = max(1, min(12, _safe_int(config.get("pivot_span"), pivot_span_default)))
-        min_touches = max(2, min(6, _safe_int(config.get("min_touches"), 2)))
-        sweep_lookahead = max(5, min(500, _safe_int(config.get("sweep_lookahead"), 120)))
-        atr_mult = max(0.02, min(2.0, _safe_float(config.get("tolerance_atr_mult"), 0.12)))
-        atr = self._atr14(work)
-        tick = _symbol_tick_size(str(config.get("symbol") or ""))
-        tol = max(float(tick), float((atr or tick) * atr_mult * STRICTNESS_TOLERANCE_MULTIPLIER.get(strictness, 1.0)))
-
-        high_pivots = self._pivot_indices(highs, pivot_span, is_high=True)
-        low_pivots = self._pivot_indices(lows, pivot_span, is_high=False)
-
-        high_clusters = self._cluster_by_tolerance(highs, high_pivots, tol, min_touches)
-        low_clusters = self._cluster_by_tolerance(lows, low_pivots, tol, min_touches)
-
-        zones: List[Dict[str, Any]] = []
-
-        def _append_pool(cluster: Dict[str, Any], *, is_high: bool) -> None:
-            idx_min = int(min(cluster["indices"]))
-            idx_max = int(max(cluster["indices"]))
-            ref = float(cluster["ref_price"])
-            z_top = float(cluster["price_max"] + tol * 0.35)
-            z_bottom = float(cluster["price_min"] - tol * 0.35)
-            ztype = "liquidity_pool_high" if is_high else "liquidity_pool_low"
-            zones.append(
-                {
-                    "type": ztype,
-                    "top": z_top,
-                    "bottom": z_bottom,
-                    "liquidity_level": ref,
-                    "touches": int(cluster["touches"]),
-                    "bar_index": int(idx_max),
-                    "start_time": _ts_iso(index_vals[idx_min]),
-                    "end_time": _ts_iso(index_vals[idx_max]),
-                    "start_time_unix": _ts_unix(index_vals[idx_min]),
-                    "end_time_unix": _ts_unix(index_vals[idx_max]),
-                    "filled": False,
-                }
-            )
-
-            sweep_end = min(n, idx_max + 1 + sweep_lookahead)
-            sweep_idx = None
-            sweep_price = None
-            if is_high:
-                for j in range(idx_max + 1, sweep_end):
-                    if highs[j] > z_top and closes[j] < ref:
-                        sweep_idx = j
-                        sweep_price = highs[j]
-                        break
-            else:
-                for j in range(idx_max + 1, sweep_end):
-                    if lows[j] < z_bottom and closes[j] > ref:
-                        sweep_idx = j
-                        sweep_price = lows[j]
-                        break
-            if sweep_idx is None:
-                return
-            zones.append(
-                {
-                    "type": "liquidity_sweep_high" if is_high else "liquidity_sweep_low",
-                    "top": float(max(ref, float(sweep_price or ref))),
-                    "bottom": float(min(ref, float(sweep_price or ref))),
-                    "liquidity_level": ref,
-                    "swept_price": float(sweep_price or ref),
-                    "swept_pool_touches": int(cluster["touches"]),
-                    "bar_index": int(sweep_idx),
-                    "start_time": _ts_iso(index_vals[idx_max]),
-                    "end_time": _ts_iso(index_vals[sweep_idx]),
-                    "start_time_unix": _ts_unix(index_vals[idx_max]),
-                    "end_time_unix": _ts_unix(index_vals[sweep_idx]),
-                    "filled": False,
-                }
-            )
-
-        for row in high_clusters:
-            _append_pool(row, is_high=True)
-        for row in low_clusters:
-            _append_pool(row, is_high=False)
-
-        zones.sort(key=lambda z: int(z.get("end_time_unix") or 0))
-        return zones[-200:]
+        return detect_liquidity_zones(df=df, config=config)
 
     def compute_current_state(self, df: pd.DataFrame, config: Dict[str, Any]) -> Dict[str, Any]:
         zones = self.scan(df, config)

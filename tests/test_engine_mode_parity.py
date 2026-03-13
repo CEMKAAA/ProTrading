@@ -77,6 +77,20 @@ class DeterministicSingleTradeStrategy(BacktestStrategy):
         )
 
 
+class ExecutionOpenProbeStrategy(BacktestStrategy):
+    def __init__(self, config):
+        super().__init__(config)
+        self.captured_execution_open = None
+
+    def initialize_day(self, date, daily_df, intraday_df):
+        return DayContext(date=date, bias="neutral", bias_strength=0, atr=1.0)
+
+    def find_setup(self, bar, df, day_context, current_bar_index):
+        if self.captured_execution_open is None:
+            self.captured_execution_open = (day_context.levels or {}).get("execution_open")
+        return None
+
+
 def _build_test_data():
     idx = pd.date_range("2024-01-02 09:30", periods=8, freq="15min", tz="America/New_York")
     df = pd.DataFrame(
@@ -152,3 +166,24 @@ def test_legacy_and_advanced_engines_produce_same_result_on_deterministic_setup(
     assert legacy_results["trades"][0]["direction"] == advanced_results["trades"][0]["direction"]
     assert legacy_results["trades"][0]["exit_reason"] == advanced_results["trades"][0]["exit_reason"]
     assert legacy_results["trades"][0]["profit_loss"] == advanced_results["trades"][0]["profit_loss"]
+
+
+def test_non_orb_strategies_receive_next_bar_open_in_both_engines():
+    df, daily = _build_test_data()
+    legacy_cfg = _base_config()
+    advanced_cfg = replace(legacy_cfg)
+
+    legacy_strategy = ExecutionOpenProbeStrategy({})
+    advanced_strategy = ExecutionOpenProbeStrategy({})
+    legacy_engine = BacktestEngine(legacy_cfg, strategy=legacy_strategy)
+    advanced_engine = AdvancedEventBacktestEngine(
+        advanced_cfg, strategy=advanced_strategy
+    )
+    legacy_engine.data_provider = StubHistoricalDataProvider(df, daily)
+    advanced_engine.data_provider = StubHistoricalDataProvider(df, daily)
+
+    legacy_engine.run()
+    advanced_engine.run()
+
+    assert legacy_strategy.captured_execution_open == 101.0
+    assert advanced_strategy.captured_execution_open == 101.0

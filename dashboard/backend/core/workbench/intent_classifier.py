@@ -16,7 +16,7 @@ TOOL_INTENT_MAP: Dict[str, List[str]] = {
     "market_query": ["get_market_snapshot", "get_indicator_values"],
     "position_query": ["get_positions_detail", "close_trade"],
     "trade_action": ["place_trade", "schedule_trade_entry", "cancel_scheduled_entry", "get_market_snapshot"],
-    "analysis": ["run_mtf_analysis", "scan_tool", "scan_draw_fvg_range", "get_market_snapshot", "get_indicator_values"],
+    "analysis": ["run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "scan_tool", "scan_draw_fvg_range", "get_market_snapshot", "get_indicator_values"],
     "news_query": ["get_market_news", "get_market_snapshot"],
     "research": ["run_research_optimize", "run_ml_diagnostic"],
     "memory": ["search_memory", "save_memory_note"],
@@ -25,7 +25,7 @@ TOOL_INTENT_MAP: Dict[str, List[str]] = {
     "identity": ["set_agent_personality"],
     # Continuation/retry gets broad access so "try again" doesn't lose tools.
     "continuation": [
-        "run_mtf_analysis", "scan_tool", "scan_draw_fvg_range",
+        "run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "scan_tool", "scan_draw_fvg_range",
         "get_market_snapshot", "get_indicator_values", "get_positions_detail",
         "schedule_trade_entry", "cancel_scheduled_entry", "get_scheduled_triggers",
         "get_market_news", "place_trade", "close_trade",
@@ -37,6 +37,7 @@ EXPLICIT_TOOL_NAMES: Set[str] = {
     "scan_tool",
     "scan_draw_fvg_range",
     "run_mtf_analysis",
+    "run_htf_fvg_liquidity_reclaim_analysis",
     "get_market_snapshot",
     "get_positions_detail",
     "get_indicator_values",
