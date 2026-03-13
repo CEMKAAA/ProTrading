@@ -332,13 +332,18 @@ class HTFFVGLiquidityReclaimStrategy(BacktestStrategy):
 
     def _timeframe_rule(self, timeframe: str) -> str:
         tf = str(timeframe or "").strip().upper()
-        if tf.startswith("M"):
-            return f"{max(1, int(tf[1:]))}min"
-        if tf.startswith("H"):
-            return f"{max(1, int(tf[1:]))}h"
+        try:
+            if tf.startswith("M") and len(tf) > 1:
+                return f"{max(1, int(tf[1:]))}min"
+            if tf.startswith("H") and len(tf) > 1:
+                return f"{max(1, int(tf[1:]))}h"
+        except (ValueError, TypeError):
+            pass
         if tf in {"D", "D1"}:
             return "1D"
-        return "4h"
+        # Invalid or unparseable timeframe falls back to execution TF.
+        base_min = timeframe_to_minutes(self.config.get("timeframe"), 15)
+        return f"{max(1, int(base_min))}min"
 
     def _scan_htf_fvgs_detailed(self, df: pd.DataFrame, atr: float) -> Dict[str, Any]:
         out: List[Dict[str, Any]] = []
@@ -463,7 +468,7 @@ class HTFFVGLiquidityReclaimStrategy(BacktestStrategy):
             df,
             {
                 "symbol": self.config.get("symbol"),
-                "strictness": 3,
+                "strictness": int(self.config.get("liquidity_strictness", 3)),
                 "pivot_span": int(self.config.get("ltf_pool_pivot_span", 3)),
                 "min_touches": int(self.config.get("min_pool_touches", 2)),
                 "lookback_bars": int(self.config.get("ltf_pool_lookback_bars", 420)),

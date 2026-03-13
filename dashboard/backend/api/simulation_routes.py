@@ -4824,13 +4824,24 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
 
     engine = _get_or_create_engine(session, db)
 
-    # Check for existing open position
+    # Check for existing open positions (session-configurable cap).
     open_count = db.query(SimulationTrade).filter(
         SimulationTrade.session_id == session_id,
         SimulationTrade.status == "open",
     ).count()
-    if open_count > 0:
-        raise HTTPException(400, "Already have an open position. Close it first.")
+    sess_cfg = _session_config_dict(session)
+    try:
+        max_open_positions = int(sess_cfg.get("max_open_positions_per_session") or 1)
+    except Exception:
+        max_open_positions = 1
+    max_open_positions = max(1, min(20, int(max_open_positions)))
+    if int(open_count) >= int(max_open_positions):
+        if int(max_open_positions) == 1:
+            raise HTTPException(400, "Already have an open position. Close it first.")
+        raise HTTPException(
+            400,
+            f"Max open positions reached ({int(open_count)}/{int(max_open_positions)}).",
+        )
 
     if req.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "Direction must be BUY or SELL")
@@ -6960,6 +6971,35 @@ def _agent_schedule_mismatch_report(
     return mismatches
 
 
+def _agent_schedule_price_tolerance(
+    *,
+    best_setup: Dict[str, Any],
+    inst,
+    effective_cfg: Dict[str, Any],
+) -> float:
+    """Compute schedule/proposal price tolerance in price units.
+
+    Default is intentionally wider than 2 ticks to avoid false mismatches on
+    fast symbols (e.g. XAUUSD) between analysis and schedule calls.
+    """
+    try:
+        ticks = int(effective_cfg.get("schedule_match_price_tol_ticks") or 8)
+    except Exception:
+        ticks = 8
+    ticks = max(1, min(100, int(ticks)))
+    tol = max(float(inst.point_value) * float(ticks), 1e-5)
+
+    abs_tol_cfg = _to_float_or_none(effective_cfg.get("schedule_match_price_tol_abs"))
+    if abs_tol_cfg is not None and math.isfinite(float(abs_tol_cfg)) and float(abs_tol_cfg) > 0:
+        tol = max(float(tol), float(abs_tol_cfg))
+
+    risk_distance = _to_float_or_none(best_setup.get("risk_distance"))
+    if risk_distance is not None and math.isfinite(float(risk_distance)) and float(risk_distance) > 0:
+        # Keep tolerance proportional to setup scale, but conservative.
+        tol = max(float(tol), float(risk_distance) * 0.01)
+    return float(max(1e-5, tol))
+
+
 def _agent_effective_max_tool_steps(provider_name: Any, requested_steps: Any) -> int:
     try:
         n = int(requested_steps)
@@ -8897,7 +8937,37 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
     current_price = _to_float_or_none(execution_bar.get("close"))
     execution_open = _to_float_or_none(execution_bar.get("open"))
     inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
-    atr_val = _to_float_or_none(day_context.atr) or _to_float_or_none(strategy_cfg.get("min_sl_usd")) or float(max(inst.point_value, 0.01))
+    atr_val: Optional[float] = None
+    # 1) Fresh ATR from signal frame (aligns workbench with backtest timing).
+    try:
+        if len(signal_df) >= 3:
+            h = signal_df["high"].astype(float)
+            l = signal_df["low"].astype(float)
+            c = signal_df["close"].astype(float)
+            pc = c.shift(1).fillna(c.iloc[0])
+            tr = pd.concat([(h - l).abs(), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+            atr_sig = float(tr.rolling(window=14, min_periods=1).mean().iloc[-1])
+            if math.isfinite(atr_sig) and atr_sig > (float(inst.point_value) * 2.0):
+                atr_val = float(atr_sig)
+    except Exception:
+        atr_val = None
+    # 2) Strategy/day context ATR.
+    if atr_val is None:
+        atr_ctx = _to_float_or_none(day_context.atr)
+        if atr_ctx is not None and math.isfinite(float(atr_ctx)) and float(atr_ctx) > (float(inst.point_value) * 2.0):
+            atr_val = float(atr_ctx)
+    # 3) Configured SL floor in price units.
+    if atr_val is None:
+        min_sl = _to_float_or_none(strategy_cfg.get("min_sl_usd"))
+        if min_sl is not None and math.isfinite(float(min_sl)) and float(min_sl) > 0:
+            atr_val = float(min_sl)
+    # 4) Hard safety floor: never collapse to raw tick size.
+    if atr_val is None:
+        atr_val = float(max(float(inst.point_value) * 20.0, 0.05))
+    try:
+        day_context.atr = float(atr_val)
+    except Exception:
+        pass
 
     htf_fvg_candidates: List[Dict[str, Any]] = []
     selected_htf_fvg_candidate: Optional[Dict[str, Any]] = None
@@ -9106,15 +9176,24 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
                 except Exception:
                     tf_rule = None
                 if not tf_rule:
-                    tf_rule = {
-                        "M1": "1T",
-                        "M5": "5T",
-                        "M15": "15T",
-                        "M30": "30T",
-                        "H1": "1H",
-                        "H4": "4H",
-                        "D1": "1D",
-                    }.get(str(fvg_tf).upper(), "4H")
+                    # Avoid hard-coding invalid HTF fallbacks to H4.
+                    # Fall back to execution timeframe rule for deterministic behavior.
+                    try:
+                        tf_rule_fn = getattr(strategy, "_timeframe_rule", None)
+                        if callable(tf_rule_fn):
+                            tf_rule = tf_rule_fn(str(execution_tf))
+                    except Exception:
+                        tf_rule = None
+                    if not tf_rule:
+                        tf_rule = {
+                            "M1": "1T",
+                            "M5": "5T",
+                            "M15": "15T",
+                            "M30": "30T",
+                            "H1": "1H",
+                            "H4": "4H",
+                            "D1": "1D",
+                        }.get(str(execution_tf).upper(), "15T")
                 htf_df_for_atr = _resample_ohlcv(signal_df, str(tf_rule))
                 htf_atr_for_sweep = _atr_last(htf_df_for_atr, 14) or atr_val or 0.0
                 htf_atr_for_sweep = float(max(float(htf_atr_for_sweep), 1e-9))
@@ -9188,6 +9267,9 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
     blockers: List[str] = []
     soft_blockers: List[str] = []
     confidence_warnings: List[str] = []
+    if str(liquidity_scan_debug.get("status") or "") == "strict_zero_relaxed_nonzero":
+        soft_blockers.append("liquidity_scan_relaxed_fallback_used")
+        confidence_warnings.append("liquidity_scan_relaxed_fallback_used")
     if len(open_positions) > 0:
         blockers.append("open_position_exists")
     if "high_impact_news" in guardrail_reasons:
@@ -10066,6 +10148,10 @@ def _agent_execute_tool(
                 effective_cfg.get("watchdog_trigger_requires_approval", False)
                 or perms.get("requires_user_confirm_for_trade", False)
             ),
+            "retry_on_guardrail_block": bool(effective_cfg.get("watchdog_trigger_retry_on_guardrail_block", True)),
+            "max_execution_retries": max(0, min(20, int(_agent_usage_safe_int(effective_cfg.get("watchdog_trigger_max_retries"), 6)))),
+            "retry_backoff_base_sec": max(1.0, min(300.0, float(_to_float_or_none(effective_cfg.get("watchdog_trigger_retry_backoff_base_sec")) or 5.0))),
+            "retry_backoff_cap_sec": max(5.0, min(1800.0, float(_to_float_or_none(effective_cfg.get("watchdog_trigger_retry_backoff_cap_sec")) or 300.0))),
         }
         condition = _normalize_agent_trigger_condition(payload.get("condition"))
         if condition is None:
@@ -10258,6 +10344,12 @@ def _agent_execute_tool(
             agent_row = _get_latest_agent(simulation_session_id=int(session.id), db=db)
         if agent_row is None:
             return {"ok": False, "error": "agent_session_not_found"}
+        schedule_guardrail_state = _agent_trade_guardrails(session=session, db=db, override_config=effective_cfg)
+        schedule_guardrail_reasons = (
+            schedule_guardrail_state.get("reasons")
+            if isinstance(schedule_guardrail_state.get("reasons"), list)
+            else []
+        )
 
         # Proposal lock: when a recent run_mtf_analysis proposal exists, schedule args must match.
         # This prevents drift between "proposed trigger" and actual persisted trigger.
@@ -10294,14 +10386,23 @@ def _agent_execute_tool(
                     "precondition": dict(precondition) if isinstance(precondition, dict) else {},
                     "cancel_rule": dict(cancel_rule) if isinstance(cancel_rule, dict) else {},
                 }
-                price_tol = max(float(inst.point_value) * 2.0, 1e-5)
+                price_tol = _agent_schedule_price_tolerance(
+                    best_setup=best_setup,
+                    inst=inst,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
                 lot_tol = max(float(inst.lot_step) * 1.01, 0.01)
+                try:
+                    expires_tol_sec = int(effective_cfg.get("schedule_match_expires_tol_sec") or 900)
+                except Exception:
+                    expires_tol_sec = 900
+                expires_tol_sec = max(60, min(4 * 3600, int(expires_tol_sec)))
                 mismatches = _agent_schedule_mismatch_report(
                     best_setup=best_setup,
                     provided=provided_setup,
                     price_tol=price_tol,
                     lot_tol=lot_tol,
-                    expires_tol_sec=300,
+                    expires_tol_sec=expires_tol_sec,
                 )
                 if mismatches:
                     return {
@@ -10310,6 +10411,8 @@ def _agent_execute_tool(
                         "details": {
                             "proposal_source": str(setup_source or ""),
                             "mismatches": mismatches[:16],
+                            "price_tolerance": float(round(price_tol, 6)),
+                            "expires_tolerance_sec": int(expires_tol_sec),
                             "hint": "Re-run the selected parent analysis tool and schedule exactly the proposed setup.",
                         },
                     }
@@ -10417,12 +10520,37 @@ def _agent_execute_tool(
                 f"pre={tp_pre_sem}|cancel={tp_cancel_sem}"
             )
             if sem_t == sem:
-                return {"ok": True, "data": {"trigger": t, "deduped": True, "pending_count": int(len(triggers))}}
+                return {
+                    "ok": True,
+                    "data": {
+                        "trigger": t,
+                        "deduped": True,
+                        "pending_count": int(len(triggers)),
+                        "schedule_guardrail_reasons": [str(r) for r in schedule_guardrail_reasons[:8]],
+                        "schedule_guardrail_details": (
+                            schedule_guardrail_state.get("details")
+                            if isinstance(schedule_guardrail_state.get("details"), dict)
+                            else {}
+                        ),
+                    },
+                }
 
         triggers.append(trigger)
         _set_agent_trade_triggers(agent_row=agent_row, triggers=triggers)
         db.add(agent_row)
-        return {"ok": True, "data": {"trigger": trigger, "pending_count": int(len(triggers))}}
+        return {
+            "ok": True,
+            "data": {
+                "trigger": trigger,
+                "pending_count": int(len(triggers)),
+                "schedule_guardrail_reasons": [str(r) for r in schedule_guardrail_reasons[:8]],
+                "schedule_guardrail_details": (
+                    schedule_guardrail_state.get("details")
+                    if isinstance(schedule_guardrail_state.get("details"), dict)
+                    else {}
+                ),
+            },
+        }
 
     if tname == "cancel_scheduled_entry":
         agent_row = _get_active_agent(simulation_session_id=int(session.id), db=db)

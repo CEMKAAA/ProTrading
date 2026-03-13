@@ -173,9 +173,10 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    reload_enabled = str(os.getenv("UVICORN_RELOAD", "0")).strip().lower() in {"1", "true", "yes", "on"}
     uvicorn.run(
         "dashboard.backend.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True
+        reload=bool(reload_enabled)
     )

@@ -1258,6 +1258,9 @@ HTF_FVG_LIQUIDITY_RECLAIM_STRATEGY = StrategyDefinition(
                            "Enable overnight swap charges", group="simulation"),
         ParameterDefinition("close_before_weekend", "Close Before Weekend", ParameterType.BOOLEAN, True,
                            "Auto-close positions on Friday", group="simulation"),
+        ParameterDefinition("liquidity_strictness", "Liquidity Strictness", ParameterType.INTEGER, 3,
+                           "Pool detection strictness (1=loose, 3=strict, 5=very strict)",
+                           min_value=1, max_value=5, step=1, group="basic"),
     ],
     presets=[
         StrategyPreset("conservative", "Conservative", "Strict sweep quality + single daily trade", {
@@ -1294,6 +1297,7 @@ HTF_FVG_LIQUIDITY_RECLAIM_STRATEGY = StrategyDefinition(
             "min_pool_touches": 2,
             "bias_min_strength": 20,
             "fvg_max_fill_ratio": 0.80,
+            "liquidity_strictness": 2,
         }),
         StrategyPreset("xauusd_m15", "XAUUSD M15 Tuned", "Gold-specific reclaim settings", {
             "timeframe": "M15",
@@ -1301,6 +1305,7 @@ HTF_FVG_LIQUIDITY_RECLAIM_STRATEGY = StrategyDefinition(
             "max_daily_loss_usd": -100.0,
             "max_total_risk_usd": 150.0,
             "max_daily_trades": 2,
+            "liquidity_strictness": 3,
             "min_rejection_ratio": 0.35,
             "sweep_distance_atr": 0.50,
             "htf_timeframe": "H4",
@@ -1314,6 +1319,7 @@ HTF_FVG_LIQUIDITY_RECLAIM_STRATEGY = StrategyDefinition(
             "max_daily_loss_usd": -150.0,
             "max_total_risk_usd": 200.0,
             "max_daily_trades": 2,
+            "liquidity_strictness": 3,
             "min_rejection_ratio": 0.30,
             "sweep_distance_atr": 0.30,
             "htf_timeframe": "H1",
@@ -1332,6 +1338,7 @@ HTF_FVG_LIQUIDITY_RECLAIM_STRATEGY = StrategyDefinition(
         "min_pool_touches": 2,
         "sweep_lookahead_bars": 120,
         "pool_tolerance_atr_mult": 0.12,
+        "liquidity_strictness": 3,
         "sweep_freshness_hours": 4.0,
         "sweep_freshness_min_bars": 4,
         "sweep_distance_atr": 0.50,

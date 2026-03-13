@@ -91,10 +91,10 @@ class AgentWatchdogService:
     @staticmethod
     def _interval_sec() -> float:
         try:
-            raw = float(os.getenv("AGENT_WATCHDOG_INTERVAL_SEC", "30"))
+            raw = float(os.getenv("AGENT_WATCHDOG_INTERVAL_SEC", "5"))
         except Exception:
-            raw = 30.0
-        return max(5.0, min(300.0, raw))
+            raw = 5.0
+        return max(1.0, min(300.0, raw))
 
     @staticmethod
     def _enabled() -> bool:
@@ -127,10 +127,10 @@ class AgentWatchdogService:
         if mode_raw not in {"deterministic", "local_gptoss_http", "claude"}:
             mode_raw = "deterministic"
         try:
-            interval = float(cfg.get("watchdog_interval_sec") or 30.0)
+            interval = float(cfg.get("watchdog_interval_sec") or 5.0)
         except Exception:
-            interval = 30.0
-        interval = max(5.0, min(300.0, interval))
+            interval = 5.0
+        interval = max(1.0, min(300.0, interval))
         try:
             llm_min = float(cfg.get("watchdog_llm_min_interval_sec") or 180.0)
         except Exception:
@@ -166,6 +166,25 @@ class AgentWatchdogService:
             "decision_window_sec": int(decision_window_sec),
             "live_bar_max_age_sec": float(live_bar_max_age_sec),
         }
+
+    @staticmethod
+    def _timeframe_minutes(timeframe: Any) -> int:
+        tf = str(timeframe or "").strip().upper()
+        if not tf:
+            return 15
+        if tf.startswith("M"):
+            try:
+                return max(1, int(tf[1:]))
+            except Exception:
+                return 15
+        if tf.startswith("H"):
+            try:
+                return max(1, int(tf[1:])) * 60
+            except Exception:
+                return 15
+        if tf in {"D", "D1"}:
+            return 1440
+        return 15
 
     @staticmethod
     def _is_live_bar_fresh(
@@ -602,6 +621,60 @@ class AgentWatchdogService:
         except Exception:
             return None
 
+    @staticmethod
+    def _parse_iso_utc(v: Any) -> Optional[datetime]:
+        raw = str(v or "").strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _is_retryable_execution_error(error_text: str, *, retry_guardrail_blocks: bool) -> bool:
+        s = str(error_text or "").strip().lower()
+        if not s:
+            return False
+        # Permanent errors should fail fast.
+        permanent_markers = {
+            "permission_denied",
+            "invalid_",
+            "rr_mismatch",
+            "rr_below_min",
+            "lot_size_mismatch_with_risk_model",
+            "scheduled_trigger_mismatch_with_proposal",
+            "missing_mtf_proposal_for_schedule",
+            "agent_session_not_found",
+        }
+        if any(marker in s for marker in permanent_markers):
+            return False
+        if "blocked:requires_user_confirm_for_trade" in s:
+            return False
+        if s.startswith("blocked:guardrail:"):
+            if not retry_guardrail_blocks:
+                return False
+            return any(x in s for x in {"outside_session_window", "high_impact_news"})
+        transient_markers = {
+            "timeout",
+            "temporarily",
+            "market closed",
+            "off quotes",
+            "requote",
+            "price changed",
+            "trade context busy",
+            "connection",
+            "service unavailable",
+            "network",
+            "too many requests",
+            "rate limit",
+            "guardrail:",
+        }
+        return any(marker in s for marker in transient_markers)
+
     def _execute_timeout_close(
         self,
         *,
@@ -796,6 +869,38 @@ class AgentWatchdogService:
             if not trigger_requires_approval:
                 # Trigger-driven entries should auto-execute by default once condition is met.
                 trigger_perms["requires_user_confirm_for_trade"] = False
+            try:
+                trigger_max_retries = int(
+                    trigger_guardrails.get("max_execution_retries")
+                    if isinstance(trigger_guardrails, dict) and trigger_guardrails.get("max_execution_retries") is not None
+                    else cfg.get("watchdog_trigger_max_retries", os.getenv("AGENT_WATCHDOG_TRIGGER_MAX_RETRIES", 6))
+                )
+            except Exception:
+                trigger_max_retries = 6
+            trigger_max_retries = max(0, min(20, int(trigger_max_retries)))
+            try:
+                retry_backoff_base_sec = float(
+                    trigger_guardrails.get("retry_backoff_base_sec")
+                    if isinstance(trigger_guardrails, dict) and trigger_guardrails.get("retry_backoff_base_sec") is not None
+                    else cfg.get("watchdog_trigger_retry_backoff_base_sec", os.getenv("AGENT_WATCHDOG_TRIGGER_RETRY_BACKOFF_BASE_SEC", 5))
+                )
+            except Exception:
+                retry_backoff_base_sec = 5.0
+            retry_backoff_base_sec = max(1.0, min(300.0, float(retry_backoff_base_sec)))
+            try:
+                retry_backoff_cap_sec = float(
+                    trigger_guardrails.get("retry_backoff_cap_sec")
+                    if isinstance(trigger_guardrails, dict) and trigger_guardrails.get("retry_backoff_cap_sec") is not None
+                    else cfg.get("watchdog_trigger_retry_backoff_cap_sec", os.getenv("AGENT_WATCHDOG_TRIGGER_RETRY_BACKOFF_CAP_SEC", 300))
+                )
+            except Exception:
+                retry_backoff_cap_sec = 300.0
+            retry_backoff_cap_sec = max(float(retry_backoff_base_sec), min(1800.0, float(retry_backoff_cap_sec)))
+            retry_guardrail_blocks = bool(
+                trigger_guardrails.get("retry_on_guardrail_block", True)
+                if isinstance(trigger_guardrails, dict)
+                else True
+            )
 
             expires_at = t.get("expires_at")
             exp_dt: Optional[datetime] = None
@@ -825,6 +930,10 @@ class AgentWatchdogService:
                         created_at=self._utc_now(),
                     )
                 )
+                next_triggers.append(t)
+                continue
+            next_retry_dt = self._parse_iso_utc(t.get("next_retry_at"))
+            if next_retry_dt is not None and now < next_retry_dt:
                 next_triggers.append(t)
                 continue
 
@@ -1148,12 +1257,21 @@ class AgentWatchdogService:
                 pre_obj = t.get("precondition") if isinstance(t.get("precondition"), dict) else {}
                 hit_price_val = pre_obj.get("hit_price")
                 hit_price = None
+                hit_price_source = "precondition_hit_price"
                 try:
                     hp = float(hit_price_val)
                     if math.isfinite(hp) and hp > 0:
                         hit_price = float(hp)
                 except Exception:
                     hit_price = None
+                if hit_price is None:
+                    try:
+                        hp_fallback = float(pre_obj.get("trigger_price"))
+                        if math.isfinite(hp_fallback) and hp_fallback > 0:
+                            hit_price = float(hp_fallback)
+                            hit_price_source = "precondition_trigger_price_fallback"
+                    except Exception:
+                        hit_price = None
                 stop_buffer = 0.0
                 try:
                     stop_buffer = float(place_args.get("dynamic_stop_buffer_points") or 0.0)
@@ -1186,10 +1304,14 @@ class AgentWatchdogService:
                             "enabled": True,
                             "resolved_at": self._safe_iso(now),
                             "from_precondition_hit_price": float(hit_price),
+                            "hit_price_source": str(hit_price_source),
                             "buffer_points": float(stop_buffer),
                             "base_stop_loss": float(base_stop) if base_stop is not None else None,
                             "resolved_stop_loss": float(resolved_stop),
                         }
+                else:
+                    t["dynamic_stop_warning"] = "missing_precondition_hit_price"
+                    changed = True
 
             try:
                 from ..api.simulation_routes import _agent_execute_tool
@@ -1211,6 +1333,8 @@ class AgentWatchdogService:
                 t["executed_at"] = self._safe_iso(now)
                 t["executed_price"] = float(eval_price)
                 t["result"] = result.get("data") if isinstance(result.get("data"), dict) else {}
+                t.pop("next_retry_at", None)
+                t.pop("last_error", None)
                 if isinstance(dynamic_stop_meta, dict):
                     t["dynamic_stop"] = dict(dynamic_stop_meta)
                 changed = True
@@ -1235,6 +1359,7 @@ class AgentWatchdogService:
                 t["status"] = "pending_approval"
                 t["pending_at"] = self._safe_iso(now)
                 t["pending_action"] = result.get("pending_action")
+                t.pop("next_retry_at", None)
                 if isinstance(dynamic_stop_meta, dict):
                     t["dynamic_stop"] = dict(dynamic_stop_meta)
                 changed = True
@@ -1256,28 +1381,80 @@ class AgentWatchdogService:
                     )
                 )
             else:
-                t["status"] = "failed"
-                t["failed_at"] = self._safe_iso(now)
-                t["error"] = str(result.get("error") or "trigger_execution_failed")[:280]
-                if isinstance(dynamic_stop_meta, dict):
-                    t["dynamic_stop"] = dict(dynamic_stop_meta)
-                changed = True
-                event_rows.append(
-                    WorkbenchAgentEventModel(
-                        agent_session_id=int(agent.id),
-                        event_type="WATCHDOG_ENTRY_FAILED",
-                        severity="warning",
-                        payload_json={
-                            "source": "agent_watchdog",
-                            "trigger_id": str(t.get("id") or ""),
-                            "condition": cond,
-                            "trigger_price": float(level),
-                            "hit_price": float(eval_price),
-                            "error": str(result.get("error") or "trigger_execution_failed")[:280],
-                        },
-                        created_at=self._utc_now(),
-                    )
+                err_text = str(result.get("error") or "trigger_execution_failed")[:280]
+                attempts_prev = int(t.get("execution_attempts") or 0)
+                is_guardrail_block = str(err_text).strip().lower().startswith("blocked:guardrail:")
+                attempts = attempts_prev + (0 if (is_guardrail_block and bool(retry_guardrail_blocks)) else 1)
+                retryable = self._is_retryable_execution_error(
+                    err_text,
+                    retry_guardrail_blocks=bool(retry_guardrail_blocks),
                 )
+                can_retry = bool(retryable and attempts <= int(trigger_max_retries))
+                if can_retry and exp_dt is not None and now >= exp_dt:
+                    can_retry = False
+                if can_retry:
+                    backoff_sec = min(
+                        float(retry_backoff_cap_sec),
+                        float(retry_backoff_base_sec) * float(max(1.0, 2.0 ** max(0, attempts - 1))),
+                    )
+                    retry_at = now + timedelta(seconds=float(backoff_sec))
+                    if exp_dt is not None and retry_at >= exp_dt:
+                        can_retry = False
+                if can_retry:
+                    t["status"] = "pending"
+                    t["state"] = "waiting_entry"
+                    t["execution_attempts"] = int(attempts)
+                    t["last_error"] = str(err_text)
+                    t["last_failed_at"] = self._safe_iso(now)
+                    t["next_retry_at"] = self._safe_iso(retry_at)
+                    if isinstance(dynamic_stop_meta, dict):
+                        t["dynamic_stop"] = dict(dynamic_stop_meta)
+                    changed = True
+                    event_rows.append(
+                        WorkbenchAgentEventModel(
+                            agent_session_id=int(agent.id),
+                            event_type="WATCHDOG_ENTRY_RETRY_SCHEDULED",
+                            severity="warning",
+                            payload_json={
+                                "source": "agent_watchdog",
+                                "trigger_id": str(t.get("id") or ""),
+                                "condition": cond,
+                                "trigger_price": float(level),
+                                "hit_price": float(eval_price),
+                                "error": str(err_text),
+                                "attempt": int(attempts),
+                                "max_retries": int(trigger_max_retries),
+                                "next_retry_at": self._safe_iso(retry_at),
+                            },
+                            created_at=self._utc_now(),
+                        )
+                    )
+                else:
+                    t["status"] = "failed"
+                    t["failed_at"] = self._safe_iso(now)
+                    t["error"] = str(err_text)
+                    t["execution_attempts"] = int(attempts)
+                    if isinstance(dynamic_stop_meta, dict):
+                        t["dynamic_stop"] = dict(dynamic_stop_meta)
+                    changed = True
+                    event_rows.append(
+                        WorkbenchAgentEventModel(
+                            agent_session_id=int(agent.id),
+                            event_type="WATCHDOG_ENTRY_FAILED",
+                            severity="warning",
+                            payload_json={
+                                "source": "agent_watchdog",
+                                "trigger_id": str(t.get("id") or ""),
+                                "condition": cond,
+                                "trigger_price": float(level),
+                                "hit_price": float(eval_price),
+                                "error": str(err_text),
+                                "attempt": int(attempts),
+                                "max_retries": int(trigger_max_retries),
+                            },
+                            created_at=self._utc_now(),
+                        )
+                    )
             next_triggers.append(t)
 
         if changed:
@@ -1609,7 +1786,13 @@ class AgentWatchdogService:
                     continue
                 agent_id = int(agent.id)
                 cfg = self._watchdog_cfg(agent)
-                interval_sec = float(cfg.get("interval_sec") or 30.0)
+                interval_sec = float(cfg.get("interval_sec") or 5.0)
+                tf_minutes = self._timeframe_minutes(getattr(session, "timeframe", None))
+                # Ensure fast-timeframe sessions are sampled multiple times per bar.
+                # Example: M1 -> <=3s, M5 -> <=15s.
+                if tf_minutes > 0:
+                    cadence_cap = max(1.0, min(30.0, (float(tf_minutes) * 60.0) / 20.0))
+                    interval_sec = min(float(interval_sec), float(cadence_cap))
                 last_scan = self._last_scan_at_by_agent.get(agent_id)
                 if last_scan is not None:
                     elapsed = (now - last_scan).total_seconds()
