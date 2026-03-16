@@ -1642,6 +1642,36 @@ def sim_agent_run_once(session_id):
     return jsonify(res)
 
 
+@app.route('/api/simulation/sessions/<int:session_id>/agent/trendilo-opportunities', methods=['POST'])
+def sim_agent_trendilo_opportunities(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/agent/trendilo-opportunities',
+        data=data,
+        return_error=True,
+        timeout_sec=180,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Trendilo opportunities scan failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/agent/strategy-opportunities', methods=['POST'])
+def sim_agent_strategy_opportunities(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/agent/strategy-opportunities',
+        data=data,
+        return_error=True,
+        timeout_sec=180,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Strategy opportunities scan failed'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/simulation/sessions/<int:session_id>/agent/start', methods=['POST'])
 def sim_agent_start(session_id):
     data = _normalize_agent_permissions_payload(request.get_json(silent=True) or {})

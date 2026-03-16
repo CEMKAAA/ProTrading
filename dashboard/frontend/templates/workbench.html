@@ -1464,6 +1464,24 @@ body.workbench-fullscreen .stats-bar {
                             <i class="bi bi-cloud-download"></i>
                         </button>
                     </div>
+                    <div class="input-group input-group-sm mt-1">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input
+                            id="sim-symbol-search"
+                            class="form-control form-control-sm"
+                            type="text"
+                            placeholder="Search symbol (LIKE: XAU%, %USD, _S500)"
+                            autocomplete="off"
+                        >
+                        <button
+                            id="btn-clear-symbol-search"
+                            class="btn btn-outline-secondary"
+                            type="button"
+                            title="Clear symbol search"
+                        >
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
                     <small id="sim-symbol-meta" class="text-muted">Broker symbols can be loaded from MT5.</small>
                 </div>
                 <div class="form-group">
@@ -1570,10 +1588,20 @@ body.workbench-fullscreen .stats-bar {
             >
                 <i class="bi bi-graph-up me-1"></i>Indicators
             </button>
+            <button
+                id="btn-open-trendilo-opps"
+                class="btn btn-sm wb-action-btn ms-2"
+                type="button"
+                data-bs-toggle="modal"
+                data-bs-target="#trendiloOppModal"
+            >
+                <i class="bi bi-lightning-charge me-1"></i>Strategy Screener
+            </button>
         </div>
         <!-- Chart -->
         <div class="chart-container">
             <div id="chart-main" class="chart-main"></div>
+            <div id="chart-trendilo-panel" class="chart-sub-panel d-none"></div>
         </div>
 
         <!-- Playback Controls -->
@@ -1981,6 +2009,8 @@ body.workbench-fullscreen .stats-bar {
                                 <select id="agent-strategy-profile" class="form-select form-select-sm">
                                     <option value="classic_htf_fvg" selected>Classic HTF FVG</option>
                                     <option value="htf_fvg_liquidity_reclaim_v2">HTF FVG + Liquidity Reclaim V2</option>
+                                    <option value="orb_ny_15m_imbalance">NY 15m ORB + 1m Imbalance</option>
+                                    <option value="trendilo_confirmation_v1">Trendilo Strategy</option>
                                 </select>
                                 <span class="agent-field-hint">Chooses which parent strategy tool the agent is allowed to use. The old HTF FVG path stays separate.</span>
                             </div>
@@ -1992,6 +2022,10 @@ body.workbench-fullscreen .stats-bar {
                                     <option value="aggressive">Aggressive</option>
                                     <option value="xauusd_m15">XAUUSD M15 Tuned</option>
                                     <option value="nas100_m15">NAS100 M15 Tuned</option>
+                                    <option value="us500_m15">US500 M15 Tuned</option>
+                                    <option value="xauusd_m1">XAUUSD M1 ORB</option>
+                                    <option value="nas100_m1">NAS100 M1 ORB</option>
+                                    <option value="us500_m1">US500 M1 ORB</option>
                                 </select>
                                 <span class="agent-field-hint">Used by the liquidity-reclaim strategy profile. Classic HTF FVG ignores this.</span>
                             </div>
@@ -2861,6 +2895,95 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
+<div class="modal fade" id="trendiloOppModal" tabindex="-1" aria-labelledby="trendiloOppModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="trendiloOppModalLabel">
+                    <i class="bi bi-lightning-charge me-1"></i>Universal Strategy Screener
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label mb-1">Strategy</label>
+                        <select id="trendilo-opp-strategy" class="form-select form-select-sm">
+                            <option value="mtf">Strategy 1 - MTF</option>
+                            <option value="htf_reclaim">Strategy 2 - HTF Reclaim</option>
+                            <option value="orb">ORB</option>
+                            <option value="trendilo" selected>Trendilo</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label mb-1">Universe</label>
+                        <select id="trendilo-opp-universe" class="form-select form-select-sm">
+                            <option value="market_mixed_top" selected>Market Mixed Top</option>
+                            <option value="stocks_top50">Stocks Top 50</option>
+                            <option value="crypto_top50">Crypto Top 50</option>
+                            <option value="">Custom Only</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Limit</label>
+                        <input id="trendilo-opp-universe-limit" type="number" class="form-control form-control-sm" value="80" min="1" max="200" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">TF</label>
+                        <select id="trendilo-opp-timeframe" class="form-select form-select-sm">
+                            <option value="M1">M1</option>
+                            <option value="M5" selected>M5</option>
+                            <option value="M15">M15</option>
+                            <option value="M30">M30</option>
+                            <option value="H1">H1</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Lookback</label>
+                        <input id="trendilo-opp-lookback" type="number" class="form-control form-control-sm" value="120" min="20" max="3000" step="1">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Top N</label>
+                        <input id="trendilo-opp-max-results" type="number" class="form-control form-control-sm" value="25" min="1" max="200" step="1">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1">Symbols (optional, comma-separated)</label>
+                        <input
+                            id="trendilo-opp-symbols"
+                            type="text"
+                            class="form-control form-control-sm"
+                            placeholder="XAUUSD, BTCUSD, SOLUSD, US500"
+                        >
+                    </div>
+                </div>
+                <div class="mt-3 d-flex align-items-center gap-2">
+                    <button type="button" id="btn-run-trendilo-opps" class="btn btn-sm btn-warning">
+                        <i class="bi bi-play-fill me-1"></i>Run Screener
+                    </button>
+                    <button type="button" id="btn-load-trendilo-opps-cache" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-clock-history me-1"></i>Load Cached
+                    </button>
+                    <span id="trendilo-opp-status" style="font-size:0.8rem;color:#cbd5e1;">Ready</span>
+                </div>
+                <div class="mt-3">
+                    <div id="trendilo-opp-summary" style="font-size:0.82rem;color:#cbd5e1;">No scan yet.</div>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm trade-log-table mb-0">
+                            <thead id="trendilo-opp-head"></thead>
+                            <tbody id="trendilo-opp-body">
+                                <tr><td class="text-center text-muted py-3"><small>Run screener to list only tradeable setups.</small></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade indicator-modal" id="indicatorModal" tabindex="-1" aria-labelledby="indicatorModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-scrollable">
         <div class="modal-content">
@@ -2904,6 +3027,20 @@ body.workbench-fullscreen .stats-bar {
                         <input class="form-check-input" type="checkbox" id="ind-stoch">
                         <label class="form-check-label" for="ind-stoch">Stochastic Oscillator</label>
                         <small class="hint">Stoch(14,3,3): %K and %D lines.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-trendilo">
+                        <label class="form-check-label" for="ind-trendilo">Trendilo</label>
+                        <small class="hint">Pine-equivalent Trendilo: AVPCH with RMS envelope bands.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-trendilo-barcolor">
+                        <label class="form-check-label" for="ind-trendilo-barcolor">Trendilo Bar Color</label>
+                        <small class="hint">Color candles by Trendilo direction (green/red/gray), like Pine barcolor.</small>
                     </div>
                 </div>
                 <div class="indicator-option">
@@ -2954,5 +3091,5 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/workbench.js') }}"></script>
+<script src="{{ url_for('static', filename='js/workbench.js', v='20260316_trendilo_opp_scan1') }}"></script>
 {% endblock %}

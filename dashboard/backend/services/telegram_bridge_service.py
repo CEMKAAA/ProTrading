@@ -1350,6 +1350,8 @@ class TelegramBridgeService:
         return [
             ("classic_htf_fvg", "classic"),
             ("htf_fvg_liquidity_reclaim_v2", "liquidity"),
+            ("orb_ny_15m_imbalance", "orb"),
+            ("trendilo_confirmation_v1", "trendilo"),
         ]
 
     def _format_strategy_help(self) -> str:
@@ -1381,6 +1383,16 @@ class TelegramBridgeService:
                     "htf_fvg_liquidity_reclaim_strategy",
                     "liquidity_reclaim_v2",
                     "v2",
+                    "orb",
+                    "opening_range",
+                    "opening_range_breakout",
+                    "orb_15m",
+                    "orb_ny_15m",
+                    "orb_imbalance",
+                    "trendilo",
+                    "trendilo_strategy",
+                    "trendilo_v1",
+                    "trendilo_confirmation",
                 }
             )
             if raw and raw not in allowed_raw:

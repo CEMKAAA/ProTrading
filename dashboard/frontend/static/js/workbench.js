@@ -11,6 +11,14 @@ let sessionSwitchSeq = 0;
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;
+let mainCrosshairSeries = null;
+let trendiloPanelChart = null;
+let trendiloPanelSeries = {};
+let trendiloPanelSyncingRange = false;
+let trendiloPanelSyncingCrosshair = false;
+let mainCloseByTime = new Map();
+let trendiloSignalByTime = new Map();
+let trendiloDirByTime = new Map();
 let sessionCatalog = [];
 let brokerSymbolCatalog = [];
 
@@ -62,6 +70,8 @@ let indicatorSelection = {
     rsi: false,
     stoch: false,
     bollinger: false,
+    trendilo: false,
+    trendiloBarColor: false,
     goldenCross: false,
 };
 let tradeMarkers = [];
@@ -87,6 +97,8 @@ const WS_STALL_FACTOR = 8;
 const LATENCY_SAMPLE_CAP = 200;
 const AGENT_LIVE_PUSH_MIN_MS = 1500;
 const AGENT_LIVE_KEEPALIVE_MS = 12000;
+const CHART_BG_COLOR = '#131722';
+const CHART_RIGHT_SCALE_MIN_WIDTH = 72;
 const INDICATOR_DEFAULTS = {
     smaPeriodFast: 20,
     smaPeriodSlow: 50,
@@ -100,6 +112,14 @@ const INDICATOR_DEFAULTS = {
     stochSmoothD: 3,
     bbPeriod: 14,
     bbStd: 2.0,
+    trendiloSmooth: 1,
+    trendiloLength: 50,
+    trendiloOffset: 0.85,
+    trendiloSigma: 6,
+    trendiloBandMultiplier: 1.0,
+    trendiloUseCustomBandLength: false,
+    trendiloBandLength: 20,
+    trendiloFillEnabled: true,
 };
 const COST_MODEL_DEFAULTS = {
     XAUUSD: 0.30,
@@ -119,6 +139,8 @@ const CURATED_SYMBOL_OPTIONS = [
 const AGENT_CHAT_STORAGE_KEY = 'workbench:agent:chat:sessions:v1';
 const LEGACY_CONSULTANT_STORAGE_KEY = 'workbench:consultant:sessions:v1';
 const AGENT_PROVIDER_PREFS_KEY = 'workbench:agent:provider:prefs:v1';
+const TRENDILO_OPP_CACHE_KEY_PREFIX = 'workbench:strategy:opportunity_scan:v1:';
+const TRENDILO_OPP_CACHE_MAX_AGE_MIN = 180;
 const WORKBENCH_PANELS = {
     trade: { panelId: 'trade-exec-panel', modalId: 'tradeExecModal', bodyId: 'trade-exec-modal-body' },
     tools: { panelId: 'analysis-tools-panel', modalId: 'analysisToolsModal', bodyId: 'analysis-tools-modal-body' },
@@ -258,12 +280,18 @@ function applyWorkbenchModeUI() {
 }
 
 function refreshChartViewport() {
-    if (!chart) return;
     const el = document.getElementById('chart-main');
-    if (!el) return;
-    const width = Math.max(320, Math.round(el.clientWidth || 0));
-    const height = Math.max(260, Math.round(el.clientHeight || 0));
-    chart.applyOptions({ width, height });
+    if (chart && el) {
+        const width = Math.max(320, Math.round(el.clientWidth || 0));
+        const height = Math.max(220, Math.round(el.clientHeight || 0));
+        chart.applyOptions({ width, height });
+    }
+    const panelEl = document.getElementById('chart-trendilo-panel');
+    if (trendiloPanelChart && panelEl && !panelEl.classList.contains('d-none')) {
+        const width = Math.max(320, Math.round(panelEl.clientWidth || 0));
+        const height = Math.max(120, Math.round(panelEl.clientHeight || 0));
+        trendiloPanelChart.applyOptions({ width, height });
+    }
 }
 
 function ensurePanelHomeMarkers() {
@@ -688,28 +716,52 @@ async function closeSelectedSession() {
     }
 }
 
-function applyBrokerSymbolsToUI(rows) {
+function escapeRegExp(raw) {
+    return String(raw || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _compileLikePattern(rawTerm) {
+    const term = String(rawTerm || '').trim();
+    if (!term) return null;
+    const hasWildcards = term.includes('%') || term.includes('_');
+    const likePattern = hasWildcards ? term : `%${term}%`;
+    const regexBody = escapeRegExp(likePattern).replace(/%/g, '.*').replace(/_/g, '.');
+    return new RegExp(`^${regexBody}$`, 'i');
+}
+
+function _symbolSearchMatch(rawTerm, parts) {
+    const rx = _compileLikePattern(rawTerm);
+    if (!rx) return true;
+    const values = Array.isArray(parts) ? parts : [];
+    return values.some((p) => rx.test(String(p || '').trim()));
+}
+
+function applyBrokerSymbolsToUI(rows, opts = {}) {
     const selectEl = document.getElementById('sim-symbol');
     const metaEl = document.getElementById('sim-symbol-meta');
     if (!selectEl) return;
     const current = String(selectEl.value || '').trim();
+    const currentUpper = current.toUpperCase();
+    const searchInputEl = document.getElementById('sim-symbol-search');
+    const rawSearch = (typeof opts.searchTerm === 'string')
+        ? opts.searchTerm
+        : String(searchInputEl?.value || '');
+    const searchTerm = String(rawSearch || '').trim();
     const list = Array.isArray(rows) ? rows : [];
-    if (list.length === 0) {
-        if (metaEl) metaEl.textContent = 'No symbols returned from MT5; using curated defaults.';
-        return;
-    }
     brokerSymbolCatalog = list.slice();
     const seen = new Set();
-    let html = '<optgroup label="Curated">';
+    const curatedRows = [];
     for (const opt of CURATED_SYMBOL_OPTIONS) {
         const value = String(opt?.value || '').trim();
         const label = String(opt?.label || value).trim();
         if (!value) continue;
+        const keep = value.toUpperCase() === currentUpper || _symbolSearchMatch(searchTerm, [value, label]);
+        if (!keep) continue;
+        curatedRows.push({ value, label });
         seen.add(value.toUpperCase());
-        html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
     }
-    html += '</optgroup>';
-    html += '<optgroup label="Broker (MT5)">';
+
+    const brokerRows = [];
     for (const row of list) {
         const name = String(row?.name || '').trim();
         if (!name) continue;
@@ -717,16 +769,43 @@ function applyBrokerSymbolsToUI(rows) {
         const desc = String(row?.description || '').trim();
         const vis = row?.visible ? 'visible' : 'hidden';
         const label = desc ? `${name} - ${desc}` : `${name} (${vis})`;
+        const keep = name.toUpperCase() === currentUpper || _symbolSearchMatch(searchTerm, [name, desc, label]);
+        if (!keep) continue;
+        brokerRows.push({ name, label });
+    }
+
+    let html = '<optgroup label="Curated">';
+    for (const opt of curatedRows) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    html += '<optgroup label="Broker (MT5)">';
+    for (const row of brokerRows) {
+        const name = String(row?.name || '').trim();
+        const label = String(row?.label || name).trim();
         html += `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
     }
     html += '</optgroup>';
+    if (curatedRows.length === 0 && brokerRows.length === 0) {
+        html = '<option value="" disabled selected>No symbols match your search</option>';
+    }
     selectEl.innerHTML = html;
-    if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === current.toUpperCase())) {
+    if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === currentUpper)) {
         selectEl.value = current;
     } else if (selectEl.options.length > 0) {
         selectEl.selectedIndex = 0;
     }
-    if (metaEl) metaEl.textContent = `Loaded ${list.length} MT5 symbols from active broker.`;
+    if (metaEl) {
+        if (list.length === 0) {
+            metaEl.textContent = 'No symbols returned from MT5; using curated defaults.';
+        } else if (searchTerm) {
+            metaEl.textContent = `Loaded ${list.length} MT5 symbols. Showing ${brokerRows.length} broker matches for "${searchTerm}".`;
+        } else {
+            metaEl.textContent = `Loaded ${list.length} MT5 symbols from active broker.`;
+        }
+    }
 }
 
 async function refreshBrokerSymbols(showToast = false) {
@@ -752,6 +831,10 @@ async function refreshBrokerSymbols(showToast = false) {
     } catch (err) {
         if (showToast) showStatus(`MT5 symbols load failed: ${err.message}`, 'warning');
     }
+}
+
+function applySymbolSearchFilter() {
+    applyBrokerSymbolsToUI(brokerSymbolCatalog);
 }
 
 function updatePerfStats() {
@@ -1694,12 +1777,12 @@ function renderAgentState(state) {
     }
     const strategyProfileEl = document.getElementById('agent-strategy-profile');
     const strategyProfile = String(cfg.agent_strategy_profile || '').trim().toLowerCase();
-    if (strategyProfileEl && ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2'].includes(strategyProfile)) {
+    if (strategyProfileEl && ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1'].includes(strategyProfile)) {
         strategyProfileEl.value = strategyProfile;
     }
     const strategyPresetEl = document.getElementById('agent-strategy-preset');
     const strategyPreset = String(cfg.agent_strategy_preset || '').trim().toLowerCase();
-    if (strategyPresetEl && ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15'].includes(strategyPreset)) {
+    if (strategyPresetEl && ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15', 'xauusd_m1', 'nas100_m1', 'us500_m1'].includes(strategyPreset)) {
         strategyPresetEl.value = strategyPreset;
     }
     const liqGateModeEl = document.getElementById('agent-liq-gate-mode');
@@ -1926,6 +2009,8 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         rsi: !!vis.rsi,
         stoch: !!vis.stoch,
         bollinger: !!vis.bollinger,
+        trendilo: !!vis.trendilo,
+        trendiloBarColor: !!vis.trendiloBarColor,
         goldenCross: !!vis.goldenCross,
     };
     indicatorSelection = { ...indicatorSelection, ...next };
@@ -1935,6 +2020,8 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         rsi: 'ind-rsi',
         stoch: 'ind-stoch',
         bollinger: 'ind-bollinger',
+        trendilo: 'ind-trendilo',
+        trendiloBarColor: 'ind-trendilo-barcolor',
         goldenCross: 'ind-golden-cross',
     };
     Object.entries(map).forEach(([k, id]) => {
@@ -3429,6 +3516,225 @@ function _latestFinite(values) {
     return null;
 }
 
+function _trendiloOppCacheKey() {
+    const sid = Number(sessionId || 0);
+    const strategy = String(document.getElementById('trendilo-opp-strategy')?.value || 'trendilo').trim().toLowerCase() || 'trendilo';
+    return `${TRENDILO_OPP_CACHE_KEY_PREFIX}${sid > 0 ? sid : 0}:${strategy}`;
+}
+
+function _saveTrendiloOppScanCache(scanData) {
+    if (!scanData || typeof scanData !== 'object') return;
+    const strategy = String(scanData.strategy || document.getElementById('trendilo-opp-strategy')?.value || 'trendilo').trim().toLowerCase() || 'trendilo';
+    const payload = {
+        session_id: Number(sessionId || 0),
+        saved_at: new Date().toISOString(),
+        strategy,
+        data: scanData,
+    };
+    try {
+        localStorage.setItem(_trendiloOppCacheKey(), JSON.stringify(payload));
+    } catch (_) {
+        // ignore storage failures
+    }
+}
+
+function _loadTrendiloOppScanCache(maxAgeMin = TRENDILO_OPP_CACHE_MAX_AGE_MIN) {
+    try {
+        const raw = String(localStorage.getItem(_trendiloOppCacheKey()) || '').trim();
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
+        const savedAt = Date.parse(String(parsed.saved_at || ''));
+        if (Number.isFinite(savedAt)) {
+            const ageMin = (Date.now() - savedAt) / 60000.0;
+            if (Number.isFinite(ageMin) && ageMin > Number(maxAgeMin || TRENDILO_OPP_CACHE_MAX_AGE_MIN)) return null;
+        }
+        return parsed;
+    } catch (_) {
+        return null;
+    }
+}
+
+function _compactTrendiloOppCacheForContext(maxRows = 12) {
+    const cached = _loadTrendiloOppScanCache(TRENDILO_OPP_CACHE_MAX_AGE_MIN);
+    if (!cached || !cached.data || typeof cached.data !== 'object') return null;
+    const d = cached.data;
+    const rows = Array.isArray(d.opportunities) ? d.opportunities.slice(0, Math.max(1, Number(maxRows || 12))) : [];
+    const compactRows = rows.map((r) => ({
+        strategy: String(r?.strategy || ''),
+        symbol: String(r?.symbol || ''),
+        direction: String(r?.direction || ''),
+        confidence: Number(r?.confidence || 0),
+        entry_ref: Number(r?.entry_ref || 0),
+        stop_loss: Number(r?.stop_loss || 0),
+        take_profit: Number(r?.take_profit || 0),
+        rr: Number(r?.rr || 0),
+        lot_size: Number(r?.lot_size || 0),
+    }));
+    return {
+        saved_at: String(cached.saved_at || ''),
+        strategy: String(d.strategy || cached.strategy || ''),
+        timeframe: String(d.timeframe || ''),
+        source: String(d.source || ''),
+        symbols_scanned: Number(d.symbols_scanned || 0),
+        tradeable_count: Number(d.tradeable_count || 0),
+        top_opportunities: compactRows,
+    };
+}
+
+function _parseTrendiloOppSymbols(rawLike) {
+    const raw = String(rawLike || '').trim();
+    if (!raw) return [];
+    const out = [];
+    const seen = new Set();
+    raw.split(/[\s,;]+/g).forEach((part) => {
+        const s = String(part || '').trim().toUpperCase();
+        if (!s || seen.has(s)) return;
+        seen.add(s);
+        out.push(s);
+    });
+    return out;
+}
+
+function _collectTrendiloOppScanArgs() {
+    const strategy = String(document.getElementById('trendilo-opp-strategy')?.value || 'trendilo').trim().toLowerCase() || 'trendilo';
+    const universe = String(document.getElementById('trendilo-opp-universe')?.value || '').trim();
+    const timeframe = normalizeTimeframeLabel(
+        document.getElementById('trendilo-opp-timeframe')?.value || document.getElementById('sim-timeframe')?.value || 'M5',
+        'M5',
+    );
+    const rawLimit = Number(document.getElementById('trendilo-opp-universe-limit')?.value || 80);
+    const rawLookback = Number(document.getElementById('trendilo-opp-lookback')?.value || 120);
+    const rawMaxResults = Number(document.getElementById('trendilo-opp-max-results')?.value || 25);
+    const symbols = _parseTrendiloOppSymbols(document.getElementById('trendilo-opp-symbols')?.value || '');
+    const args = {
+        strategy,
+        timeframe,
+        lookback_bars: Number.isFinite(rawLookback) ? Math.max(20, Math.min(3000, Math.round(rawLookback))) : 120,
+        max_results: Number.isFinite(rawMaxResults) ? Math.max(1, Math.min(200, Math.round(rawMaxResults))) : 25,
+        summary_only: true,
+        include_non_tradeable: false,
+        preset: String(document.getElementById('agent-strategy-preset')?.value || 'default'),
+    };
+    if (universe) args.universe = universe;
+    if (Number.isFinite(rawLimit)) args.universe_limit = Math.max(1, Math.min(200, Math.round(rawLimit)));
+    if (symbols.length) args.symbols = symbols.slice(0, 120);
+    return args;
+}
+
+function _renderTrendiloOppRows(rows) {
+    const body = document.getElementById('trendilo-opp-body');
+    const head = document.getElementById('trendilo-opp-head');
+    if (!body || !head) return;
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) {
+        head.innerHTML = '';
+        body.innerHTML = '<tr><td class="text-center text-muted py-3"><small>No tradeable opportunities found.</small></td></tr>';
+        return;
+    }
+    head.innerHTML = `
+        <tr>
+            <th>Strategy</th>
+            <th>Symbol</th>
+            <th>Dir</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP</th>
+            <th>RR</th>
+            <th>Lot</th>
+            <th>Conf</th>
+        </tr>
+    `;
+    body.innerHTML = list.map((r) => `
+        <tr>
+            <td>${escapeHtml(String(r?.strategy || ''))}</td>
+            <td>${escapeHtml(String(r?.symbol || ''))}</td>
+            <td>${escapeHtml(String(r?.direction || ''))}</td>
+            <td>${Number(r?.entry_ref || 0).toFixed(3)}</td>
+            <td>${Number(r?.stop_loss || 0).toFixed(3)}</td>
+            <td>${Number(r?.take_profit || 0).toFixed(3)}</td>
+            <td>${Number(r?.rr || 0).toFixed(2)}</td>
+            <td>${Number(r?.lot_size || 0).toFixed(2)}</td>
+            <td>${Number(r?.confidence || 0).toFixed(1)}</td>
+        </tr>
+    `).join('');
+}
+
+function _renderTrendiloOppResult(data, fromCache = false) {
+    const summaryEl = document.getElementById('trendilo-opp-summary');
+    if (!summaryEl) return;
+    if (!data || typeof data !== 'object') {
+        summaryEl.textContent = 'No scan data.';
+        _renderTrendiloOppRows([]);
+        return;
+    }
+    const scanned = Number(data.symbols_scanned || 0);
+    const okCount = Number(data.ok_count || 0);
+    const errCount = Number(data.error_count || 0);
+    const tradeableCount = Number(data.tradeable_count || 0);
+    const tf = String(data.timeframe || '');
+    const strategy = String(data.strategy || '').trim().toLowerCase() || 'trendilo';
+    const src = String(data.source || '');
+    const elapsed = Number(data.elapsed_ms || 0);
+    const prefix = fromCache ? '[CACHED] ' : '';
+    summaryEl.textContent = `${prefix}Strategy=${strategy} | Scanned ${scanned} symbols (${okCount} ok, ${errCount} error). Tradeable: ${tradeableCount}. TF=${tf} Source=${src} Elapsed=${elapsed}ms.`;
+    _renderTrendiloOppRows(Array.isArray(data.opportunities) ? data.opportunities : []);
+}
+
+async function runTrendiloOpportunityScreener() {
+    if (!sessionId) {
+        showStatus('Start a session first', 'warning');
+        return;
+    }
+    const btn = document.getElementById('btn-run-trendilo-opps');
+    const statusEl = document.getElementById('trendilo-opp-status');
+    const args = _collectTrendiloOppScanArgs();
+    try {
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Running...';
+        }
+        if (statusEl) statusEl.textContent = 'Running deterministic screener...';
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/strategy-opportunities`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(args),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false || !out?.data || typeof out.data !== 'object') {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            if (statusEl) statusEl.textContent = `Failed: ${err}`;
+            showStatus(`Strategy screener failed: ${err}`, 'warning');
+            return;
+        }
+        _saveTrendiloOppScanCache(out.data);
+        _renderTrendiloOppResult(out.data, false);
+        if (statusEl) statusEl.textContent = `Completed: ${Number(out.data?.tradeable_count || 0)} opportunities`;
+        showStatus(`Strategy screener complete: ${Number(out.data?.tradeable_count || 0)} tradeable setup(s)`, 'success');
+    } catch (err) {
+        const msg = String(err?.message || err || 'Unknown error');
+        if (statusEl) statusEl.textContent = `Failed: ${msg}`;
+        showStatus(`Strategy screener failed: ${msg}`, 'warning');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Run Screener';
+        }
+    }
+}
+
+function loadTrendiloOpportunityScreenerCache() {
+    const statusEl = document.getElementById('trendilo-opp-status');
+    const cached = _loadTrendiloOppScanCache(TRENDILO_OPP_CACHE_MAX_AGE_MIN);
+    if (!cached || !cached.data) {
+        if (statusEl) statusEl.textContent = 'No fresh cache found.';
+        _renderTrendiloOppResult(null, true);
+        return;
+    }
+    _renderTrendiloOppResult(cached.data, true);
+    if (statusEl) statusEl.textContent = `Loaded cache from ${String(cached.saved_at || '').replace('T', ' ').replace('Z', ' UTC')}`;
+}
+
 function buildCompactIndicatorSnapshot() {
     const cacheKey = `${Number(allBars?.length || 0)}:${Number(currentBar || 0)}:${Number(allBars?.[allBars.length - 1]?.time || 0)}`;
     if (compactIndicatorSnapshotCacheKey === cacheKey && compactIndicatorSnapshotCacheValue && typeof compactIndicatorSnapshotCacheValue === 'object') {
@@ -3444,7 +3750,7 @@ function buildCompactIndicatorSnapshot() {
         close: Number(b?.close || 0),
         volume: Number(b?.volume || 0),
     }));
-    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, goldenCross: true };
+    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, goldenCross: true };
     const pack = computeIndicatorPack(bars, fullSel);
     const out = {
         timeframe: String(document.getElementById('sim-timeframe')?.value || '').toUpperCase(),
@@ -3462,6 +3768,8 @@ function buildCompactIndicatorSnapshot() {
         rsi: _latestFinite(pack?.rsi),
         stoch_k: _latestFinite(pack?.stochK),
         stoch_d: _latestFinite(pack?.stochD),
+        trendilo_avpch: _latestFinite(pack?.trendiloAvpch),
+        trendilo_rms: _latestFinite(pack?.trendiloRms),
     };
     compactIndicatorSnapshotCacheKey = cacheKey;
     compactIndicatorSnapshotCacheValue = { ...out };
@@ -3481,7 +3789,7 @@ function buildConsultantContext() {
         close: Number(b.close || 0),
         volume: Number(b.volume || 0),
     }));
-    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, goldenCross: true };
+    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, goldenCross: true };
     const pack = recentBars.length ? computeIndicatorPack(recentBars, fullSel) : null;
     const indicatorsLatest = pack ? {
         sma20: _latestFinite(pack.sma20),
@@ -3497,6 +3805,8 @@ function buildConsultantContext() {
         rsi: _latestFinite(pack.rsi),
         stoch_k: _latestFinite(pack.stochK),
         stoch_d: _latestFinite(pack.stochD),
+        trendilo_avpch: _latestFinite(pack.trendiloAvpch),
+        trendilo_rms: _latestFinite(pack.trendiloRms),
     } : {};
 
     const sessionStats = {
@@ -3507,6 +3817,7 @@ function buildConsultantContext() {
         wins: null,
         losses: null,
     };
+    const trendiloOppCache = _compactTrendiloOppCacheForContext(10);
 
     return {
         mode,
@@ -3535,9 +3846,13 @@ function buildConsultantContext() {
         session_stats: sessionStats,
         open_positions: [],
         recent_trades: [],
+        trendilo_opportunity_scan: trendiloOppCache,
+        strategy_opportunity_scan: trendiloOppCache,
         metadata: {
             mode,
             transport_mode: String(transportMode || 'IDLE'),
+            trendilo_opportunity_cache_available: !!trendiloOppCache,
+            strategy_opportunity_cache_available: !!trendiloOppCache,
         },
         identity: getAgentIdentityFromUI(),
         tool_state: getToolStatePayload(),
@@ -3606,9 +3921,9 @@ function getAgentWatchdogConfigFromUI() {
     const toolSelectionRaw = String(toolSelectionModeEl?.value || 'autonomous').trim().toLowerCase();
     const toolSelectionMode = ['autonomous', 'guided', 'minimal'].includes(toolSelectionRaw) ? toolSelectionRaw : 'autonomous';
     const strategyProfileRaw = String(strategyProfileEl?.value || 'classic_htf_fvg').trim().toLowerCase();
-    const strategyProfile = ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2'].includes(strategyProfileRaw) ? strategyProfileRaw : 'classic_htf_fvg';
+    const strategyProfile = ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1'].includes(strategyProfileRaw) ? strategyProfileRaw : 'classic_htf_fvg';
     const strategyPresetRaw = String(strategyPresetEl?.value || 'default').trim().toLowerCase();
-    const strategyPreset = ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15'].includes(strategyPresetRaw) ? strategyPresetRaw : 'default';
+    const strategyPreset = ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15', 'xauusd_m1', 'nas100_m1', 'us500_m1'].includes(strategyPresetRaw) ? strategyPresetRaw : 'default';
     const intervalRaw = Number(intervalEl?.value || 30);
     const intervalSec = Number.isFinite(intervalRaw) ? Math.max(5, Math.min(300, Math.round(intervalRaw))) : 30;
     const llmIntervalRaw = Number(llmIntervalEl?.value || 180);
@@ -3736,12 +4051,20 @@ function syncAgentStrategyControls() {
     if (!profileEl || !presetEl) return;
     const profile = String(profileEl.value || 'classic_htf_fvg').trim().toLowerCase();
     const isLiquidityProfile = profile === 'htf_fvg_liquidity_reclaim_v2';
-    presetEl.disabled = !isLiquidityProfile;
+    const isOrbProfile = profile === 'orb_ny_15m_imbalance';
+    const isTrendiloProfile = profile === 'trendilo_confirmation_v1';
+    presetEl.disabled = !(isLiquidityProfile || isOrbProfile || isTrendiloProfile);
     const hintEl = presetEl.parentElement?.querySelector('.agent-field-hint');
     if (hintEl) {
-        hintEl.textContent = isLiquidityProfile
-            ? 'Used by the liquidity-reclaim strategy profile. Classic HTF FVG ignores this.'
-            : 'Classic HTF FVG is selected, so this preset is currently ignored.';
+        if (isLiquidityProfile) {
+            hintEl.textContent = 'Used by the liquidity-reclaim strategy profile. Classic HTF FVG ignores this.';
+        } else if (isOrbProfile) {
+            hintEl.textContent = 'Used by NY 15m ORB profile (default/xauusd_m1/nas100_m1/us500_m1).';
+        } else if (isTrendiloProfile) {
+            hintEl.textContent = 'Used by Trendilo strategy profile (default/conservative/aggressive/xauusd_m15/nas100_m15/us500_m15).';
+        } else {
+            hintEl.textContent = 'Classic HTF FVG is selected, so this preset is currently ignored.';
+        }
     }
 }
 
@@ -4795,6 +5118,98 @@ function rollingStdDev(values, period) {
     return out;
 }
 
+function rollingALMA(values, length, offset, sigma) {
+    const out = new Array(values.length).fill(NaN);
+    if (!Array.isArray(values) || values.length === 0) return out;
+    const ln = Math.max(2, Number(length) || 2);
+    const off = Math.max(0, Math.min(1, Number(offset)));
+    const sig = Math.max(0.1, Number(sigma) || 6);
+    const m = off * (ln - 1);
+    const s = ln / sig;
+    const w = new Array(ln).fill(0);
+    let wsum = 0;
+    for (let i = 0; i < ln; i += 1) {
+        const wi = Math.exp(-((i - m) ** 2) / (2 * (s ** 2)));
+        w[i] = wi;
+        wsum += wi;
+    }
+    if (!Number.isFinite(wsum) || wsum <= 1e-12) return out;
+    for (let i = 0; i < ln; i += 1) w[i] /= wsum;
+    for (let i = ln - 1; i < values.length; i += 1) {
+        let acc = 0;
+        let valid = true;
+        for (let j = 0; j < ln; j += 1) {
+            const v = toFiniteNumber(values[i - ln + 1 + j]);
+            if (!Number.isFinite(v)) {
+                valid = false;
+                break;
+            }
+            acc += v * w[j];
+        }
+        if (valid) out[i] = acc;
+    }
+    return out;
+}
+
+function rollingRms(values, period) {
+    const out = new Array(values.length).fill(NaN);
+    if (!Array.isArray(values) || values.length === 0) return out;
+    const p = Math.max(1, Number(period) || 1);
+    for (let i = p - 1; i < values.length; i += 1) {
+        let sumSq = 0;
+        let valid = true;
+        for (let j = i - p + 1; j <= i; j += 1) {
+            const v = toFiniteNumber(values[j]);
+            if (!Number.isFinite(v)) {
+                valid = false;
+                break;
+            }
+            sumSq += v * v;
+        }
+        if (valid) out[i] = Math.sqrt(sumSq / p);
+    }
+    return out;
+}
+
+function computeTrendilo(closes) {
+    const len = closes.length;
+    const pch = new Array(len).fill(NaN);
+    const smooth = Math.max(1, Number(INDICATOR_DEFAULTS.trendiloSmooth) || 1);
+    const length = Math.max(1, Number(INDICATOR_DEFAULTS.trendiloLength) || 50);
+    const offset = Number(INDICATOR_DEFAULTS.trendiloOffset);
+    const sigma = Math.max(0, Number(INDICATOR_DEFAULTS.trendiloSigma) || 6);
+    const bmult = Number(INDICATOR_DEFAULTS.trendiloBandMultiplier) || 1.0;
+    const useCustomBand = !!INDICATOR_DEFAULTS.trendiloUseCustomBandLength;
+    const bandLength = Math.max(1, useCustomBand ? (Number(INDICATOR_DEFAULTS.trendiloBandLength) || 20) : length);
+
+    for (let i = smooth; i < len; i += 1) {
+        const cur = toFiniteNumber(closes[i]);
+        const prev = toFiniteNumber(closes[i - smooth]);
+        if (!Number.isFinite(cur) || !Number.isFinite(prev) || Math.abs(cur) <= 1e-12) continue;
+        pch[i] = ((cur - prev) / cur) * 100.0;
+    }
+
+    const avpch = rollingALMA(pch, length, offset, sigma);
+    const rmsBase = rollingRms(avpch, bandLength);
+    const rms = rmsBase.map((v) => (Number.isFinite(v) ? v * bmult : NaN));
+    const negRms = rms.map((v) => (Number.isFinite(v) ? -v : NaN));
+    const cdir = new Array(len).fill(0);
+    const avpchBull = new Array(len).fill(NaN);
+    const avpchBear = new Array(len).fill(NaN);
+    const avpchNeutral = new Array(len).fill(NaN);
+    for (let i = 0; i < len; i += 1) {
+        const a = toFiniteNumber(avpch[i]);
+        const r = toFiniteNumber(rms[i]);
+        if (!Number.isFinite(a) || !Number.isFinite(r)) continue;
+        if (a > r) cdir[i] = 1;
+        else if (a < -r) cdir[i] = -1;
+        if (cdir[i] > 0) avpchBull[i] = a;
+        else if (cdir[i] < 0) avpchBear[i] = a;
+        else avpchNeutral[i] = a;
+    }
+    return { pch, avpch, rms, negRms, cdir, avpchBull, avpchBear, avpchNeutral };
+}
+
 function computeRSI(closes, period) {
     const out = new Array(closes.length).fill(NaN);
     const p = Math.max(2, Number(period) || 14);
@@ -4931,6 +5346,15 @@ function seriesDataFromArray(bars, values) {
     return out;
 }
 
+function normalizeTimeKey(t) {
+    if (typeof t === 'number') return `n:${t}`;
+    if (typeof t === 'string') return `s:${t}`;
+    if (t && typeof t === 'object') {
+        try { return `o:${JSON.stringify(t)}`; } catch (_) { return 'o:[invalid]'; }
+    }
+    return '';
+}
+
 function computeIndicatorPack(bars, selection) {
     const sel = selection || {};
     const needSmaEma = !!sel.smaEma;
@@ -4938,9 +5362,10 @@ function computeIndicatorPack(bars, selection) {
     const needAdx = !!sel.adx;
     const needRsi = !!sel.rsi;
     const needStoch = !!sel.stoch;
+    const needTrendilo = !!sel.trendilo || !!sel.trendiloBarColor;
     const needGoldenCross = !!sel.goldenCross;
 
-    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needGoldenCross;
+    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross;
     const needHighLow = needAdx || needStoch;
 
     const closes = needCloses ? bars.map(b => toFiniteNumber(b?.close)) : [];
@@ -4967,12 +5392,30 @@ function computeIndicatorPack(bars, selection) {
     const stoch = needStoch
         ? computeStochastic(highs, lows, closes, INDICATOR_DEFAULTS.stochKPeriod, INDICATOR_DEFAULTS.stochSmoothK, INDICATOR_DEFAULTS.stochSmoothD)
         : { k: [], d: [] };
+    const trendilo = needTrendilo ? computeTrendilo(closes) : {
+        pch: [],
+        avpch: [],
+        rms: [],
+        negRms: [],
+        cdir: [],
+        avpchBull: [],
+        avpchBear: [],
+        avpchNeutral: [],
+    };
     return {
         sma20, sma50, sma200, ema20, ema50, ema200,
         bbUpper, bbMid, bbLower,
         adx, rsi,
         stochK: stoch.k,
         stochD: stoch.d,
+        trendiloPch: trendilo.pch,
+        trendiloAvpch: trendilo.avpch,
+        trendiloRms: trendilo.rms,
+        trendiloNegRms: trendilo.negRms,
+        trendiloDir: trendilo.cdir,
+        trendiloBull: trendilo.avpchBull,
+        trendiloBear: trendilo.avpchBear,
+        trendiloNeutral: trendilo.avpchNeutral,
     };
 }
 
@@ -4989,6 +5432,162 @@ function removeIndicatorSeries(key) {
     delete indicatorSeries[key];
 }
 
+function setTrendiloPanelVisibility(show) {
+    const panelEl = document.getElementById('chart-trendilo-panel');
+    const containerEl = document.querySelector('.chart-container');
+    if (!panelEl || !containerEl) return;
+    const visible = !!show;
+    panelEl.classList.toggle('d-none', !visible);
+    containerEl.classList.toggle('with-trendilo-panel', visible);
+    if (!visible) {
+        try { trendiloPanelChart?.clearCrosshairPosition?.(); } catch (_) {}
+        try { chart?.clearCrosshairPosition?.(); } catch (_) {}
+    }
+    refreshChartViewport();
+}
+
+function ensureTrendiloPanelChart() {
+    if (trendiloPanelChart || typeof LightweightCharts === 'undefined') return;
+    const panelEl = document.getElementById('chart-trendilo-panel');
+    if (!panelEl) return;
+
+    trendiloPanelChart = LightweightCharts.createChart(panelEl, {
+        width: Math.max(320, panelEl.clientWidth || 320),
+        height: Math.max(120, panelEl.clientHeight || 180),
+        layout: {
+            background: { type: 'solid', color: CHART_BG_COLOR },
+            textColor: '#d1d4dc',
+            fontSize: 11,
+        },
+        grid: {
+            vertLines: { color: '#1e222d' },
+            horzLines: { color: '#1e222d' },
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
+        timeScale: {
+            borderColor: '#2a2e39',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+    });
+
+    trendiloPanelSeries.upper = trendiloPanelChart.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    trendiloPanelSeries.lower = trendiloPanelChart.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    trendiloPanelSeries.signal = trendiloPanelChart.addLineSeries({
+        color: '#9ca3af',
+        lineWidth: 3,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    trendiloPanelSeries.zero = trendiloPanelChart.addLineSeries({
+        color: '#6b7280',
+        lineWidth: 1,
+        lineStyle: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+
+    const panelResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+            trendiloPanelChart?.applyOptions({
+                width: Math.max(320, entry.contentRect.width || 320),
+                height: Math.max(120, entry.contentRect.height || 120),
+            });
+        }
+    });
+    panelResizeObserver.observe(panelEl);
+
+    if (chart) {
+        const initialRange = chart.timeScale().getVisibleLogicalRange?.();
+        if (initialRange) {
+            try { trendiloPanelChart.timeScale().setVisibleLogicalRange(initialRange); } catch (_) {}
+        }
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+            if (!trendiloPanelChart || trendiloPanelSyncingRange) return;
+            trendiloPanelSyncingRange = true;
+            try {
+                trendiloPanelChart.timeScale().setVisibleLogicalRange(range);
+            } catch (_) {
+                // ignore transient sync errors when chart has no data
+            }
+            trendiloPanelSyncingRange = false;
+        });
+        chart.subscribeCrosshairMove((param) => {
+            if (!trendiloPanelChart || !indicatorSelection.trendilo || trendiloPanelSyncingCrosshair) return;
+            if (typeof trendiloPanelChart.setCrosshairPosition !== 'function') return;
+            trendiloPanelSyncingCrosshair = true;
+            try {
+                const t = param?.time;
+                if (t == null) {
+                    trendiloPanelChart.clearCrosshairPosition?.();
+                } else {
+                    const key = normalizeTimeKey(t);
+                    const v = trendiloSignalByTime.get(key);
+                    const d = Number(trendiloDirByTime.get(key) || 0);
+                    const targetSeries = trendiloPanelSeries.signal;
+                    if (Number.isFinite(v) && targetSeries) {
+                        trendiloPanelChart.setCrosshairPosition(v, t, targetSeries);
+                    } else {
+                        trendiloPanelChart.clearCrosshairPosition?.();
+                    }
+                }
+            } catch (_) {
+                // noop
+            }
+            trendiloPanelSyncingCrosshair = false;
+        });
+        trendiloPanelChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+            if (!chart || trendiloPanelSyncingRange) return;
+            trendiloPanelSyncingRange = true;
+            try {
+                chart.timeScale().setVisibleLogicalRange(range);
+            } catch (_) {
+                // ignore transient sync errors when chart has no data
+            }
+            trendiloPanelSyncingRange = false;
+        });
+        trendiloPanelChart.subscribeCrosshairMove((param) => {
+            if (!chart || !indicatorSelection.trendilo || trendiloPanelSyncingCrosshair) return;
+            if (typeof chart.setCrosshairPosition !== 'function') return;
+            trendiloPanelSyncingCrosshair = true;
+            try {
+                const t = param?.time;
+                if (t == null) {
+                    chart.clearCrosshairPosition?.();
+                } else {
+                    const key = normalizeTimeKey(t);
+                    const close = mainCloseByTime.get(key);
+                    if (Number.isFinite(close) && mainCrosshairSeries) {
+                        chart.setCrosshairPosition(close, t, mainCrosshairSeries);
+                    } else {
+                        chart.clearCrosshairPosition?.();
+                    }
+                }
+            } catch (_) {
+                // noop
+            }
+            trendiloPanelSyncingCrosshair = false;
+        });
+    }
+}
+
+function clearTrendiloPanelData() {
+    Object.values(trendiloPanelSeries).forEach((series) => {
+        try { series?.setData([]); } catch (_) {}
+    });
+}
+
 function ensureOscillatorScale() {
     if (!chart) return;
     chart.priceScale('osc').applyOptions({
@@ -5000,6 +5599,12 @@ function ensureOscillatorScale() {
 
 function clearAllIndicatorSeries() {
     for (const key of Object.keys(indicatorSeries)) removeIndicatorSeries(key);
+    clearTrendiloPanelData();
+    setTrendiloPanelVisibility(false);
+    trendiloSignalByTime.clear();
+    trendiloDirByTime.clear();
+    mainCloseByTime.clear();
+    mainCrosshairSeries?.setData([]);
 }
 
 function computeGoldenCrossMarkers(bars, fastSma, slowSma) {
@@ -5051,12 +5656,31 @@ function syncCandleMarkers() {
     candleSeries.setMarkers(markers);
 }
 
+function applyTrendiloBarColoring(bars, trendiloDir) {
+    if (!candleSeries || !Array.isArray(bars) || bars.length === 0) return;
+    const useTrendiloBarColor = !!indicatorSelection.trendiloBarColor;
+    const colored = bars.map((b, i) => {
+        const up = Number(b?.close || 0) >= Number(b?.open || 0);
+        let color = up ? '#26a69a44' : '#ef535044';
+        if (useTrendiloBarColor && Array.isArray(trendiloDir)) {
+            const d = Number(trendiloDir[i] || 0);
+            if (d > 0) color = '#22c55e66';
+            else if (d < 0) color = '#ef444466';
+            else color = '#9ca3af55';
+        }
+        return { ...b, color };
+    });
+    candleSeries.setData(colored);
+}
+
 function applyIndicatorVisibility() {
     const showSmaEma = !!indicatorSelection.smaEma;
     const showBoll = !!indicatorSelection.bollinger;
     const showAdx = !!indicatorSelection.adx;
     const showRsi = !!indicatorSelection.rsi;
     const showStoch = !!indicatorSelection.stoch;
+    const showTrendilo = !!indicatorSelection.trendilo;
+    const showTrendiloBarColor = !!indicatorSelection.trendiloBarColor;
 
     if (!showSmaEma) {
         removeIndicatorSeries('sma20');
@@ -5075,7 +5699,11 @@ function applyIndicatorVisibility() {
         removeIndicatorSeries('stochK');
         removeIndicatorSeries('stochD');
     }
-    if (!(showAdx || showRsi || showStoch) && chart) {
+    if (!showTrendilo) {
+        clearTrendiloPanelData();
+        setTrendiloPanelVisibility(false);
+    }
+    if (!(showAdx || showRsi || showStoch || showTrendiloBarColor) && chart) {
         chart.priceScale('osc').applyOptions({
             autoScale: true,
             scaleMargins: { top: 0.99, bottom: 0.0 },
@@ -5093,21 +5721,47 @@ function updateIndicatorsOnChart() {
         || indicatorSelection.adx
         || indicatorSelection.rsi
         || indicatorSelection.stoch
+        || indicatorSelection.trendilo
+        || indicatorSelection.trendiloBarColor
         || indicatorSelection.goldenCross;
 
     if (!hasSelection) {
+        applyTrendiloBarColoring(bars, null);
+        mainCloseByTime.clear();
+        trendiloSignalByTime.clear();
+        trendiloDirByTime.clear();
+        mainCrosshairSeries?.setData([]);
         goldenCrossMarkers = [];
         syncCandleMarkers();
         return;
     }
 
     if (!Array.isArray(bars) || bars.length === 0) {
+        mainCloseByTime.clear();
+        trendiloSignalByTime.clear();
+        trendiloDirByTime.clear();
+        mainCrosshairSeries?.setData([]);
+        if (indicatorSelection.trendilo) {
+            ensureTrendiloPanelChart();
+            setTrendiloPanelVisibility(true);
+            clearTrendiloPanelData();
+        }
         goldenCrossMarkers = [];
         syncCandleMarkers();
         return;
     }
 
     const pack = computeIndicatorPack(bars, indicatorSelection);
+    mainCloseByTime.clear();
+    const crosshairBaseData = [];
+    for (const b of bars) {
+        const t = Number(b?.time || 0);
+        const c = toFiniteNumber(b?.close);
+        if (!Number.isFinite(t) || !Number.isFinite(c)) continue;
+        mainCloseByTime.set(normalizeTimeKey(t), c);
+        crosshairBaseData.push({ time: t, value: c });
+    }
+    mainCrosshairSeries?.setData(crosshairBaseData);
 
     if (indicatorSelection.smaEma) {
         ensureIndicatorSeries('sma20', { color: '#f59e0b', lineWidth: 2 });
@@ -5148,6 +5802,39 @@ function updateIndicatorsOnChart() {
         indicatorSeries.stochD?.setData(seriesDataFromArray(bars, pack.stochD));
     }
 
+    if (indicatorSelection.trendilo) {
+        ensureTrendiloPanelChart();
+        setTrendiloPanelVisibility(true);
+        const zeroLine = new Array(bars.length).fill(0);
+        trendiloSignalByTime.clear();
+        trendiloDirByTime.clear();
+        const signalData = [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const a = toFiniteNumber(pack.trendiloAvpch[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(a)) continue;
+            const key = normalizeTimeKey(t);
+            const d = Number(pack.trendiloDir[i] || 0);
+            trendiloSignalByTime.set(key, a);
+            trendiloDirByTime.set(key, d);
+            signalData.push({
+                time: t,
+                value: a,
+                color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
+            });
+        }
+        trendiloPanelSeries.upper?.setData(seriesDataFromArray(bars, pack.trendiloRms));
+        trendiloPanelSeries.lower?.setData(seriesDataFromArray(bars, pack.trendiloNegRms));
+        trendiloPanelSeries.signal?.setData(signalData);
+        trendiloPanelSeries.zero?.setData(seriesDataFromArray(bars, zeroLine));
+    } else {
+        trendiloSignalByTime.clear();
+        trendiloDirByTime.clear();
+        clearTrendiloPanelData();
+        setTrendiloPanelVisibility(false);
+    }
+
+    applyTrendiloBarColoring(bars, pack.trendiloDir);
     goldenCrossMarkers = computeGoldenCrossMarkers(bars, pack.sma50, pack.sma200);
     syncCandleMarkers();
 }
@@ -5160,12 +5847,14 @@ function readIndicatorSelectionFromUI() {
         rsi: read('ind-rsi'),
         stoch: read('ind-stoch'),
         bollinger: read('ind-bollinger'),
+        trendilo: read('ind-trendilo'),
+        trendiloBarColor: read('ind-trendilo-barcolor'),
         goldenCross: read('ind-golden-cross'),
     };
 }
 
 function resetIndicatorSelectionUI() {
-    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-golden-cross'];
+    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-trendilo-barcolor', 'ind-golden-cross'];
     for (const id of ids) {
         const el = document.getElementById(id);
         if (el) el.checked = false;
@@ -5766,8 +6455,8 @@ function initChart() {
     }
 
     chart = LightweightCharts.createChart(container, {
-        width: container.clientWidth,
-        height: 450,
+        width: Math.max(320, container.clientWidth || 320),
+        height: Math.max(220, container.clientHeight || 400),
         layout: {
             background: { type: 'solid', color: '#131722' },
             textColor: '#d1d4dc',
@@ -5780,7 +6469,7 @@ function initChart() {
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
         },
-        rightPriceScale: { borderColor: '#2a2e39' },
+        rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
         timeScale: {
             borderColor: '#2a2e39',
             timeVisible: true,
@@ -5802,13 +6491,22 @@ function initChart() {
         priceFormat: { type: 'volume' },
         priceScaleId: 'volume',
     });
+    mainCrosshairSeries = chart.addLineSeries({
+        color: 'rgba(0,0,0,0)',
+        lineWidth: 1,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
     chart.priceScale('volume').applyOptions({
         scaleMargins: { top: 0.85, bottom: 0 },
     });
 
     const resizeObserver = new ResizeObserver(entries => {
         for (const entry of entries) {
-            chart.applyOptions({ width: entry.contentRect.width });
+            chart.applyOptions({
+                width: Math.max(320, entry.contentRect.width || 320),
+                height: Math.max(220, entry.contentRect.height || 220),
+            });
         }
     });
     resizeObserver.observe(container);
@@ -5918,6 +6616,51 @@ function bindEvents() {
     document.getElementById('btn-live-feed')?.addEventListener('click', toggleLiveFeed);
     document.getElementById('btn-refresh-symbols')?.addEventListener('click', () => {
         void refreshBrokerSymbols(true);
+    });
+    document.getElementById('btn-run-trendilo-opps')?.addEventListener('click', () => {
+        void runTrendiloOpportunityScreener();
+    });
+    document.getElementById('btn-load-trendilo-opps-cache')?.addEventListener('click', () => {
+        loadTrendiloOpportunityScreenerCache();
+    });
+    document.getElementById('trendiloOppModal')?.addEventListener('show.bs.modal', () => {
+        const strategyEl = document.getElementById('trendilo-opp-strategy');
+        const profile = String(document.getElementById('agent-strategy-profile')?.value || '').trim().toLowerCase();
+        const profileToStrategy = {
+            classic_htf_fvg: 'mtf',
+            htf_fvg_liquidity_reclaim_v2: 'htf_reclaim',
+            orb_ny_15m_imbalance: 'orb',
+            trendilo_confirmation_v1: 'trendilo',
+        };
+        const mappedStrategy = String(profileToStrategy[profile] || '');
+        if (strategyEl && mappedStrategy && Array.from(strategyEl.options || []).some((o) => String(o.value || '').toLowerCase() === mappedStrategy)) {
+            strategyEl.value = mappedStrategy;
+        }
+        const tfMain = normalizeTimeframeLabel(document.getElementById('sim-timeframe')?.value || 'M15', 'M15');
+        const tfEl = document.getElementById('trendilo-opp-timeframe');
+        if (tfEl && Array.from(tfEl.options || []).some((o) => String(o.value || '').toUpperCase() === tfMain)) {
+            tfEl.value = tfMain;
+        }
+        loadTrendiloOpportunityScreenerCache();
+    });
+    document.getElementById('sim-symbol-search')?.addEventListener('input', () => {
+        applySymbolSearchFilter();
+    });
+    document.getElementById('sim-symbol-search')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const searchEl = document.getElementById('sim-symbol-search');
+            if (searchEl) {
+                searchEl.value = '';
+                applySymbolSearchFilter();
+            }
+        }
+    });
+    document.getElementById('btn-clear-symbol-search')?.addEventListener('click', () => {
+        const searchEl = document.getElementById('sim-symbol-search');
+        if (!searchEl) return;
+        searchEl.value = '';
+        applySymbolSearchFilter();
+        searchEl.focus();
     });
     document.getElementById('sim-symbol')?.addEventListener('change', () => {
         updateCostModelHint();
@@ -6132,7 +6875,7 @@ function bindEvents() {
     document.getElementById('agent-strategy-profile')?.addEventListener('change', () => {
         syncAgentStrategyControls();
     });
-    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-golden-cross'].forEach((id) => {
+    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
             readIndicatorSelectionFromUI();
             updateIndicatorsOnChart();

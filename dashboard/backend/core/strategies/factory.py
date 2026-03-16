@@ -26,6 +26,7 @@ def _ensure_registered() -> None:
     from .keltner_breakout_strategy import KeltnerBreakoutStrategy
     from .earnings_volatility_strategy import EarningsVolatilityStrategy
     from .b_profile_reversion_strategy import BProfileReversionStrategy
+    from .trendilo_strategy import TrendiloStrategy
 
     STRATEGY_CLASSES.update(
         {
@@ -50,6 +51,8 @@ def _ensure_registered() -> None:
             "earnings_volatility_strategy": EarningsVolatilityStrategy,
             # B-Profile failed-auction mean reversion strategy
             "b_profile_reversion_strategy": BProfileReversionStrategy,
+            # Trendilo + ADX/DI + T3/ALMA confirmation strategy
+            "trendilo_strategy": TrendiloStrategy,
         }
     )
 

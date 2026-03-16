@@ -23,6 +23,7 @@ BOT_STATE_FILES = {
     "liquidity_sweep_strategy": Path(__file__).parent.parent.parent / "data" / "liquidity_sweep_state.json",
     "keltner_breakout_strategy": Path(__file__).parent.parent.parent / "data" / "keltner_breakout_state.json",
     "htf_fvg_liquidity_reclaim_strategy": Path(__file__).parent.parent.parent / "data" / "htf_fvg_liquidity_reclaim_strategy_state.json",
+    "trendilo_strategy": Path(__file__).parent.parent.parent / "data" / "trendilo_strategy_state.json",
 }
 
 

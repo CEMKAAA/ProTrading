@@ -246,6 +246,149 @@ class AgentWatchdogService:
         return max(0, min(10, seg))
 
     @staticmethod
+    def _trigger_trade_id(row: Dict[str, Any]) -> int:
+        if not isinstance(row, dict):
+            return 0
+        res = row.get("result") if isinstance(row.get("result"), dict) else {}
+        for k in ("id", "trade_id"):
+            try:
+                v = int(res.get(k) or 0)
+                if v > 0:
+                    return int(v)
+            except Exception:
+                continue
+        return 0
+
+    def _maybe_move_trade_stop_to_breakeven(
+        self,
+        *,
+        db,
+        agent: WorkbenchAgentSessionModel,
+        session: SimulationSession,
+        trade: SimulationTrade,
+        price: float,
+        now: datetime,
+    ) -> Optional[Dict[str, Any]]:
+        snap = agent.last_snapshot_json if isinstance(agent.last_snapshot_json, dict) else {}
+        raw_triggers = snap.get("agent_trade_triggers") if isinstance(snap.get("agent_trade_triggers"), list) else []
+        if not raw_triggers:
+            return None
+        target_trade_id = int(getattr(trade, "id", 0) or 0)
+        if target_trade_id <= 0:
+            return None
+        matched_idx = -1
+        matched_row: Optional[Dict[str, Any]] = None
+        for idx, raw in enumerate(raw_triggers[:200]):
+            row = raw if isinstance(raw, dict) else {}
+            if not row:
+                continue
+            if self._trigger_trade_id(row) != target_trade_id:
+                continue
+            trade_args = row.get("trade_args") if isinstance(row.get("trade_args"), dict) else {}
+            if not bool(trade_args.get("breakeven_at_1r", False)):
+                continue
+            matched_idx = idx
+            matched_row = dict(row)
+            break
+        if matched_idx < 0 or not isinstance(matched_row, dict):
+            return None
+
+        be_meta = matched_row.get("breakeven") if isinstance(matched_row.get("breakeven"), dict) else {}
+        if bool(be_meta.get("moved_to_entry", False)):
+            return None
+
+        try:
+            direction = str(trade.direction or "").upper()
+            entry_price = float(trade.entry_price)
+            stop_loss = float(trade.stop_loss)
+            px = float(price)
+        except Exception:
+            return None
+        if direction not in {"BUY", "SELL"}:
+            return None
+        if not (math.isfinite(entry_price) and math.isfinite(stop_loss) and math.isfinite(px)):
+            return None
+
+        risk_distance = abs(float(entry_price) - float(stop_loss))
+        if risk_distance <= max(1e-9, abs(float(entry_price)) * 1e-9):
+            return None
+        one_r_level = float(entry_price + risk_distance) if direction == "BUY" else float(entry_price - risk_distance)
+        hit_one_r = bool(px >= one_r_level) if direction == "BUY" else bool(px <= one_r_level)
+        if not hit_one_r:
+            return None
+
+        moved = False
+        old_stop = float(stop_loss)
+        new_stop = float(entry_price)
+        eps = max(1e-9, abs(float(entry_price)) * 1e-9)
+        if direction == "BUY":
+            if old_stop < (new_stop - eps):
+                trade.stop_loss = float(new_stop)
+                db.add(trade)
+                moved = True
+        else:
+            if old_stop > (new_stop + eps):
+                trade.stop_loss = float(new_stop)
+                db.add(trade)
+                moved = True
+
+        # Keep in-memory engine stop aligned with persisted DB stop.
+        if moved:
+            try:
+                from ..api.simulation_routes import _get_or_create_engine
+                engine = _get_or_create_engine(session=session, db=db)
+                if isinstance(getattr(engine, "open_positions", None), list):
+                    for pos in engine.open_positions:
+                        if not isinstance(pos, dict):
+                            continue
+                        try:
+                            if int(pos.get("id") or 0) == int(target_trade_id):
+                                pos["stop_loss"] = float(new_stop)
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+        # Persist trigger-side breakeven state for restart-safe visibility.
+        row2 = dict(matched_row)
+        be2 = dict(be_meta)
+        be2["enabled"] = True
+        be2["armed_at"] = str(be2.get("armed_at") or row2.get("executed_at") or row2.get("created_at") or self._safe_iso(now))
+        be2["initial_risk_distance"] = float(round(risk_distance, 6))
+        be2["one_r_level"] = float(round(one_r_level, 6))
+        be2["moved_to_entry"] = True
+        be2["moved_at"] = self._safe_iso(now)
+        be2["move_price"] = float(px)
+        be2["old_stop_loss"] = float(old_stop)
+        be2["new_stop_loss"] = float(new_stop)
+        row2["breakeven"] = be2
+        new_rows: List[Dict[str, Any]] = []
+        for i, raw in enumerate(raw_triggers[:200]):
+            if i == matched_idx:
+                new_rows.append(row2)
+            else:
+                new_rows.append(dict(raw) if isinstance(raw, dict) else {})
+        new_snap = dict(snap) if isinstance(snap, dict) else {}
+        new_snap["agent_trade_triggers"] = new_rows
+        agent.last_snapshot_json = new_snap
+        agent.updated_at = self._utc_now()
+        db.add(agent)
+
+        return {
+            "source": "agent_watchdog",
+            "trigger_id": str(row2.get("id") or ""),
+            "trade_id": int(target_trade_id),
+            "direction": str(direction),
+            "entry_price": float(entry_price),
+            "one_r_level": float(one_r_level),
+            "price": float(px),
+            "old_stop_loss": float(old_stop),
+            "new_stop_loss": float(new_stop),
+            "moved": bool(moved),
+        }
+
+    @staticmethod
     def _price_from_agent_snapshot(agent: WorkbenchAgentSessionModel) -> Optional[float]:
         snap = agent.last_snapshot_json if isinstance(agent.last_snapshot_json, dict) else {}
         tool_state = snap.get("tool_state") if isinstance(snap.get("tool_state"), dict) else {}
@@ -866,7 +1009,13 @@ class AgentWatchdogService:
                     except Exception:
                         pass
             trigger_perms = dict(perms)
-            if not trigger_requires_approval:
+            if trigger_requires_approval:
+                # Approval-gated triggers should transition to pending_approval instead of
+                # failing early on permission checks. Force place permission on the
+                # watchdog path while keeping explicit confirmation required.
+                trigger_perms["can_place_trades"] = True
+                trigger_perms["requires_user_confirm_for_trade"] = True
+            else:
                 # Trigger-driven entries should auto-execute by default once condition is met.
                 trigger_perms["requires_user_confirm_for_trade"] = False
             try:
@@ -1333,6 +1482,40 @@ class AgentWatchdogService:
                 t["executed_at"] = self._safe_iso(now)
                 t["executed_price"] = float(eval_price)
                 t["result"] = result.get("data") if isinstance(result.get("data"), dict) else {}
+                if bool(place_args.get("breakeven_at_1r", False)):
+                    trade_row = t.get("result") if isinstance(t.get("result"), dict) else {}
+                    entry_px = None
+                    stop_px = None
+                    try:
+                        ep = float(trade_row.get("entry_price"))
+                        if math.isfinite(ep):
+                            entry_px = float(ep)
+                    except Exception:
+                        entry_px = None
+                    if entry_px is None:
+                        try:
+                            ep2 = float(eval_price)
+                            if math.isfinite(ep2):
+                                entry_px = float(ep2)
+                        except Exception:
+                            entry_px = None
+                    try:
+                        sp = float(place_args.get("stop_loss"))
+                        if math.isfinite(sp):
+                            stop_px = float(sp)
+                    except Exception:
+                        stop_px = None
+                    risk_dist = (
+                        abs(float(entry_px) - float(stop_px))
+                        if (entry_px is not None and stop_px is not None)
+                        else None
+                    )
+                    t["breakeven"] = {
+                        "enabled": True,
+                        "armed_at": self._safe_iso(now),
+                        "initial_risk_distance": float(risk_dist) if risk_dist is not None else None,
+                        "moved_to_entry": False,
+                    }
                 t.pop("next_retry_at", None)
                 t.pop("last_error", None)
                 if isinstance(dynamic_stop_meta, dict):
@@ -1874,6 +2057,28 @@ class AgentWatchdogService:
                 for trade in open_trades:
                     key = (int(agent.id), int(trade.id))
                     active_keys.add(key)
+                    be_payload = self._maybe_move_trade_stop_to_breakeven(
+                        db=db,
+                        agent=agent,
+                        session=session,
+                        trade=trade,
+                        price=float(price),
+                        now=now,
+                    )
+                    if isinstance(be_payload, dict):
+                        event_rows.append(
+                            WorkbenchAgentEventModel(
+                                agent_session_id=int(agent.id),
+                                event_type="WATCHDOG_BREAKEVEN_MOVED",
+                                severity="info",
+                                payload_json=be_payload,
+                                created_at=self._utc_now(),
+                            )
+                        )
+                        try:
+                            db.refresh(trade)
+                        except Exception:
+                            pass
                     seg = self._segment_for_trade(trade, float(price))
                     if seg is None:
                         continue
@@ -2172,6 +2377,31 @@ class AgentWatchdogService:
             )
             with self._live_bar_cache_lock:
                 self._last_live_bar_by_agent[agent_id] = dict(live_bar)
+            open_trades = (
+                db.query(SimulationTrade)
+                .filter(SimulationTrade.session_id == int(session.id))
+                .filter(SimulationTrade.status == "open")
+                .all()
+            )
+            for trade in open_trades:
+                be_payload = self._maybe_move_trade_stop_to_breakeven(
+                    db=db,
+                    agent=agent,
+                    session=session,
+                    trade=trade,
+                    price=float(price),
+                    now=now_utc,
+                )
+                if isinstance(be_payload, dict):
+                    event_rows.append(
+                        WorkbenchAgentEventModel(
+                            agent_session_id=int(agent.id),
+                            event_type="WATCHDOG_BREAKEVEN_MOVED",
+                            severity="info",
+                            payload_json=be_payload,
+                            created_at=self._utc_now(),
+                        )
+                    )
 
         if event_rows:
             for ev in event_rows:

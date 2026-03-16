@@ -11,6 +11,7 @@ import re
 import os
 import ipaddress
 import pandas as pd
+import numpy as np
 from time import perf_counter
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -21,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as datetime_time
 from urllib.parse import urlparse
 import json
 import logging
@@ -50,6 +51,7 @@ from ..core.instrument_specs import get_instrument
 from ..core.simulation_step_definitions import get_step_definitions, get_all_strategy_steps
 from ..core.strategy_registry import StrategyRegistry
 from ..core.strategies.factory import create_strategy
+from ..core.timezone_config import NY_TZ, ORB_SESSION, TRADING_SESSION
 from ..core.workbench import WORKBENCH_ID, get_tool, list_tools as list_workbench_tools
 from ..core.workbench.symbol_utils import normalize_strategy_symbol
 from ..core.workbench.coach import WorkbenchCoach, build_workbench_context
@@ -279,6 +281,7 @@ _AGENT_STRATEGY_TOOL_GROUPS: Dict[str, Dict[str, Any]] = {
         "children": [
             "scan_tool",
             "scan_draw_fvg_range",
+            "scan_strategy_tradeable",
             "get_indicator_values",
         ],
     },
@@ -287,25 +290,96 @@ _AGENT_STRATEGY_TOOL_GROUPS: Dict[str, Dict[str, Any]] = {
         "children": [
             "scan_tool",
             "scan_draw_fvg_range",
+            "scan_strategy_tradeable",
+            "get_indicator_values",
+        ],
+    },
+    "orb_ny_15m_imbalance": {
+        "parent": "run_orb_analysis",
+        "children": [
+            "scan_tool",
+            "scan_strategy_tradeable",
+            "get_indicator_values",
+        ],
+    },
+    "trendilo_confirmation_v1": {
+        "parent": "run_trendilo_analysis",
+        "children": [
+            "scan_tool",
+            "scan_trendilo_tradeable",
+            "scan_strategy_tradeable",
             "get_indicator_values",
         ],
     },
 }
 _AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS: set[str] = {
     "scan_tool",
+    "scan_trendilo_tradeable",
+    "scan_strategy_tradeable",
     "get_indicator_values",
 }
 
 _AGENT_STRATEGY_TOOL_ACCESS_MODES = {"all", "parent", "child"}
 _AGENT_TOOL_SELECTION_MODES = {"autonomous", "guided", "minimal"}
-_AGENT_STRATEGY_PROFILES = {"classic_htf_fvg", "htf_fvg_liquidity_reclaim_v2"}
+_AGENT_STRATEGY_PROFILES = {
+    "classic_htf_fvg",
+    "htf_fvg_liquidity_reclaim_v2",
+    "orb_ny_15m_imbalance",
+    "trendilo_confirmation_v1",
+}
 _AGENT_STRATEGY_PROFILE_PARENT_TOOL = {
     "classic_htf_fvg": "run_mtf_analysis",
     "htf_fvg_liquidity_reclaim_v2": "run_htf_fvg_liquidity_reclaim_analysis",
+    "orb_ny_15m_imbalance": "run_orb_analysis",
+    "trendilo_confirmation_v1": "run_trendilo_analysis",
 }
 _AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS = {
     "run_mtf_analysis": "mtf_analysis",
     "run_htf_fvg_liquidity_reclaim_analysis": "htf_fvg_liquidity_reclaim_analysis",
+    "run_orb_analysis": "orb_analysis",
+    "run_trendilo_analysis": "trendilo_analysis",
+}
+
+_TRENDILO_MARKET_UNIVERSES: Dict[str, List[str]] = {
+    # Liquid US large-cap + broad-market ETFs.
+    "stocks_top50": [
+        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B", "JPM", "V",
+        "WMT", "XOM", "UNH", "MA", "PG", "ORCL", "COST", "HD", "NFLX", "ABBV",
+        "BAC", "KO", "PEP", "ASML", "AVGO", "ADBE", "CRM", "CSCO", "MRK", "TMO",
+        "MCD", "DIS", "ACN", "LIN", "AMD", "QCOM", "TXN", "INTU", "AMAT", "NOW",
+        "PFE", "NKE", "UBER", "SHOP", "SPY", "QQQ", "IWM", "DIA", "VTI", "SMH",
+    ],
+    # High-liquidity crypto majors and active alts quoted in USD.
+    "crypto_top50": [
+        "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD", "ADAUSD", "DOGEUSD", "AVAXUSD", "DOTUSD", "MATICUSD",
+        "LTCUSD", "LINKUSD", "BCHUSD", "ATOMUSD", "UNIUSD", "ETCUSD", "XLMUSD", "NEARUSD", "APTUSD", "ARBUSD",
+        "OPUSD", "FILUSD", "AAVEUSD", "SUIUSD", "PEPEUSD", "INJUSD", "SEIUSD", "RUNEUSD", "TRXUSD", "TONUSD",
+        "SHIBUSD", "HBARUSD", "ICPUSD", "MKRUSD", "ALGOUSD", "VETUSD", "EOSUSD", "XTZUSD", "THETAUSD", "GRTUSD",
+        "SANDUSD", "MANAUSD", "FTMUSD", "AXSUSD", "EGLDUSD", "KASUSD", "STXUSD", "IMXUSD", "WLDUSD", "TIAUSD",
+    ],
+}
+_TRENDILO_MARKET_UNIVERSES["market_mixed_top"] = (
+    _TRENDILO_MARKET_UNIVERSES["stocks_top50"][:35] + _TRENDILO_MARKET_UNIVERSES["crypto_top50"][:35]
+)
+_TRENDILO_MARKET_UNIVERSE_ALIASES: Dict[str, str] = {
+    "stocks": "stocks_top50",
+    "stock": "stocks_top50",
+    "equities": "stocks_top50",
+    "equity": "stocks_top50",
+    "crypto": "crypto_top50",
+    "cryptos": "crypto_top50",
+    "market": "market_mixed_top",
+    "popular": "market_mixed_top",
+    "market_top": "market_mixed_top",
+    "all_popular": "market_mixed_top",
+}
+_TRENDILO_BROKER_SYMBOL_CANDIDATES: Dict[str, List[str]] = {
+    "US500": ["US500", "SPX500", "SP500", "US500M", "SPX500M", "SP500M", "US500.CASH", "SPX500.CASH"],
+    "NAS100": ["NAS100", "US100", "USTEC", "NAS100M", "US100M", "USTECM", "NAS100.CASH", "US100.CASH"],
+    "XAUUSD": ["XAUUSD", "GOLD", "XAUUSDM", "GOLDM", "XAUUSD.R", "XAUUSD.PRO"],
+    "BTCUSD": ["BTCUSD", "XBTUSD", "BTCUSDM", "BTCUSD.P", "BTCUSD.PRO"],
+    "ETHUSD": ["ETHUSD", "ETHUSDM", "ETHUSD.P", "ETHUSD.PRO"],
+    "SOLUSD": ["SOLUSD", "SOLUSDM", "SOLUSD.P", "SOLUSD.PRO"],
 }
 
 
@@ -919,6 +993,22 @@ def _agent_usage_safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+def _agent_usage_safe_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return bool(v)
+    if v is None:
+        return bool(default)
+    try:
+        s = str(v).strip().lower()
+    except Exception:
+        return bool(default)
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _normalize_agent_usage_payload(raw: Any) -> Dict[str, Any]:
@@ -1860,6 +1950,25 @@ def _normalize_agent_strategy_profile(value: Any) -> str:
         "v2",
     }:
         return "htf_fvg_liquidity_reclaim_v2"
+    if raw in {
+        "orb",
+        "ny_orb",
+        "opening_range_breakout",
+        "opening_range",
+        "orb_15m",
+        "orb_ny_15m",
+        "orb_imbalance",
+        "orb_v2",
+    }:
+        return "orb_ny_15m_imbalance"
+    if raw in {
+        "trendilo",
+        "trendilo_strategy",
+        "trendilo_v1",
+        "trendilo_confirmation",
+        "trendilo_confirm",
+    }:
+        return "trendilo_confirmation_v1"
     return "classic_htf_fvg"
 
 
@@ -6150,6 +6259,57 @@ class AgentRunOnceRequest(BaseModel):
     max_tool_steps: int = Field(default=4, ge=0, le=10)
 
 
+class TrendiloOpportunityScanRequest(BaseModel):
+    source: Optional[str] = None
+    symbol: Optional[str] = None
+    symbols: Optional[List[str]] = None
+    universe: Optional[str] = None
+    universe_limit: Optional[int] = Field(default=None, ge=1, le=200)
+    scan_market: bool = False
+    timeframe: Optional[str] = None
+    execution_timeframe: Optional[str] = None
+    history_days: Optional[float] = Field(default=None, ge=0.1, le=60.0)
+    lookback_bars: int = Field(default=120, ge=20, le=3000)
+    preset: Optional[str] = None
+    risk_percent: Optional[float] = Field(default=None, ge=0.1, le=2.0)
+    rr_target: Optional[float] = Field(default=None, ge=1.0, le=5.0)
+    adx_threshold: Optional[float] = Field(default=None, ge=5.0, le=80.0)
+    atr_stop_mult: Optional[float] = Field(default=None, ge=0.5, le=6.0)
+    use_di_direction: Optional[bool] = None
+    expires_sec: Optional[int] = Field(default=None, ge=1800, le=86400)
+    max_results: int = Field(default=25, ge=1, le=200)
+    include_non_tradeable: bool = False
+    summary_only: bool = True
+    trendilo_pct_lookback: Optional[int] = None
+    trendilo_length: Optional[int] = None
+    trendilo_alma_offset: Optional[float] = None
+    trendilo_alma_sigma: Optional[float] = None
+    trendilo_band_multiplier: Optional[float] = None
+    trendilo_use_custom_band_length: Optional[bool] = None
+    trendilo_band_length: Optional[int] = None
+
+
+class StrategyOpportunityScanRequest(BaseModel):
+    strategy: str = Field(default="trendilo", description="One of: trendilo, mtf, htf_reclaim, orb")
+    source: Optional[str] = None
+    symbol: Optional[str] = None
+    symbols: Optional[List[str]] = None
+    universe: Optional[str] = None
+    universe_limit: Optional[int] = Field(default=None, ge=1, le=200)
+    scan_market: bool = False
+    timeframe: Optional[str] = None
+    execution_timeframe: Optional[str] = None
+    history_days: Optional[float] = Field(default=None, ge=0.1, le=60.0)
+    lookback_bars: Optional[int] = Field(default=None, ge=20, le=3000)
+    preset: Optional[str] = None
+    risk_percent: Optional[float] = Field(default=None, ge=0.1, le=5.0)
+    rr_target: Optional[float] = Field(default=None, ge=1.0, le=12.0)
+    include_news: Optional[bool] = None
+    max_results: int = Field(default=25, ge=1, le=200)
+    include_non_tradeable: bool = False
+    summary_only: bool = True
+
+
 class AgentLoopStartRequest(BaseModel):
     provider: AgentProviderConfig = Field(default_factory=AgentProviderConfig)
     permissions: AgentPermissionConfig = Field(default_factory=AgentPermissionConfig)
@@ -7102,6 +7262,8 @@ def _agent_indicator_values_from_bars(
     bars: Any,
     *,
     max_rows: int = 600,
+    trendilo_params: Optional[Dict[str, Any]] = None,
+    include_trendilo: bool = True,
 ) -> Dict[str, Any]:
     rows_limit = max(30, min(2000, int(max_rows)))
     bars_df = _bars_payload_to_df(bars, max_rows=rows_limit, min_rows=5)
@@ -7110,6 +7272,7 @@ def _agent_indicator_values_from_bars(
     close = bars_df["close"].astype(float)
     high = bars_df["high"].astype(float)
     low = bars_df["low"].astype(float)
+    volume = bars_df["volume"].astype(float) if "volume" in bars_df.columns else pd.Series(0.0, index=bars_df.index)
 
     ema20 = close.ewm(span=20, adjust=False).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
@@ -7146,6 +7309,103 @@ def _agent_indicator_values_from_bars(
     stoch_k = ((close - low14) / denom) * 100.0
     stoch_d = stoch_k.rolling(window=3, min_periods=1).mean()
 
+    def _alma(series: pd.Series, length: int, offset: float, sigma: float) -> pd.Series:
+        ln = max(2, int(length))
+        off = float(max(0.0, min(1.0, float(offset))))
+        sig = float(max(0.1, float(sigma)))
+        m = off * float(ln - 1)
+        s = float(ln) / sig
+        idx = np.arange(ln, dtype=float)
+        w = np.exp(-((idx - m) ** 2) / (2.0 * (s ** 2)))
+        w_sum = float(np.sum(w))
+        if not math.isfinite(w_sum) or w_sum <= 1e-12:
+            return series.rolling(window=ln, min_periods=1).mean()
+        w = w / w_sum
+        return series.rolling(window=ln, min_periods=ln).apply(lambda x: float(np.dot(x, w)), raw=True)
+
+    def _vwma(series: pd.Series, vol: pd.Series, length: int) -> pd.Series:
+        ln = max(1, int(length))
+        w_num = (series * vol).rolling(window=ln, min_periods=1).sum()
+        w_den = vol.rolling(window=ln, min_periods=1).sum().where(lambda s: s.abs() > 1e-12, other=np.nan)
+        return (w_num / w_den).ffill()
+
+    def _t3(series: pd.Series, length: int, vfactor: float = 0.7) -> pd.Series:
+        ln = max(2, int(length))
+        v = float(max(0.0, min(1.0, float(vfactor))))
+        e1 = series.ewm(span=ln, adjust=False).mean()
+        e2 = e1.ewm(span=ln, adjust=False).mean()
+        e3 = e2.ewm(span=ln, adjust=False).mean()
+        e4 = e3.ewm(span=ln, adjust=False).mean()
+        e5 = e4.ewm(span=ln, adjust=False).mean()
+        e6 = e5.ewm(span=ln, adjust=False).mean()
+        c1 = -v ** 3
+        c2 = 3 * v ** 2 + 3 * v ** 3
+        c3 = -6 * v ** 2 - 3 * v - 3 * v ** 3
+        c4 = 1 + 3 * v + v ** 3 + 3 * v ** 2
+        return (c1 * e6) + (c2 * e5) + (c3 * e4) + (c4 * e3)
+
+    def _adx_di(high_s: pd.Series, low_s: pd.Series, close_s: pd.Series, period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        p = max(2, int(period))
+        up_move = high_s.diff()
+        down_move = -low_s.diff()
+        plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+        minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+        prev_c = close_s.shift(1).fillna(close_s.iloc[0])
+        tr_s = pd.concat(
+            [
+                (high_s - low_s).abs(),
+                (high_s - prev_c).abs(),
+                (low_s - prev_c).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr_s = tr_s.ewm(alpha=(1.0 / p), adjust=False).mean().where(lambda s: s > 1e-12, other=np.nan)
+        plus_di_s = 100.0 * (plus_dm.ewm(alpha=(1.0 / p), adjust=False).mean() / atr_s)
+        minus_di_s = 100.0 * (minus_dm.ewm(alpha=(1.0 / p), adjust=False).mean() / atr_s)
+        di_sum = (plus_di_s + minus_di_s).where(lambda s: s > 1e-12, other=np.nan)
+        dx_s = 100.0 * (plus_di_s - minus_di_s).abs() / di_sum
+        adx_s = dx_s.ewm(alpha=(1.0 / p), adjust=False).mean()
+        return adx_s.fillna(0.0), plus_di_s.fillna(0.0), minus_di_s.fillna(0.0)
+
+    cfg = trendilo_params if isinstance(trendilo_params, dict) else {}
+
+    # Trendilo core (Pine-compatible defaults):
+    # smooth=1, length=50, offset=0.85, sigma=6, bmult=1.0, cblen=false.
+    pch = pd.Series(np.nan, index=bars_df.index)
+    avpch = pd.Series(np.nan, index=bars_df.index)
+    rms = pd.Series(np.nan, index=bars_df.index)
+    trendilo_upper = pd.Series(np.nan, index=bars_df.index)
+    trendilo_lower = pd.Series(np.nan, index=bars_df.index)
+    trendilo_dir_num = pd.Series(0, index=bars_df.index, dtype=int)
+    if bool(include_trendilo):
+        trendilo_pct_lookback = max(1, int(_to_float_or_none(cfg.get("trendilo_pct_lookback")) or 1))
+        trendilo_len = max(2, int(_to_float_or_none(cfg.get("trendilo_length")) or 50))
+        trendilo_offset = float(max(0.0, min(1.0, float(_to_float_or_none(cfg.get("trendilo_alma_offset")) or 0.85))))
+        trendilo_sigma = float(max(0.1, float(_to_float_or_none(cfg.get("trendilo_alma_sigma")) or 6.0)))
+        trendilo_band_mult = float(max(0.01, float(_to_float_or_none(cfg.get("trendilo_band_multiplier")) or 1.0)))
+        trendilo_use_custom_band_len = bool(cfg.get("trendilo_use_custom_band_length") if cfg.get("trendilo_use_custom_band_length") is not None else False)
+        trendilo_custom_band_len = max(1, int(_to_float_or_none(cfg.get("trendilo_band_length")) or 20))
+        trendilo_band_len = int(trendilo_custom_band_len if trendilo_use_custom_band_len else trendilo_len)
+        trendilo_band_len = max(1, trendilo_band_len)
+        prev_n = close.shift(trendilo_pct_lookback).replace(0.0, np.nan)
+        pch = ((close - prev_n) / close.replace(0.0, np.nan)) * 100.0
+        pch = pch.replace([np.inf, -np.inf], np.nan)
+        avpch = _alma(pch, trendilo_len, trendilo_offset, trendilo_sigma)
+        rms = np.sqrt((avpch.pow(2)).rolling(window=trendilo_band_len, min_periods=trendilo_band_len).mean())
+        trendilo_upper = rms * trendilo_band_mult
+        trendilo_lower = -trendilo_upper
+        trendilo_dir_num = pd.Series(np.where(avpch > trendilo_upper, 1, np.where(avpch < trendilo_lower, -1, 0)), index=bars_df.index)
+
+    # Confirmation indicators
+    alma300 = _alma(close, 300, 0.95, 6.0).ffill()
+    t3_300 = _t3(close, 300, 0.7).ffill()
+    adx14, plus_di14, minus_di14 = _adx_di(high, low, close, 14)
+    adx_ll = adx14.rolling(window=14, min_periods=1).min()
+    adx_hh = adx14.rolling(window=14, min_periods=1).max()
+    adx_rng = (adx_hh - adx_ll).where(lambda s: s > 1e-12, other=np.nan)
+    stoch_adx14 = ((adx14 - adx_ll) / adx_rng) * 100.0
+    stoch_adx_vwma = _vwma(stoch_adx14.fillna(0.0), volume.fillna(0.0), 8).ffill()
+
     def _last(series: Any, digits: int = 5) -> Optional[float]:
         try:
             val = float(series.iloc[-1])
@@ -7172,6 +7432,24 @@ def _agent_indicator_values_from_bars(
         elif e20 < e50 < e200:
             trend_bias = "bearish"
 
+    di_direction = "neutral"
+    pdi_last = _last(plus_di14, 3)
+    mdi_last = _last(minus_di14, 3)
+    if pdi_last is not None and mdi_last is not None:
+        if pdi_last > mdi_last:
+            di_direction = "bullish"
+        elif pdi_last < mdi_last:
+            di_direction = "bearish"
+
+    trendilo_direction = "neutral"
+    if bool(include_trendilo):
+        tdir_last = _last(trendilo_dir_num, 0)
+        if tdir_last is not None:
+            if int(tdir_last) > 0:
+                trendilo_direction = "bullish"
+            elif int(tdir_last) < 0:
+                trendilo_direction = "bearish"
+
     return {
         "trend_bias": trend_bias,
         "change_pct_20": change_pct_20,
@@ -7188,6 +7466,20 @@ def _agent_indicator_values_from_bars(
         "bb_lower": _last(sma20 - (2.0 * std20)),
         "stoch_k": _last(stoch_k, 2),
         "stoch_d": _last(stoch_d, 2),
+        "trendilo_pch": _last(pch, 4) if bool(include_trendilo) else None,
+        "trendilo_avpch": _last(avpch, 4) if bool(include_trendilo) else None,
+        "trendilo_rms": _last(rms, 4) if bool(include_trendilo) else None,
+        "trendilo_upper": _last(trendilo_upper, 4) if bool(include_trendilo) else None,
+        "trendilo_lower": _last(trendilo_lower, 4) if bool(include_trendilo) else None,
+        "trendilo_direction": trendilo_direction,
+        "alma300": _last(alma300, 5),
+        "t3_300": _last(t3_300, 5),
+        "adx14": _last(adx14, 3),
+        "stoch_adx14": _last(stoch_adx14, 3),
+        "stoch_adx_vwma": _last(stoch_adx_vwma, 3),
+        "plus_di14": pdi_last,
+        "minus_di14": mdi_last,
+        "di_direction": di_direction,
     }
 
 
@@ -9734,6 +10026,2914 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
     return summary
 
 
+def _agent_orb_symbol_family(symbol: str) -> str:
+    base = normalize_strategy_symbol(symbol) or str(symbol or "").upper()
+    s = str(base or "").upper()
+    if s.startswith("XAU"):
+        return "gold"
+    if s in {"US500", "NAS100", "US100", "SPX500", "SP500"}:
+        return "index"
+    if re.fullmatch(r"[A-Z]{6}", s):
+        return "fx"
+    return "other"
+
+
+def _agent_run_trendilo_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "trendilo_strategy"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_trendilo_analysis") or "trendilo_analysis")
+
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    execution_tf = str(payload.get("execution_timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper() or "M15"
+    if execution_tf not in {"M1", "M5", "M15", "M30", "H1"}:
+        execution_tf = "M15"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        requested_preset = "default"
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+    if not isinstance(preset_cfg, dict):
+        preset_cfg = {}
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+    if risk_percent is None or not math.isfinite(float(risk_percent)):
+        risk_percent = 0.75
+    risk_percent = float(max(0.1, min(2.0, float(risk_percent))))
+
+    rr_target = _to_float_or_none(payload.get("rr_target"))
+    if rr_target is None:
+        rr_target = _to_float_or_none(preset_cfg.get("rr_ratio"))
+    if rr_target is None or not math.isfinite(float(rr_target)):
+        rr_target = 2.0
+    rr_target = float(max(1.0, min(5.0, float(rr_target))))
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(execution_tf)
+    history_days = float(max(1.0, min(30.0, float(history_days))))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=execution_tf,
+        history_days=history_days,
+        count=max(300, int((history_days * 1440.0) / max(1.0, float(_agent_timeframe_to_minutes(execution_tf))) + 40)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=4000,
+        min_rows=120,
+    )
+    if bars_df is None or len(bars_df) < 120:
+        out = {
+            "strategy_id": strategy_id,
+            "strategy_name": "Trendilo Strategy",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": execution_tf,
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "insufficient_live_history",
+            "reason": str(live_err or "live_history_unavailable"),
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": ["insufficient_live_history"],
+            "soft_blockers": [],
+            "confidence_warnings": ["insufficient_live_history"],
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": execution_tf,
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "insufficient_live_history",
+                    "reason": str(live_err or "live_history_unavailable"),
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                }
+            },
+        }
+        return out
+
+    indicators = _agent_indicator_values_from_bars(
+        bars_live,
+        max_rows=2000,
+        trendilo_params=preset_cfg,
+    )
+    last_close = _to_float_or_none(indicators.get("price")) or _to_float_or_none(float(bars_df["close"].iloc[-1]))
+    if last_close is None:
+        last_close = float(bars_df["close"].iloc[-1])
+
+    trendilo_dir = str(indicators.get("trendilo_direction") or "neutral").lower()
+    adx_line = _to_float_or_none(indicators.get("stoch_adx_vwma"))
+    plus_di = _to_float_or_none(indicators.get("plus_di14"))
+    minus_di = _to_float_or_none(indicators.get("minus_di14"))
+    alma300 = _to_float_or_none(indicators.get("alma300"))
+    t3_300 = _to_float_or_none(indicators.get("t3_300"))
+    atr14 = _to_float_or_none(indicators.get("atr14"))
+    if atr14 is None or not math.isfinite(float(atr14)) or float(atr14) <= 0:
+        atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+    atr14 = float(max(0.01, float(atr14 or 0.01)))
+
+    adx_threshold = _to_float_or_none(payload.get("adx_threshold"))
+    if adx_threshold is None:
+        adx_threshold = _to_float_or_none(preset_cfg.get("adx_threshold"))
+    if adx_threshold is None or not math.isfinite(float(adx_threshold)):
+        adx_threshold = 20.0
+    adx_threshold = float(max(5.0, min(80.0, float(adx_threshold))))
+
+    use_di_direction = bool(payload.get("use_di_direction", preset_cfg.get("use_di_direction", True)))
+    atr_stop_mult = _to_float_or_none(payload.get("atr_stop_mult"))
+    if atr_stop_mult is None:
+        atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+    if atr_stop_mult is None or not math.isfinite(float(atr_stop_mult)):
+        atr_stop_mult = 1.8
+    atr_stop_mult = float(max(0.5, min(6.0, float(atr_stop_mult))))
+
+    di_bull_ok = True
+    di_bear_ok = True
+    if use_di_direction and plus_di is not None and minus_di is not None:
+        di_bull_ok = float(plus_di) > float(minus_di)
+        di_bear_ok = float(minus_di) > float(plus_di)
+
+    price_above_trend = (alma300 is not None and t3_300 is not None and float(last_close) > float(alma300) and float(last_close) > float(t3_300))
+    price_below_trend = (alma300 is not None and t3_300 is not None and float(last_close) < float(alma300) and float(last_close) < float(t3_300))
+    adx_ok = adx_line is not None and float(adx_line) >= float(adx_threshold)
+
+    long_ready = trendilo_dir == "bullish" and price_above_trend and adx_ok and di_bull_ok
+    short_ready = trendilo_dir == "bearish" and price_below_trend and adx_ok and di_bear_ok
+    setup_ready = bool(long_ready or short_ready)
+
+    blockers: List[str] = []
+    soft_blockers: List[str] = []
+    confidence_warnings: List[str] = []
+
+    if trendilo_dir not in {"bullish", "bearish"}:
+        blockers.append("trendilo_neutral")
+    if not adx_ok:
+        blockers.append("adx_confirmation_missing")
+    if not (price_above_trend or price_below_trend):
+        blockers.append("trend_filter_not_aligned")
+    if use_di_direction and not (di_bull_ok or di_bear_ok):
+        blockers.append("di_direction_neutral")
+
+    direction = "BUY" if long_ready else ("SELL" if short_ready else "")
+    best_setup: Optional[Dict[str, Any]] = None
+    schedule_args: Optional[Dict[str, Any]] = None
+    balance = float(session.current_balance or session.initial_balance or 10000.0)
+
+    if setup_ready and direction:
+        inst = get_instrument(base_symbol)
+        entry_ref = float(last_close)
+        sl_distance_raw = float(atr14) * float(atr_stop_mult)
+        min_sl = float(max(0.05, float(_to_float_or_none(preset_cfg.get("min_sl_usd")) or 0.25)))
+        max_sl = float(max(min_sl, float(_to_float_or_none(preset_cfg.get("max_sl_usd")) or (min_sl * 20.0))))
+        risk_distance = float(max(min_sl, min(max_sl, sl_distance_raw)))
+        if direction == "BUY":
+            stop_loss = float(entry_ref - risk_distance)
+            take_profit = float(entry_ref + (risk_distance * rr_target))
+            condition = {"condition": "close_above", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_below", "trigger_price": float(round(stop_loss, 5))}
+        else:
+            stop_loss = float(entry_ref + risk_distance)
+            take_profit = float(entry_ref - (risk_distance * rr_target))
+            condition = {"condition": "close_below", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
+
+        risk_amount = float(balance * (risk_percent / 100.0))
+        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * float(inst.contract_size)))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_raw),
+            min_lot=float(inst.min_lot),
+            max_lot=float(inst.max_lot),
+            lot_step=float(inst.lot_step),
+        )
+        risk_amount_actual = float(risk_distance * float(inst.contract_size) * float(lot_size))
+        expires_sec = int(max(30 * 60, min(24 * 3600, int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600))))
+
+        best_setup = {
+            "direction": str(direction),
+            "entry_ref": float(round(entry_ref, 5)),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "risk_distance": float(round(risk_distance, 5)),
+            "reward_distance": float(round(abs(take_profit - entry_ref), 5)),
+            "rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "risk_amount": float(round(risk_amount, 2)),
+            "risk_amount_actual": float(round(risk_amount_actual, 2)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "condition": condition,
+            "precondition": None,
+            "cancel_rule": cancel_rule,
+            "setup_type": "Trendilo + ADX/DI + T3/ALMA confirmation",
+        }
+        schedule_args = {
+            "symbol": str(symbol),
+            "condition": str(condition.get("condition") or ""),
+            "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+            "direction": str(direction),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "cancel_rule": cancel_rule,
+            "entry_ref": float(round(entry_ref, 5)),
+            "expected_rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "account_balance": float(round(balance, 2)),
+        }
+        geom_ok, geom_reason = _agent_validate_trade_geometry(
+            symbol=str(symbol),
+            direction=str(direction),
+            entry_ref=float(entry_ref),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+        )
+        if not geom_ok:
+            best_setup = None
+            schedule_args = None
+            blockers.append(str(geom_reason or "invalid_trade_geometry"))
+            confidence_warnings.append("invalid_trade_geometry")
+    else:
+        if trendilo_dir in {"bullish", "bearish"} and not adx_ok:
+            soft_blockers.append("trendilo_signal_waiting_for_adx_confirmation")
+        if trendilo_dir in {"bullish", "bearish"} and not (price_above_trend or price_below_trend):
+            soft_blockers.append("trendilo_signal_waiting_for_t3_alma_alignment")
+        if use_di_direction and trendilo_dir == "bullish" and not di_bull_ok:
+            soft_blockers.append("trendilo_signal_waiting_for_di_bullish")
+        if use_di_direction and trendilo_dir == "bearish" and not di_bear_ok:
+            soft_blockers.append("trendilo_signal_waiting_for_di_bearish")
+        confidence_warnings.append("no_executable_trendilo_setup")
+
+    tradeable_today = bool(best_setup is not None)
+    decision = "TRADEABLE_TODAY" if tradeable_today else "NOT_TRADEABLE_TODAY"
+    analysis_stage = "trendilo_setup_ready" if tradeable_today else "confirmations_not_met"
+    momentum_strength = float(max(0.0, min(100.0, float(adx_line or 0.0))))
+    unlock_condition = (
+        "Need Trendilo direction + ADX(stoch/vwma) above threshold + 300 T3/ALMA trend alignment + DI direction confirmation."
+        if not tradeable_today
+        else ""
+    )
+    reason = (
+        "Trendilo momentum breakout confirmed by ADX/DI and 300 T3/ALMA trend filter."
+        if tradeable_today
+        else "Trendilo setup exists but confirmation stack is incomplete."
+    )
+
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "Trendilo Strategy",
+        "preset_id": requested_preset,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "tradeable_today": bool(tradeable_today),
+        "decision": str(decision),
+        "analysis_stage": str(analysis_stage),
+        "reason": str(reason),
+        "unlock_condition": str(unlock_condition),
+        "current_price": float(round(last_close, 5)),
+        "confidence": float(round(momentum_strength, 3)),
+        "momentum_strength": float(round(momentum_strength, 3)),
+        "indicator_snapshot": {
+            "trendilo_direction": trendilo_dir,
+            "trendilo_avpch": _to_float_or_none(indicators.get("trendilo_avpch")),
+            "trendilo_rms": _to_float_or_none(indicators.get("trendilo_rms")),
+            "adx_stoch_vwma": adx_line,
+            "adx_threshold": float(adx_threshold),
+            "plus_di14": plus_di,
+            "minus_di14": minus_di,
+            "alma300": alma300,
+            "t3_300": t3_300,
+            "atr14": float(atr14),
+            "price": float(round(last_close, 5)),
+        },
+        "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_args,
+        "trigger_ready": bool(best_setup is not None),
+        "auto_schedule_allowed": False,
+        "manual_confirmation_required": bool(best_setup is not None),
+        "blockers": blockers[:8],
+        "soft_blockers": soft_blockers[:8],
+        "confidence_warnings": confidence_warnings[:8],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": requested_preset,
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "tradeable_today": bool(tradeable_today),
+                "decision": str(decision),
+                "analysis_stage": str(analysis_stage),
+                "reason": str(reason),
+                "unlock_condition": str(unlock_condition),
+                "current_price": float(round(last_close, 5)),
+                "confidence": float(round(momentum_strength, 3)),
+                "indicator_snapshot": {
+                    "trendilo_direction": trendilo_dir,
+                    "trendilo_avpch": _to_float_or_none(indicators.get("trendilo_avpch")),
+                    "trendilo_rms": _to_float_or_none(indicators.get("trendilo_rms")),
+                    "adx_stoch_vwma": adx_line,
+                    "plus_di14": plus_di,
+                    "minus_di14": minus_di,
+                    "alma300": alma300,
+                    "t3_300": t3_300,
+                    "atr14": float(atr14),
+                    "price": float(round(last_close, 5)),
+                },
+                "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_args,
+                "trigger_ready": bool(best_setup is not None),
+                "manual_confirmation_required": bool(best_setup is not None),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_trendilo_field_stats_from_bars(
+    bars: Any,
+    *,
+    trendilo_params: Optional[Dict[str, Any]] = None,
+    lookback_bars: int = 120,
+) -> Dict[str, Any]:
+    bars_df = _bars_payload_to_df(bars, max_rows=5000, min_rows=20)
+    if bars_df is None or bars_df.empty:
+        return {"ok": False, "error": "insufficient_bars"}
+
+    close = bars_df["close"].astype(float)
+    cfg = trendilo_params if isinstance(trendilo_params, dict) else {}
+
+    trendilo_pct_lookback = max(1, int(_to_float_or_none(cfg.get("trendilo_pct_lookback")) or 1))
+    trendilo_len = max(2, int(_to_float_or_none(cfg.get("trendilo_length")) or 50))
+    trendilo_offset = float(max(0.0, min(1.0, float(_to_float_or_none(cfg.get("trendilo_alma_offset")) or 0.85))))
+    trendilo_sigma = float(max(0.1, float(_to_float_or_none(cfg.get("trendilo_alma_sigma")) or 6.0)))
+    trendilo_band_mult = float(max(0.01, float(_to_float_or_none(cfg.get("trendilo_band_multiplier")) or 1.0)))
+    trendilo_use_custom_band_len = bool(cfg.get("trendilo_use_custom_band_length") if cfg.get("trendilo_use_custom_band_length") is not None else False)
+    trendilo_custom_band_len = max(1, int(_to_float_or_none(cfg.get("trendilo_band_length")) or 20))
+    trendilo_band_len = int(trendilo_custom_band_len if trendilo_use_custom_band_len else trendilo_len)
+    trendilo_band_len = max(1, trendilo_band_len)
+
+    def _alma(series: pd.Series, length: int, offset: float, sigma: float) -> pd.Series:
+        ln = max(2, int(length))
+        off = float(max(0.0, min(1.0, float(offset))))
+        sig = float(max(0.1, float(sigma)))
+        m = off * float(ln - 1)
+        s = float(ln) / sig
+        idx = np.arange(ln, dtype=float)
+        w = np.exp(-((idx - m) ** 2) / (2.0 * (s ** 2)))
+        w_sum = float(np.sum(w))
+        if not math.isfinite(w_sum) or w_sum <= 1e-12:
+            return series.rolling(window=ln, min_periods=1).mean()
+        w = w / w_sum
+        return series.rolling(window=ln, min_periods=ln).apply(lambda x: float(np.dot(x, w)), raw=True)
+
+    prev_n = close.shift(trendilo_pct_lookback).replace(0.0, np.nan)
+    pch = ((close - prev_n) / close.replace(0.0, np.nan)) * 100.0
+    pch = pch.replace([np.inf, -np.inf], np.nan)
+    avpch = _alma(pch, trendilo_len, trendilo_offset, trendilo_sigma)
+    rms = np.sqrt((avpch.pow(2)).rolling(window=trendilo_band_len, min_periods=trendilo_band_len).mean())
+    upper = rms * trendilo_band_mult
+    lower = -upper
+    cdir = pd.Series(np.where(avpch > upper, 1, np.where(avpch < lower, -1, 0)), index=bars_df.index).fillna(0).astype(int)
+
+    lookback = max(5, min(len(cdir), int(lookback_bars)))
+    tail = cdir.iloc[-lookback:]
+    tail_vals = [int(x) for x in tail.to_list()]
+
+    def _segment_count(vals: List[int], target: int) -> int:
+        count = 0
+        prev_hit = False
+        for v in vals:
+            hit = int(v) == int(target)
+            if hit and not prev_hit:
+                count += 1
+            prev_hit = hit
+        return int(count)
+
+    green_bars = int(sum(1 for v in tail_vals if v > 0))
+    red_bars = int(sum(1 for v in tail_vals if v < 0))
+    neutral_bars = int(sum(1 for v in tail_vals if v == 0))
+    green_fields = _segment_count(tail_vals, 1)
+    red_fields = _segment_count(tail_vals, -1)
+    neutral_fields = _segment_count(tail_vals, 0)
+    latest_num = int(tail_vals[-1]) if tail_vals else 0
+    latest_field = "green" if latest_num > 0 else ("red" if latest_num < 0 else "neutral")
+
+    current_field_bars = 0
+    current_field_start_unix: Optional[int] = None
+    if tail_vals:
+        pos = len(tail_vals) - 1
+        while pos > 0 and tail_vals[pos - 1] == latest_num:
+            pos -= 1
+        current_field_bars = int(len(tail_vals) - pos)
+        try:
+            current_field_start_unix = int(tail.index[pos].timestamp())
+        except Exception:
+            current_field_start_unix = None
+    avpch_last = _to_float_or_none(avpch.iloc[-1]) if len(avpch) > 0 else None
+    if avpch_last is not None and not math.isfinite(float(avpch_last)):
+        avpch_last = None
+    rms_last = _to_float_or_none(rms.iloc[-1]) if len(rms) > 0 else None
+    if rms_last is not None and not math.isfinite(float(rms_last)):
+        rms_last = None
+
+    return {
+        "ok": True,
+        "rows_total": int(len(cdir)),
+        "lookback_bars_used": int(lookback),
+        "latest_field": str(latest_field),
+        "has_green_field": bool(green_fields > 0),
+        "has_red_field": bool(red_fields > 0),
+        "has_neutral_field": bool(neutral_fields > 0),
+        "green_bars": int(green_bars),
+        "red_bars": int(red_bars),
+        "neutral_bars": int(neutral_bars),
+        "green_fields_count": int(green_fields),
+        "red_fields_count": int(red_fields),
+        "neutral_fields_count": int(neutral_fields),
+        "current_field_bars": int(current_field_bars),
+        "current_field_start_unix": int(current_field_start_unix) if current_field_start_unix is not None else None,
+        "trendilo_avpch": avpch_last,
+        "trendilo_rms": rms_last,
+    }
+
+
+def _agent_resolve_trendilo_mt5_symbol(
+    *,
+    symbol: str,
+    mt5_service: Any,
+) -> str:
+    req = str(symbol or "").strip().upper()
+    if not req:
+        return req
+    base = normalize_strategy_symbol(req) or req
+    candidates: List[str] = [req]
+    extra = _TRENDILO_BROKER_SYMBOL_CANDIDATES.get(str(base), [])
+    if isinstance(extra, list):
+        candidates.extend([str(x or "").strip().upper() for x in extra if str(x or "").strip()])
+    if req != base:
+        candidates.append(str(base).strip().upper())
+
+    # Generic broker naming variants to improve portability across brokers.
+    stem_variants: List[str] = [req]
+    if "." in req:
+        stem_variants.append(req.replace(".", ""))
+    if req.endswith("USD") and len(req) > 3:
+        root = req[:-3]
+        stem_variants.extend([f"{root}USDT", f"{root}USD", f"{root}USDTPERP"])
+    for stem in list(stem_variants):
+        s = str(stem or "").strip().upper()
+        if not s:
+            continue
+        candidates.extend([
+            s,
+            f"{s}M",
+            f"{s}.M",
+            f"{s}.R",
+            f"{s}.PRO",
+            f"{s}.CASH",
+            f"{s}.US",
+        ])
+
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for cand in candidates:
+        c = str(cand or "").strip().upper()
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        deduped.append(c)
+
+    for cand in deduped:
+        try:
+            resolved = mt5_service.resolve_symbol_name(cand)
+            if isinstance(resolved, str) and resolved.strip():
+                return str(resolved).strip().upper()
+        except Exception:
+            continue
+
+    # Final fallback using broker symbol catalog once, with token matching.
+    try:
+        rows = mt5_service.list_symbols(limit=5000, include_hidden=True, refresh=False) or []
+        if isinstance(rows, list) and rows:
+            req_tok = re.sub(r"[^A-Z0-9]", "", req)
+            base_tok = re.sub(r"[^A-Z0-9]", "", str(base).upper())
+            best_name = ""
+            best_score: Optional[Tuple[int, int, int]] = None
+            for row in rows:
+                name = str((row or {}).get("name") or "").strip()
+                if not name:
+                    continue
+                tok = re.sub(r"[^A-Z0-9]", "", name.upper())
+                if not tok:
+                    continue
+                score: Optional[Tuple[int, int, int]] = None
+                if tok == req_tok or (base_tok and tok == base_tok):
+                    score = (0, 0, len(name))
+                elif req_tok and tok.startswith(req_tok):
+                    score = (1, len(tok) - len(req_tok), len(name))
+                elif base_tok and tok.startswith(base_tok):
+                    score = (1, len(tok) - len(base_tok), len(name))
+                elif req_tok and req_tok in tok:
+                    score = (2, tok.find(req_tok), len(name))
+                elif base_tok and base_tok in tok:
+                    score = (2, tok.find(base_tok), len(name))
+                if score is None:
+                    continue
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_name = name
+            if best_name:
+                return str(best_name).strip().upper()
+    except Exception:
+        pass
+    return req
+
+
+def _agent_prepare_trendilo_scan_jobs(
+    *,
+    symbols: List[str],
+    source: str,
+) -> List[Dict[str, str]]:
+    jobs: List[Dict[str, str]] = []
+    if not isinstance(symbols, list):
+        return jobs
+    if str(source or "").lower() != "mt5":
+        for s in symbols:
+            sym = str(s or "").strip().upper()
+            if sym:
+                jobs.append({"requested_symbol": sym, "scan_symbol": sym})
+        return jobs
+
+    mt5_service = None
+    try:
+        mt5_service = _get_mt5_service_singleton()
+    except Exception:
+        mt5_service = None
+
+    for s in symbols:
+        req = str(s or "").strip().upper()
+        if not req:
+            continue
+        resolved = req
+        if mt5_service is not None:
+            try:
+                resolved = _agent_resolve_trendilo_mt5_symbol(symbol=req, mt5_service=mt5_service)
+            except Exception:
+                resolved = req
+        jobs.append({"requested_symbol": req, "scan_symbol": str(resolved or req).strip().upper() or req})
+
+    deduped_jobs: List[Dict[str, str]] = []
+    seen_scan: set[str] = set()
+    for row in jobs:
+        scan_sym = str(row.get("scan_symbol") or "").strip().upper()
+        if not scan_sym or scan_sym in seen_scan:
+            continue
+        seen_scan.add(scan_sym)
+        deduped_jobs.append(
+            {
+                "requested_symbol": str(row.get("requested_symbol") or scan_sym).strip().upper(),
+                "scan_symbol": scan_sym,
+            }
+        )
+    return deduped_jobs
+
+
+def _agent_mt5_dynamic_trendilo_universe(
+    *,
+    universe_key: str,
+    universe_limit: int,
+) -> Tuple[List[str], Dict[str, Any]]:
+    key = str(universe_key or "").strip().lower()
+    limit = int(max(1, min(200, int(universe_limit or 50))))
+    meta: Dict[str, Any] = {
+        "dynamic_universe_used": False,
+        "dynamic_universe_source": "mt5_symbol_catalog",
+        "dynamic_universe_candidates": 0,
+    }
+    if key not in {"stocks_top50", "crypto_top50", "market_mixed_top"}:
+        return [], meta
+
+    try:
+        svc = _get_mt5_service_singleton()
+        rows = svc.list_symbols(limit=5000, include_hidden=True, refresh=False)
+    except Exception:
+        return [], meta
+    if not isinstance(rows, list) or not rows:
+        return [], meta
+
+    currency_codes = {
+        "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
+        "SEK", "NOK", "DKK", "TRY", "ZAR", "PLN", "HUF", "CZK",
+        "CNH", "HKD", "SGD", "MXN", "BRL", "RUB",
+    }
+    crypto_roots = {
+        "BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX", "DOT", "LTC",
+        "LINK", "BCH", "TRX", "TON", "XLM", "ETC", "NEAR", "APT", "ARB", "OP",
+        "FIL", "AAVE", "SUI", "PEPE", "INJ", "SEI", "RUNE", "ICP", "MKR", "ATOM",
+        "ALGO", "VET", "EOS", "XTZ", "THETA", "GRT", "SAND", "MANA", "FTM", "AXS",
+        "EGLD", "KAS", "STX", "IMX", "WLD", "TIA", "SHIB", "HBAR",
+    }
+
+    def _token(name: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", str(name or "").upper())
+
+    def _is_fx_like(tok: str) -> bool:
+        if len(tok) < 6:
+            return False
+        left = tok[:3]
+        right = tok[3:6]
+        return left in currency_codes and right in currency_codes
+
+    def _is_index_like(text_u: str, tok: str) -> bool:
+        if any(k in text_u for k in ["INDEX", "INDICES", "SPX", "S&P", "NASDAQ", "DOW", "DAX", "FTSE", "US500", "NAS100", "US100"]):
+            return True
+        return bool(re.match(r"^(US|NAS|SPX|DJ|GER|UK)\d{2,4}", tok))
+
+    def _is_metal_like(text_u: str, tok: str) -> bool:
+        return any(k in text_u for k in ["XAU", "XAG", "GOLD", "SILVER", "METAL"]) or tok.startswith("XAU") or tok.startswith("XAG")
+
+    def _is_crypto_like(text_u: str, tok: str) -> bool:
+        if any(k in text_u for k in ["CRYPTO", "COIN", "BITCOIN", "ETHEREUM"]):
+            return True
+        if "USDT" in tok:
+            return True
+        if "USD" in tok:
+            for root in crypto_roots:
+                if tok.startswith(root):
+                    return True
+        return False
+
+    def _is_stock_like(text_u: str, tok: str) -> bool:
+        if any(k in text_u for k in ["STOCK", "SHARE", "EQUITY", "NASDAQ", "NYSE", "ETF", "CFD STOCK", "US SHARES"]):
+            return True
+        if tok.startswith("#") and len(tok) > 1:
+            return True
+        if "." in text_u or "-" in text_u:
+            if re.search(r"[A-Z]{1,5}[.\-][A-Z]{1,4}", text_u):
+                return True
+        # Common equity ticker shape (1-5 letters) while excluding FX/index/metal/crypto.
+        if re.fullmatch(r"[A-Z]{1,5}", tok):
+            return True
+        return False
+
+    stocks: List[str] = []
+    cryptos: List[str] = []
+    seen_stock: set[str] = set()
+    seen_crypto: set[str] = set()
+
+    for row in rows:
+        name = str((row or {}).get("name") or "").strip().upper()
+        if not name:
+            continue
+        desc = str((row or {}).get("description") or "").strip().upper()
+        path = str((row or {}).get("path") or "").strip().upper()
+        text_u = f"{name} {desc} {path}"
+        tok = _token(name)
+        if not tok:
+            continue
+        if _is_metal_like(text_u, tok) or _is_index_like(text_u, tok):
+            continue
+        if _is_crypto_like(text_u, tok):
+            if name not in seen_crypto:
+                seen_crypto.add(name)
+                cryptos.append(name)
+            continue
+        if _is_fx_like(tok):
+            continue
+        if _is_stock_like(text_u, tok):
+            if name not in seen_stock:
+                seen_stock.add(name)
+                stocks.append(name)
+
+    meta["dynamic_universe_candidates"] = int(len(stocks) + len(cryptos))
+    selected: List[str] = []
+    if key == "stocks_top50":
+        selected = stocks[:limit]
+    elif key == "crypto_top50":
+        selected = cryptos[:limit]
+    else:
+        # Mixed: interleave stocks and crypto for diversity.
+        s_i = 0
+        c_i = 0
+        while len(selected) < limit and (s_i < len(stocks) or c_i < len(cryptos)):
+            if s_i < len(stocks):
+                selected.append(stocks[s_i])
+                s_i += 1
+                if len(selected) >= limit:
+                    break
+            if c_i < len(cryptos):
+                selected.append(cryptos[c_i])
+                c_i += 1
+
+    if not selected:
+        return [], meta
+    meta["dynamic_universe_used"] = True
+    return selected[:limit], meta
+
+
+def _agent_collect_scan_jobs_from_payload(
+    *,
+    session: SimulationSession,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    source: str,
+    default_symbol: str,
+) -> Dict[str, Any]:
+    raw_universe = str(payload.get("universe") or payload.get("symbol_universe") or "").strip().lower()
+    if not raw_universe and bool(payload.get("scan_market")):
+        raw_universe = "market_mixed_top"
+    universe_key = _TRENDILO_MARKET_UNIVERSE_ALIASES.get(raw_universe, raw_universe)
+    universe_symbols = list(_TRENDILO_MARKET_UNIVERSES.get(universe_key, []))
+    dynamic_universe_meta: Dict[str, Any] = {
+        "dynamic_universe_used": False,
+        "dynamic_universe_source": "",
+        "dynamic_universe_candidates": 0,
+    }
+    try:
+        universe_limit = int(payload.get("universe_limit")) if payload.get("universe_limit") is not None else None
+    except Exception:
+        universe_limit = None
+    if universe_limit is not None:
+        universe_limit = int(max(1, min(200, universe_limit)))
+        universe_symbols = universe_symbols[:universe_limit]
+    if source == "mt5" and universe_symbols:
+        dyn_limit = int(universe_limit) if universe_limit is not None else int(len(universe_symbols))
+        dyn_symbols, dyn_meta = _agent_mt5_dynamic_trendilo_universe(
+            universe_key=universe_key,
+            universe_limit=dyn_limit,
+        )
+        if dyn_symbols:
+            universe_symbols = dyn_symbols
+        if isinstance(dyn_meta, dict):
+            dynamic_universe_meta = {
+                "dynamic_universe_used": bool(dyn_meta.get("dynamic_universe_used")),
+                "dynamic_universe_source": str(dyn_meta.get("dynamic_universe_source") or ""),
+                "dynamic_universe_candidates": int(dyn_meta.get("dynamic_universe_candidates") or 0),
+            }
+
+    symbols: List[str] = []
+    if universe_symbols:
+        symbols.extend(universe_symbols)
+    raw_symbols = payload.get("symbols")
+    if isinstance(raw_symbols, list):
+        for row in raw_symbols:
+            s = str(row or "").strip().upper()
+            if s:
+                symbols.append(s)
+    elif isinstance(raw_symbols, str):
+        for part in re.split(r"[,\s]+", raw_symbols.strip()):
+            s = str(part or "").strip().upper()
+            if s:
+                symbols.append(s)
+    single_symbol = str(payload.get("symbol") or "").strip().upper()
+    if single_symbol:
+        symbols.append(single_symbol)
+    if not symbols:
+        mctx = _agent_market_context_from_snapshot(
+            session=session,
+            context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+        )
+        symbols = [str(mctx.get("symbol") or default_symbol or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"]
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for row in symbols:
+        s = str(row or "").strip().upper()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        deduped.append(s)
+    symbols = deduped[:120]
+    scan_jobs = _agent_prepare_trendilo_scan_jobs(symbols=symbols, source=source)
+    if not scan_jobs:
+        scan_jobs = [{"requested_symbol": s, "scan_symbol": s} for s in symbols]
+    return {
+        "raw_universe": str(raw_universe or ""),
+        "universe_key": str(universe_key or ""),
+        "universe_symbols": universe_symbols,
+        "universe_limit": universe_limit,
+        "dynamic_universe_meta": dynamic_universe_meta,
+        "symbols": symbols,
+        "scan_jobs": scan_jobs,
+    }
+
+
+def _agent_validate_trade_geometry(
+    *,
+    symbol: str,
+    direction: str,
+    entry_ref: Optional[float],
+    stop_loss: Optional[float],
+    take_profit: Optional[float],
+) -> Tuple[bool, Optional[str]]:
+    entry = _to_float_or_none(entry_ref)
+    sl = _to_float_or_none(stop_loss)
+    tp = _to_float_or_none(take_profit)
+    d = str(direction or "").strip().upper()
+    if d not in {"BUY", "SELL"}:
+        return False, "invalid_direction"
+    if entry is None or sl is None or tp is None:
+        return False, "missing_entry_or_sl_tp"
+    if (not math.isfinite(float(entry))) or (not math.isfinite(float(sl))) or (not math.isfinite(float(tp))):
+        return False, "non_finite_trade_prices"
+    if float(entry) <= 0.0 or float(sl) <= 0.0 or float(tp) <= 0.0:
+        return False, "non_positive_trade_prices"
+
+    risk_distance = abs(float(entry) - float(sl))
+    reward_distance = abs(float(tp) - float(entry))
+    if risk_distance <= 0.0:
+        return False, "zero_risk_distance"
+    if reward_distance <= 0.0:
+        return False, "zero_reward_distance"
+
+    if d == "BUY":
+        if not (float(sl) < float(entry) < float(tp)):
+            return False, "buy_directional_geometry_invalid"
+    else:
+        if not (float(tp) < float(entry) < float(sl)):
+            return False, "sell_directional_geometry_invalid"
+
+    inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
+    point = max(float(inst.point_value), 1e-6)
+    if risk_distance < (point * 0.5):
+        return False, "risk_distance_too_small"
+
+    # Guard tiny-priced instruments from oversized absolute risk templates.
+    if float(entry) < 5.0 and risk_distance >= (float(entry) * 0.9):
+        return False, "risk_distance_too_large_relative_to_price"
+
+    return True, None
+
+
+def _agent_scan_trendilo_fields(
+    *,
+    session: SimulationSession,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "trendilo_strategy"
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    timeframe = str(
+        payload.get("timeframe")
+        or payload.get("execution_timeframe")
+        or mctx.get("timeframe")
+        or session.timeframe
+        or "M15"
+    ).strip().upper() or "M15"
+    if timeframe not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}:
+        timeframe = "M15"
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(timeframe)
+    history_days = float(max(0.1, min(60.0, float(history_days))))
+
+    try:
+        lookback_bars = int(payload.get("lookback_bars")) if payload.get("lookback_bars") is not None else 120
+    except Exception:
+        lookback_bars = 120
+    lookback_bars = int(max(5, min(3000, int(lookback_bars))))
+
+    raw_universe = str(payload.get("universe") or payload.get("symbol_universe") or "").strip().lower()
+    if not raw_universe and bool(payload.get("scan_market")):
+        raw_universe = "market_mixed_top"
+    universe_key = _TRENDILO_MARKET_UNIVERSE_ALIASES.get(raw_universe, raw_universe)
+    universe_symbols = list(_TRENDILO_MARKET_UNIVERSES.get(universe_key, []))
+    dynamic_universe_meta: Dict[str, Any] = {
+        "dynamic_universe_used": False,
+        "dynamic_universe_source": "",
+        "dynamic_universe_candidates": 0,
+    }
+    try:
+        universe_limit = int(payload.get("universe_limit")) if payload.get("universe_limit") is not None else None
+    except Exception:
+        universe_limit = None
+    if universe_limit is not None:
+        universe_limit = int(max(1, min(200, universe_limit)))
+        universe_symbols = universe_symbols[:universe_limit]
+    if source == "mt5" and universe_symbols:
+        dyn_limit = int(universe_limit) if universe_limit is not None else int(len(universe_symbols))
+        dyn_symbols, dyn_meta = _agent_mt5_dynamic_trendilo_universe(
+            universe_key=universe_key,
+            universe_limit=dyn_limit,
+        )
+        if dyn_symbols:
+            universe_symbols = dyn_symbols
+        if isinstance(dyn_meta, dict):
+            dynamic_universe_meta = {
+                "dynamic_universe_used": bool(dyn_meta.get("dynamic_universe_used")),
+                "dynamic_universe_source": str(dyn_meta.get("dynamic_universe_source") or ""),
+                "dynamic_universe_candidates": int(dyn_meta.get("dynamic_universe_candidates") or 0),
+            }
+
+    raw_symbols = payload.get("symbols")
+    symbols: List[str] = []
+    if universe_symbols:
+        symbols.extend(universe_symbols)
+    if isinstance(raw_symbols, list):
+        for row in raw_symbols:
+            s = str(row or "").strip().upper()
+            if s:
+                symbols.append(s)
+    elif isinstance(raw_symbols, str):
+        for part in re.split(r"[,\s]+", raw_symbols.strip()):
+            s = str(part or "").strip().upper()
+            if s:
+                symbols.append(s)
+    single_symbol = str(payload.get("symbol") or "").strip().upper()
+    if single_symbol:
+        symbols.append(single_symbol)
+    if not symbols:
+        symbols = [str(mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"]
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for row in symbols:
+        s = str(row or "").strip().upper()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        deduped.append(s)
+    symbols = deduped[:120]
+    scan_jobs = _agent_prepare_trendilo_scan_jobs(symbols=symbols, source=source)
+    if not scan_jobs:
+        scan_jobs = [{"requested_symbol": s, "scan_symbol": s} for s in symbols]
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+
+    report: List[Dict[str, Any]] = []
+    ok_count = 0
+    error_count = 0
+    symbols_with_green: List[str] = []
+    symbols_with_red: List[str] = []
+    latest_green_symbols: List[str] = []
+    latest_red_symbols: List[str] = []
+    latest_neutral_symbols: List[str] = []
+    summary_only = bool(payload.get("summary_only", False))
+    try:
+        summary_limit = int(payload.get("summary_limit")) if payload.get("summary_limit") is not None else 120
+    except Exception:
+        summary_limit = 120
+    summary_limit = int(max(10, min(500, summary_limit)))
+
+    tf_min = max(1, _agent_timeframe_to_minutes(timeframe))
+    est_count = int((history_days * 1440.0) / float(tf_min)) + 40
+    try:
+        trendilo_len_guess = max(2, int(payload.get("trendilo_length") or 50))
+    except Exception:
+        trendilo_len_guess = 50
+    warmup_bars = int(max(220, lookback_bars + max(120, trendilo_len_guess * 2)))
+    bar_count = max(220, min(2200, max(est_count, warmup_bars)))
+    if universe_symbols:
+        # Keep market-wide scans responsive by capping bars per symbol.
+        bar_count = min(bar_count, max(420, warmup_bars))
+
+    for job in scan_jobs:
+        requested_symbol = str(job.get("requested_symbol") or "").strip().upper()
+        symbol = str(job.get("scan_symbol") or requested_symbol).strip().upper()
+        base_symbol = normalize_strategy_symbol(symbol) or normalize_strategy_symbol(requested_symbol) or symbol
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+        if not isinstance(preset_cfg, dict) or not preset_cfg:
+            preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+        if not isinstance(preset_cfg, dict):
+            preset_cfg = {}
+        trendilo_cfg = dict(preset_cfg)
+        for key in [
+            "trendilo_pct_lookback",
+            "trendilo_length",
+            "trendilo_alma_offset",
+            "trendilo_alma_sigma",
+            "trendilo_band_multiplier",
+            "trendilo_use_custom_band_length",
+            "trendilo_band_length",
+        ]:
+            if key in payload and payload.get(key) is not None:
+                trendilo_cfg[key] = payload.get(key)
+
+        bars_live, live_err = _agent_fetch_live_history_bars(
+            source=source,
+            symbol=symbol,
+            timeframe=timeframe,
+            history_days=history_days,
+            count=bar_count,
+            databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+        )
+        bars_df = _bars_payload_to_df(bars_live, max_rows=5000, min_rows=20)
+        if bars_df is None or bars_df.empty:
+            error_count += 1
+            report.append(
+                {
+                    "symbol": str(symbol),
+                    "requested_symbol": str(requested_symbol or symbol),
+                    "normalized_symbol": str(base_symbol),
+                    "ok": False,
+                    "error": str(live_err or "live_history_unavailable"),
+                }
+            )
+            continue
+
+        stats = _agent_trendilo_field_stats_from_bars(
+            bars_live,
+            trendilo_params=trendilo_cfg,
+            lookback_bars=lookback_bars,
+        )
+        if not bool(stats.get("ok")):
+            error_count += 1
+            report.append(
+                {
+                    "symbol": str(symbol),
+                    "requested_symbol": str(requested_symbol or symbol),
+                    "normalized_symbol": str(base_symbol),
+                    "ok": False,
+                    "error": str(stats.get("error") or "trendilo_scan_failed"),
+                }
+            )
+            continue
+
+        indicators = _agent_indicator_values_from_bars(
+            bars_live,
+            max_rows=2000,
+            trendilo_params=trendilo_cfg,
+            include_trendilo=False,
+        )
+        latest_close = _to_float_or_none(float(bars_df["close"].iloc[-1])) if len(bars_df) > 0 else None
+        latest_field = str(stats.get("latest_field") or "neutral")
+        trendilo_direction = "neutral"
+        if latest_field == "green":
+            trendilo_direction = "bullish"
+        elif latest_field == "red":
+            trendilo_direction = "bearish"
+        row = {
+            "symbol": str(symbol),
+            "requested_symbol": str(requested_symbol or symbol),
+            "normalized_symbol": str(base_symbol),
+            "ok": True,
+            "timeframe": str(timeframe),
+            "bars_count": int(len(bars_df)),
+            "latest_price": latest_close,
+            "latest_field": latest_field,
+            "has_green_field": bool(stats.get("has_green_field")),
+            "has_red_field": bool(stats.get("has_red_field")),
+            "has_neutral_field": bool(stats.get("has_neutral_field")),
+            "green_bars": int(stats.get("green_bars") or 0),
+            "red_bars": int(stats.get("red_bars") or 0),
+            "neutral_bars": int(stats.get("neutral_bars") or 0),
+            "green_fields_count": int(stats.get("green_fields_count") or 0),
+            "red_fields_count": int(stats.get("red_fields_count") or 0),
+            "neutral_fields_count": int(stats.get("neutral_fields_count") or 0),
+            "lookback_bars_used": int(stats.get("lookback_bars_used") or lookback_bars),
+            "current_field_bars": int(stats.get("current_field_bars") or 0),
+            "current_field_start_unix": stats.get("current_field_start_unix"),
+            "indicator_snapshot": {
+                "trendilo_direction": str(trendilo_direction),
+                "trendilo_avpch": _to_float_or_none(stats.get("trendilo_avpch")),
+                "trendilo_rms": _to_float_or_none(stats.get("trendilo_rms")),
+                "alma300": _to_float_or_none(indicators.get("alma300")),
+                "t3_300": _to_float_or_none(indicators.get("t3_300")),
+                "stoch_adx_vwma": _to_float_or_none(indicators.get("stoch_adx_vwma")),
+                "plus_di14": _to_float_or_none(indicators.get("plus_di14")),
+                "minus_di14": _to_float_or_none(indicators.get("minus_di14")),
+            },
+        }
+        if summary_only:
+            row = {
+                "symbol": str(symbol),
+                "requested_symbol": str(requested_symbol or symbol),
+                "ok": True,
+                "latest_field": latest_field,
+                "current_field_bars": int(stats.get("current_field_bars") or 0),
+                "trendilo_avpch": _to_float_or_none(stats.get("trendilo_avpch")),
+                "trendilo_rms": _to_float_or_none(stats.get("trendilo_rms")),
+            }
+        has_green_field = bool(stats.get("has_green_field"))
+        has_red_field = bool(stats.get("has_red_field"))
+        ok_count += 1
+        if has_green_field:
+            symbols_with_green.append(str(symbol))
+        if has_red_field:
+            symbols_with_red.append(str(symbol))
+        if str(row.get("latest_field") or "") == "green":
+            latest_green_symbols.append(str(symbol))
+        elif str(row.get("latest_field") or "") == "red":
+            latest_red_symbols.append(str(symbol))
+        else:
+            latest_neutral_symbols.append(str(symbol))
+        report.append(row)
+
+    summary = {
+        "strategy_id": strategy_id,
+        "scan_type": "trendilo_fields_multi_symbol",
+        "preset_id": str(requested_preset),
+        "source": str(source),
+        "timeframe": str(timeframe),
+        "history_days": float(round(history_days, 3)),
+        "lookback_bars": int(lookback_bars),
+        "universe_requested": str(raw_universe or ""),
+        "universe_resolved": str(universe_key or "") if universe_symbols else "",
+        "universe_symbol_count": int(len(universe_symbols)),
+        "universe_limit": int(universe_limit) if universe_limit is not None else None,
+        "dynamic_universe_used": bool(dynamic_universe_meta.get("dynamic_universe_used")),
+        "dynamic_universe_source": str(dynamic_universe_meta.get("dynamic_universe_source") or ""),
+        "dynamic_universe_candidates": int(dynamic_universe_meta.get("dynamic_universe_candidates") or 0),
+        "symbols_requested": symbols,
+        "symbols_resolved_for_scan": [str(j.get("scan_symbol") or "").upper() for j in scan_jobs if str(j.get("scan_symbol") or "").strip()],
+        "symbols_scanned": int(len(report)),
+        "ok_count": int(ok_count),
+        "error_count": int(error_count),
+        "symbols_with_green_field": symbols_with_green,
+        "symbols_with_red_field": symbols_with_red,
+        "latest_green_symbols": latest_green_symbols,
+        "latest_red_symbols": latest_red_symbols,
+        "latest_neutral_symbols": latest_neutral_symbols,
+        "agent_summary": {
+            "symbols_scanned": int(len(report)),
+            "ok_count": int(ok_count),
+            "error_count": int(error_count),
+            "latest_zone_counts": {
+                "green": int(len(latest_green_symbols)),
+                "red": int(len(latest_red_symbols)),
+                "neutral": int(len(latest_neutral_symbols)),
+            },
+            "latest_green_symbols": latest_green_symbols[:summary_limit],
+            "latest_red_symbols": latest_red_symbols[:summary_limit],
+            "latest_neutral_symbols": latest_neutral_symbols[:summary_limit],
+        },
+        "report": report,
+        "generated_at": _utc_now().isoformat(),
+        "tool_state_patch": {
+            "trendilo_field_scan": {
+                "generated_at": _utc_now().isoformat(),
+                "timeframe": str(timeframe),
+                "lookback_bars": int(lookback_bars),
+                "symbols_scanned": int(len(report)),
+                "ok_count": int(ok_count),
+                "error_count": int(error_count),
+                "symbols_with_green_field": symbols_with_green[:50],
+                "symbols_with_red_field": symbols_with_red[:50],
+                "latest_green_symbols": latest_green_symbols[:50],
+                "latest_red_symbols": latest_red_symbols[:50],
+                "latest_neutral_symbols": latest_neutral_symbols[:50],
+                "dynamic_universe_used": bool(dynamic_universe_meta.get("dynamic_universe_used")),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_scan_trendilo_tradeable(
+    *,
+    session: SimulationSession,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    t0 = perf_counter()
+    strategy_id = "trendilo_strategy"
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    timeframe = str(
+        payload.get("timeframe")
+        or payload.get("execution_timeframe")
+        or mctx.get("timeframe")
+        or session.timeframe
+        or "M15"
+    ).strip().upper() or "M15"
+    if timeframe not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}:
+        timeframe = "M15"
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(timeframe)
+    history_days = float(max(0.1, min(60.0, float(history_days))))
+
+    try:
+        lookback_bars = int(payload.get("lookback_bars")) if payload.get("lookback_bars") is not None else 120
+    except Exception:
+        lookback_bars = 120
+    lookback_bars = int(max(20, min(3000, int(lookback_bars))))
+
+    raw_universe = str(payload.get("universe") or payload.get("symbol_universe") or "").strip().lower()
+    if not raw_universe and bool(payload.get("scan_market")):
+        raw_universe = "market_mixed_top"
+    universe_key = _TRENDILO_MARKET_UNIVERSE_ALIASES.get(raw_universe, raw_universe)
+    universe_symbols = list(_TRENDILO_MARKET_UNIVERSES.get(universe_key, []))
+    dynamic_universe_meta: Dict[str, Any] = {
+        "dynamic_universe_used": False,
+        "dynamic_universe_source": "",
+        "dynamic_universe_candidates": 0,
+    }
+    try:
+        universe_limit = int(payload.get("universe_limit")) if payload.get("universe_limit") is not None else None
+    except Exception:
+        universe_limit = None
+    if universe_limit is not None:
+        universe_limit = int(max(1, min(200, universe_limit)))
+        universe_symbols = universe_symbols[:universe_limit]
+    if source == "mt5" and universe_symbols:
+        dyn_limit = int(universe_limit) if universe_limit is not None else int(len(universe_symbols))
+        dyn_symbols, dyn_meta = _agent_mt5_dynamic_trendilo_universe(
+            universe_key=universe_key,
+            universe_limit=dyn_limit,
+        )
+        if dyn_symbols:
+            universe_symbols = dyn_symbols
+        if isinstance(dyn_meta, dict):
+            dynamic_universe_meta = {
+                "dynamic_universe_used": bool(dyn_meta.get("dynamic_universe_used")),
+                "dynamic_universe_source": str(dyn_meta.get("dynamic_universe_source") or ""),
+                "dynamic_universe_candidates": int(dyn_meta.get("dynamic_universe_candidates") or 0),
+            }
+
+    raw_symbols = payload.get("symbols")
+    symbols: List[str] = []
+    if universe_symbols:
+        symbols.extend(universe_symbols)
+    if isinstance(raw_symbols, list):
+        for row in raw_symbols:
+            s = str(row or "").strip().upper()
+            if s:
+                symbols.append(s)
+    elif isinstance(raw_symbols, str):
+        for part in re.split(r"[,\s]+", raw_symbols.strip()):
+            s = str(part or "").strip().upper()
+            if s:
+                symbols.append(s)
+    single_symbol = str(payload.get("symbol") or "").strip().upper()
+    if single_symbol:
+        symbols.append(single_symbol)
+    if not symbols:
+        symbols = [str(mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"]
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for row in symbols:
+        s = str(row or "").strip().upper()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        deduped.append(s)
+    symbols = deduped[:120]
+    scan_jobs = _agent_prepare_trendilo_scan_jobs(symbols=symbols, source=source)
+    if not scan_jobs:
+        scan_jobs = [{"requested_symbol": s, "scan_symbol": s} for s in symbols]
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    include_non_tradeable = bool(payload.get("include_non_tradeable", False))
+    summary_only = bool(payload.get("summary_only", True))
+    try:
+        max_results = int(payload.get("max_results")) if payload.get("max_results") is not None else 25
+    except Exception:
+        max_results = 25
+    max_results = int(max(1, min(200, max_results)))
+
+    report: List[Dict[str, Any]] = []
+    opportunities: List[Dict[str, Any]] = []
+    scanned_count = 0
+    ok_count = 0
+    error_count = 0
+    blocked_count = 0
+
+    tf_min = max(1, _agent_timeframe_to_minutes(timeframe))
+    est_count = int((history_days * 1440.0) / float(tf_min)) + 40
+    warmup_base = int(max(320, lookback_bars + 40))
+    bar_count = max(320, min(2200, max(est_count, warmup_base)))
+    if universe_symbols:
+        bar_count = min(bar_count, max(420, warmup_base))
+
+    for job in scan_jobs:
+        scanned_count += 1
+        requested_symbol = str(job.get("requested_symbol") or "").strip().upper()
+        symbol = str(job.get("scan_symbol") or requested_symbol).strip().upper()
+        base_symbol = normalize_strategy_symbol(symbol) or normalize_strategy_symbol(requested_symbol) or symbol
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+        if not isinstance(preset_cfg, dict) or not preset_cfg:
+            preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+        if not isinstance(preset_cfg, dict):
+            preset_cfg = {}
+        trendilo_cfg = dict(preset_cfg)
+        for key in [
+            "trendilo_pct_lookback",
+            "trendilo_length",
+            "trendilo_alma_offset",
+            "trendilo_alma_sigma",
+            "trendilo_band_multiplier",
+            "trendilo_use_custom_band_length",
+            "trendilo_band_length",
+        ]:
+            if key in payload and payload.get(key) is not None:
+                trendilo_cfg[key] = payload.get(key)
+        trend_len_cfg = int(max(120, int(trendilo_cfg.get("trend_filter_length") or 300)))
+        symbol_bar_count = max(
+            320,
+            min(2200, max(bar_count, int(lookback_bars + trend_len_cfg + 40))),
+        )
+        if universe_symbols:
+            symbol_bar_count = min(symbol_bar_count, max(420, trend_len_cfg + 80))
+
+        try:
+            bars_live, live_err = _agent_fetch_live_history_bars(
+                source=source,
+                symbol=symbol,
+                timeframe=timeframe,
+                history_days=history_days,
+                count=symbol_bar_count,
+                databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+            )
+            bars_df = _bars_payload_to_df(bars_live, max_rows=5000, min_rows=120)
+            if bars_df is None or bars_df.empty:
+                error_count += 1
+                report.append(
+                    {
+                        "symbol": str(symbol),
+                        "requested_symbol": str(requested_symbol or symbol),
+                        "normalized_symbol": str(base_symbol),
+                        "ok": False,
+                        "error": str(live_err or "live_history_unavailable"),
+                    }
+                )
+                continue
+
+            indicators = _agent_indicator_values_from_bars(
+                bars_live,
+                max_rows=2000,
+                trendilo_params=trendilo_cfg,
+            )
+            last_close = _to_float_or_none(indicators.get("price")) or _to_float_or_none(float(bars_df["close"].iloc[-1]))
+            if last_close is None:
+                last_close = float(bars_df["close"].iloc[-1])
+
+            trendilo_dir = str(indicators.get("trendilo_direction") or "neutral").lower()
+            avpch = _to_float_or_none(indicators.get("trendilo_avpch"))
+            rms = _to_float_or_none(indicators.get("trendilo_rms"))
+            adx_line = _to_float_or_none(indicators.get("stoch_adx_vwma"))
+            plus_di = _to_float_or_none(indicators.get("plus_di14"))
+            minus_di = _to_float_or_none(indicators.get("minus_di14"))
+            alma300 = _to_float_or_none(indicators.get("alma300"))
+            t3_300 = _to_float_or_none(indicators.get("t3_300"))
+            atr14 = _to_float_or_none(indicators.get("atr14"))
+            if atr14 is None or not math.isfinite(float(atr14)) or float(atr14) <= 0:
+                atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+            atr14 = float(max(0.01, float(atr14 or 0.01)))
+
+            adx_threshold = _to_float_or_none(payload.get("adx_threshold"))
+            if adx_threshold is None:
+                adx_threshold = _to_float_or_none(preset_cfg.get("adx_threshold"))
+            if adx_threshold is None or not math.isfinite(float(adx_threshold)):
+                adx_threshold = 20.0
+            adx_threshold = float(max(5.0, min(80.0, float(adx_threshold))))
+
+            use_di_direction = payload.get("use_di_direction")
+            if use_di_direction is None:
+                use_di_direction = bool(preset_cfg.get("use_di_direction", True))
+            use_di_direction = bool(use_di_direction)
+
+            atr_stop_mult = _to_float_or_none(payload.get("atr_stop_mult"))
+            if atr_stop_mult is None:
+                atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+            if atr_stop_mult is None or not math.isfinite(float(atr_stop_mult)):
+                atr_stop_mult = 1.8
+            atr_stop_mult = float(max(0.5, min(6.0, float(atr_stop_mult))))
+
+            rr_target = _to_float_or_none(payload.get("rr_target"))
+            if rr_target is None:
+                rr_target = _to_float_or_none(preset_cfg.get("rr_ratio"))
+            if rr_target is None or not math.isfinite(float(rr_target)):
+                rr_target = 2.0
+            rr_target = float(max(1.0, min(5.0, float(rr_target))))
+
+            risk_percent = _to_float_or_none(payload.get("risk_percent"))
+            if risk_percent is None:
+                risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+            if risk_percent is None or not math.isfinite(float(risk_percent)):
+                risk_percent = 0.75
+            risk_percent = float(max(0.1, min(2.0, float(risk_percent))))
+
+            expires_sec = int(
+                max(
+                    30 * 60,
+                    min(
+                        24 * 3600,
+                        int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600),
+                    ),
+                )
+            )
+
+            di_bull_ok = True
+            di_bear_ok = True
+            if use_di_direction and plus_di is not None and minus_di is not None:
+                di_bull_ok = float(plus_di) > float(minus_di)
+                di_bear_ok = float(minus_di) > float(plus_di)
+
+            price_above_trend = (
+                alma300 is not None and t3_300 is not None and float(last_close) > float(alma300) and float(last_close) > float(t3_300)
+            )
+            price_below_trend = (
+                alma300 is not None and t3_300 is not None and float(last_close) < float(alma300) and float(last_close) < float(t3_300)
+            )
+            adx_ok = adx_line is not None and float(adx_line) >= float(adx_threshold)
+
+            long_ready = trendilo_dir == "bullish" and price_above_trend and adx_ok and di_bull_ok
+            short_ready = trendilo_dir == "bearish" and price_below_trend and adx_ok and di_bear_ok
+            setup_ready = bool(long_ready or short_ready)
+
+            blockers: List[str] = []
+            if trendilo_dir not in {"bullish", "bearish"}:
+                blockers.append("trendilo_neutral")
+            if not adx_ok:
+                blockers.append("adx_confirmation_missing")
+            if not (price_above_trend or price_below_trend):
+                blockers.append("trend_filter_not_aligned")
+            if use_di_direction and not (di_bull_ok or di_bear_ok):
+                blockers.append("di_direction_neutral")
+
+            momentum_strength = float(round(max(0.0, min(100.0, float(adx_line or 0.0))), 3))
+
+            row: Dict[str, Any] = {
+                "symbol": str(symbol),
+                "requested_symbol": str(requested_symbol or symbol),
+                "normalized_symbol": str(base_symbol),
+                "ok": True,
+                "timeframe": str(timeframe),
+                "latest_price": float(round(float(last_close), 5)),
+                "tradeable": bool(setup_ready),
+                "direction": "BUY" if long_ready else ("SELL" if short_ready else ""),
+                "confidence": momentum_strength,
+                "momentum_strength": momentum_strength,
+                "blockers": blockers,
+                "indicator_snapshot": {
+                    "trendilo_direction": str(trendilo_dir),
+                    "trendilo_avpch": _to_float_or_none(avpch),
+                    "trendilo_rms": _to_float_or_none(rms),
+                    "stoch_adx_vwma": _to_float_or_none(adx_line),
+                    "adx_threshold": float(round(adx_threshold, 3)),
+                    "plus_di14": _to_float_or_none(plus_di),
+                    "minus_di14": _to_float_or_none(minus_di),
+                    "alma300": _to_float_or_none(alma300),
+                    "t3_300": _to_float_or_none(t3_300),
+                    "atr14": float(round(atr14, 5)),
+                },
+                "gate_status": {
+                    "trendilo_direction_ok": trendilo_dir in {"bullish", "bearish"},
+                    "adx_ok": bool(adx_ok),
+                    "di_ok": bool(di_bull_ok if long_ready or trendilo_dir == "bullish" else di_bear_ok if trendilo_dir == "bearish" else False),
+                    "trend_filter_ok": bool(price_above_trend or price_below_trend),
+                },
+            }
+
+            if setup_ready:
+                direction = "BUY" if long_ready else "SELL"
+                inst = get_instrument(base_symbol)
+                entry_ref = float(last_close)
+                sl_distance_raw = float(atr14) * float(atr_stop_mult)
+                min_sl = float(max(0.05, float(_to_float_or_none(preset_cfg.get("min_sl_usd")) or 0.25)))
+                max_sl = float(max(min_sl, float(_to_float_or_none(preset_cfg.get("max_sl_usd")) or (min_sl * 20.0))))
+                risk_distance = float(max(min_sl, min(max_sl, sl_distance_raw)))
+                if direction == "BUY":
+                    stop_loss = float(entry_ref - risk_distance)
+                    take_profit = float(entry_ref + (risk_distance * rr_target))
+                    condition = {"condition": "close_above", "trigger_price": float(round(entry_ref, 5))}
+                    cancel_rule = {"condition": "close_below", "trigger_price": float(round(stop_loss, 5))}
+                else:
+                    stop_loss = float(entry_ref + risk_distance)
+                    take_profit = float(entry_ref - (risk_distance * rr_target))
+                    condition = {"condition": "close_below", "trigger_price": float(round(entry_ref, 5))}
+                    cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
+
+                balance = float(session.current_balance or session.initial_balance or 10000.0)
+                risk_amount = float(balance * (risk_percent / 100.0))
+                lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * float(inst.contract_size)))
+                lot_size = _normalize_lot_for_instrument(
+                    lot_size=float(lot_raw),
+                    min_lot=float(inst.min_lot),
+                    max_lot=float(inst.max_lot),
+                    lot_step=float(inst.lot_step),
+                )
+                risk_amount_actual = float(risk_distance * float(inst.contract_size) * float(lot_size))
+                momentum_ratio = abs(float(avpch or 0.0)) / max(1e-9, abs(float(rms or 0.0)))
+                schedule_args = {
+                    "symbol": str(symbol),
+                    "condition": str(condition.get("condition") or ""),
+                    "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+                    "direction": str(direction),
+                    "stop_loss": float(round(stop_loss, 5)),
+                    "take_profit": float(round(take_profit, 5)),
+                    "lot_size": float(lot_size),
+                    "timeframe": str(timeframe),
+                    "expires_sec": int(expires_sec),
+                    "cancel_rule": cancel_rule,
+                    "entry_ref": float(round(entry_ref, 5)),
+                    "expected_rr": float(round(rr_target, 4)),
+                    "risk_percent": float(round(risk_percent, 4)),
+                    "account_balance": float(round(balance, 2)),
+                }
+                geom_ok, geom_reason = _agent_validate_trade_geometry(
+                    symbol=str(symbol),
+                    direction=str(direction),
+                    entry_ref=float(entry_ref),
+                    stop_loss=float(stop_loss),
+                    take_profit=float(take_profit),
+                )
+                if not geom_ok:
+                    row["tradeable"] = False
+                    row["direction"] = ""
+                    blockers_now = row.get("blockers") if isinstance(row.get("blockers"), list) else []
+                    blockers_now = [str(b) for b in blockers_now if str(b or "").strip()]
+                    blockers_now.append(str(geom_reason or "invalid_trade_geometry"))
+                    row["blockers"] = blockers_now[:12]
+                    blocked_count += 1
+                    if not include_non_tradeable:
+                        ok_count += 1
+                        continue
+                else:
+                    row.update(
+                        {
+                            "direction": str(direction),
+                            "entry_ref": float(round(entry_ref, 5)),
+                            "stop_loss": float(round(stop_loss, 5)),
+                            "take_profit": float(round(take_profit, 5)),
+                            "risk_distance": float(round(risk_distance, 5)),
+                            "reward_distance": float(round(abs(take_profit - entry_ref), 5)),
+                            "rr": float(round(rr_target, 4)),
+                            "risk_percent": float(round(risk_percent, 4)),
+                            "risk_amount": float(round(risk_amount, 2)),
+                            "risk_amount_actual": float(round(risk_amount_actual, 2)),
+                            "lot_size": float(lot_size),
+                            "momentum_ratio": float(round(momentum_ratio, 4)),
+                            "schedule_trade_entry_args": schedule_args,
+                        }
+                    )
+                    opportunities.append(dict(row))
+            else:
+                blocked_count += 1
+                if not include_non_tradeable:
+                    ok_count += 1
+                    continue
+
+            if summary_only:
+                compact = {
+                    "symbol": str(row.get("symbol") or ""),
+                    "requested_symbol": str(row.get("requested_symbol") or ""),
+                    "tradeable": bool(row.get("tradeable")),
+                    "direction": str(row.get("direction") or ""),
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "momentum_strength": float(row.get("momentum_strength") or row.get("confidence") or 0.0),
+                    "latest_price": _to_float_or_none(row.get("latest_price")),
+                    "trendilo_direction": str((row.get("indicator_snapshot") if isinstance(row.get("indicator_snapshot"), dict) else {}).get("trendilo_direction") or "neutral"),
+                    "blockers": row.get("blockers") if isinstance(row.get("blockers"), list) else [],
+                }
+                if bool(row.get("tradeable")):
+                    compact["entry_ref"] = _to_float_or_none(row.get("entry_ref"))
+                    compact["stop_loss"] = _to_float_or_none(row.get("stop_loss"))
+                    compact["take_profit"] = _to_float_or_none(row.get("take_profit"))
+                    compact["rr"] = _to_float_or_none(row.get("rr"))
+                    compact["lot_size"] = _to_float_or_none(row.get("lot_size"))
+                    compact["schedule_trade_entry_args"] = row.get("schedule_trade_entry_args")
+                report.append(compact)
+            else:
+                report.append(row)
+            ok_count += 1
+        except Exception as exc:
+            error_count += 1
+            report.append(
+                {
+                    "symbol": str(symbol),
+                    "requested_symbol": str(requested_symbol or symbol),
+                    "normalized_symbol": str(base_symbol),
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                }
+            )
+
+    opportunities.sort(
+        key=lambda r: (
+            float(r.get("confidence") or 0.0),
+            float(r.get("momentum_ratio") or 0.0),
+            float(r.get("rr") or 0.0),
+        ),
+        reverse=True,
+    )
+    opportunities = opportunities[:max_results]
+
+    elapsed_ms = int(max(0.0, (perf_counter() - t0) * 1000.0))
+    summary = {
+        "strategy_id": strategy_id,
+        "scan_type": "trendilo_tradeable_scan",
+        "preset_id": str(requested_preset),
+        "source": str(source),
+        "timeframe": str(timeframe),
+        "history_days": float(round(history_days, 3)),
+        "lookback_bars": int(lookback_bars),
+        "universe_requested": str(raw_universe or ""),
+        "universe_resolved": str(universe_key or "") if universe_symbols else "",
+        "universe_symbol_count": int(len(universe_symbols)),
+        "universe_limit": int(universe_limit) if universe_limit is not None else None,
+        "dynamic_universe_used": bool(dynamic_universe_meta.get("dynamic_universe_used")),
+        "dynamic_universe_source": str(dynamic_universe_meta.get("dynamic_universe_source") or ""),
+        "dynamic_universe_candidates": int(dynamic_universe_meta.get("dynamic_universe_candidates") or 0),
+        "symbols_requested": symbols,
+        "symbols_resolved_for_scan": [str(j.get("scan_symbol") or "").upper() for j in scan_jobs if str(j.get("scan_symbol") or "").strip()],
+        "symbols_scanned": int(scanned_count),
+        "ok_count": int(ok_count),
+        "error_count": int(error_count),
+        "tradeable_count": int(len(opportunities)),
+        "blocked_count": int(blocked_count),
+        "max_results": int(max_results),
+        "opportunities": opportunities,
+        "report": report if include_non_tradeable else [],
+        "agent_summary": {
+            "symbols_scanned": int(scanned_count),
+            "ok_count": int(ok_count),
+            "error_count": int(error_count),
+            "tradeable_count": int(len(opportunities)),
+            "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
+        },
+        "generated_at": _utc_now().isoformat(),
+        "elapsed_ms": int(elapsed_ms),
+        "tool_state_patch": {
+            "trendilo_opportunity_scan": {
+                "generated_at": _utc_now().isoformat(),
+                "timeframe": str(timeframe),
+                "symbols_scanned": int(scanned_count),
+                "ok_count": int(ok_count),
+                "error_count": int(error_count),
+                "tradeable_count": int(len(opportunities)),
+                "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
+                "elapsed_ms": int(elapsed_ms),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_scan_strategy_tradeable(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    t0 = perf_counter()
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    strategy_raw = str(payload.get("strategy") or payload.get("strategy_id") or "trendilo").strip().lower()
+    strategy_aliases = {
+        "1": "mtf",
+        "strategy1": "mtf",
+        "classic": "mtf",
+        "classic_htf_fvg": "mtf",
+        "mtf": "mtf",
+        "2": "htf_reclaim",
+        "strategy2": "htf_reclaim",
+        "htf_reclaim": "htf_reclaim",
+        "htf_fvg_liquidity_reclaim": "htf_reclaim",
+        "liquidity_reclaim": "htf_reclaim",
+        "3": "orb",
+        "orb": "orb",
+        "opening_range": "orb",
+        "opening_range_breakout": "orb",
+        "4": "trendilo",
+        "trendilo": "trendilo",
+    }
+    strategy_key = strategy_aliases.get(strategy_raw, strategy_raw if strategy_raw in {"mtf", "htf_reclaim", "orb", "trendilo"} else "trendilo")
+    strategy_label_map = {
+        "mtf": "classic_htf_fvg",
+        "htf_reclaim": "htf_fvg_liquidity_reclaim_v2",
+        "orb": "orb_ny_15m_imbalance",
+        "trendilo": "trendilo_confirmation_v1",
+    }
+    strategy_id_map = {
+        "mtf": "run_mtf_analysis",
+        "htf_reclaim": "run_htf_fvg_liquidity_reclaim_analysis",
+        "orb": "run_orb_analysis",
+        "trendilo": "run_trendilo_analysis",
+    }
+
+    symbol_pack = _agent_collect_scan_jobs_from_payload(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+        payload=payload if isinstance(payload, dict) else {},
+        source=source,
+        default_symbol=str(session.symbol or "XAUUSD"),
+    )
+    scan_jobs = symbol_pack.get("scan_jobs") if isinstance(symbol_pack.get("scan_jobs"), list) else []
+    symbols = symbol_pack.get("symbols") if isinstance(symbol_pack.get("symbols"), list) else []
+    raw_universe = str(symbol_pack.get("raw_universe") or "")
+    universe_key = str(symbol_pack.get("universe_key") or "")
+    universe_symbols = symbol_pack.get("universe_symbols") if isinstance(symbol_pack.get("universe_symbols"), list) else []
+    universe_limit = symbol_pack.get("universe_limit")
+    dynamic_universe_meta = symbol_pack.get("dynamic_universe_meta") if isinstance(symbol_pack.get("dynamic_universe_meta"), dict) else {}
+
+    timeframe = str(
+        payload.get("execution_timeframe")
+        or payload.get("timeframe")
+        or mctx.get("timeframe")
+        or session.timeframe
+        or "M15"
+    ).strip().upper() or "M15"
+    include_non_tradeable = bool(payload.get("include_non_tradeable", False))
+    summary_only = bool(payload.get("summary_only", True))
+    try:
+        max_results = int(payload.get("max_results")) if payload.get("max_results") is not None else 25
+    except Exception:
+        max_results = 25
+    max_results = int(max(1, min(200, max_results)))
+
+    report: List[Dict[str, Any]] = []
+    opportunities: List[Dict[str, Any]] = []
+    scanned_count = 0
+    ok_count = 0
+    error_count = 0
+    blocked_count = 0
+
+    for job in scan_jobs:
+        scanned_count += 1
+        requested_symbol = str(job.get("requested_symbol") or "").strip().upper()
+        symbol = str(job.get("scan_symbol") or requested_symbol).strip().upper()
+        base_symbol = normalize_strategy_symbol(symbol) or normalize_strategy_symbol(requested_symbol) or symbol
+        runner_payload = dict(payload if isinstance(payload, dict) else {})
+        runner_payload["symbol"] = str(symbol)
+        runner_payload["source"] = str(source)
+        if strategy_key in {"mtf", "htf_reclaim", "trendilo"}:
+            runner_payload["execution_timeframe"] = str(timeframe)
+        try:
+            if strategy_key == "mtf":
+                summary = _agent_run_mtf_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            elif strategy_key == "htf_reclaim":
+                summary = _agent_run_htf_fvg_liquidity_reclaim_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            elif strategy_key == "orb":
+                summary = _agent_run_orb_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            else:
+                summary = _agent_run_trendilo_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            if not isinstance(summary, dict):
+                raise RuntimeError("strategy_summary_unavailable")
+
+            schedule_args = summary.get("schedule_trade_entry_args") if isinstance(summary.get("schedule_trade_entry_args"), dict) else None
+            if isinstance(schedule_args, dict):
+                schedule_args = dict(schedule_args)
+                schedule_args.setdefault("symbol", str(symbol))
+            if strategy_key in {"orb", "trendilo"}:
+                tradeable = bool(summary.get("tradeable_today")) and isinstance(schedule_args, dict)
+            else:
+                tradeable = bool(summary.get("trigger_ready")) and isinstance(schedule_args, dict)
+
+            blockers: List[str] = []
+            if isinstance(summary.get("blockers"), list):
+                blockers.extend([str(x) for x in summary.get("blockers") if str(x or "").strip()])
+            if isinstance(summary.get("soft_blockers"), list):
+                blockers.extend([str(x) for x in summary.get("soft_blockers") if str(x or "").strip()])
+            if not blockers and (not tradeable):
+                stage = str((summary.get("analysis_trace") or {}).get("stage") or summary.get("analysis_stage") or "").strip()
+                if stage:
+                    blockers.append(stage)
+
+            best_setup = summary.get("best_setup") if isinstance(summary.get("best_setup"), dict) else {}
+            direction = ""
+            if isinstance(schedule_args, dict):
+                direction = str(schedule_args.get("direction") or "").upper()
+            if not direction:
+                direction = str(best_setup.get("direction") or "").upper()
+
+            confidence = _to_float_or_none(summary.get("confidence"))
+            if confidence is None:
+                confidence = _to_float_or_none(best_setup.get("confidence"))
+            if confidence is None and isinstance(summary.get("indicator_snapshot"), dict):
+                confidence = _to_float_or_none((summary.get("indicator_snapshot") or {}).get("adx_stoch_vwma"))
+            if confidence is None:
+                confidence = _to_float_or_none(summary.get("momentum_strength"))
+            if confidence is None and isinstance(best_setup.get("fvg_quality"), dict):
+                confidence = _to_float_or_none((best_setup.get("fvg_quality") or {}).get("score"))
+            if confidence is None and isinstance(summary.get("day_context"), dict):
+                confidence = _to_float_or_none((summary.get("day_context") or {}).get("bias_strength"))
+            if confidence is None:
+                confidence = 0.0
+            confidence = float(max(0.0, min(100.0, float(confidence))))
+
+            entry_ref = _to_float_or_none((schedule_args or {}).get("entry_ref"))
+            stop_loss = _to_float_or_none((schedule_args or {}).get("stop_loss"))
+            take_profit = _to_float_or_none((schedule_args or {}).get("take_profit"))
+            if entry_ref is None:
+                entry_ref = _to_float_or_none(best_setup.get("entry_ref"))
+            if stop_loss is None:
+                stop_loss = _to_float_or_none(best_setup.get("stop_loss"))
+            if take_profit is None:
+                take_profit = _to_float_or_none(best_setup.get("take_profit"))
+
+            if tradeable and isinstance(schedule_args, dict):
+                geom_ok, geom_reason = _agent_validate_trade_geometry(
+                    symbol=str(symbol),
+                    direction=str(direction),
+                    entry_ref=entry_ref,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+                if not geom_ok:
+                    tradeable = False
+                    blockers.append(str(geom_reason or "invalid_trade_geometry"))
+
+            row: Dict[str, Any] = {
+                "strategy": str(strategy_key),
+                "strategy_profile": str(strategy_label_map.get(strategy_key) or ""),
+                "strategy_parent_tool": str(strategy_id_map.get(strategy_key) or ""),
+                "symbol": str(symbol),
+                "requested_symbol": str(requested_symbol or symbol),
+                "normalized_symbol": str(base_symbol),
+                "ok": True,
+                "tradeable": bool(tradeable),
+                "decision": str(summary.get("decision") or ("TRADEABLE" if tradeable else "NOT_TRADEABLE")),
+                "analysis_stage": str((summary.get("analysis_trace") or {}).get("stage") or summary.get("analysis_stage") or ""),
+                "direction": str(direction),
+                "confidence": float(round(confidence, 3)),
+                "latest_price": _to_float_or_none(summary.get("current_price")),
+                "blockers": blockers[:12],
+                "confidence_warnings": (
+                    [str(x) for x in summary.get("confidence_warnings")[:12]]
+                    if isinstance(summary.get("confidence_warnings"), list)
+                    else []
+                ),
+            }
+            if bool(tradeable):
+                rr = _to_float_or_none((schedule_args or {}).get("expected_rr"))
+                if rr is None:
+                    rr = _to_float_or_none(best_setup.get("rr"))
+                row.update(
+                    {
+                        "entry_ref": entry_ref,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "rr": _to_float_or_none(rr),
+                        "lot_size": _to_float_or_none((schedule_args or {}).get("lot_size")),
+                        "risk_percent": _to_float_or_none((schedule_args or {}).get("risk_percent")),
+                        "schedule_trade_entry_args": schedule_args,
+                    }
+                )
+                opportunities.append(dict(row))
+            else:
+                blocked_count += 1
+                if not include_non_tradeable:
+                    ok_count += 1
+                    continue
+
+            if summary_only:
+                compact = {
+                    "strategy": str(row.get("strategy") or ""),
+                    "symbol": str(row.get("symbol") or ""),
+                    "requested_symbol": str(row.get("requested_symbol") or ""),
+                    "tradeable": bool(row.get("tradeable")),
+                    "direction": str(row.get("direction") or ""),
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "analysis_stage": str(row.get("analysis_stage") or ""),
+                    "blockers": row.get("blockers") if isinstance(row.get("blockers"), list) else [],
+                }
+                if bool(row.get("tradeable")):
+                    compact["entry_ref"] = _to_float_or_none(row.get("entry_ref"))
+                    compact["stop_loss"] = _to_float_or_none(row.get("stop_loss"))
+                    compact["take_profit"] = _to_float_or_none(row.get("take_profit"))
+                    compact["rr"] = _to_float_or_none(row.get("rr"))
+                    compact["lot_size"] = _to_float_or_none(row.get("lot_size"))
+                    compact["schedule_trade_entry_args"] = row.get("schedule_trade_entry_args")
+                report.append(compact)
+            else:
+                report.append(row)
+            ok_count += 1
+        except Exception as exc:
+            error_count += 1
+            report.append(
+                {
+                    "strategy": str(strategy_key),
+                    "symbol": str(symbol),
+                    "requested_symbol": str(requested_symbol or symbol),
+                    "normalized_symbol": str(base_symbol),
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+                }
+            )
+
+    opportunities.sort(
+        key=lambda r: (
+            float(r.get("confidence") or 0.0),
+            float(r.get("rr") or 0.0),
+        ),
+        reverse=True,
+    )
+    opportunities = opportunities[:max_results]
+
+    elapsed_ms = int(max(0.0, (perf_counter() - t0) * 1000.0))
+    return {
+        "scan_type": "strategy_tradeable_scan",
+        "strategy": str(strategy_key),
+        "strategy_profile": str(strategy_label_map.get(strategy_key) or ""),
+        "strategy_parent_tool": str(strategy_id_map.get(strategy_key) or ""),
+        "source": str(source),
+        "timeframe": str(timeframe),
+        "universe_requested": str(raw_universe or ""),
+        "universe_resolved": str(universe_key or "") if universe_symbols else "",
+        "universe_symbol_count": int(len(universe_symbols)),
+        "universe_limit": int(universe_limit) if universe_limit is not None else None,
+        "dynamic_universe_used": bool(dynamic_universe_meta.get("dynamic_universe_used")),
+        "dynamic_universe_source": str(dynamic_universe_meta.get("dynamic_universe_source") or ""),
+        "dynamic_universe_candidates": int(dynamic_universe_meta.get("dynamic_universe_candidates") or 0),
+        "symbols_requested": symbols,
+        "symbols_resolved_for_scan": [str(j.get("scan_symbol") or "").upper() for j in scan_jobs if str(j.get("scan_symbol") or "").strip()],
+        "symbols_scanned": int(scanned_count),
+        "ok_count": int(ok_count),
+        "error_count": int(error_count),
+        "tradeable_count": int(len(opportunities)),
+        "blocked_count": int(blocked_count),
+        "max_results": int(max_results),
+        "opportunities": opportunities,
+        "report": report if include_non_tradeable else [],
+        "agent_summary": {
+            "strategy": str(strategy_key),
+            "symbols_scanned": int(scanned_count),
+            "ok_count": int(ok_count),
+            "error_count": int(error_count),
+            "tradeable_count": int(len(opportunities)),
+            "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
+        },
+        "generated_at": _utc_now().isoformat(),
+        "elapsed_ms": int(elapsed_ms),
+        "tool_state_patch": {
+            "strategy_opportunity_scan": {
+                "generated_at": _utc_now().isoformat(),
+                "strategy": str(strategy_key),
+                "timeframe": str(timeframe),
+                "symbols_scanned": int(scanned_count),
+                "ok_count": int(ok_count),
+                "error_count": int(error_count),
+                "tradeable_count": int(len(opportunities)),
+                "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
+                "elapsed_ms": int(elapsed_ms),
+            }
+        },
+    }
+
+
+def _agent_orb_pick_rr_target(
+    *,
+    symbol: str,
+    risk_distance: float,
+    atr14: float,
+    payload_rr: Optional[float],
+    default_rr: float,
+) -> float:
+    rr = float(payload_rr) if (payload_rr is not None and math.isfinite(float(payload_rr)) and float(payload_rr) > 0) else float(default_rr)
+    fam = _agent_orb_symbol_family(symbol)
+    if fam == "index":
+        if risk_distance > 30.0:
+            rr = min(rr, 1.0)
+        else:
+            rr = max(rr, 2.0)
+    else:
+        if atr14 > 0 and risk_distance > (atr14 * 1.8):
+            rr = min(rr, 1.5)
+        else:
+            rr = max(rr, 2.0)
+    return float(max(1.0, min(4.0, rr)))
+
+
+def _agent_orb_find_imbalance(
+    *,
+    post_df: pd.DataFrame,
+    break_pos: int,
+    direction: str,
+    lookahead_bars: int,
+    min_gap: float,
+) -> Optional[Dict[str, Any]]:
+    if post_df is None or post_df.empty:
+        return None
+    if direction not in {"BUY", "SELL"}:
+        return None
+    highs = post_df["high"].to_numpy()
+    lows = post_df["low"].to_numpy()
+    opens = post_df["open"].to_numpy()
+    closes = post_df["close"].to_numpy()
+    idx = post_df.index
+    start_i = max(2, int(break_pos) - 2)
+    end_i = min(len(post_df) - 1, int(break_pos) + max(1, int(lookahead_bars)))
+    for i in range(start_i, end_i + 1):
+        if direction == "BUY":
+            gap = float(lows[i] - highs[i - 2])
+            if gap >= float(min_gap):
+                anchor_low = float(min(lows[i - 2], lows[i - 1], lows[i]))
+                anchor_high = float(max(highs[i - 2], highs[i - 1], highs[i]))
+                return {
+                    "direction": "BUY",
+                    "bar_time_utc": idx[i].isoformat(),
+                    "fvg_bottom": float(highs[i - 2]),
+                    "fvg_top": float(lows[i]),
+                    "gap_size": float(gap),
+                    "entry_ref": float(closes[i]),
+                    "stop_anchor": float(anchor_low),
+                    "anchor_high": float(anchor_high),
+                    "open": float(opens[i]),
+                    "close": float(closes[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                }
+        else:
+            gap = float(lows[i - 2] - highs[i])
+            if gap >= float(min_gap):
+                anchor_low = float(min(lows[i - 2], lows[i - 1], lows[i]))
+                anchor_high = float(max(highs[i - 2], highs[i - 1], highs[i]))
+                return {
+                    "direction": "SELL",
+                    "bar_time_utc": idx[i].isoformat(),
+                    "fvg_top": float(lows[i - 2]),
+                    "fvg_bottom": float(highs[i]),
+                    "gap_size": float(gap),
+                    "entry_ref": float(closes[i]),
+                    "stop_anchor": float(anchor_high),
+                    "anchor_low": float(anchor_low),
+                    "open": float(opens[i]),
+                    "close": float(closes[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                }
+    return None
+
+
+def _agent_run_orb_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "orb_opening_range_imbalance"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_orb_analysis") or "orb_analysis")
+
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    family = _agent_orb_symbol_family(symbol)
+    preset_defaults: Dict[str, Dict[str, Any]] = {
+        "default": {
+            "risk_percent": 0.5,
+            "rr_target": 2.0,
+            "history_days": 2.5,
+            "expires_sec": 4 * 3600,
+            "premarket_conflict_min_body_ratio": 0.60,
+            "news_lookback_min": 240,
+            "high_impact_news_hard_block": True,
+        },
+        "xauusd_m1": {
+            "risk_percent": 0.5,
+            "rr_target": 2.0,
+            "history_days": 2.5,
+            "expires_sec": 3 * 3600,
+            "premarket_conflict_min_body_ratio": 0.55,
+            "news_lookback_min": 240,
+            "high_impact_news_hard_block": True,
+        },
+        "nas100_m1": {
+            "risk_percent": 0.75,
+            "rr_target": 2.0,
+            "history_days": 2.5,
+            "expires_sec": 3 * 3600,
+            "premarket_conflict_min_body_ratio": 0.58,
+            "news_lookback_min": 120,
+            "high_impact_news_hard_block": True,
+        },
+        "us500_m1": {
+            "risk_percent": 0.6,
+            "rr_target": 2.0,
+            "history_days": 2.5,
+            "expires_sec": 3 * 3600,
+            "premarket_conflict_min_body_ratio": 0.58,
+            "news_lookback_min": 120,
+            "high_impact_news_hard_block": True,
+        },
+    }
+    if requested_preset not in preset_defaults:
+        requested_preset = "default"
+    preset_cfg = dict(preset_defaults[requested_preset])
+    if requested_preset == "default":
+        if family == "gold":
+            preset_cfg.update(
+                {
+                    "risk_percent": 0.5,
+                    "rr_target": 2.0,
+                    "premarket_conflict_min_body_ratio": 0.55,
+                    "news_lookback_min": 240,
+                }
+            )
+        elif family == "index":
+            preset_cfg.update(
+                {
+                    "risk_percent": 0.75,
+                    "rr_target": 2.0,
+                    "premarket_conflict_min_body_ratio": 0.58,
+                    "news_lookback_min": 120,
+                }
+            )
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+    if risk_percent is None or (not math.isfinite(float(risk_percent))) or float(risk_percent) <= 0:
+        risk_percent = 0.5
+    risk_percent = float(max(0.1, min(2.0, float(risk_percent))))
+
+    rr_payload = _to_float_or_none(payload.get("rr_target"))
+    default_rr = _to_float_or_none(preset_cfg.get("rr_target")) or 2.0
+
+    conflict_ratio_payload = _to_float_or_none(payload.get("premarket_conflict_min_body_ratio"))
+    conflict_ratio_cfg = _to_float_or_none(preset_cfg.get("premarket_conflict_min_body_ratio"))
+    premarket_conflict_min_body_ratio = float(
+        max(
+            0.45,
+            min(
+                0.90,
+                float(
+                    conflict_ratio_payload
+                    if (conflict_ratio_payload is not None and math.isfinite(float(conflict_ratio_payload)))
+                    else (conflict_ratio_cfg if conflict_ratio_cfg is not None else 0.60)
+                ),
+            ),
+        )
+    )
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or (not math.isfinite(float(history_days))) or float(history_days) <= 0:
+        history_days = float(preset_cfg.get("history_days") or 2.5)
+    history_days = float(max(1.0, min(10.0, float(history_days))))
+
+    try:
+        expires_sec = int(payload.get("expires_sec")) if payload.get("expires_sec") is not None else int(preset_cfg.get("expires_sec") or 4 * 3600)
+    except Exception:
+        expires_sec = int(preset_cfg.get("expires_sec") or 4 * 3600)
+    expires_sec = max(15 * 60, min(24 * 3600, int(expires_sec)))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe="M1",
+        history_days=history_days,
+        count=max(360, int((history_days * 1440.0) + 40)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=12000,
+        min_rows=120,
+    )
+    if bars_df is None or len(bars_df) < 120:
+        out = {
+            "strategy_id": strategy_id,
+            "strategy_name": "NY 15m ORB + 1m Imbalance",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": "M1",
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "insufficient_live_history",
+            "reason": str(live_err or "live_history_unavailable"),
+            "orb": {},
+            "breakout": {},
+            "imbalance": {},
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": [],
+            "soft_blockers": ["insufficient_live_history"],
+            "confidence_warnings": ["insufficient_live_history"],
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": "M1",
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "insufficient_live_history",
+                    "reason": str(live_err or "live_history_unavailable"),
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                }
+            },
+        }
+        return out
+
+    bars_ny = bars_df.tz_convert(NY_TZ)
+    now_ny = bars_ny.index[-1]
+    session_date = now_ny.date()
+    session_start_ny = NY_TZ.localize(datetime.combine(session_date, datetime_time(ORB_SESSION.start.hour, ORB_SESSION.start.minute)))
+    session_end_ny = NY_TZ.localize(datetime.combine(session_date, datetime_time(ORB_SESSION.end.hour, ORB_SESSION.end.minute)))
+    trading_end_ny = NY_TZ.localize(datetime.combine(session_date, datetime_time(TRADING_SESSION.end.hour, TRADING_SESSION.end.minute)))
+
+    orb_slice = bars_ny[(bars_ny.index >= session_start_ny) & (bars_ny.index < session_end_ny)]
+    post_slice = bars_ny[(bars_ny.index >= session_end_ny) & (bars_ny.index <= min(trading_end_ny, now_ny))]
+    current_price = _to_float_or_none(float(bars_ny["close"].iloc[-1]))
+
+    # --- Patch 2: Premarket Context (PDH/PDL + Overnight H/L) ---
+    premarket_context: Dict[str, Any] = {
+        "pdh": None, "pdl": None,
+        "overnight_high": None, "overnight_low": None,
+        "bias_from_context": "neutral",
+    }
+    _prev_day_end = NY_TZ.localize(datetime.combine(session_date, datetime_time(16, 0))) - timedelta(days=1)
+    _prev_day_start = NY_TZ.localize(datetime.combine(session_date, datetime_time(9, 30))) - timedelta(days=1)
+    for _back in range(0, 5):
+        _pds = _prev_day_start - timedelta(days=_back)
+        _pde = _prev_day_end - timedelta(days=_back)
+        _prev_day_bars = bars_ny[(bars_ny.index >= _pds) & (bars_ny.index < _pde)]
+        if len(_prev_day_bars) >= 5:
+            premarket_context["pdh"] = float(round(float(_prev_day_bars["high"].max()), 5))
+            premarket_context["pdl"] = float(round(float(_prev_day_bars["low"].min()), 5))
+            _overnight_start = _pde
+            _overnight_end = session_start_ny
+            _overnight_bars = bars_ny[(bars_ny.index >= _overnight_start) & (bars_ny.index < _overnight_end)]
+            if len(_overnight_bars) >= 1:
+                premarket_context["overnight_high"] = float(round(float(_overnight_bars["high"].max()), 5))
+                premarket_context["overnight_low"] = float(round(float(_overnight_bars["low"].min()), 5))
+            break
+    if current_price is not None:
+        _pdh = premarket_context.get("pdh")
+        _pdl = premarket_context.get("pdl")
+        if _pdh is not None and _pdl is not None:
+            if current_price > _pdh:
+                premarket_context["bias_from_context"] = "bullish"
+            elif current_price < _pdl:
+                premarket_context["bias_from_context"] = "bearish"
+
+    pos = _agent_positions_detail_payload(session=session, db=db, open_limit=10, recent_limit=10)
+    open_positions = pos.get("open_positions") if isinstance(pos.get("open_positions"), list) else []
+    trigger_payload = _agent_scheduled_triggers_payload(
+        session=session,
+        db=db,
+        include_non_pending=False,
+        limit=100,
+    )
+    pending_triggers = trigger_payload.get("triggers") if isinstance(trigger_payload.get("triggers"), list) else []
+
+    # --- Patch 1: "First green = done for the day" rule ---
+    _already_won_today = False
+    _today_trades = (
+        db.query(SimulationTrade)
+        .filter(SimulationTrade.session_id == int(session.id))
+        .filter(SimulationTrade.status == "closed")
+        .filter(SimulationTrade.pnl > 0)
+        .all()
+    )
+    for _rt in _today_trades:
+        _exit_raw = getattr(_rt, "exit_time", None)
+        if _exit_raw is None:
+            continue
+        try:
+            _exit_dt = datetime.fromisoformat(str(_exit_raw).replace("Z", "+00:00"))
+            if _exit_dt.tzinfo is None:
+                _exit_dt = _exit_dt.replace(tzinfo=timezone.utc)
+            if _exit_dt.astimezone(NY_TZ).date() == session_date:
+                _already_won_today = True
+                break
+        except Exception:
+            continue
+    if _already_won_today:
+        return {
+            "strategy_id": strategy_id,
+            "strategy_name": "NY 15m ORB + 1m Imbalance",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": "M1",
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "already_won_today",
+            "reason": "First green trade of the day already hit. Done for the day.",
+            "premarket_context": premarket_context,
+            "orb": {},
+            "breakout": {},
+            "imbalance": {},
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": ["already_won_today"],
+            "soft_blockers": [],
+            "confidence_warnings": [],
+            "position_state": {
+                "open_positions_count": int(len(open_positions)),
+                "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
+            },
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": "M1",
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "already_won_today",
+                    "reason": "First green trade of the day already hit. Done for the day.",
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                    "premarket_context": premarket_context,
+                }
+            },
+        }
+
+    inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
+    point = max(float(inst.point_value), 1e-6)
+    day_slice = bars_ny[(bars_ny.index >= session_start_ny) & (bars_ny.index <= now_ny)]
+    # Bug Fix C: Proper True Range ATR (not just high-low range)
+    if len(day_slice) >= 14:
+        _ds_h = day_slice["high"].to_numpy()
+        _ds_l = day_slice["low"].to_numpy()
+        _ds_c = day_slice["close"].to_numpy()
+        _tr_vals = [float(_ds_h[0] - _ds_l[0])]
+        for _k in range(1, len(_ds_h)):
+            _tr_vals.append(float(max(
+                _ds_h[_k] - _ds_l[_k],
+                abs(_ds_h[_k] - _ds_c[_k - 1]),
+                abs(_ds_l[_k] - _ds_c[_k - 1]),
+            )))
+        atr14 = float(pd.Series(_tr_vals).rolling(14).mean().iloc[-1])
+    else:
+        _fb_h = bars_ny["high"].tail(30).to_numpy()
+        _fb_l = bars_ny["low"].tail(30).to_numpy()
+        _fb_c = bars_ny["close"].tail(30).to_numpy()
+        _fb_tr = [float(_fb_h[0] - _fb_l[0])]
+        for _k in range(1, len(_fb_h)):
+            _fb_tr.append(float(max(
+                _fb_h[_k] - _fb_l[_k],
+                abs(_fb_h[_k] - _fb_c[_k - 1]),
+                abs(_fb_l[_k] - _fb_c[_k - 1]),
+            )))
+        atr14 = float(pd.Series(_fb_tr).mean())
+    if (not math.isfinite(float(atr14))) or float(atr14) <= 0:
+        atr14 = float(max(point * 20.0, 0.01))
+
+    decision = "NOT_TRADEABLE_TODAY"
+    analysis_stage = "waiting_opening_range"
+    reason = "Waiting for NY opening range to complete."
+    tradeable_today = False
+    breakout_ctx: Dict[str, Any] = {}
+    imbalance_ctx: Dict[str, Any] = {}
+    best_setup: Optional[Dict[str, Any]] = None
+    schedule_args: Optional[Dict[str, Any]] = None
+    soft_blockers: List[str] = []
+    confidence_warnings: List[str] = []
+
+    if len(orb_slice) < 10:
+        analysis_stage = "opening_range_incomplete"
+        reason = "Opening range bars are not complete yet for today."
+        soft_blockers.append("opening_range_incomplete")
+    else:
+        orh = float(orb_slice["high"].max())
+        orl = float(orb_slice["low"].min())
+        or_range = float(max(orh - orl, point))
+        or_range_atr = float(or_range / max(atr14, point))
+
+        min_or_atr = 0.03
+        max_or_atr = 1.25
+        if or_range_atr < min_or_atr:
+            analysis_stage = "opening_range_too_small"
+            reason = "Opening range is too compressed; breakout quality is usually weak."
+            soft_blockers.append("opening_range_too_small")
+        elif or_range_atr > max_or_atr:
+            analysis_stage = "opening_range_too_wide"
+            reason = "Opening range is unusually wide; move is often already exhausted."
+            soft_blockers.append("opening_range_too_wide")
+        elif len(post_slice) < 3:
+            analysis_stage = "waiting_breakout_window"
+            reason = "No post-opening-range candles yet to confirm breakout."
+            soft_blockers.append("waiting_breakout_window")
+        else:
+            post_ranges = (post_slice["high"] - post_slice["low"]).to_numpy()
+            post_opens = post_slice["open"].to_numpy()
+            post_highs = post_slice["high"].to_numpy()
+            post_lows = post_slice["low"].to_numpy()
+            post_closes = post_slice["close"].to_numpy()
+            post_index = post_slice.index
+            break_idx: Optional[int] = None
+            break_direction: Optional[str] = None
+            break_boundary: Optional[float] = None
+            break_body_ratio: Optional[float] = None
+            break_hold_ok = False
+            hold_bars = 2
+            min_ext = max(point * 2.0, or_range * 0.08)
+            for i in range(0, len(post_slice)):
+                rng = float(max(post_ranges[i], point))
+                body = float(abs(post_closes[i] - post_opens[i]))
+                body_ratio = float(body / max(rng, point))
+                recent_start = max(0, i - 20)
+                recent_med = float(pd.Series(post_ranges[recent_start:i]).median()) if i > 0 else rng
+                if (not math.isfinite(recent_med)) or recent_med <= 0:
+                    recent_med = rng
+                displacement_ok = bool(body_ratio >= 0.45 and rng >= (recent_med * 0.80))
+                if post_closes[i] > (orh + min_ext) and displacement_ok:
+                    break_idx = i
+                    break_direction = "BUY"
+                    break_boundary = float(orh)
+                    break_body_ratio = float(body_ratio)
+                elif post_closes[i] < (orl - min_ext) and displacement_ok:
+                    break_idx = i
+                    break_direction = "SELL"
+                    break_boundary = float(orl)
+                    break_body_ratio = float(body_ratio)
+                if break_idx is None:
+                    continue
+                if (i + hold_bars) < len(post_slice):
+                    next_closes = post_closes[(i + 1) : (i + hold_bars + 1)]
+                    if break_direction == "BUY":
+                        break_hold_ok = bool(len(next_closes) > 0 and min(next_closes) > (orh - point))
+                    else:
+                        break_hold_ok = bool(len(next_closes) > 0 and max(next_closes) < (orl + point))
+                else:
+                    break_hold_ok = False
+                if break_hold_ok:
+                    break
+                break_idx = None
+                break_direction = None
+                break_boundary = None
+
+            if break_idx is None or break_direction is None or break_boundary is None:
+                analysis_stage = "no_clean_break_and_hold"
+                reason = "No clean breakout with displacement and hold outside opening range."
+                soft_blockers.append("no_clean_break_and_hold")
+            else:
+                breakout_ctx = {
+                    "direction": str(break_direction),
+                    "bar_time_utc": post_index[int(break_idx)].tz_convert(timezone.utc).isoformat(),
+                    "boundary": float(round(break_boundary, 5)),
+                    "break_close": float(round(post_closes[int(break_idx)], 5)),
+                    "break_high": float(round(post_highs[int(break_idx)], 5)),
+                    "break_low": float(round(post_lows[int(break_idx)], 5)),
+                    "break_body_ratio": float(round(float(break_body_ratio or 0.0), 4)),
+                    "hold_confirmed": bool(break_hold_ok),
+                }
+                # Premarket context is informational by default; when it conflicts
+                # with the breakout direction, require stronger displacement before
+                # accepting the intraday reversal.
+                pre_bias = str(premarket_context.get("bias_from_context") or "neutral").strip().lower()
+                if pre_bias in {"bullish", "bearish"}:
+                    conflict = (pre_bias == "bullish" and str(break_direction) == "SELL") or (
+                        pre_bias == "bearish" and str(break_direction) == "BUY"
+                    )
+                    if conflict:
+                        confidence_warnings.append("premarket_bias_conflict")
+                        # Allow adaptation only on very strong displacement bars.
+                        if float(break_body_ratio or 0.0) < float(premarket_conflict_min_body_ratio):
+                            analysis_stage = "premarket_bias_conflict"
+                            reason = "Breakout conflicts with premarket bias and displacement is not strong enough."
+                            soft_blockers.append("premarket_bias_conflict")
+                            imbalance_ctx = {}
+                            best_setup = None
+                            schedule_args = None
+                            breakout_ctx["premarket_bias_conflict"] = True
+                            breakout_ctx["premarket_bias_required_body_ratio"] = float(round(premarket_conflict_min_body_ratio, 4))
+                            break_direction = None
+                min_gap = float(max(point * 2.0, atr14 * 0.03))
+                if break_direction in {"BUY", "SELL"}:
+                    imbalance = _agent_orb_find_imbalance(
+                        post_df=post_slice,
+                        break_pos=int(break_idx),
+                        direction=str(break_direction),
+                        lookahead_bars=8,
+                        min_gap=float(min_gap),
+                    )
+                    if not isinstance(imbalance, dict):
+                        analysis_stage = "breakout_without_imbalance"
+                        reason = "Breakout exists but no 1m imbalance confirmation formed."
+                        soft_blockers.append("breakout_without_imbalance")
+                    else:
+                        imbalance_ctx = dict(imbalance)
+                        entry_ref = _to_float_or_none(imbalance.get("entry_ref"))
+                        if entry_ref is None:
+                            entry_ref = _to_float_or_none(post_closes[int(break_idx)])
+                        if entry_ref is None:
+                            analysis_stage = "entry_reference_unavailable"
+                            reason = "Imbalance confirmed but entry reference is unavailable."
+                            soft_blockers.append("entry_reference_unavailable")
+                        else:
+                            stop_anchor = _to_float_or_none(imbalance.get("stop_anchor"))
+                            stop_buffer = float(max(point * 2.0, atr14 * 0.10))
+                            if stop_anchor is None:
+                                stop_anchor = float(entry_ref - (atr14 * 0.6) if break_direction == "BUY" else entry_ref + (atr14 * 0.6))
+                            stop_loss = float(stop_anchor - stop_buffer) if break_direction == "BUY" else float(stop_anchor + stop_buffer)
+                            risk_distance = abs(float(entry_ref) - float(stop_loss))
+                            if (not math.isfinite(risk_distance)) or risk_distance <= point:
+                                analysis_stage = "invalid_risk_distance"
+                                reason = "Risk distance is invalid after imbalance anchoring."
+                                soft_blockers.append("invalid_risk_distance")
+                            else:
+                                rr_target = _agent_orb_pick_rr_target(
+                                    symbol=symbol,
+                                    risk_distance=float(risk_distance),
+                                    atr14=float(atr14),
+                                    payload_rr=rr_payload,
+                                    default_rr=float(default_rr),
+                                )
+                                target_rr = float(entry_ref + (risk_distance * rr_target)) if break_direction == "BUY" else float(entry_ref - (risk_distance * rr_target))
+
+                            bars_day_payload: List[Dict[str, Any]] = []
+                            for ts, row in day_slice.iterrows():
+                                bars_day_payload.append(
+                                    {
+                                        "time": int(ts.tz_convert(timezone.utc).timestamp()),
+                                        "open": float(row["open"]),
+                                        "high": float(row["high"]),
+                                        "low": float(row["low"]),
+                                        "close": float(row["close"]),
+                                        "volume": float(row["volume"]),
+                                    }
+                                )
+                            liq_target: Optional[float] = None
+                            liq_out = _agent_scan_tool_from_bars(
+                                tool_id="liquidity",
+                                bars=bars_day_payload,
+                                symbol=symbol,
+                                timeframe="M1",
+                                config={"timeframe": "M1"},
+                            )
+                            if bool(liq_out.get("ok")):
+                                liq_data = liq_out.get("data") if isinstance(liq_out.get("data"), dict) else {}
+                                liq_zones = liq_data.get("zones") if isinstance(liq_data.get("zones"), list) else []
+                                candidates: List[float] = []
+                                for zone in liq_zones:
+                                    if not isinstance(zone, dict):
+                                        continue
+                                    z_type = str(zone.get("type") or "").strip().lower()
+                                    lvl = _to_float_or_none(zone.get("liquidity_level"))
+                                    if lvl is None:
+                                        continue
+                                    if break_direction == "BUY" and z_type == "liquidity_pool_high" and lvl > float(entry_ref):
+                                        candidates.append(float(lvl))
+                                    if break_direction == "SELL" and z_type == "liquidity_pool_low" and lvl < float(entry_ref):
+                                        candidates.append(float(lvl))
+                                if candidates:
+                                    if break_direction == "BUY":
+                                        liq_target = float(min(candidates))
+                                    else:
+                                        liq_target = float(max(candidates))
+
+                                target_price = float(target_rr)
+                                target_basis = "rr_fixed"
+                                if liq_target is not None:
+                                    if break_direction == "BUY":
+                                        target_price = float(min(liq_target, target_rr))
+                                    else:
+                                        target_price = float(max(liq_target, target_rr))
+                                    target_basis = "liquidity_or_rr"
+                                reward_distance = abs(float(target_price) - float(entry_ref))
+                                # Incorporate spread into qualification so reported RR
+                                # better matches realized execution quality.
+                                spread_points = _to_float_or_none(payload.get("cost_spread"))
+                                if spread_points is None:
+                                    try:
+                                        if _is_cost_model_enabled(session):
+                                            cm_orb = _session_cost_model(session)
+                                            spread_points = _to_float_or_none(cm_orb.spread)
+                                    except Exception:
+                                        spread_points = None
+                                if spread_points is None:
+                                    spread_points = _to_float_or_none(INSTRUMENT_SPREAD.get(str(symbol or "").upper()))
+                                spread_points = float(max(0.0, float(spread_points or 0.0)))
+                                risk_distance_effective = float(risk_distance + spread_points)
+                                reward_distance_effective = float(max(point, reward_distance - spread_points))
+                                rr_eff = reward_distance_effective / max(risk_distance_effective, 1e-9)
+                                if rr_eff < 1.0:
+                                    target_price = float(target_rr)
+                                    reward_distance = abs(float(target_price) - float(entry_ref))
+                                    reward_distance_effective = float(max(point, reward_distance - spread_points))
+                                    rr_eff = reward_distance_effective / max(risk_distance_effective, 1e-9)
+                                    target_basis = "rr_fixed"
+
+                                balance = float(session.current_balance or session.initial_balance or 0.0)
+                                if balance <= 0:
+                                    balance = 10000.0
+                                risk_amount = float(balance * (float(risk_percent) / 100.0))
+                                value_per_1lot = float(inst.contract_size)
+                                lot_raw = risk_amount / (risk_distance_effective * value_per_1lot) if (risk_distance_effective > 0 and value_per_1lot > 0) else float(inst.min_lot)
+                                lot_size = _normalize_lot_for_instrument(
+                                    lot_size=float(lot_raw),
+                                    min_lot=float(inst.min_lot),
+                                    max_lot=float(inst.max_lot),
+                                    lot_step=float(inst.lot_step),
+                                )
+                                actual_risk_usd = float(risk_distance_effective * value_per_1lot * float(lot_size))
+
+                                direction = str(break_direction)
+                                cond_price = float(round(float(entry_ref), 5))
+                                condition = {
+                                    "condition": "price_above" if direction == "BUY" else "price_below",
+                                    "trigger_price": cond_price,
+                                }
+                                best_setup = {
+                                    "direction": direction,
+                                    "entry_ref": float(round(float(entry_ref), 5)),
+                                    "stop_loss": float(round(stop_loss, 5)),
+                                    "take_profit": float(round(target_price, 5)),
+                                    "risk_distance": float(round(risk_distance, 5)),
+                                    "reward_distance": float(round(reward_distance, 5)),
+                                    "risk_distance_effective": float(round(risk_distance_effective, 5)),
+                                    "reward_distance_effective": float(round(reward_distance_effective, 5)),
+                                    "cost_spread_points": float(round(spread_points, 5)),
+                                    "rr": float(round(rr_eff, 4)),
+                                    "tp_basis": str(target_basis),
+                                    "risk_percent": float(round(risk_percent, 4)),
+                                    "risk_amount": float(round(risk_amount, 2)),
+                                    "risk_amount_actual": float(round(actual_risk_usd, 2)),
+                                    "lot_size": float(lot_size),
+                                    "timeframe": "M1",
+                                    "expires_sec": int(expires_sec),
+                                    "condition": condition,
+                                    "precondition": None,
+                                    "cancel_rule": {
+                                        "condition": "price_below" if direction == "BUY" else "price_above",
+                                        "trigger_price": float(round(stop_loss, 5)),
+                                    },
+                                    "warnings": [],
+                                    "imbalance": imbalance_ctx,
+                                    "breakout": breakout_ctx,
+                                    "breakeven_at_1r": True,
+                                }
+                                schedule_args = {
+                                    "condition": str(condition.get("condition") or ""),
+                                    "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+                                    "direction": str(direction),
+                                    "stop_loss": float(round(stop_loss, 5)),
+                                    "take_profit": float(round(target_price, 5)),
+                                    "lot_size": float(lot_size),
+                                    "timeframe": "M1",
+                                    "expires_sec": int(expires_sec),
+                                    "entry_ref": float(round(float(entry_ref), 5)),
+                                    "expected_rr": float(round(rr_eff, 4)),
+                                    "risk_percent": float(round(risk_percent, 4)),
+                                    "account_balance": float(round(balance, 2)),
+                                    "breakeven_at_1r": True,
+                                }
+
+                                tradeable_today = True
+                                decision = "TRADEABLE_TODAY"
+                                analysis_stage = "tradeable_today"
+                                reason = "Clean NY ORB breakout + hold + 1m imbalance confirmation detected."
+
+        orb_payload = {
+            "session_date_ny": str(session_date),
+            "session_start_ny": session_start_ny.isoformat(),
+            "session_end_ny": session_end_ny.isoformat(),
+            "trading_end_ny": trading_end_ny.isoformat(),
+            "range_high": float(round(float(orb_slice["high"].max()), 5)) if len(orb_slice) > 0 else None,
+            "range_low": float(round(float(orb_slice["low"].min()), 5)) if len(orb_slice) > 0 else None,
+            "range_size": float(round(float(max((float(orb_slice["high"].max()) - float(orb_slice["low"].min())) if len(orb_slice) > 0 else 0.0, 0.0)), 5)) if len(orb_slice) > 0 else None,
+            "bars_count": int(len(orb_slice)),
+            "post_bars_count": int(len(post_slice)),
+            "current_price": float(round(current_price, 5)) if current_price is not None else None,
+            "atr14_m1": float(round(float(atr14), 5)),
+            "premarket_context": premarket_context if 'premarket_context' in locals() else {},
+            "premarket_bias": str((premarket_context if 'premarket_context' in locals() else {}).get("bias_from_context") or "neutral"),
+            "premarket_conflict_min_body_ratio": float(round(premarket_conflict_min_body_ratio, 4)),
+        }
+
+    manual_confirmation_required = bool(best_setup is not None)
+    trigger_ready = bool(best_setup is not None)
+    auto_schedule_allowed = False
+    if len(open_positions) > 0:
+        confidence_warnings.append("open_position_exists")
+    if len(pending_triggers) > 0:
+        confidence_warnings.append("pending_trigger_exists")
+
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "NY 15m ORB + 1m Imbalance",
+        "preset_id": requested_preset,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": "M1",
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "tradeable_today": bool(tradeable_today),
+        "decision": str(decision),
+        "analysis_stage": str(analysis_stage),
+        "reason": str(reason),
+        "position_state": {
+            "open_positions_count": int(len(open_positions)),
+            "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
+        },
+        "orb": orb_payload if 'orb_payload' in locals() else {},
+        "breakout": breakout_ctx,
+        "imbalance": imbalance_ctx,
+        "premarket_context": premarket_context if 'premarket_context' in locals() else {},
+        "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_args,
+        "trigger_ready": bool(trigger_ready),
+        "auto_schedule_allowed": bool(auto_schedule_allowed),
+        "manual_confirmation_required": bool(manual_confirmation_required),
+        "blockers": [],
+        "soft_blockers": soft_blockers[:8],
+        "confidence_warnings": confidence_warnings[:8],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": requested_preset,
+                "symbol": symbol,
+                "execution_timeframe": "M1",
+                "tradeable_today": bool(tradeable_today),
+                "decision": str(decision),
+                "analysis_stage": str(analysis_stage),
+                "reason": str(reason),
+                "orb": orb_payload if 'orb_payload' in locals() else {},
+                "breakout": breakout_ctx,
+                "imbalance": imbalance_ctx,
+                "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_args,
+                "trigger_ready": bool(trigger_ready),
+                "manual_confirmation_required": bool(manual_confirmation_required),
+                "premarket_context": premarket_context if 'premarket_context' in locals() else {},
+            }
+        },
+    }
+    # --- Patch 4: Automatic news gating (default on) ---
+    include_news = _agent_usage_safe_bool(payload.get("include_news"), True)
+    high_impact_news_hard_block = _agent_usage_safe_bool(
+        payload.get("high_impact_news_hard_block"),
+        _agent_usage_safe_bool(preset_cfg.get("high_impact_news_hard_block"), True),
+    )
+    news_lookback_default = _agent_usage_safe_int(
+        preset_cfg.get("news_lookback_min"),
+        _agent_usage_safe_int(effective_cfg.get("guardrail_news_lookback_min"), 240),
+    )
+    _high_impact_news_today = False
+    if include_news:
+        try:
+            news_limit = int(payload.get("news_limit") or 5)
+        except Exception:
+            news_limit = 5
+        try:
+            news_lookback_min = int(payload.get("news_lookback_min") or news_lookback_default)
+        except Exception:
+            news_lookback_min = int(news_lookback_default)
+        news_provider = str(payload.get("provider") or effective_cfg.get("market_news_provider") or "polygon").strip().lower()
+        news_data = _agent_fetch_market_news(
+            symbol=symbol,
+            limit=max(1, min(10, int(news_limit))),
+            lookback_min=max(15, min(24 * 60, int(news_lookback_min))),
+            provider=news_provider,
+            include_summary=True,
+            summary_model=str(effective_cfg.get("market_news_summary_model") or "claude-haiku-4-5-20251001").strip(),
+            summary_timeout_sec=max(4, min(30, int(effective_cfg.get("market_news_llm_timeout_sec") or 8))),
+            ibkr_host=str(effective_cfg.get("market_news_ibkr_host") or "127.0.0.1").strip() or "127.0.0.1",
+            ibkr_port=max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
+        )
+        summary["news"] = news_data
+        if isinstance(news_data, dict) and bool(news_data.get("ok")):
+            _news_items = news_data.get("items") if isinstance(news_data.get("items"), list) else []
+            if any(str(r.get("impact") or "") == "high" for r in _news_items if isinstance(r, dict)):
+                _high_impact_news_today = True
+    if _high_impact_news_today:
+        if "high_impact_news_today" not in summary.get("soft_blockers", []):
+            summary.setdefault("soft_blockers", []).append("high_impact_news_today")
+        if "high_impact_news_today" not in summary.get("confidence_warnings", []):
+            summary.setdefault("confidence_warnings", []).append("high_impact_news_today")
+        if bool(high_impact_news_hard_block):
+            # Hard daily block for ORB on high-impact macro headlines.
+            summary["tradeable_today"] = False
+            summary["decision"] = "NOT_TRADEABLE_TODAY"
+            summary["analysis_stage"] = "high_impact_news_guardrail"
+            summary["reason"] = "High-impact news detected in lookback window. ORB trading is blocked for today."
+            blockers = summary.get("blockers") if isinstance(summary.get("blockers"), list) else []
+            if "high_impact_news" not in blockers:
+                blockers.append("high_impact_news")
+            summary["blockers"] = blockers[:8]
+            summary["trigger_ready"] = False
+            summary["auto_schedule_allowed"] = False
+            summary["manual_confirmation_required"] = False
+            summary["best_setup"] = None
+            summary["schedule_trade_entry_args"] = None
+            patch = summary.get("tool_state_patch") if isinstance(summary.get("tool_state_patch"), dict) else {}
+            orb_patch = patch.get(tool_state_key) if isinstance(patch.get(tool_state_key), dict) else {}
+            orb_patch["tradeable_today"] = False
+            orb_patch["decision"] = "NOT_TRADEABLE_TODAY"
+            orb_patch["analysis_stage"] = "high_impact_news_guardrail"
+            orb_patch["reason"] = "High-impact news detected in lookback window. ORB trading is blocked for today."
+            orb_patch["trigger_ready"] = False
+            orb_patch["manual_confirmation_required"] = False
+            orb_patch["best_setup"] = None
+            orb_patch["schedule_trade_entry_args"] = None
+            patch[tool_state_key] = orb_patch
+            summary["tool_state_patch"] = patch
+    return summary
+
+
 def _agent_execute_tool(
     *,
     session: SimulationSession,
@@ -9856,6 +13056,79 @@ def _agent_execute_tool(
             return {"ok": False, "error": "permission_denied:can_scan_tools"}
         try:
             data = _agent_run_htf_fvg_liquidity_reclaim_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "run_orb_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_orb_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "run_trendilo_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_trendilo_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "scan_trendilo_fields":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_scan_trendilo_fields(
+                session=session,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "scan_trendilo_tradeable":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_scan_trendilo_tradeable(
+                session=session,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "scan_strategy_tradeable":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_scan_strategy_tradeable(
                 session=session,
                 db=db,
                 context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
@@ -10454,6 +13727,10 @@ def _agent_execute_tool(
             trigger_trade_args["dynamic_stop_from_precondition"] = True
             trigger_trade_args["dynamic_stop_buffer_points"] = float(max(0.0, float(dyn_stop_buffer)))
             trigger["trade_args"] = trigger_trade_args
+        if bool(payload.get("breakeven_at_1r", False)):
+            trigger_trade_args = trigger.get("trade_args") if isinstance(trigger.get("trade_args"), dict) else {}
+            trigger_trade_args["breakeven_at_1r"] = True
+            trigger["trade_args"] = trigger_trade_args
         pre_side = _agent_trigger_condition_side(precondition.get("condition")) if isinstance(precondition, dict) else None
         cond_side = _agent_trigger_condition_side(condition)
         if pre_side in {"above", "below"} and cond_side in {"above", "below"} and pre_side != cond_side:
@@ -10901,7 +14178,7 @@ def _agent_tool_state_from_tool_calls(tool_calls: Any) -> Dict[str, Any]:
                         "end_index": int(selection.get("end_index") or 0),
                         "bars": int(selection.get("bars") or 0),
                     }
-        elif tool_name in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis"}:
+        elif tool_name in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable"}:
             tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
             if tsp:
                 patch.update(tsp)
@@ -12044,6 +15321,61 @@ async def workbench_agent_tool_state_http(
     except ValidationError as exc:
         raise HTTPException(422, f"Invalid tool-state payload: {str(exc)[:300]}")
     return workbench_agent_tool_state(session_id=session_id, req=req, db=db)
+
+
+@router.post("/sessions/{session_id}/agent/trendilo-opportunities")
+def workbench_agent_trendilo_opportunities(
+    session_id: int,
+    req: TrendiloOpportunityScanRequest,
+    db: Session = Depends(get_db),
+):
+    """Deterministic multi-symbol Trendilo screener (no LLM call)."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if str(session.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Trendilo screener is available only for Workbench sessions")
+    try:
+        ctx = _agent_default_context(session=session, db=db)
+    except Exception:
+        ctx = {}
+    effective_cfg = _agent_effective_tool_config(session=session, db=db)
+    payload = _model_to_dict(req)
+    data = _agent_scan_trendilo_tradeable(
+        session=session,
+        context_snapshot=ctx,
+        payload=payload if isinstance(payload, dict) else {},
+        effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+    )
+    return {"ok": True, "session_id": int(session_id), "data": data}
+
+
+@router.post("/sessions/{session_id}/agent/strategy-opportunities")
+def workbench_agent_strategy_opportunities(
+    session_id: int,
+    req: StrategyOpportunityScanRequest,
+    db: Session = Depends(get_db),
+):
+    """Deterministic multi-symbol strategy screener across parent strategies (no LLM call)."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if str(session.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy screener is available only for Workbench sessions")
+    try:
+        ctx = _agent_default_context(session=session, db=db)
+    except Exception:
+        ctx = {}
+    effective_cfg = _agent_effective_tool_config(session=session, db=db)
+    payload = _model_to_dict(req)
+    data = _agent_scan_strategy_tradeable(
+        session=session,
+        db=db,
+        context_snapshot=ctx,
+        payload=payload if isinstance(payload, dict) else {},
+        effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+    )
+    return {"ok": True, "session_id": int(session_id), "data": data}
 
 
 @router.post("/sessions/{session_id}/coach/evaluate")

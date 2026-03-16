@@ -500,6 +500,8 @@ def test_agent_strategy_profile_normalization():
     assert sim_routes._normalize_agent_strategy_profile("classic") == "classic_htf_fvg"
     assert sim_routes._normalize_agent_strategy_profile("v2") == "htf_fvg_liquidity_reclaim_v2"
     assert sim_routes._normalize_agent_strategy_profile("liquidity_reclaim") == "htf_fvg_liquidity_reclaim_v2"
+    assert sim_routes._normalize_agent_strategy_profile("orb") == "orb_ny_15m_imbalance"
+    assert sim_routes._normalize_agent_strategy_profile("opening_range_breakout") == "orb_ny_15m_imbalance"
     assert sim_routes._normalize_agent_strategy_profile("unknown") == "classic_htf_fvg"
 
 
@@ -545,6 +547,21 @@ def test_agent_select_allowed_tool_names_filters_parent_tool_by_strategy_profile
     assert "run_mtf_analysis" not in out
 
 
+def test_agent_select_allowed_tool_names_filters_orb_parent_by_strategy_profile():
+    out = sim_routes._agent_select_allowed_tool_names(
+        message="run active strategy and give me the setup",
+        conversation_history=[],
+        cfg={
+            "tool_selection_mode": "autonomous",
+            "strategy_tool_access_mode": "all",
+            "agent_strategy_profile": "orb_ny_15m_imbalance",
+        },
+    )
+    assert "run_orb_analysis" in out
+    assert "run_mtf_analysis" not in out
+    assert "run_htf_fvg_liquidity_reclaim_analysis" not in out
+
+
 def test_strategy_tool_access_mode_filters_parent_and_child_tools():
     base = [
         "get_positions_detail",
@@ -588,6 +605,11 @@ def test_strategy_profile_blocks_non_selected_parent_tool():
     cfg = {"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"}
     assert sim_routes._agent_tool_allowed_by_strategy_profile("run_htf_fvg_liquidity_reclaim_analysis", cfg) is True
     assert sim_routes._agent_tool_allowed_by_strategy_profile("run_mtf_analysis", cfg) is False
+    assert sim_routes._agent_tool_allowed_by_strategy_profile("run_orb_analysis", cfg) is False
+
+    cfg_orb = {"agent_strategy_profile": "orb_ny_15m_imbalance"}
+    assert sim_routes._agent_tool_allowed_by_strategy_profile("run_orb_analysis", cfg_orb) is True
+    assert sim_routes._agent_tool_allowed_by_strategy_profile("run_mtf_analysis", cfg_orb) is False
 
 
 def test_strategy_tool_access_mode_injects_parent_when_children_requested():

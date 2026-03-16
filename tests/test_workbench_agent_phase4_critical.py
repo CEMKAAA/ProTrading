@@ -14,6 +14,7 @@ from dashboard.backend.services.agent_watchdog_service import AgentWatchdogServi
 from dashboard.backend.models.database import (
     Base,
     SimulationSession,
+    SimulationTrade,
     WorkbenchCopilotSessionModel,
     WorkbenchAgentSessionModel,
     WorkbenchAgentEventModel,
@@ -64,6 +65,1301 @@ def test_tool_specs_include_run_htf_fvg_liquidity_reclaim_analysis():
     specs = WorkbenchAgent._tool_specs()
     names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
     assert "run_htf_fvg_liquidity_reclaim_analysis" in names
+
+
+def test_tool_specs_include_run_orb_analysis():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "run_orb_analysis" in names
+
+
+def test_tool_specs_include_run_trendilo_analysis():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "run_trendilo_analysis" in names
+
+
+def test_tool_specs_include_scan_trendilo_fields():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "scan_trendilo_fields" in names
+
+
+def test_tool_specs_include_scan_trendilo_tradeable():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "scan_trendilo_tradeable" in names
+
+
+def test_tool_specs_include_scan_strategy_tradeable():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "scan_strategy_tradeable" in names
+
+
+def _build_orb_m1_bars(*, tradeable: bool) -> list[dict]:
+    start_utc = datetime(2026, 3, 12, 13, 0, tzinfo=timezone.utc)
+    bars: list[dict] = []
+    for i in range(190):
+        ts = start_utc + timedelta(minutes=i)
+        hhmm = ts.strftime("%H:%M")
+        o = 100.20
+        h = 100.60
+        l = 99.90
+        c = 100.30
+        # NY OR window: 09:30-09:44 => 13:30-13:44 UTC (DST)
+        if "13:30" <= hhmm <= "13:44":
+            o = 100.20
+            h = 101.20
+            l = 100.50
+            c = 100.70
+        elif hhmm >= "13:45":
+            if tradeable and hhmm == "13:45":
+                o = 100.90
+                h = 102.00
+                l = 100.80
+                c = 101.95
+            elif tradeable and hhmm == "13:46":
+                o = 101.95
+                h = 102.10
+                l = 101.85
+                c = 102.00
+            elif tradeable and hhmm == "13:47":
+                o = 102.00
+                h = 102.60
+                l = 102.25
+                c = 102.40
+            else:
+                o = 100.80
+                h = 101.00
+                l = 100.30
+                c = 100.55
+        bars.append(
+            {
+                "time": int(ts.timestamp()),
+                "open": float(o),
+                "high": float(h),
+                "low": float(l),
+                "close": float(c),
+                "volume": 100.0,
+            }
+        )
+    return bars
+
+
+def _build_trendilo_bars(*, bullish: bool = True) -> list[dict]:
+    start_utc = datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc)
+    bars: list[dict] = []
+    px = 2000.0
+    drift = 0.18 if bullish else -0.18
+    for i in range(420):
+        ts = start_utc + timedelta(minutes=(i * 15))
+        cyc = 0.25 * math.sin(i / 8.0)
+        o = px
+        c = px + drift + cyc
+        h = max(o, c) + 0.35
+        l = min(o, c) - 0.35
+        v = 1000.0 + float((i % 17) * 12)
+        bars.append(
+            {
+                "time": int(ts.timestamp()),
+                "open": float(o),
+                "high": float(h),
+                "low": float(l),
+                "close": float(c),
+                "volume": float(v),
+            }
+        )
+        px = c
+    return bars
+
+
+def test_execute_tool_runs_trendilo_parent_tradeable(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_trendilo_bars(bullish=True), None),
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_trendilo_analysis",
+            args={"symbol": "XAUUSD", "execution_timeframe": "M15", "preset": "xauusd_m15"},
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("strategy_id") or "") == "trendilo_strategy"
+        assert isinstance(data.get("indicator_snapshot"), dict)
+        assert isinstance(data.get("tradeable_today"), bool)
+        if bool(data.get("tradeable_today")):
+            setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
+            assert str(setup.get("direction") or "") in {"BUY", "SELL"}
+    finally:
+        db.close()
+
+
+def test_execute_tool_scans_trendilo_fields_multi_symbol(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _build_field_bars(*, bullish_tail: bool) -> list[dict]:
+            start_utc = datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc)
+            bars: list[dict] = []
+            px = 2000.0
+            for i in range(420):
+                ts = start_utc + timedelta(minutes=(i * 15))
+                base_drift = 0.03 if bullish_tail else -0.03
+                tail_drift = 0.60 if bullish_tail else -0.60
+                drift = tail_drift if i >= 360 else base_drift
+                cyc = 0.12 * math.sin(i / 9.0)
+                if i == 419:
+                    drift += 3.0 if bullish_tail else -3.0
+                o = px
+                c = px + drift + cyc
+                h = max(o, c) + 0.30
+                l = min(o, c) - 0.30
+                bars.append(
+                    {
+                        "time": int(ts.timestamp()),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": 1000.0 + float(i % 11),
+                    }
+                )
+                px = c
+            return bars
+
+        def _fake_fetch(**kwargs):
+            sym = str(kwargs.get("symbol") or "").upper()
+            if sym == "XAUUSD":
+                return _build_field_bars(bullish_tail=True), None
+            if sym == "US500":
+                return _build_field_bars(bullish_tail=False), None
+            return [], "live_history_unavailable"
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", _fake_fetch)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_fields",
+            args={
+                "symbols": ["XAUUSD", "US500", "BADSYMBOL"],
+                "timeframe": "M15",
+                "lookback_bars": 120,
+                "preset": "default",
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("scan_type") or "") == "trendilo_fields_multi_symbol"
+        assert int(data.get("symbols_scanned") or 0) == 3
+        assert int(data.get("ok_count") or 0) == 2
+        assert int(data.get("error_count") or 0) == 1
+        report = data.get("report") if isinstance(data.get("report"), list) else []
+        by_symbol = {
+            str(r.get("symbol") or ""): r
+            for r in report
+            if isinstance(r, dict)
+        }
+        assert bool(by_symbol.get("XAUUSD", {}).get("ok")) is True
+        assert bool(by_symbol.get("US500", {}).get("ok")) is True
+        assert bool(by_symbol.get("BADSYMBOL", {}).get("ok")) is False
+        assert str(by_symbol.get("XAUUSD", {}).get("latest_field") or "") == "green"
+        assert str(by_symbol.get("US500", {}).get("latest_field") or "") == "red"
+        assert bool(by_symbol.get("XAUUSD", {}).get("has_green_field")) is True
+        assert bool(by_symbol.get("US500", {}).get("has_red_field")) is True
+    finally:
+        db.close()
+
+
+def test_execute_tool_scans_trendilo_fields_with_market_universe(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _build_field_bars() -> list[dict]:
+            start_utc = datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc)
+            bars: list[dict] = []
+            px = 2000.0
+            for i in range(260):
+                ts = start_utc + timedelta(minutes=(i * 15))
+                drift = 0.05 + (0.08 * math.sin(i / 7.0))
+                o = px
+                c = px + drift
+                h = max(o, c) + 0.25
+                l = min(o, c) - 0.25
+                bars.append(
+                    {
+                        "time": int(ts.timestamp()),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": 1200.0 + float(i % 7),
+                    }
+                )
+                px = c
+            return bars
+
+        def _fake_fetch(**kwargs):
+            return _build_field_bars(), None
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", _fake_fetch)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_fields",
+            args={
+                "universe": "market_mixed_top",
+                "universe_limit": 8,
+                "symbols": ["XAUUSD"],
+                "timeframe": "M15",
+                "lookback_bars": 90,
+                "preset": "default",
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("universe_resolved") or "") == "market_mixed_top"
+        assert int(data.get("universe_symbol_count") or 0) == 8
+        symbols_requested = data.get("symbols_requested") if isinstance(data.get("symbols_requested"), list) else []
+        symbols_norm = {str(s or "").upper() for s in symbols_requested}
+        assert "XAUUSD" in symbols_norm
+        assert int(data.get("symbols_scanned") or 0) >= 8
+        assert int(data.get("ok_count") or 0) == int(data.get("symbols_scanned") or 0)
+    finally:
+        db.close()
+
+
+def test_execute_tool_scans_trendilo_fields_resolves_mt5_broker_symbol_names(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="US500",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        class _FakeMt5Svc:
+            def resolve_symbol_name(self, symbol: str):
+                s = str(symbol or "").upper()
+                if s in {"US500", "SPX500", "SP500"}:
+                    return "SPX500m"
+                if s in {"NAS100", "US100", "USTEC"}:
+                    return "USTECm"
+                return s
+
+        monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeMt5Svc())
+
+        def _build_field_bars() -> list[dict]:
+            start_utc = datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc)
+            bars: list[dict] = []
+            px = 5000.0
+            for i in range(260):
+                ts = start_utc + timedelta(minutes=(i * 15))
+                drift = 0.04 + (0.06 * math.sin(i / 8.0))
+                o = px
+                c = px + drift
+                h = max(o, c) + 0.20
+                l = min(o, c) - 0.20
+                bars.append(
+                    {
+                        "time": int(ts.timestamp()),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": 900.0 + float(i % 9),
+                    }
+                )
+                px = c
+            return bars
+
+        captured_symbols: list[str] = []
+
+        def _fake_fetch(**kwargs):
+            captured_symbols.append(str(kwargs.get("symbol") or ""))
+            return _build_field_bars(), None
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", _fake_fetch)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_fields",
+            args={
+                "source": "mt5",
+                "symbols": ["US500", "NAS100"],
+                "timeframe": "M15",
+                "lookback_bars": 90,
+                "preset": "default",
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        assert "SPX500M" in {str(s).upper() for s in captured_symbols}
+        assert "USTECM" in {str(s).upper() for s in captured_symbols}
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        resolved = data.get("symbols_resolved_for_scan") if isinstance(data.get("symbols_resolved_for_scan"), list) else []
+        resolved_set = {str(s or "").upper() for s in resolved}
+        assert {"SPX500M", "USTECM"} <= resolved_set
+        report = data.get("report") if isinstance(data.get("report"), list) else []
+        by_requested = {
+            str(r.get("requested_symbol") or "").upper(): r
+            for r in report
+            if isinstance(r, dict)
+        }
+        assert "US500" in by_requested
+        assert str(by_requested["US500"].get("symbol") or "").upper() == "SPX500M"
+    finally:
+        db.close()
+
+
+def test_execute_tool_scans_trendilo_fields_scan_market_shortcut_dedups_overlap(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _build_field_bars() -> list[dict]:
+            start_utc = datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc)
+            bars: list[dict] = []
+            px = 100.0
+            for i in range(260):
+                ts = start_utc + timedelta(minutes=(i * 5))
+                drift = 0.02 + (0.02 * math.sin(i / 5.0))
+                o = px
+                c = px + drift
+                h = max(o, c) + 0.10
+                l = min(o, c) - 0.10
+                bars.append(
+                    {
+                        "time": int(ts.timestamp()),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": 700.0 + float(i % 4),
+                    }
+                )
+                px = c
+            return bars
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (_build_field_bars(), None))
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_fields",
+            args={
+                "scan_market": True,
+                "universe_limit": 5,
+                "symbols": ["AAPL", "MSFT"],  # overlaps first two mixed-universe symbols
+                "source": "databento",
+                "timeframe": "M5",
+                "lookback_bars": 100,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("universe_resolved") or "") == "market_mixed_top"
+        symbols_requested = data.get("symbols_requested") if isinstance(data.get("symbols_requested"), list) else []
+        assert int(len(symbols_requested)) == 5
+        assert int(data.get("symbols_scanned") or 0) == 5
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_trendilo_fields_requires_scan_permission():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": False},
+            context_snapshot={},
+            tool_name="scan_trendilo_fields",
+            args={"symbols": ["XAUUSD"]},
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is False
+        assert str(out.get("error") or "") == "permission_denied:can_scan_tools"
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_trendilo_tradeable_multi_symbol(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_trendilo_bars(bullish=(str(kwargs.get("symbol") or "").upper() != "MSFT")), None),
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_tradeable",
+            args={
+                "symbols": ["XAUUSD", "MSFT"],
+                "timeframe": "M15",
+                "preset": "default",
+                "summary_only": True,
+                "max_results": 20,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("scan_type") or "") == "trendilo_tradeable_scan"
+        assert int(data.get("tradeable_count") or 0) >= 0
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        assert int(data.get("tradeable_count") or 0) == len(opps)
+        for row in opps:
+            assert str(row.get("direction") or "") in {"BUY", "SELL"}
+            args = row.get("schedule_trade_entry_args") if isinstance(row.get("schedule_trade_entry_args"), dict) else {}
+            assert str(args.get("symbol") or "") == str(row.get("symbol") or "")
+            assert str(args.get("direction") or "") in {"BUY", "SELL"}
+            assert str(args.get("timeframe") or "") == "M15"
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_trendilo_tradeable_requires_scan_permission():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": False},
+            context_snapshot={},
+            tool_name="scan_trendilo_tradeable",
+            args={"symbols": ["XAUUSD"]},
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is False
+        assert str(out.get("error") or "") == "permission_denied:can_scan_tools"
+    finally:
+        db.close()
+
+
+def test_scan_trendilo_tradeable_filters_invalid_tiny_price_geometry(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="BBBY",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        bars = []
+        base_t = 1700000000
+        p = 0.07
+        for i in range(500):
+            bars.append(
+                {
+                    "time": base_t + (i * 60),
+                    "open": p,
+                    "high": p + 0.01,
+                    "low": max(0.001, p - 0.01),
+                    "close": p,
+                    "volume": 100.0,
+                }
+            )
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_live_history_bars", lambda **kwargs: (bars, None))
+
+        def _fake_indicators(*args, **kwargs):
+            return {
+                "price": 0.07,
+                "trendilo_direction": "bearish",
+                "trendilo_avpch": -1.0,
+                "trendilo_rms": 0.5,
+                "stoch_adx_vwma": 90.0,
+                "plus_di14": 10.0,
+                "minus_di14": 30.0,
+                "alma300": 0.10,
+                "t3_300": 0.12,
+                "atr14": 1.0,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_indicator_values_from_bars", _fake_indicators)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_trendilo_tradeable",
+            args={
+                "symbols": ["BBBY"],
+                "timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": True,
+                "max_results": 10,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert int(data.get("tradeable_count") or 0) == 0
+        rows = data.get("report") if isinstance(data.get("report"), list) else []
+        assert len(rows) >= 1
+        blockers = rows[0].get("blockers") if isinstance(rows[0].get("blockers"), list) else []
+        assert ("non_positive_trade_prices" in blockers) or ("risk_distance_too_large_relative_to_price" in blockers)
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_strategy_tradeable_mtf_multi_symbol(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _fake_mtf(**kwargs):
+            payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+            sym = str(payload.get("symbol") or "").upper()
+            if sym == "XAUUSD":
+                return {
+                    "trigger_ready": True,
+                    "analysis_trace": {"stage": "trigger_ready"},
+                    "schedule_trade_entry_args": {
+                        "condition": "close_above",
+                        "trigger_price": 3000.0,
+                        "direction": "BUY",
+                        "stop_loss": 2990.0,
+                        "take_profit": 3020.0,
+                        "lot_size": 0.1,
+                        "timeframe": "M15",
+                        "expires_sec": 21600,
+                        "entry_ref": 3000.0,
+                        "expected_rr": 2.0,
+                        "risk_percent": 0.5,
+                    },
+                    "best_setup": {"direction": "BUY", "rr": 2.0, "fvg_quality": {"score": 80.0}},
+                    "blockers": [],
+                    "soft_blockers": [],
+                    "confidence_warnings": [],
+                    "current_price": 3000.0,
+                }
+            return {
+                "trigger_ready": False,
+                "analysis_trace": {"stage": "no_setup"},
+                "schedule_trade_entry_args": None,
+                "best_setup": None,
+                "blockers": ["no_strategy_setup"],
+                "soft_blockers": [],
+                "confidence_warnings": [],
+                "current_price": 100.0,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_run_mtf_analysis", _fake_mtf)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_strategy_tradeable",
+            args={
+                "strategy": "mtf",
+                "symbols": ["XAUUSD", "MSFT"],
+                "timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": True,
+                "max_results": 20,
+            },
+            tool_config={"agent_strategy_profile": "classic_htf_fvg"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("scan_type") or "") == "strategy_tradeable_scan"
+        assert str(data.get("strategy") or "") == "mtf"
+        assert int(data.get("symbols_scanned") or 0) == 2
+        assert int(data.get("ok_count") or 0) == 2
+        assert int(data.get("tradeable_count") or 0) == 1
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        assert len(opps) == 1
+        args = opps[0].get("schedule_trade_entry_args") if isinstance(opps[0].get("schedule_trade_entry_args"), dict) else {}
+        assert str(args.get("symbol") or "") == "XAUUSD"
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_strategy_tradeable_trendilo_counts_and_confidence(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _fake_trendilo(**kwargs):
+            payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+            sym = str(payload.get("symbol") or "").upper()
+            if sym == "XAUUSD":
+                return {
+                    "tradeable_today": True,
+                    "decision": "TRADEABLE_TODAY",
+                    "analysis_stage": "trendilo_setup_ready",
+                    "schedule_trade_entry_args": {
+                        "condition": "close_above",
+                        "trigger_price": 3000.0,
+                        "direction": "BUY",
+                        "stop_loss": 2990.0,
+                        "take_profit": 3020.0,
+                        "lot_size": 0.1,
+                        "timeframe": "M15",
+                        "expires_sec": 21600,
+                        "entry_ref": 3000.0,
+                        "expected_rr": 2.0,
+                        "risk_percent": 0.5,
+                    },
+                    "indicator_snapshot": {"adx_stoch_vwma": 87.5},
+                    "best_setup": {"direction": "BUY", "rr": 2.0},
+                    "blockers": [],
+                    "soft_blockers": [],
+                    "confidence_warnings": [],
+                    "current_price": 3000.0,
+                }
+            return {
+                "tradeable_today": False,
+                "decision": "NOT_TRADEABLE_TODAY",
+                "analysis_stage": "confirmations_not_met",
+                "schedule_trade_entry_args": None,
+                "indicator_snapshot": {"adx_stoch_vwma": 61.0},
+                "best_setup": None,
+                "blockers": ["trendilo_neutral"],
+                "soft_blockers": [],
+                "confidence_warnings": [],
+                "current_price": 100.0,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_run_trendilo_analysis", _fake_trendilo)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_strategy_tradeable",
+            args={
+                "strategy": "trendilo",
+                "symbols": ["XAUUSD", "MSFT"],
+                "timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": False,
+                "max_results": 20,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("scan_type") or "") == "strategy_tradeable_scan"
+        assert str(data.get("strategy") or "") == "trendilo"
+        assert int(data.get("symbols_scanned") or 0) == 2
+        assert int(data.get("ok_count") or 0) == 2
+        assert int(data.get("error_count") or 0) == 0
+        assert int(data.get("tradeable_count") or 0) == 1
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        assert len(opps) == 1
+        assert abs(float(opps[0].get("confidence") or 0.0) - 87.5) < 1e-9
+        args = opps[0].get("schedule_trade_entry_args") if isinstance(opps[0].get("schedule_trade_entry_args"), dict) else {}
+        assert str(args.get("symbol") or "") == "XAUUSD"
+    finally:
+        db.close()
+
+
+def test_indicator_values_from_bars_can_skip_trendilo_series():
+    bars = _build_trendilo_bars(bullish=True)
+    out = sim_routes._agent_indicator_values_from_bars(
+        bars,
+        max_rows=600,
+        include_trendilo=False,
+    )
+    assert isinstance(out, dict)
+    assert out.get("trendilo_avpch") is None
+    assert out.get("trendilo_rms") is None
+    assert out.get("trendilo_direction") == "neutral"
+    assert out.get("adx14") is not None
+    assert out.get("alma300") is not None
+
+
+def test_execute_tool_runs_orb_parent_tradeable(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=True), None),
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={"symbol": "XAUUSD", "preset": "xauusd_m1"},
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert bool(data.get("tradeable_today")) is True
+        assert str(data.get("decision") or "") == "TRADEABLE_TODAY"
+        assert isinstance(data.get("best_setup"), dict)
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_orb_parent_not_tradeable(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=False), None),
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={"symbol": "XAUUSD", "preset": "xauusd_m1"},
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert bool(data.get("tradeable_today")) is False
+        assert str(data.get("decision") or "") == "NOT_TRADEABLE_TODAY"
+        assert data.get("best_setup") is None
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_orb_parent_blocks_on_high_impact_news(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=True), None),
+        )
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_market_news",
+            lambda **kwargs: {"ok": True, "items": [{"impact": "high", "headline": "CPI surprise"}]},
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={"symbol": "XAUUSD", "preset": "xauusd_m1", "include_news": True},
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert bool(data.get("tradeable_today")) is False
+        assert str(data.get("decision") or "") == "NOT_TRADEABLE_TODAY"
+        assert str(data.get("analysis_stage") or "") == "high_impact_news_guardrail"
+        assert "high_impact_news" in list(data.get("blockers") or [])
+        assert data.get("best_setup") is None
+        assert data.get("schedule_trade_entry_args") is None
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_orb_parent_uses_preset_news_lookback(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="NAS100",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=True), None),
+        )
+        captured = {}
+
+        def _fake_news(**kwargs):
+            captured["lookback_min"] = int(kwargs.get("lookback_min") or 0)
+            return {"ok": True, "items": []}
+
+        monkeypatch.setattr(sim_routes, "_agent_fetch_market_news", _fake_news)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={"symbol": "NAS100", "preset": "nas100_m1", "include_news": True},
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        assert int(captured.get("lookback_min") or 0) == 120
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_orb_parent_soft_news_when_hard_block_disabled(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=True), None),
+        )
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_market_news",
+            lambda **kwargs: {"ok": True, "items": [{"impact": "high", "headline": "CPI surprise"}]},
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={
+                "symbol": "XAUUSD",
+                "preset": "xauusd_m1",
+                "include_news": True,
+                "high_impact_news_hard_block": False,
+            },
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert bool(data.get("tradeable_today")) is True
+        assert str(data.get("decision") or "") == "TRADEABLE_TODAY"
+        assert "high_impact_news_today" in list(data.get("soft_blockers") or [])
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_orb_parent_exposes_custom_premarket_conflict_ratio(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_orb_m1_bars(tradeable=True), None),
+        )
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_orb_analysis",
+            args={
+                "symbol": "XAUUSD",
+                "preset": "xauusd_m1",
+                "include_news": False,
+                "premarket_conflict_min_body_ratio": 0.67,
+            },
+            tool_config={"agent_strategy_profile": "orb_ny_15m_imbalance"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        orb = data.get("orb") if isinstance(data.get("orb"), dict) else {}
+        assert math.isclose(float(orb.get("premarket_conflict_min_body_ratio") or 0.0), 0.67, rel_tol=1e-9, abs_tol=1e-9)
+    finally:
+        db.close()
 
 
 def test_update_session_live_control_enables_backend_mt5_relay():
@@ -3969,6 +5265,163 @@ def test_watchdog_dynamic_stop_from_precondition_hit_price_is_applied_on_executi
         db.close()
 
 
+def test_schedule_trade_entry_persists_breakeven_flag_in_trigger_trade_args():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "price_below",
+                "trigger_price": 2000.0,
+                "direction": "SELL",
+                "stop_loss": 2004.0,
+                "take_profit": 1990.0,
+                "lot_size": 0.01,
+                "timeframe": "M1",
+                "expires_sec": 7200,
+                "breakeven_at_1r": True,
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+        rows = sim_routes._get_agent_trade_triggers(agent_row)
+        assert len(rows) >= 1
+        ta = rows[0].get("trade_args") if isinstance(rows[0].get("trade_args"), dict) else {}
+        assert bool(ta.get("breakeven_at_1r", False)) is True
+    finally:
+        db.close()
+
+
+def test_watchdog_moves_orb_trade_stop_to_breakeven_at_1r_on_live_tick():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M1",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"live_control": {"enabled": True, "source": "mt5", "backend_native": True}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        # Open SELL trade: entry=100, SL=105 => 1R reached at 95.
+        tr = SimulationTrade(
+            session_id=int(sim.id),
+            direction="SELL",
+            entry_price=100.0,
+            entry_bar=1,
+            entry_time=datetime.utcnow().isoformat(),
+            stop_loss=105.0,
+            take_profit=90.0,
+            lot_size=0.01,
+            status="open",
+        )
+        db.add(tr)
+        db.flush()
+
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": False},
+            config={"agent_permissions": {"can_place_trades": True, "requires_user_confirm_for_trade": False}},
+            runtime={},
+            copilot_session_id=None,
+        )
+        snap = dict(agent_row.last_snapshot_json) if isinstance(agent_row.last_snapshot_json, dict) else {}
+        snap["agent_trade_triggers"] = [
+            {
+                "id": "trg_orb_be",
+                "status": "executed",
+                "executed_at": datetime.utcnow().isoformat(),
+                "trade_args": {"breakeven_at_1r": True},
+                "result": {"id": int(tr.id), "entry_price": 100.0},
+            }
+        ]
+        agent_row.last_snapshot_json = snap
+        db.add(agent_row)
+        db.commit()
+        db.refresh(agent_row)
+
+        svc = AgentWatchdogService()
+        now_utc = datetime.now(timezone.utc)
+        tick_ts = int(now_utc.timestamp())
+        out = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={"time": tick_ts, "open": 96.0, "high": 96.5, "low": 94.8, "close": 94.9},
+            now=now_utc,
+            auto_commit=True,
+        )
+        assert out.get("ok") is True
+        assert "WATCHDOG_BREAKEVEN_MOVED" in list(out.get("trigger_event_types") or [])
+
+        db.refresh(tr)
+        assert abs(float(tr.stop_loss or 0.0) - 100.0) < 1e-9
+
+        db.refresh(agent_row)
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        be = rows[0].get("breakeven") if isinstance(rows[0].get("breakeven"), dict) else {}
+        assert bool(be.get("moved_to_entry", False)) is True
+        assert abs(float(be.get("new_stop_loss") or 0.0) - 100.0) < 1e-9
+    finally:
+        db.close()
+
+
 def test_watchdog_non_reclaim_close_entry_still_waits_for_closed_bar():
     db = _db_session()
     try:
@@ -4583,6 +6036,97 @@ def test_agent_tool_state_live_tick_preserves_requires_approval_without_copilot(
         assert len(rows) >= 1
         first = rows[0]
         assert str(first.get("status") or "").lower() == "pending_approval"
+    finally:
+        db.close()
+
+
+def test_watchdog_trigger_requires_approval_ignores_agent_can_place_false_and_sets_pending_approval():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=100,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.flush()
+
+        # Intentional mismatch:
+        # - agent session perms deny placing trades
+        # - trigger policy requires approval
+        # Watchdog must transition to pending_approval, not failed(permission_denied).
+        agent_row = sim_routes._ensure_agent_session(
+            simulation_session_id=int(sim.id),
+            db=db,
+            mode="LOOP",
+            provider="deterministic",
+            model_label=None,
+            permissions={"can_place_trades": False, "requires_user_confirm_for_trade": True},
+            config={
+                "watchdog_trigger_requires_approval": True,
+                "agent_permissions": {"can_place_trades": False, "requires_user_confirm_for_trade": True},
+            },
+            runtime={},
+            copilot_session_id=None,
+        )
+        db.flush()
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_place_trades": True, "requires_user_confirm_for_trade": True},
+            context_snapshot={},
+            tool_name="schedule_trade_entry",
+            args={
+                "condition": "price_above",
+                "trigger_price": 5186.83,
+                "direction": "BUY",
+                "stop_loss": 5148.16,
+                "take_profit": 5226.77,
+                "lot_size": 0.01,
+                "timeframe": "M15",
+            },
+            atomic=True,
+        )
+        assert out.get("ok") is True
+
+        svc = AgentWatchdogService()
+        tick_out = svc.process_live_tick(
+            db=db,
+            agent=agent_row,
+            session=sim,
+            live_bar={
+                "time": int(datetime.now(timezone.utc).timestamp()),
+                "open": 5185.10,
+                "high": 5190.25,
+                "low": 5184.90,
+                "close": 5189.35,
+                "volume": 140.0,
+            },
+            auto_commit=False,
+        )
+        assert tick_out.get("ok") is True
+        assert "WATCHDOG_ENTRY_PENDING" in set(tick_out.get("trigger_event_types") or [])
+        assert "WATCHDOG_ENTRY_FAILED" not in set(tick_out.get("trigger_event_types") or [])
+
+        rows = sim_routes._agent_trigger_rows_from_agent(agent_row)
+        assert len(rows) >= 1
+        first = rows[0]
+        assert str(first.get("status") or "").lower() == "pending_approval"
+        assert "permission_denied:can_place_trades" not in str(first.get("error") or "").lower()
     finally:
         db.close()
 
@@ -6290,6 +7834,73 @@ def test_heuristic_plan_covers_research_ml_and_indicator_visibility():
     vis = vis_rows[0]["args"].get("visibility")
     assert isinstance(vis, dict)
     assert vis.get("rsi") is False
+
+
+def test_heuristic_plan_trendilo_field_scan_extracts_symbols():
+    context = {
+        "timeframe": "M15",
+        "agent_strategy_preset": "default",
+    }
+    permissions = {
+        "can_scan_tools": True,
+    }
+    msg = "Scan Trendilo green/red fields across symbols: XAUUSD, US500m and NAS100."
+    plan = WorkbenchAgent._heuristic_tool_plan(
+        message=msg,
+        context=context,
+        permissions=permissions,
+        allowed_tool_names=["scan_trendilo_fields"],
+    )
+    scan_rows = [r for r in plan if str(r.get("name") or "") == "scan_trendilo_fields"]
+    assert scan_rows
+    args = scan_rows[0].get("args") if isinstance(scan_rows[0].get("args"), dict) else {}
+    symbols = args.get("symbols") if isinstance(args.get("symbols"), list) else []
+    symbols_norm = {str(s or "").upper() for s in symbols}
+    assert {"XAUUSD", "US500M", "NAS100"} <= symbols_norm
+
+
+def test_heuristic_plan_trendilo_field_scan_market_universe():
+    context = {
+        "timeframe": "M15",
+        "agent_strategy_preset": "default",
+    }
+    permissions = {
+        "can_scan_tools": True,
+    }
+    msg = "Scan Trendilo fields across market for stocks and crypto top 50."
+    plan = WorkbenchAgent._heuristic_tool_plan(
+        message=msg,
+        context=context,
+        permissions=permissions,
+        allowed_tool_names=["scan_trendilo_fields"],
+    )
+    scan_rows = [r for r in plan if str(r.get("name") or "") == "scan_trendilo_fields"]
+    assert scan_rows
+    args = scan_rows[0].get("args") if isinstance(scan_rows[0].get("args"), dict) else {}
+    assert str(args.get("universe") or "") == "market_mixed_top"
+    assert int(args.get("universe_limit") or 0) == 50
+
+
+def test_heuristic_plan_trendilo_field_scan_market_universe_top5():
+    context = {
+        "timeframe": "M5",
+        "agent_strategy_preset": "default",
+    }
+    permissions = {
+        "can_scan_tools": True,
+    }
+    msg = "Scan trendilo fields across market top 5."
+    plan = WorkbenchAgent._heuristic_tool_plan(
+        message=msg,
+        context=context,
+        permissions=permissions,
+        allowed_tool_names=["scan_trendilo_fields"],
+    )
+    scan_rows = [r for r in plan if str(r.get("name") or "") == "scan_trendilo_fields"]
+    assert scan_rows
+    args = scan_rows[0].get("args") if isinstance(scan_rows[0].get("args"), dict) else {}
+    assert str(args.get("universe") or "") == "market_mixed_top"
+    assert int(args.get("universe_limit") or 0) == 5
 
 
 def test_heuristic_plan_covers_draw_range_and_trade_entry_exit():

@@ -38,6 +38,27 @@ def test_liquidity_language_maps_to_analysis_tools():
     assert "run_mtf_analysis" in tools
 
 
+def test_trendilo_field_language_maps_to_multi_symbol_scan_tool():
+    intents = classify_intent("scan trendilo green/red fields on XAUUSD and US500")
+    assert "analysis" in intents
+    tools = get_tools_for_intent("scan trendilo green/red fields on XAUUSD and US500")
+    assert "scan_trendilo_fields" in tools
+
+
+def test_trendilo_tradeable_scan_language_maps_to_tradeable_tool():
+    intents = classify_intent("scan market for tradeable trendilo opportunities")
+    assert "analysis" in intents
+    tools = get_tools_for_intent("scan market for tradeable trendilo opportunities")
+    assert "scan_trendilo_tradeable" in tools
+
+
+def test_strategy_tradeable_scan_language_maps_to_universal_tool():
+    intents = classify_intent("run strategy scanner for strategy 1 tradeable opportunities across market")
+    assert "analysis" in intents
+    tools = get_tools_for_intent("run strategy scanner for strategy 1 tradeable opportunities across market")
+    assert "scan_strategy_tradeable" in tools
+
+
 def test_identity_intent_includes_personality_switch_tool():
     intents = classify_intent("switch to master personality profile")
     assert "identity" in intents

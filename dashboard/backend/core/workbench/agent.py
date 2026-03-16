@@ -33,6 +33,11 @@ _ALLOWED_TOOL_NAMES = {
     "scan_draw_fvg_range",
     "run_mtf_analysis",
     "run_htf_fvg_liquidity_reclaim_analysis",
+    "run_orb_analysis",
+    "run_trendilo_analysis",
+    "scan_trendilo_fields",
+    "scan_trendilo_tradeable",
+    "scan_strategy_tradeable",
     "get_market_snapshot",
     "get_positions_detail",
     "get_indicator_values",
@@ -712,6 +717,155 @@ class WorkbenchAgent:
                 },
             },
             {
+                "name": "run_orb_analysis",
+                "description": "Parent strategy tool: NY 15-minute Opening Range Breakout + 1-minute imbalance confirmation. Returns a clear verdict: TRADEABLE_TODAY or NOT_TRADEABLE_TODAY with exact rule-level reasoning.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "preset": {"type": "string", "description": "Optional preset override: default, xauusd_m1, nas100_m1, us500_m1."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days (default ~2.5)."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional target R multiple override."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                        "include_news": {"type": "boolean", "description": "Include market news headlines in output when true."},
+                        "news_limit": {"type": "integer", "description": "News headline limit (1-10)."},
+                        "news_lookback_min": {"type": "integer", "description": "News lookback window in minutes."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "run_trendilo_analysis",
+                "description": "Parent strategy tool: Trendilo momentum-envelope strategy with ADX/DI + 300 T3/ALMA confirmations and ATR-based SL / RR TP planning.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "execution_timeframe": {"type": "string", "description": "Optional execution timeframe (M1/M5/M15/M30/H1)."},
+                        "preset": {"type": "string", "description": "Optional preset override: conservative/default/aggressive/xauusd_m15/nas100_m15/us500_m15."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional target R multiple override."},
+                        "adx_threshold": {"type": "number", "description": "Optional stoch-ADX(vwma) confirmation threshold."},
+                        "atr_stop_mult": {"type": "number", "description": "Optional ATR stop multiplier override."},
+                        "use_di_direction": {"type": "boolean", "description": "Require DI direction confirmation when true."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "scan_trendilo_fields",
+                "description": "Scan Trendilo field state across symbols and report green/red/neutral field structure. Supports manual symbol lists and built-in market universes (stocks/crypto/mixed) with automatic MT5 broker-symbol resolution.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbols": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Symbols to scan (e.g., [\"XAUUSD\",\"US500\",\"NAS100\"]).",
+                        },
+                        "symbol": {"type": "string", "description": "Optional single-symbol shortcut."},
+                        "universe": {
+                            "type": "string",
+                            "description": "Optional built-in universe: stocks_top50, crypto_top50, market_mixed_top (or aliases: stocks, crypto, market).",
+                        },
+                        "universe_limit": {"type": "integer", "description": "Optional cap for universe symbols (1-200)."},
+                        "scan_market": {"type": "boolean", "description": "Shortcut for market_mixed_top universe scan."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "timeframe": {"type": "string", "description": "Optional timeframe override (M1/M5/M15/M30/H1/H4/D1)."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "lookback_bars": {"type": "integer", "description": "Bars window used to count green/red/neutral fields."},
+                        "summary_only": {"type": "boolean", "description": "When true, return compact per-symbol rows + zone summary for lower token usage."},
+                        "summary_limit": {"type": "integer", "description": "Max symbols per zone list in agent_summary."},
+                        "preset": {"type": "string", "description": "Optional Trendilo preset for parameter alignment."},
+                        "trendilo_pct_lookback": {"type": "integer", "description": "Override Trendilo pch lookback."},
+                        "trendilo_length": {"type": "integer", "description": "Override Trendilo ALMA length."},
+                        "trendilo_alma_offset": {"type": "number", "description": "Override Trendilo ALMA offset (0..1)."},
+                        "trendilo_alma_sigma": {"type": "number", "description": "Override Trendilo ALMA sigma."},
+                        "trendilo_band_multiplier": {"type": "number", "description": "Override Trendilo RMS band multiplier."},
+                        "trendilo_use_custom_band_length": {"type": "boolean", "description": "Use custom RMS band length when true."},
+                        "trendilo_band_length": {"type": "integer", "description": "Override Trendilo custom RMS band length."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "scan_trendilo_tradeable",
+                "description": "Deterministic Trendilo opportunity screener across symbols. Returns only symbols where Trendilo + ADX/DI + ALMA/T3 gates are fully tradeable, with schedule_trade_entry-ready args.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbols": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Symbols to scan (e.g., [\"XAUUSD\",\"US500\",\"NAS100\"]).",
+                        },
+                        "symbol": {"type": "string", "description": "Optional single-symbol shortcut."},
+                        "universe": {
+                            "type": "string",
+                            "description": "Optional built-in universe: stocks_top50, crypto_top50, market_mixed_top (or aliases: stocks, crypto, market).",
+                        },
+                        "universe_limit": {"type": "integer", "description": "Optional cap for universe symbols (1-200)."},
+                        "scan_market": {"type": "boolean", "description": "Shortcut for market_mixed_top universe scan."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "timeframe": {"type": "string", "description": "Optional timeframe override (M1/M5/M15/M30/H1/H4/D1)."},
+                        "execution_timeframe": {"type": "string", "description": "Alias for timeframe."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "lookback_bars": {"type": "integer", "description": "Bars window used for warmup/field context."},
+                        "preset": {"type": "string", "description": "Optional Trendilo preset for parameter alignment."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional R multiple override."},
+                        "adx_threshold": {"type": "number", "description": "Optional stoch-ADX(vwma) threshold override."},
+                        "atr_stop_mult": {"type": "number", "description": "Optional ATR stop multiplier override."},
+                        "use_di_direction": {"type": "boolean", "description": "Require DI direction confirmation when true."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                        "max_results": {"type": "integer", "description": "Maximum returned opportunities (default 25)."},
+                        "include_non_tradeable": {"type": "boolean", "description": "Include blocked symbols in report when true."},
+                        "summary_only": {"type": "boolean", "description": "Return compact rows for lower token usage (default true)."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "scan_strategy_tradeable",
+                "description": "Deterministic multi-symbol screener for parent strategies. Supports strategy=mtf, htf_reclaim, orb, or trendilo and returns currently tradeable instruments with schedule-ready args.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "strategy": {"type": "string", "description": "Required strategy selector: mtf, htf_reclaim, orb, trendilo."},
+                        "symbols": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Symbols to scan (e.g., [\"XAUUSD\",\"US500\",\"NAS100\"]).",
+                        },
+                        "symbol": {"type": "string", "description": "Optional single-symbol shortcut."},
+                        "universe": {
+                            "type": "string",
+                            "description": "Optional built-in universe: stocks_top50, crypto_top50, market_mixed_top (or aliases: stocks, crypto, market).",
+                        },
+                        "universe_limit": {"type": "integer", "description": "Optional cap for universe symbols (1-200)."},
+                        "scan_market": {"type": "boolean", "description": "Shortcut for market_mixed_top universe scan."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "timeframe": {"type": "string", "description": "Optional timeframe override (execution timeframe for mtf/htf_reclaim/trendilo)."},
+                        "execution_timeframe": {"type": "string", "description": "Alias for timeframe."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "preset": {"type": "string", "description": "Optional strategy preset override."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional R multiple override."},
+                        "include_news": {"type": "boolean", "description": "When true, include news gate where strategy supports it."},
+                        "max_results": {"type": "integer", "description": "Maximum returned opportunities (default 25)."},
+                        "include_non_tradeable": {"type": "boolean", "description": "Include blocked symbols in report when true."},
+                        "summary_only": {"type": "boolean", "description": "Return compact rows for lower token usage (default true)."},
+                    },
+                    "required": ["strategy"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "get_market_snapshot",
                 "description": "General market context snapshot (price, indicators, optional bars). Safe for quick status checks; not a replacement for run_mtf_analysis when building HTF->LTF FVG execution plans.",
                 "parameters": {
@@ -1307,6 +1461,8 @@ class WorkbenchAgent:
             "STRATEGY WORKFLOW:\n"
             "- For classic multi-timeframe FVG analysis, call run_mtf_analysis first (HTF anchors + LTF confirmation + risk math in one call).\n"
             "- For the separate HTF FVG + Liquidity Reclaim strategy, call run_htf_fvg_liquidity_reclaim_analysis first.\n"
+            "- For NY Open ORB workflow, call run_orb_analysis first and report TRADEABLE_TODAY vs NOT_TRADEABLE_TODAY with strict rule evidence.\n"
+            "- For Trendilo workflow, call run_trendilo_analysis first and report TRADEABLE_TODAY vs NOT_TRADEABLE_TODAY with confirmation stack evidence (Trendilo + ADX/DI + T3/ALMA).\n"
             "- If a parent strategy returns NO_TRIGGER, zero HTF candidates, or sparse negative output, verify before concluding: run raw scan_tool checks on HTF FVG structure and execution-timeframe liquidity, then explain whether the structure truly does not exist or was filtered out by strategy rules.\n"
             "- For conditional entries, use schedule_trade_entry with precondition, condition, and cancel_rule.\n"
             "- Always include stop_loss and take_profit with every trade action.\n\n"
@@ -1591,7 +1747,8 @@ class WorkbenchAgent:
         allowed_tool_names: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         plan: List[Dict[str, Any]] = []
-        msg = str(message or "").lower()
+        raw_msg = str(message or "")
+        msg = raw_msg.lower()
         strategy_profile = str(context.get("agent_strategy_profile") or "").strip().lower()
         can_scan = bool(permissions.get("can_scan_tools", True))
         can_research = bool(permissions.get("can_use_research", False))
@@ -1741,8 +1898,155 @@ class WorkbenchAgent:
         )
         if can_scan and strategy_profile == "htf_fvg_liquidity_reclaim_v2" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy"]):
             liquidity_reclaim_request = True
+        orb_request = (
+            can_scan
+            and _contains_any(
+                msg,
+                [
+                    "orb",
+                    "opening range",
+                    "opening-range",
+                    "opening range breakout",
+                    "orh",
+                    "orl",
+                    "ny open",
+                    "new york open",
+                    "1m imbalance",
+                    "imbalance",
+                ],
+            )
+        )
+        if can_scan and strategy_profile == "orb_ny_15m_imbalance" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "orb", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
+            orb_request = True
+        trendilo_request = (
+            can_scan
+            and _contains_any(
+                msg,
+                [
+                    "trendilo",
+                    "alma",
+                    "t3",
+                    "adx",
+                    "di",
+                    "trendilo strategy",
+                    "trendilo analysis",
+                ],
+            )
+        )
+        trendilo_field_scan_request = (
+            can_scan
+            and _tool_allowed("scan_trendilo_fields")
+            and _contains_any(msg, ["trendilo"])
+            and _contains_any(
+                msg,
+                [
+                    "green field",
+                    "red field",
+                    "field scan",
+                    "fields",
+                    "across symbols",
+                    "all symbols",
+                    "multi symbol",
+                    "multisymbol",
+                ],
+            )
+        )
+        trendilo_tradeable_scan_request = (
+            can_scan
+            and _tool_allowed("scan_trendilo_tradeable")
+            and _contains_any(msg, ["trendilo"])
+            and _contains_any(
+                msg,
+                [
+                    "tradeable opportunities",
+                    "tradable opportunities",
+                    "only tradeable",
+                    "only tradable",
+                    "opportunity scan",
+                    "best opportunities",
+                    "find opportunities",
+                    "scanner",
+                    "screener",
+                    "across market",
+                    "market wide",
+                    "top opportunities",
+                ],
+            )
+        )
+        strategy_tradeable_scan_request = (
+            can_scan
+            and _tool_allowed("scan_strategy_tradeable")
+            and _contains_any(
+                msg,
+                [
+                    "tradeable opportunities",
+                    "tradable opportunities",
+                    "opportunity scan",
+                    "strategy scanner",
+                    "scan strategy",
+                    "scan opportunities",
+                    "market scanner",
+                    "screener",
+                    "across market",
+                    "market wide",
+                ],
+            )
+            and _contains_any(
+                msg,
+                [
+                    "strategy 1",
+                    "strategy1",
+                    "classic",
+                    "mtf",
+                    "strategy 2",
+                    "strategy2",
+                    "liquidity reclaim",
+                    "htf reclaim",
+                    "orb",
+                    "opening range",
+                    "trendilo",
+                ],
+            )
+        )
+        trendilo_scan_symbols: List[str] = []
+        trendilo_scan_universe = ""
+        trendilo_scan_universe_limit: Optional[int] = None
+        if trendilo_field_scan_request or trendilo_tradeable_scan_request:
+            sym_hits = re.findall(
+                r"\b(xauusdm?|nas100m?|us500m?|us100m?|spx500m?|sp500m?|us30m?|ger40m?|uk100m?|eurusdm?|gbpusdm?|usdjpym?|audusdm?|usdcadm?|usdchfm?|btcusdm?|ethusdm?)\b",
+                msg,
+                flags=re.IGNORECASE,
+            )
+            seen_symbols: set[str] = set()
+            for s in sym_hits:
+                key = str(s or "").strip().upper()
+                if not key or key in seen_symbols:
+                    continue
+                seen_symbols.add(key)
+                trendilo_scan_symbols.append(key)
+            wants_market = _contains_any(msg, ["across market", "market wide", "market-wide", "whole market", "all market", "popular symbols", "top symbols"])
+            wants_crypto = _contains_any(msg, ["crypto", "btc", "eth", "coins", "altcoin"])
+            wants_stocks = _contains_any(msg, ["stock", "stocks", "equity", "equities", "nasdaq", "s&p", "sp500", "dow"])
+            if wants_market or (wants_crypto and wants_stocks):
+                trendilo_scan_universe = "market_mixed_top"
+            elif wants_crypto:
+                trendilo_scan_universe = "crypto_top50"
+            elif wants_stocks:
+                trendilo_scan_universe = "stocks_top50"
+            top_match = re.search(r"\btop\s*(\d{1,3})\b", msg, flags=re.IGNORECASE)
+            if not top_match:
+                top_match = re.search(r"\b(\d{1,3})\s*(symbols|assets|tickers)\b", msg, flags=re.IGNORECASE)
+            if top_match:
+                try:
+                    trendilo_scan_universe_limit = max(1, min(200, int(top_match.group(1))))
+                except Exception:
+                    trendilo_scan_universe_limit = None
+        if can_scan and strategy_profile == "trendilo_confirmation_v1" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "trendilo", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
+            trendilo_request = True
         classic_parent_allowed = can_scan and _tool_allowed("run_mtf_analysis")
         liquidity_parent_allowed = can_scan and _tool_allowed("run_htf_fvg_liquidity_reclaim_analysis")
+        orb_parent_allowed = can_scan and _tool_allowed("run_orb_analysis")
+        trendilo_parent_allowed = can_scan and _tool_allowed("run_trendilo_analysis")
         raw_verify_request = can_scan and _contains_any(
             msg,
             [
@@ -1756,7 +2060,104 @@ class WorkbenchAgent:
                 "technical analysis",
             ],
         )
-        if mtf_fvg_request:
+        if strategy_tradeable_scan_request:
+            wants_s1 = _contains_any(msg, ["strategy 1", "strategy1", "classic", "mtf"])
+            wants_s2 = _contains_any(msg, ["strategy 2", "strategy2", "liquidity reclaim", "htf reclaim"])
+            wants_orb = _contains_any(msg, ["orb", "opening range"])
+            wants_trendilo = _contains_any(msg, ["trendilo"])
+            strategy_scan = "trendilo"
+            if wants_s1:
+                strategy_scan = "mtf"
+            elif wants_s2:
+                strategy_scan = "htf_reclaim"
+            elif wants_orb:
+                strategy_scan = "orb"
+            elif wants_trendilo:
+                strategy_scan = "trendilo"
+            elif strategy_profile == "classic_htf_fvg":
+                strategy_scan = "mtf"
+            elif strategy_profile == "htf_fvg_liquidity_reclaim_v2":
+                strategy_scan = "htf_reclaim"
+            elif strategy_profile == "orb_ny_15m_imbalance":
+                strategy_scan = "orb"
+
+            scan_args: Dict[str, Any] = {
+                "strategy": strategy_scan,
+                "timeframe": str(context.get("timeframe") or "M15"),
+                "preset": str(context.get("agent_strategy_preset") or "default"),
+                "summary_only": True,
+                "max_results": 25,
+                "include_non_tradeable": False,
+            }
+            if trendilo_scan_universe:
+                scan_args["universe"] = trendilo_scan_universe
+            if trendilo_scan_universe_limit is not None:
+                scan_args["universe_limit"] = int(trendilo_scan_universe_limit)
+            if trendilo_scan_symbols:
+                scan_args["symbols"] = trendilo_scan_symbols[:80]
+            plan.append({"name": "scan_strategy_tradeable", "args": scan_args})
+        elif trendilo_tradeable_scan_request:
+            scan_args: Dict[str, Any] = {
+                "timeframe": str(context.get("timeframe") or "M15"),
+                "preset": str(context.get("agent_strategy_preset") or "default"),
+                "lookback_bars": 120,
+                "summary_only": True,
+                "max_results": 25,
+                "include_non_tradeable": False,
+            }
+            if trendilo_scan_universe:
+                scan_args["universe"] = trendilo_scan_universe
+            if trendilo_scan_universe_limit is not None:
+                scan_args["universe_limit"] = int(trendilo_scan_universe_limit)
+            if trendilo_scan_symbols:
+                scan_args["symbols"] = trendilo_scan_symbols[:80]
+            plan.append(
+                {
+                    "name": "scan_trendilo_tradeable",
+                    "args": scan_args,
+                }
+            )
+        elif trendilo_field_scan_request:
+            scan_args: Dict[str, Any] = {
+                "timeframe": str(context.get("timeframe") or "M15"),
+                "preset": str(context.get("agent_strategy_preset") or "default"),
+                "lookback_bars": 120,
+                "summary_only": True,
+                "summary_limit": 120,
+            }
+            if trendilo_scan_universe:
+                scan_args["universe"] = trendilo_scan_universe
+            if trendilo_scan_universe_limit is not None:
+                scan_args["universe_limit"] = int(trendilo_scan_universe_limit)
+            if trendilo_scan_symbols:
+                scan_args["symbols"] = trendilo_scan_symbols[:50]
+            plan.append(
+                {
+                    "name": "scan_trendilo_fields",
+                    "args": scan_args,
+                }
+            )
+        elif trendilo_request and trendilo_parent_allowed:
+            plan.append(
+                {
+                    "name": "run_trendilo_analysis",
+                    "args": {
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
+                        "execution_timeframe": str(context.get("timeframe") or "M15"),
+                    },
+                }
+            )
+        elif orb_request and orb_parent_allowed:
+            plan.append(
+                {
+                    "name": "run_orb_analysis",
+                    "args": {
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
+                        "include_news": False,
+                    },
+                }
+            )
+        elif mtf_fvg_request:
             if liquidity_reclaim_request and liquidity_parent_allowed:
                 plan.append(
                     {
@@ -1897,6 +2298,8 @@ class WorkbenchAgent:
                 "rsi": bool(enabled.get("rsi", True)),
                 "stoch": bool(enabled.get("stoch", True)),
                 "bollinger": bool(enabled.get("bollinger", True)),
+                "trendilo": bool(enabled.get("trendilo", True)),
+                "trendiloBarColor": bool(enabled.get("trendiloBarColor", False)),
                 "goldenCross": bool(enabled.get("goldenCross", True)),
             }
             if _contains_any(msg, ["hide all indicators", "disable all indicators"]):
@@ -1912,6 +2315,8 @@ class WorkbenchAgent:
                 "rsi": ["rsi"],
                 "stoch": ["stoch", "stochastic"],
                 "bollinger": ["bollinger", "bb "],
+                "trendilo": ["trendilo"],
+                "trendiloBarColor": ["trendilo bar color", "trendilo barcolour", "barcolor", "bar color"],
                 "goldenCross": ["golden cross", "death cross", "cross marker"],
             }
             has_indicator_context = _contains_any(msg, ["indicator"]) or any(

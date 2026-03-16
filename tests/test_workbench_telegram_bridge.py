@@ -538,6 +538,24 @@ def test_strategy_command_show_and_set(monkeypatch):
     assert seen.get("value") == (97, "liquidity", "nas100_m15")
 
 
+def test_strategy_command_help_lists_orb_profile(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_provider_and_permissions",
+        lambda _sid: (
+            {"provider": "claude"},
+            {},
+            {"agent_strategy_profile": "classic_htf_fvg", "agent_strategy_preset": "default"},
+        ),
+    )
+    out = svc._handle_text(chat_id, "/strategy")
+    assert "orb_ny_15m_imbalance" in out
+    assert "orb" in out.lower()
+
+
 def test_set_strategy_profile_persists_normalized_value(monkeypatch):
     svc = tbs.TelegramBridgeService()
     session_id = 97
@@ -602,6 +620,126 @@ def test_set_strategy_profile_persists_normalized_value(monkeypatch):
     cfg = fake_db.agent_row.config_json if isinstance(fake_db.agent_row.config_json, dict) else {}
     assert cfg.get("agent_strategy_profile") == "htf_fvg_liquidity_reclaim_v2"
     assert cfg.get("agent_strategy_preset") == "xauusd_m15"
+
+
+def test_set_strategy_profile_accepts_orb_alias(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    session_id = 98
+    session_row = types.SimpleNamespace(id=session_id, strategy_id="_workbench")
+    agent_row = types.SimpleNamespace(
+        simulation_session_id=session_id,
+        status="ACTIVE",
+        config_json={},
+        updated_at=None,
+    )
+
+    class _FakeQuery:
+        def __init__(self, db, model):
+            self.db = db
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            if self.model is tbs.WorkbenchAgentSessionModel:
+                return self.db.agent_row
+            return None
+
+        def get(self, _sid):
+            if self.model is tbs.SimulationSession:
+                return self.db.session_row
+            return None
+
+    class _FakeDB:
+        def __init__(self):
+            self.session_row = session_row
+            self.agent_row = agent_row
+
+        def query(self, model):
+            return _FakeQuery(self, model)
+
+        def add(self, _row):
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(tbs, "SessionLocal", lambda: _FakeDB())
+    out = svc._set_strategy_profile(session_id, "orb", "xauusd_m1")
+    assert "orb_ny_15m_imbalance" in out
+
+
+def test_set_strategy_profile_accepts_trendilo_alias(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    session_id = 99
+    session_row = types.SimpleNamespace(id=session_id, strategy_id="_workbench")
+    agent_row = types.SimpleNamespace(
+        simulation_session_id=session_id,
+        status="ACTIVE",
+        config_json={},
+        updated_at=None,
+    )
+
+    class _FakeQuery:
+        def __init__(self, db, model):
+            self.db = db
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            if self.model is tbs.WorkbenchAgentSessionModel:
+                return self.db.agent_row
+            return None
+
+        def get(self, _sid):
+            if self.model is tbs.SimulationSession:
+                return self.db.session_row
+            return None
+
+    class _FakeDB:
+        def __init__(self):
+            self.session_row = session_row
+            self.agent_row = agent_row
+
+        def query(self, model):
+            return _FakeQuery(self, model)
+
+        def add(self, _row):
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(tbs, "SessionLocal", lambda: _FakeDB())
+    out = svc._set_strategy_profile(session_id, "trendilo", "xauusd_m15")
+    assert "trendilo_confirmation_v1" in out
 
 
 def test_botprofile_command_outputs_active_profile(monkeypatch):

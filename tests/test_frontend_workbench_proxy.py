@@ -79,3 +79,55 @@ def test_sim_agent_admin_proxy_forwards_to_backend(monkeypatch):
     assert data["ok"] is True
     assert seen["method"] == "GET"
     assert seen["path"] == "/api/v1/simulation/sessions/125/agent/admin"
+
+
+def test_sim_agent_trendilo_opportunities_proxy_forwards_to_backend(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = dict(data or {})
+        return {"ok": True, "session_id": 45, "data": {"scan_type": "trendilo_tradeable_scan"}}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    payload = {"timeframe": "M5", "lookback_bars": 120, "summary_only": True}
+    resp = client.post("/api/simulation/sessions/45/agent/trendilo-opportunities", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/simulation/sessions/45/agent/trendilo-opportunities"
+    assert seen["data"] == payload
+
+
+def test_sim_agent_strategy_opportunities_proxy_forwards_to_backend(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = dict(data or {})
+        return {"ok": True, "session_id": 45, "data": {"scan_type": "strategy_tradeable_scan"}}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    payload = {"strategy": "mtf", "timeframe": "M15", "summary_only": True}
+    resp = client.post("/api/simulation/sessions/45/agent/strategy-opportunities", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/simulation/sessions/45/agent/strategy-opportunities"
+    assert seen["data"] == payload
