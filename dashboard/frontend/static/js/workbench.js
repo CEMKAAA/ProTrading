@@ -16,11 +16,16 @@ let trendiloPanelChart = null;
 let trendiloPanelSeries = {};
 let trendiloPanelSyncingRange = false;
 let trendiloPanelSyncingCrosshair = false;
+let userHasScrolledAway = false;
 let mainCloseByTime = new Map();
 let trendiloSignalByTime = new Map();
 let trendiloDirByTime = new Map();
 let sessionCatalog = [];
 let brokerSymbolCatalog = [];
+let sessionLiveExecutionMode = 'paper';
+let sessionLiveControlState = null;
+let sessionLiveAccountState = null;
+let sessionSymbolEconomics = null;
 
 let isPlaying = false;
 let playInterval = null;
@@ -71,6 +76,10 @@ let indicatorSelection = {
     stoch: false,
     bollinger: false,
     trendilo: false,
+    advancedTrendilo: false,
+    trendiloLsma: false,
+    alphaWave: false,
+    orbSignal: false,
     trendiloBarColor: false,
     goldenCross: false,
 };
@@ -89,6 +98,7 @@ let chartClickHandler = null;
 const STRATEGY_ID = '_workbench';
 const API_BASE = '';
 const WS_BACKEND_PORT = 8000;
+const LIVE_CONFIRMATION_PHRASE = 'CONFIRM_LIVE_ORDER';
 const SESSION_STORAGE_KEY = 'sim:lastSession:_workbench';
 const SESSION_LIST_LIMIT = 200;
 const SPEED_STEPS = [1, 2, 5, 10];
@@ -99,6 +109,16 @@ const AGENT_LIVE_PUSH_MIN_MS = 1500;
 const AGENT_LIVE_KEEPALIVE_MS = 12000;
 const CHART_BG_COLOR = '#131722';
 const CHART_RIGHT_SCALE_MIN_WIDTH = 72;
+const ORB_NY_TIMEZONE = 'America/New_York';
+const ORB_NY_PARTS_FORMATTER = new Intl.DateTimeFormat('en-US', {
+    timeZone: ORB_NY_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+});
 const INDICATOR_DEFAULTS = {
     smaPeriodFast: 20,
     smaPeriodSlow: 50,
@@ -119,7 +139,16 @@ const INDICATOR_DEFAULTS = {
     trendiloBandMultiplier: 1.0,
     trendiloUseCustomBandLength: false,
     trendiloBandLength: 20,
+    trendiloVolumeSmaPeriod: 20,
     trendiloFillEnabled: true,
+    advancedTrendiloHysteresisMult: 0.15,
+    trendiloLsmaLength: 25,
+    trendiloLsmaOffset: 0,
+    trendiloLsmaSmooth: 5,
+    trendiloLsmaHmaLength: 50,
+    alphaWaveBaselineAdxLength: 2,
+    alphaWaveBaselineWeight: 10.0,
+    alphaWaveBaselineMaLength: 6,
 };
 const COST_MODEL_DEFAULTS = {
     XAUUSD: 0.30,
@@ -165,6 +194,21 @@ let pendingApprovalTimer = null;
 let pendingApprovalTimeoutBusy = false;
 let compactIndicatorSnapshotCacheKey = '';
 let compactIndicatorSnapshotCacheValue = {};
+let strategyAutomationJobs = [];
+let strategyAutomationJobIndex = {};
+let automationMonitorExpandedJobs = new Set();
+let lastStrategyOpportunityScanData = null;
+let automationChartJobContext = null;
+let automationChartMain = null;
+let automationChartCandles = null;
+let automationChartVolume = null;
+let automationChartOverlay = null;
+let automationChartOverlaySecondary = null;
+let automationChartPanel = null;
+let automationChartPanelSeries = {};
+let automationChartResizeObserver = null;
+let automationChartPanelResizeObserver = null;
+let automationChartSyncingRange = false;
 let seenWatchdogApprovalSignatures = {};
 let agentAdminNewsHealth = {
     checkedAtMs: 0,
@@ -476,6 +520,133 @@ function setTransportMode(mode) {
     if (el) el.textContent = adaptiveSpeedEnabled ? `${transportMode}+AUTO` : transportMode;
 }
 
+function renderExecutionModeBadge() {
+    const el = document.getElementById('stat-execution');
+    if (!el) return;
+    const badgeClassBase = 'stat-value execution-badge clickable';
+    if (!(sessionId && Number.isFinite(Number(sessionId)) && Number(sessionId) > 0)) {
+        el.textContent = 'NO SESSION';
+        el.className = `${badgeClassBase} mode-none`;
+        el.title = 'No active session';
+        return;
+    }
+    const cfg = _normalizeSessionLiveControl(sessionLiveControlState || { execution_mode: 'paper' });
+    const mode = String(cfg.execution_mode || 'paper').toLowerCase();
+    if (mode === 'live_mt5') {
+        if (Boolean(cfg.kill_switch_enabled)) {
+            el.textContent = 'LIVE MT5 · KILL';
+            el.className = `${badgeClassBase} mode-kill`;
+            el.title = 'Live MT5 selected but kill switch is ON (order routing blocked)';
+        } else {
+            el.textContent = 'LIVE MT5';
+            el.className = `${badgeClassBase} mode-live`;
+            el.title = 'Live MT5 execution enabled';
+        }
+    } else {
+        el.textContent = 'PAPER';
+        el.className = `${badgeClassBase} mode-paper`;
+        el.title = 'Paper execution mode (simulated orders)';
+    }
+}
+
+function _numFmt(value, digits = 2) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '-';
+    return n.toFixed(digits);
+}
+
+function _parseUiDecimal(rawValue, fallback = null) {
+    const txt = String(rawValue ?? '').trim();
+    if (!txt) return fallback;
+    const normalized = txt.replace(',', '.');
+    const n = Number(normalized);
+    if (!Number.isFinite(n)) return fallback;
+    return n;
+}
+
+function renderSymbolEconomicsHint(snapshotLike = null) {
+    if (snapshotLike && typeof snapshotLike === 'object') {
+        sessionSymbolEconomics = { ...snapshotLike };
+    } else if (!sessionSymbolEconomics) {
+        sessionSymbolEconomics = null;
+    }
+    const el = document.getElementById('symbol-econ-hint');
+    if (!el) return;
+    const s = sessionSymbolEconomics;
+    if (!s || typeof s !== 'object') {
+        el.textContent = 'Symbol economics will be shown after session start.';
+        return;
+    }
+    const resolved = String(s.resolved_symbol || s.requested_symbol || '').toUpperCase();
+    const source = String(s.source || 'instrument_specs');
+    const contract = _numFmt(s.contract_size, 6);
+    const point = _numFmt(s.point, 8);
+    const value1Lot = _numFmt(s.point_value_per_1lot, 6);
+    const pnlPoint1Lot = _numFmt(s.pnl_per_point_1lot, 6);
+    const minLot = _numFmt(s.volume_min, 4);
+    const maxLot = _numFmt(s.volume_max, 4);
+    const stepLot = _numFmt(s.volume_step, 4);
+    const lot1pct100p = (s.risk_examples && s.risk_examples.lot_for_1pct_risk_at_100_points_stop !== undefined)
+        ? _numFmt(s.risk_examples.lot_for_1pct_risk_at_100_points_stop, 4)
+        : '-';
+    el.textContent = `Symbol economics (${resolved || '-'}, ${source}): contract_size=${contract}, point_value_per_1lot=${value1Lot}, point=${point}, pnl_per_point_1lot=${pnlPoint1Lot}, lot[min/step/max]=${minLot}/${stepLot}/${maxLot}, lot@1%risk(100 points SL)=${lot1pct100p}`;
+}
+
+function setPanelBodyExpanded(bodyId, expanded) {
+    const id = String(bodyId || '').trim();
+    if (!id) return false;
+    const body = document.getElementById(id);
+    if (!body) return false;
+    const isOpen = !!expanded;
+    body.classList.toggle('d-none', !isOpen);
+    const toggle = document.querySelector(`.panel-toggle[data-target="#${id}"]`);
+    if (toggle) toggle.setAttribute('aria-expanded', String(isOpen));
+    return true;
+}
+
+function setAgentSectionExpanded(sectionId, expanded) {
+    const id = String(sectionId || '').trim();
+    if (!id) return false;
+    const body = document.getElementById(id);
+    if (!body) return false;
+    const isOpen = !!expanded;
+    body.classList.toggle('d-none', !isOpen);
+    const toggle = document.querySelector(`.agent-section-toggle[data-agent-section="${id}"]`);
+    if (toggle) toggle.setAttribute('aria-expanded', String(isOpen));
+    return true;
+}
+
+function focusAgentSafetyExecutionMode() {
+    const input = document.getElementById('agent-live-execution-mode');
+    if (!input) return;
+    try {
+        input.focus({ preventScroll: false });
+    } catch (_) {
+        input.focus();
+    }
+}
+
+function openAgentSafetyFromExecutionBadge() {
+    const expandSafety = () => {
+        setPanelBodyExpanded('agent-panel-body', true);
+        setAgentSectionExpanded('agent-sec-safety', true);
+        focusAgentSafetyExecutionMode();
+    };
+    if (fullscreenWorkbench && typeof bootstrap !== 'undefined') {
+        const modalEl = document.getElementById('agentPanelModal');
+        if (modalEl) {
+            const onShown = () => {
+                modalEl.removeEventListener('shown.bs.modal', onShown);
+                expandSafety();
+            };
+            modalEl.addEventListener('shown.bs.modal', onShown);
+            openWorkbenchPanel('agent');
+            return;
+        }
+    }
+    expandSafety();
+}
+
 function updateSessionIdStat() {
     const el = document.getElementById('stat-session-id');
     const sel = document.getElementById('sim-session-select');
@@ -492,6 +663,7 @@ function updateSessionIdStat() {
         el.title = 'No active session';
         if (sel) sel.value = '';
     }
+    renderExecutionModeBadge();
 }
 
 function setSelectValueCaseInsensitive(selectEl, rawValue) {
@@ -549,6 +721,7 @@ async function refreshSessionCatalog(showToast = false) {
         const q = new URLSearchParams();
         q.set('strategy_id', STRATEGY_ID);
         q.set('limit', String(SESSION_LIST_LIMIT));
+        q.set('include_automation_children', '0');
         const res = await fetch(`${API_BASE}/api/simulation/sessions?${q.toString()}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.ok === false || !Array.isArray(data?.sessions)) {
@@ -563,11 +736,16 @@ async function refreshSessionCatalog(showToast = false) {
     }
 }
 
-async function switchToSession(nextSessionId, { restartLive = false } = {}) {
+async function switchToSession(nextSessionId, { restartLive = false, forceLiveMode = false } = {}) {
     const sid = Number(nextSessionId);
     if (!Number.isFinite(sid) || sid <= 0) {
         showStatus('Invalid session id', 'warning');
         return false;
+    }
+    if (forceLiveMode) {
+        const modeEl = document.getElementById('workbench-mode');
+        if (modeEl) modeEl.value = 'live';
+        applyWorkbenchModeUI();
     }
     const switchSeq = ++sessionSwitchSeq;
     const wasLive = liveFeedActive || liveFeedRequested;
@@ -586,12 +764,16 @@ async function switchToSession(nextSessionId, { restartLive = false } = {}) {
                     sessionId = null;
                     clearPersistedSessionId();
                     updateSessionIdStat();
+                    sessionSymbolEconomics = null;
+                    renderSymbolEconomicsHint(null);
                 }
             }
             showStatus(`Session switch failed: ${data?.error || res.status}`, 'danger');
             return false;
         }
         sessionId = Number(data.id);
+        setSessionLiveExecutionModeFromLiveControl(data?.live_control || null, data?.live_account || null);
+        renderSymbolEconomicsHint(data?.symbol_economics || null);
         sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
@@ -708,6 +890,8 @@ async function closeSelectedSession() {
             renderTradeLog([]);
             renderAgentTriggerList([]);
             renderPendingAgentApprovals();
+            sessionSymbolEconomics = null;
+            renderSymbolEconomicsHint(null);
         }
         await refreshSessionCatalog(false);
         showStatus(`Session #${sid} closed`, 'success');
@@ -808,6 +992,77 @@ function applyBrokerSymbolsToUI(rows, opts = {}) {
     }
 }
 
+function applyBrokerSymbolsToAutomationUI(rows, opts = {}) {
+    const selectEl = document.getElementById('auto-start-symbol');
+    const metaEl = document.getElementById('auto-start-symbol-meta');
+    if (!selectEl) return;
+    const current = String(selectEl.value || '').trim();
+    const currentUpper = current.toUpperCase();
+    const searchInputEl = document.getElementById('auto-start-symbol-search');
+    const rawSearch = (typeof opts.searchTerm === 'string')
+        ? opts.searchTerm
+        : String(searchInputEl?.value || '');
+    const searchTerm = String(rawSearch || '').trim();
+    const list = Array.isArray(rows) ? rows : [];
+    const seen = new Set();
+    const curatedRows = [];
+    for (const opt of CURATED_SYMBOL_OPTIONS) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        if (!value) continue;
+        const keep = value.toUpperCase() === currentUpper || _symbolSearchMatch(searchTerm, [value, label]);
+        if (!keep) continue;
+        curatedRows.push({ value, label });
+        seen.add(value.toUpperCase());
+    }
+
+    const brokerRows = [];
+    for (const row of list) {
+        const name = String(row?.name || '').trim();
+        if (!name) continue;
+        if (seen.has(name.toUpperCase())) continue;
+        const desc = String(row?.description || '').trim();
+        const vis = row?.visible ? 'visible' : 'hidden';
+        const label = desc ? `${name} - ${desc}` : `${name} (${vis})`;
+        const keep = name.toUpperCase() === currentUpper || _symbolSearchMatch(searchTerm, [name, desc, label]);
+        if (!keep) continue;
+        brokerRows.push({ name, label });
+    }
+
+    let html = '<optgroup label="Curated">';
+    for (const opt of curatedRows) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    html += '<optgroup label="Broker (MT5)">';
+    for (const row of brokerRows) {
+        const name = String(row?.name || '').trim();
+        const label = String(row?.label || name).trim();
+        html += `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    if (curatedRows.length === 0 && brokerRows.length === 0) {
+        html = '<option value="" disabled selected>No symbols match your search</option>';
+    }
+    selectEl.innerHTML = html;
+    if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === currentUpper)) {
+        selectEl.value = current;
+    } else if (selectEl.options.length > 0) {
+        selectEl.selectedIndex = 0;
+    }
+    if (metaEl) {
+        if (list.length === 0) {
+            metaEl.textContent = 'No symbols returned from MT5; using curated defaults.';
+        } else if (searchTerm) {
+            metaEl.textContent = `Loaded ${list.length} MT5 symbols. Showing ${brokerRows.length} broker matches for "${searchTerm}".`;
+        } else {
+            metaEl.textContent = `Loaded ${list.length} MT5 symbols from active broker.`;
+        }
+    }
+}
+
 async function refreshBrokerSymbols(showToast = false) {
     try {
         const q = new URLSearchParams();
@@ -821,6 +1076,7 @@ async function refreshBrokerSymbols(showToast = false) {
         }
         const rows = Array.isArray(data?.symbols) ? data.symbols : [];
         applyBrokerSymbolsToUI(rows);
+        applyBrokerSymbolsToAutomationUI(rows);
         if (showToast) {
             if (rows.length > 0) {
                 showStatus(`Loaded ${Number(data.count || 0)} broker symbols`, 'success');
@@ -835,6 +1091,10 @@ async function refreshBrokerSymbols(showToast = false) {
 
 function applySymbolSearchFilter() {
     applyBrokerSymbolsToUI(brokerSymbolCatalog);
+}
+
+function applyAutomationSymbolSearchFilter() {
+    applyBrokerSymbolsToAutomationUI(brokerSymbolCatalog);
 }
 
 function updatePerfStats() {
@@ -907,8 +1167,11 @@ function historyBarsFor(timeframe, days) {
     const tfMins = Math.max(1, timeframeToMinutes(timeframe));
     const d = Math.max(0.1, Math.min(60, Number(days || 2)));
     const base = Math.ceil((d * 1440.0) / tfMins);
-    const withBuffer = base + 3;
-    return Math.max(2, Math.min(10000, withBuffer));
+    // Keep enough warmup bars for heavy indicators (Trendilo/LSMA/300-length stacks),
+    // especially on higher timeframes like D1 where day-based fetches can be too short.
+    const warmupFloor = tfMins >= 1440 ? 220 : (tfMins >= 240 ? 180 : 140);
+    const withBuffer = base + 20;
+    return Math.max(warmupFloor, Math.min(10000, withBuffer));
 }
 
 function getDatabentoApiKey() {
@@ -1777,7 +2040,7 @@ function renderAgentState(state) {
     }
     const strategyProfileEl = document.getElementById('agent-strategy-profile');
     const strategyProfile = String(cfg.agent_strategy_profile || '').trim().toLowerCase();
-    if (strategyProfileEl && ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1'].includes(strategyProfile)) {
+    if (strategyProfileEl && ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1', 'advanced_trendilo_confirmation_v1', 'trendilo_lsma_confirmation_v1', 'alpha_wave_confirmation_v1'].includes(strategyProfile)) {
         strategyProfileEl.value = strategyProfile;
     }
     const strategyPresetEl = document.getElementById('agent-strategy-preset');
@@ -1848,6 +2111,15 @@ function renderAgentState(state) {
     const guardrailNewsEl = document.getElementById('agent-guardrail-news-filter');
     if (guardrailNewsEl) {
         guardrailNewsEl.checked = Boolean(cfg.guardrail_news_filter_enabled);
+    }
+    const guardrailMaxRiskEl = document.getElementById('agent-guardrail-max-risk-per-trade');
+    const guardrailMaxRisk = Number(
+        cfg.guardrail_max_risk_per_trade_usd
+        ?? cfg.guardrail_trade_risk_cap_usd
+        ?? cfg.guardrail_max_risk_per_trade
+    );
+    if (guardrailMaxRiskEl && Number.isFinite(guardrailMaxRisk)) {
+        guardrailMaxRiskEl.value = String(Math.max(0, Math.min(1_000_000_000, guardrailMaxRisk)));
     }
     const guardrailNewsLookbackEl = document.getElementById('agent-guardrail-news-lookback');
     const lookbackMin = Number(cfg.guardrail_news_lookback_min);
@@ -2010,6 +2282,10 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         stoch: !!vis.stoch,
         bollinger: !!vis.bollinger,
         trendilo: !!vis.trendilo,
+        advancedTrendilo: !!vis.advancedTrendilo,
+        trendiloLsma: !!vis.trendiloLsma,
+        alphaWave: !!vis.alphaWave,
+        orbSignal: !!vis.orbSignal,
         trendiloBarColor: !!vis.trendiloBarColor,
         goldenCross: !!vis.goldenCross,
     };
@@ -2021,6 +2297,10 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         stoch: 'ind-stoch',
         bollinger: 'ind-bollinger',
         trendilo: 'ind-trendilo',
+        advancedTrendilo: 'ind-advanced-trendilo',
+        trendiloLsma: 'ind-trendilo-lsma',
+        alphaWave: 'ind-alpha-wave',
+        orbSignal: 'ind-orb-signal',
         trendiloBarColor: 'ind-trendilo-barcolor',
         goldenCross: 'ind-golden-cross',
     };
@@ -3308,6 +3588,7 @@ async function approvePendingAgentApproval(approvalIdLike, opts = {}) {
             showStatus('Approval payload is invalid for trade entry.', 'danger');
             return;
         }
+        applyLiveConfirmationToPayload(body);
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/trade`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3349,6 +3630,7 @@ async function approvePendingAgentApproval(approvalIdLike, opts = {}) {
             cost_tc_rate: (args.cost_tc_rate === null || args.cost_tc_rate === undefined || args.cost_tc_rate === '') ? null : Number(args.cost_tc_rate),
             cost_spread_source: args.cost_spread_source ? String(args.cost_spread_source) : null,
         };
+        applyLiveConfirmationToPayload(body);
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-trade/${tradeId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3575,6 +3857,7 @@ function _compactTrendiloOppCacheForContext(maxRows = 12) {
         saved_at: String(cached.saved_at || ''),
         strategy: String(d.strategy || cached.strategy || ''),
         timeframe: String(d.timeframe || ''),
+        execution_timeframe: String(d.execution_timeframe || d.timeframe || ''),
         source: String(d.source || ''),
         symbols_scanned: Number(d.symbols_scanned || 0),
         tradeable_count: Number(d.tradeable_count || 0),
@@ -3599,17 +3882,20 @@ function _parseTrendiloOppSymbols(rawLike) {
 function _collectTrendiloOppScanArgs() {
     const strategy = String(document.getElementById('trendilo-opp-strategy')?.value || 'trendilo').trim().toLowerCase() || 'trendilo';
     const universe = String(document.getElementById('trendilo-opp-universe')?.value || '').trim();
-    const timeframe = normalizeTimeframeLabel(
+    const scanTimeframe = normalizeTimeframeLabel(
         document.getElementById('trendilo-opp-timeframe')?.value || document.getElementById('sim-timeframe')?.value || 'M5',
         'M5',
     );
+    const execRaw = String(document.getElementById('trendilo-opp-exec-timeframe')?.value || 'AUTO').trim().toUpperCase();
+    const executionTimeframe = execRaw === 'AUTO' ? scanTimeframe : normalizeTimeframeLabel(execRaw, scanTimeframe);
     const rawLimit = Number(document.getElementById('trendilo-opp-universe-limit')?.value || 80);
     const rawLookback = Number(document.getElementById('trendilo-opp-lookback')?.value || 120);
     const rawMaxResults = Number(document.getElementById('trendilo-opp-max-results')?.value || 25);
     const symbols = _parseTrendiloOppSymbols(document.getElementById('trendilo-opp-symbols')?.value || '');
     const args = {
         strategy,
-        timeframe,
+        timeframe: scanTimeframe,
+        execution_timeframe: executionTimeframe,
         lookback_bars: Number.isFinite(rawLookback) ? Math.max(20, Math.min(3000, Math.round(rawLookback))) : 120,
         max_results: Number.isFinite(rawMaxResults) ? Math.max(1, Math.min(200, Math.round(rawMaxResults))) : 25,
         summary_only: true,
@@ -3620,6 +3906,1073 @@ function _collectTrendiloOppScanArgs() {
     if (Number.isFinite(rawLimit)) args.universe_limit = Math.max(1, Math.min(200, Math.round(rawLimit)));
     if (symbols.length) args.symbols = symbols.slice(0, 120);
     return args;
+}
+
+function _strategyAutomationSupportsStrategy(strategyLike) {
+    const s = _strategyAutomationResolveStartStrategy(strategyLike);
+    return s === 'trendilo'
+        || s === 'advanced_trendilo'
+        || s === 'trendilo_lsma'
+        || s === 'alpha_wave'
+        || s === 'orb_alpha_hybrid';
+}
+
+function _strategyAutomationResolveStartStrategy(strategyLike) {
+    const s = String(strategyLike || '').trim().toLowerCase();
+    if (s === 'orb') return 'orb_alpha_hybrid';
+    return s;
+}
+
+function _strategyAutomationJobKey(jobLike) {
+    const strategy = String(jobLike?.strategy || '').trim().toLowerCase();
+    const symbol = String(jobLike?.symbol || '').trim().toUpperCase();
+    const timeframe = normalizeTimeframeLabel(jobLike?.timeframe || '', 'M15');
+    return `${strategy}|${symbol}|${timeframe}`;
+}
+
+function _syncStrategyAutomationJobsCache(jobsLike) {
+    const list = Array.isArray(jobsLike) ? jobsLike : [];
+    strategyAutomationJobs = list.map((j) => (j && typeof j === 'object' ? { ...j } : {}));
+    strategyAutomationJobIndex = {};
+    const validJobIds = new Set();
+    strategyAutomationJobs.forEach((job) => {
+        if (!job || typeof job !== 'object') return;
+        const jobId = String(job?.job_id || '').trim();
+        if (jobId) validJobIds.add(jobId);
+        const key = _strategyAutomationJobKey(job);
+        strategyAutomationJobIndex[key] = { ...job };
+    });
+    automationMonitorExpandedJobs.forEach((jobId) => {
+        if (!validJobIds.has(String(jobId || ''))) automationMonitorExpandedJobs.delete(jobId);
+    });
+}
+
+function _findAutomationJobForOpportunity(row) {
+    if (!row || typeof row !== 'object') return null;
+    const resolvedStrategy = _strategyAutomationResolveStartStrategy(row.strategy);
+    const key = _strategyAutomationJobKey({
+        strategy: resolvedStrategy,
+        symbol: row.symbol,
+        timeframe: row?.schedule_trade_entry_args?.timeframe || lastStrategyOpportunityScanData?.execution_timeframe || lastStrategyOpportunityScanData?.timeframe || 'M15',
+    });
+    return strategyAutomationJobIndex[key] || null;
+}
+
+function _renderStrategyAutomationJobsTable(jobsLike) {
+    const head = document.getElementById('trendilo-auto-head');
+    const body = document.getElementById('trendilo-auto-body');
+    const summary = document.getElementById('trendilo-auto-summary');
+    if (!head || !body || !summary) return;
+    const jobs = Array.isArray(jobsLike) ? jobsLike : [];
+    const running = jobs.filter((j) => !!j?.enabled).length;
+    summary.textContent = `Automation jobs: ${running} running / ${jobs.length} total.`;
+    if (!jobs.length) {
+        head.innerHTML = '';
+        body.innerHTML = '<tr><td class="text-center text-muted py-2"><small>No automation jobs running.</small></td></tr>';
+        return;
+    }
+    head.innerHTML = `
+        <tr>
+            <th>Job</th>
+            <th>Strategy</th>
+            <th>Symbol</th>
+            <th>TF</th>
+            <th>Status</th>
+            <th>Color</th>
+            <th>Open</th>
+            <th>Action</th>
+        </tr>
+    `;
+    body.innerHTML = jobs.map((j) => {
+        const status = !!j?.enabled ? 'RUNNING' : 'STOPPED';
+        const color = String(j?.current_color || j?.last_color || 'gray').toUpperCase();
+        const openCount = Number(j?.open_trades_count || 0);
+        const childId = Number(j?.child_session_id || 0);
+        const parentId = Number(j?.parent_session_id || 0);
+        const jobId = String(j?.job_id || '');
+        const stopBtn = !!j?.enabled
+            ? `<button type="button" class="btn btn-sm btn-outline-danger" data-auto-action="stop-job" data-auto-parent="${parentId}" data-auto-child="${childId}" data-auto-job="${escapeHtml(jobId)}">Stop</button>`
+            : '<span class="text-muted">-</span>';
+        return `
+            <tr>
+                <td>${escapeHtml(jobId)}</td>
+                <td>${escapeHtml(String(j?.strategy || ''))}</td>
+                <td>${escapeHtml(String(j?.symbol || ''))}</td>
+                <td>${escapeHtml(String(j?.timeframe || ''))}</td>
+                <td>${escapeHtml(status)}</td>
+                <td>${escapeHtml(color)}</td>
+                <td>${openCount}</td>
+                <td>${stopBtn}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function loadStrategyAutomationJobs(showStatusToast = false) {
+    const statusEl = document.getElementById('trendilo-opp-status');
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/agent/strategy-automation/jobs?include_disabled=1`);
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            _syncStrategyAutomationJobsCache([]);
+            _renderStrategyAutomationJobsTable([]);
+            if (showStatusToast) showStatus(`Automation jobs load failed: ${err}`, 'warning');
+            return;
+        }
+        _syncStrategyAutomationJobsCache(Array.isArray(out?.jobs) ? out.jobs : []);
+        _renderStrategyAutomationJobsTable(strategyAutomationJobs);
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+        if (showStatusToast && statusEl) statusEl.textContent = `Automation jobs loaded (${strategyAutomationJobs.length})`;
+    } catch (err) {
+        _syncStrategyAutomationJobsCache([]);
+        _renderStrategyAutomationJobsTable([]);
+        _renderAutomationMonitorRows([]);
+        if (showStatusToast) showStatus(`Automation jobs load failed: ${String(err?.message || err)}`, 'warning');
+    }
+}
+
+function _automationJobOpenTrades(jobLike) {
+    const job = (jobLike && typeof jobLike === 'object') ? jobLike : {};
+    const list = Array.isArray(job?.open_trades) ? job.open_trades : [];
+    const normalized = list
+        .map((t) => (t && typeof t === 'object' ? t : {}))
+        .map((t) => ({
+            id: Number(t?.id || 0),
+            direction: String(t?.direction || '').trim().toUpperCase(),
+            entry_price: Number(t?.entry_price),
+            stop_loss: Number(t?.stop_loss),
+            take_profit: Number(t?.take_profit),
+            lot_size: Number(t?.lot_size),
+            status: String(t?.status || '').trim().toLowerCase(),
+        }))
+        .filter((t) => Number.isFinite(t.id) && t.id > 0);
+    if (normalized.length > 0) return normalized;
+    const one = (job?.open_trade && typeof job.open_trade === 'object') ? job.open_trade : null;
+    if (!one) return [];
+    const oneId = Number(one?.id || 0);
+    if (!Number.isFinite(oneId) || oneId <= 0) return [];
+    return [{
+        id: oneId,
+        direction: String(one?.direction || '').trim().toUpperCase(),
+        entry_price: Number(one?.entry_price),
+        stop_loss: Number(one?.stop_loss),
+        take_profit: Number(one?.take_profit),
+        lot_size: Number(one?.lot_size),
+        status: String(one?.status || '').trim().toLowerCase(),
+    }];
+}
+
+function _automationMonitorRunningOnlyEnabled() {
+    return !!document.getElementById('auto-monitor-running-only')?.checked;
+}
+
+function _automationMonitorSortMode() {
+    const raw = String(document.getElementById('auto-monitor-sort')?.value || 'created_desc').trim().toLowerCase();
+    return raw === 'created_asc' ? 'created_asc' : 'created_desc';
+}
+
+function _automationMonitorParseMs(rawLike) {
+    const raw = String(rawLike || '').trim();
+    if (!raw) return Number.NaN;
+    let ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+    ms = Date.parse(raw.replace(' ', 'T'));
+    if (Number.isFinite(ms)) return ms;
+    return Number.NaN;
+}
+
+function _automationMonitorSortJobs(jobsLike) {
+    const list = Array.isArray(jobsLike) ? jobsLike.slice() : [];
+    const mode = _automationMonitorSortMode();
+    list.sort((a, b) => {
+        const aMs = _automationMonitorParseMs(a?.created_at);
+        const bMs = _automationMonitorParseMs(b?.created_at);
+        const aHas = Number.isFinite(aMs);
+        const bHas = Number.isFinite(bMs);
+        if (aHas && bHas && aMs !== bMs) {
+            return mode === 'created_asc' ? (aMs - bMs) : (bMs - aMs);
+        }
+        if (aHas !== bHas) {
+            return aHas ? -1 : 1;
+        }
+        const aId = Number(a?.child_session_id || 0);
+        const bId = Number(b?.child_session_id || 0);
+        if (aId !== bId) return mode === 'created_asc' ? (aId - bId) : (bId - aId);
+        return String(a?.job_id || '').localeCompare(String(b?.job_id || ''));
+    });
+    return list;
+}
+
+function _renderAutomationMonitorRows(jobsLike) {
+    const head = document.getElementById('auto-monitor-head');
+    const body = document.getElementById('auto-monitor-body');
+    const summary = document.getElementById('auto-monitor-summary');
+    if (!head || !body || !summary) return;
+    const allJobs = Array.isArray(jobsLike) ? jobsLike : [];
+    const running = allJobs.filter((j) => !!j?.enabled).length;
+    const runningOnly = _automationMonitorRunningOnlyEnabled();
+    const jobs = _automationMonitorSortJobs(runningOnly ? allJobs.filter((j) => !!j?.enabled) : allJobs);
+    summary.textContent = runningOnly
+        ? `${running} running / ${allJobs.length} total automation jobs. Showing running only.`
+        : `${running} running / ${allJobs.length} total automation jobs.`;
+    if (!jobs.length) {
+        head.innerHTML = '';
+        body.innerHTML = runningOnly
+            ? '<tr><td class="text-center text-muted py-3"><small>No running automation jobs.</small></td></tr>'
+            : '<tr><td class="text-center text-muted py-3"><small>No automation jobs.</small></td></tr>';
+        return;
+    }
+    head.innerHTML = `
+        <tr>
+            <th>Job</th>
+            <th>Strategy</th>
+            <th>Symbol</th>
+            <th>TF</th>
+            <th>Status</th>
+            <th>Color</th>
+            <th>Open</th>
+            <th>Session</th>
+            <th>Actions</th>
+        </tr>
+    `;
+    const htmlRows = [];
+    jobs.forEach((j) => {
+        const childId = Number(j?.child_session_id || 0);
+        const parentId = Number(j?.parent_session_id || 0);
+        const jobId = String(j?.job_id || '').trim();
+        const status = !!j?.enabled ? 'RUNNING' : 'STOPPED';
+        const color = String(j?.current_color || j?.last_color || 'gray').toUpperCase();
+        const openTrades = _automationJobOpenTrades(j);
+        const openCount = Number(j?.open_trades_count || openTrades.length || 0);
+        const hasOpen = openTrades.length > 0;
+        const expanded = hasOpen && automationMonitorExpandedJobs.has(jobId);
+        const toggleBtn = hasOpen
+            ? `<button type="button" class="btn btn-sm btn-outline-secondary me-1" data-auto-action="toggle-job-trades" data-auto-job="${escapeHtml(jobId)}">${expanded ? 'Hide Trades' : 'View Trades'}</button>`
+            : '<span class="text-muted">No Trades</span>';
+        const stopBtn = !!j?.enabled
+            ? `<button type="button" class="btn btn-sm btn-outline-danger" data-auto-action="stop-job" data-auto-parent="${parentId}" data-auto-child="${childId}" data-auto-job="${escapeHtml(String(j?.job_id || ''))}">Stop</button>`
+            : '<span class="text-muted">-</span>';
+        htmlRows.push(`
+            <tr data-auto-row="${escapeHtml(jobId)}">
+                <td>${escapeHtml(String(j?.job_id || ''))}</td>
+                <td>${escapeHtml(String(j?.strategy || ''))}</td>
+                <td>${escapeHtml(String(j?.symbol || ''))}</td>
+                <td>${escapeHtml(String(j?.timeframe || ''))}</td>
+                <td>${escapeHtml(status)}</td>
+                <td>${escapeHtml(color)}</td>
+                <td>${openCount}</td>
+                <td>P#${parentId} / C#${childId}</td>
+                <td>
+                    ${toggleBtn}
+                    <button
+                        type="button"
+                        class="btn btn-sm btn-outline-primary me-1"
+                        data-auto-action="open-job-chart"
+                        data-auto-job="${escapeHtml(String(j?.job_id || ''))}"
+                        data-auto-parent="${parentId}"
+                        data-auto-child="${childId}"
+                        data-auto-symbol="${escapeHtml(String(j?.symbol || ''))}"
+                        data-auto-strategy="${escapeHtml(String(j?.strategy || ''))}"
+                        data-auto-timeframe="${escapeHtml(String(j?.timeframe || 'M15'))}"
+                        data-auto-source="${escapeHtml(String(j?.source || 'mt5'))}"
+                    >Open Chart</button>
+                    ${stopBtn}
+                </td>
+            </tr>
+        `);
+        if (expanded) {
+            const tradeRows = openTrades.map((t) => {
+                const entry = Number.isFinite(Number(t?.entry_price)) ? Number(t.entry_price).toFixed(5) : '-';
+                const sl = Number.isFinite(Number(t?.stop_loss)) ? Number(t.stop_loss).toFixed(5) : '-';
+                const tp = Number.isFinite(Number(t?.take_profit)) ? Number(t.take_profit).toFixed(5) : '-';
+                const lot = Number.isFinite(Number(t?.lot_size)) ? Number(t.lot_size).toFixed(3) : '-';
+                return `
+                    <tr>
+                        <td>${Number(t?.id || 0)}</td>
+                        <td>${escapeHtml(String(t?.direction || ''))}</td>
+                        <td>${entry}</td>
+                        <td>${sl}</td>
+                        <td>${tp}</td>
+                        <td>${lot}</td>
+                        <td>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-warning"
+                                data-auto-action="close-open-trade"
+                                data-auto-job="${escapeHtml(jobId)}"
+                                data-auto-child="${childId}"
+                                data-auto-trade="${Number(t?.id || 0)}"
+                            >Close</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+            htmlRows.push(`
+                <tr data-auto-detail-row="${escapeHtml(jobId)}">
+                    <td colspan="9" class="py-2">
+                        <div class="p-2 border rounded" style="border-color: rgba(148,163,184,0.28) !important; background: rgba(15,23,42,0.45);">
+                            <div class="mb-1" style="font-size:0.78rem;color:#cbd5e1;">
+                                Open trades under job <code>${escapeHtml(jobId)}</code> (session #${childId})
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Dir</th>
+                                            <th>Entry</th>
+                                            <th>SL</th>
+                                            <th>TP</th>
+                                            <th>Lot</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${tradeRows}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `);
+        }
+    });
+    body.innerHTML = htmlRows.join('');
+}
+
+async function refreshAutomationMonitorModal(showStatusToast = false) {
+    const statusEl = document.getElementById('auto-monitor-status');
+    if (statusEl) statusEl.textContent = 'Loading...';
+    await loadStrategyAutomationJobs(false);
+    _renderAutomationMonitorRows(strategyAutomationJobs);
+    if (statusEl) statusEl.textContent = `Loaded ${strategyAutomationJobs.length} jobs`;
+    if (showStatusToast) showStatus(`Automation monitor refreshed (${strategyAutomationJobs.length})`, 'info');
+}
+
+async function closeAutomationOpenTrade(opts = {}) {
+    const childSessionId = Number(opts?.childSessionId || opts?.child_session_id || 0);
+    const tradeId = Number(opts?.tradeId || opts?.trade_id || 0);
+    if (!(childSessionId > 0) || !(tradeId > 0)) {
+        showStatus('Close trade failed: invalid session/trade id.', 'warning');
+        return;
+    }
+    const payload = {
+        confirm_live_order: true,
+        live_confirmation_phrase: LIVE_CONFIRMATION_PHRASE,
+    };
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${childSessionId}/close-trade/${tradeId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.error || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            showStatus(`Close trade #${tradeId} failed: ${err}`, 'warning');
+            return;
+        }
+        showStatus(`Closed trade #${tradeId} (automation session #${childSessionId}).`, 'success');
+        await loadStrategyAutomationJobs(false);
+        _renderStrategyAutomationJobsTable(strategyAutomationJobs);
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+    } catch (err) {
+        showStatus(`Close trade #${tradeId} failed: ${String(err?.message || err)}`, 'warning');
+    }
+}
+
+function _automationChartSelectionForStrategy(strategyLike) {
+    const strategy = String(strategyLike || '').trim().toLowerCase();
+    const base = {
+        smaEma: false,
+        adx: false,
+        rsi: false,
+        stoch: false,
+        bollinger: false,
+        trendilo: false,
+        advancedTrendilo: false,
+        trendiloLsma: false,
+        alphaWave: false,
+        orbSignal: false,
+        trendiloBarColor: false,
+        goldenCross: false,
+    };
+    if (strategy === 'trendilo') {
+        base.trendilo = true;
+        base.trendiloBarColor = true;
+    } else if (strategy === 'advanced_trendilo') {
+        base.advancedTrendilo = true;
+        base.trendiloBarColor = true;
+    } else if (strategy === 'trendilo_lsma') {
+        base.trendiloLsma = true;
+    } else if (strategy === 'alpha_wave') {
+        base.alphaWave = true;
+    } else if (strategy === 'orb') {
+        base.orbSignal = true;
+    } else if (strategy === 'orb_alpha_hybrid') {
+        base.orbSignal = true;
+        base.alphaWave = true;
+    }
+    return base;
+}
+
+function _automationChartLatestDir(dirArr) {
+    if (!Array.isArray(dirArr) || dirArr.length === 0) return 0;
+    for (let i = dirArr.length - 1; i >= 0; i -= 1) {
+        const d = Number(dirArr[i] || 0);
+        if (!Number.isFinite(d)) continue;
+        if (d > 0) return 1;
+        if (d < 0) return -1;
+        return 0;
+    }
+    return 0;
+}
+
+function _automationChartSignalLabel(strategyLike, dir) {
+    const strategy = String(strategyLike || '').trim().toLowerCase();
+    const d = Number(dir || 0);
+    if (strategy === 'alpha_wave') {
+        if (d > 0) return 'GREEN (LONG)';
+        if (d < 0) return 'PINK (SHORT)';
+        return 'GRAY (WAIT)';
+    }
+    if (d > 0) return 'GREEN (LONG)';
+    if (d < 0) return 'RED (SHORT)';
+    return 'GRAY (WAIT)';
+}
+
+function _automationChartSetStatus(text, tone = 'info') {
+    const el = document.getElementById('automation-chart-status');
+    if (!el) return;
+    const msg = String(text || '').trim() || 'Ready.';
+    el.textContent = msg;
+    const color = tone === 'warning'
+        ? '#fca5a5'
+        : (tone === 'success' ? '#86efac' : '#cbd5e1');
+    el.style.color = color;
+}
+
+function _automationChartSetMeta(job, barsCount, signalLabel) {
+    const el = document.getElementById('automation-chart-meta');
+    if (!el) return;
+    const symbol = String(job?.symbol || '').toUpperCase();
+    const tf = normalizeTimeframeLabel(job?.timeframe || 'M15', 'M15');
+    const strategy = String(job?.strategy || '').toLowerCase();
+    const source = String(job?.source || 'mt5').toLowerCase();
+    const child = Number(job?.child_session_id || 0);
+    const jobId = String(job?.job_id || '').trim();
+    const barsText = Number.isFinite(Number(barsCount)) ? `${Number(barsCount)} bars` : 'no bars';
+    const signalText = String(signalLabel || 'n/a');
+    el.textContent = `${symbol} ${tf} | ${strategy} | source=${source} | child=#${child} | ${barsText} | signal=${signalText} | job=${jobId}`;
+}
+
+function _automationChartSetPanelVisible(show) {
+    const panelEl = document.getElementById('automation-chart-panel');
+    if (!panelEl) return;
+    panelEl.classList.toggle('d-none', !show);
+}
+
+function _automationChartEnsureMain() {
+    const container = document.getElementById('automation-chart-main');
+    if (!container || typeof LightweightCharts === 'undefined') return false;
+    if (automationChartMain) return true;
+
+    automationChartMain = LightweightCharts.createChart(container, {
+        width: Math.max(320, container.clientWidth || 320),
+        height: Math.max(240, container.clientHeight || 240),
+        layout: {
+            background: { type: 'solid', color: CHART_BG_COLOR },
+            textColor: '#d1d4dc',
+            fontSize: 12,
+        },
+        grid: {
+            vertLines: { color: '#1e222d' },
+            horzLines: { color: '#1e222d' },
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
+        timeScale: {
+            borderColor: '#2a2e39',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+    });
+    automationChartCandles = automationChartMain.addCandlestickSeries({
+        upColor: '#26a69a',
+        downColor: '#ef5350',
+        borderDownColor: '#ef5350',
+        borderUpColor: '#26a69a',
+        wickDownColor: '#ef5350',
+        wickUpColor: '#26a69a',
+    });
+    automationChartVolume = automationChartMain.addHistogramSeries({
+        color: '#385263',
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+    });
+    automationChartOverlay = automationChartMain.addLineSeries({
+        color: '#cbd5e1',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    automationChartOverlaySecondary = automationChartMain.addLineSeries({
+        color: '#9ca3af',
+        lineWidth: 2,
+        lineStyle: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    automationChartMain.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0.0 },
+    });
+
+    if (automationChartResizeObserver) {
+        try { automationChartResizeObserver.disconnect(); } catch (_) {}
+    }
+    automationChartResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+            automationChartMain?.applyOptions({
+                width: Math.max(320, entry.contentRect.width || 320),
+                height: Math.max(240, entry.contentRect.height || 240),
+            });
+        }
+    });
+    automationChartResizeObserver.observe(container);
+    return true;
+}
+
+function _automationChartEnsurePanel() {
+    const panelEl = document.getElementById('automation-chart-panel');
+    if (!panelEl || typeof LightweightCharts === 'undefined') return false;
+    if (automationChartPanel) return true;
+
+    automationChartPanel = LightweightCharts.createChart(panelEl, {
+        width: Math.max(320, panelEl.clientWidth || 320),
+        height: Math.max(120, panelEl.clientHeight || 140),
+        layout: {
+            background: { type: 'solid', color: CHART_BG_COLOR },
+            textColor: '#d1d4dc',
+            fontSize: 11,
+        },
+        grid: {
+            vertLines: { color: '#1e222d' },
+            horzLines: { color: '#1e222d' },
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
+        timeScale: {
+            borderColor: '#2a2e39',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+    });
+    automationChartPanelSeries.upper = automationChartPanel.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    automationChartPanelSeries.lower = automationChartPanel.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    automationChartPanelSeries.signal = automationChartPanel.addLineSeries({
+        color: '#9ca3af',
+        lineWidth: 3,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    automationChartPanelSeries.zero = automationChartPanel.addLineSeries({
+        color: '#6b7280',
+        lineWidth: 1,
+        lineStyle: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+
+    if (automationChartResizeObserver && automationChartMain) {
+        automationChartMain.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+            if (!automationChartPanel || automationChartSyncingRange) return;
+            automationChartSyncingRange = true;
+            try { automationChartPanel.timeScale().setVisibleLogicalRange(range); } catch (_) {}
+            requestAnimationFrame(() => { automationChartSyncingRange = false; });
+        });
+        automationChartPanel.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+            if (!automationChartMain || automationChartSyncingRange) return;
+            automationChartSyncingRange = true;
+            try { automationChartMain.timeScale().setVisibleLogicalRange(range); } catch (_) {}
+            requestAnimationFrame(() => { automationChartSyncingRange = false; });
+        });
+    }
+
+    if (automationChartPanelResizeObserver) {
+        try { automationChartPanelResizeObserver.disconnect(); } catch (_) {}
+    }
+    automationChartPanelResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+            automationChartPanel?.applyOptions({
+                width: Math.max(320, entry.contentRect.width || 320),
+                height: Math.max(120, entry.contentRect.height || 120),
+            });
+        }
+    });
+    automationChartPanelResizeObserver.observe(panelEl);
+    return true;
+}
+
+function _automationChartClearPanelData() {
+    Object.values(automationChartPanelSeries || {}).forEach((series) => {
+        try { series?.setData([]); } catch (_) {}
+    });
+}
+
+function _automationChartApplyTrendiloBarColor(bars, dirArr) {
+    if (!automationChartCandles) return;
+    const out = (Array.isArray(bars) ? bars : []).map((b, i) => {
+        const up = Number(b?.close || 0) >= Number(b?.open || 0);
+        let color = up ? '#26a69a' : '#ef5350';
+        const d = Number(Array.isArray(dirArr) ? (dirArr[i] || 0) : 0);
+        if (d > 0) color = '#22c55e';
+        else if (d < 0) color = '#ef4444';
+        else color = '#9ca3af';
+        return {
+            time: Number(b?.time || 0),
+            open: Number(b?.open || 0),
+            high: Number(b?.high || 0),
+            low: Number(b?.low || 0),
+            close: Number(b?.close || 0),
+            color,
+            borderColor: color,
+            wickColor: color,
+        };
+    });
+    automationChartCandles.setData(out);
+}
+
+function _automationChartApplyDefaultCandles(bars) {
+    if (!automationChartCandles) return;
+    automationChartCandles.setData(Array.isArray(bars) ? bars : []);
+}
+
+async function openAutomationChartModal(jobLike, opts = {}) {
+    const showModal = opts?.showModal !== false;
+    const candidate = jobLike && typeof jobLike === 'object' ? jobLike : {};
+    const strategy = String(candidate?.strategy || '').trim().toLowerCase();
+    const symbol = String(candidate?.symbol || '').trim().toUpperCase();
+    const timeframe = normalizeTimeframeLabel(candidate?.timeframe || 'M15', 'M15');
+    const source = String(candidate?.source || 'mt5').trim().toLowerCase() || 'mt5';
+    const childSessionId = Number(candidate?.child_session_id || 0);
+    const jobId = String(candidate?.job_id || '').trim();
+    if (!symbol || !strategy) {
+        _automationChartSetStatus('Automation chart open failed: symbol/strategy missing.', 'warning');
+        return;
+    }
+    automationChartJobContext = {
+        ...candidate,
+        strategy,
+        symbol,
+        timeframe,
+        source,
+        child_session_id: childSessionId,
+        job_id: jobId,
+    };
+
+    const modalEl = document.getElementById('automationChartModal');
+    if (showModal && modalEl && window.bootstrap && window.bootstrap.Modal) {
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+    _automationChartSetStatus(`Loading ${symbol} ${timeframe} (${strategy})...`, 'info');
+    _automationChartSetMeta(automationChartJobContext, null, 'LOADING');
+    if (!_automationChartEnsureMain()) {
+        _automationChartSetStatus('Automation chart unavailable: chart container missing.', 'warning');
+        return;
+    }
+
+    const tfMin = Math.max(1, timeframeToMinutes(timeframe));
+    const lookbackDays = Math.max(2, Math.min(120, Math.ceil((2200 * tfMin) / 1440)));
+    let bars = [];
+    let fetchError = null;
+    try {
+        bars = await fetchLiveHistoryBars(symbol, timeframe, source, lookbackDays);
+    } catch (err) {
+        fetchError = String(err?.message || err || 'history_fetch_failed');
+    }
+    if ((!Array.isArray(bars) || bars.length < 20) && source !== 'mt5') {
+        try {
+            bars = await fetchLiveHistoryBars(symbol, timeframe, 'mt5', lookbackDays);
+            automationChartJobContext.source = 'mt5';
+        } catch (_) {
+            // keep prior error/path
+        }
+    }
+    if ((!Array.isArray(bars) || bars.length < 20)) {
+        const liveSymbol = String(document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+        const liveTf = normalizeTimeframeLabel(document.getElementById('sim-timeframe')?.value || 'M15', 'M15');
+        if (liveSymbol === symbol && liveTf === timeframe && Array.isArray(allBars) && allBars.length >= 20) {
+            bars = allBars.slice(-5000);
+        }
+    }
+    if (!Array.isArray(bars) || bars.length === 0) {
+        _automationChartApplyDefaultCandles([]);
+        automationChartVolume?.setData([]);
+        automationChartOverlay?.setData([]);
+        automationChartOverlaySecondary?.setData([]);
+        _automationChartClearPanelData();
+        _automationChartSetPanelVisible(false);
+        _automationChartSetMeta(automationChartJobContext, 0, 'N/A');
+        _automationChartSetStatus(
+            `No bars for ${symbol} ${timeframe}${fetchError ? ` (${fetchError})` : ''}`,
+            'warning',
+        );
+        return;
+    }
+
+    bars = bars
+        .map((b) => ({
+            time: Number(b?.time || 0),
+            open: Number(b?.open || 0),
+            high: Number(b?.high || 0),
+            low: Number(b?.low || 0),
+            close: Number(b?.close || 0),
+            volume: Number(b?.volume || 0),
+        }))
+        .filter((b) => Number.isFinite(b.time) && b.time > 0 && Number.isFinite(b.open) && Number.isFinite(b.high) && Number.isFinite(b.low) && Number.isFinite(b.close))
+        .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+    if (bars.length > 5000) bars = bars.slice(-5000);
+
+    const selection = _automationChartSelectionForStrategy(strategy);
+    const pack = computeIndicatorPack(bars, selection);
+    const volumeData = bars.map((b) => ({
+        time: b.time,
+        value: Math.max(0, Number(b.volume || 0)),
+        color: Number(b.close) >= Number(b.open) ? '#26a69a55' : '#ef535055',
+    }));
+    automationChartVolume?.setData(volumeData);
+
+    let dirArr = [];
+    if (strategy === 'trendilo') dirArr = pack.trendiloDir || [];
+    else if (strategy === 'advanced_trendilo') dirArr = pack.advancedTrendiloDir || [];
+    else if (strategy === 'trendilo_lsma') dirArr = pack.trendiloLsmaDir || [];
+    else if (strategy === 'alpha_wave') dirArr = pack.alphaWaveDir || [];
+    else if (strategy === 'orb') dirArr = pack.orbDir || [];
+    else if (strategy === 'orb_alpha_hybrid') dirArr = pack.orbDir || [];
+
+    if (strategy === 'trendilo' || strategy === 'advanced_trendilo') {
+        _automationChartApplyTrendiloBarColor(bars, dirArr);
+    } else {
+        _automationChartApplyDefaultCandles(bars);
+    }
+
+    let overlayData = [];
+    let secondaryOverlayData = [];
+    if (strategy === 'trendilo_lsma') {
+        const values = pack.trendiloLsmaCombine || [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(values[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            overlayData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#00ff0a' : (d < 0 ? '#fe1807' : '#ffff00'),
+            });
+        }
+    } else if (strategy === 'alpha_wave') {
+        const values = pack.alphaWaveBaseline || [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(values[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            overlayData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#01ffa7' : (d < 0 ? '#fb0bff' : '#9e9e9e'),
+            });
+        }
+    } else if (strategy === 'orb' || strategy === 'orb_alpha_hybrid') {
+        const values = pack.orbSignal || [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(values[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            overlayData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
+            });
+        }
+        if (strategy === 'orb_alpha_hybrid') {
+            const alphaValues = pack.alphaWaveBaseline || [];
+            const alphaDirArr = pack.alphaWaveDir || [];
+            for (let i = 0; i < bars.length; i += 1) {
+                const t = Number(bars[i]?.time || 0);
+                const v = toFiniteNumber(alphaValues[i]);
+                if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+                const d = Number(alphaDirArr[i] || 0);
+                secondaryOverlayData.push({
+                    time: t,
+                    value: v,
+                    color: d > 0 ? '#01ffa7' : (d < 0 ? '#fb0bff' : '#9e9e9e'),
+                });
+            }
+        }
+    }
+    automationChartOverlay?.setData(overlayData);
+    automationChartOverlaySecondary?.setData(secondaryOverlayData);
+
+    if (strategy === 'trendilo' || strategy === 'advanced_trendilo') {
+        if (_automationChartEnsurePanel()) {
+            _automationChartSetPanelVisible(true);
+            const avpchArr = strategy === 'advanced_trendilo' ? (pack.advancedTrendiloAvpch || []) : (pack.trendiloAvpch || []);
+            const rmsArr = strategy === 'advanced_trendilo' ? (pack.advancedTrendiloRms || []) : (pack.trendiloRms || []);
+            const negRmsArr = strategy === 'advanced_trendilo' ? (pack.advancedTrendiloNegRms || []) : (pack.trendiloNegRms || []);
+            const signalData = [];
+            for (let i = 0; i < bars.length; i += 1) {
+                const t = Number(bars[i]?.time || 0);
+                const a = toFiniteNumber(avpchArr[i]);
+                if (!Number.isFinite(t) || !Number.isFinite(a)) continue;
+                const d = Number(dirArr[i] || 0);
+                signalData.push({
+                    time: t,
+                    value: a,
+                    color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
+                });
+            }
+            const zeroLine = new Array(bars.length).fill(0);
+            automationChartPanelSeries.upper?.setData(seriesDataFromArray(bars, rmsArr));
+            automationChartPanelSeries.lower?.setData(seriesDataFromArray(bars, negRmsArr));
+            automationChartPanelSeries.signal?.setData(signalData);
+            automationChartPanelSeries.zero?.setData(seriesDataFromArray(bars, zeroLine));
+            try { automationChartPanel.timeScale().fitContent(); } catch (_) {}
+        } else {
+            _automationChartSetPanelVisible(false);
+        }
+    } else {
+        _automationChartClearPanelData();
+        _automationChartSetPanelVisible(false);
+    }
+
+    const latestDir = _automationChartLatestDir(dirArr);
+    const signalLabel = _automationChartSignalLabel(strategy, latestDir);
+    _automationChartSetMeta(automationChartJobContext, bars.length, signalLabel);
+    _automationChartSetStatus(`Loaded ${bars.length} bars | ${signalLabel}`, 'success');
+    try { automationChartMain.timeScale().fitContent(); } catch (_) {}
+}
+
+async function startStrategyAutomationFromOpportunityRow(rowLike, opts = {}) {
+    const row = rowLike && typeof rowLike === 'object' ? rowLike : {};
+    const strategyRaw = String(row?.strategy || '').trim().toLowerCase();
+    const strategy = _strategyAutomationResolveStartStrategy(strategyRaw);
+    if (!_strategyAutomationSupportsStrategy(strategy)) {
+        showStatus('Automation supports Trendilo, Advanced Trendilo, Trendilo LSMA, Alpha Wave, and ORB+Alpha hybrid modes.', 'warning');
+        return;
+    }
+    if (!sessionId) {
+        showStatus('Start a session first.', 'warning');
+        return;
+    }
+    const symbol = String(row?.symbol || '').trim().toUpperCase();
+    if (!symbol) {
+        showStatus('Automation start failed: symbol missing.', 'warning');
+        return;
+    }
+    const timeframe = normalizeTimeframeLabel(
+        row?.schedule_trade_entry_args?.timeframe
+            || row?.timeframe
+            || lastStrategyOpportunityScanData?.execution_timeframe
+            || lastStrategyOpportunityScanData?.timeframe
+            || document.getElementById('trendilo-opp-exec-timeframe')?.value
+            || document.getElementById('trendilo-opp-timeframe')?.value
+            || 'M15',
+        'M15',
+    );
+    const executionMode = String(
+        document.getElementById('agent-live-execution-mode')?.value
+        || sessionLiveControlState?.execution_mode
+        || sessionLiveExecutionMode
+        || 'paper',
+    ).trim().toLowerCase() === 'live_mt5' ? 'live_mt5' : 'paper';
+    const sourceRaw = String(lastStrategyOpportunityScanData?.source || document.getElementById('live-source')?.value || 'mt5').trim().toLowerCase() || 'mt5';
+    const source = executionMode === 'live_mt5' ? 'mt5' : sourceRaw;
+    const preset = String(document.getElementById('agent-strategy-preset')?.value || 'default').trim() || 'default';
+    const riskOverride = Number.isFinite(Number(opts?.riskPercent)) ? Number(opts.riskPercent) : (Number.isFinite(Number(row?.risk_percent)) ? Number(row.risk_percent) : undefined);
+    const rrOverride = Number.isFinite(Number(opts?.rrTarget)) ? Number(opts.rrTarget) : (Number.isFinite(Number(row?.rr)) ? Number(row.rr) : undefined);
+    const payload = {
+        symbol,
+        strategy,
+        timeframe,
+        source,
+        execution_mode: executionMode,
+        preset,
+        volume_sma_period: 20,
+        force_first_entry: true,
+        immediate_entry: true,
+        risk_percent: riskOverride,
+        rr_target: rrOverride,
+        lot_size_override: Number.isFinite(Number(opts?.lotSizeOverride)) ? Number(opts.lotSizeOverride) : undefined,
+    };
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/strategy-automation/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            showStatus(`Automation start failed (${symbol}): ${err}`, 'warning');
+            return;
+        }
+        await loadStrategyAutomationJobs(false);
+        _renderStrategyAutomationJobsTable(strategyAutomationJobs);
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+        _renderTrendiloOppRows(Array.isArray(lastStrategyOpportunityScanData?.opportunities) ? lastStrategyOpportunityScanData.opportunities : []);
+        const immediate = out?.immediate_entry && typeof out.immediate_entry === 'object' ? out.immediate_entry : null;
+        const immediateMsg = immediate
+            ? ` | immediate_entry=${String(immediate.ok ? 'OPENED' : String(immediate.reason || 'no_open'))}`
+            : '';
+        showStatus(`Automation started: ${symbol} ${timeframe} ${strategy}${immediateMsg}`, 'success');
+    } catch (err) {
+        showStatus(`Automation start failed (${symbol}): ${String(err?.message || err)}`, 'warning');
+    }
+}
+
+async function startStrategyAutomationFromManualModal() {
+    const statusEl = document.getElementById('auto-start-status');
+    if (!sessionId) {
+        if (statusEl) statusEl.textContent = 'Start/select a session first.';
+        showStatus('Start/select a session first.', 'warning');
+        return;
+    }
+    const strategy = String(document.getElementById('auto-start-strategy')?.value || 'trendilo').trim().toLowerCase();
+    if (!_strategyAutomationSupportsStrategy(strategy)) {
+        if (statusEl) statusEl.textContent = 'Unsupported strategy for automation.';
+        showStatus('Unsupported strategy for automation.', 'warning');
+        return;
+    }
+    const symbol = String(document.getElementById('auto-start-symbol')?.value || document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    if (!symbol) {
+        if (statusEl) statusEl.textContent = 'Symbol is required.';
+        showStatus('Symbol is required.', 'warning');
+        return;
+    }
+    const timeframe = normalizeTimeframeLabel(
+        document.getElementById('auto-start-timeframe')?.value || document.getElementById('sim-timeframe')?.value || 'M15',
+        'M15',
+    );
+    const executionMode = String(
+        document.getElementById('agent-live-execution-mode')?.value
+        || sessionLiveControlState?.execution_mode
+        || sessionLiveExecutionMode
+        || 'paper',
+    ).trim().toLowerCase() === 'live_mt5' ? 'live_mt5' : 'paper';
+    const sourceRaw = String(document.getElementById('auto-start-source')?.value || document.getElementById('live-source')?.value || 'mt5').trim().toLowerCase() || 'mt5';
+    const source = executionMode === 'live_mt5' ? 'mt5' : sourceRaw;
+    const riskRaw = Number(document.getElementById('auto-start-risk')?.value);
+    const rrRaw = Number(document.getElementById('auto-start-rr')?.value);
+    const lotRaw = Number(document.getElementById('auto-start-lot')?.value);
+    const riskPercent = Number.isFinite(riskRaw) ? Math.max(0.05, Math.min(25.0, riskRaw)) : 0.75;
+    const rrTarget = Number.isFinite(rrRaw) ? Math.max(1.0, Math.min(12.0, rrRaw)) : 2.0;
+    const lotOverride = Number.isFinite(lotRaw) ? Math.max(0.001, Math.min(200.0, lotRaw)) : null;
+    const preset = String(document.getElementById('agent-strategy-preset')?.value || 'default').trim() || 'default';
+    const payload = {
+        symbol,
+        strategy,
+        timeframe,
+        source,
+        execution_mode: executionMode,
+        preset,
+        volume_sma_period: 20,
+        force_first_entry: true,
+        immediate_entry: true,
+        risk_percent: riskPercent,
+        rr_target: rrTarget,
+        lot_size_override: lotOverride,
+    };
+    if (statusEl) statusEl.textContent = `Starting ${strategy} automation on ${symbol} ${timeframe}...`;
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/strategy-automation/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            if (statusEl) statusEl.textContent = `Failed: ${err}`;
+            showStatus(`Automation start failed (${symbol}): ${err}`, 'warning');
+            return;
+        }
+        await loadStrategyAutomationJobs(false);
+        _renderStrategyAutomationJobsTable(strategyAutomationJobs);
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+        const immediate = out?.immediate_entry && typeof out.immediate_entry === 'object' ? out.immediate_entry : null;
+        const immediateTxt = immediate ? ` | immediate=${String(immediate.ok ? 'OPENED' : (immediate.reason || 'no_open'))}` : '';
+        if (statusEl) statusEl.textContent = `Started ${strategy} ${symbol} ${timeframe}${immediateTxt}`;
+        showStatus(`Automation started: ${symbol} ${timeframe} ${strategy}${immediateTxt}`, 'success');
+        const modalEl = document.getElementById('automationStarterModal');
+        if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+            const modal = window.bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        }
+    } catch (err) {
+        const msg = String(err?.message || err || 'request_failed');
+        if (statusEl) statusEl.textContent = `Failed: ${msg}`;
+        showStatus(`Automation start failed (${symbol}): ${msg}`, 'warning');
+    }
+}
+
+async function stopStrategyAutomationJob(opts = {}) {
+    const childSessionId = Number(opts?.childSessionId || opts?.child_session_id || 0);
+    let parentSessionId = Number(opts?.parentSessionId || opts?.parent_session_id || 0);
+    const jobId = String(opts?.jobId || opts?.job_id || '').trim();
+    if (!childSessionId && !jobId) {
+        showStatus('Automation stop failed: missing job id.', 'warning');
+        return;
+    }
+    if (!(parentSessionId > 0)) {
+        const found = strategyAutomationJobs.find((j) => (
+            (childSessionId > 0 && Number(j?.child_session_id || 0) === childSessionId)
+            || (jobId && String(j?.job_id || '') === jobId)
+        ));
+        parentSessionId = Number(found?.parent_session_id || 0);
+    }
+    if (!(parentSessionId > 0) && sessionId) {
+        parentSessionId = Number(sessionId);
+    }
+    if (!(parentSessionId > 0)) {
+        showStatus('Automation stop failed: parent session not found.', 'warning');
+        return;
+    }
+    const payload = {};
+    if (childSessionId > 0) payload.child_session_id = childSessionId;
+    if (jobId) payload.job_id = jobId;
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${parentSessionId}/agent/strategy-automation/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            showStatus(`Automation stop failed: ${err}`, 'warning');
+            return;
+        }
+        await loadStrategyAutomationJobs(false);
+        _renderStrategyAutomationJobsTable(strategyAutomationJobs);
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+        _renderTrendiloOppRows(Array.isArray(lastStrategyOpportunityScanData?.opportunities) ? lastStrategyOpportunityScanData.opportunities : []);
+        showStatus('Automation stopped.', 'info');
+    } catch (err) {
+        showStatus(`Automation stop failed: ${String(err?.message || err)}`, 'warning');
+    }
 }
 
 function _renderTrendiloOppRows(rows) {
@@ -3634,28 +4987,59 @@ function _renderTrendiloOppRows(rows) {
     }
     head.innerHTML = `
         <tr>
+            <th>Rank</th>
             <th>Strategy</th>
             <th>Symbol</th>
+            <th>State</th>
             <th>Dir</th>
             <th>Entry</th>
             <th>SL</th>
             <th>TP</th>
             <th>RR</th>
             <th>Lot</th>
+            <th>Score</th>
             <th>Conf</th>
+            <th>Risk%</th>
+            <th>RR</th>
+            <th>Action</th>
         </tr>
     `;
-    body.innerHTML = list.map((r) => `
+    body.innerHTML = list.map((r, idx) => `
         <tr>
+            <td>${Number(r?.rank || 0)}</td>
             <td>${escapeHtml(String(r?.strategy || ''))}</td>
             <td>${escapeHtml(String(r?.symbol || ''))}</td>
+            <td>${escapeHtml(String(r?.opportunity_state || (r?.watch_only ? 'watch_only' : (r?.executable_now ? 'ready' : 'blocked'))).toUpperCase())}</td>
             <td>${escapeHtml(String(r?.direction || ''))}</td>
             <td>${Number(r?.entry_ref || 0).toFixed(3)}</td>
             <td>${Number(r?.stop_loss || 0).toFixed(3)}</td>
             <td>${Number(r?.take_profit || 0).toFixed(3)}</td>
             <td>${Number(r?.rr || 0).toFixed(2)}</td>
             <td>${Number(r?.lot_size || 0).toFixed(2)}</td>
-            <td>${Number(r?.confidence || 0).toFixed(1)}</td>
+            <td>${(() => {
+                const v = Number(r?.rank_score);
+                return Number.isFinite(v) ? v.toFixed(1) : '0.0';
+            })()}</td>
+            <td>${(() => {
+                const raw = Number(r?.confidence);
+                if (!Number.isFinite(raw)) return '0.0';
+                const normalized = (raw > 0 && raw <= 1) ? (raw * 100) : raw;
+                return Number(normalized).toFixed(1);
+            })()}</td>
+            <td><input id="auto-risk-${idx}" type="number" class="form-control form-control-sm" style="min-width:72px" step="0.05" min="0.1" max="5" value="${Number.isFinite(Number(r?.risk_percent)) ? Number(r.risk_percent).toFixed(2) : '0.75'}"></td>
+            <td><input id="auto-rr-${idx}" type="number" class="form-control form-control-sm" style="min-width:68px" step="0.1" min="1" max="12" value="${Number.isFinite(Number(r?.rr)) ? Number(r.rr).toFixed(2) : '2.00'}"></td>
+            <td>${(() => {
+                const strategyRaw = String(r?.strategy || '').trim().toLowerCase();
+                const strategy = _strategyAutomationResolveStartStrategy(strategyRaw);
+                if (!_strategyAutomationSupportsStrategy(strategy)) {
+                    return '<span class="text-muted">-</span>';
+                }
+                const job = _findAutomationJobForOpportunity(r);
+                if (job && job.enabled) {
+                    return `<button type="button" class="btn btn-sm btn-outline-danger" data-auto-action="stop-row" data-auto-parent="${Number(job?.parent_session_id || 0)}" data-auto-child="${Number(job?.child_session_id || 0)}" data-auto-job="${escapeHtml(String(job?.job_id || ''))}">Stop Auto</button>`;
+                }
+                return `<button type="button" class="btn btn-sm btn-outline-success" data-auto-action="start-row" data-auto-symbol="${escapeHtml(String(r?.symbol || ''))}" data-auto-strategy="${escapeHtml(strategy)}" data-auto-row="${idx}">Start Auto</button>`;
+            })()}</td>
         </tr>
     `).join('');
 }
@@ -3671,25 +5055,41 @@ function _renderTrendiloOppResult(data, fromCache = false) {
     const scanned = Number(data.symbols_scanned || 0);
     const okCount = Number(data.ok_count || 0);
     const errCount = Number(data.error_count || 0);
-    const tradeableCount = Number(data.tradeable_count || 0);
-    const tf = String(data.timeframe || '');
+    const tradeableCountShown = Number(data.tradeable_count || 0);
+    const tradeableTotalCount = Number(data.tradeable_total_count || tradeableCountShown);
+    const readyCount = Number(data.ready_count || 0);
+    const watchOnlyCount = Number(data.watch_only_count || 0);
+    const scanTf = String(data.timeframe || data.scan_timeframe || '');
+    const execTf = String(data.execution_timeframe || data.exec_timeframe || scanTf || '');
     const strategy = String(data.strategy || '').trim().toLowerCase() || 'trendilo';
     const src = String(data.source || '');
     const elapsed = Number(data.elapsed_ms || 0);
     const prefix = fromCache ? '[CACHED] ' : '';
-    summaryEl.textContent = `${prefix}Strategy=${strategy} | Scanned ${scanned} symbols (${okCount} ok, ${errCount} error). Tradeable: ${tradeableCount}. TF=${tf} Source=${src} Elapsed=${elapsed}ms.`;
+    summaryEl.textContent = `${prefix}Strategy=${strategy} | Scanned ${scanned} symbols (${okCount} ok, ${errCount} error). Tradeable shown/total: ${tradeableCountShown}/${tradeableTotalCount} (ready: ${readyCount}, watch-only: ${watchOnlyCount}). Ranked best→worst by score. ScanTF=${scanTf} ExecTF=${execTf} Source=${src} Elapsed=${elapsed}ms.`;
+    lastStrategyOpportunityScanData = { ...(data || {}) };
     _renderTrendiloOppRows(Array.isArray(data.opportunities) ? data.opportunities : []);
 }
 
 async function runTrendiloOpportunityScreener() {
-    if (!sessionId) {
-        showStatus('Start a session first', 'warning');
-        return;
-    }
     const btn = document.getElementById('btn-run-trendilo-opps');
     const statusEl = document.getElementById('trendilo-opp-status');
     const args = _collectTrendiloOppScanArgs();
     try {
+        if (!sessionId) {
+            const bootSymbol = String(document.getElementById('sim-symbol')?.value || 'XAUUSD').trim().toUpperCase() || 'XAUUSD';
+            const bootTf = normalizeTimeframeLabel(
+                document.getElementById('sim-timeframe')?.value || args.execution_timeframe || args.timeframe || 'M15',
+                'M15',
+            );
+            const bootSource = String(args.source || 'mt5').trim().toLowerCase() || 'mt5';
+            if (statusEl) statusEl.textContent = `No active session. Initializing ${bootSource.toUpperCase()} session...`;
+            const ready = await ensureSessionForLive(bootSymbol, bootTf, bootSource);
+            if (!ready || !sessionId) {
+                if (statusEl) statusEl.textContent = 'Failed: unable to initialize session context for screener';
+                showStatus('Strategy screener failed: unable to initialize session context', 'warning');
+                return;
+            }
+        }
         if (btn) {
             btn.disabled = true;
             btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Running...';
@@ -3707,10 +5107,16 @@ async function runTrendiloOpportunityScreener() {
             showStatus(`Strategy screener failed: ${err}`, 'warning');
             return;
         }
+        // Keep both scan/execution timeframe explicit in cached payloads for UI consistency.
+        out.data.timeframe = String(out.data?.timeframe || args?.timeframe || '');
+        out.data.execution_timeframe = String(out.data?.execution_timeframe || args?.execution_timeframe || out.data?.timeframe || '');
         _saveTrendiloOppScanCache(out.data);
         _renderTrendiloOppResult(out.data, false);
-        if (statusEl) statusEl.textContent = `Completed: ${Number(out.data?.tradeable_count || 0)} opportunities`;
-        showStatus(`Strategy screener complete: ${Number(out.data?.tradeable_count || 0)} tradeable setup(s)`, 'success');
+        await loadStrategyAutomationJobs(false);
+        const shown = Number(out.data?.tradeable_count || 0);
+        const total = Number(out.data?.tradeable_total_count || shown);
+        if (statusEl) statusEl.textContent = `Completed: ${shown}/${total} opportunities (shown/total)`;
+        showStatus(`Strategy screener complete: ${shown}/${total} tradeable setup(s) shown/total`, 'success');
     } catch (err) {
         const msg = String(err?.message || err || 'Unknown error');
         if (statusEl) statusEl.textContent = `Failed: ${msg}`;
@@ -3901,6 +5307,7 @@ function getAgentWatchdogConfigFromUI() {
     const guardrailEnabledEl = document.getElementById('agent-guardrail-enabled');
     const sessionFilterEl = document.getElementById('agent-guardrail-session-filter');
     const newsFilterEl = document.getElementById('agent-guardrail-news-filter');
+    const guardrailMaxRiskEl = document.getElementById('agent-guardrail-max-risk-per-trade');
     const newsLookbackEl = document.getElementById('agent-guardrail-news-lookback');
     const newsProviderEl = document.getElementById('agent-news-provider');
     const newsLlmSummaryEl = document.getElementById('agent-news-llm-summary');
@@ -3921,7 +5328,7 @@ function getAgentWatchdogConfigFromUI() {
     const toolSelectionRaw = String(toolSelectionModeEl?.value || 'autonomous').trim().toLowerCase();
     const toolSelectionMode = ['autonomous', 'guided', 'minimal'].includes(toolSelectionRaw) ? toolSelectionRaw : 'autonomous';
     const strategyProfileRaw = String(strategyProfileEl?.value || 'classic_htf_fvg').trim().toLowerCase();
-    const strategyProfile = ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1'].includes(strategyProfileRaw) ? strategyProfileRaw : 'classic_htf_fvg';
+    const strategyProfile = ['classic_htf_fvg', 'htf_fvg_liquidity_reclaim_v2', 'orb_ny_15m_imbalance', 'trendilo_confirmation_v1', 'advanced_trendilo_confirmation_v1', 'trendilo_lsma_confirmation_v1', 'alpha_wave_confirmation_v1'].includes(strategyProfileRaw) ? strategyProfileRaw : 'classic_htf_fvg';
     const strategyPresetRaw = String(strategyPresetEl?.value || 'default').trim().toLowerCase();
     const strategyPreset = ['default', 'conservative', 'aggressive', 'xauusd_m15', 'nas100_m15', 'xauusd_m1', 'nas100_m1', 'us500_m1'].includes(strategyPresetRaw) ? strategyPresetRaw : 'default';
     const intervalRaw = Number(intervalEl?.value || 30);
@@ -3930,6 +5337,10 @@ function getAgentWatchdogConfigFromUI() {
     const llmMinIntervalSec = Number.isFinite(llmIntervalRaw) ? Math.max(10, Math.min(3600, Math.round(llmIntervalRaw))) : 180;
     const newsLookbackRaw = Number(newsLookbackEl?.value || 120);
     const newsLookbackMin = Number.isFinite(newsLookbackRaw) ? Math.max(15, Math.min(1440, Math.round(newsLookbackRaw))) : 120;
+    const guardrailMaxRiskRaw = Number(guardrailMaxRiskEl?.value || 0);
+    const guardrailMaxRiskPerTradeUsd = Number.isFinite(guardrailMaxRiskRaw)
+        ? Math.max(0, Math.min(1_000_000_000, guardrailMaxRiskRaw))
+        : 0;
     const newsProviderRaw = String(newsProviderEl?.value || 'polygon').trim().toLowerCase();
     const newsProvider = ['polygon', 'ibkr'].includes(newsProviderRaw) ? newsProviderRaw : 'polygon';
     const newsSummaryModel = String(newsSummaryModelEl?.value || '').trim() || 'claude-haiku-4-5-20251001';
@@ -3969,6 +5380,7 @@ function getAgentWatchdogConfigFromUI() {
         guardrail_enabled: Boolean(guardrailEnabledEl?.checked),
         guardrail_session_filter_enabled: Boolean(sessionFilterEl?.checked),
         guardrail_news_filter_enabled: Boolean(newsFilterEl?.checked),
+        guardrail_max_risk_per_trade_usd: guardrailMaxRiskPerTradeUsd,
         guardrail_news_lookback_min: newsLookbackMin,
         market_news_provider: newsProvider,
         market_news_llm_summary_enabled: Boolean(newsLlmSummaryEl?.checked),
@@ -3996,6 +5408,7 @@ function syncAgentGuardrailControls() {
     const guardrailEnabledEl = document.getElementById('agent-guardrail-enabled');
     const sessionFilterEl = document.getElementById('agent-guardrail-session-filter');
     const newsFilterEl = document.getElementById('agent-guardrail-news-filter');
+    const maxRiskEl = document.getElementById('agent-guardrail-max-risk-per-trade');
     const newsLookbackEl = document.getElementById('agent-guardrail-news-lookback');
     const statusEl = document.getElementById('agent-guardrail-effective-status');
     const guardrailsEnabled = !!guardrailEnabledEl?.checked;
@@ -4003,6 +5416,7 @@ function syncAgentGuardrailControls() {
     const newsEnabled = !!newsFilterEl?.checked;
     if (sessionFilterEl) sessionFilterEl.disabled = !guardrailsEnabled;
     if (newsFilterEl) newsFilterEl.disabled = !guardrailsEnabled;
+    if (maxRiskEl) maxRiskEl.disabled = !guardrailsEnabled;
     if (newsLookbackEl) newsLookbackEl.disabled = !guardrailsEnabled || !Boolean(newsFilterEl?.checked);
     if (statusEl) {
         if (!guardrailsEnabled) {
@@ -4053,7 +5467,10 @@ function syncAgentStrategyControls() {
     const isLiquidityProfile = profile === 'htf_fvg_liquidity_reclaim_v2';
     const isOrbProfile = profile === 'orb_ny_15m_imbalance';
     const isTrendiloProfile = profile === 'trendilo_confirmation_v1';
-    presetEl.disabled = !(isLiquidityProfile || isOrbProfile || isTrendiloProfile);
+    const isAdvancedTrendiloProfile = profile === 'advanced_trendilo_confirmation_v1';
+    const isTrendiloLsmaProfile = profile === 'trendilo_lsma_confirmation_v1';
+    const isAlphaWaveProfile = profile === 'alpha_wave_confirmation_v1';
+    presetEl.disabled = !(isLiquidityProfile || isOrbProfile || isTrendiloProfile || isAdvancedTrendiloProfile || isTrendiloLsmaProfile || isAlphaWaveProfile);
     const hintEl = presetEl.parentElement?.querySelector('.agent-field-hint');
     if (hintEl) {
         if (isLiquidityProfile) {
@@ -4062,6 +5479,12 @@ function syncAgentStrategyControls() {
             hintEl.textContent = 'Used by NY 15m ORB profile (default/xauusd_m1/nas100_m1/us500_m1).';
         } else if (isTrendiloProfile) {
             hintEl.textContent = 'Used by Trendilo strategy profile (default/conservative/aggressive/xauusd_m15/nas100_m15/us500_m15).';
+        } else if (isAdvancedTrendiloProfile) {
+            hintEl.textContent = 'Used by Advanced Trendilo profile (anti-whipsaw: persistence/edge/ADX-rising/DI-spread filters).';
+        } else if (isTrendiloLsmaProfile) {
+            hintEl.textContent = 'Used by Trendilo LSMA profile (Pine-parity LSMA/HMA combine direction).';
+        } else if (isAlphaWaveProfile) {
+            hintEl.textContent = 'Used by Alpha Wave profile (Pine-parity DaviddTech baseline/wave/quantum/momentum state machine).';
         } else {
             hintEl.textContent = 'Classic HTF FVG is selected, so this preset is currently ignored.';
         }
@@ -5171,7 +6594,77 @@ function rollingRms(values, period) {
     return out;
 }
 
-function computeTrendilo(closes) {
+function rollingWMA(values, period) {
+    const out = new Array(values.length).fill(NaN);
+    if (!Array.isArray(values) || values.length === 0) return out;
+    const p = Math.max(1, Number(period) || 1);
+    const weights = Array.from({ length: p }, (_, i) => i + 1);
+    const weightSum = weights.reduce((acc, n) => acc + n, 0);
+    for (let i = p - 1; i < values.length; i += 1) {
+        let acc = 0;
+        let valid = true;
+        for (let j = 0; j < p; j += 1) {
+            const v = toFiniteNumber(values[i - p + 1 + j]);
+            if (!Number.isFinite(v)) {
+                valid = false;
+                break;
+            }
+            acc += v * weights[j];
+        }
+        if (valid) out[i] = acc / weightSum;
+    }
+    return out;
+}
+
+function rollingLinReg(values, period, offset) {
+    const out = new Array(values.length).fill(NaN);
+    if (!Array.isArray(values) || values.length === 0) return out;
+    const p = Math.max(2, Number(period) || 2);
+    const off = Math.round(Number(offset) || 0);
+    const x = Array.from({ length: p }, (_, i) => i);
+    const sx = x.reduce((acc, v) => acc + v, 0);
+    const sx2 = x.reduce((acc, v) => acc + (v * v), 0);
+    const denom = (p * sx2) - (sx * sx);
+    if (!Number.isFinite(denom) || Math.abs(denom) <= 1e-12) return out;
+    const xEval = (p - 1) - off;
+    for (let i = p - 1; i < values.length; i += 1) {
+        let sy = 0;
+        let sxy = 0;
+        let valid = true;
+        for (let j = 0; j < p; j += 1) {
+            const y = toFiniteNumber(values[i - p + 1 + j]);
+            if (!Number.isFinite(y)) {
+                valid = false;
+                break;
+            }
+            sy += y;
+            sxy += (x[j] * y);
+        }
+        if (!valid) continue;
+        const slope = ((p * sxy) - (sx * sy)) / denom;
+        const intercept = (sy - (slope * sx)) / p;
+        out[i] = intercept + (slope * xEval);
+    }
+    return out;
+}
+
+function rollingHMA(values, period) {
+    const p = Math.max(2, Number(period) || 2);
+    const half = Math.max(1, Math.floor(p / 2));
+    const sqrtP = Math.max(1, Math.floor(Math.sqrt(p)));
+    const w1 = rollingWMA(values, half);
+    const w2 = rollingWMA(values, p);
+    const raw = new Array(values.length).fill(NaN);
+    for (let i = 0; i < values.length; i += 1) {
+        const a = toFiniteNumber(w1[i]);
+        const b = toFiniteNumber(w2[i]);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        raw[i] = (2 * a) - b;
+    }
+    return rollingWMA(raw, sqrtP);
+}
+
+function computeTrendilo(closes, volumes) {
     const len = closes.length;
     const pch = new Array(len).fill(NaN);
     const smooth = Math.max(1, Number(INDICATOR_DEFAULTS.trendiloSmooth) || 1);
@@ -5181,6 +6674,7 @@ function computeTrendilo(closes) {
     const bmult = Number(INDICATOR_DEFAULTS.trendiloBandMultiplier) || 1.0;
     const useCustomBand = !!INDICATOR_DEFAULTS.trendiloUseCustomBandLength;
     const bandLength = Math.max(1, useCustomBand ? (Number(INDICATOR_DEFAULTS.trendiloBandLength) || 20) : length);
+    const volumeSmaPeriod = Math.max(1, Number(INDICATOR_DEFAULTS.trendiloVolumeSmaPeriod) || 20);
 
     for (let i = smooth; i < len; i += 1) {
         const cur = toFiniteNumber(closes[i]);
@@ -5193,21 +6687,409 @@ function computeTrendilo(closes) {
     const rmsBase = rollingRms(avpch, bandLength);
     const rms = rmsBase.map((v) => (Number.isFinite(v) ? v * bmult : NaN));
     const negRms = rms.map((v) => (Number.isFinite(v) ? -v : NaN));
+    const vol = Array.isArray(volumes) ? volumes : new Array(len).fill(0);
+    const volSma = rollingSMA(vol.map((v) => Math.max(0, toFiniteNumber(v) || 0)), volumeSmaPeriod);
+    const isVolumeConfirmed = new Array(len).fill(false);
     const cdir = new Array(len).fill(0);
+    const cdirRaw = new Array(len).fill(0);
     const avpchBull = new Array(len).fill(NaN);
     const avpchBear = new Array(len).fill(NaN);
     const avpchNeutral = new Array(len).fill(NaN);
     for (let i = 0; i < len; i += 1) {
         const a = toFiniteNumber(avpch[i]);
         const r = toFiniteNumber(rms[i]);
+        const vNow = Math.max(0, toFiniteNumber(vol[i]) || 0);
+        const vAvg = Math.max(0, toFiniteNumber(volSma[i]) || 0);
+        isVolumeConfirmed[i] = Number.isFinite(vNow) && Number.isFinite(vAvg) && (vNow > Math.max(1e-12, vAvg));
         if (!Number.isFinite(a) || !Number.isFinite(r)) continue;
-        if (a > r) cdir[i] = 1;
-        else if (a < -r) cdir[i] = -1;
+        if (a > r) cdirRaw[i] = 1;
+        else if (a < -r) cdirRaw[i] = -1;
+        cdir[i] = isVolumeConfirmed[i] ? cdirRaw[i] : 0;
         if (cdir[i] > 0) avpchBull[i] = a;
         else if (cdir[i] < 0) avpchBear[i] = a;
         else avpchNeutral[i] = a;
     }
-    return { pch, avpch, rms, negRms, cdir, avpchBull, avpchBear, avpchNeutral };
+    return { pch, avpch, rms, negRms, cdir, cdirRaw, isVolumeConfirmed, volumeSma: volSma, avpchBull, avpchBear, avpchNeutral };
+}
+
+function computeAdvancedTrendilo(closes, volumes) {
+    const base = computeTrendilo(closes, volumes);
+    const len = Math.min(base.avpch.length, base.rms.length);
+    const hystMult = Math.max(0, Number(INDICATOR_DEFAULTS.advancedTrendiloHysteresisMult) || 0.15);
+    const cdir = new Array(len).fill(0);
+    const cdirRaw = new Array(len).fill(0);
+    const avpchBull = new Array(len).fill(NaN);
+    const avpchBear = new Array(len).fill(NaN);
+    const avpchNeutral = new Array(len).fill(NaN);
+    let prevDir = 0;
+
+    for (let i = 0; i < len; i += 1) {
+        const a = toFiniteNumber(base.avpch[i]);
+        const r = Math.abs(toFiniteNumber(base.rms[i]));
+        if (!Number.isFinite(a) || !Number.isFinite(r)) {
+            cdir[i] = 0;
+            prevDir = 0;
+            continue;
+        }
+        const h = r * hystMult;
+        const upEnter = r + h;
+        const dnEnter = -r - h;
+        const upHold = r - h;
+        const dnHold = -r + h;
+        let dirNow = 0;
+        if (a > upEnter) dirNow = 1;
+        else if (a < dnEnter) dirNow = -1;
+        else if (prevDir > 0 && a > upHold) dirNow = 1;
+        else if (prevDir < 0 && a < dnHold) dirNow = -1;
+        cdirRaw[i] = dirNow;
+        cdir[i] = base.isVolumeConfirmed[i] ? dirNow : 0;
+        prevDir = dirNow;
+        if (cdir[i] > 0) avpchBull[i] = a;
+        else if (cdir[i] < 0) avpchBear[i] = a;
+        else avpchNeutral[i] = a;
+    }
+
+    return {
+        pch: base.pch,
+        avpch: base.avpch,
+        rms: base.rms,
+        negRms: base.negRms,
+        isVolumeConfirmed: base.isVolumeConfirmed,
+        volumeSma: base.volumeSma,
+        cdir,
+        cdirRaw,
+        avpchBull,
+        avpchBear,
+        avpchNeutral,
+    };
+}
+
+function computeTrendiloLsma(highs, lows) {
+    const len = Math.min(Array.isArray(highs) ? highs.length : 0, Array.isArray(lows) ? lows.length : 0);
+    const hl2 = new Array(len).fill(NaN);
+    for (let i = 0; i < len; i += 1) {
+        const h = toFiniteNumber(highs[i]);
+        const l = toFiniteNumber(lows[i]);
+        if (!Number.isFinite(h) || !Number.isFinite(l)) continue;
+        hl2[i] = (h + l) / 2;
+    }
+    const smooth = Math.max(1, Number(INDICATOR_DEFAULTS.trendiloLsmaSmooth) || 5);
+    const lsmaLength = Math.max(2, Number(INDICATOR_DEFAULTS.trendiloLsmaLength) || 25);
+    const lsmaOffset = Math.round(Number(INDICATOR_DEFAULTS.trendiloLsmaOffset) || 0);
+    const hmaLength = Math.max(2, Number(INDICATOR_DEFAULTS.trendiloLsmaHmaLength) || 50);
+
+    const src = rollingEMA(hl2, smooth);
+    const lsma = rollingLinReg(src, lsmaLength, lsmaOffset);
+    const hma = rollingHMA(src, hmaLength);
+    const combine = new Array(len).fill(NaN);
+    const signal = new Array(len).fill(NaN);
+    const dir = new Array(len).fill(0);
+    for (let i = 0; i < len; i += 1) {
+        const a = toFiniteNumber(lsma[i]);
+        const b = toFiniteNumber(hma[i]);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        combine[i] = (a + b) / 2;
+        if (i <= 0) continue;
+        const prev = toFiniteNumber(combine[i - 1]);
+        if (!Number.isFinite(prev)) continue;
+        signal[i] = combine[i] - prev;
+        if (signal[i] > 0) dir[i] = 1;
+        else if (signal[i] < 0) dir[i] = -1;
+    }
+    return { src, lsma, hma, combine, signal, dir };
+}
+
+function computeAlphaWave(highs, lows, closes) {
+    const len = Math.min(
+        Array.isArray(highs) ? highs.length : 0,
+        Array.isArray(lows) ? lows.length : 0,
+        Array.isArray(closes) ? closes.length : 0,
+    );
+    const baseline = new Array(len).fill(NaN);
+    const dir = new Array(len).fill(0);
+    if (len <= 0) return { baseline, dir };
+
+    const adxLen = Math.max(1, Number(INDICATOR_DEFAULTS.alphaWaveBaselineAdxLength) || 2);
+    const weight = Math.max(0.1, Number(INDICATOR_DEFAULTS.alphaWaveBaselineWeight) || 10.0);
+    const maLen = Math.max(1, Number(INDICATOR_DEFAULTS.alphaWaveBaselineMaLength) || 6);
+
+    const powerBulls = new Array(len).fill(0);
+    const powerBears = new Array(len).fill(0);
+    const strRange = new Array(len).fill(0);
+    const diagX = new Array(len).fill(0);
+    const varMa = new Array(len).fill(NaN);
+
+    const h0 = toFiniteNumber(highs[0]);
+    const l0 = toFiniteNumber(lows[0]);
+    const c0 = toFiniteNumber(closes[0]);
+    if (!Number.isFinite(h0) || !Number.isFinite(l0) || !Number.isFinite(c0)) {
+        return { baseline, dir };
+    }
+    strRange[0] = Math.max(h0 - l0, 1e-12);
+    varMa[0] = c0;
+
+    for (let i = 1; i < len; i += 1) {
+        const hi = toFiniteNumber(highs[i]);
+        const hi1 = toFiniteNumber(highs[i - 1]);
+        const lo = toFiniteNumber(lows[i]);
+        const lo1 = toFiniteNumber(lows[i - 1]);
+        const close1 = toFiniteNumber(closes[i - 1]);
+        const ci = toFiniteNumber(closes[i]);
+        if (![hi, hi1, lo, lo1, close1, ci].every(Number.isFinite)) {
+            powerBulls[i] = powerBulls[i - 1];
+            powerBears[i] = powerBears[i - 1];
+            strRange[i] = strRange[i - 1];
+            diagX[i] = diagX[i - 1];
+            varMa[i] = varMa[i - 1];
+            continue;
+        }
+        const bulls1 = 0.5 * (Math.abs(hi - hi1) + (hi - hi1));
+        const bears1 = 0.5 * (Math.abs(lo1 - lo) + (lo1 - lo));
+        const bears = bulls1 >= bears1 ? 0 : bears1;
+        const bulls = bulls1 <= bears1 ? 0 : bulls1;
+        powerBulls[i] = ((weight * powerBulls[i - 1]) + bulls) / (weight + 1.0);
+        powerBears[i] = ((weight * powerBears[i - 1]) + bears) / (weight + 1.0);
+        const trueRange = Math.max(hi - lo, hi - close1);
+        strRange[i] = ((weight * strRange[i - 1]) + trueRange) / (weight + 1.0);
+        const posDi = strRange[i] > 0 ? powerBulls[i] / strRange[i] : 0;
+        const negDi = strRange[i] > 0 ? powerBears[i] / strRange[i] : 0;
+        const diSum = posDi + negDi;
+        const diDiff = diSum > 0 ? Math.abs(posDi - negDi) / diSum : 0;
+        diagX[i] = ((weight * diagX[i - 1]) + diDiff) / (weight + 1.0);
+        const loIdx = Math.max(0, i - adxLen + 1);
+        let adxMin = Number.POSITIVE_INFINITY;
+        let adxMax = Number.NEGATIVE_INFINITY;
+        for (let j = loIdx; j <= i; j += 1) {
+            const v = toFiniteNumber(diagX[j]);
+            if (!Number.isFinite(v)) continue;
+            if (v < adxMin) adxMin = v;
+            if (v > adxMax) adxMax = v;
+        }
+        if (!Number.isFinite(adxMin) || !Number.isFinite(adxMax)) {
+            adxMin = 0;
+            adxMax = 0;
+        }
+        const adxDiff = adxMax - adxMin;
+        const adxConst = adxDiff > 1e-12 ? (diagX[i] - adxMin) / adxDiff : 0;
+        varMa[i] = (((2.0 - adxConst) * varMa[i - 1]) + (adxConst * ci)) / 2.0;
+    }
+
+    let rollingSum = 0.0;
+    for (let i = 0; i < len; i += 1) {
+        const cur = toFiniteNumber(varMa[i]);
+        if (!Number.isFinite(cur)) continue;
+        rollingSum += cur;
+        const dropIdx = i - maLen;
+        if (dropIdx >= 0) {
+            const drop = toFiniteNumber(varMa[dropIdx]);
+            if (Number.isFinite(drop)) rollingSum -= drop;
+        }
+        const denom = Math.min(maLen, i + 1);
+        if (denom > 0) baseline[i] = rollingSum / denom;
+        const c = toFiniteNumber(closes[i]);
+        const b = toFiniteNumber(baseline[i]);
+        if (Number.isFinite(c) && Number.isFinite(b)) {
+            if (c > b) dir[i] = 1;
+            else if (c < b) dir[i] = -1;
+            else dir[i] = 0;
+        }
+    }
+    return { baseline, dir };
+}
+
+function _orbNyParts(unixSec) {
+    const ts = Number(unixSec);
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    const d = new Date(ts * 1000);
+    if (Number.isNaN(d.getTime())) return null;
+    const parts = ORB_NY_PARTS_FORMATTER.formatToParts(d);
+    const out = {};
+    for (const p of parts) {
+        if (p && p.type && p.type !== 'literal') out[p.type] = p.value;
+    }
+    const y = Number(out.year);
+    const m = Number(out.month);
+    const dd = Number(out.day);
+    let hh = Number(out.hour);
+    const mm = Number(out.minute);
+    if (![y, m, dd, hh, mm].every(Number.isFinite)) return null;
+    if (hh === 24) hh = 0;
+    const dateKey = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+    return {
+        dateKey,
+        minutesOfDay: (Math.max(0, Math.min(23, hh)) * 60) + Math.max(0, Math.min(59, mm)),
+    };
+}
+
+function _orbIsIndexSymbol(symbolLike) {
+    const s = String(symbolLike || '').trim().toUpperCase();
+    if (!s) return false;
+    return s.includes('NAS')
+        || s.includes('US500')
+        || s.includes('SPX')
+        || s.includes('DJI')
+        || s.includes('US30')
+        || s.includes('NQ')
+        || s.includes('ES')
+        || s.includes('USTEC');
+}
+
+function _orbInWindow(minute, startMin, endMin) {
+    const m = Number(minute);
+    if (!Number.isFinite(m)) return false;
+    if (endMin >= startMin) {
+        return m >= startMin && m < endMin;
+    }
+    return m >= startMin || m < endMin;
+}
+
+function _orbInKillZone(minute, isIndex) {
+    const windows = isIndex
+        ? [
+            [20 * 60, 24 * 60],       // Asia
+            [2 * 60, 5 * 60],         // London
+            [(8 * 60) + 30, 11 * 60], // NY AM
+            [(13 * 60) + 30, 16 * 60],// NY PM
+        ]
+        : [
+            [20 * 60, 24 * 60],       // Asia
+            [2 * 60, 5 * 60],         // London
+            [7 * 60, 10 * 60],        // NY AM
+            [10 * 60, 12 * 60],       // London Close
+        ];
+    return windows.some(([startMin, endMin]) => _orbInWindow(minute, startMin, endMin));
+}
+
+function computeOrbSignal(bars, symbolLike) {
+    const len = Array.isArray(bars) ? bars.length : 0;
+    const signal = new Array(len).fill(NaN);
+    const dir = new Array(len).fill(0);
+    const inKillZone = new Array(len).fill(false);
+    if (!Array.isArray(bars) || len <= 0) return { signal, dir, inKillZone };
+
+    const perDay = new Map();
+
+    for (let i = 0; i < len; i += 1) {
+        const b = bars[i] || {};
+        const parts = _orbNyParts(b.time);
+        const c = toFiniteNumber(b.close);
+        if (!parts || !Number.isFinite(c)) continue;
+        signal[i] = c;
+        inKillZone[i] = false;
+        let bucket = perDay.get(parts.dateKey);
+        if (!bucket) {
+            bucket = { indices: [], orHigh: NaN, orLow: NaN };
+            perDay.set(parts.dateKey, bucket);
+        }
+        bucket.indices.push(i);
+    }
+
+    const OR_START_MIN = (9 * 60) + 30; // NY 09:30
+    const OR_END_MIN = (9 * 60) + 45;   // NY 09:45
+    const EXEC_END_MIN = 12 * 60;       // NY 12:00 hard stop (gray after this)
+    const HOLD_BARS = 2;
+
+    for (const bucket of perDay.values()) {
+        for (const idx of bucket.indices) {
+            const b = bars[idx] || {};
+            const parts = _orbNyParts(b.time);
+            const h = toFiniteNumber(b.high);
+            const l = toFiniteNumber(b.low);
+            if (!parts || !Number.isFinite(h) || !Number.isFinite(l)) continue;
+            if (parts.minutesOfDay >= OR_START_MIN && parts.minutesOfDay < OR_END_MIN) {
+                bucket.orHigh = Number.isFinite(bucket.orHigh) ? Math.max(bucket.orHigh, h) : h;
+                bucket.orLow = Number.isFinite(bucket.orLow) ? Math.min(bucket.orLow, l) : l;
+            }
+        }
+    }
+
+    for (const bucket of perDay.values()) {
+        if (!Number.isFinite(bucket.orHigh) || !Number.isFinite(bucket.orLow)) continue;
+        let upCount = 0;
+        let downCount = 0;
+        let sessionDir = 0;      // 1 long, -1 short, 0 wait
+        let tradeLocked = false; // one ORB cycle per day: enter once, then wait after re-entry
+        for (const idx of bucket.indices) {
+            const b = bars[idx] || {};
+            const parts = _orbNyParts(bars[idx]?.time);
+            const close = toFiniteNumber(b?.close);
+            const high = toFiniteNumber(b?.high);
+            const low = toFiniteNumber(b?.low);
+            if (!parts || !Number.isFinite(close)) continue;
+
+            const minute = Number(parts.minutesOfDay || 0);
+            const afterOpenRange = minute >= OR_END_MIN;
+            const inExecWindow = minute >= OR_END_MIN && minute < EXEC_END_MIN;
+            inKillZone[idx] = inExecWindow;
+
+            // Before OR closes or after execution window, stay gray.
+            if (!afterOpenRange || !inExecWindow) {
+                dir[idx] = 0;
+                upCount = 0;
+                downCount = 0;
+                continue;
+            }
+
+            // Once one full ORB trade cycle is finished, no more signals for the day.
+            if (tradeLocked) {
+                dir[idx] = 0;
+                continue;
+            }
+
+            // If in position, hold only while price remains outside ORB.
+            if (sessionDir > 0) {
+                if (close > bucket.orHigh) {
+                    dir[idx] = 1;
+                    continue;
+                }
+                // Returned to range -> done for today.
+                sessionDir = 0;
+                tradeLocked = true;
+                dir[idx] = 0;
+                continue;
+            }
+            if (sessionDir < 0) {
+                if (close < bucket.orLow) {
+                    dir[idx] = -1;
+                    continue;
+                }
+                // Returned to range -> done for today.
+                sessionDir = 0;
+                tradeLocked = true;
+                dir[idx] = 0;
+                continue;
+            }
+
+            // Flat state: require breakout + displacement proxy (3-candle FVG on chart TF).
+            const prev2 = idx >= 2 ? (bars[idx - 2] || {}) : null;
+            const prev2High = toFiniteNumber(prev2?.high);
+            const prev2Low = toFiniteNumber(prev2?.low);
+            const bullFvg = Number.isFinite(low) && Number.isFinite(prev2High) && (low > prev2High);
+            const bearFvg = Number.isFinite(high) && Number.isFinite(prev2Low) && (high < prev2Low);
+
+            if (close > bucket.orHigh && bullFvg) {
+                upCount += 1;
+                downCount = 0;
+            } else if (close < bucket.orLow && bearFvg) {
+                downCount += 1;
+                upCount = 0;
+            } else {
+                upCount = 0;
+                downCount = 0;
+            }
+
+            if (upCount >= HOLD_BARS) {
+                sessionDir = 1;
+                dir[idx] = 1;
+            } else if (downCount >= HOLD_BARS) {
+                sessionDir = -1;
+                dir[idx] = -1;
+            } else {
+                dir[idx] = 0;
+            }
+        }
+    }
+    return { signal, dir, inKillZone };
 }
 
 function computeRSI(closes, period) {
@@ -5362,15 +7244,19 @@ function computeIndicatorPack(bars, selection) {
     const needAdx = !!sel.adx;
     const needRsi = !!sel.rsi;
     const needStoch = !!sel.stoch;
-    const needTrendilo = !!sel.trendilo || !!sel.trendiloBarColor;
+    const needTrendilo = !!sel.trendilo || !!sel.advancedTrendilo || !!sel.trendiloBarColor;
+    const needTrendiloLsma = !!sel.trendiloLsma;
+    const needAlphaWave = !!sel.alphaWave;
+    const needOrbSignal = !!sel.orbSignal;
     const needGoldenCross = !!sel.goldenCross;
 
-    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross;
-    const needHighLow = needAdx || needStoch;
+    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross || needAlphaWave || needOrbSignal;
+    const needHighLow = needAdx || needStoch || needTrendiloLsma || needAlphaWave;
 
     const closes = needCloses ? bars.map(b => toFiniteNumber(b?.close)) : [];
     const highs = needHighLow ? bars.map(b => toFiniteNumber(b?.high)) : [];
     const lows = needHighLow ? bars.map(b => toFiniteNumber(b?.low)) : [];
+    const volumes = needTrendilo ? bars.map(b => Math.max(0, toFiniteNumber(b?.volume) || 0)) : [];
 
     const needTrendLong = needSmaEma || needGoldenCross;
     const sma20 = needSmaEma ? rollingSMA(closes, INDICATOR_DEFAULTS.smaPeriodFast) : [];
@@ -5392,15 +7278,48 @@ function computeIndicatorPack(bars, selection) {
     const stoch = needStoch
         ? computeStochastic(highs, lows, closes, INDICATOR_DEFAULTS.stochKPeriod, INDICATOR_DEFAULTS.stochSmoothK, INDICATOR_DEFAULTS.stochSmoothD)
         : { k: [], d: [] };
-    const trendilo = needTrendilo ? computeTrendilo(closes) : {
+    const trendilo = needTrendilo ? computeTrendilo(closes, volumes) : {
         pch: [],
         avpch: [],
         rms: [],
         negRms: [],
         cdir: [],
+        cdirRaw: [],
+        isVolumeConfirmed: [],
+        volumeSma: [],
         avpchBull: [],
         avpchBear: [],
         avpchNeutral: [],
+    };
+    const advancedTrendilo = needTrendilo ? computeAdvancedTrendilo(closes, volumes) : {
+        pch: [],
+        avpch: [],
+        rms: [],
+        negRms: [],
+        cdir: [],
+        cdirRaw: [],
+        isVolumeConfirmed: [],
+        volumeSma: [],
+        avpchBull: [],
+        avpchBear: [],
+        avpchNeutral: [],
+    };
+    const trendiloLsma = needTrendiloLsma ? computeTrendiloLsma(highs, lows) : {
+        src: [],
+        lsma: [],
+        hma: [],
+        combine: [],
+        signal: [],
+        dir: [],
+    };
+    const alphaWave = needAlphaWave ? computeAlphaWave(highs, lows, closes) : {
+        baseline: [],
+        dir: [],
+    };
+    const orbSignal = needOrbSignal ? computeOrbSignal(bars, getCostModelSymbol()) : {
+        signal: [],
+        dir: [],
+        inKillZone: [],
     };
     return {
         sma20, sma50, sma200, ema20, ema50, ema200,
@@ -5416,6 +7335,25 @@ function computeIndicatorPack(bars, selection) {
         trendiloBull: trendilo.avpchBull,
         trendiloBear: trendilo.avpchBear,
         trendiloNeutral: trendilo.avpchNeutral,
+        advancedTrendiloPch: advancedTrendilo.pch,
+        advancedTrendiloAvpch: advancedTrendilo.avpch,
+        advancedTrendiloRms: advancedTrendilo.rms,
+        advancedTrendiloNegRms: advancedTrendilo.negRms,
+        advancedTrendiloDir: advancedTrendilo.cdir,
+        advancedTrendiloBull: advancedTrendilo.avpchBull,
+        advancedTrendiloBear: advancedTrendilo.avpchBear,
+        advancedTrendiloNeutral: advancedTrendilo.avpchNeutral,
+        trendiloLsmaSrc: trendiloLsma.src,
+        trendiloLsmaLsma: trendiloLsma.lsma,
+        trendiloLsmaHma: trendiloLsma.hma,
+        trendiloLsmaCombine: trendiloLsma.combine,
+        trendiloLsmaSignal: trendiloLsma.signal,
+        trendiloLsmaDir: trendiloLsma.dir,
+        alphaWaveBaseline: alphaWave.baseline,
+        alphaWaveDir: alphaWave.dir,
+        orbSignal: orbSignal.signal,
+        orbDir: orbSignal.dir,
+        orbKillZone: orbSignal.inKillZone,
     };
 }
 
@@ -5444,6 +7382,10 @@ function setTrendiloPanelVisibility(show) {
         try { chart?.clearCrosshairPosition?.(); } catch (_) {}
     }
     refreshChartViewport();
+}
+
+function isTrendiloPanelEnabled() {
+    return !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo);
 }
 
 function ensureTrendiloPanelChart() {
@@ -5521,10 +7463,10 @@ function ensureTrendiloPanelChart() {
             } catch (_) {
                 // ignore transient sync errors when chart has no data
             }
-            trendiloPanelSyncingRange = false;
+            requestAnimationFrame(() => { trendiloPanelSyncingRange = false; });
         });
         chart.subscribeCrosshairMove((param) => {
-            if (!trendiloPanelChart || !indicatorSelection.trendilo || trendiloPanelSyncingCrosshair) return;
+            if (!trendiloPanelChart || !isTrendiloPanelEnabled() || trendiloPanelSyncingCrosshair) return;
             if (typeof trendiloPanelChart.setCrosshairPosition !== 'function') return;
             trendiloPanelSyncingCrosshair = true;
             try {
@@ -5555,10 +7497,10 @@ function ensureTrendiloPanelChart() {
             } catch (_) {
                 // ignore transient sync errors when chart has no data
             }
-            trendiloPanelSyncingRange = false;
+            requestAnimationFrame(() => { trendiloPanelSyncingRange = false; });
         });
         trendiloPanelChart.subscribeCrosshairMove((param) => {
-            if (!chart || !indicatorSelection.trendilo || trendiloPanelSyncingCrosshair) return;
+            if (!chart || !isTrendiloPanelEnabled() || trendiloPanelSyncingCrosshair) return;
             if (typeof chart.setCrosshairPosition !== 'function') return;
             trendiloPanelSyncingCrosshair = true;
             try {
@@ -5679,7 +7621,10 @@ function applyIndicatorVisibility() {
     const showAdx = !!indicatorSelection.adx;
     const showRsi = !!indicatorSelection.rsi;
     const showStoch = !!indicatorSelection.stoch;
-    const showTrendilo = !!indicatorSelection.trendilo;
+    const showTrendilo = !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo);
+    const showTrendiloLsma = !!indicatorSelection.trendiloLsma;
+    const showAlphaWave = !!indicatorSelection.alphaWave;
+    const showOrbSignal = !!indicatorSelection.orbSignal;
     const showTrendiloBarColor = !!indicatorSelection.trendiloBarColor;
 
     if (!showSmaEma) {
@@ -5703,6 +7648,15 @@ function applyIndicatorVisibility() {
         clearTrendiloPanelData();
         setTrendiloPanelVisibility(false);
     }
+    if (!showTrendiloLsma) {
+        removeIndicatorSeries('trendiloLsma');
+    }
+    if (!showAlphaWave) {
+        removeIndicatorSeries('alphaWave');
+    }
+    if (!showOrbSignal) {
+        removeIndicatorSeries('orbSignal');
+    }
     if (!(showAdx || showRsi || showStoch || showTrendiloBarColor) && chart) {
         chart.priceScale('osc').applyOptions({
             autoScale: true,
@@ -5722,6 +7676,10 @@ function updateIndicatorsOnChart() {
         || indicatorSelection.rsi
         || indicatorSelection.stoch
         || indicatorSelection.trendilo
+        || indicatorSelection.advancedTrendilo
+        || indicatorSelection.trendiloLsma
+        || indicatorSelection.alphaWave
+        || indicatorSelection.orbSignal
         || indicatorSelection.trendiloBarColor
         || indicatorSelection.goldenCross;
 
@@ -5741,7 +7699,7 @@ function updateIndicatorsOnChart() {
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
         mainCrosshairSeries?.setData([]);
-        if (indicatorSelection.trendilo) {
+        if (indicatorSelection.trendilo || indicatorSelection.advancedTrendilo) {
             ensureTrendiloPanelChart();
             setTrendiloPanelVisibility(true);
             clearTrendiloPanelData();
@@ -5802,19 +7760,24 @@ function updateIndicatorsOnChart() {
         indicatorSeries.stochD?.setData(seriesDataFromArray(bars, pack.stochD));
     }
 
-    if (indicatorSelection.trendilo) {
+    const useAdvancedTrendilo = !!indicatorSelection.advancedTrendilo;
+    if (indicatorSelection.trendilo || indicatorSelection.advancedTrendilo) {
         ensureTrendiloPanelChart();
         setTrendiloPanelVisibility(true);
         const zeroLine = new Array(bars.length).fill(0);
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
+        const avpchArr = useAdvancedTrendilo ? pack.advancedTrendiloAvpch : pack.trendiloAvpch;
+        const dirArr = useAdvancedTrendilo ? pack.advancedTrendiloDir : pack.trendiloDir;
+        const rmsArr = useAdvancedTrendilo ? pack.advancedTrendiloRms : pack.trendiloRms;
+        const negRmsArr = useAdvancedTrendilo ? pack.advancedTrendiloNegRms : pack.trendiloNegRms;
         const signalData = [];
         for (let i = 0; i < bars.length; i += 1) {
             const t = Number(bars[i]?.time || 0);
-            const a = toFiniteNumber(pack.trendiloAvpch[i]);
+            const a = toFiniteNumber(avpchArr[i]);
             if (!Number.isFinite(t) || !Number.isFinite(a)) continue;
             const key = normalizeTimeKey(t);
-            const d = Number(pack.trendiloDir[i] || 0);
+            const d = Number(dirArr[i] || 0);
             trendiloSignalByTime.set(key, a);
             trendiloDirByTime.set(key, d);
             signalData.push({
@@ -5823,8 +7786,8 @@ function updateIndicatorsOnChart() {
                 color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
             });
         }
-        trendiloPanelSeries.upper?.setData(seriesDataFromArray(bars, pack.trendiloRms));
-        trendiloPanelSeries.lower?.setData(seriesDataFromArray(bars, pack.trendiloNegRms));
+        trendiloPanelSeries.upper?.setData(seriesDataFromArray(bars, rmsArr));
+        trendiloPanelSeries.lower?.setData(seriesDataFromArray(bars, negRmsArr));
         trendiloPanelSeries.signal?.setData(signalData);
         trendiloPanelSeries.zero?.setData(seriesDataFromArray(bars, zeroLine));
     } else {
@@ -5834,7 +7797,71 @@ function updateIndicatorsOnChart() {
         setTrendiloPanelVisibility(false);
     }
 
-    applyTrendiloBarColoring(bars, pack.trendiloDir);
+    if (indicatorSelection.trendiloLsma) {
+        ensureIndicatorSeries('trendiloLsma', { color: '#ffff00', lineWidth: 2 });
+        const combineArr = pack.trendiloLsmaCombine || [];
+        const dirArr = pack.trendiloLsmaDir || [];
+        const lsmaData = [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(combineArr[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            lsmaData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#00ff0a' : (d < 0 ? '#fe1807' : '#ffff00'),
+            });
+        }
+        indicatorSeries.trendiloLsma?.setData(lsmaData);
+    } else {
+        removeIndicatorSeries('trendiloLsma');
+    }
+
+    if (indicatorSelection.alphaWave) {
+        ensureIndicatorSeries('alphaWave', { color: '#9ca3af', lineWidth: 2 });
+        const baselineArr = pack.alphaWaveBaseline || [];
+        const dirArr = pack.alphaWaveDir || [];
+        const alphaData = [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(baselineArr[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            alphaData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#01ffa7' : (d < 0 ? '#fb0bff' : '#9e9e9e'),
+            });
+        }
+        indicatorSeries.alphaWave?.setData(alphaData);
+    } else {
+        removeIndicatorSeries('alphaWave');
+    }
+
+    if (indicatorSelection.orbSignal) {
+        ensureIndicatorSeries('orbSignal', { color: '#9ca3af', lineWidth: 2 });
+        const signalArr = pack.orbSignal || [];
+        const dirArr = pack.orbDir || [];
+        const orbData = [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(signalArr[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            orbData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
+            });
+        }
+        indicatorSeries.orbSignal?.setData(orbData);
+    } else {
+        removeIndicatorSeries('orbSignal');
+    }
+
+    const barDir = useAdvancedTrendilo ? pack.advancedTrendiloDir : pack.trendiloDir;
+    applyTrendiloBarColoring(bars, barDir);
     goldenCrossMarkers = computeGoldenCrossMarkers(bars, pack.sma50, pack.sma200);
     syncCandleMarkers();
 }
@@ -5848,13 +7875,17 @@ function readIndicatorSelectionFromUI() {
         stoch: read('ind-stoch'),
         bollinger: read('ind-bollinger'),
         trendilo: read('ind-trendilo'),
+        advancedTrendilo: read('ind-advanced-trendilo'),
+        trendiloLsma: read('ind-trendilo-lsma'),
+        alphaWave: read('ind-alpha-wave'),
+        orbSignal: read('ind-orb-signal'),
         trendiloBarColor: read('ind-trendilo-barcolor'),
         goldenCross: read('ind-golden-cross'),
     };
 }
 
 function resetIndicatorSelectionUI() {
-    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-trendilo-barcolor', 'ind-golden-cross'];
+    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'];
     for (const id of ids) {
         const el = document.getElementById(id);
         if (el) el.checked = false;
@@ -6329,6 +8360,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tickMs = getTickMsForSpeed(playSpeed);
     setTransportMode('IDLE');
     updateSessionIdStat();
+    renderSymbolEconomicsHint(null);
     updateSpeedButtons();
     updatePerfStats();
     initChart();
@@ -6501,6 +8533,20 @@ function initChart() {
         scaleMargins: { top: 0.85, bottom: 0 },
     });
 
+    // Track user scroll: detect when user scrolls away from realtime
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        if (trendiloPanelSyncingRange) return; // ignore sync-caused changes
+        try {
+            const range = chart.timeScale().getVisibleLogicalRange();
+            if (range && candleSeries) {
+                const barCount = allBars.length || 0;
+                // If the right edge of visible range is near the last bar, user is at realtime
+                const atRealtime = range.to >= barCount - 3;
+                userHasScrolledAway = !atRealtime;
+            }
+        } catch (_) { /* ignore */ }
+    });
+
     const resizeObserver = new ResizeObserver(entries => {
         for (const entry of entries) {
             chart.applyOptions({
@@ -6606,6 +8652,8 @@ function bindEvents() {
             sessionCreateNewRequested = true;
             clearPersistedSessionId();
             renderSessionSelector();
+            sessionSymbolEconomics = null;
+            renderSymbolEconomicsHint(null);
             showStatus('New session mode selected. Starting replay/live will create a fresh session.', 'info');
             return;
         }
@@ -6623,6 +8671,137 @@ function bindEvents() {
     document.getElementById('btn-load-trendilo-opps-cache')?.addEventListener('click', () => {
         loadTrendiloOpportunityScreenerCache();
     });
+    document.getElementById('trendilo-opp-body')?.addEventListener('click', (e) => {
+        const target = e?.target?.closest?.('[data-auto-action]');
+        if (!target) return;
+        const action = String(target.getAttribute('data-auto-action') || '').trim().toLowerCase();
+        if (action === 'start-row') {
+            const symbol = String(target.getAttribute('data-auto-symbol') || '').trim().toUpperCase();
+            const strategy = String(target.getAttribute('data-auto-strategy') || '').trim().toLowerCase();
+            const rowIdx = Number(target.getAttribute('data-auto-row') || -1);
+            const riskEl = Number.isFinite(rowIdx) && rowIdx >= 0 ? document.getElementById(`auto-risk-${rowIdx}`) : null;
+            const rrEl = Number.isFinite(rowIdx) && rowIdx >= 0 ? document.getElementById(`auto-rr-${rowIdx}`) : null;
+            const riskPercent = Number.isFinite(Number(riskEl?.value)) ? Number(riskEl.value) : undefined;
+            const rrTarget = Number.isFinite(Number(rrEl?.value)) ? Number(rrEl.value) : undefined;
+            const rows = Array.isArray(lastStrategyOpportunityScanData?.opportunities) ? lastStrategyOpportunityScanData.opportunities : [];
+            const row = rows.find((r) => String(r?.symbol || '').trim().toUpperCase() === symbol && String(r?.strategy || '').trim().toLowerCase() === strategy);
+            if (!row) {
+                showStatus('Automation start failed: screener row not found.', 'warning');
+                return;
+            }
+            target.setAttribute('disabled', 'disabled');
+            void startStrategyAutomationFromOpportunityRow(row, { riskPercent, rrTarget }).finally(() => {
+                target.removeAttribute('disabled');
+            });
+            return;
+        }
+        if (action === 'stop-row' || action === 'stop-job') {
+            const parentSessionId = Number(target.getAttribute('data-auto-parent') || 0);
+            const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
+            const jobId = String(target.getAttribute('data-auto-job') || '').trim();
+            void stopStrategyAutomationJob({ parentSessionId, childSessionId, jobId });
+        }
+    });
+    document.getElementById('trendilo-auto-body')?.addEventListener('click', (e) => {
+        const target = e?.target?.closest?.('[data-auto-action]');
+        if (!target) return;
+        const action = String(target.getAttribute('data-auto-action') || '').trim().toLowerCase();
+        if (action !== 'stop-job') return;
+        const parentSessionId = Number(target.getAttribute('data-auto-parent') || 0);
+        const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
+        const jobId = String(target.getAttribute('data-auto-job') || '').trim();
+        void stopStrategyAutomationJob({ parentSessionId, childSessionId, jobId });
+    });
+    document.getElementById('auto-monitor-body')?.addEventListener('click', (e) => {
+        const target = e?.target?.closest?.('[data-auto-action]');
+        if (!target) {
+            const rowEl = e?.target?.closest?.('tr[data-auto-row]');
+            if (!rowEl) return;
+            const rowJobId = String(rowEl.getAttribute('data-auto-row') || '').trim();
+            if (!rowJobId) return;
+            if (automationMonitorExpandedJobs.has(rowJobId)) automationMonitorExpandedJobs.delete(rowJobId);
+            else automationMonitorExpandedJobs.add(rowJobId);
+            _renderAutomationMonitorRows(strategyAutomationJobs);
+            return;
+        }
+        const action = String(target.getAttribute('data-auto-action') || '').trim().toLowerCase();
+        if (action === 'stop-job') {
+            const parentSessionId = Number(target.getAttribute('data-auto-parent') || 0);
+            const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
+            const jobId = String(target.getAttribute('data-auto-job') || '').trim();
+            void stopStrategyAutomationJob({ parentSessionId, childSessionId, jobId });
+            return;
+        }
+        if (action === 'toggle-job-trades') {
+            const jobId = String(target.getAttribute('data-auto-job') || '').trim();
+            if (!jobId) return;
+            if (automationMonitorExpandedJobs.has(jobId)) automationMonitorExpandedJobs.delete(jobId);
+            else automationMonitorExpandedJobs.add(jobId);
+            _renderAutomationMonitorRows(strategyAutomationJobs);
+            return;
+        }
+        if (action === 'close-open-trade') {
+            const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
+            const tradeId = Number(target.getAttribute('data-auto-trade') || 0);
+            if (!(childSessionId > 0) || !(tradeId > 0)) return;
+            target.setAttribute('disabled', 'disabled');
+            void closeAutomationOpenTrade({ childSessionId, tradeId }).finally(() => {
+                target.removeAttribute('disabled');
+            });
+            return;
+        }
+        if (action === 'open-job-chart') {
+            const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
+            const parentSessionId = Number(target.getAttribute('data-auto-parent') || 0);
+            const jobId = String(target.getAttribute('data-auto-job') || '').trim();
+            const strategy = String(target.getAttribute('data-auto-strategy') || '').trim().toLowerCase();
+            const symbol = String(target.getAttribute('data-auto-symbol') || '').trim().toUpperCase();
+            const timeframe = normalizeTimeframeLabel(target.getAttribute('data-auto-timeframe') || 'M15', 'M15');
+            const source = String(target.getAttribute('data-auto-source') || 'mt5').trim().toLowerCase() || 'mt5';
+            const fromCache = strategyAutomationJobs.find((j) => (
+                (jobId && String(j?.job_id || '') === jobId)
+                || (childSessionId > 0 && Number(j?.child_session_id || 0) === childSessionId)
+            ));
+            const job = {
+                ...(fromCache && typeof fromCache === 'object' ? fromCache : {}),
+                job_id: jobId || String(fromCache?.job_id || ''),
+                parent_session_id: parentSessionId || Number(fromCache?.parent_session_id || 0),
+                child_session_id: childSessionId || Number(fromCache?.child_session_id || 0),
+                symbol: symbol || String(fromCache?.symbol || ''),
+                strategy: strategy || String(fromCache?.strategy || ''),
+                timeframe: timeframe || String(fromCache?.timeframe || 'M15'),
+                source: source || String(fromCache?.source || 'mt5'),
+            };
+            void openAutomationChartModal(job, { showModal: true });
+            const modalEl = document.getElementById('automationMonitorModal');
+            if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+                const modal = window.bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
+            }
+            showStatus(`Opened automation chart: ${job.symbol} ${job.timeframe} ${job.strategy}`, 'info');
+        }
+    });
+    document.getElementById('btn-refresh-auto-monitor')?.addEventListener('click', () => {
+        void refreshAutomationMonitorModal(true);
+    });
+    document.getElementById('auto-monitor-sort')?.addEventListener('change', () => {
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+    });
+    document.getElementById('auto-monitor-running-only')?.addEventListener('change', () => {
+        _renderAutomationMonitorRows(strategyAutomationJobs);
+    });
+    const executionBadgeEl = document.getElementById('stat-execution');
+    if (executionBadgeEl) {
+        executionBadgeEl.addEventListener('click', () => {
+            openAgentSafetyFromExecutionBadge();
+        });
+        executionBadgeEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openAgentSafetyFromExecutionBadge();
+            }
+        });
+    }
     document.getElementById('trendiloOppModal')?.addEventListener('show.bs.modal', () => {
         const strategyEl = document.getElementById('trendilo-opp-strategy');
         const profile = String(document.getElementById('agent-strategy-profile')?.value || '').trim().toLowerCase();
@@ -6631,6 +8810,9 @@ function bindEvents() {
             htf_fvg_liquidity_reclaim_v2: 'htf_reclaim',
             orb_ny_15m_imbalance: 'orb',
             trendilo_confirmation_v1: 'trendilo',
+            advanced_trendilo_confirmation_v1: 'advanced_trendilo',
+            trendilo_lsma_confirmation_v1: 'trendilo_lsma',
+            alpha_wave_confirmation_v1: 'alpha_wave',
         };
         const mappedStrategy = String(profileToStrategy[profile] || '');
         if (strategyEl && mappedStrategy && Array.from(strategyEl.options || []).some((o) => String(o.value || '').toLowerCase() === mappedStrategy)) {
@@ -6641,7 +8823,75 @@ function bindEvents() {
         if (tfEl && Array.from(tfEl.options || []).some((o) => String(o.value || '').toUpperCase() === tfMain)) {
             tfEl.value = tfMain;
         }
+        const execTfEl = document.getElementById('trendilo-opp-exec-timeframe');
+        if (execTfEl) execTfEl.value = 'AUTO';
         loadTrendiloOpportunityScreenerCache();
+        void loadStrategyAutomationJobs(false);
+    });
+    document.getElementById('automationMonitorModal')?.addEventListener('show.bs.modal', () => {
+        void refreshAutomationMonitorModal(false);
+    });
+    document.getElementById('automationChartModal')?.addEventListener('shown.bs.modal', () => {
+        const mainEl = document.getElementById('automation-chart-main');
+        if (automationChartMain && mainEl) {
+            automationChartMain.applyOptions({
+                width: Math.max(320, mainEl.clientWidth || 320),
+                height: Math.max(240, mainEl.clientHeight || 240),
+            });
+            try { automationChartMain.timeScale().fitContent(); } catch (_) {}
+        }
+        const panelEl = document.getElementById('automation-chart-panel');
+        if (automationChartPanel && panelEl && !panelEl.classList.contains('d-none')) {
+            automationChartPanel.applyOptions({
+                width: Math.max(320, panelEl.clientWidth || 320),
+                height: Math.max(120, panelEl.clientHeight || 120),
+            });
+            try { automationChartPanel.timeScale().fitContent(); } catch (_) {}
+        }
+    });
+    document.getElementById('btn-refresh-automation-chart')?.addEventListener('click', () => {
+        if (!automationChartJobContext) {
+            _automationChartSetStatus('No automation job selected yet.', 'warning');
+            return;
+        }
+        void openAutomationChartModal(automationChartJobContext, { showModal: false });
+    });
+    document.getElementById('automationStarterModal')?.addEventListener('show.bs.modal', () => {
+        const strategyEl = document.getElementById('auto-start-strategy');
+        const symbolEl = document.getElementById('auto-start-symbol');
+        const tfEl = document.getElementById('auto-start-timeframe');
+        const sourceEl = document.getElementById('auto-start-source');
+        const searchEl = document.getElementById('auto-start-symbol-search');
+        const statusEl = document.getElementById('auto-start-status');
+        const profile = String(document.getElementById('agent-strategy-profile')?.value || '').trim().toLowerCase();
+        const profileToStrategy = {
+            trendilo_confirmation_v1: 'trendilo',
+            advanced_trendilo_confirmation_v1: 'advanced_trendilo',
+            trendilo_lsma_confirmation_v1: 'trendilo_lsma',
+            alpha_wave_confirmation_v1: 'alpha_wave',
+        };
+        const mapped = String(profileToStrategy[profile] || 'trendilo');
+        if (strategyEl && Array.from(strategyEl.options || []).some((o) => String(o.value || '').toLowerCase() === mapped)) {
+            strategyEl.value = mapped;
+        }
+        applyBrokerSymbolsToAutomationUI(brokerSymbolCatalog);
+        if (searchEl) searchEl.value = '';
+        const mainSymbol = String(document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+        if (symbolEl && mainSymbol) {
+            const hasOption = Array.from(symbolEl.options || []).some((o) => String(o.value || '').trim().toUpperCase() === mainSymbol);
+            if (hasOption) {
+                symbolEl.value = mainSymbol;
+            }
+        }
+        const tfMain = normalizeTimeframeLabel(document.getElementById('sim-timeframe')?.value || 'M15', 'M15');
+        if (tfEl && Array.from(tfEl.options || []).some((o) => String(o.value || '').toUpperCase() === tfMain)) {
+            tfEl.value = tfMain;
+        }
+        if (sourceEl) sourceEl.value = String(document.getElementById('live-source')?.value || 'mt5').toLowerCase();
+        if (statusEl) statusEl.textContent = 'Ready.';
+    });
+    document.getElementById('btn-start-auto-manual')?.addEventListener('click', () => {
+        void startStrategyAutomationFromManualModal();
     });
     document.getElementById('sim-symbol-search')?.addEventListener('input', () => {
         applySymbolSearchFilter();
@@ -6661,6 +8911,28 @@ function bindEvents() {
         searchEl.value = '';
         applySymbolSearchFilter();
         searchEl.focus();
+    });
+    document.getElementById('auto-start-symbol-search')?.addEventListener('input', () => {
+        applyAutomationSymbolSearchFilter();
+    });
+    document.getElementById('auto-start-symbol-search')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const searchEl = document.getElementById('auto-start-symbol-search');
+            if (searchEl) {
+                searchEl.value = '';
+                applyAutomationSymbolSearchFilter();
+            }
+        }
+    });
+    document.getElementById('btn-clear-auto-start-symbol-search')?.addEventListener('click', () => {
+        const searchEl = document.getElementById('auto-start-symbol-search');
+        if (!searchEl) return;
+        searchEl.value = '';
+        applyAutomationSymbolSearchFilter();
+        searchEl.focus();
+    });
+    document.getElementById('btn-refresh-auto-start-symbols')?.addEventListener('click', () => {
+        void refreshBrokerSymbols(true);
     });
     document.getElementById('sim-symbol')?.addEventListener('change', () => {
         updateCostModelHint();
@@ -6854,6 +9126,7 @@ function bindEvents() {
     syncAgentGuardrailControls();
     syncAgentNewsProviderControls();
     syncAgentStrategyControls();
+    renderSessionLiveControlUI(sessionLiveControlState || { execution_mode: 'paper' }, sessionLiveAccountState);
     setAgentToolModeBadge(document.getElementById('agent-strategy-tool-access')?.value || 'all');
     toggleAgentIdentityFields(false);
     toggleAgentMemoryFields(false);
@@ -6862,6 +9135,27 @@ function bindEvents() {
     });
     document.getElementById('agent-guardrail-news-filter')?.addEventListener('change', () => {
         syncAgentGuardrailControls();
+    });
+    document.getElementById('agent-guardrail-max-risk-per-trade')?.addEventListener('change', () => {
+        syncAgentGuardrailControls();
+    });
+    document.getElementById('agent-live-execution-mode')?.addEventListener('change', () => {
+        const modeEl = document.getElementById('agent-live-execution-mode');
+        const selected = String(modeEl?.value || 'paper').trim().toLowerCase() === 'live_mt5' ? 'live_mt5' : 'paper';
+        const nextCfg = {
+            ...(sessionLiveControlState || _normalizeSessionLiveControl({ execution_mode: 'paper' })),
+            execution_mode: selected,
+        };
+        renderSessionLiveControlUI(nextCfg, sessionLiveAccountState);
+    });
+    document.getElementById('btn-agent-live-apply')?.addEventListener('click', () => {
+        void applySessionLiveControlFromUI();
+    });
+    document.getElementById('btn-agent-live-mode-paper')?.addEventListener('click', () => {
+        void applySessionLiveControlFromUI({ forceMode: 'paper' });
+    });
+    document.getElementById('btn-agent-live-mode-live')?.addEventListener('click', () => {
+        void applySessionLiveControlFromUI({ forceMode: 'live_mt5' });
     });
     document.getElementById('agent-news-provider')?.addEventListener('change', () => {
         syncAgentNewsProviderControls();
@@ -6875,7 +9169,7 @@ function bindEvents() {
     document.getElementById('agent-strategy-profile')?.addEventListener('change', () => {
         syncAgentStrategyControls();
     });
-    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
+    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
             readIndicatorSelectionFromUI();
             updateIndicatorsOnChart();
@@ -7433,6 +9727,7 @@ async function startLiveFeed(isReconnect = false) {
                     allBars = bars.slice();
                     currentBar = Math.max(0, allBars.length - 1);
                     totalBars = allBars.length;
+                    userHasScrolledAway = false;
                     candleSeries.setData(allBars);
                     volumeSeries.setData(allBars.map(b => ({
                         time: b.time,
@@ -7460,7 +9755,9 @@ async function startLiveFeed(isReconnect = false) {
                     }
                     updateIndicatorsOnChart();
                     updateBarCounter();
-                    try { chart?.timeScale()?.scrollToRealTime(); } catch (_) { /* ignore */ }
+                    if (!userHasScrolledAway) {
+                        try { chart?.timeScale()?.scrollToRealTime(); } catch (_) { /* ignore */ }
+                    }
                     void maybePushLiveAgentTick(false);
                     return;
                 }
@@ -7524,6 +9821,8 @@ async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
             const existingRes = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}`);
             const existing = await existingRes.json().catch(() => ({}));
             if (existingRes.ok && existing?.id && String(existing.strategy_id || '') === STRATEGY_ID) {
+                setSessionLiveExecutionModeFromLiveControl(existing?.live_control || null, existing?.live_account || null);
+                renderSymbolEconomicsHint(existing?.symbol_economics || null);
                 const sameSymbol = String(existing.symbol || '').toUpperCase() === String(symbol || '').toUpperCase();
                 const sameTimeframe = String(existing.timeframe || '').toUpperCase() === String(timeframe || '').toUpperCase();
                 applyCostModelToUI(existing?.cost_model || null);
@@ -7565,6 +9864,7 @@ async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
                         enabled: true,
                         source: String(source || 'mt5').toLowerCase(),
                         backend_native: String(source || 'mt5').toLowerCase() === 'mt5',
+                        execution_mode: 'paper',
                     },
                 },
             }),
@@ -7575,6 +9875,8 @@ async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
             return false;
         }
         sessionId = data.id;
+        setSessionLiveExecutionModeFromLiveControl({ execution_mode: 'paper' });
+        renderSymbolEconomicsHint(data?.symbol_economics || null);
         sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
@@ -7654,6 +9956,7 @@ async function startSession() {
         if (data.error) { showStatus(`Error: ${data.error}`, 'danger'); return; }
 
         sessionId = data.id;
+        renderSymbolEconomicsHint(data?.symbol_economics || null);
         sessionCreateNewRequested = false;
         persistSessionId(sessionId);
         updateSessionIdStat();
@@ -7943,7 +10246,40 @@ function applyAdvancePayload(data) {
     }
 
     if (Array.isArray(data.bars) && data.bars.length > 0) {
-        for (const bar of data.bars) {
+        const guardOutliers = getWorkbenchMode() === 'live';
+        let prevBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+        for (const rawBar of data.bars) {
+            const bt = Number(rawBar?.time);
+            const bo = Number(rawBar?.open);
+            const bh = Number(rawBar?.high);
+            const bl = Number(rawBar?.low);
+            const bc = Number(rawBar?.close);
+            const bv = Number(rawBar?.volume || 0);
+            if (!Number.isFinite(bt) || bt <= 0) continue;
+            if (!Number.isFinite(bo) || !Number.isFinite(bh) || !Number.isFinite(bl) || !Number.isFinite(bc)) continue;
+            if (bo <= 0 || bh <= 0 || bl <= 0 || bc <= 0) continue;
+            const hi = Math.max(bh, bo, bc);
+            const lo = Math.min(bl, bo, bc);
+            if (!(hi >= lo)) continue;
+            if (
+                guardOutliers
+                && prevBar
+                && Number.isFinite(Number(prevBar?.close))
+                && Number(prevBar.close) > 0
+            ) {
+                const ratio = bc / Number(prevBar.close);
+                if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 5.0 || ratio < 0.2) {
+                    continue;
+                }
+            }
+            const bar = {
+                time: bt,
+                open: bo,
+                high: hi,
+                low: lo,
+                close: bc,
+                volume: Number.isFinite(bv) && bv > 0 ? bv : 0,
+            };
             allBars.push(bar);
             candleSeries.update(bar);
             volumeSeries.update({
@@ -7951,6 +10287,7 @@ function applyAdvancePayload(data) {
                 value: bar.volume || 0,
                 color: bar.close >= bar.open ? '#26a69a44' : '#ef535044',
             });
+            prevBar = bar;
         }
     }
 
@@ -8013,6 +10350,7 @@ async function executeTrade(direction) {
             body.entry_price = Number(lastBar.close);
             body.bar_time_unix = Number(lastBar.time || 0);
         }
+        applyLiveConfirmationToPayload(body);
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/trade`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -8062,6 +10400,7 @@ async function closePosition() {
                 bar_time_unix: Number(lastBar.time || 0),
             };
         }
+        applyLiveConfirmationToPayload(requestBody, { force: true });
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-trade/${tradeId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -8505,26 +10844,209 @@ function showStatus(msg, type) {
     setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 5000);
 }
 
-async function setSessionLiveControl(enabled, source = 'mt5') {
+function _normalizeSessionLiveControl(liveControlLike) {
+    const raw = (liveControlLike && typeof liveControlLike === 'object') ? liveControlLike : {};
+    const sourceRaw = String(raw.source || 'mt5').trim().toLowerCase();
+    const source = (sourceRaw === 'databento') ? 'databento' : 'mt5';
+    const modeRaw = String(raw.execution_mode || 'paper').trim().toLowerCase();
+    const executionMode = modeRaw === 'live_mt5' ? 'live_mt5' : 'paper';
+    const maxRiskRaw = Number(raw.max_risk_per_trade_usd);
+    const maxLotRaw = Number(raw.max_lot_per_trade);
+    const dailyLossRaw = (raw.daily_loss_limit_usd === null || raw.daily_loss_limit_usd === undefined || raw.daily_loss_limit_usd === '')
+        ? null
+        : Number(raw.daily_loss_limit_usd);
+    return {
+        enabled: Boolean(raw.enabled ?? true),
+        source,
+        backend_native: Boolean(raw.backend_native ?? (source === 'mt5')),
+        use_active_account: Boolean(raw.use_active_account ?? (source === 'mt5')),
+        execution_mode: executionMode,
+        kill_switch_enabled: Boolean(raw.kill_switch_enabled ?? false),
+        max_risk_per_trade_usd: Number.isFinite(maxRiskRaw) ? Math.max(0, Math.min(1_000_000_000, maxRiskRaw)) : 25.0,
+        max_lot_per_trade: Number.isFinite(maxLotRaw) ? Math.max(0, Math.min(100, maxLotRaw)) : 5.0,
+        daily_loss_limit_usd: Number.isFinite(dailyLossRaw) ? Math.max(0, Math.min(1_000_000_000, dailyLossRaw)) : null,
+        require_confirmation_for_live_order: Boolean(raw.require_confirmation_for_live_order ?? true),
+    };
+}
+
+function syncSessionLiveControlInputs() {
+    const modeEl = document.getElementById('agent-live-execution-mode');
+    const killEl = document.getElementById('agent-live-kill-switch');
+    const confirmEl = document.getElementById('agent-live-require-confirmation');
+    const mode = String(modeEl?.value || 'paper').trim().toLowerCase();
+    const isLive = mode === 'live_mt5';
+    if (killEl) killEl.disabled = !isLive;
+    if (confirmEl) confirmEl.disabled = !isLive;
+}
+
+function renderSessionLiveControlUI(liveControlLike = null, liveAccountLike = null) {
+    if (liveControlLike && typeof liveControlLike === 'object') {
+        sessionLiveControlState = _normalizeSessionLiveControl(liveControlLike);
+    } else if (!sessionLiveControlState) {
+        sessionLiveControlState = _normalizeSessionLiveControl({ execution_mode: 'paper' });
+    }
+    if (liveAccountLike && typeof liveAccountLike === 'object') {
+        sessionLiveAccountState = { ...liveAccountLike };
+    }
+    const cfg = sessionLiveControlState || _normalizeSessionLiveControl({ execution_mode: 'paper' });
+    const modeEl = document.getElementById('agent-live-execution-mode');
+    const killEl = document.getElementById('agent-live-kill-switch');
+    const riskEl = document.getElementById('agent-live-max-risk-per-trade');
+    const lotEl = document.getElementById('agent-live-max-lot-per-trade');
+    const dailyEl = document.getElementById('agent-live-daily-loss-limit');
+    const confirmEl = document.getElementById('agent-live-require-confirmation');
+    if (modeEl) modeEl.value = String(cfg.execution_mode || 'paper');
+    if (killEl) killEl.checked = Boolean(cfg.kill_switch_enabled);
+    if (riskEl) riskEl.value = String(Number(cfg.max_risk_per_trade_usd || 0));
+    if (lotEl) lotEl.value = String(Number(cfg.max_lot_per_trade || 0));
+    if (dailyEl) dailyEl.value = (cfg.daily_loss_limit_usd === null || cfg.daily_loss_limit_usd === undefined) ? '' : String(Number(cfg.daily_loss_limit_usd));
+    if (confirmEl) confirmEl.checked = Boolean(cfg.require_confirmation_for_live_order);
+    syncSessionLiveControlInputs();
+
+    const statusEl = document.getElementById('agent-live-control-status');
+    if (statusEl) {
+        const isLive = String(cfg.execution_mode || 'paper') === 'live_mt5';
+        const accountLogin = sessionLiveAccountState && sessionLiveAccountState.login !== undefined ? String(sessionLiveAccountState.login) : '';
+        const accountBalanceRaw = sessionLiveAccountState ? Number(sessionLiveAccountState.balance) : NaN;
+        const accountBalance = Number.isFinite(accountBalanceRaw) ? accountBalanceRaw : null;
+        const dailyLossTxt = cfg.daily_loss_limit_usd === null ? 'disabled' : `$${Number(cfg.daily_loss_limit_usd).toFixed(2)}`;
+        if (!isLive) {
+            statusEl.style.color = '#93c5fd';
+            statusEl.textContent = `Execution: PAPER | Source: ${String(cfg.source || 'mt5').toUpperCase()} | Live safety stored (risk cap $${Number(cfg.max_risk_per_trade_usd).toFixed(2)}, lot cap ${Number(cfg.max_lot_per_trade).toFixed(2)}).`;
+        } else if (cfg.kill_switch_enabled) {
+            statusEl.style.color = '#fca5a5';
+            statusEl.textContent = `Execution: LIVE MT5 (KILL SWITCH ON) | Caps: risk $${Number(cfg.max_risk_per_trade_usd).toFixed(2)}, lot ${Number(cfg.max_lot_per_trade).toFixed(2)}, daily loss ${dailyLossTxt} | confirm=${cfg.require_confirmation_for_live_order ? 'required' : 'off'}`;
+        } else {
+            statusEl.style.color = '#86efac';
+            statusEl.textContent = `Execution: LIVE MT5 armed | Caps: risk $${Number(cfg.max_risk_per_trade_usd).toFixed(2)}, lot ${Number(cfg.max_lot_per_trade).toFixed(2)}, daily loss ${dailyLossTxt} | confirm=${cfg.require_confirmation_for_live_order ? 'required' : 'off'}${accountLogin ? ` | account #${accountLogin}${accountBalance !== null ? ` bal $${accountBalance.toFixed(2)}` : ''}` : ''}`;
+        }
+    }
+    renderExecutionModeBadge();
+}
+
+function setSessionLiveExecutionModeFromLiveControl(liveControlLike, liveAccountLike = null) {
+    const normalized = _normalizeSessionLiveControl(liveControlLike);
+    sessionLiveExecutionMode = String(normalized.execution_mode || 'paper');
+    sessionLiveControlState = normalized;
+    renderSessionLiveControlUI(normalized, liveAccountLike);
+}
+
+function isSessionLiveMt5Execution() {
+    return String(sessionLiveExecutionMode || '').toLowerCase() === 'live_mt5';
+}
+
+function applyLiveConfirmationToPayload(payloadLike, opts = {}) {
+    const payload = (payloadLike && typeof payloadLike === 'object') ? payloadLike : {};
+    const force = !!opts.force;
+    if (!force && !isSessionLiveMt5Execution()) return payload;
+    payload.confirm_live_order = true;
+    payload.live_confirmation_phrase = LIVE_CONFIRMATION_PHRASE;
+    return payload;
+}
+
+async function setSessionLiveControl(enabled, source = 'mt5', overrides = null) {
     if (!sessionId) return { ok: false, error: 'No active session' };
     try {
+        const payload = {
+            enabled: !!enabled,
+            source: String(source || 'mt5').toLowerCase(),
+            backend_native: String(source || 'mt5').toLowerCase() === 'mt5' && !!enabled,
+        };
+        if (overrides && typeof overrides === 'object') {
+            if (overrides.source !== undefined) payload.source = String(overrides.source || payload.source).toLowerCase();
+            if (overrides.backend_native !== undefined) payload.backend_native = Boolean(overrides.backend_native);
+            if (overrides.use_active_account !== undefined) payload.use_active_account = Boolean(overrides.use_active_account);
+            if (overrides.execution_mode !== undefined) payload.execution_mode = String(overrides.execution_mode || '').trim().toLowerCase();
+            if (overrides.kill_switch_enabled !== undefined) payload.kill_switch_enabled = Boolean(overrides.kill_switch_enabled);
+            if (overrides.max_risk_per_trade_usd !== undefined) payload.max_risk_per_trade_usd = Number(overrides.max_risk_per_trade_usd);
+            if (overrides.max_lot_per_trade !== undefined) payload.max_lot_per_trade = Number(overrides.max_lot_per_trade);
+            if (overrides.daily_loss_limit_usd !== undefined) payload.daily_loss_limit_usd = overrides.daily_loss_limit_usd;
+            if (overrides.require_confirmation_for_live_order !== undefined) {
+                payload.require_confirmation_for_live_order = Boolean(overrides.require_confirmation_for_live_order);
+            }
+        }
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/live-control`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                enabled: !!enabled,
-                source: String(source || 'mt5').toLowerCase(),
-                backend_native: String(source || 'mt5').toLowerCase() === 'mt5' && !!enabled,
-            }),
+            body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.ok === false) {
             return { ok: false, error: String(data?.detail || data?.error || `HTTP ${res.status}`) };
         }
+        setSessionLiveExecutionModeFromLiveControl(data?.live_control || null, data?.live_account || null);
+        renderSymbolEconomicsHint(data?.symbol_economics || null);
+        const initBal = Number(data?.initial_balance);
+        const curBal = Number(data?.current_balance);
+        if (Number.isFinite(initBal)) {
+            initialBalance = initBal;
+            const balEl = document.getElementById('sim-balance');
+            if (balEl) balEl.value = String(initBal);
+        }
+        if (Number.isFinite(curBal)) {
+            updateStats({ balance: curBal, current_balance: curBal });
+        }
         return { ok: true, data };
     } catch (err) {
         return { ok: false, error: String(err?.message || err || 'live control update failed') };
     }
+}
+
+function _collectLiveControlOverridesFromUI() {
+    const modeEl = document.getElementById('agent-live-execution-mode');
+    const killEl = document.getElementById('agent-live-kill-switch');
+    const riskEl = document.getElementById('agent-live-max-risk-per-trade');
+    const lotEl = document.getElementById('agent-live-max-lot-per-trade');
+    const dailyEl = document.getElementById('agent-live-daily-loss-limit');
+    const confirmEl = document.getElementById('agent-live-require-confirmation');
+    const executionMode = String(modeEl?.value || 'paper').trim().toLowerCase() === 'live_mt5' ? 'live_mt5' : 'paper';
+    const baseCfg = _normalizeSessionLiveControl(sessionLiveControlState || { execution_mode: executionMode });
+    const maxRiskRaw = _parseUiDecimal(riskEl?.value, Number(baseCfg.max_risk_per_trade_usd || 0));
+    const maxLotRaw = _parseUiDecimal(lotEl?.value, Number(baseCfg.max_lot_per_trade || 0));
+    const dailyRawText = String(dailyEl?.value || '').trim();
+    const dailyRaw = dailyRawText === ''
+        ? null
+        : _parseUiDecimal(dailyRawText, baseCfg.daily_loss_limit_usd === null ? null : Number(baseCfg.daily_loss_limit_usd));
+    const maxRisk = Number.isFinite(maxRiskRaw) ? Math.max(0, Math.min(1_000_000_000, maxRiskRaw)) : Number(baseCfg.max_risk_per_trade_usd || 0);
+    const maxLot = Number.isFinite(maxLotRaw) ? Math.max(0, Math.min(100, maxLotRaw)) : Number(baseCfg.max_lot_per_trade || 0);
+    const dailyLoss = (dailyRaw === null || !Number.isFinite(dailyRaw))
+        ? null
+        : Math.max(0, Math.min(1_000_000_000, dailyRaw));
+    const sourceFromUI = getSelectedLiveSource();
+    const source = executionMode === 'live_mt5' ? 'mt5' : sourceFromUI;
+    return {
+        source,
+        execution_mode: executionMode,
+        use_active_account: source === 'mt5',
+        backend_native: source === 'mt5',
+        kill_switch_enabled: Boolean(killEl?.checked),
+        max_risk_per_trade_usd: maxRisk,
+        max_lot_per_trade: maxLot,
+        daily_loss_limit_usd: dailyLoss,
+        require_confirmation_for_live_order: Boolean(confirmEl?.checked),
+    };
+}
+
+async function applySessionLiveControlFromUI(opts = {}) {
+    if (!sessionId) {
+        showStatus('Start or select a session first.', 'warning');
+        return;
+    }
+    const forceMode = String(opts?.forceMode || '').trim().toLowerCase();
+    const modeEl = document.getElementById('agent-live-execution-mode');
+    if (modeEl && (forceMode === 'paper' || forceMode === 'live_mt5')) {
+        modeEl.value = forceMode;
+    }
+    syncSessionLiveControlInputs();
+    const overrides = _collectLiveControlOverridesFromUI();
+    const enabled = true;
+    const res = await setSessionLiveControl(enabled, String(overrides.source || 'mt5'), overrides);
+    if (!res?.ok) {
+        showStatus(`Execution settings apply failed: ${res?.error || 'unknown error'}`, 'danger');
+        return;
+    }
+    const modeTxt = String(overrides.execution_mode || 'paper').toUpperCase();
+    showStatus(`Execution settings applied (${modeTxt})`, 'success');
 }
 
 async function handleAgentToolStateResponse(response, eventType = 'TOOL_SIGNAL_CHANGED') {

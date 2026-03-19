@@ -27,6 +27,7 @@ def _ensure_registered() -> None:
     from .earnings_volatility_strategy import EarningsVolatilityStrategy
     from .b_profile_reversion_strategy import BProfileReversionStrategy
     from .trendilo_strategy import TrendiloStrategy
+    from .advanced_trendilo_strategy import AdvancedTrendiloStrategy
 
     STRATEGY_CLASSES.update(
         {
@@ -53,6 +54,8 @@ def _ensure_registered() -> None:
             "b_profile_reversion_strategy": BProfileReversionStrategy,
             # Trendilo + ADX/DI + T3/ALMA confirmation strategy
             "trendilo_strategy": TrendiloStrategy,
+            # Advanced Trendilo with anti-whipsaw and persistence filters
+            "advanced_trendilo_strategy": AdvancedTrendiloStrategy,
         }
     )
 

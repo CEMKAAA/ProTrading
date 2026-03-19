@@ -157,7 +157,7 @@ def test_stress_backend_mt5_relay_processes_multiple_live_sessions_in_one_pass(m
     monkeypatch.setattr(live_tick_mod, "get_agent_watchdog_service", lambda: watchdog)
     svc = AgentLiveTickService()
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", lambda session: dict(bars[int(session.id)]))
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
 
     db = SessionLocal()
     try:
@@ -210,7 +210,7 @@ def test_stress_backend_mt5_relay_repeated_same_bar_polls_do_not_duplicate_execu
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", lambda _session: dict(live_bar))
 
     for _ in range(3):
-        svc._process_once()
+        svc._process_once(run_watchdog=True, run_automation=False)
 
     db = SessionLocal()
     try:
@@ -280,7 +280,7 @@ def test_stress_backend_mt5_relay_same_bar_burst_updates_complete_reclaim_progre
 
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", _next_bar)
 
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
     db = SessionLocal()
     try:
         agent = (
@@ -296,7 +296,7 @@ def test_stress_backend_mt5_relay_same_bar_burst_updates_complete_reclaim_progre
     finally:
         db.close()
 
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
     db = SessionLocal()
     try:
         agent = (

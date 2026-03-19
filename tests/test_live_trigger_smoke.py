@@ -120,7 +120,7 @@ def test_smoke_backend_mt5_relay_executes_reclaim_trigger_without_browser(monkey
     monkeypatch.setattr(live_tick_mod, "get_agent_watchdog_service", lambda: AgentWatchdogService())
     svc = AgentLiveTickService()
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", lambda _session: dict(live_bar))
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
 
     db = SessionLocal()
     try:
@@ -171,7 +171,7 @@ def test_smoke_backend_mt5_relay_keeps_close_only_trigger_pending_intrabar(monke
     monkeypatch.setattr(live_tick_mod, "get_agent_watchdog_service", lambda: AgentWatchdogService())
     svc = AgentLiveTickService()
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", lambda _session: dict(live_bar))
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
 
     db = SessionLocal()
     try:
@@ -218,7 +218,7 @@ def test_smoke_backend_mt5_relay_preserves_manual_confirmation_gate(monkeypatch)
     monkeypatch.setattr(live_tick_mod, "get_agent_watchdog_service", lambda: AgentWatchdogService())
     svc = AgentLiveTickService()
     monkeypatch.setattr(svc, "_fetch_mt5_live_bar", lambda _session: dict(live_bar))
-    svc._process_once()
+    svc._process_once(run_watchdog=True, run_automation=False)
 
     db = SessionLocal()
     try:

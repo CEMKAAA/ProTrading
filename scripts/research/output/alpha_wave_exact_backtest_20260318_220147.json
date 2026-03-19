@@ -1,0 +1,142 @@
+{
+  "generated_at": "2026-03-18T22:01:16.770451Z",
+  "params": {
+    "baseline_adx_length": 2,
+    "baseline_weight": 10.0,
+    "baseline_ma_length": 6,
+    "use_conf1": true,
+    "conf1_smooth": 21,
+    "conf1_constant": 0.4,
+    "conf1_cross": true,
+    "conf1_inverse": false,
+    "conf1_highlight": true,
+    "use_conf2": true,
+    "conf2_poles": 4,
+    "conf2_period": 144,
+    "conf2_multiplier": 1.414,
+    "conf2_cross": true,
+    "conf2_inverse": false,
+    "conf2_highlight": true,
+    "use_vol": true,
+    "vol_ma_length": 100,
+    "vol_length": 60,
+    "vol_smooth": 3,
+    "vol_threshold": 90,
+    "use_stop": true,
+    "stop_atr_length": 22,
+    "stop_atr_mult": 3.0,
+    "stop_use_wicks": true,
+    "exit_type": "Inversed Channel",
+    "trade_style": "Balanced",
+    "entry_filter": 3,
+    "exit_filter": 2,
+    "require_all_aligned": false
+  },
+  "symbols": {
+    "XAUUSD": {
+      "range_all": [
+        "2024-06-20 13:15:00",
+        "2026-02-06 16:45:00"
+      ],
+      "range_train": [
+        "2024-06-20 13:15:00",
+        "2025-10-15 10:45:00"
+      ],
+      "range_test": [
+        "2025-10-15 11:00:00",
+        "2026-02-06 16:45:00"
+      ],
+      "bars_all": 24000,
+      "bars_train": 16800,
+      "bars_test": 7200,
+      "train": {
+        "trades": 215,
+        "win_rate": 83.25581395348837,
+        "net_return_pct": 32.3876853675181,
+        "max_drawdown_pct": 1.7972972678446604,
+        "profit_factor": 3.8566703288176836,
+        "expectancy_pct": 0.1309529080142741,
+        "trades_per_day": 1.2285714285714286
+      },
+      "test": {
+        "trades": 90,
+        "win_rate": 88.88888888888889,
+        "net_return_pct": 29.460348073531485,
+        "max_drawdown_pct": 2.370613051880735,
+        "profit_factor": 4.541751777124076,
+        "expectancy_pct": 0.2890729625083822,
+        "trades_per_day": 1.2
+      }
+    },
+    "NAS100": {
+      "range_all": [
+        "2025-01-21 00:30:00",
+        "2026-02-13 21:00:00"
+      ],
+      "range_train": [
+        "2025-01-21 00:30:00",
+        "2025-10-20 04:30:00"
+      ],
+      "range_test": [
+        "2025-10-20 04:45:00",
+        "2026-02-13 21:00:00"
+      ],
+      "bars_all": 24000,
+      "bars_train": 16800,
+      "bars_test": 7200,
+      "train": {
+        "trades": 236,
+        "win_rate": 88.13559322033898,
+        "net_return_pct": 55.80315638233972,
+        "max_drawdown_pct": 1.552343867041196,
+        "profit_factor": 7.818741407418154,
+        "expectancy_pct": 0.18865392226212924,
+        "trades_per_day": 1.3485714285714285
+      },
+      "test": {
+        "trades": 83,
+        "win_rate": 83.13253012048193,
+        "net_return_pct": 12.723179679635477,
+        "max_drawdown_pct": 0.7409052182783471,
+        "profit_factor": 5.327500836445269,
+        "expectancy_pct": 0.14469645262666303,
+        "trades_per_day": 1.1066666666666667
+      }
+    },
+    "US500": {
+      "range_all": [
+        "2025-01-17 20:15:00",
+        "2026-02-12 15:45:00"
+      ],
+      "range_train": [
+        "2025-01-17 20:15:00",
+        "2025-10-16 19:15:00"
+      ],
+      "range_test": [
+        "2025-10-16 19:30:00",
+        "2026-02-12 15:45:00"
+      ],
+      "bars_all": 24000,
+      "bars_train": 16800,
+      "bars_test": 7200,
+      "train": {
+        "trades": 222,
+        "win_rate": 82.43243243243244,
+        "net_return_pct": 27.694006689170347,
+        "max_drawdown_pct": 1.6923531971757575,
+        "profit_factor": 3.989141654231966,
+        "expectancy_pct": 0.11052883858360273,
+        "trades_per_day": 1.2685714285714285
+      },
+      "test": {
+        "trades": 96,
+        "win_rate": 84.375,
+        "net_return_pct": 7.447104561459916,
+        "max_drawdown_pct": 1.3999133254628826,
+        "profit_factor": 2.560743802775777,
+        "expectancy_pct": 0.07516543909357956,
+        "trades_per_day": 1.28
+      }
+    }
+  }
+}

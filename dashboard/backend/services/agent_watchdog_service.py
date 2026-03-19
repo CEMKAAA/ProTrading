@@ -834,6 +834,7 @@ class AgentWatchdogService:
                 cost_spread=None,
                 cost_tc_rate=None,
                 cost_spread_source=None,
+                automation_internal=True,
             )
             prev_suppress = bool(getattr(db, "_suppress_commit", False))
             setattr(db, "_suppress_commit", True)
@@ -1006,6 +1007,13 @@ class AgentWatchdogService:
                 if "news_ibkr_port" in trigger_guardrails:
                     try:
                         trigger_tool_config["market_news_ibkr_port"] = int(trigger_guardrails.get("news_ibkr_port"))
+                    except Exception:
+                        pass
+                if "max_risk_per_trade_usd" in trigger_guardrails:
+                    try:
+                        risk_cap = float(trigger_guardrails.get("max_risk_per_trade_usd"))
+                        if math.isfinite(risk_cap):
+                            trigger_tool_config["guardrail_max_risk_per_trade_usd"] = max(0.0, float(risk_cap))
                     except Exception:
                         pass
             trigger_perms = dict(perms)

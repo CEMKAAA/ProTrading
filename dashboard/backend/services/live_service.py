@@ -407,29 +407,35 @@ class LiveTradingService:
             logger.error(f"Error getting live status: {e}")
             return default_status
 
-    def get_open_positions(self, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
-        """Get all open positions for given symbol"""
+    def get_open_positions(self, symbol: Optional[str] = "XAUUSD") -> List[Dict[str, Any]]:
+        """Get open positions (symbol-filtered when symbol is provided)."""
         if not self._ensure_mt5():
             return []
 
         try:
-            symbol_req = str(symbol or "XAUUSD").upper()
-            symbol_resolved = self.resolve_symbol_name(symbol_req)
-            if not symbol_resolved:
-                return []
-            positions = mt5.positions_get(symbol=symbol_resolved)
+            symbol_raw = str(symbol or "").strip()
+            symbol_resolved: Optional[str] = None
+            if symbol_raw:
+                symbol_req = symbol_raw.upper()
+                symbol_resolved = self.resolve_symbol_name(symbol_req)
+                if not symbol_resolved:
+                    return []
+                positions = mt5.positions_get(symbol=symbol_resolved)
+            else:
+                positions = mt5.positions_get()
             if not positions:
                 return []
 
             result = []
             for pos in positions:
-                tick = mt5.symbol_info_tick(symbol_resolved)
+                pos_symbol = str(getattr(pos, "symbol", "") or "").strip() or str(symbol_resolved or "")
+                tick = mt5.symbol_info_tick(pos_symbol) if pos_symbol else None
                 current_price = tick.bid if pos.type == 0 else tick.ask if tick else pos.price_current
 
                 result.append({
                     "ticket": pos.ticket,
                     "direction": "BUY" if pos.type == 0 else "SELL",
-                    "symbol": symbol_resolved,
+                    "symbol": pos_symbol,
                     "entry_time": datetime.fromtimestamp(pos.time, tz=timezone.utc).isoformat(),
                     "entry_price": pos.price_open,
                     "current_price": current_price,
@@ -548,11 +554,19 @@ class LiveTradingService:
                 "digits": info.digits,
                 "spread": info.spread,
                 "trade_tick_value": info.trade_tick_value,
+                "trade_tick_value_profit": getattr(info, "trade_tick_value_profit", None),
+                "trade_tick_value_loss": getattr(info, "trade_tick_value_loss", None),
+                "trade_tick_size": getattr(info, "trade_tick_size", None),
+                "trade_contract_size": getattr(info, "trade_contract_size", None),
                 "volume_min": info.volume_min,
                 "volume_max": info.volume_max,
                 "volume_step": info.volume_step,
                 "trade_stops_level": info.trade_stops_level,
                 "trade_freeze_level": info.trade_freeze_level,
+                "trade_calc_mode": getattr(info, "trade_calc_mode", None),
+                "currency_base": getattr(info, "currency_base", None),
+                "currency_profit": getattr(info, "currency_profit", None),
+                "currency_margin": getattr(info, "currency_margin", None),
             }
 
         except Exception as e:
@@ -685,6 +699,256 @@ class LiveTradingService:
         except Exception as e:
             logger.error(f"Error getting recent candles: {e}")
             return []
+
+    @staticmethod
+    def _retcode_name(retcode: Any) -> str:
+        try:
+            code = int(retcode)
+        except Exception:
+            return ""
+        for name in dir(mt5):
+            if not name.startswith("TRADE_RETCODE_"):
+                continue
+            try:
+                if int(getattr(mt5, name)) == code:
+                    return str(name)
+            except Exception:
+                continue
+        return ""
+
+    def place_market_order(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        lot_size: float,
+        stop_loss: float,
+        take_profit: Optional[float] = None,
+        comment: str = "",
+        deviation_points: int = 20,
+    ) -> Dict[str, Any]:
+        """Place a live MT5 market order."""
+        if not self._ensure_mt5():
+            return {"ok": False, "error": "MT5 not connected"}
+        try:
+            symbol_req = str(symbol or "").strip().upper()
+            if not symbol_req:
+                return {"ok": False, "error": "symbol is required"}
+            direction_u = str(direction or "").strip().upper()
+            if direction_u not in {"BUY", "SELL"}:
+                return {"ok": False, "error": "direction must be BUY or SELL"}
+            vol = float(lot_size or 0.0)
+            if (not vol) or vol <= 0.0:
+                return {"ok": False, "error": "lot_size must be > 0"}
+            sl = float(stop_loss or 0.0)
+            if sl <= 0.0:
+                return {"ok": False, "error": "stop_loss must be > 0"}
+            tp = None if take_profit is None else float(take_profit)
+            if tp is not None and tp <= 0.0:
+                return {"ok": False, "error": "take_profit must be > 0"}
+
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return {"ok": False, "error": f"symbol_not_found:{symbol_req}"}
+            try:
+                mt5.symbol_select(symbol_resolved, True)
+            except Exception:
+                pass
+            info = mt5.symbol_info(symbol_resolved)
+            if info is None:
+                return {"ok": False, "error": f"symbol_info_unavailable:{symbol_resolved}"}
+            tick = mt5.symbol_info_tick(symbol_resolved)
+            if tick is None:
+                return {"ok": False, "error": f"symbol_tick_unavailable:{symbol_resolved}"}
+
+            order_type = mt5.ORDER_TYPE_BUY if direction_u == "BUY" else mt5.ORDER_TYPE_SELL
+            requested_price = float(tick.ask) if direction_u == "BUY" else float(tick.bid)
+            if requested_price <= 0.0:
+                return {"ok": False, "error": f"invalid_market_price:{symbol_resolved}"}
+
+            filling_candidates = []
+            try:
+                fm = int(getattr(info, "filling_mode", 0))
+                if fm > 0:
+                    filling_candidates.append(fm)
+            except Exception:
+                pass
+            for c in [getattr(mt5, "ORDER_FILLING_RETURN", 0), getattr(mt5, "ORDER_FILLING_IOC", 0), getattr(mt5, "ORDER_FILLING_FOK", 0)]:
+                try:
+                    cv = int(c)
+                except Exception:
+                    continue
+                if cv > 0 and cv not in filling_candidates:
+                    filling_candidates.append(cv)
+            if not filling_candidates:
+                filling_candidates = [getattr(mt5, "ORDER_FILLING_RETURN", 0)]
+
+            last_err = ""
+            for fill_mode in filling_candidates:
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol_resolved,
+                    "volume": float(vol),
+                    "type": int(order_type),
+                    "price": float(requested_price),
+                    "sl": float(sl),
+                    "tp": float(tp) if tp is not None else 0.0,
+                    "deviation": int(max(1, min(5000, int(deviation_points or 20)))),
+                    "magic": 970001,
+                    "comment": str(comment or "")[:31],
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": int(fill_mode),
+                }
+                try:
+                    result = mt5.order_send(request)
+                except Exception as exc:
+                    last_err = f"{type(exc).__name__}:{str(exc)}"
+                    continue
+                if result is None:
+                    last_err = f"order_send_none:last_error={mt5.last_error()}"
+                    continue
+                retcode = int(getattr(result, "retcode", 0) or 0)
+                retcode_name = self._retcode_name(retcode)
+                ok = retcode in {
+                    int(getattr(mt5, "TRADE_RETCODE_DONE", 10009)),
+                    int(getattr(mt5, "TRADE_RETCODE_PLACED", 10008)),
+                    int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)),
+                }
+                payload = {
+                    "ok": bool(ok),
+                    "requested_symbol": symbol_req,
+                    "symbol": symbol_resolved,
+                    "direction": direction_u,
+                    "lot_size": float(vol),
+                    "requested_price": float(requested_price),
+                    "price": float(getattr(result, "price", requested_price) or requested_price),
+                    "sl": float(sl),
+                    "tp": float(tp) if tp is not None else None,
+                    "retcode": int(retcode),
+                    "retcode_name": str(retcode_name),
+                    "comment": str(getattr(result, "comment", "") or ""),
+                    "order": int(getattr(result, "order", 0) or 0),
+                    "deal": int(getattr(result, "deal", 0) or 0),
+                    "position": int(getattr(result, "order", 0) or 0),
+                    "request": request,
+                }
+                if ok:
+                    return payload
+                last_err = f"{retcode}:{retcode_name}:{payload.get('comment')}"
+            return {"ok": False, "error": f"order_send_failed:{last_err or mt5.last_error()}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)}"}
+
+    def close_position(
+        self,
+        *,
+        symbol: str,
+        position_ticket: Optional[int] = None,
+        lot_size: Optional[float] = None,
+        deviation_points: int = 20,
+        comment: str = "",
+    ) -> Dict[str, Any]:
+        """Close an open MT5 position by ticket (or first symbol position)."""
+        if not self._ensure_mt5():
+            return {"ok": False, "error": "MT5 not connected"}
+        try:
+            symbol_req = str(symbol or "").strip().upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req) if symbol_req else None
+            if not symbol_resolved:
+                return {"ok": False, "error": f"symbol_not_found:{symbol_req}"}
+            try:
+                mt5.symbol_select(symbol_resolved, True)
+            except Exception:
+                pass
+            if position_ticket is not None:
+                try:
+                    rows = mt5.positions_get(ticket=int(position_ticket))
+                except Exception:
+                    rows = None
+                positions = list(rows or [])
+            else:
+                positions = list(mt5.positions_get(symbol=symbol_resolved) or [])
+            if not positions:
+                return {"ok": False, "error": "position_not_found"}
+            pos = positions[0]
+            pos_type = int(getattr(pos, "type", 0) or 0)
+            close_type = mt5.ORDER_TYPE_SELL if pos_type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            tick = mt5.symbol_info_tick(symbol_resolved)
+            if tick is None:
+                return {"ok": False, "error": f"symbol_tick_unavailable:{symbol_resolved}"}
+            close_price = float(tick.bid) if close_type == mt5.ORDER_TYPE_SELL else float(tick.ask)
+            volume = float(lot_size if lot_size is not None else getattr(pos, "volume", 0.0) or 0.0)
+            if volume <= 0.0:
+                return {"ok": False, "error": "invalid_close_volume"}
+            filling_candidates: List[int] = []
+            info = mt5.symbol_info(symbol_resolved)
+            if info is not None:
+                try:
+                    fm = int(getattr(info, "filling_mode", 0) or 0)
+                    if fm > 0:
+                        filling_candidates.append(int(fm))
+                except Exception:
+                    pass
+            for c in [
+                getattr(mt5, "ORDER_FILLING_IOC", 0),
+                getattr(mt5, "ORDER_FILLING_FOK", 0),
+                getattr(mt5, "ORDER_FILLING_RETURN", 0),
+            ]:
+                try:
+                    cv = int(c)
+                except Exception:
+                    continue
+                if cv >= 0 and cv not in filling_candidates:
+                    filling_candidates.append(cv)
+            if not filling_candidates:
+                filling_candidates = [int(getattr(mt5, "ORDER_FILLING_RETURN", 0) or 0)]
+
+            last_err = ""
+            for fill_mode in filling_candidates:
+                req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol_resolved,
+                    "position": int(getattr(pos, "ticket", 0) or 0),
+                    "volume": float(volume),
+                    "type": int(close_type),
+                    "price": float(close_price),
+                    "deviation": int(max(1, min(5000, int(deviation_points or 20)))),
+                    "magic": 970001,
+                    "comment": str(comment or "")[:31],
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": int(fill_mode),
+                }
+                result = mt5.order_send(req)
+                if result is None:
+                    last_err = f"order_send_none:last_error={mt5.last_error()}"
+                    continue
+                retcode = int(getattr(result, "retcode", 0) or 0)
+                retcode_name = self._retcode_name(retcode)
+                ok = retcode in {
+                    int(getattr(mt5, "TRADE_RETCODE_DONE", 10009)),
+                    int(getattr(mt5, "TRADE_RETCODE_PLACED", 10008)),
+                    int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)),
+                }
+                payload = {
+                    "ok": bool(ok),
+                    "requested_symbol": symbol_req,
+                    "symbol": symbol_resolved,
+                    "position_ticket": int(getattr(pos, "ticket", 0) or 0),
+                    "price": float(getattr(result, "price", close_price) or close_price),
+                    "retcode": int(retcode),
+                    "retcode_name": str(retcode_name),
+                    "comment": str(getattr(result, "comment", "") or ""),
+                    "order": int(getattr(result, "order", 0) or 0),
+                    "deal": int(getattr(result, "deal", 0) or 0),
+                    "request": req,
+                    "error": None if ok else f"{retcode}:{retcode_name}:{getattr(result, 'comment', '')}",
+                }
+                if ok:
+                    return payload
+                last_err = str(payload.get("error") or "")
+            return {"ok": False, "error": last_err or "close_order_send_failed"}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)}"}
 
     def close(self):
         """Cleanup MT5 connection"""

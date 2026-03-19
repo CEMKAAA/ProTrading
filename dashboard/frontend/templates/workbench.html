@@ -606,6 +606,29 @@
     font-size: 0.92rem;
     font-weight: 600;
 }
+.automation-chart-modal .modal-dialog {
+    max-width: min(1400px, 96vw);
+}
+.automation-chart-shell {
+    background: #131722;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.automation-chart-main {
+    width: 100%;
+    height: min(70vh, 760px);
+}
+.automation-chart-panel {
+    width: 100%;
+    height: min(24vh, 260px);
+    border-top: 1px solid #2a2e39;
+    background: #131722;
+}
+.automation-chart-meta {
+    font-size: 0.8rem;
+    color: #cbd5e1;
+}
 .modal-bottom-sheet {
     position: fixed;
     left: 50%;
@@ -1290,6 +1313,44 @@ body.workbench-fullscreen .stats-bar {
 }
 .stat-value.positive { color: #4ade80 !important; }
 .stat-value.negative { color: #f87171 !important; }
+.stat-item .stat-value.execution-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    font-size: 0.68rem;
+    letter-spacing: 0.02em;
+    font-weight: 700;
+}
+.stat-item .stat-value.execution-badge.mode-paper {
+    color: #93c5fd !important;
+    border-color: rgba(147, 197, 253, 0.45);
+    background: rgba(59, 130, 246, 0.14);
+}
+.stat-item .stat-value.execution-badge.mode-live {
+    color: #86efac !important;
+    border-color: rgba(74, 222, 128, 0.45);
+    background: rgba(22, 163, 74, 0.16);
+}
+.stat-item .stat-value.execution-badge.mode-kill {
+    color: #fca5a5 !important;
+    border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(220, 38, 38, 0.16);
+}
+.stat-item .stat-value.execution-badge.mode-none {
+    color: #94a3b8 !important;
+    border-color: rgba(148, 163, 184, 0.35);
+    background: rgba(51, 65, 85, 0.28);
+}
+.stat-item .stat-value.execution-badge.clickable {
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.stat-item .stat-value.execution-badge.clickable:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.25);
+}
 /* ── Header dark theme ──────────────────── */
 .sim-header {
     background: #1e293b !important;
@@ -1402,6 +1463,15 @@ body.workbench-fullscreen .stats-bar {
     margin-top: 8px;
     font-size: 0.8rem;
     color: #bfdbfe;
+}
+.symbol-econ-hint {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.35);
+    color: #cbd5e1;
+    font-size: 0.76rem;
 }
 </style>
 {% endblock %}
@@ -1553,6 +1623,9 @@ body.workbench-fullscreen .stats-bar {
                     </div>
                 </div>
             </div>
+            <div id="symbol-econ-hint" class="symbol-econ-hint">
+                Symbol economics will be shown after session start.
+            </div>
         </div>
     </div>
 </div>
@@ -1596,6 +1669,24 @@ body.workbench-fullscreen .stats-bar {
                 data-bs-target="#trendiloOppModal"
             >
                 <i class="bi bi-lightning-charge me-1"></i>Strategy Screener
+            </button>
+            <button
+                id="btn-open-auto-monitor"
+                class="btn btn-sm wb-action-btn ms-2"
+                type="button"
+                data-bs-toggle="modal"
+                data-bs-target="#automationMonitorModal"
+            >
+                <i class="bi bi-activity me-1"></i>Automation Monitor
+            </button>
+            <button
+                id="btn-open-auto-starter"
+                class="btn btn-sm wb-action-btn ms-2"
+                type="button"
+                data-bs-toggle="modal"
+                data-bs-target="#automationStarterModal"
+            >
+                <i class="bi bi-lightning me-1"></i>Start Automation
             </button>
         </div>
         <!-- Chart -->
@@ -1662,6 +1753,10 @@ body.workbench-fullscreen .stats-bar {
             <div class="stat-item">
                 <span class="stat-label">Transport</span>
                 <span class="stat-value" id="stat-transport">IDLE</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Execution</span>
+                <span class="stat-value execution-badge mode-none clickable" id="stat-execution" role="button" tabindex="0" title="Open Safety & Guardrails">NO SESSION</span>
             </div>
             <div class="stat-item">
                 <span class="stat-label">Session</span>
@@ -2011,6 +2106,9 @@ body.workbench-fullscreen .stats-bar {
                                     <option value="htf_fvg_liquidity_reclaim_v2">HTF FVG + Liquidity Reclaim V2</option>
                                     <option value="orb_ny_15m_imbalance">NY 15m ORB + 1m Imbalance</option>
                                     <option value="trendilo_confirmation_v1">Trendilo Strategy</option>
+                                    <option value="advanced_trendilo_confirmation_v1">Advanced Trendilo Strategy</option>
+                                    <option value="trendilo_lsma_confirmation_v1">Trendilo LSMA Strategy</option>
+                                    <option value="alpha_wave_confirmation_v1">Alpha Wave Strategy</option>
                                 </select>
                                 <span class="agent-field-hint">Chooses which parent strategy tool the agent is allowed to use. The old HTF FVG path stays separate.</span>
                             </div>
@@ -2132,6 +2230,68 @@ body.workbench-fullscreen .stats-bar {
                         </div>
                         <div id="agent-guardrail-effective-status" style="font-size:0.72rem;color:#94a3b8;margin-bottom:8px;">
                             Guardrails: disabled.
+                        </div>
+                        <div class="coach-grid">
+                            <div>
+                                <label for="agent-guardrail-max-risk-per-trade" class="agent-field-label">Max Risk Per Trade (USD)</label>
+                                <input id="agent-guardrail-max-risk-per-trade" class="form-control form-control-sm" type="number" min="0" max="1000000000" step="0.01" value="5">
+                                <span class="agent-field-hint">Hard cap for estimated risk per trade. Set 0 to disable this cap.</span>
+                            </div>
+                        </div>
+                        <hr style="border-color:rgba(148,163,184,0.2); margin:10px 0 8px;">
+                        <div style="font-size:0.74rem;color:#cbd5e1;margin-bottom:8px;font-weight:600;">
+                            Execution Routing (Session)
+                        </div>
+                        <div class="coach-grid">
+                            <div>
+                                <label for="agent-live-execution-mode" class="agent-field-label">Execution Mode</label>
+                                <select id="agent-live-execution-mode" class="form-select form-select-sm">
+                                    <option value="paper" selected>Paper (simulated orders)</option>
+                                    <option value="live_mt5">Live MT5 (real orders)</option>
+                                </select>
+                                <span class="agent-field-hint">Paper is the default safe mode. Live MT5 sends real orders.</span>
+                            </div>
+                            <div>
+                                <label for="agent-live-max-risk-per-trade" class="agent-field-label">Live Max Risk Per Trade (USD)</label>
+                                <input id="agent-live-max-risk-per-trade" class="form-control form-control-sm" type="number" min="0" max="1000000000" step="0.01" value="25">
+                            </div>
+                            <div>
+                                <label for="agent-live-max-lot-per-trade" class="agent-field-label">Live Max Lot Per Trade</label>
+                                <input id="agent-live-max-lot-per-trade" class="form-control form-control-sm" type="number" min="0" max="100" step="0.01" value="5.0">
+                            </div>
+                            <div>
+                                <label for="agent-live-daily-loss-limit" class="agent-field-label">Daily Loss Limit (USD)</label>
+                                <input id="agent-live-daily-loss-limit" class="form-control form-control-sm" type="number" min="0" max="1000000000" step="0.01" placeholder="Optional">
+                                <span class="agent-field-hint">Empty means disabled.</span>
+                            </div>
+                            <div>
+                                <label class="agent-perm-item" style="margin:0;">
+                                    <input class="form-check-input" type="checkbox" id="agent-live-kill-switch">
+                                    <i class="bi bi-slash-circle agent-perm-icon"></i>
+                                    <span>Kill Switch<br><small style="color:#64748b;">Block all live order execution instantly.</small></span>
+                                </label>
+                            </div>
+                            <div>
+                                <label class="agent-perm-item" style="margin:0;">
+                                    <input class="form-check-input" type="checkbox" id="agent-live-require-confirmation" checked>
+                                    <i class="bi bi-hand-index agent-perm-icon"></i>
+                                    <span>Live Confirmation Required<br><small style="color:#64748b;">Force explicit confirmation for every live order.</small></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <button id="btn-agent-live-apply" class="btn btn-outline-info btn-sm" type="button">
+                                <i class="bi bi-shield-check me-1"></i>Apply Execution Settings
+                            </button>
+                            <button id="btn-agent-live-mode-paper" class="btn btn-outline-secondary btn-sm" type="button">
+                                Paper Mode
+                            </button>
+                            <button id="btn-agent-live-mode-live" class="btn btn-outline-danger btn-sm" type="button">
+                                Live MT5 Mode
+                            </button>
+                        </div>
+                        <div id="agent-live-control-status" style="font-size:0.72rem;color:#94a3b8;margin-top:8px;">
+                            Execution mode: paper.
                         </div>
                     </div>
                 </div>
@@ -2906,16 +3066,19 @@ body.workbench-fullscreen .stats-bar {
             </div>
             <div class="modal-body">
                 <div class="row g-2">
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label mb-1">Strategy</label>
                         <select id="trendilo-opp-strategy" class="form-select form-select-sm">
                             <option value="mtf">Strategy 1 - MTF</option>
                             <option value="htf_reclaim">Strategy 2 - HTF Reclaim</option>
                             <option value="orb">ORB</option>
                             <option value="trendilo" selected>Trendilo</option>
+                            <option value="advanced_trendilo">Advanced Trendilo</option>
+                            <option value="trendilo_lsma">Trendilo LSMA</option>
+                            <option value="alpha_wave">Alpha Wave</option>
                         </select>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label mb-1">Universe</label>
                         <select id="trendilo-opp-universe" class="form-select form-select-sm">
                             <option value="market_mixed_top" selected>Market Mixed Top</option>
@@ -2929,13 +3092,28 @@ body.workbench-fullscreen .stats-bar {
                         <input id="trendilo-opp-universe-limit" type="number" class="form-control form-control-sm" value="80" min="1" max="200" step="1">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label mb-1">TF</label>
+                        <label class="form-label mb-1">Scan TF</label>
                         <select id="trendilo-opp-timeframe" class="form-select form-select-sm">
                             <option value="M1">M1</option>
                             <option value="M5" selected>M5</option>
                             <option value="M15">M15</option>
                             <option value="M30">M30</option>
                             <option value="H1">H1</option>
+                            <option value="H4">H4</option>
+                            <option value="D1">D1</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Exec TF</label>
+                        <select id="trendilo-opp-exec-timeframe" class="form-select form-select-sm">
+                            <option value="AUTO" selected>AUTO (same as Scan)</option>
+                            <option value="M1">M1</option>
+                            <option value="M5">M5</option>
+                            <option value="M15">M15</option>
+                            <option value="M30">M30</option>
+                            <option value="H1">H1</option>
+                            <option value="H4">H4</option>
+                            <option value="D1">D1</option>
                         </select>
                     </div>
                     <div class="col-md-2">
@@ -2976,9 +3154,193 @@ body.workbench-fullscreen .stats-bar {
                         </table>
                     </div>
                 </div>
+                <div class="mt-3">
+                    <div id="trendilo-auto-summary" style="font-size:0.82rem;color:#cbd5e1;">Automation jobs: none.</div>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm trade-log-table mb-0">
+                            <thead id="trendilo-auto-head"></thead>
+                            <tbody id="trendilo-auto-body">
+                                <tr><td class="text-center text-muted py-2"><small>No automation jobs running.</small></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="automationMonitorModal" tabindex="-1" aria-labelledby="automationMonitorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="automationMonitorModalLabel">
+                    <i class="bi bi-activity me-1"></i>Strategy Automation Monitor
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" id="btn-refresh-auto-monitor" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                    <select id="auto-monitor-sort" class="form-select form-select-sm" style="max-width: 190px;">
+                        <option value="created_desc" selected>Sort: Latest Created</option>
+                        <option value="created_asc">Sort: Oldest Created</option>
+                    </select>
+                    <div class="form-check form-switch m-0">
+                        <input class="form-check-input" type="checkbox" id="auto-monitor-running-only">
+                        <label class="form-check-label" for="auto-monitor-running-only" style="font-size:0.82rem;color:#cbd5e1;">Running only</label>
+                    </div>
+                    <span id="auto-monitor-status" style="font-size:0.82rem;color:#cbd5e1;">Ready</span>
+                </div>
+                <div class="mt-2" id="auto-monitor-summary" style="font-size:0.82rem;color:#cbd5e1;">No jobs loaded.</div>
+                <div class="table-responsive mt-2">
+                    <table class="table table-sm trade-log-table mb-0">
+                        <thead id="auto-monitor-head"></thead>
+                        <tbody id="auto-monitor-body">
+                            <tr><td class="text-center text-muted py-3"><small>No automation jobs.</small></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade automation-chart-modal" id="automationChartModal" tabindex="-1" aria-labelledby="automationChartModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-xl">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="automationChartModalLabel">
+                    <i class="bi bi-graph-up-arrow me-1"></i>Automation Chart
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
+                    <div id="automation-chart-meta" class="automation-chart-meta">Ready.</div>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" id="btn-refresh-automation-chart" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                        </button>
+                    </div>
+                </div>
+                <div class="automation-chart-shell mt-2">
+                    <div id="automation-chart-main" class="automation-chart-main"></div>
+                    <div id="automation-chart-panel" class="automation-chart-panel d-none"></div>
+                </div>
+                <div class="mt-2">
+                    <span id="automation-chart-status" style="font-size:0.82rem;color:#cbd5e1;">No chart loaded.</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="automationStarterModal" tabindex="-1" aria-labelledby="automationStarterModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="automationStarterModalLabel">
+                    <i class="bi bi-lightning me-1"></i>Start Strategy Automation
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-md-6">
+                        <label class="form-label mb-1">Strategy</label>
+                        <select id="auto-start-strategy" class="form-select form-select-sm">
+                            <option value="trendilo" selected>Trendilo</option>
+                            <option value="advanced_trendilo">Advanced Trendilo</option>
+                            <option value="trendilo_lsma">Trendilo LSMA</option>
+                            <option value="alpha_wave">Alpha Wave</option>
+                            <option value="orb_alpha_hybrid">ORB + Alpha Hybrid</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label mb-1">Symbol</label>
+                        <div class="input-group input-group-sm">
+                            <select id="auto-start-symbol" class="form-select form-select-sm">
+                                <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                                <option value="NAS100">NAS100</option>
+                                <option value="US500">US500</option>
+                                <option value="GBPUSD">GBPUSD</option>
+                                <option value="EURUSD">EURUSD</option>
+                            </select>
+                            <button id="btn-refresh-auto-start-symbols" class="btn btn-outline-secondary" type="button" title="Load symbols from active MT5 broker">
+                                <i class="bi bi-cloud-download"></i>
+                            </button>
+                        </div>
+                        <div class="input-group input-group-sm mt-1">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input
+                                id="auto-start-symbol-search"
+                                class="form-control form-control-sm"
+                                type="text"
+                                placeholder="Search symbol (LIKE: XAU%, %USD, _S500)"
+                                autocomplete="off"
+                            >
+                            <button
+                                id="btn-clear-auto-start-symbol-search"
+                                class="btn btn-outline-secondary"
+                                type="button"
+                                title="Clear symbol search"
+                            >
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>
+                        <small id="auto-start-symbol-meta" class="text-muted">Broker symbols can be loaded from MT5.</small>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label mb-1">Timeframe</label>
+                        <select id="auto-start-timeframe" class="form-select form-select-sm">
+                            <option value="M1">M1</option>
+                            <option value="M5">M5</option>
+                            <option value="M15" selected>M15</option>
+                            <option value="M30">M30</option>
+                            <option value="H1">H1</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label mb-1">Source</label>
+                        <select id="auto-start-source" class="form-select form-select-sm">
+                            <option value="mt5" selected>MT5</option>
+                            <option value="databento">Databento</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label mb-1">Risk %</label>
+                        <input id="auto-start-risk" type="number" class="form-control form-control-sm" min="0.1" max="5" step="0.05" value="0.75">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label mb-1">RR Target</label>
+                        <input id="auto-start-rr" type="number" class="form-control form-control-sm" min="1" max="12" step="0.1" value="2.0">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label mb-1">Lot Override (optional)</label>
+                        <input id="auto-start-lot" type="number" class="form-control form-control-sm" min="0.001" max="200" step="0.001" placeholder="auto">
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <span id="auto-start-status" style="font-size:0.82rem;color:#cbd5e1;">Ready.</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" id="btn-start-auto-manual" class="btn btn-sm btn-success">
+                    <i class="bi bi-play-fill me-1"></i>Start
+                </button>
             </div>
         </div>
     </div>
@@ -3038,6 +3400,34 @@ body.workbench-fullscreen .stats-bar {
                 </div>
                 <div class="indicator-option">
                     <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-advanced-trendilo">
+                        <label class="form-check-label" for="ind-advanced-trendilo">Advanced Trendilo</label>
+                        <small class="hint">Trendilo with hysteresis-aware direction state to reduce one-bar whipsaws.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-trendilo-lsma">
+                        <label class="form-check-label" for="ind-trendilo-lsma">Trendilo LSMA</label>
+                        <small class="hint">Pine-equivalent LSMA combine line (EMA(HL2) + LINREG + HMA), colored green/red/yellow by slope signal.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-alpha-wave">
+                        <label class="form-check-label" for="ind-alpha-wave">Alpha Wave</label>
+                        <small class="hint">Pine-parity Alpha Wave baseline line, colored green/red/gray by current Alpha Wave direction state.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-orb-signal">
+                        <label class="form-check-label" for="ind-orb-signal">ORB Breakout Signal</label>
+                        <small class="hint">NY ORB execution signal: green after confirmed break-and-hold above opening range, red after confirmed break-and-hold below range, gray otherwise.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="ind-trendilo-barcolor">
                         <label class="form-check-label" for="ind-trendilo-barcolor">Trendilo Bar Color</label>
                         <small class="hint">Color candles by Trendilo direction (green/red/gray), like Pine barcolor.</small>
@@ -3091,5 +3481,5 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/workbench.js', v='20260316_trendilo_opp_scan1') }}"></script>
+<script src="{{ url_for('static', filename='js/workbench.js', v='20260319_screener_universe_conf_fix') }}"></script>
 {% endblock %}

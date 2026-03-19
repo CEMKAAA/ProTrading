@@ -7,6 +7,7 @@ def test_normalize_copilot_config_keeps_guardrail_and_watchdog_fields():
             "guardrail_enabled": False,
             "guardrail_session_filter_enabled": True,
             "guardrail_news_filter_enabled": True,
+            "guardrail_max_risk_per_trade_usd": 1250.0,
             "guardrail_news_lookback_min": 90,
             "watchdog_mode": "claude",
             "watchdog_interval_sec": 45,
@@ -25,6 +26,7 @@ def test_normalize_copilot_config_keeps_guardrail_and_watchdog_fields():
     assert cfg["guardrail_enabled"] is False
     assert cfg["guardrail_session_filter_enabled"] is True
     assert cfg["guardrail_news_filter_enabled"] is True
+    assert float(cfg["guardrail_max_risk_per_trade_usd"]) == 1250.0
     assert int(cfg["guardrail_news_lookback_min"]) == 90
     assert str(cfg["watchdog_mode"]) == "claude"
     assert int(cfg["watchdog_interval_sec"]) == 45

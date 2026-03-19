@@ -7,4 +7,5 @@ from .keltner_breakout_strategy import KeltnerBreakoutStrategy
 from .earnings_volatility_strategy import EarningsVolatilityStrategy
 from .b_profile_reversion_strategy import BProfileReversionStrategy
 from .trendilo_strategy import TrendiloStrategy
+from .advanced_trendilo_strategy import AdvancedTrendiloStrategy
 from .factory import create_strategy

@@ -102,6 +102,23 @@ _COPILOT_SENSITIVE_CONFIG_KEYS = {
 _MT5_SERVICE_SINGLETON = None
 _COST_SPREAD_SOURCE_MANUAL = "manual"
 _COST_SPREAD_SOURCE_MT5 = "mt5_live"
+_LIVE_EXECUTION_MODE_PAPER = "paper"
+_LIVE_EXECUTION_MODE_MT5 = "live_mt5"
+_LIVE_EXECUTION_MODES = {_LIVE_EXECUTION_MODE_PAPER, _LIVE_EXECUTION_MODE_MT5}
+# Live defaults should be conservative but practical.
+# They are safety caps (not target sizing), and remain user-adjustable per session.
+_LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD = 25.0
+_LIVE_DEFAULT_MAX_LOT_PER_TRADE = 5.0
+_LIVE_CONFIRMATION_PHRASE = "CONFIRM_LIVE_ORDER"
+_STRATEGY_AUTOMATION_CFG_KEY = "strategy_automation"
+_STRATEGY_AUTOMATION_SUPPORTED = {
+    "trendilo",
+    "advanced_trendilo",
+    "trendilo_lsma",
+    "alpha_wave",
+    "orb_alpha_hybrid",
+}
+_STRATEGY_AUTOMATION_START_LOCK = Lock()
 _AGENT_SNAPSHOT_MAX_PER_SESSION = 5000
 _AGENT_EVENT_PAYLOAD_MAX_BYTES = 64 * 1024
 _AGENT_CONTEXT_BARS_MAX = 220
@@ -311,6 +328,31 @@ _AGENT_STRATEGY_TOOL_GROUPS: Dict[str, Dict[str, Any]] = {
             "get_indicator_values",
         ],
     },
+    "advanced_trendilo_confirmation_v1": {
+        "parent": "run_advanced_trendilo_analysis",
+        "children": [
+            "scan_tool",
+            "scan_trendilo_tradeable",
+            "scan_strategy_tradeable",
+            "get_indicator_values",
+        ],
+    },
+    "trendilo_lsma_confirmation_v1": {
+        "parent": "run_trendilo_lsma_analysis",
+        "children": [
+            "scan_tool",
+            "scan_strategy_tradeable",
+            "get_indicator_values",
+        ],
+    },
+    "alpha_wave_confirmation_v1": {
+        "parent": "run_alpha_wave_analysis",
+        "children": [
+            "scan_tool",
+            "scan_strategy_tradeable",
+            "get_indicator_values",
+        ],
+    },
 }
 _AGENT_STRATEGY_PARENT_VERIFICATION_TOOLS: set[str] = {
     "scan_tool",
@@ -326,18 +368,27 @@ _AGENT_STRATEGY_PROFILES = {
     "htf_fvg_liquidity_reclaim_v2",
     "orb_ny_15m_imbalance",
     "trendilo_confirmation_v1",
+    "advanced_trendilo_confirmation_v1",
+    "trendilo_lsma_confirmation_v1",
+    "alpha_wave_confirmation_v1",
 }
 _AGENT_STRATEGY_PROFILE_PARENT_TOOL = {
     "classic_htf_fvg": "run_mtf_analysis",
     "htf_fvg_liquidity_reclaim_v2": "run_htf_fvg_liquidity_reclaim_analysis",
     "orb_ny_15m_imbalance": "run_orb_analysis",
     "trendilo_confirmation_v1": "run_trendilo_analysis",
+    "advanced_trendilo_confirmation_v1": "run_advanced_trendilo_analysis",
+    "trendilo_lsma_confirmation_v1": "run_trendilo_lsma_analysis",
+    "alpha_wave_confirmation_v1": "run_alpha_wave_analysis",
 }
 _AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS = {
     "run_mtf_analysis": "mtf_analysis",
     "run_htf_fvg_liquidity_reclaim_analysis": "htf_fvg_liquidity_reclaim_analysis",
     "run_orb_analysis": "orb_analysis",
     "run_trendilo_analysis": "trendilo_analysis",
+    "run_advanced_trendilo_analysis": "advanced_trendilo_analysis",
+    "run_trendilo_lsma_analysis": "trendilo_lsma_analysis",
+    "run_alpha_wave_analysis": "alpha_wave_analysis",
 }
 
 _TRENDILO_MARKET_UNIVERSES: Dict[str, List[str]] = {
@@ -494,9 +545,26 @@ class CreateSessionRequest(BaseModel):
 
 
 class LiveControlRequest(BaseModel):
-    enabled: bool = True
-    source: str = "mt5"
-    backend_native: bool = True
+    enabled: Optional[bool] = None
+    source: Optional[str] = None
+    backend_native: Optional[bool] = None
+    use_active_account: Optional[bool] = None
+    execution_mode: Optional[str] = None  # paper | live_mt5
+    kill_switch_enabled: Optional[bool] = None
+    max_risk_per_trade_usd: Optional[float] = Field(default=None, ge=0.0, le=1_000_000_000.0)
+    max_lot_per_trade: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    daily_loss_limit_usd: Optional[float] = Field(default=None, ge=0.0, le=1_000_000_000.0)
+    require_confirmation_for_live_order: Optional[bool] = None
+
+    @field_validator("execution_mode")
+    @classmethod
+    def _validate_execution_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        mode = str(v or "").strip().lower()
+        if mode not in _LIVE_EXECUTION_MODES:
+            raise ValueError("execution_mode must be 'paper' or 'live_mt5'")
+        return mode
 
 
 class AdvanceRequest(BaseModel):
@@ -511,6 +579,8 @@ class TradeRequest(BaseModel):
     lot_size: float = Field(default=0.01, gt=0.0, le=100.0)
     entry_price: Optional[float] = None
     bar_time_unix: Optional[int] = None
+    confirm_live_order: bool = False
+    live_confirmation_phrase: Optional[str] = None
     cost_spread: Optional[float] = None
     cost_tc_rate: Optional[float] = None
     cost_spread_source: Optional[str] = None
@@ -529,9 +599,12 @@ class TradeRequest(BaseModel):
 class CloseTradeRequest(BaseModel):
     exit_price: Optional[float] = None
     bar_time_unix: Optional[int] = None
+    confirm_live_order: bool = False
+    live_confirmation_phrase: Optional[str] = None
     cost_spread: Optional[float] = None
     cost_tc_rate: Optional[float] = None
     cost_spread_source: Optional[str] = None
+    automation_internal: bool = False
 
 
 class CostModelUpdateRequest(BaseModel):
@@ -1886,6 +1959,465 @@ def _session_config_dict(session: SimulationSession) -> Dict[str, Any]:
     return {}
 
 
+def _symbol_alias_tokens(symbol: Any) -> List[str]:
+    raw = str(symbol or "").strip().upper()
+    out: List[str] = []
+    if raw:
+        out.append(raw)
+    try:
+        norm = str(normalize_strategy_symbol(raw) or "").strip().upper()
+    except Exception:
+        norm = ""
+    if norm and norm not in out:
+        out.append(norm)
+    return out
+
+
+def _symbols_equivalent(a: Any, b: Any) -> bool:
+    aa = set(_symbol_alias_tokens(a))
+    bb = set(_symbol_alias_tokens(b))
+    return bool(aa and bb and (aa & bb))
+
+
+def _derive_point_value_per_1lot(
+    *,
+    contract_size: Optional[float],
+    trade_tick_size: Optional[float],
+    trade_tick_value: Optional[float],
+) -> Optional[float]:
+    tsize = _to_float_or_none(trade_tick_size)
+    tvalue = _to_float_or_none(trade_tick_value)
+    if tsize is not None and tvalue is not None and math.isfinite(tsize) and math.isfinite(tvalue) and tsize > 0.0 and tvalue > 0.0:
+        return float(tvalue / tsize)
+    csize = _to_float_or_none(contract_size)
+    if csize is not None and math.isfinite(csize) and csize > 0.0:
+        return float(csize)
+    return None
+
+
+def _build_symbol_economics_snapshot(
+    *,
+    symbol: str,
+    prefer_mt5: bool,
+    account_balance: Optional[float] = None,
+    account_leverage: Optional[float] = None,
+) -> Dict[str, Any]:
+    symbol_req = str(symbol or "").strip().upper() or "XAUUSD"
+    inst = get_instrument(normalize_strategy_symbol(symbol_req) or symbol_req)
+    source = "instrument_specs"
+    resolved_symbol = symbol_req
+
+    point = float(max(1e-9, float(inst.point_value)))
+    digits = None
+    volume_min = float(max(0.0, float(inst.min_lot)))
+    volume_max = float(max(volume_min, float(inst.max_lot)))
+    volume_step = float(max(1e-6, float(inst.lot_step)))
+    contract_size = float(max(1e-9, float(inst.contract_size)))
+    trade_tick_size = float(point)
+    trade_tick_value = None
+    currency_profit = None
+    currency_margin = None
+    trade_calc_mode = None
+
+    if bool(prefer_mt5):
+        try:
+            service = _get_mt5_service_singleton()
+            sinfo = service.get_symbol_info(symbol=symbol_req)
+        except Exception:
+            sinfo = {}
+        if isinstance(sinfo, dict) and not str(sinfo.get("error") or "").strip():
+            source = "mt5_symbol_info"
+            resolved_symbol = str(sinfo.get("resolved_symbol") or symbol_req).strip().upper() or symbol_req
+            point = float(max(1e-9, _to_float_or_none(sinfo.get("point")) or point))
+            digits = int(_to_float_or_none(sinfo.get("digits")) or 0)
+            volume_min = float(max(0.0, _to_float_or_none(sinfo.get("volume_min")) or volume_min))
+            volume_max = float(max(volume_min, _to_float_or_none(sinfo.get("volume_max")) or volume_max))
+            volume_step = float(max(1e-6, _to_float_or_none(sinfo.get("volume_step")) or volume_step))
+            contract_size = float(max(1e-9, _to_float_or_none(sinfo.get("trade_contract_size")) or contract_size))
+            trade_tick_size = float(max(1e-9, _to_float_or_none(sinfo.get("trade_tick_size")) or point))
+            trade_tick_value = _to_float_or_none(sinfo.get("trade_tick_value"))
+            currency_profit = str(sinfo.get("currency_profit") or "") or None
+            currency_margin = str(sinfo.get("currency_margin") or "") or None
+            trade_calc_mode = sinfo.get("trade_calc_mode")
+
+    point_value_per_1lot = _derive_point_value_per_1lot(
+        contract_size=contract_size,
+        trade_tick_size=trade_tick_size,
+        trade_tick_value=trade_tick_value,
+    )
+    if point_value_per_1lot is None:
+        point_value_per_1lot = float(contract_size)
+
+    pnl_per_point_1lot = float(point_value_per_1lot * point)
+    account_bal = _to_float_or_none(account_balance)
+    leverage = _to_float_or_none(account_leverage)
+    risk_examples: Dict[str, Any] = {}
+    if account_bal is not None and math.isfinite(account_bal) and account_bal > 0.0:
+        stop_distance_100_points = float(point * 100.0)
+        risk_examples["lot_for_1pct_risk_at_100_points_stop"] = (
+            _normalize_lot_for_instrument(
+                lot_size=float((account_bal * 0.01) / max(1e-12, point_value_per_1lot * stop_distance_100_points)),
+                min_lot=volume_min,
+                max_lot=volume_max,
+                lot_step=volume_step,
+            )
+            if stop_distance_100_points > 0.0
+            else None
+        )
+        risk_examples["lot_for_0_5pct_risk_at_100_points_stop"] = (
+            _normalize_lot_for_instrument(
+                lot_size=float((account_bal * 0.005) / max(1e-12, point_value_per_1lot * stop_distance_100_points)),
+                min_lot=volume_min,
+                max_lot=volume_max,
+                lot_step=volume_step,
+            )
+            if stop_distance_100_points > 0.0
+            else None
+        )
+
+    return {
+        "source": source,
+        "requested_symbol": symbol_req,
+        "resolved_symbol": resolved_symbol,
+        "formula": "pnl = lot_size * point_value_per_1lot * price_change",
+        "risk_formula": "risk_usd = abs(entry_price - stop_loss) * point_value_per_1lot * lot_size",
+        "contract_size": float(contract_size),
+        "point": float(point),
+        "digits": digits,
+        "trade_tick_size": float(trade_tick_size),
+        "trade_tick_value": _to_float_or_none(trade_tick_value),
+        "point_value_per_1lot": float(point_value_per_1lot),
+        "pnl_per_price_unit_1lot": float(point_value_per_1lot),
+        "pnl_per_point_1lot": float(pnl_per_point_1lot),
+        "volume_min": float(volume_min),
+        "volume_max": float(volume_max),
+        "volume_step": float(volume_step),
+        "account_balance_reference": float(account_bal) if account_bal is not None and math.isfinite(account_bal) else None,
+        "account_leverage": float(leverage) if leverage is not None and math.isfinite(leverage) and leverage > 0 else None,
+        "currency_profit": currency_profit,
+        "currency_margin": currency_margin,
+        "trade_calc_mode": trade_calc_mode,
+        "risk_examples": risk_examples,
+        "computed_at": _utc_now().isoformat(),
+    }
+
+
+def _session_symbol_economics_snapshot(
+    *,
+    session: SimulationSession,
+    session_cfg: Optional[Dict[str, Any]] = None,
+    mt5_account: Optional[Dict[str, Any]] = None,
+    refresh_mt5: bool = False,
+) -> Dict[str, Any]:
+    cfg = dict(session_cfg) if isinstance(session_cfg, dict) else _session_config_dict(session)
+    cached = cfg.get("symbol_economics") if isinstance(cfg.get("symbol_economics"), dict) else {}
+    live_cfg = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+    source = str(live_cfg.get("source") or "mt5").strip().lower() or "mt5"
+    prefer_mt5 = bool(source == "mt5")
+    session_symbol = str(session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    if (
+        isinstance(cached, dict)
+        and not bool(refresh_mt5)
+        and _symbols_equivalent(cached.get("requested_symbol"), session_symbol)
+    ):
+        return dict(cached)
+    account_balance = _to_float_or_none((mt5_account or {}).get("balance")) if isinstance(mt5_account, dict) else None
+    if account_balance is None:
+        account_balance = _to_float_or_none(session.current_balance)
+    if account_balance is None:
+        account_balance = _to_float_or_none(session.initial_balance)
+    account_leverage = _to_float_or_none((mt5_account or {}).get("leverage")) if isinstance(mt5_account, dict) else None
+    return _build_symbol_economics_snapshot(
+        symbol=session_symbol,
+        prefer_mt5=prefer_mt5,
+        account_balance=account_balance,
+        account_leverage=account_leverage,
+    )
+
+
+def _session_trade_math_context(
+    *,
+    session: Optional[SimulationSession],
+    symbol: str,
+    session_cfg: Optional[Dict[str, Any]] = None,
+    mt5_account: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    symbol_norm = str(symbol or "").strip().upper() or "XAUUSD"
+    inst = get_instrument(normalize_strategy_symbol(symbol_norm) or symbol_norm)
+    min_lot = float(max(0.0, float(inst.min_lot)))
+    max_lot = float(max(min_lot, float(inst.max_lot)))
+    lot_step = float(max(1e-6, float(inst.lot_step)))
+    value_per_1lot = float(max(1e-9, float(inst.contract_size)))
+    point = float(max(1e-9, float(inst.point_value)))
+
+    if session is not None:
+        try:
+            econ = _session_symbol_economics_snapshot(
+                session=session,
+                session_cfg=session_cfg,
+                mt5_account=mt5_account,
+                refresh_mt5=False,
+            )
+        except Exception:
+            econ = {}
+        if isinstance(econ, dict) and _symbols_equivalent(econ.get("requested_symbol"), symbol_norm):
+            min_lot = float(max(0.0, _to_float_or_none(econ.get("volume_min")) or min_lot))
+            max_lot = float(max(min_lot, _to_float_or_none(econ.get("volume_max")) or max_lot))
+            lot_step = float(max(1e-6, _to_float_or_none(econ.get("volume_step")) or lot_step))
+            value_per_1lot = float(max(1e-9, _to_float_or_none(econ.get("point_value_per_1lot")) or value_per_1lot))
+            point = float(max(1e-9, _to_float_or_none(econ.get("point")) or point))
+    return {
+        "min_lot": float(min_lot),
+        "max_lot": float(max_lot),
+        "lot_step": float(lot_step),
+        "value_per_1lot": float(value_per_1lot),
+        "point": float(point),
+    }
+
+
+def _session_live_control_dict(session: SimulationSession) -> Dict[str, Any]:
+    cfg = _session_config_dict(session)
+    live = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+    source = str(live.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    execution_mode = str(live.get("execution_mode") or _LIVE_EXECUTION_MODE_PAPER).strip().lower()
+    if execution_mode not in _LIVE_EXECUTION_MODES:
+        execution_mode = _LIVE_EXECUTION_MODE_PAPER
+    backend_native = bool(live.get("backend_native", source == "mt5"))
+    use_active_account = bool(live.get("use_active_account", source == "mt5"))
+    if execution_mode == _LIVE_EXECUTION_MODE_MT5:
+        # Hard requirements for live order routing.
+        source = "mt5"
+        backend_native = True
+        use_active_account = True
+    max_risk = _to_float_or_none(live.get("max_risk_per_trade_usd"))
+    if max_risk is None:
+        max_risk = float(_LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD)
+    max_risk = max(0.0, min(1_000_000_000.0, float(max_risk)))
+    max_lot = _to_float_or_none(live.get("max_lot_per_trade"))
+    if max_lot is None:
+        max_lot = float(_LIVE_DEFAULT_MAX_LOT_PER_TRADE)
+    max_lot = max(0.0, min(100.0, float(max_lot)))
+    daily_loss_limit = _to_float_or_none(live.get("daily_loss_limit_usd"))
+    if daily_loss_limit is not None:
+        daily_loss_limit = max(0.0, min(1_000_000_000.0, float(daily_loss_limit)))
+    return {
+        "enabled": bool(live.get("enabled", str(session.mode or "").strip().lower() == "live")),
+        "source": source,
+        "backend_native": bool(backend_native),
+        "use_active_account": bool(use_active_account),
+        "execution_mode": str(execution_mode),
+        "kill_switch_enabled": bool(live.get("kill_switch_enabled", execution_mode == _LIVE_EXECUTION_MODE_MT5)),
+        "max_risk_per_trade_usd": float(max_risk),
+        "max_lot_per_trade": float(max_lot),
+        "daily_loss_limit_usd": float(daily_loss_limit) if daily_loss_limit is not None else None,
+        "require_confirmation_for_live_order": bool(live.get("require_confirmation_for_live_order", True)),
+        "daily_loss_anchor_balance": _to_float_or_none(live.get("daily_loss_anchor_balance")),
+        "daily_loss_anchor_date_utc": (
+            str(live.get("daily_loss_anchor_date_utc") or "").strip() or None
+        ),
+    }
+
+
+def _is_live_mt5_execution_enabled(session: SimulationSession) -> bool:
+    live = _session_live_control_dict(session)
+    return (
+        str(session.mode or "").strip().lower() == "live"
+        and bool(live.get("enabled"))
+        and str(live.get("source") or "").strip().lower() == "mt5"
+        and str(live.get("execution_mode") or "").strip().lower() == _LIVE_EXECUTION_MODE_MT5
+    )
+
+
+def _touch_live_daily_anchor(
+    *,
+    session: SimulationSession,
+    db: Session,
+    live: Dict[str, Any],
+    account_balance: float,
+    now: datetime,
+) -> Dict[str, Any]:
+    today = now.date().isoformat()
+    anchor_date = str(live.get("daily_loss_anchor_date_utc") or "").strip()
+    anchor_balance = _to_float_or_none(live.get("daily_loss_anchor_balance"))
+    changed = False
+    if anchor_balance is None or (not math.isfinite(float(anchor_balance))) or float(anchor_balance) <= 0.0 or anchor_date != today:
+        anchor_balance = float(account_balance)
+        anchor_date = str(today)
+        changed = True
+    loss_usd = max(0.0, float(anchor_balance) - float(account_balance))
+    if changed:
+        cfg = _session_config_dict(session)
+        lc = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+        lc["daily_loss_anchor_balance"] = float(anchor_balance)
+        lc["daily_loss_anchor_date_utc"] = str(anchor_date)
+        cfg["live_control"] = lc
+        session.config_json = json.dumps(cfg)
+        session.updated_at = datetime.utcnow()
+        db.add(session)
+        db.flush()
+    return {
+        "anchor_balance": float(anchor_balance),
+        "anchor_date_utc": str(anchor_date),
+        "current_balance": float(account_balance),
+        "loss_usd": float(loss_usd),
+        "changed": bool(changed),
+    }
+
+
+def _session_is_live_mt5_account_sync(session: SimulationSession) -> bool:
+    if str(session.mode or "").strip().lower() != "live":
+        return False
+    live = _session_live_control_dict(session)
+    return (
+        bool(live.get("enabled"))
+        and str(live.get("source") or "").strip().lower() == "mt5"
+        and bool(live.get("use_active_account", True))
+    )
+
+
+def _mt5_active_account_snapshot(
+    *,
+    session: SimulationSession,
+    include_positions: bool = False,
+    open_limit: int = 50,
+) -> Optional[Dict[str, Any]]:
+    if not _session_is_live_mt5_account_sync(session):
+        return None
+    try:
+        service = _get_mt5_service_singleton()
+        account = service.get_account_info()
+    except Exception:
+        return None
+    if not isinstance(account, dict) or str(account.get("error") or "").strip():
+        return None
+
+    snap: Dict[str, Any] = {
+        "source": "mt5_active_account",
+        "login": account.get("login"),
+        "server": account.get("server"),
+        "name": account.get("name"),
+        "currency": account.get("currency"),
+        "balance": _to_float_or_none(account.get("balance")),
+        "equity": _to_float_or_none(account.get("equity")),
+        "margin": _to_float_or_none(account.get("margin")),
+        "margin_free": _to_float_or_none(account.get("margin_free")),
+        "margin_level": _to_float_or_none(account.get("margin_level")),
+        "profit": _to_float_or_none(account.get("profit")),
+        "trade_allowed": bool(account.get("trade_allowed", False)),
+        "leverage": account.get("leverage"),
+        "fetched_at": _utc_now().isoformat(),
+    }
+
+    if bool(include_positions):
+        lim = max(1, min(500, int(open_limit)))
+        try:
+            raw_positions = service.get_open_positions(symbol=None)
+        except Exception:
+            raw_positions = []
+        normalized: List[Dict[str, Any]] = []
+        for row in raw_positions:
+            if not isinstance(row, dict):
+                continue
+            normalized.append(
+                {
+                    "ticket": int(row.get("ticket") or 0),
+                    "id": int(row.get("ticket") or 0),
+                    "symbol": str(row.get("symbol") or ""),
+                    "direction": str(row.get("direction") or "").upper(),
+                    "entry_price": _to_float_or_none(row.get("entry_price")),
+                    "current_price": _to_float_or_none(row.get("current_price")),
+                    "stop_loss": _to_float_or_none(row.get("stop_loss")),
+                    "take_profit": _to_float_or_none(row.get("take_profit")),
+                    "lot_size": _to_float_or_none(row.get("lot_size")),
+                    "profit_loss": _to_float_or_none(row.get("profit_loss")),
+                    "swap": _to_float_or_none(row.get("swap")),
+                    "opened_at": row.get("entry_time"),
+                    "comment": str(row.get("comment") or "") or None,
+                }
+            )
+        normalized.sort(key=lambda p: (str(p.get("symbol") or ""), int(p.get("ticket") or 0)))
+        snap["open_positions"] = normalized[:lim]
+        snap["open_count"] = int(len(normalized))
+    return snap
+
+
+def _session_sync_live_mt5_account(
+    *,
+    session: SimulationSession,
+    db: Optional[Session] = None,
+    include_positions: bool = False,
+    open_limit: int = 50,
+    persist: bool = False,
+    auto_commit: bool = False,
+) -> Optional[Dict[str, Any]]:
+    snap = _mt5_active_account_snapshot(
+        session=session,
+        include_positions=include_positions,
+        open_limit=open_limit,
+    )
+    if not isinstance(snap, dict):
+        return None
+    bal = _to_float_or_none(snap.get("balance"))
+    if bal is not None and math.isfinite(float(bal)):
+        session.current_balance = float(bal)
+        if _to_float_or_none(session.initial_balance) is None:
+            session.initial_balance = float(bal)
+        session.total_pnl = float(session.current_balance or 0.0) - float(session.initial_balance or 0.0)
+        session.updated_at = datetime.utcnow()
+        if bool(persist) and db is not None:
+            if bool(auto_commit):
+                db.commit()
+            else:
+                db.flush()
+    return snap
+
+
+def _session_stats_payload(
+    *,
+    session: SimulationSession,
+    mt5_account: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    initial_balance = _to_float_or_none(session.initial_balance)
+    if initial_balance is None:
+        initial_balance = 0.0
+    current_balance = _to_float_or_none(session.current_balance)
+    if current_balance is None:
+        current_balance = float(initial_balance)
+    account_source = "session_db"
+    currency = None
+    login = None
+    server = None
+    equity = None
+    margin_level = None
+    if isinstance(mt5_account, dict):
+        mt5_balance = _to_float_or_none(mt5_account.get("balance"))
+        if mt5_balance is not None:
+            current_balance = float(mt5_balance)
+            account_source = "mt5_active_account"
+        currency = str(mt5_account.get("currency") or "") or None
+        login = mt5_account.get("login")
+        server = str(mt5_account.get("server") or "") or None
+        equity = _to_float_or_none(mt5_account.get("equity"))
+        margin_level = _to_float_or_none(mt5_account.get("margin_level"))
+    total_pnl = float(current_balance) - float(initial_balance)
+    return {
+        "initial_balance": float(initial_balance),
+        "current_balance": float(current_balance),
+        "total_pnl": float(total_pnl),
+        "trades_count": int(session.trades_count or 0),
+        "wins": int(session.wins or 0),
+        "losses": int(session.losses or 0),
+        "account_source": account_source,
+        "currency": currency,
+        "account_login": login,
+        "account_server": server,
+        "equity": equity,
+        "margin_level": margin_level,
+    }
+
+
 def _agent_effective_tool_config(
     *,
     session: SimulationSession,
@@ -1969,6 +2501,33 @@ def _normalize_agent_strategy_profile(value: Any) -> str:
         "trendilo_confirm",
     }:
         return "trendilo_confirmation_v1"
+    if raw in {
+        "advanced_trendilo",
+        "advanced_trendilo_strategy",
+        "advanced_trendilo_v1",
+        "trendilo_advanced",
+        "advanced_trendilo_confirmation",
+    }:
+        return "advanced_trendilo_confirmation_v1"
+    if raw in {
+        "trendilo_lsma",
+        "trendilo_lsma_strategy",
+        "trendilo_lsma_v1",
+        "lsma",
+        "lsma_trendilo",
+        "trendilo_lsma_confirmation",
+    }:
+        return "trendilo_lsma_confirmation_v1"
+    if raw in {
+        "alpha_wave",
+        "alpha_wave_strategy",
+        "alpha_wave_v1",
+        "alphawave",
+        "alphawave",
+        "daviddtech",
+        "alpha_wave_confirmation",
+    }:
+        return "alpha_wave_confirmation_v1"
     return "classic_htf_fvg"
 
 
@@ -2723,6 +3282,98 @@ def _agent_session_window_for_symbol(symbol: str) -> Optional[Dict[str, int]]:
     return None
 
 
+def _agent_guardrail_trade_risk_cap_usd(
+    cfg: Optional[Dict[str, Any]],
+    *,
+    live_execution: bool = False,
+) -> Optional[float]:
+    raw_cfg = cfg if isinstance(cfg, dict) else {}
+    cap = _to_float_or_none(raw_cfg.get("guardrail_max_risk_per_trade_usd"))
+    if cap is None:
+        # Backward-compatible alias.
+        cap = _to_float_or_none(raw_cfg.get("guardrail_trade_risk_cap_usd"))
+    if cap is None:
+        cap = _to_float_or_none(os.getenv("AGENT_GUARDRAIL_MAX_RISK_PER_TRADE_USD"))
+    if cap is None:
+        # Safety default applies only for live MT5 execution.
+        # Paper mode keeps historical behavior (no implicit cap).
+        cap = 5.0 if bool(live_execution) else None
+    if cap is None or (not math.isfinite(float(cap))):
+        return None
+    cap_value = max(0.0, min(1_000_000_000.0, float(cap)))
+    if cap_value <= 0.0:
+        return None
+    return float(cap_value)
+
+
+def _agent_guardrail_check_trade_risk(
+    *,
+    symbol: str,
+    entry_price: Optional[float],
+    stop_loss: Optional[float],
+    lot_size: Optional[float],
+    cfg: Optional[Dict[str, Any]],
+    point_value_per_1lot: Optional[float] = None,
+    live_execution: bool = False,
+) -> Dict[str, Any]:
+    cap_usd = _agent_guardrail_trade_risk_cap_usd(cfg, live_execution=bool(live_execution))
+    if cap_usd is None:
+        return {
+            "enabled": False,
+            "ok": True,
+            "cap_usd": None,
+            "risk_usd": None,
+            "value_per_1lot": None,
+            "error": None,
+        }
+    entry = _to_float_or_none(entry_price)
+    stop = _to_float_or_none(stop_loss)
+    lot = _to_float_or_none(lot_size)
+    if entry is None or stop is None or lot is None:
+        return {
+            "enabled": True,
+            "ok": False,
+            "cap_usd": float(cap_usd),
+            "risk_usd": None,
+            "value_per_1lot": None,
+            "error": "invalid_trade_risk_inputs",
+        }
+    if (not math.isfinite(float(entry))) or (not math.isfinite(float(stop))) or (not math.isfinite(float(lot))) or float(lot) <= 0.0:
+        return {
+            "enabled": True,
+            "ok": False,
+            "cap_usd": float(cap_usd),
+            "risk_usd": None,
+            "value_per_1lot": None,
+            "error": "invalid_trade_risk_inputs",
+        }
+    symbol_norm = str(symbol or "").strip().upper()
+    inst = get_instrument(normalize_strategy_symbol(symbol_norm) or symbol_norm or "XAUUSD")
+    value_per_1lot = _to_float_or_none(point_value_per_1lot)
+    if value_per_1lot is None:
+        value_per_1lot = float(inst.contract_size)
+    if (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+        return {
+            "enabled": True,
+            "ok": False,
+            "cap_usd": float(cap_usd),
+            "risk_usd": None,
+            "value_per_1lot": None,
+            "error": "invalid_point_value_per_1lot",
+        }
+    risk_distance = abs(float(entry) - float(stop))
+    risk_usd = float(risk_distance * float(value_per_1lot) * float(lot))
+    ok = bool(risk_usd <= float(cap_usd) + 1e-9)
+    return {
+        "enabled": True,
+        "ok": bool(ok),
+        "cap_usd": float(cap_usd),
+        "risk_usd": float(risk_usd),
+        "value_per_1lot": float(value_per_1lot),
+        "error": None if ok else "risk_cap_per_trade",
+    }
+
+
 def _agent_trade_guardrails(
     *,
     session: SimulationSession,
@@ -2746,6 +3397,11 @@ def _agent_trade_guardrails(
     news_lookback_min = max(15, min(24 * 60, int(news_lookback_min)))
     if not guardrail_enabled:
         details["guardrails_disabled"] = True
+    cap_usd = _agent_guardrail_trade_risk_cap_usd(
+        cfg,
+        live_execution=_is_live_mt5_execution_enabled(session),
+    )
+    details["max_risk_per_trade_usd"] = float(round(cap_usd, 4)) if cap_usd is not None else None
 
     if session_enabled:
         wnd = _agent_session_window_for_symbol(str(session.symbol or ""))
@@ -4470,10 +5126,11 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Unsupported simulation strategy: {req.strategy_id}")
 
     config = req.config or {}
-    config["initial_balance"] = req.initial_balance
     mode = str(req.mode or "replay").strip().lower()
     if mode not in {"replay", "live"}:
         mode = "replay"
+    seeded_initial_balance = float(req.initial_balance)
+    mt5_bootstrap_account: Optional[Dict[str, Any]] = None
     if req.strategy_id == WORKBENCH_ID:
         cm = config.get("cost_model") if isinstance(config.get("cost_model"), dict) else {}
         spread_source = str(cm.get("spread_source") or _COST_SPREAD_SOURCE_MANUAL).strip().lower()
@@ -4489,11 +5146,69 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         source = str(live_cfg.get("source") or "mt5").strip().lower() or "mt5"
         if source not in {"mt5", "databento"}:
             source = "mt5"
+        execution_mode = str(live_cfg.get("execution_mode") or _LIVE_EXECUTION_MODE_PAPER).strip().lower()
+        if execution_mode not in _LIVE_EXECUTION_MODES:
+            execution_mode = _LIVE_EXECUTION_MODE_PAPER
+        if execution_mode == _LIVE_EXECUTION_MODE_MT5:
+            source = "mt5"
         config["live_control"] = {
             "enabled": bool(live_cfg.get("enabled", mode == "live")),
             "source": source,
             "backend_native": bool(live_cfg.get("backend_native", source == "mt5")),
+            "use_active_account": bool(live_cfg.get("use_active_account", source == "mt5")),
+            "execution_mode": execution_mode,
+            "kill_switch_enabled": bool(live_cfg.get("kill_switch_enabled", execution_mode == _LIVE_EXECUTION_MODE_MT5)),
+            "max_risk_per_trade_usd": float(max(0.0, _to_float_or_none(live_cfg.get("max_risk_per_trade_usd")) or _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD)),
+            "max_lot_per_trade": float(max(0.0, _to_float_or_none(live_cfg.get("max_lot_per_trade")) or _LIVE_DEFAULT_MAX_LOT_PER_TRADE)),
+            "daily_loss_limit_usd": _to_float_or_none(live_cfg.get("daily_loss_limit_usd")),
+            "require_confirmation_for_live_order": bool(live_cfg.get("require_confirmation_for_live_order", True)),
+            "daily_loss_anchor_balance": _to_float_or_none(live_cfg.get("daily_loss_anchor_balance")),
+            "daily_loss_anchor_date_utc": str(live_cfg.get("daily_loss_anchor_date_utc") or "").strip() or None,
         }
+
+        live_ctrl = config.get("live_control") if isinstance(config.get("live_control"), dict) else {}
+        if (
+            mode == "live"
+            and bool(live_ctrl.get("enabled"))
+            and str(live_ctrl.get("source") or "").strip().lower() == "mt5"
+            and bool(live_ctrl.get("use_active_account", True))
+        ):
+            try:
+                service = _get_mt5_service_singleton()
+                account = service.get_account_info()
+            except Exception:
+                account = {}
+            if isinstance(account, dict) and not str(account.get("error") or "").strip():
+                bal = _to_float_or_none(account.get("balance"))
+                if bal is not None and math.isfinite(float(bal)):
+                    seeded_initial_balance = float(bal)
+                    mt5_bootstrap_account = {
+                        "login": account.get("login"),
+                        "server": account.get("server"),
+                        "name": account.get("name"),
+                        "currency": account.get("currency"),
+                        "leverage": _to_float_or_none(account.get("leverage")),
+                        "balance_at_session_start": float(bal),
+                        "captured_at": _utc_now().isoformat(),
+                    }
+                    config["mt5_account_anchor"] = mt5_bootstrap_account
+                    # Initialize daily-loss anchor at session creation time.
+                    config["live_control"]["daily_loss_anchor_balance"] = float(bal)
+                    config["live_control"]["daily_loss_anchor_date_utc"] = _utc_now().date().isoformat()
+        try:
+            econ = _build_symbol_economics_snapshot(
+                symbol=str(req.symbol or "XAUUSD"),
+                prefer_mt5=bool(str((config.get("live_control") or {}).get("source") or "mt5").strip().lower() == "mt5"),
+                account_balance=float(seeded_initial_balance),
+                account_leverage=_to_float_or_none((mt5_bootstrap_account or {}).get("leverage")),
+            )
+            if isinstance(econ, dict) and econ:
+                config["symbol_economics"] = econ
+        except Exception:
+            # Symbol economics is additive metadata; do not fail session bootstrap.
+            pass
+
+    config["initial_balance"] = float(seeded_initial_balance)
 
     session = SimulationSession(
         strategy_id=req.strategy_id,
@@ -4501,8 +5216,8 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         timeframe=req.timeframe,
         mode=mode,
         data_file=req.data_file,
-        initial_balance=req.initial_balance,
-        current_balance=req.initial_balance,
+        initial_balance=float(seeded_initial_balance),
+        current_balance=float(seeded_initial_balance),
         config_json=json.dumps(config),
     )
     db.add(session)
@@ -4553,8 +5268,12 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         "mode": session.mode,
         "total_bars": session.total_bars,
         "initial_balance": session.initial_balance,
+        "current_balance": session.current_balance,
         "status": session.status,
         "cost_model": (config.get("cost_model") if isinstance(config.get("cost_model"), dict) else None),
+        "symbol_economics": (config.get("symbol_economics") if isinstance(config.get("symbol_economics"), dict) else None),
+        "account_source": "mt5_active_account" if mt5_bootstrap_account is not None else "session_seed",
+        "mt5_account_anchor": mt5_bootstrap_account,
     }
 
 
@@ -4562,6 +5281,7 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
 def list_sessions(
     strategy_id: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
+    include_automation_children: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
@@ -4571,9 +5291,14 @@ def list_sessions(
         q = q.filter(SimulationSession.strategy_id == str(strategy_id).strip())
     if status is not None and str(status).strip():
         q = q.filter(SimulationSession.status == str(status).strip().lower())
-    rows = q.order_by(desc(SimulationSession.updated_at), desc(SimulationSession.id)).limit(int(limit)).all()
+    scan_limit = int(max(int(limit), min(5000, int(limit) * 8)))
+    rows = q.order_by(desc(SimulationSession.updated_at), desc(SimulationSession.id)).limit(scan_limit).all()
     out = []
     for s in rows:
+        is_auto_child = _is_automation_child_session(s)
+        if (not bool(include_automation_children)) and bool(is_auto_child):
+            continue
+        auto_cfg = _strategy_automation_cfg(s) if is_auto_child else {}
         out.append(
             {
                 "id": int(s.id),
@@ -4589,8 +5314,16 @@ def list_sessions(
                 "total_pnl": float(s.total_pnl or 0.0),
                 "trades_count": int(s.trades_count or 0),
                 "updated_at": s.updated_at.isoformat() if getattr(s, "updated_at", None) else None,
+                "is_automation_child": bool(is_auto_child),
+                "automation_parent_session_id": (
+                    int(_to_float_or_none(auto_cfg.get("parent_session_id")) or 0)
+                    if bool(is_auto_child)
+                    else None
+                ),
             }
         )
+        if len(out) >= int(limit):
+            break
     return {"ok": True, "count": len(out), "sessions": out}
 
 
@@ -4606,6 +5339,20 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
     ).order_by(SimulationTrade.id.desc()).limit(50).all()
 
     cfg = _session_config_dict(session)
+    live = _session_live_control_dict(session)
+    mt5_account = _session_sync_live_mt5_account(
+        session=session,
+        db=db,
+        include_positions=False,
+        persist=False,
+    )
+    session_stats = _session_stats_payload(session=session, mt5_account=mt5_account)
+    symbol_economics = _session_symbol_economics_snapshot(
+        session=session,
+        session_cfg=cfg,
+        mt5_account=mt5_account,
+        refresh_mt5=bool(str(live.get("source") or "").strip().lower() == "mt5"),
+    )
     return {
         "id": session.id,
         "strategy_id": session.strategy_id,
@@ -4614,14 +5361,37 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
         "mode": session.mode,
         "current_bar": session.current_bar,
         "total_bars": session.total_bars,
-        "initial_balance": session.initial_balance,
-        "current_balance": session.current_balance,
-        "total_pnl": session.total_pnl,
-        "trades_count": session.trades_count,
-        "wins": session.wins,
-        "losses": session.losses,
+        "initial_balance": float(session_stats.get("initial_balance") or 0.0),
+        "current_balance": float(session_stats.get("current_balance") or 0.0),
+        "total_pnl": float(session_stats.get("total_pnl") or 0.0),
+        "trades_count": int(session_stats.get("trades_count") or 0),
+        "wins": int(session_stats.get("wins") or 0),
+        "losses": int(session_stats.get("losses") or 0),
+        "account_source": str(session_stats.get("account_source") or "session_db"),
+        "account_currency": session_stats.get("currency"),
+        "account_login": session_stats.get("account_login"),
+        "account_server": session_stats.get("account_server"),
+        "account_equity": session_stats.get("equity"),
         "status": session.status,
         "cost_model": cfg.get("cost_model") if isinstance(cfg.get("cost_model"), dict) else None,
+        "live_control": live,
+        "live_account": (
+            {
+                "source": "mt5_active_account",
+                "login": mt5_account.get("login"),
+                "server": mt5_account.get("server"),
+                "name": mt5_account.get("name"),
+                "currency": mt5_account.get("currency"),
+                "balance": _to_float_or_none(mt5_account.get("balance")),
+                "equity": _to_float_or_none(mt5_account.get("equity")),
+                "margin_level": _to_float_or_none(mt5_account.get("margin_level")),
+                "trade_allowed": bool(mt5_account.get("trade_allowed", False)),
+                "leverage": _to_float_or_none(mt5_account.get("leverage")),
+            }
+            if isinstance(mt5_account, dict)
+            else None
+        ),
+        "symbol_economics": symbol_economics if isinstance(symbol_economics, dict) else None,
         "trades": [
             {
                 "id": t.id,
@@ -4700,32 +5470,189 @@ def update_session_live_control(session_id: int, req: LiveControlRequest, db: Se
         raise HTTPException(404, "Session not found")
 
     cfg = _session_config_dict(session)
-    live = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
-    source = str(req.source or live.get("source") or "mt5").strip().lower() or "mt5"
+    live_raw = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+    live_now = _session_live_control_dict(session)
+    source = str(req.source or live_now.get("source") or "mt5").strip().lower() or "mt5"
     if source not in {"mt5", "databento"}:
         source = "mt5"
-    enabled = bool(req.enabled)
-    live["enabled"] = enabled
-    live["source"] = source
-    live["backend_native"] = bool(req.backend_native and source == "mt5" and enabled)
-    live["updated_at"] = datetime.utcnow().isoformat()
+    execution_mode = str(req.execution_mode or live_now.get("execution_mode") or _LIVE_EXECUTION_MODE_PAPER).strip().lower()
+    if execution_mode not in _LIVE_EXECUTION_MODES:
+        execution_mode = _LIVE_EXECUTION_MODE_PAPER
+    if execution_mode == _LIVE_EXECUTION_MODE_MT5:
+        source = "mt5"
+    enabled = bool(live_now.get("enabled")) if req.enabled is None else bool(req.enabled)
+    backend_native = (
+        bool(live_now.get("backend_native"))
+        if req.backend_native is None
+        else bool(req.backend_native)
+    )
+    if execution_mode == _LIVE_EXECUTION_MODE_MT5:
+        backend_native = True
+    backend_native = bool(backend_native and source == "mt5" and enabled)
+    use_active_account = (
+        bool(live_now.get("use_active_account"))
+        if req.use_active_account is None
+        else bool(req.use_active_account)
+    )
+    if execution_mode == _LIVE_EXECUTION_MODE_MT5:
+        use_active_account = True
+    kill_switch_enabled = (
+        bool(live_now.get("kill_switch_enabled"))
+        if req.kill_switch_enabled is None
+        else bool(req.kill_switch_enabled)
+    )
+    max_risk_per_trade_usd = (
+        float(live_now.get("max_risk_per_trade_usd") or _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD)
+        if req.max_risk_per_trade_usd is None
+        else float(req.max_risk_per_trade_usd)
+    )
+    max_lot_per_trade = (
+        float(live_now.get("max_lot_per_trade") or _LIVE_DEFAULT_MAX_LOT_PER_TRADE)
+        if req.max_lot_per_trade is None
+        else float(req.max_lot_per_trade)
+    )
+    daily_loss_limit_usd = (
+        _to_float_or_none(live_now.get("daily_loss_limit_usd"))
+        if req.daily_loss_limit_usd is None
+        else _to_float_or_none(req.daily_loss_limit_usd)
+    )
+    require_confirmation_for_live_order = (
+        bool(live_now.get("require_confirmation_for_live_order", True))
+        if req.require_confirmation_for_live_order is None
+        else bool(req.require_confirmation_for_live_order)
+    )
+    live = {
+        **(live_raw if isinstance(live_raw, dict) else {}),
+        "enabled": bool(enabled),
+        "source": str(source),
+        "backend_native": bool(backend_native),
+        "use_active_account": bool(use_active_account),
+        "execution_mode": str(execution_mode),
+        "kill_switch_enabled": bool(kill_switch_enabled),
+        "max_risk_per_trade_usd": float(max(0.0, min(1_000_000_000.0, float(max_risk_per_trade_usd)))),
+        "max_lot_per_trade": float(max(0.0, min(100.0, float(max_lot_per_trade)))),
+        "daily_loss_limit_usd": (
+            float(max(0.0, min(1_000_000_000.0, float(daily_loss_limit_usd))))
+            if daily_loss_limit_usd is not None
+            else None
+        ),
+        "require_confirmation_for_live_order": bool(require_confirmation_for_live_order),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
     cfg["live_control"] = live
     session.config_json = json.dumps(cfg)
-    if enabled:
+    if bool(enabled):
         session.mode = "live"
+    mt5_account = _session_sync_live_mt5_account(
+        session=session,
+        db=db,
+        include_positions=False,
+        persist=False,
+    )
+    if (
+        bool(enabled)
+        and str(source or "").strip().lower() == "mt5"
+        and bool(use_active_account)
+        and isinstance(mt5_account, dict)
+    ):
+        bal = _to_float_or_none(mt5_account.get("balance"))
+        if bal is not None and math.isfinite(float(bal)):
+            # Re-anchor simulation balance to active MT5 account when switching to live mode
+            # for a fresh session that has no realized history yet.
+            if int(session.trades_count or 0) <= 0 and abs(float(session.total_pnl or 0.0)) < 1e-9:
+                session.initial_balance = float(bal)
+                cfg["initial_balance"] = float(bal)
+                session.config_json = json.dumps(cfg)
+            session.current_balance = float(bal)
+            session.total_pnl = float(session.current_balance or 0.0) - float(session.initial_balance or 0.0)
+            if str(execution_mode) == _LIVE_EXECUTION_MODE_MT5:
+                live["daily_loss_anchor_balance"] = float(bal)
+                live["daily_loss_anchor_date_utc"] = _utc_now().date().isoformat()
+                cfg["live_control"] = live
+                session.config_json = json.dumps(cfg)
+
+    # Propagate live execution guardrails/routing to strategy-automation child sessions.
+    propagated_child_sessions = 0
+    if str(session.strategy_id or "").strip() == WORKBENCH_ID:
+        child_rows = (
+            db.query(SimulationSession)
+            .filter(SimulationSession.strategy_id == WORKBENCH_ID)
+            .filter(SimulationSession.id != int(session.id))
+            .all()
+        )
+        for child in child_rows:
+            try:
+                auto_cfg = _strategy_automation_cfg(child)
+            except Exception:
+                auto_cfg = {}
+            parent_id = int(_to_float_or_none((auto_cfg or {}).get("parent_session_id")) or 0)
+            if parent_id != int(session.id):
+                continue
+            child_cfg = _session_config_dict(child)
+            child_live_raw = child_cfg.get("live_control") if isinstance(child_cfg.get("live_control"), dict) else {}
+            child_live_next = {
+                **(child_live_raw if isinstance(child_live_raw, dict) else {}),
+                "enabled": bool(live.get("enabled", True)),
+                "source": str(live.get("source") or "mt5"),
+                "backend_native": bool(live.get("backend_native", True)),
+                "use_active_account": bool(live.get("use_active_account", True)),
+                "execution_mode": str(live.get("execution_mode") or _LIVE_EXECUTION_MODE_PAPER),
+                "kill_switch_enabled": bool(live.get("kill_switch_enabled", False)),
+                "max_risk_per_trade_usd": float(_to_float_or_none(live.get("max_risk_per_trade_usd")) or _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD),
+                "max_lot_per_trade": float(_to_float_or_none(live.get("max_lot_per_trade")) or _LIVE_DEFAULT_MAX_LOT_PER_TRADE),
+                "daily_loss_limit_usd": _to_float_or_none(live.get("daily_loss_limit_usd")),
+                "require_confirmation_for_live_order": bool(live.get("require_confirmation_for_live_order", True)),
+                "daily_loss_anchor_balance": _to_float_or_none(live.get("daily_loss_anchor_balance"))
+                if live.get("daily_loss_anchor_balance") is not None
+                else _to_float_or_none(child_live_raw.get("daily_loss_anchor_balance")),
+                "daily_loss_anchor_date_utc": (
+                    str(live.get("daily_loss_anchor_date_utc") or "").strip()
+                    or str(child_live_raw.get("daily_loss_anchor_date_utc") or "").strip()
+                    or None
+                ),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            child_cfg["live_control"] = child_live_next
+            child.config_json = json.dumps(child_cfg)
+            if bool(child_live_next.get("enabled")):
+                child.mode = "live"
+            child.updated_at = datetime.utcnow()
+            db.add(child)
+            propagated_child_sessions += 1
     session.updated_at = datetime.utcnow()
     db.add(session)
     db.commit()
     db.refresh(session)
+    live_out = _session_live_control_dict(session)
+    session_stats = _session_stats_payload(session=session, mt5_account=mt5_account)
+    symbol_economics = _session_symbol_economics_snapshot(
+        session=session,
+        session_cfg=cfg,
+        mt5_account=mt5_account,
+        refresh_mt5=bool(str(live_out.get("source") or "").strip().lower() == "mt5"),
+    )
     return {
         "ok": True,
         "session_id": int(session.id),
         "mode": str(session.mode or ""),
-        "live_control": {
-            "enabled": bool(live.get("enabled", False)),
-            "source": str(live.get("source") or ""),
-            "backend_native": bool(live.get("backend_native", False)),
-        },
+        "initial_balance": float(session_stats.get("initial_balance") or 0.0),
+        "current_balance": float(session_stats.get("current_balance") or 0.0),
+        "account_source": str(session_stats.get("account_source") or "session_db"),
+        "live_control": live_out,
+        "live_account": (
+            {
+                "login": mt5_account.get("login"),
+                "server": mt5_account.get("server"),
+                "currency": mt5_account.get("currency"),
+                "balance": _to_float_or_none(mt5_account.get("balance")),
+                "equity": _to_float_or_none(mt5_account.get("equity")),
+                "leverage": _to_float_or_none(mt5_account.get("leverage")),
+            }
+            if isinstance(mt5_account, dict)
+            else None
+        ),
+        "symbol_economics": symbol_economics if isinstance(symbol_economics, dict) else None,
+        "propagated_child_sessions": int(propagated_child_sessions),
     }
 
 
@@ -4955,17 +5882,142 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
     if req.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "Direction must be BUY or SELL")
 
+    live_exec_enabled = _is_live_mt5_execution_enabled(session)
+    live_ctrl = _session_live_control_dict(session) if live_exec_enabled else {}
+
+    if live_exec_enabled and bool(live_ctrl.get("kill_switch_enabled", False)):
+        raise HTTPException(403, "live_execution_blocked:kill_switch_enabled")
+
+    if live_exec_enabled and bool(live_ctrl.get("require_confirmation_for_live_order", True)):
+        if not bool(req.confirm_live_order):
+            raise HTTPException(
+                400,
+                (
+                    "live_confirmation_required:"
+                    f"set confirm_live_order=true and live_confirmation_phrase={_LIVE_CONFIRMATION_PHRASE}"
+                ),
+            )
+        phrase = str(req.live_confirmation_phrase or "").strip().upper()
+        if phrase != str(_LIVE_CONFIRMATION_PHRASE):
+            raise HTTPException(400, "live_confirmation_phrase_invalid")
+
+    if live_exec_enabled:
+        max_lot = _to_float_or_none(live_ctrl.get("max_lot_per_trade"))
+        if max_lot is not None and float(max_lot) > 0.0 and float(req.lot_size) > float(max_lot) + 1e-9:
+            raise HTTPException(
+                400,
+                f"lot_size_exceeds_live_cap: lot_size={float(req.lot_size):.4f} max_lot_per_trade={float(max_lot):.4f}",
+            )
+
     entry_mid = _to_float_or_none(req.entry_price)
     if entry_mid is None:
         if engine.df is None or engine.df.empty or engine.current_bar >= engine.total_bars:
-            raise HTTPException(400, "No market data available for trade entry price")
-        entry_mid = float(engine.df.iloc[engine.current_bar]["close"])
+            if live_exec_enabled:
+                try:
+                    mt5_service = _get_mt5_service_singleton()
+                    candle = mt5_service.get_current_candle(symbol=str(session.symbol or ""), timeframe=str(session.timeframe or "M1"))
+                except Exception:
+                    candle = {}
+                cpx = _to_float_or_none(candle.get("close")) if isinstance(candle, dict) else None
+                if cpx is None:
+                    raise HTTPException(400, "No market data available for trade entry price")
+                entry_mid = float(cpx)
+            else:
+                raise HTTPException(400, "No market data available for trade entry price")
+        else:
+            entry_mid = float(engine.df.iloc[engine.current_bar]["close"])
+
+    if live_exec_enabled:
+        risk_cfg = {
+            "guardrail_max_risk_per_trade_usd": _to_float_or_none(live_ctrl.get("max_risk_per_trade_usd")),
+        }
+        trade_math_ctx = _session_trade_math_context(
+            session=session,
+            symbol=str(session.symbol or "XAUUSD"),
+        )
+        point_value_for_risk = _to_float_or_none(trade_math_ctx.get("value_per_1lot"))
+        risk_check = _agent_guardrail_check_trade_risk(
+            symbol=str(session.symbol or ""),
+            entry_price=float(entry_mid),
+            stop_loss=_to_float_or_none(req.stop_loss),
+            lot_size=_to_float_or_none(req.lot_size),
+            cfg=risk_cfg,
+            point_value_per_1lot=point_value_for_risk,
+        )
+        if bool(risk_check.get("enabled")) and not bool(risk_check.get("ok")):
+            raise HTTPException(
+                400,
+                (
+                    "risk_amount_exceeds_live_cap:"
+                    f" risk_usd={float(risk_check.get('risk_usd') or 0.0):.4f}"
+                    f" cap_usd={float(risk_check.get('cap_usd') or 0.0):.4f}"
+                ),
+            )
+
+        daily_limit = _to_float_or_none(live_ctrl.get("daily_loss_limit_usd"))
+        if daily_limit is not None and float(daily_limit) > 0.0:
+            mt5_account = _session_sync_live_mt5_account(
+                session=session,
+                db=db,
+                include_positions=False,
+                persist=False,
+            )
+            bal = _to_float_or_none(mt5_account.get("balance")) if isinstance(mt5_account, dict) else None
+            if bal is None:
+                raise HTTPException(400, "live_account_balance_unavailable_for_daily_loss_check")
+            daily = _touch_live_daily_anchor(
+                session=session,
+                db=db,
+                live=live_ctrl,
+                account_balance=float(bal),
+                now=_utc_now(),
+            )
+            if float(daily.get("loss_usd") or 0.0) >= float(daily_limit) - 1e-9:
+                raise HTTPException(
+                    400,
+                    (
+                        "daily_loss_limit_reached:"
+                        f" loss_usd={float(daily.get('loss_usd') or 0.0):.4f}"
+                        f" limit_usd={float(daily_limit):.4f}"
+                    ),
+                )
+
     use_cost_model = _is_cost_model_enabled(session)
     cm = _session_cost_model(session, req.cost_spread, req.cost_tc_rate, req.cost_spread_source) if use_cost_model else None
     entry_fill = float(entry_mid)
     if use_cost_model and cm is not None:
         open_side = "buy" if str(req.direction).upper() == "BUY" else "sell"
         entry_fill = float(cm.apply_fill_spread(float(entry_mid), open_side))
+
+    live_exec_meta: Dict[str, Any] = {}
+    if live_exec_enabled:
+        mt5_service = _get_mt5_service_singleton()
+        mt5_result = mt5_service.place_market_order(
+            symbol=str(session.symbol or ""),
+            direction=str(req.direction or "").upper(),
+            lot_size=float(req.lot_size),
+            stop_loss=float(req.stop_loss),
+            take_profit=_to_float_or_none(req.take_profit),
+            comment=f"WB#{int(session.id)}",
+            deviation_points=20,
+        )
+        if not bool(mt5_result.get("ok")):
+            raise HTTPException(400, f"live_order_send_failed:{str(mt5_result.get('error') or 'unknown')}")
+        live_price = _to_float_or_none(mt5_result.get("price"))
+        if live_price is not None and math.isfinite(float(live_price)) and float(live_price) > 0.0:
+            entry_fill = float(live_price)
+            entry_mid = float(_to_float_or_none(mt5_result.get("requested_price")) or entry_fill)
+        live_exec_meta = {
+            "execution_mode": _LIVE_EXECUTION_MODE_MT5,
+            "requested_symbol": str(mt5_result.get("requested_symbol") or ""),
+            "resolved_symbol": str(mt5_result.get("symbol") or ""),
+            "retcode": mt5_result.get("retcode"),
+            "retcode_name": str(mt5_result.get("retcode_name") or ""),
+            "order": _to_float_or_none(mt5_result.get("order")),
+            "deal": _to_float_or_none(mt5_result.get("deal")),
+            "position_ticket": _to_float_or_none(mt5_result.get("position")),
+            "broker_comment": str(mt5_result.get("comment") or ""),
+        }
 
     trade_result = engine.execute_trade(
         direction=req.direction,
@@ -4990,6 +6042,7 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
         entry_fill_price=float(entry_fill),
         spread_value=float(cm.spread) if use_cost_model and cm is not None else None,
         tc_rate=float(cm.tc_rate) if use_cost_model and cm is not None else None,
+        cost_breakdown_json=({"execution": live_exec_meta} if live_exec_enabled and live_exec_meta else None),
     )
     db.add(trade)
     if auto_commit:
@@ -5051,6 +6104,7 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
         "lot_size": trade.lot_size,
         "spread_value": trade.spread_value,
         "tc_rate": trade.tc_rate,
+        "execution": live_exec_meta if live_exec_enabled else {"execution_mode": _LIVE_EXECUTION_MODE_PAPER},
         "status": "open",
     }
 
@@ -5074,12 +6128,192 @@ def close_trade(
     if trade.status != "open":
         raise HTTPException(400, "Trade is already closed")
 
+    if _is_live_mt5_execution_enabled(session):
+        live_ctrl = _session_live_control_dict(session)
+        if bool(live_ctrl.get("require_confirmation_for_live_order", True)):
+            if not bool(getattr(req, "confirm_live_order", False)):
+                raise HTTPException(
+                    400,
+                    (
+                        "live_confirmation_required:"
+                        f"set confirm_live_order=true and live_confirmation_phrase={_LIVE_CONFIRMATION_PHRASE}"
+                    ),
+                )
+            phrase = str(getattr(req, "live_confirmation_phrase", None) or "").strip().upper()
+            if phrase != str(_LIVE_CONFIRMATION_PHRASE):
+                raise HTTPException(400, "live_confirmation_phrase_invalid")
+        exec_meta = trade.cost_breakdown_json if isinstance(trade.cost_breakdown_json, dict) else {}
+        exec_ctx = exec_meta.get("execution") if isinstance(exec_meta.get("execution"), dict) else {}
+        pos_ticket_val = _to_float_or_none(exec_ctx.get("position_ticket"))
+        pos_ticket = int(pos_ticket_val) if pos_ticket_val is not None else None
+        mt5_service = _get_mt5_service_singleton()
+        close_result = mt5_service.close_position(
+            symbol=str(session.symbol or ""),
+            position_ticket=pos_ticket,
+            lot_size=_to_float_or_none(trade.lot_size),
+            deviation_points=20,
+            comment=f"WB_CLOSE#{int(session.id)}",
+        )
+        reconciled_missing_position = False
+        if not bool(close_result.get("ok")):
+            close_err = str(close_result.get("error") or "").strip().lower()
+            # Ticket can become stale (closed externally / remapped by broker). Try recovery by symbol positions.
+            if close_err == "position_not_found":
+                try:
+                    pos_rows = mt5_service.get_open_positions(symbol=str(session.symbol or "")) or []
+                except Exception:
+                    pos_rows = []
+                if isinstance(pos_rows, list) and pos_rows:
+                    desired_dir = str(trade.direction or "").strip().upper()
+                    desired_lot = _to_float_or_none(trade.lot_size) or 0.0
+                    candidates = [
+                        r for r in pos_rows
+                        if str(r.get("direction") or "").strip().upper() == desired_dir
+                    ]
+                    if not candidates:
+                        candidates = list(pos_rows)
+                    candidates.sort(
+                        key=lambda r: (
+                            abs((_to_float_or_none(r.get("lot_size")) or 0.0) - float(desired_lot)),
+                            int(_to_float_or_none(r.get("ticket")) or 0),
+                        )
+                    )
+                    chosen = candidates[0] if candidates else None
+                    chosen_ticket = int(_to_float_or_none((chosen or {}).get("ticket")) or 0)
+                    if chosen_ticket > 0:
+                        close_result = mt5_service.close_position(
+                            symbol=str(session.symbol or ""),
+                            position_ticket=chosen_ticket,
+                            lot_size=_to_float_or_none(trade.lot_size),
+                            deviation_points=20,
+                            comment=f"WB_CLOSE#{int(session.id)}",
+                        )
+                else:
+                    # No broker position exists anymore: reconcile local row as already closed.
+                    reconciled_missing_position = True
+                    close_result = {"ok": True, "position_ticket": pos_ticket, "order": 0, "deal": 0, "retcode": 0, "retcode_name": "RECONCILED_POSITION_NOT_FOUND", "comment": "reconciled"}
+            if not bool(close_result.get("ok")):
+                raise HTTPException(400, f"live_close_failed:{str(close_result.get('error') or 'unknown')}")
+        exit_fill = _to_float_or_none(close_result.get("price"))
+        if exit_fill is None:
+            exit_fill = _to_float_or_none(req.exit_price)
+        if exit_fill is None:
+            if bool(reconciled_missing_position):
+                exit_fill = _to_float_or_none(trade.entry_fill_price)
+            if exit_fill is None:
+                exit_fill = _to_float_or_none(trade.entry_price)
+        if exit_fill is None:
+            raise HTTPException(400, "live_close_missing_exit_price")
+        direction = str(trade.direction or "").upper()
+        trade_math = _session_trade_math_context(
+            session=session,
+            symbol=str(session.symbol or ""),
+        )
+        value_per_1lot = _to_float_or_none(trade_math.get("value_per_1lot"))
+        if value_per_1lot is None or (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+            value_per_1lot = float(_contract_size_for_symbol(str(session.symbol or "")))
+        lot = float(_to_float_or_none(trade.lot_size) or 0.0)
+        entry_fill = float(_to_float_or_none(trade.entry_fill_price) or _to_float_or_none(trade.entry_price) or 0.0)
+        pnl = (
+            (float(exit_fill) - float(entry_fill)) * float(lot) * float(value_per_1lot)
+            if direction == "BUY"
+            else (float(entry_fill) - float(exit_fill)) * float(lot) * float(value_per_1lot)
+        )
+        trade.exit_price = float(exit_fill)
+        trade.exit_mid_price = float(_to_float_or_none(req.exit_price) or exit_fill)
+        trade.exit_fill_price = float(exit_fill)
+        trade.exit_bar = int(session.current_bar or 0)
+        trade.exit_time = _utc_now().isoformat()
+        trade.exit_reason = "manual_live_reconciled" if bool(reconciled_missing_position) else "manual_live"
+        trade.raw_pnl = float(pnl)
+        trade.pnl = float(pnl)
+        trade.spread_cost = 0.0
+        trade.turnover_cost = 0.0
+        trade.total_cost = 0.0
+        trade.cost_breakdown_json = {
+            **(exec_meta if isinstance(exec_meta, dict) else {}),
+            "live_close": {
+                "order": close_result.get("order"),
+                "deal": close_result.get("deal"),
+                    "retcode": close_result.get("retcode"),
+                    "retcode_name": close_result.get("retcode_name"),
+                    "comment": close_result.get("comment"),
+                    "position_ticket": close_result.get("position_ticket"),
+                    "reconciled_position_not_found": bool(reconciled_missing_position),
+                },
+            }
+        risk = abs(float(_to_float_or_none(trade.entry_price) or entry_fill) - float(_to_float_or_none(trade.stop_loss) or entry_fill))
+        if risk > 1e-12:
+            trade.r_multiple = float(pnl) / float(risk * lot * float(value_per_1lot))
+        else:
+            trade.r_multiple = None
+        trade.status = "closed"
+        session.trades_count = int(session.trades_count or 0) + 1
+        if float(pnl) > 0.0:
+            session.wins = int(session.wins or 0) + 1
+        elif float(pnl) < 0.0:
+            session.losses = int(session.losses or 0) + 1
+        mt5_account = _session_sync_live_mt5_account(
+            session=session,
+            db=db,
+            include_positions=False,
+            persist=False,
+        )
+        if isinstance(mt5_account, dict):
+            bal = _to_float_or_none(mt5_account.get("balance"))
+            if bal is not None:
+                session.current_balance = float(bal)
+        session.total_pnl = float(session.current_balance or 0.0) - float(session.initial_balance or 0.0)
+        automation_stopped = False
+        if not bool(getattr(req, "automation_internal", False)):
+            automation_stopped = _strategy_automation_mark_stopped(
+                session=session,
+                db=db,
+                reason="manual_close_auto_stop",
+                action="stopped_by_manual_close",
+            )
+        session.updated_at = datetime.utcnow()
+        db.add(trade)
+        db.add(session)
+        if auto_commit:
+            db.commit()
+        else:
+            db.flush()
+        return {
+            "id": trade.id,
+            "direction": trade.direction,
+            "entry_price": trade.entry_price,
+            "exit_price": trade.exit_price,
+            "exit_reason": trade.exit_reason,
+            "pnl": trade.pnl,
+            "r_multiple": trade.r_multiple,
+            "status": "closed",
+            "execution": {
+                "execution_mode": _LIVE_EXECUTION_MODE_MT5,
+                "close": {
+                    "order": close_result.get("order"),
+                    "deal": close_result.get("deal"),
+                    "position_ticket": close_result.get("position_ticket"),
+                    "reconciled_position_not_found": bool(reconciled_missing_position),
+                },
+            },
+            "automation_stopped": bool(automation_stopped),
+        }
+
     engine = _get_or_create_engine(session, db)
     exit_mid = _to_float_or_none(req.exit_price)
     if exit_mid is None:
         if engine.df is None or engine.df.empty or engine.current_bar >= engine.total_bars:
-            raise HTTPException(400, "No market data available for close exit price")
-        exit_mid = float(engine.df.iloc[engine.current_bar]["close"])
+            # Fallback for data-less sessions (e.g., live/paper sessions without loaded replay CSV):
+            # allow manual close at entry price so position can always be released.
+            fallback_exit = _to_float_or_none(trade.entry_fill_price)
+            if fallback_exit is None:
+                fallback_exit = _to_float_or_none(trade.entry_price)
+            if fallback_exit is None or (not math.isfinite(float(fallback_exit))) or float(fallback_exit) <= 0.0:
+                raise HTTPException(400, "No market data available for close exit price")
+            exit_mid = float(fallback_exit)
+        else:
+            exit_mid = float(engine.df.iloc[engine.current_bar]["close"])
     use_cost_model = _is_cost_model_enabled(session)
     cm = _session_cost_model(session, req.cost_spread, req.cost_tc_rate, req.cost_spread_source) if use_cost_model else None
     exit_fill = float(exit_mid)
@@ -5087,12 +6321,52 @@ def close_trade(
         close_side = "sell" if str(trade.direction or "").upper() == "BUY" else "buy"
         exit_fill = float(cm.apply_fill_spread(float(exit_mid), close_side))
 
-    close_result = engine.close_position(
-        trade_id,
-        exit_price_override=exit_fill,
-        exit_time_unix=req.bar_time_unix,
-    )
-    if use_cost_model and cm is not None:
+    closed_via_engine = True
+    try:
+        close_result = engine.close_position(
+            trade_id,
+            exit_price_override=exit_fill,
+            exit_time_unix=req.bar_time_unix,
+        )
+    except ValueError as exc:
+        # Engine/DB desync fallback: allow manual close from persisted trade row.
+        msg = str(exc or "")
+        if "not found" not in msg.lower() and "no data available for close" not in msg.lower():
+            raise
+        closed_via_engine = False
+        direction = str(trade.direction or "").upper()
+        trade_math = _session_trade_math_context(
+            session=session,
+            symbol=str(session.symbol or ""),
+        )
+        value_per_1lot = _to_float_or_none(trade_math.get("value_per_1lot"))
+        if value_per_1lot is None or (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+            value_per_1lot = float(_contract_size_for_symbol(str(session.symbol or "")))
+        lot = float(_to_float_or_none(trade.lot_size) or 0.0)
+        entry_fill = float(_to_float_or_none(trade.entry_fill_price) or _to_float_or_none(trade.entry_price) or 0.0)
+        pnl = (
+            (float(exit_fill) - float(entry_fill)) * float(lot) * float(value_per_1lot)
+            if direction == "BUY"
+            else (float(entry_fill) - float(exit_fill)) * float(lot) * float(value_per_1lot)
+        )
+        risk = abs(float(_to_float_or_none(trade.entry_price) or entry_fill) - float(_to_float_or_none(trade.stop_loss) or entry_fill))
+        r_mult = (float(pnl) / float(risk * lot * float(value_per_1lot))) if risk > 1e-12 else None
+        close_result = {
+            "id": int(trade.id),
+            "direction": str(direction),
+            "entry_price": float(_to_float_or_none(trade.entry_price) or entry_fill),
+            "exit_price": float(exit_fill),
+            "exit_bar": int(session.current_bar or 0),
+            "exit_time": _utc_now().isoformat(),
+            "exit_reason": "manual",
+            "pnl": float(pnl),
+            "raw_pnl": float(pnl),
+            "spread_cost": 0.0,
+            "turnover_cost": 0.0,
+            "total_cost": 0.0,
+            "r_multiple": float(r_mult) if r_mult is not None else None,
+        }
+    if closed_via_engine and use_cost_model and cm is not None:
         close_result = _apply_close_cost_adjustment(
             session=session,
             engine=engine,
@@ -5117,7 +6391,26 @@ def close_trade(
     trade.r_multiple = close_result.get("r_multiple")
     trade.status = "closed"
 
-    _sync_session_from_engine_no_commit(session, engine)
+    if closed_via_engine:
+        _sync_session_from_engine_no_commit(session, engine)
+    else:
+        session.trades_count = int(session.trades_count or 0) + 1
+        if float(trade.pnl or 0.0) > 0.0:
+            session.wins = int(session.wins or 0) + 1
+        elif float(trade.pnl or 0.0) < 0.0:
+            session.losses = int(session.losses or 0) + 1
+        session.current_balance = float(session.current_balance or 0.0) + float(trade.pnl or 0.0)
+        session.total_pnl = float(session.current_balance or 0.0) - float(session.initial_balance or 0.0)
+        session.updated_at = datetime.utcnow()
+        db.add(session)
+    automation_stopped = False
+    if not bool(getattr(req, "automation_internal", False)):
+        automation_stopped = _strategy_automation_mark_stopped(
+            session=session,
+            db=db,
+            reason="manual_close_auto_stop",
+            action="stopped_by_manual_close",
+        )
     if auto_commit:
         db.commit()
     else:
@@ -5180,6 +6473,7 @@ def close_trade(
         "r_multiple": trade.r_multiple,
         "exit_reason": trade.exit_reason,
         "status": "closed",
+        "automation_stopped": bool(automation_stopped),
     }
 
 
@@ -6290,7 +7584,7 @@ class TrendiloOpportunityScanRequest(BaseModel):
 
 
 class StrategyOpportunityScanRequest(BaseModel):
-    strategy: str = Field(default="trendilo", description="One of: trendilo, mtf, htf_reclaim, orb")
+    strategy: str = Field(default="trendilo", description="One of: trendilo, advanced_trendilo, trendilo_lsma, alpha_wave, mtf, htf_reclaim, orb")
     source: Optional[str] = None
     symbol: Optional[str] = None
     symbols: Optional[List[str]] = None
@@ -6308,6 +7602,34 @@ class StrategyOpportunityScanRequest(BaseModel):
     max_results: int = Field(default=25, ge=1, le=200)
     include_non_tradeable: bool = False
     summary_only: bool = True
+
+
+class StrategyAutomationStartRequest(BaseModel):
+    symbol: str
+    strategy: str = Field(
+        default="trendilo",
+        description=(
+            "trendilo, advanced_trendilo, trendilo_lsma, alpha_wave, "
+            "orb_alpha_hybrid"
+        ),
+    )
+    timeframe: str = Field(default="M15")
+    source: Optional[str] = None
+    execution_mode: Optional[str] = Field(default=None, description="paper | live_mt5")
+    preset: Optional[str] = None
+    volume_sma_period: int = Field(default=20, ge=1, le=300)
+    force_first_entry: bool = True
+    immediate_entry: bool = True
+    allow_parallel: bool = False
+    entry_plan: Optional[Dict[str, Any]] = None
+    risk_percent: Optional[float] = Field(default=None, ge=0.1, le=5.0)
+    rr_target: Optional[float] = Field(default=None, ge=1.0, le=12.0)
+    lot_size_override: Optional[float] = Field(default=None, gt=0.0, le=200.0)
+
+
+class StrategyAutomationStopRequest(BaseModel):
+    child_session_id: Optional[int] = None
+    job_id: Optional[str] = None
 
 
 class AgentLoopStartRequest(BaseModel):
@@ -6845,6 +8167,13 @@ def _agent_default_context(
 ) -> Dict[str, Any]:
     engine = _get_or_create_engine(session, db)
     identity = _agent_identity_from_session_config(session)
+    mt5_account = _session_sync_live_mt5_account(
+        session=session,
+        db=db,
+        include_positions=True,
+        open_limit=120,
+        persist=False,
+    )
     bars: List[Dict[str, Any]] = []
     if engine.df is not None and not engine.df.empty:
         end_idx = int(min(engine.current_bar, max(0, len(engine.df) - 1)))
@@ -6929,6 +8258,15 @@ def _agent_default_context(
             if len(scheduled_triggers) >= 30:
                 break
 
+    if isinstance(mt5_account, dict) and isinstance(mt5_account.get("open_positions"), list):
+        open_positions = [
+            p
+            for p in (mt5_account.get("open_positions") or [])
+            if isinstance(p, dict)
+        ][:50]
+
+    session_stats = _session_stats_payload(session=session, mt5_account=mt5_account)
+
     return {
         "session": {
             "id": int(session.id),
@@ -6941,20 +8279,14 @@ def _agent_default_context(
         "bars": bars,
         "tool_state": tool_state,
         "indicators": {},
-        "session_stats": {
-            "initial_balance": float(session.initial_balance or 0.0),
-            "current_balance": float(session.current_balance or 0.0),
-            "total_pnl": float(session.total_pnl or 0.0),
-            "trades_count": int(session.trades_count or 0),
-            "wins": int(session.wins or 0),
-            "losses": int(session.losses or 0),
-        },
+        "session_stats": session_stats,
         "open_positions": open_positions,
         "recent_trades": recent_trades,
         "scheduled_triggers": scheduled_triggers,
         "identity": identity,
         "metadata": {
             "generated_at": _utc_now().isoformat(),
+            "account_source": str(session_stats.get("account_source") or "session_db"),
         },
     }
 
@@ -7492,6 +8824,14 @@ def _agent_positions_detail_payload(
 ) -> Dict[str, Any]:
     o_lim = max(1, min(50, int(open_limit)))
     r_lim = max(1, min(100, int(recent_limit)))
+    mt5_account = _session_sync_live_mt5_account(
+        session=session,
+        db=db,
+        include_positions=True,
+        open_limit=o_lim,
+        persist=False,
+    )
+
     open_rows = (
         db.query(SimulationTrade)
         .filter(SimulationTrade.session_id == int(session.id))
@@ -7508,18 +8848,25 @@ def _agent_positions_detail_payload(
         .limit(r_lim)
         .all()
     )
-    open_positions = [
-        {
-            "id": int(t.id),
-            "direction": str(t.direction or "").upper(),
-            "entry_price": _to_float_or_none(t.entry_price),
-            "stop_loss": _to_float_or_none(t.stop_loss),
-            "take_profit": _to_float_or_none(t.take_profit),
-            "lot_size": _to_float_or_none(t.lot_size),
-            "opened_at": t.opened_at.isoformat() if getattr(t, "opened_at", None) is not None else None,
-        }
-        for t in open_rows
-    ]
+    if isinstance(mt5_account, dict) and isinstance(mt5_account.get("open_positions"), list):
+        open_positions = [
+            p
+            for p in (mt5_account.get("open_positions") or [])
+            if isinstance(p, dict)
+        ][:o_lim]
+    else:
+        open_positions = [
+            {
+                "id": int(t.id),
+                "direction": str(t.direction or "").upper(),
+                "entry_price": _to_float_or_none(t.entry_price),
+                "stop_loss": _to_float_or_none(t.stop_loss),
+                "take_profit": _to_float_or_none(t.take_profit),
+                "lot_size": _to_float_or_none(t.lot_size),
+                "opened_at": t.opened_at.isoformat() if getattr(t, "opened_at", None) is not None else None,
+            }
+            for t in open_rows
+        ]
     recent_trades = [
         {
             "id": int(t.id),
@@ -7539,6 +8886,28 @@ def _agent_positions_detail_payload(
         "recent_trades": recent_trades,
         "open_count": int(len(open_positions)),
         "recent_count": int(len(recent_trades)),
+        "account": (
+            {
+                "source": "mt5_active_account",
+                "login": mt5_account.get("login"),
+                "server": mt5_account.get("server"),
+                "name": mt5_account.get("name"),
+                "currency": mt5_account.get("currency"),
+                "balance": _to_float_or_none(mt5_account.get("balance")),
+                "equity": _to_float_or_none(mt5_account.get("equity")),
+                "margin": _to_float_or_none(mt5_account.get("margin")),
+                "margin_free": _to_float_or_none(mt5_account.get("margin_free")),
+                "margin_level": _to_float_or_none(mt5_account.get("margin_level")),
+                "profit": _to_float_or_none(mt5_account.get("profit")),
+                "trade_allowed": bool(mt5_account.get("trade_allowed", False)),
+            }
+            if isinstance(mt5_account, dict)
+            else {
+                "source": "session_db",
+                "balance": _to_float_or_none(session.current_balance),
+                "currency": None,
+            }
+        ),
     }
 
 
@@ -7608,6 +8977,13 @@ def _agent_market_snapshot_payload(
 
     indicators = _agent_indicator_values_from_bars(bars, max_rows=max(120, lim * 6)) if include_indicators else {}
     last_bar = bars[-1] if bars else {}
+    mt5_account = _session_sync_live_mt5_account(
+        session=session,
+        db=db,
+        include_positions=False,
+        persist=False,
+    )
+    session_stats = _session_stats_payload(session=session, mt5_account=mt5_account)
     positions_detail = _agent_positions_detail_payload(session=session, db=db, open_limit=20, recent_limit=20)
     trigger_payload = _agent_scheduled_triggers_payload(
         session=session,
@@ -7630,14 +9006,20 @@ def _agent_market_snapshot_payload(
         "indicators": indicators,
         "open_positions_count": int(positions_detail.get("open_count") or 0),
         "pending_triggers_count": int(trigger_payload.get("pending_count") or 0),
-        "session_stats": {
-            "initial_balance": _to_float_or_none(session.initial_balance),
-            "current_balance": _to_float_or_none(session.current_balance),
-            "total_pnl": _to_float_or_none(session.total_pnl),
-            "trades_count": int(session.trades_count or 0),
-            "wins": int(session.wins or 0),
-            "losses": int(session.losses or 0),
-        },
+        "session_stats": session_stats,
+        "account": (
+            {
+                "source": "mt5_active_account",
+                "login": mt5_account.get("login"),
+                "server": mt5_account.get("server"),
+                "currency": mt5_account.get("currency"),
+                "balance": _to_float_or_none(mt5_account.get("balance")),
+                "equity": _to_float_or_none(mt5_account.get("equity")),
+                "margin_level": _to_float_or_none(mt5_account.get("margin_level")),
+            }
+            if isinstance(mt5_account, dict)
+            else {"source": "session_db", "balance": _to_float_or_none(session.current_balance)}
+        ),
     }
 
 
@@ -8168,7 +9550,8 @@ def _agent_run_mtf_analysis(
         if tf == execution_tf and ltf_history_days is not None and math.isfinite(ltf_history_days) and ltf_history_days > 0:
             days = float(max(0.5, min(60.0, ltf_history_days)))
         elif tf != execution_tf and htf_history_days is not None and math.isfinite(htf_history_days) and htf_history_days > 0:
-            days = float(max(0.5, min(120.0, htf_history_days)))
+            # Keep within LiveHistoryRequest bounds (<= 60 days).
+            days = float(max(0.5, min(60.0, htf_history_days)))
         elif tf == execution_tf:
             base_days = _agent_default_history_days_for_timeframe(tf)
             days = float(max(10.0 if tf_min <= 30 else 5.0, min(30.0, base_days * 2.0)))
@@ -8232,7 +9615,8 @@ def _agent_run_mtf_analysis(
         zones_raw = scan_data.get("zones") if isinstance(scan_data.get("zones"), list) else []
         fallback_used = False
         if tf in htf_tfs and htf_history_days is None and len(zones_raw) == 0:
-            fallback_days_map = {"D1": 90.0, "H4": 45.0}
+            # LiveHistoryRequest enforces lookback_days <= 60.
+            fallback_days_map = {"D1": 60.0, "H4": 45.0}
             fallback_days = float(fallback_days_map.get(tf, 0.0))
             if fallback_days > float(days) + 0.5:
                 est_fb_count = int((fallback_days * 1440.0) / float(tf_min)) + 30
@@ -8743,13 +10127,14 @@ def _agent_run_mtf_analysis(
             if balance is None or balance <= 0:
                 balance = _to_float_or_none(session.initial_balance) or 10000.0
             risk_amount = float(balance * (risk_percent / 100.0))
-            value_per_1lot = float(inst.contract_size)
-            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(inst.min_lot)
+            trade_math = _session_trade_math_context(session=session, symbol=str(symbol or session.symbol or "XAUUSD"))
+            value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(trade_math.get("min_lot") or inst.min_lot)
             lot_size = _normalize_lot_for_instrument(
                 lot_size=float(lot_raw),
-                min_lot=float(inst.min_lot),
-                max_lot=min(100.0, float(inst.max_lot)),
-                lot_step=float(inst.lot_step),
+                min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                max_lot=min(100.0, float(trade_math.get("max_lot") or inst.max_lot)),
+                lot_step=float(trade_math.get("lot_step") or inst.lot_step),
             )
 
             tf_min = max(1, _agent_timeframe_to_minutes(execution_tf))
@@ -9621,13 +11006,14 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
             reward_distance = abs(float(take_profit) - float(entry_ref)) if take_profit is not None else None
             rr = (float(reward_distance) / float(risk_distance)) if (reward_distance is not None and risk_distance > 0) else None
             risk_amount = float(balance) * (float(risk_percent) / 100.0)
-            value_per_1lot = float(inst.contract_size)
-            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(inst.min_lot)
+            trade_math = _session_trade_math_context(session=session, symbol=str(symbol or session.symbol or "XAUUSD"))
+            value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+            lot_raw = risk_amount / (risk_distance * value_per_1lot) if (risk_distance > 0 and value_per_1lot > 0) else float(trade_math.get("min_lot") or inst.min_lot)
             lot_size = _normalize_lot_for_instrument(
                 lot_size=float(lot_raw),
-                min_lot=float(inst.min_lot),
-                max_lot=min(100.0, float(inst.max_lot)),
-                lot_step=float(inst.lot_step),
+                min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                max_lot=min(100.0, float(trade_math.get("max_lot") or inst.max_lot)),
+                lot_step=float(trade_math.get("lot_step") or inst.lot_step),
             )
             expires_sec = _agent_usage_safe_int(payload.get("expires_sec"), 6 * 3600)
             expires_sec = max(4 * 3600, min(24 * 3600, int(expires_sec)))
@@ -9794,13 +11180,14 @@ def _agent_run_htf_fvg_liquidity_reclaim_analysis(
                     if reward_distance > 0.0:
                         rr = float(reward_distance / float(risk_distance))
                 risk_amount = float(balance) * (float(risk_percent) / 100.0)
-                value_per_1lot = float(inst.contract_size)
-                lot_raw = risk_amount / (risk_distance * value_per_1lot) if value_per_1lot > 0.0 else float(inst.min_lot)
+                trade_math = _session_trade_math_context(session=session, symbol=str(symbol or session.symbol or "XAUUSD"))
+                value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+                lot_raw = risk_amount / (risk_distance * value_per_1lot) if value_per_1lot > 0.0 else float(trade_math.get("min_lot") or inst.min_lot)
                 lot_size = _normalize_lot_for_instrument(
                     lot_size=float(lot_raw),
-                    min_lot=float(inst.min_lot),
-                    max_lot=min(100.0, float(inst.max_lot)),
-                    lot_step=float(inst.lot_step),
+                    min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                    max_lot=min(100.0, float(trade_math.get("max_lot") or inst.max_lot)),
+                    lot_step=float(trade_math.get("lot_step") or inst.lot_step),
                 )
                 expires_sec = _agent_usage_safe_int(payload.get("expires_sec"), 12 * 3600)
                 expires_sec = max(4 * 3600, min(48 * 3600, int(expires_sec)))
@@ -10038,6 +11425,664 @@ def _agent_orb_symbol_family(symbol: str) -> str:
     return "other"
 
 
+def _agent_advanced_trendilo_indicators_from_df(
+    bars_df: pd.DataFrame,
+    *,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    params = cfg if isinstance(cfg, dict) else {}
+    close = bars_df["close"].astype(float)
+    high = bars_df["high"].astype(float)
+    low = bars_df["low"].astype(float)
+    volume = bars_df["volume"].astype(float) if "volume" in bars_df.columns else pd.Series(0.0, index=bars_df.index)
+
+    def _alma(series: pd.Series, length: int, offset: float, sigma: float) -> pd.Series:
+        ln = max(2, int(length))
+        off = float(max(0.0, min(1.0, float(offset))))
+        sig = float(max(0.1, float(sigma)))
+        m = off * float(ln - 1)
+        s = float(ln) / sig
+        idx = np.arange(ln, dtype=float)
+        w = np.exp(-((idx - m) ** 2) / (2.0 * (s ** 2)))
+        w_sum = float(np.sum(w))
+        if not math.isfinite(w_sum) or w_sum <= 1e-12:
+            return series.rolling(window=ln, min_periods=1).mean()
+        w = w / w_sum
+        return series.rolling(window=ln, min_periods=ln).apply(lambda x: float(np.dot(x, w)), raw=True)
+
+    def _vwma(series: pd.Series, vol: pd.Series, length: int) -> pd.Series:
+        ln = max(1, int(length))
+        num = (series * vol).rolling(window=ln, min_periods=1).sum()
+        den = vol.rolling(window=ln, min_periods=1).sum().replace(0.0, np.nan)
+        return (num / den).ffill()
+
+    def _adx_di(high_s: pd.Series, low_s: pd.Series, close_s: pd.Series, period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        p = max(2, int(period))
+        up_move = high_s.diff()
+        down_move = -low_s.diff()
+        plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+        minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+        prev_c = close_s.shift(1).fillna(close_s.iloc[0])
+        tr_s = pd.concat(
+            [
+                (high_s - low_s).abs(),
+                (high_s - prev_c).abs(),
+                (low_s - prev_c).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr_s = tr_s.ewm(alpha=(1.0 / p), adjust=False).mean().replace(0.0, np.nan)
+        plus_di_s = 100.0 * (plus_dm.ewm(alpha=(1.0 / p), adjust=False).mean() / atr_s)
+        minus_di_s = 100.0 * (minus_dm.ewm(alpha=(1.0 / p), adjust=False).mean() / atr_s)
+        di_sum = (plus_di_s + minus_di_s).replace(0.0, np.nan)
+        dx_s = 100.0 * (plus_di_s - minus_di_s).abs() / di_sum
+        adx_s = dx_s.ewm(alpha=(1.0 / p), adjust=False).mean()
+        return adx_s.fillna(0.0), plus_di_s.fillna(0.0), minus_di_s.fillna(0.0)
+
+    trendilo_pct_lookback = max(1, int(_to_float_or_none(params.get("trendilo_pct_lookback")) or 1))
+    trendilo_len = max(2, int(_to_float_or_none(params.get("trendilo_length")) or 50))
+    trendilo_offset = float(max(0.0, min(1.0, float(_to_float_or_none(params.get("trendilo_alma_offset")) or 0.85))))
+    trendilo_sigma = float(max(0.1, float(_to_float_or_none(params.get("trendilo_alma_sigma")) or 6.0)))
+    trendilo_band_mult = float(max(0.01, float(_to_float_or_none(params.get("trendilo_band_multiplier")) or 1.0)))
+    trendilo_use_custom_band_len = bool(params.get("trendilo_use_custom_band_length") if params.get("trendilo_use_custom_band_length") is not None else False)
+    trendilo_custom_band_len = max(1, int(_to_float_or_none(params.get("trendilo_band_length")) or 20))
+    trendilo_band_len = int(trendilo_custom_band_len if trendilo_use_custom_band_len else trendilo_len)
+    trendilo_band_len = max(1, trendilo_band_len)
+
+    prev_n = close.shift(trendilo_pct_lookback).replace(0.0, np.nan)
+    pch = ((close - prev_n) / close.replace(0.0, np.nan)) * 100.0
+    pch = pch.replace([np.inf, -np.inf], np.nan)
+    avpch = _alma(pch, trendilo_len, trendilo_offset, trendilo_sigma)
+    rms = np.sqrt((avpch.pow(2)).rolling(window=trendilo_band_len, min_periods=trendilo_band_len).mean())
+    upper = rms * trendilo_band_mult
+    lower = -upper
+
+    hyst_mult = float(max(0.0, float(_to_float_or_none(params.get("direction_hysteresis_mult")) or 0.15)))
+    h = rms.abs() * hyst_mult
+    dir_vals: List[int] = []
+    prev_dir = 0
+    for idx in avpch.index:
+        a = float(avpch.loc[idx]) if np.isfinite(avpch.loc[idx]) else np.nan
+        up = float(upper.loc[idx]) if np.isfinite(upper.loc[idx]) else np.nan
+        lo = float(lower.loc[idx]) if np.isfinite(lower.loc[idx]) else np.nan
+        hv = float(h.loc[idx]) if np.isfinite(h.loc[idx]) else 0.0
+        if not np.isfinite(a) or not np.isfinite(up) or not np.isfinite(lo):
+            dir_now = 0
+        elif a > (up + hv):
+            dir_now = 1
+        elif a < (lo - hv):
+            dir_now = -1
+        elif prev_dir == 1 and a > (up - hv):
+            dir_now = 1
+        elif prev_dir == -1 and a < (lo + hv):
+            dir_now = -1
+        else:
+            dir_now = 0
+        dir_vals.append(int(dir_now))
+        prev_dir = int(dir_now)
+    dir_num = pd.Series(dir_vals, index=bars_df.index, dtype=int)
+
+    persistence = 0
+    if len(dir_num) > 0:
+        cur_dir = int(dir_num.iloc[-1])
+        if cur_dir != 0:
+            i = len(dir_num) - 1
+            while i >= 0 and int(dir_num.iloc[i]) == cur_dir:
+                persistence += 1
+                i -= 1
+
+    edge_ratio = 0.0
+    if len(avpch) > 0:
+        a = float(avpch.iloc[-1]) if np.isfinite(avpch.iloc[-1]) else 0.0
+        u = float(upper.iloc[-1]) if np.isfinite(upper.iloc[-1]) else 0.0
+        denom = max(1e-6, abs(u))
+        edge_ratio = max(0.0, (abs(a) - abs(u)) / denom)
+
+    fail_event = (dir_num.shift(1).fillna(0).astype(int).abs() > 0) & (dir_num.astype(int) == 0)
+    failed_breakout_bars_ago: Optional[int] = None
+    fail_idxs = np.where(fail_event.to_numpy(dtype=bool))[0]
+    if len(fail_idxs) > 0:
+        failed_breakout_bars_ago = int((len(dir_num) - 1) - int(fail_idxs[-1]))
+
+    adx_period = max(2, int(_to_float_or_none(params.get("adx_period")) or 14))
+    adx_stoch_period = max(2, int(_to_float_or_none(params.get("adx_stoch_period")) or 14))
+    adx_vwma_len = max(1, int(_to_float_or_none(params.get("adx_vwma_length")) or 8))
+    adx_rising_lookback = max(1, int(_to_float_or_none(params.get("adx_rising_lookback")) or 3))
+    adx, plus_di, minus_di = _adx_di(high, low, close, adx_period)
+    adx_ll = adx.rolling(window=adx_stoch_period, min_periods=1).min()
+    adx_hh = adx.rolling(window=adx_stoch_period, min_periods=1).max()
+    adx_rng = (adx_hh - adx_ll).replace(0.0, np.nan)
+    stoch_adx = ((adx - adx_ll) / adx_rng) * 100.0
+    stoch_adx_vwma = _vwma(stoch_adx.fillna(0.0), volume.fillna(0.0), adx_vwma_len).ffill()
+
+    adx_is_rising = False
+    if len(stoch_adx_vwma) > (adx_rising_lookback + 1):
+        cur = float(stoch_adx_vwma.iloc[-1])
+        prev = float(stoch_adx_vwma.iloc[-1 - adx_rising_lookback])
+        adx_is_rising = bool(np.isfinite(cur) and np.isfinite(prev) and (cur > prev))
+
+    direction = "neutral"
+    if len(dir_num) > 0 and int(dir_num.iloc[-1]) > 0:
+        direction = "bullish"
+    elif len(dir_num) > 0 and int(dir_num.iloc[-1]) < 0:
+        direction = "bearish"
+
+    return {
+        "trendilo_direction": direction,
+        "trendilo_avpch": _to_float_or_none(avpch.iloc[-1]) if len(avpch) else None,
+        "trendilo_rms": _to_float_or_none(rms.iloc[-1]) if len(rms) else None,
+        "trendilo_upper": _to_float_or_none(upper.iloc[-1]) if len(upper) else None,
+        "trendilo_lower": _to_float_or_none(lower.iloc[-1]) if len(lower) else None,
+        "trendilo_edge_ratio": float(max(0.0, edge_ratio)),
+        "trendilo_persistence_bars": int(persistence),
+        "trendilo_failed_breakout_bars_ago": failed_breakout_bars_ago,
+        "plus_di14": _to_float_or_none(plus_di.iloc[-1]) if len(plus_di) else None,
+        "minus_di14": _to_float_or_none(minus_di.iloc[-1]) if len(minus_di) else None,
+        "di_spread": float(abs(float((plus_di.iloc[-1] if len(plus_di) else 0.0)) - float((minus_di.iloc[-1] if len(minus_di) else 0.0)))),
+        "stoch_adx_vwma": _to_float_or_none(stoch_adx_vwma.iloc[-1]) if len(stoch_adx_vwma) else None,
+        "adx_is_rising": bool(adx_is_rising),
+    }
+
+
+def _agent_trendilo_lsma_indicators_from_df(
+    bars_df: pd.DataFrame,
+    *,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    params = cfg if isinstance(cfg, dict) else {}
+    high = bars_df["high"].astype(float)
+    low = bars_df["low"].astype(float)
+
+    lsma_len = max(2, int(_to_float_or_none(params.get("lsma_length")) or 25))
+    lsma_offset = int(_to_float_or_none(params.get("lsma_offset")) or 0)
+    lsma_smooth = max(1, int(_to_float_or_none(params.get("lsma_smooth")) or 5))
+    hma_len = max(2, int(_to_float_or_none(params.get("hma_length")) or 50))
+
+    hl2 = (high + low) / 2.0
+    src = hl2.ewm(span=lsma_smooth, adjust=False).mean()
+
+    def _linreg(series: pd.Series, length: int, offset: int) -> pd.Series:
+        n = max(2, int(length))
+        x = np.arange(n, dtype=float)
+        sx = float(np.sum(x))
+        sx2 = float(np.sum(x * x))
+        denom = (n * sx2) - (sx * sx)
+        if not math.isfinite(denom) or abs(denom) <= 1e-12:
+            return pd.Series(np.nan, index=series.index)
+        xo = float(n - 1 - int(offset))
+
+        def _calc(window: np.ndarray) -> float:
+            y = np.asarray(window, dtype=float)
+            if y.shape[0] != n or not np.isfinite(y).all():
+                return np.nan
+            sy = float(np.sum(y))
+            sxy = float(np.sum(x * y))
+            slope = ((n * sxy) - (sx * sy)) / denom
+            intercept = (sy - (slope * sx)) / float(n)
+            return float(intercept + (slope * xo))
+
+        return series.rolling(window=n, min_periods=n).apply(_calc, raw=True)
+
+    def _wma(series: pd.Series, length: int) -> pd.Series:
+        n = max(1, int(length))
+        w = np.arange(1, n + 1, dtype=float)
+        w_sum = float(np.sum(w))
+        if not math.isfinite(w_sum) or w_sum <= 1e-12:
+            return series.rolling(window=n, min_periods=n).mean()
+
+        def _calc(window: np.ndarray) -> float:
+            y = np.asarray(window, dtype=float)
+            if y.shape[0] != n or not np.isfinite(y).all():
+                return np.nan
+            return float(np.dot(y, w) / w_sum)
+
+        return series.rolling(window=n, min_periods=n).apply(_calc, raw=True)
+
+    def _hma(series: pd.Series, length: int) -> pd.Series:
+        n = max(2, int(length))
+        half = max(1, n // 2)
+        sqrt_n = max(1, int(math.sqrt(float(n))))
+        w1 = _wma(series, half)
+        w2 = _wma(series, n)
+        raw = (2.0 * w1) - w2
+        return _wma(raw, sqrt_n)
+
+    lsma = _linreg(src, lsma_len, lsma_offset)
+    hma = _hma(src, hma_len)
+    combine = (lsma + hma) / 2.0
+    signal = combine - combine.shift(1)
+
+    combine_last = _to_float_or_none(combine.iloc[-1]) if len(combine) else None
+    signal_last = _to_float_or_none(signal.iloc[-1]) if len(signal) else None
+    direction = "neutral"
+    if signal_last is not None and math.isfinite(float(signal_last)):
+        if float(signal_last) > 0.0:
+            direction = "bullish"
+        elif float(signal_last) < 0.0:
+            direction = "bearish"
+
+    color = "yellow"
+    if direction == "bullish":
+        color = "green"
+    elif direction == "bearish":
+        color = "red"
+
+    return {
+        "lsma": _to_float_or_none(lsma.iloc[-1]) if len(lsma) else None,
+        "hma": _to_float_or_none(hma.iloc[-1]) if len(hma) else None,
+        "combine": combine_last,
+        "signal": signal_last,
+        "direction": str(direction),
+        "color": str(color),
+    }
+
+
+def _agent_alpha_wave_indicators_from_df(
+    bars_df: pd.DataFrame,
+    *,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    params = cfg if isinstance(cfg, dict) else {}
+    if bars_df is None or bars_df.empty:
+        return {
+            "direction": "neutral",
+            "color": "gray",
+        }
+
+    high = bars_df["high"].astype(float)
+    low = bars_df["low"].astype(float)
+    close = bars_df["close"].astype(float)
+    open_ = bars_df["open"].astype(float)
+    hl2 = (high + low) / 2.0
+    hlc3 = (high + low + close) / 3.0
+
+    p = {
+        "baseline_adx_length": max(1, int(_to_float_or_none(params.get("baseline_adx_length")) or 2)),
+        "baseline_weight": float(max(0.1, float(_to_float_or_none(params.get("baseline_weight")) or 10.0))),
+        "baseline_ma_length": max(1, int(_to_float_or_none(params.get("baseline_ma_length")) or 6)),
+        "use_conf1": bool(params.get("use_conf1") if params.get("use_conf1") is not None else True),
+        "conf1_smooth": max(3, int(_to_float_or_none(params.get("conf1_smooth")) or 21)),
+        "conf1_constant": float(max(0.1, min(1.0, float(_to_float_or_none(params.get("conf1_constant")) or 0.4)))),
+        "conf1_cross": bool(params.get("conf1_cross") if params.get("conf1_cross") is not None else True),
+        "conf1_inverse": bool(params.get("conf1_inverse") if params.get("conf1_inverse") is not None else False),
+        "conf1_highlight": bool(params.get("conf1_highlight") if params.get("conf1_highlight") is not None else True),
+        "use_conf2": bool(params.get("use_conf2") if params.get("use_conf2") is not None else True),
+        "conf2_poles": max(1, min(9, int(_to_float_or_none(params.get("conf2_poles")) or 4))),
+        "conf2_period": max(2, int(_to_float_or_none(params.get("conf2_period")) or 144)),
+        "conf2_multiplier": float(max(0.1, float(_to_float_or_none(params.get("conf2_multiplier")) or 1.414))),
+        "conf2_cross": bool(params.get("conf2_cross") if params.get("conf2_cross") is not None else True),
+        "conf2_inverse": bool(params.get("conf2_inverse") if params.get("conf2_inverse") is not None else False),
+        "conf2_highlight": bool(params.get("conf2_highlight") if params.get("conf2_highlight") is not None else True),
+        "use_vol": bool(params.get("use_vol") if params.get("use_vol") is not None else True),
+        "vol_ma_length": max(1, int(_to_float_or_none(params.get("vol_ma_length")) or 100)),
+        "vol_length": max(1, int(_to_float_or_none(params.get("vol_length")) or 60)),
+        "vol_smooth": max(1, int(_to_float_or_none(params.get("vol_smooth")) or 3)),
+        "vol_threshold": float(max(1.0, min(100.0, float(_to_float_or_none(params.get("vol_threshold")) or 90.0)))),
+        "stop_atr_length": max(1, int(_to_float_or_none(params.get("stop_atr_length")) or 22)),
+        "stop_atr_mult": float(max(0.1, float(_to_float_or_none(params.get("stop_atr_mult")) or 3.0))),
+        "stop_use_wicks": bool(params.get("stop_use_wicks") if params.get("stop_use_wicks") is not None else True),
+        "exit_type": str(params.get("exit_type") or "Inversed Channel"),
+        "trade_style": str(params.get("trade_style") or "Balanced"),
+        "entry_filter": max(0, int(_to_float_or_none(params.get("entry_filter")) or 3)),
+        "exit_filter": max(0, int(_to_float_or_none(params.get("exit_filter")) or 2)),
+        "require_all_aligned": bool(params.get("require_all_aligned") if params.get("require_all_aligned") is not None else False),
+    }
+
+    def _ema(series: pd.Series, length: int) -> pd.Series:
+        return series.ewm(span=max(1, int(length)), adjust=False).mean()
+
+    def _atr(period: int = 14) -> pd.Series:
+        pp = max(2, int(period))
+        prev_close = close.shift(1).fillna(close.iloc[0])
+        tr = pd.concat(
+            [
+                (high - low).abs(),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        return tr.rolling(window=pp, min_periods=1).mean()
+
+    def _quantum_adaptive_ma(adx_len: int, weight: float, ma_len: int) -> pd.Series:
+        h = high.to_numpy(dtype=float)
+        l = low.to_numpy(dtype=float)
+        c = close.to_numpy(dtype=float)
+        n = len(c)
+        power_bulls = np.zeros(n, dtype=float)
+        power_bears = np.zeros(n, dtype=float)
+        str_range = np.zeros(n, dtype=float)
+        diag_x = np.zeros(n, dtype=float)
+        var_ma = np.zeros(n, dtype=float)
+        if n <= 0:
+            return pd.Series(dtype=float, index=bars_df.index)
+        str_range[0] = max(h[0] - l[0], 1e-12)
+        var_ma[0] = c[0]
+        for i in range(1, n):
+            hi = h[i]
+            hi1 = h[i - 1]
+            lo = l[i]
+            lo1 = l[i - 1]
+            close1 = c[i - 1]
+            bulls1 = 0.5 * (abs(hi - hi1) + (hi - hi1))
+            bears1 = 0.5 * (abs(lo1 - lo) + (lo1 - lo))
+            bears = 0.0 if bulls1 >= bears1 else bears1
+            bulls = 0.0 if bulls1 <= bears1 else bulls1
+            power_bulls[i] = (weight * power_bulls[i - 1] + bulls) / (weight + 1.0)
+            power_bears[i] = (weight * power_bears[i - 1] + bears) / (weight + 1.0)
+            true_range = max(hi - lo, hi - close1)
+            str_range[i] = (weight * str_range[i - 1] + true_range) / (weight + 1.0)
+            pos_di = power_bulls[i] / str_range[i] if str_range[i] > 0 else 0.0
+            neg_di = power_bears[i] / str_range[i] if str_range[i] > 0 else 0.0
+            di_sum = pos_di + neg_di
+            di_diff = abs(pos_di - neg_di) / di_sum if di_sum > 0 else 0.0
+            diag_x[i] = (weight * diag_x[i - 1] + di_diff) / (weight + 1.0)
+            lo_idx = max(0, i - adx_len + 1)
+            adx_min = float(np.min(diag_x[lo_idx : i + 1]))
+            adx_max = float(np.max(diag_x[lo_idx : i + 1]))
+            adx_diff = adx_max - adx_min
+            adx_const = (diag_x[i] - adx_min) / adx_diff if adx_diff > 1e-12 else 0.0
+            var_ma[i] = ((2.0 - adx_const) * var_ma[i - 1] + adx_const * c[i]) / 2.0
+        var_series = pd.Series(var_ma, index=bars_df.index)
+        return var_series.rolling(window=max(1, int(ma_len)), min_periods=1).mean()
+
+    def _wave_pulse(series_close: pd.Series, smooth: int, constant: float) -> pd.Series:
+        di_val = (smooth - 1.0) / 2.0 + 1.0
+        c1 = 2.0 / (di_val + 1.0)
+        c2 = 1.0 - c1
+        c3 = 3.0 * (constant * constant + constant * constant * constant)
+        c4 = -3.0 * (2.0 * constant * constant + constant + constant * constant * constant)
+        c5 = 3.0 * constant + 1.0 + constant * constant * constant + 3.0 * constant * constant
+        c = series_close.to_numpy(dtype=float)
+        n = len(c)
+        i1 = np.zeros(n, dtype=float)
+        i2 = np.zeros(n, dtype=float)
+        i3 = np.zeros(n, dtype=float)
+        i4 = np.zeros(n, dtype=float)
+        i5 = np.zeros(n, dtype=float)
+        i6 = np.zeros(n, dtype=float)
+        if n > 0:
+            i1[0] = c[0]
+            i2[0] = c[0]
+            i3[0] = c[0]
+            i4[0] = c[0]
+            i5[0] = c[0]
+            i6[0] = c[0]
+        for t in range(1, n):
+            i1[t] = c1 * c[t] + c2 * i1[t - 1]
+            i2[t] = c1 * i1[t] + c2 * i2[t - 1]
+            i3[t] = c1 * i2[t] + c2 * i3[t - 1]
+            i4[t] = c1 * i3[t] + c2 * i4[t - 1]
+            i5[t] = c1 * i4[t] + c2 * i5[t - 1]
+            i6[t] = c1 * i5[t] + c2 * i6[t - 1]
+        wave = -(constant**3) * i6 + c3 * i5 + c4 * i4 + c5 * i3
+        return pd.Series(wave, index=bars_df.index)
+
+    def _quantum_filter(src: np.ndarray, a: float, poles: int) -> np.ndarray:
+        coeff_map = {
+            2: (1, 0, 0, 0, 0, 0, 0, 0),
+            3: (3, 1, 0, 0, 0, 0, 0, 0),
+            4: (6, 4, 1, 0, 0, 0, 0, 0),
+            5: (10, 10, 5, 1, 0, 0, 0, 0),
+            6: (15, 20, 15, 6, 1, 0, 0, 0),
+            7: (21, 35, 35, 21, 7, 1, 0, 0),
+            8: (28, 56, 70, 56, 28, 8, 1, 0),
+            9: (36, 84, 126, 126, 84, 36, 9, 1),
+        }
+        pnum = max(1, min(9, int(poles)))
+        c = coeff_map.get(pnum, (0, 0, 0, 0, 0, 0, 0, 0))
+        x = 1.0 - float(a)
+        n = len(src)
+        f = np.zeros(n, dtype=float)
+        if n <= 0:
+            return f
+        f[0] = float(src[0])
+        ap = float(a) ** pnum
+        for t in range(1, n):
+            term = ap * float(src[t]) + pnum * x * f[t - 1]
+            if pnum >= 2 and t >= 2:
+                term -= c[0] * (x**2) * f[t - 2]
+            if pnum >= 3 and t >= 3:
+                term += c[1] * (x**3) * f[t - 3]
+            if pnum >= 4 and t >= 4:
+                term -= c[2] * (x**4) * f[t - 4]
+            if pnum >= 5 and t >= 5:
+                term += c[3] * (x**5) * f[t - 5]
+            if pnum >= 6 and t >= 6:
+                term -= c[4] * (x**6) * f[t - 6]
+            if pnum >= 7 and t >= 7:
+                term += c[5] * (x**7) * f[t - 7]
+            if pnum >= 8 and t >= 8:
+                term -= c[6] * (x**8) * f[t - 8]
+            if pnum >= 9 and t >= 9:
+                term += c[7] * (x**9) * f[t - 9]
+            f[t] = term
+        return f
+
+    baseline = _quantum_adaptive_ma(
+        p["baseline_adx_length"],
+        p["baseline_weight"],
+        p["baseline_ma_length"],
+    )
+    baseline_trend = np.where(close > baseline, 1, np.where(close < baseline, -1, 0))
+    baseline_trend_s = pd.Series(baseline_trend, index=bars_df.index).astype(int)
+
+    wave_val = _wave_pulse(close, p["conf1_smooth"], p["conf1_constant"])
+    wave_signal = np.where(wave_val > wave_val.shift(1), 1, -1)
+    wave_long_basic = (wave_signal > 0) & (close > wave_val)
+    wave_short_basic = (wave_signal < 0) & (close < wave_val)
+    wave_long = wave_long_basic if p["conf1_highlight"] else (close > wave_val)
+    wave_short = wave_short_basic if p["conf1_highlight"] else (close < wave_val)
+    if not p["use_conf1"]:
+        wave_long = pd.Series(True, index=bars_df.index)
+        wave_short = pd.Series(True, index=bars_df.index)
+    wave_long_cross = ((~wave_long.shift(1).fillna(False)) & wave_long) if p["conf1_cross"] else wave_long
+    wave_short_cross = ((~wave_short.shift(1).fillna(False)) & wave_short) if p["conf1_cross"] else wave_short
+    wave_long_final = wave_short_cross if p["conf1_inverse"] else wave_long_cross
+    wave_short_final = wave_long_cross if p["conf1_inverse"] else wave_short_cross
+
+    quantum_beta = (1 - np.cos(4 * np.arcsin(1) / p["conf2_period"])) / ((1.414 ** (2 / p["conf2_poles"])) - 1)
+    quantum_alpha = -quantum_beta + np.sqrt(quantum_beta * quantum_beta + 2 * quantum_beta)
+    prev_close = close.shift(1).fillna(close)
+    quantum_tr = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    qf = _quantum_filter(hlc3.to_numpy(dtype=float), float(quantum_alpha), int(p["conf2_poles"]))
+    qtr = _quantum_filter(quantum_tr.to_numpy(dtype=float), float(quantum_alpha), int(p["conf2_poles"]))
+    quantum_filter = pd.Series(qf, index=bars_df.index)
+    quantum_tr_filtered = pd.Series(qtr, index=bars_df.index)
+    quantum_upper_band = quantum_filter + quantum_tr_filtered * float(p["conf2_multiplier"])
+    quantum_lower_band = quantum_filter - quantum_tr_filtered * float(p["conf2_multiplier"])
+    quantum_signal = np.where(quantum_filter > quantum_filter.shift(1), 1, -1)
+    quantum_long_basic = (quantum_signal > 0) & (close > quantum_filter)
+    quantum_short_basic = (quantum_signal < 0) & (close < quantum_filter)
+    quantum_long = quantum_long_basic if p["conf2_highlight"] else (close > quantum_filter)
+    quantum_short = quantum_short_basic if p["conf2_highlight"] else (close < quantum_filter)
+    if not p["use_conf2"]:
+        quantum_long = pd.Series(True, index=bars_df.index)
+        quantum_short = pd.Series(True, index=bars_df.index)
+    quantum_long_cross = ((~quantum_long.shift(1).fillna(False)) & quantum_long) if p["conf2_cross"] else quantum_long
+    quantum_short_cross = ((~quantum_short.shift(1).fillna(False)) & quantum_short) if p["conf2_cross"] else quantum_short
+    quantum_long_final = quantum_short_cross if p["conf2_inverse"] else quantum_long_cross
+    quantum_short_final = quantum_long_cross if p["conf2_inverse"] else quantum_short_cross
+
+    bound = close.rolling(p["vol_ma_length"], min_periods=1).mean() - 0.2 * close.rolling(p["vol_ma_length"], min_periods=2).std().fillna(0.0)
+    sum_above = (close > bound).astype(int).rolling(p["vol_length"], min_periods=1).sum()
+    momentum_density = _ema((sum_above * 100.0) / float(p["vol_length"]), p["vol_smooth"])
+    momentum_signal = (momentum_density > p["vol_threshold"]) if p["use_vol"] else pd.Series(True, index=bars_df.index)
+
+    stop_atr = _atr(p["stop_atr_length"]) * float(p["stop_atr_mult"])
+    stop_high_price = high if p["stop_use_wicks"] else close
+    stop_low_price = low if p["stop_use_wicks"] else close
+    stop_doji_price = (open_ == close) & (open_ == low) & (open_ == high)
+    n = len(bars_df)
+    stop_long_level = np.zeros(n, dtype=float)
+    stop_short_level = np.zeros(n, dtype=float)
+    stop_direction = np.ones(n, dtype=int)
+    src = hl2.to_numpy(dtype=float)
+    atr_arr = stop_atr.fillna(0.0).to_numpy(dtype=float)
+    sh = stop_high_price.to_numpy(dtype=float)
+    sl = stop_low_price.to_numpy(dtype=float)
+    doji = stop_doji_price.to_numpy(dtype=bool)
+    for i in range(n):
+        raw_long = float(src[i] - atr_arr[i])
+        raw_short = float(src[i] + atr_arr[i])
+        if i == 0:
+            stop_long_level[i] = raw_long
+            stop_short_level[i] = raw_short
+            stop_direction[i] = 1
+            continue
+        prev_long = float(stop_long_level[i - 1])
+        prev_short = float(stop_short_level[i - 1])
+        prev_dir = int(stop_direction[i - 1])
+        if bool(doji[i]):
+            stop_long_level[i] = prev_long
+            stop_short_level[i] = prev_short
+        else:
+            stop_long_level[i] = max(raw_long, prev_long) if float(sl[i - 1]) > prev_long else raw_long
+            stop_short_level[i] = min(raw_short, prev_short) if float(sh[i - 1]) < prev_short else raw_short
+        if prev_dir == -1 and float(sh[i]) > prev_short:
+            stop_direction[i] = 1
+        elif prev_dir == 1 and float(sl[i]) < prev_long:
+            stop_direction[i] = -1
+        else:
+            stop_direction[i] = prev_dir
+    stop_direction_s = pd.Series(stop_direction, index=bars_df.index).astype(int)
+    stop_buy_signal = (stop_direction_s == 1) & (stop_direction_s.shift(1) == -1)
+    stop_sell_signal = (stop_direction_s == -1) & (stop_direction_s.shift(1) == 1)
+
+    trade_style = str(p["trade_style"]).strip()
+    if trade_style == "Strict":
+        raw_long_signal = (baseline_trend_s == 1) & (close > baseline) & wave_long_final & quantum_long_final & momentum_signal
+        raw_short_signal = (baseline_trend_s == -1) & (close < baseline) & wave_short_final & quantum_short_final & momentum_signal
+    elif trade_style == "Balanced":
+        raw_long_signal = (baseline_trend_s == 1) & (close > baseline) & (
+            (wave_long_final & quantum_long_final)
+            | (wave_long_final & momentum_signal)
+            | (quantum_long_final & momentum_signal)
+        )
+        raw_short_signal = (baseline_trend_s == -1) & (close < baseline) & (
+            (wave_short_final & quantum_short_final)
+            | (wave_short_final & momentum_signal)
+            | (quantum_short_final & momentum_signal)
+        )
+    elif trade_style == "Scalper":
+        raw_long_signal = (baseline_trend_s == 1) & (close > baseline) & (wave_long_final | quantum_long_final) & momentum_signal
+        raw_short_signal = (baseline_trend_s == -1) & (close < baseline) & (wave_short_final | quantum_short_final) & momentum_signal
+    else:
+        raw_long_signal = pd.Series(False, index=bars_df.index)
+        raw_short_signal = pd.Series(False, index=bars_df.index)
+
+    all_aligned_long = (baseline_trend_s == 1) & (pd.Series(wave_signal, index=bars_df.index) == 1) & (pd.Series(quantum_signal, index=bars_df.index) == 1) & momentum_signal
+    all_aligned_short = (baseline_trend_s == -1) & (pd.Series(wave_signal, index=bars_df.index) == -1) & (pd.Series(quantum_signal, index=bars_df.index) == -1) & momentum_signal
+    if p["require_all_aligned"]:
+        raw_long_signal = raw_long_signal & all_aligned_long
+        raw_short_signal = raw_short_signal & all_aligned_short
+
+    stop_long_exit = stop_sell_signal
+    stop_short_exit = stop_buy_signal
+    channel_long_exit = high > pd.Series(stop_short_level, index=bars_df.index)
+    channel_short_exit = low < pd.Series(stop_long_level, index=bars_df.index)
+    exit_type = str(p["exit_type"]).strip()
+    if exit_type == "Stop Only":
+        raw_long_exit = stop_long_exit
+        raw_short_exit = stop_short_exit
+    elif exit_type == "Inversed Channel":
+        raw_long_exit = channel_long_exit
+        raw_short_exit = channel_short_exit
+    else:
+        raw_long_exit = stop_long_exit | channel_long_exit
+        raw_short_exit = stop_short_exit | channel_short_exit
+
+    in_long = False
+    in_short = False
+    bars_since_last_entry = 1000
+    bars_since_last_exit = 1000
+    dtech_long_entry_arr = np.zeros(n, dtype=bool)
+    dtech_short_entry_arr = np.zeros(n, dtype=bool)
+    dtech_long_exit_arr = np.zeros(n, dtype=bool)
+    dtech_short_exit_arr = np.zeros(n, dtype=bool)
+    pos_state_arr = np.zeros(n, dtype=int)
+
+    raw_long_a = raw_long_signal.fillna(False).to_numpy(dtype=bool)
+    raw_short_a = raw_short_signal.fillna(False).to_numpy(dtype=bool)
+    raw_long_exit_a = raw_long_exit.fillna(False).to_numpy(dtype=bool)
+    raw_short_exit_a = raw_short_exit.fillna(False).to_numpy(dtype=bool)
+
+    for i in range(n):
+        bars_since_last_entry += 1
+        bars_since_last_exit += 1
+        filtered_long_entry = bool(raw_long_a[i]) and (bars_since_last_entry >= int(p["entry_filter"])) and (not in_long)
+        filtered_short_entry = bool(raw_short_a[i]) and (bars_since_last_entry >= int(p["entry_filter"])) and (not in_short)
+        filtered_long_exit = bool(raw_long_exit_a[i]) and (bars_since_last_exit >= int(p["exit_filter"])) and in_long
+        filtered_short_exit = bool(raw_short_exit_a[i]) and (bars_since_last_exit >= int(p["exit_filter"])) and in_short
+        dtech_long_entry = (trade_style != "Exits Only") and filtered_long_entry
+        dtech_short_entry = (trade_style != "Exits Only") and filtered_short_entry
+        dtech_long_exit = filtered_long_exit
+        dtech_short_exit = filtered_short_exit
+        if dtech_long_entry:
+            in_long = True
+            in_short = False
+            bars_since_last_entry = 0
+        if dtech_short_entry:
+            in_short = True
+            in_long = False
+            bars_since_last_entry = 0
+        if dtech_long_exit:
+            in_long = False
+            bars_since_last_exit = 0
+        if dtech_short_exit:
+            in_short = False
+            bars_since_last_exit = 0
+        dtech_long_entry_arr[i] = bool(dtech_long_entry)
+        dtech_short_entry_arr[i] = bool(dtech_short_entry)
+        dtech_long_exit_arr[i] = bool(dtech_long_exit)
+        dtech_short_exit_arr[i] = bool(dtech_short_exit)
+        pos_state_arr[i] = 1 if in_long else (-1 if in_short else 0)
+
+    direction = "neutral"
+    color = "gray"
+    if len(baseline_trend_s) > 0:
+        bt = int(baseline_trend_s.iloc[-1])
+        if bt > 0:
+            direction = "bullish"
+            color = "green"
+        elif bt < 0:
+            direction = "bearish"
+            color = "red"
+
+    return {
+        "direction": str(direction),
+        "color": str(color),
+        "baseline_value": _to_float_or_none(baseline.iloc[-1]) if len(baseline) else None,
+        "baseline_trend": int(baseline_trend_s.iloc[-1]) if len(baseline_trend_s) else 0,
+        "wave_pulse_value": _to_float_or_none(wave_val.iloc[-1]) if len(wave_val) else None,
+        "wave_pulse_signal": int(wave_signal[-1]) if len(wave_signal) else 0,
+        "quantum_filter": _to_float_or_none(quantum_filter.iloc[-1]) if len(quantum_filter) else None,
+        "quantum_upper_band": _to_float_or_none(quantum_upper_band.iloc[-1]) if len(quantum_upper_band) else None,
+        "quantum_lower_band": _to_float_or_none(quantum_lower_band.iloc[-1]) if len(quantum_lower_band) else None,
+        "momentum_density": _to_float_or_none(momentum_density.iloc[-1]) if len(momentum_density) else None,
+        "momentum_signal": bool(momentum_signal.iloc[-1]) if len(momentum_signal) else False,
+        "stop_long_level": _to_float_or_none(stop_long_level[-1]) if len(stop_long_level) else None,
+        "stop_short_level": _to_float_or_none(stop_short_level[-1]) if len(stop_short_level) else None,
+        "stop_direction": int(stop_direction[-1]) if len(stop_direction) else 0,
+        "raw_long_signal": bool(raw_long_signal.iloc[-1]) if len(raw_long_signal) else False,
+        "raw_short_signal": bool(raw_short_signal.iloc[-1]) if len(raw_short_signal) else False,
+        "raw_long_exit": bool(raw_long_exit.iloc[-1]) if len(raw_long_exit) else False,
+        "raw_short_exit": bool(raw_short_exit.iloc[-1]) if len(raw_short_exit) else False,
+        "dtech_long_entry": bool(dtech_long_entry_arr[-1]) if len(dtech_long_entry_arr) else False,
+        "dtech_short_entry": bool(dtech_short_entry_arr[-1]) if len(dtech_short_entry_arr) else False,
+        "dtech_long_exit": bool(dtech_long_exit_arr[-1]) if len(dtech_long_exit_arr) else False,
+        "dtech_short_exit": bool(dtech_short_exit_arr[-1]) if len(dtech_short_exit_arr) else False,
+        "position_state": int(pos_state_arr[-1]) if len(pos_state_arr) else 0,
+    }
+
+
 def _agent_run_trendilo_analysis(
     *,
     session: SimulationSession,
@@ -10233,14 +12278,16 @@ def _agent_run_trendilo_analysis(
             cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
 
         risk_amount = float(balance * (risk_percent / 100.0))
-        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * float(inst.contract_size)))
+        trade_math = _session_trade_math_context(session=session, symbol=str(symbol or base_symbol))
+        value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * value_per_1lot))
         lot_size = _normalize_lot_for_instrument(
             lot_size=float(lot_raw),
-            min_lot=float(inst.min_lot),
-            max_lot=float(inst.max_lot),
-            lot_step=float(inst.lot_step),
+            min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+            max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+            lot_step=float(trade_math.get("lot_step") or inst.lot_step),
         )
-        risk_amount_actual = float(risk_distance * float(inst.contract_size) * float(lot_size))
+        risk_amount_actual = float(risk_distance * value_per_1lot * float(lot_size))
         expires_sec = int(max(30 * 60, min(24 * 3600, int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600))))
 
         best_setup = {
@@ -10277,6 +12324,7 @@ def _agent_run_trendilo_analysis(
             "expected_rr": float(round(rr_target, 4)),
             "risk_percent": float(round(risk_percent, 4)),
             "account_balance": float(round(balance, 2)),
+            "point_value_per_1lot": float(round(value_per_1lot, 6)),
         }
         geom_ok, geom_reason = _agent_validate_trade_geometry(
             symbol=str(symbol),
@@ -10380,6 +12428,1055 @@ def _agent_run_trendilo_analysis(
                     "atr14": float(atr14),
                     "price": float(round(last_close, 5)),
                 },
+                "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_args,
+                "trigger_ready": bool(best_setup is not None),
+                "manual_confirmation_required": bool(best_setup is not None),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_run_trendilo_lsma_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "trendilo_lsma_strategy"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_trendilo_lsma_analysis") or "trendilo_lsma_analysis")
+
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    execution_tf = str(payload.get("execution_timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper() or "M15"
+    if execution_tf not in {"M1", "M5", "M15", "M30", "H1"}:
+        execution_tf = "M15"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        requested_preset = "default"
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+    if not isinstance(preset_cfg, dict):
+        preset_cfg = {}
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+    if risk_percent is None or not math.isfinite(float(risk_percent)):
+        risk_percent = 0.75
+    risk_percent = float(max(0.1, min(2.0, float(risk_percent))))
+
+    rr_target = _to_float_or_none(payload.get("rr_target"))
+    if rr_target is None:
+        rr_target = _to_float_or_none(preset_cfg.get("rr_ratio"))
+    if rr_target is None or not math.isfinite(float(rr_target)):
+        rr_target = 2.0
+    rr_target = float(max(1.0, min(5.0, float(rr_target))))
+
+    atr_stop_mult = _to_float_or_none(payload.get("atr_stop_mult"))
+    if atr_stop_mult is None:
+        atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+    if atr_stop_mult is None or not math.isfinite(float(atr_stop_mult)):
+        atr_stop_mult = 1.8
+    atr_stop_mult = float(max(0.5, min(6.0, float(atr_stop_mult))))
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(execution_tf)
+    history_days = float(max(1.0, min(30.0, float(history_days))))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=execution_tf,
+        history_days=history_days,
+        count=max(300, int((history_days * 1440.0) / max(1.0, float(_agent_timeframe_to_minutes(execution_tf))) + 40)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=4000,
+        min_rows=120,
+    )
+    if bars_df is None or len(bars_df) < 120:
+        out = {
+            "strategy_id": strategy_id,
+            "strategy_name": "Trendilo LSMA Strategy",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": execution_tf,
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "insufficient_live_history",
+            "reason": str(live_err or "live_history_unavailable"),
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": ["insufficient_live_history"],
+            "soft_blockers": [],
+            "confidence_warnings": ["insufficient_live_history"],
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": execution_tf,
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "insufficient_live_history",
+                    "reason": str(live_err or "live_history_unavailable"),
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                }
+            },
+        }
+        return out
+
+    lsma = _agent_trendilo_lsma_indicators_from_df(bars_df, cfg=preset_cfg)
+    last_close = _to_float_or_none(float(bars_df["close"].iloc[-1])) or float(bars_df["close"].iloc[-1])
+    atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+    atr14 = float(max(0.01, float(atr14 or 0.01)))
+    direction_raw = str(lsma.get("direction") or "neutral").lower()
+    direction = "BUY" if direction_raw == "bullish" else ("SELL" if direction_raw == "bearish" else "")
+
+    blockers: List[str] = []
+    confidence_warnings: List[str] = []
+    best_setup: Optional[Dict[str, Any]] = None
+    schedule_args: Optional[Dict[str, Any]] = None
+    balance = float(session.current_balance or session.initial_balance or 10000.0)
+
+    if direction:
+        inst = get_instrument(base_symbol)
+        entry_ref = float(last_close)
+        sl_distance_raw = float(atr14) * float(atr_stop_mult)
+        min_sl = float(max(0.05, float(_to_float_or_none(preset_cfg.get("min_sl_usd")) or 0.25)))
+        max_sl = float(max(min_sl, float(_to_float_or_none(preset_cfg.get("max_sl_usd")) or (min_sl * 20.0))))
+        risk_distance = float(max(min_sl, min(max_sl, sl_distance_raw)))
+        if direction == "BUY":
+            stop_loss = float(entry_ref - risk_distance)
+            take_profit = float(entry_ref + (risk_distance * rr_target))
+            condition = {"condition": "close_above", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_below", "trigger_price": float(round(stop_loss, 5))}
+        else:
+            stop_loss = float(entry_ref + risk_distance)
+            take_profit = float(entry_ref - (risk_distance * rr_target))
+            condition = {"condition": "close_below", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
+
+        risk_amount = float(balance * (risk_percent / 100.0))
+        trade_math = _session_trade_math_context(session=session, symbol=str(symbol or base_symbol))
+        value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * value_per_1lot))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_raw),
+            min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+            max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+            lot_step=float(trade_math.get("lot_step") or inst.lot_step),
+        )
+        risk_amount_actual = float(risk_distance * value_per_1lot * float(lot_size))
+        expires_sec = int(max(30 * 60, min(24 * 3600, int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600))))
+
+        best_setup = {
+            "direction": str(direction),
+            "entry_ref": float(round(entry_ref, 5)),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "risk_distance": float(round(risk_distance, 5)),
+            "reward_distance": float(round(abs(take_profit - entry_ref), 5)),
+            "rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "risk_amount": float(round(risk_amount, 2)),
+            "risk_amount_actual": float(round(risk_amount_actual, 2)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "condition": condition,
+            "precondition": None,
+            "cancel_rule": cancel_rule,
+            "setup_type": "Trendilo LSMA (Pine parity)",
+        }
+        schedule_args = {
+            "symbol": str(symbol),
+            "condition": str(condition.get("condition") or ""),
+            "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+            "direction": str(direction),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "cancel_rule": cancel_rule,
+            "entry_ref": float(round(entry_ref, 5)),
+            "expected_rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "account_balance": float(round(balance, 2)),
+            "point_value_per_1lot": float(round(value_per_1lot, 6)),
+        }
+        geom_ok, geom_reason = _agent_validate_trade_geometry(
+            symbol=str(symbol),
+            direction=str(direction),
+            entry_ref=float(entry_ref),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+        )
+        if not geom_ok:
+            best_setup = None
+            schedule_args = None
+            blockers.append(str(geom_reason or "invalid_trade_geometry"))
+            confidence_warnings.append("invalid_trade_geometry")
+    else:
+        blockers.append("lsma_neutral")
+        confidence_warnings.append("no_executable_trendilo_lsma_setup")
+
+    tradeable_today = bool(best_setup is not None)
+    decision = "TRADEABLE_TODAY" if tradeable_today else "NOT_TRADEABLE_TODAY"
+    analysis_stage = "trendilo_lsma_setup_ready" if tradeable_today else "lsma_neutral"
+    signal_abs = abs(float(_to_float_or_none(lsma.get("signal")) or 0.0))
+    momentum_strength = float(max(0.0, min(100.0, (signal_abs / max(1e-9, atr14)) * 100.0)))
+    unlock_condition = (
+        "Signal must be non-zero: combine - combine[1] > 0 for BUY or < 0 for SELL."
+        if not tradeable_today
+        else ""
+    )
+    reason = (
+        "Trendilo LSMA signal is directional (green/red), setup is tradeable."
+        if tradeable_today
+        else "Trendilo LSMA signal is neutral (yellow), no trade."
+    )
+
+    indicator_snapshot = {
+        "trendilo_lsma_direction": str(direction_raw),
+        "trendilo_lsma_color": str(lsma.get("color") or "yellow"),
+        "trendilo_lsma_lsma": _to_float_or_none(lsma.get("lsma")),
+        "trendilo_lsma_hma": _to_float_or_none(lsma.get("hma")),
+        "trendilo_lsma_combine": _to_float_or_none(lsma.get("combine")),
+        "trendilo_lsma_signal": _to_float_or_none(lsma.get("signal")),
+        "atr14": float(atr14),
+        "price": float(round(last_close, 5)),
+    }
+
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "Trendilo LSMA Strategy",
+        "preset_id": requested_preset,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "tradeable_today": bool(tradeable_today),
+        "decision": str(decision),
+        "analysis_stage": str(analysis_stage),
+        "reason": str(reason),
+        "unlock_condition": str(unlock_condition),
+        "current_price": float(round(last_close, 5)),
+        "confidence": float(round(momentum_strength, 3)),
+        "momentum_strength": float(round(momentum_strength, 3)),
+        "indicator_snapshot": indicator_snapshot,
+        "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_args,
+        "trigger_ready": bool(best_setup is not None),
+        "auto_schedule_allowed": False,
+        "manual_confirmation_required": bool(best_setup is not None),
+        "blockers": blockers[:8],
+        "soft_blockers": [],
+        "confidence_warnings": confidence_warnings[:8],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": requested_preset,
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "tradeable_today": bool(tradeable_today),
+                "decision": str(decision),
+                "analysis_stage": str(analysis_stage),
+                "reason": str(reason),
+                "unlock_condition": str(unlock_condition),
+                "current_price": float(round(last_close, 5)),
+                "confidence": float(round(momentum_strength, 3)),
+                "indicator_snapshot": indicator_snapshot,
+                "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_args,
+                "trigger_ready": bool(best_setup is not None),
+                "manual_confirmation_required": bool(best_setup is not None),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_run_alpha_wave_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "alpha_wave_strategy"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_alpha_wave_analysis") or "alpha_wave_analysis")
+
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    execution_tf = str(payload.get("execution_timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper() or "M15"
+    if execution_tf not in {"M1", "M5", "M15", "M30", "H1"}:
+        execution_tf = "M15"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        requested_preset = "default"
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+    if not isinstance(preset_cfg, dict):
+        preset_cfg = {}
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+    if risk_percent is None or not math.isfinite(float(risk_percent)):
+        risk_percent = 0.75
+    risk_percent = float(max(0.1, min(5.0, float(risk_percent))))
+
+    rr_target = _to_float_or_none(payload.get("rr_target"))
+    if rr_target is None:
+        rr_target = _to_float_or_none(preset_cfg.get("rr_ratio"))
+    if rr_target is None or not math.isfinite(float(rr_target)):
+        rr_target = 2.0
+    rr_target = float(max(1.0, min(12.0, float(rr_target))))
+
+    atr_stop_mult = _to_float_or_none(payload.get("atr_stop_mult"))
+    if atr_stop_mult is None:
+        atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+    if atr_stop_mult is None or not math.isfinite(float(atr_stop_mult)):
+        atr_stop_mult = 3.0
+    atr_stop_mult = float(max(0.1, min(10.0, float(atr_stop_mult))))
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(execution_tf)
+    history_days = float(max(1.0, min(60.0, float(history_days))))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=execution_tf,
+        history_days=history_days,
+        count=max(300, int((history_days * 1440.0) / max(1.0, float(_agent_timeframe_to_minutes(execution_tf))) + 40)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=4000,
+        min_rows=120,
+    )
+    if bars_df is None or len(bars_df) < 120:
+        out = {
+            "strategy_id": strategy_id,
+            "strategy_name": "Alpha Wave DaviddTech Strategy",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": execution_tf,
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "insufficient_live_history",
+            "reason": str(live_err or "live_history_unavailable"),
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": ["insufficient_live_history"],
+            "soft_blockers": [],
+            "confidence_warnings": ["insufficient_live_history"],
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": execution_tf,
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "insufficient_live_history",
+                    "reason": str(live_err or "live_history_unavailable"),
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                }
+            },
+        }
+        return out
+
+    alpha = _agent_alpha_wave_indicators_from_df(bars_df, cfg=preset_cfg)
+    last_close = _to_float_or_none(float(bars_df["close"].iloc[-1])) or float(bars_df["close"].iloc[-1])
+    atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+    atr14 = float(max(0.01, float(atr14 or 0.01)))
+    direction_raw = str(alpha.get("direction") or "neutral").lower()
+    direction = "BUY" if direction_raw == "bullish" else ("SELL" if direction_raw == "bearish" else "")
+
+    blockers: List[str] = []
+    confidence_warnings: List[str] = []
+    best_setup: Optional[Dict[str, Any]] = None
+    schedule_args: Optional[Dict[str, Any]] = None
+    balance = float(session.current_balance or session.initial_balance or 10000.0)
+
+    if direction:
+        inst = get_instrument(base_symbol)
+        entry_ref = float(last_close)
+        stop_long_level = _to_float_or_none(alpha.get("stop_long_level"))
+        stop_short_level = _to_float_or_none(alpha.get("stop_short_level"))
+        if direction == "BUY" and stop_long_level is not None and float(stop_long_level) < entry_ref:
+            stop_loss = float(stop_long_level)
+        elif direction == "SELL" and stop_short_level is not None and float(stop_short_level) > entry_ref:
+            stop_loss = float(stop_short_level)
+        elif direction == "BUY":
+            stop_loss = float(entry_ref - (atr14 * atr_stop_mult))
+        else:
+            stop_loss = float(entry_ref + (atr14 * atr_stop_mult))
+
+        risk_distance_raw = abs(float(entry_ref) - float(stop_loss))
+        min_sl = float(max(0.05, float(_to_float_or_none(preset_cfg.get("min_sl_usd")) or 0.25)))
+        max_sl = float(max(min_sl, float(_to_float_or_none(preset_cfg.get("max_sl_usd")) or (min_sl * 20.0))))
+        risk_distance = float(max(min_sl, min(max_sl, float(risk_distance_raw))))
+
+        if direction == "BUY":
+            stop_loss = float(entry_ref - risk_distance)
+            take_profit = float(entry_ref + (risk_distance * rr_target))
+            condition = {"condition": "close_above", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_below", "trigger_price": float(round(stop_loss, 5))}
+        else:
+            stop_loss = float(entry_ref + risk_distance)
+            take_profit = float(entry_ref - (risk_distance * rr_target))
+            condition = {"condition": "close_below", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
+
+        risk_amount = float(balance * (risk_percent / 100.0))
+        trade_math = _session_trade_math_context(session=session, symbol=str(symbol or base_symbol))
+        value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * value_per_1lot))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_raw),
+            min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+            max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+            lot_step=float(trade_math.get("lot_step") or inst.lot_step),
+        )
+        risk_amount_actual = float(risk_distance * value_per_1lot * float(lot_size))
+        expires_sec = int(max(30 * 60, min(24 * 3600, int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600))))
+
+        best_setup = {
+            "direction": str(direction),
+            "entry_ref": float(round(entry_ref, 5)),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "risk_distance": float(round(risk_distance, 5)),
+            "reward_distance": float(round(abs(take_profit - entry_ref), 5)),
+            "rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "risk_amount": float(round(risk_amount, 2)),
+            "risk_amount_actual": float(round(risk_amount_actual, 2)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "condition": condition,
+            "precondition": None,
+            "cancel_rule": cancel_rule,
+            "setup_type": "Alpha Wave DaviddTech (Pine parity)",
+        }
+        schedule_args = {
+            "symbol": str(symbol),
+            "condition": str(condition.get("condition") or ""),
+            "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+            "direction": str(direction),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "cancel_rule": cancel_rule,
+            "entry_ref": float(round(entry_ref, 5)),
+            "expected_rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "account_balance": float(round(balance, 2)),
+            "point_value_per_1lot": float(round(value_per_1lot, 6)),
+        }
+        geom_ok, geom_reason = _agent_validate_trade_geometry(
+            symbol=str(symbol),
+            direction=str(direction),
+            entry_ref=float(entry_ref),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+        )
+        if not geom_ok:
+            best_setup = None
+            schedule_args = None
+            blockers.append(str(geom_reason or "invalid_trade_geometry"))
+            confidence_warnings.append("invalid_trade_geometry")
+    else:
+        blockers.append("alpha_wave_neutral")
+        confidence_warnings.append("no_executable_alpha_wave_setup")
+
+    tradeable_today = bool(best_setup is not None)
+    decision = "TRADEABLE_TODAY" if tradeable_today else "NOT_TRADEABLE_TODAY"
+    analysis_stage = "alpha_wave_setup_ready" if tradeable_today else "alpha_wave_neutral"
+    momentum_density = _to_float_or_none(alpha.get("momentum_density"))
+    momentum_strength = float(max(0.0, min(100.0, float(momentum_density if momentum_density is not None else 0.0))))
+    unlock_condition = (
+        "Baseline trend must be directional (close above baseline for BUY or below for SELL)."
+        if not tradeable_today
+        else ""
+    )
+    reason = (
+        "Alpha Wave baseline trend is directional (bullish/bearish), setup is tradeable."
+        if tradeable_today
+        else "Alpha Wave baseline trend is neutral, no trade."
+    )
+
+    indicator_snapshot = {
+        "alpha_wave_direction": str(direction_raw),
+        "alpha_wave_color": str(alpha.get("color") or "gray"),
+        "alpha_wave_baseline": _to_float_or_none(alpha.get("baseline_value")),
+        "alpha_wave_baseline_trend": int(_to_float_or_none(alpha.get("baseline_trend")) or 0),
+        "alpha_wave_wavepulse": _to_float_or_none(alpha.get("wave_pulse_value")),
+        "alpha_wave_quantum_filter": _to_float_or_none(alpha.get("quantum_filter")),
+        "alpha_wave_quantum_upper": _to_float_or_none(alpha.get("quantum_upper_band")),
+        "alpha_wave_quantum_lower": _to_float_or_none(alpha.get("quantum_lower_band")),
+        "alpha_wave_momentum_density": momentum_density,
+        "alpha_wave_momentum_signal": bool(alpha.get("momentum_signal")),
+        "alpha_wave_stop_long": _to_float_or_none(alpha.get("stop_long_level")),
+        "alpha_wave_stop_short": _to_float_or_none(alpha.get("stop_short_level")),
+        "alpha_wave_stop_direction": int(_to_float_or_none(alpha.get("stop_direction")) or 0),
+        "alpha_wave_raw_long_signal": bool(alpha.get("raw_long_signal")),
+        "alpha_wave_raw_short_signal": bool(alpha.get("raw_short_signal")),
+        "alpha_wave_raw_long_exit": bool(alpha.get("raw_long_exit")),
+        "alpha_wave_raw_short_exit": bool(alpha.get("raw_short_exit")),
+        "alpha_wave_dtech_long_entry": bool(alpha.get("dtech_long_entry")),
+        "alpha_wave_dtech_short_entry": bool(alpha.get("dtech_short_entry")),
+        "alpha_wave_dtech_long_exit": bool(alpha.get("dtech_long_exit")),
+        "alpha_wave_dtech_short_exit": bool(alpha.get("dtech_short_exit")),
+        "alpha_wave_position_state": int(_to_float_or_none(alpha.get("position_state")) or 0),
+        "atr14": float(atr14),
+        "price": float(round(last_close, 5)),
+    }
+
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "Alpha Wave DaviddTech Strategy",
+        "preset_id": requested_preset,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "tradeable_today": bool(tradeable_today),
+        "decision": str(decision),
+        "analysis_stage": str(analysis_stage),
+        "reason": str(reason),
+        "unlock_condition": str(unlock_condition),
+        "current_price": float(round(last_close, 5)),
+        "confidence": float(round(momentum_strength, 3)),
+        "momentum_strength": float(round(momentum_strength, 3)),
+        "indicator_snapshot": indicator_snapshot,
+        "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_args,
+        "trigger_ready": bool(best_setup is not None),
+        "auto_schedule_allowed": False,
+        "manual_confirmation_required": bool(best_setup is not None),
+        "blockers": blockers[:8],
+        "soft_blockers": [],
+        "confidence_warnings": confidence_warnings[:8],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": requested_preset,
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "tradeable_today": bool(tradeable_today),
+                "decision": str(decision),
+                "analysis_stage": str(analysis_stage),
+                "reason": str(reason),
+                "unlock_condition": str(unlock_condition),
+                "current_price": float(round(last_close, 5)),
+                "confidence": float(round(momentum_strength, 3)),
+                "indicator_snapshot": indicator_snapshot,
+                "best_setup": best_setup,
+                "schedule_trade_entry_args": schedule_args,
+                "trigger_ready": bool(best_setup is not None),
+                "manual_confirmation_required": bool(best_setup is not None),
+            }
+        },
+    }
+    return summary
+
+
+def _agent_run_advanced_trendilo_analysis(
+    *,
+    session: SimulationSession,
+    db: Session,
+    context_snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    effective_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategy_id = "advanced_trendilo_strategy"
+    tool_state_key = str(_AGENT_PARENT_ANALYSIS_TOOL_STATE_KEYS.get("run_advanced_trendilo_analysis") or "advanced_trendilo_analysis")
+
+    mctx = _agent_market_context_from_snapshot(
+        session=session,
+        context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+    )
+    symbol = str(payload.get("symbol") or mctx.get("symbol") or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(payload.get("source") or mctx.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    execution_tf = str(payload.get("execution_timeframe") or mctx.get("timeframe") or session.timeframe or "M15").strip().upper() or "M15"
+    if execution_tf not in {"M1", "M5", "M15", "M30", "H1"}:
+        execution_tf = "M15"
+
+    requested_preset = _normalize_agent_strategy_preset(
+        payload.get("preset")
+        or effective_cfg.get("agent_strategy_preset")
+        or "default"
+    )
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    preset_cfg = StrategyRegistry.get_preset_config(strategy_id, requested_preset, base_symbol)
+    if not isinstance(preset_cfg, dict) or not preset_cfg:
+        requested_preset = "default"
+        preset_cfg = StrategyRegistry.get_preset_config(strategy_id, "default", base_symbol)
+    if not isinstance(preset_cfg, dict):
+        preset_cfg = {}
+
+    risk_percent = _to_float_or_none(payload.get("risk_percent"))
+    if risk_percent is None:
+        risk_percent = _to_float_or_none(preset_cfg.get("risk_percent"))
+    if risk_percent is None or not math.isfinite(float(risk_percent)):
+        risk_percent = 0.75
+    risk_percent = float(max(0.1, min(2.0, float(risk_percent))))
+
+    rr_target = _to_float_or_none(payload.get("rr_target"))
+    if rr_target is None:
+        rr_target = _to_float_or_none(preset_cfg.get("rr_ratio"))
+    if rr_target is None or not math.isfinite(float(rr_target)):
+        rr_target = 2.0
+    rr_target = float(max(1.0, min(5.0, float(rr_target))))
+
+    try:
+        history_days = float(payload.get("history_days")) if payload.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(execution_tf)
+    history_days = float(max(1.0, min(30.0, float(history_days))))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=execution_tf,
+        history_days=history_days,
+        count=max(300, int((history_days * 1440.0) / max(1.0, float(_agent_timeframe_to_minutes(execution_tf))) + 40)),
+        databento_api_key=str(effective_cfg.get("databento_api_key") or ""),
+    )
+    bars_df = _bars_payload_to_df(
+        bars_live,
+        max_rows=4000,
+        min_rows=120,
+    )
+    if bars_df is None or len(bars_df) < 120:
+        out = {
+            "strategy_id": strategy_id,
+            "strategy_name": "Advanced Trendilo Strategy",
+            "preset_id": requested_preset,
+            "symbol": symbol,
+            "source": source,
+            "execution_timeframe": execution_tf,
+            "tradeable_today": False,
+            "decision": "NOT_TRADEABLE_TODAY",
+            "analysis_stage": "insufficient_live_history",
+            "reason": str(live_err or "live_history_unavailable"),
+            "best_setup": None,
+            "schedule_trade_entry_args": None,
+            "trigger_ready": False,
+            "auto_schedule_allowed": False,
+            "manual_confirmation_required": False,
+            "blockers": ["insufficient_live_history"],
+            "soft_blockers": [],
+            "confidence_warnings": ["insufficient_live_history"],
+            "tool_state_patch": {
+                tool_state_key: {
+                    "generated_at": _utc_now().isoformat(),
+                    "strategy_id": strategy_id,
+                    "preset_id": requested_preset,
+                    "symbol": symbol,
+                    "execution_timeframe": execution_tf,
+                    "tradeable_today": False,
+                    "decision": "NOT_TRADEABLE_TODAY",
+                    "analysis_stage": "insufficient_live_history",
+                    "reason": str(live_err or "live_history_unavailable"),
+                    "best_setup": None,
+                    "schedule_trade_entry_args": None,
+                }
+            },
+        }
+        return out
+
+    base_indicators = _agent_indicator_values_from_bars(
+        bars_live,
+        max_rows=2000,
+        trendilo_params=preset_cfg,
+    )
+    adv = _agent_advanced_trendilo_indicators_from_df(bars_df, cfg=preset_cfg)
+
+    last_close = _to_float_or_none(base_indicators.get("price")) or _to_float_or_none(float(bars_df["close"].iloc[-1]))
+    if last_close is None:
+        last_close = float(bars_df["close"].iloc[-1])
+
+    trendilo_dir = str(adv.get("trendilo_direction") or "neutral").lower()
+    adx_line = _to_float_or_none(adv.get("stoch_adx_vwma"))
+    plus_di = _to_float_or_none(adv.get("plus_di14"))
+    minus_di = _to_float_or_none(adv.get("minus_di14"))
+    di_spread = _to_float_or_none(adv.get("di_spread")) or 0.0
+    adx_is_rising = bool(adv.get("adx_is_rising", False))
+    edge_ratio = _to_float_or_none(adv.get("trendilo_edge_ratio")) or 0.0
+    persistence = int(adv.get("trendilo_persistence_bars") or 0)
+    failed_breakout_bars_ago = adv.get("trendilo_failed_breakout_bars_ago")
+
+    alma300 = _to_float_or_none(base_indicators.get("alma300"))
+    t3_300 = _to_float_or_none(base_indicators.get("t3_300"))
+    atr14 = _to_float_or_none(base_indicators.get("atr14"))
+    if atr14 is None or not math.isfinite(float(atr14)) or float(atr14) <= 0:
+        atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+    atr14 = float(max(0.01, float(atr14 or 0.01)))
+
+    adx_threshold = _to_float_or_none(payload.get("adx_threshold"))
+    if adx_threshold is None:
+        adx_threshold = _to_float_or_none(preset_cfg.get("adx_threshold"))
+    if adx_threshold is None or not math.isfinite(float(adx_threshold)):
+        adx_threshold = 20.0
+    adx_threshold = float(max(5.0, min(80.0, float(adx_threshold))))
+
+    use_di_direction = bool(payload.get("use_di_direction", preset_cfg.get("use_di_direction", True)))
+    min_di_spread = _to_float_or_none(payload.get("min_di_spread"))
+    if min_di_spread is None:
+        min_di_spread = _to_float_or_none(preset_cfg.get("min_di_spread"))
+    if min_di_spread is None or not math.isfinite(float(min_di_spread)):
+        min_di_spread = 3.0
+    min_di_spread = float(max(0.0, min(50.0, float(min_di_spread))))
+
+    min_persistence_bars = _to_float_or_none(payload.get("min_persistence_bars"))
+    if min_persistence_bars is None:
+        min_persistence_bars = _to_float_or_none(preset_cfg.get("min_persistence_bars"))
+    if min_persistence_bars is None or not math.isfinite(float(min_persistence_bars)):
+        min_persistence_bars = 2
+    min_persistence_bars = int(max(1, min(20, int(round(float(min_persistence_bars))))))
+
+    min_edge_ratio = _to_float_or_none(payload.get("min_edge_ratio"))
+    if min_edge_ratio is None:
+        min_edge_ratio = _to_float_or_none(preset_cfg.get("min_edge_ratio"))
+    if min_edge_ratio is None or not math.isfinite(float(min_edge_ratio)):
+        min_edge_ratio = 0.05
+    min_edge_ratio = float(max(0.0, min(2.0, float(min_edge_ratio))))
+
+    failed_breakout_cooldown_bars = _to_float_or_none(payload.get("failed_breakout_cooldown_bars"))
+    if failed_breakout_cooldown_bars is None:
+        failed_breakout_cooldown_bars = _to_float_or_none(preset_cfg.get("failed_breakout_cooldown_bars"))
+    if failed_breakout_cooldown_bars is None or not math.isfinite(float(failed_breakout_cooldown_bars)):
+        failed_breakout_cooldown_bars = 3
+    failed_breakout_cooldown_bars = int(max(0, min(40, int(round(float(failed_breakout_cooldown_bars))))))
+
+    require_adx_rising = bool(payload.get("require_adx_rising", preset_cfg.get("require_adx_rising", True)))
+
+    atr_stop_mult = _to_float_or_none(payload.get("atr_stop_mult"))
+    if atr_stop_mult is None:
+        atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+    if atr_stop_mult is None or not math.isfinite(float(atr_stop_mult)):
+        atr_stop_mult = 1.8
+    atr_stop_mult = float(max(0.5, min(6.0, float(atr_stop_mult))))
+
+    di_bull_ok = True
+    di_bear_ok = True
+    if use_di_direction and plus_di is not None and minus_di is not None:
+        di_bull_ok = float(plus_di) > float(minus_di)
+        di_bear_ok = float(minus_di) > float(plus_di)
+
+    price_above_trend = (alma300 is not None and t3_300 is not None and float(last_close) > float(alma300) and float(last_close) > float(t3_300))
+    price_below_trend = (alma300 is not None and t3_300 is not None and float(last_close) < float(alma300) and float(last_close) < float(t3_300))
+    adx_ok = adx_line is not None and float(adx_line) >= float(adx_threshold)
+    di_spread_ok = (not use_di_direction) or (float(di_spread) >= float(min_di_spread))
+    persistence_ok = int(persistence) >= int(min_persistence_bars)
+    edge_ok = float(edge_ratio) >= float(min_edge_ratio)
+    cooldown_ok = True
+    if failed_breakout_cooldown_bars > 0 and isinstance(failed_breakout_bars_ago, int):
+        cooldown_ok = int(failed_breakout_bars_ago) > int(failed_breakout_cooldown_bars)
+
+    long_ready = (
+        trendilo_dir == "bullish"
+        and price_above_trend
+        and adx_ok
+        and (adx_is_rising if require_adx_rising else True)
+        and di_bull_ok
+        and di_spread_ok
+        and persistence_ok
+        and edge_ok
+        and cooldown_ok
+    )
+    short_ready = (
+        trendilo_dir == "bearish"
+        and price_below_trend
+        and adx_ok
+        and (adx_is_rising if require_adx_rising else True)
+        and di_bear_ok
+        and di_spread_ok
+        and persistence_ok
+        and edge_ok
+        and cooldown_ok
+    )
+    setup_ready = bool(long_ready or short_ready)
+
+    blockers: List[str] = []
+    soft_blockers: List[str] = []
+    confidence_warnings: List[str] = []
+
+    if trendilo_dir not in {"bullish", "bearish"}:
+        blockers.append("trendilo_neutral")
+    if not adx_ok:
+        blockers.append("adx_confirmation_missing")
+    if require_adx_rising and (not adx_is_rising):
+        blockers.append("adx_not_rising")
+    if not (price_above_trend or price_below_trend):
+        blockers.append("trend_filter_not_aligned")
+    if use_di_direction and (not di_spread_ok):
+        blockers.append("di_spread_too_small")
+    if use_di_direction and not (di_bull_ok or di_bear_ok):
+        blockers.append("di_direction_neutral")
+    if not persistence_ok:
+        blockers.append("trendilo_persistence_not_met")
+    if not edge_ok:
+        blockers.append("trendilo_edge_not_met")
+    if not cooldown_ok:
+        blockers.append("failed_breakout_cooldown_active")
+
+    direction = "BUY" if long_ready else ("SELL" if short_ready else "")
+    best_setup: Optional[Dict[str, Any]] = None
+    schedule_args: Optional[Dict[str, Any]] = None
+    balance = float(session.current_balance or session.initial_balance or 10000.0)
+
+    if setup_ready and direction:
+        inst = get_instrument(base_symbol)
+        entry_ref = float(last_close)
+        sl_distance_raw = float(atr14) * float(atr_stop_mult)
+        min_sl = float(max(0.05, float(_to_float_or_none(preset_cfg.get("min_sl_usd")) or 0.25)))
+        max_sl = float(max(min_sl, float(_to_float_or_none(preset_cfg.get("max_sl_usd")) or (min_sl * 20.0))))
+        risk_distance = float(max(min_sl, min(max_sl, sl_distance_raw)))
+        if direction == "BUY":
+            stop_loss = float(entry_ref - risk_distance)
+            take_profit = float(entry_ref + (risk_distance * rr_target))
+            condition = {"condition": "close_above", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_below", "trigger_price": float(round(stop_loss, 5))}
+        else:
+            stop_loss = float(entry_ref + risk_distance)
+            take_profit = float(entry_ref - (risk_distance * rr_target))
+            condition = {"condition": "close_below", "trigger_price": float(round(entry_ref, 5))}
+            cancel_rule = {"condition": "close_above", "trigger_price": float(round(stop_loss, 5))}
+
+        risk_amount = float(balance * (risk_percent / 100.0))
+        trade_math = _session_trade_math_context(session=session, symbol=str(symbol or base_symbol))
+        value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+        lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * value_per_1lot))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_raw),
+            min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+            max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+            lot_step=float(trade_math.get("lot_step") or inst.lot_step),
+        )
+        risk_amount_actual = float(risk_distance * value_per_1lot * float(lot_size))
+        expires_sec = int(max(30 * 60, min(24 * 3600, int(payload.get("expires_sec") or preset_cfg.get("expires_sec") or 6 * 3600))))
+
+        best_setup = {
+            "direction": str(direction),
+            "entry_ref": float(round(entry_ref, 5)),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "risk_distance": float(round(risk_distance, 5)),
+            "reward_distance": float(round(abs(take_profit - entry_ref), 5)),
+            "rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "risk_amount": float(round(risk_amount, 2)),
+            "risk_amount_actual": float(round(risk_amount_actual, 2)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "condition": condition,
+            "precondition": None,
+            "cancel_rule": cancel_rule,
+            "setup_type": "Advanced Trendilo + persistence + edge + ADX rising + DI spread + T3/ALMA",
+        }
+        schedule_args = {
+            "symbol": str(symbol),
+            "condition": str(condition.get("condition") or ""),
+            "trigger_price": float(round(_to_float_or_none(condition.get("trigger_price")) or 0.0, 5)),
+            "direction": str(direction),
+            "stop_loss": float(round(stop_loss, 5)),
+            "take_profit": float(round(take_profit, 5)),
+            "lot_size": float(lot_size),
+            "timeframe": str(execution_tf),
+            "expires_sec": int(expires_sec),
+            "cancel_rule": cancel_rule,
+            "entry_ref": float(round(entry_ref, 5)),
+            "expected_rr": float(round(rr_target, 4)),
+            "risk_percent": float(round(risk_percent, 4)),
+            "account_balance": float(round(balance, 2)),
+            "point_value_per_1lot": float(round(value_per_1lot, 6)),
+        }
+        geom_ok, geom_reason = _agent_validate_trade_geometry(
+            symbol=str(symbol),
+            direction=str(direction),
+            entry_ref=float(entry_ref),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+        )
+        if not geom_ok:
+            best_setup = None
+            schedule_args = None
+            blockers.append(str(geom_reason or "invalid_trade_geometry"))
+            confidence_warnings.append("invalid_trade_geometry")
+    else:
+        if trendilo_dir in {"bullish", "bearish"} and not persistence_ok:
+            soft_blockers.append("trendilo_waiting_persistence")
+        if trendilo_dir in {"bullish", "bearish"} and not edge_ok:
+            soft_blockers.append("trendilo_waiting_edge_expansion")
+        if trendilo_dir in {"bullish", "bearish"} and not adx_ok:
+            soft_blockers.append("trendilo_waiting_for_adx_confirmation")
+        if trendilo_dir in {"bullish", "bearish"} and require_adx_rising and (not adx_is_rising):
+            soft_blockers.append("trendilo_waiting_for_adx_rising")
+        if trendilo_dir in {"bullish", "bearish"} and not (price_above_trend or price_below_trend):
+            soft_blockers.append("trendilo_waiting_for_t3_alma_alignment")
+        if use_di_direction and trendilo_dir == "bullish" and not di_bull_ok:
+            soft_blockers.append("trendilo_waiting_for_di_bullish")
+        if use_di_direction and trendilo_dir == "bearish" and not di_bear_ok:
+            soft_blockers.append("trendilo_waiting_for_di_bearish")
+        if use_di_direction and not di_spread_ok:
+            soft_blockers.append("trendilo_waiting_for_di_spread")
+        if not cooldown_ok:
+            soft_blockers.append("trendilo_waiting_failed_breakout_cooldown")
+        confidence_warnings.append("no_executable_advanced_trendilo_setup")
+
+    tradeable_today = bool(best_setup is not None)
+    decision = "TRADEABLE_TODAY" if tradeable_today else "NOT_TRADEABLE_TODAY"
+    analysis_stage = "advanced_trendilo_setup_ready" if tradeable_today else "advanced_confirmations_not_met"
+    momentum_strength = float(max(0.0, min(100.0, float(adx_line or 0.0))))
+    unlock_condition = (
+        "Need advanced Trendilo direction outside RMS, persistence bars, edge ratio, ADX rising+threshold, DI spread/direction, and 300 T3/ALMA alignment."
+        if not tradeable_today
+        else ""
+    )
+    reason = (
+        "Advanced Trendilo breakout confirmed by persistence + edge + ADX/DI + 300 T3/ALMA trend filter."
+        if tradeable_today
+        else "Advanced Trendilo setup exists but anti-whipsaw confirmation stack is incomplete."
+    )
+
+    indicator_snapshot = {
+        "trendilo_direction": trendilo_dir,
+        "trendilo_avpch": _to_float_or_none(adv.get("trendilo_avpch")),
+        "trendilo_rms": _to_float_or_none(adv.get("trendilo_rms")),
+        "trendilo_upper": _to_float_or_none(adv.get("trendilo_upper")),
+        "trendilo_lower": _to_float_or_none(adv.get("trendilo_lower")),
+        "trendilo_edge_ratio": float(round(float(edge_ratio), 5)),
+        "trendilo_persistence_bars": int(persistence),
+        "trendilo_failed_breakout_bars_ago": failed_breakout_bars_ago if isinstance(failed_breakout_bars_ago, int) else None,
+        "min_persistence_bars": int(min_persistence_bars),
+        "min_edge_ratio": float(round(float(min_edge_ratio), 5)),
+        "stoch_adx_vwma": adx_line,
+        "adx_threshold": float(adx_threshold),
+        "require_adx_rising": bool(require_adx_rising),
+        "adx_is_rising": bool(adx_is_rising),
+        "plus_di14": plus_di,
+        "minus_di14": minus_di,
+        "di_spread": float(round(float(di_spread), 5)),
+        "min_di_spread": float(round(float(min_di_spread), 5)),
+        "alma300": alma300,
+        "t3_300": t3_300,
+        "atr14": float(atr14),
+        "price": float(round(last_close, 5)),
+    }
+
+    summary: Dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "strategy_name": "Advanced Trendilo Strategy",
+        "preset_id": requested_preset,
+        "symbol": symbol,
+        "source": source,
+        "execution_timeframe": execution_tf,
+        "history_days": float(round(history_days, 3)),
+        "bars_count": int(len(bars_df)),
+        "tradeable_today": bool(tradeable_today),
+        "decision": str(decision),
+        "analysis_stage": str(analysis_stage),
+        "reason": str(reason),
+        "unlock_condition": str(unlock_condition),
+        "current_price": float(round(last_close, 5)),
+        "confidence": float(round(momentum_strength, 3)),
+        "momentum_strength": float(round(momentum_strength, 3)),
+        "indicator_snapshot": indicator_snapshot,
+        "best_setup": best_setup,
+        "schedule_trade_entry_args": schedule_args,
+        "trigger_ready": bool(best_setup is not None),
+        "auto_schedule_allowed": False,
+        "manual_confirmation_required": bool(best_setup is not None),
+        "blockers": blockers[:12],
+        "soft_blockers": soft_blockers[:12],
+        "confidence_warnings": confidence_warnings[:12],
+        "tool_state_patch": {
+            tool_state_key: {
+                "generated_at": _utc_now().isoformat(),
+                "strategy_id": strategy_id,
+                "preset_id": requested_preset,
+                "symbol": symbol,
+                "execution_timeframe": execution_tf,
+                "tradeable_today": bool(tradeable_today),
+                "decision": str(decision),
+                "analysis_stage": str(analysis_stage),
+                "reason": str(reason),
+                "unlock_condition": str(unlock_condition),
+                "current_price": float(round(last_close, 5)),
+                "confidence": float(round(momentum_strength, 3)),
+                "indicator_snapshot": indicator_snapshot,
                 "best_setup": best_setup,
                 "schedule_trade_entry_args": schedule_args,
                 "trigger_ready": bool(best_setup is not None),
@@ -10719,8 +13816,10 @@ def _agent_mt5_dynamic_trendilo_universe(
 
     stocks: List[str] = []
     cryptos: List[str] = []
+    fallback_any: List[str] = []
     seen_stock: set[str] = set()
     seen_crypto: set[str] = set()
+    seen_fallback: set[str] = set()
 
     for row in rows:
         name = str((row or {}).get("name") or "").strip().upper()
@@ -10732,21 +13831,29 @@ def _agent_mt5_dynamic_trendilo_universe(
         tok = _token(name)
         if not tok:
             continue
-        if _is_metal_like(text_u, tok) or _is_index_like(text_u, tok):
+        is_fx = _is_fx_like(tok)
+        is_metal = _is_metal_like(text_u, tok)
+        is_index = _is_index_like(text_u, tok)
+        is_crypto = _is_crypto_like(text_u, tok)
+        is_stock = _is_stock_like(text_u, tok)
+        if (not is_fx) and (not is_metal) and name not in seen_fallback:
+            seen_fallback.add(name)
+            fallback_any.append(name)
+        if is_metal or is_index:
             continue
-        if _is_crypto_like(text_u, tok):
+        if is_crypto:
             if name not in seen_crypto:
                 seen_crypto.add(name)
                 cryptos.append(name)
             continue
-        if _is_fx_like(tok):
+        if is_fx:
             continue
-        if _is_stock_like(text_u, tok):
+        if is_stock:
             if name not in seen_stock:
                 seen_stock.add(name)
                 stocks.append(name)
 
-    meta["dynamic_universe_candidates"] = int(len(stocks) + len(cryptos))
+    meta["dynamic_universe_candidates"] = int(max(len(stocks) + len(cryptos), len(fallback_any)))
     selected: List[str] = []
     if key == "stocks_top50":
         selected = stocks[:limit]
@@ -10766,9 +13873,23 @@ def _agent_mt5_dynamic_trendilo_universe(
                 selected.append(cryptos[c_i])
                 c_i += 1
 
+    selected_set = set(selected)
+    fallback_added = 0
+    if len(selected) < limit:
+        for name in fallback_any:
+            if name in selected_set:
+                continue
+            selected.append(name)
+            selected_set.add(name)
+            fallback_added += 1
+            if len(selected) >= limit:
+                break
+
     if not selected:
         return [], meta
     meta["dynamic_universe_used"] = True
+    meta["dynamic_universe_fallback_used"] = bool(fallback_added > 0)
+    meta["dynamic_universe_fallback_added"] = int(fallback_added)
     return selected[:limit], meta
 
 
@@ -11567,14 +14688,16 @@ def _agent_scan_trendilo_tradeable(
 
                 balance = float(session.current_balance or session.initial_balance or 10000.0)
                 risk_amount = float(balance * (risk_percent / 100.0))
-                lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * float(inst.contract_size)))
+                trade_math = _session_trade_math_context(session=session, symbol=str(symbol or base_symbol))
+                value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+                lot_raw = float(risk_amount / max(1e-9, float(risk_distance) * value_per_1lot))
                 lot_size = _normalize_lot_for_instrument(
                     lot_size=float(lot_raw),
-                    min_lot=float(inst.min_lot),
-                    max_lot=float(inst.max_lot),
-                    lot_step=float(inst.lot_step),
+                    min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                    max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+                    lot_step=float(trade_math.get("lot_step") or inst.lot_step),
                 )
-                risk_amount_actual = float(risk_distance * float(inst.contract_size) * float(lot_size))
+                risk_amount_actual = float(risk_distance * value_per_1lot * float(lot_size))
                 momentum_ratio = abs(float(avpch or 0.0)) / max(1e-9, abs(float(rms or 0.0)))
                 schedule_args = {
                     "symbol": str(symbol),
@@ -11591,6 +14714,7 @@ def _agent_scan_trendilo_tradeable(
                     "expected_rr": float(round(rr_target, 4)),
                     "risk_percent": float(round(risk_percent, 4)),
                     "account_balance": float(round(balance, 2)),
+                    "point_value_per_1lot": float(round(value_per_1lot, 6)),
                 }
                 geom_ok, geom_reason = _agent_validate_trade_geometry(
                     symbol=str(symbol),
@@ -11765,19 +14889,39 @@ def _agent_scan_strategy_tradeable(
         "opening_range_breakout": "orb",
         "4": "trendilo",
         "trendilo": "trendilo",
+        "5": "advanced_trendilo",
+        "advanced_trendilo": "advanced_trendilo",
+        "advanced_trendilo_strategy": "advanced_trendilo",
+        "trendilo_advanced": "advanced_trendilo",
+        "6": "trendilo_lsma",
+        "trendilo_lsma": "trendilo_lsma",
+        "trendilo_lsma_strategy": "trendilo_lsma",
+        "lsma": "trendilo_lsma",
+        "lsma_trendilo": "trendilo_lsma",
+        "7": "alpha_wave",
+        "alpha_wave": "alpha_wave",
+        "alpha_wave_strategy": "alpha_wave",
+        "alphawave": "alpha_wave",
+        "daviddtech": "alpha_wave",
     }
-    strategy_key = strategy_aliases.get(strategy_raw, strategy_raw if strategy_raw in {"mtf", "htf_reclaim", "orb", "trendilo"} else "trendilo")
+    strategy_key = strategy_aliases.get(strategy_raw, strategy_raw if strategy_raw in {"mtf", "htf_reclaim", "orb", "trendilo", "advanced_trendilo", "trendilo_lsma", "alpha_wave"} else "trendilo")
     strategy_label_map = {
         "mtf": "classic_htf_fvg",
         "htf_reclaim": "htf_fvg_liquidity_reclaim_v2",
         "orb": "orb_ny_15m_imbalance",
         "trendilo": "trendilo_confirmation_v1",
+        "advanced_trendilo": "advanced_trendilo_confirmation_v1",
+        "trendilo_lsma": "trendilo_lsma_confirmation_v1",
+        "alpha_wave": "alpha_wave_confirmation_v1",
     }
     strategy_id_map = {
         "mtf": "run_mtf_analysis",
         "htf_reclaim": "run_htf_fvg_liquidity_reclaim_analysis",
         "orb": "run_orb_analysis",
         "trendilo": "run_trendilo_analysis",
+        "advanced_trendilo": "run_advanced_trendilo_analysis",
+        "trendilo_lsma": "run_trendilo_lsma_analysis",
+        "alpha_wave": "run_alpha_wave_analysis",
     }
 
     symbol_pack = _agent_collect_scan_jobs_from_payload(
@@ -11795,13 +14939,24 @@ def _agent_scan_strategy_tradeable(
     universe_limit = symbol_pack.get("universe_limit")
     dynamic_universe_meta = symbol_pack.get("dynamic_universe_meta") if isinstance(symbol_pack.get("dynamic_universe_meta"), dict) else {}
 
-    timeframe = str(
-        payload.get("execution_timeframe")
-        or payload.get("timeframe")
+    allowed_tfs = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+    scan_timeframe = str(
+        payload.get("timeframe")
         or mctx.get("timeframe")
         or session.timeframe
         or "M15"
     ).strip().upper() or "M15"
+    if scan_timeframe not in allowed_tfs:
+        scan_timeframe = "M15"
+    execution_timeframe = str(
+        payload.get("execution_timeframe")
+        or scan_timeframe
+        or mctx.get("timeframe")
+        or session.timeframe
+        or "M15"
+    ).strip().upper() or "M15"
+    if execution_timeframe not in allowed_tfs:
+        execution_timeframe = scan_timeframe
     include_non_tradeable = bool(payload.get("include_non_tradeable", False))
     summary_only = bool(payload.get("summary_only", True))
     try:
@@ -11816,6 +14971,35 @@ def _agent_scan_strategy_tradeable(
     ok_count = 0
     error_count = 0
     blocked_count = 0
+    watch_only_count = 0
+    ready_count = 0
+
+    def _rr_quality_score(rr_val: Optional[float]) -> float:
+        rr = _to_float_or_none(rr_val)
+        if rr is None or (not math.isfinite(float(rr))) or float(rr) <= 0.0:
+            return 0.0
+        r = float(rr)
+        # Prefer realistic R:R bands; penalize both too-low and excessively high "paper" R:R.
+        if 1.8 <= r <= 3.5:
+            return 100.0
+        if r < 1.8:
+            return float(max(0.0, min(100.0, (r / 1.8) * 100.0)))
+        return float(max(0.0, 100.0 - ((r - 3.5) * 20.0)))
+
+    def _normalize_confidence_0_100(raw_val: Any) -> Optional[float]:
+        cv = _to_float_or_none(raw_val)
+        if cv is None or (not math.isfinite(float(cv))):
+            return None
+        fv = float(cv)
+        if 0.0 < fv <= 1.0:
+            fv = fv * 100.0
+        return float(max(0.0, min(100.0, fv)))
+
+    def _opportunity_rank_score(row: Dict[str, Any]) -> float:
+        conf_v = float(_normalize_confidence_0_100(row.get("confidence")) or 0.0)
+        rr_score = _rr_quality_score(row.get("rr"))
+        state_bonus = 5.0 if bool(row.get("executable_now")) else 0.0
+        return float(max(0.0, min(100.0, (0.80 * conf_v) + (0.20 * rr_score) + state_bonus)))
 
     for job in scan_jobs:
         scanned_count += 1
@@ -11825,8 +15009,8 @@ def _agent_scan_strategy_tradeable(
         runner_payload = dict(payload if isinstance(payload, dict) else {})
         runner_payload["symbol"] = str(symbol)
         runner_payload["source"] = str(source)
-        if strategy_key in {"mtf", "htf_reclaim", "trendilo"}:
-            runner_payload["execution_timeframe"] = str(timeframe)
+        runner_payload["timeframe"] = str(scan_timeframe)
+        runner_payload["execution_timeframe"] = str(execution_timeframe)
         try:
             if strategy_key == "mtf":
                 summary = _agent_run_mtf_analysis(
@@ -11852,6 +15036,30 @@ def _agent_scan_strategy_tradeable(
                     payload=runner_payload,
                     effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
                 )
+            elif strategy_key == "advanced_trendilo":
+                summary = _agent_run_advanced_trendilo_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            elif strategy_key == "trendilo_lsma":
+                summary = _agent_run_trendilo_lsma_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
+            elif strategy_key == "alpha_wave":
+                summary = _agent_run_alpha_wave_analysis(
+                    session=session,
+                    db=db,
+                    context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                    payload=runner_payload,
+                    effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                )
             else:
                 summary = _agent_run_trendilo_analysis(
                     session=session,
@@ -11864,13 +15072,18 @@ def _agent_scan_strategy_tradeable(
                 raise RuntimeError("strategy_summary_unavailable")
 
             schedule_args = summary.get("schedule_trade_entry_args") if isinstance(summary.get("schedule_trade_entry_args"), dict) else None
+            watch_setup = summary.get("watch_setup") if isinstance(summary.get("watch_setup"), dict) else None
             if isinstance(schedule_args, dict):
                 schedule_args = dict(schedule_args)
                 schedule_args.setdefault("symbol", str(symbol))
-            if strategy_key in {"orb", "trendilo"}:
-                tradeable = bool(summary.get("tradeable_today")) and isinstance(schedule_args, dict)
+            executable_ready = False
+            watch_only_ready = False
+            if strategy_key in {"orb", "trendilo", "advanced_trendilo", "trendilo_lsma", "alpha_wave"}:
+                executable_ready = bool(summary.get("tradeable_today")) and isinstance(schedule_args, dict)
             else:
-                tradeable = bool(summary.get("trigger_ready")) and isinstance(schedule_args, dict)
+                executable_ready = bool(summary.get("trigger_ready")) and isinstance(schedule_args, dict)
+                watch_only_ready = bool((not executable_ready) and isinstance(watch_setup, dict) and isinstance(schedule_args, dict))
+            tradeable = bool(executable_ready or watch_only_ready)
 
             blockers: List[str] = []
             if isinstance(summary.get("blockers"), list):
@@ -11889,19 +15102,43 @@ def _agent_scan_strategy_tradeable(
             if not direction:
                 direction = str(best_setup.get("direction") or "").upper()
 
-            confidence = _to_float_or_none(summary.get("confidence"))
-            if confidence is None:
-                confidence = _to_float_or_none(best_setup.get("confidence"))
-            if confidence is None and isinstance(summary.get("indicator_snapshot"), dict):
-                confidence = _to_float_or_none((summary.get("indicator_snapshot") or {}).get("adx_stoch_vwma"))
-            if confidence is None:
-                confidence = _to_float_or_none(summary.get("momentum_strength"))
-            if confidence is None and isinstance(best_setup.get("fvg_quality"), dict):
-                confidence = _to_float_or_none((best_setup.get("fvg_quality") or {}).get("score"))
-            if confidence is None and isinstance(summary.get("day_context"), dict):
-                confidence = _to_float_or_none((summary.get("day_context") or {}).get("bias_strength"))
-            if confidence is None:
-                confidence = 0.0
+            confidence_candidates: List[Tuple[str, Optional[float]]] = [
+                ("summary.confidence", _normalize_confidence_0_100(summary.get("confidence"))),
+                ("best_setup.confidence", _normalize_confidence_0_100(best_setup.get("confidence"))),
+                (
+                    "indicator_snapshot.adx_stoch_vwma",
+                    _normalize_confidence_0_100(
+                        (summary.get("indicator_snapshot") or {}).get("adx_stoch_vwma")
+                        if isinstance(summary.get("indicator_snapshot"), dict)
+                        else None
+                    ),
+                ),
+                ("summary.momentum_strength", _normalize_confidence_0_100(summary.get("momentum_strength"))),
+                (
+                    "best_setup.fvg_quality.score",
+                    _normalize_confidence_0_100(
+                        (best_setup.get("fvg_quality") or {}).get("score")
+                        if isinstance(best_setup.get("fvg_quality"), dict)
+                        else None
+                    ),
+                ),
+                (
+                    "day_context.bias_strength",
+                    _normalize_confidence_0_100(
+                        (summary.get("day_context") or {}).get("bias_strength")
+                        if isinstance(summary.get("day_context"), dict)
+                        else None
+                    ),
+                ),
+            ]
+            summary_conf = confidence_candidates[0][1]
+            positive_alts = [float(v) for (_src, v) in confidence_candidates[1:] if v is not None and float(v) > 0.0]
+            if summary_conf is None:
+                confidence = float(max(positive_alts)) if positive_alts else 0.0
+            elif float(summary_conf) <= 0.0 and positive_alts:
+                confidence = float(max(positive_alts))
+            else:
+                confidence = float(summary_conf)
             confidence = float(max(0.0, min(100.0, float(confidence))))
 
             entry_ref = _to_float_or_none((schedule_args or {}).get("entry_ref"))
@@ -11935,6 +15172,9 @@ def _agent_scan_strategy_tradeable(
                 "normalized_symbol": str(base_symbol),
                 "ok": True,
                 "tradeable": bool(tradeable),
+                "executable_now": bool(executable_ready),
+                "watch_only": bool(watch_only_ready),
+                "opportunity_state": ("ready" if executable_ready else ("watch_only" if watch_only_ready else "blocked")),
                 "decision": str(summary.get("decision") or ("TRADEABLE" if tradeable else "NOT_TRADEABLE")),
                 "analysis_stage": str((summary.get("analysis_trace") or {}).get("stage") or summary.get("analysis_stage") or ""),
                 "direction": str(direction),
@@ -11948,6 +15188,10 @@ def _agent_scan_strategy_tradeable(
                 ),
             }
             if bool(tradeable):
+                if bool(executable_ready):
+                    ready_count += 1
+                elif bool(watch_only_ready):
+                    watch_only_count += 1
                 rr = _to_float_or_none((schedule_args or {}).get("expected_rr"))
                 if rr is None:
                     rr = _to_float_or_none(best_setup.get("rr"))
@@ -11975,6 +15219,9 @@ def _agent_scan_strategy_tradeable(
                     "symbol": str(row.get("symbol") or ""),
                     "requested_symbol": str(row.get("requested_symbol") or ""),
                     "tradeable": bool(row.get("tradeable")),
+                    "executable_now": bool(row.get("executable_now")),
+                    "watch_only": bool(row.get("watch_only")),
+                    "opportunity_state": str(row.get("opportunity_state") or ""),
                     "direction": str(row.get("direction") or ""),
                     "confidence": float(row.get("confidence") or 0.0),
                     "analysis_stage": str(row.get("analysis_stage") or ""),
@@ -12006,12 +15253,19 @@ def _agent_scan_strategy_tradeable(
 
     opportunities.sort(
         key=lambda r: (
+            float(_opportunity_rank_score(r)),
             float(r.get("confidence") or 0.0),
             float(r.get("rr") or 0.0),
         ),
         reverse=True,
     )
+    for idx, row in enumerate(opportunities, start=1):
+        row["rank"] = int(idx)
+        row["rank_score"] = float(round(_opportunity_rank_score(row), 3))
+    tradeable_total_count = int(len(opportunities))
     opportunities = opportunities[:max_results]
+    ready_shown_count = int(sum(1 for r in opportunities if bool(r.get("executable_now"))))
+    watch_only_shown_count = int(sum(1 for r in opportunities if bool(r.get("watch_only"))))
 
     elapsed_ms = int(max(0.0, (perf_counter() - t0) * 1000.0))
     return {
@@ -12020,7 +15274,8 @@ def _agent_scan_strategy_tradeable(
         "strategy_profile": str(strategy_label_map.get(strategy_key) or ""),
         "strategy_parent_tool": str(strategy_id_map.get(strategy_key) or ""),
         "source": str(source),
-        "timeframe": str(timeframe),
+        "timeframe": str(scan_timeframe),
+        "execution_timeframe": str(execution_timeframe),
         "universe_requested": str(raw_universe or ""),
         "universe_resolved": str(universe_key or "") if universe_symbols else "",
         "universe_symbol_count": int(len(universe_symbols)),
@@ -12034,6 +15289,11 @@ def _agent_scan_strategy_tradeable(
         "ok_count": int(ok_count),
         "error_count": int(error_count),
         "tradeable_count": int(len(opportunities)),
+        "tradeable_total_count": int(tradeable_total_count),
+        "ready_count": int(ready_count),
+        "watch_only_count": int(watch_only_count),
+        "ready_shown_count": int(ready_shown_count),
+        "watch_only_shown_count": int(watch_only_shown_count),
         "blocked_count": int(blocked_count),
         "max_results": int(max_results),
         "opportunities": opportunities,
@@ -12044,6 +15304,11 @@ def _agent_scan_strategy_tradeable(
             "ok_count": int(ok_count),
             "error_count": int(error_count),
             "tradeable_count": int(len(opportunities)),
+            "tradeable_total_count": int(tradeable_total_count),
+            "ready_count": int(ready_count),
+            "watch_only_count": int(watch_only_count),
+            "ready_shown_count": int(ready_shown_count),
+            "watch_only_shown_count": int(watch_only_shown_count),
             "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
         },
         "generated_at": _utc_now().isoformat(),
@@ -12052,16 +15317,1268 @@ def _agent_scan_strategy_tradeable(
             "strategy_opportunity_scan": {
                 "generated_at": _utc_now().isoformat(),
                 "strategy": str(strategy_key),
-                "timeframe": str(timeframe),
+                "timeframe": str(scan_timeframe),
+                "execution_timeframe": str(execution_timeframe),
                 "symbols_scanned": int(scanned_count),
                 "ok_count": int(ok_count),
                 "error_count": int(error_count),
                 "tradeable_count": int(len(opportunities)),
+                "tradeable_total_count": int(tradeable_total_count),
+                "ready_count": int(ready_count),
+                "watch_only_count": int(watch_only_count),
+                "ready_shown_count": int(ready_shown_count),
+                "watch_only_shown_count": int(watch_only_shown_count),
                 "top_tradeable_symbols": [str(r.get("symbol") or "") for r in opportunities[:20]],
                 "elapsed_ms": int(elapsed_ms),
             }
         },
     }
+
+
+def _normalize_strategy_automation_strategy(raw_like: Any) -> str:
+    raw = str(raw_like or "").strip().lower()
+    aliases = {
+        "trendilo": "trendilo",
+        "trendilo_strategy": "trendilo",
+        "advanced_trendilo": "advanced_trendilo",
+        "advanced_trendilo_strategy": "advanced_trendilo",
+        "trendilo_advanced": "advanced_trendilo",
+        "5": "advanced_trendilo",
+        "trendilo_lsma": "trendilo_lsma",
+        "trendilo_lsma_strategy": "trendilo_lsma",
+        "lsma": "trendilo_lsma",
+        "lsma_trendilo": "trendilo_lsma",
+        "6": "trendilo_lsma",
+        "alpha_wave": "alpha_wave",
+        "alpha_wave_strategy": "alpha_wave",
+        "alphawave": "alpha_wave",
+        "daviddtech": "alpha_wave",
+        "7": "alpha_wave",
+        "orb_alpha_hybrid": "orb_alpha_hybrid",
+        "orb_alpha": "orb_alpha_hybrid",
+        "hybrid_orb_alpha": "orb_alpha_hybrid",
+        "orb": "orb_alpha_hybrid",
+        "4": "trendilo",
+    }
+    return aliases.get(raw, "trendilo")
+
+
+def _strategy_automation_profile_for_strategy(strategy: str) -> str:
+    skey = _normalize_strategy_automation_strategy(strategy)
+    if skey == "advanced_trendilo":
+        return "advanced_trendilo_confirmation_v1"
+    if skey == "trendilo_lsma":
+        return "trendilo_lsma_confirmation_v1"
+    if skey in {"alpha_wave", "orb_alpha_hybrid"}:
+        return "alpha_wave_confirmation_v1"
+    return "trendilo_confirmation_v1"
+
+
+def _strategy_automation_job_id(
+    *,
+    parent_session_id: int,
+    symbol: str,
+    strategy: str,
+    timeframe: str,
+) -> str:
+    base = f"{int(parent_session_id)}:{str(symbol).upper()}:{str(strategy).lower()}:{str(timeframe).upper()}"
+    digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
+    return f"auto_{digest}"
+
+
+def _strategy_automation_cfg(session: SimulationSession) -> Dict[str, Any]:
+    cfg = _session_config_dict(session)
+    auto = cfg.get(_STRATEGY_AUTOMATION_CFG_KEY) if isinstance(cfg.get(_STRATEGY_AUTOMATION_CFG_KEY), dict) else {}
+    return dict(auto)
+
+
+def _is_automation_child_session(session: SimulationSession) -> bool:
+    auto = _strategy_automation_cfg(session)
+    parent_id = int(_to_float_or_none(auto.get("parent_session_id")) or 0)
+    return bool(parent_id > 0)
+
+
+def _strategy_automation_mark_stopped(
+    *,
+    session: SimulationSession,
+    db: Session,
+    reason: str,
+    action: str = "stopped",
+) -> bool:
+    auto = _strategy_automation_cfg(session)
+    if not auto:
+        return False
+    if not bool(auto.get("enabled", False)) and str(auto.get("status") or "").lower() == "stopped":
+        return False
+    cfg = _session_config_dict(session)
+    auto_next = dict(auto)
+    now_iso = _utc_now().isoformat()
+    auto_next["enabled"] = False
+    auto_next["status"] = "stopped"
+    auto_next["last_action"] = str(action or "stopped")
+    auto_next["last_reason"] = str(reason or "manual_stop")
+    auto_next["updated_at"] = now_iso
+    cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+    session.config_json = json.dumps(cfg)
+    session.updated_at = datetime.utcnow()
+    db.add(session)
+    return True
+
+
+def _strategy_automation_collect_jobs_for_parent(
+    *,
+    parent_session_id: int,
+    db: Session,
+    include_disabled: bool = True,
+) -> List[Dict[str, Any]]:
+    rows = (
+        db.query(SimulationSession)
+        .filter(SimulationSession.strategy_id == WORKBENCH_ID)
+        .order_by(SimulationSession.id.asc())
+        .all()
+    )
+    jobs: List[Dict[str, Any]] = []
+    for child in rows:
+        auto = _strategy_automation_cfg(child)
+        if not auto:
+            continue
+        p_id = int(_to_float_or_none(auto.get("parent_session_id")) or 0)
+        if p_id != int(parent_session_id):
+            continue
+        enabled = bool(auto.get("enabled", False))
+        if (not include_disabled) and (not enabled):
+            continue
+        open_trades_count = int(
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .count()
+        )
+        open_trade_rows = (
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .order_by(desc(SimulationTrade.id))
+            .all()
+        )
+        open_trade = (
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .order_by(desc(SimulationTrade.id))
+            .first()
+        )
+        jobs.append(
+            {
+                "job_id": str(auto.get("job_id") or _strategy_automation_job_id(
+                    parent_session_id=int(parent_session_id),
+                    symbol=str(child.symbol or ""),
+                    strategy=str(auto.get("strategy") or "trendilo"),
+                    timeframe=str(child.timeframe or "M15"),
+                )),
+                "parent_session_id": int(parent_session_id),
+                "child_session_id": int(child.id),
+                "symbol": str(child.symbol or "").upper(),
+                "strategy": str(_normalize_strategy_automation_strategy(auto.get("strategy") or "trendilo")),
+                "timeframe": str(auto.get("timeframe") or child.timeframe or "M15").upper(),
+                "source": str(auto.get("source") or "mt5").lower(),
+                "preset": str(auto.get("preset") or "default"),
+                "enabled": bool(enabled),
+                "status": str(auto.get("status") or ("running" if enabled else "stopped")),
+                "force_first_entry": bool(auto.get("force_first_entry", True)),
+                "volume_sma_period": int(max(1, min(300, int(_to_float_or_none(auto.get("volume_sma_period")) or 20)))),
+                "last_color": str(auto.get("last_color") or "gray"),
+                "current_color": str(auto.get("current_color") or auto.get("last_color") or "gray"),
+                "last_action": str(auto.get("last_action") or ""),
+                "last_reason": str(auto.get("last_reason") or ""),
+                "last_run_at": str(auto.get("last_run_at") or ""),
+                "created_at": (
+                    str(auto.get("created_at"))
+                    if str(auto.get("created_at") or "").strip()
+                    else (child.created_at.isoformat() if getattr(child, "created_at", None) is not None else "")
+                ),
+                "updated_at": (
+                    str(auto.get("updated_at"))
+                    if str(auto.get("updated_at") or "").strip()
+                    else (child.updated_at.isoformat() if getattr(child, "updated_at", None) is not None else "")
+                ),
+                "open_trades_count": int(open_trades_count),
+                "open_trades": [
+                    {
+                        "id": int(t.id),
+                        "direction": str(t.direction or "").upper(),
+                        "entry_price": _to_float_or_none(t.entry_price),
+                        "stop_loss": _to_float_or_none(t.stop_loss),
+                        "take_profit": _to_float_or_none(t.take_profit),
+                        "lot_size": _to_float_or_none(t.lot_size),
+                        "status": str(t.status or "").lower(),
+                    }
+                    for t in open_trade_rows
+                ],
+                "open_trade": (
+                    {
+                        "id": int(open_trade.id),
+                        "direction": str(open_trade.direction or "").upper(),
+                        "entry_price": _to_float_or_none(open_trade.entry_price),
+                        "stop_loss": _to_float_or_none(open_trade.stop_loss),
+                        "take_profit": _to_float_or_none(open_trade.take_profit),
+                        "lot_size": _to_float_or_none(open_trade.lot_size),
+                        "status": str(open_trade.status or "").lower(),
+                    }
+                    if open_trade is not None
+                    else None
+                ),
+            }
+        )
+    jobs.sort(key=lambda x: (str(x.get("strategy") or ""), str(x.get("symbol") or ""), int(x.get("child_session_id") or 0)))
+    return jobs
+
+
+def _strategy_automation_collect_jobs_global(
+    *,
+    db: Session,
+    include_disabled: bool = True,
+) -> List[Dict[str, Any]]:
+    rows = (
+        db.query(SimulationSession)
+        .filter(SimulationSession.strategy_id == WORKBENCH_ID)
+        .order_by(SimulationSession.id.asc())
+        .all()
+    )
+    jobs: List[Dict[str, Any]] = []
+    for child in rows:
+        auto = _strategy_automation_cfg(child)
+        if not auto:
+            continue
+        p_id = int(_to_float_or_none(auto.get("parent_session_id")) or 0)
+        if p_id <= 0:
+            continue
+        enabled = bool(auto.get("enabled", False))
+        if (not include_disabled) and (not enabled):
+            continue
+        open_trades_count = int(
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .count()
+        )
+        open_trade_rows = (
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .order_by(desc(SimulationTrade.id))
+            .all()
+        )
+        open_trade = (
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(child.id))
+            .filter(SimulationTrade.status == "open")
+            .order_by(desc(SimulationTrade.id))
+            .first()
+        )
+        jobs.append(
+            {
+                "job_id": str(auto.get("job_id") or _strategy_automation_job_id(
+                    parent_session_id=int(p_id),
+                    symbol=str(child.symbol or ""),
+                    strategy=str(auto.get("strategy") or "trendilo"),
+                    timeframe=str(child.timeframe or "M15"),
+                )),
+                "parent_session_id": int(p_id),
+                "child_session_id": int(child.id),
+                "symbol": str(child.symbol or "").upper(),
+                "strategy": str(_normalize_strategy_automation_strategy(auto.get("strategy") or "trendilo")),
+                "timeframe": str(auto.get("timeframe") or child.timeframe or "M15").upper(),
+                "source": str(auto.get("source") or "mt5").lower(),
+                "preset": str(auto.get("preset") or "default"),
+                "enabled": bool(enabled),
+                "status": str(auto.get("status") or ("running" if enabled else "stopped")),
+                "force_first_entry": bool(auto.get("force_first_entry", True)),
+                "volume_sma_period": int(max(1, min(300, int(_to_float_or_none(auto.get("volume_sma_period")) or 20)))),
+                "last_color": str(auto.get("last_color") or "gray"),
+                "current_color": str(auto.get("current_color") or auto.get("last_color") or "gray"),
+                "last_action": str(auto.get("last_action") or ""),
+                "last_reason": str(auto.get("last_reason") or ""),
+                "last_run_at": str(auto.get("last_run_at") or ""),
+                "created_at": (
+                    str(auto.get("created_at"))
+                    if str(auto.get("created_at") or "").strip()
+                    else (child.created_at.isoformat() if getattr(child, "created_at", None) is not None else "")
+                ),
+                "updated_at": (
+                    str(auto.get("updated_at"))
+                    if str(auto.get("updated_at") or "").strip()
+                    else (child.updated_at.isoformat() if getattr(child, "updated_at", None) is not None else "")
+                ),
+                "open_trades_count": int(open_trades_count),
+                "open_trades": [
+                    {
+                        "id": int(t.id),
+                        "direction": str(t.direction or "").upper(),
+                        "entry_price": _to_float_or_none(t.entry_price),
+                        "stop_loss": _to_float_or_none(t.stop_loss),
+                        "take_profit": _to_float_or_none(t.take_profit),
+                        "lot_size": _to_float_or_none(t.lot_size),
+                        "status": str(t.status or "").lower(),
+                    }
+                    for t in open_trade_rows
+                ],
+                "open_trade": (
+                    {
+                        "id": int(open_trade.id),
+                        "direction": str(open_trade.direction or "").upper(),
+                        "entry_price": _to_float_or_none(open_trade.entry_price),
+                        "stop_loss": _to_float_or_none(open_trade.stop_loss),
+                        "take_profit": _to_float_or_none(open_trade.take_profit),
+                        "lot_size": _to_float_or_none(open_trade.lot_size),
+                        "status": str(open_trade.status or "").lower(),
+                    }
+                    if open_trade is not None
+                    else None
+                ),
+            }
+        )
+    jobs.sort(key=lambda x: (int(x.get("parent_session_id") or 0), str(x.get("strategy") or ""), str(x.get("symbol") or ""), int(x.get("child_session_id") or 0)))
+    return jobs
+
+
+def _strategy_automation_orb_signal_from_bars(
+    *,
+    bars_df: pd.DataFrame,
+) -> Dict[str, Any]:
+    if bars_df is None or bars_df.empty:
+        return {
+            "color": "gray",
+            "direction": "neutral",
+            "dir": 0,
+            "value": None,
+        }
+    df = bars_df.copy()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return {
+            "color": "gray",
+            "direction": "neutral",
+            "dir": 0,
+            "value": None,
+        }
+    if len(df.index) <= 0:
+        return {
+            "color": "gray",
+            "direction": "neutral",
+            "dir": 0,
+            "value": None,
+        }
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(timezone.utc)
+    df = df.sort_index()
+    df_ny = df.tz_convert(NY_TZ)
+
+    closes = df_ny["close"].astype(float).to_numpy()
+    highs = df_ny["high"].astype(float).to_numpy()
+    lows = df_ny["low"].astype(float).to_numpy()
+    n = len(df_ny)
+    if n <= 0:
+        return {
+            "color": "gray",
+            "direction": "neutral",
+            "dir": 0,
+            "value": None,
+        }
+
+    dates = [ts.date().isoformat() for ts in df_ny.index]
+    minutes = [int(ts.hour * 60 + ts.minute) for ts in df_ny.index]
+    dir_arr = np.zeros(n, dtype=int)
+    day_indices: Dict[str, List[int]] = {}
+    for i, d in enumerate(dates):
+        day_indices.setdefault(d, []).append(i)
+
+    or_start_min = (9 * 60) + 30
+    or_end_min = (9 * 60) + 45
+    exec_end_min = 12 * 60
+    hold_bars = 2
+
+    for _, idxs in day_indices.items():
+        if not idxs:
+            continue
+        day_or_high = None
+        day_or_low = None
+        for i in idxs:
+            m = int(minutes[i])
+            h = _to_float_or_none(highs[i])
+            l = _to_float_or_none(lows[i])
+            if h is None or l is None:
+                continue
+            if m >= or_start_min and m < or_end_min:
+                day_or_high = float(h) if day_or_high is None else float(max(day_or_high, h))
+                day_or_low = float(l) if day_or_low is None else float(min(day_or_low, l))
+        if day_or_high is None or day_or_low is None:
+            continue
+
+        up_count = 0
+        down_count = 0
+        session_dir = 0
+        trade_locked = False
+        for i in idxs:
+            c = _to_float_or_none(closes[i])
+            if c is None or not math.isfinite(float(c)):
+                continue
+            minute = int(minutes[i])
+            in_exec = minute >= or_end_min and minute < exec_end_min
+            if minute < or_end_min or (not in_exec):
+                dir_arr[i] = 0
+                up_count = 0
+                down_count = 0
+                continue
+            if trade_locked:
+                dir_arr[i] = 0
+                continue
+
+            if session_dir > 0:
+                if float(c) > float(day_or_high):
+                    dir_arr[i] = 1
+                    continue
+                session_dir = 0
+                trade_locked = True
+                dir_arr[i] = 0
+                continue
+            if session_dir < 0:
+                if float(c) < float(day_or_low):
+                    dir_arr[i] = -1
+                    continue
+                session_dir = 0
+                trade_locked = True
+                dir_arr[i] = 0
+                continue
+
+            prev2_high = _to_float_or_none(highs[i - 2]) if i >= 2 else None
+            prev2_low = _to_float_or_none(lows[i - 2]) if i >= 2 else None
+            low_now = _to_float_or_none(lows[i])
+            high_now = _to_float_or_none(highs[i])
+            bull_fvg = bool(
+                low_now is not None
+                and prev2_high is not None
+                and float(low_now) > float(prev2_high)
+            )
+            bear_fvg = bool(
+                high_now is not None
+                and prev2_low is not None
+                and float(high_now) < float(prev2_low)
+            )
+
+            if float(c) > float(day_or_high) and bull_fvg:
+                up_count += 1
+                down_count = 0
+            elif float(c) < float(day_or_low) and bear_fvg:
+                down_count += 1
+                up_count = 0
+            else:
+                up_count = 0
+                down_count = 0
+
+            if up_count >= int(hold_bars):
+                session_dir = 1
+                dir_arr[i] = 1
+            elif down_count >= int(hold_bars):
+                session_dir = -1
+                dir_arr[i] = -1
+            else:
+                dir_arr[i] = 0
+
+    last_dir = int(dir_arr[-1]) if len(dir_arr) > 0 else 0
+    if last_dir > 0:
+        color = "green"
+        direction = "bullish"
+    elif last_dir < 0:
+        color = "red"
+        direction = "bearish"
+    else:
+        color = "gray"
+        direction = "neutral"
+    last_value = _to_float_or_none(closes[-1]) if len(closes) > 0 else None
+    return {
+        "color": str(color),
+        "direction": str(direction),
+        "dir": int(last_dir),
+        "value": _to_float_or_none(last_value),
+    }
+
+
+def _strategy_automation_color_from_bars(
+    *,
+    bars_df: pd.DataFrame,
+    strategy_key: str,
+    preset_cfg: Dict[str, Any],
+    volume_sma_period: int,
+) -> Dict[str, Any]:
+    if bars_df is None or bars_df.empty:
+        return {
+            "color": "gray",
+            "direction": "neutral",
+            "avpch": None,
+            "rms": None,
+            "is_volume_confirmed": False,
+            "volume": None,
+            "volume_sma": None,
+        }
+    skey = str(strategy_key or "").strip().lower()
+    bars_payload = _bars_df_to_payload(bars_df)
+    if skey == "trendilo_lsma":
+        lsma = _agent_trendilo_lsma_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        direction = str(lsma.get("direction") or "neutral").lower()
+        signal = _to_float_or_none(lsma.get("signal"))
+        color = "gray"
+        if direction == "bullish":
+            color = "green"
+        elif direction == "bearish":
+            color = "red"
+        return {
+            "color": str(color),
+            "direction": str(direction),
+            "avpch": _to_float_or_none(signal),
+            "rms": None,
+            "is_volume_confirmed": bool(direction in {"bullish", "bearish"}),
+            "volume": None,
+            "volume_sma": None,
+        }
+    if skey == "alpha_wave":
+        alpha = _agent_alpha_wave_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        direction = str(alpha.get("direction") or "neutral").lower()
+        color = "gray"
+        if direction == "bullish":
+            color = "green"
+        elif direction == "bearish":
+            color = "red"
+        return {
+            "color": str(color),
+            "direction": str(direction),
+            "avpch": _to_float_or_none(alpha.get("momentum_density")),
+            "rms": None,
+            "is_volume_confirmed": bool(direction in {"bullish", "bearish"}),
+            "volume": None,
+            "volume_sma": None,
+        }
+    if skey == "orb_alpha_hybrid":
+        orb = _strategy_automation_orb_signal_from_bars(
+            bars_df=bars_df,
+        )
+        alpha = _agent_alpha_wave_indicators_from_df(
+            bars_df,
+            cfg=preset_cfg if isinstance(preset_cfg, dict) else {},
+        )
+        alpha_direction = str(alpha.get("direction") or "neutral").lower()
+        alpha_color = "gray"
+        if alpha_direction == "bullish":
+            alpha_color = "green"
+        elif alpha_direction == "bearish":
+            alpha_color = "red"
+        return {
+            "color": str(orb.get("color") or "gray"),
+            "direction": str(orb.get("direction") or "neutral"),
+            "avpch": _to_float_or_none(orb.get("value")),
+            "rms": None,
+            "is_volume_confirmed": True,
+            "volume": None,
+            "volume_sma": None,
+            "orb_color": str(orb.get("color") or "gray"),
+            "orb_direction": str(orb.get("direction") or "neutral"),
+            "alpha_color": str(alpha_color),
+            "alpha_direction": str(alpha_direction),
+            "alpha_momentum_density": _to_float_or_none(alpha.get("momentum_density")),
+        }
+    if skey == "advanced_trendilo":
+        adv = _agent_advanced_trendilo_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        direction = str(adv.get("trendilo_direction") or "neutral").lower()
+        avpch = _to_float_or_none(adv.get("trendilo_avpch"))
+        rms = _to_float_or_none(adv.get("trendilo_rms"))
+    else:
+        ind = _agent_indicator_values_from_bars(
+            bars_payload,
+            max_rows=2000,
+            trendilo_params=preset_cfg if isinstance(preset_cfg, dict) else {},
+        )
+        direction = str(ind.get("trendilo_direction") or "neutral").lower()
+        avpch = _to_float_or_none(ind.get("trendilo_avpch"))
+        rms = _to_float_or_none(ind.get("trendilo_rms"))
+    vol = bars_df["volume"].astype(float).fillna(0.0)
+    vsma_period = int(max(1, min(300, int(volume_sma_period or 20))))
+    vol_sma = vol.rolling(window=vsma_period, min_periods=1).mean()
+    volume_now = float(vol.iloc[-1]) if len(vol) else 0.0
+    volume_avg = float(vol_sma.iloc[-1]) if len(vol_sma) else 0.0
+    is_volume_confirmed = bool(np.isfinite(volume_now) and np.isfinite(volume_avg) and volume_now > max(1e-12, volume_avg))
+
+    color = "gray"
+    if direction == "bullish" and is_volume_confirmed:
+        color = "green"
+    elif direction == "bearish" and is_volume_confirmed:
+        color = "red"
+    return {
+        "color": str(color),
+        "direction": str(direction),
+        "avpch": _to_float_or_none(avpch),
+        "rms": _to_float_or_none(rms),
+        "is_volume_confirmed": bool(is_volume_confirmed),
+        "volume": float(volume_now) if np.isfinite(volume_now) else None,
+        "volume_sma": float(volume_avg) if np.isfinite(volume_avg) else None,
+    }
+
+
+def _strategy_automation_is_entry_signal(
+    *,
+    prev_color: str,
+    current_color: str,
+    first_run: bool,
+    force_first_entry: bool,
+) -> bool:
+    now_col = str(current_color or "gray").strip().lower()
+    prev_col = str(prev_color or "gray").strip().lower()
+    if now_col not in {"green", "red"}:
+        return False
+    if bool(first_run) and bool(force_first_entry):
+        return True
+    if prev_col == "gray":
+        return True
+    # Color flip is the core trigger for automation entries.
+    if prev_col in {"green", "red"} and prev_col != now_col:
+        return True
+    return False
+
+
+def _strategy_automation_is_exit_signal(
+    *,
+    open_direction: str,
+    current_color: str,
+) -> bool:
+    d = str(open_direction or "").strip().upper()
+    col = str(current_color or "gray").strip().lower()
+    # Exit on neutral or opposite color.
+    # Neutral means momentum structure is no longer directional.
+    if col not in {"green", "red"}:
+        return True
+    if d == "BUY" and col == "red":
+        return True
+    if d == "SELL" and col == "green":
+        return True
+    return False
+
+
+def _strategy_automation_build_flip_order(
+    *,
+    session: SimulationSession,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    bars_df: pd.DataFrame,
+    risk_percent_override: Optional[float] = None,
+    lot_size_override: Optional[float] = None,
+    atr_stop_mult: float = 1.8,
+) -> Optional[Dict[str, Any]]:
+    """Build a market order for color-flip automation.
+
+    TP is intentionally omitted; position lifecycle is managed by color flips.
+    SL remains as emergency protection.
+    """
+    d = str(direction or "").strip().upper()
+    px = _to_float_or_none(entry_price)
+    if d not in {"BUY", "SELL"} or px is None or not math.isfinite(float(px)) or float(px) <= 0.0:
+        return None
+
+    trade_math = _session_trade_math_context(session=session, symbol=str(symbol or session.symbol or "XAUUSD"))
+    inst = get_instrument(normalize_strategy_symbol(symbol) or symbol)
+    point = float(max(1e-9, _to_float_or_none(trade_math.get("point")) or inst.point_value))
+    value_per_1lot = float(max(1e-12, _to_float_or_none(trade_math.get("value_per_1lot")) or inst.contract_size))
+    min_lot = float(max(0.0, _to_float_or_none(trade_math.get("min_lot")) or inst.min_lot))
+    max_lot = float(max(min_lot, _to_float_or_none(trade_math.get("max_lot")) or inst.max_lot))
+    lot_step = float(max(1e-6, _to_float_or_none(trade_math.get("lot_step")) or inst.lot_step))
+
+    atr14 = _to_float_or_none(_atr_from_bars_df(bars_df, period=14))
+    if atr14 is None or not math.isfinite(float(atr14)) or float(atr14) <= 0.0:
+        atr14 = float(max(point * 20.0, abs(float(px)) * 0.001))
+    atr_mult = float(max(0.5, min(8.0, _to_float_or_none(atr_stop_mult) or 1.8)))
+    min_sl = float(max(point * 10.0, 1e-6))
+    max_sl = float(max(min_sl * 2.0, abs(float(px)) * 0.20))
+    risk_distance = float(max(min_sl, min(max_sl, float(atr14) * atr_mult)))
+
+    stop_loss = float(px - risk_distance) if d == "BUY" else float(px + risk_distance)
+    if stop_loss <= 0.0 or not math.isfinite(stop_loss):
+        return None
+
+    lot_override_eff = _to_float_or_none(lot_size_override)
+    if lot_override_eff is not None and math.isfinite(float(lot_override_eff)) and float(lot_override_eff) > 0.0:
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_override_eff),
+            min_lot=float(min_lot),
+            max_lot=float(max_lot),
+            lot_step=float(lot_step),
+        )
+        risk_pct_eff = _to_float_or_none(risk_percent_override)
+    else:
+        risk_pct_eff = _to_float_or_none(risk_percent_override)
+        if risk_pct_eff is None or not math.isfinite(float(risk_pct_eff)) or float(risk_pct_eff) <= 0.0:
+            risk_pct_eff = 0.75
+        risk_pct_eff = float(max(0.1, min(5.0, float(risk_pct_eff))))
+        balance = _to_float_or_none(session.current_balance)
+        if balance is None or not math.isfinite(float(balance)) or float(balance) <= 0.0:
+            balance = _to_float_or_none(session.initial_balance)
+        if balance is None or not math.isfinite(float(balance)) or float(balance) <= 0.0:
+            balance = 10000.0
+        risk_amount = float(balance) * (float(risk_pct_eff) / 100.0)
+        lot_raw = float(risk_amount / max(1e-12, float(risk_distance) * float(value_per_1lot)))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_raw),
+            min_lot=float(min_lot),
+            max_lot=float(max_lot),
+            lot_step=float(lot_step),
+        )
+
+    return {
+        "direction": str(d),
+        "entry_price": float(px),
+        "stop_loss": float(stop_loss),
+        "take_profit": None,
+        "lot_size": float(lot_size),
+        "risk_distance": float(risk_distance),
+        "risk_percent": _to_float_or_none(risk_pct_eff),
+    }
+
+
+def _strategy_automation_fetch_entry_price(
+    *,
+    symbol: str,
+    timeframe: str,
+    source: str,
+) -> Optional[float]:
+    bars, _err = _agent_fetch_live_history_bars(
+        source=str(source or "mt5"),
+        symbol=str(symbol or "XAUUSD"),
+        timeframe=str(timeframe or "M15"),
+        history_days=1.0,
+        count=3,
+        databento_api_key=None,
+    )
+    bars_df = _bars_payload_to_df(bars, max_rows=32, min_rows=1)
+    if bars_df is None or bars_df.empty:
+        return None
+    px = _to_float_or_none(float(bars_df["close"].iloc[-1]))
+    if px is None or (not math.isfinite(float(px))) or float(px) <= 0.0:
+        return None
+    return float(px)
+
+
+def _strategy_automation_try_open_from_plan(
+    *,
+    session: SimulationSession,
+    db: Session,
+    plan: Dict[str, Any],
+    source: str,
+    timeframe: str,
+    risk_percent_override: Optional[float] = None,
+    rr_target_override: Optional[float] = None,
+    lot_size_override: Optional[float] = None,
+) -> Dict[str, Any]:
+    if not isinstance(plan, dict):
+        return {"ok": False, "reason": "entry_plan_missing"}
+    # Avoid duplicate entries when Start Auto is clicked repeatedly.
+    open_trade = (
+        db.query(SimulationTrade)
+        .filter(SimulationTrade.session_id == int(session.id))
+        .filter(SimulationTrade.status == "open")
+        .order_by(desc(SimulationTrade.id))
+        .first()
+    )
+    if open_trade is not None:
+        return {"ok": False, "reason": "open_trade_exists", "trade_id": int(open_trade.id)}
+
+    direction = str(plan.get("direction") or "").strip().upper()
+    stop_loss = _to_float_or_none(plan.get("stop_loss"))
+    take_profit = _to_float_or_none(plan.get("take_profit"))
+    lot_size = _to_float_or_none(plan.get("lot_size"))
+    if direction not in {"BUY", "SELL"}:
+        return {"ok": False, "reason": "entry_plan_direction_invalid"}
+    if stop_loss is None or take_profit is None or lot_size is None or float(lot_size) <= 0.0:
+        return {"ok": False, "reason": "entry_plan_levels_invalid"}
+    entry_price = _strategy_automation_fetch_entry_price(
+        symbol=str(session.symbol or ""),
+        timeframe=str(timeframe or session.timeframe or "M15"),
+        source=str(source or "mt5"),
+    )
+    if entry_price is None:
+        return {"ok": False, "reason": "entry_price_unavailable"}
+
+    applied_overrides: Dict[str, Any] = {}
+    rr_eff = _to_float_or_none(rr_target_override)
+    if rr_eff is not None and math.isfinite(float(rr_eff)) and float(rr_eff) > 0.0:
+        rr_eff = float(max(1.0, min(12.0, float(rr_eff))))
+        tp_from_rr = _derive_tp_from_rr(
+            entry_price=float(entry_price),
+            stop_loss=float(stop_loss),
+            direction=str(direction),
+            rr_target=float(rr_eff),
+        )
+        if tp_from_rr is not None and math.isfinite(float(tp_from_rr)):
+            take_profit = float(tp_from_rr)
+            applied_overrides["rr_target"] = float(rr_eff)
+            applied_overrides["take_profit"] = float(take_profit)
+
+    risk_pct_eff = _to_float_or_none(risk_percent_override)
+    if risk_pct_eff is not None and math.isfinite(float(risk_pct_eff)) and float(risk_pct_eff) > 0.0:
+        risk_pct_eff = float(max(0.1, min(5.0, float(risk_pct_eff))))
+        balance = _to_float_or_none(session.current_balance)
+        if balance is None or (not math.isfinite(float(balance))) or float(balance) <= 0.0:
+            balance = _to_float_or_none(session.initial_balance)
+        if balance is not None and math.isfinite(float(balance)) and float(balance) > 0.0:
+            risk_distance = abs(float(entry_price) - float(stop_loss))
+            if risk_distance > 0.0:
+                trade_math = _session_trade_math_context(
+                    session=session,
+                    symbol=str(session.symbol or ""),
+                )
+                value_per_1lot = _to_float_or_none(trade_math.get("value_per_1lot"))
+                min_lot = float(max(0.0, _to_float_or_none(trade_math.get("min_lot")) or 0.0))
+                max_lot = float(max(min_lot, _to_float_or_none(trade_math.get("max_lot")) or min_lot))
+                lot_step = float(max(1e-6, _to_float_or_none(trade_math.get("lot_step")) or 0.01))
+                if value_per_1lot is not None and math.isfinite(float(value_per_1lot)) and float(value_per_1lot) > 0.0:
+                    risk_amount = float(balance) * (float(risk_pct_eff) / 100.0)
+                    lot_raw = float(risk_amount / max(1e-12, (risk_distance * float(value_per_1lot))))
+                    lot_size = _normalize_lot_for_instrument(
+                        lot_size=float(lot_raw),
+                        min_lot=float(min_lot),
+                        max_lot=float(max_lot),
+                        lot_step=float(lot_step),
+                    )
+                    applied_overrides["risk_percent"] = float(risk_pct_eff)
+                    applied_overrides["account_balance"] = float(balance)
+                    applied_overrides["lot_size"] = float(lot_size)
+
+    lot_override_eff = _to_float_or_none(lot_size_override)
+    if lot_override_eff is not None and math.isfinite(float(lot_override_eff)) and float(lot_override_eff) > 0.0:
+        trade_math = _session_trade_math_context(
+            session=session,
+            symbol=str(session.symbol or ""),
+        )
+        min_lot = float(max(0.0, _to_float_or_none(trade_math.get("min_lot")) or 0.0))
+        max_lot = float(max(min_lot, _to_float_or_none(trade_math.get("max_lot")) or min_lot))
+        lot_step = float(max(1e-6, _to_float_or_none(trade_math.get("lot_step")) or 0.01))
+        lot_size = _normalize_lot_for_instrument(
+            lot_size=float(lot_override_eff),
+            min_lot=float(min_lot),
+            max_lot=float(max_lot),
+            lot_step=float(lot_step),
+        )
+        applied_overrides["lot_size"] = float(lot_size)
+
+    geom_ok, geom_reason = _agent_validate_trade_geometry(
+        symbol=str(session.symbol or ""),
+        direction=str(direction),
+        entry_ref=float(entry_price),
+        stop_loss=float(stop_loss),
+        take_profit=float(take_profit),
+    )
+    if not geom_ok:
+        return {"ok": False, "reason": str(geom_reason or "invalid_trade_geometry")}
+    try:
+        req = TradeRequest(
+            direction=str(direction),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+            lot_size=float(lot_size),
+            entry_price=float(entry_price),
+            confirm_live_order=True,
+            live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+        )
+        out = execute_trade(session_id=int(session.id), req=req, db=db)
+        return {
+            "ok": True,
+            "reason": "opened_from_entry_plan",
+            "entry_price": float(entry_price),
+            "applied_overrides": applied_overrides,
+            "trade": out if isinstance(out, dict) else {},
+        }
+    except HTTPException as exc:
+        return {"ok": False, "reason": f"entry_plan_open_failed:{str(exc.detail)}"}
+    except Exception as exc:
+        return {"ok": False, "reason": f"entry_plan_open_failed:{type(exc).__name__}"}
+
+
+def _process_strategy_automation_tick_unlocked(
+    *,
+    session: SimulationSession,
+    db: Session,
+    live_bar: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    auto = _strategy_automation_cfg(session)
+    if not auto or not bool(auto.get("enabled", False)):
+        return {"ok": True, "action": "noop", "reason": "automation_disabled"}
+
+    strategy_key = _normalize_strategy_automation_strategy(auto.get("strategy") or "trendilo")
+    if strategy_key not in _STRATEGY_AUTOMATION_SUPPORTED:
+        return {"ok": False, "action": "noop", "reason": "unsupported_strategy"}
+
+    symbol = str(auto.get("symbol") or session.symbol or "XAUUSD").strip().upper() or str(session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    timeframe = str(auto.get("timeframe") or session.timeframe or "M15").strip().upper() or "M15"
+    source = str(auto.get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+    preset = str(auto.get("preset") or "default").strip() or "default"
+    try:
+        history_days = float(auto.get("history_days")) if auto.get("history_days") is not None else None
+    except Exception:
+        history_days = None
+    if history_days is None or not math.isfinite(float(history_days)) or float(history_days) <= 0:
+        history_days = _agent_default_history_days_for_timeframe(timeframe)
+    history_days = float(max(0.5, min(60.0, float(history_days))))
+    volume_sma_period = int(max(1, min(300, int(_to_float_or_none(auto.get("volume_sma_period")) or 20))))
+    force_first_entry = bool(auto.get("force_first_entry", True))
+    risk_percent_override = _to_float_or_none(auto.get("risk_percent"))
+    lot_size_override = _to_float_or_none(auto.get("lot_size_override"))
+
+    bars_live, live_err = _agent_fetch_live_history_bars(
+        source=source,
+        symbol=symbol,
+        timeframe=timeframe,
+        history_days=history_days,
+        count=max(220, int(volume_sma_period + 120)),
+        databento_api_key=None,
+    )
+    bars_df = _bars_payload_to_df(bars_live, max_rows=4000, min_rows=120)
+    if bars_df is None or bars_df.empty:
+        cfg = _session_config_dict(session)
+        auto_next = dict(auto)
+        auto_next["last_run_at"] = _utc_now().isoformat()
+        auto_next["last_action"] = "noop"
+        auto_next["last_reason"] = str(live_err or "insufficient_live_history")
+        auto_next["updated_at"] = _utc_now().isoformat()
+        cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+        session.config_json = json.dumps(cfg)
+        session.updated_at = datetime.utcnow()
+        db.add(session)
+        db.flush()
+        return {"ok": False, "action": "noop", "reason": str(live_err or "insufficient_live_history")}
+
+    base_symbol = normalize_strategy_symbol(symbol) or symbol
+    strategy_id_for_preset = "trendilo_strategy"
+    if strategy_key == "advanced_trendilo":
+        strategy_id_for_preset = "advanced_trendilo_strategy"
+    elif strategy_key == "trendilo_lsma":
+        strategy_id_for_preset = "trendilo_lsma_strategy"
+    elif strategy_key in {"alpha_wave", "orb_alpha_hybrid"}:
+        strategy_id_for_preset = "alpha_wave_strategy"
+    preset_cfg = StrategyRegistry.get_preset_config(
+        str(strategy_id_for_preset),
+        preset,
+        base_symbol,
+    )
+    if not isinstance(preset_cfg, dict):
+        preset_cfg = {}
+    color_state = _strategy_automation_color_from_bars(
+        bars_df=bars_df,
+        strategy_key=strategy_key,
+        preset_cfg=preset_cfg,
+        volume_sma_period=volume_sma_period,
+    )
+    is_orb_alpha_hybrid = strategy_key == "orb_alpha_hybrid"
+    current_color = str(color_state.get("color") or "gray")
+    current_alpha_color = str(color_state.get("alpha_color") or "gray").strip().lower()
+    prev_color = str(auto.get("last_color") or "gray")
+    last_bar_ts = pd.Timestamp(bars_df.index[-1])
+    if last_bar_ts.tzinfo is None:
+        last_bar_ts = last_bar_ts.tz_localize(timezone.utc)
+    else:
+        last_bar_ts = last_bar_ts.tz_convert(timezone.utc)
+    current_bar_unix = int(last_bar_ts.timestamp())
+    current_price = _to_float_or_none((live_bar or {}).get("close"))
+    current_high = _to_float_or_none((live_bar or {}).get("high"))
+    current_low = _to_float_or_none((live_bar or {}).get("low"))
+    if current_price is None:
+        current_price = _to_float_or_none(float(bars_df["close"].iloc[-1]))
+    if current_high is None:
+        current_high = _to_float_or_none(float(bars_df["high"].iloc[-1]))
+    if current_low is None:
+        current_low = _to_float_or_none(float(bars_df["low"].iloc[-1]))
+    if current_price is None or (not math.isfinite(float(current_price))) or float(current_price) <= 0.0:
+        return {"ok": False, "action": "noop", "reason": "price_unavailable"}
+    current_price = float(current_price)
+    if current_high is None or (not math.isfinite(float(current_high))) or float(current_high) <= 0.0:
+        current_high = float(current_price)
+    else:
+        current_high = float(current_high)
+    if current_low is None or (not math.isfinite(float(current_low))) or float(current_low) <= 0.0:
+        current_low = float(current_price)
+    else:
+        current_low = float(current_low)
+
+    open_trade = (
+        db.query(SimulationTrade)
+        .filter(SimulationTrade.session_id == int(session.id))
+        .filter(SimulationTrade.status == "open")
+        .order_by(desc(SimulationTrade.id))
+        .first()
+    )
+    action = "noop"
+    action_payload: Dict[str, Any] = {}
+    action_reason = ""
+    just_closed = False
+    allow_immediate_reentry = False
+    close_payload: Optional[Dict[str, Any]] = None
+    hybrid_entry_time_utc = str(auto.get("hybrid_entry_time_utc") or "")
+    hybrid_alpha_opp_count = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_opp_count")) or 0)))
+    hybrid_alpha_last_bar_unix = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_last_bar_unix")) or 0)))
+
+    if open_trade is not None:
+        open_dir = str(open_trade.direction or "").strip().upper()
+        open_sl = _to_float_or_none(open_trade.stop_loss)
+        open_tp = _to_float_or_none(open_trade.take_profit)
+        forced_close_reason = ""
+        forced_close_price = float(current_price)
+        if open_dir == "BUY":
+            sl_hit = (
+                open_sl is not None
+                and math.isfinite(float(open_sl))
+                and float(open_sl) > 0.0
+                and (float(current_low) <= float(open_sl) or float(current_price) <= float(open_sl))
+            )
+            tp_hit = (
+                open_tp is not None
+                and math.isfinite(float(open_tp))
+                and float(open_tp) > 0.0
+                and (float(current_high) >= float(open_tp) or float(current_price) >= float(open_tp))
+            )
+            if sl_hit:
+                forced_close_reason = "stop_loss_hit"
+                forced_close_price = float(open_sl)
+            elif tp_hit:
+                forced_close_reason = "take_profit_hit"
+                forced_close_price = float(open_tp)
+        elif open_dir == "SELL":
+            sl_hit = (
+                open_sl is not None
+                and math.isfinite(float(open_sl))
+                and float(open_sl) > 0.0
+                and (float(current_high) >= float(open_sl) or float(current_price) >= float(open_sl))
+            )
+            tp_hit = (
+                open_tp is not None
+                and math.isfinite(float(open_tp))
+                and float(open_tp) > 0.0
+                and (float(current_low) <= float(open_tp) or float(current_price) <= float(open_tp))
+            )
+            if sl_hit:
+                forced_close_reason = "stop_loss_hit"
+                forced_close_price = float(open_sl)
+            elif tp_hit:
+                forced_close_reason = "take_profit_hit"
+                forced_close_price = float(open_tp)
+
+        should_color_exit = False
+        if is_orb_alpha_hybrid:
+            entry_dt = _agent_parse_iso_utc(hybrid_entry_time_utc)
+            if entry_dt is None:
+                entry_dt = _agent_parse_iso_utc(getattr(open_trade, "entry_time", None))
+                if entry_dt is not None:
+                    hybrid_entry_time_utc = entry_dt.isoformat()
+            elapsed_sec = None
+            if entry_dt is not None:
+                try:
+                    elapsed_sec = float((last_bar_ts.to_pydatetime() - entry_dt).total_seconds())
+                except Exception:
+                    elapsed_sec = None
+            # Hold first 10 minutes unconditionally, then require 2-bar opposite Alpha Wave confirmation.
+            if elapsed_sec is not None and elapsed_sec >= 600.0:
+                opposite_alpha = "red" if open_dir == "BUY" else ("green" if open_dir == "SELL" else "")
+                if current_bar_unix != hybrid_alpha_last_bar_unix:
+                    if opposite_alpha and current_alpha_color == opposite_alpha:
+                        hybrid_alpha_opp_count = int(hybrid_alpha_opp_count + 1)
+                    else:
+                        hybrid_alpha_opp_count = 0
+                    hybrid_alpha_last_bar_unix = int(current_bar_unix)
+                should_color_exit = bool(opposite_alpha and hybrid_alpha_opp_count >= 2)
+        else:
+            should_color_exit = _strategy_automation_is_exit_signal(
+                open_direction=open_dir,
+                current_color=current_color,
+            )
+        if forced_close_reason or should_color_exit:
+            exit_reason = str(
+                forced_close_reason
+                or ("alpha_opposite_2bar_exit_after_10m" if is_orb_alpha_hybrid else "color_exit_signal")
+            )
+            close_req = CloseTradeRequest(
+                exit_price=float(forced_close_price if forced_close_reason else current_price),
+                confirm_live_order=True,
+                live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+                automation_internal=True,
+            )
+            try:
+                close_out = close_trade(
+                    session_id=int(session.id),
+                    trade_id=int(open_trade.id),
+                    req=close_req,
+                    db=db,
+                )
+                action = "closed_trade"
+                close_payload = {
+                    "trade_id": int(open_trade.id),
+                    "close_result": close_out if isinstance(close_out, dict) else {},
+                }
+                action_payload = dict(close_payload)
+                action_reason = str(exit_reason)
+                just_closed = True
+                allow_immediate_reentry = (not bool(forced_close_reason)) and (not bool(is_orb_alpha_hybrid))
+                if is_orb_alpha_hybrid:
+                    hybrid_entry_time_utc = ""
+                    hybrid_alpha_opp_count = 0
+                    hybrid_alpha_last_bar_unix = int(current_bar_unix)
+                open_trade = None
+            except HTTPException as http_exc:
+                action = "noop"
+                action_reason = f"close_failed:{str(http_exc.detail)}"
+            except Exception as exc:
+                action = "noop"
+                action_reason = f"close_failed:{type(exc).__name__}"
+    if open_trade is None:
+        first_run = bool(auto.get("first_run", True))
+        should_enter = _strategy_automation_is_entry_signal(
+            prev_color=prev_color,
+            current_color=current_color,
+            first_run=first_run,
+            force_first_entry=force_first_entry,
+        )
+        # Reversal mode: immediately re-enter on opposite color after a close.
+        if (not should_enter) and just_closed and allow_immediate_reentry and str(current_color or "").lower() in {"green", "red"}:
+            should_enter = True
+        if should_enter:
+            direction_expected = "BUY" if current_color == "green" else ("SELL" if current_color == "red" else "")
+            if direction_expected:
+                atr_stop_mult = _to_float_or_none(auto.get("atr_stop_mult"))
+                if atr_stop_mult is None:
+                    atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+                order_plan = _strategy_automation_build_flip_order(
+                    session=session,
+                    symbol=str(symbol),
+                    direction=str(direction_expected),
+                    entry_price=float(current_price),
+                    bars_df=bars_df,
+                    risk_percent_override=risk_percent_override,
+                    lot_size_override=lot_size_override,
+                    atr_stop_mult=float(atr_stop_mult if atr_stop_mult is not None else 1.8),
+                )
+                if isinstance(order_plan, dict):
+                    trade_req = TradeRequest(
+                        direction=str(order_plan.get("direction") or direction_expected),
+                        stop_loss=float(_to_float_or_none(order_plan.get("stop_loss")) or 0.0),
+                        take_profit=None,
+                        lot_size=float(_to_float_or_none(order_plan.get("lot_size")) or 0.0),
+                        entry_price=float(current_price),
+                        confirm_live_order=True,
+                        live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+                    )
+                    try:
+                        trade_out = execute_trade(
+                            session_id=int(session.id),
+                            req=trade_req,
+                            db=db,
+                        )
+                        action = "closed_and_opened_trade" if just_closed else "opened_trade"
+                        action_payload = {
+                            "trade_result": trade_out if isinstance(trade_out, dict) else {},
+                            "order_plan": order_plan,
+                            "entry_mode": "color_flip",
+                        }
+                        if isinstance(close_payload, dict):
+                            action_payload["close_result"] = close_payload
+                        action_reason = "color_flip_entry_signal"
+                        if is_orb_alpha_hybrid:
+                            hybrid_entry_time_utc = _utc_now().isoformat()
+                            hybrid_alpha_opp_count = 0
+                            hybrid_alpha_last_bar_unix = int(current_bar_unix)
+                    except HTTPException as http_exc:
+                        if action == "closed_trade":
+                            action_reason = f"entry_after_close_failed:{str(http_exc.detail)}"
+                        else:
+                            action = "noop"
+                            action_reason = f"entry_failed:{str(http_exc.detail)}"
+                    except Exception as exc:
+                        if action == "closed_trade":
+                            action_reason = f"entry_after_close_failed:{type(exc).__name__}"
+                        else:
+                            action = "noop"
+                            action_reason = f"entry_failed:{type(exc).__name__}"
+                else:
+                    if action == "closed_trade":
+                        action_reason = "entry_after_close_failed:order_plan_invalid"
+                    else:
+                        action_reason = "entry_signal_but_order_plan_invalid"
+
+    if is_orb_alpha_hybrid and open_trade is None and action not in {"opened_trade", "closed_and_opened_trade"}:
+        hybrid_entry_time_utc = ""
+        hybrid_alpha_opp_count = 0
+
+    cfg = _session_config_dict(session)
+    auto_next = dict(auto)
+    now_iso = _utc_now().isoformat()
+    auto_next["strategy"] = str(strategy_key)
+    auto_next["symbol"] = str(symbol)
+    auto_next["timeframe"] = str(timeframe)
+    auto_next["source"] = str(source)
+    auto_next["preset"] = str(preset)
+    auto_next["first_run"] = False
+    auto_next["last_color"] = str(current_color)
+    auto_next["current_color"] = str(current_color)
+    auto_next["last_action"] = str(action)
+    auto_next["last_reason"] = str(action_reason or "none")
+    auto_next["last_run_at"] = now_iso
+    auto_next["updated_at"] = now_iso
+    if is_orb_alpha_hybrid:
+        auto_next["hybrid_entry_time_utc"] = str(hybrid_entry_time_utc or "")
+        auto_next["hybrid_alpha_opp_count"] = int(max(0, hybrid_alpha_opp_count))
+        auto_next["hybrid_alpha_last_bar_unix"] = int(max(0, hybrid_alpha_last_bar_unix))
+        auto_next["alpha_color"] = str(current_alpha_color)
+    auto_next["last_snapshot"] = {
+        "color": str(current_color),
+        "trendilo_direction": str(color_state.get("direction") or "neutral"),
+        "trendilo_avpch": _to_float_or_none(color_state.get("avpch")),
+        "trendilo_rms": _to_float_or_none(color_state.get("rms")),
+        "is_volume_confirmed": bool(color_state.get("is_volume_confirmed")),
+        "volume": _to_float_or_none(color_state.get("volume")),
+        "volume_sma": _to_float_or_none(color_state.get("volume_sma")),
+        "price": float(current_price),
+        "high": float(current_high),
+        "low": float(current_low),
+        "alpha_color": str(current_alpha_color),
+        "alpha_direction": str(color_state.get("alpha_direction") or "neutral"),
+    }
+    if action_payload:
+        auto_next["last_action_payload"] = action_payload
+    cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+    session.config_json = json.dumps(cfg)
+    session.updated_at = datetime.utcnow()
+    db.add(session)
+    db.flush()
+    return {
+        "ok": True,
+        "action": str(action),
+        "reason": str(action_reason or "none"),
+        "symbol": str(symbol),
+        "strategy": str(strategy_key),
+        "timeframe": str(timeframe),
+        "color": str(current_color),
+        "price": float(current_price),
+        "payload": action_payload,
+    }
+
+
+def _process_strategy_automation_tick(
+    *,
+    session: SimulationSession,
+    db: Session,
+    live_bar: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    lock = _get_agent_session_lock(int(session.id))
+    with lock:
+        return _process_strategy_automation_tick_unlocked(
+            session=session,
+            db=db,
+            live_bar=live_bar,
+        )
 
 
 def _agent_orb_pick_rr_target(
@@ -12720,13 +17237,14 @@ def _agent_run_orb_analysis(
                                 if balance <= 0:
                                     balance = 10000.0
                                 risk_amount = float(balance * (float(risk_percent) / 100.0))
-                                value_per_1lot = float(inst.contract_size)
-                                lot_raw = risk_amount / (risk_distance_effective * value_per_1lot) if (risk_distance_effective > 0 and value_per_1lot > 0) else float(inst.min_lot)
+                                trade_math = _session_trade_math_context(session=session, symbol=str(symbol or session.symbol or "XAUUSD"))
+                                value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+                                lot_raw = risk_amount / (risk_distance_effective * value_per_1lot) if (risk_distance_effective > 0 and value_per_1lot > 0) else float(trade_math.get("min_lot") or inst.min_lot)
                                 lot_size = _normalize_lot_for_instrument(
                                     lot_size=float(lot_raw),
-                                    min_lot=float(inst.min_lot),
-                                    max_lot=float(inst.max_lot),
-                                    lot_step=float(inst.lot_step),
+                                    min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                                    max_lot=float(trade_math.get("max_lot") or inst.max_lot),
+                                    lot_step=float(trade_math.get("lot_step") or inst.lot_step),
                                 )
                                 actual_risk_usd = float(risk_distance_effective * value_per_1lot * float(lot_size))
 
@@ -13096,6 +17614,51 @@ def _agent_execute_tool(
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
 
+    if tname == "run_advanced_trendilo_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_advanced_trendilo_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "run_trendilo_lsma_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_trendilo_lsma_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+    if tname == "run_alpha_wave_analysis":
+        if not bool(perms.get("can_scan_tools", True)):
+            return {"ok": False, "error": "permission_denied:can_scan_tools"}
+        try:
+            data = _agent_run_alpha_wave_analysis(
+                session=session,
+                db=db,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else {},
+                payload=payload if isinstance(payload, dict) else {},
+                effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            )
+            return {"ok": True, "data": data}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
     if tname == "scan_trendilo_fields":
         if not bool(perms.get("can_scan_tools", True)):
             return {"ok": False, "error": "permission_denied:can_scan_tools"}
@@ -13352,6 +17915,8 @@ def _agent_execute_tool(
                         "lot_size": payload.get("lot_size"),
                         "entry_price": payload.get("entry_price"),
                         "bar_time_unix": payload.get("bar_time_unix"),
+                        "confirm_live_order": payload.get("confirm_live_order"),
+                        "live_confirmation_phrase": payload.get("live_confirmation_phrase"),
                         "cost_spread": payload.get("cost_spread"),
                         "cost_tc_rate": payload.get("cost_tc_rate"),
                         "cost_spread_source": payload.get("cost_spread_source"),
@@ -13367,10 +17932,63 @@ def _agent_execute_tool(
                 lot_size=float(payload.get("lot_size") or 0.01),
                 entry_price=_to_float_or_none(payload.get("entry_price")),
                 bar_time_unix=int(payload.get("bar_time_unix")) if payload.get("bar_time_unix") is not None else None,
+                confirm_live_order=bool(payload.get("confirm_live_order", False)),
+                live_confirmation_phrase=(
+                    str(payload.get("live_confirmation_phrase"))
+                    if payload.get("live_confirmation_phrase") is not None
+                    else None
+                ),
                 cost_spread=_to_float_or_none(payload.get("cost_spread")),
                 cost_tc_rate=_to_float_or_none(payload.get("cost_tc_rate")),
                 cost_spread_source=str(payload.get("cost_spread_source")) if payload.get("cost_spread_source") is not None else None,
             )
+            entry_for_risk = _to_float_or_none(req.entry_price)
+            if entry_for_risk is None and isinstance(context_snapshot, dict):
+                market_ctx = context_snapshot.get("market") if isinstance(context_snapshot.get("market"), dict) else {}
+                entry_for_risk = (
+                    _to_float_or_none(market_ctx.get("current_price"))
+                    or _to_float_or_none(context_snapshot.get("current_price"))
+                    or _to_float_or_none(context_snapshot.get("last_price"))
+                )
+            if entry_for_risk is None:
+                try:
+                    eng = _get_or_create_engine(session, db)
+                    if eng.df is not None and not eng.df.empty and int(eng.current_bar) < int(eng.total_bars):
+                        entry_for_risk = _to_float_or_none(eng.df.iloc[int(eng.current_bar)]["close"])
+                except Exception:
+                    entry_for_risk = None
+            trade_math_for_risk = _session_trade_math_context(
+                session=session,
+                symbol=str(session.symbol or "XAUUSD"),
+            )
+            point_value_for_risk = _to_float_or_none(payload.get("point_value_per_1lot"))
+            if point_value_for_risk is None:
+                point_value_for_risk = _to_float_or_none(trade_math_for_risk.get("value_per_1lot"))
+            risk_cap_check = _agent_guardrail_check_trade_risk(
+                symbol=str(session.symbol or "XAUUSD"),
+                entry_price=entry_for_risk,
+                stop_loss=req.stop_loss,
+                lot_size=req.lot_size,
+                cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+                point_value_per_1lot=point_value_for_risk,
+                live_execution=_is_live_mt5_execution_enabled(session),
+            )
+            if bool(risk_cap_check.get("enabled")) and (not bool(risk_cap_check.get("ok", True))):
+                return {
+                    "ok": False,
+                    "error": f"blocked:guardrail:{str(risk_cap_check.get('error') or 'risk_cap_per_trade')}",
+                    "guardrails": {
+                        "guardrail_enabled": bool(guardrails.get("guardrail_enabled", True)),
+                        "session_filter_enabled": bool(guardrails.get("session_filter_enabled")),
+                        "news_filter_enabled": bool(guardrails.get("news_filter_enabled")),
+                        "reasons": [str(risk_cap_check.get("error") or "risk_cap_per_trade")],
+                        "details": {
+                            "max_risk_per_trade_usd": risk_cap_check.get("cap_usd"),
+                            "estimated_risk_usd": risk_cap_check.get("risk_usd"),
+                            "value_per_1lot": risk_cap_check.get("value_per_1lot"),
+                        },
+                    },
+                }
             if atomic:
                 prev_suppress = bool(getattr(db, "_suppress_commit", False))
                 setattr(db, "_suppress_commit", True)
@@ -13409,15 +18027,24 @@ def _agent_execute_tool(
     if tname == "schedule_trade_entry":
         if not bool(perms.get("can_place_trades", False)):
             return {"ok": False, "error": "permission_denied:can_place_trades"}
+        live_trigger_requires_approval = bool(_is_live_mt5_execution_enabled(session))
+        is_live_exec = _is_live_mt5_execution_enabled(session)
+        guardrail_risk_cap_usd = _agent_guardrail_trade_risk_cap_usd(
+            effective_cfg if isinstance(effective_cfg, dict) else {},
+            live_execution=bool(is_live_exec),
+        )
         schedule_guardrail_policy = {
             "guardrail_enabled": bool(effective_cfg.get("guardrail_enabled", True)),
             "session_filter_enabled": bool(effective_cfg.get("guardrail_session_filter_enabled", False)),
             "news_filter_enabled": bool(effective_cfg.get("guardrail_news_filter_enabled", False)),
+            "max_risk_per_trade_usd": (float(round(guardrail_risk_cap_usd, 4)) if guardrail_risk_cap_usd is not None else None),
             "news_lookback_min": max(15, min(24 * 60, int(effective_cfg.get("guardrail_news_lookback_min") or 120))),
             "news_provider": str(effective_cfg.get("market_news_provider") or "polygon").strip().lower() or "polygon",
             "news_ibkr_host": str(effective_cfg.get("market_news_ibkr_host") or "127.0.0.1").strip() or "127.0.0.1",
             "news_ibkr_port": max(1, min(65535, int(_agent_usage_safe_int(effective_cfg.get("market_news_ibkr_port"), 7497)))),
             "trigger_requires_approval": bool(
+                live_trigger_requires_approval
+                or
                 effective_cfg.get("watchdog_trigger_requires_approval", False)
                 or perms.get("requires_user_confirm_for_trade", False)
             ),
@@ -13502,12 +18129,18 @@ def _agent_execute_tool(
                 }
         session_symbol = str(session.symbol or "XAUUSD").upper()
         inst = get_instrument(normalize_strategy_symbol(session_symbol) or session_symbol)
+        trade_math = _session_trade_math_context(session=session, symbol=session_symbol)
         lot_value = _normalize_lot_for_instrument(
             lot_size=float(lot_value),
-            min_lot=float(inst.min_lot),
-            max_lot=min(100.0, float(inst.max_lot)),
-            lot_step=float(inst.lot_step),
+            min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+            max_lot=min(100.0, float(trade_math.get("max_lot") or inst.max_lot)),
+            lot_step=float(trade_math.get("lot_step") or inst.lot_step),
         )
+        value_per_1lot = _to_float_or_none(payload.get("point_value_per_1lot"))
+        if value_per_1lot is None:
+            value_per_1lot = float(trade_math.get("value_per_1lot") or inst.contract_size)
+        if (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+            return {"ok": False, "error": "invalid_point_value_per_1lot"}
         risk_amount = _to_float_or_none(payload.get("risk_amount"))
         risk_percent = _to_float_or_none(payload.get("risk_percent"))
         account_balance = _to_float_or_none(payload.get("account_balance"))
@@ -13521,19 +18154,14 @@ def _agent_execute_tool(
         if risk_amount is not None:
             if (not math.isfinite(float(risk_amount))) or float(risk_amount) <= 0.0:
                 return {"ok": False, "error": "invalid_risk_amount"}
-            value_per_1lot = _to_float_or_none(payload.get("point_value_per_1lot"))
-            if value_per_1lot is None:
-                value_per_1lot = float(inst.contract_size)
-            if (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
-                return {"ok": False, "error": "invalid_point_value_per_1lot"}
             expected_lot_raw = float(risk_amount) / (float(risk_distance) * float(value_per_1lot))
             expected_lot = _normalize_lot_for_instrument(
                 lot_size=expected_lot_raw,
-                min_lot=float(inst.min_lot),
-                max_lot=min(100.0, float(inst.max_lot)),
-                lot_step=float(inst.lot_step),
+                min_lot=float(trade_math.get("min_lot") or inst.min_lot),
+                max_lot=min(100.0, float(trade_math.get("max_lot") or inst.max_lot)),
+                lot_step=float(trade_math.get("lot_step") or inst.lot_step),
             )
-            lot_tol = max(float(inst.lot_step) * 1.01, 0.01)
+            lot_tol = max(float(trade_math.get("lot_step") or inst.lot_step) * 1.01, 0.01)
             if abs(float(lot_value) - float(expected_lot)) > float(lot_tol):
                 return {
                     "ok": False,
@@ -13546,6 +18174,25 @@ def _agent_execute_tool(
                         "value_per_1lot": round(float(value_per_1lot), 6),
                     },
                 }
+        risk_cap_check = _agent_guardrail_check_trade_risk(
+            symbol=session_symbol,
+            entry_price=float(entry_ref),
+            stop_loss=float(stop_loss),
+            lot_size=float(lot_value),
+            cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+            point_value_per_1lot=float(value_per_1lot),
+            live_execution=bool(is_live_exec),
+        )
+        if bool(risk_cap_check.get("enabled")) and (not bool(risk_cap_check.get("ok", True))):
+            return {
+                "ok": False,
+                "error": "risk_amount_exceeds_guardrail_cap",
+                "details": {
+                    "max_risk_per_trade_usd": round(float(risk_cap_check.get("cap_usd") or 0.0), 4),
+                    "calculated_risk_usd": round(float(risk_cap_check.get("risk_usd") or 0.0), 4),
+                    "value_per_1lot": round(float(risk_cap_check.get("value_per_1lot") or 0.0), 6),
+                },
+            }
         if not _validate_entry_levels(direction, float(trigger_price), float(stop_loss), take_profit):
             return {"ok": False, "error": "invalid_levels_for_trigger_price"}
         timeframe = str(payload.get("timeframe") or session.timeframe or "M15").strip().upper()
@@ -13906,6 +18553,8 @@ def _agent_execute_tool(
                         "trade_id": int(trade_id),
                         "exit_price": payload.get("exit_price"),
                         "bar_time_unix": payload.get("bar_time_unix"),
+                        "confirm_live_order": payload.get("confirm_live_order"),
+                        "live_confirmation_phrase": payload.get("live_confirmation_phrase"),
                         "cost_spread": payload.get("cost_spread"),
                         "cost_tc_rate": payload.get("cost_tc_rate"),
                         "cost_spread_source": payload.get("cost_spread_source"),
@@ -13917,6 +18566,12 @@ def _agent_execute_tool(
             req = CloseTradeRequest(
                 exit_price=_to_float_or_none(payload.get("exit_price")),
                 bar_time_unix=int(payload.get("bar_time_unix")) if payload.get("bar_time_unix") is not None else None,
+                confirm_live_order=bool(payload.get("confirm_live_order", False)),
+                live_confirmation_phrase=(
+                    str(payload.get("live_confirmation_phrase"))
+                    if payload.get("live_confirmation_phrase") is not None
+                    else None
+                ),
                 cost_spread=_to_float_or_none(payload.get("cost_spread")),
                 cost_tc_rate=_to_float_or_none(payload.get("cost_tc_rate")),
                 cost_spread_source=str(payload.get("cost_spread_source")) if payload.get("cost_spread_source") is not None else None,
@@ -14178,7 +18833,7 @@ def _agent_tool_state_from_tool_calls(tool_calls: Any) -> Dict[str, Any]:
                         "end_index": int(selection.get("end_index") or 0),
                         "bars": int(selection.get("bars") or 0),
                     }
-        elif tool_name in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable"}:
+        elif tool_name in {"run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "run_advanced_trendilo_analysis", "run_trendilo_lsma_analysis", "run_alpha_wave_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable"}:
             tsp = data.get("tool_state_patch") if isinstance(data.get("tool_state_patch"), dict) else {}
             if tsp:
                 patch.update(tsp)
@@ -14263,6 +18918,98 @@ def _bars_payload_to_df(
     if bars_df.empty or len(bars_df) < int(min_rows):
         return None
     return bars_df
+
+
+def _atr_from_bars_df(
+    bars_df: Optional[pd.DataFrame],
+    *,
+    period: int = 14,
+) -> Optional[float]:
+    """Compute ATR from an OHLCV DataFrame using classic True Range."""
+    if bars_df is None or bars_df.empty:
+        return None
+    need = {"high", "low", "close"}
+    if not need.issubset(set(bars_df.columns)):
+        return None
+    p = max(1, int(period or 14))
+    try:
+        high = pd.to_numeric(bars_df["high"], errors="coerce").astype(float)
+        low = pd.to_numeric(bars_df["low"], errors="coerce").astype(float)
+        close = pd.to_numeric(bars_df["close"], errors="coerce").astype(float)
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat(
+            [
+                (high - low).abs(),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.rolling(window=p, min_periods=1).mean()
+        val = _to_float_or_none(atr.iloc[-1]) if len(atr) else None
+        if val is None or not math.isfinite(float(val)) or float(val) <= 0.0:
+            return None
+        return float(val)
+    except Exception:
+        return None
+
+
+def _bars_df_to_payload(
+    bars_df: Optional[pd.DataFrame],
+    *,
+    max_rows: int = 4000,
+    min_rows: int = 1,
+) -> Optional[List[Dict[str, float]]]:
+    """Convert OHLCV DataFrame to bars payload consumed by indicator helpers."""
+    if bars_df is None or bars_df.empty:
+        return None
+    try:
+        frame = bars_df.copy()
+        if len(frame) > int(max_rows):
+            frame = frame.tail(int(max_rows))
+        if len(frame) < int(min_rows):
+            return None
+
+        out: List[Dict[str, float]] = []
+        for idx, row in frame.iterrows():
+            try:
+                if isinstance(idx, pd.Timestamp):
+                    ts = idx
+                else:
+                    ts = pd.to_datetime(idx, utc=True, errors="coerce")
+                if ts is None or pd.isna(ts):
+                    continue
+                if getattr(ts, "tzinfo", None) is None:
+                    ts = ts.tz_localize("UTC")
+                else:
+                    ts = ts.tz_convert("UTC")
+                t = int(ts.timestamp())
+                o = float(row.get("open"))
+                h = float(row.get("high"))
+                l = float(row.get("low"))
+                c = float(row.get("close"))
+                v = float(row.get("volume", 0.0))
+                if t <= 0:
+                    continue
+                if not all(math.isfinite(x) for x in (o, h, l, c, v)):
+                    continue
+                out.append(
+                    {
+                        "time": int(t),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": float(v),
+                    }
+                )
+            except Exception:
+                continue
+        if len(out) < int(min_rows):
+            return None
+        return out
+    except Exception:
+        return None
 
 
 def _build_live_advance_result(
@@ -15267,6 +20014,10 @@ def workbench_agent_admin_status(
             "enabled": bool(cfg.get("guardrail_enabled", True)),
             "session_filter_enabled": bool(cfg.get("guardrail_session_filter_enabled", False)),
             "news_filter_enabled": bool(cfg.get("guardrail_news_filter_enabled", False)),
+            "max_risk_per_trade_usd": _agent_guardrail_trade_risk_cap_usd(
+                cfg if isinstance(cfg, dict) else {},
+                live_execution=_is_live_mt5_execution_enabled(session),
+            ),
             "news_lookback_min": max(15, min(24 * 60, int(cfg.get("guardrail_news_lookback_min") or 120))),
             "market_news_provider": str(cfg.get("market_news_provider") or "polygon").strip().lower() or "polygon",
             "market_news_llm_summary_enabled": bool(cfg.get("market_news_llm_summary_enabled", False)),
@@ -15376,6 +20127,507 @@ def workbench_agent_strategy_opportunities(
         effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
     )
     return {"ok": True, "session_id": int(session_id), "data": data}
+
+
+def _strategy_automation_default_source(parent_session: SimulationSession, req_source: Optional[str]) -> str:
+    src = str(req_source or "").strip().lower()
+    if not src:
+        src = str(_session_live_control_dict(parent_session).get("source") or "mt5").strip().lower() or "mt5"
+    if src not in {"mt5", "databento"}:
+        src = "mt5"
+    return src
+
+
+def _ensure_backend_automation_relay_running() -> None:
+    """Best-effort self-heal: restart backend relay thread if it is not alive."""
+    try:
+        from ..main import agent_live_tick_service
+
+        if agent_live_tick_service is not None:
+            agent_live_tick_service.ensure_started()
+    except Exception:
+        # Never fail user requests on relay self-heal path.
+        pass
+
+
+@router.post("/sessions/{session_id}/agent/strategy-automation/start")
+def workbench_agent_strategy_automation_start(
+    session_id: int,
+    req: StrategyAutomationStartRequest,
+    db: Session = Depends(get_db),
+):
+    _ensure_backend_automation_relay_running()
+    parent = db.query(SimulationSession).get(session_id)
+    if not parent:
+        raise HTTPException(404, "Session not found")
+    if str(parent.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy automation is available only for Workbench sessions")
+
+    strategy_key = _normalize_strategy_automation_strategy(req.strategy)
+    if strategy_key not in _STRATEGY_AUTOMATION_SUPPORTED:
+        raise HTTPException(
+            400,
+            (
+                "strategy_automation supports trendilo, advanced_trendilo, trendilo_lsma, alpha_wave, "
+                "orb_alpha_hybrid"
+            ),
+        )
+
+    symbol = str(req.symbol or "").strip().upper()
+    if not symbol:
+        raise HTTPException(400, "symbol is required")
+    timeframe = str(req.timeframe or parent.timeframe or "M15").strip().upper() or "M15"
+    if timeframe not in {"M1", "M5", "M15", "M30", "H1"}:
+        timeframe = "M15"
+    source = _strategy_automation_default_source(parent, req.source)
+    preset = str(req.preset or "default").strip() or "default"
+    profile = _strategy_automation_profile_for_strategy(strategy_key)
+    parent_live = _session_live_control_dict(parent)
+    parent_cfg = _session_config_dict(parent)
+    req_exec_mode = str(req.execution_mode or "").strip().lower()
+    if req_exec_mode not in _LIVE_EXECUTION_MODES:
+        req_exec_mode = ""
+
+    with _STRATEGY_AUTOMATION_START_LOCK:
+        existing = None
+        stopped_conflicts: List[Dict[str, Any]] = []
+        siblings = (
+            db.query(SimulationSession)
+            .filter(SimulationSession.strategy_id == WORKBENCH_ID)
+            .filter(SimulationSession.status == "active")
+            .all()
+        )
+        for row in siblings:
+            auto = _strategy_automation_cfg(row)
+            if not auto:
+                continue
+            if int(_to_float_or_none(auto.get("parent_session_id")) or 0) != int(parent.id):
+                continue
+            if _normalize_strategy_automation_strategy(auto.get("strategy")) != strategy_key:
+                continue
+            if str(row.symbol or "").strip().upper() != symbol:
+                continue
+            if str(row.timeframe or "").strip().upper() != timeframe:
+                continue
+            existing = row
+            break
+
+        if not bool(req.allow_parallel):
+            for row in siblings:
+                if row is None:
+                    continue
+                if existing is not None and int(row.id) == int(existing.id):
+                    continue
+                auto = _strategy_automation_cfg(row)
+                if not auto or not bool(auto.get("enabled", False)):
+                    continue
+                row_symbol = str(row.symbol or auto.get("symbol") or "").strip().upper()
+                if row_symbol != symbol:
+                    continue
+                row_strategy = _normalize_strategy_automation_strategy(auto.get("strategy") or "")
+                if row_strategy not in _STRATEGY_AUTOMATION_SUPPORTED or row_strategy != strategy_key:
+                    continue
+                row_timeframe = str(auto.get("timeframe") or row.timeframe or "").strip().upper()
+                if row_timeframe != timeframe:
+                    continue
+                if _strategy_automation_mark_stopped(
+                    session=row,
+                    db=db,
+                    reason=f"conflict_replaced_by_parent_{int(parent.id)}",
+                    action="stopped_conflict",
+                ):
+                    stopped_conflicts.append(
+                        {
+                            "child_session_id": int(row.id),
+                            "parent_session_id": int(_to_float_or_none(auto.get("parent_session_id")) or 0),
+                            "symbol": str(row_symbol),
+                            "strategy": str(row_strategy),
+                            "timeframe": str(auto.get("timeframe") or row.timeframe or "").upper(),
+                        }
+                    )
+
+        job_id = _strategy_automation_job_id(
+            parent_session_id=int(parent.id),
+            symbol=symbol,
+            strategy=strategy_key,
+            timeframe=timeframe,
+        )
+        now_iso = _utc_now().isoformat()
+
+        if existing is None:
+            child_execution_mode = str(
+                req_exec_mode
+                or parent_live.get("execution_mode")
+                or _LIVE_EXECUTION_MODE_PAPER
+            ).strip().lower()
+            if child_execution_mode not in _LIVE_EXECUTION_MODES:
+                child_execution_mode = _LIVE_EXECUTION_MODE_PAPER
+            child_source = str(source)
+            if child_execution_mode == _LIVE_EXECUTION_MODE_MT5:
+                child_source = "mt5"
+            child_live = {
+                **(parent_live if isinstance(parent_live, dict) else {}),
+                "enabled": True,
+                "source": str(child_source),
+                "backend_native": bool(str(child_source) == "mt5"),
+                "use_active_account": bool(
+                    True if child_execution_mode == _LIVE_EXECUTION_MODE_MT5 else parent_live.get("use_active_account", True)
+                ),
+                "execution_mode": str(child_execution_mode),
+                "kill_switch_enabled": bool(parent_live.get("kill_switch_enabled", False)),
+                "max_risk_per_trade_usd": float(_to_float_or_none(parent_live.get("max_risk_per_trade_usd")) or _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD),
+                "max_lot_per_trade": float(_to_float_or_none(parent_live.get("max_lot_per_trade")) or _LIVE_DEFAULT_MAX_LOT_PER_TRADE),
+                "daily_loss_limit_usd": _to_float_or_none(parent_live.get("daily_loss_limit_usd")),
+                "require_confirmation_for_live_order": bool(parent_live.get("require_confirmation_for_live_order", True)),
+                "daily_loss_anchor_balance": _to_float_or_none(parent_live.get("daily_loss_anchor_balance")),
+                "daily_loss_anchor_date_utc": str(parent_live.get("daily_loss_anchor_date_utc") or "").strip() or None,
+            }
+            child_cfg: Dict[str, Any] = {
+                "initial_balance": float(parent.current_balance or parent.initial_balance or 10000.0),
+                "agent_strategy_profile": str(profile),
+                "agent_strategy_preset": str(preset),
+                "cost_model": (
+                    dict(parent_cfg.get("cost_model"))
+                    if isinstance(parent_cfg.get("cost_model"), dict)
+                    else {
+                        "enabled": True,
+                        "spread": float(INSTRUMENT_SPREAD.get(symbol, 0.30)),
+                        "tc_rate": float(DEFAULT_TC_RATE),
+                        "spread_source": _COST_SPREAD_SOURCE_MANUAL,
+                    }
+                ),
+                "live_control": child_live,
+                _STRATEGY_AUTOMATION_CFG_KEY: {
+                    "enabled": True,
+                    "status": "running",
+                    "job_id": str(job_id),
+                    "parent_session_id": int(parent.id),
+                    "strategy": str(strategy_key),
+                    "symbol": str(symbol),
+                    "timeframe": str(timeframe),
+                    "source": str(source),
+                    "preset": str(preset),
+                    "volume_sma_period": int(max(1, min(300, int(req.volume_sma_period or 20)))),
+                    "force_first_entry": bool(req.force_first_entry),
+                    "risk_percent": (
+                        float(max(0.1, min(5.0, float(req.risk_percent))))
+                        if req.risk_percent is not None
+                        else None
+                    ),
+                    "rr_target": (
+                        float(max(1.0, min(12.0, float(req.rr_target))))
+                        if req.rr_target is not None
+                        else None
+                    ),
+                    "lot_size_override": (
+                        float(max(0.001, min(200.0, float(req.lot_size_override))))
+                        if req.lot_size_override is not None
+                        else None
+                    ),
+                    "first_run": True,
+                    "last_color": "gray",
+                    "current_color": "gray",
+                    "last_action": "",
+                    "last_reason": "",
+                    "hybrid_entry_time_utc": "",
+                    "hybrid_alpha_opp_count": 0,
+                    "hybrid_alpha_last_bar_unix": 0,
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                },
+            }
+            create_req = CreateSessionRequest(
+                strategy_id=WORKBENCH_ID,
+                symbol=symbol,
+                timeframe=timeframe,
+                mode="live",
+                data_file=None,
+                initial_balance=float(parent.current_balance or parent.initial_balance or 10000.0),
+                config=child_cfg,
+                allow_empty_replay=True,
+            )
+            create_out = create_session(create_req, db=db)
+            child_session_id = int(create_out.get("id") or 0)
+            child = db.query(SimulationSession).get(child_session_id) if child_session_id > 0 else None
+            if child is None:
+                raise HTTPException(500, "Failed to create automation child session")
+            existing = child
+        else:
+            cfg = _session_config_dict(existing)
+            auto = cfg.get(_STRATEGY_AUTOMATION_CFG_KEY) if isinstance(cfg.get(_STRATEGY_AUTOMATION_CFG_KEY), dict) else {}
+            auto = dict(auto)
+            auto["enabled"] = True
+            auto["status"] = "running"
+            auto["job_id"] = str(job_id)
+            auto["strategy"] = str(strategy_key)
+            auto["symbol"] = str(symbol)
+            auto["timeframe"] = str(timeframe)
+            auto["source"] = str(source)
+            auto["preset"] = str(preset)
+            auto["volume_sma_period"] = int(max(1, min(300, int(req.volume_sma_period or auto.get("volume_sma_period") or 20))))
+            auto["force_first_entry"] = bool(req.force_first_entry)
+            auto["risk_percent"] = (
+                float(max(0.1, min(5.0, float(req.risk_percent))))
+                if req.risk_percent is not None
+                else _to_float_or_none(auto.get("risk_percent"))
+            )
+            auto["rr_target"] = (
+                float(max(1.0, min(12.0, float(req.rr_target))))
+                if req.rr_target is not None
+                else _to_float_or_none(auto.get("rr_target"))
+            )
+            auto["lot_size_override"] = (
+                float(max(0.001, min(200.0, float(req.lot_size_override))))
+                if req.lot_size_override is not None
+                else _to_float_or_none(auto.get("lot_size_override"))
+            )
+            if strategy_key == "orb_alpha_hybrid":
+                auto["hybrid_entry_time_utc"] = str(auto.get("hybrid_entry_time_utc") or "")
+                auto["hybrid_alpha_opp_count"] = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_opp_count")) or 0)))
+                auto["hybrid_alpha_last_bar_unix"] = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_last_bar_unix")) or 0)))
+            auto["updated_at"] = now_iso
+            if auto.get("created_at") is None:
+                auto["created_at"] = now_iso
+            cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto
+            lc_raw = cfg.get("live_control") if isinstance(cfg.get("live_control"), dict) else {}
+            child_execution_mode = str(
+                req_exec_mode
+                or parent_live.get("execution_mode")
+                or lc_raw.get("execution_mode")
+                or _LIVE_EXECUTION_MODE_PAPER
+            ).strip().lower()
+            if child_execution_mode not in _LIVE_EXECUTION_MODES:
+                child_execution_mode = _LIVE_EXECUTION_MODE_PAPER
+            child_source = str(source)
+            if child_execution_mode == _LIVE_EXECUTION_MODE_MT5:
+                child_source = "mt5"
+            lc = {
+                **(lc_raw if isinstance(lc_raw, dict) else {}),
+                "enabled": True,
+                "source": str(child_source),
+                "backend_native": bool(str(child_source) == "mt5"),
+                "use_active_account": bool(
+                    True if child_execution_mode == _LIVE_EXECUTION_MODE_MT5 else parent_live.get("use_active_account", lc_raw.get("use_active_account", True))
+                ),
+                "execution_mode": str(child_execution_mode),
+                "kill_switch_enabled": bool(parent_live.get("kill_switch_enabled", lc_raw.get("kill_switch_enabled", False))),
+                "max_risk_per_trade_usd": float(
+                    _to_float_or_none(parent_live.get("max_risk_per_trade_usd"))
+                    or _to_float_or_none(lc_raw.get("max_risk_per_trade_usd"))
+                    or _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD
+                ),
+                "max_lot_per_trade": float(
+                    _to_float_or_none(parent_live.get("max_lot_per_trade"))
+                    or _to_float_or_none(lc_raw.get("max_lot_per_trade"))
+                    or _LIVE_DEFAULT_MAX_LOT_PER_TRADE
+                ),
+                "daily_loss_limit_usd": (
+                    _to_float_or_none(parent_live.get("daily_loss_limit_usd"))
+                    if parent_live.get("daily_loss_limit_usd") is not None
+                    else _to_float_or_none(lc_raw.get("daily_loss_limit_usd"))
+                ),
+                "require_confirmation_for_live_order": bool(
+                    parent_live.get("require_confirmation_for_live_order", lc_raw.get("require_confirmation_for_live_order", True))
+                ),
+            }
+            cfg["live_control"] = lc
+            cfg["agent_strategy_profile"] = str(profile)
+            cfg["agent_strategy_preset"] = str(preset)
+            existing.config_json = json.dumps(cfg)
+            existing.mode = "live"
+            existing.updated_at = datetime.utcnow()
+            db.add(existing)
+            db.commit()
+            db.refresh(existing)
+
+    immediate_entry_result: Dict[str, Any] = {"ok": False, "reason": "immediate_entry_disabled"}
+    if bool(req.immediate_entry):
+        immediate_entry_result = {"ok": False, "reason": "no_immediate_action"}
+        entry_plan = req.entry_plan if isinstance(req.entry_plan, dict) else None
+        if isinstance(entry_plan, dict):
+            immediate_entry_result = _strategy_automation_try_open_from_plan(
+                session=existing,
+                db=db,
+                plan=entry_plan,
+                source=str(source),
+                timeframe=str(timeframe),
+                risk_percent_override=_to_float_or_none(req.risk_percent),
+                rr_target_override=_to_float_or_none(req.rr_target),
+                lot_size_override=_to_float_or_none(req.lot_size_override),
+            )
+        if not bool(immediate_entry_result.get("ok")):
+            try:
+                tick_out = _process_strategy_automation_tick(
+                    session=existing,
+                    db=db,
+                    live_bar=None,
+                )
+                immediate_entry_result = {
+                    "ok": bool(tick_out.get("action") == "opened_trade"),
+                    "reason": str(tick_out.get("reason") or "tick_processed"),
+                    "action": str(tick_out.get("action") or "noop"),
+                    "payload": tick_out.get("payload") if isinstance(tick_out.get("payload"), dict) else {},
+                }
+            except Exception as exc:
+                immediate_entry_result = {"ok": False, "reason": f"tick_process_failed:{type(exc).__name__}"}
+        db.commit()
+        db.refresh(existing)
+
+    jobs = _strategy_automation_collect_jobs_for_parent(
+        parent_session_id=int(parent.id),
+        db=db,
+        include_disabled=True,
+    )
+    started_job = next((j for j in jobs if int(j.get("child_session_id") or 0) == int(existing.id)), None)
+    return {
+        "ok": True,
+        "session_id": int(parent.id),
+        "job": started_job,
+        "immediate_entry": immediate_entry_result,
+        "stopped_conflicts": stopped_conflicts,
+        "jobs": jobs,
+    }
+
+
+@router.post("/sessions/{session_id}/agent/strategy-automation/stop")
+def workbench_agent_strategy_automation_stop(
+    session_id: int,
+    req: StrategyAutomationStopRequest,
+    db: Session = Depends(get_db),
+):
+    parent = db.query(SimulationSession).get(session_id)
+    if not parent:
+        raise HTTPException(404, "Session not found")
+    if str(parent.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy automation is available only for Workbench sessions")
+
+    jobs = _strategy_automation_collect_jobs_for_parent(
+        parent_session_id=int(parent.id),
+        db=db,
+        include_disabled=True,
+    )
+    targets: List[int] = []
+    if req.child_session_id is not None:
+        targets = [int(req.child_session_id)]
+    elif req.job_id is not None and str(req.job_id).strip():
+        for j in jobs:
+            if str(j.get("job_id") or "") == str(req.job_id):
+                targets.append(int(j.get("child_session_id") or 0))
+                break
+    else:
+        targets = [int(j.get("child_session_id") or 0) for j in jobs if bool(j.get("enabled"))]
+
+    stopped_ids: List[int] = []
+    now_iso = _utc_now().isoformat()
+    for child_id in targets:
+        if int(child_id or 0) <= 0:
+            continue
+        child = db.query(SimulationSession).get(int(child_id))
+        if child is None:
+            continue
+        auto = _strategy_automation_cfg(child)
+        if int(_to_float_or_none(auto.get("parent_session_id")) or 0) != int(parent.id):
+            continue
+        cfg = _session_config_dict(child)
+        auto_next = dict(auto)
+        auto_next["enabled"] = False
+        auto_next["status"] = "stopped"
+        auto_next["last_action"] = "stopped"
+        auto_next["last_reason"] = "user_stop"
+        auto_next["updated_at"] = now_iso
+        cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+        child.config_json = json.dumps(cfg)
+        child.updated_at = datetime.utcnow()
+        db.add(child)
+        stopped_ids.append(int(child.id))
+    db.commit()
+
+    jobs_after = _strategy_automation_collect_jobs_for_parent(
+        parent_session_id=int(parent.id),
+        db=db,
+        include_disabled=True,
+    )
+    return {
+        "ok": True,
+        "session_id": int(parent.id),
+        "stopped_child_session_ids": stopped_ids,
+        "jobs": jobs_after,
+    }
+
+
+@router.get("/sessions/{session_id}/agent/strategy-automation/jobs")
+def workbench_agent_strategy_automation_jobs(
+    session_id: int,
+    include_disabled: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
+    _ensure_backend_automation_relay_running()
+    parent = db.query(SimulationSession).get(session_id)
+    if not parent:
+        raise HTTPException(404, "Session not found")
+    if str(parent.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy automation is available only for Workbench sessions")
+    jobs = _strategy_automation_collect_jobs_for_parent(
+        parent_session_id=int(parent.id),
+        db=db,
+        include_disabled=bool(include_disabled),
+    )
+    running_count = int(sum(1 for j in jobs if bool(j.get("enabled"))))
+    return {
+        "ok": True,
+        "session_id": int(parent.id),
+        "jobs": jobs,
+        "running_count": int(running_count),
+        "total_count": int(len(jobs)),
+    }
+
+
+@router.get("/agent/strategy-automation/jobs")
+def workbench_agent_strategy_automation_jobs_global(
+    include_disabled: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
+    """
+    Global automation monitor endpoint.
+    Returns automation jobs across all Workbench parent sessions so UI can monitor
+    and manage running jobs regardless of the currently selected chart/session.
+    """
+    _ensure_backend_automation_relay_running()
+    jobs = _strategy_automation_collect_jobs_global(
+        db=db,
+        include_disabled=bool(include_disabled),
+    )
+    running_count = int(sum(1 for j in jobs if bool(j.get("enabled"))))
+    parent_ids = sorted(
+        {
+            int(_to_float_or_none(j.get("parent_session_id")) or 0)
+            for j in jobs
+            if int(_to_float_or_none(j.get("parent_session_id")) or 0) > 0
+        }
+    )
+    return {
+        "ok": True,
+        "jobs": jobs,
+        "running_count": int(running_count),
+        "total_count": int(len(jobs)),
+        "parent_session_ids": parent_ids,
+        "parent_count": int(len(parent_ids)),
+    }
+
+
+@router.get("/system/agent-live-tick-relay/status")
+def system_agent_live_tick_relay_status(
+    ensure_started: bool = Query(default=False),
+):
+    try:
+        from ..main import agent_live_tick_service
+
+        if ensure_started and agent_live_tick_service is not None:
+            agent_live_tick_service.ensure_started()
+        status = agent_live_tick_service.status() if agent_live_tick_service is not None else {}
+        return {"ok": True, "status": status}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)}"}
 
 
 @router.post("/sessions/{session_id}/coach/evaluate")
@@ -16228,8 +21480,15 @@ def workbench_agent_start(
     db: Session = Depends(get_db),
 ):
     """Start unified Agent loop by wiring to existing copilot runtime."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
     provider_cfg = _model_to_dict(req.provider)
     perms = _model_to_dict(req.permissions)
+    if _is_live_mt5_execution_enabled(session):
+        # Live execution is always manual-confirm only.
+        perms["can_auto_execute"] = False
+        perms["requires_user_confirm_for_trade"] = True
     config = dict(req.config or {})
     config["agent_unified"] = True
     config["agent_permissions"] = perms
@@ -16277,7 +21536,6 @@ def workbench_agent_start(
         runtime=runtime_for_db,
         copilot_session_id=int(copilot.id) if copilot is not None else None,
     )
-    session = db.query(SimulationSession).get(session_id)
     if session is not None:
         _agent_emit_event(
             agent=agent_row,

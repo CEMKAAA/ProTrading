@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -77,6 +78,12 @@ def test_tool_specs_include_run_trendilo_analysis():
     specs = WorkbenchAgent._tool_specs()
     names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
     assert "run_trendilo_analysis" in names
+
+
+def test_tool_specs_include_run_advanced_trendilo_analysis():
+    specs = WorkbenchAgent._tool_specs()
+    names = {str(row.get("name") or "") for row in specs if isinstance(row, dict)}
+    assert "run_advanced_trendilo_analysis" in names
 
 
 def test_tool_specs_include_scan_trendilo_fields():
@@ -223,6 +230,59 @@ def test_execute_tool_runs_trendilo_parent_tradeable(monkeypatch):
         if bool(data.get("tradeable_today")):
             setup = data.get("best_setup") if isinstance(data.get("best_setup"), dict) else {}
             assert str(setup.get("direction") or "") in {"BUY", "SELL"}
+    finally:
+        db.close()
+
+
+def test_execute_tool_runs_advanced_trendilo_parent(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        monkeypatch.setattr(
+            sim_routes,
+            "_agent_fetch_live_history_bars",
+            lambda **kwargs: (_build_trendilo_bars(bullish=True), None),
+        )
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="run_advanced_trendilo_analysis",
+            args={"symbol": "XAUUSD", "execution_timeframe": "M15", "preset": "xauusd_m15"},
+            tool_config={"agent_strategy_profile": "advanced_trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("strategy_id") or "") == "advanced_trendilo_strategy"
+        snap = data.get("indicator_snapshot") if isinstance(data.get("indicator_snapshot"), dict) else {}
+        assert "trendilo_persistence_bars" in snap
+        assert "trendilo_edge_ratio" in snap
+        assert "adx_is_rising" in snap
+        assert isinstance(data.get("tradeable_today"), bool)
     finally:
         db.close()
 
@@ -1022,6 +1082,339 @@ def test_execute_tool_scan_strategy_tradeable_trendilo_counts_and_confidence(mon
         db.close()
 
 
+def test_strategy_scan_confidence_normalizes_fractional_and_backfills_zero(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _fake_trendilo(**kwargs):
+            payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+            sym = str(payload.get("symbol") or "").upper()
+            if sym == "XAUUSD":
+                return {
+                    "tradeable_today": True,
+                    "decision": "TRADEABLE_TODAY",
+                    "analysis_stage": "trendilo_setup_ready",
+                    "confidence": 0.25,  # 0..1 model-style confidence
+                    "schedule_trade_entry_args": {
+                        "condition": "close_above",
+                        "trigger_price": 3000.0,
+                        "direction": "BUY",
+                        "stop_loss": 2990.0,
+                        "take_profit": 3020.0,
+                        "lot_size": 0.1,
+                        "timeframe": "M15",
+                        "expires_sec": 21600,
+                        "entry_ref": 3000.0,
+                        "expected_rr": 2.0,
+                        "risk_percent": 0.5,
+                    },
+                    "best_setup": {"direction": "BUY", "rr": 2.0},
+                    "blockers": [],
+                    "soft_blockers": [],
+                    "confidence_warnings": [],
+                    "current_price": 3000.0,
+                }
+            return {
+                "tradeable_today": True,
+                "decision": "TRADEABLE_TODAY",
+                "analysis_stage": "trendilo_setup_ready",
+                "confidence": 0.0,  # should backfill from alternatives
+                "momentum_strength": 25.0,
+                "indicator_snapshot": {"adx_stoch_vwma": 22.0},
+                "schedule_trade_entry_args": {
+                    "condition": "close_above",
+                    "trigger_price": 100.0,
+                    "direction": "BUY",
+                    "stop_loss": 99.0,
+                    "take_profit": 102.0,
+                    "lot_size": 0.1,
+                    "timeframe": "M15",
+                    "expires_sec": 21600,
+                    "entry_ref": 100.0,
+                    "expected_rr": 2.0,
+                    "risk_percent": 0.5,
+                },
+                "best_setup": {"direction": "BUY", "rr": 2.0},
+                "blockers": [],
+                "soft_blockers": [],
+                "confidence_warnings": [],
+                "current_price": 100.0,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_run_trendilo_analysis", _fake_trendilo)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_strategy_tradeable",
+            args={
+                "strategy": "trendilo",
+                "symbols": ["XAUUSD", "MSFT"],
+                "timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": False,
+                "max_results": 20,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        by_symbol = {str(r.get("symbol") or ""): r for r in opps}
+        assert abs(float((by_symbol.get("XAUUSD") or {}).get("confidence") or 0.0) - 25.0) < 1e-9
+        assert abs(float((by_symbol.get("MSFT") or {}).get("confidence") or 0.0) - 25.0) < 1e-9
+    finally:
+        db.close()
+
+
+def test_mt5_dynamic_universe_backfills_to_limit(monkeypatch):
+    class _Svc:
+        def list_symbols(self, **kwargs):
+            return [
+                {"name": "BTCUSDM", "description": "Bitcoin", "path": "Crypto", "visible": True},
+                {"name": "AAPLM", "description": "Apple Inc", "path": "US Shares", "visible": True},
+                {"name": "US500M", "description": "US500 Index", "path": "Indices", "visible": True},
+                {"name": "XAUUSDM", "description": "Gold", "path": "Metals", "visible": True},
+                {"name": "EURUSDM", "description": "EURUSD", "path": "Forex", "visible": True},
+                {"name": "SYM1", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM2", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM3", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM4", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM5", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM6", "description": "Generic", "path": "Other", "visible": True},
+                {"name": "SYM7", "description": "Generic", "path": "Other", "visible": True},
+            ]
+
+    monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _Svc())
+    symbols, meta = sim_routes._agent_mt5_dynamic_trendilo_universe(
+        universe_key="market_mixed_top",
+        universe_limit=8,
+    )
+    assert isinstance(symbols, list)
+    assert len(symbols) == 8
+    assert bool(meta.get("dynamic_universe_used")) is True
+    assert bool(meta.get("dynamic_universe_fallback_used")) is True
+    assert int(meta.get("dynamic_universe_fallback_added") or 0) >= 1
+
+
+def test_execute_tool_scan_strategy_tradeable_htf_reclaim_includes_watch_only(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _fake_htf_reclaim(**kwargs):
+            payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+            sym = str(payload.get("symbol") or "").upper()
+            if sym == "XAUUSD":
+                return {
+                    "trigger_ready": False,
+                    "analysis_trace": {"stage": "no_matching_liquidity_sweep"},
+                    "watch_setup": {"direction": "SELL", "status": "waiting_for_sweep_unlock"},
+                    "schedule_trade_entry_args": {
+                        "condition": "close_below",
+                        "trigger_price": 2000.0,
+                        "direction": "SELL",
+                        "stop_loss": 2002.0,
+                        "take_profit": 1996.0,
+                        "lot_size": 0.1,
+                        "timeframe": "M15",
+                        "expires_sec": 43200,
+                        "precondition": {"condition": "sweep_above", "trigger_price": 2001.0},
+                        "cancel_rule": {"condition": "close_above", "trigger_price": 2001.0},
+                        "entry_ref": 2000.0,
+                        "expected_rr": 2.0,
+                        "risk_percent": 0.5,
+                    },
+                    "best_setup": None,
+                    "blockers": ["no_strategy_setup"],
+                    "soft_blockers": ["awaiting_liquidity_sweep_confirmation"],
+                    "confidence_warnings": ["watch_setup_waiting_for_sweep"],
+                    "current_price": 1999.5,
+                }
+            return {
+                "trigger_ready": False,
+                "analysis_trace": {"stage": "no_strategy_setup"},
+                "watch_setup": None,
+                "schedule_trade_entry_args": None,
+                "best_setup": None,
+                "blockers": ["no_strategy_setup"],
+                "soft_blockers": [],
+                "confidence_warnings": [],
+                "current_price": 100.0,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_run_htf_fvg_liquidity_reclaim_analysis", _fake_htf_reclaim)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_strategy_tradeable",
+            args={
+                "strategy": "htf_reclaim",
+                "symbols": ["XAUUSD", "MSFT"],
+                "timeframe": "H4",
+                "execution_timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": False,
+                "max_results": 20,
+            },
+            tool_config={"agent_strategy_profile": "htf_fvg_liquidity_reclaim_v2"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert str(data.get("strategy") or "") == "htf_reclaim"
+        assert int(data.get("symbols_scanned") or 0) == 2
+        assert int(data.get("tradeable_count") or 0) == 1
+        assert int(data.get("watch_only_count") or 0) == 1
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        assert len(opps) == 1
+        assert bool(opps[0].get("tradeable")) is True
+        assert bool(opps[0].get("executable_now")) is False
+        assert bool(opps[0].get("watch_only")) is True
+        assert str(opps[0].get("opportunity_state") or "") == "watch_only"
+        sched = opps[0].get("schedule_trade_entry_args") if isinstance(opps[0].get("schedule_trade_entry_args"), dict) else {}
+        assert str(sched.get("symbol") or "") == "XAUUSD"
+    finally:
+        db.close()
+
+
+def test_execute_tool_scan_strategy_tradeable_reports_totals_separate_from_max_results(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="replay",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        def _fake_trendilo(**kwargs):
+            payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+            sym = str(payload.get("symbol") or "").upper()
+            px = {"XAUUSD": 3000.0, "MSFT": 400.0, "AAPL": 200.0}.get(sym, 100.0)
+            return {
+                "tradeable_today": True,
+                "decision": "TRADEABLE_TODAY",
+                "analysis_stage": "trendilo_setup_ready",
+                "schedule_trade_entry_args": {
+                    "condition": "close_above",
+                    "trigger_price": px,
+                    "direction": "BUY",
+                    "stop_loss": px - 10.0,
+                    "take_profit": px + 20.0,
+                    "lot_size": 0.1,
+                    "timeframe": "M15",
+                    "expires_sec": 21600,
+                    "entry_ref": px,
+                    "expected_rr": 2.0,
+                    "risk_percent": 0.5,
+                },
+                "indicator_snapshot": {"adx_stoch_vwma": 90.0},
+                "best_setup": {"direction": "BUY", "rr": 2.0},
+                "blockers": [],
+                "soft_blockers": [],
+                "confidence_warnings": [],
+                "current_price": px,
+            }
+
+        monkeypatch.setattr(sim_routes, "_agent_run_trendilo_analysis", _fake_trendilo)
+
+        out = sim_routes._agent_execute_tool(
+            session=sim,
+            db=db,
+            permissions={"can_scan_tools": True},
+            context_snapshot={},
+            tool_name="scan_strategy_tradeable",
+            args={
+                "strategy": "trendilo",
+                "symbols": ["XAUUSD", "MSFT", "AAPL"],
+                "timeframe": "M15",
+                "summary_only": True,
+                "include_non_tradeable": False,
+                "max_results": 2,
+            },
+            tool_config={"agent_strategy_profile": "trendilo_confirmation_v1"},
+            atomic=False,
+        )
+        assert out.get("ok") is True
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        assert int(data.get("symbols_scanned") or 0) == 3
+        assert int(data.get("tradeable_total_count") or 0) == 3
+        assert int(data.get("tradeable_count") or 0) == 2
+        assert int(data.get("ready_count") or 0) == 3
+        assert int(data.get("watch_only_count") or 0) == 0
+        assert int(data.get("ready_shown_count") or 0) == 2
+        assert int(data.get("watch_only_shown_count") or 0) == 0
+        opps = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+        assert len(opps) == 2
+        assert int(opps[0].get("rank") or 0) >= 1
+        assert float(opps[0].get("rank_score") or 0.0) >= 0.0
+    finally:
+        db.close()
+
+
 def test_indicator_values_from_bars_can_skip_trendilo_series():
     bars = _build_trendilo_bars(bullish=True)
     out = sim_routes._agent_indicator_values_from_bars(
@@ -1409,6 +1802,481 @@ def test_update_session_live_control_enables_backend_mt5_relay():
         db.close()
 
 
+def test_update_session_live_control_persists_live_execution_policy():
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"live_control": {"enabled": True, "source": "mt5"}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        out = sim_routes.update_session_live_control(
+            session_id=int(sim.id),
+            req=sim_routes.LiveControlRequest(
+                enabled=True,
+                source="mt5",
+                execution_mode="live_mt5",
+                kill_switch_enabled=False,
+                max_risk_per_trade_usd=25.0,
+                max_lot_per_trade=0.10,
+                daily_loss_limit_usd=100.0,
+                require_confirmation_for_live_order=True,
+            ),
+            db=db,
+        )
+        assert out.get("ok") is True
+        live = out.get("live_control") if isinstance(out.get("live_control"), dict) else {}
+        assert str(live.get("execution_mode") or "") == "live_mt5"
+        assert bool(live.get("kill_switch_enabled")) is False
+        assert math.isclose(float(live.get("max_risk_per_trade_usd") or 0.0), 25.0, rel_tol=1e-9, abs_tol=1e-9)
+        assert math.isclose(float(live.get("max_lot_per_trade") or 0.0), 0.10, rel_tol=1e-9, abs_tol=1e-9)
+        assert math.isclose(float(live.get("daily_loss_limit_usd") or 0.0), 100.0, rel_tol=1e-9, abs_tol=1e-9)
+        assert bool(live.get("require_confirmation_for_live_order")) is True
+    finally:
+        db.close()
+
+
+def test_update_session_live_control_propagates_to_automation_children():
+    db = _db_session()
+    try:
+        parent = SimulationSession(
+            strategy_id="_workbench",
+            symbol="BTCUSDm",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps({"live_control": {"enabled": True, "source": "mt5", "execution_mode": "paper"}}),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(parent)
+        db.commit()
+        db.refresh(parent)
+
+        child = SimulationSession(
+            strategy_id="_workbench",
+            symbol="BTCUSDM",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=1,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps(
+                {
+                    "live_control": {
+                        "enabled": True,
+                        "source": "mt5",
+                        "execution_mode": "paper",
+                        "max_risk_per_trade_usd": 25.0,
+                        "max_lot_per_trade": 5.0,
+                        "require_confirmation_for_live_order": True,
+                    },
+                    sim_routes._STRATEGY_AUTOMATION_CFG_KEY: {
+                        "enabled": True,
+                        "parent_session_id": int(parent.id),
+                        "strategy": "trendilo",
+                        "symbol": "BTCUSDM",
+                    },
+                }
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(child)
+        db.commit()
+        db.refresh(child)
+
+        out = sim_routes.update_session_live_control(
+            session_id=int(parent.id),
+            req=sim_routes.LiveControlRequest(
+                enabled=True,
+                source="mt5",
+                execution_mode="live_mt5",
+                kill_switch_enabled=True,
+                max_risk_per_trade_usd=88.0,
+                max_lot_per_trade=1.75,
+                daily_loss_limit_usd=44.0,
+                require_confirmation_for_live_order=False,
+            ),
+            db=db,
+        )
+        assert out.get("ok") is True
+        assert int(out.get("propagated_child_sessions") or 0) >= 1
+
+        db.refresh(child)
+        child_cfg = sim_routes._session_config_dict(child)
+        child_live = child_cfg.get("live_control") if isinstance(child_cfg.get("live_control"), dict) else {}
+        assert str(child_live.get("execution_mode") or "") == "live_mt5"
+        assert bool(child_live.get("kill_switch_enabled")) is True
+        assert math.isclose(float(child_live.get("max_risk_per_trade_usd") or 0.0), 88.0, rel_tol=1e-9, abs_tol=1e-9)
+        assert math.isclose(float(child_live.get("max_lot_per_trade") or 0.0), 1.75, rel_tol=1e-9, abs_tol=1e-9)
+        assert math.isclose(float(child_live.get("daily_loss_limit_usd") or 0.0), 44.0, rel_tol=1e-9, abs_tol=1e-9)
+        assert bool(child_live.get("require_confirmation_for_live_order")) is False
+    finally:
+        db.close()
+
+
+def test_execute_trade_live_mt5_blocks_on_kill_switch(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps(
+                {
+                    "live_control": {
+                        "enabled": True,
+                        "source": "mt5",
+                        "execution_mode": "live_mt5",
+                        "kill_switch_enabled": True,
+                    }
+                }
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        class _FakeEngine:
+            def __init__(self):
+                self.open_positions = []
+                self.df = None
+                self.current_bar = 0
+                self.total_bars = 0
+
+            def execute_trade(self, **kwargs):
+                return {"entry_price": 100.0, "entry_bar": 0, "entry_time": datetime.utcnow().isoformat()}
+
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda *args, **kwargs: _FakeEngine())
+
+        with pytest.raises(HTTPException) as exc:
+            sim_routes.execute_trade(
+                session_id=int(sim.id),
+                req=sim_routes.TradeRequest(
+                    direction="BUY",
+                    stop_loss=99.0,
+                    take_profit=102.0,
+                    lot_size=0.01,
+                    entry_price=100.0,
+                    confirm_live_order=True,
+                    live_confirmation_phrase="CONFIRM_LIVE_ORDER",
+                ),
+                db=db,
+            )
+        assert str(exc.value.detail).startswith("live_execution_blocked:kill_switch_enabled")
+    finally:
+        db.close()
+
+
+def test_execute_trade_live_mt5_requires_confirmation(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps(
+                {
+                    "live_control": {
+                        "enabled": True,
+                        "source": "mt5",
+                        "execution_mode": "live_mt5",
+                        "kill_switch_enabled": False,
+                        "max_lot_per_trade": 0.2,
+                        "max_risk_per_trade_usd": 50.0,
+                        "require_confirmation_for_live_order": True,
+                    }
+                }
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        class _FakeEngine:
+            def __init__(self):
+                self.open_positions = []
+                self.df = None
+                self.current_bar = 0
+                self.total_bars = 0
+
+            def execute_trade(self, **kwargs):
+                return {"entry_price": 100.0, "entry_bar": 0, "entry_time": datetime.utcnow().isoformat()}
+
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda *args, **kwargs: _FakeEngine())
+
+        with pytest.raises(HTTPException) as exc:
+            sim_routes.execute_trade(
+                session_id=int(sim.id),
+                req=sim_routes.TradeRequest(
+                    direction="BUY",
+                    stop_loss=99.0,
+                    take_profit=102.0,
+                    lot_size=0.01,
+                    entry_price=100.0,
+                ),
+                db=db,
+            )
+        assert str(exc.value.detail).startswith("live_confirmation_required")
+    finally:
+        db.close()
+
+
+def test_execute_trade_live_mt5_routes_order_and_persists(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="XAUUSD",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps(
+                {
+                    "live_control": {
+                        "enabled": True,
+                        "source": "mt5",
+                        "execution_mode": "live_mt5",
+                        "kill_switch_enabled": False,
+                        "max_lot_per_trade": 0.2,
+                        "max_risk_per_trade_usd": 50.0,
+                        "require_confirmation_for_live_order": True,
+                    }
+                }
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        class _FakeEngine:
+            def __init__(self):
+                self.open_positions = []
+                self.df = None
+                self.current_bar = 0
+                self.total_bars = 0
+
+            def execute_trade(self, **kwargs):
+                return {
+                    "entry_price": float(kwargs.get("entry_price_override") or 100.0),
+                    "entry_bar": 0,
+                    "entry_time": datetime.utcnow().isoformat(),
+                }
+
+        class _FakeMt5:
+            def place_market_order(self, **kwargs):
+                return {
+                    "ok": True,
+                    "requested_symbol": "XAUUSD",
+                    "symbol": "XAUUSDm",
+                    "price": 100.10,
+                    "requested_price": 100.0,
+                    "retcode": 10009,
+                    "retcode_name": "TRADE_RETCODE_DONE",
+                    "order": 12345,
+                    "deal": 67890,
+                    "position": 12345,
+                    "comment": "ok",
+                }
+
+            def get_account_info(self):
+                return {"balance": 10000.0, "equity": 10000.0, "trade_allowed": True}
+
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda *args, **kwargs: _FakeEngine())
+        monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeMt5())
+
+        out = sim_routes.execute_trade(
+            session_id=int(sim.id),
+            req=sim_routes.TradeRequest(
+                direction="BUY",
+                stop_loss=99.0,
+                take_profit=102.0,
+                lot_size=0.01,
+                entry_price=100.0,
+                confirm_live_order=True,
+                live_confirmation_phrase="CONFIRM_LIVE_ORDER",
+            ),
+            db=db,
+        )
+        assert isinstance(out, dict)
+        assert int(out.get("id") or 0) > 0
+        execution = out.get("execution") if isinstance(out.get("execution"), dict) else {}
+        assert str(execution.get("execution_mode") or "") == "live_mt5"
+    finally:
+        db.close()
+
+
+def test_execute_trade_live_mt5_uses_session_trade_math_for_risk_cap(monkeypatch):
+    db = _db_session()
+    try:
+        sim = SimulationSession(
+            strategy_id="_workbench",
+            symbol="BTCUSDM",
+            timeframe="M15",
+            mode="live",
+            current_bar=0,
+            total_bars=0,
+            initial_balance=10000.0,
+            current_balance=10000.0,
+            total_pnl=0.0,
+            trades_count=0,
+            wins=0,
+            losses=0,
+            status="active",
+            config_json=json.dumps(
+                {
+                    "live_control": {
+                        "enabled": True,
+                        "source": "mt5",
+                        "execution_mode": "live_mt5",
+                        "kill_switch_enabled": False,
+                        "max_lot_per_trade": 1.0,
+                        "max_risk_per_trade_usd": 25.0,
+                        "require_confirmation_for_live_order": True,
+                    }
+                }
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(sim)
+        db.commit()
+        db.refresh(sim)
+
+        class _FakeEngine:
+            def __init__(self):
+                self.open_positions = []
+                self.df = None
+                self.current_bar = 0
+                self.total_bars = 0
+
+            def execute_trade(self, **kwargs):
+                return {
+                    "entry_price": float(kwargs.get("entry_price_override") or 70000.0),
+                    "entry_bar": 0,
+                    "entry_time": datetime.utcnow().isoformat(),
+                }
+
+        class _FakeMt5:
+            def place_market_order(self, **kwargs):
+                return {
+                    "ok": True,
+                    "requested_symbol": "BTCUSDM",
+                    "symbol": "BTCUSDM",
+                    "price": 70000.0,
+                    "requested_price": 70000.0,
+                    "retcode": 10009,
+                    "retcode_name": "TRADE_RETCODE_DONE",
+                    "order": 12345,
+                    "deal": 67890,
+                    "position": 12345,
+                    "comment": "ok",
+                }
+
+            def get_account_info(self):
+                return {"balance": 10000.0, "equity": 10000.0, "trade_allowed": True}
+
+        monkeypatch.setattr(sim_routes, "_get_or_create_engine", lambda *args, **kwargs: _FakeEngine())
+        monkeypatch.setattr(sim_routes, "_get_mt5_service_singleton", lambda: _FakeMt5())
+        monkeypatch.setattr(
+            sim_routes,
+            "_session_trade_math_context",
+            lambda **kwargs: {
+                "min_lot": 0.01,
+                "max_lot": 200.0,
+                "lot_step": 0.01,
+                "value_per_1lot": 1.0,
+                "point": 0.01,
+            },
+        )
+
+        out = sim_routes.execute_trade(
+            session_id=int(sim.id),
+            req=sim_routes.TradeRequest(
+                direction="SELL",
+                stop_loss=70600.0,
+                take_profit=68800.0,
+                lot_size=0.01,
+                entry_price=70000.0,
+                confirm_live_order=True,
+                live_confirmation_phrase="CONFIRM_LIVE_ORDER",
+            ),
+            db=db,
+        )
+        assert isinstance(out, dict)
+        assert int(out.get("id") or 0) > 0
+        execution = out.get("execution") if isinstance(out.get("execution"), dict) else {}
+        assert str(execution.get("execution_mode") or "") == "live_mt5"
+    finally:
+        db.close()
+
+
 def test_agent_live_tick_service_processes_live_enabled_mt5_session(monkeypatch):
     db = _db_session()
     try:
@@ -1495,7 +2363,7 @@ def test_agent_live_tick_service_processes_live_enabled_mt5_session(monkeypatch)
         )
 
         svc = AgentLiveTickService()
-        svc._process_once()
+        svc._process_once(run_watchdog=True, run_automation=False)
 
         assert seen["calls"] == 1
         db.refresh(agent_row)

@@ -1,0 +1,2223 @@
+{
+  "generated_at": "2026-03-18T21:53:16.596436Z",
+  "symbols": [
+    "XAUUSD",
+    "NAS100",
+    "US500"
+  ],
+  "candidates_total": 30,
+  "top10": [
+    {
+      "id": "C02",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 17.10359481816934,
+      "mean_score": 12.2757371401014,
+      "worst_score": 2.72857261792876,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3022222222222222,
+      "symbols": {
+        "XAUUSD": {
+          "score": 27.348235374006588,
+          "ret_pct": 10.695532950340315,
+          "dd_pct": 0.6087276518752481,
+          "pf": 10.180938070715609,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 78.94736842105263
+        },
+        "NAS100": {
+          "score": 2.72857261792876,
+          "ret_pct": 0.9766287198388568,
+          "dd_pct": 2.1534944966811276,
+          "pf": 1.3660504398615936,
+          "trades": 20,
+          "trades_per_day": 0.26666666666666666,
+          "win_rate": 55.00000000000001
+        },
+        "US500": {
+          "score": 6.750403428368854,
+          "ret_pct": 1.3492011830336992,
+          "dd_pct": 0.8961374481245947,
+          "pf": 1.5354222072502932,
+          "trades": 29,
+          "trades_per_day": 0.38666666666666666,
+          "win_rate": 51.724137931034484
+        }
+      }
+    },
+    {
+      "id": "C04",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.05,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 16.013915063432187,
+      "mean_score": 11.607427713364523,
+      "worst_score": 1.7921941112614723,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3288888888888889,
+      "symbols": {
+        "XAUUSD": {
+          "score": 26.10676088019355,
+          "ret_pct": 9.81194662270537,
+          "dd_pct": 0.8324077557365549,
+          "pf": 6.866451454166326,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 84.21052631578947
+        },
+        "NAS100": {
+          "score": 1.7921941112614723,
+          "ret_pct": 0.857590678281106,
+          "dd_pct": 2.6789566395142566,
+          "pf": 1.2652335140507942,
+          "trades": 24,
+          "trades_per_day": 0.32,
+          "win_rate": 50.0
+        },
+        "US500": {
+          "score": 6.923328148638541,
+          "ret_pct": 1.4203679916688472,
+          "dd_pct": 0.8961374481245565,
+          "pf": 1.5275283518255793,
+          "trades": 31,
+          "trades_per_day": 0.41333333333333333,
+          "win_rate": 51.61290322580645
+        }
+      }
+    },
+    {
+      "id": "C05",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 86,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.05,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 15.215986317099675,
+      "mean_score": 10.10672295025156,
+      "worst_score": 3.353918592995811,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.4133333333333334,
+      "symbols": {
+        "XAUUSD": {
+          "score": 20.47013475479436,
+          "ret_pct": 8.569774212886427,
+          "dd_pct": 1.9025344440132264,
+          "pf": 3.722770579748939,
+          "trades": 23,
+          "trades_per_day": 0.30666666666666664,
+          "win_rate": 73.91304347826086
+        },
+        "NAS100": {
+          "score": 3.353918592995811,
+          "ret_pct": 1.7238160515131273,
+          "dd_pct": 2.9953421308147905,
+          "pf": 1.3923291543632537,
+          "trades": 32,
+          "trades_per_day": 0.4266666666666667,
+          "win_rate": 53.125
+        },
+        "US500": {
+          "score": 6.496115502964515,
+          "ret_pct": 1.8397634539761176,
+          "dd_pct": 1.5801374085760787,
+          "pf": 1.5428096423441975,
+          "trades": 38,
+          "trades_per_day": 0.5066666666666667,
+          "win_rate": 55.26315789473685
+        }
+      }
+    },
+    {
+      "id": "C13",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 88,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.08,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 13.410730349777564,
+      "mean_score": 9.168586130855376,
+      "worst_score": 1.426987153160421,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3644444444444444,
+      "symbols": {
+        "XAUUSD": {
+          "score": 18.964661466180175,
+          "ret_pct": 8.138285549901303,
+          "dd_pct": 1.4010962081978584,
+          "pf": 3.3070324623488614,
+          "trades": 21,
+          "trades_per_day": 0.28,
+          "win_rate": 71.42857142857143
+        },
+        "NAS100": {
+          "score": 1.426987153160421,
+          "ret_pct": 0.6851813395550188,
+          "dd_pct": 2.777380638977953,
+          "pf": 1.1764037089925319,
+          "trades": 27,
+          "trades_per_day": 0.36,
+          "win_rate": 51.85185185185185
+        },
+        "US500": {
+          "score": 7.114109773225529,
+          "ret_pct": 1.6021199168776201,
+          "dd_pct": 1.0923749057548382,
+          "pf": 1.588280759722246,
+          "trades": 34,
+          "trades_per_day": 0.4533333333333333,
+          "win_rate": 55.88235294117647
+        }
+      }
+    },
+    {
+      "id": "C10",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 86,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.6
+      },
+      "aggregate_score": 12.51731911857848,
+      "mean_score": 6.802103897268558,
+      "worst_score": 4.700478269577602,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.20444444444444443,
+      "symbols": {
+        "XAUUSD": {
+          "score": 8.444851838890006,
+          "ret_pct": 2.721284470451746,
+          "dd_pct": 1.3488142909704746,
+          "pf": 2.223750891831088,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 69.23076923076923
+        },
+        "NAS100": {
+          "score": 7.260981583338064,
+          "ret_pct": 1.638871268604647,
+          "dd_pct": 0.8076611007959866,
+          "pf": 1.9552586856684155,
+          "trades": 14,
+          "trades_per_day": 0.18666666666666668,
+          "win_rate": 57.14285714285714
+        },
+        "US500": {
+          "score": 4.700478269577602,
+          "ret_pct": 0.5028121847245437,
+          "dd_pct": 0.5065817087225088,
+          "pf": 1.3453825380356015,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        }
+      }
+    },
+    {
+      "id": "C07",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 84,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 2.4
+      },
+      "aggregate_score": 11.74102908666459,
+      "mean_score": 7.811911986722748,
+      "worst_score": 0.7313713332040939,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.48444444444444446,
+      "symbols": {
+        "XAUUSD": {
+          "score": 16.362565990900496,
+          "ret_pct": 7.68908703039437,
+          "dd_pct": 1.5879110525608007,
+          "pf": 2.5968674944841847,
+          "trades": 31,
+          "trades_per_day": 0.41333333333333333,
+          "win_rate": 64.51612903225806
+        },
+        "NAS100": {
+          "score": 0.7313713332040939,
+          "ret_pct": 0.06343659321250694,
+          "dd_pct": 2.7704817820981287,
+          "pf": 1.0151763978371482,
+          "trades": 39,
+          "trades_per_day": 0.52,
+          "win_rate": 43.58974358974359
+        },
+        "US500": {
+          "score": 6.341798636063655,
+          "ret_pct": 1.5863502319242606,
+          "dd_pct": 1.391472369468384,
+          "pf": 1.4854510488222021,
+          "trades": 39,
+          "trades_per_day": 0.52,
+          "win_rate": 51.28205128205128
+        }
+      }
+    },
+    {
+      "id": "C09",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 11.556672991817507,
+      "mean_score": 7.013498026446528,
+      "worst_score": 2.095944367491067,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.13333333333333333,
+      "symbols": {
+        "XAUUSD": {
+          "score": 12.827468434102174,
+          "ret_pct": 3.2504983777016383,
+          "dd_pct": 1.3969551497247177,
+          "pf": 3.313024573990021,
+          "trades": 9,
+          "trades_per_day": 0.12,
+          "win_rate": 88.88888888888889
+        },
+        "NAS100": {
+          "score": 6.117081277746343,
+          "ret_pct": 0.8998893432194066,
+          "dd_pct": 0.8697056520604192,
+          "pf": 2.0388469111225684,
+          "trades": 8,
+          "trades_per_day": 0.10666666666666667,
+          "win_rate": 50.0
+        },
+        "US500": {
+          "score": 2.095944367491067,
+          "ret_pct": 0.04594604292642579,
+          "dd_pct": 0.695796711014518,
+          "pf": 1.044151598880301,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 46.15384615384615
+        }
+      }
+    },
+    {
+      "id": "C03",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 11.070972949173022,
+      "mean_score": 6.540789738893911,
+      "worst_score": 2.067073800620248,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.1511111111111111,
+      "symbols": {
+        "XAUUSD": {
+          "score": 14.661891563127112,
+          "ret_pct": 3.781416485280631,
+          "dd_pct": 1.3969551497247248,
+          "pf": 3.55890082935151,
+          "trades": 12,
+          "trades_per_day": 0.16,
+          "win_rate": 83.33333333333334
+        },
+        "NAS100": {
+          "score": 2.893403852934371,
+          "ret_pct": 0.34959185799416925,
+          "dd_pct": 0.8943915802354039,
+          "pf": 1.353709630829212,
+          "trades": 9,
+          "trades_per_day": 0.12,
+          "win_rate": 44.44444444444444
+        },
+        "US500": {
+          "score": 2.067073800620248,
+          "ret_pct": 0.03972972165171562,
+          "dd_pct": 0.695796711014518,
+          "pf": 1.0384880374812737,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 46.15384615384615
+        }
+      }
+    },
+    {
+      "id": "C08",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 84,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.4
+      },
+      "aggregate_score": 10.756053438180981,
+      "mean_score": 5.447778018480714,
+      "worst_score": 3.796167599333927,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.21777777777777776,
+      "symbols": {
+        "XAUUSD": {
+          "score": 6.894433504699735,
+          "ret_pct": 2.389236043276499,
+          "dd_pct": 1.4923628581299255,
+          "pf": 1.949911175274446,
+          "trades": 14,
+          "trades_per_day": 0.18666666666666668,
+          "win_rate": 64.28571428571429
+        },
+        "NAS100": {
+          "score": 5.652732951408481,
+          "ret_pct": 1.3105178769896364,
+          "dd_pct": 0.9653403810637049,
+          "pf": 1.6450232543635266,
+          "trades": 16,
+          "trades_per_day": 0.21333333333333335,
+          "win_rate": 56.25
+        },
+        "US500": {
+          "score": 3.796167599333927,
+          "ret_pct": 0.2659627776016249,
+          "dd_pct": 0.5065817087225088,
+          "pf": 1.1785172222554123,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        }
+      }
+    },
+    {
+      "id": "C29",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 3,
+        "lsma_len": 15,
+        "hma_len": 30,
+        "adx_len": 10,
+        "adx_min": 10,
+        "h1_ema_len": 150,
+        "atr_mult": 1.5
+      },
+      "aggregate_score": 10.056874543317925,
+      "mean_score": 9.457814415405904,
+      "worst_score": -4.002088604639956,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 4.515555555555555,
+      "symbols": {
+        "XAUUSD": {
+          "score": 23.567328884151127,
+          "ret_pct": 21.264231835672387,
+          "dd_pct": 4.456111234698863,
+          "pf": 1.3582187559992305,
+          "trades": 351,
+          "trades_per_day": 4.68,
+          "win_rate": 33.61823361823362
+        },
+        "NAS100": {
+          "score": 8.808202966706542,
+          "ret_pct": 11.164207529502557,
+          "dd_pct": 7.178410376472229,
+          "pf": 1.2823630098898884,
+          "trades": 323,
+          "trades_per_day": 4.306666666666667,
+          "win_rate": 37.461300309597526
+        },
+        "US500": {
+          "score": -4.002088604639956,
+          "ret_pct": -2.055754295538348,
+          "dd_pct": 6.069362017456783,
+          "pf": 0.9411612297073112,
+          "trades": 342,
+          "trades_per_day": 4.56,
+          "win_rate": 31.28654970760234
+        }
+      }
+    }
+  ],
+  "all": [
+    {
+      "id": "C02",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 17.10359481816934,
+      "mean_score": 12.2757371401014,
+      "worst_score": 2.72857261792876,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3022222222222222,
+      "symbols": {
+        "XAUUSD": {
+          "score": 27.348235374006588,
+          "ret_pct": 10.695532950340315,
+          "dd_pct": 0.6087276518752481,
+          "pf": 10.180938070715609,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 78.94736842105263
+        },
+        "NAS100": {
+          "score": 2.72857261792876,
+          "ret_pct": 0.9766287198388568,
+          "dd_pct": 2.1534944966811276,
+          "pf": 1.3660504398615936,
+          "trades": 20,
+          "trades_per_day": 0.26666666666666666,
+          "win_rate": 55.00000000000001
+        },
+        "US500": {
+          "score": 6.750403428368854,
+          "ret_pct": 1.3492011830336992,
+          "dd_pct": 0.8961374481245947,
+          "pf": 1.5354222072502932,
+          "trades": 29,
+          "trades_per_day": 0.38666666666666666,
+          "win_rate": 51.724137931034484
+        }
+      }
+    },
+    {
+      "id": "C04",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.05,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 16.013915063432187,
+      "mean_score": 11.607427713364523,
+      "worst_score": 1.7921941112614723,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3288888888888889,
+      "symbols": {
+        "XAUUSD": {
+          "score": 26.10676088019355,
+          "ret_pct": 9.81194662270537,
+          "dd_pct": 0.8324077557365549,
+          "pf": 6.866451454166326,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 84.21052631578947
+        },
+        "NAS100": {
+          "score": 1.7921941112614723,
+          "ret_pct": 0.857590678281106,
+          "dd_pct": 2.6789566395142566,
+          "pf": 1.2652335140507942,
+          "trades": 24,
+          "trades_per_day": 0.32,
+          "win_rate": 50.0
+        },
+        "US500": {
+          "score": 6.923328148638541,
+          "ret_pct": 1.4203679916688472,
+          "dd_pct": 0.8961374481245565,
+          "pf": 1.5275283518255793,
+          "trades": 31,
+          "trades_per_day": 0.41333333333333333,
+          "win_rate": 51.61290322580645
+        }
+      }
+    },
+    {
+      "id": "C05",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 86,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.05,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 15.215986317099675,
+      "mean_score": 10.10672295025156,
+      "worst_score": 3.353918592995811,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.4133333333333334,
+      "symbols": {
+        "XAUUSD": {
+          "score": 20.47013475479436,
+          "ret_pct": 8.569774212886427,
+          "dd_pct": 1.9025344440132264,
+          "pf": 3.722770579748939,
+          "trades": 23,
+          "trades_per_day": 0.30666666666666664,
+          "win_rate": 73.91304347826086
+        },
+        "NAS100": {
+          "score": 3.353918592995811,
+          "ret_pct": 1.7238160515131273,
+          "dd_pct": 2.9953421308147905,
+          "pf": 1.3923291543632537,
+          "trades": 32,
+          "trades_per_day": 0.4266666666666667,
+          "win_rate": 53.125
+        },
+        "US500": {
+          "score": 6.496115502964515,
+          "ret_pct": 1.8397634539761176,
+          "dd_pct": 1.5801374085760787,
+          "pf": 1.5428096423441975,
+          "trades": 38,
+          "trades_per_day": 0.5066666666666667,
+          "win_rate": 55.26315789473685
+        }
+      }
+    },
+    {
+      "id": "C13",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 88,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.08,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 13.410730349777564,
+      "mean_score": 9.168586130855376,
+      "worst_score": 1.426987153160421,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.3644444444444444,
+      "symbols": {
+        "XAUUSD": {
+          "score": 18.964661466180175,
+          "ret_pct": 8.138285549901303,
+          "dd_pct": 1.4010962081978584,
+          "pf": 3.3070324623488614,
+          "trades": 21,
+          "trades_per_day": 0.28,
+          "win_rate": 71.42857142857143
+        },
+        "NAS100": {
+          "score": 1.426987153160421,
+          "ret_pct": 0.6851813395550188,
+          "dd_pct": 2.777380638977953,
+          "pf": 1.1764037089925319,
+          "trades": 27,
+          "trades_per_day": 0.36,
+          "win_rate": 51.85185185185185
+        },
+        "US500": {
+          "score": 7.114109773225529,
+          "ret_pct": 1.6021199168776201,
+          "dd_pct": 1.0923749057548382,
+          "pf": 1.588280759722246,
+          "trades": 34,
+          "trades_per_day": 0.4533333333333333,
+          "win_rate": 55.88235294117647
+        }
+      }
+    },
+    {
+      "id": "C10",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 86,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.6
+      },
+      "aggregate_score": 12.51731911857848,
+      "mean_score": 6.802103897268558,
+      "worst_score": 4.700478269577602,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.20444444444444443,
+      "symbols": {
+        "XAUUSD": {
+          "score": 8.444851838890006,
+          "ret_pct": 2.721284470451746,
+          "dd_pct": 1.3488142909704746,
+          "pf": 2.223750891831088,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 69.23076923076923
+        },
+        "NAS100": {
+          "score": 7.260981583338064,
+          "ret_pct": 1.638871268604647,
+          "dd_pct": 0.8076611007959866,
+          "pf": 1.9552586856684155,
+          "trades": 14,
+          "trades_per_day": 0.18666666666666668,
+          "win_rate": 57.14285714285714
+        },
+        "US500": {
+          "score": 4.700478269577602,
+          "ret_pct": 0.5028121847245437,
+          "dd_pct": 0.5065817087225088,
+          "pf": 1.3453825380356015,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        }
+      }
+    },
+    {
+      "id": "C07",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 84,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 2.4
+      },
+      "aggregate_score": 11.74102908666459,
+      "mean_score": 7.811911986722748,
+      "worst_score": 0.7313713332040939,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.48444444444444446,
+      "symbols": {
+        "XAUUSD": {
+          "score": 16.362565990900496,
+          "ret_pct": 7.68908703039437,
+          "dd_pct": 1.5879110525608007,
+          "pf": 2.5968674944841847,
+          "trades": 31,
+          "trades_per_day": 0.41333333333333333,
+          "win_rate": 64.51612903225806
+        },
+        "NAS100": {
+          "score": 0.7313713332040939,
+          "ret_pct": 0.06343659321250694,
+          "dd_pct": 2.7704817820981287,
+          "pf": 1.0151763978371482,
+          "trades": 39,
+          "trades_per_day": 0.52,
+          "win_rate": 43.58974358974359
+        },
+        "US500": {
+          "score": 6.341798636063655,
+          "ret_pct": 1.5863502319242606,
+          "dd_pct": 1.391472369468384,
+          "pf": 1.4854510488222021,
+          "trades": 39,
+          "trades_per_day": 0.52,
+          "win_rate": 51.28205128205128
+        }
+      }
+    },
+    {
+      "id": "C09",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.8
+      },
+      "aggregate_score": 11.556672991817507,
+      "mean_score": 7.013498026446528,
+      "worst_score": 2.095944367491067,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.13333333333333333,
+      "symbols": {
+        "XAUUSD": {
+          "score": 12.827468434102174,
+          "ret_pct": 3.2504983777016383,
+          "dd_pct": 1.3969551497247177,
+          "pf": 3.313024573990021,
+          "trades": 9,
+          "trades_per_day": 0.12,
+          "win_rate": 88.88888888888889
+        },
+        "NAS100": {
+          "score": 6.117081277746343,
+          "ret_pct": 0.8998893432194066,
+          "dd_pct": 0.8697056520604192,
+          "pf": 2.0388469111225684,
+          "trades": 8,
+          "trades_per_day": 0.10666666666666667,
+          "win_rate": 50.0
+        },
+        "US500": {
+          "score": 2.095944367491067,
+          "ret_pct": 0.04594604292642579,
+          "dd_pct": 0.695796711014518,
+          "pf": 1.044151598880301,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 46.15384615384615
+        }
+      }
+    },
+    {
+      "id": "C03",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 90,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 11.070972949173022,
+      "mean_score": 6.540789738893911,
+      "worst_score": 2.067073800620248,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.1511111111111111,
+      "symbols": {
+        "XAUUSD": {
+          "score": 14.661891563127112,
+          "ret_pct": 3.781416485280631,
+          "dd_pct": 1.3969551497247248,
+          "pf": 3.55890082935151,
+          "trades": 12,
+          "trades_per_day": 0.16,
+          "win_rate": 83.33333333333334
+        },
+        "NAS100": {
+          "score": 2.893403852934371,
+          "ret_pct": 0.34959185799416925,
+          "dd_pct": 0.8943915802354039,
+          "pf": 1.353709630829212,
+          "trades": 9,
+          "trades_per_day": 0.12,
+          "win_rate": 44.44444444444444
+        },
+        "US500": {
+          "score": 2.067073800620248,
+          "ret_pct": 0.03972972165171562,
+          "dd_pct": 0.695796711014518,
+          "pf": 1.0384880374812737,
+          "trades": 13,
+          "trades_per_day": 0.17333333333333334,
+          "win_rate": 46.15384615384615
+        }
+      }
+    },
+    {
+      "id": "C08",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 84,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.1,
+        "stop_atr_mult": 2.4
+      },
+      "aggregate_score": 10.756053438180981,
+      "mean_score": 5.447778018480714,
+      "worst_score": 3.796167599333927,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.21777777777777776,
+      "symbols": {
+        "XAUUSD": {
+          "score": 6.894433504699735,
+          "ret_pct": 2.389236043276499,
+          "dd_pct": 1.4923628581299255,
+          "pf": 1.949911175274446,
+          "trades": 14,
+          "trades_per_day": 0.18666666666666668,
+          "win_rate": 64.28571428571429
+        },
+        "NAS100": {
+          "score": 5.652732951408481,
+          "ret_pct": 1.3105178769896364,
+          "dd_pct": 0.9653403810637049,
+          "pf": 1.6450232543635266,
+          "trades": 16,
+          "trades_per_day": 0.21333333333333335,
+          "win_rate": 56.25
+        },
+        "US500": {
+          "score": 3.796167599333927,
+          "ret_pct": 0.2659627776016249,
+          "dd_pct": 0.5065817087225088,
+          "pf": 1.1785172222554123,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        }
+      }
+    },
+    {
+      "id": "C29",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 3,
+        "lsma_len": 15,
+        "hma_len": 30,
+        "adx_len": 10,
+        "adx_min": 10,
+        "h1_ema_len": 150,
+        "atr_mult": 1.5
+      },
+      "aggregate_score": 10.056874543317925,
+      "mean_score": 9.457814415405904,
+      "worst_score": -4.002088604639956,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 4.515555555555555,
+      "symbols": {
+        "XAUUSD": {
+          "score": 23.567328884151127,
+          "ret_pct": 21.264231835672387,
+          "dd_pct": 4.456111234698863,
+          "pf": 1.3582187559992305,
+          "trades": 351,
+          "trades_per_day": 4.68,
+          "win_rate": 33.61823361823362
+        },
+        "NAS100": {
+          "score": 8.808202966706542,
+          "ret_pct": 11.164207529502557,
+          "dd_pct": 7.178410376472229,
+          "pf": 1.2823630098898884,
+          "trades": 323,
+          "trades_per_day": 4.306666666666667,
+          "win_rate": 37.461300309597526
+        },
+        "US500": {
+          "score": -4.002088604639956,
+          "ret_pct": -2.055754295538348,
+          "dd_pct": 6.069362017456783,
+          "pf": 0.9411612297073112,
+          "trades": 342,
+          "trades_per_day": 4.56,
+          "win_rate": 31.28654970760234
+        }
+      }
+    },
+    {
+      "id": "C25",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 4,
+        "lsma_len": 20,
+        "hma_len": 42,
+        "adx_len": 12,
+        "adx_min": 14,
+        "h1_ema_len": 180,
+        "atr_mult": 1.8
+      },
+      "aggregate_score": 9.78177541391779,
+      "mean_score": 9.609050846991137,
+      "worst_score": -4.949500962385214,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 3.3777777777777778,
+      "symbols": {
+        "XAUUSD": {
+          "score": 29.429762108031948,
+          "ret_pct": 26.08340496873971,
+          "dd_pct": 4.3835762432792915,
+          "pf": 1.5900197821347761,
+          "trades": 270,
+          "trades_per_day": 3.6,
+          "win_rate": 35.18518518518518
+        },
+        "NAS100": {
+          "score": 4.346891395326675,
+          "ret_pct": 5.715778535982863,
+          "dd_pct": 6.293998061989771,
+          "pf": 1.1753774396318617,
+          "trades": 237,
+          "trades_per_day": 3.16,
+          "win_rate": 35.86497890295359
+        },
+        "US500": {
+          "score": -4.949500962385214,
+          "ret_pct": -3.3063810740772026,
+          "dd_pct": 5.706457555439685,
+          "pf": 0.871803050098871,
+          "trades": 253,
+          "trades_per_day": 3.3733333333333335,
+          "win_rate": 29.64426877470356
+        }
+      }
+    },
+    {
+      "id": "C12",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 82,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.05,
+        "stop_atr_mult": 2.6
+      },
+      "aggregate_score": 8.851001548891198,
+      "mean_score": 4.142522082322592,
+      "worst_score": 2.4632877034857894,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.23111111111111113,
+      "symbols": {
+        "XAUUSD": {
+          "score": 5.2638002739043825,
+          "ret_pct": 1.97872331027662,
+          "dd_pct": 1.5744837336759183,
+          "pf": 1.677729401043975,
+          "trades": 14,
+          "trades_per_day": 0.18666666666666668,
+          "win_rate": 64.28571428571429
+        },
+        "NAS100": {
+          "score": 2.4632877034857894,
+          "ret_pct": 0.494028926647605,
+          "dd_pct": 1.4670310259128074,
+          "pf": 1.1724604379080024,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        },
+        "US500": {
+          "score": 4.700478269577602,
+          "ret_pct": 0.5028121847245437,
+          "dd_pct": 0.5065817087225088,
+          "pf": 1.3453825380356015,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 47.368421052631575
+        }
+      }
+    },
+    {
+      "id": "C11",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 82,
+        "min_persistence": 1,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 2.2
+      },
+      "aggregate_score": 8.22578766088153,
+      "mean_score": 6.276608040915488,
+      "worst_score": -1.0018230667421295,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 0.5066666666666667,
+      "symbols": {
+        "XAUUSD": {
+          "score": 11.781112960911083,
+          "ret_pct": 5.530791754374387,
+          "dd_pct": 1.8417523342419018,
+          "pf": 2.0859479019976015,
+          "trades": 32,
+          "trades_per_day": 0.4266666666666667,
+          "win_rate": 59.375
+        },
+        "NAS100": {
+          "score": -1.0018230667421295,
+          "ret_pct": -0.3924755106608835,
+          "dd_pct": 3.4476574836677396,
+          "pf": 0.9467261044467844,
+          "trades": 42,
+          "trades_per_day": 0.56,
+          "win_rate": 40.476190476190474
+        },
+        "US500": {
+          "score": 8.050534228577511,
+          "ret_pct": 2.1530636306248407,
+          "dd_pct": 1.274104403075301,
+          "pf": 1.7173427440516216,
+          "trades": 40,
+          "trades_per_day": 0.5333333333333333,
+          "win_rate": 52.5
+        }
+      }
+    },
+    {
+      "id": "C30",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 5,
+        "lsma_len": 25,
+        "hma_len": 50,
+        "adx_len": 14,
+        "adx_min": 20,
+        "h1_ema_len": 200,
+        "atr_mult": 2.6
+      },
+      "aggregate_score": 7.210019440080869,
+      "mean_score": 4.77120967805524,
+      "worst_score": 0.08624391561250633,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 2.1822222222222223,
+      "symbols": {
+        "XAUUSD": {
+          "score": 13.186873717195564,
+          "ret_pct": 11.270442347592224,
+          "dd_pct": 4.629673489331081,
+          "pf": 1.330977238133267,
+          "trades": 169,
+          "trades_per_day": 2.2533333333333334,
+          "win_rate": 33.13609467455622
+        },
+        "NAS100": {
+          "score": 1.0405114013576506,
+          "ret_pct": 1.451712328272059,
+          "dd_pct": 5.417992545432458,
+          "pf": 1.0643967864443813,
+          "trades": 162,
+          "trades_per_day": 2.16,
+          "win_rate": 30.864197530864196
+        },
+        "US500": {
+          "score": 0.08624391561250633,
+          "ret_pct": -2.069386306576848,
+          "dd_pct": 3.3629687063548066,
+          "pf": 0.8840950380892614,
+          "trades": 160,
+          "trades_per_day": 2.1333333333333333,
+          "win_rate": 30.0
+        }
+      }
+    },
+    {
+      "id": "C06",
+      "family": "alpha",
+      "params": {
+        "baseline_adx_length": 2,
+        "baseline_weight": 10.0,
+        "baseline_ma_length": 6,
+        "conf1_smooth": 21,
+        "conf1_constant": 0.4,
+        "conf1_cross": true,
+        "conf1_inverse": false,
+        "conf2_poles": 4,
+        "conf2_period": 144,
+        "conf2_multiplier": 1.414,
+        "conf2_cross": true,
+        "conf2_inverse": false,
+        "vol_ma_length": 100,
+        "vol_length": 60,
+        "vol_smooth": 3,
+        "stop_atr_length": 22,
+        "entry_filter": 1,
+        "exit_filter": 1,
+        "vol_threshold": 86,
+        "min_persistence": 2,
+        "min_edge_ratio": 0.0,
+        "stop_atr_mult": 3.0
+      },
+      "aggregate_score": 5.844630787097953,
+      "mean_score": 2.8244422792642907,
+      "worst_score": -1.2884699825918622,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 0.22222222222222224,
+      "symbols": {
+        "XAUUSD": {
+          "score": -1.2884699825918622,
+          "ret_pct": 0.05197308893449826,
+          "dd_pct": 2.9563552411873717,
+          "pf": 1.020764661926692,
+          "trades": 16,
+          "trades_per_day": 0.21333333333333335,
+          "win_rate": 62.5
+        },
+        "NAS100": {
+          "score": 6.221091893697483,
+          "ret_pct": 1.644472626464033,
+          "dd_pct": 1.275487100458127,
+          "pf": 1.8543496569916131,
+          "trades": 15,
+          "trades_per_day": 0.2,
+          "win_rate": 53.333333333333336
+        },
+        "US500": {
+          "score": 3.5407049266872512,
+          "ret_pct": 0.2660839140102622,
+          "dd_pct": 0.7349283026263365,
+          "pf": 1.205959907553115,
+          "trades": 19,
+          "trades_per_day": 0.25333333333333335,
+          "win_rate": 52.63157894736842
+        }
+      }
+    },
+    {
+      "id": "C27",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 5,
+        "lsma_len": 18,
+        "hma_len": 34,
+        "adx_len": 10,
+        "adx_min": 12,
+        "h1_ema_len": 160,
+        "atr_mult": 1.6
+      },
+      "aggregate_score": 5.668822642672392,
+      "mean_score": 5.32176963278568,
+      "worst_score": -4.562104422473972,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 3.3511111111111114,
+      "symbols": {
+        "XAUUSD": {
+          "score": 20.97809515217716,
+          "ret_pct": 19.264013853995344,
+          "dd_pct": 4.954309548722905,
+          "pf": 1.4102441440346163,
+          "trades": 253,
+          "trades_per_day": 3.3733333333333335,
+          "win_rate": 37.54940711462451
+        },
+        "NAS100": {
+          "score": -4.562104422473972,
+          "ret_pct": 0.30965386550763085,
+          "dd_pct": 8.0848127192619,
+          "pf": 1.0159855157093596,
+          "trades": 251,
+          "trades_per_day": 3.3466666666666667,
+          "win_rate": 38.24701195219124
+        },
+        "US500": {
+          "score": -0.4506818313461505,
+          "ret_pct": -1.3930463148969507,
+          "dd_pct": 4.2855203703920814,
+          "pf": 0.949799269044533,
+          "trades": 250,
+          "trades_per_day": 3.3333333333333335,
+          "win_rate": 34.4
+        }
+      }
+    },
+    {
+      "id": "C26",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 6,
+        "lsma_len": 30,
+        "hma_len": 55,
+        "adx_len": 14,
+        "adx_min": 18,
+        "h1_ema_len": 200,
+        "atr_mult": 2.2
+      },
+      "aggregate_score": 3.6406539604657615,
+      "mean_score": 4.924613110714542,
+      "worst_score": -5.519909222775068,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 1.9955555555555555,
+      "symbols": {
+        "XAUUSD": {
+          "score": 21.163144805155707,
+          "ret_pct": 18.489542712071795,
+          "dd_pct": 4.575185371818194,
+          "pf": 1.4984746719982556,
+          "trades": 154,
+          "trades_per_day": 2.0533333333333332,
+          "win_rate": 38.311688311688314
+        },
+        "NAS100": {
+          "score": -5.519909222775068,
+          "ret_pct": -0.34354692379953145,
+          "dd_pct": 8.208616483207507,
+          "pf": 0.9960226852057855,
+          "trades": 149,
+          "trades_per_day": 1.9866666666666666,
+          "win_rate": 28.859060402684566
+        },
+        "US500": {
+          "score": -0.8693962502370116,
+          "ret_pct": -2.4068176008739672,
+          "dd_pct": 3.63058689566354,
+          "pf": 0.8632567625913217,
+          "trades": 146,
+          "trades_per_day": 1.9466666666666668,
+          "win_rate": 32.19178082191781
+        }
+      }
+    },
+    {
+      "id": "C21",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 34,
+        "pct_lookback": 2,
+        "alma_offset": 0.82,
+        "alma_sigma": 7,
+        "band_mult": 1.0,
+        "adx_min": 16,
+        "adx_len": 12,
+        "neutral_hold": 2,
+        "atr_mult": 1.8
+      },
+      "aggregate_score": 2.9916335559758425,
+      "mean_score": 0.7802786391173514,
+      "worst_score": -3.085877962536686,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 3.408888888888889,
+      "symbols": {
+        "XAUUSD": {
+          "score": 2.7685346549864764,
+          "ret_pct": 5.736068723895582,
+          "dd_pct": 7.181528804694542,
+          "pf": 1.1307280046505406,
+          "trades": 260,
+          "trades_per_day": 3.466666666666667,
+          "win_rate": 43.07692307692308
+        },
+        "NAS100": {
+          "score": -3.085877962536686,
+          "ret_pct": 0.7953680943404651,
+          "dd_pct": 7.4958334275588125,
+          "pf": 1.0280218568042379,
+          "trades": 252,
+          "trades_per_day": 3.36,
+          "win_rate": 42.06349206349206
+        },
+        "US500": {
+          "score": 2.6581792249022635,
+          "ret_pct": 1.8216465965137152,
+          "dd_pct": 4.6699824774293495,
+          "pf": 1.077126148068877,
+          "trades": 255,
+          "trades_per_day": 3.4,
+          "win_rate": 40.78431372549019
+        }
+      }
+    },
+    {
+      "id": "C28",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 7,
+        "lsma_len": 35,
+        "hma_len": 70,
+        "adx_len": 16,
+        "adx_min": 20,
+        "h1_ema_len": 220,
+        "atr_mult": 2.4
+      },
+      "aggregate_score": 1.8312600983019938,
+      "mean_score": 0.30081658207177125,
+      "worst_score": -4.599014408377283,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 1.511111111111111,
+      "symbols": {
+        "XAUUSD": {
+          "score": -4.599014408377283,
+          "ret_pct": 0.9034182179680439,
+          "dd_pct": 7.882043961043742,
+          "pf": 1.0438760944978318,
+          "trades": 110,
+          "trades_per_day": 1.4666666666666666,
+          "win_rate": 35.45454545454545
+        },
+        "NAS100": {
+          "score": 5.056905996767724,
+          "ret_pct": 4.488997364978675,
+          "dd_pct": 4.639022257273725,
+          "pf": 1.2109193941900855,
+          "trades": 118,
+          "trades_per_day": 1.5733333333333333,
+          "win_rate": 30.508474576271187
+        },
+        "US500": {
+          "score": 0.4445581578248725,
+          "ret_pct": 0.00035057519154335637,
+          "dd_pct": 4.102560307242472,
+          "pf": 1.0054093518886544,
+          "trades": 112,
+          "trades_per_day": 1.4933333333333334,
+          "win_rate": 31.25
+        }
+      }
+    },
+    {
+      "id": "C24",
+      "family": "lsma_hybrid",
+      "params": {
+        "smooth": 5,
+        "lsma_len": 25,
+        "hma_len": 50,
+        "adx_len": 14,
+        "adx_min": 16,
+        "h1_ema_len": 200,
+        "atr_mult": 2.0
+      },
+      "aggregate_score": 1.5042559400334532,
+      "mean_score": 3.259261451607182,
+      "worst_score": -6.566678914608286,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 2.506666666666667,
+      "symbols": {
+        "XAUUSD": {
+          "score": 21.01963827103073,
+          "ret_pct": 20.42199797636679,
+          "dd_pct": 5.915432452794828,
+          "pf": 1.5155830547839166,
+          "trades": 191,
+          "trades_per_day": 2.546666666666667,
+          "win_rate": 35.07853403141361
+        },
+        "NAS100": {
+          "score": -4.675175001600898,
+          "ret_pct": -0.5957433541625146,
+          "dd_pct": 7.518263190418765,
+          "pf": 0.9874473643079104,
+          "trades": 182,
+          "trades_per_day": 2.4266666666666667,
+          "win_rate": 29.120879120879124
+        },
+        "US500": {
+          "score": -6.566678914608286,
+          "ret_pct": -4.493103209059656,
+          "dd_pct": 5.754670313427422,
+          "pf": 0.7834741989838118,
+          "trades": 191,
+          "trades_per_day": 2.546666666666667,
+          "win_rate": 28.272251308900525
+        }
+      }
+    },
+    {
+      "id": "C17",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 42,
+        "pct_lookback": 2,
+        "alma_offset": 0.9,
+        "alma_sigma": 5,
+        "band_mult": 0.95,
+        "adx_min": 18,
+        "adx_len": 12,
+        "neutral_hold": 3,
+        "atr_mult": 1.7
+      },
+      "aggregate_score": 0.2683587827303633,
+      "mean_score": -1.1457710662253877,
+      "worst_score": -4.857489224542775,
+      "pass_symbols": 3,
+      "mean_trades_per_day": 3.1733333333333333,
+      "symbols": {
+        "XAUUSD": {
+          "score": -4.857489224542775,
+          "ret_pct": 2.3980560754295777,
+          "dd_pct": 9.68152378092548,
+          "pf": 1.0587231873771035,
+          "trades": 244,
+          "trades_per_day": 3.2533333333333334,
+          "win_rate": 38.52459016393443
+        },
+        "NAS100": {
+          "score": -1.3969538850365044,
+          "ret_pct": 1.4663153608145407,
+          "dd_pct": 6.908582559674448,
+          "pf": 1.0476157124070182,
+          "trades": 238,
+          "trades_per_day": 3.1733333333333333,
+          "win_rate": 41.17647058823529
+        },
+        "US500": {
+          "score": 2.817129910903116,
+          "ret_pct": 0.8821019599908775,
+          "dd_pct": 3.8918381706668246,
+          "pf": 1.0404922559947896,
+          "trades": 232,
+          "trades_per_day": 3.0933333333333333,
+          "win_rate": 38.793103448275865
+        }
+      }
+    },
+    {
+      "id": "C01",
+      "family": "classic",
+      "params": {
+        "entry_filter": 1,
+        "exit_filter": 1
+      },
+      "aggregate_score": -0.27936441705160986,
+      "mean_score": -0.21174400237841665,
+      "worst_score": -5.483600921495984,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 3.9955555555555553,
+      "symbols": {
+        "XAUUSD": {
+          "score": -5.483600921495984,
+          "ret_pct": 0.93024472599601,
+          "dd_pct": 9.082915282832142,
+          "pf": 1.0297047012598586,
+          "trades": 318,
+          "trades_per_day": 4.24,
+          "win_rate": 26.729559748427672
+        },
+        "NAS100": {
+          "score": 7.6198391548580195,
+          "ret_pct": 7.206054065327194,
+          "dd_pct": 5.273249487339364,
+          "pf": 1.212746067318452,
+          "trades": 281,
+          "trades_per_day": 3.7466666666666666,
+          "win_rate": 29.537366548042705
+        },
+        "US500": {
+          "score": -2.771470240497285,
+          "ret_pct": -1.5355819914842472,
+          "dd_pct": 5.6400666506648856,
+          "pf": 0.9470545980126945,
+          "trades": 300,
+          "trades_per_day": 4.0,
+          "win_rate": 29.666666666666668
+        }
+      }
+    },
+    {
+      "id": "C20",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 34,
+        "pct_lookback": 1,
+        "alma_offset": 0.82,
+        "alma_sigma": 6,
+        "band_mult": 0.95,
+        "adx_min": 14,
+        "adx_len": 10,
+        "neutral_hold": 2,
+        "atr_mult": 1.7
+      },
+      "aggregate_score": -2.513143072103111,
+      "mean_score": -2.1056717596803853,
+      "worst_score": -6.238825138717168,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 3.9377777777777774,
+      "symbols": {
+        "XAUUSD": {
+          "score": -6.238825138717168,
+          "ret_pct": 2.5694495543386653,
+          "dd_pct": 10.640188170405597,
+          "pf": 1.054006594898281,
+          "trades": 312,
+          "trades_per_day": 4.16,
+          "win_rate": 36.858974358974365
+        },
+        "NAS100": {
+          "score": 5.785977247124238,
+          "ret_pct": 7.0007638222163715,
+          "dd_pct": 6.2209671879505075,
+          "pf": 1.18469023140717,
+          "trades": 286,
+          "trades_per_day": 3.8133333333333335,
+          "win_rate": 39.16083916083916
+        },
+        "US500": {
+          "score": -5.8641673874482265,
+          "ret_pct": -1.441184846609167,
+          "dd_pct": 7.655606176805431,
+          "pf": 0.9564968355124076,
+          "trades": 288,
+          "trades_per_day": 3.84,
+          "win_rate": 33.33333333333333
+        }
+      }
+    },
+    {
+      "id": "C14",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 50,
+        "pct_lookback": 1,
+        "alma_offset": 0.85,
+        "alma_sigma": 6,
+        "band_mult": 1.0,
+        "adx_min": 16,
+        "adx_len": 14,
+        "neutral_hold": 2,
+        "atr_mult": 1.8
+      },
+      "aggregate_score": -8.60707673545999,
+      "mean_score": -4.214772656767674,
+      "worst_score": -12.427342397094037,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 2.977777777777778,
+      "symbols": {
+        "XAUUSD": {
+          "score": -12.427342397094037,
+          "ret_pct": -1.4931968096620896,
+          "dd_pct": 11.774081391075418,
+          "pf": 0.9760961595721814,
+          "trades": 229,
+          "trades_per_day": 3.0533333333333332,
+          "win_rate": 34.93449781659388
+        },
+        "NAS100": {
+          "score": 1.2667672753383545,
+          "ret_pct": 4.010858460804578,
+          "dd_pct": 7.029919079350046,
+          "pf": 1.1259448353734627,
+          "trades": 220,
+          "trades_per_day": 2.933333333333333,
+          "win_rate": 36.36363636363637
+        },
+        "US500": {
+          "score": -1.4837428485473385,
+          "ret_pct": -0.6147588025350648,
+          "dd_pct": 5.491859369173419,
+          "pf": 0.9794977361662989,
+          "trades": 221,
+          "trades_per_day": 2.9466666666666668,
+          "win_rate": 38.46153846153847
+        }
+      }
+    },
+    {
+      "id": "C15",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 50,
+        "pct_lookback": 1,
+        "alma_offset": 0.85,
+        "alma_sigma": 6,
+        "band_mult": 1.1,
+        "adx_min": 18,
+        "adx_len": 14,
+        "neutral_hold": 2,
+        "atr_mult": 1.9
+      },
+      "aggregate_score": -9.87459486761959,
+      "mean_score": -4.864146919767809,
+      "worst_score": -16.46766210633729,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 2.6577777777777776,
+      "symbols": {
+        "XAUUSD": {
+          "score": -16.46766210633729,
+          "ret_pct": -4.3554455063660065,
+          "dd_pct": 12.3159121888989,
+          "pf": 0.8983107255667397,
+          "trades": 210,
+          "trades_per_day": 2.8,
+          "win_rate": 35.714285714285715
+        },
+        "NAS100": {
+          "score": -0.4577820351536106,
+          "ret_pct": 0.9503164375371354,
+          "dd_pct": 5.975970448381524,
+          "pf": 1.0383635611799231,
+          "trades": 194,
+          "trades_per_day": 2.5866666666666664,
+          "win_rate": 36.597938144329895
+        },
+        "US500": {
+          "score": 2.3330033821874725,
+          "ret_pct": 1.391263101542406,
+          "dd_pct": 4.5955816997891485,
+          "pf": 1.073667750076926,
+          "trades": 194,
+          "trades_per_day": 2.5866666666666664,
+          "win_rate": 40.20618556701031
+        }
+      }
+    },
+    {
+      "id": "C16",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 42,
+        "pct_lookback": 1,
+        "alma_offset": 0.88,
+        "alma_sigma": 5,
+        "band_mult": 1.0,
+        "adx_min": 20,
+        "adx_len": 14,
+        "neutral_hold": 2,
+        "atr_mult": 1.8
+      },
+      "aggregate_score": -16.030711181615096,
+      "mean_score": -7.063262202106821,
+      "worst_score": -25.26099773224061,
+      "pass_symbols": 2,
+      "mean_trades_per_day": 3.222222222222222,
+      "symbols": {
+        "XAUUSD": {
+          "score": -25.26099773224061,
+          "ret_pct": -8.082651450985502,
+          "dd_pct": 15.321356385315932,
+          "pf": 0.8339559838125957,
+          "trades": 247,
+          "trades_per_day": 3.2933333333333334,
+          "win_rate": 31.17408906882591
+        },
+        "NAS100": {
+          "score": -2.644340736749836,
+          "ret_pct": 0.279707362351167,
+          "dd_pct": 6.86620121204283,
+          "pf": 1.0154684600418813,
+          "trades": 246,
+          "trades_per_day": 3.28,
+          "win_rate": 33.33333333333333
+        },
+        "US500": {
+          "score": 6.715551862669982,
+          "ret_pct": 2.897208326073719,
+          "dd_pct": 2.943886277247358,
+          "pf": 1.132140395048009,
+          "trades": 232,
+          "trades_per_day": 3.0933333333333333,
+          "win_rate": 34.91379310344828
+        }
+      }
+    },
+    {
+      "id": "C19",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 60,
+        "pct_lookback": 2,
+        "alma_offset": 0.9,
+        "alma_sigma": 6,
+        "band_mult": 1.05,
+        "adx_min": 20,
+        "adx_len": 14,
+        "neutral_hold": 2,
+        "atr_mult": 2.0
+      },
+      "aggregate_score": -16.96201878353214,
+      "mean_score": -6.757318242172077,
+      "worst_score": -25.34377898080014,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 2.4222222222222225,
+      "symbols": {
+        "XAUUSD": {
+          "score": -25.34377898080014,
+          "ret_pct": -8.717075132818042,
+          "dd_pct": 14.860242128566108,
+          "pf": 0.7874208894309194,
+          "trades": 195,
+          "trades_per_day": 2.6,
+          "win_rate": 36.92307692307693
+        },
+        "NAS100": {
+          "score": 1.0931108437443688,
+          "ret_pct": -0.09742076976264613,
+          "dd_pct": 4.2643024113277,
+          "pf": 1.0033538679078338,
+          "trades": 172,
+          "trades_per_day": 2.2933333333333334,
+          "win_rate": 39.53488372093023
+        },
+        "US500": {
+          "score": 3.9787134105395374,
+          "ret_pct": 1.3442572897104377,
+          "dd_pct": 3.551852637193267,
+          "pf": 1.0793550850845817,
+          "trades": 178,
+          "trades_per_day": 2.3733333333333335,
+          "win_rate": 41.01123595505618
+        }
+      }
+    },
+    {
+      "id": "C18",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 60,
+        "pct_lookback": 1,
+        "alma_offset": 0.85,
+        "alma_sigma": 6,
+        "band_mult": 1.0,
+        "adx_min": 16,
+        "adx_len": 14,
+        "neutral_hold": 3,
+        "atr_mult": 2.0
+      },
+      "aggregate_score": -24.424487490930215,
+      "mean_score": -10.049538328113512,
+      "worst_score": -34.61099813959267,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 2.3644444444444446,
+      "symbols": {
+        "XAUUSD": {
+          "score": -34.61099813959267,
+          "ret_pct": -10.842820023947974,
+          "dd_pct": 19.28657330999615,
+          "pf": 0.7725847950872871,
+          "trades": 191,
+          "trades_per_day": 2.546666666666667,
+          "win_rate": 33.50785340314136
+        },
+        "NAS100": {
+          "score": 6.338825574877639,
+          "ret_pct": 5.44794403098543,
+          "dd_pct": 4.9633948107605015,
+          "pf": 1.208078310277253,
+          "trades": 161,
+          "trades_per_day": 2.1466666666666665,
+          "win_rate": 40.993788819875775
+        },
+        "US500": {
+          "score": -1.8764424196255067,
+          "ret_pct": -1.472561086130475,
+          "dd_pct": 5.103814103689551,
+          "pf": 0.9405553081020623,
+          "trades": 180,
+          "trades_per_day": 2.4,
+          "win_rate": 42.22222222222222
+        }
+      }
+    },
+    {
+      "id": "C22",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 72,
+        "pct_lookback": 1,
+        "alma_offset": 0.88,
+        "alma_sigma": 6,
+        "band_mult": 1.1,
+        "adx_min": 22,
+        "adx_len": 14,
+        "neutral_hold": 2,
+        "atr_mult": 2.2
+      },
+      "aggregate_score": -28.92085521826931,
+      "mean_score": -12.162384517431915,
+      "worst_score": -37.24104600186087,
+      "pass_symbols": 0,
+      "mean_trades_per_day": 2.1466666666666665,
+      "symbols": {
+        "XAUUSD": {
+          "score": -37.24104600186087,
+          "ret_pct": -14.401363282076785,
+          "dd_pct": 18.384870559746666,
+          "pf": 0.644027543952644,
+          "trades": 187,
+          "trades_per_day": 2.493333333333333,
+          "win_rate": 29.411764705882355
+        },
+        "NAS100": {
+          "score": -0.01864533154488246,
+          "ret_pct": -0.11450447175624934,
+          "dd_pct": 4.944751089730713,
+          "pf": 1.0018652209451269,
+          "trades": 153,
+          "trades_per_day": 2.04,
+          "win_rate": 34.64052287581699
+        },
+        "US500": {
+          "score": 0.7725377811100071,
+          "ret_pct": -1.2109245030651916,
+          "dd_pct": 3.461907542438012,
+          "pf": 0.9272952546856711,
+          "trades": 143,
+          "trades_per_day": 1.9066666666666667,
+          "win_rate": 37.76223776223776
+        }
+      }
+    },
+    {
+      "id": "C23",
+      "family": "trendilo_pulse",
+      "params": {
+        "lookback": 72,
+        "pct_lookback": 2,
+        "alma_offset": 0.88,
+        "alma_sigma": 7,
+        "band_mult": 1.15,
+        "adx_min": 24,
+        "adx_len": 16,
+        "neutral_hold": 2,
+        "atr_mult": 2.2
+      },
+      "aggregate_score": -32.18540506251739,
+      "mean_score": -12.947732808312914,
+      "worst_score": -45.417049453787726,
+      "pass_symbols": 1,
+      "mean_trades_per_day": 1.6666666666666667,
+      "symbols": {
+        "XAUUSD": {
+          "score": -45.417049453787726,
+          "ret_pct": -17.68947137224448,
+          "dd_pct": 21.024139001557145,
+          "pf": 0.5177610802370476,
+          "trades": 144,
+          "trades_per_day": 1.92,
+          "win_rate": 28.47222222222222
+        },
+        "NAS100": {
+          "score": 5.276458297113589,
+          "ret_pct": 3.908157763049136,
+          "dd_pct": 4.144288953078119,
+          "pf": 1.2531240480806942,
+          "trades": 112,
+          "trades_per_day": 1.4933333333333334,
+          "win_rate": 43.75
+        },
+        "US500": {
+          "score": 1.2973927317353917,
+          "ret_pct": -1.1582000866378728,
+          "dd_pct": 2.7518377894578108,
+          "pf": 0.9212999870431072,
+          "trades": 119,
+          "trades_per_day": 1.5866666666666667,
+          "win_rate": 35.294117647058826
+        }
+      }
+    }
+  ]
+}

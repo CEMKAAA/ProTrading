@@ -153,6 +153,10 @@ class TelegramBridgeService:
         self._last_ask_at_by_chat: Dict[int, float] = {}
         self._last_watchdog_event_id_by_chat_session: Dict[Tuple[int, int], int] = {}
         self._last_watchdog_check_at_by_chat_session: Dict[Tuple[int, int], float] = {}
+        self._callback_actions_by_chat: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        self._callback_action_order_by_chat: Dict[int, List[str]] = {}
+        self._next_callback_id_by_chat: Dict[int, int] = {}
+        self._last_screener_scan_by_chat_session: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     @staticmethod
     def _enabled() -> bool:
@@ -251,6 +255,14 @@ class TelegramBridgeService:
         return max(1, min(12, raw))
 
     @staticmethod
+    def _screener_page_size() -> int:
+        try:
+            raw = int(TelegramBridgeService._get_env_value("TELEGRAM_SCREENER_PAGE_SIZE", "6"))
+        except Exception:
+            raw = 6
+        return max(3, min(20, raw))
+
+    @staticmethod
     def _normalize_tool_access_mode(value: Any) -> str:
         raw = str(value or "").strip().lower()
         if raw in {"all", "parent", "child"}:
@@ -276,6 +288,286 @@ class TelegramBridgeService:
 
     def _base_url(self) -> str:
         return f"https://api.telegram.org/bot{self._token()}"
+
+    @staticmethod
+    def _keyboard_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_UI_KEYBOARD_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    def _main_reply_keyboard(self) -> Dict[str, Any]:
+        return {
+            "keyboard": [
+                [{"text": "/latest"}, {"text": "/status"}, {"text": "/summary"}],
+                [{"text": "/runtime"}, {"text": "/triggers"}, {"text": "/strategy"}],
+                [{"text": "/screener"}, {"text": "/menu"}],
+                [{"text": "/newsession XAUUSD M15 live mt5 10000"}],
+                [{"text": "/hidekeyboard"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "selective": False,
+        }
+
+    @staticmethod
+    def _to_base36(num: int) -> str:
+        chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+        n = int(max(0, int(num or 0)))
+        if n == 0:
+            return "0"
+        out = []
+        while n:
+            n, r = divmod(n, 36)
+            out.append(chars[r])
+        return "".join(reversed(out))
+
+    def _register_callback_action(self, chat_id: int, action: Dict[str, Any]) -> str:
+        cid = int(chat_id)
+        with self._lock:
+            nxt = int(self._next_callback_id_by_chat.get(cid, 0)) + 1
+            self._next_callback_id_by_chat[cid] = nxt
+            token = self._to_base36(nxt)
+            rows = self._callback_actions_by_chat.setdefault(cid, {})
+            order = self._callback_action_order_by_chat.setdefault(cid, [])
+            rows[token] = dict(action or {})
+            order.append(token)
+            # Keep bounded memory.
+            max_keep = 600
+            while len(order) > max_keep:
+                old = order.pop(0)
+                rows.pop(old, None)
+            return token
+
+    def _consume_callback_action(self, chat_id: int, token: str) -> Optional[Dict[str, Any]]:
+        cid = int(chat_id)
+        tok = str(token or "").strip()
+        if not tok:
+            return None
+        with self._lock:
+            rows = self._callback_actions_by_chat.get(cid) or {}
+            action = rows.get(tok)
+            if action is None:
+                return None
+            one_shot = bool((action or {}).get("one_shot", True))
+            if one_shot:
+                rows.pop(tok, None)
+                order = self._callback_action_order_by_chat.get(cid) or []
+                if tok in order:
+                    order.remove(tok)
+            return dict(action)
+
+    def _inline_button(self, chat_id: int, text: str, action: Dict[str, Any]) -> Dict[str, Any]:
+        token = self._register_callback_action(int(chat_id), action)
+        return {"text": str(text), "callback_data": f"cb:{token}"}
+
+    def _build_pending_inline_keyboard(self, chat_id: int) -> Optional[Dict[str, Any]]:
+        rows = self._get_pending(int(chat_id))
+        if not rows:
+            return None
+        kb: List[List[Dict[str, Any]]] = []
+        for p in rows[:4]:
+            pid = int(p.get("id") or 0)
+            if pid <= 0:
+                continue
+            kb.append(
+                [
+                    self._inline_button(
+                        int(chat_id),
+                        f"Approve #{pid}",
+                        {"type": "pending_approve", "pending_id": int(pid), "one_shot": True},
+                    ),
+                    self._inline_button(
+                        int(chat_id),
+                        f"Cancel #{pid}",
+                        {"type": "pending_cancel", "pending_id": int(pid), "one_shot": True},
+                    ),
+                ]
+            )
+        if not kb:
+            return None
+        return {"inline_keyboard": kb}
+
+    def _build_session_inline_keyboard(self, chat_id: int, session_id: int) -> Dict[str, Any]:
+        sid = int(session_id)
+        return {
+            "inline_keyboard": [
+                [
+                    self._inline_button(int(chat_id), f"Use #{sid}", {"type": "use_session", "session_id": sid}),
+                    self._inline_button(int(chat_id), "Status", {"type": "session_status", "session_id": sid}),
+                ],
+                [
+                    self._inline_button(int(chat_id), "Runtime", {"type": "session_runtime", "session_id": sid}),
+                    self._inline_button(int(chat_id), "Triggers", {"type": "session_triggers", "session_id": sid}),
+                ],
+                [
+                    self._inline_button(int(chat_id), "Run Screener", {"type": "session_screener", "session_id": sid}),
+                ],
+            ]
+        }
+
+    def _build_triggers_inline_keyboard(self, chat_id: int, session_id: int) -> Optional[Dict[str, Any]]:
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            out = sim_routes.workbench_agent_triggers_list(session_id=int(session_id), db=db)
+            rows = out.get("triggers") if isinstance(out, dict) else []
+            if not isinstance(rows, list) or not rows:
+                return None
+            kb: List[List[Dict[str, Any]]] = []
+            for r in rows[:6]:
+                if not isinstance(r, dict):
+                    continue
+                tid = str(r.get("id") or "").strip()
+                if not tid:
+                    continue
+                st = str(r.get("status") or "").lower()
+                buttons = [
+                    self._inline_button(
+                        int(chat_id),
+                        f"Details {tid[-6:]}",
+                        {"type": "trigger_details", "session_id": int(session_id), "trigger_id": tid},
+                    )
+                ]
+                if st in {"pending", "pending_approval"}:
+                    buttons.append(
+                        self._inline_button(
+                            int(chat_id),
+                            f"Cancel {tid[-6:]}",
+                            {"type": "trigger_cancel", "session_id": int(session_id), "trigger_id": tid, "one_shot": True},
+                        )
+                    )
+                kb.append(buttons)
+            if not kb:
+                return None
+            return {"inline_keyboard": kb}
+        except Exception:
+            return None
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _build_screener_inline_keyboard(self, chat_id: int, session_id: int, page: int = 0) -> Optional[Dict[str, Any]]:
+        key = (int(chat_id), int(session_id))
+        with self._lock:
+            scan = self._last_screener_scan_by_chat_session.get(key)
+        if not isinstance(scan, dict):
+            return None
+        strategy = str(scan.get("strategy") or "mtf")
+        scan_tf = str(scan.get("scan_tf") or "M15")
+        exec_tf = str(scan.get("exec_tf") or scan_tf)
+        opportunities = scan.get("opportunities") if isinstance(scan.get("opportunities"), list) else []
+        if not opportunities:
+            return None
+        page_size = int(self._screener_page_size())
+        total = int(len(opportunities))
+        total_pages = max(1, int(math.ceil(float(total) / float(page_size))))
+        page_idx = int(max(0, min(total_pages - 1, int(page or 0))))
+        start = int(page_idx * page_size)
+        end = int(min(total, start + page_size))
+        kb: List[List[Dict[str, Any]]] = []
+        for row in opportunities[start:end]:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            direction = str(row.get("direction") or "").strip().upper()
+            conf = float(row.get("confidence") or 0.0)
+            kb.append(
+                [
+                    self._inline_button(
+                        int(chat_id),
+                        f"Analyze {sym}",
+                        {
+                            "type": "screener_analyze",
+                            "session_id": int(session_id),
+                            "strategy": strategy,
+                            "symbol": sym,
+                            "scan_tf": scan_tf,
+                            "exec_tf": exec_tf,
+                        },
+                    ),
+                    self._inline_button(
+                        int(chat_id),
+                        f"One-Click {sym} {direction}",
+                        {
+                            "type": "screener_oneclick",
+                            "session_id": int(session_id),
+                            "strategy": strategy,
+                            "symbol": sym,
+                            "scan_tf": scan_tf,
+                            "exec_tf": exec_tf,
+                        },
+                    ),
+                ]
+            )
+        if total_pages > 1:
+            nav_row: List[Dict[str, Any]] = []
+            if page_idx > 0:
+                nav_row.append(
+                    self._inline_button(
+                        int(chat_id),
+                        "Prev",
+                        {
+                            "type": "screener_page",
+                            "session_id": int(session_id),
+                            "strategy": strategy,
+                            "scan_tf": scan_tf,
+                            "exec_tf": exec_tf,
+                            "page": int(page_idx - 1),
+                        },
+                    )
+                )
+            nav_row.append(
+                self._inline_button(
+                    int(chat_id),
+                    f"Page {int(page_idx + 1)}/{int(total_pages)}",
+                    {"type": "noop", "text": f"Screener page {int(page_idx + 1)} of {int(total_pages)}"},
+                )
+            )
+            if page_idx < (total_pages - 1):
+                nav_row.append(
+                    self._inline_button(
+                        int(chat_id),
+                        "Next",
+                        {
+                            "type": "screener_page",
+                            "session_id": int(session_id),
+                            "strategy": strategy,
+                            "scan_tf": scan_tf,
+                            "exec_tf": exec_tf,
+                            "page": int(page_idx + 1),
+                        },
+                    )
+                )
+            kb.append(nav_row)
+        kb.append(
+            [
+                self._inline_button(
+                        int(chat_id),
+                        f"{sym} conf {conf:.1f}",
+                        {"type": "noop", "text": f"{sym} confidence {conf:.1f}/100"},
+                    )
+                ]
+            )
+        kb.append(
+            [
+                self._inline_button(
+                    int(chat_id),
+                    "Refresh Screener",
+                    {
+                        "type": "screener_refresh",
+                        "session_id": int(session_id),
+                        "strategy": strategy,
+                        "scan_tf": scan_tf,
+                        "exec_tf": exec_tf,
+                    },
+                )
+            ]
+        )
+        return {"inline_keyboard": kb}
 
     def _format_botprofile(self) -> str:
         profile = self._active_profile()
@@ -350,15 +642,22 @@ class TelegramBridgeService:
             raise RuntimeError(f"telegram_api_error:{str(body)[:220]}")
         return body
 
-    def _send_text(self, chat_id: int, text: str) -> None:
-        for chunk in self._chunk_text(text, limit=3500):
+    def _send_text(self, chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
+        chunks = self._chunk_text(text, limit=3500)
+        for idx, chunk in enumerate(chunks):
             try:
+                params: Dict[str, Any] = {
+                    "chat_id": int(chat_id),
+                    "text": chunk,
+                }
+                if idx == 0 and isinstance(reply_markup, dict) and reply_markup:
+                    try:
+                        params["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+                    except Exception:
+                        pass
                 self._tg_request(
                     "sendMessage",
-                    params={
-                        "chat_id": int(chat_id),
-                        "text": chunk,
-                    },
+                    params=params,
                     timeout_sec=15.0,
                     http_method="POST",
                 )
@@ -1081,11 +1380,21 @@ class TelegramBridgeService:
             session = db.query(SimulationSession).get(int(session_id))
             if session is None:
                 return f"Session #{int(session_id)} not found."
+            is_live_mt5_exec = False
+            try:
+                is_live_mt5_exec = bool(sim_routes._is_live_mt5_execution_enabled(session))
+            except Exception:
+                is_live_mt5_exec = False
             _provider_cfg, perms_cfg, _tool_cfg = self._resolve_provider_and_permissions(int(session_id))
             approved_perms = dict(perms_cfg if isinstance(perms_cfg, dict) else {})
             approved_perms["can_place_trades"] = True
             approved_perms["can_close_trades"] = True
             approved_perms["requires_user_confirm_for_trade"] = False
+            args_for_exec = dict(args) if isinstance(args, dict) else {}
+            if is_live_mt5_exec and tool in {"place_trade", "close_trade"}:
+                phrase = str(getattr(sim_routes, "_LIVE_CONFIRMATION_PHRASE", "CONFIRM_LIVE_ORDER"))
+                args_for_exec["confirm_live_order"] = True
+                args_for_exec["live_confirmation_phrase"] = phrase
             # Keep approval path decoupled from private context builders.
             # Guardrails for place/close trade rely on session + policy; this minimal
             # context is sufficient and stable across internal refactors.
@@ -1104,7 +1413,7 @@ class TelegramBridgeService:
                 permissions=approved_perms,
                 context_snapshot=ctx,
                 tool_name=str(tool),
-                args=dict(args),
+                args=args_for_exec,
                 atomic=False,
             )
             if bool(res.get("ok")):
@@ -1352,6 +1661,8 @@ class TelegramBridgeService:
             ("htf_fvg_liquidity_reclaim_v2", "liquidity"),
             ("orb_ny_15m_imbalance", "orb"),
             ("trendilo_confirmation_v1", "trendilo"),
+            ("advanced_trendilo_confirmation_v1", "advanced_trendilo"),
+            ("trendilo_lsma_confirmation_v1", "trendilo_lsma"),
         ]
 
     def _format_strategy_help(self) -> str:
@@ -1393,6 +1704,17 @@ class TelegramBridgeService:
                     "trendilo_strategy",
                     "trendilo_v1",
                     "trendilo_confirmation",
+                    "advanced_trendilo",
+                    "advanced_trendilo_strategy",
+                    "advanced_trendilo_v1",
+                    "trendilo_advanced",
+                    "advanced_trendilo_confirmation",
+                    "trendilo_lsma",
+                    "trendilo_lsma_strategy",
+                    "trendilo_lsma_v1",
+                    "lsma",
+                    "lsma_trendilo",
+                    "trendilo_lsma_confirmation",
                 }
             )
             if raw and raw not in allowed_raw:
@@ -1624,6 +1946,521 @@ class TelegramBridgeService:
         finally:
             db.close()
 
+    @staticmethod
+    def _extract_trailing_session_arg(tokens: List[str]) -> Tuple[Optional[int], List[str]]:
+        if not tokens:
+            return None, tokens
+        tail = str(tokens[-1]).strip()
+        if not tail.isdigit():
+            return None, tokens
+        try:
+            return int(tail), tokens[:-1]
+        except Exception:
+            return None, tokens
+
+    def _active_scan_strategy(self, session_id: int) -> str:
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            _provider, _perms, cfg = self._resolve_provider_and_permissions(int(session_id))
+            profile = sim_routes._normalize_agent_strategy_profile(
+                (cfg if isinstance(cfg, dict) else {}).get("agent_strategy_profile")
+            )
+        except Exception:
+            profile = "classic_htf_fvg"
+        mapping = {
+            "classic_htf_fvg": "mtf",
+            "htf_fvg_liquidity_reclaim_v2": "htf_reclaim",
+            "orb_ny_15m_imbalance": "orb",
+            "trendilo_confirmation_v1": "trendilo",
+            "advanced_trendilo_confirmation_v1": "advanced_trendilo",
+            "trendilo_lsma_confirmation_v1": "trendilo_lsma",
+        }
+        return str(mapping.get(str(profile), "mtf"))
+
+    def _create_workbench_session_core(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        mode: str = "live",
+        source: str = "mt5",
+        initial_balance: float = 10000.0,
+    ) -> Dict[str, Any]:
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper()
+        md = str(mode or "live").strip().lower()
+        src = str(source or "mt5").strip().lower()
+        try:
+            bal = float(initial_balance)
+        except Exception:
+            bal = 10000.0
+        if not sym or not tf:
+            raise ValueError("invalid_symbol_or_timeframe")
+        if md not in {"live", "replay"}:
+            raise ValueError("invalid_mode")
+        if src not in {"mt5", "databento"}:
+            src = "mt5"
+        bal = max(100.0, min(10_000_000.0, float(bal)))
+
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            cost_model = {
+                "enabled": True,
+                "spread": 0.30,
+                "tc_rate": 0.0005,
+                "spread_source": "manual",
+            }
+            cfg: Dict[str, Any] = {"cost_model": cost_model}
+            allow_empty_replay = False
+            if md == "live":
+                allow_empty_replay = True
+                cfg["live_control"] = {
+                    "enabled": True,
+                    "source": str(src),
+                    "backend_native": bool(src == "mt5"),
+                    # Default new Telegram sessions to paper execution.
+                    # Users can explicitly switch to live_mt5 later.
+                    "use_active_account": bool(src == "mt5"),
+                    "execution_mode": "paper",
+                    "kill_switch_enabled": False,
+                    "max_risk_per_trade_usd": 25.0,
+                    "max_lot_per_trade": 5.0,
+                    "require_confirmation_for_live_order": True,
+                }
+            req = sim_routes.CreateSessionRequest(
+                strategy_id="_workbench",
+                symbol=str(sym),
+                timeframe=str(tf),
+                mode=str(md),
+                data_file=None,
+                initial_balance=float(bal),
+                config=cfg,
+                allow_empty_replay=bool(allow_empty_replay),
+            )
+            out = sim_routes.create_session(req=req, db=db)
+            if not isinstance(out, dict) or out.get("id") is None:
+                raise RuntimeError("invalid_backend_response")
+            return out
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _create_workbench_session(
+        self,
+        *,
+        chat_id: int,
+        symbol: str,
+        timeframe: str,
+        mode: str = "live",
+        source: str = "mt5",
+        initial_balance: float = 10000.0,
+    ) -> str:
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper()
+        md = str(mode or "live").strip().lower()
+        try:
+            out = self._create_workbench_session_core(
+                symbol=sym,
+                timeframe=tf,
+                mode=md,
+                source=source,
+                initial_balance=float(initial_balance),
+            )
+            sid = int(out.get("id"))
+            self._set_default_session(int(chat_id), int(sid))
+            return (
+                f"Session created: #{sid}\n"
+                f"Symbol/TF: {str(out.get('symbol') or sym).upper()} {str(out.get('timeframe') or tf).upper()}\n"
+                f"Mode: {str(out.get('mode') or md).lower()} | Balance: {float(out.get('initial_balance') or initial_balance):.2f}\n"
+                f"Total bars: {int(out.get('total_bars') or 0)}\n"
+                f"Default session set to #{sid}."
+            )
+        except ValueError:
+            return "Usage: /newsession <symbol> <timeframe> [live|replay] [mt5|databento] [balance]"
+        except HTTPException as exc:
+            return f"Session creation failed: {str(exc.detail)[:220]}"
+        except Exception as exc:
+            return f"Session creation failed: {type(exc).__name__}: {str(exc)[:180]}"
+
+    def _run_strategy_screener(
+        self,
+        *,
+        chat_id: Optional[int] = None,
+        session_id: int,
+        strategy: str,
+        universe: str,
+        universe_limit: int,
+        timeframe: str,
+        execution_timeframe: str,
+        max_results: int = 20,
+    ) -> str:
+        sid = int(session_id)
+        strategy_in = str(strategy or "").strip().lower() or "mtf"
+        strategy_alias = {
+            "1": "mtf",
+            "strategy1": "mtf",
+            "classic": "mtf",
+            "mtf": "mtf",
+            "2": "htf_reclaim",
+            "strategy2": "htf_reclaim",
+            "reclaim": "htf_reclaim",
+            "htf_reclaim": "htf_reclaim",
+            "liquidity": "htf_reclaim",
+            "3": "orb",
+            "strategy3": "orb",
+            "orb": "orb",
+            "4": "trendilo",
+            "strategy4": "trendilo",
+            "trendilo": "trendilo",
+            "5": "advanced_trendilo",
+            "strategy5": "advanced_trendilo",
+            "advanced_trendilo": "advanced_trendilo",
+            "advanced_trendilo_strategy": "advanced_trendilo",
+            "trendilo_advanced": "advanced_trendilo",
+            "6": "trendilo_lsma",
+            "strategy6": "trendilo_lsma",
+            "trendilo_lsma": "trendilo_lsma",
+            "trendilo_lsma_strategy": "trendilo_lsma",
+            "lsma": "trendilo_lsma",
+            "lsma_trendilo": "trendilo_lsma",
+        }
+        strategy_key = str(strategy_alias.get(strategy_in, "mtf"))
+        universe_key = str(universe or "market_mixed_top").strip().lower() or "market_mixed_top"
+        tf_scan = str(timeframe or "M15").strip().upper() or "M15"
+        tf_exec = str(execution_timeframe or tf_scan).strip().upper() or tf_scan
+        limit = int(max(5, min(200, int(universe_limit or 80))))
+        max_rows = int(max(1, min(50, int(max_results or 20))))
+
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            session = db.query(SimulationSession).get(int(sid))
+            if session is None:
+                return f"Session #{int(sid)} not found."
+            if str(session.strategy_id or "") != "_workbench":
+                return f"Session #{int(sid)} is not a Workbench session."
+            try:
+                ctx = sim_routes._agent_default_context(session=session, db=db)
+            except Exception:
+                ctx = {}
+            cfg = sim_routes._agent_effective_tool_config(session=session, db=db)
+            payload = {
+                "strategy": str(strategy_key),
+                "source": "mt5",
+                "universe": str(universe_key),
+                "universe_limit": int(limit),
+                "timeframe": str(tf_scan),
+                "execution_timeframe": str(tf_exec),
+                "summary_only": True,
+                "include_non_tradeable": False,
+                "max_results": int(max_rows),
+            }
+            data = sim_routes._agent_scan_strategy_tradeable(
+                session=session,
+                db=db,
+                context_snapshot=ctx if isinstance(ctx, dict) else {},
+                payload=payload,
+                effective_cfg=cfg if isinstance(cfg, dict) else {},
+            )
+            if not isinstance(data, dict):
+                return "Screener failed: invalid backend response."
+            opportunities = data.get("opportunities") if isinstance(data.get("opportunities"), list) else []
+            if chat_id is not None:
+                try:
+                    with self._lock:
+                        self._last_screener_scan_by_chat_session[(int(chat_id), int(sid))] = {
+                            "strategy": str(strategy_key),
+                            "scan_tf": str(tf_scan),
+                            "exec_tf": str(tf_exec),
+                            "opportunities": [dict(r) for r in opportunities if isinstance(r, dict)],
+                            "generated_at": self._now_iso(),
+                        }
+                except Exception:
+                    pass
+            out = [
+                (
+                    f"Screener | strategy={strategy_key} | tf={tf_scan} | exec={tf_exec}\n"
+                    f"Universe={str(data.get('universe_resolved') or universe_key)}({int(data.get('universe_symbol_count') or 0)}) "
+                    f"scanned={int(data.get('symbols_scanned') or 0)} ok={int(data.get('ok_count') or 0)} "
+                    f"err={int(data.get('error_count') or 0)} tradeable={int(data.get('tradeable_count') or 0)} "
+                    f"elapsed={int(data.get('elapsed_ms') or 0)}ms"
+                )
+            ]
+            if not opportunities:
+                out.append("No tradeable symbols found in this scan.")
+                return "\n".join(out)
+            out.append("Top tradeable:")
+            for i, row in enumerate(opportunities[:max_rows], 1):
+                if not isinstance(row, dict):
+                    continue
+                args = row.get("schedule_trade_entry_args") if isinstance(row.get("schedule_trade_entry_args"), dict) else {}
+                out.append(
+                    f"{i}) {str(row.get('symbol') or '').upper()} {str(row.get('direction') or '').upper()} "
+                    f"conf={float(row.get('confidence') or 0.0):.1f} rr={float(row.get('rr') or 0.0):.2f} "
+                    f"entry={args.get('entry_ref', row.get('entry_ref'))} sl={args.get('stop_loss', row.get('stop_loss'))} "
+                    f"tp={args.get('take_profit', row.get('take_profit'))} lot={args.get('lot_size', row.get('lot_size'))}"
+                )
+            out.append("To schedule one: /ask schedule symbol <SYMBOL> using screener args.")
+            return "\n".join(out)
+        except Exception as exc:
+            return f"Screener failed: {type(exc).__name__}: {str(exc)[:180]}"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _strategy_key_to_profile_alias(strategy_key: str) -> str:
+        sk = str(strategy_key or "").strip().lower()
+        mapping = {
+            "mtf": "classic",
+            "htf_reclaim": "liquidity",
+            "orb": "orb",
+            "trendilo": "trendilo",
+            "advanced_trendilo": "advanced_trendilo",
+            "trendilo_lsma": "trendilo_lsma",
+        }
+        return str(mapping.get(sk, "classic"))
+
+    @staticmethod
+    def _premade_analysis_prompt(strategy_key: str) -> str:
+        sk = str(strategy_key or "").strip().lower()
+        if sk == "trendilo":
+            return (
+                "Run tools now. Validate Trendilo gates for the active session symbol/timeframe. "
+                "Output only: TRADEABLE_TODAY or NOT_TRADEABLE_TODAY, gate audit, and exact "
+                "schedule_trade_entry args if tradeable. Do NOT execute any trade."
+            )
+        if sk == "advanced_trendilo":
+            return (
+                "Run tools now. Validate Advanced Trendilo gates for the active session symbol/timeframe. "
+                "Output only: TRADEABLE_TODAY or NOT_TRADEABLE_TODAY, gate audit including persistence/edge/ADX-rising/DI-spread, "
+                "and exact schedule_trade_entry args if tradeable. Do NOT execute any trade."
+            )
+        if sk == "trendilo_lsma":
+            return (
+                "Run tools now. Validate Trendilo LSMA gates for the active session symbol/timeframe. "
+                "Use Pine-parity LSMA+HMA combine direction (green=long, red=short, yellow=neutral). "
+                "Output only: TRADEABLE_TODAY or NOT_TRADEABLE_TODAY, gate audit, and exact schedule_trade_entry args if tradeable. "
+                "Do NOT execute any trade."
+            )
+        if sk == "orb":
+            return (
+                "Run ORB analysis for active session symbol/timeframe and decide if today is tradeable. "
+                "Output gate audit, tradeability verdict, and exact schedule_trade_entry args if valid. "
+                "Do NOT execute any trade."
+            )
+        if sk == "htf_reclaim":
+            return (
+                "Run HTF FVG + Liquidity Reclaim analysis for active session symbol/timeframe. "
+                "Return gate audit, watch/block/ready decision, and exact schedule_trade_entry args if valid. "
+                "Do NOT execute any trade."
+            )
+        return (
+            "Run MTF analysis for active session symbol/timeframe. "
+            "Return setup quality, tradeability verdict, and exact schedule_trade_entry args if valid. "
+            "Do NOT execute any trade."
+        )
+
+    def _execute_callback_action(self, chat_id: int, action: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
+        atype = str((action or {}).get("type") or "").strip().lower()
+        if atype == "noop":
+            return str((action or {}).get("text") or "OK"), None
+
+        if atype == "use_session":
+            sid = int((action or {}).get("session_id") or 0)
+            if sid <= 0:
+                return "Invalid session.", None
+            db = SessionLocal()
+            try:
+                row = db.query(SimulationSession).get(int(sid))
+                if row is None:
+                    return f"Session #{sid} not found.", None
+                if str(row.strategy_id or "") != "_workbench":
+                    return f"Session #{sid} is not a Workbench session.", None
+                self._set_default_session(int(chat_id), int(sid))
+                return f"Default session set to #{sid} ({str(row.symbol or '').upper()} {str(row.timeframe or '').upper()}).", self._build_session_inline_keyboard(int(chat_id), int(sid))
+            finally:
+                db.close()
+
+        if atype == "session_status":
+            sid = int((action or {}).get("session_id") or 0)
+            return self._format_status(int(sid)), self._build_session_inline_keyboard(int(chat_id), int(sid))
+
+        if atype == "session_runtime":
+            sid = int((action or {}).get("session_id") or 0)
+            return self._format_runtime(int(sid)), self._build_session_inline_keyboard(int(chat_id), int(sid))
+
+        if atype == "session_triggers":
+            sid = int((action or {}).get("session_id") or 0)
+            return self._format_triggers(int(sid)), self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+
+        if atype == "session_screener":
+            sid = int((action or {}).get("session_id") or 0)
+            msg = self._run_strategy_screener(
+                chat_id=int(chat_id),
+                session_id=int(sid),
+                strategy=self._active_scan_strategy(int(sid)),
+                universe="market_mixed_top",
+                universe_limit=80,
+                timeframe="M15",
+                execution_timeframe="M15",
+                max_results=20,
+            )
+            return msg, self._build_screener_inline_keyboard(int(chat_id), int(sid))
+
+        if atype == "pending_approve":
+            pid = int((action or {}).get("pending_id") or 0)
+            return self._execute_pending_approval(int(chat_id), int(pid)), self._build_pending_inline_keyboard(int(chat_id))
+
+        if atype == "pending_cancel":
+            pid = int((action or {}).get("pending_id") or 0)
+            return self._cancel_pending_approval(int(chat_id), int(pid)), self._build_pending_inline_keyboard(int(chat_id))
+
+        if atype == "trigger_cancel":
+            sid = int((action or {}).get("session_id") or 0)
+            tid = str((action or {}).get("trigger_id") or "").strip()
+            if sid <= 0 or not tid:
+                return "Invalid trigger action.", None
+            db = SessionLocal()
+            try:
+                from ..api import simulation_routes as sim_routes
+
+                out = sim_routes.workbench_agent_trigger_cancel(session_id=int(sid), trigger_id=str(tid), db=db)
+                ok = bool((out or {}).get("ok"))
+                cancelled = bool((out or {}).get("cancelled"))
+                txt = (
+                    f"Trigger {tid} cancelled."
+                    if (ok and cancelled)
+                    else (f"Trigger {tid} was not pending/cancellable." if ok else f"Trigger cancel failed: {str((out or {}).get('error') or 'unknown')[:180]}")
+                )
+                return txt, self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+            except HTTPException as exc:
+                return f"Trigger cancel failed: {str(exc.detail)[:180]}", self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+            except Exception as exc:
+                return f"Trigger cancel failed: {type(exc).__name__}: {str(exc)[:180]}", self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
+        if atype == "trigger_details":
+            sid = int((action or {}).get("session_id") or 0)
+            tid = str((action or {}).get("trigger_id") or "").strip()
+            if sid <= 0 or not tid:
+                return "Invalid trigger action.", None
+            db = SessionLocal()
+            try:
+                from ..api import simulation_routes as sim_routes
+
+                out = sim_routes.workbench_agent_triggers_list(session_id=int(sid), db=db)
+                rows = out.get("triggers") if isinstance(out, dict) else []
+                row = None
+                for r in rows if isinstance(rows, list) else []:
+                    if isinstance(r, dict) and str(r.get("id") or "").strip() == tid:
+                        row = r
+                        break
+                if not isinstance(row, dict):
+                    return f"Trigger {tid} not found.", self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+                return (
+                    f"Trigger {tid}\n"
+                    f"status={str(row.get('status') or '').upper()} dir={str(row.get('direction') or '').upper()} tf={str(row.get('timeframe') or '').upper()}\n"
+                    f"condition={row.get('condition')} @ {row.get('trigger_price')}\n"
+                    f"pre={row.get('precondition')}\n"
+                    f"cancel={row.get('cancel_rule')}\n"
+                    f"entry={row.get('entry_ref')} sl={row.get('stop_loss')} tp={row.get('take_profit')} lot={row.get('lot_size')}",
+                    self._build_triggers_inline_keyboard(int(chat_id), int(sid)),
+                )
+            except Exception as exc:
+                return f"Trigger details failed: {type(exc).__name__}: {str(exc)[:180]}", self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
+        if atype in {"screener_refresh", "screener_analyze", "screener_oneclick"}:
+            sid = int((action or {}).get("session_id") or self._resolve_default_session_id(int(chat_id)) or 0)
+            strategy = str((action or {}).get("strategy") or "mtf").strip().lower()
+            scan_tf = str((action or {}).get("scan_tf") or "M15").strip().upper()
+            exec_tf = str((action or {}).get("exec_tf") or scan_tf).strip().upper()
+            if sid <= 0:
+                return "No active Workbench session found.", None
+            if atype == "screener_refresh":
+                msg = self._run_strategy_screener(
+                    chat_id=int(chat_id),
+                    session_id=int(sid),
+                    strategy=str(strategy),
+                    universe="market_mixed_top",
+                    universe_limit=80,
+                    timeframe=str(scan_tf),
+                    execution_timeframe=str(exec_tf),
+                    max_results=20,
+                )
+                return msg, self._build_screener_inline_keyboard(int(chat_id), int(sid))
+
+            symbol = str((action or {}).get("symbol") or "").strip().upper()
+            if not symbol:
+                return "Invalid screener symbol.", None
+            # One-click flow: create session -> set strategy -> run premade analysis prompt.
+            try:
+                created = self._create_workbench_session_core(
+                    symbol=str(symbol),
+                    timeframe=str(exec_tf),
+                    mode="live",
+                    source="mt5",
+                    initial_balance=10000.0,
+                )
+                new_sid = int(created.get("id"))
+                self._set_default_session(int(chat_id), int(new_sid))
+            except Exception as exc:
+                return f"One-click failed at session creation: {type(exc).__name__}: {str(exc)[:180]}", None
+
+            profile_alias = self._strategy_key_to_profile_alias(str(strategy))
+            set_out = self._set_strategy_profile(int(new_sid), profile_alias, None)
+            if "failed" in str(set_out).lower():
+                return f"One-click failed at strategy set: {set_out}", self._build_session_inline_keyboard(int(chat_id), int(new_sid))
+
+            prompt = self._premade_analysis_prompt(str(strategy))
+            if atype == "screener_analyze":
+                prompt = (
+                    f"Symbol selected from screener: {symbol}. "
+                    + prompt
+                )
+            reply = self._run_agent_chat(int(chat_id), int(new_sid), prompt)
+            return reply, self._build_pending_inline_keyboard(int(chat_id)) or self._build_session_inline_keyboard(int(chat_id), int(new_sid))
+
+        if atype == "screener_page":
+            sid = int((action or {}).get("session_id") or self._resolve_default_session_id(int(chat_id)) or 0)
+            if sid <= 0:
+                return "No active Workbench session found.", None
+            try:
+                page_idx = int((action or {}).get("page") or 0)
+            except Exception:
+                page_idx = 0
+            key = (int(chat_id), int(sid))
+            with self._lock:
+                scan = self._last_screener_scan_by_chat_session.get(key)
+            if not isinstance(scan, dict):
+                return "Screener results expired. Run /screener again.", None
+            opportunities = scan.get("opportunities") if isinstance(scan.get("opportunities"), list) else []
+            total = int(len(opportunities))
+            page_size = int(self._screener_page_size())
+            total_pages = max(1, int(math.ceil(float(total) / float(page_size)))) if total > 0 else 1
+            page_idx = int(max(0, min(total_pages - 1, int(page_idx))))
+            text = f"Screener page {int(page_idx + 1)}/{int(total_pages)} ({int(total)} symbols)"
+            return text, self._build_screener_inline_keyboard(int(chat_id), int(sid), page=page_idx)
+
+        return "Unsupported action.", None
+
     def _handle_text(self, chat_id: int, text: str) -> str:
         raw = str(text or "").strip()
         if not raw:
@@ -1642,10 +2479,22 @@ class TelegramBridgeService:
                 "- Purpose: Show active Telegram bot profile (system-wide) and env resolution order.\n"
                 "- Params: none\n"
                 "- Example: /botprofile\n\n"
+                "/menu\n"
+                "- Purpose: Show quick-action Telegram buttons.\n"
+                "- Params: none\n"
+                "- Example: /menu\n\n"
+                "/hidekeyboard\n"
+                "- Purpose: Hide Telegram quick-action buttons.\n"
+                "- Params: none\n"
+                "- Example: /hidekeyboard\n\n"
                 "/latest\n"
                 "- Purpose: Show latest active Workbench session.\n"
                 "- Params: none\n"
                 "- Example: /latest\n\n"
+                "/newsession <symbol> <timeframe> [live|replay] [mt5|databento] [balance]\n"
+                "- Purpose: Create a new Workbench session from Telegram and set it as default.\n"
+                "- Params: symbol/timeframe required.\n"
+                "- Example: /newsession XAUUSD M15 live mt5 10000\n\n"
                 "/use <session_id>\n"
                 "- Purpose: Set default session for all commands.\n"
                 "- Params: session_id (required)\n"
@@ -1690,6 +2539,10 @@ class TelegramBridgeService:
                 "- Purpose: Choose tool-selection policy (autonomous=LLM decides, guided=intent-aware prune, minimal=core tools only).\n"
                 "- Params: optional mode, optional session_id\n"
                 "- Example: /toolselect guided\n\n"
+                "/screener [strategy] [universe] [limit] [scan_tf] [exec_tf] [session_id]\n"
+                "- Purpose: Run deterministic universal strategy screener (no LLM wait).\n"
+                "- Params: optional; defaults to active strategy, market_mixed_top, 80, M15, M15.\n"
+                "- Example: /screener trendilo market 80 M15 M5\n\n"
                 "/convo list\n"
                 "- Purpose: List available Telegram conversation slots for current session.\n"
                 "- Params: none\n"
@@ -1724,8 +2577,34 @@ class TelegramBridgeService:
         if cmd_l in {"/botprofile", "/bot"}:
             return self._format_botprofile()
 
+        if cmd_l in {"/menu", "/keyboard", "/showkeyboard"}:
+            return "Quick-action keyboard enabled."
+
+        if cmd_l in {"/hidekeyboard", "/hidekb"}:
+            return "Quick-action keyboard hidden."
+
         if cmd_l in {"/latest", "/latestsession"}:
             return self._format_latest_session(chat_id)
+
+        if cmd_l in {"/newsession", "/new"}:
+            if len(args) < 2:
+                return "Usage: /newsession <symbol> <timeframe> [live|replay] [mt5|databento] [balance]"
+            symbol = str(args[0] or "").strip().upper()
+            timeframe = str(args[1] or "").strip().upper()
+            mode = str(args[2] or "live").strip().lower() if len(args) >= 3 else "live"
+            source = str(args[3] or "mt5").strip().lower() if len(args) >= 4 else "mt5"
+            try:
+                balance = float(args[4]) if len(args) >= 5 else 10000.0
+            except Exception:
+                balance = 10000.0
+            return self._create_workbench_session(
+                chat_id=int(chat_id),
+                symbol=symbol,
+                timeframe=timeframe,
+                mode=mode,
+                source=source,
+                initial_balance=float(balance),
+            )
 
         if cmd_l == "/use":
             if not args or not str(args[0]).isdigit():
@@ -1920,6 +2799,31 @@ class TelegramBridgeService:
                 target_sid = int(args[1])
             return self._set_tool_selection_mode(target_sid, mode_raw)
 
+        if cmd_l in {"/screener", "/scan"}:
+            sid_default = self._resolve_default_session_id(chat_id)
+            if sid_default is None:
+                return "No active Workbench session found. Start one in dashboard, or use /use <session_id>."
+            sid_tail, rest = self._extract_trailing_session_arg(args)
+            target_sid = int(sid_tail) if sid_tail is not None else int(sid_default)
+            strategy = str(rest[0] or "").strip().lower() if len(rest) >= 1 else self._active_scan_strategy(int(target_sid))
+            universe = str(rest[1] or "market_mixed_top").strip().lower() if len(rest) >= 2 else "market_mixed_top"
+            try:
+                universe_limit = int(rest[2]) if len(rest) >= 3 else 80
+            except Exception:
+                universe_limit = 80
+            scan_tf = str(rest[3] or "M15").strip().upper() if len(rest) >= 4 else "M15"
+            exec_tf = str(rest[4] or scan_tf).strip().upper() if len(rest) >= 5 else scan_tf
+            return self._run_strategy_screener(
+                chat_id=int(chat_id),
+                session_id=int(target_sid),
+                strategy=str(strategy),
+                universe=str(universe),
+                universe_limit=int(universe_limit),
+                timeframe=str(scan_tf),
+                execution_timeframe=str(exec_tf),
+                max_results=20,
+            )
+
         if cmd_l == "/convo":
             sid = self._resolve_default_session_id(chat_id)
             if sid is None:
@@ -1987,6 +2891,47 @@ class TelegramBridgeService:
     def _process_update(self, upd: Dict[str, Any]) -> None:
         if not isinstance(upd, dict):
             return
+        cq = upd.get("callback_query") if isinstance(upd.get("callback_query"), dict) else None
+        if cq is not None:
+            msg = cq.get("message") if isinstance(cq.get("message"), dict) else {}
+            chat = msg.get("chat") if isinstance(msg.get("chat"), dict) else {}
+            chat_id = int(chat.get("id") or 0) if chat.get("id") is not None else 0
+            if chat_id <= 0:
+                return
+            allowed = self._allowed_chat_id()
+            if allowed is not None and int(chat_id) != int(allowed):
+                logger.warning("telegram unauthorized callback chat_id=%s ignored", int(chat_id))
+                return
+            cbid = str(cq.get("id") or "").strip()
+            data = str(cq.get("data") or "").strip()
+            reply = "Unsupported callback action."
+            markup = None
+            try:
+                if data.startswith("cb:"):
+                    token = str(data.split(":", 1)[1] or "").strip()
+                    action = self._consume_callback_action(int(chat_id), token)
+                    if not isinstance(action, dict):
+                        reply = "Action expired. Run the command again."
+                    else:
+                        reply, markup = self._execute_callback_action(int(chat_id), action)
+            except Exception as exc:
+                logger.exception("telegram callback handling failed")
+                reply = f"Callback failed: {type(exc).__name__}: {str(exc)[:180]}"
+                markup = None
+            finally:
+                if cbid:
+                    try:
+                        self._tg_request(
+                            "answerCallbackQuery",
+                            params={"callback_query_id": cbid, "text": str(reply or "OK")[:120]},
+                            timeout_sec=10.0,
+                            http_method="POST",
+                        )
+                    except Exception:
+                        pass
+            self._send_text(chat_id, reply, reply_markup=markup)
+            return
+
         msg = upd.get("message") if isinstance(upd.get("message"), dict) else None
         if msg is None:
             return
@@ -2001,19 +2946,51 @@ class TelegramBridgeService:
         text = str(msg.get("text") or "").strip()
         if not text:
             return
+        parts = text.split()
+        cmd_raw = str(parts[0] if parts else "").strip()
+        cmd_norm = str(cmd_raw.split("@", 1)[0] if cmd_raw else "").strip().lower()
+        args = parts[1:] if len(parts) > 1 else []
         try:
             reply = self._handle_text(chat_id, text)
         except Exception as exc:
             logger.exception("telegram command handling failed")
             reply = f"Command failed: {type(exc).__name__}: {str(exc)[:180]}"
-        self._send_text(chat_id, reply)
+        reply_markup: Optional[Dict[str, Any]] = None
+        if cmd_norm in {"/hidekeyboard", "/hidekb"}:
+            reply_markup = {"remove_keyboard": True, "selective": False}
+            self._send_text(chat_id, reply, reply_markup=reply_markup)
+            return
+        if self._keyboard_enabled() and cmd_norm in {"/start", "/help", "/menu", "/keyboard", "/showkeyboard"}:
+            reply_markup = self._main_reply_keyboard()
+            self._send_text(chat_id, reply, reply_markup=reply_markup)
+            return
+        if cmd_norm in {"/latest", "/latestsession"}:
+            m = re.search(r"#(\d+)", str(reply))
+            if m:
+                try:
+                    reply_markup = self._build_session_inline_keyboard(int(chat_id), int(m.group(1)))
+                except Exception:
+                    reply_markup = None
+        elif cmd_norm == "/triggers":
+            sid_arg, _rest = self._extract_session_arg(args)
+            sid = int(sid_arg) if sid_arg is not None else int(self._resolve_default_session_id(int(chat_id)) or 0)
+            if sid > 0:
+                reply_markup = self._build_triggers_inline_keyboard(int(chat_id), int(sid))
+        elif cmd_norm in {"/screener", "/scan"}:
+            sid_tail, _rest = self._extract_trailing_session_arg(args)
+            sid = int(sid_tail) if sid_tail is not None else int(self._resolve_default_session_id(int(chat_id)) or 0)
+            if sid > 0:
+                reply_markup = self._build_screener_inline_keyboard(int(chat_id), int(sid))
+        elif cmd_norm == "/ask" or not cmd_norm.startswith("/"):
+            reply_markup = self._build_pending_inline_keyboard(int(chat_id))
+        self._send_text(chat_id, reply, reply_markup=reply_markup)
 
     def _poll_once(self) -> None:
         timeout = max(1.0, min(25.0, self._poll_interval_sec()))
         params = {
             "timeout": int(timeout),
             "offset": int(self._offset),
-            "allowed_updates": '["message"]',
+            "allowed_updates": '["message","callback_query"]',
         }
         body = self._tg_request("getUpdates", params=params, timeout_sec=timeout + 10.0)
         rows = body.get("result") if isinstance(body.get("result"), list) else []

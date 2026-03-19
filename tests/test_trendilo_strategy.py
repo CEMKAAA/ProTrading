@@ -7,6 +7,7 @@ import pandas as pd
 from dashboard.backend.core.strategies.base import DayContext
 from dashboard.backend.core.strategies.factory import create_strategy
 from dashboard.backend.core.strategies.trendilo_strategy import TrendiloStrategy
+from dashboard.backend.core.strategies.advanced_trendilo_strategy import AdvancedTrendiloStrategy
 
 
 def _build_df(*, bullish_spike: bool = True) -> pd.DataFrame:
@@ -40,6 +41,11 @@ def test_factory_creates_trendilo_strategy():
     assert isinstance(s, TrendiloStrategy)
 
 
+def test_factory_creates_advanced_trendilo_strategy():
+    s = create_strategy("advanced_trendilo_strategy", {})
+    assert isinstance(s, AdvancedTrendiloStrategy)
+
+
 def test_find_setup_detects_bullish_signal():
     strategy = TrendiloStrategy(
         {
@@ -65,6 +71,33 @@ def test_find_setup_detects_bullish_signal():
     assert float(setup.take_profit) > float(setup.entry_price)
 
 
+def test_advanced_trendilo_requires_persistence_when_configured():
+    strategy = AdvancedTrendiloStrategy(
+        {
+            "trend_filter_length": 120,
+            "trendilo_length": 20,
+            "trendilo_pct_lookback": 4,
+            "adx_threshold": 5.0,
+            "rr_ratio": 2.0,
+            "atr_stop_mult": 1.5,
+            "min_persistence_bars": 1000,
+            "min_edge_ratio": 0.01,
+            "require_adx_rising": False,
+            "failed_breakout_cooldown_bars": 0,
+            "min_di_spread": 0.0,
+        }
+    )
+    df = _build_df(bullish_spike=True)
+    bar = df.iloc[-1]
+    setup = strategy.find_setup(
+        bar=bar,
+        df=df,
+        day_context=DayContext(date=datetime(2026, 1, 1), bias="neutral", bias_strength=0, atr=1.0),
+        current_bar_index=len(df) - 1,
+    )
+    assert setup is None
+
+
 def test_should_close_early_on_bearish_flip_for_long():
     strategy = TrendiloStrategy(
         {
@@ -84,4 +117,3 @@ def test_should_close_early_on_bearish_flip_for_long():
         day_context=DayContext(date=datetime(2026, 1, 1), bias="neutral", bias_strength=0, atr=1.0),
     )
     assert isinstance(reason, str) and reason
-

@@ -135,6 +135,7 @@ def test_approve_uses_agent_execute_tool_with_confirm_off(monkeypatch):
     def _fake_agent_execute_tool(*, session, db, permissions, context_snapshot, tool_name, args, atomic):
         calls["tool_name"] = tool_name
         calls["permissions"] = dict(permissions or {})
+        calls["args"] = dict(args or {})
         calls["atomic"] = atomic
         return {"ok": True, "data": {"id": 999, "direction": "BUY"}}
 
@@ -150,6 +151,80 @@ def test_approve_uses_agent_execute_tool_with_confirm_off(monkeypatch):
     assert calls.get("tool_name") == "place_trade"
     assert calls.get("permissions", {}).get("requires_user_confirm_for_trade") is False
     assert calls.get("permissions", {}).get("can_place_trades") is True
+    assert calls.get("args", {}).get("confirm_live_order") in {None, False}
+    assert svc._get_pending(chat_id) == []
+
+
+def test_approve_injects_live_confirmation_fields_for_live_mt5(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    svc._set_pending(
+        chat_id,
+        [
+            {
+                "id": 1,
+                "session_id": 77,
+                "tool": "place_trade",
+                "args": {
+                    "direction": "SELL",
+                    "stop_loss": 220.0,
+                    "take_profit": 210.0,
+                    "lot_size": 0.01,
+                },
+            }
+        ],
+    )
+
+    class _FakeQuery:
+        def __init__(self, row):
+            self._row = row
+
+        def get(self, _sid):
+            return self._row
+
+    class _FakeDB:
+        def __init__(self, row):
+            self._row = row
+
+        def query(self, _model):
+            return _FakeQuery(self._row)
+
+        def close(self):
+            return None
+
+    session_row = types.SimpleNamespace(id=77, strategy_id="_workbench", symbol="ABBVM", timeframe="M15")
+    monkeypatch.setattr(tbs, "SessionLocal", lambda: _FakeDB(session_row))
+    monkeypatch.setattr(
+        svc,
+        "_resolve_provider_and_permissions",
+        lambda _sid: (
+            {"provider": "deterministic"},
+            {
+                "can_place_trades": True,
+                "can_close_trades": True,
+                "requires_user_confirm_for_trade": True,
+            },
+            {},
+        ),
+    )
+
+    from dashboard.backend.api import simulation_routes as sim_routes
+
+    calls = {}
+
+    def _fake_agent_execute_tool(*, session, db, permissions, context_snapshot, tool_name, args, atomic):
+        calls["tool_name"] = tool_name
+        calls["args"] = dict(args or {})
+        return {"ok": True, "data": {"id": 1001, "direction": "SELL"}}
+
+    monkeypatch.setattr(sim_routes, "_agent_execute_tool", _fake_agent_execute_tool)
+    monkeypatch.setattr(sim_routes, "_is_live_mt5_execution_enabled", lambda _session: True)
+
+    msg = svc._execute_pending_approval(chat_id, 1)
+    assert "Approved and executed" in msg
+    assert calls.get("tool_name") == "place_trade"
+    assert calls.get("args", {}).get("confirm_live_order") is True
+    assert calls.get("args", {}).get("live_confirmation_phrase") == "CONFIRM_LIVE_ORDER"
     assert svc._get_pending(chat_id) == []
 
 
@@ -742,6 +817,66 @@ def test_set_strategy_profile_accepts_trendilo_alias(monkeypatch):
     assert "trendilo_confirmation_v1" in out
 
 
+def test_set_strategy_profile_accepts_advanced_trendilo_alias(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    session_id = 99
+    session_row = types.SimpleNamespace(id=session_id, strategy_id="_workbench")
+    agent_row = types.SimpleNamespace(
+        simulation_session_id=session_id,
+        status="ACTIVE",
+        config_json={},
+        updated_at=None,
+    )
+
+    class _FakeQuery:
+        def __init__(self, db, model):
+            self.db = db
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            if self.model is tbs.WorkbenchAgentSessionModel:
+                return self.db.agent_row
+            return None
+
+        def get(self, _sid):
+            if self.model is tbs.SimulationSession:
+                return self.db.session_row
+            return None
+
+    class _FakeDB:
+        def __init__(self):
+            self.session_row = session_row
+            self.agent_row = agent_row
+
+        def query(self, model):
+            return _FakeQuery(self, model)
+
+        def add(self, _row):
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(tbs, "SessionLocal", lambda: _FakeDB())
+    out = svc._set_strategy_profile(session_id, "advanced_trendilo", "xauusd_m15")
+    assert "advanced_trendilo_confirmation_v1" in out
+
+
 def test_botprofile_command_outputs_active_profile(monkeypatch):
     svc = tbs.TelegramBridgeService()
     env_file = {
@@ -1025,3 +1160,274 @@ def test_provider_set_clears_stale_cross_provider_keys(monkeypatch):
     assert "openai_api_key" not in rt
     assert "api_key" not in rt
     assert rt.get("claude_base_url") == "https://api.anthropic.com"
+
+
+def test_newsession_command_routes_to_session_creator(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    seen = {}
+
+    def _fake_create_workbench_session(*, chat_id, symbol, timeframe, mode, source, initial_balance):
+        seen["chat_id"] = int(chat_id)
+        seen["symbol"] = str(symbol)
+        seen["timeframe"] = str(timeframe)
+        seen["mode"] = str(mode)
+        seen["source"] = str(source)
+        seen["initial_balance"] = float(initial_balance)
+        return "ok"
+
+    monkeypatch.setattr(svc, "_create_workbench_session", _fake_create_workbench_session)
+    out = svc._handle_text(chat_id, "/newsession XAUUSD M15 live mt5 12500")
+    assert out == "ok"
+    assert seen.get("chat_id") == chat_id
+    assert seen.get("symbol") == "XAUUSD"
+    assert seen.get("timeframe") == "M15"
+    assert seen.get("mode") == "live"
+    assert seen.get("source") == "mt5"
+    assert seen.get("initial_balance") == 12500.0
+
+
+def test_screener_command_defaults_to_active_strategy(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    seen = {}
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(svc, "_active_scan_strategy", lambda _sid: "trendilo")
+
+    def _fake_run_strategy_screener(*, chat_id=None, session_id, strategy, universe, universe_limit, timeframe, execution_timeframe, max_results):
+        seen["session_id"] = int(session_id)
+        seen["strategy"] = str(strategy)
+        seen["universe"] = str(universe)
+        seen["universe_limit"] = int(universe_limit)
+        seen["timeframe"] = str(timeframe)
+        seen["execution_timeframe"] = str(execution_timeframe)
+        seen["max_results"] = int(max_results)
+        seen["chat_id"] = int(chat_id) if chat_id is not None else None
+        return "ok"
+
+    monkeypatch.setattr(svc, "_run_strategy_screener", _fake_run_strategy_screener)
+    out = svc._handle_text(chat_id, "/screener")
+    assert out == "ok"
+    assert seen.get("session_id") == 97
+    assert seen.get("strategy") == "trendilo"
+    assert seen.get("universe") == "market_mixed_top"
+    assert seen.get("universe_limit") == 80
+    assert seen.get("timeframe") == "M15"
+    assert seen.get("execution_timeframe") == "M15"
+    assert seen.get("max_results") == 20
+    assert seen.get("chat_id") == chat_id
+
+
+def test_screener_command_accepts_trailing_session_id(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    seen = {}
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+
+    def _fake_run_strategy_screener(*, chat_id=None, session_id, strategy, universe, universe_limit, timeframe, execution_timeframe, max_results):
+        seen["session_id"] = int(session_id)
+        seen["strategy"] = str(strategy)
+        seen["universe"] = str(universe)
+        seen["universe_limit"] = int(universe_limit)
+        seen["timeframe"] = str(timeframe)
+        seen["execution_timeframe"] = str(execution_timeframe)
+        seen["chat_id"] = int(chat_id) if chat_id is not None else None
+        return "ok"
+
+    monkeypatch.setattr(svc, "_run_strategy_screener", _fake_run_strategy_screener)
+    out = svc._handle_text(chat_id, "/screener mtf market 60 M5 M1 123")
+    assert out == "ok"
+    assert seen.get("session_id") == 123
+    assert seen.get("strategy") == "mtf"
+    assert seen.get("universe") == "market"
+    assert seen.get("universe_limit") == 60
+    assert seen.get("timeframe") == "M5"
+    assert seen.get("execution_timeframe") == "M1"
+    assert seen.get("chat_id") == chat_id
+
+
+def test_screener_command_accepts_advanced_trendilo_strategy(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    seen = {}
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+
+    def _fake_run_strategy_screener(*, chat_id=None, session_id, strategy, universe, universe_limit, timeframe, execution_timeframe, max_results):
+        seen["session_id"] = int(session_id)
+        seen["strategy"] = str(strategy)
+        seen["universe"] = str(universe)
+        seen["timeframe"] = str(timeframe)
+        seen["execution_timeframe"] = str(execution_timeframe)
+        seen["chat_id"] = int(chat_id) if chat_id is not None else None
+        return "ok"
+
+    monkeypatch.setattr(svc, "_run_strategy_screener", _fake_run_strategy_screener)
+    out = svc._handle_text(chat_id, "/screener advanced_trendilo market 40 M15 M15")
+    assert out == "ok"
+    assert seen.get("session_id") == 97
+    assert seen.get("strategy") == "advanced_trendilo"
+    assert seen.get("universe") == "market"
+    assert seen.get("timeframe") == "M15"
+    assert seen.get("execution_timeframe") == "M15"
+    assert seen.get("chat_id") == chat_id
+
+
+def test_process_update_start_sends_reply_keyboard(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sent = {}
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: chat_id)
+    monkeypatch.setattr(svc, "_keyboard_enabled", lambda: True)
+
+    def _fake_send_text(cid, text, reply_markup=None):
+        sent["chat_id"] = int(cid)
+        sent["text"] = str(text)
+        sent["reply_markup"] = reply_markup
+
+    monkeypatch.setattr(svc, "_send_text", _fake_send_text)
+    svc._process_update(
+        {
+            "message": {
+                "chat": {"id": chat_id},
+                "text": "/start",
+            }
+        }
+    )
+    assert sent.get("chat_id") == chat_id
+    rm = sent.get("reply_markup")
+    assert isinstance(rm, dict)
+    assert isinstance(rm.get("keyboard"), list)
+
+
+def test_process_update_hidekeyboard_sends_remove_markup(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sent = {}
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: chat_id)
+
+    def _fake_send_text(cid, text, reply_markup=None):
+        sent["chat_id"] = int(cid)
+        sent["reply_markup"] = reply_markup
+
+    monkeypatch.setattr(svc, "_send_text", _fake_send_text)
+    svc._process_update(
+        {
+            "message": {
+                "chat": {"id": chat_id},
+                "text": "/hidekeyboard",
+            }
+        }
+    )
+    assert sent.get("chat_id") == chat_id
+    rm = sent.get("reply_markup")
+    assert isinstance(rm, dict)
+    assert rm.get("remove_keyboard") is True
+
+
+def test_process_update_callback_query_dispatches_inline_action(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sent = {}
+    seen = {}
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: chat_id)
+    monkeypatch.setattr(svc, "_consume_callback_action", lambda _chat, _tok: {"type": "noop", "text": "ok"})
+    monkeypatch.setattr(svc, "_execute_callback_action", lambda _chat, _action: ("done", None))
+
+    def _fake_send_text(cid, text, reply_markup=None):
+        sent["chat_id"] = int(cid)
+        sent["text"] = str(text)
+        sent["reply_markup"] = reply_markup
+
+    def _fake_tg_request(method, *, params=None, timeout_sec=0, http_method="GET"):
+        seen["method"] = method
+        seen["params"] = dict(params or {})
+        return {"ok": True}
+
+    monkeypatch.setattr(svc, "_send_text", _fake_send_text)
+    monkeypatch.setattr(svc, "_tg_request", _fake_tg_request)
+    svc._process_update(
+        {
+            "callback_query": {
+                "id": "cq_1",
+                "data": "cb:abc",
+                "message": {"chat": {"id": chat_id}},
+            }
+        }
+    )
+    assert seen.get("method") == "answerCallbackQuery"
+    assert sent.get("chat_id") == chat_id
+    assert sent.get("text") == "done"
+
+
+def test_process_update_screener_attaches_inline_markup(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sent = {}
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: chat_id)
+    monkeypatch.setattr(svc, "_resolve_default_session_id", lambda _chat: 97)
+    monkeypatch.setattr(svc, "_handle_text", lambda _chat, _txt: "scan_result")
+    monkeypatch.setattr(svc, "_build_screener_inline_keyboard", lambda _chat, _sid: {"inline_keyboard": [[{"text": "x", "callback_data": "cb:1"}]]})
+
+    def _fake_send_text(cid, text, reply_markup=None):
+        sent["chat_id"] = int(cid)
+        sent["text"] = str(text)
+        sent["reply_markup"] = reply_markup
+
+    monkeypatch.setattr(svc, "_send_text", _fake_send_text)
+    svc._process_update({"message": {"chat": {"id": chat_id}, "text": "/screener"}})
+    assert sent.get("chat_id") == chat_id
+    assert sent.get("text") == "scan_result"
+    rm = sent.get("reply_markup")
+    assert isinstance(rm, dict)
+    assert isinstance(rm.get("inline_keyboard"), list)
+
+
+def test_build_screener_inline_keyboard_paginates(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sid = 97
+    monkeypatch.setattr(svc, "_screener_page_size", lambda: 3)
+    with svc._lock:
+        svc._last_screener_scan_by_chat_session[(chat_id, sid)] = {
+            "strategy": "trendilo",
+            "scan_tf": "M15",
+            "exec_tf": "M15",
+            "opportunities": [
+                {"symbol": f"SYM{i}", "direction": "BUY", "confidence": 80.0 + i}
+                for i in range(1, 9)
+            ],
+            "generated_at": "2026-03-16T00:00:00+00:00",
+        }
+    kb = svc._build_screener_inline_keyboard(chat_id, sid, page=0)
+    assert isinstance(kb, dict)
+    rows = kb.get("inline_keyboard")
+    assert isinstance(rows, list) and rows
+    flat = [str(btn.get("text") or "") for row in rows for btn in (row if isinstance(row, list) else []) if isinstance(btn, dict)]
+    assert any("Page 1/3" in t for t in flat)
+    assert any("Next" == t for t in flat)
+
+
+def test_execute_callback_action_screener_page(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    chat_id = 7119946313
+    sid = 97
+    monkeypatch.setattr(svc, "_screener_page_size", lambda: 4)
+    with svc._lock:
+        svc._last_screener_scan_by_chat_session[(chat_id, sid)] = {
+            "strategy": "mtf",
+            "scan_tf": "H4",
+            "exec_tf": "M15",
+            "opportunities": [
+                {"symbol": f"SYM{i}", "direction": "SELL", "confidence": 90.0 - i}
+                for i in range(1, 10)
+            ],
+            "generated_at": "2026-03-16T00:00:00+00:00",
+        }
+    txt, rm = svc._execute_callback_action(chat_id, {"type": "screener_page", "session_id": sid, "page": 1})
+    assert "Screener page 2/3" in str(txt)
+    assert isinstance(rm, dict)
+    rows = rm.get("inline_keyboard")
+    assert isinstance(rows, list) and rows
+    flat = [str(btn.get("text") or "") for row in rows for btn in (row if isinstance(row, list) else []) if isinstance(btn, dict)]
+    assert any("Prev" == t for t in flat)
+    assert any("Next" == t for t in flat)

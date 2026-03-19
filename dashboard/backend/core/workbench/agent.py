@@ -35,6 +35,9 @@ _ALLOWED_TOOL_NAMES = {
     "run_htf_fvg_liquidity_reclaim_analysis",
     "run_orb_analysis",
     "run_trendilo_analysis",
+    "run_advanced_trendilo_analysis",
+    "run_trendilo_lsma_analysis",
+    "run_alpha_wave_analysis",
     "scan_trendilo_fields",
     "scan_trendilo_tradeable",
     "scan_strategy_tradeable",
@@ -758,6 +761,76 @@ class WorkbenchAgent:
                 },
             },
             {
+                "name": "run_advanced_trendilo_analysis",
+                "description": "Parent strategy tool: Advanced Trendilo with anti-whipsaw filters (hysteresis, persistence, edge ratio, ADX-rising, DI spread, cooldown) plus ATR-based SL / RR TP planning.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "execution_timeframe": {"type": "string", "description": "Optional execution timeframe (M1/M5/M15/M30/H1)."},
+                        "preset": {"type": "string", "description": "Optional preset override: conservative/default/aggressive/xauusd_m15/nas100_m15/us500_m15."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional target R multiple override."},
+                        "adx_threshold": {"type": "number", "description": "Optional stoch-ADX(vwma) confirmation threshold."},
+                        "require_adx_rising": {"type": "boolean", "description": "Require ADX rising over recent bars when true."},
+                        "min_di_spread": {"type": "number", "description": "Optional minimum DI spread confirmation."},
+                        "min_persistence_bars": {"type": "integer", "description": "Minimum bars Trendilo must persist outside envelope."},
+                        "min_edge_ratio": {"type": "number", "description": "Minimum breakout edge ratio above envelope."},
+                        "failed_breakout_cooldown_bars": {"type": "integer", "description": "Cooldown bars after failed breakout."},
+                        "atr_stop_mult": {"type": "number", "description": "Optional ATR stop multiplier override."},
+                        "use_di_direction": {"type": "boolean", "description": "Require DI direction confirmation when true."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "run_trendilo_lsma_analysis",
+                "description": "Parent strategy tool: Trendilo LSMA (Pine parity). src=EMA(HL2,smooth), LSMA=LINREG(src,len,offset), HMA(src,hlen), combine=(LSMA+HMA)/2, signal=combine-combine[1].",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "execution_timeframe": {"type": "string", "description": "Optional execution timeframe (M1/M5/M15/M30/H1)."},
+                        "preset": {"type": "string", "description": "Optional preset override: conservative/default/aggressive/xauusd_m15/nas100_m15/us500_m15."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional target R multiple override."},
+                        "atr_stop_mult": {"type": "number", "description": "Optional ATR stop multiplier override."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "run_alpha_wave_analysis",
+                "description": "Parent strategy tool: Alpha Wave DaviddTech (Pine parity core logic) with baseline + wave/quantum confirmations, momentum-density filter, and trailing-stop-based exits.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Optional symbol override (defaults to session symbol)."},
+                        "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
+                        "execution_timeframe": {"type": "string", "description": "Optional execution timeframe (M1/M5/M15/M30/H1)."},
+                        "preset": {"type": "string", "description": "Optional preset override: conservative/default/aggressive/xauusd_m15/nas100_m15/us500_m15."},
+                        "history_days": {"type": "number", "description": "Optional live-history window in days."},
+                        "risk_percent": {"type": "number", "description": "Optional risk percent override for sizing."},
+                        "rr_target": {"type": "number", "description": "Optional target R multiple override."},
+                        "atr_stop_mult": {"type": "number", "description": "Optional ATR stop multiplier override."},
+                        "exit_type": {"type": "string", "description": "Optional exit method override: Stop Only, Inversed Channel, Combined."},
+                        "trade_style": {"type": "string", "description": "Optional trading style override: Exits Only, Scalper, Balanced, Strict."},
+                        "entry_filter": {"type": "integer", "description": "Optional minimum bars between entries."},
+                        "exit_filter": {"type": "integer", "description": "Optional minimum bars between exits."},
+                        "require_all_aligned": {"type": "boolean", "description": "Require all baseline/wave/quantum components aligned."},
+                        "vol_threshold": {"type": "number", "description": "Optional momentum-density threshold override."},
+                        "expires_sec": {"type": "integer", "description": "Optional trigger expiry override in seconds."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "scan_trendilo_fields",
                 "description": "Scan Trendilo field state across symbols and report green/red/neutral field structure. Supports manual symbol lists and built-in market universes (stocks/crypto/mixed) with automatic MT5 broker-symbol resolution.",
                 "parameters": {
@@ -832,11 +905,11 @@ class WorkbenchAgent:
             },
             {
                 "name": "scan_strategy_tradeable",
-                "description": "Deterministic multi-symbol screener for parent strategies. Supports strategy=mtf, htf_reclaim, orb, or trendilo and returns currently tradeable instruments with schedule-ready args.",
+                "description": "Deterministic multi-symbol screener for parent strategies. Supports strategy=mtf, htf_reclaim, orb, trendilo, advanced_trendilo, trendilo_lsma, or alpha_wave and returns currently tradeable instruments with schedule-ready args.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "strategy": {"type": "string", "description": "Required strategy selector: mtf, htf_reclaim, orb, trendilo."},
+                        "strategy": {"type": "string", "description": "Required strategy selector: mtf, htf_reclaim, orb, trendilo, advanced_trendilo, trendilo_lsma, alpha_wave."},
                         "symbols": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -850,7 +923,7 @@ class WorkbenchAgent:
                         "universe_limit": {"type": "integer", "description": "Optional cap for universe symbols (1-200)."},
                         "scan_market": {"type": "boolean", "description": "Shortcut for market_mixed_top universe scan."},
                         "source": {"type": "string", "description": "Optional data source override: mt5 or databento."},
-                        "timeframe": {"type": "string", "description": "Optional timeframe override (execution timeframe for mtf/htf_reclaim/trendilo)."},
+                        "timeframe": {"type": "string", "description": "Optional timeframe override (execution timeframe for mtf/htf_reclaim/trendilo/advanced_trendilo)."},
                         "execution_timeframe": {"type": "string", "description": "Alias for timeframe."},
                         "history_days": {"type": "number", "description": "Optional live-history window in days."},
                         "preset": {"type": "string", "description": "Optional strategy preset override."},
@@ -1463,6 +1536,9 @@ class WorkbenchAgent:
             "- For the separate HTF FVG + Liquidity Reclaim strategy, call run_htf_fvg_liquidity_reclaim_analysis first.\n"
             "- For NY Open ORB workflow, call run_orb_analysis first and report TRADEABLE_TODAY vs NOT_TRADEABLE_TODAY with strict rule evidence.\n"
             "- For Trendilo workflow, call run_trendilo_analysis first and report TRADEABLE_TODAY vs NOT_TRADEABLE_TODAY with confirmation stack evidence (Trendilo + ADX/DI + T3/ALMA).\n"
+            "- For Advanced Trendilo workflow, call run_advanced_trendilo_analysis first and include persistence/edge/ADX-rising/DI-spread gates in the verdict.\n"
+            "- For Trendilo LSMA workflow, call run_trendilo_lsma_analysis first and use Pine-parity direction from combine-combine[1] (green long, red short, yellow neutral).\n"
+            "- For Alpha Wave workflow, call run_alpha_wave_analysis first and use Pine-parity baseline/wave/quantum/momentum/stop-state evidence.\n"
             "- If a parent strategy returns NO_TRIGGER, zero HTF candidates, or sparse negative output, verify before concluding: run raw scan_tool checks on HTF FVG structure and execution-timeframe liquidity, then explain whether the structure truly does not exist or was filtered out by strategy rules.\n"
             "- For conditional entries, use schedule_trade_entry with precondition, condition, and cancel_rule.\n"
             "- Always include stop_loss and take_profit with every trade action.\n\n"
@@ -1924,12 +2000,56 @@ class WorkbenchAgent:
                 msg,
                 [
                     "trendilo",
+                    "advanced trendilo",
+                    "trendilo advanced",
+                    "trendilo lsma",
+                    "lsma",
                     "alma",
                     "t3",
                     "adx",
                     "di",
                     "trendilo strategy",
                     "trendilo analysis",
+                    "alpha wave",
+                    "alphawave",
+                    "daviddtech",
+                ],
+            )
+        )
+        lsma_request = (
+            can_scan
+            and _contains_any(
+                msg,
+                [
+                    "trendilo lsma",
+                    "lsma trendilo",
+                    "lsma",
+                ],
+            )
+        )
+        advanced_trendilo_request = (
+            can_scan
+            and _contains_any(
+                msg,
+                [
+                    "advanced trendilo",
+                    "trendilo advanced",
+                    "anti-whipsaw trendilo",
+                    "trendilo persistence",
+                    "trendilo hysteresis",
+                ],
+            )
+        )
+        alpha_wave_request = (
+            can_scan
+            and _contains_any(
+                msg,
+                [
+                    "alpha wave",
+                    "alphawave",
+                    "daviddtech",
+                    "alpha wave strategy",
+                    "alpha wave analysis",
                 ],
             )
         )
@@ -2005,6 +2125,13 @@ class WorkbenchAgent:
                     "orb",
                     "opening range",
                     "trendilo",
+                    "advanced trendilo",
+                    "trendilo advanced",
+                    "trendilo lsma",
+                    "lsma",
+                    "alpha wave",
+                    "alphawave",
+                    "daviddtech",
                 ],
             )
         )
@@ -2043,10 +2170,22 @@ class WorkbenchAgent:
                     trendilo_scan_universe_limit = None
         if can_scan and strategy_profile == "trendilo_confirmation_v1" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "trendilo", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
             trendilo_request = True
+        if can_scan and strategy_profile == "advanced_trendilo_confirmation_v1" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "trendilo", "advanced", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
+            advanced_trendilo_request = True
+            trendilo_request = True
+        if can_scan and strategy_profile == "trendilo_lsma_confirmation_v1" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "trendilo", "lsma", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
+            lsma_request = True
+            trendilo_request = True
+        if can_scan and strategy_profile == "alpha_wave_confirmation_v1" and _contains_any(msg, ["strategy", "setup", "analysis", "scan", "plan", "trade plan", "run active strategy", "active strategy", "alpha wave", "alphawave", "daviddtech", "tradeable", "today tradeable", "is today tradable", "is today tradeable"]):
+            alpha_wave_request = True
+            trendilo_request = True
         classic_parent_allowed = can_scan and _tool_allowed("run_mtf_analysis")
         liquidity_parent_allowed = can_scan and _tool_allowed("run_htf_fvg_liquidity_reclaim_analysis")
         orb_parent_allowed = can_scan and _tool_allowed("run_orb_analysis")
         trendilo_parent_allowed = can_scan and _tool_allowed("run_trendilo_analysis")
+        advanced_trendilo_parent_allowed = can_scan and _tool_allowed("run_advanced_trendilo_analysis")
+        lsma_parent_allowed = can_scan and _tool_allowed("run_trendilo_lsma_analysis")
+        alpha_wave_parent_allowed = can_scan and _tool_allowed("run_alpha_wave_analysis")
         raw_verify_request = can_scan and _contains_any(
             msg,
             [
@@ -2065,6 +2204,9 @@ class WorkbenchAgent:
             wants_s2 = _contains_any(msg, ["strategy 2", "strategy2", "liquidity reclaim", "htf reclaim"])
             wants_orb = _contains_any(msg, ["orb", "opening range"])
             wants_trendilo = _contains_any(msg, ["trendilo"])
+            wants_advanced_trendilo = _contains_any(msg, ["advanced trendilo", "trendilo advanced"])
+            wants_lsma = _contains_any(msg, ["trendilo lsma", "lsma"])
+            wants_alpha_wave = _contains_any(msg, ["alpha wave", "alphawave", "daviddtech"])
             strategy_scan = "trendilo"
             if wants_s1:
                 strategy_scan = "mtf"
@@ -2072,6 +2214,12 @@ class WorkbenchAgent:
                 strategy_scan = "htf_reclaim"
             elif wants_orb:
                 strategy_scan = "orb"
+            elif wants_alpha_wave:
+                strategy_scan = "alpha_wave"
+            elif wants_lsma:
+                strategy_scan = "trendilo_lsma"
+            elif wants_advanced_trendilo:
+                strategy_scan = "advanced_trendilo"
             elif wants_trendilo:
                 strategy_scan = "trendilo"
             elif strategy_profile == "classic_htf_fvg":
@@ -2080,6 +2228,12 @@ class WorkbenchAgent:
                 strategy_scan = "htf_reclaim"
             elif strategy_profile == "orb_ny_15m_imbalance":
                 strategy_scan = "orb"
+            elif strategy_profile == "advanced_trendilo_confirmation_v1":
+                strategy_scan = "advanced_trendilo"
+            elif strategy_profile == "trendilo_lsma_confirmation_v1":
+                strategy_scan = "trendilo_lsma"
+            elif strategy_profile == "alpha_wave_confirmation_v1":
+                strategy_scan = "alpha_wave"
 
             scan_args: Dict[str, Any] = {
                 "strategy": strategy_scan,
@@ -2135,6 +2289,36 @@ class WorkbenchAgent:
                 {
                     "name": "scan_trendilo_fields",
                     "args": scan_args,
+                }
+            )
+        elif (advanced_trendilo_request or (strategy_profile == "advanced_trendilo_confirmation_v1" and trendilo_request)) and advanced_trendilo_parent_allowed:
+            plan.append(
+                {
+                    "name": "run_advanced_trendilo_analysis",
+                    "args": {
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
+                        "execution_timeframe": str(context.get("timeframe") or "M15"),
+                    },
+                }
+            )
+        elif (lsma_request or (strategy_profile == "trendilo_lsma_confirmation_v1" and trendilo_request)) and lsma_parent_allowed:
+            plan.append(
+                {
+                    "name": "run_trendilo_lsma_analysis",
+                    "args": {
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
+                        "execution_timeframe": str(context.get("timeframe") or "M15"),
+                    },
+                }
+            )
+        elif (alpha_wave_request or (strategy_profile == "alpha_wave_confirmation_v1" and trendilo_request)) and alpha_wave_parent_allowed:
+            plan.append(
+                {
+                    "name": "run_alpha_wave_analysis",
+                    "args": {
+                        "preset": str(context.get("agent_strategy_preset") or "default"),
+                        "execution_timeframe": str(context.get("timeframe") or "M15"),
+                    },
                 }
             )
         elif trendilo_request and trendilo_parent_allowed:

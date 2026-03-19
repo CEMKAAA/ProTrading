@@ -58,6 +58,7 @@ DEFAULT_COPILOT_CONFIG: Dict[str, Any] = {
     "guardrail_enabled": True,
     "guardrail_session_filter_enabled": False,
     "guardrail_news_filter_enabled": False,
+    "guardrail_max_risk_per_trade_usd": 5.0,
     "guardrail_news_lookback_min": 120,
     "market_news_provider": "polygon",
     "market_news_llm_summary_enabled": False,
@@ -205,6 +206,10 @@ def normalize_copilot_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
     )
     cfg["guardrail_news_filter_enabled"] = bool(
         raw.get("guardrail_news_filter_enabled", cfg["guardrail_news_filter_enabled"])
+    )
+    cfg["guardrail_max_risk_per_trade_usd"] = max(
+        0.0,
+        min(1_000_000_000.0, _safe_float(raw.get("guardrail_max_risk_per_trade_usd"), cfg["guardrail_max_risk_per_trade_usd"])),
     )
     cfg["guardrail_news_lookback_min"] = max(
         15,

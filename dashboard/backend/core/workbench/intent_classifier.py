@@ -16,7 +16,7 @@ TOOL_INTENT_MAP: Dict[str, List[str]] = {
     "market_query": ["get_market_snapshot", "get_indicator_values"],
     "position_query": ["get_positions_detail", "close_trade"],
     "trade_action": ["place_trade", "schedule_trade_entry", "cancel_scheduled_entry", "get_market_snapshot"],
-    "analysis": ["run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable", "scan_tool", "scan_draw_fvg_range", "get_market_snapshot", "get_indicator_values"],
+    "analysis": ["run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "run_advanced_trendilo_analysis", "run_trendilo_lsma_analysis", "run_alpha_wave_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable", "scan_tool", "scan_draw_fvg_range", "get_market_snapshot", "get_indicator_values"],
     "news_query": ["get_market_news", "get_market_snapshot"],
     "research": ["run_research_optimize", "run_ml_diagnostic"],
     "memory": ["search_memory", "save_memory_note"],
@@ -25,7 +25,7 @@ TOOL_INTENT_MAP: Dict[str, List[str]] = {
     "identity": ["set_agent_personality"],
     # Continuation/retry gets broad access so "try again" doesn't lose tools.
     "continuation": [
-        "run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable", "scan_tool", "scan_draw_fvg_range",
+        "run_mtf_analysis", "run_htf_fvg_liquidity_reclaim_analysis", "run_orb_analysis", "run_trendilo_analysis", "run_advanced_trendilo_analysis", "run_trendilo_lsma_analysis", "run_alpha_wave_analysis", "scan_trendilo_fields", "scan_trendilo_tradeable", "scan_strategy_tradeable", "scan_tool", "scan_draw_fvg_range",
         "get_market_snapshot", "get_indicator_values", "get_positions_detail",
         "schedule_trade_entry", "cancel_scheduled_entry", "get_scheduled_triggers",
         "get_market_news", "place_trade", "close_trade",
@@ -40,6 +40,9 @@ EXPLICIT_TOOL_NAMES: Set[str] = {
     "run_htf_fvg_liquidity_reclaim_analysis",
     "run_orb_analysis",
     "run_trendilo_analysis",
+    "run_advanced_trendilo_analysis",
+    "run_trendilo_lsma_analysis",
+    "run_alpha_wave_analysis",
     "scan_trendilo_fields",
     "scan_trendilo_tradeable",
     "scan_strategy_tradeable",
@@ -75,7 +78,7 @@ INTENT_PATTERNS: Dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "analysis": re.compile(
-        r"scan|fvg|fair\s*value\s*gap|setup|pattern|signal|analy[sz]e|structure|order\s*block|mitigation|breaker|liquidity|sweep|equal\s+high|equal\s+low|stop\s*hunt|opening\s*range|orb|orh|orl|imbalance|trendilo|trendilo\s*field|green\s*field|red\s*field|alma|t3|di\b|adx",
+        r"scan|fvg|fair\s*value\s*gap|setup|pattern|signal|analy[sz]e|structure|order\s*block|mitigation|breaker|liquidity|sweep|equal\s+high|equal\s+low|stop\s*hunt|opening\s*range|orb|orh|orl|imbalance|trendilo|trendilo\s*field|green\s*field|red\s*field|alma|t3|di\b|adx|alpha\s*wave|alphawave|daviddtech",
         re.IGNORECASE,
     ),
     "news_query": re.compile(

@@ -131,3 +131,127 @@ def test_sim_agent_strategy_opportunities_proxy_forwards_to_backend(monkeypatch)
     assert seen["method"] == "POST"
     assert seen["path"] == "/api/v1/simulation/sessions/45/agent/strategy-opportunities"
     assert seen["data"] == payload
+
+
+def test_sim_agent_strategy_automation_start_proxy_forwards_to_backend(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = dict(data or {})
+        return {"ok": True, "job_id": "auto_1"}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    payload = {"symbol": "XAUUSDm", "strategy": "trendilo", "timeframe": "M15"}
+    resp = client.post("/api/simulation/sessions/45/agent/strategy-automation/start", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/simulation/sessions/45/agent/strategy-automation/start"
+    assert seen["data"] == payload
+
+
+def test_sim_agent_strategy_automation_stop_proxy_forwards_to_backend(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = dict(data or {})
+        return {"ok": True, "stopped": 1}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    payload = {"job_id": "auto_1"}
+    resp = client.post("/api/simulation/sessions/45/agent/strategy-automation/stop", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/simulation/sessions/45/agent/strategy-automation/stop"
+    assert seen["data"] == payload
+
+
+def test_sim_agent_strategy_automation_jobs_proxy_forwards_query_params(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, params=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["params"] = dict(params or {})
+        return {"ok": True, "jobs": []}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    resp = client.get("/api/simulation/sessions/45/agent/strategy-automation/jobs?include_disabled=1")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/v1/simulation/sessions/45/agent/strategy-automation/jobs"
+    assert seen["params"] == {"include_disabled": "1"}
+
+
+def test_sim_live_control_proxy_forwards_to_backend(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    seen = {}
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = dict(data or {})
+        return {"ok": True, "session_id": 122, "live_control": {"execution_mode": "live_mt5"}}, None
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    payload = {
+        "execution_mode": "live_mt5",
+        "max_risk_per_trade_usd": 50.0,
+        "max_lot_per_trade": 0.25,
+    }
+    resp = client.post("/api/simulation/sessions/122/live-control", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v1/simulation/sessions/122/live-control"
+    assert seen["data"] == payload
+
+
+def test_sim_close_trade_proxy_preserves_upstream_400(monkeypatch):
+    app = frontend_app_module.app
+    app.config["TESTING"] = True
+
+    def _fake_api_request(method, path, data=None, **kwargs):
+        return None, "API error (400): No market data available for close exit price"
+
+    monkeypatch.setattr(frontend_app_module, "api_request", _fake_api_request)
+
+    client = app.test_client()
+    resp = client.post("/api/simulation/sessions/99/close-trade/4", json={})
+
+    assert resp.status_code == 400
+    data = resp.get_json() or {}
+    assert "No market data available for close exit price" in str(data.get("error") or "")

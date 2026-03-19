@@ -276,6 +276,24 @@ def api_request(method, endpoint, data=None, params=None, use_cache=False, retur
         return None
 
 
+def _http_status_from_api_error(err_text, default_status=500):
+    """Map api_request(return_error=True) text to HTTP status for proxy passthrough."""
+    text = str(err_text or "").strip()
+    if not text:
+        return int(default_status)
+    m = re.search(r"API error \((\d{3})\):", text)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return int(default_status)
+    if "Not found (404)" in text:
+        return 404
+    if "Validation error (422)" in text:
+        return 422
+    return int(default_status)
+
+
 def _to_int(v, default):
     try:
         return int(v)
@@ -1007,6 +1025,8 @@ def sim_sessions():
             params['status'] = request.args.get('status')
         if request.args.get('limit') is not None:
             params['limit'] = request.args.get('limit')
+        if request.args.get('include_automation_children') is not None:
+            params['include_automation_children'] = request.args.get('include_automation_children')
         res, err = api_request('GET', '/api/v1/simulation/sessions', params=params, return_error=True, timeout_sec=30)
         if not res:
             return jsonify({'error': err or 'Failed to load sessions'}), 500
@@ -1039,7 +1059,7 @@ def sim_trade(session_id):
     data = request.get_json(silent=True) or {}
     res, err = api_request('POST', f'/api/v1/simulation/sessions/{session_id}/trade', data=data, return_error=True, timeout_sec=15)
     if not res:
-        return jsonify({'error': err or 'Trade failed'}), 500
+        return jsonify({'error': err or 'Trade failed'}), _http_status_from_api_error(err, 500)
     return jsonify(res)
 
 
@@ -1053,7 +1073,7 @@ def sim_close_trade(session_id, trade_id):
         return_error=True,
     )
     if not res:
-        return jsonify({'error': err or 'Close failed'}), 500
+        return jsonify({'error': err or 'Close failed'}), _http_status_from_api_error(err, 500)
     return jsonify(res)
 
 
@@ -1069,6 +1089,21 @@ def sim_update_cost_model(session_id):
     )
     if not res:
         return jsonify({'error': err or 'Cost model update failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/live-control', methods=['POST'])
+def sim_update_live_control(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/live-control',
+        data=data,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'error': err or 'Live control update failed'}), 500
     return jsonify(res)
 
 
@@ -1669,6 +1704,70 @@ def sim_agent_strategy_opportunities(session_id):
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Strategy opportunities scan failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/agent/strategy-automation/start', methods=['POST'])
+def sim_agent_strategy_automation_start(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/agent/strategy-automation/start',
+        data=data,
+        return_error=True,
+        timeout_sec=180,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Strategy automation start failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/agent/strategy-automation/stop', methods=['POST'])
+def sim_agent_strategy_automation_stop(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/agent/strategy-automation/stop',
+        data=data,
+        return_error=True,
+        timeout_sec=60,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Strategy automation stop failed'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/agent/strategy-automation/jobs')
+def sim_agent_strategy_automation_jobs(session_id):
+    params = {}
+    if request.args.get('include_disabled') is not None:
+        params['include_disabled'] = request.args.get('include_disabled')
+    res, err = api_request(
+        'GET',
+        f'/api/v1/simulation/sessions/{session_id}/agent/strategy-automation/jobs',
+        params=params,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Strategy automation jobs unavailable'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/simulation/agent/strategy-automation/jobs')
+def sim_agent_strategy_automation_jobs_global():
+    params = {}
+    if request.args.get('include_disabled') is not None:
+        params['include_disabled'] = request.args.get('include_disabled')
+    res, err = api_request(
+        'GET',
+        '/api/v1/simulation/agent/strategy-automation/jobs',
+        params=params,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Global strategy automation jobs unavailable'}), 500
     return jsonify(res)
 
 

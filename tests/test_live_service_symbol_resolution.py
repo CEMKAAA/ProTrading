@@ -126,3 +126,62 @@ def test_list_symbols_reinitializes_when_mt5_handle_is_stale(monkeypatch):
     assert calls["shutdown"] >= 1
     assert calls["initialize"] >= 1
     assert calls["symbols_get"] >= 1
+
+
+def test_close_position_falls_back_across_filling_modes(monkeypatch):
+    service = ls.LiveTradingService()
+    service._mt5_initialized = True
+
+    monkeypatch.setattr(service, "_ensure_mt5", lambda **_kwargs: True)
+    monkeypatch.setattr(service, "resolve_symbol_name", lambda _s: "ETHUSDm")
+    monkeypatch.setattr(ls.mt5, "symbol_select", lambda *_args, **_kwargs: True, raising=False)
+
+    monkeypatch.setattr(ls.mt5, "POSITION_TYPE_BUY", 0, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_TYPE_BUY", 0, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_TYPE_SELL", 1, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_ACTION_DEAL", 1, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_TIME_GTC", 0, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_FILLING_RETURN", 0, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_FILLING_IOC", 1, raising=False)
+    monkeypatch.setattr(ls.mt5, "ORDER_FILLING_FOK", 2, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_DONE", 10009, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_PLACED", 10008, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010, raising=False)
+
+    pos = types.SimpleNamespace(ticket=12345, type=0, volume=0.1)
+    monkeypatch.setattr(ls.mt5, "positions_get", lambda **_kwargs: [pos], raising=False)
+    monkeypatch.setattr(
+        ls.mt5,
+        "symbol_info_tick",
+        lambda _symbol: types.SimpleNamespace(bid=2180.0, ask=2181.0),
+        raising=False,
+    )
+    monkeypatch.setattr(ls.mt5, "symbol_info", lambda _symbol: types.SimpleNamespace(filling_mode=3), raising=False)
+
+    calls = []
+
+    def _fake_order_send(req):
+        calls.append(int(req.get("type_filling")))
+        # First filling mode rejected by broker, second mode succeeds.
+        if len(calls) == 1:
+            return types.SimpleNamespace(
+                retcode=10030,
+                comment="Unsupported filling mode",
+                price=req.get("price"),
+                order=0,
+                deal=0,
+            )
+        return types.SimpleNamespace(
+            retcode=10009,
+            comment="done",
+            price=req.get("price"),
+            order=999,
+            deal=111,
+        )
+
+    monkeypatch.setattr(ls.mt5, "order_send", _fake_order_send, raising=False)
+
+    out = service.close_position(symbol="ETHUSDm", position_ticket=12345, lot_size=0.1, comment="test-close")
+    assert out["ok"] is True
+    assert out["retcode"] == 10009
+    assert calls[:2] == [3, 1]
