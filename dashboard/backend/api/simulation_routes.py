@@ -9,6 +9,7 @@ import uuid
 import math
 import re
 import os
+import time
 import ipaddress
 import pandas as pd
 import numpy as np
@@ -18,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi import Request
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import desc, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal, Tuple
@@ -117,6 +118,7 @@ _STRATEGY_AUTOMATION_SUPPORTED = {
     "trendilo_lsma",
     "alpha_wave",
     "orb_alpha_hybrid",
+    "deadzone_pro",
 }
 _STRATEGY_AUTOMATION_START_LOCK = Lock()
 _AGENT_SNAPSHOT_MAX_PER_SESSION = 5000
@@ -208,6 +210,44 @@ _AGENT_NEWS_SUMMARY_CACHE: Dict[str, Dict[str, Any]] = {}
 _AGENT_NEWS_SUMMARY_CACHE_LOCK = Lock()
 _AGENT_NEWS_SUMMARY_CACHE_TTL_SEC = 20 * 60.0  # 20 minutes
 _AGENT_NEWS_SUMMARY_CACHE_MAX_ENTRIES = 512
+_AGENT_LIVE_FETCH_WARN_LAST_TS: Dict[str, float] = {}
+_AGENT_LIVE_FETCH_WARN_MIN_INTERVAL_SEC = 30.0
+
+
+def _is_sqlite_locked_error(exc: Exception) -> bool:
+    if not isinstance(exc, OperationalError):
+        return False
+    try:
+        msg = str(exc).lower()
+    except Exception:
+        msg = ""
+    return "database is locked" in msg or "database table is locked" in msg
+
+
+def _is_ws_client_disconnected(exc: Exception) -> bool:
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    name = str(type(exc).__name__ or "")
+    if name in {"ClientDisconnected", "ConnectionClosed", "ConnectionClosedError", "ConnectionClosedOK"}:
+        return True
+    text = str(exc).lower()
+    return "connection closed" in text or "keepalive ping timeout" in text
+
+
+def _agent_live_fetch_warn_throttled(*, source: str, symbol: str, timeframe: str, reason: str) -> None:
+    key = f"{str(source).upper()}|{str(symbol).upper()}|{str(timeframe).upper()}|{str(reason)}"
+    now_ts = time.time()
+    last_ts = float(_AGENT_LIVE_FETCH_WARN_LAST_TS.get(key, 0.0))
+    if (now_ts - last_ts) < float(_AGENT_LIVE_FETCH_WARN_MIN_INTERVAL_SEC):
+        return
+    _AGENT_LIVE_FETCH_WARN_LAST_TS[key] = now_ts
+    logger.warning(
+        "agent_live_history_fetch_failed source=%s symbol=%s timeframe=%s reason=%s",
+        source,
+        symbol,
+        timeframe,
+        reason,
+    )
 
 _AGENT_NEWS_SYMBOL_MAP: Dict[str, str] = {
     "XAUUSD": "GLD",
@@ -587,10 +627,10 @@ class TradeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_positive_levels(self):
-        if self.stop_loss is None or not math.isfinite(float(self.stop_loss)) or float(self.stop_loss) <= 0.0:
-            raise ValueError("stop_loss must be a positive finite number")
-        if self.take_profit is not None and (not math.isfinite(float(self.take_profit)) or float(self.take_profit) <= 0.0):
-            raise ValueError("take_profit must be a positive finite number")
+        if self.stop_loss is None or not math.isfinite(float(self.stop_loss)) or float(self.stop_loss) < 0.0:
+            raise ValueError("stop_loss must be a finite number >= 0 (0 disables SL)")
+        if self.take_profit is not None and (not math.isfinite(float(self.take_profit)) or float(self.take_profit) < 0.0):
+            raise ValueError("take_profit must be a finite number >= 0 (0 disables TP)")
         if self.entry_price is not None and (not math.isfinite(float(self.entry_price)) or float(self.entry_price) <= 0.0):
             raise ValueError("entry_price must be a positive finite number")
         return self
@@ -1941,6 +1981,37 @@ def _to_float_or_none(v: Any) -> Optional[float]:
         if v is None:
             return None
         return float(v)
+    except Exception:
+        return None
+
+
+def _rsi_last(close_like: Any, period: int = 14) -> Optional[float]:
+    """Compute last RSI value using Wilder smoothing."""
+    try:
+        s = pd.Series(close_like, dtype="float64")
+        n = int(max(2, period))
+        if s is None or s.empty or len(s) < (n + 1):
+            return None
+        delta = s.diff()
+        gain = delta.clip(lower=0.0)
+        loss = (-delta.clip(upper=0.0))
+        avg_gain = gain.ewm(alpha=1.0 / float(n), adjust=False, min_periods=n).mean()
+        avg_loss = loss.ewm(alpha=1.0 / float(n), adjust=False, min_periods=n).mean()
+        g = _to_float_or_none(avg_gain.iloc[-1])
+        l = _to_float_or_none(avg_loss.iloc[-1])
+        if g is None or l is None:
+            return None
+        if (not math.isfinite(float(g))) or (not math.isfinite(float(l))):
+            return None
+        if float(l) <= 1e-12:
+            if float(g) <= 1e-12:
+                return 50.0
+            return 100.0
+        rs = float(g) / float(l)
+        rsi = 100.0 - (100.0 / (1.0 + float(rs)))
+        if not math.isfinite(float(rsi)):
+            return None
+        return float(max(0.0, min(100.0, float(rsi))))
     except Exception:
         return None
 
@@ -5220,8 +5291,23 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
         current_balance=float(seeded_initial_balance),
         config_json=json.dumps(config),
     )
+    def _commit_with_sqlite_retry(_db: Session, *, attempts: int = 4, base_sleep_sec: float = 0.08) -> None:
+        last_exc: Optional[Exception] = None
+        for i in range(max(1, int(attempts))):
+            try:
+                _db.commit()
+                return
+            except Exception as exc:
+                last_exc = exc
+                _db.rollback()
+                if (not _is_sqlite_locked_error(exc)) or i >= int(attempts) - 1:
+                    raise
+                time.sleep(float(base_sleep_sec) * float(i + 1))
+        if last_exc is not None:
+            raise last_exc
+
     db.add(session)
-    db.commit()
+    _commit_with_sqlite_retry(db)
     db.refresh(session)
 
     # Create engine immediately and require usable replay data.
@@ -5233,7 +5319,7 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
             if bool(req.allow_empty_replay) and str(req.strategy_id or "") == WORKBENCH_ID:
                 session.total_bars = 0
                 session.current_bar = 0
-                db.commit()
+                _commit_with_sqlite_retry(db)
                 logger.info(
                     "create_session live bootstrap without replay data: session=%s symbol=%s timeframe=%s",
                     int(session.id),
@@ -5248,16 +5334,16 @@ def create_session(req: CreateSessionRequest, db: Session = Depends(get_db)):
                 )
         else:
             session.total_bars = engine.total_bars
-            db.commit()
+            _commit_with_sqlite_retry(db)
     except HTTPException:
         _clear_cached_engine(session.id)
         db.delete(session)
-        db.commit()
+        _commit_with_sqlite_retry(db)
         raise
     except Exception as e:
         _clear_cached_engine(session.id)
         db.delete(session)
-        db.commit()
+        _commit_with_sqlite_retry(db)
         raise HTTPException(400, f"Unable to initialize simulation session: {e}")
 
     return {
@@ -5857,6 +5943,8 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
         raise HTTPException(404, "Session not found")
     if session.status != "active":
         raise HTTPException(400, "Session is not active")
+    live_exec_enabled = _is_live_mt5_execution_enabled(session)
+    live_ctrl = _session_live_control_dict(session) if live_exec_enabled else {}
 
     engine = _get_or_create_engine(session, db)
 
@@ -5871,6 +5959,65 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
     except Exception:
         max_open_positions = 1
     max_open_positions = max(1, min(20, int(max_open_positions)))
+    if int(open_count) >= int(max_open_positions) and bool(live_exec_enabled):
+        # Manual broker-side closes can leave stale local rows as "open" until a user action.
+        # Reconcile only when MT5 explicitly reports zero open positions for this symbol.
+        try:
+            snap = _session_sync_live_mt5_account(
+                session=session,
+                db=db,
+                include_positions=True,
+                persist=False,
+            )
+        except Exception as exc:
+            snap = None
+            logger.warning(
+                "live_trade_guard_reconcile_failed session=%s symbol=%s err=%s",
+                int(session.id),
+                str(session.symbol or ""),
+                str(type(exc).__name__),
+            )
+        pos_rows = snap.get("open_positions") if isinstance(snap, dict) and isinstance(snap.get("open_positions"), list) else None
+        if isinstance(pos_rows, list) and len(pos_rows) == 0:
+            stale_rows = (
+                db.query(SimulationTrade)
+                .filter(SimulationTrade.session_id == session_id, SimulationTrade.status == "open")
+                .order_by(desc(SimulationTrade.id))
+                .all()
+            )
+            reconciled_count = 0
+            for stale in stale_rows:
+                try:
+                    _ = close_trade(
+                        session_id=int(session.id),
+                        trade_id=int(stale.id),
+                        req=CloseTradeRequest(
+                            confirm_live_order=True,
+                            live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+                            automation_internal=True,
+                        ),
+                        db=db,
+                    )
+                    reconciled_count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "live_trade_guard_reconcile_close_failed session=%s trade_id=%s err=%s",
+                        int(session.id),
+                        int(stale.id),
+                        str(type(exc).__name__),
+                    )
+            if reconciled_count > 0:
+                open_count = db.query(SimulationTrade).filter(
+                    SimulationTrade.session_id == session_id,
+                    SimulationTrade.status == "open",
+                ).count()
+                logger.info(
+                    "live_trade_guard_reconciled session=%s symbol=%s reconciled=%s remaining_open=%s",
+                    int(session.id),
+                    str(session.symbol or ""),
+                    int(reconciled_count),
+                    int(open_count),
+                )
     if int(open_count) >= int(max_open_positions):
         if int(max_open_positions) == 1:
             raise HTTPException(400, "Already have an open position. Close it first.")
@@ -5882,8 +6029,15 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
     if req.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "Direction must be BUY or SELL")
 
-    live_exec_enabled = _is_live_mt5_execution_enabled(session)
-    live_ctrl = _session_live_control_dict(session) if live_exec_enabled else {}
+    stop_loss_value = _to_float_or_none(req.stop_loss)
+    if stop_loss_value is None or (not math.isfinite(float(stop_loss_value))) or float(stop_loss_value) < 0.0:
+        raise HTTPException(400, "stop_loss must be finite and >= 0")
+    take_profit_value = _to_float_or_none(req.take_profit)
+    if take_profit_value is not None and ((not math.isfinite(float(take_profit_value))) or float(take_profit_value) < 0.0):
+        raise HTTPException(400, "take_profit must be finite and >= 0")
+    no_stop_loss = bool(float(stop_loss_value) <= 0.0)
+    if take_profit_value is not None and float(take_profit_value) <= 0.0:
+        take_profit_value = None
 
     if live_exec_enabled and bool(live_ctrl.get("kill_switch_enabled", False)):
         raise HTTPException(403, "live_execution_blocked:kill_switch_enabled")
@@ -5931,28 +6085,29 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
         risk_cfg = {
             "guardrail_max_risk_per_trade_usd": _to_float_or_none(live_ctrl.get("max_risk_per_trade_usd")),
         }
-        trade_math_ctx = _session_trade_math_context(
-            session=session,
-            symbol=str(session.symbol or "XAUUSD"),
-        )
-        point_value_for_risk = _to_float_or_none(trade_math_ctx.get("value_per_1lot"))
-        risk_check = _agent_guardrail_check_trade_risk(
-            symbol=str(session.symbol or ""),
-            entry_price=float(entry_mid),
-            stop_loss=_to_float_or_none(req.stop_loss),
-            lot_size=_to_float_or_none(req.lot_size),
-            cfg=risk_cfg,
-            point_value_per_1lot=point_value_for_risk,
-        )
-        if bool(risk_check.get("enabled")) and not bool(risk_check.get("ok")):
-            raise HTTPException(
-                400,
-                (
-                    "risk_amount_exceeds_live_cap:"
-                    f" risk_usd={float(risk_check.get('risk_usd') or 0.0):.4f}"
-                    f" cap_usd={float(risk_check.get('cap_usd') or 0.0):.4f}"
-                ),
+        if not no_stop_loss:
+            trade_math_ctx = _session_trade_math_context(
+                session=session,
+                symbol=str(session.symbol or "XAUUSD"),
             )
+            point_value_for_risk = _to_float_or_none(trade_math_ctx.get("value_per_1lot"))
+            risk_check = _agent_guardrail_check_trade_risk(
+                symbol=str(session.symbol or ""),
+                entry_price=float(entry_mid),
+                stop_loss=float(stop_loss_value),
+                lot_size=_to_float_or_none(req.lot_size),
+                cfg=risk_cfg,
+                point_value_per_1lot=point_value_for_risk,
+            )
+            if bool(risk_check.get("enabled")) and not bool(risk_check.get("ok")):
+                raise HTTPException(
+                    400,
+                    (
+                        "risk_amount_exceeds_live_cap:"
+                        f" risk_usd={float(risk_check.get('risk_usd') or 0.0):.4f}"
+                        f" cap_usd={float(risk_check.get('cap_usd') or 0.0):.4f}"
+                    ),
+                )
 
         daily_limit = _to_float_or_none(live_ctrl.get("daily_loss_limit_usd"))
         if daily_limit is not None and float(daily_limit) > 0.0:
@@ -5996,8 +6151,8 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
             symbol=str(session.symbol or ""),
             direction=str(req.direction or "").upper(),
             lot_size=float(req.lot_size),
-            stop_loss=float(req.stop_loss),
-            take_profit=_to_float_or_none(req.take_profit),
+            stop_loss=(None if no_stop_loss else float(stop_loss_value)),
+            take_profit=take_profit_value,
             comment=f"WB#{int(session.id)}",
             deviation_points=20,
         )
@@ -6021,8 +6176,8 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
 
     trade_result = engine.execute_trade(
         direction=req.direction,
-        sl=req.stop_loss,
-        tp=req.take_profit,
+        sl=float(stop_loss_value),
+        tp=take_profit_value,
         lot_size=req.lot_size,
         entry_price_override=entry_fill,
         entry_time_unix=req.bar_time_unix,
@@ -6035,8 +6190,8 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
         entry_price=float(trade_result["entry_price"]),
         entry_bar=trade_result["entry_bar"],
         entry_time=trade_result.get("entry_time"),
-        stop_loss=req.stop_loss,
-        take_profit=req.take_profit,
+        stop_loss=float(stop_loss_value),
+        take_profit=take_profit_value,
         lot_size=req.lot_size,
         entry_mid_price=float(entry_mid),
         entry_fill_price=float(entry_fill),
@@ -6157,7 +6312,8 @@ def close_trade(
         reconciled_missing_position = False
         if not bool(close_result.get("ok")):
             close_err = str(close_result.get("error") or "").strip().lower()
-            # Ticket can become stale (closed externally / remapped by broker). Try recovery by symbol positions.
+            # Ticket can become stale (closed externally / remapped by broker).
+            # Recover only from positions explicitly tagged for this session.
             if close_err == "position_not_found":
                 try:
                     pos_rows = mt5_service.get_open_positions(symbol=str(session.symbol or "")) or []
@@ -6166,32 +6322,75 @@ def close_trade(
                 if isinstance(pos_rows, list) and pos_rows:
                     desired_dir = str(trade.direction or "").strip().upper()
                     desired_lot = _to_float_or_none(trade.lot_size) or 0.0
-                    candidates = [
-                        r for r in pos_rows
-                        if str(r.get("direction") or "").strip().upper() == desired_dir
-                    ]
-                    if not candidates:
-                        candidates = list(pos_rows)
-                    candidates.sort(
-                        key=lambda r: (
-                            abs((_to_float_or_none(r.get("lot_size")) or 0.0) - float(desired_lot)),
-                            int(_to_float_or_none(r.get("ticket")) or 0),
-                        )
-                    )
-                    chosen = candidates[0] if candidates else None
-                    chosen_ticket = int(_to_float_or_none((chosen or {}).get("ticket")) or 0)
-                    if chosen_ticket > 0:
-                        close_result = mt5_service.close_position(
-                            symbol=str(session.symbol or ""),
-                            position_ticket=chosen_ticket,
-                            lot_size=_to_float_or_none(trade.lot_size),
-                            deviation_points=20,
-                            comment=f"WB_CLOSE#{int(session.id)}",
-                        )
+                    expected_tag = f"WB#{int(session.id)}".upper()
+                    tagged_candidates = []
+                    dir_candidates = []
+                    for r in pos_rows:
+                        row_dir = str(r.get("direction") or "").strip().upper()
+                        if row_dir != desired_dir:
+                            continue
+                        dir_candidates.append(r)
+                        cmt = str(r.get("comment") or "").strip().upper()
+                        if expected_tag and expected_tag in cmt:
+                            tagged_candidates.append(r)
+                    if len(tagged_candidates) == 1:
+                        chosen = tagged_candidates[0]
+                        chosen_ticket = int(_to_float_or_none((chosen or {}).get("ticket")) or 0)
+                        if chosen_ticket > 0:
+                            close_result = mt5_service.close_position(
+                                symbol=str(session.symbol or ""),
+                                position_ticket=chosen_ticket,
+                                lot_size=_to_float_or_none(trade.lot_size),
+                                deviation_points=20,
+                                comment=f"WB_CLOSE#{int(session.id)}",
+                            )
+                    elif len(tagged_candidates) == 0:
+                        # If comment tagging isn't available, only fallback when a single
+                        # unambiguous direction/lot candidate exists.
+                        lot_candidates = [
+                            r
+                            for r in dir_candidates
+                            if abs((_to_float_or_none(r.get("lot_size")) or 0.0) - float(desired_lot)) <= 1e-9
+                        ]
+                        chosen = None
+                        if len(lot_candidates) == 1:
+                            chosen = lot_candidates[0]
+                        elif len(dir_candidates) == 1:
+                            chosen = dir_candidates[0]
+                        if isinstance(chosen, dict):
+                            chosen_ticket = int(_to_float_or_none((chosen or {}).get("ticket")) or 0)
+                            if chosen_ticket > 0:
+                                close_result = mt5_service.close_position(
+                                    symbol=str(session.symbol or ""),
+                                    position_ticket=chosen_ticket,
+                                    lot_size=_to_float_or_none(trade.lot_size),
+                                    deviation_points=20,
+                                    comment=f"WB_CLOSE#{int(session.id)}",
+                                )
+                        else:
+                            # Broker has positions, but none can be safely mapped to this session.
+                            reconciled_missing_position = True
+                            close_result = {
+                                "ok": True,
+                                "position_ticket": pos_ticket,
+                                "order": 0,
+                                "deal": 0,
+                                "retcode": 0,
+                                "retcode_name": "RECONCILED_POSITION_NOT_FOUND",
+                                "comment": "reconciled_not_tagged",
+                            }
                 else:
                     # No broker position exists anymore: reconcile local row as already closed.
                     reconciled_missing_position = True
-                    close_result = {"ok": True, "position_ticket": pos_ticket, "order": 0, "deal": 0, "retcode": 0, "retcode_name": "RECONCILED_POSITION_NOT_FOUND", "comment": "reconciled"}
+                    close_result = {
+                        "ok": True,
+                        "position_ticket": pos_ticket,
+                        "order": 0,
+                        "deal": 0,
+                        "retcode": 0,
+                        "retcode_name": "RECONCILED_POSITION_NOT_FOUND",
+                        "comment": "reconciled",
+                    }
             if not bool(close_result.get("ok")):
                 raise HTTPException(400, f"live_close_failed:{str(close_result.get('error') or 'unknown')}")
         exit_fill = _to_float_or_none(close_result.get("price"))
@@ -6783,6 +6982,66 @@ def _mt5_live_bootstrap_fetch_bars(
     return [], 0
 
 
+def _mt5_timeframe_seconds(timeframe: str) -> int:
+    tf = str(timeframe or "").strip().upper()
+    return {
+        "M1": 60,
+        "M5": 300,
+        "M15": 900,
+        "M30": 1800,
+        "H1": 3600,
+        "H4": 14400,
+        "D1": 86400,
+    }.get(tf, 60)
+
+
+def _mt5_live_merge_tick_into_bar(bar: Dict[str, Any], tick: Optional[Dict[str, Any]], timeframe: str) -> Dict[str, Any]:
+    out = dict(bar or {})
+    if not out:
+        return out
+    tick_obj = tick if isinstance(tick, dict) else {}
+    bid = _to_float_or_none(tick_obj.get("bid"))
+    ask = _to_float_or_none(tick_obj.get("ask"))
+    last = _to_float_or_none(tick_obj.get("last"))
+    px = bid
+    if px is None or not math.isfinite(float(px)) or float(px) <= 0.0:
+        px = last
+    if (px is None or not math.isfinite(float(px)) or float(px) <= 0.0) and ask is not None and math.isfinite(float(ask)) and float(ask) > 0.0:
+        px = float(ask)
+    if px is None or not math.isfinite(float(px)) or float(px) <= 0.0:
+        return out
+    px = float(px)
+
+    base_time = int(_to_float_or_none(out.get("time")) or 0)
+    tf_sec = _mt5_timeframe_seconds(timeframe)
+    tick_ts = int(_to_float_or_none(tick_obj.get("time_unix")) or 0)
+    bucket_time = int((tick_ts // tf_sec) * tf_sec) if (tick_ts > 0 and tf_sec > 0) else base_time
+
+    try:
+        o = float(_to_float_or_none(out.get("open")) or px)
+        h = float(_to_float_or_none(out.get("high")) or px)
+        l = float(_to_float_or_none(out.get("low")) or px)
+        c = float(_to_float_or_none(out.get("close")) or px)
+    except Exception:
+        return out
+    v = int(_to_float_or_none(out.get("volume")) or 0)
+
+    if bucket_time > base_time and base_time > 0:
+        prev_close = c
+        out["time"] = int(bucket_time)
+        out["open"] = float(prev_close)
+        out["high"] = float(max(prev_close, px))
+        out["low"] = float(min(prev_close, px))
+        out["close"] = float(px)
+        out["volume"] = int(max(0, v))
+        return out
+
+    out["close"] = float(px)
+    out["high"] = float(max(h, px))
+    out["low"] = float(min(l, px))
+    return out
+
+
 @router.websocket("/ws/mt5/live")
 async def ws_mt5_live(
     websocket: WebSocket,
@@ -6801,6 +7060,16 @@ async def ws_mt5_live(
     - {"type":"error","message":"..."}
     """
     await websocket.accept()
+
+    async def _safe_send(payload: Dict[str, Any]) -> bool:
+        try:
+            await websocket.send_json(payload)
+            return True
+        except Exception as exc:
+            if _is_ws_client_disconnected(exc):
+                return False
+            raise
+
     try:
         service = _get_mt5_service_singleton()
         symbol_u = str(symbol or "XAUUSD").upper()
@@ -6809,7 +7078,7 @@ async def ws_mt5_live(
         # Run blocking MT5 calls in thread pool to avoid blocking the event loop.
         resolved_symbol = await asyncio.to_thread(service.resolve_symbol_name, symbol_u)
         if not resolved_symbol:
-            await websocket.send_json({"type": "error", "message": f"Symbol not found in MT5 broker list: {symbol_u}"})
+            _ = await _safe_send({"type": "error", "message": f"Symbol not found in MT5 broker list: {symbol_u}"})
             await websocket.close(code=4404, reason="symbol_not_found")
             return
 
@@ -6821,7 +7090,7 @@ async def ws_mt5_live(
             history,
         )
         if not bars:
-            await websocket.send_json({"type": "error", "message": f"No MT5 candle data for {resolved_symbol} {tf_u}"})
+            _ = await _safe_send({"type": "error", "message": f"No MT5 candle data for {resolved_symbol} {tf_u}"})
             await websocket.close(code=4404, reason="no_candle_data")
             return
 
@@ -6836,7 +7105,7 @@ async def ws_mt5_live(
             }
             for b in bars
         ]
-        await websocket.send_json(
+        if not await _safe_send(
             {
                 "type": "snapshot",
                 "symbol": symbol_u,
@@ -6846,9 +7115,10 @@ async def ws_mt5_live(
                 "returned_bars": int(len(snapshot_bars)),
                 "bars": snapshot_bars,
             }
-        )
+        ):
+            return
         if int(bootstrap_count or 0) and int(bootstrap_count) < int(history):
-            await websocket.send_json(
+            if not await _safe_send(
                 {
                     "type": "warning",
                     "message": (
@@ -6856,7 +7126,8 @@ async def ws_mt5_live(
                         f"(requested {int(history)}). Live stream continues with reduced bootstrap history."
                     ),
                 }
-            )
+            ):
+                return
 
         last_sig = None
         poll_sec = max(0.25, float(poll_ms) / 1000.0)
@@ -6869,12 +7140,13 @@ async def ws_mt5_live(
                 resolve_symbol=False,
             )
             if not latest:
-                await websocket.send_json(
+                if not await _safe_send(
                     {
                         "type": "warning",
                         "message": f"No MT5 update for {resolved_symbol} {tf_u}; retrying...",
                     }
-                )
+                ):
+                    return
                 await asyncio.sleep(poll_sec)
                 continue
 
@@ -6887,6 +7159,9 @@ async def ws_mt5_live(
                 "close": float(lb.get("close") or 0.0),
                 "volume": int(lb.get("volume") or 0),
             }
+            # Keep chart responsive to live ticks even when broker candle cache lags.
+            tick = await asyncio.to_thread(service.get_symbol_tick, resolved_symbol, False)
+            bar = _mt5_live_merge_tick_into_bar(bar, tick, tf_u)
             sig = (
                 int(bar["time"]),
                 float(bar["open"]),
@@ -6896,7 +7171,7 @@ async def ws_mt5_live(
                 int(bar["volume"]),
             )
             if sig != last_sig:
-                await websocket.send_json(
+                if not await _safe_send(
                     {
                         "type": "tick",
                         "symbol": symbol_u,
@@ -6904,16 +7179,20 @@ async def ws_mt5_live(
                         "timeframe": tf_u,
                         "bars": [bar],
                     }
-                )
+                ):
+                    return
                 last_sig = sig
 
             await asyncio.sleep(poll_sec)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
+        if _is_ws_client_disconnected(exc):
+            logger.debug("ws_mt5_live client disconnected: %s %s", symbol, timeframe)
+            return
         logger.exception("ws_mt5_live unhandled error for %s %s: %s", symbol, timeframe, exc)
         try:
-            await websocket.send_json({"type": "error", "message": f"{type(exc).__name__}: {str(exc)}"})
+            _ = await _safe_send({"type": "error", "message": f"{type(exc).__name__}: {str(exc)}"})
         except Exception:
             pass
 
@@ -7610,7 +7889,7 @@ class StrategyAutomationStartRequest(BaseModel):
         default="trendilo",
         description=(
             "trendilo, advanced_trendilo, trendilo_lsma, alpha_wave, "
-            "orb_alpha_hybrid"
+            "orb_alpha_hybrid, deadzone_pro"
         ),
     )
     timeframe: str = Field(default="M15")
@@ -7625,6 +7904,15 @@ class StrategyAutomationStartRequest(BaseModel):
     risk_percent: Optional[float] = Field(default=None, ge=0.1, le=5.0)
     rr_target: Optional[float] = Field(default=None, ge=1.0, le=12.0)
     lot_size_override: Optional[float] = Field(default=None, gt=0.0, le=200.0)
+    deadzone_mode: str = Field(default="default", description="default | advanced (deadzone_pro only)")
+
+    @field_validator("deadzone_mode")
+    @classmethod
+    def _validate_deadzone_mode(cls, v: str) -> str:
+        mode = str(v or "default").strip().lower()
+        if mode not in {"default", "advanced"}:
+            raise ValueError("deadzone_mode must be 'default' or 'advanced'")
+        return mode
 
 
 class StrategyAutomationStopRequest(BaseModel):
@@ -9112,11 +9400,11 @@ def _agent_fetch_live_history_bars(
         )
         out = simulation_live_history(req)
         if not isinstance(out, dict):
-            logger.warning(
-                "agent_live_history_fetch_failed source=%s symbol=%s timeframe=%s reason=invalid_response",
-                src,
-                sym,
-                tf,
+            _agent_live_fetch_warn_throttled(
+                source=src,
+                symbol=sym,
+                timeframe=tf,
+                reason="invalid_response",
             )
             return [], "live_history_unavailable:invalid_response"
         ok = bool(out.get("ok", False))
@@ -9129,29 +9417,27 @@ def _agent_fetch_live_history_bars(
                 bars.append(nb)
         if len(bars) <= 0:
             if not ok:
-                logger.warning(
-                    "agent_live_history_fetch_failed source=%s symbol=%s timeframe=%s reason=%s",
-                    src,
-                    sym,
-                    tf,
-                    (err_text or "source_not_ready")[:180],
+                _agent_live_fetch_warn_throttled(
+                    source=src,
+                    symbol=sym,
+                    timeframe=tf,
+                    reason=str((err_text or "source_not_ready")[:180]),
                 )
                 return [], f"live_history_unavailable:{(err_text or 'source_not_ready')[:180]}"
-            logger.warning(
-                "agent_live_history_fetch_failed source=%s symbol=%s timeframe=%s reason=empty_bars",
-                src,
-                sym,
-                tf,
+            _agent_live_fetch_warn_throttled(
+                source=src,
+                symbol=sym,
+                timeframe=tf,
+                reason="empty_bars",
             )
             return [], "live_history_unavailable:empty_bars"
         return bars, None
     except Exception as exc:
-        logger.warning(
-            "agent_live_history_fetch_failed source=%s symbol=%s timeframe=%s err=%s",
-            src,
-            sym,
-            tf,
-            f"{type(exc).__name__}: {str(exc)[:180]}",
+        _agent_live_fetch_warn_throttled(
+            source=src,
+            symbol=sym,
+            timeframe=tf,
+            reason=f"{type(exc).__name__}: {str(exc)[:180]}",
         )
         return [], f"live_history_unavailable:{type(exc).__name__}"
 
@@ -15358,6 +15644,11 @@ def _normalize_strategy_automation_strategy(raw_like: Any) -> str:
         "orb_alpha": "orb_alpha_hybrid",
         "hybrid_orb_alpha": "orb_alpha_hybrid",
         "orb": "orb_alpha_hybrid",
+        "deadzone_pro": "deadzone_pro",
+        "deadzone": "deadzone_pro",
+        "deadzonepro": "deadzone_pro",
+        "dead_zone_pro": "deadzone_pro",
+        "8": "deadzone_pro",
         "4": "trendilo",
     }
     return aliases.get(raw, "trendilo")
@@ -15369,7 +15660,7 @@ def _strategy_automation_profile_for_strategy(strategy: str) -> str:
         return "advanced_trendilo_confirmation_v1"
     if skey == "trendilo_lsma":
         return "trendilo_lsma_confirmation_v1"
-    if skey in {"alpha_wave", "orb_alpha_hybrid"}:
+    if skey in {"alpha_wave", "orb_alpha_hybrid", "deadzone_pro"}:
         return "alpha_wave_confirmation_v1"
     return "trendilo_confirmation_v1"
 
@@ -15380,8 +15671,17 @@ def _strategy_automation_job_id(
     symbol: str,
     strategy: str,
     timeframe: str,
+    deadzone_mode: str = "default",
 ) -> str:
-    base = f"{int(parent_session_id)}:{str(symbol).upper()}:{str(strategy).lower()}:{str(timeframe).upper()}"
+    strategy_key = _normalize_strategy_automation_strategy(strategy)
+    mode = str(deadzone_mode or "default").strip().lower()
+    if mode not in {"default", "advanced"}:
+        mode = "default"
+    mode_key = mode if strategy_key == "deadzone_pro" else "default"
+    base = (
+        f"{int(parent_session_id)}:{str(symbol).upper()}:"
+        f"{str(strategy_key).lower()}:{str(timeframe).upper()}:{str(mode_key)}"
+    )
     digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
     return f"auto_{digest}"
 
@@ -15475,6 +15775,7 @@ def _strategy_automation_collect_jobs_for_parent(
                     symbol=str(child.symbol or ""),
                     strategy=str(auto.get("strategy") or "trendilo"),
                     timeframe=str(child.timeframe or "M15"),
+                    deadzone_mode=str(auto.get("deadzone_mode") or "default"),
                 )),
                 "parent_session_id": int(parent_session_id),
                 "child_session_id": int(child.id),
@@ -15483,6 +15784,7 @@ def _strategy_automation_collect_jobs_for_parent(
                 "timeframe": str(auto.get("timeframe") or child.timeframe or "M15").upper(),
                 "source": str(auto.get("source") or "mt5").lower(),
                 "preset": str(auto.get("preset") or "default"),
+                "deadzone_mode": str(auto.get("deadzone_mode") or "default"),
                 "enabled": bool(enabled),
                 "status": str(auto.get("status") or ("running" if enabled else "stopped")),
                 "force_first_entry": bool(auto.get("force_first_entry", True)),
@@ -15583,6 +15885,7 @@ def _strategy_automation_collect_jobs_global(
                     symbol=str(child.symbol or ""),
                     strategy=str(auto.get("strategy") or "trendilo"),
                     timeframe=str(child.timeframe or "M15"),
+                    deadzone_mode=str(auto.get("deadzone_mode") or "default"),
                 )),
                 "parent_session_id": int(p_id),
                 "child_session_id": int(child.id),
@@ -15591,6 +15894,7 @@ def _strategy_automation_collect_jobs_global(
                 "timeframe": str(auto.get("timeframe") or child.timeframe or "M15").upper(),
                 "source": str(auto.get("source") or "mt5").lower(),
                 "preset": str(auto.get("preset") or "default"),
+                "deadzone_mode": str(auto.get("deadzone_mode") or "default"),
                 "enabled": bool(enabled),
                 "status": str(auto.get("status") or ("running" if enabled else "stopped")),
                 "force_first_entry": bool(auto.get("force_first_entry", True)),
@@ -15803,12 +16107,92 @@ def _strategy_automation_orb_signal_from_bars(
     }
 
 
+def _agent_deadzone_pro_indicators_from_df(
+    bars_df: pd.DataFrame,
+    *,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    params = cfg if isinstance(cfg, dict) else {}
+    if bars_df is None or bars_df.empty:
+        return {"direction": "neutral", "color": "gray", "hull": None, "slope": None}
+
+    high = bars_df["high"].astype(float)
+    low = bars_df["low"].astype(float)
+    close = bars_df["close"].astype(float)
+    open_ = bars_df["open"].astype(float)
+
+    source_key = str(
+        params.get("atp_hull_source")
+        or params.get("hull_source")
+        or "close"
+    ).strip().lower()
+    src = close
+    if source_key == "open":
+        src = open_
+    elif source_key == "high":
+        src = high
+    elif source_key == "low":
+        src = low
+    elif source_key == "hl2":
+        src = (high + low) / 2.0
+    elif source_key == "hlc3":
+        src = (high + low + close) / 3.0
+    elif source_key == "ohlc4":
+        src = (open_ + high + low + close) / 4.0
+
+    hull_len = max(5, min(300, int(_to_float_or_none(params.get("atp_hull_length")) or _to_float_or_none(params.get("hull_length")) or 21)))
+    half_len = max(1, int(hull_len // 2))
+    sqrt_len = max(1, int(round(math.sqrt(float(hull_len)))))
+
+    def _wma(series: pd.Series, length: int) -> pd.Series:
+        n = max(1, int(length))
+        w = np.arange(1, n + 1, dtype=float)
+        w_sum = float(np.sum(w))
+        if not math.isfinite(w_sum) or w_sum <= 1e-12:
+            return series.rolling(window=n, min_periods=n).mean()
+
+        def _calc(window: np.ndarray) -> float:
+            y = np.asarray(window, dtype=float)
+            if y.shape[0] != n or not np.isfinite(y).all():
+                return np.nan
+            return float(np.dot(y, w) / w_sum)
+
+        return series.rolling(window=n, min_periods=n).apply(_calc, raw=True)
+
+    wma1 = _wma(src, half_len)
+    wma2 = _wma(src, hull_len)
+    hull = _wma((2.0 * wma1) - wma2, sqrt_len)
+    slope = hull - hull.shift(1)
+
+    slope_last = _to_float_or_none(slope.iloc[-1]) if len(slope) else None
+    direction = "neutral"
+    if slope_last is not None and math.isfinite(float(slope_last)):
+        if float(slope_last) > 0.0:
+            direction = "bullish"
+        elif float(slope_last) < 0.0:
+            direction = "bearish"
+
+    color = "gray"
+    if direction == "bullish":
+        color = "green"
+    elif direction == "bearish":
+        color = "red"
+
+    return {
+        "direction": str(direction),
+        "color": str(color),
+        "hull": _to_float_or_none(hull.iloc[-1]) if len(hull) else None,
+        "slope": slope_last,
+    }
+
+
 def _strategy_automation_color_from_bars(
     *,
     bars_df: pd.DataFrame,
     strategy_key: str,
     preset_cfg: Dict[str, Any],
     volume_sma_period: int,
+    closed_bar_only: bool = False,
 ) -> Dict[str, Any]:
     if bars_df is None or bars_df.empty:
         return {
@@ -15821,9 +16205,25 @@ def _strategy_automation_color_from_bars(
             "volume_sma": None,
         }
     skey = str(strategy_key or "").strip().lower()
-    bars_payload = _bars_df_to_payload(bars_df)
+    eval_df = bars_df
+    if bool(closed_bar_only) and skey in {
+        "trendilo",
+        "advanced_trendilo",
+        "trendilo_lsma",
+        "alpha_wave",
+        "deadzone_pro",
+        "orb_alpha_hybrid",
+    } and len(bars_df.index) > 1:
+        # MT5 history includes the currently forming candle. Evaluating color
+        # state on that bar can flicker around thresholds and trigger false
+        # flip entries/exits.
+        eval_df = bars_df.iloc[:-1]
+    if eval_df is None or eval_df.empty:
+        eval_df = bars_df
+
+    bars_payload = _bars_df_to_payload(eval_df)
     if skey == "trendilo_lsma":
-        lsma = _agent_trendilo_lsma_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        lsma = _agent_trendilo_lsma_indicators_from_df(eval_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
         direction = str(lsma.get("direction") or "neutral").lower()
         signal = _to_float_or_none(lsma.get("signal"))
         color = "gray"
@@ -15841,7 +16241,7 @@ def _strategy_automation_color_from_bars(
             "volume_sma": None,
         }
     if skey == "alpha_wave":
-        alpha = _agent_alpha_wave_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        alpha = _agent_alpha_wave_indicators_from_df(eval_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
         direction = str(alpha.get("direction") or "neutral").lower()
         color = "gray"
         if direction == "bullish":
@@ -15857,12 +16257,27 @@ def _strategy_automation_color_from_bars(
             "volume": None,
             "volume_sma": None,
         }
+    if skey == "deadzone_pro":
+        deadzone = _agent_deadzone_pro_indicators_from_df(eval_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        direction = str(deadzone.get("direction") or "neutral").lower()
+        color = str(deadzone.get("color") or "gray").lower()
+        return {
+            "color": str(color),
+            "direction": str(direction),
+            "avpch": _to_float_or_none(deadzone.get("slope")),
+            "rms": None,
+            "is_volume_confirmed": bool(direction in {"bullish", "bearish"}),
+            "volume": None,
+            "volume_sma": None,
+            "deadzone_hull": _to_float_or_none(deadzone.get("hull")),
+            "deadzone_slope": _to_float_or_none(deadzone.get("slope")),
+        }
     if skey == "orb_alpha_hybrid":
         orb = _strategy_automation_orb_signal_from_bars(
-            bars_df=bars_df,
+            bars_df=eval_df,
         )
         alpha = _agent_alpha_wave_indicators_from_df(
-            bars_df,
+            eval_df,
             cfg=preset_cfg if isinstance(preset_cfg, dict) else {},
         )
         alpha_direction = str(alpha.get("direction") or "neutral").lower()
@@ -15886,7 +16301,7 @@ def _strategy_automation_color_from_bars(
             "alpha_momentum_density": _to_float_or_none(alpha.get("momentum_density")),
         }
     if skey == "advanced_trendilo":
-        adv = _agent_advanced_trendilo_indicators_from_df(bars_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
+        adv = _agent_advanced_trendilo_indicators_from_df(eval_df, cfg=preset_cfg if isinstance(preset_cfg, dict) else {})
         direction = str(adv.get("trendilo_direction") or "neutral").lower()
         avpch = _to_float_or_none(adv.get("trendilo_avpch"))
         rms = _to_float_or_none(adv.get("trendilo_rms"))
@@ -15899,7 +16314,7 @@ def _strategy_automation_color_from_bars(
         direction = str(ind.get("trendilo_direction") or "neutral").lower()
         avpch = _to_float_or_none(ind.get("trendilo_avpch"))
         rms = _to_float_or_none(ind.get("trendilo_rms"))
-    vol = bars_df["volume"].astype(float).fillna(0.0)
+    vol = eval_df["volume"].astype(float).fillna(0.0)
     vsma_period = int(max(1, min(300, int(volume_sma_period or 20))))
     vol_sma = vol.rolling(window=vsma_period, min_periods=1).mean()
     volume_now = float(vol.iloc[-1]) if len(vol) else 0.0
@@ -16064,6 +16479,58 @@ def _strategy_automation_fetch_entry_price(
     return float(px)
 
 
+def _strategy_automation_attach_trade_context(
+    *,
+    db: Session,
+    trade_id: int,
+    job_id: str,
+    strategy: str,
+    symbol: str,
+    timeframe: str,
+    mode: str,
+    event: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist automation context on trade row for post-run audits."""
+    try:
+        tr = db.query(SimulationTrade).get(int(trade_id))
+        if tr is None:
+            return
+        cb_raw = tr.cost_breakdown_json if isinstance(tr.cost_breakdown_json, dict) else {}
+        # Important: use a deep copy so SQLAlchemy JSON change detection always sees updates.
+        cb = json.loads(json.dumps(cb_raw)) if isinstance(cb_raw, dict) else {}
+        auto_raw = cb.get("strategy_automation") if isinstance(cb.get("strategy_automation"), dict) else {}
+        auto = dict(auto_raw)
+        event_key = str(event or "").strip().lower()
+        event_payload = dict(payload) if isinstance(payload, dict) else {}
+        record = {
+            "job_id": str(job_id or ""),
+            "strategy": str(strategy or ""),
+            "symbol": str(symbol or ""),
+            "timeframe": str(timeframe or ""),
+            "mode": str(mode or "default"),
+            "at": _utc_now().isoformat(),
+            **event_payload,
+        }
+        if event_key in {"entry", "exit"}:
+            auto[event_key] = record
+        else:
+            auto["last_event"] = record
+        auto["job_id"] = str(job_id or "")
+        auto["strategy"] = str(strategy or "")
+        auto["symbol"] = str(symbol or "")
+        auto["timeframe"] = str(timeframe or "")
+        auto["mode"] = str(mode or "default")
+        auto["updated_at"] = _utc_now().isoformat()
+        cb["strategy_automation"] = auto
+        tr.cost_breakdown_json = cb
+        db.add(tr)
+        db.flush()
+    except Exception:
+        # Best-effort enrichment; never break trade execution path.
+        pass
+
+
 def _strategy_automation_try_open_from_plan(
     *,
     session: SimulationSession,
@@ -16077,6 +16544,15 @@ def _strategy_automation_try_open_from_plan(
 ) -> Dict[str, Any]:
     if not isinstance(plan, dict):
         return {"ok": False, "reason": "entry_plan_missing"}
+    try:
+        auto_cfg = _strategy_automation_cfg(session)
+    except Exception:
+        auto_cfg = {}
+    job_id = str(auto_cfg.get("job_id") or "")
+    strategy_key = _normalize_strategy_automation_strategy(auto_cfg.get("strategy") or "trendilo")
+    deadzone_mode = str(auto_cfg.get("deadzone_mode") or "default").strip().lower()
+    if deadzone_mode not in {"default", "advanced"}:
+        deadzone_mode = "default"
     # Avoid duplicate entries when Start Auto is clicked repeatedly.
     open_trade = (
         db.query(SimulationTrade)
@@ -16086,6 +16562,14 @@ def _strategy_automation_try_open_from_plan(
         .first()
     )
     if open_trade is not None:
+        logger.info(
+            "strategy_automation_open_skip job_id=%s child_session_id=%s strategy=%s mode=%s reason=open_trade_exists trade_id=%s",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            int(open_trade.id),
+        )
         return {"ok": False, "reason": "open_trade_exists", "trade_id": int(open_trade.id)}
 
     direction = str(plan.get("direction") or "").strip().upper()
@@ -16186,6 +16670,33 @@ def _strategy_automation_try_open_from_plan(
             live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
         )
         out = execute_trade(session_id=int(session.id), req=req, db=db)
+        opened_trade_id = int(_to_float_or_none((out if isinstance(out, dict) else {}).get("trade_id")) or _to_float_or_none((out if isinstance(out, dict) else {}).get("id")) or 0)
+        logger.info(
+            "strategy_automation_open_ok job_id=%s child_session_id=%s strategy=%s mode=%s trigger=entry_plan trade_id=%s direction=%s entry_price=%.5f",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            int(opened_trade_id),
+            str(direction),
+            float(entry_price),
+        )
+        if opened_trade_id > 0:
+            _strategy_automation_attach_trade_context(
+                db=db,
+                trade_id=int(opened_trade_id),
+                job_id=str(job_id),
+                strategy=str(strategy_key),
+                symbol=str(session.symbol or ""),
+                timeframe=str(timeframe or session.timeframe or "M15"),
+                mode=str(deadzone_mode),
+                event="entry",
+                payload={
+                    "trigger": "entry_plan",
+                    "direction": str(direction),
+                    "entry_price": float(entry_price),
+                },
+            )
         return {
             "ok": True,
             "reason": "opened_from_entry_plan",
@@ -16194,8 +16705,24 @@ def _strategy_automation_try_open_from_plan(
             "trade": out if isinstance(out, dict) else {},
         }
     except HTTPException as exc:
+        logger.warning(
+            "strategy_automation_open_failed job_id=%s child_session_id=%s strategy=%s mode=%s trigger=entry_plan err=%s",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            str(exc.detail),
+        )
         return {"ok": False, "reason": f"entry_plan_open_failed:{str(exc.detail)}"}
     except Exception as exc:
+        logger.warning(
+            "strategy_automation_open_failed job_id=%s child_session_id=%s strategy=%s mode=%s trigger=entry_plan err=%s",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            str(type(exc).__name__),
+        )
         return {"ok": False, "reason": f"entry_plan_open_failed:{type(exc).__name__}"}
 
 
@@ -16219,6 +16746,9 @@ def _process_strategy_automation_tick_unlocked(
     if source not in {"mt5", "databento"}:
         source = "mt5"
     preset = str(auto.get("preset") or "default").strip() or "default"
+    deadzone_mode = str(auto.get("deadzone_mode") or "default").strip().lower()
+    if deadzone_mode not in {"default", "advanced"}:
+        deadzone_mode = "default"
     try:
         history_days = float(auto.get("history_days")) if auto.get("history_days") is not None else None
     except Exception:
@@ -16230,6 +16760,16 @@ def _process_strategy_automation_tick_unlocked(
     force_first_entry = bool(auto.get("force_first_entry", True))
     risk_percent_override = _to_float_or_none(auto.get("risk_percent"))
     lot_size_override = _to_float_or_none(auto.get("lot_size_override"))
+    job_id = str(
+        auto.get("job_id")
+        or _strategy_automation_job_id(
+            parent_session_id=int(_to_float_or_none(auto.get("parent_session_id")) or int(session.id)),
+            symbol=str(symbol),
+            strategy=str(strategy_key),
+            timeframe=str(timeframe),
+            deadzone_mode=str(deadzone_mode),
+        )
+    )
 
     bars_live, live_err = _agent_fetch_live_history_bars(
         source=source,
@@ -16241,17 +16781,26 @@ def _process_strategy_automation_tick_unlocked(
     )
     bars_df = _bars_payload_to_df(bars_live, max_rows=4000, min_rows=120)
     if bars_df is None or bars_df.empty:
-        cfg = _session_config_dict(session)
-        auto_next = dict(auto)
-        auto_next["last_run_at"] = _utc_now().isoformat()
-        auto_next["last_action"] = "noop"
-        auto_next["last_reason"] = str(live_err or "insufficient_live_history")
-        auto_next["updated_at"] = _utc_now().isoformat()
-        cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
-        session.config_json = json.dumps(cfg)
-        session.updated_at = datetime.utcnow()
-        db.add(session)
-        db.flush()
+        now_utc = _utc_now()
+        now_iso = str(now_utc.isoformat())
+        fail_reason = str(live_err or "insufficient_live_history")
+        fail_minute_key = int(now_utc.replace(second=0, microsecond=0).timestamp())
+        prev_reason = str(auto.get("last_reason") or "")
+        prev_fail_minute = int(_to_float_or_none(auto.get("last_failure_minute_key")) or 0)
+        should_persist_fail = bool(fail_reason != prev_reason or fail_minute_key != prev_fail_minute)
+        if should_persist_fail:
+            cfg = _session_config_dict(session)
+            auto_next = dict(auto)
+            auto_next["last_run_at"] = now_iso
+            auto_next["last_action"] = "noop"
+            auto_next["last_reason"] = str(fail_reason)
+            auto_next["last_failure_minute_key"] = int(fail_minute_key)
+            auto_next["updated_at"] = now_iso
+            cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+            session.config_json = json.dumps(cfg)
+            session.updated_at = datetime.utcnow()
+            db.add(session)
+            db.flush()
         return {"ok": False, "action": "noop", "reason": str(live_err or "insufficient_live_history")}
 
     base_symbol = normalize_strategy_symbol(symbol) or symbol
@@ -16262,6 +16811,8 @@ def _process_strategy_automation_tick_unlocked(
         strategy_id_for_preset = "trendilo_lsma_strategy"
     elif strategy_key in {"alpha_wave", "orb_alpha_hybrid"}:
         strategy_id_for_preset = "alpha_wave_strategy"
+    elif strategy_key == "deadzone_pro":
+        strategy_id_for_preset = "deadzone_pro_strategy"
     preset_cfg = StrategyRegistry.get_preset_config(
         str(strategy_id_for_preset),
         preset,
@@ -16274,17 +16825,27 @@ def _process_strategy_automation_tick_unlocked(
         strategy_key=strategy_key,
         preset_cfg=preset_cfg,
         volume_sma_period=volume_sma_period,
+        closed_bar_only=True,
     )
     is_orb_alpha_hybrid = strategy_key == "orb_alpha_hybrid"
     current_color = str(color_state.get("color") or "gray")
     current_alpha_color = str(color_state.get("alpha_color") or "gray").strip().lower()
     prev_color = str(auto.get("last_color") or "gray")
+    last_entry_color = str(auto.get("last_entry_color") or "gray").strip().lower()
+    deadzone_m5_guard_pending = bool(auto.get("deadzone_m5_guard_pending_reentry", False))
+    deadzone_m5_guard_base_color = str(auto.get("deadzone_m5_guard_base_color") or "").strip().lower()
+    deadzone_m5_guard_pending_set_at = str(auto.get("deadzone_m5_guard_pending_set_at") or "")
+    deadzone_m5_guard_exit_m5_color = str(auto.get("deadzone_m5_guard_exit_m5_color") or "").strip().lower()
+    deadzone_m5_guard_exit_m15_color = str(auto.get("deadzone_m5_guard_exit_m15_color") or "").strip().lower()
+    deadzone_m5_prev_color = str(auto.get("deadzone_m5_last_color") or "gray").strip().lower()
     last_bar_ts = pd.Timestamp(bars_df.index[-1])
     if last_bar_ts.tzinfo is None:
         last_bar_ts = last_bar_ts.tz_localize(timezone.utc)
     else:
         last_bar_ts = last_bar_ts.tz_convert(timezone.utc)
     current_bar_unix = int(last_bar_ts.timestamp())
+    prev_eval_bar_unix = int(_to_float_or_none(auto.get("last_eval_bar_unix")) or 0)
+    is_new_bar = bool(current_bar_unix != prev_eval_bar_unix)
     current_price = _to_float_or_none((live_bar or {}).get("close"))
     current_high = _to_float_or_none((live_bar or {}).get("high"))
     current_low = _to_float_or_none((live_bar or {}).get("low"))
@@ -16305,6 +16866,91 @@ def _process_strategy_automation_tick_unlocked(
         current_low = float(current_price)
     else:
         current_low = float(current_low)
+    tick_now_utc = _utc_now()
+    tick_minute_key = int(tick_now_utc.replace(second=0, microsecond=0).timestamp())
+    routine_last_minute_key = int(_to_float_or_none(auto.get("routine_last_minute_key")) or 0)
+
+    if is_new_bar or str(prev_color).strip().lower() != str(current_color).strip().lower():
+        logger.info(
+            "strategy_automation_tick_eval job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s timeframe=%s bar_unix=%s prev_color=%s color=%s direction=%s price=%.5f",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            str(symbol),
+            str(timeframe),
+            int(current_bar_unix),
+            str(prev_color),
+            str(current_color),
+            str(color_state.get("direction") or "neutral"),
+            float(current_price),
+        )
+
+    deadzone_m5_guard_enabled = bool(
+        strategy_key == "deadzone_pro"
+        and str(timeframe).upper() == "M15"
+        and str(deadzone_mode) == "advanced"
+    )
+    deadzone_m5_color = "gray"
+    deadzone_m5_direction = "neutral"
+    deadzone_m5_reason = ""
+    deadzone_m5_bar_unix = 0
+    deadzone_m5_bar_at = ""
+    deadzone_m5_flip_detected = False
+    deadzone_m5_flip_from = str(deadzone_m5_prev_color)
+    deadzone_m5_flip_to = str(deadzone_m5_prev_color)
+    deadzone_m5_flip_at = ""
+    # Deadzone M15 automation: use M5 as an early-exit guard only.
+    # Entry logic remains anchored to the configured (M15) timeframe color flips.
+    if deadzone_m5_guard_enabled:
+        try:
+            m5_bars_live, m5_err = _agent_fetch_live_history_bars(
+                source=source,
+                symbol=symbol,
+                timeframe="M5",
+                history_days=max(0.5, min(10.0, float(history_days))),
+                count=max(220, int(volume_sma_period + 120)),
+                databento_api_key=None,
+            )
+            m5_df = _bars_payload_to_df(m5_bars_live, max_rows=2000, min_rows=80)
+            if m5_df is not None and not m5_df.empty:
+                m5_last_ts = pd.Timestamp(m5_df.index[-1])
+                if m5_last_ts.tzinfo is None:
+                    m5_last_ts = m5_last_ts.tz_localize(timezone.utc)
+                else:
+                    m5_last_ts = m5_last_ts.tz_convert(timezone.utc)
+                deadzone_m5_bar_unix = int(m5_last_ts.timestamp())
+                deadzone_m5_bar_at = str(m5_last_ts.isoformat())
+                m5_state = _strategy_automation_color_from_bars(
+                    bars_df=m5_df,
+                    strategy_key="deadzone_pro",
+                    preset_cfg=preset_cfg,
+                    volume_sma_period=volume_sma_period,
+                    closed_bar_only=True,
+                )
+                deadzone_m5_color = str(m5_state.get("color") or "gray").strip().lower()
+                deadzone_m5_direction = str(m5_state.get("direction") or "neutral").strip().lower()
+                if str(deadzone_m5_prev_color) != str(deadzone_m5_color):
+                    deadzone_m5_flip_detected = True
+                    deadzone_m5_flip_from = str(deadzone_m5_prev_color)
+                    deadzone_m5_flip_to = str(deadzone_m5_color)
+                    deadzone_m5_flip_at = str(deadzone_m5_bar_at or _utc_now().isoformat())
+                    logger.info(
+                        "strategy_automation_deadzone_m5_flip job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s m15_color=%s m5_from=%s m5_to=%s m5_bar_unix=%s",
+                        str(job_id),
+                        int(session.id),
+                        str(strategy_key),
+                        str(deadzone_mode),
+                        str(symbol),
+                        str(current_color),
+                        str(deadzone_m5_flip_from),
+                        str(deadzone_m5_flip_to),
+                        int(deadzone_m5_bar_unix),
+                    )
+            elif m5_err:
+                deadzone_m5_reason = str(m5_err)
+        except Exception as exc:
+            deadzone_m5_reason = f"m5_guard_error:{type(exc).__name__}"
 
     open_trade = (
         db.query(SimulationTrade)
@@ -16323,11 +16969,166 @@ def _process_strategy_automation_tick_unlocked(
     hybrid_alpha_opp_count = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_opp_count")) or 0)))
     hybrid_alpha_last_bar_unix = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_last_bar_unix")) or 0)))
 
+    session_mode = str(getattr(session, "mode", "") or "").strip().lower()
+    if open_trade is not None and session_mode == "live" and _is_live_mt5_execution_enabled(session):
+        broker_positions: Optional[List[Dict[str, Any]]] = None
+        try:
+            broker_snap = _session_sync_live_mt5_account(
+                session=session,
+                db=db,
+                include_positions=True,
+                persist=False,
+            )
+            if isinstance(broker_snap, dict) and isinstance(broker_snap.get("open_positions"), list):
+                broker_positions = [dict(x) for x in broker_snap.get("open_positions") if isinstance(x, dict)]
+        except Exception as exc:
+            logger.warning(
+                "strategy_automation_live_reconcile_fetch_failed job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s err=%s",
+                str(job_id),
+                int(session.id),
+                str(strategy_key),
+                str(deadzone_mode),
+                str(symbol),
+                str(type(exc).__name__),
+            )
+            broker_positions = None
+        if isinstance(broker_positions, list):
+            expected_dir = str(open_trade.direction or "").strip().upper()
+            expected_tag = f"WB#{int(session.id)}".upper()
+            exec_meta = open_trade.cost_breakdown_json if isinstance(open_trade.cost_breakdown_json, dict) else {}
+            exec_ctx = exec_meta.get("execution") if isinstance(exec_meta.get("execution"), dict) else {}
+            expected_pos_ticket = int(_to_float_or_none(exec_ctx.get("position_ticket")) or 0)
+            matched = False
+            matched_via = ""
+            for row in broker_positions:
+                row_ticket = int(_to_float_or_none(row.get("ticket")) or 0)
+                row_symbol = str(row.get("symbol") or "")
+                if expected_pos_ticket > 0 and row_ticket == expected_pos_ticket:
+                    if _symbols_equivalent(row_symbol, symbol) or (not str(row_symbol).strip()):
+                        matched = True
+                        matched_via = "position_ticket"
+                        break
+            if not matched:
+                for row in broker_positions:
+                    row_dir = str(row.get("direction") or "").strip().upper()
+                    row_symbol = str(row.get("symbol") or "")
+                    row_comment = str(row.get("comment") or "").strip().upper()
+                    if row_dir != expected_dir:
+                        continue
+                    if not _symbols_equivalent(row_symbol, symbol):
+                        continue
+                    if expected_tag and expected_tag in row_comment:
+                        matched = True
+                        matched_via = "session_comment"
+                        break
+            if not matched:
+                reconcile_reason = "broker_position_missing_reconciled"
+                logger.warning(
+                    "strategy_automation_live_reconcile_missing job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s trade_id=%s expected_pos_ticket=%s broker_open_count=%s",
+                    str(job_id),
+                    int(session.id),
+                    str(strategy_key),
+                    str(deadzone_mode),
+                    str(symbol),
+                    int(open_trade.id),
+                    int(expected_pos_ticket),
+                    int(len(broker_positions)),
+                )
+                reconcile_req = CloseTradeRequest(
+                    exit_price=float(current_price),
+                    confirm_live_order=True,
+                    live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+                    automation_internal=True,
+                )
+                try:
+                    close_out = close_trade(
+                        session_id=int(session.id),
+                        trade_id=int(open_trade.id),
+                        req=reconcile_req,
+                        db=db,
+                    )
+                    action = "closed_trade"
+                    action_reason = str(reconcile_reason)
+                    close_payload = {
+                        "trade_id": int(open_trade.id),
+                        "close_result": close_out if isinstance(close_out, dict) else {},
+                        "strategy": str(strategy_key),
+                        "deadzone_mode": str(deadzone_mode),
+                        "job_id": str(job_id),
+                        "reason": str(reconcile_reason),
+                        "matched_via": str(matched_via or "none"),
+                        "expected_position_ticket": int(expected_pos_ticket),
+                        "broker_open_count": int(len(broker_positions)),
+                        "m15_color": str(current_color),
+                        "m15_bar_unix": int(current_bar_unix),
+                        "m15_bar_at": str(last_bar_ts.isoformat()),
+                        "m5_color": str(deadzone_m5_color),
+                        "m5_prev_color": str(deadzone_m5_prev_color),
+                        "m5_flip_from": str(deadzone_m5_flip_from),
+                        "m5_flip_to": str(deadzone_m5_flip_to),
+                        "m5_flip_at": str(deadzone_m5_flip_at),
+                        "m5_bar_unix": int(deadzone_m5_bar_unix),
+                        "m5_bar_at": str(deadzone_m5_bar_at),
+                    }
+                    action_payload = dict(close_payload)
+                    just_closed = True
+                    allow_immediate_reentry = not bool(is_orb_alpha_hybrid)
+                    _strategy_automation_attach_trade_context(
+                        db=db,
+                        trade_id=int(open_trade.id),
+                        job_id=str(job_id),
+                        strategy=str(strategy_key),
+                        symbol=str(symbol),
+                        timeframe=str(timeframe),
+                        mode=str(deadzone_mode),
+                        event="exit",
+                        payload={
+                            "trigger": str(reconcile_reason),
+                            "open_direction": str(expected_dir),
+                            "expected_position_ticket": int(expected_pos_ticket),
+                            "broker_open_count": int(len(broker_positions)),
+                            "m15_color": str(current_color),
+                            "m15_bar_unix": int(current_bar_unix),
+                            "m15_bar_at": str(last_bar_ts.isoformat()),
+                            "m5_color": str(deadzone_m5_color),
+                            "m5_prev_color": str(deadzone_m5_prev_color),
+                            "m5_flip_from": str(deadzone_m5_flip_from),
+                            "m5_flip_to": str(deadzone_m5_flip_to),
+                            "m5_flip_at": str(deadzone_m5_flip_at),
+                            "m5_bar_unix": int(deadzone_m5_bar_unix),
+                            "m5_bar_at": str(deadzone_m5_bar_at),
+                        },
+                    )
+                    open_trade = None
+                except HTTPException as http_exc:
+                    logger.warning(
+                        "strategy_automation_live_reconcile_close_failed job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s trade_id=%s err=%s",
+                        str(job_id),
+                        int(session.id),
+                        str(strategy_key),
+                        str(deadzone_mode),
+                        str(symbol),
+                        int(open_trade.id),
+                        str(http_exc.detail),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "strategy_automation_live_reconcile_close_failed job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s trade_id=%s err=%s",
+                        str(job_id),
+                        int(session.id),
+                        str(strategy_key),
+                        str(deadzone_mode),
+                        str(symbol),
+                        int(open_trade.id),
+                        str(type(exc).__name__),
+                    )
+
     if open_trade is not None:
         open_dir = str(open_trade.direction or "").strip().upper()
         open_sl = _to_float_or_none(open_trade.stop_loss)
         open_tp = _to_float_or_none(open_trade.take_profit)
         forced_close_reason = ""
+        m5_guard_close_reason = ""
         forced_close_price = float(current_price)
         if open_dir == "BUY":
             sl_hit = (
@@ -16396,10 +17197,31 @@ def _process_strategy_automation_tick_unlocked(
                 open_direction=open_dir,
                 current_color=current_color,
             )
+            if deadzone_m5_guard_enabled:
+                if _strategy_automation_is_exit_signal(
+                    open_direction=open_dir,
+                    current_color=deadzone_m5_color,
+                ):
+                    should_color_exit = True
+                    m5_guard_close_reason = "deadzone_m5_color_flip_exit"
         if forced_close_reason or should_color_exit:
             exit_reason = str(
                 forced_close_reason
+                or m5_guard_close_reason
                 or ("alpha_opposite_2bar_exit_after_10m" if is_orb_alpha_hybrid else "color_exit_signal")
+            )
+            logger.info(
+                "strategy_automation_close_attempt job_id=%s child_session_id=%s trade_id=%s strategy=%s mode=%s symbol=%s color=%s open_dir=%s reason=%s price=%.5f",
+                str(job_id),
+                int(session.id),
+                int(open_trade.id),
+                str(strategy_key),
+                str(deadzone_mode),
+                str(symbol),
+                str(current_color),
+                str(open_dir),
+                str(exit_reason),
+                float(forced_close_price if forced_close_reason else current_price),
             )
             close_req = CloseTradeRequest(
                 exit_price=float(forced_close_price if forced_close_reason else current_price),
@@ -16418,22 +17240,105 @@ def _process_strategy_automation_tick_unlocked(
                 close_payload = {
                     "trade_id": int(open_trade.id),
                     "close_result": close_out if isinstance(close_out, dict) else {},
+                    "strategy": str(strategy_key),
+                    "deadzone_mode": str(deadzone_mode),
+                    "job_id": str(job_id),
+                    "reason": str(exit_reason),
+                    "m15_color": str(current_color),
+                    "m15_bar_unix": int(current_bar_unix),
+                    "m15_bar_at": str(last_bar_ts.isoformat()),
+                    "m5_color": str(deadzone_m5_color),
+                    "m5_prev_color": str(deadzone_m5_prev_color),
+                    "m5_flip_from": str(deadzone_m5_flip_from),
+                    "m5_flip_to": str(deadzone_m5_flip_to),
+                    "m5_flip_at": str(deadzone_m5_flip_at),
+                    "m5_bar_unix": int(deadzone_m5_bar_unix),
+                    "m5_bar_at": str(deadzone_m5_bar_at),
                 }
                 action_payload = dict(close_payload)
                 action_reason = str(exit_reason)
                 just_closed = True
                 allow_immediate_reentry = (not bool(forced_close_reason)) and (not bool(is_orb_alpha_hybrid))
+                logger.info(
+                    "strategy_automation_close_ok job_id=%s child_session_id=%s trade_id=%s strategy=%s mode=%s symbol=%s reason=%s",
+                    str(job_id),
+                    int(session.id),
+                    int(open_trade.id),
+                    str(strategy_key),
+                    str(deadzone_mode),
+                    str(symbol),
+                    str(exit_reason),
+                )
+                _strategy_automation_attach_trade_context(
+                    db=db,
+                    trade_id=int(open_trade.id),
+                    job_id=str(job_id),
+                    strategy=str(strategy_key),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    mode=str(deadzone_mode),
+                    event="exit",
+                    payload={
+                        "trigger": str(exit_reason),
+                        "open_direction": str(open_dir),
+                        "color": str(current_color),
+                        "m15_color": str(current_color),
+                        "m15_bar_unix": int(current_bar_unix),
+                        "m15_bar_at": str(last_bar_ts.isoformat()),
+                        "m5_color": str(deadzone_m5_color),
+                        "m5_prev_color": str(deadzone_m5_prev_color),
+                        "m5_flip_from": str(deadzone_m5_flip_from),
+                        "m5_flip_to": str(deadzone_m5_flip_to),
+                        "m5_flip_at": str(deadzone_m5_flip_at),
+                        "m5_bar_unix": int(deadzone_m5_bar_unix),
+                        "m5_bar_at": str(deadzone_m5_bar_at),
+                        "m15_unchanged_reentry_candidate": bool(deadzone_m5_guard_enabled and bool(m5_guard_close_reason)),
+                    },
+                )
                 if is_orb_alpha_hybrid:
                     hybrid_entry_time_utc = ""
                     hybrid_alpha_opp_count = 0
                     hybrid_alpha_last_bar_unix = int(current_bar_unix)
+                if deadzone_m5_guard_enabled:
+                    if m5_guard_close_reason:
+                        deadzone_m5_guard_pending = True
+                        deadzone_m5_guard_base_color = str(current_color).strip().lower()
+                        deadzone_m5_guard_pending_set_at = str(_utc_now().isoformat())
+                        deadzone_m5_guard_exit_m5_color = str(deadzone_m5_color).strip().lower()
+                        deadzone_m5_guard_exit_m15_color = str(current_color).strip().lower()
+                    else:
+                        deadzone_m5_guard_pending = False
+                        deadzone_m5_guard_base_color = ""
+                        deadzone_m5_guard_pending_set_at = ""
+                        deadzone_m5_guard_exit_m5_color = ""
+                        deadzone_m5_guard_exit_m15_color = ""
                 open_trade = None
             except HTTPException as http_exc:
                 action = "noop"
                 action_reason = f"close_failed:{str(http_exc.detail)}"
+                logger.warning(
+                    "strategy_automation_close_failed job_id=%s child_session_id=%s trade_id=%s strategy=%s mode=%s symbol=%s err=%s",
+                    str(job_id),
+                    int(session.id),
+                    int(open_trade.id),
+                    str(strategy_key),
+                    str(deadzone_mode),
+                    str(symbol),
+                    str(http_exc.detail),
+                )
             except Exception as exc:
                 action = "noop"
                 action_reason = f"close_failed:{type(exc).__name__}"
+                logger.warning(
+                    "strategy_automation_close_failed job_id=%s child_session_id=%s trade_id=%s strategy=%s mode=%s symbol=%s err=%s",
+                    str(job_id),
+                    int(session.id),
+                    int(open_trade.id),
+                    str(strategy_key),
+                    str(deadzone_mode),
+                    str(symbol),
+                    str(type(exc).__name__),
+                )
     if open_trade is None:
         first_run = bool(auto.get("first_run", True))
         should_enter = _strategy_automation_is_entry_signal(
@@ -16442,15 +17347,65 @@ def _process_strategy_automation_tick_unlocked(
             first_run=first_run,
             force_first_entry=force_first_entry,
         )
+        reentry_from_m5_guard = False
+        if deadzone_m5_guard_enabled:
+            # If we exited due M5 opposite color while M15 base color stayed intact,
+            # re-enter when M5 realigns with that same M15 base color.
+            if (
+                deadzone_m5_guard_pending
+                and deadzone_m5_guard_base_color in {"green", "red"}
+                and str(current_color).strip().lower() == deadzone_m5_guard_base_color
+                and str(deadzone_m5_color).strip().lower() == deadzone_m5_guard_base_color
+            ):
+                should_enter = True
+                reentry_from_m5_guard = True
+                action_reason = "deadzone_m5_flipback_reentry_m15_unchanged"
+            elif (
+                deadzone_m5_guard_pending
+                and deadzone_m5_guard_base_color in {"green", "red"}
+                and str(current_color).strip().lower() in {"green", "red"}
+                and str(current_color).strip().lower() != deadzone_m5_guard_base_color
+            ):
+                # M15 base changed; pending re-entry guard is no longer relevant.
+                deadzone_m5_guard_pending = False
+                deadzone_m5_guard_base_color = ""
+                deadzone_m5_guard_pending_set_at = ""
+                deadzone_m5_guard_exit_m5_color = ""
+                deadzone_m5_guard_exit_m15_color = ""
         # Reversal mode: immediately re-enter on opposite color after a close.
         if (not should_enter) and just_closed and allow_immediate_reentry and str(current_color or "").lower() in {"green", "red"}:
             should_enter = True
+        # Prevent same-direction re-entry churn when signal briefly degrades to
+        # gray and then returns to the prior side without a true flip.
+        if (
+            should_enter
+            and (not reentry_from_m5_guard)
+            and (not (first_run and force_first_entry))
+            and str(current_color or "").strip().lower() in {"green", "red"}
+            and last_entry_color in {"green", "red"}
+            and str(current_color).strip().lower() == str(last_entry_color).strip().lower()
+        ):
+            should_enter = False
+            action_reason = "same_color_reentry_blocked"
         if should_enter:
             direction_expected = "BUY" if current_color == "green" else ("SELL" if current_color == "red" else "")
             if direction_expected:
                 atr_stop_mult = _to_float_or_none(auto.get("atr_stop_mult"))
                 if atr_stop_mult is None:
                     atr_stop_mult = _to_float_or_none(preset_cfg.get("atr_stop_mult"))
+                if atr_stop_mult is None and strategy_key == "deadzone_pro":
+                    atr_stop_mult = 3.0
+                logger.info(
+                    "strategy_automation_entry_signal job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s color=%s direction=%s price=%.5f",
+                    str(job_id),
+                    int(session.id),
+                    str(strategy_key),
+                    str(deadzone_mode),
+                    str(symbol),
+                    str(current_color),
+                    str(direction_expected),
+                    float(current_price),
+                )
                 order_plan = _strategy_automation_build_flip_order(
                     session=session,
                     symbol=str(symbol),
@@ -16462,6 +17417,18 @@ def _process_strategy_automation_tick_unlocked(
                     atr_stop_mult=float(atr_stop_mult if atr_stop_mult is not None else 1.8),
                 )
                 if isinstance(order_plan, dict):
+                    logger.info(
+                        "strategy_automation_open_attempt job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s direction=%s lot=%.4f sl=%s price=%.5f",
+                        str(job_id),
+                        int(session.id),
+                        str(strategy_key),
+                        str(deadzone_mode),
+                        str(symbol),
+                        str(order_plan.get("direction") or direction_expected),
+                        float(_to_float_or_none(order_plan.get("lot_size")) or 0.0),
+                        str(_to_float_or_none(order_plan.get("stop_loss"))),
+                        float(current_price),
+                    )
                     trade_req = TradeRequest(
                         direction=str(order_plan.get("direction") or direction_expected),
                         stop_loss=float(_to_float_or_none(order_plan.get("stop_loss")) or 0.0),
@@ -16482,51 +17449,624 @@ def _process_strategy_automation_tick_unlocked(
                             "trade_result": trade_out if isinstance(trade_out, dict) else {},
                             "order_plan": order_plan,
                             "entry_mode": "color_flip",
+                            "strategy": str(strategy_key),
+                            "deadzone_mode": str(deadzone_mode),
+                            "job_id": str(job_id),
+                            "reason": str(action_reason),
+                            "m15_color": str(current_color),
+                            "m15_bar_unix": int(current_bar_unix),
+                            "m15_bar_at": str(last_bar_ts.isoformat()),
+                            "m5_color": str(deadzone_m5_color),
+                            "m5_prev_color": str(deadzone_m5_prev_color),
+                            "m5_flip_from": str(deadzone_m5_flip_from),
+                            "m5_flip_to": str(deadzone_m5_flip_to),
+                            "m5_flip_at": str(deadzone_m5_flip_at),
+                            "m5_bar_unix": int(deadzone_m5_bar_unix),
+                            "m5_bar_at": str(deadzone_m5_bar_at),
+                            "reentry_from_m5_guard": bool(reentry_from_m5_guard),
+                            "guard_base_color": str(deadzone_m5_guard_base_color),
+                            "guard_pending_set_at": str(deadzone_m5_guard_pending_set_at),
+                            "guard_exit_m5_color": str(deadzone_m5_guard_exit_m5_color),
+                            "guard_exit_m15_color": str(deadzone_m5_guard_exit_m15_color),
                         }
                         if isinstance(close_payload, dict):
                             action_payload["close_result"] = close_payload
-                        action_reason = "color_flip_entry_signal"
+                        entry_reason = (
+                            "deadzone_m5_flipback_reentry_m15_unchanged"
+                            if bool(reentry_from_m5_guard)
+                            else "color_flip_entry_signal"
+                        )
+                        action_reason = str(entry_reason)
+                        action_payload["reason"] = str(entry_reason)
+                        opened_trade_id = int(_to_float_or_none((trade_out if isinstance(trade_out, dict) else {}).get("trade_id")) or _to_float_or_none((trade_out if isinstance(trade_out, dict) else {}).get("id")) or 0)
+                        logger.info(
+                            "strategy_automation_open_ok job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s trade_id=%s direction=%s reason=%s",
+                            str(job_id),
+                            int(session.id),
+                            str(strategy_key),
+                            str(deadzone_mode),
+                            str(symbol),
+                            int(opened_trade_id),
+                            str(order_plan.get("direction") or direction_expected),
+                            str(action_reason),
+                        )
+                        if opened_trade_id > 0:
+                            _strategy_automation_attach_trade_context(
+                                db=db,
+                                trade_id=int(opened_trade_id),
+                                job_id=str(job_id),
+                                strategy=str(strategy_key),
+                                symbol=str(symbol),
+                                timeframe=str(timeframe),
+                                mode=str(deadzone_mode),
+                                event="entry",
+                                payload={
+                                    "trigger": str(action_reason),
+                                    "color": str(current_color),
+                                    "m15_color": str(current_color),
+                                    "m15_bar_unix": int(current_bar_unix),
+                                    "m15_bar_at": str(last_bar_ts.isoformat()),
+                                    "direction": str(order_plan.get("direction") or direction_expected),
+                                    "m5_color": str(deadzone_m5_color),
+                                    "m5_prev_color": str(deadzone_m5_prev_color),
+                                    "m5_flip_from": str(deadzone_m5_flip_from),
+                                    "m5_flip_to": str(deadzone_m5_flip_to),
+                                    "m5_flip_at": str(deadzone_m5_flip_at),
+                                    "m5_bar_unix": int(deadzone_m5_bar_unix),
+                                    "m5_bar_at": str(deadzone_m5_bar_at),
+                                    "reentry_from_m5_guard": bool(reentry_from_m5_guard),
+                                    "guard_base_color": str(deadzone_m5_guard_base_color),
+                                    "guard_pending_set_at": str(deadzone_m5_guard_pending_set_at),
+                                    "guard_exit_m5_color": str(deadzone_m5_guard_exit_m5_color),
+                                    "guard_exit_m15_color": str(deadzone_m5_guard_exit_m15_color),
+                                },
+                            )
                         if is_orb_alpha_hybrid:
                             hybrid_entry_time_utc = _utc_now().isoformat()
                             hybrid_alpha_opp_count = 0
                             hybrid_alpha_last_bar_unix = int(current_bar_unix)
+                        last_entry_color = str(current_color or "gray").strip().lower()
+                        if deadzone_m5_guard_enabled:
+                            deadzone_m5_guard_pending = False
+                            deadzone_m5_guard_base_color = ""
+                            deadzone_m5_guard_pending_set_at = ""
+                            deadzone_m5_guard_exit_m5_color = ""
+                            deadzone_m5_guard_exit_m15_color = ""
                     except HTTPException as http_exc:
                         if action == "closed_trade":
                             action_reason = f"entry_after_close_failed:{str(http_exc.detail)}"
                         else:
                             action = "noop"
                             action_reason = f"entry_failed:{str(http_exc.detail)}"
+                        logger.warning(
+                            "strategy_automation_open_failed job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s err=%s",
+                            str(job_id),
+                            int(session.id),
+                            str(strategy_key),
+                            str(deadzone_mode),
+                            str(symbol),
+                            str(http_exc.detail),
+                        )
                     except Exception as exc:
                         if action == "closed_trade":
                             action_reason = f"entry_after_close_failed:{type(exc).__name__}"
                         else:
                             action = "noop"
                             action_reason = f"entry_failed:{type(exc).__name__}"
+                        logger.warning(
+                            "strategy_automation_open_failed job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s err=%s",
+                            str(job_id),
+                            int(session.id),
+                            str(strategy_key),
+                            str(deadzone_mode),
+                            str(symbol),
+                            str(type(exc).__name__),
+                        )
                 else:
                     if action == "closed_trade":
                         action_reason = "entry_after_close_failed:order_plan_invalid"
                     else:
                         action_reason = "entry_signal_but_order_plan_invalid"
+                    logger.warning(
+                        "strategy_automation_order_plan_invalid job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s color=%s direction=%s",
+                        str(job_id),
+                        int(session.id),
+                        str(strategy_key),
+                        str(deadzone_mode),
+                        str(symbol),
+                        str(current_color),
+                        str(direction_expected),
+                    )
 
     if is_orb_alpha_hybrid and open_trade is None and action not in {"opened_trade", "closed_and_opened_trade"}:
         hybrid_entry_time_utc = ""
         hybrid_alpha_opp_count = 0
+    if not deadzone_m5_guard_enabled:
+        deadzone_m5_guard_pending = False
+        deadzone_m5_guard_base_color = ""
+        deadzone_m5_guard_pending_set_at = ""
+        deadzone_m5_guard_exit_m5_color = ""
+        deadzone_m5_guard_exit_m15_color = ""
+
+    routine_logs_next: List[Dict[str, Any]] = []
+    try:
+        raw_routine_logs = auto.get("routine_logs") if isinstance(auto.get("routine_logs"), list) else []
+        routine_logs_next = [dict(x) for x in raw_routine_logs if isinstance(x, dict)]
+    except Exception:
+        routine_logs_next = []
+    routine_log_appended = False
+    shadow_state_root_raw = auto.get("shadow_pnl_states") if isinstance(auto.get("shadow_pnl_states"), dict) else {}
+    shadow_state_root: Dict[str, Dict[str, Any]] = {}
+    for _k, _v in shadow_state_root_raw.items():
+        if isinstance(_v, dict):
+            shadow_state_root[str(_k)] = dict(_v)
+
+    if tick_minute_key > 0 and tick_minute_key != routine_last_minute_key:
+        def _tf_color_snapshot(tf_label: str, *, min_rows: int = 80) -> Dict[str, Any]:
+            try:
+                tf_bars_live, tf_err = _agent_fetch_live_history_bars(
+                    source=source,
+                    symbol=symbol,
+                    timeframe=str(tf_label),
+                    history_days=max(0.5, min(10.0, float(history_days))),
+                    count=max(220, int(volume_sma_period + 120)),
+                    databento_api_key=None,
+                )
+                if not tf_bars_live:
+                    return {
+                        "timeframe": str(tf_label).upper(),
+                        "color": "gray",
+                        "direction": "neutral",
+                        "bar_unix": 0,
+                        "bar_at": "",
+                        "rsi": None,
+                        "error": str(tf_err or "empty_live_payload"),
+                    }
+                tf_df = _bars_payload_to_df(tf_bars_live, max_rows=2400, min_rows=min_rows)
+                if tf_df is None or tf_df.empty:
+                    return {
+                        "timeframe": str(tf_label).upper(),
+                        "color": "gray",
+                        "direction": "neutral",
+                        "bar_unix": 0,
+                        "bar_at": "",
+                        "rsi": None,
+                        "error": str(tf_err or "insufficient_live_history"),
+                    }
+                tf_state = _strategy_automation_color_from_bars(
+                    bars_df=tf_df,
+                    strategy_key=str(strategy_key),
+                    preset_cfg=preset_cfg,
+                    volume_sma_period=volume_sma_period,
+                    closed_bar_only=True,
+                )
+                tf_last_ts = pd.Timestamp(tf_df.index[-1])
+                if tf_last_ts.tzinfo is None:
+                    tf_last_ts = tf_last_ts.tz_localize(timezone.utc)
+                else:
+                    tf_last_ts = tf_last_ts.tz_convert(timezone.utc)
+                return {
+                    "timeframe": str(tf_label).upper(),
+                    "color": str(tf_state.get("color") or "gray").strip().lower(),
+                    "direction": str(tf_state.get("direction") or "neutral").strip().lower(),
+                    "bar_unix": int(tf_last_ts.timestamp()),
+                    "bar_at": str(tf_last_ts.isoformat()),
+                    "rsi": _to_float_or_none(_rsi_last(tf_df["close"], period=14)),
+                    "error": "",
+                }
+            except Exception as exc:
+                return {
+                    "timeframe": str(tf_label).upper(),
+                    "color": "gray",
+                    "direction": "neutral",
+                    "bar_unix": 0,
+                    "bar_at": "",
+                    "rsi": None,
+                    "error": f"{type(exc).__name__}",
+                }
+
+        m1_snap = _tf_color_snapshot("M1", min_rows=40)
+        if deadzone_m5_bar_unix > 0:
+            m5_snap = {
+                "timeframe": "M5",
+                "color": str(deadzone_m5_color or "gray").strip().lower(),
+                "direction": str(deadzone_m5_direction or "neutral").strip().lower(),
+                "bar_unix": int(deadzone_m5_bar_unix),
+                "bar_at": str(deadzone_m5_bar_at or ""),
+                "rsi": None,
+                "error": str(deadzone_m5_reason or ""),
+            }
+        else:
+            m5_snap = _tf_color_snapshot("M5", min_rows=50)
+        if str(timeframe).upper() == "M15":
+            m15_snap = {
+                "timeframe": "M15",
+                "color": str(current_color or "gray").strip().lower(),
+                "direction": str(color_state.get("direction") or "neutral").strip().lower(),
+                "bar_unix": int(current_bar_unix),
+                "bar_at": str(last_bar_ts.isoformat()),
+                "rsi": None,
+                "error": "",
+            }
+        else:
+            m15_snap = _tf_color_snapshot("M15", min_rows=50)
+
+        open_trade_now = (
+            db.query(SimulationTrade)
+            .filter(SimulationTrade.session_id == int(session.id))
+            .filter(SimulationTrade.status == "open")
+            .order_by(desc(SimulationTrade.id))
+            .first()
+        )
+        open_trade_id = int(_to_float_or_none(getattr(open_trade_now, "id", None)) or 0) if open_trade_now is not None else 0
+        open_trade_dir = str(getattr(open_trade_now, "direction", "") or "").strip().upper() if open_trade_now is not None else ""
+        open_trade_entry_price = _to_float_or_none(getattr(open_trade_now, "entry_price", None)) if open_trade_now is not None else None
+        open_trade_lot = _to_float_or_none(getattr(open_trade_now, "lot_size", None)) if open_trade_now is not None else None
+        open_trade_stop = _to_float_or_none(getattr(open_trade_now, "stop_loss", None)) if open_trade_now is not None else None
+        open_trade_created_at = None
+        if open_trade_now is not None:
+            _open_trade_created_raw = getattr(open_trade_now, "created_at", None)
+            if isinstance(_open_trade_created_raw, datetime):
+                open_trade_created_at = _open_trade_created_raw
+            else:
+                open_trade_created_at = _agent_parse_iso_utc(_open_trade_created_raw)
+        if open_trade_created_at is not None:
+            if open_trade_created_at.tzinfo is None:
+                open_trade_created_at = open_trade_created_at.replace(tzinfo=timezone.utc)
+            else:
+                open_trade_created_at = open_trade_created_at.astimezone(timezone.utc)
+        trade_math_ctx = _session_trade_math_context(
+            session=session,
+            symbol=str(symbol),
+            session_cfg=_session_config_dict(session),
+        )
+        value_per_1lot = _to_float_or_none(trade_math_ctx.get("value_per_1lot"))
+        if value_per_1lot is None or (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+            value_per_1lot = float(_contract_size_for_symbol(str(symbol)))
+        unrealized_pnl = None
+        unrealized_pnl_pct = None
+        unrealized_r = None
+        if (
+            open_trade_id > 0
+            and open_trade_entry_price is not None
+            and math.isfinite(float(open_trade_entry_price))
+            and float(open_trade_entry_price) > 0.0
+        ):
+            signed_move = 0.0
+            if open_trade_dir == "BUY":
+                signed_move = float(current_price) - float(open_trade_entry_price)
+                unrealized_pnl_pct = (signed_move / float(open_trade_entry_price)) * 100.0
+            elif open_trade_dir == "SELL":
+                signed_move = float(open_trade_entry_price) - float(current_price)
+                unrealized_pnl_pct = (signed_move / float(open_trade_entry_price)) * 100.0
+            if (
+                open_trade_lot is not None
+                and math.isfinite(float(open_trade_lot))
+                and float(open_trade_lot) > 0.0
+                and value_per_1lot is not None
+                and math.isfinite(float(value_per_1lot))
+                and float(value_per_1lot) > 0.0
+            ):
+                unrealized_pnl = float(signed_move) * float(open_trade_lot) * float(value_per_1lot)
+                if (
+                    open_trade_stop is not None
+                    and math.isfinite(float(open_trade_stop))
+                    and float(open_trade_stop) > 0.0
+                ):
+                    risk_dist = abs(float(open_trade_entry_price) - float(open_trade_stop))
+                    risk_usd = risk_dist * float(open_trade_lot) * float(value_per_1lot)
+                    if risk_usd > 1e-12:
+                        unrealized_r = float(unrealized_pnl) / float(risk_usd)
+
+        shadow_m1_default: Dict[str, Any] = {"total_pnl": None}
+        shadow_m1_advanced: Dict[str, Any] = {"total_pnl": None}
+        shadow_m5_default: Dict[str, Any] = {"total_pnl": None}
+        shadow_m5_advanced: Dict[str, Any] = {"total_pnl": None}
+        if str(strategy_key) == "deadzone_pro":
+            shadow_lot = _to_float_or_none(auto.get("shadow_lot_size"))
+            if shadow_lot is None:
+                shadow_lot = _to_float_or_none(auto.get("lot_size_override"))
+            if shadow_lot is None:
+                shadow_lot = _to_float_or_none(open_trade_lot)
+            if shadow_lot is None or (not math.isfinite(float(shadow_lot))) or float(shadow_lot) <= 0.0:
+                shadow_lot = 0.01
+            shadow_lot = float(max(0.0001, min(100.0, float(shadow_lot))))
+
+        def _shadow_state_norm(raw_state: Any) -> Dict[str, Any]:
+            s = dict(raw_state) if isinstance(raw_state, dict) else {}
+            out = {
+                "first_run": bool(s.get("first_run", True)),
+                "last_color": str(s.get("last_color") or "gray").strip().lower(),
+                "last_entry_color": str(s.get("last_entry_color") or "gray").strip().lower(),
+                "open_direction": str(s.get("open_direction") or "").strip().upper(),
+                "entry_price": _to_float_or_none(s.get("entry_price")),
+                "realized_pnl": _to_float_or_none(s.get("realized_pnl")) or 0.0,
+                "closed_trades": int(max(0, int(_to_float_or_none(s.get("closed_trades")) or 0))),
+                "guard_pending": bool(s.get("guard_pending", False)),
+                "guard_base_color": str(s.get("guard_base_color") or "").strip().lower(),
+            }
+            if out["open_direction"] not in {"BUY", "SELL"}:
+                out["open_direction"] = ""
+                out["entry_price"] = None
+            if out["last_color"] not in {"green", "red", "gray"}:
+                out["last_color"] = "gray"
+            if out["last_entry_color"] not in {"green", "red", "gray"}:
+                out["last_entry_color"] = "gray"
+            if out["guard_base_color"] not in {"green", "red"}:
+                out["guard_base_color"] = ""
+            return out
+
+        def _shadow_step(
+            *,
+            state: Dict[str, Any],
+            base_color: str,
+            price: float,
+            lot: float,
+            value_per_lot: float,
+            guard_color: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            s = _shadow_state_norm(state)
+            col = str(base_color or "gray").strip().lower()
+            if col not in {"green", "red"}:
+                col = "gray"
+            gcol = str(guard_color or "").strip().lower()
+            if gcol and gcol not in {"green", "red", "gray"}:
+                gcol = ""
+
+            prev_col = str(s.get("last_color") or "gray")
+            open_dir = str(s.get("open_direction") or "")
+            entry_px = _to_float_or_none(s.get("entry_price"))
+            realized = float(_to_float_or_none(s.get("realized_pnl")) or 0.0)
+            closed_trades = int(max(0, int(_to_float_or_none(s.get("closed_trades")) or 0)))
+            just_closed = False
+            guard_closed = False
+
+            if open_dir in {"BUY", "SELL"} and entry_px is not None and math.isfinite(float(entry_px)):
+                should_exit = _strategy_automation_is_exit_signal(open_direction=open_dir, current_color=col)
+                if gcol and _strategy_automation_is_exit_signal(open_direction=open_dir, current_color=gcol):
+                    should_exit = True
+                    guard_closed = True
+                if should_exit:
+                    signed_move = (float(price) - float(entry_px)) if open_dir == "BUY" else (float(entry_px) - float(price))
+                    realized += float(signed_move) * float(lot) * float(value_per_lot)
+                    closed_trades = int(closed_trades + 1)
+                    open_dir = ""
+                    entry_px = None
+                    just_closed = True
+                    if guard_closed and col in {"green", "red"}:
+                        s["guard_pending"] = True
+                        s["guard_base_color"] = str(col)
+                    else:
+                        s["guard_pending"] = False
+                        s["guard_base_color"] = ""
+
+            if not open_dir:
+                first_run_shadow = bool(s.get("first_run", True))
+                should_enter = _strategy_automation_is_entry_signal(
+                    prev_color=prev_col,
+                    current_color=col,
+                    first_run=first_run_shadow,
+                    force_first_entry=True,
+                )
+                reentry_from_guard = False
+                if gcol:
+                    guard_pending = bool(s.get("guard_pending", False))
+                    guard_base = str(s.get("guard_base_color") or "").strip().lower()
+                    if (
+                        guard_pending
+                        and guard_base in {"green", "red"}
+                        and col == guard_base
+                        and gcol == guard_base
+                    ):
+                        should_enter = True
+                        reentry_from_guard = True
+                    elif (
+                        guard_pending
+                        and guard_base in {"green", "red"}
+                        and col in {"green", "red"}
+                        and col != guard_base
+                    ):
+                        s["guard_pending"] = False
+                        s["guard_base_color"] = ""
+                if (not should_enter) and just_closed and col in {"green", "red"}:
+                    should_enter = True
+                if (
+                    should_enter
+                    and (not reentry_from_guard)
+                    and (not (first_run_shadow and True))
+                    and col in {"green", "red"}
+                    and str(s.get("last_entry_color") or "gray") in {"green", "red"}
+                    and col == str(s.get("last_entry_color") or "gray")
+                ):
+                    should_enter = False
+                if should_enter and col in {"green", "red"}:
+                    open_dir = "BUY" if col == "green" else "SELL"
+                    entry_px = float(price)
+                    s["last_entry_color"] = str(col)
+                    s["guard_pending"] = False
+                    s["guard_base_color"] = ""
+
+            unreal = 0.0
+            if open_dir in {"BUY", "SELL"} and entry_px is not None and math.isfinite(float(entry_px)):
+                signed_move_now = (float(price) - float(entry_px)) if open_dir == "BUY" else (float(entry_px) - float(price))
+                unreal = float(signed_move_now) * float(lot) * float(value_per_lot)
+
+            s["first_run"] = False
+            s["last_color"] = str(col)
+            s["open_direction"] = str(open_dir)
+            s["entry_price"] = float(entry_px) if (entry_px is not None and math.isfinite(float(entry_px))) else None
+            s["realized_pnl"] = float(realized)
+            s["unrealized_pnl"] = float(unreal)
+            s["total_pnl"] = float(realized + unreal)
+            s["closed_trades"] = int(closed_trades)
+            return s
+
+        if str(strategy_key) == "deadzone_pro":
+            m1_col = str(m1_snap.get("color") or "gray").strip().lower()
+            m5_col = str(m5_snap.get("color") or "gray").strip().lower()
+            shadow_m1_default = _shadow_step(
+                state=shadow_state_root.get("m1_default", {}),
+                base_color=m1_col,
+                price=float(current_price),
+                lot=float(shadow_lot),
+                value_per_lot=float(value_per_1lot),
+                guard_color=None,
+            )
+            shadow_m1_advanced = _shadow_step(
+                state=shadow_state_root.get("m1_advanced", {}),
+                base_color=m1_col,
+                price=float(current_price),
+                lot=float(shadow_lot),
+                value_per_lot=float(value_per_1lot),
+                guard_color=None,  # no lower timeframe than M1
+            )
+            shadow_m5_default = _shadow_step(
+                state=shadow_state_root.get("m5_default", {}),
+                base_color=m5_col,
+                price=float(current_price),
+                lot=float(shadow_lot),
+                value_per_lot=float(value_per_1lot),
+                guard_color=None,
+            )
+            shadow_m5_advanced = _shadow_step(
+                state=shadow_state_root.get("m5_advanced", {}),
+                base_color=m5_col,
+                price=float(current_price),
+                lot=float(shadow_lot),
+                value_per_lot=float(value_per_1lot),
+                guard_color=m1_col,  # advanced M5 uses M1 as early-exit guard
+            )
+            shadow_state_root["m1_default"] = dict(shadow_m1_default)
+            shadow_state_root["m1_advanced"] = dict(shadow_m1_advanced)
+            shadow_state_root["m5_default"] = dict(shadow_m5_default)
+            shadow_state_root["m5_advanced"] = dict(shadow_m5_advanced)
+
+        routine_event = {
+            "event": "routine",
+            "event_time": str(tick_now_utc.isoformat()),
+            "trade_created_at": str(open_trade_created_at.isoformat()) if open_trade_created_at is not None else "",
+            "trade_id": int(open_trade_id),
+            "direction": str(open_trade_dir),
+            "strategy": str(strategy_key),
+            "mode": str(deadzone_mode),
+            "symbol": str(symbol).upper(),
+            "timeframe": str(timeframe).upper(),
+            "reason": "routine_1m_snapshot",
+            "color": str(current_color or "gray"),
+            "m1_color": str(m1_snap.get("color") or "gray"),
+            "m5_color": str(m5_snap.get("color") or "gray"),
+            "m15_color": str(m15_snap.get("color") or "gray"),
+            "m1_bar_unix": int(_to_float_or_none(m1_snap.get("bar_unix")) or 0),
+            "m5_bar_unix": int(_to_float_or_none(m5_snap.get("bar_unix")) or 0),
+            "m15_bar_unix": int(_to_float_or_none(m15_snap.get("bar_unix")) or 0),
+            "m1_bar_at": str(m1_snap.get("bar_at") or ""),
+            "m5_bar_at": str(m5_snap.get("bar_at") or ""),
+            "m15_bar_at": str(m15_snap.get("bar_at") or ""),
+            "price": float(current_price),
+            "rsi": _to_float_or_none(m1_snap.get("rsi")),
+            "entry_price": _to_float_or_none(open_trade_entry_price),
+            "exit_price": None,
+            "lot_size": _to_float_or_none(open_trade_lot),
+            "pnl": _to_float_or_none(unrealized_pnl),
+            "r_multiple": _to_float_or_none(unrealized_r),
+            "open_trade_pnl_pct": _to_float_or_none(unrealized_pnl_pct),
+            "m1_default_pnl": _to_float_or_none(shadow_m1_default.get("total_pnl")),
+            "m1_advanced_pnl": _to_float_or_none(shadow_m1_advanced.get("total_pnl")),
+            "m5_default_pnl": _to_float_or_none(shadow_m5_default.get("total_pnl")),
+            "m5_advanced_pnl": _to_float_or_none(shadow_m5_advanced.get("total_pnl")),
+            "m1_default_realized_pnl": _to_float_or_none(shadow_m1_default.get("realized_pnl")),
+            "m1_default_unrealized_pnl": _to_float_or_none(shadow_m1_default.get("unrealized_pnl")),
+            "m1_advanced_realized_pnl": _to_float_or_none(shadow_m1_advanced.get("realized_pnl")),
+            "m1_advanced_unrealized_pnl": _to_float_or_none(shadow_m1_advanced.get("unrealized_pnl")),
+            "m5_default_realized_pnl": _to_float_or_none(shadow_m5_default.get("realized_pnl")),
+            "m5_default_unrealized_pnl": _to_float_or_none(shadow_m5_default.get("unrealized_pnl")),
+            "m5_advanced_realized_pnl": _to_float_or_none(shadow_m5_advanced.get("realized_pnl")),
+            "m5_advanced_unrealized_pnl": _to_float_or_none(shadow_m5_advanced.get("unrealized_pnl")),
+            "status": "open" if int(open_trade_id) > 0 else "flat",
+        }
+        routine_logs_next.append(routine_event)
+        if len(routine_logs_next) > 6000:
+            routine_logs_next = routine_logs_next[-6000:]
+        routine_last_minute_key = int(tick_minute_key)
+        routine_log_appended = True
+        logger.info(
+            "strategy_automation_routine_1m job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s timeframe=%s price=%.5f m1=%s m5=%s m15=%s rsi=%.2f pnl=%s",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            str(symbol),
+            str(timeframe),
+            float(current_price),
+            str(routine_event.get("m1_color") or "gray"),
+            str(routine_event.get("m5_color") or "gray"),
+            str(routine_event.get("m15_color") or "gray"),
+            float(_to_float_or_none(routine_event.get("rsi")) or 0.0),
+            str(_to_float_or_none(routine_event.get("pnl"))),
+        )
+
+    color_changed = str(prev_color).strip().lower() != str(current_color).strip().lower()
+    should_persist_state = bool(
+        action != "noop"
+        or routine_log_appended
+        or is_new_bar
+        or color_changed
+        or deadzone_m5_flip_detected
+        or bool(auto.get("first_run", True))
+    )
 
     cfg = _session_config_dict(session)
     auto_next = dict(auto)
-    now_iso = _utc_now().isoformat()
+    now_iso = str(tick_now_utc.isoformat())
     auto_next["strategy"] = str(strategy_key)
     auto_next["symbol"] = str(symbol)
     auto_next["timeframe"] = str(timeframe)
     auto_next["source"] = str(source)
     auto_next["preset"] = str(preset)
+    auto_next["deadzone_mode"] = str(deadzone_mode)
     auto_next["first_run"] = False
     auto_next["last_color"] = str(current_color)
     auto_next["current_color"] = str(current_color)
+    auto_next["last_entry_color"] = (
+        str(last_entry_color)
+        if str(last_entry_color).strip().lower() in {"green", "red", "gray"}
+        else "gray"
+    )
+    auto_next["deadzone_m5_guard_pending_reentry"] = bool(deadzone_m5_guard_pending)
+    auto_next["deadzone_m5_guard_base_color"] = (
+        str(deadzone_m5_guard_base_color)
+        if str(deadzone_m5_guard_base_color).strip().lower() in {"green", "red"}
+        else ""
+    )
+    auto_next["deadzone_m5_guard_pending_set_at"] = str(deadzone_m5_guard_pending_set_at or "")
+    auto_next["deadzone_m5_guard_exit_m5_color"] = (
+        str(deadzone_m5_guard_exit_m5_color)
+        if str(deadzone_m5_guard_exit_m5_color).strip().lower() in {"green", "red", "gray"}
+        else ""
+    )
+    auto_next["deadzone_m5_guard_exit_m15_color"] = (
+        str(deadzone_m5_guard_exit_m15_color)
+        if str(deadzone_m5_guard_exit_m15_color).strip().lower() in {"green", "red", "gray"}
+        else ""
+    )
+    auto_next["deadzone_m5_last_color"] = (
+        str(deadzone_m5_color)
+        if str(deadzone_m5_color).strip().lower() in {"green", "red", "gray"}
+        else str(deadzone_m5_prev_color or "gray")
+    )
+    auto_next["deadzone_m5_last_flip_at"] = str(deadzone_m5_flip_at or "")
+    auto_next["deadzone_m5_last_flip_from"] = str(deadzone_m5_flip_from or "")
+    auto_next["deadzone_m5_last_flip_to"] = str(deadzone_m5_flip_to or "")
     auto_next["last_action"] = str(action)
     auto_next["last_reason"] = str(action_reason or "none")
     auto_next["last_run_at"] = now_iso
     auto_next["updated_at"] = now_iso
+    auto_next["last_eval_bar_unix"] = int(current_bar_unix)
+    auto_next["routine_last_minute_key"] = int(max(0, routine_last_minute_key))
+    auto_next["routine_logs"] = routine_logs_next
+    auto_next["shadow_pnl_states"] = shadow_state_root if isinstance(shadow_state_root, dict) else {}
+    if routine_log_appended:
+        auto_next["routine_last_logged_at"] = str(now_iso)
     if is_orb_alpha_hybrid:
         auto_next["hybrid_entry_time_utc"] = str(hybrid_entry_time_utc or "")
         auto_next["hybrid_alpha_opp_count"] = int(max(0, hybrid_alpha_opp_count))
@@ -16545,20 +18085,48 @@ def _process_strategy_automation_tick_unlocked(
         "low": float(current_low),
         "alpha_color": str(current_alpha_color),
         "alpha_direction": str(color_state.get("alpha_direction") or "neutral"),
+        "deadzone_hull": _to_float_or_none(color_state.get("deadzone_hull")),
+        "deadzone_slope": _to_float_or_none(color_state.get("deadzone_slope")),
+        "deadzone_mode": str(deadzone_mode),
+        "deadzone_m5_color": str(deadzone_m5_color),
+        "deadzone_m5_direction": str(deadzone_m5_direction),
+        "deadzone_m5_reason": str(deadzone_m5_reason),
+        "deadzone_m5_prev_color": str(deadzone_m5_prev_color),
+        "deadzone_m5_flip_detected": bool(deadzone_m5_flip_detected),
+        "deadzone_m5_flip_from": str(deadzone_m5_flip_from),
+        "deadzone_m5_flip_to": str(deadzone_m5_flip_to),
+        "deadzone_m5_flip_at": str(deadzone_m5_flip_at),
+        "deadzone_m5_bar_unix": int(deadzone_m5_bar_unix),
+        "deadzone_m5_bar_at": str(deadzone_m5_bar_at),
     }
     if action_payload:
         auto_next["last_action_payload"] = action_payload
-    cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
-    session.config_json = json.dumps(cfg)
-    session.updated_at = datetime.utcnow()
-    db.add(session)
-    db.flush()
+    if should_persist_state:
+        cfg[_STRATEGY_AUTOMATION_CFG_KEY] = auto_next
+        session.config_json = json.dumps(cfg)
+        session.updated_at = datetime.utcnow()
+        db.add(session)
+        db.flush()
+    if action != "noop":
+        logger.info(
+            "strategy_automation_tick_action job_id=%s child_session_id=%s strategy=%s mode=%s symbol=%s timeframe=%s action=%s reason=%s color=%s",
+            str(job_id),
+            int(session.id),
+            str(strategy_key),
+            str(deadzone_mode),
+            str(symbol),
+            str(timeframe),
+            str(action),
+            str(action_reason or "none"),
+            str(current_color),
+        )
     return {
         "ok": True,
         "action": str(action),
         "reason": str(action_reason or "none"),
         "symbol": str(symbol),
         "strategy": str(strategy_key),
+        "deadzone_mode": str(deadzone_mode),
         "timeframe": str(timeframe),
         "color": str(current_color),
         "price": float(current_price),
@@ -20169,7 +21737,7 @@ def workbench_agent_strategy_automation_start(
             400,
             (
                 "strategy_automation supports trendilo, advanced_trendilo, trendilo_lsma, alpha_wave, "
-                "orb_alpha_hybrid"
+                "orb_alpha_hybrid, deadzone_pro"
             ),
         )
 
@@ -20181,6 +21749,17 @@ def workbench_agent_strategy_automation_start(
         timeframe = "M15"
     source = _strategy_automation_default_source(parent, req.source)
     preset = str(req.preset or "default").strip() or "default"
+    req_deadzone_mode = str(req.deadzone_mode or "default").strip().lower()
+    if req_deadzone_mode not in {"default", "advanced"}:
+        req_deadzone_mode = "default"
+    deadzone_mode = req_deadzone_mode if strategy_key == "deadzone_pro" else "default"
+
+    def _effective_deadzone_mode_for_row(row_strategy: str, row_auto: Dict[str, Any]) -> str:
+        mode_raw = str((row_auto or {}).get("deadzone_mode") or "default").strip().lower()
+        if mode_raw not in {"default", "advanced"}:
+            mode_raw = "default"
+        return mode_raw if str(row_strategy) == "deadzone_pro" else "default"
+
     profile = _strategy_automation_profile_for_strategy(strategy_key)
     parent_live = _session_live_control_dict(parent)
     parent_cfg = _session_config_dict(parent)
@@ -20205,6 +21784,9 @@ def workbench_agent_strategy_automation_start(
                 continue
             if _normalize_strategy_automation_strategy(auto.get("strategy")) != strategy_key:
                 continue
+            row_mode = _effective_deadzone_mode_for_row(strategy_key, auto)
+            if str(strategy_key) == "deadzone_pro" and str(row_mode) != str(deadzone_mode):
+                continue
             if str(row.symbol or "").strip().upper() != symbol:
                 continue
             if str(row.timeframe or "").strip().upper() != timeframe:
@@ -20226,6 +21808,10 @@ def workbench_agent_strategy_automation_start(
                     continue
                 row_strategy = _normalize_strategy_automation_strategy(auto.get("strategy") or "")
                 if row_strategy not in _STRATEGY_AUTOMATION_SUPPORTED or row_strategy != strategy_key:
+                    continue
+                row_mode = _effective_deadzone_mode_for_row(row_strategy, auto)
+                if str(strategy_key) == "deadzone_pro" and str(row_mode) != str(deadzone_mode):
+                    # Allow deadzone default/advanced A/B runs in parallel.
                     continue
                 row_timeframe = str(auto.get("timeframe") or row.timeframe or "").strip().upper()
                 if row_timeframe != timeframe:
@@ -20251,6 +21837,7 @@ def workbench_agent_strategy_automation_start(
             symbol=symbol,
             strategy=strategy_key,
             timeframe=timeframe,
+            deadzone_mode=str(deadzone_mode),
         )
         now_iso = _utc_now().isoformat()
 
@@ -20307,6 +21894,7 @@ def workbench_agent_strategy_automation_start(
                     "timeframe": str(timeframe),
                     "source": str(source),
                     "preset": str(preset),
+                    "deadzone_mode": str(deadzone_mode),
                     "volume_sma_period": int(max(1, min(300, int(req.volume_sma_period or 20)))),
                     "force_first_entry": bool(req.force_first_entry),
                     "risk_percent": (
@@ -20327,6 +21915,16 @@ def workbench_agent_strategy_automation_start(
                     "first_run": True,
                     "last_color": "gray",
                     "current_color": "gray",
+                    "last_entry_color": "gray",
+                    "deadzone_m5_guard_pending_reentry": False,
+                    "deadzone_m5_guard_base_color": "",
+                    "deadzone_m5_guard_pending_set_at": "",
+                    "deadzone_m5_guard_exit_m5_color": "",
+                    "deadzone_m5_guard_exit_m15_color": "",
+                    "deadzone_m5_last_color": "gray",
+                    "deadzone_m5_last_flip_at": "",
+                    "deadzone_m5_last_flip_from": "",
+                    "deadzone_m5_last_flip_to": "",
                     "last_action": "",
                     "last_reason": "",
                     "hybrid_entry_time_utc": "",
@@ -20364,6 +21962,13 @@ def workbench_agent_strategy_automation_start(
             auto["timeframe"] = str(timeframe)
             auto["source"] = str(source)
             auto["preset"] = str(preset)
+            auto["deadzone_mode"] = str(deadzone_mode)
+            if str(deadzone_mode) != "advanced":
+                auto["deadzone_m5_guard_pending_reentry"] = False
+                auto["deadzone_m5_guard_base_color"] = ""
+                auto["deadzone_m5_guard_pending_set_at"] = ""
+                auto["deadzone_m5_guard_exit_m5_color"] = ""
+                auto["deadzone_m5_guard_exit_m15_color"] = ""
             auto["volume_sma_period"] = int(max(1, min(300, int(req.volume_sma_period or auto.get("volume_sma_period") or 20))))
             auto["force_first_entry"] = bool(req.force_first_entry)
             auto["risk_percent"] = (
@@ -20381,6 +21986,26 @@ def workbench_agent_strategy_automation_start(
                 if req.lot_size_override is not None
                 else _to_float_or_none(auto.get("lot_size_override"))
             )
+            auto["last_entry_color"] = str(auto.get("last_entry_color") or "gray").strip().lower()
+            if auto["last_entry_color"] not in {"green", "red", "gray"}:
+                auto["last_entry_color"] = "gray"
+            auto["deadzone_m5_guard_pending_reentry"] = bool(auto.get("deadzone_m5_guard_pending_reentry", False))
+            auto["deadzone_m5_guard_base_color"] = str(auto.get("deadzone_m5_guard_base_color") or "").strip().lower()
+            if auto["deadzone_m5_guard_base_color"] not in {"green", "red"}:
+                auto["deadzone_m5_guard_base_color"] = ""
+            auto["deadzone_m5_guard_pending_set_at"] = str(auto.get("deadzone_m5_guard_pending_set_at") or "")
+            auto["deadzone_m5_guard_exit_m5_color"] = str(auto.get("deadzone_m5_guard_exit_m5_color") or "").strip().lower()
+            if auto["deadzone_m5_guard_exit_m5_color"] not in {"green", "red", "gray"}:
+                auto["deadzone_m5_guard_exit_m5_color"] = ""
+            auto["deadzone_m5_guard_exit_m15_color"] = str(auto.get("deadzone_m5_guard_exit_m15_color") or "").strip().lower()
+            if auto["deadzone_m5_guard_exit_m15_color"] not in {"green", "red", "gray"}:
+                auto["deadzone_m5_guard_exit_m15_color"] = ""
+            auto["deadzone_m5_last_color"] = str(auto.get("deadzone_m5_last_color") or "gray").strip().lower()
+            if auto["deadzone_m5_last_color"] not in {"green", "red", "gray"}:
+                auto["deadzone_m5_last_color"] = "gray"
+            auto["deadzone_m5_last_flip_at"] = str(auto.get("deadzone_m5_last_flip_at") or "")
+            auto["deadzone_m5_last_flip_from"] = str(auto.get("deadzone_m5_last_flip_from") or "")
+            auto["deadzone_m5_last_flip_to"] = str(auto.get("deadzone_m5_last_flip_to") or "")
             if strategy_key == "orb_alpha_hybrid":
                 auto["hybrid_entry_time_utc"] = str(auto.get("hybrid_entry_time_utc") or "")
                 auto["hybrid_alpha_opp_count"] = int(max(0, int(_to_float_or_none(auto.get("hybrid_alpha_opp_count")) or 0)))
@@ -20440,6 +22065,23 @@ def workbench_agent_strategy_automation_start(
             db.commit()
             db.refresh(existing)
 
+    try:
+        auto_started = _strategy_automation_cfg(existing)
+    except Exception:
+        auto_started = {}
+    logger.info(
+        "strategy_automation_start_ok parent_session_id=%s child_session_id=%s job_id=%s strategy=%s mode=%s symbol=%s timeframe=%s source=%s preset=%s",
+        int(parent.id),
+        int(existing.id),
+        str(auto_started.get("job_id") or ""),
+        str(_normalize_strategy_automation_strategy(auto_started.get("strategy") or strategy_key)),
+        str(auto_started.get("deadzone_mode") or "default"),
+        str(existing.symbol or symbol),
+        str(existing.timeframe or timeframe),
+        str(auto_started.get("source") or source),
+        str(auto_started.get("preset") or preset),
+    )
+
     immediate_entry_result: Dict[str, Any] = {"ok": False, "reason": "immediate_entry_disabled"}
     if bool(req.immediate_entry):
         immediate_entry_result = {"ok": False, "reason": "no_immediate_action"}
@@ -20455,6 +22097,143 @@ def workbench_agent_strategy_automation_start(
                 rr_target_override=_to_float_or_none(req.rr_target),
                 lot_size_override=_to_float_or_none(req.lot_size_override),
             )
+        if (not bool(immediate_entry_result.get("ok"))) and entry_plan is None and str(strategy_key) == "deadzone_pro":
+            # One-shot immediate-start entry on live (forming) bar color so manual starts
+            # align with what the user sees at chart edge, while runtime automation keeps
+            # closed-bar evaluation for stability.
+            try:
+                live_cfg = _strategy_automation_cfg(existing)
+                history_days_raw = _to_float_or_none((live_cfg or {}).get("history_days"))
+                if history_days_raw is None or (not math.isfinite(float(history_days_raw))) or float(history_days_raw) <= 0.0:
+                    history_days_raw = _agent_default_history_days_for_timeframe(str(timeframe))
+                history_days_live = float(max(0.5, min(60.0, float(history_days_raw))))
+                volume_period_live = int(max(1, min(300, int((live_cfg or {}).get("volume_sma_period") or req.volume_sma_period or 20))))
+
+                bars_live_now, bars_live_err = _agent_fetch_live_history_bars(
+                    source=str(source),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    history_days=history_days_live,
+                    count=max(220, int(volume_period_live + 120)),
+                    databento_api_key=None,
+                )
+                bars_df_now = _bars_payload_to_df(bars_live_now, max_rows=4000, min_rows=120)
+                if bars_df_now is not None and not bars_df_now.empty:
+                    preset_cfg_now = StrategyRegistry.get_preset_config(
+                        "deadzone_pro_strategy",
+                        str(preset),
+                        normalize_strategy_symbol(symbol) or symbol,
+                    )
+                    if not isinstance(preset_cfg_now, dict):
+                        preset_cfg_now = {}
+                    live_color_state = _strategy_automation_color_from_bars(
+                        bars_df=bars_df_now,
+                        strategy_key="deadzone_pro",
+                        preset_cfg=preset_cfg_now,
+                        volume_sma_period=volume_period_live,
+                        closed_bar_only=False,
+                    )
+                    live_color_now = str(live_color_state.get("color") or "gray").strip().lower()
+                    if live_color_now in {"green", "red"}:
+                        direction_expected = "BUY" if live_color_now == "green" else "SELL"
+                        current_price_live = _to_float_or_none(float(bars_df_now["close"].iloc[-1]))
+                        if current_price_live is not None and math.isfinite(float(current_price_live)) and float(current_price_live) > 0.0:
+                            atr_stop_mult_live = _to_float_or_none((live_cfg or {}).get("atr_stop_mult"))
+                            if atr_stop_mult_live is None:
+                                atr_stop_mult_live = _to_float_or_none(preset_cfg_now.get("atr_stop_mult"))
+                            if atr_stop_mult_live is None:
+                                atr_stop_mult_live = 3.0
+                            order_plan_live = _strategy_automation_build_flip_order(
+                                session=existing,
+                                symbol=str(symbol),
+                                direction=str(direction_expected),
+                                entry_price=float(current_price_live),
+                                bars_df=bars_df_now,
+                                risk_percent_override=_to_float_or_none(req.risk_percent),
+                                lot_size_override=_to_float_or_none(req.lot_size_override),
+                                atr_stop_mult=float(atr_stop_mult_live),
+                            )
+                            if isinstance(order_plan_live, dict):
+                                trade_out_live = execute_trade(
+                                    session_id=int(existing.id),
+                                    req=TradeRequest(
+                                        direction=str(order_plan_live.get("direction") or direction_expected),
+                                        stop_loss=float(_to_float_or_none(order_plan_live.get("stop_loss")) or 0.0),
+                                        take_profit=None,
+                                        lot_size=float(_to_float_or_none(order_plan_live.get("lot_size")) or 0.0),
+                                        entry_price=float(current_price_live),
+                                        confirm_live_order=True,
+                                        live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
+                                    ),
+                                    db=db,
+                                )
+                                opened_trade_id = int(
+                                    _to_float_or_none((trade_out_live if isinstance(trade_out_live, dict) else {}).get("trade_id"))
+                                    or _to_float_or_none((trade_out_live if isinstance(trade_out_live, dict) else {}).get("id"))
+                                    or 0
+                                )
+                                if opened_trade_id > 0:
+                                    last_ts = pd.Timestamp(bars_df_now.index[-1])
+                                    if last_ts.tzinfo is None:
+                                        last_ts = last_ts.tz_localize(timezone.utc)
+                                    else:
+                                        last_ts = last_ts.tz_convert(timezone.utc)
+                                    _strategy_automation_attach_trade_context(
+                                        db=db,
+                                        trade_id=int(opened_trade_id),
+                                        job_id=str((live_cfg or {}).get("job_id") or ""),
+                                        strategy="deadzone_pro",
+                                        symbol=str(symbol),
+                                        timeframe=str(timeframe),
+                                        mode=str(req_deadzone_mode),
+                                        event="entry",
+                                        payload={
+                                            "trigger": "immediate_live_color_entry_signal",
+                                            "color": str(live_color_now),
+                                            "m15_live_color": str(live_color_now) if str(timeframe).upper() == "M15" else "",
+                                            "m15_live_bar_unix": int(last_ts.timestamp()) if str(timeframe).upper() == "M15" else 0,
+                                            "m15_live_bar_at": str(last_ts.isoformat()) if str(timeframe).upper() == "M15" else "",
+                                            "direction": str(order_plan_live.get("direction") or direction_expected),
+                                            "live_entry_eval": True,
+                                        },
+                                    )
+                                immediate_entry_result = {
+                                    "ok": True,
+                                    "reason": "immediate_live_color_entry_signal",
+                                    "action": "opened_trade",
+                                    "payload": {
+                                        "trade_result": trade_out_live if isinstance(trade_out_live, dict) else {},
+                                        "order_plan": order_plan_live,
+                                        "live_color": str(live_color_now),
+                                        "bars_error": str(bars_live_err or ""),
+                                    },
+                                }
+                                logger.info(
+                                    "strategy_automation_immediate_live_entry_ok parent_session_id=%s child_session_id=%s job_id=%s strategy=%s mode=%s symbol=%s timeframe=%s color=%s direction=%s",
+                                    int(parent.id),
+                                    int(existing.id),
+                                    str((live_cfg or {}).get("job_id") or ""),
+                                    str(strategy_key),
+                                    str(req_deadzone_mode),
+                                    str(symbol),
+                                    str(timeframe),
+                                    str(live_color_now),
+                                    str(order_plan_live.get("direction") or direction_expected),
+                                )
+            except HTTPException as exc:
+                immediate_entry_result = {
+                    "ok": False,
+                    "reason": str(exc.detail or "immediate_live_entry_failed"),
+                    "action": "noop",
+                    "payload": {},
+                }
+            except Exception as exc:
+                immediate_entry_result = {
+                    "ok": False,
+                    "reason": f"immediate_live_entry_failed:{type(exc).__name__}",
+                    "action": "noop",
+                    "payload": {},
+                }
         if not bool(immediate_entry_result.get("ok")):
             try:
                 tick_out = _process_strategy_automation_tick(
@@ -20579,6 +22358,299 @@ def workbench_agent_strategy_automation_jobs(
         "jobs": jobs,
         "running_count": int(running_count),
         "total_count": int(len(jobs)),
+    }
+
+
+@router.get("/sessions/{session_id}/agent/strategy-automation/logs")
+def workbench_agent_strategy_automation_logs(
+    session_id: int,
+    child_session_id: Optional[int] = Query(default=None),
+    job_id: Optional[str] = Query(default=None),
+    sort_by: str = Query(default="event_time"),  # event_time|trade_created_at|trade_id|direction|event
+    sort_order: str = Query(default="desc"),      # asc|desc
+    direction: str = Query(default="all"),        # all|buy|sell
+    log_scope: str = Query(default="both"),       # major|routine|both
+    db: Session = Depends(get_db),
+):
+    """
+    Per-automation trade logs for audit/debug:
+    - Emits OPEN/CLOSE major events per trade.
+    - Emits optional 1-minute routine telemetry snapshots.
+    - Includes automation context (strategy/mode/reason/trigger/color) when available.
+    """
+    parent = db.query(SimulationSession).get(session_id)
+    if not parent:
+        raise HTTPException(404, "Session not found")
+    if str(parent.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy automation is available only for Workbench sessions")
+
+    jobs = _strategy_automation_collect_jobs_for_parent(
+        parent_session_id=int(parent.id),
+        db=db,
+        include_disabled=True,
+    )
+    target_child_id = int(child_session_id or 0)
+    req_job_id = str(job_id or "").strip()
+    if target_child_id <= 0:
+        if req_job_id:
+            for j in jobs:
+                if str(j.get("job_id") or "") == req_job_id:
+                    target_child_id = int(_to_float_or_none(j.get("child_session_id")) or 0)
+                    break
+    if target_child_id <= 0:
+        raise HTTPException(400, "child_session_id or valid job_id is required")
+
+    child = db.query(SimulationSession).get(int(target_child_id))
+    if child is None:
+        raise HTTPException(404, "Automation child session not found")
+    auto = _strategy_automation_cfg(child)
+    if int(_to_float_or_none(auto.get("parent_session_id")) or 0) != int(parent.id):
+        raise HTTPException(400, "Child session does not belong to this parent session")
+
+    strategy_key = _normalize_strategy_automation_strategy(auto.get("strategy") or "trendilo")
+    mode = str(auto.get("deadzone_mode") or "default").strip().lower()
+    if mode not in {"default", "advanced"}:
+        mode = "default"
+
+    sort_key = str(sort_by or "event_time").strip().lower()
+    if sort_key not in {"event_time", "trade_created_at", "trade_id", "direction", "event"}:
+        sort_key = "event_time"
+    order_key = str(sort_order or "desc").strip().lower()
+    if order_key not in {"asc", "desc"}:
+        order_key = "desc"
+    direction_filter = str(direction or "all").strip().lower()
+    if direction_filter not in {"all", "buy", "sell"}:
+        direction_filter = "all"
+    scope_mode = str(log_scope or "both").strip().lower()
+    if scope_mode not in {"major", "routine", "both"}:
+        scope_mode = "both"
+
+    def _to_iso(v: Any) -> str:
+        if isinstance(v, datetime):
+            dt = v
+        else:
+            dt = _agent_parse_iso_utc(v)
+            if dt is None:
+                return ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    def _sort_dt(v: Any) -> datetime:
+        dt = _agent_parse_iso_utc(v)
+        if dt is None:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    trades = (
+        db.query(SimulationTrade)
+        .filter(SimulationTrade.session_id == int(child.id))
+        .order_by(desc(SimulationTrade.created_at), desc(SimulationTrade.id))
+        .all()
+    )
+
+    major_events: List[Dict[str, Any]] = []
+    for tr in trades:
+        tr_dir = str(tr.direction or "").strip().upper()
+        if direction_filter in {"buy", "sell"} and tr_dir != direction_filter.upper():
+            continue
+        tr_created_iso = _to_iso(tr.created_at)
+        cb = tr.cost_breakdown_json if isinstance(tr.cost_breakdown_json, dict) else {}
+        sa = cb.get("strategy_automation") if isinstance(cb.get("strategy_automation"), dict) else {}
+        entry_ctx = sa.get("entry") if isinstance(sa.get("entry"), dict) else {}
+        exit_ctx = sa.get("exit") if isinstance(sa.get("exit"), dict) else {}
+        tr_mode = str(
+            (entry_ctx.get("mode") if isinstance(entry_ctx, dict) else None)
+            or (exit_ctx.get("mode") if isinstance(exit_ctx, dict) else None)
+            or sa.get("mode")
+            or mode
+        ).strip().lower()
+        if tr_mode not in {"default", "advanced"}:
+            tr_mode = "default"
+
+        entry_event_time = str(
+            (entry_ctx.get("at") if isinstance(entry_ctx, dict) else None)
+            or tr.entry_time
+            or tr_created_iso
+        )
+        major_events.append(
+            {
+                "event": "open",
+                "event_time": entry_event_time,
+                "trade_created_at": tr_created_iso,
+                "trade_id": int(tr.id),
+                "direction": tr_dir,
+                "strategy": str(sa.get("strategy") or strategy_key),
+                "mode": str(tr_mode),
+                "symbol": str(child.symbol or auto.get("symbol") or ""),
+                "timeframe": str(auto.get("timeframe") or child.timeframe or ""),
+                "reason": str(entry_ctx.get("trigger") or "entry"),
+                "color": str(entry_ctx.get("color") or ""),
+                "m15_color": str(entry_ctx.get("m15_color") or entry_ctx.get("color") or ""),
+                "m15_bar_at": str(entry_ctx.get("m15_bar_at") or ""),
+                "m15_bar_unix": int(_to_float_or_none(entry_ctx.get("m15_bar_unix")) or 0),
+                "m5_color": str(entry_ctx.get("m5_color") or ""),
+                "m5_prev_color": str(entry_ctx.get("m5_prev_color") or ""),
+                "m5_flip_from": str(entry_ctx.get("m5_flip_from") or ""),
+                "m5_flip_to": str(entry_ctx.get("m5_flip_to") or ""),
+                "m5_flip_at": str(entry_ctx.get("m5_flip_at") or ""),
+                "m5_bar_at": str(entry_ctx.get("m5_bar_at") or ""),
+                "m5_bar_unix": int(_to_float_or_none(entry_ctx.get("m5_bar_unix")) or 0),
+                "reentry_from_m5_guard": bool(entry_ctx.get("reentry_from_m5_guard", False)),
+                "guard_base_color": str(entry_ctx.get("guard_base_color") or ""),
+                "guard_pending_set_at": str(entry_ctx.get("guard_pending_set_at") or ""),
+                "guard_exit_m5_color": str(entry_ctx.get("guard_exit_m5_color") or ""),
+                "guard_exit_m15_color": str(entry_ctx.get("guard_exit_m15_color") or ""),
+                "entry_price": _to_float_or_none(tr.entry_price),
+                "exit_price": _to_float_or_none(tr.exit_price),
+                "lot_size": _to_float_or_none(tr.lot_size),
+                "pnl": _to_float_or_none(tr.pnl),
+                "r_multiple": _to_float_or_none(tr.r_multiple),
+                "status": str(tr.status or "").lower(),
+            }
+        )
+
+        has_close = bool(
+            (str(tr.status or "").lower() == "closed")
+            or str(tr.exit_time or "").strip()
+            or bool(exit_ctx)
+        )
+        if has_close:
+            close_event_time = str(
+                (exit_ctx.get("at") if isinstance(exit_ctx, dict) else None)
+                or tr.exit_time
+                or tr_created_iso
+            )
+            major_events.append(
+                {
+                    "event": "close",
+                    "event_time": close_event_time,
+                    "trade_created_at": tr_created_iso,
+                    "trade_id": int(tr.id),
+                    "direction": tr_dir,
+                    "strategy": str(sa.get("strategy") or strategy_key),
+                    "mode": str(tr_mode),
+                    "symbol": str(child.symbol or auto.get("symbol") or ""),
+                    "timeframe": str(auto.get("timeframe") or child.timeframe or ""),
+                    "reason": str((exit_ctx.get("trigger") if isinstance(exit_ctx, dict) else None) or tr.exit_reason or "exit"),
+                    "color": str(exit_ctx.get("color") or ""),
+                    "m15_color": str(exit_ctx.get("m15_color") or exit_ctx.get("color") or ""),
+                    "m15_bar_at": str(exit_ctx.get("m15_bar_at") or ""),
+                    "m15_bar_unix": int(_to_float_or_none(exit_ctx.get("m15_bar_unix")) or 0),
+                    "m5_color": str(exit_ctx.get("m5_color") or ""),
+                    "m5_prev_color": str(exit_ctx.get("m5_prev_color") or ""),
+                    "m5_flip_from": str(exit_ctx.get("m5_flip_from") or ""),
+                    "m5_flip_to": str(exit_ctx.get("m5_flip_to") or ""),
+                    "m5_flip_at": str(exit_ctx.get("m5_flip_at") or ""),
+                    "m5_bar_at": str(exit_ctx.get("m5_bar_at") or ""),
+                    "m5_bar_unix": int(_to_float_or_none(exit_ctx.get("m5_bar_unix")) or 0),
+                    "m15_unchanged_reentry_candidate": bool(exit_ctx.get("m15_unchanged_reentry_candidate", False)),
+                    "entry_price": _to_float_or_none(tr.entry_price),
+                    "exit_price": _to_float_or_none(tr.exit_price),
+                    "lot_size": _to_float_or_none(tr.lot_size),
+                    "pnl": _to_float_or_none(tr.pnl),
+                    "r_multiple": _to_float_or_none(tr.r_multiple),
+                    "status": str(tr.status or "").lower(),
+                }
+            )
+
+    routine_events: List[Dict[str, Any]] = []
+    if scope_mode in {"routine", "both"}:
+        raw_routine = auto.get("routine_logs") if isinstance(auto.get("routine_logs"), list) else []
+        for rr in raw_routine:
+            if not isinstance(rr, dict):
+                continue
+            rr_dir = str(rr.get("direction") or "").strip().upper()
+            if direction_filter in {"buy", "sell"} and rr_dir != direction_filter.upper():
+                continue
+            routine_events.append(
+                {
+                    "event": "routine",
+                    "event_time": str(rr.get("event_time") or rr.get("at") or ""),
+                    "trade_created_at": str(rr.get("trade_created_at") or ""),
+                    "trade_id": int(_to_float_or_none(rr.get("trade_id")) or 0),
+                    "direction": str(rr_dir),
+                    "strategy": str(rr.get("strategy") or strategy_key),
+                    "mode": str(rr.get("mode") or mode),
+                    "symbol": str(rr.get("symbol") or child.symbol or auto.get("symbol") or ""),
+                    "timeframe": str(rr.get("timeframe") or auto.get("timeframe") or child.timeframe or ""),
+                    "reason": str(rr.get("reason") or "routine_1m_snapshot"),
+                    "color": str(rr.get("color") or ""),
+                    "m1_color": str(rr.get("m1_color") or ""),
+                    "m5_color": str(rr.get("m5_color") or ""),
+                    "m15_color": str(rr.get("m15_color") or rr.get("color") or ""),
+                    "m1_bar_at": str(rr.get("m1_bar_at") or ""),
+                    "m5_bar_at": str(rr.get("m5_bar_at") or ""),
+                    "m15_bar_at": str(rr.get("m15_bar_at") or ""),
+                    "m1_bar_unix": int(_to_float_or_none(rr.get("m1_bar_unix")) or 0),
+                    "m5_bar_unix": int(_to_float_or_none(rr.get("m5_bar_unix")) or 0),
+                    "m15_bar_unix": int(_to_float_or_none(rr.get("m15_bar_unix")) or 0),
+                    "m5_flip_at": str(rr.get("m5_flip_at") or ""),
+                    "entry_price": _to_float_or_none(rr.get("entry_price")),
+                    "exit_price": _to_float_or_none(rr.get("exit_price")),
+                    "lot_size": _to_float_or_none(rr.get("lot_size")),
+                    "price": _to_float_or_none(rr.get("price")),
+                    "rsi": _to_float_or_none(rr.get("rsi")),
+                    "pnl": _to_float_or_none(rr.get("pnl")),
+                    "open_trade_pnl_pct": _to_float_or_none(rr.get("open_trade_pnl_pct")),
+                    "r_multiple": _to_float_or_none(rr.get("r_multiple")),
+                    "m1_default_pnl": _to_float_or_none(rr.get("m1_default_pnl")),
+                    "m1_advanced_pnl": _to_float_or_none(rr.get("m1_advanced_pnl")),
+                    "m5_default_pnl": _to_float_or_none(rr.get("m5_default_pnl")),
+                    "m5_advanced_pnl": _to_float_or_none(rr.get("m5_advanced_pnl")),
+                    "m1_default_realized_pnl": _to_float_or_none(rr.get("m1_default_realized_pnl")),
+                    "m1_default_unrealized_pnl": _to_float_or_none(rr.get("m1_default_unrealized_pnl")),
+                    "m1_advanced_realized_pnl": _to_float_or_none(rr.get("m1_advanced_realized_pnl")),
+                    "m1_advanced_unrealized_pnl": _to_float_or_none(rr.get("m1_advanced_unrealized_pnl")),
+                    "m5_default_realized_pnl": _to_float_or_none(rr.get("m5_default_realized_pnl")),
+                    "m5_default_unrealized_pnl": _to_float_or_none(rr.get("m5_default_unrealized_pnl")),
+                    "m5_advanced_realized_pnl": _to_float_or_none(rr.get("m5_advanced_realized_pnl")),
+                    "m5_advanced_unrealized_pnl": _to_float_or_none(rr.get("m5_advanced_unrealized_pnl")),
+                    "status": str(rr.get("status") or ""),
+                }
+            )
+
+    events: List[Dict[str, Any]] = []
+    if scope_mode in {"major", "both"}:
+        events.extend(major_events)
+    if scope_mode in {"routine", "both"}:
+        events.extend(routine_events)
+
+    reverse = bool(order_key != "asc")
+    if sort_key == "trade_id":
+        events.sort(key=lambda e: int(_to_float_or_none(e.get("trade_id")) or 0), reverse=reverse)
+    elif sort_key == "direction":
+        events.sort(key=lambda e: str(e.get("direction") or ""), reverse=reverse)
+    elif sort_key == "event":
+        events.sort(key=lambda e: str(e.get("event") or ""), reverse=reverse)
+    elif sort_key == "trade_created_at":
+        events.sort(key=lambda e: _sort_dt(e.get("trade_created_at")), reverse=reverse)
+    else:
+        events.sort(key=lambda e: _sort_dt(e.get("event_time")), reverse=reverse)
+
+    trade_ids = {int(_to_float_or_none(e.get("trade_id")) or 0) for e in events if int(_to_float_or_none(e.get("trade_id")) or 0) > 0}
+    open_events = int(sum(1 for e in major_events if str(e.get("event") or "").lower() == "open"))
+    close_events = int(sum(1 for e in major_events if str(e.get("event") or "").lower() == "close"))
+    routine_count = int(sum(1 for e in routine_events if str(e.get("event") or "").lower() == "routine"))
+
+    return {
+        "ok": True,
+        "parent_session_id": int(parent.id),
+        "child_session_id": int(child.id),
+        "job_id": str(auto.get("job_id") or req_job_id),
+        "strategy": str(strategy_key),
+        "deadzone_mode": str(mode),
+        "symbol": str(child.symbol or auto.get("symbol") or "").upper(),
+        "timeframe": str(auto.get("timeframe") or child.timeframe or "").upper(),
+        "log_scope": str(scope_mode),
+        "event_count": int(len(events)),
+        "trade_count": int(len(trade_ids)),
+        "open_event_count": int(open_events),
+        "close_event_count": int(close_events),
+        "routine_event_count": int(routine_count),
+        "events": events,
     }
 
 

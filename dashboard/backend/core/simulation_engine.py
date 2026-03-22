@@ -330,21 +330,25 @@ class SimulationReplayEngine:
         for pos in self.open_positions:
             hit = None
             exit_price = None
+            stop_loss = pos.get("stop_loss")
+            stop_enabled = stop_loss is not None and np.isfinite(float(stop_loss)) and float(stop_loss) > 0.0
+            take_profit = pos.get("take_profit")
+            tp_enabled = take_profit is not None and np.isfinite(float(take_profit)) and float(take_profit) > 0.0
 
             if pos["direction"] == "BUY":
-                if bar["low"] <= pos["stop_loss"]:
+                if stop_enabled and bar["low"] <= float(stop_loss):
                     hit = "SL"
-                    exit_price = pos["stop_loss"]
-                elif pos.get("take_profit") and bar["high"] >= pos["take_profit"]:
+                    exit_price = float(stop_loss)
+                elif tp_enabled and bar["high"] >= float(take_profit):
                     hit = "TP"
-                    exit_price = pos["take_profit"]
+                    exit_price = float(take_profit)
             else:  # SELL
-                if bar["high"] >= pos["stop_loss"]:
+                if stop_enabled and bar["high"] >= float(stop_loss):
                     hit = "SL"
-                    exit_price = pos["stop_loss"]
-                elif pos.get("take_profit") and bar["low"] <= pos["take_profit"]:
+                    exit_price = float(stop_loss)
+                elif tp_enabled and bar["low"] <= float(take_profit):
                     hit = "TP"
-                    exit_price = pos["take_profit"]
+                    exit_price = float(take_profit)
 
             if hit:
                 pnl = self._calculate_pnl(pos, exit_price)
@@ -383,7 +387,10 @@ class SimulationReplayEngine:
 
     def _calculate_r_multiple(self, pos: dict, exit_price: float) -> float:
         """Calculate R-multiple for a trade."""
-        risk = abs(pos["entry_price"] - pos["stop_loss"])
+        stop_loss = pos.get("stop_loss")
+        if stop_loss is None or (not np.isfinite(float(stop_loss))) or float(stop_loss) <= 0.0:
+            return 0
+        risk = abs(pos["entry_price"] - float(stop_loss))
         if risk == 0:
             return 0
         price_diff = exit_price - pos["entry_price"]
@@ -1274,15 +1281,18 @@ class SimulationReplayEngine:
 
         # Open position SL/TP lines
         for pos in self.open_positions:
-            overlays["lines"].append({
-                "price": pos["stop_loss"],
-                "label": "Stop Loss",
-                "color": "#F44336",
-                "style": "solid",
-            })
-            if pos.get("take_profit"):
+            stop_loss = pos.get("stop_loss")
+            if stop_loss is not None and np.isfinite(float(stop_loss)) and float(stop_loss) > 0.0:
                 overlays["lines"].append({
-                    "price": pos["take_profit"],
+                    "price": float(stop_loss),
+                    "label": "Stop Loss",
+                    "color": "#F44336",
+                    "style": "solid",
+                })
+            take_profit = pos.get("take_profit")
+            if take_profit is not None and np.isfinite(float(take_profit)) and float(take_profit) > 0.0:
+                overlays["lines"].append({
+                    "price": float(take_profit),
                     "label": "Take Profit",
                     "color": "#4CAF50",
                     "style": "solid",

@@ -1754,6 +1754,33 @@ def sim_agent_strategy_automation_jobs(session_id):
     return jsonify(res)
 
 
+@app.route('/api/simulation/sessions/<int:session_id>/agent/strategy-automation/logs')
+def sim_agent_strategy_automation_logs(session_id):
+    params = {}
+    if request.args.get('child_session_id') is not None:
+        params['child_session_id'] = request.args.get('child_session_id')
+    if request.args.get('job_id') is not None:
+        params['job_id'] = request.args.get('job_id')
+    if request.args.get('sort_by') is not None:
+        params['sort_by'] = request.args.get('sort_by')
+    if request.args.get('sort_order') is not None:
+        params['sort_order'] = request.args.get('sort_order')
+    if request.args.get('direction') is not None:
+        params['direction'] = request.args.get('direction')
+    if request.args.get('log_scope') is not None:
+        params['log_scope'] = request.args.get('log_scope')
+    res, err = api_request(
+        'GET',
+        f'/api/v1/simulation/sessions/{session_id}/agent/strategy-automation/logs',
+        params=params,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Strategy automation logs unavailable'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/simulation/agent/strategy-automation/jobs')
 def sim_agent_strategy_automation_jobs_global():
     params = {}

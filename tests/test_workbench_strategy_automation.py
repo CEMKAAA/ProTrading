@@ -146,6 +146,42 @@ def test_bars_df_to_payload_converts_valid_ohlcv_rows():
     assert out[-1]["close"] == 101.3
 
 
+def test_mt5_live_merge_tick_updates_inbar_close_and_extremes():
+    bar = {
+        "time": 1710000000,  # bucket start
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 10,
+    }
+    tick = {"time_unix": 1710000005, "bid": 102.2}
+    out = sim_routes._mt5_live_merge_tick_into_bar(bar, tick, "M1")
+    assert out["time"] == 1710000000
+    assert out["close"] == 102.2
+    assert out["high"] == 102.2
+    assert out["low"] == 99.0
+
+
+def test_mt5_live_merge_tick_rolls_to_next_bucket_when_tick_advances():
+    bar = {
+        "time": 1710000000,
+        "open": 100.0,
+        "high": 100.8,
+        "low": 99.5,
+        "close": 100.2,
+        "volume": 11,
+    }
+    # Next M1 bucket
+    tick = {"time_unix": 1710000062, "bid": 101.4}
+    out = sim_routes._mt5_live_merge_tick_into_bar(bar, tick, "M1")
+    assert out["time"] == 1710000060
+    assert out["open"] == 100.2
+    assert out["close"] == 101.4
+    assert out["high"] == 101.4
+    assert out["low"] == 100.2
+
+
 def test_strategy_automation_mark_stopped_disables_enabled_job():
     session = SimpleNamespace(
         id=303,
@@ -187,9 +223,67 @@ def test_strategy_automation_mark_stopped_disables_enabled_job():
     assert len(db.added) == 1
 
 
+@pytest.mark.parametrize("strategy_key", ["trendilo", "advanced_trendilo", "trendilo_lsma"])
+def test_strategy_automation_color_from_bars_trendilo_family_uses_closed_bar(monkeypatch, strategy_key):
+    idx = pd.date_range("2026-03-21 00:00:00", periods=3, freq="min", tz="UTC")
+    bars_df = pd.DataFrame(
+        {
+            "open": [100.0, 101.0, 102.0],
+            "high": [101.2, 102.2, 102.5],
+            "low": [99.8, 100.8, 89.5],
+            "close": [101.0, 102.0, 90.0],  # last bar is opposite/flicker bar
+            "volume": [100.0, 200.0, 300.0],
+        },
+        index=idx,
+    )
+
+    def _dir_from_last_close(v):
+        return "bullish" if float(v) >= 100.0 else "bearish"
+
+    if strategy_key == "trendilo":
+        def _fake_indicator_values_from_bars(bars_payload, **kwargs):
+            last_close = float((bars_payload or [{}])[-1].get("close") or 0.0)
+            d = _dir_from_last_close(last_close)
+            return {"trendilo_direction": d, "trendilo_avpch": 1.0, "trendilo_rms": 1.0}
+
+        monkeypatch.setattr(sim_routes, "_agent_indicator_values_from_bars", _fake_indicator_values_from_bars)
+    elif strategy_key == "advanced_trendilo":
+        def _fake_advanced(df, cfg=None):
+            last_close = float(df["close"].astype(float).iloc[-1])
+            d = _dir_from_last_close(last_close)
+            return {"trendilo_direction": d, "trendilo_avpch": 1.0, "trendilo_rms": 1.0}
+
+        monkeypatch.setattr(sim_routes, "_agent_advanced_trendilo_indicators_from_df", _fake_advanced)
+    else:
+        def _fake_lsma(df, cfg=None):
+            last_close = float(df["close"].astype(float).iloc[-1])
+            d = _dir_from_last_close(last_close)
+            return {"direction": d, "signal": 1.0}
+
+        monkeypatch.setattr(sim_routes, "_agent_trendilo_lsma_indicators_from_df", _fake_lsma)
+
+    out_closed = sim_routes._strategy_automation_color_from_bars(
+        bars_df=bars_df,
+        strategy_key=strategy_key,
+        preset_cfg={},
+        volume_sma_period=20,
+        closed_bar_only=True,
+    )
+    out_live = sim_routes._strategy_automation_color_from_bars(
+        bars_df=bars_df,
+        strategy_key=strategy_key,
+        preset_cfg={},
+        volume_sma_period=20,
+        closed_bar_only=False,
+    )
+
+    assert out_closed["color"] == "green"
+    assert out_live["color"] == "red"
+
+
 @pytest.mark.parametrize(
     "strategy_key",
-    ["trendilo", "advanced_trendilo", "trendilo_lsma", "alpha_wave", "orb_alpha_hybrid"],
+    ["trendilo", "advanced_trendilo", "trendilo_lsma", "alpha_wave", "orb_alpha_hybrid", "deadzone_pro"],
 )
 def test_strategy_automation_tick_closes_on_stop_loss_without_immediate_reentry(monkeypatch, strategy_key):
     session = SimpleNamespace(
@@ -490,6 +584,48 @@ def test_orb_alpha_hybrid_waits_10m_then_exits_after_two_opposite_alpha_bars(mon
 def test_strategy_automation_hybrid_alias_normalization():
     assert sim_routes._normalize_strategy_automation_strategy("orb") == "orb_alpha_hybrid"
     assert sim_routes._normalize_strategy_automation_strategy("orb_alpha") == "orb_alpha_hybrid"
+    assert sim_routes._normalize_strategy_automation_strategy("deadzone") == "deadzone_pro"
+    assert sim_routes._normalize_strategy_automation_strategy("deadzonepro") == "deadzone_pro"
+
+
+def test_strategy_automation_color_from_bars_deadzone_pro_uses_hull_slope():
+    up_idx = pd.date_range("2026-03-21 00:00:00", periods=80, freq="min", tz="UTC")
+    up_close = [100.0 + (i * 0.1) for i in range(80)]
+    up_df = pd.DataFrame(
+        {
+            "open": up_close,
+            "high": [v + 0.2 for v in up_close],
+            "low": [v - 0.2 for v in up_close],
+            "close": up_close,
+            "volume": [100.0 for _ in up_close],
+        },
+        index=up_idx,
+    )
+    down_df = up_df.copy()
+    down_df["close"] = list(reversed(up_close))
+    down_df["open"] = down_df["close"]
+    down_df["high"] = down_df["close"] + 0.2
+    down_df["low"] = down_df["close"] - 0.2
+
+    out_up = sim_routes._strategy_automation_color_from_bars(
+        bars_df=up_df,
+        strategy_key="deadzone_pro",
+        preset_cfg={},
+        volume_sma_period=20,
+        closed_bar_only=True,
+    )
+    out_down = sim_routes._strategy_automation_color_from_bars(
+        bars_df=down_df,
+        strategy_key="deadzone_pro",
+        preset_cfg={},
+        volume_sma_period=20,
+        closed_bar_only=True,
+    )
+
+    assert out_up["color"] == "green"
+    assert out_up["direction"] == "bullish"
+    assert out_down["color"] == "red"
+    assert out_down["direction"] == "bearish"
 
 
 def test_close_trade_falls_back_to_entry_price_when_no_market_data(monkeypatch):

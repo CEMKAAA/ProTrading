@@ -5,7 +5,7 @@ SQLite for local development, PostgreSQL-ready for production
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Date, DateTime,
-    Boolean, JSON, ForeignKey, Text, Enum as SQLEnum
+    Boolean, JSON, ForeignKey, Text, Enum as SQLEnum, event
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -31,12 +31,32 @@ DATABASE_URL = os.getenv(
     f"sqlite:///{DATABASE_PATH}"
 )
 
+_IS_SQLITE = "sqlite" in str(DATABASE_URL).lower()
+
 # Create engine
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+    connect_args=(
+        {"check_same_thread": False, "timeout": 30.0}
+        if _IS_SQLITE
+        else {}
+    ),
     echo=False
 )
+
+if _IS_SQLITE:
+    @event.listens_for(engine, "connect")
+    def _sqlite_configure_connection(dbapi_connection, connection_record):
+        """Reduce writer contention for high-frequency background workers."""
+        cur = dbapi_connection.cursor()
+        try:
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA foreign_keys=ON")
+            cur.execute("PRAGMA temp_store=MEMORY")
+        finally:
+            cur.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

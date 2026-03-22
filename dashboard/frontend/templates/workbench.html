@@ -2516,6 +2516,36 @@ body.workbench-fullscreen .stats-bar {
                 <i class="bi bi-currency-exchange me-1"></i> Trade Execution
             </div>
             <div class="trade-panel-body" id="trade-panel-body">
+                <div class="trade-input-group">
+                    <label>Quick Entry</label>
+                    <div class="row g-1">
+                        <div class="col-5">
+                            <select id="trade-quick-symbol" class="form-select form-select-sm" title="Trade symbol">
+                                <option value="XAUUSD" selected>XAUUSD (Gold)</option>
+                            </select>
+                        </div>
+                        <div class="col-3">
+                            <select id="trade-quick-direction" class="form-select form-select-sm" title="Direction">
+                                <option value="BUY" selected>BUY</option>
+                                <option value="SELL">SELL</option>
+                            </select>
+                        </div>
+                        <div class="col-4">
+                            <input type="number" id="trade-quick-lots" class="form-control form-control-sm" value="0.01" min="0.01" step="0.01" title="Lot size">
+                        </div>
+                        <div class="col-6">
+                            <input type="number" id="trade-quick-risk-usd" class="form-control form-control-sm" value="5" min="0.01" step="0.01" placeholder="Risk $ (USD)" title="Risk amount in USD">
+                        </div>
+                        <div class="col-12">
+                            <button class="btn btn-sm btn-outline-primary w-100" id="btn-trade-quick-enter" type="button">
+                                <i class="bi bi-lightning-charge me-1"></i>Quick Enter
+                            </button>
+                        </div>
+                    </div>
+                    <small style="color:#94a3b8;font-size:0.72rem;display:block;margin-top:4px;">
+                        Stop Loss is calculated from Risk $ and current price.
+                    </small>
+                </div>
                 <div class="trade-direction-hint">
                     <span class="dir-tag buy-tag">BUY = Long</span>
                     <span class="dir-tag sell-tag">SELL = Short</span>
@@ -2523,6 +2553,17 @@ body.workbench-fullscreen .stats-bar {
                 <div id="trade-buttons" class="d-flex justify-content-between mb-3">
                     <button class="btn-buy" id="btn-buy">BUY</button>
                     <button class="btn-sell" id="btn-sell">SELL</button>
+                </div>
+                <div class="trade-input-group">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="trade-no-protection-toggle">
+                        <label class="form-check-label" for="trade-no-protection-toggle" style="font-size:0.78rem;color:#fca5a5;">
+                            No SL/TP mode (dangerous, unlimited downside)
+                        </label>
+                    </div>
+                    <small style="color:#94a3b8;font-size:0.7rem;display:block;margin-top:2px;">
+                        When enabled, manual and quick entries will open with no protective Stop Loss / Take Profit.
+                    </small>
                 </div>
 
                 <div class="trade-input-group">
@@ -3214,6 +3255,59 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
+<div class="modal fade" id="automationLogsModal" tabindex="-1" aria-labelledby="automationLogsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-xl" style="max-width: 98vw;">
+        <div class="modal-content workbench-panel-modal">
+            <div class="modal-header">
+                <h5 class="modal-title" id="automationLogsModalLabel">
+                    <i class="bi bi-journal-text me-1"></i>Automation Logs
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <button type="button" id="btn-refresh-auto-logs" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                    <select id="auto-logs-sort" class="form-select form-select-sm" style="max-width: 220px;">
+                        <option value="event_time_desc" selected>Sort: Event Time (Newest)</option>
+                        <option value="event_time_asc">Sort: Event Time (Oldest)</option>
+                        <option value="trade_created_desc">Sort: Trade Created (Newest)</option>
+                        <option value="trade_created_asc">Sort: Trade Created (Oldest)</option>
+                        <option value="trade_id_desc">Sort: Trade ID (High-Low)</option>
+                        <option value="trade_id_asc">Sort: Trade ID (Low-High)</option>
+                        <option value="direction_buy_sell">Sort: Direction (BUY-SELL)</option>
+                        <option value="direction_sell_buy">Sort: Direction (SELL-BUY)</option>
+                    </select>
+                    <select id="auto-logs-direction" class="form-select form-select-sm" style="max-width: 160px;">
+                        <option value="all" selected>Direction: All</option>
+                        <option value="buy">Direction: BUY</option>
+                        <option value="sell">Direction: SELL</option>
+                    </select>
+                    <select id="auto-logs-scope" class="form-select form-select-sm" style="max-width: 170px;">
+                        <option value="both" selected>Logs: Both</option>
+                        <option value="major">Logs: Major</option>
+                        <option value="routine">Logs: Routine 1m</option>
+                    </select>
+                    <span id="auto-logs-status" style="font-size:0.82rem;color:#cbd5e1;">Ready</span>
+                </div>
+                <div class="mt-2" id="auto-logs-summary" style="font-size:0.82rem;color:#cbd5e1;">No automation logs loaded.</div>
+                <div class="table-responsive mt-2">
+                    <table class="table table-sm trade-log-table mb-0">
+                        <thead id="auto-logs-head"></thead>
+                        <tbody id="auto-logs-body">
+                            <tr><td class="text-center text-muted py-3"><small>No logs.</small></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade automation-chart-modal" id="automationChartModal" tabindex="-1" aria-labelledby="automationChartModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-scrollable modal-xl">
         <div class="modal-content workbench-panel-modal">
@@ -3265,8 +3359,17 @@ body.workbench-fullscreen .stats-bar {
                             <option value="advanced_trendilo">Advanced Trendilo</option>
                             <option value="trendilo_lsma">Trendilo LSMA</option>
                             <option value="alpha_wave">Alpha Wave</option>
+                            <option value="deadzone_pro">Deadzone Pro</option>
                             <option value="orb_alpha_hybrid">ORB + Alpha Hybrid</option>
                         </select>
+                    </div>
+                    <div class="col-md-6 d-none" id="auto-start-deadzone-mode-wrap">
+                        <label class="form-label mb-1">Deadzone Mode</label>
+                        <select id="auto-start-deadzone-mode" class="form-select form-select-sm">
+                            <option value="default" selected>Default</option>
+                            <option value="advanced">Advanced (M15+M5 Guard)</option>
+                        </select>
+                        <small class="text-muted">Default = pure chart timeframe color flip. Advanced = M15 entry + M5 early-exit guard.</small>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label mb-1">Symbol</label>
@@ -3421,6 +3524,13 @@ body.workbench-fullscreen .stats-bar {
                 </div>
                 <div class="indicator-option">
                     <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-deadzone-pro">
+                        <label class="form-check-label" for="ind-deadzone-pro">Deadzone Pro</label>
+                        <small class="hint">Pine-parity Deadzone Pro baseline (Adaptive Hull MA), colored green/red by slope direction.</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="ind-orb-signal">
                         <label class="form-check-label" for="ind-orb-signal">ORB Breakout Signal</label>
                         <small class="hint">NY ORB execution signal: green after confirmed break-and-hold above opening range, red after confirmed break-and-hold below range, gray otherwise.</small>
@@ -3481,5 +3591,5 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/workbench.js', v='20260319_screener_universe_conf_fix') }}"></script>
+<script src="{{ url_for('static', filename='js/workbench.js', v='20260322_auto_logs_m5_flip_audit') }}"></script>
 {% endblock %}

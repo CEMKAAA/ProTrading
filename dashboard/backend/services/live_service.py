@@ -14,6 +14,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _to_float_or_none(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        x = float(v)
+        if x != x:
+            return None
+        return x
+    except Exception:
+        return None
+
 # Bot state file locations for all strategies
 BOT_STATE_FILES = {
     "orb_strategy": Path(__file__).parent.parent.parent / "data" / "bot_state.json",
@@ -38,6 +50,16 @@ class LiveTradingService:
         self._resolved_symbol_cache: Dict[str, Dict[str, Any]] = {}
         self._resolved_symbol_cache_ttl_sec: float = 30.0
         self._last_symbols_error: str = ""
+        self._last_mt5_warn_msg: str = ""
+        self._last_mt5_warn_ts: float = 0.0
+
+    def _warn_mt5_unavailable(self, err: Any) -> None:
+        msg = str(err)
+        now_ts = time.time()
+        if msg != self._last_mt5_warn_msg or (now_ts - float(self._last_mt5_warn_ts)) >= 30.0:
+            logger.warning("MT5 not available: %s", msg)
+            self._last_mt5_warn_msg = msg
+            self._last_mt5_warn_ts = now_ts
 
     @staticmethod
     def _extract_strategy_diagnostics(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -90,7 +112,7 @@ class LiveTradingService:
             self._reset_mt5()
 
         if not mt5.initialize():
-            logger.warning(f"MT5 not available: {mt5.last_error()}")
+            self._warn_mt5_unavailable(mt5.last_error())
             return False
 
         self._mt5_initialized = True
@@ -643,6 +665,34 @@ class LiveTradingService:
             logger.error(f"Error getting candle: {e}")
             return {"error": str(e)}
 
+    def get_symbol_tick(self, symbol: str = "XAUUSD", resolve_symbol: bool = True) -> Dict[str, Any]:
+        """Get latest MT5 tick for symbol."""
+        if not self._ensure_mt5():
+            return {"error": "MT5 not connected"}
+        try:
+            symbol_raw = str(symbol or "XAUUSD").strip()
+            symbol_req = symbol_raw.upper()
+            symbol_resolved = self.resolve_symbol_name(symbol_req) if bool(resolve_symbol) else symbol_raw
+            if not symbol_resolved:
+                return {"error": f"Symbol {symbol_req} not found in broker symbol list"}
+            tick = mt5.symbol_info_tick(symbol_resolved)
+            if tick is None:
+                return {"error": f"No tick data for {symbol_resolved}"}
+            ts = int(getattr(tick, "time", 0) or 0)
+            return {
+                "requested_symbol": symbol_req,
+                "resolved_symbol": symbol_resolved,
+                "time_unix": ts,
+                "time": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts > 0 else None,
+                "bid": _to_float_or_none(getattr(tick, "bid", None)),
+                "ask": _to_float_or_none(getattr(tick, "ask", None)),
+                "last": _to_float_or_none(getattr(tick, "last", None)),
+                "volume": _to_float_or_none(getattr(tick, "volume", None)),
+            }
+        except Exception as e:
+            logger.error(f"Error getting symbol tick: {e}")
+            return {"error": str(e)}
+
     def get_recent_candles(
         self,
         symbol: str = "XAUUSD",
@@ -722,7 +772,7 @@ class LiveTradingService:
         symbol: str,
         direction: str,
         lot_size: float,
-        stop_loss: float,
+        stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         comment: str = "",
         deviation_points: int = 20,
@@ -740,9 +790,8 @@ class LiveTradingService:
             vol = float(lot_size or 0.0)
             if (not vol) or vol <= 0.0:
                 return {"ok": False, "error": "lot_size must be > 0"}
-            sl = float(stop_loss or 0.0)
-            if sl <= 0.0:
-                return {"ok": False, "error": "stop_loss must be > 0"}
+            sl_raw = _to_float_or_none(stop_loss)
+            sl = None if sl_raw is None or float(sl_raw) <= 0.0 else float(sl_raw)
             tp = None if take_profit is None else float(take_profit)
             if tp is not None and tp <= 0.0:
                 return {"ok": False, "error": "take_profit must be > 0"}
@@ -791,7 +840,7 @@ class LiveTradingService:
                     "volume": float(vol),
                     "type": int(order_type),
                     "price": float(requested_price),
-                    "sl": float(sl),
+                    "sl": float(sl) if sl is not None else 0.0,
                     "tp": float(tp) if tp is not None else 0.0,
                     "deviation": int(max(1, min(5000, int(deviation_points or 20)))),
                     "magic": 970001,
@@ -822,7 +871,7 @@ class LiveTradingService:
                     "lot_size": float(vol),
                     "requested_price": float(requested_price),
                     "price": float(getattr(result, "price", requested_price) or requested_price),
-                    "sl": float(sl),
+                    "sl": float(sl) if sl is not None else None,
                     "tp": float(tp) if tp is not None else None,
                     "retcode": int(retcode),
                     "retcode_name": str(retcode_name),

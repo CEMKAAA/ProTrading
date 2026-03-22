@@ -11,8 +11,11 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+
+from sqlalchemy.exc import OperationalError
 
 from ..models.database import SessionLocal, SimulationSession, WorkbenchAgentSessionModel
 from .agent_watchdog_service import get_agent_watchdog_service
@@ -248,6 +251,22 @@ class AgentLiveTickService:
                                 )
                             db.commit()
                             successes += 1
+                        except OperationalError as exc:
+                            db.rollback()
+                            failures += 1
+                            last_failure = f"session={int(getattr(session, 'id', 0) or 0)} OperationalError: {str(exc)}"
+                            if "database is locked" in str(exc).lower():
+                                logger.warning(
+                                    "Strategy automation tick skipped (db locked) for session=%s",
+                                    int(getattr(session, "id", 0) or 0),
+                                )
+                                time.sleep(0.05)
+                            else:
+                                logger.exception(
+                                    "Strategy automation tick failed for session=%s: %s",
+                                    int(getattr(session, "id", 0) or 0),
+                                    exc,
+                                )
                         except Exception as exc:
                             db.rollback()
                             failures += 1

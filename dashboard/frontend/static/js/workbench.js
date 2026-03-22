@@ -79,6 +79,7 @@ let indicatorSelection = {
     advancedTrendilo: false,
     trendiloLsma: false,
     alphaWave: false,
+    deadzonePro: false,
     orbSignal: false,
     trendiloBarColor: false,
     goldenCross: false,
@@ -209,6 +210,8 @@ let automationChartPanelSeries = {};
 let automationChartResizeObserver = null;
 let automationChartPanelResizeObserver = null;
 let automationChartSyncingRange = false;
+let automationLogsContext = null;
+let automationLogsEvents = [];
 let seenWatchdogApprovalSignatures = {};
 let agentAdminNewsHealth = {
     checkedAtMs: 0,
@@ -1063,6 +1066,104 @@ function applyBrokerSymbolsToAutomationUI(rows, opts = {}) {
     }
 }
 
+function applyBrokerSymbolsToTradeUI(rows) {
+    const selectEl = document.getElementById('trade-quick-symbol');
+    if (!selectEl) return;
+    const current = String(selectEl.value || '').trim();
+    const currentUpper = current.toUpperCase();
+    const list = Array.isArray(rows) ? rows : [];
+    const seen = new Set();
+    const curatedRows = [];
+    for (const opt of CURATED_SYMBOL_OPTIONS) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        if (!value) continue;
+        curatedRows.push({ value, label });
+        seen.add(value.toUpperCase());
+    }
+
+    const brokerRows = [];
+    for (const row of list) {
+        const name = String(row?.name || '').trim();
+        if (!name) continue;
+        if (seen.has(name.toUpperCase())) continue;
+        const desc = String(row?.description || '').trim();
+        const vis = row?.visible ? 'visible' : 'hidden';
+        const label = desc ? `${name} - ${desc}` : `${name} (${vis})`;
+        brokerRows.push({ name, label });
+    }
+
+    let html = '<optgroup label="Curated">';
+    for (const opt of curatedRows) {
+        const value = String(opt?.value || '').trim();
+        const label = String(opt?.label || value).trim();
+        html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    html += '<optgroup label="Broker (MT5)">';
+    for (const row of brokerRows) {
+        const name = String(row?.name || '').trim();
+        const label = String(row?.label || name).trim();
+        html += `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
+    }
+    html += '</optgroup>';
+    if (curatedRows.length === 0 && brokerRows.length === 0) {
+        html = '<option value="" disabled selected>No symbols available</option>';
+    }
+    selectEl.innerHTML = html;
+    if (current && Array.from(selectEl.options).some((o) => String(o.value).toUpperCase() === currentUpper)) {
+        selectEl.value = current;
+        return;
+    }
+    const mainSymbol = String(document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    if (mainSymbol && setSelectValueCaseInsensitive(selectEl, mainSymbol)) {
+        return;
+    }
+    if (selectEl.options.length > 0) {
+        selectEl.selectedIndex = 0;
+    }
+}
+
+function syncQuickTradeControlsFromMain() {
+    const symbolEl = document.getElementById('trade-quick-symbol');
+    const mainSymbol = String(document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    if (symbolEl && mainSymbol) {
+        setSelectValueCaseInsensitive(symbolEl, mainSymbol);
+    }
+    const quickLotsEl = document.getElementById('trade-quick-lots');
+    const mainLotsEl = document.getElementById('trade-lots');
+    if (quickLotsEl && mainLotsEl && !String(quickLotsEl.value || '').trim()) {
+        quickLotsEl.value = String(mainLotsEl.value || '0.01');
+    }
+    const quickRiskEl = document.getElementById('trade-quick-risk-usd');
+    if (quickRiskEl && !String(quickRiskEl.value || '').trim()) {
+        quickRiskEl.value = '5';
+    }
+}
+
+function isNoProtectionModeEnabled() {
+    return !!document.getElementById('trade-no-protection-toggle')?.checked;
+}
+
+function syncTradeProtectionToggleUI() {
+    const noProtection = isNoProtectionModeEnabled();
+    const slEl = document.getElementById('trade-sl');
+    const tpLongEl = document.getElementById('trade-tp-long');
+    const tpShortEl = document.getElementById('trade-tp-short');
+    if (slEl) {
+        slEl.disabled = noProtection;
+        if (noProtection) slEl.value = '0';
+    }
+    if (tpLongEl) {
+        tpLongEl.disabled = noProtection;
+        if (noProtection) tpLongEl.value = '0';
+    }
+    if (tpShortEl) {
+        tpShortEl.disabled = noProtection;
+        if (noProtection) tpShortEl.value = '0';
+    }
+}
+
 async function refreshBrokerSymbols(showToast = false) {
     try {
         const q = new URLSearchParams();
@@ -1077,6 +1178,7 @@ async function refreshBrokerSymbols(showToast = false) {
         const rows = Array.isArray(data?.symbols) ? data.symbols : [];
         applyBrokerSymbolsToUI(rows);
         applyBrokerSymbolsToAutomationUI(rows);
+        applyBrokerSymbolsToTradeUI(rows);
         if (showToast) {
             if (rows.length > 0) {
                 showStatus(`Loaded ${Number(data.count || 0)} broker symbols`, 'success');
@@ -2285,6 +2387,7 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         advancedTrendilo: !!vis.advancedTrendilo,
         trendiloLsma: !!vis.trendiloLsma,
         alphaWave: !!vis.alphaWave,
+        deadzonePro: !!vis.deadzonePro,
         orbSignal: !!vis.orbSignal,
         trendiloBarColor: !!vis.trendiloBarColor,
         goldenCross: !!vis.goldenCross,
@@ -2300,6 +2403,7 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         advancedTrendilo: 'ind-advanced-trendilo',
         trendiloLsma: 'ind-trendilo-lsma',
         alphaWave: 'ind-alpha-wave',
+        deadzonePro: 'ind-deadzone-pro',
         orbSignal: 'ind-orb-signal',
         trendiloBarColor: 'ind-trendilo-barcolor',
         goldenCross: 'ind-golden-cross',
@@ -3914,20 +4018,52 @@ function _strategyAutomationSupportsStrategy(strategyLike) {
         || s === 'advanced_trendilo'
         || s === 'trendilo_lsma'
         || s === 'alpha_wave'
-        || s === 'orb_alpha_hybrid';
+        || s === 'orb_alpha_hybrid'
+        || s === 'deadzone_pro';
 }
 
 function _strategyAutomationResolveStartStrategy(strategyLike) {
     const s = String(strategyLike || '').trim().toLowerCase();
     if (s === 'orb') return 'orb_alpha_hybrid';
+    if (s === 'deadzone' || s === 'deadzonepro') return 'deadzone_pro';
     return s;
+}
+
+function _normalizeDeadzoneAutomationMode(modeLike) {
+    const m = String(modeLike || 'default').trim().toLowerCase();
+    return m === 'advanced' ? 'advanced' : 'default';
+}
+
+function _getAutoStartDeadzoneMode() {
+    return _normalizeDeadzoneAutomationMode(document.getElementById('auto-start-deadzone-mode')?.value || 'default');
+}
+
+function _syncAutoStartDeadzoneModeControl() {
+    const strategy = _strategyAutomationResolveStartStrategy(document.getElementById('auto-start-strategy')?.value || 'trendilo');
+    const wrap = document.getElementById('auto-start-deadzone-mode-wrap');
+    const sel = document.getElementById('auto-start-deadzone-mode');
+    const isDeadzone = strategy === 'deadzone_pro';
+    if (wrap) wrap.classList.toggle('d-none', !isDeadzone);
+    if (sel && !isDeadzone) sel.value = 'default';
+}
+
+function _formatAutomationStrategyLabel(jobLike) {
+    const strategy = String(jobLike?.strategy || '').trim();
+    const mode = _normalizeDeadzoneAutomationMode(jobLike?.deadzone_mode || 'default');
+    if (String(strategy).toLowerCase() === 'deadzone_pro') {
+        return `${strategy} (${mode === 'advanced' ? 'ADV' : 'DEF'})`;
+    }
+    return strategy;
 }
 
 function _strategyAutomationJobKey(jobLike) {
     const strategy = String(jobLike?.strategy || '').trim().toLowerCase();
     const symbol = String(jobLike?.symbol || '').trim().toUpperCase();
     const timeframe = normalizeTimeframeLabel(jobLike?.timeframe || '', 'M15');
-    return `${strategy}|${symbol}|${timeframe}`;
+    const mode = strategy === 'deadzone_pro'
+        ? _normalizeDeadzoneAutomationMode(jobLike?.deadzone_mode || 'default')
+        : 'default';
+    return `${strategy}|${symbol}|${timeframe}|${mode}`;
 }
 
 function _syncStrategyAutomationJobsCache(jobsLike) {
@@ -3996,7 +4132,7 @@ function _renderStrategyAutomationJobsTable(jobsLike) {
         return `
             <tr>
                 <td>${escapeHtml(jobId)}</td>
-                <td>${escapeHtml(String(j?.strategy || ''))}</td>
+                <td>${escapeHtml(_formatAutomationStrategyLabel(j))}</td>
                 <td>${escapeHtml(String(j?.symbol || ''))}</td>
                 <td>${escapeHtml(String(j?.timeframe || ''))}</td>
                 <td>${escapeHtml(status)}</td>
@@ -4156,7 +4292,7 @@ function _renderAutomationMonitorRows(jobsLike) {
         htmlRows.push(`
             <tr data-auto-row="${escapeHtml(jobId)}">
                 <td>${escapeHtml(String(j?.job_id || ''))}</td>
-                <td>${escapeHtml(String(j?.strategy || ''))}</td>
+                <td>${escapeHtml(_formatAutomationStrategyLabel(j))}</td>
                 <td>${escapeHtml(String(j?.symbol || ''))}</td>
                 <td>${escapeHtml(String(j?.timeframe || ''))}</td>
                 <td>${escapeHtml(status)}</td>
@@ -4165,6 +4301,19 @@ function _renderAutomationMonitorRows(jobsLike) {
                 <td>P#${parentId} / C#${childId}</td>
                 <td>
                     ${toggleBtn}
+                    <button
+                        type="button"
+                        class="btn btn-sm btn-outline-info me-1"
+                        data-auto-action="show-job-logs"
+                        data-auto-job="${escapeHtml(String(j?.job_id || ''))}"
+                        data-auto-parent="${parentId}"
+                        data-auto-child="${childId}"
+                        data-auto-symbol="${escapeHtml(String(j?.symbol || ''))}"
+                        data-auto-strategy="${escapeHtml(String(j?.strategy || ''))}"
+                        data-auto-timeframe="${escapeHtml(String(j?.timeframe || 'M15'))}"
+                        data-auto-source="${escapeHtml(String(j?.source || 'mt5'))}"
+                        data-auto-deadzone-mode="${escapeHtml(String(j?.deadzone_mode || 'default'))}"
+                    >Show Logs</button>
                     <button
                         type="button"
                         class="btn btn-sm btn-outline-primary me-1"
@@ -4240,6 +4389,302 @@ function _renderAutomationMonitorRows(jobsLike) {
     body.innerHTML = htmlRows.join('');
 }
 
+function _automationLogsSortMode() {
+    return String(document.getElementById('auto-logs-sort')?.value || 'event_time_desc').trim().toLowerCase();
+}
+
+function _automationLogsDirectionFilter() {
+    const raw = String(document.getElementById('auto-logs-direction')?.value || 'all').trim().toLowerCase();
+    return raw === 'buy' || raw === 'sell' ? raw : 'all';
+}
+
+function _automationLogsScopeFilter() {
+    const raw = String(document.getElementById('auto-logs-scope')?.value || 'both').trim().toLowerCase();
+    return raw === 'major' || raw === 'routine' || raw === 'both' ? raw : 'both';
+}
+
+function _automationLogsParseMs(rawLike) {
+    return _automationMonitorParseMs(rawLike);
+}
+
+function _automationLogsFormatTime(rawLike) {
+    const ms = _automationLogsParseMs(rawLike);
+    if (!Number.isFinite(ms)) return '-';
+    try {
+        return new Date(ms).toLocaleString([], {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        });
+    } catch (_) {
+        return '-';
+    }
+}
+
+function _automationLogsPriceDecimals() {
+    const symbol = String(automationLogsContext?.symbol || document.getElementById('sim-symbol')?.value || 'XAUUSD').toUpperCase();
+    return getPriceDecimalsForSymbol(symbol);
+}
+
+function _automationLogsFormatPrice(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '-';
+    return n.toFixed(_automationLogsPriceDecimals());
+}
+
+function _automationLogsFormatPnl(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '-';
+    return n.toFixed(2);
+}
+
+function _automationLogsFormatR(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '-';
+    return n.toFixed(2);
+}
+
+function _automationLogsApplySortFilter(eventsLike) {
+    const list = Array.isArray(eventsLike) ? eventsLike.slice() : [];
+    const dirFilter = _automationLogsDirectionFilter();
+    const scopeFilter = _automationLogsScopeFilter();
+    let rows = list.filter((row) => {
+        const ev = String(row?.event || '').trim().toLowerCase();
+        if (scopeFilter === 'major' && ev === 'routine') return false;
+        if (scopeFilter === 'routine' && ev !== 'routine') return false;
+        const dir = String(row?.direction || '').trim().toLowerCase();
+        if (dirFilter === 'buy') return dir === 'buy';
+        if (dirFilter === 'sell') return dir === 'sell';
+        return true;
+    });
+    const mode = _automationLogsSortMode();
+    const byEventTime = (a, b) => _automationLogsParseMs(a?.event_time) - _automationLogsParseMs(b?.event_time);
+    const byCreatedTime = (a, b) => _automationLogsParseMs(a?.trade_created_at) - _automationLogsParseMs(b?.trade_created_at);
+    const byTradeId = (a, b) => Number(a?.trade_id || 0) - Number(b?.trade_id || 0);
+    const byDirection = (a, b) => String(a?.direction || '').localeCompare(String(b?.direction || ''));
+
+    switch (mode) {
+        case 'event_time_asc':
+            rows.sort(byEventTime);
+            break;
+        case 'trade_created_desc':
+            rows.sort((a, b) => byCreatedTime(b, a));
+            break;
+        case 'trade_created_asc':
+            rows.sort(byCreatedTime);
+            break;
+        case 'trade_id_desc':
+            rows.sort((a, b) => byTradeId(b, a));
+            break;
+        case 'trade_id_asc':
+            rows.sort(byTradeId);
+            break;
+        case 'direction_buy_sell':
+            rows.sort((a, b) => {
+                const cmp = byDirection(a, b);
+                if (cmp !== 0) return cmp;
+                return byEventTime(b, a);
+            });
+            break;
+        case 'direction_sell_buy':
+            rows.sort((a, b) => {
+                const cmp = byDirection(b, a);
+                if (cmp !== 0) return cmp;
+                return byEventTime(b, a);
+            });
+            break;
+        case 'event_time_desc':
+        default:
+            rows.sort((a, b) => byEventTime(b, a));
+            break;
+    }
+    return rows;
+}
+
+function _renderAutomationLogsRows() {
+    const head = document.getElementById('auto-logs-head');
+    const body = document.getElementById('auto-logs-body');
+    const summary = document.getElementById('auto-logs-summary');
+    const statusEl = document.getElementById('auto-logs-status');
+    if (!head || !body || !summary) return;
+
+    const ctx = automationLogsContext || {};
+    const strategyLabel = _formatAutomationStrategyLabel(ctx);
+    const rows = _automationLogsApplySortFilter(automationLogsEvents);
+    const uniqueTradeIds = new Set(rows.map((r) => Number(r?.trade_id || 0)).filter((v) => v > 0));
+    const openCount = rows.filter((r) => String(r?.event || '').toLowerCase() === 'open').length;
+    const closeCount = rows.filter((r) => String(r?.event || '').toLowerCase() === 'close').length;
+    const routineCount = rows.filter((r) => String(r?.event || '').toLowerCase() === 'routine').length;
+    summary.textContent = `Job ${String(ctx?.job_id || '-')} | ${strategyLabel} | ${String(ctx?.symbol || '-')} ${String(ctx?.timeframe || '-')} | Events: ${rows.length} (open=${openCount}, close=${closeCount}, routine=${routineCount}) | Trades: ${uniqueTradeIds.size}`;
+    if (statusEl) statusEl.textContent = rows.length ? `Loaded ${rows.length} log rows` : 'No logs';
+
+    head.innerHTML = `
+        <tr>
+            <th>Event Time</th>
+            <th>Trade Created</th>
+            <th>Trade ID</th>
+            <th>Event</th>
+            <th>Dir</th>
+            <th>Reason</th>
+            <th>M1</th>
+            <th>M5</th>
+            <th>M15</th>
+            <th>Price</th>
+            <th>RSI(14)</th>
+            <th>M1 DEF R/U</th>
+            <th>M1 ADV R/U</th>
+            <th>M5 DEF R/U</th>
+            <th>M5 ADV R/U</th>
+            <th>M5 Flip At</th>
+            <th>Mode</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>P&L</th>
+            <th>R</th>
+            <th>Status</th>
+        </tr>
+    `;
+
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="22" class="text-center text-muted py-3"><small>No logs found for this automation.</small></td></tr>';
+        return;
+    }
+
+    body.innerHTML = rows.map((r) => {
+        const event = String(r?.event || '').toUpperCase();
+        const dir = String(r?.direction || '').toUpperCase();
+        const reason = String(r?.reason || '').trim() || '-';
+        const m1Color = String(r?.m1_color || '').trim().toUpperCase() || '-';
+        const m5Color = String(r?.m5_color || '').trim().toUpperCase() || '-';
+        const m15Color = String(r?.m15_color || r?.color || '').trim().toUpperCase() || '-';
+        const m5FlipAt = _automationLogsFormatTime(r?.m5_flip_at || r?.m5_bar_at);
+        const mode = String(r?.mode || 'default').toUpperCase();
+        const status = String(r?.status || '').trim().toLowerCase() || '-';
+        const rsiVal = Number(r?.rsi);
+        const priceVal = _automationLogsFormatPrice(r?.price);
+        const m1DefR = _automationLogsFormatPnl(r?.m1_default_realized_pnl);
+        const m1DefU = _automationLogsFormatPnl(r?.m1_default_unrealized_pnl);
+        const m1AdvR = _automationLogsFormatPnl(r?.m1_advanced_realized_pnl);
+        const m1AdvU = _automationLogsFormatPnl(r?.m1_advanced_unrealized_pnl);
+        const m5DefR = _automationLogsFormatPnl(r?.m5_default_realized_pnl);
+        const m5DefU = _automationLogsFormatPnl(r?.m5_default_unrealized_pnl);
+        const m5AdvR = _automationLogsFormatPnl(r?.m5_advanced_realized_pnl);
+        const m5AdvU = _automationLogsFormatPnl(r?.m5_advanced_unrealized_pnl);
+        return `
+            <tr>
+                <td>${escapeHtml(_automationLogsFormatTime(r?.event_time))}</td>
+                <td>${escapeHtml(_automationLogsFormatTime(r?.trade_created_at))}</td>
+                <td>${Number(r?.trade_id || 0)}</td>
+                <td>${escapeHtml(event)}</td>
+                <td>${escapeHtml(dir)}</td>
+                <td>${escapeHtml(reason)}</td>
+                <td>${escapeHtml(m1Color)}</td>
+                <td>${escapeHtml(m5Color)}</td>
+                <td>${escapeHtml(m15Color)}</td>
+                <td>${escapeHtml(priceVal)}</td>
+                <td>${Number.isFinite(rsiVal) ? rsiVal.toFixed(2) : '-'}</td>
+                <td>${escapeHtml(`${m1DefR}/${m1DefU}`)}</td>
+                <td>${escapeHtml(`${m1AdvR}/${m1AdvU}`)}</td>
+                <td>${escapeHtml(`${m5DefR}/${m5DefU}`)}</td>
+                <td>${escapeHtml(`${m5AdvR}/${m5AdvU}`)}</td>
+                <td>${escapeHtml(m5FlipAt)}</td>
+                <td>${escapeHtml(mode)}</td>
+                <td>${escapeHtml(_automationLogsFormatPrice(r?.entry_price))}</td>
+                <td>${escapeHtml(_automationLogsFormatPrice(r?.exit_price))}</td>
+                <td>${escapeHtml(_automationLogsFormatPnl(r?.pnl))}</td>
+                <td>${escapeHtml(_automationLogsFormatR(r?.r_multiple))}</td>
+                <td>${escapeHtml(status.toUpperCase())}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function _automationJobFromMonitorActionTarget(target) {
+    const childSessionId = Number(target?.getAttribute?.('data-auto-child') || 0);
+    const parentSessionId = Number(target?.getAttribute?.('data-auto-parent') || 0);
+    const jobId = String(target?.getAttribute?.('data-auto-job') || '').trim();
+    const strategy = String(target?.getAttribute?.('data-auto-strategy') || '').trim().toLowerCase();
+    const symbol = String(target?.getAttribute?.('data-auto-symbol') || '').trim().toUpperCase();
+    const timeframe = normalizeTimeframeLabel(target?.getAttribute?.('data-auto-timeframe') || 'M15', 'M15');
+    const source = String(target?.getAttribute?.('data-auto-source') || 'mt5').trim().toLowerCase() || 'mt5';
+    const deadzoneMode = _normalizeDeadzoneAutomationMode(target?.getAttribute?.('data-auto-deadzone-mode') || 'default');
+    const fromCache = strategyAutomationJobs.find((j) => (
+        (jobId && String(j?.job_id || '') === jobId)
+        || (childSessionId > 0 && Number(j?.child_session_id || 0) === childSessionId)
+    ));
+    return {
+        ...(fromCache && typeof fromCache === 'object' ? fromCache : {}),
+        job_id: jobId || String(fromCache?.job_id || ''),
+        parent_session_id: parentSessionId || Number(fromCache?.parent_session_id || 0),
+        child_session_id: childSessionId || Number(fromCache?.child_session_id || 0),
+        symbol: symbol || String(fromCache?.symbol || ''),
+        strategy: strategy || String(fromCache?.strategy || ''),
+        timeframe: timeframe || String(fromCache?.timeframe || 'M15'),
+        source: source || String(fromCache?.source || 'mt5'),
+        deadzone_mode: deadzoneMode || String(fromCache?.deadzone_mode || 'default'),
+    };
+}
+
+async function openAutomationLogsModal(jobLike, opts = {}) {
+    const showModal = opts?.showModal !== false;
+    const parentSessionId = Number(jobLike?.parent_session_id || 0);
+    const childSessionId = Number(jobLike?.child_session_id || 0);
+    const jobId = String(jobLike?.job_id || '').trim();
+    if (!(parentSessionId > 0) || (!(childSessionId > 0) && !jobId)) {
+        showStatus('Automation logs unavailable: missing job context.', 'warning');
+        return;
+    }
+    const titleEl = document.getElementById('automationLogsModalLabel');
+    if (titleEl) {
+        titleEl.innerHTML = `<i class="bi bi-journal-text me-1"></i>Automation Logs - ${escapeHtml(_formatAutomationStrategyLabel(jobLike))} ${escapeHtml(String(jobLike?.symbol || ''))} ${escapeHtml(String(jobLike?.timeframe || ''))}`;
+    }
+    const statusEl = document.getElementById('auto-logs-status');
+    if (statusEl) statusEl.textContent = 'Loading...';
+    automationLogsContext = { ...(jobLike && typeof jobLike === 'object' ? jobLike : {}) };
+    automationLogsEvents = [];
+    _renderAutomationLogsRows();
+    if (showModal) {
+        const modalEl = document.getElementById('automationLogsModal');
+        if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+            window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }
+    }
+    const params = new URLSearchParams();
+    if (childSessionId > 0) params.set('child_session_id', String(childSessionId));
+    if (jobId) params.set('job_id', jobId);
+    params.set('log_scope', _automationLogsScopeFilter());
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${parentSessionId}/agent/strategy-automation/logs?${params.toString()}`);
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            const err = String(out?.error || out?.detail || `HTTP ${res.status}`);
+            if (statusEl) statusEl.textContent = `Load failed: ${err}`;
+            showStatus(`Automation logs load failed: ${err}`, 'warning');
+            return;
+        }
+        automationLogsContext = {
+            ...(automationLogsContext || {}),
+            parent_session_id: Number(out?.parent_session_id || parentSessionId),
+            child_session_id: Number(out?.child_session_id || childSessionId),
+            job_id: String(out?.job_id || jobId),
+            strategy: String(out?.strategy || jobLike?.strategy || ''),
+            deadzone_mode: _normalizeDeadzoneAutomationMode(out?.deadzone_mode || jobLike?.deadzone_mode || 'default'),
+            symbol: String(out?.symbol || jobLike?.symbol || ''),
+            timeframe: String(out?.timeframe || jobLike?.timeframe || 'M15'),
+            log_scope: String(out?.log_scope || _automationLogsScopeFilter()),
+        };
+        automationLogsEvents = Array.isArray(out?.events) ? out.events : [];
+        _renderAutomationLogsRows();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `Load failed: ${String(err?.message || err)}`;
+        showStatus(`Automation logs load failed: ${String(err?.message || err)}`, 'warning');
+    }
+}
+
 async function refreshAutomationMonitorModal(showStatusToast = false) {
     const statusEl = document.getElementById('auto-monitor-status');
     if (statusEl) statusEl.textContent = 'Loading...';
@@ -4293,6 +4738,7 @@ function _automationChartSelectionForStrategy(strategyLike) {
         advancedTrendilo: false,
         trendiloLsma: false,
         alphaWave: false,
+        deadzonePro: false,
         orbSignal: false,
         trendiloBarColor: false,
         goldenCross: false,
@@ -4307,6 +4753,8 @@ function _automationChartSelectionForStrategy(strategyLike) {
         base.trendiloLsma = true;
     } else if (strategy === 'alpha_wave') {
         base.alphaWave = true;
+    } else if (strategy === 'deadzone_pro' || strategy === 'deadzone' || strategy === 'deadzonepro') {
+        base.deadzonePro = true;
     } else if (strategy === 'orb') {
         base.orbSignal = true;
     } else if (strategy === 'orb_alpha_hybrid') {
@@ -4395,6 +4843,10 @@ function _automationChartEnsureMain() {
             borderColor: '#2a2e39',
             timeVisible: true,
             secondsVisible: false,
+            rightOffset: 8,
+            rightBarStaysOnScroll: false,
+            fixRightEdge: false,
+            shiftVisibleRangeOnNewBar: false,
         },
     });
     automationChartCandles = automationChartMain.addCandlestickSeries({
@@ -4657,6 +5109,7 @@ async function openAutomationChartModal(jobLike, opts = {}) {
     else if (strategy === 'advanced_trendilo') dirArr = pack.advancedTrendiloDir || [];
     else if (strategy === 'trendilo_lsma') dirArr = pack.trendiloLsmaDir || [];
     else if (strategy === 'alpha_wave') dirArr = pack.alphaWaveDir || [];
+    else if (strategy === 'deadzone_pro' || strategy === 'deadzone') dirArr = pack.deadzoneProDir || [];
     else if (strategy === 'orb') dirArr = pack.orbDir || [];
     else if (strategy === 'orb_alpha_hybrid') dirArr = pack.orbDir || [];
 
@@ -4692,6 +5145,19 @@ async function openAutomationChartModal(jobLike, opts = {}) {
                 time: t,
                 value: v,
                 color: d > 0 ? '#01ffa7' : (d < 0 ? '#fb0bff' : '#9e9e9e'),
+            });
+        }
+    } else if (strategy === 'deadzone_pro' || strategy === 'deadzone') {
+        const values = pack.deadzoneProLine || [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(values[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            overlayData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#4caf50' : (d < 0 ? '#ff5252' : '#9ca3af'),
             });
         }
     } else if (strategy === 'orb' || strategy === 'orb_alpha_hybrid') {
@@ -4817,6 +5283,9 @@ async function startStrategyAutomationFromOpportunityRow(rowLike, opts = {}) {
         rr_target: rrOverride,
         lot_size_override: Number.isFinite(Number(opts?.lotSizeOverride)) ? Number(opts.lotSizeOverride) : undefined,
     };
+    if (strategy === 'deadzone_pro') {
+        payload.deadzone_mode = _getAutoStartDeadzoneMode();
+    }
     try {
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/strategy-automation/start`, {
             method: 'POST',
@@ -4895,6 +5364,9 @@ async function startStrategyAutomationFromManualModal() {
         rr_target: rrTarget,
         lot_size_override: lotOverride,
     };
+    if (strategy === 'deadzone_pro') {
+        payload.deadzone_mode = _getAutoStartDeadzoneMode();
+    }
     if (statusEl) statusEl.textContent = `Starting ${strategy} automation on ${symbol} ${timeframe}...`;
     try {
         const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/agent/strategy-automation/start`, {
@@ -5156,7 +5628,7 @@ function buildCompactIndicatorSnapshot() {
         close: Number(b?.close || 0),
         volume: Number(b?.volume || 0),
     }));
-    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, goldenCross: true };
+    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, deadzonePro: true, goldenCross: true };
     const pack = computeIndicatorPack(bars, fullSel);
     const out = {
         timeframe: String(document.getElementById('sim-timeframe')?.value || '').toUpperCase(),
@@ -5176,6 +5648,8 @@ function buildCompactIndicatorSnapshot() {
         stoch_d: _latestFinite(pack?.stochD),
         trendilo_avpch: _latestFinite(pack?.trendiloAvpch),
         trendilo_rms: _latestFinite(pack?.trendiloRms),
+        deadzone_line: _latestFinite(pack?.deadzoneProLine),
+        deadzone_dir: _latestFinite(pack?.deadzoneProDir),
     };
     compactIndicatorSnapshotCacheKey = cacheKey;
     compactIndicatorSnapshotCacheValue = { ...out };
@@ -5195,7 +5669,7 @@ function buildConsultantContext() {
         close: Number(b.close || 0),
         volume: Number(b.volume || 0),
     }));
-    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, goldenCross: true };
+    const fullSel = { smaEma: true, adx: true, rsi: true, stoch: true, bollinger: true, trendilo: true, deadzonePro: true, goldenCross: true };
     const pack = recentBars.length ? computeIndicatorPack(recentBars, fullSel) : null;
     const indicatorsLatest = pack ? {
         sma20: _latestFinite(pack.sma20),
@@ -5213,6 +5687,8 @@ function buildConsultantContext() {
         stoch_d: _latestFinite(pack.stochD),
         trendilo_avpch: _latestFinite(pack.trendiloAvpch),
         trendilo_rms: _latestFinite(pack.trendiloRms),
+        deadzone_line: _latestFinite(pack.deadzoneProLine),
+        deadzone_dir: _latestFinite(pack.deadzoneProDir),
     } : {};
 
     const sessionStats = {
@@ -6897,6 +7373,43 @@ function computeAlphaWave(highs, lows, closes) {
     return { baseline, dir };
 }
 
+function computeDeadzonePro(closes) {
+    const len = Array.isArray(closes) ? closes.length : 0;
+    const line = new Array(len).fill(NaN);
+    const dir = new Array(len).fill(0);
+    if (len <= 0) return { line, dir };
+
+    // Pine defaults from the shared script:
+    // atp_hull_length=21, atp_hull_source=close
+    const hullLength = 21;
+    const halfLength = Math.max(1, Math.floor(hullLength / 2));
+    const sqrtLength = Math.max(1, Math.round(Math.sqrt(hullLength)));
+
+    const wma1 = rollingWMA(closes, halfLength);
+    const wma2 = rollingWMA(closes, hullLength);
+    const diff = new Array(len).fill(NaN);
+    for (let i = 0; i < len; i += 1) {
+        const a = toFiniteNumber(wma1[i]);
+        const b = toFiniteNumber(wma2[i]);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        diff[i] = (2.0 * a) - b;
+    }
+    const hull = rollingWMA(diff, sqrtLength);
+    for (let i = 0; i < len; i += 1) {
+        const h = toFiniteNumber(hull[i]);
+        if (!Number.isFinite(h)) continue;
+        line[i] = h;
+        if (i <= 0) continue;
+        const prev = toFiniteNumber(hull[i - 1]);
+        if (!Number.isFinite(prev)) continue;
+        const slope = h - prev;
+        if (slope > 0) dir[i] = 1;
+        else if (slope < 0) dir[i] = -1;
+        else dir[i] = 0;
+    }
+    return { line, dir };
+}
+
 function _orbNyParts(unixSec) {
     const ts = Number(unixSec);
     if (!Number.isFinite(ts) || ts <= 0) return null;
@@ -7247,10 +7760,11 @@ function computeIndicatorPack(bars, selection) {
     const needTrendilo = !!sel.trendilo || !!sel.advancedTrendilo || !!sel.trendiloBarColor;
     const needTrendiloLsma = !!sel.trendiloLsma;
     const needAlphaWave = !!sel.alphaWave;
+    const needDeadzonePro = !!sel.deadzonePro;
     const needOrbSignal = !!sel.orbSignal;
     const needGoldenCross = !!sel.goldenCross;
 
-    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross || needAlphaWave || needOrbSignal;
+    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross || needAlphaWave || needDeadzonePro || needOrbSignal;
     const needHighLow = needAdx || needStoch || needTrendiloLsma || needAlphaWave;
 
     const closes = needCloses ? bars.map(b => toFiniteNumber(b?.close)) : [];
@@ -7316,6 +7830,10 @@ function computeIndicatorPack(bars, selection) {
         baseline: [],
         dir: [],
     };
+    const deadzonePro = needDeadzonePro ? computeDeadzonePro(closes) : {
+        line: [],
+        dir: [],
+    };
     const orbSignal = needOrbSignal ? computeOrbSignal(bars, getCostModelSymbol()) : {
         signal: [],
         dir: [],
@@ -7351,6 +7869,8 @@ function computeIndicatorPack(bars, selection) {
         trendiloLsmaDir: trendiloLsma.dir,
         alphaWaveBaseline: alphaWave.baseline,
         alphaWaveDir: alphaWave.dir,
+        deadzoneProLine: deadzonePro.line,
+        deadzoneProDir: deadzonePro.dir,
         orbSignal: orbSignal.signal,
         orbDir: orbSignal.dir,
         orbKillZone: orbSignal.inKillZone,
@@ -7534,7 +8054,7 @@ function ensureOscillatorScale() {
     if (!chart) return;
     chart.priceScale('osc').applyOptions({
         autoScale: true,
-        scaleMargins: { top: 0.74, bottom: 0.03 },
+        scaleMargins: { top: 0.52, bottom: 0.02 },
         borderColor: '#334155',
     });
 }
@@ -7624,6 +8144,7 @@ function applyIndicatorVisibility() {
     const showTrendilo = !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo);
     const showTrendiloLsma = !!indicatorSelection.trendiloLsma;
     const showAlphaWave = !!indicatorSelection.alphaWave;
+    const showDeadzonePro = !!indicatorSelection.deadzonePro;
     const showOrbSignal = !!indicatorSelection.orbSignal;
     const showTrendiloBarColor = !!indicatorSelection.trendiloBarColor;
 
@@ -7654,6 +8175,9 @@ function applyIndicatorVisibility() {
     if (!showAlphaWave) {
         removeIndicatorSeries('alphaWave');
     }
+    if (!showDeadzonePro) {
+        removeIndicatorSeries('deadzonePro');
+    }
     if (!showOrbSignal) {
         removeIndicatorSeries('orbSignal');
     }
@@ -7679,6 +8203,7 @@ function updateIndicatorsOnChart() {
         || indicatorSelection.advancedTrendilo
         || indicatorSelection.trendiloLsma
         || indicatorSelection.alphaWave
+        || indicatorSelection.deadzonePro
         || indicatorSelection.orbSignal
         || indicatorSelection.trendiloBarColor
         || indicatorSelection.goldenCross;
@@ -7749,7 +8274,7 @@ function updateIndicatorsOnChart() {
     }
 
     if (indicatorSelection.rsi) {
-        ensureIndicatorSeries('rsi', { color: '#f472b6', lineWidth: 1, priceScaleId: 'osc' });
+        ensureIndicatorSeries('rsi', { color: '#f472b6', lineWidth: 3, priceScaleId: 'osc' });
         indicatorSeries.rsi?.setData(seriesDataFromArray(bars, pack.rsi));
     }
 
@@ -7839,6 +8364,27 @@ function updateIndicatorsOnChart() {
         removeIndicatorSeries('alphaWave');
     }
 
+    if (indicatorSelection.deadzonePro) {
+        ensureIndicatorSeries('deadzonePro', { color: '#9ca3af', lineWidth: 2 });
+        const lineArr = pack.deadzoneProLine || [];
+        const dirArr = pack.deadzoneProDir || [];
+        const deadzoneData = [];
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(lineArr[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            const d = Number(dirArr[i] || 0);
+            deadzoneData.push({
+                time: t,
+                value: v,
+                color: d > 0 ? '#4caf50' : (d < 0 ? '#ff5252' : '#9ca3af'),
+            });
+        }
+        indicatorSeries.deadzonePro?.setData(deadzoneData);
+    } else {
+        removeIndicatorSeries('deadzonePro');
+    }
+
     if (indicatorSelection.orbSignal) {
         ensureIndicatorSeries('orbSignal', { color: '#9ca3af', lineWidth: 2 });
         const signalArr = pack.orbSignal || [];
@@ -7878,6 +8424,7 @@ function readIndicatorSelectionFromUI() {
         advancedTrendilo: read('ind-advanced-trendilo'),
         trendiloLsma: read('ind-trendilo-lsma'),
         alphaWave: read('ind-alpha-wave'),
+        deadzonePro: read('ind-deadzone-pro'),
         orbSignal: read('ind-orb-signal'),
         trendiloBarColor: read('ind-trendilo-barcolor'),
         goldenCross: read('ind-golden-cross'),
@@ -7885,7 +8432,7 @@ function readIndicatorSelectionFromUI() {
 }
 
 function resetIndicatorSelectionUI() {
-    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'];
+    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'];
     for (const id of ids) {
         const el = document.getElementById(id);
         if (el) el.checked = false;
@@ -7899,6 +8446,11 @@ function resetIndicatorSelectionUI() {
 
 function getZonePriceDecimals() {
     const symbol = String(document.getElementById('sim-symbol')?.value || 'XAUUSD').toUpperCase();
+    return getPriceDecimalsForSymbol(symbol);
+}
+
+function getPriceDecimalsForSymbol(symbolLike) {
+    const symbol = String(symbolLike || 'XAUUSD').toUpperCase();
     if (symbol.includes('USD') && (symbol.startsWith('EUR') || symbol.startsWith('GBP'))) return 5;
     if (symbol.includes('NAS') || symbol.includes('US500') || symbol.includes('SPX') || symbol.includes('DJI')) return 1;
     return 2;
@@ -8751,27 +9303,7 @@ function bindEvents() {
             return;
         }
         if (action === 'open-job-chart') {
-            const childSessionId = Number(target.getAttribute('data-auto-child') || 0);
-            const parentSessionId = Number(target.getAttribute('data-auto-parent') || 0);
-            const jobId = String(target.getAttribute('data-auto-job') || '').trim();
-            const strategy = String(target.getAttribute('data-auto-strategy') || '').trim().toLowerCase();
-            const symbol = String(target.getAttribute('data-auto-symbol') || '').trim().toUpperCase();
-            const timeframe = normalizeTimeframeLabel(target.getAttribute('data-auto-timeframe') || 'M15', 'M15');
-            const source = String(target.getAttribute('data-auto-source') || 'mt5').trim().toLowerCase() || 'mt5';
-            const fromCache = strategyAutomationJobs.find((j) => (
-                (jobId && String(j?.job_id || '') === jobId)
-                || (childSessionId > 0 && Number(j?.child_session_id || 0) === childSessionId)
-            ));
-            const job = {
-                ...(fromCache && typeof fromCache === 'object' ? fromCache : {}),
-                job_id: jobId || String(fromCache?.job_id || ''),
-                parent_session_id: parentSessionId || Number(fromCache?.parent_session_id || 0),
-                child_session_id: childSessionId || Number(fromCache?.child_session_id || 0),
-                symbol: symbol || String(fromCache?.symbol || ''),
-                strategy: strategy || String(fromCache?.strategy || ''),
-                timeframe: timeframe || String(fromCache?.timeframe || 'M15'),
-                source: source || String(fromCache?.source || 'mt5'),
-            };
+            const job = _automationJobFromMonitorActionTarget(target);
             void openAutomationChartModal(job, { showModal: true });
             const modalEl = document.getElementById('automationMonitorModal');
             if (modalEl && window.bootstrap && window.bootstrap.Modal) {
@@ -8779,6 +9311,12 @@ function bindEvents() {
                 if (modal) modal.hide();
             }
             showStatus(`Opened automation chart: ${job.symbol} ${job.timeframe} ${job.strategy}`, 'info');
+            return;
+        }
+        if (action === 'show-job-logs') {
+            const job = _automationJobFromMonitorActionTarget(target);
+            void openAutomationLogsModal(job, { showModal: true });
+            return;
         }
     });
     document.getElementById('btn-refresh-auto-monitor')?.addEventListener('click', () => {
@@ -8789,6 +9327,26 @@ function bindEvents() {
     });
     document.getElementById('auto-monitor-running-only')?.addEventListener('change', () => {
         _renderAutomationMonitorRows(strategyAutomationJobs);
+    });
+    document.getElementById('btn-refresh-auto-logs')?.addEventListener('click', () => {
+        if (!automationLogsContext) {
+            showStatus('No automation selected for logs.', 'warning');
+            return;
+        }
+        void openAutomationLogsModal(automationLogsContext, { showModal: false });
+    });
+    document.getElementById('auto-logs-sort')?.addEventListener('change', () => {
+        _renderAutomationLogsRows();
+    });
+    document.getElementById('auto-logs-direction')?.addEventListener('change', () => {
+        _renderAutomationLogsRows();
+    });
+    document.getElementById('auto-logs-scope')?.addEventListener('change', () => {
+        if (!automationLogsContext) {
+            _renderAutomationLogsRows();
+            return;
+        }
+        void openAutomationLogsModal(automationLogsContext, { showModal: false });
     });
     const executionBadgeEl = document.getElementById('stat-execution');
     if (executionBadgeEl) {
@@ -8888,7 +9446,11 @@ function bindEvents() {
             tfEl.value = tfMain;
         }
         if (sourceEl) sourceEl.value = String(document.getElementById('live-source')?.value || 'mt5').toLowerCase();
+        _syncAutoStartDeadzoneModeControl();
         if (statusEl) statusEl.textContent = 'Ready.';
+    });
+    document.getElementById('auto-start-strategy')?.addEventListener('change', () => {
+        _syncAutoStartDeadzoneModeControl();
     });
     document.getElementById('btn-start-auto-manual')?.addEventListener('click', () => {
         void startStrategyAutomationFromManualModal();
@@ -8936,6 +9498,7 @@ function bindEvents() {
     });
     document.getElementById('sim-symbol')?.addEventListener('change', () => {
         updateCostModelHint();
+        syncQuickTradeControlsFromMain();
         const spreadEl = document.getElementById('cost-model-spread');
         if (spreadEl && (!spreadEl.value || Number.isNaN(Number(spreadEl.value)))) {
             spreadEl.value = String(getDefaultSpreadForSymbol(getCostModelSymbol()));
@@ -9169,7 +9732,7 @@ function bindEvents() {
     document.getElementById('agent-strategy-profile')?.addEventListener('change', () => {
         syncAgentStrategyControls();
     });
-    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
+    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
             readIndicatorSelectionFromUI();
             updateIndicatorsOnChart();
@@ -9204,7 +9767,15 @@ function bindEvents() {
     // Trade buttons
     document.getElementById('btn-buy')?.addEventListener('click', () => executeTrade('BUY'));
     document.getElementById('btn-sell')?.addEventListener('click', () => executeTrade('SELL'));
+    document.getElementById('btn-trade-quick-enter')?.addEventListener('click', () => {
+        void executeQuickTradeFromControls();
+    });
+    document.getElementById('trade-no-protection-toggle')?.addEventListener('change', () => {
+        syncTradeProtectionToggleUI();
+    });
     document.getElementById('btn-close-pos')?.addEventListener('click', closePosition);
+    syncQuickTradeControlsFromMain();
+    syncTradeProtectionToggleUI();
 
     // Reset
     document.getElementById('btn-reset')?.addEventListener('click', resetSession);
@@ -9299,13 +9870,140 @@ function renderTradeLog(trades) {
     }
 }
 
+function _normalizeLiveBar(rawBar, prevBar = null) {
+    if (!rawBar || typeof rawBar !== 'object') return null;
+    const t = Number(rawBar.time);
+    if (!Number.isFinite(t) || t <= 0) return null;
+
+    let o = Number(rawBar.open);
+    let h = Number(rawBar.high);
+    let l = Number(rawBar.low);
+    let c = Number(rawBar.close);
+    const vRaw = Number(rawBar.volume || 0);
+    const vol = Number.isFinite(vRaw) && vRaw > 0 ? vRaw : 0;
+
+    const prev = (prevBar && typeof prevBar === 'object') ? prevBar : null;
+    const prevTime = Number(prev?.time);
+    const prevOpen = Number(prev?.open);
+    const prevHigh = Number(prev?.high);
+    const prevLow = Number(prev?.low);
+    const prevClose = Number(prev?.close);
+    const tfSec = Math.max(60, timeframeToMinutes(document.getElementById('sim-timeframe')?.value || 'M15') * 60);
+
+    if (!Number.isFinite(o)) o = Number.isFinite(c) ? c : (Number.isFinite(prevClose) ? prevClose : NaN);
+    if (!Number.isFinite(c)) c = Number.isFinite(o) ? o : NaN;
+    if (!Number.isFinite(h)) h = Math.max(o, c);
+    if (!Number.isFinite(l)) l = Math.min(o, c);
+
+    if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) return null;
+    if (o <= 0 || h <= 0 || l <= 0 || c <= 0) return null;
+
+    if (Number.isFinite(prevTime) && Number.isFinite(prevClose) && prevClose > 0) {
+        if (t < prevTime) {
+            if ((prevTime - t) > tfSec) return null;
+        }
+
+        // Merge intrabar updates safely to avoid flicker/corruption on the same candle.
+        if (t === prevTime) {
+            o = Number.isFinite(prevOpen) && prevOpen > 0 ? prevOpen : o;
+            c = Number.isFinite(c) ? c : prevClose;
+            const hiCand = [h, o, c, prevHigh].filter((x) => Number.isFinite(x) && x > 0);
+            const loCand = [l, o, c, prevLow].filter((x) => Number.isFinite(x) && x > 0);
+            h = hiCand.length ? Math.max(...hiCand) : h;
+            l = loCand.length ? Math.min(...loCand) : l;
+        } else if (t > prevTime) {
+            // Guard against obvious outliers from transient feed glitches.
+            const ratio = c / prevClose;
+            if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 5.0 || ratio < 0.2) return null;
+
+            // For contiguous candles, anchor the new candle open to previous close.
+            const dt = t - prevTime;
+            const contiguous = Number.isFinite(dt) && dt > 0 && dt <= Math.ceil(tfSec * 1.5);
+            if (contiguous) {
+                const openGapRatio = Math.abs(o - prevClose) / prevClose;
+                // Preserve rare true gaps, otherwise enforce OHLC continuity.
+                if (!Number.isFinite(openGapRatio) || openGapRatio <= 0.02) {
+                    o = prevClose;
+                }
+                // First-seen new bar should spawn from a minimal body/wick.
+                h = Math.max(o, c);
+                l = Math.min(o, c);
+            } else {
+                h = Math.max(h, o, c);
+                l = Math.min(l, o, c);
+            }
+        }
+    }
+
+    if (!(h >= l)) {
+        const hi = Math.max(h, l, o, c);
+        const lo = Math.min(h, l, o, c);
+        h = hi;
+        l = lo;
+    }
+
+    return {
+        time: Math.floor(t),
+        open: o,
+        high: h,
+        low: l,
+        close: c,
+        volume: vol,
+    };
+}
+
+function _sanitizeLiveBars(rawBars) {
+    const src = Array.isArray(rawBars) ? rawBars : [];
+    if (!src.length) return [];
+    const sorted = src
+        .map((b) => ({
+            time: Number(b?.time),
+            open: Number(b?.open),
+            high: Number(b?.high),
+            low: Number(b?.low),
+            close: Number(b?.close),
+            volume: Number(b?.volume || 0),
+        }))
+        .filter((b) =>
+            Number.isFinite(b.time) && b.time > 0
+            && Number.isFinite(b.open)
+            && Number.isFinite(b.high)
+            && Number.isFinite(b.low)
+            && Number.isFinite(b.close)
+            && b.open > 0
+            && b.high > 0
+            && b.low > 0
+            && b.close > 0
+        )
+        .sort((a, b) => a.time - b.time);
+
+    const deduped = [];
+    for (const b of sorted) {
+        if (deduped.length > 0 && Number(deduped[deduped.length - 1].time) === Number(b.time)) {
+            deduped[deduped.length - 1] = b;
+        } else {
+            deduped.push(b);
+        }
+    }
+
+    const out = [];
+    for (const b of deduped) {
+        const prev = out.length > 0 ? out[out.length - 1] : null;
+        const normalized = _normalizeLiveBar(b, prev);
+        if (normalized) out.push(normalized);
+    }
+    return out;
+}
+
 function upsertLiveBar(bar) {
-    if (!bar || !Number.isFinite(Number(bar.time))) return;
-    const t = Number(bar.time);
+    const prev = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const normalized = _normalizeLiveBar(bar, prev);
+    if (!normalized) return;
+    const t = Number(normalized.time);
     if (allBars.length > 0 && Number(allBars[allBars.length - 1].time) === t) {
-        allBars[allBars.length - 1] = bar;
+        allBars[allBars.length - 1] = normalized;
     } else {
-        allBars.push(bar);
+        allBars.push(normalized);
     }
     currentBar = Math.max(0, allBars.length - 1);
     totalBars = allBars.length;
@@ -9716,7 +10414,8 @@ async function startLiveFeed(isReconnect = false) {
                 if (!msg || !msg.type) return;
                 if (msg.type === 'snapshot') {
                     receivedStreamPayload = true;
-                    const bars = Array.isArray(msg.bars) ? msg.bars : [];
+                    const barsRaw = Array.isArray(msg.bars) ? msg.bars : [];
+                    const bars = _sanitizeLiveBars(barsRaw);
                     console.info('[LiveWS] snapshot', {
                         symbol: msg.symbol || symbol,
                         resolvedSymbol: msg.resolved_symbol || '',
@@ -9745,19 +10444,19 @@ async function startLiveFeed(isReconnect = false) {
                     receivedStreamPayload = true;
                     const bars = Array.isArray(msg.bars) ? msg.bars : [];
                     for (const b of bars) {
-                        upsertLiveBar(b);
-                        candleSeries.update(b);
+                        const prev = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+                        const normalized = _normalizeLiveBar(b, prev);
+                        if (!normalized) continue;
+                        upsertLiveBar(normalized);
+                        candleSeries.update(normalized);
                         volumeSeries.update({
-                            time: b.time,
-                            value: b.volume || 0,
-                            color: b.close >= b.open ? '#26a69a44' : '#ef535044',
+                            time: normalized.time,
+                            value: normalized.volume || 0,
+                            color: normalized.close >= normalized.open ? '#26a69a44' : '#ef535044',
                         });
                     }
                     updateIndicatorsOnChart();
                     updateBarCounter();
-                    if (!userHasScrolledAway) {
-                        try { chart?.timeScale()?.scrollToRealTime(); } catch (_) { /* ignore */ }
-                    }
                     void maybePushLiveAgentTick(false);
                     return;
                 }
@@ -10322,23 +11021,124 @@ function applyAdvancePayload(data) {
 
 // â”€â”€ Trade Execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-async function executeTrade(direction) {
+function _buildQuickRiskStopLoss(direction, entryPrice, lotSize, riskUsd, symbolLike) {
+    const dir = String(direction || '').trim().toUpperCase();
+    const px = Number(entryPrice);
+    const lots = Number(lotSize);
+    const risk = Number(riskUsd);
+    if (!Number.isFinite(px)) return NaN;
+    if (!Number.isFinite(lots) || lots <= 0) return NaN;
+    if (!Number.isFinite(risk) || risk <= 0) return NaN;
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const econSymbol = String(econ?.resolved_symbol || econ?.requested_symbol || '').trim().toUpperCase();
+    const reqSymbol = String(symbolLike || '').trim().toUpperCase();
+    if (econSymbol && reqSymbol && econSymbol !== reqSymbol) return NaN;
+    const valuePer1Lot = Number(econ?.point_value_per_1lot);
+    if (!Number.isFinite(valuePer1Lot) || valuePer1Lot <= 0) return NaN;
+    const stopDist = risk / (valuePer1Lot * lots);
+    if (!Number.isFinite(stopDist) || stopDist <= 0) return NaN;
+    const raw = dir === 'SELL' ? px + stopDist : px - stopDist;
+    const decimals = getPriceDecimalsForSymbol(symbolLike);
+    return Number(raw.toFixed(decimals));
+}
+
+async function _ensureQuickTradeSymbolContext(symbolLike) {
+    const nextSymbol = String(symbolLike || '').trim().toUpperCase();
+    if (!nextSymbol) return false;
+    const simSymbolEl = document.getElementById('sim-symbol');
+    if (!simSymbolEl) return false;
+    const current = String(simSymbolEl.value || '').trim().toUpperCase();
+    if (current === nextSymbol) return true;
+
+    if (!setSelectValueCaseInsensitive(simSymbolEl, nextSymbol)) {
+        showStatus(`Quick Entry symbol unavailable: ${nextSymbol}`, 'warning');
+        return false;
+    }
+
+    updateCostModelHint();
+    const spreadEl = document.getElementById('cost-model-spread');
+    if (spreadEl && (!spreadEl.value || Number.isNaN(Number(spreadEl.value)))) {
+        spreadEl.value = String(getDefaultSpreadForSymbol(getCostModelSymbol()));
+    }
+
+    if (getWorkbenchMode() === 'live' && (liveFeedActive || liveFeedRequested)) {
+        await autoSwitchLiveContextFromInputs('quick entry symbol');
+    }
+    return true;
+}
+
+async function executeQuickTradeFromControls() {
+    const symbol = String(document.getElementById('trade-quick-symbol')?.value || document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    const direction = String(document.getElementById('trade-quick-direction')?.value || 'BUY').trim().toUpperCase();
+    const lotsRaw = Number(document.getElementById('trade-quick-lots')?.value);
+    const riskUsdRaw = _parseUiDecimal(document.getElementById('trade-quick-risk-usd')?.value, NaN);
+    const lots = Number.isFinite(lotsRaw) && lotsRaw > 0 ? lotsRaw : 0.01;
+    const riskUsd = Number.isFinite(riskUsdRaw) && riskUsdRaw > 0 ? riskUsdRaw : NaN;
+    if (!['BUY', 'SELL'].includes(direction)) {
+        showStatus('Quick Entry failed: invalid direction.', 'warning');
+        return;
+    }
+    if (isNoProtectionModeEnabled()) {
+        const alignedNoProtection = await _ensureQuickTradeSymbolContext(symbol);
+        if (!alignedNoProtection) return;
+        await executeTrade(direction, { stop_loss: 0, lot_size: lots, take_profit: 0 });
+        return;
+    }
+    if (!Number.isFinite(riskUsd) || riskUsd <= 0) {
+        showStatus('Quick Entry failed: set a valid Risk $ amount.', 'warning');
+        return;
+    }
+    const aligned = await _ensureQuickTradeSymbolContext(symbol);
+    if (!aligned) return;
+    const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const entryPrice = Number(lastBar?.close);
+    const autoSl = _buildQuickRiskStopLoss(direction, entryPrice, lots, riskUsd, symbol);
+    if (!Number.isFinite(autoSl)) {
+        showStatus('Quick Entry failed: symbol economics unavailable for risk-based SL.', 'warning');
+        return;
+    }
+    const slInput = document.getElementById('trade-sl');
+    if (slInput) slInput.value = String(autoSl);
+    await executeTrade(direction, { stop_loss: autoSl, lot_size: lots, take_profit: null });
+}
+
+async function executeTrade(direction, options = {}) {
     if (!sessionId) return;
-    const sl = parseFloat(document.getElementById('trade-sl')?.value);
+    const dir = String(direction || '').trim().toUpperCase();
+    if (!['BUY', 'SELL'].includes(dir)) { showStatus('Trade error: invalid direction', 'warning'); return; }
+    const noProtection = isNoProtectionModeEnabled();
+    const slOverride = Number(options?.stop_loss);
+    let sl = Number.isFinite(slOverride) ? slOverride : parseFloat(document.getElementById('trade-sl')?.value);
     const tpLongRaw = parseFloat(document.getElementById('trade-tp-long')?.value);
     const tpShortRaw = parseFloat(document.getElementById('trade-tp-short')?.value);
-    const tpLong = Number.isFinite(tpLongRaw) ? tpLongRaw : null;
-    const tpShort = Number.isFinite(tpShortRaw) ? tpShortRaw : null;
-    const tp = String(direction).toUpperCase() === 'BUY' ? tpLong : tpShort;
-    const lots = parseFloat(document.getElementById('trade-lots')?.value) || 0.01;
+    const tpLong = Number.isFinite(tpLongRaw) && tpLongRaw > 0 ? tpLongRaw : null;
+    const tpShort = Number.isFinite(tpShortRaw) && tpShortRaw > 0 ? tpShortRaw : null;
+    const tpOptRaw = options?.take_profit;
+    let tp = null;
+    if (tpOptRaw === null) {
+        tp = null;
+    } else if (tpOptRaw === undefined || String(tpOptRaw).trim() === '') {
+        tp = dir === 'BUY' ? tpLong : tpShort;
+    } else {
+        const tpOverride = Number(tpOptRaw);
+        tp = Number.isFinite(tpOverride) && tpOverride > 0 ? tpOverride : null;
+    }
+    const lotsOverride = Number(options?.lot_size);
+    const lots = Number.isFinite(lotsOverride) && lotsOverride > 0 ? lotsOverride : (parseFloat(document.getElementById('trade-lots')?.value) || 0.01);
 
-    if (!sl || isNaN(sl)) { showStatus('Please set a Stop Loss', 'warning'); return; }
+    if (noProtection) {
+        sl = 0;
+        tp = null;
+    }
+
+    if (!Number.isFinite(sl)) { showStatus('Please set a Stop Loss', 'warning'); return; }
+    if (!noProtection && sl <= 0) { showStatus('Stop Loss must be greater than 0', 'warning'); return; }
 
     try {
         const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
         const costCfg = getCostModelConfigFromUI();
         const body = {
-            direction,
+            direction: dir,
             stop_loss: sl,
             take_profit: tp,
             lot_size: lots,
@@ -10361,16 +11161,16 @@ async function executeTrade(direction) {
 
         updateOpenPosition(data, 0);
         renderCostModelSummary(data?.cost_breakdown || null);
-        showStatus(`${direction} @ ${data.entry_price?.toFixed(2)}`, 'success');
+        showStatus(`${dir} @ ${data.entry_price?.toFixed(2)}`, 'success');
 
         if (allBars.length > 0) {
             const lastBar = allBars[allBars.length - 1];
             tradeMarkers.push({
                 time: lastBar.time,
-                position: direction === 'BUY' ? 'belowBar' : 'aboveBar',
-                color: direction === 'BUY' ? '#26a69a' : '#ef5350',
-                shape: direction === 'BUY' ? 'arrowUp' : 'arrowDown',
-                text: direction,
+                position: dir === 'BUY' ? 'belowBar' : 'aboveBar',
+                color: dir === 'BUY' ? '#26a69a' : '#ef5350',
+                shape: dir === 'BUY' ? 'arrowUp' : 'arrowDown',
+                text: dir,
             });
             if (tradeMarkers.length > 400) tradeMarkers = tradeMarkers.slice(tradeMarkers.length - 400);
             syncCandleMarkers();

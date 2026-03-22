@@ -157,6 +157,16 @@ class TelegramBridgeService:
         self._callback_action_order_by_chat: Dict[int, List[str]] = {}
         self._next_callback_id_by_chat: Dict[int, int] = {}
         self._last_screener_scan_by_chat_session: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        self._last_warn_key: str = ""
+        self._last_warn_at: float = 0.0
+
+    def _warn_throttled(self, key: str, message: str, *, min_interval_sec: float = 30.0) -> None:
+        now_ts = time.time()
+        k = str(key or "warn")
+        if k != self._last_warn_key or (now_ts - float(self._last_warn_at)) >= float(min_interval_sec):
+            logger.warning("%s", message)
+            self._last_warn_key = k
+            self._last_warn_at = now_ts
 
     @staticmethod
     def _enabled() -> bool:
@@ -3036,7 +3046,11 @@ class TelegramBridgeService:
             try:
                 self._poll_once()
             except Exception as exc:
-                logger.warning("Telegram bridge poll failed: %s", str(exc)[:220])
+                self._warn_throttled(
+                    "telegram_poll_failed",
+                    f"Telegram bridge poll failed: {str(exc)[:220]}",
+                    min_interval_sec=max(10.0, self._poll_interval_sec() * 5.0),
+                )
                 # Backoff on transient Telegram API failures.
                 self._stop.wait(max(1.0, self._poll_interval_sec()))
                 continue
