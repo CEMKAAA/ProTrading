@@ -1972,6 +1972,87 @@ body.workbench-fullscreen .stats-bar {
                     </div>
                 </div>
 
+                <div class="tool-card" data-tool-id="strategy_backtest_overlay">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-graph-up-arrow"></i> Strategy Backtest Overlay</span>
+                            <span class="zone-count-badge d-none" id="strategy-backtest-trade-count">0</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-strategy-backtest-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Replay selected strategy over current chart bars and draw exact entry/exit markers.</div>
+                    <div class="tool-settings" id="strategy-backtest-settings">
+                        <div class="mb-2">
+                            <label>Strategy</label>
+                            <select id="strategy-backtest-strategy" class="form-select form-select-sm">
+                                <option value="deadzone_pro" selected>Deadzone Pro</option>
+                                <option value="alpha_wave">Alpha Wave</option>
+                                <option value="trendilo">Trendilo</option>
+                                <option value="advanced_trendilo">Advanced Trendilo</option>
+                                <option value="trendilo_lsma">Trendilo LSMA</option>
+                                <option value="orb_alpha_hybrid">ORB Alpha Hybrid</option>
+                            </select>
+                        </div>
+                        <div class="mb-2" id="strategy-backtest-deadzone-mode-wrap">
+                            <label>Deadzone Mode</label>
+                            <select id="strategy-backtest-deadzone-mode" class="form-select form-select-sm">
+                                <option value="default" selected>Default</option>
+                                <option value="advanced">Advanced</option>
+                                <option value="rsi_adaptive">RSI Adaptive</option>
+                                <option value="rsi_quant">RSI Quant</option>
+                                <option value="rsi_quant_sell_only">RSI Quant Sell-Only</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label>Lookback (Days)</label>
+                            <input type="number" id="strategy-backtest-lookback-days" class="form-control form-control-sm" value="30" min="0.1" max="365" step="0.5">
+                        </div>
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="strategy-backtest-force-first-entry" checked>
+                                <label class="form-check-label" for="strategy-backtest-force-first-entry" style="color: #94a3b8; font-size: 0.75rem;">
+                                    Force first entry if current bar is colored
+                                </label>
+                            </div>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-strategy-backtest-run">
+                                <i class="bi bi-play-circle me-1"></i>Show Results
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-strategy-backtest-clear">
+                                <i class="bi bi-x-circle me-1"></i>Clear
+                            </button>
+                        </div>
+                        <div class="fvg-inspector" id="strategy-backtest-summary">
+                            <div class="fvg-inspector-header">
+                                <span><i class="bi bi-clipboard-data me-1"></i>Backtest Summary</span>
+                                <span class="fvg-inspector-source" id="strategy-backtest-summary-source">idle</span>
+                            </div>
+                            <div class="fvg-empty" id="strategy-backtest-summary-body">Run "Show Results" to draw entry/exit markers and summary.</div>
+                            <div class="mt-2 p-2 rounded" id="strategy-backtest-kpi-box" style="background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.25);">
+                                <div class="d-flex justify-content-between" style="font-size: 0.76rem;">
+                                    <span style="color:#94a3b8;">Total Profit</span>
+                                    <span id="strategy-backtest-kpi-profit" style="color:#22c55e;">-</span>
+                                </div>
+                                <div class="d-flex justify-content-between" style="font-size: 0.76rem;">
+                                    <span style="color:#94a3b8;">Total Loss</span>
+                                    <span id="strategy-backtest-kpi-loss" style="color:#ef4444;">-</span>
+                                </div>
+                                <div class="d-flex justify-content-between" style="font-size: 0.76rem;">
+                                    <span style="color:#94a3b8;">Net</span>
+                                    <span id="strategy-backtest-kpi-net" style="color:#e2e8f0;">-</span>
+                                </div>
+                                <div class="d-flex justify-content-between" style="font-size: 0.76rem;">
+                                    <span style="color:#94a3b8;">Profit Factor</span>
+                                    <span id="strategy-backtest-kpi-pf" style="color:#e2e8f0;">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Placeholder for future tools -->
                 <div class="tool-card" style="opacity: 0.5;">
                     <div class="tool-toggle">
@@ -3368,8 +3449,11 @@ body.workbench-fullscreen .stats-bar {
                         <select id="auto-start-deadzone-mode" class="form-select form-select-sm">
                             <option value="default" selected>Default</option>
                             <option value="advanced">Advanced (M15+M5 Guard)</option>
+                            <option value="rsi_adaptive">RSI Adaptive (Profit-Aware Exits)</option>
+                            <option value="rsi_quant">RSI Quant (Trend-Weak + MFE Protection)</option>
+                            <option value="rsi_quant_sell_only">RSI Quant Sell-Only (No BUY Entries)</option>
                         </select>
-                        <small class="text-muted">Default = pure chart timeframe color flip. Advanced = M15 entry + M5 early-exit guard.</small>
+                        <small class="text-muted">Default = pure chart timeframe color flip. Advanced = M15 entry + M5 early-exit guard. RSI Adaptive = M15+M5 with RSI local pivot + MFE drawdown locks. RSI Quant = stricter profit-protection (trend-weak + MFE drawdown + RSI pivots). RSI Quant Sell-Only = same quant exits but blocks BUY entries.</small>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label mb-1">Symbol</label>

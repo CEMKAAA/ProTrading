@@ -588,6 +588,43 @@ def test_strategy_automation_hybrid_alias_normalization():
     assert sim_routes._normalize_strategy_automation_strategy("deadzonepro") == "deadzone_pro"
 
 
+def test_strategy_automation_start_request_accepts_deadzone_rsi_adaptive_mode():
+    req = sim_routes.StrategyAutomationStartRequest(
+        symbol="BTCUSDM",
+        strategy="deadzone_pro",
+        timeframe="M15",
+        deadzone_mode="rsi_adaptive",
+    )
+    assert str(req.deadzone_mode) == "rsi_adaptive"
+
+
+def test_strategy_automation_job_id_distinguishes_deadzone_modes():
+    jid_default = sim_routes._strategy_automation_job_id(
+        parent_session_id=101,
+        symbol="BTCUSDM",
+        strategy="deadzone_pro",
+        timeframe="M15",
+        deadzone_mode="default",
+    )
+    jid_adv = sim_routes._strategy_automation_job_id(
+        parent_session_id=101,
+        symbol="BTCUSDM",
+        strategy="deadzone_pro",
+        timeframe="M15",
+        deadzone_mode="advanced",
+    )
+    jid_rsi = sim_routes._strategy_automation_job_id(
+        parent_session_id=101,
+        symbol="BTCUSDM",
+        strategy="deadzone_pro",
+        timeframe="M15",
+        deadzone_mode="rsi_adaptive",
+    )
+    assert jid_default != jid_adv
+    assert jid_adv != jid_rsi
+    assert jid_default != jid_rsi
+
+
 def test_strategy_automation_color_from_bars_deadzone_pro_uses_hull_slope():
     up_idx = pd.date_range("2026-03-21 00:00:00", periods=80, freq="min", tz="UTC")
     up_close = [100.0 + (i * 0.1) for i in range(80)]

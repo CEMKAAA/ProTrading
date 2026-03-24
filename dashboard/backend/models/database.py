@@ -876,6 +876,27 @@ class SimulationTrade(Base):
     session = relationship("SimulationSession", back_populates="sim_trades")
 
 
+class StrategyAutomationLogModel(Base):
+    """Durable per-automation telemetry/event log rows for analysis/debug."""
+    __tablename__ = "strategy_automation_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    parent_session_id = Column(Integer, ForeignKey("simulation_sessions.id"), nullable=True, index=True)
+    child_session_id = Column(Integer, ForeignKey("simulation_sessions.id"), nullable=False, index=True)
+    job_id = Column(String(80), nullable=False, index=True)
+    strategy = Column(String(50), nullable=False, index=True)
+    mode = Column(String(32), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(10), nullable=False, index=True)
+    event_type = Column(String(24), nullable=False, index=True)  # major | routine | future
+    event_name = Column(String(80), nullable=False, index=True)
+    trade_id = Column(Integer, nullable=True, index=True)
+    direction = Column(String(8), nullable=True, index=True)
+    event_time = Column(DateTime, nullable=True, index=True)
+    payload_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class TradingSimulationSessionModel(Base):
     """Guided trading simulation control-plane session."""
     __tablename__ = "trading_simulation_sessions"
@@ -1506,6 +1527,38 @@ def _run_migrations():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sim_sessions_strategy ON simulation_sessions(strategy_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sim_sessions_status ON simulation_sessions(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sim_trades_session ON simulation_trades(session_id)")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS strategy_automation_logs (
+            id INTEGER PRIMARY KEY,
+            parent_session_id INTEGER,
+            child_session_id INTEGER NOT NULL,
+            job_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            trade_id INTEGER,
+            direction TEXT,
+            event_time TIMESTAMP,
+            payload_json TEXT,
+            created_at TIMESTAMP,
+            FOREIGN KEY (parent_session_id) REFERENCES simulation_sessions(id),
+            FOREIGN KEY (child_session_id) REFERENCES simulation_sessions(id)
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_parent_session ON strategy_automation_logs(parent_session_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_child_session ON strategy_automation_logs(child_session_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_job_id ON strategy_automation_logs(job_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_strategy ON strategy_automation_logs(strategy)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_mode ON strategy_automation_logs(mode)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_event_type ON strategy_automation_logs(event_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_event_name ON strategy_automation_logs(event_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_trade_id ON strategy_automation_logs(trade_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sa_logs_event_time ON strategy_automation_logs(event_time)")
 
     # Guided trading simulation control-plane tables
     cursor.execute(

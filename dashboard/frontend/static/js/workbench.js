@@ -20,6 +20,8 @@ let userHasScrolledAway = false;
 let mainCloseByTime = new Map();
 let trendiloSignalByTime = new Map();
 let trendiloDirByTime = new Map();
+let rsiByTime = new Map();
+let rsiHoverTooltipEl = null;
 let sessionCatalog = [];
 let brokerSymbolCatalog = [];
 let sessionLiveExecutionMode = 'paper';
@@ -87,6 +89,7 @@ let indicatorSelection = {
 let tradeMarkers = [];
 let goldenCrossMarkers = [];
 let fvgCreatorMarkers = [];
+let strategyBacktestMarkers = [];
 let fvgZonesByTimeframe = {};
 let fvgNavigationList = [];
 let fvgNavigationIndex = -1;
@@ -804,6 +807,7 @@ async function switchToSession(nextSessionId, { restartLive = false, forceLiveMo
         volumeSeries.setData([]);
         if (zoneRenderer) zoneRenderer.clearAll();
         tradeMarkers = [];
+        strategyBacktestMarkers = [];
         goldenCrossMarkers = [];
         fvgCreatorMarkers = [];
         clearAllIndicatorSeries();
@@ -4031,7 +4035,11 @@ function _strategyAutomationResolveStartStrategy(strategyLike) {
 
 function _normalizeDeadzoneAutomationMode(modeLike) {
     const m = String(modeLike || 'default').trim().toLowerCase();
-    return m === 'advanced' ? 'advanced' : 'default';
+    if (m === 'advanced') return 'advanced';
+    if (m === 'rsi_adaptive' || m === 'adaptive_rsi' || m === 'rsi') return 'rsi_adaptive';
+    if (m === 'rsi_quant_sell_only' || m === 'quant_sell_only' || m === 'qns' || m === 'sell_only') return 'rsi_quant_sell_only';
+    if (m === 'rsi_quant' || m === 'quant_rsi' || m === 'quant') return 'rsi_quant';
+    return 'default';
 }
 
 function _getAutoStartDeadzoneMode() {
@@ -4051,7 +4059,8 @@ function _formatAutomationStrategyLabel(jobLike) {
     const strategy = String(jobLike?.strategy || '').trim();
     const mode = _normalizeDeadzoneAutomationMode(jobLike?.deadzone_mode || 'default');
     if (String(strategy).toLowerCase() === 'deadzone_pro') {
-        return `${strategy} (${mode === 'advanced' ? 'ADV' : 'DEF'})`;
+        const modeLbl = mode === 'advanced' ? 'ADV' : (mode === 'rsi_adaptive' ? 'RSI' : (mode === 'rsi_quant' ? 'QNT' : (mode === 'rsi_quant_sell_only' ? 'QNS' : 'DEF')));
+        return `${strategy} (${modeLbl})`;
     }
     return strategy;
 }
@@ -8059,12 +8068,103 @@ function ensureOscillatorScale() {
     });
 }
 
+function ensureRsiHoverTooltip() {
+    const container = document.getElementById('chart-main');
+    if (!container) return null;
+    if (!rsiHoverTooltipEl) {
+        const el = document.createElement('div');
+        el.id = 'rsi-hover-tooltip';
+        el.style.position = 'absolute';
+        el.style.display = 'none';
+        el.style.pointerEvents = 'none';
+        el.style.zIndex = '30';
+        el.style.padding = '4px 8px';
+        el.style.borderRadius = '6px';
+        el.style.background = 'rgba(15, 23, 42, 0.92)';
+        el.style.border = '1px solid rgba(244, 114, 182, 0.7)';
+        el.style.color = '#fbcfe8';
+        el.style.fontSize = '11px';
+        el.style.fontWeight = '600';
+        el.style.lineHeight = '1.2';
+        el.style.whiteSpace = 'nowrap';
+        rsiHoverTooltipEl = el;
+        container.appendChild(el);
+    }
+    const style = window.getComputedStyle(container);
+    if (style.position === 'static') container.style.position = 'relative';
+    return rsiHoverTooltipEl;
+}
+
+function hideRsiHoverTooltip() {
+    if (rsiHoverTooltipEl) rsiHoverTooltipEl.style.display = 'none';
+}
+
+function updateRsiHoverTooltip(param) {
+    if (!chart || !indicatorSelection.rsi) {
+        hideRsiHoverTooltip();
+        return;
+    }
+    const container = document.getElementById('chart-main');
+    if (!container) {
+        hideRsiHoverTooltip();
+        return;
+    }
+    const point = param?.point;
+    const maxX = Number(container.clientWidth || 0);
+    const maxY = Number(container.clientHeight || 0);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > maxX || point.y > maxY) {
+        hideRsiHoverTooltip();
+        return;
+    }
+
+    let rsiVal = NaN;
+    try {
+        const rsiSeries = indicatorSeries.rsi;
+        const seriesData = param?.seriesData;
+        if (rsiSeries && seriesData && typeof seriesData.get === 'function') {
+            const row = seriesData.get(rsiSeries);
+            if (typeof row === 'number') rsiVal = Number(row);
+            else if (row && typeof row === 'object' && Number.isFinite(Number(row.value))) rsiVal = Number(row.value);
+        }
+    } catch (_) { /* noop */ }
+
+    if (!Number.isFinite(rsiVal)) {
+        const key = normalizeTimeKey(param?.time);
+        const mapped = Number(rsiByTime.get(key));
+        if (Number.isFinite(mapped)) rsiVal = mapped;
+    }
+
+    if (!Number.isFinite(rsiVal)) {
+        hideRsiHoverTooltip();
+        return;
+    }
+
+    const tip = ensureRsiHoverTooltip();
+    if (!tip) return;
+    tip.textContent = `RSI(${INDICATOR_DEFAULTS.rsiPeriod}): ${rsiVal.toFixed(2)}`;
+
+    const tipW = Number(tip.offsetWidth || 96);
+    const tipH = Number(tip.offsetHeight || 22);
+    let left = Number(point.x) + 10;
+    let top = Number(point.y) - (tipH + 10);
+    if (left + tipW > maxX - 6) left = maxX - tipW - 6;
+    if (left < 6) left = 6;
+    if (top < 6) top = Number(point.y) + 10;
+    if (top + tipH > maxY - 6) top = maxY - tipH - 6;
+
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+    tip.style.display = 'block';
+}
+
 function clearAllIndicatorSeries() {
     for (const key of Object.keys(indicatorSeries)) removeIndicatorSeries(key);
     clearTrendiloPanelData();
     setTrendiloPanelVisibility(false);
     trendiloSignalByTime.clear();
     trendiloDirByTime.clear();
+    rsiByTime.clear();
+    hideRsiHoverTooltip();
     mainCloseByTime.clear();
     mainCrosshairSeries?.setData([]);
 }
@@ -8108,6 +8208,7 @@ function syncCandleMarkers() {
     if (!candleSeries) return;
     const markers = [];
     if (Array.isArray(tradeMarkers) && tradeMarkers.length > 0) markers.push(...tradeMarkers);
+    if (Array.isArray(strategyBacktestMarkers) && strategyBacktestMarkers.length > 0) markers.push(...strategyBacktestMarkers);
     if (indicatorSelection.goldenCross && Array.isArray(goldenCrossMarkers) && goldenCrossMarkers.length > 0) {
         markers.push(...goldenCrossMarkers);
     }
@@ -8213,6 +8314,8 @@ function updateIndicatorsOnChart() {
         mainCloseByTime.clear();
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
+        rsiByTime.clear();
+        hideRsiHoverTooltip();
         mainCrosshairSeries?.setData([]);
         goldenCrossMarkers = [];
         syncCandleMarkers();
@@ -8223,6 +8326,8 @@ function updateIndicatorsOnChart() {
         mainCloseByTime.clear();
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
+        rsiByTime.clear();
+        hideRsiHoverTooltip();
         mainCrosshairSeries?.setData([]);
         if (indicatorSelection.trendilo || indicatorSelection.advancedTrendilo) {
             ensureTrendiloPanelChart();
@@ -8276,6 +8381,16 @@ function updateIndicatorsOnChart() {
     if (indicatorSelection.rsi) {
         ensureIndicatorSeries('rsi', { color: '#f472b6', lineWidth: 3, priceScaleId: 'osc' });
         indicatorSeries.rsi?.setData(seriesDataFromArray(bars, pack.rsi));
+        rsiByTime.clear();
+        for (let i = 0; i < bars.length; i += 1) {
+            const t = Number(bars[i]?.time || 0);
+            const v = toFiniteNumber(pack.rsi?.[i]);
+            if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+            rsiByTime.set(normalizeTimeKey(t), v);
+        }
+    } else {
+        rsiByTime.clear();
+        hideRsiHoverTooltip();
     }
 
     if (indicatorSelection.stoch) {
@@ -8978,6 +9093,14 @@ function initWorkbenchState() {
             enabled: false,
             picks: [],
         },
+        strategy_backtest: {
+            enabled: false,
+            strategy: 'deadzone_pro',
+            deadzone_mode: 'default',
+            lookback_days: 30,
+            force_first_entry: true,
+            last_result: null,
+        },
     };
     if (toolStates?.fvg) {
         toolStates.fvg.detect_timeframe = getChartTimeframe();
@@ -9001,7 +9124,14 @@ function initWorkbenchState() {
     if (drawSettings) drawSettings.classList.remove('active');
     const drawStatus = document.getElementById('draw-fvg-status');
     if (drawStatus) drawStatus.textContent = 'Pick two bars on chart to begin.';
+    const sbToggle = document.getElementById('tool-strategy-backtest-toggle');
+    if (sbToggle) sbToggle.checked = false;
+    const sbSettings = document.getElementById('strategy-backtest-settings');
+    if (sbSettings) sbSettings.classList.remove('active');
+    syncStrategyBacktestModeControls();
+    renderStrategyBacktestSummary(null);
     tradeMarkers = [];
+    strategyBacktestMarkers = [];
     goldenCrossMarkers = [];
     fvgCreatorMarkers = [];
     clearAllIndicatorSeries();
@@ -9097,6 +9227,12 @@ function initChart() {
                 userHasScrolledAway = !atRealtime;
             }
         } catch (_) { /* ignore */ }
+    });
+    chart.subscribeCrosshairMove((param) => {
+        updateRsiHoverTooltip(param);
+    });
+    container.addEventListener('mouseleave', () => {
+        hideRsiHoverTooltip();
     });
 
     const resizeObserver = new ResizeObserver(entries => {
@@ -9844,6 +9980,22 @@ function bindEvents() {
     });
     document.getElementById('btn-mean-rev-scan')?.addEventListener('click', scanMeanRev);
     document.getElementById('btn-mean-rev-clear')?.addEventListener('click', clearMeanRevZones);
+    document.getElementById('tool-strategy-backtest-toggle')?.addEventListener('change', (e) => {
+        const settings = document.getElementById('strategy-backtest-settings');
+        if (settings) settings.classList.toggle('active', e.target.checked);
+        if (!toolStates.strategy_backtest) toolStates.strategy_backtest = {};
+        toolStates.strategy_backtest.enabled = !!e.target.checked;
+        if (!e.target.checked) clearStrategyBacktestOverlay(false);
+    });
+    document.getElementById('btn-strategy-backtest-run')?.addEventListener('click', () => {
+        void runStrategyBacktestOverlay();
+    });
+    document.getElementById('btn-strategy-backtest-clear')?.addEventListener('click', () => {
+        clearStrategyBacktestOverlay();
+    });
+    document.getElementById('strategy-backtest-strategy')?.addEventListener('change', () => {
+        syncStrategyBacktestModeControls();
+    });
 
     // Agent loop events (copilot-backed runtime)
     document.getElementById('btn-agent-start')?.addEventListener('click', startAgentLoop);
@@ -10715,6 +10867,7 @@ async function resetSession() {
         candleSeries.setData([]);
         volumeSeries.setData([]);
         tradeMarkers = [];
+        strategyBacktestMarkers = [];
         goldenCrossMarkers = [];
         fvgCreatorMarkers = [];
         clearAllIndicatorSeries();
@@ -11522,6 +11675,196 @@ function clearMeanRevZones() {
         showStatus('Mean-reversion signals cleared', 'info');
     }
     void pushAgentToolState('TOOL_SIGNAL_CHANGED');
+}
+
+function _normalizeStrategyBacktestMarker(row) {
+    if (!row || typeof row !== 'object') return null;
+    const t = Number(row.time);
+    if (!Number.isFinite(t) || t <= 0) return null;
+    const positionRaw = String(row.position || '').trim();
+    const shapeRaw = String(row.shape || '').trim();
+    return {
+        time: Math.floor(t),
+        position: positionRaw || 'aboveBar',
+        shape: shapeRaw || 'circle',
+        color: String(row.color || '#94a3b8'),
+        text: String(row.text || ''),
+    };
+}
+
+function syncStrategyBacktestModeControls() {
+    const strategy = String(document.getElementById('strategy-backtest-strategy')?.value || 'deadzone_pro').trim().toLowerCase();
+    const wrap = document.getElementById('strategy-backtest-deadzone-mode-wrap');
+    const modeEl = document.getElementById('strategy-backtest-deadzone-mode');
+    const isDeadzone = strategy === 'deadzone_pro';
+    if (wrap) wrap.style.display = isDeadzone ? '' : 'none';
+    if (!isDeadzone && modeEl) modeEl.value = 'default';
+}
+
+function renderStrategyBacktestSummary(data) {
+    const sourceEl = document.getElementById('strategy-backtest-summary-source');
+    const bodyEl = document.getElementById('strategy-backtest-summary-body');
+    const badgeEl = document.getElementById('strategy-backtest-trade-count');
+    const profitEl = document.getElementById('strategy-backtest-kpi-profit');
+    const lossEl = document.getElementById('strategy-backtest-kpi-loss');
+    const netEl = document.getElementById('strategy-backtest-kpi-net');
+    const pfEl = document.getElementById('strategy-backtest-kpi-pf');
+    if (!sourceEl || !bodyEl || !badgeEl) return;
+
+    const setKpiDefaults = () => {
+        if (profitEl) profitEl.textContent = '-';
+        if (lossEl) lossEl.textContent = '-';
+        if (netEl) netEl.textContent = '-';
+        if (pfEl) pfEl.textContent = '-';
+    };
+
+    if (!data || typeof data !== 'object') {
+        sourceEl.textContent = 'idle';
+        bodyEl.textContent = 'Run "Show Results" to draw entry/exit markers and summary.';
+        badgeEl.textContent = '0';
+        badgeEl.classList.add('d-none');
+        setKpiDefaults();
+        return;
+    }
+
+    const summary = (data.summary && typeof data.summary === 'object') ? data.summary : {};
+    const tradesTotal = Number(summary.trades_total || 0);
+    const closedTrades = Number(summary.closed_trades || 0);
+    const openTrades = Number(summary.open_trades || 0);
+    const wins = Number(summary.wins || 0);
+    const losses = Number(summary.losses || 0);
+    const winRate = Number(summary.win_rate_pct || 0);
+    const totalPct = Number(summary.total_pnl_pct || 0);
+    const avgPct = Number(summary.avg_pnl_pct || 0);
+    const maxWin = Number(summary.max_win_pct || 0);
+    const maxLoss = Number(summary.max_loss_pct || 0);
+    const barsEvaluated = Number(data.bars_evaluated || 0);
+    const source = String(data.scan_source || 'unknown');
+    const dzMode = String(data.deadzone_mode || 'default');
+    sourceEl.textContent = `${source} | ${barsEvaluated} bars${data.strategy === 'deadzone_pro' ? ` | mode ${dzMode}` : ''}`;
+    bodyEl.innerHTML = [
+        `Trades: <b>${tradesTotal}</b> (closed ${closedTrades}, open ${openTrades})`,
+        `Wins/Losses: <b>${wins}/${losses}</b> | Win Rate: <b>${winRate.toFixed(2)}%</b>`,
+        `Total PnL: <b>${totalPct.toFixed(2)}%</b> | Avg/Trade: <b>${avgPct.toFixed(2)}%</b>`,
+        `Best/Worst: <b>${maxWin.toFixed(2)}%</b> / <b>${maxLoss.toFixed(2)}%</b>`,
+    ].join('<br>');
+    badgeEl.textContent = String(tradesTotal);
+    badgeEl.classList.toggle('d-none', tradesTotal <= 0);
+
+    const trades = Array.isArray(data.trades) ? data.trades : [];
+    const closedTradesList = trades.filter((t) => String(t?.status || '').toLowerCase() === 'closed');
+    const grossProfitPct = closedTradesList.reduce((acc, t) => {
+        const v = Number(t?.pnl_pct || 0);
+        return acc + (Number.isFinite(v) && v > 0 ? v : 0);
+    }, 0);
+    const grossLossPct = closedTradesList.reduce((acc, t) => {
+        const v = Number(t?.pnl_pct || 0);
+        return acc + (Number.isFinite(v) && v < 0 ? v : 0);
+    }, 0);
+    const grossProfitPts = closedTradesList.reduce((acc, t) => {
+        const v = Number(t?.pnl_points || 0);
+        return acc + (Number.isFinite(v) && v > 0 ? v : 0);
+    }, 0);
+    const grossLossPts = closedTradesList.reduce((acc, t) => {
+        const v = Number(t?.pnl_points || 0);
+        return acc + (Number.isFinite(v) && v < 0 ? v : 0);
+    }, 0);
+    const netPctKpi = Number.isFinite(totalPct) ? totalPct : (grossProfitPct + grossLossPct);
+    const netPtsKpi = grossProfitPts + grossLossPts;
+    let pfText = '-';
+    if (Math.abs(grossLossPct) > 1e-9) {
+        pfText = (grossProfitPct / Math.abs(grossLossPct)).toFixed(2);
+    } else if (grossProfitPct > 0) {
+        pfText = '∞';
+    } else {
+        pfText = '0.00';
+    }
+    if (profitEl) profitEl.textContent = `${grossProfitPct.toFixed(2)}% | ${grossProfitPts.toFixed(2)} pts`;
+    if (lossEl) lossEl.textContent = `${grossLossPct.toFixed(2)}% | ${grossLossPts.toFixed(2)} pts`;
+    if (netEl) netEl.textContent = `${netPctKpi.toFixed(2)}% | ${netPtsKpi.toFixed(2)} pts`;
+    if (pfEl) pfEl.textContent = pfText;
+}
+
+function clearStrategyBacktestOverlay(showToast = true) {
+    strategyBacktestMarkers = [];
+    if (!toolStates.strategy_backtest) toolStates.strategy_backtest = {};
+    toolStates.strategy_backtest.last_result = null;
+    syncCandleMarkers();
+    renderStrategyBacktestSummary(null);
+    if (showToast) showStatus('Strategy backtest overlay cleared', 'info');
+}
+
+async function runStrategyBacktestOverlay() {
+    if (!sessionId) {
+        showStatus('Start a session first', 'warning');
+        return;
+    }
+    const strategy = String(document.getElementById('strategy-backtest-strategy')?.value || 'deadzone_pro').trim().toLowerCase();
+    const deadzoneModeRaw = String(document.getElementById('strategy-backtest-deadzone-mode')?.value || 'default').trim().toLowerCase();
+    const deadzoneMode = (strategy === 'deadzone_pro' && ['default', 'advanced', 'rsi_adaptive', 'rsi_quant', 'rsi_quant_sell_only'].includes(deadzoneModeRaw))
+        ? deadzoneModeRaw
+        : 'default';
+    const lookbackRaw = Number(document.getElementById('strategy-backtest-lookback-days')?.value || 30);
+    const lookbackDays = Number.isFinite(lookbackRaw) ? Math.max(0.1, Math.min(365, lookbackRaw)) : 30;
+    const forceFirstEntry = !!document.getElementById('strategy-backtest-force-first-entry')?.checked;
+    const chartSymbol = getCostModelSymbol();
+    const chartTimeframe = getChartTimeframe();
+
+    let srcBars = Array.isArray(allBars) ? allBars.slice() : [];
+    srcBars = trimBarsByLookbackDays(srcBars, lookbackDays);
+    const barsPayload = barsToPayload(srcBars, 12000, 3);
+    if (!barsPayload || barsPayload.length < 3) {
+        showStatus('Not enough chart bars for backtest overlay. Increase window or load more history.', 'warning');
+        return;
+    }
+
+    if (!toolStates.strategy_backtest) toolStates.strategy_backtest = {};
+    toolStates.strategy_backtest.strategy = strategy;
+    toolStates.strategy_backtest.deadzone_mode = deadzoneMode;
+    toolStates.strategy_backtest.lookback_days = lookbackDays;
+    toolStates.strategy_backtest.force_first_entry = forceFirstEntry;
+
+    try {
+        showStatus('Running strategy backtest overlay...', 'info');
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/tools/strategy/backtest-overlay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strategy,
+                deadzone_mode: deadzoneMode,
+                symbol: chartSymbol,
+                timeframe: chartTimeframe,
+                lookback_days: lookbackDays,
+                force_first_entry: forceFirstEntry,
+                closed_bar_only: false,
+                include_open_trade: true,
+                max_eval_bars: 6000,
+                bars: barsPayload,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+            throw new Error(String(data?.error || data?.detail || `HTTP ${res.status}`));
+        }
+        const rawMarkers = Array.isArray(data?.markers) ? data.markers : [];
+        strategyBacktestMarkers = rawMarkers
+            .map(_normalizeStrategyBacktestMarker)
+            .filter((m) => !!m);
+        if (strategyBacktestMarkers.length > 5000) {
+            strategyBacktestMarkers = strategyBacktestMarkers.slice(strategyBacktestMarkers.length - 5000);
+        }
+        syncCandleMarkers();
+        toolStates.strategy_backtest.last_result = data;
+        renderStrategyBacktestSummary(data);
+        const tradeCount = Number(data?.summary?.trades_total || 0);
+        const pnlPct = Number(data?.summary?.total_pnl_pct || 0);
+        showStatus(
+            `Overlay ready: ${strategy} | trades ${tradeCount} | total ${pnlPct.toFixed(2)}%`,
+            tradeCount > 0 ? 'success' : 'info',
+        );
+    } catch (err) {
+        showStatus(`Backtest overlay error: ${err.message}`, 'danger');
+    }
 }
 
 

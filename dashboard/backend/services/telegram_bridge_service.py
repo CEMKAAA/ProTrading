@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from fastapi import HTTPException
 
+from .live_service import LiveTradingService
 from ..models.database import (
     SessionLocal,
     SimulationSession,
@@ -50,6 +51,25 @@ def _json_obj(value: Any) -> Dict[str, Any]:
 
 
 class TelegramBridgeService:
+    _DEADZONE_WATCH_BASE: List[Tuple[str, List[str]]] = [
+        ("BTCUSDT", ["BTCUSDT", "BTCUSD", "BTCUSDM", "BTCUSDm"]),
+        ("ETHUSDT", ["ETHUSDT", "ETHUSD", "ETHUSDM", "ETHUSDm"]),
+        ("SOLUSDT", ["SOLUSDT", "SOLUSD", "SOLUSDM", "SOLUSDm"]),
+        ("AVAXUSDT", ["AVAXUSDT", "AVAXUSD", "AVAXUSDM", "AVAXUSDm"]),
+        ("NEARUSDT", ["NEARUSDT", "NEARUSD", "NEARUSDM", "NEARUSDm"]),
+        ("NVDA", ["NVDA", "NVDAm"]),
+        ("AMD", ["AMD", "AMDm"]),
+        ("TSLA", ["TSLA", "TSLAm"]),
+        ("MSTR", ["MSTR", "MSTRm"]),
+        ("PLTR", ["PLTR", "PLTRm"]),
+        ("COIN", ["COIN", "COINm"]),
+        ("QQQ", ["QQQ", "QQQm", "USTEC", "USTECm", "USTEC_x100m"]),
+        ("SPY", ["SPY", "SPYm", "US500", "US500m", "US500_x100m"]),
+        ("XAUUSD", ["XAUUSD", "XAUUSDm", "GOLD", "GOLDm"]),
+        ("GLD", ["GLD", "GLDm", "XAUUSD", "XAUUSDm"]),
+        ("USO", ["USO", "USOm", "USOIL", "USOILm"]),
+    ]
+
     @staticmethod
     def _read_env_file_value(var_name: str) -> Optional[str]:
         """Lightweight .env lookup without requiring python-dotenv at runtime."""
@@ -159,6 +179,16 @@ class TelegramBridgeService:
         self._last_screener_scan_by_chat_session: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self._last_warn_key: str = ""
         self._last_warn_at: float = 0.0
+        self._live_service: Optional[LiveTradingService] = None
+        self._deadzone_watch_last_run_ts: float = 0.0
+        self._deadzone_watch_resolved_cache: List[Dict[str, str]] = []
+        self._deadzone_watch_resolved_cache_ts: float = 0.0
+        self._deadzone_watch_last_color: Dict[Tuple[str, str], str] = {}
+        self._deadzone_watch_last_alert_key: Dict[Tuple[str, str], str] = {}
+        self._deadzone_watch_last_alert_ts: Dict[Tuple[str, str], float] = {}
+        self._deadzone_watch_pending_noncore: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._pending_deadzone_quick_trade_by_chat: Dict[int, Dict[str, Any]] = {}
+        self._next_reply_markup_by_chat: Dict[int, Dict[str, Any]] = {}
 
     def _warn_throttled(self, key: str, message: str, *, min_interval_sec: float = 30.0) -> None:
         now_ts = time.time()
@@ -167,6 +197,33 @@ class TelegramBridgeService:
             logger.warning("%s", message)
             self._last_warn_key = k
             self._last_warn_at = now_ts
+
+    @staticmethod
+    def _parse_positive_number(value: Any) -> Optional[float]:
+        raw = str(value or "").strip().replace(",", ".")
+        if not raw:
+            return None
+        try:
+            num = float(raw)
+        except Exception:
+            return None
+        if not math.isfinite(float(num)) or float(num) <= 0.0:
+            return None
+        return float(num)
+
+    def _set_next_reply_markup(self, chat_id: int, markup: Optional[Dict[str, Any]]) -> None:
+        cid = int(chat_id)
+        with self._lock:
+            if isinstance(markup, dict) and markup:
+                self._next_reply_markup_by_chat[cid] = dict(markup)
+            else:
+                self._next_reply_markup_by_chat.pop(cid, None)
+
+    def _pop_next_reply_markup(self, chat_id: int) -> Optional[Dict[str, Any]]:
+        cid = int(chat_id)
+        with self._lock:
+            val = self._next_reply_markup_by_chat.pop(cid, None)
+        return val if isinstance(val, dict) and val else None
 
     @staticmethod
     def _enabled() -> bool:
@@ -227,6 +284,707 @@ class TelegramBridgeService:
         else:
             raw = TelegramBridgeService._poll_interval_sec()
         return max(0.5, min(60.0, raw))
+
+    @staticmethod
+    def _deadzone_colorflip_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_COLORFLIP_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _deadzone_colorflip_interval_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_COLORFLIP_INTERVAL_SEC", "5"))
+        except Exception:
+            raw = 5.0
+        return max(1.0, min(60.0, raw))
+
+    @staticmethod
+    def _deadzone_colorflip_history_count() -> int:
+        try:
+            raw = int(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_COLORFLIP_HISTORY_COUNT", "220"))
+        except Exception:
+            raw = 220
+        return max(80, min(1000, raw))
+
+    @staticmethod
+    def _deadzone_noncore_filter_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_NONCORE_FILTER_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _deadzone_noncore_confirm_polls() -> int:
+        try:
+            raw = int(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_NONCORE_CONFIRM_POLLS", "2"))
+        except Exception:
+            raw = 2
+        return max(1, min(5, raw))
+
+    @staticmethod
+    def _deadzone_noncore_min_hold_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_NONCORE_MIN_HOLD_SEC", "4"))
+        except Exception:
+            raw = 4.0
+        return max(0.0, min(60.0, raw))
+
+    @staticmethod
+    def _deadzone_noncore_cooldown_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_NONCORE_ALERT_COOLDOWN_SEC", "30"))
+        except Exception:
+            raw = 30.0
+        return max(0.0, min(600.0, raw))
+
+    def _get_live_service(self) -> LiveTradingService:
+        svc = self._live_service
+        if svc is None:
+            svc = LiveTradingService()
+            self._live_service = svc
+        return svc
+
+    def _resolve_deadzone_watch_symbols(self) -> List[Dict[str, str]]:
+        now = time.time()
+        if self._deadzone_watch_resolved_cache and (now - float(self._deadzone_watch_resolved_cache_ts)) <= 300.0:
+            return list(self._deadzone_watch_resolved_cache)
+        svc = self._get_live_service()
+        rows: List[Dict[str, str]] = []
+        seen: set[Tuple[str, str]] = set()
+        for label, aliases in self._DEADZONE_WATCH_BASE:
+            resolved = None
+            for alias in aliases:
+                try:
+                    got = svc.resolve_symbol_name(str(alias))
+                except Exception:
+                    got = None
+                if got:
+                    resolved = str(got)
+                    break
+            if not resolved:
+                continue
+            key = (str(label).upper(), str(resolved).upper())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"label": str(label).upper(), "resolved": str(resolved)})
+        self._deadzone_watch_resolved_cache = list(rows)
+        self._deadzone_watch_resolved_cache_ts = now
+        return rows
+
+    @staticmethod
+    def _normalize_live_bars_for_color_engine(bars: Any) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        if not isinstance(bars, list):
+            return out
+        for b in bars:
+            if not isinstance(b, dict):
+                continue
+            t_raw = b.get("time_unix")
+            if t_raw is None:
+                t_raw = b.get("time")
+            t_unix: Optional[int] = None
+            try:
+                t_unix = int(t_raw)
+            except Exception:
+                try:
+                    s = str(t_raw or "").strip()
+                    if s:
+                        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                        t_unix = int(dt.timestamp())
+                except Exception:
+                    t_unix = None
+            if t_unix is None or int(t_unix) <= 0:
+                continue
+            try:
+                o = float(b.get("open"))
+                h = float(b.get("high"))
+                l = float(b.get("low"))
+                c = float(b.get("close"))
+                v = float(b.get("volume") or 0.0)
+                if not all(math.isfinite(x) for x in (o, h, l, c, v)):
+                    continue
+                out.append(
+                    {
+                        "time": int(t_unix),
+                        "open": float(o),
+                        "high": float(h),
+                        "low": float(l),
+                        "close": float(c),
+                        "volume": float(v),
+                    }
+                )
+            except Exception:
+                continue
+        return out
+
+    @staticmethod
+    def _deadzone_quick_trade_direction(from_color: Any, to_color: Any) -> Optional[str]:
+        f = str(from_color or "").strip().lower()
+        t = str(to_color or "").strip().lower()
+        if f == "red" and t == "green":
+            return "BUY"
+        if f == "green" and t == "red":
+            return "SELL"
+        return None
+
+    @staticmethod
+    def _is_deadzone_core_symbol(resolved_symbol: Any) -> bool:
+        s = str(resolved_symbol or "").strip().upper()
+        if not s:
+            return False
+        return s.startswith("BTCUSD") or s.startswith("XAUUSD") or s.startswith("GOLD")
+
+    def _build_deadzone_colorflip_alert_payload(
+        self,
+        *,
+        chat_id: int,
+        label: str,
+        resolved: str,
+        timeframe: str,
+        from_color: str,
+        to_color: str,
+        price: Optional[float],
+        rsi: Optional[float],
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        msg = (
+            "Deadzone color flip (global watch)\n"
+            f"Watch: {str(label).upper()}\n"
+            f"Symbol/TF: {str(resolved)} {str(timeframe).upper()}\n"
+            f"Flip: {str(from_color).upper()} -> {str(to_color).upper()}\n"
+            f"Price: {('-' if price is None else f'{float(price):.2f}')}\n"
+            f"RSI(14): {('-' if rsi is None else f'{float(rsi):.2f}')}\n"
+            f"Time (UTC): {datetime.now(timezone.utc).isoformat()}"
+        )
+        markup = None
+        if self._deadzone_quick_trade_direction(from_color, to_color) in {"BUY", "SELL"}:
+            markup = {
+                "inline_keyboard": [
+                    [
+                        self._inline_button(
+                            int(chat_id),
+                            "Quick Trade",
+                            {
+                                "type": "deadzone_quick_trade_start",
+                                "symbol": str(resolved),
+                                "timeframe": str(timeframe).upper(),
+                                "from_color": str(from_color),
+                                "to_color": str(to_color),
+                                "one_shot": True,
+                            },
+                        )
+                    ]
+                ]
+            }
+        return msg, markup
+
+    def _resolve_quick_trade_session(self, chat_id: int, symbol: str, timeframe: str) -> Tuple[Optional[int], str]:
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper()
+        if not sym:
+            return None, "missing_symbol"
+        db = SessionLocal()
+        try:
+            sid_default = self._resolve_default_session_id(int(chat_id))
+            if sid_default is not None:
+                row = db.query(SimulationSession).get(int(sid_default))
+                if row is not None and str(row.strategy_id or "") == "_workbench":
+                    row_sym = str(row.symbol or "").strip().upper()
+                    row_tf = str(row.timeframe or "").strip().upper()
+                    if row_sym == sym and (not tf or row_tf == tf):
+                        return int(row.id), "default_match"
+            rows = (
+                db.query(SimulationSession)
+                .filter(SimulationSession.strategy_id == "_workbench")
+                .filter(SimulationSession.status == "active")
+                .order_by(SimulationSession.updated_at.desc())
+                .limit(200)
+                .all()
+            )
+            for r in rows:
+                rs = str(getattr(r, "symbol", "") or "").strip().upper()
+                rt = str(getattr(r, "timeframe", "") or "").strip().upper()
+                if rs == sym and rt == tf:
+                    return int(r.id), "active_symbol_tf_match"
+            for r in rows:
+                rs = str(getattr(r, "symbol", "") or "").strip().upper()
+                if rs == sym:
+                    return int(r.id), "active_symbol_match"
+            return None, "no_session_for_symbol"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _cancel_deadzone_quick_trade(self, chat_id: int) -> str:
+        cid = int(chat_id)
+        with self._lock:
+            existed = self._pending_deadzone_quick_trade_by_chat.pop(cid, None)
+        self._set_next_reply_markup(cid, None)
+        return "Quick Trade flow canceled." if existed else "No active Quick Trade flow."
+
+    def _start_deadzone_quick_trade_flow(self, chat_id: int, action: Dict[str, Any]) -> str:
+        symbol = str((action or {}).get("symbol") or "").strip()
+        timeframe = str((action or {}).get("timeframe") or "").strip().upper() or "M15"
+        from_color = str((action or {}).get("from_color") or "").strip().lower()
+        to_color = str((action or {}).get("to_color") or "").strip().lower()
+        direction = self._deadzone_quick_trade_direction(from_color, to_color)
+        if direction not in {"BUY", "SELL"}:
+            return "Quick Trade supports only RED->GREEN (BUY) or GREEN->RED (SELL) flips."
+        sid, reason = self._resolve_quick_trade_session(int(chat_id), str(symbol), str(timeframe))
+        if sid is None or int(sid) <= 0:
+            return (
+                f"No active Workbench session found for {str(symbol).upper()} {str(timeframe).upper()}.\n"
+                "Start/select a matching live Workbench session first, then tap Quick Trade again."
+            )
+        state = {
+            "type": "deadzone_quick_trade",
+            "stage": "await_risk",
+            "session_id": int(sid),
+            "symbol": str(symbol).upper(),
+            "timeframe": str(timeframe).upper(),
+            "from_color": str(from_color),
+            "to_color": str(to_color),
+            "direction": str(direction),
+            "resolver": str(reason),
+            "created_at": self._now_iso(),
+        }
+        with self._lock:
+            self._pending_deadzone_quick_trade_by_chat[int(chat_id)] = state
+        self._set_next_reply_markup(int(chat_id), None)
+        return (
+            "Quick Trade armed\n"
+            f"Session: #{int(sid)} | {str(symbol).upper()} {str(timeframe).upper()}\n"
+            f"Flip: {str(from_color).upper()} -> {str(to_color).upper()} => {str(direction)}\n"
+            "Enter Risk USD (example: 5). Type 'cancel' to abort."
+        )
+
+    def _build_deadzone_quick_trade_preview(
+        self,
+        *,
+        chat_id: int,
+        state: Dict[str, Any],
+        risk_usd: float,
+        lot_size: float,
+    ) -> Tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        symbol = str(state.get("symbol") or "").strip().upper()
+        timeframe = str(state.get("timeframe") or "").strip().upper() or "M15"
+        direction = str(state.get("direction") or "").strip().upper()
+        session_id = int(state.get("session_id") or 0)
+        if session_id <= 0 or direction not in {"BUY", "SELL"} or not symbol:
+            return "Quick Trade state is invalid. Start again from the alert.", None, None
+        svc = self._get_live_service()
+        try:
+            bars = svc.get_recent_candles(
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                count=5,
+                resolve_symbol=False,
+            )
+        except Exception:
+            bars = []
+        if not isinstance(bars, list) or not bars:
+            return f"Could not load live price for {symbol} {timeframe}.", None, None
+        last = bars[-1] if isinstance(bars[-1], dict) else {}
+        try:
+            entry_price = float(last.get("close"))
+        except Exception:
+            entry_price = math.nan
+        if not math.isfinite(float(entry_price)) or float(entry_price) <= 0.0:
+            return f"Invalid entry price for {symbol} {timeframe}.", None, None
+        bar_time_unix = int(last.get("time_unix") or 0)
+
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            session = db.query(SimulationSession).get(int(session_id))
+            if session is None or str(session.strategy_id or "") != "_workbench":
+                return f"Session #{int(session_id)} not available.", None, None
+            trade_math = sim_routes._session_trade_math_context(
+                session=session,
+                symbol=str(session.symbol or symbol),
+            )
+            value_per_1lot = sim_routes._to_float_or_none((trade_math or {}).get("value_per_1lot"))
+            min_lot = sim_routes._to_float_or_none((trade_math or {}).get("min_lot"))
+            max_lot = sim_routes._to_float_or_none((trade_math or {}).get("max_lot"))
+            lot_step = sim_routes._to_float_or_none((trade_math or {}).get("lot_step"))
+            point = sim_routes._to_float_or_none((trade_math or {}).get("point"))
+            if value_per_1lot is None or (not math.isfinite(float(value_per_1lot))) or float(value_per_1lot) <= 0.0:
+                return "Symbol economics unavailable (value_per_1lot).", None, None
+            lot_norm = float(
+                sim_routes._normalize_lot_for_instrument(
+                    lot_size=float(lot_size),
+                    min_lot=float(min_lot if min_lot is not None else 0.01),
+                    max_lot=float(max_lot if max_lot is not None else 100.0),
+                    lot_step=float(lot_step if lot_step is not None else 0.01),
+                )
+            )
+            if not math.isfinite(float(lot_norm)) or float(lot_norm) <= 0.0:
+                return "Invalid lot size after broker normalization.", None, None
+            risk_distance = float(risk_usd) / (float(value_per_1lot) * float(lot_norm))
+            if (not math.isfinite(float(risk_distance))) or float(risk_distance) <= 0.0:
+                return "Risk distance is invalid. Check risk/lot values.", None, None
+            sl_raw = float(entry_price) - float(risk_distance) if direction == "BUY" else float(entry_price) + float(risk_distance)
+            if point is not None and math.isfinite(float(point)) and float(point) > 0.0:
+                sl_raw = round(float(sl_raw) / float(point)) * float(point)
+            stop_loss = float(sl_raw)
+            if (not math.isfinite(float(stop_loss))) or float(stop_loss) <= 0.0:
+                return "Calculated Stop Loss is invalid.", None, None
+            risk_actual = abs(float(entry_price) - float(stop_loss)) * float(value_per_1lot) * float(lot_norm)
+            sl_distance_pct = (abs(float(entry_price) - float(stop_loss)) / float(entry_price) * 100.0) if float(entry_price) > 0.0 else None
+            state_next = dict(state)
+            state_next.update(
+                {
+                    "stage": "await_confirm",
+                    "risk_usd": float(risk_usd),
+                    "lot_size": float(lot_norm),
+                    "entry_price": float(entry_price),
+                    "stop_loss": float(stop_loss),
+                    "bar_time_unix": int(bar_time_unix),
+                    "value_per_1lot": float(value_per_1lot),
+                    "risk_actual_usd": float(risk_actual),
+                    "sl_distance_pct": float(sl_distance_pct) if sl_distance_pct is not None and math.isfinite(float(sl_distance_pct)) else None,
+                    "updated_at": self._now_iso(),
+                }
+            )
+            message = (
+                "Quick Trade preview\n"
+                f"Session: #{int(session_id)} | {str(symbol)} {str(timeframe)}\n"
+                f"Direction: {str(direction)}\n"
+                f"Entry: {float(entry_price):.5f}\n"
+                f"SL: {float(stop_loss):.5f}\n"
+                f"Lot: {float(lot_norm):.4f}\n"
+                f"Risk (target): ${float(risk_usd):.2f}\n"
+                f"Risk (calc): ${float(risk_actual):.2f}\n"
+                f"SL distance: {('-' if sl_distance_pct is None else f'{float(sl_distance_pct):.4f}%')}\n"
+                "Confirm trade?"
+            )
+            markup = {
+                "inline_keyboard": [
+                    [
+                        self._inline_button(int(chat_id), "Confirm Quick Trade", {"type": "deadzone_quick_trade_confirm", "one_shot": True}),
+                        self._inline_button(int(chat_id), "Cancel", {"type": "deadzone_quick_trade_cancel", "one_shot": True}),
+                    ]
+                ]
+            }
+            return message, markup, state_next
+        except Exception as exc:
+            return f"Quick Trade preview failed: {type(exc).__name__}: {str(exc)[:180]}", None, None
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _execute_deadzone_quick_trade_confirm(self, chat_id: int) -> str:
+        with self._lock:
+            state = dict(self._pending_deadzone_quick_trade_by_chat.get(int(chat_id)) or {})
+        if not state or str(state.get("type")) != "deadzone_quick_trade":
+            return "No pending Quick Trade flow."
+        if str(state.get("stage") or "") != "await_confirm":
+            return "Quick Trade is waiting for Risk/Lot inputs first."
+        session_id = int(state.get("session_id") or 0)
+        direction = str(state.get("direction") or "").strip().upper()
+        stop_loss = self._parse_positive_number(state.get("stop_loss"))
+        lot_size = self._parse_positive_number(state.get("lot_size"))
+        entry_price = self._parse_positive_number(state.get("entry_price"))
+        bar_time_unix = int(state.get("bar_time_unix") or 0)
+        if session_id <= 0 or direction not in {"BUY", "SELL"} or stop_loss is None or lot_size is None:
+            return "Quick Trade state is invalid. Start again from the alert."
+        db = SessionLocal()
+        try:
+            from ..api import simulation_routes as sim_routes
+
+            phrase = str(getattr(sim_routes, "_LIVE_CONFIRMATION_PHRASE", "CONFIRM_LIVE_ORDER"))
+            req = sim_routes.TradeRequest(
+                direction=str(direction),
+                stop_loss=float(stop_loss),
+                take_profit=None,
+                lot_size=float(lot_size),
+                entry_price=float(entry_price) if entry_price is not None else None,
+                bar_time_unix=int(bar_time_unix) if int(bar_time_unix) > 0 else None,
+                confirm_live_order=True,
+                live_confirmation_phrase=str(phrase),
+            )
+            data = sim_routes.execute_trade(session_id=int(session_id), req=req, db=db)
+            with self._lock:
+                self._pending_deadzone_quick_trade_by_chat.pop(int(chat_id), None)
+            self._set_next_reply_markup(int(chat_id), None)
+            return (
+                "Quick Trade executed\n"
+                f"Session: #{int(session_id)}\n"
+                f"Trade ID: {int((data or {}).get('id') or 0)}\n"
+                f"Direction: {str((data or {}).get('direction') or direction).upper()}\n"
+                f"Entry: {float((data or {}).get('entry_price') or 0.0):.5f}\n"
+                f"Lot: {float((data or {}).get('lot_size') or lot_size):.4f}"
+            )
+        except HTTPException as exc:
+            return f"Quick Trade failed: {str(exc.detail)[:220]}"
+        except Exception as exc:
+            return f"Quick Trade failed: {type(exc).__name__}: {str(exc)[:220]}"
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _handle_deadzone_quick_trade_text(self, chat_id: int, raw: str) -> Optional[str]:
+        cid = int(chat_id)
+        with self._lock:
+            state = dict(self._pending_deadzone_quick_trade_by_chat.get(cid) or {})
+        if not state or str(state.get("type")) != "deadzone_quick_trade":
+            return None
+        text = str(raw or "").strip()
+        lowered = text.lower()
+        if text.startswith("/") and lowered not in {"/cancel", "/confirm"}:
+            return None
+        if lowered in {"cancel", "abort", "stop", "/stop"}:
+            return self._cancel_deadzone_quick_trade(cid)
+        if lowered in {"/cancel"} and len(text.split()) == 1:
+            return self._cancel_deadzone_quick_trade(cid)
+
+        stage = str(state.get("stage") or "")
+        if stage == "await_risk":
+            risk = self._parse_positive_number(text)
+            if risk is None:
+                return "Enter Risk USD as a positive number (example: 5). Type 'cancel' to abort."
+            state["risk_usd"] = float(risk)
+            state["stage"] = "await_lot"
+            state["updated_at"] = self._now_iso()
+            with self._lock:
+                self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
+            return "Enter Lot size (example: 0.02). Type 'cancel' to abort."
+
+        if stage == "await_lot":
+            lot = self._parse_positive_number(text)
+            if lot is None:
+                return "Enter Lot size as a positive number (example: 0.02). Type 'cancel' to abort."
+            risk = self._parse_positive_number(state.get("risk_usd"))
+            if risk is None:
+                state["stage"] = "await_risk"
+                with self._lock:
+                    self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
+                return "Risk value expired. Enter Risk USD again."
+            msg, markup, state_next = self._build_deadzone_quick_trade_preview(
+                chat_id=cid,
+                state=state,
+                risk_usd=float(risk),
+                lot_size=float(lot),
+            )
+            if isinstance(state_next, dict) and state_next:
+                with self._lock:
+                    self._pending_deadzone_quick_trade_by_chat[cid] = dict(state_next)
+            if isinstance(markup, dict) and markup:
+                self._set_next_reply_markup(cid, markup)
+            return msg
+
+        if stage == "await_confirm":
+            if lowered in {"confirm", "yes", "y", "/confirm"}:
+                return self._execute_deadzone_quick_trade_confirm(cid)
+            return "Tap 'Confirm Quick Trade' button (or type 'confirm'). Type 'cancel' to abort."
+
+        return None
+
+    def _push_deadzone_colorflip_alerts(self) -> None:
+        if not self._deadzone_colorflip_enabled():
+            return
+        if not self._enabled() or not self._token():
+            return
+        target_chat = self._allowed_chat_id()
+        if target_chat is None:
+            return
+        now_ts = time.time()
+        if (now_ts - float(self._deadzone_watch_last_run_ts)) < float(self._deadzone_colorflip_interval_sec()):
+            return
+        self._deadzone_watch_last_run_ts = now_ts
+        try:
+            from ..api import simulation_routes as sim_routes
+        except Exception:
+            return
+        svc = self._get_live_service()
+        watch_symbols = self._resolve_deadzone_watch_symbols()
+        if not watch_symbols:
+            return
+        noncore_filter_enabled = bool(self._deadzone_noncore_filter_enabled())
+        noncore_confirm_polls = int(self._deadzone_noncore_confirm_polls())
+        noncore_min_hold_sec = float(self._deadzone_noncore_min_hold_sec())
+        noncore_cooldown_sec = float(self._deadzone_noncore_cooldown_sec())
+        tf_list = ("M5", "M15")
+        bars_count = int(self._deadzone_colorflip_history_count())
+        for row in watch_symbols:
+            label = str(row.get("label") or "").upper()
+            resolved = str(row.get("resolved") or "")
+            if not label or not resolved:
+                continue
+            for tf in tf_list:
+                try:
+                    bars = svc.get_recent_candles(
+                        symbol=str(resolved),
+                        timeframe=str(tf),
+                        count=int(bars_count),
+                        resolve_symbol=False,
+                    )
+                except Exception:
+                    bars = []
+                if not isinstance(bars, list) or len(bars) < 80:
+                    continue
+                try:
+                    bars_norm = self._normalize_live_bars_for_color_engine(bars)
+                    df = sim_routes._bars_payload_to_df(bars_norm, max_rows=2000, min_rows=80)
+                except Exception:
+                    df = None
+                if df is None or df.empty:
+                    continue
+                try:
+                    cstate = sim_routes._strategy_automation_color_from_bars(
+                        bars_df=df,
+                        strategy_key="deadzone_pro",
+                        preset_cfg={},
+                        volume_sma_period=20,
+                        closed_bar_only=False,
+                    )
+                except Exception:
+                    continue
+                color_now = str((cstate or {}).get("color") or "gray").strip().lower()
+                if color_now not in {"green", "red", "gray"}:
+                    color_now = "gray"
+                key = (str(resolved).upper(), str(tf).upper())
+                is_core = bool(self._is_deadzone_core_symbol(resolved))
+                prev = str(self._deadzone_watch_last_color.get(key) or "").strip().lower()
+                self._deadzone_watch_last_color[key] = str(color_now)
+                if prev not in {"green", "red", "gray"}:
+                    with self._lock:
+                        self._deadzone_watch_pending_noncore.pop(key, None)
+                    continue
+                bar_unix = int((bars_norm[-1] or {}).get("time") or 0) if isinstance(bars_norm[-1], dict) and bars_norm else 0
+                alert_key = f"{bar_unix}:{prev}>{color_now}:{key[0]}:{key[1]}"
+                try:
+                    rsi_now = sim_routes._rsi_last(df["close"], period=14)
+                except Exception:
+                    rsi_now = None
+                try:
+                    px = float(df["close"].iloc[-1])
+                except Exception:
+                    px = None
+
+                # Keep BTC/XAU behavior unchanged: immediate intrabar alert on flip.
+                if is_core or (not noncore_filter_enabled):
+                    with self._lock:
+                        self._deadzone_watch_pending_noncore.pop(key, None)
+                    if prev == color_now:
+                        continue
+                    if str(self._deadzone_watch_last_alert_key.get(key) or "") == str(alert_key):
+                        continue
+                    msg, markup = self._build_deadzone_colorflip_alert_payload(
+                        chat_id=int(target_chat),
+                        label=label,
+                        resolved=str(resolved),
+                        timeframe=str(tf).upper(),
+                        from_color=str(prev),
+                        to_color=str(color_now),
+                        price=px,
+                        rsi=rsi_now,
+                    )
+                    try:
+                        with self._lock:
+                            sent = bool(self._send_text(int(target_chat), msg, reply_markup=markup))
+                    except Exception:
+                        sent = False
+                    if sent:
+                        self._deadzone_watch_last_alert_key[key] = str(alert_key)
+                        self._deadzone_watch_last_alert_ts[key] = float(now_ts)
+                        logger.info(
+                            "telegram_deadzone_global_colorflip_sent label=%s symbol=%s timeframe=%s from=%s to=%s",
+                            str(label),
+                            str(resolved),
+                            str(tf),
+                            str(prev),
+                            str(color_now),
+                        )
+                    continue
+
+                # Non-core light filter path (persistence + short hold + short cooldown).
+                with self._lock:
+                    pending = dict(self._deadzone_watch_pending_noncore.get(key) or {})
+                if prev != color_now:
+                    pending = {
+                        "label": str(label),
+                        "resolved": str(resolved),
+                        "timeframe": str(tf).upper(),
+                        "from_color": str(prev),
+                        "to_color": str(color_now),
+                        "started_ts": float(now_ts),
+                        "polls": 1,
+                        "bar_unix": int(bar_unix),
+                        "price": px,
+                        "rsi": rsi_now,
+                        "alert_key": str(alert_key),
+                    }
+                    with self._lock:
+                        self._deadzone_watch_pending_noncore[key] = dict(pending)
+                    continue
+
+                if not pending:
+                    continue
+
+                target_color = str(pending.get("to_color") or "").strip().lower()
+                if target_color != color_now:
+                    with self._lock:
+                        self._deadzone_watch_pending_noncore.pop(key, None)
+                    continue
+
+                pending["polls"] = int(pending.get("polls") or 0) + 1
+                pending["bar_unix"] = int(bar_unix)
+                pending["price"] = px
+                pending["rsi"] = rsi_now
+                with self._lock:
+                    self._deadzone_watch_pending_noncore[key] = dict(pending)
+
+                started_ts = float(pending.get("started_ts") or now_ts)
+                polls = int(pending.get("polls") or 0)
+                since_start = float(now_ts) - float(started_ts)
+                if polls < int(noncore_confirm_polls):
+                    continue
+                if since_start < float(noncore_min_hold_sec):
+                    continue
+                last_alert_ts = float(self._deadzone_watch_last_alert_ts.get(key) or 0.0)
+                if (float(now_ts) - float(last_alert_ts)) < float(noncore_cooldown_sec):
+                    continue
+                pending_alert_key = str(pending.get("alert_key") or "")
+                if pending_alert_key and str(self._deadzone_watch_last_alert_key.get(key) or "") == pending_alert_key:
+                    with self._lock:
+                        self._deadzone_watch_pending_noncore.pop(key, None)
+                    continue
+                msg, markup = self._build_deadzone_colorflip_alert_payload(
+                    chat_id=int(target_chat),
+                    label=str(pending.get("label") or label),
+                    resolved=str(pending.get("resolved") or resolved),
+                    timeframe=str(pending.get("timeframe") or str(tf).upper()),
+                    from_color=str(pending.get("from_color") or prev),
+                    to_color=str(pending.get("to_color") or color_now),
+                    price=pending.get("price"),
+                    rsi=pending.get("rsi"),
+                )
+                try:
+                    with self._lock:
+                        sent = bool(self._send_text(int(target_chat), msg, reply_markup=markup))
+                except Exception:
+                    sent = False
+                with self._lock:
+                    self._deadzone_watch_pending_noncore.pop(key, None)
+                if sent:
+                    self._deadzone_watch_last_alert_key[key] = str(pending_alert_key or alert_key)
+                    self._deadzone_watch_last_alert_ts[key] = float(now_ts)
+                    logger.info(
+                        "telegram_deadzone_global_colorflip_sent_noncore label=%s symbol=%s timeframe=%s from=%s to=%s polls=%s hold_sec=%.2f",
+                        str(pending.get("label") or label),
+                        str(pending.get("resolved") or resolved),
+                        str(pending.get("timeframe") or str(tf).upper()),
+                        str(pending.get("from_color") or prev),
+                        str(pending.get("to_color") or color_now),
+                        int(polls),
+                        float(since_start),
+                    )
 
     @staticmethod
     def _watchdog_alert_event_types() -> Optional[set[str]]:
@@ -636,7 +1394,9 @@ class TelegramBridgeService:
             # Telegram API token lives in endpoint path by design; suppress httpx INFO URL logs.
             if prev_level <= logging.INFO:
                 httpx_logger.setLevel(logging.WARNING)
-            with httpx.Client(timeout=timeout_sec, http2=False) as client:
+            # Telegram bridge should not inherit host-level proxy env vars by default.
+            # Local broken proxies (e.g. 127.0.0.1:9) can otherwise hard-fail bot delivery.
+            with httpx.Client(timeout=timeout_sec, http2=False, trust_env=False) as client:
                 hm = str(http_method or "GET").strip().upper()
                 if hm == "POST":
                     resp = client.post(url, data=params or {})
@@ -652,7 +1412,7 @@ class TelegramBridgeService:
             raise RuntimeError(f"telegram_api_error:{str(body)[:220]}")
         return body
 
-    def _send_text(self, chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
+    def _send_text(self, chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> bool:
         chunks = self._chunk_text(text, limit=3500)
         for idx, chunk in enumerate(chunks):
             try:
@@ -673,7 +1433,31 @@ class TelegramBridgeService:
                 )
             except Exception as exc:
                 logger.warning("telegram sendMessage failed: %s", str(exc)[:220])
-                break
+                return False
+        return True
+
+    def send_system_alert(self, text: str, *, chat_id: Optional[int] = None) -> bool:
+        """
+        Best-effort outbound alert helper for backend services.
+        Returns True when send attempt completed without local validation errors.
+        """
+        msg = str(text or "").strip()
+        if not msg:
+            return False
+        if not self._enabled():
+            return False
+        token = self._token()
+        if not token:
+            return False
+        target = int(chat_id) if chat_id is not None else self._allowed_chat_id()
+        if target is None:
+            return False
+        try:
+            with self._lock:
+                return bool(self._send_text(int(target), msg))
+        except Exception as exc:
+            logger.warning("telegram system alert failed: %s", str(exc)[:220])
+            return False
 
     def _can_run_ask(self, chat_id: int) -> Tuple[bool, float]:
         cooldown = float(self._ask_cooldown_sec())
@@ -2284,6 +3068,15 @@ class TelegramBridgeService:
         if atype == "noop":
             return str((action or {}).get("text") or "OK"), None
 
+        if atype == "deadzone_quick_trade_start":
+            return self._start_deadzone_quick_trade_flow(int(chat_id), action), None
+
+        if atype == "deadzone_quick_trade_confirm":
+            return self._execute_deadzone_quick_trade_confirm(int(chat_id)), None
+
+        if atype == "deadzone_quick_trade_cancel":
+            return self._cancel_deadzone_quick_trade(int(chat_id)), None
+
         if atype == "use_session":
             sid = int((action or {}).get("session_id") or 0)
             if sid <= 0:
@@ -2475,6 +3268,9 @@ class TelegramBridgeService:
         raw = str(text or "").strip()
         if not raw:
             return "Empty message."
+        pending_quick = self._handle_deadzone_quick_trade_text(int(chat_id), raw)
+        if isinstance(pending_quick, str) and pending_quick.strip():
+            return pending_quick
         parts = raw.split()
         cmd = str(parts[0] or "").strip()
         if "@" in cmd:
@@ -2993,6 +3789,9 @@ class TelegramBridgeService:
                 reply_markup = self._build_screener_inline_keyboard(int(chat_id), int(sid))
         elif cmd_norm == "/ask" or not cmd_norm.startswith("/"):
             reply_markup = self._build_pending_inline_keyboard(int(chat_id))
+        override_markup = self._pop_next_reply_markup(int(chat_id))
+        if isinstance(override_markup, dict) and override_markup:
+            reply_markup = override_markup
         self._send_text(chat_id, reply, reply_markup=reply_markup)
 
     def _poll_once(self) -> None:
@@ -3058,6 +3857,10 @@ class TelegramBridgeService:
                 self._push_watchdog_alerts()
             except Exception as exc:
                 logger.warning("Telegram watchdog push failed: %s", str(exc)[:220])
+            try:
+                self._push_deadzone_colorflip_alerts()
+            except Exception as exc:
+                logger.warning("Telegram deadzone colorflip push failed: %s", str(exc)[:220])
         logger.info("Telegram bridge service loop stopped")
 
     def start(self) -> None:
