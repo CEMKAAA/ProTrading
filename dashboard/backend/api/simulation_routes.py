@@ -112,15 +112,18 @@ _LIVE_EXECUTION_MODES = {_LIVE_EXECUTION_MODE_PAPER, _LIVE_EXECUTION_MODE_MT5}
 _LIVE_DEFAULT_MAX_RISK_PER_TRADE_USD = 25.0
 _LIVE_DEFAULT_MAX_LOT_PER_TRADE = 5.0
 _LIVE_CONFIRMATION_PHRASE = "CONFIRM_LIVE_ORDER"
+_LIVE_MT5_MAX_OPEN_POSITIONS = 4
 _RSI_ALERT_HIGH = 70.0
 _RSI_ALERT_LOW = 30.0
 _DEADZONE_COLORFLIP_TELEGRAM_WATCHLIST = {
-    # Crypto
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT",
-    # Momentum stocks
-    "NVDA", "AMD", "TSLA", "MSTR", "PLTR", "COIN",
-    # ETFs
-    "QQQ", "SPY", "GLD", "USO",
+    # User-scoped whitelist only.
+    "BTCUSD",
+    "ETHUSD",
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "AUDUSD",
+    "XAUUSD",
 }
 _DEADZONE_COLORFLIP_CRYPTO_BASES = {"BTC", "ETH", "SOL", "AVAX", "NEAR"}
 _DEADZONE_COLORFLIP_BROKER_ALIAS_MAP = {
@@ -6307,83 +6310,50 @@ def execute_trade(session_id: int, req: TradeRequest, db: Session = Depends(get_
 
     engine = _get_or_create_engine(session, db)
 
-    # Check for existing open positions (session-configurable cap).
-    open_count = db.query(SimulationTrade).filter(
-        SimulationTrade.session_id == session_id,
-        SimulationTrade.status == "open",
-    ).count()
+    # Check open-position caps.
     sess_cfg = _session_config_dict(session)
-    try:
-        max_open_positions = int(sess_cfg.get("max_open_positions_per_session") or 1)
-    except Exception:
-        max_open_positions = 1
-    max_open_positions = max(1, min(20, int(max_open_positions)))
-    if int(open_count) >= int(max_open_positions) and bool(live_exec_enabled):
-        # Manual broker-side closes can leave stale local rows as "open" until a user action.
-        # Reconcile only when MT5 explicitly reports zero open positions for this symbol.
+    if bool(live_exec_enabled):
+        # LIVE mode: enforce cap using broker truth (MT5 open positions), not local DB state.
+        mt5_open_positions: List[Dict[str, Any]] = []
         try:
-            snap = _session_sync_live_mt5_account(
-                session=session,
-                db=db,
-                include_positions=True,
-                persist=False,
-            )
+            mt5_service = _get_mt5_service_singleton()
+            mt5_open_positions = mt5_service.get_open_positions(symbol="") or []
         except Exception as exc:
-            snap = None
             logger.warning(
-                "live_trade_guard_reconcile_failed session=%s symbol=%s err=%s",
+                "live_trade_guard_mt5_positions_fetch_failed session=%s symbol=%s err=%s",
                 int(session.id),
                 str(session.symbol or ""),
                 str(type(exc).__name__),
             )
-        pos_rows = snap.get("open_positions") if isinstance(snap, dict) and isinstance(snap.get("open_positions"), list) else None
-        if isinstance(pos_rows, list) and len(pos_rows) == 0:
-            stale_rows = (
-                db.query(SimulationTrade)
-                .filter(SimulationTrade.session_id == session_id, SimulationTrade.status == "open")
-                .order_by(desc(SimulationTrade.id))
-                .all()
+            raise HTTPException(400, "mt5_open_positions_unavailable_for_cap_check")
+        mt5_open_count = int(len(mt5_open_positions))
+        if mt5_open_count >= int(_LIVE_MT5_MAX_OPEN_POSITIONS):
+            raise HTTPException(
+                400,
+                (
+                    "mt5_max_open_positions_reached:"
+                    f" open_positions={int(mt5_open_count)}"
+                    f" cap={int(_LIVE_MT5_MAX_OPEN_POSITIONS)}"
+                ),
             )
-            reconciled_count = 0
-            for stale in stale_rows:
-                try:
-                    _ = close_trade(
-                        session_id=int(session.id),
-                        trade_id=int(stale.id),
-                        req=CloseTradeRequest(
-                            confirm_live_order=True,
-                            live_confirmation_phrase=str(_LIVE_CONFIRMATION_PHRASE),
-                            automation_internal=True,
-                        ),
-                        db=db,
-                    )
-                    reconciled_count += 1
-                except Exception as exc:
-                    logger.warning(
-                        "live_trade_guard_reconcile_close_failed session=%s trade_id=%s err=%s",
-                        int(session.id),
-                        int(stale.id),
-                        str(type(exc).__name__),
-                    )
-            if reconciled_count > 0:
-                open_count = db.query(SimulationTrade).filter(
-                    SimulationTrade.session_id == session_id,
-                    SimulationTrade.status == "open",
-                ).count()
-                logger.info(
-                    "live_trade_guard_reconciled session=%s symbol=%s reconciled=%s remaining_open=%s",
-                    int(session.id),
-                    str(session.symbol or ""),
-                    int(reconciled_count),
-                    int(open_count),
-                )
-    if int(open_count) >= int(max_open_positions):
-        if int(max_open_positions) == 1:
-            raise HTTPException(400, "Already have an open position. Close it first.")
-        raise HTTPException(
-            400,
-            f"Max open positions reached ({int(open_count)}/{int(max_open_positions)}).",
-        )
+    else:
+        # Replay/paper: session-local open cap.
+        open_count = db.query(SimulationTrade).filter(
+            SimulationTrade.session_id == session_id,
+            SimulationTrade.status == "open",
+        ).count()
+        try:
+            max_open_positions = int(sess_cfg.get("max_open_positions_per_session") or 1)
+        except Exception:
+            max_open_positions = 1
+        max_open_positions = max(1, min(20, int(max_open_positions)))
+        if int(open_count) >= int(max_open_positions):
+            if int(max_open_positions) == 1:
+                raise HTTPException(400, "Already have an open position. Close it first.")
+            raise HTTPException(
+                400,
+                f"Max open positions reached ({int(open_count)}/{int(max_open_positions)}).",
+            )
 
     if req.direction not in ("BUY", "SELL"):
         raise HTTPException(400, "Direction must be BUY or SELL")

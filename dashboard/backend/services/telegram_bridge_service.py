@@ -52,22 +52,13 @@ def _json_obj(value: Any) -> Dict[str, Any]:
 
 class TelegramBridgeService:
     _DEADZONE_WATCH_BASE: List[Tuple[str, List[str]]] = [
-        ("BTCUSDT", ["BTCUSDT", "BTCUSD", "BTCUSDM", "BTCUSDm"]),
-        ("ETHUSDT", ["ETHUSDT", "ETHUSD", "ETHUSDM", "ETHUSDm"]),
-        ("SOLUSDT", ["SOLUSDT", "SOLUSD", "SOLUSDM", "SOLUSDm"]),
-        ("AVAXUSDT", ["AVAXUSDT", "AVAXUSD", "AVAXUSDM", "AVAXUSDm"]),
-        ("NEARUSDT", ["NEARUSDT", "NEARUSD", "NEARUSDM", "NEARUSDm"]),
-        ("NVDA", ["NVDA", "NVDAm"]),
-        ("AMD", ["AMD", "AMDm"]),
-        ("TSLA", ["TSLA", "TSLAm"]),
-        ("MSTR", ["MSTR", "MSTRm"]),
-        ("PLTR", ["PLTR", "PLTRm"]),
-        ("COIN", ["COIN", "COINm"]),
-        ("QQQ", ["QQQ", "QQQm", "USTEC", "USTECm", "USTEC_x100m"]),
-        ("SPY", ["SPY", "SPYm", "US500", "US500m", "US500_x100m"]),
+        ("BTCUSD", ["BTCUSD", "BTCUSDM", "BTCUSDm", "BTCUSDT"]),
+        ("ETHUSD", ["ETHUSD", "ETHUSDM", "ETHUSDm", "ETHUSDT"]),
+        ("EURUSD", ["EURUSD", "EURUSDm"]),
+        ("GBPUSD", ["GBPUSD", "GBPUSDm"]),
+        ("USDJPY", ["USDJPY", "USDJPYm"]),
+        ("AUDUSD", ["AUDUSD", "AUDUSDm"]),
         ("XAUUSD", ["XAUUSD", "XAUUSDm", "GOLD", "GOLDm"]),
-        ("GLD", ["GLD", "GLDm", "XAUUSD", "XAUUSDm"]),
-        ("USO", ["USO", "USOm", "USOIL", "USOILm"]),
     ]
 
     @staticmethod

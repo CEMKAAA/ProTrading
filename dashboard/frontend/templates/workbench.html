@@ -2617,6 +2617,9 @@ body.workbench-fullscreen .stats-bar {
                         <div class="col-6">
                             <input type="number" id="trade-quick-risk-usd" class="form-control form-control-sm" value="5" min="0.01" step="0.01" placeholder="Risk $ (USD)" title="Risk amount in USD">
                         </div>
+                        <div class="col-6">
+                            <input type="number" id="trade-quick-tp-usd" class="form-control form-control-sm" value="" min="0" step="0.01" placeholder="TP $ (instant close)" title="Close position instantly when profit reaches this USD value">
+                        </div>
                         <div class="col-12">
                             <button class="btn btn-sm btn-outline-primary w-100" id="btn-trade-quick-enter" type="button">
                                 <i class="bi bi-lightning-charge me-1"></i>Quick Enter
@@ -2625,6 +2628,9 @@ body.workbench-fullscreen .stats-bar {
                     </div>
                     <small style="color:#94a3b8;font-size:0.72rem;display:block;margin-top:4px;">
                         Stop Loss is calculated from Risk $ and current price.
+                    </small>
+                    <small style="color:#94a3b8;font-size:0.72rem;display:block;margin-top:2px;">
+                        If TP $ is set, position closes instantly on live tick when target profit is reached.
                     </small>
                 </div>
                 <div class="trade-direction-hint">
@@ -3675,5 +3681,6 @@ body.workbench-fullscreen .stats-bar {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/workbench.js', v='20260322_auto_logs_m5_flip_audit') }}"></script>
+<script src="{{ url_for('static', filename='js/workbench.js', v='20260324_quick_tp_usd') }}"></script>
 {% endblock %}
+

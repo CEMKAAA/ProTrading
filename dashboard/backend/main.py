@@ -21,6 +21,7 @@ from .services.workbench_copilot_worker import WorkbenchCopilotWorkerService
 from .services.agent_live_tick_service import AgentLiveTickService
 from .services.agent_watchdog_service import get_agent_watchdog_service
 from .services.telegram_bridge_service import TelegramBridgeService
+from .services.youtube_colorflip_service import YouTubeColorFlipService
 
 # Auto-retrain service singleton
 auto_retrain_service = AutoRetrainService()
@@ -29,6 +30,7 @@ workbench_copilot_worker = WorkbenchCopilotWorkerService()
 agent_watchdog_service: Optional[object] = None
 agent_live_tick_service = AgentLiveTickService()
 telegram_bridge_service = TelegramBridgeService()
+youtube_colorflip_service = YouTubeColorFlipService()
 
 # Configure logging
 logging.basicConfig(
@@ -129,6 +131,13 @@ async def startup_event():
     except Exception:
         logger.exception("Telegram bridge service failed to start")
 
+    # Start YouTube frame colorflip watcher (optional, env-gated)
+    try:
+        youtube_colorflip_service.start()
+        logger.info("YouTube colorflip service initialized")
+    except Exception:
+        logger.exception("YouTube colorflip service failed to start")
+
     logger.info("Dashboard started successfully")
 
 
@@ -136,6 +145,7 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup resources on shutdown"""
     global agent_watchdog_service
+    youtube_colorflip_service.stop()
     telegram_bridge_service.stop()
     agent_live_tick_service.stop()
     if agent_watchdog_service is not None:

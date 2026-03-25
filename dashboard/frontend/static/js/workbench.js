@@ -28,6 +28,10 @@ let sessionLiveExecutionMode = 'paper';
 let sessionLiveControlState = null;
 let sessionLiveAccountState = null;
 let sessionSymbolEconomics = null;
+let currentOpenPositionState = null;
+let quickTpUsdTarget = null;
+let quickTpTradeId = null;
+let quickTpAutoCloseInFlight = false;
 
 let isPlaying = false;
 let playInterval = null;
@@ -87,6 +91,8 @@ let indicatorSelection = {
     goldenCross: false,
 };
 let tradeMarkers = [];
+let openPositionSlLine = null;
+let openPositionTpLine = null;
 let goldenCrossMarkers = [];
 let fvgCreatorMarkers = [];
 let strategyBacktestMarkers = [];
@@ -1165,6 +1171,77 @@ function syncTradeProtectionToggleUI() {
     if (tpShortEl) {
         tpShortEl.disabled = noProtection;
         if (noProtection) tpShortEl.value = '0';
+    }
+}
+
+function clearQuickTpWatcher() {
+    quickTpUsdTarget = null;
+    quickTpTradeId = null;
+    quickTpAutoCloseInFlight = false;
+}
+
+function armQuickTpWatcher(openTrade, targetUsd) {
+    const target = Number(targetUsd);
+    const tradeId = Number(openTrade?.id);
+    if (!Number.isFinite(target) || target <= 0 || !Number.isFinite(tradeId) || tradeId <= 0) {
+        clearQuickTpWatcher();
+        return;
+    }
+    quickTpUsdTarget = target;
+    quickTpTradeId = tradeId;
+    quickTpAutoCloseInFlight = false;
+}
+
+function computeLiveOpenPnlUsd(openPos, markPrice) {
+    const position = openPos && typeof openPos === 'object' ? openPos : null;
+    const px = Number(markPrice);
+    if (!position || !Number.isFinite(px) || px <= 0) return NaN;
+    const entry = Number(position.entry_price);
+    const lots = Number(position.lot_size);
+    if (!Number.isFinite(entry) || !Number.isFinite(lots) || lots <= 0) return NaN;
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const valuePer1Lot = Number(econ?.point_value_per_1lot);
+    if (!Number.isFinite(valuePer1Lot) || valuePer1Lot <= 0) return NaN;
+    const dir = String(position.direction || '').trim().toUpperCase();
+    const sign = dir === 'BUY' ? 1 : (dir === 'SELL' ? -1 : 0);
+    if (!sign) return NaN;
+    return (px - entry) * sign * valuePer1Lot * lots;
+}
+
+async function maybeQuickTpAutoClose(markPrice = NaN) {
+    if (!Number.isFinite(Number(quickTpUsdTarget)) || Number(quickTpUsdTarget) <= 0) return;
+    if (!Number.isFinite(Number(quickTpTradeId)) || Number(quickTpTradeId) <= 0) return;
+    if (quickTpAutoCloseInFlight) return;
+    const openPos = currentOpenPositionState && typeof currentOpenPositionState === 'object'
+        ? currentOpenPositionState
+        : null;
+    const openTradeId = Number(openPos?.id);
+    if (!openPos || !Number.isFinite(openTradeId) || openTradeId <= 0) {
+        return;
+    }
+    if (openTradeId !== Number(quickTpTradeId)) {
+        clearQuickTpWatcher();
+        return;
+    }
+    let px = Number(markPrice);
+    if (!Number.isFinite(px) || px <= 0) {
+        const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+        px = Number(lastBar?.close);
+    }
+    if (!Number.isFinite(px) || px <= 0) return;
+    const pnlUsd = computeLiveOpenPnlUsd(openPos, px);
+    if (!Number.isFinite(pnlUsd)) return;
+    if (pnlUsd < Number(quickTpUsdTarget)) return;
+
+    quickTpAutoCloseInFlight = true;
+    showStatus(`Quick TP hit: $${Number(quickTpUsdTarget).toFixed(2)} reached, closing...`, 'info');
+    try {
+        const closeRes = await closePosition({ expectedTradeId: quickTpTradeId });
+        if (!closeRes) {
+            quickTpAutoCloseInFlight = false;
+        }
+    } catch (_) {
+        quickTpAutoCloseInFlight = false;
     }
 }
 
@@ -9043,6 +9120,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initWorkbenchState() {
+    currentOpenPositionState = null;
+    clearQuickTpWatcher();
+    clearOpenPositionProtectionLines();
     fvgZonesByTimeframe = {};
     fvgNavigationList = [];
     fvgNavigationIndex = -1;
@@ -10588,6 +10668,10 @@ async function startLiveFeed(isReconnect = false) {
                     updateIndicatorsOnChart();
                     updateBarCounter();
                     updateStats({ balance: initialBalance, total_pnl: 0, trades_count: 0, wins: 0 });
+                    const snapshotLastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+                    if (snapshotLastBar && Number.isFinite(Number(snapshotLastBar.close))) {
+                        void maybeQuickTpAutoClose(Number(snapshotLastBar.close));
+                    }
                     try { chart?.timeScale()?.fitContent(); } catch (_) { /* ignore */ }
                     void maybePushLiveAgentTick(true);
                     return;
@@ -10609,6 +10693,10 @@ async function startLiveFeed(isReconnect = false) {
                     }
                     updateIndicatorsOnChart();
                     updateBarCounter();
+                    const tickLastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+                    if (tickLastBar && Number.isFinite(Number(tickLastBar.close))) {
+                        void maybeQuickTpAutoClose(Number(tickLastBar.close));
+                    }
                     void maybePushLiveAgentTick(false);
                     return;
                 }
@@ -11159,6 +11247,10 @@ function applyAdvancePayload(data) {
     } else {
         updateOpenPosition(null);
     }
+    const replayLastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    if (replayLastBar && Number.isFinite(Number(replayLastBar.close))) {
+        void maybeQuickTpAutoClose(Number(replayLastBar.close));
+    }
 
     updateStats(data);
     updateBarCounter();
@@ -11225,8 +11317,10 @@ async function executeQuickTradeFromControls() {
     const direction = String(document.getElementById('trade-quick-direction')?.value || 'BUY').trim().toUpperCase();
     const lotsRaw = Number(document.getElementById('trade-quick-lots')?.value);
     const riskUsdRaw = _parseUiDecimal(document.getElementById('trade-quick-risk-usd')?.value, NaN);
+    const tpUsdRaw = _parseUiDecimal(document.getElementById('trade-quick-tp-usd')?.value, NaN);
     const lots = Number.isFinite(lotsRaw) && lotsRaw > 0 ? lotsRaw : 0.01;
     const riskUsd = Number.isFinite(riskUsdRaw) && riskUsdRaw > 0 ? riskUsdRaw : NaN;
+    const tpUsd = Number.isFinite(tpUsdRaw) && tpUsdRaw > 0 ? tpUsdRaw : NaN;
     if (!['BUY', 'SELL'].includes(direction)) {
         showStatus('Quick Entry failed: invalid direction.', 'warning');
         return;
@@ -11234,7 +11328,17 @@ async function executeQuickTradeFromControls() {
     if (isNoProtectionModeEnabled()) {
         const alignedNoProtection = await _ensureQuickTradeSymbolContext(symbol);
         if (!alignedNoProtection) return;
-        await executeTrade(direction, { stop_loss: 0, lot_size: lots, take_profit: 0 });
+        const openedTrade = await executeTrade(direction, { stop_loss: 0, lot_size: lots, take_profit: 0 });
+        if (openedTrade && Number.isFinite(tpUsd) && tpUsd > 0) {
+            armQuickTpWatcher(openedTrade, tpUsd);
+            showStatus(`Quick TP armed at +$${tpUsd.toFixed(2)} (instant close).`, 'info');
+            const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+            if (lastBar && Number.isFinite(Number(lastBar.close))) {
+                void maybeQuickTpAutoClose(Number(lastBar.close));
+            }
+        } else if (openedTrade) {
+            clearQuickTpWatcher();
+        }
         return;
     }
     if (!Number.isFinite(riskUsd) || riskUsd <= 0) {
@@ -11252,13 +11356,23 @@ async function executeQuickTradeFromControls() {
     }
     const slInput = document.getElementById('trade-sl');
     if (slInput) slInput.value = String(autoSl);
-    await executeTrade(direction, { stop_loss: autoSl, lot_size: lots, take_profit: null });
+    const openedTrade = await executeTrade(direction, { stop_loss: autoSl, lot_size: lots, take_profit: null });
+    if (openedTrade && Number.isFinite(tpUsd) && tpUsd > 0) {
+        armQuickTpWatcher(openedTrade, tpUsd);
+        showStatus(`Quick TP armed at +$${tpUsd.toFixed(2)} (instant close).`, 'info');
+        const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+        if (lastBar && Number.isFinite(Number(lastBar.close))) {
+            void maybeQuickTpAutoClose(Number(lastBar.close));
+        }
+    } else if (openedTrade) {
+        clearQuickTpWatcher();
+    }
 }
 
 async function executeTrade(direction, options = {}) {
-    if (!sessionId) return;
+    if (!sessionId) return null;
     const dir = String(direction || '').trim().toUpperCase();
-    if (!['BUY', 'SELL'].includes(dir)) { showStatus('Trade error: invalid direction', 'warning'); return; }
+    if (!['BUY', 'SELL'].includes(dir)) { showStatus('Trade error: invalid direction', 'warning'); return null; }
     const noProtection = isNoProtectionModeEnabled();
     const slOverride = Number(options?.stop_loss);
     let sl = Number.isFinite(slOverride) ? slOverride : parseFloat(document.getElementById('trade-sl')?.value);
@@ -11284,8 +11398,8 @@ async function executeTrade(direction, options = {}) {
         tp = null;
     }
 
-    if (!Number.isFinite(sl)) { showStatus('Please set a Stop Loss', 'warning'); return; }
-    if (!noProtection && sl <= 0) { showStatus('Stop Loss must be greater than 0', 'warning'); return; }
+    if (!Number.isFinite(sl)) { showStatus('Please set a Stop Loss', 'warning'); return null; }
+    if (!noProtection && sl <= 0) { showStatus('Stop Loss must be greater than 0', 'warning'); return null; }
 
     try {
         const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
@@ -11310,7 +11424,7 @@ async function executeTrade(direction, options = {}) {
             body: JSON.stringify(body),
         });
         const data = await res.json();
-        if (data.error) { showStatus(`Trade error: ${data.error}`, 'danger'); return; }
+        if (data.error) { showStatus(`Trade error: ${data.error}`, 'danger'); return null; }
 
         updateOpenPosition(data, 0);
         renderCostModelSummary(data?.cost_breakdown || null);
@@ -11328,15 +11442,23 @@ async function executeTrade(direction, options = {}) {
             if (tradeMarkers.length > 400) tradeMarkers = tradeMarkers.slice(tradeMarkers.length - 400);
             syncCandleMarkers();
         }
+        return data;
     } catch (err) {
         showStatus(`Trade error: ${err.message}`, 'danger');
+        return null;
     }
 }
 
-async function closePosition() {
-    if (!sessionId) return;
-    const tradeId = document.getElementById('open-pos-id')?.dataset.tradeId;
-    if (!tradeId) return;
+async function closePosition(options = null) {
+    if (!sessionId) return null;
+    const opts = (options && typeof options === 'object' && !(options instanceof Event)) ? options : {};
+    const expectedTradeId = Number(opts?.expectedTradeId);
+    const tradeIdRaw = document.getElementById('open-pos-id')?.dataset.tradeId;
+    const tradeId = Number(tradeIdRaw);
+    if (!Number.isFinite(tradeId) || tradeId <= 0) return null;
+    if (Number.isFinite(expectedTradeId) && expectedTradeId > 0 && tradeId !== expectedTradeId) {
+        return null;
+    }
 
     try {
         const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
@@ -11354,18 +11476,20 @@ async function closePosition() {
             };
         }
         applyLiveConfirmationToPayload(requestBody, { force: true });
-        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-trade/${tradeId}`, {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-trade/${tradeIdRaw}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody),
         });
         const data = await res.json();
-        if (data.error) { showStatus(`Close error: ${data.error}`, 'danger'); return; }
+        if (data.error) { showStatus(`Close error: ${data.error}`, 'danger'); return null; }
         updateOpenPosition(null);
         addTradeToLog(data);
         showTradeResult(data);
+        return data;
     } catch (err) {
         showStatus(`Close error: ${err.message}`, 'danger');
+        return null;
     }
 }
 
@@ -11870,6 +11994,49 @@ async function runStrategyBacktestOverlay() {
 
 // â”€â”€ UI Updates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+function clearOpenPositionProtectionLines() {
+    if (!candleSeries) return;
+    if (openPositionSlLine) {
+        try { candleSeries.removePriceLine(openPositionSlLine); } catch (_) { /* ignore */ }
+        openPositionSlLine = null;
+    }
+    if (openPositionTpLine) {
+        try { candleSeries.removePriceLine(openPositionTpLine); } catch (_) { /* ignore */ }
+        openPositionTpLine = null;
+    }
+}
+
+function renderOpenPositionProtectionLines(pos) {
+    clearOpenPositionProtectionLines();
+    if (!candleSeries || !pos || typeof pos !== 'object') return;
+    const sl = Number(pos.stop_loss);
+    const tp = Number(pos.take_profit);
+    if (Number.isFinite(sl) && sl > 0) {
+        try {
+            openPositionSlLine = candleSeries.createPriceLine({
+                price: sl,
+                color: '#ef5350',
+                lineWidth: 2,
+                lineStyle: 2,
+                axisLabelVisible: true,
+                title: 'SL',
+            });
+        } catch (_) { /* ignore */ }
+    }
+    if (Number.isFinite(tp) && tp > 0) {
+        try {
+            openPositionTpLine = candleSeries.createPriceLine({
+                price: tp,
+                color: '#26a69a',
+                lineWidth: 2,
+                lineStyle: 2,
+                axisLabelVisible: true,
+                title: 'TP',
+            });
+        } catch (_) { /* ignore */ }
+    }
+}
+
 function updateOpenPosition(pos, pnl) {
     const container = document.getElementById('open-position-display');
     const idEl = document.getElementById('open-pos-id');
@@ -11878,6 +12045,18 @@ function updateOpenPosition(pos, pnl) {
     if (!container) return;
 
     if (pos) {
+        currentOpenPositionState = { ...pos };
+        renderOpenPositionProtectionLines(pos);
+        const openTradeId = Number(pos?.id);
+        if (
+            Number.isFinite(Number(quickTpTradeId))
+            && Number(quickTpTradeId) > 0
+            && Number.isFinite(openTradeId)
+            && openTradeId > 0
+            && openTradeId !== Number(quickTpTradeId)
+        ) {
+            clearQuickTpWatcher();
+        }
         const pnlValue = pnl || 0;
         const pnlClass = pnlValue >= 0 ? 'positive' : 'negative';
         const direction = String(pos.direction || '');
@@ -11903,6 +12082,9 @@ function updateOpenPosition(pos, pnl) {
         if (closeBtn) closeBtn.classList.remove('d-none');
         if (tradeButtons) tradeButtons.classList.add('d-none');
     } else {
+        currentOpenPositionState = null;
+        clearOpenPositionProtectionLines();
+        clearQuickTpWatcher();
         container.innerHTML = '';
         container.classList.add('d-none');
         if (closeBtn) closeBtn.classList.add('d-none');
