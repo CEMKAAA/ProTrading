@@ -30,7 +30,30 @@ workbench_copilot_worker = WorkbenchCopilotWorkerService()
 agent_watchdog_service: Optional[object] = None
 agent_live_tick_service = AgentLiveTickService()
 telegram_bridge_service = TelegramBridgeService()
-youtube_colorflip_service = YouTubeColorFlipService()
+youtube_colorflip_service = YouTubeColorFlipService(
+    profile="PRIMARY",
+    default_url="https://www.youtube.com/watch?v=fFrLWCCUY68",
+    default_right_symbol="ETHUSDm",
+    default_left_symbol="BTCUSDm",
+    default_right_label="ETH",
+    default_left_label="BTC",
+)
+youtube_colorflip_service_forex = YouTubeColorFlipService(
+    profile="FOREX",
+    default_url="https://www.youtube.com/watch?v=boI9giWyejc",
+    default_right_symbol="GBPUSDm",
+    default_left_symbol="EURUSDm",
+    default_right_label="GBPUSD",
+    default_left_label="EURUSD",
+)
+youtube_colorflip_service_forex2 = YouTubeColorFlipService(
+    profile="FOREX2",
+    default_url="https://www.youtube.com/watch?v=wsRKTiFqSAk",
+    default_right_symbol="AUDUSDm",
+    default_left_symbol="USDJPYm",
+    default_right_label="AUDUSD",
+    default_left_label="USDJPY",
+)
 
 # Configure logging
 logging.basicConfig(
@@ -137,6 +160,16 @@ async def startup_event():
         logger.info("YouTube colorflip service initialized")
     except Exception:
         logger.exception("YouTube colorflip service failed to start")
+    try:
+        youtube_colorflip_service_forex.start()
+        logger.info("YouTube colorflip FOREX service initialized")
+    except Exception:
+        logger.exception("YouTube colorflip FOREX service failed to start")
+    try:
+        youtube_colorflip_service_forex2.start()
+        logger.info("YouTube colorflip FOREX2 service initialized")
+    except Exception:
+        logger.exception("YouTube colorflip FOREX2 service failed to start")
 
     logger.info("Dashboard started successfully")
 
@@ -145,6 +178,8 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup resources on shutdown"""
     global agent_watchdog_service
+    youtube_colorflip_service_forex2.stop()
+    youtube_colorflip_service_forex.stop()
     youtube_colorflip_service.stop()
     telegram_bridge_service.stop()
     agent_live_tick_service.stop()

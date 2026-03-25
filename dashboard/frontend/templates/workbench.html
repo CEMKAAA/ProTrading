@@ -1464,6 +1464,125 @@ body.workbench-fullscreen .stats-bar {
     font-size: 0.8rem;
     color: #bfdbfe;
 }
+.quick-open-trades {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.45);
+}
+.quick-open-trades-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    color: #cbd5e1;
+    font-size: 0.74rem;
+    font-weight: 600;
+}
+.quick-open-trades-summary {
+    color: #94a3b8;
+    font-size: 0.7rem;
+}
+.quick-open-trades-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+.quick-open-trade-row {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 7px;
+    padding: 6px 8px;
+    background: rgba(30, 41, 59, 0.45);
+}
+.quick-open-trade-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.74rem;
+}
+.quick-open-trade-symbol {
+    color: #e2e8f0;
+    font-weight: 600;
+}
+.quick-open-trade-dir {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-size: 0.67rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+.quick-open-trade-dir.buy {
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.38);
+    background: rgba(22, 163, 74, 0.18);
+}
+.quick-open-trade-dir.sell {
+    color: #fca5a5;
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    background: rgba(220, 38, 38, 0.18);
+}
+.quick-open-trade-pnl {
+    font-weight: 700;
+}
+.quick-open-trade-pnl.positive {
+    color: #4ade80;
+}
+.quick-open-trade-pnl.negative {
+    color: #f87171;
+}
+.quick-open-trade-meta {
+    margin-top: 3px;
+    font-size: 0.69rem;
+    color: #94a3b8;
+}
+.chart-container {
+    position: relative;
+}
+.chart-container.stream-mode #chart-main,
+.chart-container.stream-mode #chart-trendilo-panel {
+    visibility: hidden;
+}
+.chart-stream-wrap {
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    background: #0b1220;
+    display: flex;
+    flex-direction: column;
+}
+.chart-stream-head {
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 10px;
+    background: rgba(15, 23, 42, 0.92);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    font-size: 0.72rem;
+    color: #cbd5e1;
+}
+.chart-stream-url {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.chart-stream-frame {
+    width: 100%;
+    height: calc(100% - 34px);
+    border: 0;
+    background: #000;
+}
 .symbol-econ-hint {
     margin-top: 8px;
     padding: 8px 10px;
@@ -1644,6 +1763,14 @@ body.workbench-fullscreen .stats-bar {
                 <i class="bi bi-arrows-fullscreen me-1"></i>Focus Mode
             </button>
             <button
+                id="btn-toggle-livestream"
+                class="btn btn-sm wb-action-btn me-2"
+                type="button"
+                title="Toggle chart livestream mode"
+            >
+                <i class="bi bi-broadcast-pin me-1"></i>Livestream
+            </button>
+            <button
                 id="btn-open-research"
                 class="btn btn-sm wb-action-btn me-2"
                 type="button"
@@ -1693,6 +1820,21 @@ body.workbench-fullscreen .stats-bar {
         <div class="chart-container">
             <div id="chart-main" class="chart-main"></div>
             <div id="chart-trendilo-panel" class="chart-sub-panel d-none"></div>
+            <div id="chart-stream-wrap" class="chart-stream-wrap d-none">
+                <div class="chart-stream-head">
+                    <span id="chart-stream-url-label" class="chart-stream-url">No URL</span>
+                    <small style="color:#94a3b8;">Livestream Mode</small>
+                </div>
+                <iframe
+                    id="chart-stream-frame"
+                    class="chart-stream-frame"
+                    src=""
+                    title="Chart livestream"
+                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                    allowfullscreen
+                    referrerpolicy="no-referrer-when-downgrade"
+                ></iframe>
+            </div>
         </div>
 
         <!-- Playback Controls -->
@@ -2632,6 +2774,15 @@ body.workbench-fullscreen .stats-bar {
                     <small style="color:#94a3b8;font-size:0.72rem;display:block;margin-top:2px;">
                         If TP $ is set, position closes instantly on live tick when target profit is reached.
                     </small>
+                    <div id="quick-open-trades" class="quick-open-trades">
+                        <div class="quick-open-trades-header">
+                            <span><i class="bi bi-list-check me-1"></i>Open Trades</span>
+                            <span id="quick-open-trades-summary" class="quick-open-trades-summary">No open trades</span>
+                        </div>
+                        <div id="quick-open-trades-list" class="quick-open-trades-list">
+                            <div class="fvg-empty mb-0">No open trades.</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="trade-direction-hint">
                     <span class="dir-tag buy-tag">BUY = Long</span>

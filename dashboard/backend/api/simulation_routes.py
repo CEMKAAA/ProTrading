@@ -679,6 +679,14 @@ class CloseTradeRequest(BaseModel):
     automation_internal: bool = False
 
 
+class CloseBrokerPositionRequest(BaseModel):
+    ticket: int = Field(gt=0)
+    symbol: Optional[str] = None
+    lot_size: Optional[float] = Field(default=None, gt=0.0, le=100.0)
+    confirm_live_order: bool = False
+    live_confirmation_phrase: Optional[str] = None
+
+
 class CostModelUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     spread: Optional[float] = None
@@ -5870,6 +5878,37 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/sessions/{session_id}/open-positions")
+def get_session_open_positions(
+    session_id: int,
+    limit: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Return open positions for workbench quick panel (MT5-account aware)."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    detail = _agent_positions_detail_payload(
+        session=session,
+        db=db,
+        open_limit=max(1, min(200, int(limit))),
+        recent_limit=20,
+    )
+    open_positions = detail.get("open_positions") if isinstance(detail.get("open_positions"), list) else []
+    account = detail.get("account") if isinstance(detail.get("account"), dict) else {}
+    return {
+        "ok": True,
+        "session_id": int(session.id),
+        "symbol": str(session.symbol or ""),
+        "timeframe": str(session.timeframe or ""),
+        "open_count": int(len(open_positions)),
+        "open_positions": open_positions,
+        "account": account,
+        "generated_at": _utc_now().isoformat(),
+    }
+
+
 @router.post("/sessions/{session_id}/cost-model")
 def update_session_cost_model(session_id: int, req: CostModelUpdateRequest, db: Session = Depends(get_db)):
     """Update per-session workbench cost model config."""
@@ -7052,6 +7091,65 @@ def close_trade(
         "exit_reason": trade.exit_reason,
         "status": "closed",
         "automation_stopped": bool(automation_stopped),
+    }
+
+
+@router.post("/sessions/{session_id}/close-broker-position")
+def close_broker_position(
+    session_id: int,
+    req: CloseBrokerPositionRequest = Body(default_factory=CloseBrokerPositionRequest),
+    db: Session = Depends(get_db),
+):
+    """Close an MT5 broker position by ticket (supports manual/external positions too)."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if not _is_live_mt5_execution_enabled(session):
+        raise HTTPException(400, "live_mt5_execution_not_enabled")
+
+    live_ctrl = _session_live_control_dict(session)
+    if bool(live_ctrl.get("require_confirmation_for_live_order", True)):
+        if not bool(getattr(req, "confirm_live_order", False)):
+            raise HTTPException(
+                400,
+                (
+                    "live_confirmation_required:"
+                    f"set confirm_live_order=true and live_confirmation_phrase={_LIVE_CONFIRMATION_PHRASE}"
+                ),
+            )
+        phrase = str(getattr(req, "live_confirmation_phrase", None) or "").strip().upper()
+        if phrase != str(_LIVE_CONFIRMATION_PHRASE):
+            raise HTTPException(400, "live_confirmation_phrase_invalid")
+
+    symbol = str(req.symbol or session.symbol or "").strip()
+    if not symbol:
+        raise HTTPException(400, "symbol_required")
+    ticket = int(req.ticket or 0)
+    if ticket <= 0:
+        raise HTTPException(400, "invalid_ticket")
+
+    mt5_service = _get_mt5_service_singleton()
+    close_result = mt5_service.close_position(
+        symbol=symbol,
+        position_ticket=ticket,
+        lot_size=_to_float_or_none(req.lot_size),
+        deviation_points=20,
+        comment=f"WB_QCLOSE#{int(session.id)}",
+    )
+    if not bool(close_result.get("ok")):
+        raise HTTPException(400, f"live_close_failed:{str(close_result.get('error') or 'unknown')}")
+
+    return {
+        "ok": True,
+        "session_id": int(session.id),
+        "ticket": int(_to_float_or_none(close_result.get("position_ticket")) or ticket),
+        "symbol": str(close_result.get("symbol") or symbol),
+        "price": _to_float_or_none(close_result.get("price")),
+        "order": int(_to_float_or_none(close_result.get("order")) or 0),
+        "deal": int(_to_float_or_none(close_result.get("deal")) or 0),
+        "retcode": int(_to_float_or_none(close_result.get("retcode")) or 0),
+        "retcode_name": str(close_result.get("retcode_name") or ""),
+        "comment": str(close_result.get("comment") or ""),
     }
 
 
@@ -9538,16 +9636,33 @@ def _agent_positions_detail_payload(
         .limit(r_lim)
         .all()
     )
+    ticket_to_session_trade_id: Dict[int, int] = {}
+    for t in open_rows:
+        if not isinstance(t, SimulationTrade):
+            continue
+        cb = t.cost_breakdown_json if isinstance(t.cost_breakdown_json, dict) else {}
+        ex = cb.get("execution") if isinstance(cb.get("execution"), dict) else {}
+        tk_val = _to_float_or_none(ex.get("position_ticket"))
+        tk = int(tk_val or 0)
+        if tk > 0:
+            ticket_to_session_trade_id[tk] = int(t.id)
     if isinstance(mt5_account, dict) and isinstance(mt5_account.get("open_positions"), list):
-        open_positions = [
-            p
-            for p in (mt5_account.get("open_positions") or [])
-            if isinstance(p, dict)
-        ][:o_lim]
+        open_positions = []
+        for p in (mt5_account.get("open_positions") or []):
+            if not isinstance(p, dict):
+                continue
+            row = dict(p)
+            tk = int(_to_float_or_none(row.get("ticket")) or _to_float_or_none(row.get("id")) or 0)
+            if tk > 0 and tk in ticket_to_session_trade_id:
+                row["session_trade_id"] = int(ticket_to_session_trade_id.get(tk) or 0)
+            open_positions.append(row)
+            if len(open_positions) >= o_lim:
+                break
     else:
         open_positions = [
             {
                 "id": int(t.id),
+                "session_trade_id": int(t.id),
                 "direction": str(t.direction or "").upper(),
                 "entry_price": _to_float_or_none(t.entry_price),
                 "stop_loss": _to_float_or_none(t.stop_loss),

@@ -50,6 +50,18 @@ def _json_obj(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _to_float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        f = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(float(f)):
+        return None
+    return float(f)
+
+
 class TelegramBridgeService:
     _DEADZONE_WATCH_BASE: List[Tuple[str, List[str]]] = [
         ("BTCUSD", ["BTCUSD", "BTCUSDM", "BTCUSDm", "BTCUSDT"]),
@@ -179,6 +191,7 @@ class TelegramBridgeService:
         self._deadzone_watch_last_alert_ts: Dict[Tuple[str, str], float] = {}
         self._deadzone_watch_pending_noncore: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._pending_deadzone_quick_trade_by_chat: Dict[int, Dict[str, Any]] = {}
+        self._pending_live_tp_flow_by_chat: Dict[int, Dict[str, Any]] = {}
         self._next_reply_markup_by_chat: Dict[int, Dict[str, Any]] = {}
 
     def _warn_throttled(self, key: str, message: str, *, min_interval_sec: float = 30.0) -> None:
@@ -278,8 +291,8 @@ class TelegramBridgeService:
 
     @staticmethod
     def _deadzone_colorflip_enabled() -> bool:
-        v = str(TelegramBridgeService._get_env_value("TELEGRAM_DEADZONE_COLORFLIP_ENABLED", "1")).strip().lower()
-        return v in {"1", "true", "yes", "on"}
+        # Hard-disabled by product decision: deadzone color-flip alerts are not needed.
+        return False
 
     @staticmethod
     def _deadzone_colorflip_interval_sec() -> float:
@@ -480,8 +493,9 @@ class TelegramBridgeService:
                 if row is not None and str(row.strategy_id or "") == "_workbench":
                     row_sym = str(row.symbol or "").strip().upper()
                     row_tf = str(row.timeframe or "").strip().upper()
-                    if row_sym == sym and (not tf or row_tf == tf):
-                        return int(row.id), "default_match"
+                    row_mode = str(getattr(row, "mode", "") or "").strip().lower()
+                    if row_sym == sym and (not tf or row_tf == tf) and row_mode == "live":
+                        return int(row.id), "default_live_match"
             rows = (
                 db.query(SimulationSession)
                 .filter(SimulationSession.strategy_id == "_workbench")
@@ -493,8 +507,19 @@ class TelegramBridgeService:
             for r in rows:
                 rs = str(getattr(r, "symbol", "") or "").strip().upper()
                 rt = str(getattr(r, "timeframe", "") or "").strip().upper()
+                rm = str(getattr(r, "mode", "") or "").strip().lower()
+                if rs == sym and rt == tf and rm == "live":
+                    return int(r.id), "active_live_symbol_tf_match"
+            for r in rows:
+                rs = str(getattr(r, "symbol", "") or "").strip().upper()
+                rt = str(getattr(r, "timeframe", "") or "").strip().upper()
                 if rs == sym and rt == tf:
                     return int(r.id), "active_symbol_tf_match"
+            for r in rows:
+                rs = str(getattr(r, "symbol", "") or "").strip().upper()
+                rm = str(getattr(r, "mode", "") or "").strip().lower()
+                if rs == sym and rm == "live":
+                    return int(r.id), "active_live_symbol_match"
             for r in rows:
                 rs = str(getattr(r, "symbol", "") or "").strip().upper()
                 if rs == sym:
@@ -513,30 +538,386 @@ class TelegramBridgeService:
         self._set_next_reply_markup(cid, None)
         return "Quick Trade flow canceled." if existed else "No active Quick Trade flow."
 
+    def _close_live_positions_quick(self, *, symbol: Optional[str] = None) -> str:
+        svc = self._get_live_service()
+        target = str(symbol or "").strip().upper()
+        try:
+            rows = svc.get_open_positions(symbol=(target if target else None))
+        except Exception as exc:
+            return f"Close failed: could not read open positions ({type(exc).__name__}: {str(exc)[:120]})."
+        if not isinstance(rows, list) or not rows:
+            return "No active MT5 position found."
+        closed = 0
+        failed = 0
+        fail_msgs: List[str] = []
+        for r in rows:
+            ticket = int((r or {}).get("ticket") or 0)
+            sym = str((r or {}).get("symbol") or "").strip().upper()
+            if ticket <= 0 or not sym:
+                failed += 1
+                continue
+            try:
+                out = svc.close_position(
+                    symbol=str(sym),
+                    position_ticket=int(ticket),
+                    comment="tg_quick_close",
+                )
+            except Exception as exc:
+                failed += 1
+                fail_msgs.append(f"{sym}#{ticket}: {type(exc).__name__}")
+                continue
+            if bool((out or {}).get("ok")):
+                closed += 1
+            else:
+                failed += 1
+                fail_msgs.append(f"{sym}#{ticket}: {str((out or {}).get('error') or 'close_failed')[:80]}")
+        tail = ""
+        if fail_msgs:
+            tail = "\nFailed: " + " | ".join(fail_msgs[:3])
+        return f"Close active positions done. Closed={int(closed)} Failed={int(failed)}{tail}"
+
+    def _build_position_select_markup(self, *, positions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        rows: List[List[Dict[str, str]]] = []
+        for p in positions[:12]:
+            ticket = int((p or {}).get("ticket") or 0)
+            sym = str((p or {}).get("symbol") or "").strip().upper()
+            direction = str((p or {}).get("direction") or "").strip().upper()
+            pnl = _to_float_or_none((p or {}).get("profit_loss"))
+            if ticket <= 0 or not sym:
+                continue
+            label = f"{sym} {direction} #{ticket}"
+            if pnl is not None and math.isfinite(float(pnl)):
+                label += f" ({float(pnl):+.2f})"
+            cb = f"ytq|ct|{int(ticket)}|{sym}"
+            rows.append([{"text": str(label)[:64], "callback_data": str(cb)}])
+        if not rows:
+            return None
+        rows.append([{"text": "Cancel", "callback_data": "ytq|x"}])
+        return {"inline_keyboard": rows}
+
+    def _open_position_close_selector(self, *, symbol: Optional[str] = None) -> Tuple[str, Optional[Dict[str, Any]]]:
+        svc = self._get_live_service()
+        target = str(symbol or "").strip().upper()
+        try:
+            rows = svc.get_open_positions(symbol=(target if target else None))
+        except Exception as exc:
+            return f"Could not load MT5 positions ({type(exc).__name__}: {str(exc)[:120]}).", None
+        if not isinstance(rows, list) or not rows:
+            return "No active MT5 position found.", None
+        markup = self._build_position_select_markup(positions=rows)
+        if not isinstance(markup, dict):
+            return "No closable position found.", None
+        return f"Select position to close ({len(rows)} open):", markup
+
+    def _close_live_position_by_ticket(self, *, symbol: str, ticket: int) -> str:
+        sym = str(symbol or "").strip().upper()
+        t = int(ticket or 0)
+        if not sym or t <= 0:
+            return "Invalid close payload."
+        svc = self._get_live_service()
+        try:
+            out = svc.close_position(symbol=str(sym), position_ticket=int(t), comment="tg_quick_close_selected")
+        except Exception as exc:
+            return f"Close failed for {sym} #{t}: {type(exc).__name__}: {str(exc)[:120]}"
+        if bool((out or {}).get("ok")):
+            px = _to_float_or_none((out or {}).get("price"))
+            return f"Position closed: {sym} #{t}" + (f" @ {float(px):.5f}" if px is not None else "")
+        return f"Close failed for {sym} #{t}: {str((out or {}).get('error') or 'close_failed')[:180]}"
+
+    def _cancel_live_tp_flow(self, chat_id: int) -> str:
+        cid = int(chat_id)
+        with self._lock:
+            existed = self._pending_live_tp_flow_by_chat.pop(cid, None)
+        self._set_next_reply_markup(cid, None)
+        return "TP flow canceled." if existed else "No active TP flow."
+
+    def _start_live_tp_flow(self, chat_id: int) -> str:
+        cid = int(chat_id)
+        svc = self._get_live_service()
+        try:
+            rows = svc.get_open_positions(symbol=None)
+        except Exception as exc:
+            return f"Could not load MT5 open positions ({type(exc).__name__}: {str(exc)[:140]})."
+        if not isinstance(rows, list) or not rows:
+            return "No active MT5 position found."
+        choices: List[Dict[str, Any]] = []
+        lines: List[str] = ["Open positions (pick number):"]
+        for idx, p in enumerate(rows, start=1):
+            ticket = int((p or {}).get("ticket") or 0)
+            symbol = str((p or {}).get("symbol") or "").strip().upper()
+            direction = str((p or {}).get("direction") or "").strip().upper()
+            lot = _to_float_or_none((p or {}).get("lot_size"))
+            pnl = _to_float_or_none((p or {}).get("profit_loss"))
+            if ticket <= 0 or not symbol:
+                continue
+            choices.append(
+                {
+                    "idx": int(idx),
+                    "ticket": int(ticket),
+                    "symbol": str(symbol),
+                    "direction": str(direction),
+                    "lot_size": float(lot or 0.0),
+                    "profit_loss": float(pnl or 0.0),
+                }
+            )
+            lot_txt = "-" if lot is None else f"{float(lot):.2f}"
+            pnl_txt = "-" if pnl is None else f"{float(pnl):+.2f}"
+            lines.append(f"{int(idx)}) {symbol} {direction} #{ticket} lot={lot_txt} pnl={pnl_txt}")
+        if not choices:
+            return "No selectable MT5 position found."
+        state = {
+            "type": "live_tp_manage",
+            "stage": "await_index",
+            "choices": choices,
+            "created_at": self._now_iso(),
+        }
+        with self._lock:
+            self._pending_live_tp_flow_by_chat[cid] = state
+        lines.append("Send position number. Type 'cancel' to abort.")
+        return "\n".join(lines)
+
+    def _live_tp_execute_partial_close(self, *, symbol: str, ticket: int, target_profit_usd: float) -> str:
+        svc = self._get_live_service()
+        sym = str(symbol or "").strip().upper()
+        t = int(ticket or 0)
+        want = float(target_profit_usd or 0.0)
+        if not sym or t <= 0 or (not math.isfinite(want)) or want <= 0.0:
+            return "Invalid partial TP request."
+        try:
+            current_rows = svc.get_open_positions(symbol=str(sym))
+        except Exception as exc:
+            return f"Could not refresh position for partial TP ({type(exc).__name__}: {str(exc)[:120]})."
+        row = None
+        for r in current_rows if isinstance(current_rows, list) else []:
+            if int((r or {}).get("ticket") or 0) == int(t):
+                row = r
+                break
+        if not isinstance(row, dict):
+            return f"Position not found or already closed: {sym} #{t}."
+        current_pnl = _to_float_or_none((row or {}).get("profit_loss"))
+        current_lot = _to_float_or_none((row or {}).get("lot_size"))
+        if current_pnl is None or current_lot is None or (not math.isfinite(float(current_lot))) or float(current_lot) <= 0.0:
+            return "Position data unavailable for partial TP."
+        if float(current_pnl) <= 0.0:
+            return f"Position is not in profit now ({float(current_pnl):+.2f}). Partial TP requires positive P/L."
+        take_usd = float(min(float(want), float(current_pnl)))
+        raw_lot = float(current_lot) * (float(take_usd) / float(current_pnl))
+        if (not math.isfinite(raw_lot)) or raw_lot <= 0.0:
+            return "Could not compute partial close lot."
+        info = svc.get_symbol_info(symbol=str(sym))
+        if isinstance(info, dict) and str(info.get("error") or "").strip():
+            return f"Symbol info unavailable for {sym}: {str(info.get('error'))[:120]}"
+        vol_min = _to_float_or_none((info or {}).get("volume_min")) or 0.01
+        vol_step = _to_float_or_none((info or {}).get("volume_step")) or 0.01
+        vol_max = _to_float_or_none((info or {}).get("volume_max")) or float(current_lot)
+        vol_step = max(1e-6, float(vol_step))
+        vol_min = max(vol_step, float(vol_min))
+        cap_max = min(float(current_lot), float(max(vol_min, vol_max)))
+        lot_units = math.floor(float(raw_lot) / float(vol_step))
+        lot_norm = float(lot_units) * float(vol_step)
+        lot_norm = min(cap_max, max(0.0, float(lot_norm)))
+        if float(lot_norm) <= 0.0:
+            return "Requested TP amount is too small for broker lot step."
+        if float(lot_norm) < float(vol_min):
+            min_take = float(current_pnl) * (float(vol_min) / float(current_lot))
+            return (
+                f"Requested TP too small for {sym}. Min realizable now is about ${float(min_take):.2f} "
+                f"(min lot {float(vol_min):.2f})."
+            )
+        if float(lot_norm) >= float(current_lot) - (float(vol_step) * 0.5):
+            out = svc.close_position(symbol=str(sym), position_ticket=int(t), comment="tg_tp_take_all")
+            if bool((out or {}).get("ok")):
+                return f"Take-all profit executed: {sym} #{t} closed."
+            return f"Take-all profit failed: {str((out or {}).get('error') or 'close_failed')[:160]}"
+        out = svc.close_position(
+            symbol=str(sym),
+            position_ticket=int(t),
+            lot_size=float(lot_norm),
+            comment="tg_tp_partial",
+        )
+        if not bool((out or {}).get("ok")):
+            return f"Partial TP failed: {str((out or {}).get('error') or 'close_failed')[:160]}"
+        realized_est = float(current_pnl) * (float(lot_norm) / float(current_lot))
+        return (
+            f"Partial TP done: {sym} #{t}\n"
+            f"Closed lot: {float(lot_norm):.2f}/{float(current_lot):.2f}\n"
+            f"Estimated realized: ${float(realized_est):.2f}"
+        )
+
+    def _handle_live_tp_flow_text(self, chat_id: int, raw: str) -> Optional[str]:
+        cid = int(chat_id)
+        with self._lock:
+            state = dict(self._pending_live_tp_flow_by_chat.get(cid) or {})
+        if not state or str(state.get("type") or "") != "live_tp_manage":
+            return None
+        text = str(raw or "").strip()
+        lowered = text.lower()
+        if lowered in {"cancel", "abort", "/cancel", "/stop", "stop"}:
+            return self._cancel_live_tp_flow(cid)
+        stage = str(state.get("stage") or "")
+        choices = state.get("choices") if isinstance(state.get("choices"), list) else []
+        if stage == "await_index":
+            if not str(text).isdigit():
+                return "Send position number (example: 1). Type 'cancel' to abort."
+            idx = int(text)
+            selected = None
+            for c in choices:
+                if int((c or {}).get("idx") or 0) == int(idx):
+                    selected = dict(c)
+                    break
+            if not isinstance(selected, dict):
+                return f"Invalid number. Choose between 1 and {int(len(choices))}."
+            pnl = _to_float_or_none(selected.get("profit_loss")) or 0.0
+            state["selected"] = selected
+            state["stage"] = "await_action"
+            with self._lock:
+                self._pending_live_tp_flow_by_chat[cid] = dict(state)
+            markup = {
+                "inline_keyboard": [
+                    [
+                        self._inline_button(
+                            int(cid),
+                            "Take All Profit (Close Full)",
+                            {
+                                "type": "tp_take_all",
+                                "symbol": str(selected.get("symbol") or ""),
+                                "ticket": int(selected.get("ticket") or 0),
+                                "one_shot": True,
+                            },
+                        )
+                    ],
+                    [self._inline_button(int(cid), "Cancel", {"type": "tp_flow_cancel", "one_shot": True})],
+                ]
+            }
+            self._set_next_reply_markup(int(cid), markup)
+            return (
+                f"Selected: {str(selected.get('symbol'))} {str(selected.get('direction'))} #{int(selected.get('ticket') or 0)} | pnl={float(pnl):+.2f}\n"
+                "Choose action:\n"
+                "1) Close full position\n"
+                "2) Take partial profit ($) and keep running\n"
+                "3) Take all profit (close full)\n"
+                "Reply with 1/2/3."
+            )
+        if stage == "await_action":
+            sel = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+            symbol = str(sel.get("symbol") or "").strip().upper()
+            ticket = int(sel.get("ticket") or 0)
+            if ticket <= 0 or not symbol:
+                return "Selected position is missing. Start again with /tp."
+            if text == "1":
+                msg = self._close_live_position_by_ticket(symbol=symbol, ticket=ticket)
+                with self._lock:
+                    self._pending_live_tp_flow_by_chat.pop(cid, None)
+                return msg
+            if text == "3":
+                msg = self._live_tp_execute_partial_close(symbol=symbol, ticket=ticket, target_profit_usd=1e12)
+                with self._lock:
+                    self._pending_live_tp_flow_by_chat.pop(cid, None)
+                return msg
+            if text == "2":
+                state["stage"] = "await_partial_amount"
+                with self._lock:
+                    self._pending_live_tp_flow_by_chat[cid] = dict(state)
+                return "Enter profit amount to realize in USD (example: 10)."
+            return "Invalid action. Reply with 1, 2 or 3."
+        if stage == "await_partial_amount":
+            sel = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+            symbol = str(sel.get("symbol") or "").strip().upper()
+            ticket = int(sel.get("ticket") or 0)
+            amt = self._parse_positive_number(text)
+            if amt is None:
+                return "Enter a positive USD amount (example: 10)."
+            msg = self._live_tp_execute_partial_close(symbol=symbol, ticket=ticket, target_profit_usd=float(amt))
+            with self._lock:
+                self._pending_live_tp_flow_by_chat.pop(cid, None)
+            return msg
+        return None
+
+    def _handle_external_quick_trade_callback(self, chat_id: int, data: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        raw = str(data or "").strip()
+        parts = [str(x or "").strip() for x in raw.split("|")]
+        if len(parts) < 2 or str(parts[0]).lower() != "ytq":
+            return "Unsupported callback action.", None
+        cmd = str(parts[1]).lower()
+        if cmd == "o":
+            if len(parts) < 5:
+                return "Invalid quick-trade callback payload.", None
+            symbol = str(parts[2] or "").strip()
+            timeframe = str(parts[3] or "M5").strip().upper()
+            direction = str(parts[4] or "").strip().upper()
+            from_color = str(parts[5] or "").strip().lower() if len(parts) >= 6 else ""
+            to_color = str(parts[6] or "").strip().lower() if len(parts) >= 7 else ""
+            action = {
+                "type": "deadzone_quick_trade_start",
+                "symbol": str(symbol),
+                "timeframe": str(timeframe),
+                "direction": str(direction),
+                "from_color": str(from_color),
+                "to_color": str(to_color),
+            }
+            return self._start_deadzone_quick_trade_flow(int(chat_id), action), None
+        if cmd == "c":
+            scope = str(parts[2] or "ALL").strip().upper() if len(parts) >= 3 else "ALL"
+            if scope in {"ALL", "*"}:
+                return self._close_live_positions_quick(symbol=None), None
+            return self._close_live_positions_quick(symbol=str(scope)), None
+        if cmd == "ls":
+            scope = str(parts[2] or "ALL").strip().upper() if len(parts) >= 3 else "ALL"
+            if scope in {"ALL", "*"}:
+                return self._open_position_close_selector(symbol=None)
+            return self._open_position_close_selector(symbol=str(scope))
+        if cmd == "ct":
+            if len(parts) < 4:
+                return "Invalid close-ticket callback payload.", None
+            try:
+                ticket = int(parts[2])
+            except Exception:
+                return "Invalid position ticket.", None
+            symbol = str(parts[3] or "").strip().upper()
+            return self._close_live_position_by_ticket(symbol=symbol, ticket=int(ticket)), None
+        if cmd == "x":
+            return "Selection canceled.", None
+        return "Unsupported quick-trade callback command.", None
+
     def _start_deadzone_quick_trade_flow(self, chat_id: int, action: Dict[str, Any]) -> str:
         symbol = str((action or {}).get("symbol") or "").strip()
         timeframe = str((action or {}).get("timeframe") or "").strip().upper() or "M15"
         from_color = str((action or {}).get("from_color") or "").strip().lower()
         to_color = str((action or {}).get("to_color") or "").strip().lower()
-        direction = self._deadzone_quick_trade_direction(from_color, to_color)
+        direction_raw = str((action or {}).get("direction") or "").strip().upper()
+        direction = direction_raw if direction_raw in {"BUY", "SELL"} else self._deadzone_quick_trade_direction(from_color, to_color)
         if direction not in {"BUY", "SELL"}:
-            return "Quick Trade supports only RED->GREEN (BUY) or GREEN->RED (SELL) flips."
+            return "Quick Trade direction invalid. Use BUY or SELL."
         sid, reason = self._resolve_quick_trade_session(int(chat_id), str(symbol), str(timeframe))
         if sid is None or int(sid) <= 0:
             return (
                 f"No active Workbench session found for {str(symbol).upper()} {str(timeframe).upper()}.\n"
                 "Start/select a matching live Workbench session first, then tap Quick Trade again."
             )
+        session_mode = "unknown"
+        db_mode = SessionLocal()
+        try:
+            srow = db_mode.query(SimulationSession).get(int(sid))
+            if srow is not None:
+                session_mode = str(getattr(srow, "mode", "") or "").strip().upper() or "UNKNOWN"
+        except Exception:
+            session_mode = "unknown"
+        finally:
+            try:
+                db_mode.close()
+            except Exception:
+                pass
         state = {
             "type": "deadzone_quick_trade",
-            "stage": "await_risk",
+            "stage": "await_lot",
             "session_id": int(sid),
-            "symbol": str(symbol).upper(),
+            "symbol": str(symbol).strip(),
             "timeframe": str(timeframe).upper(),
             "from_color": str(from_color),
             "to_color": str(to_color),
             "direction": str(direction),
             "resolver": str(reason),
+            "session_mode": str(session_mode),
             "created_at": self._now_iso(),
         }
         with self._lock:
@@ -544,9 +925,9 @@ class TelegramBridgeService:
         self._set_next_reply_markup(int(chat_id), None)
         return (
             "Quick Trade armed\n"
-            f"Session: #{int(sid)} | {str(symbol).upper()} {str(timeframe).upper()}\n"
+            f"Session: #{int(sid)} [{str(session_mode)}] | {str(symbol).strip()} {str(timeframe).upper()}\n"
             f"Flip: {str(from_color).upper()} -> {str(to_color).upper()} => {str(direction)}\n"
-            "Enter Risk USD (example: 5). Type 'cancel' to abort."
+            "Enter Lot size (example: 0.02). Type 'cancel' to abort."
         )
 
     def _build_deadzone_quick_trade_preview(
@@ -556,8 +937,10 @@ class TelegramBridgeService:
         state: Dict[str, Any],
         risk_usd: float,
         lot_size: float,
+        tp_usd: float,
     ) -> Tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-        symbol = str(state.get("symbol") or "").strip().upper()
+        symbol_raw = str(state.get("symbol") or "").strip()
+        symbol = str(symbol_raw).upper()
         timeframe = str(state.get("timeframe") or "").strip().upper() or "M15"
         direction = str(state.get("direction") or "").strip().upper()
         session_id = int(state.get("session_id") or 0)
@@ -566,10 +949,10 @@ class TelegramBridgeService:
         svc = self._get_live_service()
         try:
             bars = svc.get_recent_candles(
-                symbol=str(symbol),
+                symbol=str(symbol_raw or symbol),
                 timeframe=str(timeframe),
                 count=5,
-                resolve_symbol=False,
+                resolve_symbol=True,
             )
         except Exception:
             bars = []
@@ -615,26 +998,40 @@ class TelegramBridgeService:
             risk_distance = float(risk_usd) / (float(value_per_1lot) * float(lot_norm))
             if (not math.isfinite(float(risk_distance))) or float(risk_distance) <= 0.0:
                 return "Risk distance is invalid. Check risk/lot values.", None, None
+            tp_distance = float(tp_usd) / (float(value_per_1lot) * float(lot_norm))
+            if (not math.isfinite(float(tp_distance))) or float(tp_distance) <= 0.0:
+                return "TP distance is invalid. Check TP USD / lot values.", None, None
             sl_raw = float(entry_price) - float(risk_distance) if direction == "BUY" else float(entry_price) + float(risk_distance)
+            tp_raw = float(entry_price) + float(tp_distance) if direction == "BUY" else float(entry_price) - float(tp_distance)
             if point is not None and math.isfinite(float(point)) and float(point) > 0.0:
                 sl_raw = round(float(sl_raw) / float(point)) * float(point)
+                tp_raw = round(float(tp_raw) / float(point)) * float(point)
             stop_loss = float(sl_raw)
+            take_profit = float(tp_raw)
             if (not math.isfinite(float(stop_loss))) or float(stop_loss) <= 0.0:
                 return "Calculated Stop Loss is invalid.", None, None
+            if (not math.isfinite(float(take_profit))) or float(take_profit) <= 0.0:
+                return "Calculated Take Profit is invalid.", None, None
             risk_actual = abs(float(entry_price) - float(stop_loss)) * float(value_per_1lot) * float(lot_norm)
+            tp_actual = abs(float(take_profit) - float(entry_price)) * float(value_per_1lot) * float(lot_norm)
             sl_distance_pct = (abs(float(entry_price) - float(stop_loss)) / float(entry_price) * 100.0) if float(entry_price) > 0.0 else None
+            tp_distance_pct = (abs(float(take_profit) - float(entry_price)) / float(entry_price) * 100.0) if float(entry_price) > 0.0 else None
             state_next = dict(state)
             state_next.update(
                 {
                     "stage": "await_confirm",
                     "risk_usd": float(risk_usd),
+                    "tp_usd": float(tp_usd),
                     "lot_size": float(lot_norm),
                     "entry_price": float(entry_price),
                     "stop_loss": float(stop_loss),
+                    "take_profit": float(take_profit),
                     "bar_time_unix": int(bar_time_unix),
                     "value_per_1lot": float(value_per_1lot),
                     "risk_actual_usd": float(risk_actual),
+                    "tp_actual_usd": float(tp_actual),
                     "sl_distance_pct": float(sl_distance_pct) if sl_distance_pct is not None and math.isfinite(float(sl_distance_pct)) else None,
+                    "tp_distance_pct": float(tp_distance_pct) if tp_distance_pct is not None and math.isfinite(float(tp_distance_pct)) else None,
                     "updated_at": self._now_iso(),
                 }
             )
@@ -644,10 +1041,14 @@ class TelegramBridgeService:
                 f"Direction: {str(direction)}\n"
                 f"Entry: {float(entry_price):.5f}\n"
                 f"SL: {float(stop_loss):.5f}\n"
+                f"TP: {float(take_profit):.5f}\n"
                 f"Lot: {float(lot_norm):.4f}\n"
                 f"Risk (target): ${float(risk_usd):.2f}\n"
                 f"Risk (calc): ${float(risk_actual):.2f}\n"
+                f"TP (target): ${float(tp_usd):.2f}\n"
+                f"TP (calc): ${float(tp_actual):.2f}\n"
                 f"SL distance: {('-' if sl_distance_pct is None else f'{float(sl_distance_pct):.4f}%')}\n"
+                f"TP distance: {('-' if tp_distance_pct is None else f'{float(tp_distance_pct):.4f}%')}\n"
                 "Confirm trade?"
             )
             markup = {
@@ -673,14 +1074,15 @@ class TelegramBridgeService:
         if not state or str(state.get("type")) != "deadzone_quick_trade":
             return "No pending Quick Trade flow."
         if str(state.get("stage") or "") != "await_confirm":
-            return "Quick Trade is waiting for Risk/Lot inputs first."
+            return "Quick Trade is waiting for Lot/Risk/TP inputs first."
         session_id = int(state.get("session_id") or 0)
         direction = str(state.get("direction") or "").strip().upper()
         stop_loss = self._parse_positive_number(state.get("stop_loss"))
+        take_profit = self._parse_positive_number(state.get("take_profit"))
         lot_size = self._parse_positive_number(state.get("lot_size"))
         entry_price = self._parse_positive_number(state.get("entry_price"))
         bar_time_unix = int(state.get("bar_time_unix") or 0)
-        if session_id <= 0 or direction not in {"BUY", "SELL"} or stop_loss is None or lot_size is None:
+        if session_id <= 0 or direction not in {"BUY", "SELL"} or stop_loss is None or take_profit is None or lot_size is None:
             return "Quick Trade state is invalid. Start again from the alert."
         db = SessionLocal()
         try:
@@ -690,7 +1092,7 @@ class TelegramBridgeService:
             req = sim_routes.TradeRequest(
                 direction=str(direction),
                 stop_loss=float(stop_loss),
-                take_profit=None,
+                take_profit=float(take_profit),
                 lot_size=float(lot_size),
                 entry_price=float(entry_price) if entry_price is not None else None,
                 bar_time_unix=int(bar_time_unix) if int(bar_time_unix) > 0 else None,
@@ -735,21 +1137,38 @@ class TelegramBridgeService:
             return self._cancel_deadzone_quick_trade(cid)
 
         stage = str(state.get("stage") or "")
-        if stage == "await_risk":
-            risk = self._parse_positive_number(text)
-            if risk is None:
-                return "Enter Risk USD as a positive number (example: 5). Type 'cancel' to abort."
-            state["risk_usd"] = float(risk)
-            state["stage"] = "await_lot"
-            state["updated_at"] = self._now_iso()
-            with self._lock:
-                self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
-            return "Enter Lot size (example: 0.02). Type 'cancel' to abort."
-
         if stage == "await_lot":
             lot = self._parse_positive_number(text)
             if lot is None:
                 return "Enter Lot size as a positive number (example: 0.02). Type 'cancel' to abort."
+            state["lot_size"] = float(lot)
+            state["stage"] = "await_risk"
+            state["updated_at"] = self._now_iso()
+            with self._lock:
+                self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
+            return "Enter Risk USD (example: 10). Type 'cancel' to abort."
+
+        if stage == "await_risk":
+            risk = self._parse_positive_number(text)
+            if risk is None:
+                return "Enter Risk USD as a positive number (example: 10). Type 'cancel' to abort."
+            state["risk_usd"] = float(risk)
+            state["stage"] = "await_tp"
+            state["updated_at"] = self._now_iso()
+            with self._lock:
+                self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
+            return "Enter TP USD (example: 20). Type 'cancel' to abort."
+
+        if stage == "await_tp":
+            tp_usd = self._parse_positive_number(text)
+            if tp_usd is None:
+                return "Enter TP USD as a positive number (example: 20). Type 'cancel' to abort."
+            lot = self._parse_positive_number(state.get("lot_size"))
+            if lot is None:
+                state["stage"] = "await_lot"
+                with self._lock:
+                    self._pending_deadzone_quick_trade_by_chat[cid] = dict(state)
+                return "Lot value expired. Enter Lot size again."
             risk = self._parse_positive_number(state.get("risk_usd"))
             if risk is None:
                 state["stage"] = "await_risk"
@@ -761,6 +1180,7 @@ class TelegramBridgeService:
                 state=state,
                 risk_usd=float(risk),
                 lot_size=float(lot),
+                tp_usd=float(tp_usd),
             )
             if isinstance(state_next, dict) and state_next:
                 with self._lock:
@@ -3068,6 +3488,25 @@ class TelegramBridgeService:
         if atype == "deadzone_quick_trade_cancel":
             return self._cancel_deadzone_quick_trade(int(chat_id)), None
 
+        if atype == "deadzone_quick_trade_close_all":
+            scope = str((action or {}).get("scope") or "ALL").strip().upper()
+            if scope in {"ALL", "*"}:
+                return self._close_live_positions_quick(symbol=None), None
+            return self._close_live_positions_quick(symbol=str(scope)), None
+
+        if atype == "tp_take_all":
+            symbol = str((action or {}).get("symbol") or "").strip().upper()
+            ticket = int((action or {}).get("ticket") or 0)
+            if ticket <= 0 or not symbol:
+                return "Invalid take-all action payload.", None
+            msg = self._live_tp_execute_partial_close(symbol=symbol, ticket=ticket, target_profit_usd=1e12)
+            with self._lock:
+                self._pending_live_tp_flow_by_chat.pop(int(chat_id), None)
+            return msg, None
+
+        if atype == "tp_flow_cancel":
+            return self._cancel_live_tp_flow(int(chat_id)), None
+
         if atype == "use_session":
             sid = int((action or {}).get("session_id") or 0)
             if sid <= 0:
@@ -3262,6 +3701,9 @@ class TelegramBridgeService:
         pending_quick = self._handle_deadzone_quick_trade_text(int(chat_id), raw)
         if isinstance(pending_quick, str) and pending_quick.strip():
             return pending_quick
+        pending_tp = self._handle_live_tp_flow_text(int(chat_id), raw)
+        if isinstance(pending_tp, str) and pending_tp.strip():
+            return pending_tp
         parts = raw.split()
         cmd = str(parts[0] or "").strip()
         if "@" in cmd:
@@ -3320,6 +3762,10 @@ class TelegramBridgeService:
                 "- Purpose: List scheduled triggers and statuses.\n"
                 "- Params: optional session_id\n"
                 "- Example: /triggers\n\n"
+                "/tp\n"
+                "- Purpose: Manage open MT5 positions from Telegram (close full or take partial profit in USD).\n"
+                "- Params: none\n"
+                "- Example: /tp\n\n"
                 "/identity master|apprentice [session_id]\n"
                 "- Purpose: Switch agent personality preset.\n"
                 "- Params: profile (required), optional session_id\n"
@@ -3461,6 +3907,9 @@ class TelegramBridgeService:
             if cmd_l == "/summary":
                 return self._format_summary(int(sid))
             return self._format_status(int(sid))
+
+        if cmd_l in {"/tp", "/takeprofit", "/tpmanage"}:
+            return self._start_live_tp_flow(int(chat_id))
 
         if cmd_l == "/identity":
             sid = self._resolve_default_session_id(chat_id)
@@ -3711,6 +4160,8 @@ class TelegramBridgeService:
                         reply = "Action expired. Run the command again."
                     else:
                         reply, markup = self._execute_callback_action(int(chat_id), action)
+                elif data.startswith("ytq|"):
+                    reply, markup = self._handle_external_quick_trade_callback(int(chat_id), data)
             except Exception as exc:
                 logger.exception("telegram callback handling failed")
                 reply = f"Callback failed: {type(exc).__name__}: {str(exc)[:180]}"

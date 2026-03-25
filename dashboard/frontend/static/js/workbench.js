@@ -29,9 +29,15 @@ let sessionLiveControlState = null;
 let sessionLiveAccountState = null;
 let sessionSymbolEconomics = null;
 let currentOpenPositionState = null;
+let quickOpenTradesState = [];
+let quickOpenTradesPollTimer = null;
+let quickOpenTradesInFlight = false;
+let quickCloseInFlightKeys = new Set();
 let quickTpUsdTarget = null;
 let quickTpTradeId = null;
 let quickTpAutoCloseInFlight = false;
+let streamModeActive = false;
+let streamModeUrl = '';
 
 let isPlaying = false;
 let playInterval = null;
@@ -180,6 +186,7 @@ const LEGACY_CONSULTANT_STORAGE_KEY = 'workbench:consultant:sessions:v1';
 const AGENT_PROVIDER_PREFS_KEY = 'workbench:agent:provider:prefs:v1';
 const TRENDILO_OPP_CACHE_KEY_PREFIX = 'workbench:strategy:opportunity_scan:v1:';
 const TRENDILO_OPP_CACHE_MAX_AGE_MIN = 180;
+const QUICK_OPEN_TRADES_POLL_MS = 3000;
 const WORKBENCH_PANELS = {
     trade: { panelId: 'trade-exec-panel', modalId: 'tradeExecModal', bodyId: 'trade-exec-modal-body' },
     tools: { panelId: 'analysis-tools-panel', modalId: 'analysisToolsModal', bodyId: 'analysis-tools-modal-body' },
@@ -348,6 +355,94 @@ function refreshChartViewport() {
         const height = Math.max(120, Math.round(panelEl.clientHeight || 0));
         trendiloPanelChart.applyOptions({ width, height });
     }
+}
+
+function _normalizeLivestreamUrl(rawUrl) {
+    const raw = String(rawUrl || '').trim();
+    if (!raw) return '';
+    let parsed = null;
+    try {
+        parsed = new URL(raw);
+    } catch (_) {
+        return '';
+    }
+    const host = String(parsed.hostname || '').toLowerCase();
+    const isYoutube = host.includes('youtube.com') || host.includes('youtu.be');
+    if (!isYoutube) return parsed.toString();
+
+    let videoId = '';
+    if (host.includes('youtu.be')) {
+        videoId = String(parsed.pathname || '').replace(/^\/+/, '').split('/')[0];
+    } else {
+        videoId = parsed.searchParams.get('v') || '';
+        if (!videoId && String(parsed.pathname || '').includes('/shorts/')) {
+            videoId = String(parsed.pathname || '').split('/shorts/')[1]?.split('/')[0] || '';
+        }
+        if (!videoId && String(parsed.pathname || '').includes('/embed/')) {
+            videoId = String(parsed.pathname || '').split('/embed/')[1]?.split('/')[0] || '';
+        }
+    }
+    videoId = String(videoId || '').trim();
+    if (!videoId) return parsed.toString();
+
+    const embed = new URL(`https://www.youtube.com/embed/${encodeURIComponent(videoId)}`);
+    embed.searchParams.set('autoplay', '1');
+    embed.searchParams.set('mute', '1');
+    embed.searchParams.set('rel', '0');
+    return embed.toString();
+}
+
+function setLivestreamMode(active, url = '') {
+    const nextActive = !!active;
+    const chartContainer = document.querySelector('.chart-container');
+    const streamWrap = document.getElementById('chart-stream-wrap');
+    const streamFrame = document.getElementById('chart-stream-frame');
+    const streamLabel = document.getElementById('chart-stream-url-label');
+    const btn = document.getElementById('btn-toggle-livestream');
+
+    streamModeActive = nextActive;
+    if (nextActive) {
+        streamModeUrl = String(url || streamModeUrl || '').trim();
+        if (streamFrame) streamFrame.src = streamModeUrl;
+        if (streamLabel) streamLabel.textContent = streamModeUrl || 'Livestream URL';
+        chartContainer?.classList.add('stream-mode');
+        streamWrap?.classList.remove('d-none');
+        hideRsiHoverTooltip();
+        setTrendiloPanelVisibility(false);
+        if (btn) {
+            btn.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Live ON';
+            btn.classList.add('btn-outline-warning');
+        }
+    } else {
+        if (streamFrame) streamFrame.src = '';
+        if (streamLabel) streamLabel.textContent = 'No URL';
+        chartContainer?.classList.remove('stream-mode');
+        streamWrap?.classList.add('d-none');
+        if (btn) {
+            btn.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Livestream';
+            btn.classList.remove('btn-outline-warning');
+        }
+        setTrendiloPanelVisibility(isTrendiloPanelEnabled());
+        refreshChartViewport();
+    }
+}
+
+function toggleLivestreamMode() {
+    if (streamModeActive) {
+        setLivestreamMode(false);
+        showStatus('Livestream mode disabled.', 'info');
+        return;
+    }
+    const initial = String(streamModeUrl || '').trim();
+    const raw = window.prompt('Livestream URL girin', initial);
+    if (raw === null) return;
+    const normalized = _normalizeLivestreamUrl(raw);
+    if (!normalized) {
+        showStatus('Geçerli bir URL girin (http/https).', 'warning');
+        return;
+    }
+    setLivestreamMode(true, normalized);
+    showStatus('Livestream mode enabled.', 'success');
 }
 
 function ensurePanelHomeMarkers() {
@@ -857,6 +952,7 @@ async function switchToSession(nextSessionId, { restartLive = false, forceLiveMo
         await refreshAgentMemoryList('');
         await refreshAgentIdentity(false);
         await refreshAgentTriggerList(false);
+        await refreshQuickOpenTrades();
         if (switchSeq !== sessionSwitchSeq) {
             return false;
         }
@@ -900,11 +996,14 @@ async function closeSelectedSession() {
             volumeSeries.setData([]);
             updateBarCounter();
             updateStats({ balance: initialBalance, total_pnl: 0, trades_count: 0, wins: 0, losses: 0 });
+            updateOpenPosition(null);
             renderTradeLog([]);
             renderAgentTriggerList([]);
             renderPendingAgentApprovals();
             sessionSymbolEconomics = null;
             renderSymbolEconomicsHint(null);
+            quickOpenTradesState = [];
+            renderQuickOpenTrades([]);
         }
         await refreshSessionCatalog(false);
         showStatus(`Session #${sid} closed`, 'success');
@@ -3791,6 +3890,7 @@ async function approvePendingAgentApproval(approvalIdLike, opts = {}) {
             return;
         }
         updateOpenPosition(data, 0);
+        void refreshQuickOpenTrades();
         renderCostModelSummary(data?.cost_breakdown || null);
         _consultantAppendMessage('assistant', `${autoTimeout ? 'Auto-timeout approved and executed' : 'Approved and executed'}: ${body.direction} trade (id=${data?.id ?? 'n/a'}).`);
         renderConsultantChat();
@@ -3850,6 +3950,7 @@ async function approvePendingAgentApproval(approvalIdLike, opts = {}) {
             return;
         }
         updateOpenPosition(null);
+        void refreshQuickOpenTrades();
         addTradeToLog(data);
         showTradeResult(data);
         _consultantAppendMessage('assistant', `${autoTimeout ? 'Auto-timeout approved and executed' : 'Approved and executed'}: close trade #${tradeId}.`);
@@ -9112,6 +9213,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initWorkbenchState();
     applyWorkbenchModeUI();
     setWorkbenchFullscreenUI(!!document.fullscreenElement);
+    startQuickOpenTradesPoller();
     void refreshSessionCatalog(false);
     void refreshBrokerSymbols(false);
     if (restoredSessionId) {
@@ -9121,8 +9223,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function initWorkbenchState() {
     currentOpenPositionState = null;
+    quickOpenTradesState = [];
     clearQuickTpWatcher();
     clearOpenPositionProtectionLines();
+    renderQuickOpenTrades([]);
     fvgZonesByTimeframe = {};
     fvgNavigationList = [];
     fvgNavigationIndex = -1;
@@ -9337,6 +9441,7 @@ function initChart() {
 function bindEvents() {
     ensurePanelHomeMarkers();
     document.getElementById('btn-toggle-fullscreen')?.addEventListener('click', toggleWorkbenchFullscreen);
+    document.getElementById('btn-toggle-livestream')?.addEventListener('click', toggleLivestreamMode);
     document.addEventListener('fullscreenchange', () => {
         setWorkbenchFullscreenUI(!!document.fullscreenElement);
     });
@@ -9990,6 +10095,17 @@ function bindEvents() {
         syncTradeProtectionToggleUI();
     });
     document.getElementById('btn-close-pos')?.addEventListener('click', closePosition);
+    document.getElementById('quick-open-trades-list')?.addEventListener('click', (e) => {
+        const btn = e?.target?.closest?.('[data-quick-close="1"]');
+        if (!btn) return;
+        const row = {
+            session_trade_id: Number(btn.getAttribute('data-session-trade-id') || 0),
+            ticket: Number(btn.getAttribute('data-ticket') || 0),
+            symbol: String(btn.getAttribute('data-symbol') || '').trim().toUpperCase(),
+            lot_size: Number(btn.getAttribute('data-lot-size') || 0),
+        };
+        void quickCloseOpenTrade(row);
+    });
     syncQuickTradeControlsFromMain();
     syncTradeProtectionToggleUI();
 
@@ -10930,6 +11046,7 @@ async function startSession() {
         await refreshAgentState(false);
         await refreshAgentMemoryList('');
         await refreshAgentIdentity(false);
+        await refreshQuickOpenTrades();
 
     } catch (err) {
         showStatus(`Connection error: ${err.message}`, 'danger');
@@ -10969,6 +11086,7 @@ async function resetSession() {
         await advanceBars(50);
         await refreshSessionCatalog(false);
         await refreshAgentState(false);
+        await refreshQuickOpenTrades();
     } catch (err) {
         showStatus(`Reset error: ${err.message}`, 'danger');
     }
@@ -11247,6 +11365,7 @@ function applyAdvancePayload(data) {
     } else {
         updateOpenPosition(null);
     }
+    renderQuickOpenTrades(quickOpenTradesState);
     const replayLastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
     if (replayLastBar && Number.isFinite(Number(replayLastBar.close))) {
         void maybeQuickTpAutoClose(Number(replayLastBar.close));
@@ -11427,6 +11546,7 @@ async function executeTrade(direction, options = {}) {
         if (data.error) { showStatus(`Trade error: ${data.error}`, 'danger'); return null; }
 
         updateOpenPosition(data, 0);
+        void refreshQuickOpenTrades();
         renderCostModelSummary(data?.cost_breakdown || null);
         showStatus(`${dir} @ ${data.entry_price?.toFixed(2)}`, 'success');
 
@@ -11484,6 +11604,7 @@ async function closePosition(options = null) {
         const data = await res.json();
         if (data.error) { showStatus(`Close error: ${data.error}`, 'danger'); return null; }
         updateOpenPosition(null);
+        void refreshQuickOpenTrades();
         addTradeToLog(data);
         showTradeResult(data);
         return data;
@@ -12037,6 +12158,246 @@ function renderOpenPositionProtectionLines(pos) {
     }
 }
 
+function _extractOpenTradePnl(pos) {
+    if (!pos || typeof pos !== 'object') return null;
+    const candidates = [
+        pos.profit_loss,
+        pos.pnl,
+        pos.profit,
+        pos.unrealized_pnl,
+        pos.open_pnl,
+    ];
+    for (const c of candidates) {
+        const n = Number(c);
+        if (Number.isFinite(n)) return n;
+    }
+    return null;
+}
+
+function _estimateOpenTradePnl(pos) {
+    if (!pos || typeof pos !== 'object') return null;
+    const direction = String(pos.direction || '').trim().toUpperCase();
+    const entry = Number(pos.entry_price);
+    const lots = Number(pos.lot_size);
+    if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(lots) || lots <= 0) return null;
+
+    const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const current = Number(pos.current_price);
+    const px = Number.isFinite(current) && current > 0 ? current : Number(lastBar?.close);
+    if (!Number.isFinite(px) || px <= 0) return null;
+
+    const pointValue = Number(sessionSymbolEconomics?.point_value_per_1lot);
+    if (!Number.isFinite(pointValue) || pointValue <= 0) return null;
+
+    const delta = direction === 'SELL' ? (entry - px) : (px - entry);
+    if (!Number.isFinite(delta)) return null;
+    return delta * pointValue * lots;
+}
+
+function _quickTradeCloseKey(row) {
+    const sessionTradeId = Number(row?.session_trade_id);
+    if (Number.isFinite(sessionTradeId) && sessionTradeId > 0) {
+        return `session:${Math.trunc(sessionTradeId)}`;
+    }
+    const ticket = Number(row?.ticket ?? row?.id);
+    if (Number.isFinite(ticket) && ticket > 0) {
+        return `ticket:${Math.trunc(ticket)}`;
+    }
+    return `row:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function quickCloseOpenTrade(rowLike) {
+    const row = (rowLike && typeof rowLike === 'object') ? rowLike : null;
+    if (!row || !sessionId) return;
+    const closeKey = _quickTradeCloseKey(row);
+    if (quickCloseInFlightKeys.has(closeKey)) return;
+    quickCloseInFlightKeys.add(closeKey);
+    try {
+        const sessionTradeId = Number(row.session_trade_id);
+        if (Number.isFinite(sessionTradeId) && sessionTradeId > 0) {
+            const body = {};
+            applyLiveConfirmationToPayload(body, { force: true });
+            const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-trade/${sessionTradeId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data?.error) {
+                showStatus(`Close error: ${data?.error || data?.detail || res.status}`, 'danger');
+                return;
+            }
+            const openPosId = Number(document.getElementById('open-pos-id')?.dataset.tradeId || 0);
+            if (Number.isFinite(openPosId) && openPosId === sessionTradeId) {
+                updateOpenPosition(null);
+            }
+            addTradeToLog(data);
+            showTradeResult(data);
+            showStatus(`Trade #${sessionTradeId} closed.`, 'success');
+            void refreshQuickOpenTrades();
+            return;
+        }
+
+        const ticket = Number(row.ticket ?? row.id);
+        const symbol = String(row.symbol || document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+        if (!Number.isFinite(ticket) || ticket <= 0 || !symbol) {
+            showStatus('Quick close failed: invalid broker ticket/symbol.', 'warning');
+            return;
+        }
+        const body = {
+            ticket: Math.trunc(ticket),
+            symbol,
+            lot_size: Number.isFinite(Number(row.lot_size)) ? Number(row.lot_size) : null,
+        };
+        applyLiveConfirmationToPayload(body, { force: true });
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/close-broker-position`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) {
+            showStatus(`Broker close error: ${data?.error || data?.detail || res.status}`, 'danger');
+            return;
+        }
+        showStatus(`Broker position closed: ${symbol} #${Math.trunc(ticket)}`, 'success');
+        void refreshQuickOpenTrades();
+    } catch (err) {
+        showStatus(`Quick close error: ${err?.message || err}`, 'danger');
+    } finally {
+        quickCloseInFlightKeys.delete(closeKey);
+        renderQuickOpenTrades(quickOpenTradesState);
+    }
+}
+
+function renderQuickOpenTrades(positionsLike) {
+    const listEl = document.getElementById('quick-open-trades-list');
+    const summaryEl = document.getElementById('quick-open-trades-summary');
+    if (!listEl || !summaryEl) return;
+
+    const rows = Array.isArray(positionsLike) ? positionsLike.filter((x) => x && typeof x === 'object') : [];
+    if (!rows.length) {
+        listEl.innerHTML = '<div class="fvg-empty mb-0">No open trades.</div>';
+        summaryEl.textContent = 'No open trades';
+        return;
+    }
+
+    let pnlKnownCount = 0;
+    let pnlTotal = 0;
+    const html = rows.map((row) => {
+        const symbol = String(row.symbol || document.getElementById('sim-symbol')?.value || '').toUpperCase() || '-';
+        const direction = String(row.direction || '').toUpperCase();
+        const dirClass = direction === 'BUY' ? 'buy' : (direction === 'SELL' ? 'sell' : '');
+        const lots = Number(row.lot_size);
+        const entry = Number(row.entry_price);
+        const current = Number(row.current_price);
+
+        let pnl = _extractOpenTradePnl(row);
+        if (!Number.isFinite(Number(pnl))) {
+            pnl = _estimateOpenTradePnl(row);
+        }
+        const hasPnl = Number.isFinite(Number(pnl));
+        if (hasPnl) {
+            pnlKnownCount += 1;
+            pnlTotal += Number(pnl);
+        }
+        const pnlVal = Number(pnl);
+        const pnlClass = hasPnl ? (pnlVal >= 0 ? 'positive' : 'negative') : '';
+        const pnlText = hasPnl ? `${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}` : 'n/a';
+
+        const entryTxt = Number.isFinite(entry) ? entry.toFixed(2) : '-';
+        const currentTxt = Number.isFinite(current) ? current.toFixed(2) : '-';
+        const sl = Number(row.stop_loss);
+        const tp = Number(row.take_profit);
+        const slTxt = Number.isFinite(sl) && sl > 0 ? sl.toFixed(2) : '-';
+        const tpTxt = Number.isFinite(tp) && tp > 0 ? tp.toFixed(2) : '-';
+        const lotsTxt = Number.isFinite(lots) ? lots.toFixed(2) : '-';
+        const closeKey = _quickTradeCloseKey(row);
+        const inFlight = quickCloseInFlightKeys.has(closeKey);
+        const sessionTradeId = Number(row.session_trade_id);
+        const ticket = Number(row.ticket ?? row.id);
+        return `
+            <div class="quick-open-trade-row">
+                <div class="quick-open-trade-top">
+                    <span>
+                        <span class="quick-open-trade-symbol">${escapeHtml(symbol)}</span>
+                        <span class="quick-open-trade-dir ${dirClass} ms-1">${escapeHtml(direction || '-')}</span>
+                    </span>
+                    <span style="display:flex;align-items:center;gap:6px;">
+                        <span class="quick-open-trade-pnl ${pnlClass}">${escapeHtml(pnlText)}</span>
+                        <button
+                            type="button"
+                            class="btn btn-sm btn-outline-danger py-0 px-2"
+                            data-quick-close="1"
+                            data-session-trade-id="${Number.isFinite(sessionTradeId) ? Math.trunc(sessionTradeId) : 0}"
+                            data-ticket="${Number.isFinite(ticket) ? Math.trunc(ticket) : 0}"
+                            data-symbol="${escapeHtml(symbol)}"
+                            data-lot-size="${Number.isFinite(lots) ? lots : ''}"
+                            data-close-key="${escapeHtml(closeKey)}"
+                            ${inFlight ? 'disabled' : ''}
+                        >
+                            ${inFlight ? '...' : 'Kapat'}
+                        </button>
+                    </span>
+                </div>
+                <div class="quick-open-trade-meta">
+                    Lots: ${escapeHtml(lotsTxt)} | Entry: ${escapeHtml(entryTxt)} | Current: ${escapeHtml(currentTxt)} | SL: ${escapeHtml(slTxt)} | TP: ${escapeHtml(tpTxt)}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    listEl.innerHTML = html;
+    if (pnlKnownCount > 0) {
+        const totalTxt = `${pnlTotal >= 0 ? '+' : ''}$${pnlTotal.toFixed(2)}`;
+        summaryEl.textContent = `${rows.length} open | total ${totalTxt}`;
+    } else {
+        summaryEl.textContent = `${rows.length} open`;
+    }
+}
+
+async function refreshQuickOpenTrades() {
+    if (!sessionId) {
+        quickOpenTradesState = [];
+        renderQuickOpenTrades([]);
+        return;
+    }
+    if (quickOpenTradesInFlight) return;
+    quickOpenTradesInFlight = true;
+    try {
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/open-positions?limit=40`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+            return;
+        }
+        const positions = Array.isArray(data?.open_positions) ? data.open_positions : [];
+        quickOpenTradesState = positions;
+        renderQuickOpenTrades(quickOpenTradesState);
+    } catch (_) {
+        // Silent by design: polling should not spam status line.
+    } finally {
+        quickOpenTradesInFlight = false;
+    }
+}
+
+function startQuickOpenTradesPoller() {
+    if (quickOpenTradesPollTimer) {
+        clearInterval(quickOpenTradesPollTimer);
+        quickOpenTradesPollTimer = null;
+    }
+    quickOpenTradesPollTimer = setInterval(() => {
+        void refreshQuickOpenTrades();
+    }, QUICK_OPEN_TRADES_POLL_MS);
+    void refreshQuickOpenTrades();
+}
+
+function stopQuickOpenTradesPoller() {
+    if (quickOpenTradesPollTimer) {
+        clearInterval(quickOpenTradesPollTimer);
+        quickOpenTradesPollTimer = null;
+    }
+}
+
 function updateOpenPosition(pos, pnl) {
     const container = document.getElementById('open-position-display');
     const idEl = document.getElementById('open-pos-id');
@@ -12090,6 +12451,7 @@ function updateOpenPosition(pos, pnl) {
         if (closeBtn) closeBtn.classList.add('d-none');
         if (tradeButtons) tradeButtons.classList.remove('d-none');
     }
+    renderQuickOpenTrades(quickOpenTradesState);
 }
 
 function updateStats(data) {

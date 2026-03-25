@@ -79,6 +79,9 @@ class PanelState:
     last_emit_ts: float = 0.0
     last_line_y: float = -1.0
     last_candidate_emit_ts: float = 0.0
+    last_yellow_candidate_emit_ts: float = 0.0
+    last_red_candidate_pending_since: float = 0.0
+    last_yellow_candidate_pending_since: float = 0.0
     transient_red_streak: int = 0
     last_transient_red_emit_ts: float = 0.0
 
@@ -93,11 +96,13 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
         if not self.enabled:
             return
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {"chat_id": self.chat_id, "text": text}
+        payload: Dict[str, Any] = {"chat_id": self.chat_id, "text": text}
+        if isinstance(reply_markup, dict) and reply_markup:
+            payload["reply_markup"] = reply_markup
         try:
             requests.post(url, json=payload, timeout=self.timeout_s)
         except Exception as exc:
@@ -549,6 +554,35 @@ def detect_line_local_edge_color(
     return out
 
 
+def _yt_quick_trade_markup(
+    *,
+    symbol: str,
+    timeframe: str,
+    from_color: str,
+    to_color: str,
+) -> Dict[str, Any]:
+    sym = str(symbol or "").strip()
+    tf = str(timeframe or "M5").strip().upper()
+    f = str(from_color or "").strip().lower()
+    t = str(to_color or "").strip().lower()
+    suggested = "BUY" if (f == "red" and t == "yellow") else "SELL" if (f == "yellow" and t == "red") else ""
+    long_label = "LONG (AUTO)" if suggested == "BUY" else "LONG"
+    short_label = "SHORT (AUTO)" if suggested == "SELL" else "SHORT"
+    long_cb = f"ytq|o|{sym}|{tf}|BUY|{f}|{t}"
+    short_cb = f"ytq|o|{sym}|{tf}|SELL|{f}|{t}"
+    return {
+        "inline_keyboard": [
+            [
+                {"text": str(long_label), "callback_data": str(long_cb)},
+                {"text": str(short_label), "callback_data": str(short_cb)},
+            ],
+            [
+                {"text": "Close Selected Trade", "callback_data": "ytq|ls|ALL"},
+            ],
+        ]
+    }
+
+
 def maybe_commit_flip(
     name: str,
     state: PanelState,
@@ -568,6 +602,8 @@ def maybe_commit_flip(
     flip_dominance_margin: float,
     notifier: TelegramNotifier,
     notify_red_only: bool,
+    trade_symbol: str,
+    trade_timeframe: str,
 ) -> Optional[str]:
     tnow = time.time()
     if raw_color not in {"red", "yellow"}:
@@ -653,7 +689,13 @@ def maybe_commit_flip(
     )
     print(f"[FLIP] {msg}")
     if (not notify_red_only) or raw_color == "red":
-        notifier.send(msg)
+        markup = _yt_quick_trade_markup(
+            symbol=str(trade_symbol),
+            timeframe=str(trade_timeframe),
+            from_color=str(prev),
+            to_color=str(raw_color),
+        )
+        notifier.send(msg, reply_markup=markup)
     return msg
 
 
@@ -672,15 +714,56 @@ def maybe_emit_red_candidate(
         return
     if state.stable_color != "yellow" or raw_color != "red":
         return
+    # Emit once per pending episode to avoid repeated spam while state is unchanged.
+    pending_since = float(state.pending_since or 0.0)
+    if str(state.pending_color or "").strip().lower() != "red" or pending_since <= 0.0:
+        return
+    if float(state.last_red_candidate_pending_since or 0.0) == float(pending_since):
+        return
     tnow = time.time()
     if (tnow - float(state.last_candidate_emit_ts)) < float(max(1.0, candidate_gap_s)):
         return
     state.last_candidate_emit_ts = tnow
+    state.last_red_candidate_pending_since = float(pending_since)
     msg = (
         f"{name.upper()} RED candidate: YELLOW -> RED (pending) | "
         f"r={float(red_ratio):.4f} y={float(yellow_ratio):.4f} | {now_iso()}"
     )
     print(f"[CAND] {msg}")
+    notifier.send(msg)
+
+
+def maybe_emit_yellow_candidate(
+    name: str,
+    state: PanelState,
+    raw_color: str,
+    *,
+    red_ratio: float,
+    yellow_ratio: float,
+    notifier: TelegramNotifier,
+    enabled: bool,
+    candidate_gap_s: float,
+) -> None:
+    if not enabled:
+        return
+    if state.stable_color != "red" or raw_color != "yellow":
+        return
+    # Emit once per pending episode to avoid repeated spam while state is unchanged.
+    pending_since = float(state.pending_since or 0.0)
+    if str(state.pending_color or "").strip().lower() != "yellow" or pending_since <= 0.0:
+        return
+    if float(state.last_yellow_candidate_pending_since or 0.0) == float(pending_since):
+        return
+    tnow = time.time()
+    if (tnow - float(state.last_yellow_candidate_emit_ts)) < float(max(1.0, candidate_gap_s)):
+        return
+    state.last_yellow_candidate_emit_ts = tnow
+    state.last_yellow_candidate_pending_since = float(pending_since)
+    msg = (
+        f"{name.upper()} YELLOW candidate: RED -> YELLOW (pending) | "
+        f"r={float(red_ratio):.4f} y={float(yellow_ratio):.4f} | {now_iso()}"
+    )
+    print(f"[CAND-Y] {msg}")
     notifier.send(msg)
 
 
@@ -841,7 +924,9 @@ def build_auto_two_panel_rois(
     usable_h = max(1, y2 - y1)
     half = frame_w // 2
 
-    # User said: left-for-user/right-for-assistant is BTC, so BTC is right panel.
+    # Internal keys are slot-1 ("btc") and slot-2 ("eth").
+    # Final symbol/label mapping is provided by runtime args:
+    #   --btc-symbol / --right-label and --eth-symbol / --left-label.
     left_roi = ROI(x=pad_x, y=y1, w=max(1, half - (2 * pad_x)), h=usable_h).clamp(frame_w, frame_h)
     right_roi = ROI(x=half + pad_x, y=y1, w=max(1, frame_w - half - (2 * pad_x)), h=usable_h).clamp(frame_w, frame_h)
     return {"btc": right_roi, "eth": left_roi}
@@ -948,7 +1033,9 @@ def run(args: argparse.Namespace) -> int:
         "btc": rois["btc"].clamp(fw, fh),
         "eth": rois["eth"].clamp(fw, fh),
     }
-    print(f"[ROI] BTC={rois['btc']} ETH={rois['eth']}")
+    right_label = str(args.right_label or "BTC").strip().upper() or "BTC"
+    left_label = str(args.left_label or "ETH").strip().upper() or "ETH"
+    print(f"[ROI] {right_label}={rois['btc']} {left_label}={rois['eth']}")
     if args.save_roi_file:
         save_roi_file(args.save_roi_file, rois)
 
@@ -957,7 +1044,7 @@ def run(args: argparse.Namespace) -> int:
         chat_id=str(args.telegram_chat_id or "").strip(),
     )
     if notifier.enabled:
-        notifier.send(f"YT colorflip watcher started | title={title}")
+        notifier.send(f"YT colorflip watcher started | title={title} | right={right_label} left={left_label}")
 
     states = {"btc": PanelState(), "eth": PanelState()}
     frame_idx = 0
@@ -1118,8 +1205,24 @@ def run(args: argparse.Namespace) -> int:
                         return lc, ly, ler, ley
                     return raw_color, None, float(red_ratio), float(yellow_ratio)
                 if source_mode == "hybrid":
+                    # Conservative hybrid:
+                    # - If line and raw agree: accept.
+                    # - If raw is unknown but line is valid: accept line.
+                    # - If they disagree: allow only strong line-dominance override;
+                    #   otherwise return unknown to avoid false hard flips from
+                    #   candle/overlay intersections.
                     if lok and lc in {"red", "yellow"}:
-                        return lc, ly, ler, ley
+                        rc = str(raw_color or "").strip().lower()
+                        if rc in {"red", "yellow"} and rc == lc:
+                            return lc, ly, ler, ley
+                        if rc not in {"red", "yellow"}:
+                            return lc, ly, ler, ley
+                        dom_hi = float(max(ler, ley))
+                        dom_lo = float(max(1e-9, min(ler, ley)))
+                        dom_ratio = float(dom_hi / dom_lo)
+                        if dom_hi >= 0.08 and dom_ratio >= 1.35:
+                            return lc, ly, ler, ley
+                        return "unknown", ly, ler, ley
                     return raw_color, None, float(red_ratio), float(yellow_ratio)
                 return raw_color, None, float(red_ratio), float(yellow_ratio)
 
@@ -1137,7 +1240,7 @@ def run(args: argparse.Namespace) -> int:
             )
 
             maybe_emit_transient_red_probe(
-                "btc",
+                str(right_label),
                 states["btc"],
                 decision_color=btc_decision_color,
                 stable_color=states["btc"].stable_color,
@@ -1149,7 +1252,7 @@ def run(args: argparse.Namespace) -> int:
                 cooldown_s=float(args.transient_probe_cooldown_seconds),
             )
             maybe_emit_transient_red_probe(
-                "eth",
+                str(left_label),
                 states["eth"],
                 decision_color=eth_decision_color,
                 stable_color=states["eth"].stable_color,
@@ -1162,7 +1265,7 @@ def run(args: argparse.Namespace) -> int:
             )
 
             btc_flip = maybe_commit_flip(
-                "btc",
+                str(right_label),
                 states["btc"],
                 btc_decision_color,
                 (btc_decision_y if btc_decision_y is not None else (btc_red_y if btc_raw == "red" else btc_yel_y)),
@@ -1179,9 +1282,11 @@ def run(args: argparse.Namespace) -> int:
                 flip_dominance_margin=args.flip_dominance_margin,
                 notifier=notifier,
                 notify_red_only=bool(args.notify_red_only),
+                trade_symbol=str(args.btc_symbol),
+                trade_timeframe=str(args.trade_timeframe),
             )
             eth_flip = maybe_commit_flip(
-                "eth",
+                str(left_label),
                 states["eth"],
                 eth_decision_color,
                 (eth_decision_y if eth_decision_y is not None else (eth_red_y if eth_raw == "red" else eth_yel_y)),
@@ -1198,9 +1303,11 @@ def run(args: argparse.Namespace) -> int:
                 flip_dominance_margin=args.flip_dominance_margin,
                 notifier=notifier,
                 notify_red_only=bool(args.notify_red_only),
+                trade_symbol=str(args.eth_symbol),
+                trade_timeframe=str(args.trade_timeframe),
             )
             maybe_emit_red_candidate(
-                "btc",
+                str(right_label),
                 states["btc"],
                 btc_decision_color,
                 red_ratio=btc_decision_r,
@@ -1209,14 +1316,34 @@ def run(args: argparse.Namespace) -> int:
                 enabled=bool(args.notify_candidates),
                 candidate_gap_s=float(args.candidate_gap_seconds),
             )
+            maybe_emit_yellow_candidate(
+                str(right_label),
+                states["btc"],
+                btc_decision_color,
+                red_ratio=btc_decision_r,
+                yellow_ratio=btc_decision_yel,
+                notifier=notifier,
+                enabled=bool(args.notify_yellow_candidates),
+                candidate_gap_s=float(args.candidate_gap_seconds),
+            )
             maybe_emit_red_candidate(
-                "eth",
+                str(left_label),
                 states["eth"],
                 eth_decision_color,
                 red_ratio=eth_decision_r,
                 yellow_ratio=eth_decision_yel,
                 notifier=notifier,
                 enabled=bool(args.notify_candidates),
+                candidate_gap_s=float(args.candidate_gap_seconds),
+            )
+            maybe_emit_yellow_candidate(
+                str(left_label),
+                states["eth"],
+                eth_decision_color,
+                red_ratio=eth_decision_r,
+                yellow_ratio=eth_decision_yel,
+                notifier=notifier,
+                enabled=bool(args.notify_yellow_candidates),
                 candidate_gap_s=float(args.candidate_gap_seconds),
             )
             if btc_flip:
@@ -1246,8 +1373,8 @@ def run(args: argparse.Namespace) -> int:
                     last_debug = now_t
                     print(
                         "[STATE] "
-                        f"BTC raw={btc_raw} dec={btc_decision_color} stable={states['btc'].stable_color} r={btc_r:.3f} y={btc_y:.3f} | "
-                        f"ETH raw={eth_raw} dec={eth_decision_color} stable={states['eth'].stable_color} r={eth_r:.3f} y={eth_y:.3f}"
+                        f"{right_label} raw={btc_raw} dec={btc_decision_color} stable={states['btc'].stable_color} r={btc_r:.3f} y={btc_y:.3f} | "
+                        f"{left_label} raw={eth_raw} dec={eth_decision_color} stable={states['eth'].stable_color} r={eth_r:.3f} y={eth_y:.3f}"
                     )
                     if bool(args.debug_line_extract):
                         bdbg = line_debug_latest.get("btc") or {}
@@ -1260,7 +1387,10 @@ def run(args: argparse.Namespace) -> int:
                                 f"slope={float(d.get('slope_px_per_col') or 0.0):.4f} "
                                 f"pts={len(d.get('points') or [])}"
                             )
-                        print(f"[LINE] BTC {_fmt(bdbg)} edge={str((line_edge_btc or {}).get('color') or 'unknown')} conf={float((line_edge_btc or {}).get('confidence') or 0.0):.3f} | ETH {_fmt(edbg)} edge={str((line_edge_eth or {}).get('color') or 'unknown')} conf={float((line_edge_eth or {}).get('confidence') or 0.0):.3f}")
+                        print(
+                            f"[LINE] {right_label} {_fmt(bdbg)} edge={str((line_edge_btc or {}).get('color') or 'unknown')} conf={float((line_edge_btc or {}).get('confidence') or 0.0):.3f} | "
+                            f"{left_label} {_fmt(edbg)} edge={str((line_edge_eth or {}).get('color') or 'unknown')} conf={float((line_edge_eth or {}).get('confidence') or 0.0):.3f}"
+                        )
 
             if bool(args.debug_line_extract) and str(args.debug_line_json_file or "").strip():
                 now_t = time.time()
@@ -1300,8 +1430,8 @@ def run(args: argparse.Namespace) -> int:
     print(
         "[SUMMARY] "
         f"elapsed={elapsed:.1f}s "
-        f"samples(BTC/ETH)={sample_count['btc']}/{sample_count['eth']} "
-        f"flips(BTC/ETH)={flips_count['btc']}/{flips_count['eth']}"
+        f"samples({right_label}/{left_label})={sample_count['btc']}/{sample_count['eth']} "
+        f"flips({right_label}/{left_label})={flips_count['btc']}/{flips_count['eth']}"
     )
     print("[OK] watcher stopped")
     return 0
@@ -1347,6 +1477,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--flip-dominance-margin", type=float, default=1.08, help="On flip, require new color ratio to dominate old color by this factor")
     p.add_argument("--notify-red-only", action="store_true", help="Send Telegram only for flips ending in RED")
     p.add_argument("--notify-candidates", action="store_true", help="Send Telegram for YELLOW->RED pending candidates")
+    p.add_argument("--notify-yellow-candidates", action="store_true", help="Send Telegram for RED->YELLOW pending candidates")
     p.add_argument("--candidate-gap-seconds", type=float, default=20.0, help="Min seconds between candidate notifications per panel")
     p.add_argument("--notify-transient-red-probe", action="store_true", help="Send pre-close transient red-dot alerts while stable color is still yellow")
     p.add_argument("--transient-probe-min-frames", type=int, default=1, help="Consecutive red-probe frames required before alert")
@@ -1360,6 +1491,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--debug-line-min-columns", type=int, default=30, help="Minimum color columns to accept extracted line")
     p.add_argument("--debug-line-smooth-window", type=int, default=7, help="Smoothing window for extracted line points")
     p.add_argument("--debug-line-max-gap-columns", type=int, default=14, help="Max column gap to bridge during interpolation")
+    p.add_argument("--trade-timeframe", default="M5", help="Execution timeframe used in Telegram quick-trade callbacks")
+    p.add_argument("--btc-symbol", default="BTCUSDm", help="Broker symbol for BTC panel quick-trade callbacks")
+    p.add_argument("--eth-symbol", default="ETHUSDm", help="Broker symbol for ETH panel quick-trade callbacks")
+    p.add_argument("--right-label", default="BTC", help="Display label for right panel")
+    p.add_argument("--left-label", default="ETH", help="Display label for left panel")
     p.add_argument("--telegram-bot-token", default="", help="Telegram bot token")
     p.add_argument("--telegram-chat-id", default="", help="Telegram chat id")
     return p

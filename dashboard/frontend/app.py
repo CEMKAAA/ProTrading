@@ -1045,6 +1045,23 @@ def sim_get_session(session_id):
     return jsonify(res or {})
 
 
+@app.route('/api/simulation/sessions/<int:session_id>/open-positions')
+def sim_get_open_positions(session_id):
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        f'/api/v1/simulation/sessions/{session_id}/open-positions',
+        params=params,
+        return_error=True,
+        timeout_sec=15,
+    )
+    if not res:
+        return jsonify({'ok': False, 'open_positions': [], 'open_count': 0, 'error': err or 'Open positions unavailable'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/simulation/sessions/<int:session_id>/advance', methods=['POST'])
 def sim_advance(session_id):
     data = request.get_json(silent=True) or {}
@@ -1074,6 +1091,21 @@ def sim_close_trade(session_id, trade_id):
     )
     if not res:
         return jsonify({'error': err or 'Close failed'}), _http_status_from_api_error(err, 500)
+    return jsonify(res)
+
+
+@app.route('/api/simulation/sessions/<int:session_id>/close-broker-position', methods=['POST'])
+def sim_close_broker_position(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/close-broker-position',
+        data=data,
+        return_error=True,
+        timeout_sec=15,
+    )
+    if not res:
+        return jsonify({'error': err or 'Broker close failed'}), _http_status_from_api_error(err, 500)
     return jsonify(res)
 
 
