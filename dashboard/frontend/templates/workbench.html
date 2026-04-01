@@ -87,6 +87,108 @@
     border-radius: 8px;
     margin-left: 6px;
 }
+.trigger-summary-box,
+.position-planner-box {
+    margin-top: 10px;
+    padding: 8px;
+    background: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+}
+.trigger-summary-lines,
+.position-planner-metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+.trigger-summary-line,
+.planner-metric-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.72rem;
+    color: #cbd5e1;
+}
+.trigger-summary-label,
+.planner-metric-label {
+    color: #94a3b8;
+}
+.planner-status {
+    color: #94a3b8;
+    font-size: 0.72rem;
+}
+.planner-status.ready {
+    color: #86efac;
+}
+.planner-status.warning {
+    color: #fbbf24;
+}
+.chart-position-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+}
+.chart-position-label.buy {
+    color: #d1fae5;
+    background: rgba(5, 150, 105, 0.92);
+}
+.chart-position-label.sell {
+    color: #fee2e2;
+    background: rgba(220, 38, 38, 0.9);
+}
+.chart-trigger-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+}
+.chart-trigger-line,
+.chart-position-line {
+    position: absolute;
+    height: 0;
+    border-top-style: solid;
+    pointer-events: none;
+}
+.chart-position-line.draggable {
+    pointer-events: auto;
+    cursor: ns-resize;
+}
+.chart-position-handle {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    cursor: ns-resize;
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.95);
+}
+.chart-position-area {
+    position: absolute;
+    pointer-events: none;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+.chart-position-area.reward.buy,
+.chart-position-area.risk.sell {
+    background: rgba(16, 185, 129, 0.20);
+}
+.chart-position-area.risk.buy,
+.chart-position-area.reward.sell {
+    background: rgba(239, 68, 68, 0.18);
+}
 .fvg-inspector {
     margin-top: 10px;
     padding: 8px;
@@ -647,15 +749,35 @@
 body.workbench-fullscreen #workbench-sidebar {
     display: none !important;
 }
+body.workbench-fullscreen .sidebar {
+    display: none !important;
+}
+body.workbench-fullscreen .main-content {
+    margin-left: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    min-height: 100vh;
+    padding: 8px !important;
+}
+body.workbench-fullscreen #workbench-main-row {
+    --bs-gutter-x: 0;
+    --bs-gutter-y: 0;
+    width: 100%;
+    margin: 0;
+}
 body.workbench-fullscreen #workbench-chart-col {
     flex: 0 0 100%;
     max-width: 100%;
+    width: 100%;
+    padding-left: 0;
+    padding-right: 0;
 }
 body.workbench-fullscreen #workbench-top-actions {
     display: none !important;
 }
 body.workbench-fullscreen .chart-container {
-    min-height: calc(100vh - 260px);
+    min-height: calc(100vh - 118px);
+    height: calc(100vh - 118px);
 }
 body.workbench-fullscreen #sim-config-panel,
 body.workbench-fullscreen .info-card,
@@ -1544,6 +1666,41 @@ body.workbench-fullscreen .stats-bar {
 }
 .chart-container {
     position: relative;
+    width: 100%;
+    min-height: min(68vh, 760px);
+    height: min(68vh, 760px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.chart-main {
+    position: relative;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 360px;
+}
+.chart-sub-panel {
+    width: 100%;
+    flex: 0 0 min(24vh, 220px);
+    height: min(24vh, 220px);
+    border-top: 1px solid #2a2e39;
+    background: #131722;
+}
+.chart-price-pan-strip {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 92px;
+    height: 100%;
+    z-index: 9;
+    cursor: ns-resize;
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.01));
+}
+.chart-price-pan-strip.active {
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(59, 130, 246, 0.12));
+}
+body.workbench-fullscreen .chart-main {
+    min-height: 0;
 }
 .chart-container.stream-mode #chart-main,
 .chart-container.stream-mode #chart-trendilo-panel {
@@ -1819,6 +1976,7 @@ body.workbench-fullscreen .stats-bar {
         <!-- Chart -->
         <div class="chart-container">
             <div id="chart-main" class="chart-main"></div>
+            <div id="chart-price-pan-strip" class="chart-price-pan-strip" title="Drag vertically to pan price scale"></div>
             <div id="chart-trendilo-panel" class="chart-sub-panel d-none"></div>
             <div id="chart-stream-wrap" class="chart-stream-wrap d-none">
                 <div class="chart-stream-head">
@@ -2190,6 +2348,121 @@ body.workbench-fullscreen .stats-bar {
                                     <span style="color:#94a3b8;">Profit Factor</span>
                                     <span id="strategy-backtest-kpi-pf" style="color:#e2e8f0;">-</span>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-card" data-tool-id="strategy_trigger_map">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-diagram-3"></i> Strategy Trigger Map</span>
+                            <span class="zone-count-badge d-none" id="strategy-trigger-line-count">0</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-strategy-trigger-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Detect MTF / HTF trigger schedules in one click and draw the exact levels on chart.</div>
+                    <div class="tool-settings" id="strategy-trigger-settings">
+                        <div class="mb-2">
+                            <label>Strategy</label>
+                            <select id="strategy-trigger-kind" class="form-select form-select-sm">
+                                <option value="mtf" selected>MTF FVG</option>
+                                <option value="htf_reclaim">HTF FVG + Reclaim</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label>Risk %</label>
+                            <input type="number" id="strategy-trigger-risk-percent" class="form-control form-control-sm" value="0.5" min="0.1" max="10" step="0.1">
+                        </div>
+                        <div class="mb-2">
+                            <label>Min R:R</label>
+                            <input type="number" id="strategy-trigger-min-rr" class="form-control form-control-sm" value="2.0" min="0.5" max="12" step="0.1">
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-primary" id="btn-strategy-trigger-run">
+                                <i class="bi bi-lightning-charge me-1"></i>Detect & Draw
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-strategy-trigger-clear">
+                                <i class="bi bi-x-circle me-1"></i>Clear
+                            </button>
+                        </div>
+                        <div class="trigger-summary-box">
+                            <div class="fvg-inspector-header">
+                                <span><i class="bi bi-broadcast-pin me-1"></i>Current Setup</span>
+                                <span class="fvg-inspector-source" id="strategy-trigger-source">idle</span>
+                            </div>
+                            <div id="strategy-trigger-summary-body" class="planner-status">Run detection to draw trigger levels.</div>
+                            <div id="strategy-trigger-summary-lines" class="trigger-summary-lines"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-card" data-tool-id="position_planner">
+                    <div class="tool-toggle">
+                        <div>
+                            <span class="tool-name"><i class="bi bi-bounding-box"></i> Position Planner</span>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="tool-position-planner-toggle">
+                        </div>
+                    </div>
+                    <div class="tool-desc">Create a TradingView-style risk/reward draft with ATR20 default stop size and live lot calculation.</div>
+                    <div class="tool-settings" id="position-planner-settings">
+                        <div class="row g-1">
+                            <div class="col-6">
+                                <label>Side</label>
+                                <select id="position-planner-side" class="form-select form-select-sm">
+                                    <option value="BUY" selected>BUY</option>
+                                    <option value="SELL">SELL</option>
+                                </select>
+                            </div>
+                            <div class="col-6">
+                                <label>Target R</label>
+                                <input type="number" id="position-planner-target-r" class="form-control form-control-sm" value="2.0" min="0.2" max="20" step="0.1">
+                            </div>
+                            <div class="col-6">
+                                <label>Stop (ATR20 pts)</label>
+                                <input type="number" id="position-planner-stop-points" class="form-control form-control-sm" value="" min="0.1" step="0.1" placeholder="ATR20">
+                            </div>
+                            <div class="col-6">
+                                <label>Risk $</label>
+                                <input type="number" id="position-planner-risk-usd" class="form-control form-control-sm" value="5" min="0.01" step="0.01">
+                            </div>
+                            <div class="col-6">
+                                <label>Reward $</label>
+                                <input type="number" id="position-planner-reward-usd" class="form-control form-control-sm" value="10" min="0.01" step="0.01">
+                            </div>
+                            <div class="col-6">
+                                <label>Lot (auto)</label>
+                                <input type="number" id="position-planner-lot" class="form-control form-control-sm" value="" step="0.01" readonly>
+                            </div>
+                        </div>
+                        <div class="tool-actions">
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-position-planner-atr">
+                                <i class="bi bi-magic me-1"></i>Load ATR20
+                            </button>
+                            <button class="btn btn-sm btn-primary" id="btn-position-planner-create">
+                                <i class="bi bi-plus-square me-1"></i>Create Draft
+                            </button>
+                            <button class="btn btn-sm btn-success" id="btn-position-planner-open">
+                                <i class="bi bi-send me-1"></i>Open Trade
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="btn-position-planner-clear">
+                                <i class="bi bi-trash me-1"></i>Clear
+                            </button>
+                        </div>
+                        <div class="position-planner-box">
+                            <div class="fvg-inspector-header">
+                                <span><i class="bi bi-arrows-move me-1"></i>Draft</span>
+                                <span id="position-planner-status" class="planner-status">No draft on chart.</span>
+                            </div>
+                            <div class="position-planner-metrics">
+                                <div class="planner-metric-row"><span class="planner-metric-label">Entry</span><span id="position-planner-metric-entry">-</span></div>
+                                <div class="planner-metric-row"><span class="planner-metric-label">SL</span><span id="position-planner-metric-sl">-</span></div>
+                                <div class="planner-metric-row"><span class="planner-metric-label">TP</span><span id="position-planner-metric-tp">-</span></div>
+                                <div class="planner-metric-row"><span class="planner-metric-label">Risk / Reward</span><span id="position-planner-metric-risk-reward">-</span></div>
                             </div>
                         </div>
                     </div>
@@ -3719,6 +3992,13 @@ body.workbench-fullscreen .stats-bar {
                         <input class="form-check-input" type="checkbox" id="ind-rsi">
                         <label class="form-check-label" for="ind-rsi">RSI</label>
                         <small class="hint">RSI(10) oscillator line (0-100).</small>
+                    </div>
+                </div>
+                <div class="indicator-option">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="ind-tdi">
+                        <label class="form-check-label" for="ind-tdi">TDI (Goldminds)</label>
+                        <small class="hint">TDI(11,31,1,9): lower panel with only black 50 midline plus green/red signal lines.</small>
                     </div>
                 </div>
                 <div class="indicator-option">

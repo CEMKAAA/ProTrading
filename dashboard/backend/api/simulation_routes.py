@@ -7995,6 +7995,24 @@ class StrategyBacktestOverlayRequest(BaseModel):
         return mode
 
 
+class StrategyTriggerMapRequest(BaseModel):
+    strategy: str = Field(default="mtf", description="mtf | htf_reclaim")
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    source: Optional[str] = None
+    risk_percent: float = Field(default=0.5, ge=0.1, le=10.0)
+    min_rr_ratio: float = Field(default=2.0, ge=0.5, le=12.0)
+    include_news: bool = False
+
+    @field_validator("strategy")
+    @classmethod
+    def _validate_strategy(cls, v: str) -> str:
+        raw = str(v or "mtf").strip().lower()
+        if raw not in {"mtf", "htf_reclaim"}:
+            raise ValueError("strategy must be 'mtf' or 'htf_reclaim'")
+        return raw
+
+
 class ResearchOptimizeRequest(BaseModel):
     strategy_type: str = "sma_crossover"  # sma_crossover | mean_reversion
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -22919,6 +22937,171 @@ def workbench_strategy_backtest_overlay(
         int(len(out.get("trades") or [])),
     )
     return out
+
+
+def _workbench_strategy_trigger_map_payload(
+    *,
+    summary: Dict[str, Any],
+    strategy: str,
+) -> Dict[str, Any]:
+    setup = summary.get("best_setup") if isinstance(summary.get("best_setup"), dict) else None
+    if not isinstance(setup, dict):
+        setup = summary.get("watch_setup") if isinstance(summary.get("watch_setup"), dict) else None
+    schedule_args = summary.get("schedule_trade_entry_args") if isinstance(summary.get("schedule_trade_entry_args"), dict) else {}
+
+    def _price(v: Any) -> Optional[float]:
+        n = _to_float_or_none(v)
+        if n is None or (not math.isfinite(float(n))):
+            return None
+        return float(round(float(n), 5))
+
+    entry_ref = _price((setup or {}).get("entry_ref"))
+    if entry_ref is None:
+        entry_ref = _price(schedule_args.get("entry_ref"))
+    trigger_price = _price(schedule_args.get("trigger_price"))
+    stop_loss = _price((setup or {}).get("stop_loss"))
+    if stop_loss is None:
+        stop_loss = _price(schedule_args.get("stop_loss"))
+    take_profit = _price((setup or {}).get("take_profit"))
+    if take_profit is None:
+        take_profit = _price(schedule_args.get("take_profit"))
+
+    precondition = (setup or {}).get("precondition") if isinstance((setup or {}).get("precondition"), dict) else {}
+    if not precondition and isinstance(schedule_args.get("precondition"), dict):
+        precondition = dict(schedule_args.get("precondition") or {})
+    condition = (setup or {}).get("condition") if isinstance((setup or {}).get("condition"), dict) else {}
+    if not condition and isinstance(schedule_args.get("condition"), str):
+        condition = {
+            "condition": str(schedule_args.get("condition") or ""),
+            "trigger_price": trigger_price,
+        }
+    cancel_rule = (setup or {}).get("cancel_rule") if isinstance((setup or {}).get("cancel_rule"), dict) else {}
+    if not cancel_rule and isinstance(schedule_args.get("cancel_rule"), dict):
+        cancel_rule = dict(schedule_args.get("cancel_rule") or {})
+
+    lines: List[Dict[str, Any]] = []
+
+    def _push_line(kind: str, label: str, value: Any, color: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        px = _price(value)
+        if px is None:
+            return
+        row = {
+            "kind": str(kind),
+            "label": str(label),
+            "price": float(px),
+            "color": str(color),
+        }
+        if isinstance(extra, dict):
+            row.update(extra)
+        lines.append(row)
+
+    _push_line("entry_ref", "Entry Ref", entry_ref, "#93c5fd")
+    _push_line("trigger", f"Trigger: {str(condition.get('condition') or schedule_args.get('condition') or 'condition')}", trigger_price, "#60a5fa")
+    _push_line(
+        "precondition",
+        f"Pre: {str(precondition.get('condition') or 'precondition')}",
+        precondition.get("trigger_price"),
+        "#f59e0b",
+    )
+    _push_line(
+        "cancel",
+        f"Cancel: {str(cancel_rule.get('condition') or 'cancel')}",
+        cancel_rule.get("trigger_price"),
+        "#ef4444",
+    )
+    _push_line("stop_loss", "Stop Loss", stop_loss, "#ef5350")
+    _push_line("take_profit", "Take Profit", take_profit, "#22c55e")
+
+    return {
+        "strategy": str(strategy),
+        "strategy_name": str(summary.get("strategy_name") or ("MTF FVG" if str(strategy) == "mtf" else "HTF FVG + Liquidity Reclaim")),
+        "symbol": str(summary.get("symbol") or ""),
+        "timeframe": str(summary.get("execution_timeframe") or ""),
+        "source": str(summary.get("source") or ""),
+        "trigger_ready": bool(summary.get("trigger_ready", False)),
+        "manual_confirmation_required": bool(summary.get("manual_confirmation_required", False)),
+        "auto_schedule_allowed": bool(summary.get("auto_schedule_allowed", False)),
+        "analysis_stage": str(((summary.get("analysis_trace") or {}).get("stage")) or ""),
+        "direction": str((setup or {}).get("direction") or schedule_args.get("direction") or "").upper(),
+        "entry_ref": entry_ref,
+        "trigger_price": trigger_price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "expected_rr": _price((setup or {}).get("rr")) if (setup or {}).get("rr") is not None else _price(schedule_args.get("expected_rr")),
+        "risk_percent": _price((setup or {}).get("risk_percent")) if (setup or {}).get("risk_percent") is not None else _price(schedule_args.get("risk_percent")),
+        "lot_size": _price((setup or {}).get("lot_size")) if (setup or {}).get("lot_size") is not None else _price(schedule_args.get("lot_size")),
+        "blockers": [str(x) for x in (summary.get("blockers") if isinstance(summary.get("blockers"), list) else [])[:12]],
+        "soft_blockers": [str(x) for x in (summary.get("soft_blockers") if isinstance(summary.get("soft_blockers"), list) else [])[:12]],
+        "confidence_warnings": [str(x) for x in (summary.get("confidence_warnings") if isinstance(summary.get("confidence_warnings"), list) else [])[:12]],
+        "best_setup": setup if isinstance(setup, dict) else None,
+        "schedule_trade_entry_args": schedule_args if isinstance(schedule_args, dict) else {},
+        "lines": lines,
+    }
+
+
+@router.post("/sessions/{session_id}/tools/strategy/trigger-map")
+def workbench_strategy_trigger_map(
+    session_id: int,
+    req: StrategyTriggerMapRequest = StrategyTriggerMapRequest(),
+    db: Session = Depends(get_db),
+):
+    """Run deterministic MTF/HTF opportunity analysis and normalize trigger lines for chart overlays."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if str(session.strategy_id or "") != WORKBENCH_ID:
+        raise HTTPException(400, "Strategy trigger map is available only for Workbench sessions")
+
+    try:
+        ctx = _agent_default_context(session=session, db=db)
+    except Exception:
+        ctx = {}
+    effective_cfg = _agent_effective_tool_config(session=session, db=db)
+
+    tf = str(req.timeframe or session.timeframe or "M15").strip().upper() or "M15"
+    if tf not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}:
+        tf = "M15"
+    symbol = str(req.symbol or session.symbol or "XAUUSD").strip().upper() or "XAUUSD"
+    source = str(req.source or _session_live_control_dict(session).get("source") or "mt5").strip().lower() or "mt5"
+    if source not in {"mt5", "databento"}:
+        source = "mt5"
+
+    payload = {
+        "symbol": str(symbol),
+        "source": str(source),
+        "timeframe": str(tf),
+        "execution_timeframe": str(tf),
+        "risk_percent": float(req.risk_percent),
+        "min_rr_ratio": float(req.min_rr_ratio),
+        "include_news": bool(req.include_news),
+    }
+
+    if str(req.strategy) == "htf_reclaim":
+        data = _agent_run_htf_fvg_liquidity_reclaim_analysis(
+            session=session,
+            db=db,
+            context_snapshot=ctx if isinstance(ctx, dict) else {},
+            payload=payload,
+            effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+        )
+    else:
+        data = _agent_run_mtf_analysis(
+            session=session,
+            db=db,
+            context_snapshot=ctx if isinstance(ctx, dict) else {},
+            payload=payload,
+            effective_cfg=effective_cfg if isinstance(effective_cfg, dict) else {},
+        )
+
+    normalized = _workbench_strategy_trigger_map_payload(
+        summary=data if isinstance(data, dict) else {},
+        strategy=str(req.strategy),
+    )
+    return {
+        "ok": True,
+        "session_id": int(session_id),
+        "data": normalized,
+    }
 
 
 @router.post("/sessions/{session_id}/tools/{tool_id}/scan")

@@ -1345,6 +1345,22 @@ def sim_strategy_backtest_overlay(session_id):
     return jsonify(res)
 
 
+@app.route('/api/simulation/sessions/<int:session_id>/tools/strategy/trigger-map', methods=['POST'])
+def sim_strategy_trigger_map(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/tools/strategy/trigger-map',
+        data=data,
+        return_error=True,
+        timeout_sec=60,
+    )
+    if not res:
+        status = _http_status_from_api_error(err, default_status=500)
+        return jsonify({'error': err or 'Strategy trigger map failed'}), status
+    return jsonify(res)
+
+
 def _legacy_copilot_start_to_agent_payload(data):
     src = data if isinstance(data, dict) else {}
     mode = str(src.get('mode') or 'ADVISE').strip().upper()

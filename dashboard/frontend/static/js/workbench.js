@@ -85,6 +85,7 @@ let indicatorSelection = {
     smaEma: false,
     adx: false,
     rsi: false,
+    tdi: false,
     stoch: false,
     bollinger: false,
     trendilo: false,
@@ -102,6 +103,7 @@ let openPositionTpLine = null;
 let goldenCrossMarkers = [];
 let fvgCreatorMarkers = [];
 let strategyBacktestMarkers = [];
+let tdiMarkers = [];
 let fvgZonesByTimeframe = {};
 let fvgNavigationList = [];
 let fvgNavigationIndex = -1;
@@ -110,6 +112,13 @@ let lastFvgInspectorZones = [];
 let lastFvgInspectorSource = 'idle';
 let warnedDatabentoCreditsForFvg = false;
 let chartClickHandler = null;
+let triggerMapRenderer = null;
+let positionDraftRenderer = null;
+let strategyTriggerMapState = null;
+let positionPlannerDraft = null;
+let activeChartToolMode = null;
+let manualChartPriceRange = null;
+let chartPricePanState = null;
 
 const STRATEGY_ID = '_workbench';
 const API_BASE = '';
@@ -143,6 +152,10 @@ const INDICATOR_DEFAULTS = {
     emaPeriodSlow: 50,
     adxPeriod: 14,
     rsiPeriod: 10,
+    tdiRsiPeriod: 11,
+    tdiBandLength: 31,
+    tdiFastMa: 1,
+    tdiSlowMa: 9,
     stochKPeriod: 14,
     stochSmoothK: 3,
     stochSmoothD: 3,
@@ -357,6 +370,87 @@ function refreshChartViewport() {
     }
 }
 
+function _getVisibleMainPriceRange() {
+    const el = document.getElementById('chart-main');
+    if (!candleSeries || !el || typeof candleSeries.coordinateToPrice !== 'function') return null;
+    const topPrice = Number(candleSeries.coordinateToPrice(0));
+    const bottomPrice = Number(candleSeries.coordinateToPrice(el.clientHeight || 0));
+    if (!Number.isFinite(topPrice) || !Number.isFinite(bottomPrice) || topPrice === bottomPrice) return null;
+    return {
+        min: Math.min(topPrice, bottomPrice),
+        max: Math.max(topPrice, bottomPrice),
+    };
+}
+
+function _applyManualChartPriceRange(range = null) {
+    manualChartPriceRange = range && Number.isFinite(Number(range.min)) && Number.isFinite(Number(range.max))
+        ? { min: Number(range.min), max: Number(range.max) }
+        : null;
+    if (!chart || !candleSeries) return;
+    chart.applyOptions({
+        rightPriceScale: {
+            borderColor: '#2a2e39',
+            minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH,
+            autoScale: !manualChartPriceRange,
+        },
+    });
+    refreshChartViewport();
+}
+
+function resetManualChartPriceRange() {
+    _applyManualChartPriceRange(null);
+}
+
+function installChartPricePan() {
+    const strip = document.getElementById('chart-price-pan-strip');
+    const container = document.getElementById('chart-main');
+    if (!strip || !container || strip.dataset.bound === '1') return;
+
+    const stopPan = () => {
+        chartPricePanState = null;
+        strip.classList.remove('active');
+        window.removeEventListener('mousemove', handlePanMove);
+        window.removeEventListener('mouseup', stopPan);
+    };
+
+    const handlePanMove = (event) => {
+        if (!chartPricePanState) return;
+        const rect = container.getBoundingClientRect();
+        const span = chartPricePanState.startMax - chartPricePanState.startMin;
+        if (!(rect.height > 0) || !(span > 0)) return;
+        const deltaPx = Number(event.clientY) - chartPricePanState.startY;
+        const deltaPrice = (deltaPx / rect.height) * span;
+        _applyManualChartPriceRange({
+            min: chartPricePanState.startMin + deltaPrice,
+            max: chartPricePanState.startMax + deltaPrice,
+        });
+    };
+
+    strip.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const range = manualChartPriceRange || _getVisibleMainPriceRange();
+        if (!range) return;
+        chartPricePanState = {
+            startY: Number(event.clientY || 0),
+            startMin: Number(range.min),
+            startMax: Number(range.max),
+        };
+        strip.classList.add('active');
+        window.addEventListener('mousemove', handlePanMove);
+        window.addEventListener('mouseup', stopPan);
+    });
+
+    strip.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        resetManualChartPriceRange();
+        showStatus('Price scale reset to auto.', 'info');
+    });
+
+    strip.dataset.bound = '1';
+}
+
 function _normalizeLivestreamUrl(rawUrl) {
     const raw = String(rawUrl || '').trim();
     if (!raw) return '';
@@ -505,8 +599,13 @@ function setWorkbenchFullscreenUI(active) {
     } else {
         syncFullscreenMarketControlsFromMain();
     }
-    // Use rAF + short delay for reliable chart resize after fullscreen transition
-    requestAnimationFrame(() => setTimeout(refreshChartViewport, 60));
+    // Fullscreen transitions are delayed in some browsers; resize more than once.
+    requestAnimationFrame(() => {
+        refreshChartViewport();
+        setTimeout(refreshChartViewport, 60);
+        setTimeout(refreshChartViewport, 180);
+        setTimeout(refreshChartViewport, 360);
+    });
 }
 
 async function toggleWorkbenchFullscreen() {
@@ -697,6 +796,7 @@ function renderSymbolEconomicsHint(snapshotLike = null) {
         ? _numFmt(s.risk_examples.lot_for_1pct_risk_at_100_points_stop, 4)
         : '-';
     el.textContent = `Symbol economics (${resolved || '-'}, ${source}): contract_size=${contract}, point_value_per_1lot=${value1Lot}, point=${point}, pnl_per_point_1lot=${pnlPoint1Lot}, lot[min/step/max]=${minLot}/${stepLot}/${maxLot}, lot@1%risk(100 points SL)=${lot1pct100p}`;
+    syncPositionPlannerInputs('econ');
 }
 
 function setPanelBodyExpanded(bodyId, expanded) {
@@ -904,6 +1004,7 @@ async function switchToSession(nextSessionId, { restartLive = false, forceLiveMo
         allBars = [];
         pendingAdvance = 0;
         isAdvancing = false;
+        resetManualChartPriceRange();
         candleSeries.setData([]);
         volumeSeries.setData([]);
         if (zoneRenderer) zoneRenderer.clearAll();
@@ -992,6 +1093,7 @@ async function closeSelectedSession() {
             allBars = [];
             currentBar = 0;
             totalBars = 0;
+            resetManualChartPriceRange();
             candleSeries.setData([]);
             volumeSeries.setData([]);
             updateBarCounter();
@@ -2561,6 +2663,7 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         smaEma: !!vis.smaEma,
         adx: !!vis.adx,
         rsi: !!vis.rsi,
+        tdi: !!vis.tdi,
         stoch: !!vis.stoch,
         bollinger: !!vis.bollinger,
         trendilo: !!vis.trendilo,
@@ -2577,6 +2680,7 @@ function _applyAgentIndicatorVisibilityOutput(data, sourceTag) {
         smaEma: 'ind-sma-ema',
         adx: 'ind-adx',
         rsi: 'ind-rsi',
+        tdi: 'ind-tdi',
         stoch: 'ind-stoch',
         bollinger: 'ind-bollinger',
         trendilo: 'ind-trendilo',
@@ -4919,6 +5023,7 @@ function _automationChartSelectionForStrategy(strategyLike) {
         smaEma: false,
         adx: false,
         rsi: false,
+        tdi: false,
         stoch: false,
         bollinger: false,
         trendilo: false,
@@ -7821,6 +7926,21 @@ function computeRSI(closes, period) {
     return out;
 }
 
+function computeTdi(closes, cfg = {}) {
+    const rsiPeriod = Math.max(1, Number(cfg.rsiPeriod) || INDICATOR_DEFAULTS.tdiRsiPeriod);
+    const bandLength = Math.max(1, Number(cfg.bandLength) || INDICATOR_DEFAULTS.tdiBandLength);
+    const fastLength = Math.max(0, Number(cfg.fastLength) || INDICATOR_DEFAULTS.tdiFastMa);
+    const slowLength = Math.max(1, Number(cfg.slowLength) || INDICATOR_DEFAULTS.tdiSlowMa);
+    const rsi = computeRSI(closes, rsiPeriod);
+    const mid = rollingSMA(rsi, bandLength);
+    const std = rollingStdDev(rsi, bandLength);
+    const upper = mid.map((m, i) => (Number.isFinite(m) && Number.isFinite(std[i]) ? (m + (1.6185 * std[i])) : NaN));
+    const lower = mid.map((m, i) => (Number.isFinite(m) && Number.isFinite(std[i]) ? (m - (1.6185 * std[i])) : NaN));
+    const fast = fastLength <= 1 ? rsi.slice() : rollingSMA(rsi, fastLength);
+    const slow = rollingSMA(rsi, slowLength);
+    return { rsi, upper, lower, mid, fast, slow };
+}
+
 function computeADX(highs, lows, closes, period) {
     const len = closes.length;
     const adx = new Array(len).fill(NaN);
@@ -7943,6 +8063,7 @@ function computeIndicatorPack(bars, selection) {
     const needBoll = !!sel.bollinger;
     const needAdx = !!sel.adx;
     const needRsi = !!sel.rsi;
+    const needTdi = !!sel.tdi;
     const needStoch = !!sel.stoch;
     const needTrendilo = !!sel.trendilo || !!sel.advancedTrendilo || !!sel.trendiloBarColor;
     const needTrendiloLsma = !!sel.trendiloLsma;
@@ -7951,7 +8072,7 @@ function computeIndicatorPack(bars, selection) {
     const needOrbSignal = !!sel.orbSignal;
     const needGoldenCross = !!sel.goldenCross;
 
-    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needStoch || needTrendilo || needGoldenCross || needAlphaWave || needDeadzonePro || needOrbSignal;
+    const needCloses = needSmaEma || needBoll || needAdx || needRsi || needTdi || needStoch || needTrendilo || needGoldenCross || needAlphaWave || needDeadzonePro || needOrbSignal;
     const needHighLow = needAdx || needStoch || needTrendiloLsma || needAlphaWave;
 
     const closes = needCloses ? bars.map(b => toFiniteNumber(b?.close)) : [];
@@ -7976,6 +8097,7 @@ function computeIndicatorPack(bars, selection) {
         : [];
     const adx = needAdx ? computeADX(highs, lows, closes, INDICATOR_DEFAULTS.adxPeriod) : [];
     const rsi = needRsi ? computeRSI(closes, INDICATOR_DEFAULTS.rsiPeriod) : [];
+    const tdi = needTdi ? computeTdi(closes) : { rsi: [], upper: [], lower: [], mid: [], fast: [], slow: [] };
     const stoch = needStoch
         ? computeStochastic(highs, lows, closes, INDICATOR_DEFAULTS.stochKPeriod, INDICATOR_DEFAULTS.stochSmoothK, INDICATOR_DEFAULTS.stochSmoothD)
         : { k: [], d: [] };
@@ -8030,6 +8152,12 @@ function computeIndicatorPack(bars, selection) {
         sma20, sma50, sma200, ema20, ema50, ema200,
         bbUpper, bbMid, bbLower,
         adx, rsi,
+        tdiRsi: tdi.rsi,
+        tdiUpper: tdi.upper,
+        tdiLower: tdi.lower,
+        tdiMid: tdi.mid,
+        tdiFast: tdi.fast,
+        tdiSlow: tdi.slow,
         stochK: stoch.k,
         stochD: stoch.d,
         trendiloPch: trendilo.pch,
@@ -8092,7 +8220,7 @@ function setTrendiloPanelVisibility(show) {
 }
 
 function isTrendiloPanelEnabled() {
-    return !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo);
+    return !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo || indicatorSelection.tdi);
 }
 
 function ensureTrendiloPanelChart() {
@@ -8146,6 +8274,24 @@ function ensureTrendiloPanelChart() {
         lastValueVisible: false,
         priceLineVisible: false,
     });
+    trendiloPanelSeries.tdiFast = trendiloPanelChart.addLineSeries({
+        color: '#ef4444',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    trendiloPanelSeries.tdiSlow = trendiloPanelChart.addLineSeries({
+        color: '#22c55e',
+        lineWidth: 2,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+    trendiloPanelSeries.midline = trendiloPanelChart.addLineSeries({
+        color: '#111111',
+        lineWidth: 1,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
 
     const panelResizeObserver = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -8183,8 +8329,7 @@ function ensureTrendiloPanelChart() {
                 } else {
                     const key = normalizeTimeKey(t);
                     const v = trendiloSignalByTime.get(key);
-                    const d = Number(trendiloDirByTime.get(key) || 0);
-                    const targetSeries = trendiloPanelSeries.signal;
+                    const targetSeries = indicatorSelection.tdi ? trendiloPanelSeries.tdiFast : trendiloPanelSeries.signal;
                     if (Number.isFinite(v) && targetSeries) {
                         trendiloPanelChart.setCrosshairPosition(v, t, targetSeries);
                     } else {
@@ -8345,6 +8490,7 @@ function clearAllIndicatorSeries() {
     hideRsiHoverTooltip();
     mainCloseByTime.clear();
     mainCrosshairSeries?.setData([]);
+    tdiMarkers = [];
 }
 
 function computeGoldenCrossMarkers(bars, fastSma, slowSma) {
@@ -8382,6 +8528,42 @@ function computeGoldenCrossMarkers(bars, fastSma, slowSma) {
     return markers;
 }
 
+function computeTdiMarkers(bars, fastArr, slowArr) {
+    const markers = [];
+    const n = Math.min(
+        Array.isArray(bars) ? bars.length : 0,
+        Array.isArray(fastArr) ? fastArr.length : 0,
+        Array.isArray(slowArr) ? slowArr.length : 0,
+    );
+    for (let i = 1; i < n; i += 1) {
+        const prevFast = toFiniteNumber(fastArr[i - 1]);
+        const prevSlow = toFiniteNumber(slowArr[i - 1]);
+        const curFast = toFiniteNumber(fastArr[i]);
+        const curSlow = toFiniteNumber(slowArr[i]);
+        const t = Number(bars[i]?.time || 0);
+        if (![prevFast, prevSlow, curFast, curSlow, t].every(Number.isFinite)) continue;
+
+        if (prevFast <= prevSlow && curFast > curSlow && curFast < 50 && curSlow < 50) {
+            markers.push({
+                time: t,
+                position: 'belowBar',
+                color: '#22c55e',
+                shape: 'arrowUp',
+                text: 'TDI Long',
+            });
+        } else if (prevFast >= prevSlow && curFast < curSlow && curFast > 50 && curSlow > 50) {
+            markers.push({
+                time: t,
+                position: 'aboveBar',
+                color: '#ef4444',
+                shape: 'arrowDown',
+                text: 'TDI Short',
+            });
+        }
+    }
+    return markers;
+}
+
 function syncCandleMarkers() {
     if (!candleSeries) return;
     const markers = [];
@@ -8389,6 +8571,9 @@ function syncCandleMarkers() {
     if (Array.isArray(strategyBacktestMarkers) && strategyBacktestMarkers.length > 0) markers.push(...strategyBacktestMarkers);
     if (indicatorSelection.goldenCross && Array.isArray(goldenCrossMarkers) && goldenCrossMarkers.length > 0) {
         markers.push(...goldenCrossMarkers);
+    }
+    if (indicatorSelection.tdi && Array.isArray(tdiMarkers) && tdiMarkers.length > 0) {
+        markers.push(...tdiMarkers);
     }
     if (Array.isArray(fvgCreatorMarkers) && fvgCreatorMarkers.length > 0) {
         markers.push(...fvgCreatorMarkers);
@@ -8419,6 +8604,7 @@ function applyIndicatorVisibility() {
     const showBoll = !!indicatorSelection.bollinger;
     const showAdx = !!indicatorSelection.adx;
     const showRsi = !!indicatorSelection.rsi;
+    const showTdi = !!indicatorSelection.tdi;
     const showStoch = !!indicatorSelection.stoch;
     const showTrendilo = !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo);
     const showTrendiloLsma = !!indicatorSelection.trendiloLsma;
@@ -8444,7 +8630,7 @@ function applyIndicatorVisibility() {
         removeIndicatorSeries('stochK');
         removeIndicatorSeries('stochD');
     }
-    if (!showTrendilo) {
+    if (!showTrendilo && !showTdi) {
         clearTrendiloPanelData();
         setTrendiloPanelVisibility(false);
     }
@@ -8460,7 +8646,7 @@ function applyIndicatorVisibility() {
     if (!showOrbSignal) {
         removeIndicatorSeries('orbSignal');
     }
-    if (!(showAdx || showRsi || showStoch || showTrendiloBarColor) && chart) {
+    if (!(showAdx || showRsi || showTdi || showStoch || showTrendiloBarColor) && chart) {
         chart.priceScale('osc').applyOptions({
             autoScale: true,
             scaleMargins: { top: 0.99, bottom: 0.0 },
@@ -8477,6 +8663,7 @@ function updateIndicatorsOnChart() {
         || indicatorSelection.bollinger
         || indicatorSelection.adx
         || indicatorSelection.rsi
+        || indicatorSelection.tdi
         || indicatorSelection.stoch
         || indicatorSelection.trendilo
         || indicatorSelection.advancedTrendilo
@@ -8496,6 +8683,7 @@ function updateIndicatorsOnChart() {
         hideRsiHoverTooltip();
         mainCrosshairSeries?.setData([]);
         goldenCrossMarkers = [];
+        tdiMarkers = [];
         syncCandleMarkers();
         return;
     }
@@ -8513,6 +8701,7 @@ function updateIndicatorsOnChart() {
             clearTrendiloPanelData();
         }
         goldenCrossMarkers = [];
+        tdiMarkers = [];
         syncCandleMarkers();
         return;
     }
@@ -8579,40 +8768,73 @@ function updateIndicatorsOnChart() {
     }
 
     const useAdvancedTrendilo = !!indicatorSelection.advancedTrendilo;
-    if (indicatorSelection.trendilo || indicatorSelection.advancedTrendilo) {
+    const showLowerPanel = !!(indicatorSelection.trendilo || indicatorSelection.advancedTrendilo || indicatorSelection.tdi);
+    if (showLowerPanel) {
         ensureTrendiloPanelChart();
         setTrendiloPanelVisibility(true);
-        const zeroLine = new Array(bars.length).fill(0);
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
-        const avpchArr = useAdvancedTrendilo ? pack.advancedTrendiloAvpch : pack.trendiloAvpch;
-        const dirArr = useAdvancedTrendilo ? pack.advancedTrendiloDir : pack.trendiloDir;
-        const rmsArr = useAdvancedTrendilo ? pack.advancedTrendiloRms : pack.trendiloRms;
-        const negRmsArr = useAdvancedTrendilo ? pack.advancedTrendiloNegRms : pack.trendiloNegRms;
-        const signalData = [];
-        for (let i = 0; i < bars.length; i += 1) {
-            const t = Number(bars[i]?.time || 0);
-            const a = toFiniteNumber(avpchArr[i]);
-            if (!Number.isFinite(t) || !Number.isFinite(a)) continue;
-            const key = normalizeTimeKey(t);
-            const d = Number(dirArr[i] || 0);
-            trendiloSignalByTime.set(key, a);
-            trendiloDirByTime.set(key, d);
-            signalData.push({
-                time: t,
-                value: a,
-                color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
-            });
+        clearTrendiloPanelData();
+        if (indicatorSelection.tdi) {
+            const fastData = seriesDataFromArray(bars, pack.tdiFast);
+            const slowData = seriesDataFromArray(bars, pack.tdiSlow);
+            const midData = seriesDataFromArray(bars, new Array(bars.length).fill(50));
+            try {
+                const panelScale = trendiloPanelChart && typeof trendiloPanelChart.priceScale === 'function'
+                    ? trendiloPanelChart.priceScale('right')
+                    : null;
+                if (panelScale && typeof panelScale.applyOptions === 'function') {
+                    panelScale.applyOptions({
+                        autoScale: true,
+                        scaleMargins: { top: 0.08, bottom: 0.08 },
+                    });
+                }
+            } catch (_) { /* ignore */ }
+            trendiloPanelSeries.tdiFast?.setData(fastData);
+            trendiloPanelSeries.tdiSlow?.setData(slowData);
+            trendiloPanelSeries.midline?.setData(midData);
+            for (let i = 0; i < bars.length; i += 1) {
+                const t = Number(bars[i]?.time || 0);
+                const fastVal = toFiniteNumber(pack.tdiFast?.[i]);
+                const slowVal = toFiniteNumber(pack.tdiSlow?.[i]);
+                if (!Number.isFinite(t) || !Number.isFinite(fastVal)) continue;
+                trendiloSignalByTime.set(normalizeTimeKey(t), fastVal);
+                trendiloDirByTime.set(normalizeTimeKey(t), Number.isFinite(slowVal) ? Math.sign(fastVal - slowVal) : 0);
+            }
+            tdiMarkers = computeTdiMarkers(bars, pack.tdiFast, pack.tdiSlow);
+        } else {
+            const zeroLine = new Array(bars.length).fill(0);
+            const avpchArr = useAdvancedTrendilo ? pack.advancedTrendiloAvpch : pack.trendiloAvpch;
+            const dirArr = useAdvancedTrendilo ? pack.advancedTrendiloDir : pack.trendiloDir;
+            const rmsArr = useAdvancedTrendilo ? pack.advancedTrendiloRms : pack.trendiloRms;
+            const negRmsArr = useAdvancedTrendilo ? pack.advancedTrendiloNegRms : pack.trendiloNegRms;
+            const signalData = [];
+            for (let i = 0; i < bars.length; i += 1) {
+                const t = Number(bars[i]?.time || 0);
+                const a = toFiniteNumber(avpchArr[i]);
+                if (!Number.isFinite(t) || !Number.isFinite(a)) continue;
+                const key = normalizeTimeKey(t);
+                const d = Number(dirArr[i] || 0);
+                trendiloSignalByTime.set(key, a);
+                trendiloDirByTime.set(key, d);
+                signalData.push({
+                    time: t,
+                    value: a,
+                    color: d > 0 ? '#22c55e' : (d < 0 ? '#ef4444' : '#9ca3af'),
+                });
+            }
+            trendiloPanelSeries.upper?.setData(seriesDataFromArray(bars, rmsArr));
+            trendiloPanelSeries.lower?.setData(seriesDataFromArray(bars, negRmsArr));
+            trendiloPanelSeries.signal?.setData(signalData);
+            trendiloPanelSeries.zero?.setData(seriesDataFromArray(bars, zeroLine));
+            tdiMarkers = [];
         }
-        trendiloPanelSeries.upper?.setData(seriesDataFromArray(bars, rmsArr));
-        trendiloPanelSeries.lower?.setData(seriesDataFromArray(bars, negRmsArr));
-        trendiloPanelSeries.signal?.setData(signalData);
-        trendiloPanelSeries.zero?.setData(seriesDataFromArray(bars, zeroLine));
     } else {
         trendiloSignalByTime.clear();
         trendiloDirByTime.clear();
         clearTrendiloPanelData();
         setTrendiloPanelVisibility(false);
+        tdiMarkers = [];
     }
 
     if (indicatorSelection.trendiloLsma) {
@@ -8711,6 +8933,7 @@ function readIndicatorSelectionFromUI() {
         smaEma: read('ind-sma-ema'),
         adx: read('ind-adx'),
         rsi: read('ind-rsi'),
+        tdi: read('ind-tdi'),
         stoch: read('ind-stoch'),
         bollinger: read('ind-bollinger'),
         trendilo: read('ind-trendilo'),
@@ -8725,7 +8948,7 @@ function readIndicatorSelectionFromUI() {
 }
 
 function resetIndicatorSelectionUI() {
-    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'];
+    const ids = ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-tdi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'];
     for (const id of ids) {
         const el = document.getElementById(id);
         if (el) el.checked = false;
@@ -8733,6 +8956,7 @@ function resetIndicatorSelectionUI() {
     readIndicatorSelectionFromUI();
     clearAllIndicatorSeries();
     goldenCrossMarkers = [];
+    tdiMarkers = [];
     syncCandleMarkers();
     showStatus('All indicators hidden', 'info');
 }
@@ -9195,6 +9419,275 @@ class ChartZoneRenderer {
     }
 }
 
+class ChartTriggerMapRenderer {
+    constructor(chartObj, series) {
+        this.chart = chartObj;
+        this.series = series;
+        this.container = chartObj.chartElement();
+        this.overlayContainer = document.createElement('div');
+        this.overlayContainer.className = 'chart-zones-overlay';
+        this.container.style.position = 'relative';
+        this.container.appendChild(this.overlayContainer);
+        this.lines = [];
+        this.resizeObserver = new ResizeObserver(() => this._repositionAll());
+        this.resizeObserver.observe(this.container);
+        this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => this._repositionAll());
+        this.series.subscribeDataChanged(() => this._repositionAll());
+    }
+
+    render(linesLike = []) {
+        this.clear();
+        const rows = Array.isArray(linesLike) ? linesLike.filter((x) => x && typeof x === 'object') : [];
+        for (const row of rows) {
+            const lineEl = document.createElement('div');
+            lineEl.className = 'chart-trigger-line';
+            lineEl.style.borderTopWidth = '1px';
+            lineEl.style.borderTopColor = String(row.color || '#94a3b8');
+            const labelEl = document.createElement('div');
+            labelEl.className = 'chart-trigger-label';
+            labelEl.style.borderColor = String(row.color || 'rgba(148,163,184,0.28)');
+            labelEl.textContent = `${String(row.label || row.kind || 'Level')} @ ${formatZonePrice(Number(row.price))}`;
+            this.overlayContainer.appendChild(lineEl);
+            this.overlayContainer.appendChild(labelEl);
+            this.lines.push({ data: row, lineEl, labelEl });
+        }
+        this._repositionAll();
+    }
+
+    _repositionAll() {
+        const width = Number(this.container.clientWidth || this.overlayContainer.clientWidth || 0);
+        if (width <= 0) return;
+        for (const item of this.lines) {
+            const y = this.series.priceToCoordinate(Number(item.data?.price));
+            if (y === null || !Number.isFinite(Number(y))) {
+                item.lineEl.style.display = 'none';
+                item.labelEl.style.display = 'none';
+                continue;
+            }
+            item.lineEl.style.display = 'block';
+            item.labelEl.style.display = 'block';
+            item.lineEl.style.left = '0px';
+            item.lineEl.style.top = `${Number(y)}px`;
+            item.lineEl.style.width = `${Math.max(40, width - 10)}px`;
+            item.labelEl.style.left = `${Math.max(4, width - 230)}px`;
+            item.labelEl.style.top = `${Math.max(0, Number(y) - 13)}px`;
+        }
+    }
+
+    clear() {
+        for (const item of this.lines) {
+            try { item.lineEl.remove(); } catch (_) { /* ignore */ }
+            try { item.labelEl.remove(); } catch (_) { /* ignore */ }
+        }
+        this.lines = [];
+    }
+}
+
+class ChartPositionDraftRenderer {
+    constructor(chartObj, series, onDraftChange) {
+        this.chart = chartObj;
+        this.series = series;
+        this.onDraftChange = typeof onDraftChange === 'function' ? onDraftChange : null;
+        this.container = chartObj.chartElement();
+        this.overlayContainer = document.createElement('div');
+        this.overlayContainer.className = 'chart-zones-overlay';
+        this.container.style.position = 'relative';
+        this.container.appendChild(this.overlayContainer);
+        this.draft = null;
+        this.dragKind = null;
+        this.dragHandler = (e) => this._onPointerMove(e);
+        this.stopDragHandler = () => this._stopDrag();
+        this.resizeObserver = new ResizeObserver(() => this._reposition());
+        this.resizeObserver.observe(this.container);
+        this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => this._reposition());
+        this.series.subscribeDataChanged(() => this._reposition());
+    }
+
+    setDraft(draftLike) {
+        if (!draftLike || typeof draftLike !== 'object') {
+            this.clear();
+            return;
+        }
+        this._ensureElements();
+        this.draft = { ...draftLike };
+        this._reposition();
+    }
+
+    clear() {
+        this.draft = null;
+        this.dragKind = null;
+        this._unbindDrag();
+        if (this.rewardAreaEl) this.rewardAreaEl.style.display = 'none';
+        if (this.riskAreaEl) this.riskAreaEl.style.display = 'none';
+        if (this.entryLineEl) this.entryLineEl.style.display = 'none';
+        if (this.stopLineEl) this.stopLineEl.style.display = 'none';
+        if (this.targetLineEl) this.targetLineEl.style.display = 'none';
+        if (this.entryLabelEl) this.entryLabelEl.style.display = 'none';
+        if (this.stopLabelEl) this.stopLabelEl.style.display = 'none';
+        if (this.targetLabelEl) this.targetLabelEl.style.display = 'none';
+        if (this.stopHandleEl) this.stopHandleEl.style.display = 'none';
+        if (this.targetHandleEl) this.targetHandleEl.style.display = 'none';
+    }
+
+    _ensureElements() {
+        if (this.rewardAreaEl) return;
+        const mkArea = (cls) => {
+            const el = document.createElement('div');
+            el.className = `chart-position-area ${cls}`;
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkLine = (kind, color) => {
+            const el = document.createElement('div');
+            el.className = `chart-position-line ${kind === 'entry' ? '' : 'draggable'}`.trim();
+            el.style.borderTopWidth = kind === 'entry' ? '1px' : '2px';
+            el.style.borderTopColor = color;
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkLabel = (kind) => {
+            const el = document.createElement('div');
+            el.className = `chart-position-label ${kind}`;
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkHandle = (kind, color) => {
+            const el = document.createElement('div');
+            el.className = 'chart-position-handle';
+            el.style.background = color;
+            el.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.dragKind = kind;
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        this.rewardAreaEl = mkArea('reward buy');
+        this.riskAreaEl = mkArea('risk buy');
+        this.entryLineEl = mkLine('entry', '#e2e8f0');
+        this.stopLineEl = mkLine('stop', '#ef5350');
+        this.targetLineEl = mkLine('target', '#26a69a');
+        this.entryLabelEl = mkLabel('buy');
+        this.stopLabelEl = mkLabel('sell');
+        this.targetLabelEl = mkLabel('buy');
+        this.stopHandleEl = mkHandle('stop', '#ef5350');
+        this.targetHandleEl = mkHandle('target', '#26a69a');
+    }
+
+    _bindDrag() {
+        window.addEventListener('mousemove', this.dragHandler);
+        window.addEventListener('mouseup', this.stopDragHandler);
+    }
+
+    _unbindDrag() {
+        window.removeEventListener('mousemove', this.dragHandler);
+        window.removeEventListener('mouseup', this.stopDragHandler);
+    }
+
+    _stopDrag() {
+        this.dragKind = null;
+        this._unbindDrag();
+    }
+
+    _onPointerMove(event) {
+        if (!this.dragKind || !this.draft || typeof this.series.coordinateToPrice !== 'function') return;
+        const rect = this.container.getBoundingClientRect();
+        const y = Number(event.clientY) - Number(rect.top);
+        const nextPriceRaw = this.series.coordinateToPrice(y);
+        const nextPriceNum = Number(nextPriceRaw);
+        if (!Number.isFinite(nextPriceNum) || nextPriceNum <= 0) return;
+        const decimals = getPriceDecimalsForSymbol(this.draft.symbol);
+        const nextPrice = Number(nextPriceNum.toFixed(decimals));
+        const side = String(this.draft.side || 'BUY').toUpperCase();
+        const entry = Number(this.draft.entryPrice);
+        const stop = Number(this.draft.stopPrice);
+        const target = Number(this.draft.targetPrice);
+        if (!Number.isFinite(entry) || !Number.isFinite(stop) || !Number.isFinite(target)) return;
+
+        if (this.dragKind === 'stop') {
+            if (side === 'BUY' && nextPrice >= entry) return;
+            if (side === 'SELL' && nextPrice <= entry) return;
+            this.draft.stopPrice = nextPrice;
+        } else if (this.dragKind === 'target') {
+            if (side === 'BUY' && nextPrice <= entry) return;
+            if (side === 'SELL' && nextPrice >= entry) return;
+            this.draft.targetPrice = nextPrice;
+        } else {
+            return;
+        }
+        if (this.onDraftChange) this.onDraftChange({ ...this.draft }, { source: 'drag' });
+        this._reposition();
+    }
+
+    _reposition() {
+        if (!this.draft) {
+            this.clear();
+            return;
+        }
+        this._ensureElements();
+        const width = Number(this.container.clientWidth || this.overlayContainer.clientWidth || 0);
+        const side = String(this.draft.side || 'BUY').toUpperCase();
+        const rewardCls = side === 'BUY' ? 'reward buy' : 'reward sell';
+        const riskCls = side === 'BUY' ? 'risk buy' : 'risk sell';
+        this.rewardAreaEl.className = `chart-position-area ${rewardCls}`;
+        this.riskAreaEl.className = `chart-position-area ${riskCls}`;
+        this.entryLabelEl.className = `chart-position-label ${side === 'BUY' ? 'buy' : 'sell'}`;
+        this.targetLabelEl.className = `chart-position-label ${side === 'BUY' ? 'buy' : 'sell'}`;
+        this.stopLabelEl.className = `chart-position-label ${side === 'BUY' ? 'sell' : 'buy'}`;
+
+        const xRaw = this.chart.timeScale().timeToCoordinate(Number(this.draft.anchorTime));
+        const xLeft = Number.isFinite(Number(xRaw)) ? Number(xRaw) : Math.max(24, width * 0.55);
+        const xRight = Math.max(xLeft + 40, width - 8);
+        const entryY = this.series.priceToCoordinate(Number(this.draft.entryPrice));
+        const stopY = this.series.priceToCoordinate(Number(this.draft.stopPrice));
+        const targetY = this.series.priceToCoordinate(Number(this.draft.targetPrice));
+        if (![entryY, stopY, targetY].every((v) => v !== null && Number.isFinite(Number(v)))) {
+            return;
+        }
+
+        const riskTop = Math.min(Number(entryY), Number(stopY));
+        const riskHeight = Math.max(2, Math.abs(Number(entryY) - Number(stopY)));
+        const rewardTop = Math.min(Number(entryY), Number(targetY));
+        const rewardHeight = Math.max(2, Math.abs(Number(entryY) - Number(targetY)));
+        const boxWidth = Math.max(40, xRight - xLeft);
+
+        const applyLine = (lineEl, labelEl, handleEl, y, color, text) => {
+            lineEl.style.display = 'block';
+            lineEl.style.left = `${xLeft}px`;
+            lineEl.style.top = `${Number(y)}px`;
+            lineEl.style.width = `${boxWidth}px`;
+            lineEl.style.borderTopColor = color;
+            labelEl.style.display = 'inline-flex';
+            labelEl.style.left = `${Math.max(4, xRight - 132)}px`;
+            labelEl.style.top = `${Math.max(0, Number(y) - 13)}px`;
+            labelEl.textContent = text;
+            if (handleEl) {
+                handleEl.style.display = 'block';
+                handleEl.style.left = `${xRight}px`;
+                handleEl.style.top = `${Number(y)}px`;
+            }
+        };
+
+        this.rewardAreaEl.style.display = 'block';
+        this.rewardAreaEl.style.left = `${xLeft}px`;
+        this.rewardAreaEl.style.top = `${rewardTop}px`;
+        this.rewardAreaEl.style.width = `${boxWidth}px`;
+        this.rewardAreaEl.style.height = `${rewardHeight}px`;
+
+        this.riskAreaEl.style.display = 'block';
+        this.riskAreaEl.style.left = `${xLeft}px`;
+        this.riskAreaEl.style.top = `${riskTop}px`;
+        this.riskAreaEl.style.width = `${boxWidth}px`;
+        this.riskAreaEl.style.height = `${riskHeight}px`;
+
+        applyLine(this.entryLineEl, this.entryLabelEl, null, entryY, '#e2e8f0', `Entry ${formatZonePrice(Number(this.draft.entryPrice))}`);
+        applyLine(this.stopLineEl, this.stopLabelEl, this.stopHandleEl, stopY, '#ef5350', `SL ${formatZonePrice(Number(this.draft.stopPrice))}`);
+        applyLine(this.targetLineEl, this.targetLabelEl, this.targetHandleEl, targetY, '#10b981', `TP ${formatZonePrice(Number(this.draft.targetPrice))}`);
+    }
+}
+
 
 // â”€â”€ Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -9285,6 +9778,21 @@ function initWorkbenchState() {
             force_first_entry: true,
             last_result: null,
         },
+        strategy_trigger_map: {
+            enabled: false,
+            strategy: 'mtf',
+            risk_percent: 0.5,
+            min_rr_ratio: 2.0,
+            last_result: null,
+        },
+        position_planner: {
+            enabled: false,
+            side: 'BUY',
+            stop_points: null,
+            risk_usd: 5,
+            reward_usd: 10,
+            target_r: 2.0,
+        },
     };
     if (toolStates?.fvg) {
         toolStates.fvg.detect_timeframe = getChartTimeframe();
@@ -9312,12 +9820,27 @@ function initWorkbenchState() {
     if (sbToggle) sbToggle.checked = false;
     const sbSettings = document.getElementById('strategy-backtest-settings');
     if (sbSettings) sbSettings.classList.remove('active');
+    const stmToggle = document.getElementById('tool-strategy-trigger-toggle');
+    if (stmToggle) stmToggle.checked = false;
+    const stmSettings = document.getElementById('strategy-trigger-settings');
+    if (stmSettings) stmSettings.classList.remove('active');
+    const ppToggle = document.getElementById('tool-position-planner-toggle');
+    if (ppToggle) ppToggle.checked = false;
+    const ppSettings = document.getElementById('position-planner-settings');
+    if (ppSettings) ppSettings.classList.remove('active');
     syncStrategyBacktestModeControls();
     renderStrategyBacktestSummary(null);
+    renderStrategyTriggerSummary(null);
+    updatePositionPlannerUi(null);
     tradeMarkers = [];
     strategyBacktestMarkers = [];
     goldenCrossMarkers = [];
     fvgCreatorMarkers = [];
+    strategyTriggerMapState = null;
+    positionPlannerDraft = null;
+    activeChartToolMode = null;
+    if (triggerMapRenderer) triggerMapRenderer.clear();
+    if (positionDraftRenderer) positionDraftRenderer.clear();
     clearAllIndicatorSeries();
     readIndicatorSelectionFromUI();
     syncCandleMarkers();
@@ -9382,6 +9905,17 @@ function initChart() {
         borderUpColor: '#26a69a',
         wickDownColor: '#ef5350',
         wickUpColor: '#26a69a',
+        autoscaleInfoProvider: (original) => {
+            const info = typeof original === 'function' ? original() : null;
+            if (!info || !manualChartPriceRange) return info;
+            return {
+                ...info,
+                priceRange: {
+                    minValue: Number(manualChartPriceRange.min),
+                    maxValue: Number(manualChartPriceRange.max),
+                },
+            };
+        },
     });
 
     volumeSeries = chart.addHistogramSeries({
@@ -9428,9 +9962,15 @@ function initChart() {
         }
     });
     resizeObserver.observe(container);
+    installChartPricePan();
 
     // Initialize zone renderer
     zoneRenderer = new ChartZoneRenderer(chart, candleSeries);
+    triggerMapRenderer = new ChartTriggerMapRenderer(chart, candleSeries);
+    positionDraftRenderer = new ChartPositionDraftRenderer(chart, candleSeries, (draft, meta) => {
+        positionPlannerDraft = { ...draft };
+        updatePositionPlannerUi(positionPlannerDraft, meta);
+    });
     if (chartClickHandler) {
         try { chart.unsubscribeClick(chartClickHandler); } catch (_) { /* ignore */ }
     }
@@ -9444,6 +9984,9 @@ function bindEvents() {
     document.getElementById('btn-toggle-livestream')?.addEventListener('click', toggleLivestreamMode);
     document.addEventListener('fullscreenchange', () => {
         setWorkbenchFullscreenUI(!!document.fullscreenElement);
+    });
+    window.addEventListener('resize', () => {
+        requestAnimationFrame(() => setTimeout(refreshChartViewport, 20));
     });
     document.querySelectorAll('[data-panel-launch]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -10053,7 +10596,7 @@ function bindEvents() {
     document.getElementById('agent-strategy-profile')?.addEventListener('change', () => {
         syncAgentStrategyControls();
     });
-    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
+    ['ind-sma-ema', 'ind-adx', 'ind-rsi', 'ind-tdi', 'ind-stoch', 'ind-bollinger', 'ind-trendilo', 'ind-advanced-trendilo', 'ind-trendilo-lsma', 'ind-alpha-wave', 'ind-deadzone-pro', 'ind-orb-signal', 'ind-trendilo-barcolor', 'ind-golden-cross'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => {
             readIndicatorSelectionFromUI();
             updateIndicatorsOnChart();
@@ -10192,6 +10735,43 @@ function bindEvents() {
     document.getElementById('strategy-backtest-strategy')?.addEventListener('change', () => {
         syncStrategyBacktestModeControls();
     });
+    document.getElementById('tool-strategy-trigger-toggle')?.addEventListener('change', (e) => {
+        const settings = document.getElementById('strategy-trigger-settings');
+        if (settings) settings.classList.toggle('active', e.target.checked);
+        if (!toolStates.strategy_trigger_map) toolStates.strategy_trigger_map = {};
+        toolStates.strategy_trigger_map.enabled = !!e.target.checked;
+        if (!e.target.checked) clearStrategyTriggerMap(false);
+    });
+    document.getElementById('btn-strategy-trigger-run')?.addEventListener('click', () => {
+        void runStrategyTriggerMap();
+    });
+    document.getElementById('btn-strategy-trigger-clear')?.addEventListener('click', () => {
+        clearStrategyTriggerMap();
+    });
+    document.getElementById('tool-position-planner-toggle')?.addEventListener('change', (e) => {
+        const settings = document.getElementById('position-planner-settings');
+        if (settings) settings.classList.toggle('active', e.target.checked);
+        if (!toolStates.position_planner) toolStates.position_planner = {};
+        toolStates.position_planner.enabled = !!e.target.checked;
+        if (!e.target.checked) clearPositionPlannerDraft(false);
+    });
+    document.getElementById('btn-position-planner-atr')?.addEventListener('click', () => {
+        loadPositionPlannerAtrDefault();
+    });
+    document.getElementById('btn-position-planner-create')?.addEventListener('click', () => {
+        createPositionPlannerDraft();
+    });
+    document.getElementById('btn-position-planner-clear')?.addEventListener('click', () => {
+        clearPositionPlannerDraft();
+    });
+    document.getElementById('btn-position-planner-open')?.addEventListener('click', () => {
+        void openPositionPlannerDraftTrade();
+    });
+    document.getElementById('position-planner-side')?.addEventListener('change', () => syncPositionPlannerInputs('side'));
+    document.getElementById('position-planner-stop-points')?.addEventListener('input', () => syncPositionPlannerInputs('stop'));
+    document.getElementById('position-planner-risk-usd')?.addEventListener('input', () => syncPositionPlannerInputs('risk'));
+    document.getElementById('position-planner-reward-usd')?.addEventListener('input', () => syncPositionPlannerInputs('reward'));
+    document.getElementById('position-planner-target-r')?.addEventListener('input', () => syncPositionPlannerInputs('r'));
 
     // Agent loop events (copilot-backed runtime)
     document.getElementById('btn-agent-start')?.addEventListener('click', startAgentLoop);
@@ -11023,6 +11603,7 @@ async function startSession() {
         pendingAdvance = 0;
         isAdvancing = false;
         initialBalance = Number(data.initial_balance || balance);
+        resetManualChartPriceRange();
         tickCounter = 0; tickWindowStartMs = 0; barsPerSecond = 0;
         lastPayloadAtMs = 0; adaptiveLastTuneMs = 0;
         wsReconnectRequested = false; droppedTickCount = 0; reconnectCount = 0;
@@ -11063,6 +11644,7 @@ async function resetSession() {
         currentBar = 0;
         allBars = [];
         pendingAdvance = 0;
+        resetManualChartPriceRange();
         tickCounter = 0; tickWindowStartMs = 0; barsPerSecond = 0;
         lastPayloadAtMs = 0; adaptiveLastTuneMs = 0;
         wsReconnectRequested = false; droppedTickCount = 0; reconnectCount = 0;
@@ -12028,6 +12610,351 @@ function renderStrategyBacktestSummary(data) {
     if (lossEl) lossEl.textContent = `${grossLossPct.toFixed(2)}% | ${grossLossPts.toFixed(2)} pts`;
     if (netEl) netEl.textContent = `${netPctKpi.toFixed(2)}% | ${netPtsKpi.toFixed(2)} pts`;
     if (pfEl) pfEl.textContent = pfText;
+}
+
+function renderStrategyTriggerSummary(payload) {
+    const sourceEl = document.getElementById('strategy-trigger-source');
+    const bodyEl = document.getElementById('strategy-trigger-summary-body');
+    const linesEl = document.getElementById('strategy-trigger-summary-lines');
+    const badgeEl = document.getElementById('strategy-trigger-line-count');
+    if (!sourceEl || !bodyEl || !linesEl || !badgeEl) return;
+    if (!payload || typeof payload !== 'object') {
+        sourceEl.textContent = 'idle';
+        bodyEl.textContent = 'Run detection to draw trigger levels.';
+        bodyEl.className = 'planner-status';
+        linesEl.innerHTML = '';
+        badgeEl.textContent = '0';
+        badgeEl.classList.add('d-none');
+        return;
+    }
+    const lines = Array.isArray(payload.lines) ? payload.lines : [];
+    const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+    const softBlockers = Array.isArray(payload.soft_blockers) ? payload.soft_blockers : [];
+    const ready = !!payload.trigger_ready;
+    const manual = !!payload.manual_confirmation_required;
+    sourceEl.textContent = `${String(payload.strategy || 'mtf').toUpperCase()} | ${String(payload.symbol || '-')}`;
+    bodyEl.className = `planner-status ${ready ? 'ready' : 'warning'}`;
+    bodyEl.textContent = ready
+        ? `${String(payload.direction || '').toUpperCase()} setup ready${manual ? ' | manual confirmation' : ''}`
+        : `${String(payload.analysis_stage || 'no_setup').replaceAll('_', ' ')}`;
+    const summaryRows = [];
+    if (Number.isFinite(Number(payload.entry_ref))) summaryRows.push(['Entry', formatZonePrice(Number(payload.entry_ref))]);
+    if (Number.isFinite(Number(payload.stop_loss))) summaryRows.push(['SL', formatZonePrice(Number(payload.stop_loss))]);
+    if (Number.isFinite(Number(payload.take_profit))) summaryRows.push(['TP', formatZonePrice(Number(payload.take_profit))]);
+    if (Number.isFinite(Number(payload.expected_rr))) summaryRows.push(['R:R', Number(payload.expected_rr).toFixed(2)]);
+    if (blockers.length) summaryRows.push(['Blocker', blockers[0]]);
+    else if (softBlockers.length) summaryRows.push(['Watch', softBlockers[0]]);
+    linesEl.innerHTML = summaryRows.map(([label, value]) => `
+        <div class="trigger-summary-line">
+            <span class="trigger-summary-label">${escapeHtml(String(label))}</span>
+            <span>${escapeHtml(String(value))}</span>
+        </div>
+    `).join('');
+    badgeEl.textContent = String(lines.length);
+    badgeEl.classList.toggle('d-none', lines.length <= 0);
+}
+
+function clearStrategyTriggerMap(showToast = true) {
+    strategyTriggerMapState = null;
+    if (triggerMapRenderer) triggerMapRenderer.clear();
+    if (!toolStates.strategy_trigger_map) toolStates.strategy_trigger_map = {};
+    toolStates.strategy_trigger_map.last_result = null;
+    renderStrategyTriggerSummary(null);
+    if (showToast) showStatus('Strategy trigger map cleared', 'info');
+}
+
+async function runStrategyTriggerMap() {
+    if (!sessionId) {
+        showStatus('Start a session first', 'warning');
+        return;
+    }
+    const strategy = String(document.getElementById('strategy-trigger-kind')?.value || 'mtf').trim().toLowerCase();
+    const riskPercentRaw = Number(document.getElementById('strategy-trigger-risk-percent')?.value || 0.5);
+    const minRrRaw = Number(document.getElementById('strategy-trigger-min-rr')?.value || 2.0);
+    const chartSymbol = getCostModelSymbol();
+    const chartTimeframe = getChartTimeframe();
+    const riskPercent = Number.isFinite(riskPercentRaw) ? Math.max(0.1, Math.min(10, riskPercentRaw)) : 0.5;
+    const minRrRatio = Number.isFinite(minRrRaw) ? Math.max(0.5, Math.min(12, minRrRaw)) : 2.0;
+    try {
+        showStatus(`Running ${strategy.toUpperCase()} trigger detection...`, 'info');
+        const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/tools/strategy/trigger-map`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strategy,
+                symbol: chartSymbol,
+                timeframe: chartTimeframe,
+                source: getSelectedLiveSource(),
+                risk_percent: riskPercent,
+                min_rr_ratio: minRrRatio,
+                include_news: false,
+            }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out?.ok === false) {
+            throw new Error(String(out?.error || out?.detail || `HTTP ${res.status}`));
+        }
+        const data = (out && typeof out.data === 'object') ? out.data : {};
+        strategyTriggerMapState = data;
+        if (!toolStates.strategy_trigger_map) toolStates.strategy_trigger_map = {};
+        toolStates.strategy_trigger_map.last_result = data;
+        toolStates.strategy_trigger_map.strategy = strategy;
+        toolStates.strategy_trigger_map.risk_percent = riskPercent;
+        toolStates.strategy_trigger_map.min_rr_ratio = minRrRatio;
+        renderStrategyTriggerSummary(data);
+        if (triggerMapRenderer) triggerMapRenderer.render(Array.isArray(data.lines) ? data.lines : []);
+        const msg = data?.trigger_ready
+            ? `${String(data.strategy_name || strategy)} drawn on chart`
+            : `${String(data.analysis_stage || 'no_setup').replaceAll('_', ' ')} | levels drawn`;
+        showStatus(msg, data?.trigger_ready ? 'success' : 'info');
+    } catch (err) {
+        showStatus(`Trigger map error: ${err.message}`, 'danger');
+    }
+}
+
+function getLastMarketPrice() {
+    const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const px = Number(lastBar?.close);
+    return Number.isFinite(px) && px > 0 ? px : NaN;
+}
+
+function getSymbolPointSize(symbolLike = null) {
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const econSymbol = String(econ?.resolved_symbol || econ?.requested_symbol || '').trim().toUpperCase();
+    const requested = String(symbolLike || getCostModelSymbol()).trim().toUpperCase();
+    const point = Number(econ?.point);
+    if (econ && (!econSymbol || !requested || econSymbol === requested) && Number.isFinite(point) && point > 0) {
+        return point;
+    }
+    const decimals = getPriceDecimalsForSymbol(requested);
+    return Math.pow(10, -Math.max(0, decimals));
+}
+
+function computeAtr20() {
+    const bars = Array.isArray(allBars) ? allBars : [];
+    if (bars.length < 21) return NaN;
+    let sum = 0;
+    let count = 0;
+    for (let i = Math.max(1, bars.length - 20); i < bars.length; i += 1) {
+        const bar = bars[i] || {};
+        const prev = bars[i - 1] || {};
+        const high = Number(bar.high);
+        const low = Number(bar.low);
+        const prevClose = Number(prev.close);
+        if (![high, low, prevClose].every((x) => Number.isFinite(x))) continue;
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        if (!Number.isFinite(tr)) continue;
+        sum += tr;
+        count += 1;
+    }
+    return count > 0 ? (sum / count) : NaN;
+}
+
+function normalizeLotForEconomics(rawLot) {
+    const lot = Number(rawLot);
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    if (!Number.isFinite(lot) || lot <= 0) return NaN;
+    const minLot = Number(econ?.volume_min);
+    const maxLot = Number(econ?.volume_max);
+    const step = Number(econ?.volume_step);
+    let out = lot;
+    const safeStep = Number.isFinite(step) && step > 0 ? step : 0.01;
+    if (Number.isFinite(minLot) && minLot > 0) out = Math.max(out, minLot);
+    if (Number.isFinite(maxLot) && maxLot > 0) out = Math.min(out, maxLot);
+    out = Math.floor(out / safeStep) * safeStep;
+    const stepDigits = Math.max(0, String(safeStep).includes('.') ? String(safeStep).split('.')[1].length : 0);
+    return Number(out.toFixed(Math.min(6, stepDigits + 1)));
+}
+
+function computePositionPlannerLot(stopPoints, riskUsd) {
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const valuePer1Lot = Number(econ?.point_value_per_1lot);
+    const pointSize = getSymbolPointSize();
+    const stopPts = Number(stopPoints);
+    const risk = Number(riskUsd);
+    if (!Number.isFinite(valuePer1Lot) || valuePer1Lot <= 0) return NaN;
+    if (!Number.isFinite(pointSize) || pointSize <= 0) return NaN;
+    if (!Number.isFinite(stopPts) || stopPts <= 0) return NaN;
+    if (!Number.isFinite(risk) || risk <= 0) return NaN;
+    const priceDistance = stopPts * pointSize;
+    const rawLot = risk / (priceDistance * valuePer1Lot);
+    return normalizeLotForEconomics(rawLot);
+}
+
+function buildPositionPlannerDraft() {
+    const side = String(document.getElementById('position-planner-side')?.value || 'BUY').trim().toUpperCase();
+    const stopPoints = _parseUiDecimal(document.getElementById('position-planner-stop-points')?.value, NaN);
+    const riskUsd = _parseUiDecimal(document.getElementById('position-planner-risk-usd')?.value, NaN);
+    const rewardUsd = _parseUiDecimal(document.getElementById('position-planner-reward-usd')?.value, NaN);
+    const targetR = _parseUiDecimal(document.getElementById('position-planner-target-r')?.value, NaN);
+    const entryPrice = getLastMarketPrice();
+    const pointSize = getSymbolPointSize();
+    const lot = computePositionPlannerLot(stopPoints, riskUsd);
+    if (!['BUY', 'SELL'].includes(side)) throw new Error('Invalid side');
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('Current market price unavailable');
+    if (!Number.isFinite(stopPoints) || stopPoints <= 0) throw new Error('Stop points unavailable');
+    if (!Number.isFinite(pointSize) || pointSize <= 0) throw new Error('Symbol point size unavailable');
+    if (!Number.isFinite(lot) || lot <= 0) throw new Error('Lot calculation failed');
+    const decimals = getPriceDecimalsForSymbol(getCostModelSymbol());
+    const riskDistance = stopPoints * pointSize;
+    let rewardDistance = NaN;
+    if (Number.isFinite(rewardUsd) && rewardUsd > 0) {
+        const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
+        rewardDistance = rewardUsd / Math.max(1e-12, valuePer1Lot * lot);
+    } else if (Number.isFinite(targetR) && targetR > 0) {
+        rewardDistance = riskDistance * targetR;
+    }
+    if (!Number.isFinite(rewardDistance) || rewardDistance <= 0) {
+        throw new Error('Reward target unavailable');
+    }
+    const stopPrice = side === 'BUY' ? entryPrice - riskDistance : entryPrice + riskDistance;
+    const targetPrice = side === 'BUY' ? entryPrice + rewardDistance : entryPrice - rewardDistance;
+    const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    return {
+        side,
+        symbol: getCostModelSymbol(),
+        anchorTime: Number(lastBar?.time || Math.floor(Date.now() / 1000)),
+        entryPrice: Number(entryPrice.toFixed(decimals)),
+        stopPrice: Number(stopPrice.toFixed(decimals)),
+        targetPrice: Number(targetPrice.toFixed(decimals)),
+        stopPoints: Number(stopPoints),
+        riskUsd: Number(riskUsd),
+        rewardUsd: Number((Number.isFinite(rewardUsd) && rewardUsd > 0 ? rewardUsd : (riskUsd * targetR)).toFixed(2)),
+        targetR: Number((rewardDistance / riskDistance).toFixed(2)),
+        lotSize: Number(lot.toFixed(4)),
+    };
+}
+
+function updatePositionPlannerUi(draft, meta = {}) {
+    const statusEl = document.getElementById('position-planner-status');
+    const entryEl = document.getElementById('position-planner-metric-entry');
+    const slEl = document.getElementById('position-planner-metric-sl');
+    const tpEl = document.getElementById('position-planner-metric-tp');
+    const rrEl = document.getElementById('position-planner-metric-risk-reward');
+    const lotEl = document.getElementById('position-planner-lot');
+    if (!statusEl || !entryEl || !slEl || !tpEl || !rrEl || !lotEl) return;
+
+    if (!draft || typeof draft !== 'object') {
+        statusEl.textContent = 'No draft on chart.';
+        statusEl.className = 'planner-status';
+        entryEl.textContent = '-';
+        slEl.textContent = '-';
+        tpEl.textContent = '-';
+        rrEl.textContent = '-';
+        lotEl.value = '';
+        return;
+    }
+    const riskDistance = Math.abs(Number(draft.entryPrice) - Number(draft.stopPrice));
+    const rewardDistance = Math.abs(Number(draft.targetPrice) - Number(draft.entryPrice));
+    const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
+    const riskUsd = Number.isFinite(valuePer1Lot) ? (riskDistance * valuePer1Lot * Number(draft.lotSize || 0)) : Number(draft.riskUsd || 0);
+    const rewardUsd = Number.isFinite(valuePer1Lot) ? (rewardDistance * valuePer1Lot * Number(draft.lotSize || 0)) : Number(draft.rewardUsd || 0);
+    const rr = rewardDistance > 0 && riskDistance > 0 ? rewardDistance / riskDistance : NaN;
+
+    statusEl.textContent = meta?.source === 'drag' ? 'Draft updated live by drag.' : 'Draft ready on chart. Drag SL/TP handles.';
+    statusEl.className = 'planner-status ready';
+    entryEl.textContent = formatZonePrice(Number(draft.entryPrice));
+    slEl.textContent = formatZonePrice(Number(draft.stopPrice));
+    tpEl.textContent = formatZonePrice(Number(draft.targetPrice));
+    rrEl.textContent = `${Number.isFinite(riskUsd) ? `$${riskUsd.toFixed(2)}` : '-'} / ${Number.isFinite(rewardUsd) ? `$${rewardUsd.toFixed(2)}` : '-'} | ${Number.isFinite(rr) ? rr.toFixed(2) : '-'}R`;
+    lotEl.value = Number.isFinite(Number(draft.lotSize)) ? Number(draft.lotSize).toFixed(4) : '';
+    const rewardInput = document.getElementById('position-planner-reward-usd');
+    const targetRInput = document.getElementById('position-planner-target-r');
+    const stopInput = document.getElementById('position-planner-stop-points');
+    if (rewardInput && Number.isFinite(rewardUsd)) rewardInput.value = rewardUsd.toFixed(2);
+    if (targetRInput && Number.isFinite(rr)) targetRInput.value = rr.toFixed(2);
+    if (stopInput) {
+        const pointSize = getSymbolPointSize(draft.symbol);
+        const stopPts = riskDistance > 0 && pointSize > 0 ? (riskDistance / pointSize) : NaN;
+        if (Number.isFinite(stopPts)) stopInput.value = stopPts.toFixed(1);
+    }
+}
+
+function syncPositionPlannerInputs(source = 'manual') {
+    const riskInput = document.getElementById('position-planner-risk-usd');
+    const rewardInput = document.getElementById('position-planner-reward-usd');
+    const rInput = document.getElementById('position-planner-target-r');
+    const stopInput = document.getElementById('position-planner-stop-points');
+    const sideInput = document.getElementById('position-planner-side');
+    if (!riskInput || !rewardInput || !rInput || !stopInput || !sideInput) return;
+    const riskUsd = _parseUiDecimal(riskInput.value, NaN);
+    const rewardUsd = _parseUiDecimal(rewardInput.value, NaN);
+    const targetR = _parseUiDecimal(rInput.value, NaN);
+    if (source === 'reward' && Number.isFinite(rewardUsd) && Number.isFinite(riskUsd) && riskUsd > 0) {
+        rInput.value = (rewardUsd / riskUsd).toFixed(2);
+    } else if (source === 'r' && Number.isFinite(targetR) && Number.isFinite(riskUsd) && riskUsd > 0) {
+        rewardInput.value = (riskUsd * targetR).toFixed(2);
+    }
+    const stopPts = _parseUiDecimal(stopInput.value, NaN);
+    const lot = computePositionPlannerLot(stopPts, _parseUiDecimal(riskInput.value, NaN));
+    const lotEl = document.getElementById('position-planner-lot');
+    if (lotEl) lotEl.value = Number.isFinite(lot) ? lot.toFixed(4) : '';
+    if (positionPlannerDraft && typeof positionPlannerDraft === 'object') {
+        try {
+            const nextDraft = buildPositionPlannerDraft();
+            nextDraft.anchorTime = positionPlannerDraft.anchorTime;
+            nextDraft.entryPrice = positionPlannerDraft.entryPrice;
+            positionPlannerDraft = nextDraft;
+            if (positionDraftRenderer) positionDraftRenderer.setDraft(positionPlannerDraft);
+            updatePositionPlannerUi(positionPlannerDraft);
+        } catch (_) {
+            // keep old draft if controls are temporarily invalid
+        }
+    }
+}
+
+function loadPositionPlannerAtrDefault() {
+    const atr20 = computeAtr20();
+    const point = getSymbolPointSize();
+    const stopInput = document.getElementById('position-planner-stop-points');
+    if (!stopInput) return;
+    if (!Number.isFinite(atr20) || atr20 <= 0 || !Number.isFinite(point) || point <= 0) {
+        showStatus('ATR20 unavailable. Load more bars first.', 'warning');
+        return;
+    }
+    stopInput.value = (atr20 / point).toFixed(1);
+    syncPositionPlannerInputs('atr');
+    showStatus(`ATR20 loaded: ${(atr20 / point).toFixed(1)} points`, 'info');
+}
+
+function createPositionPlannerDraft() {
+    try {
+        const stopInput = document.getElementById('position-planner-stop-points');
+        const stopPoints = _parseUiDecimal(stopInput?.value, NaN);
+        if ((!Number.isFinite(stopPoints) || stopPoints <= 0) && stopInput) {
+            loadPositionPlannerAtrDefault();
+        }
+        positionPlannerDraft = buildPositionPlannerDraft();
+        if (positionDraftRenderer) positionDraftRenderer.setDraft(positionPlannerDraft);
+        updatePositionPlannerUi(positionPlannerDraft);
+        showStatus('Position draft created on chart. Drag SL/TP handles to fine-tune.', 'success');
+    } catch (err) {
+        showStatus(`Position planner error: ${err.message}`, 'warning');
+    }
+}
+
+function clearPositionPlannerDraft(showToast = true) {
+    positionPlannerDraft = null;
+    if (positionDraftRenderer) positionDraftRenderer.clear();
+    updatePositionPlannerUi(null);
+    if (showToast) showStatus('Position draft cleared', 'info');
+}
+
+async function openPositionPlannerDraftTrade() {
+    if (!positionPlannerDraft || typeof positionPlannerDraft !== 'object') {
+        showStatus('Create a draft first', 'warning');
+        return;
+    }
+    const draft = positionPlannerDraft;
+    const opened = await executeTrade(String(draft.side || 'BUY'), {
+        stop_loss: Number(draft.stopPrice),
+        take_profit: Number(draft.targetPrice),
+        lot_size: Number(draft.lotSize),
+    });
+    if (opened) {
+        clearPositionPlannerDraft(false);
+        showStatus(`Draft trade opened: ${String(draft.side || '').toUpperCase()} ${String(draft.symbol || '')}`, 'success');
+    }
 }
 
 function clearStrategyBacktestOverlay(showToast = true) {

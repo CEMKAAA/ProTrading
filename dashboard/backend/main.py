@@ -61,6 +61,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+# runtime note: notification services are env-gated from dashboard/.env
 
 # Create FastAPI app
 app = FastAPI(
