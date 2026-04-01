@@ -166,6 +166,14 @@
     pointer-events: auto;
     cursor: ns-resize;
 }
+.chart-position-line-hit {
+    position: absolute;
+    height: 14px;
+    transform: translateY(-50%);
+    pointer-events: auto;
+    cursor: ns-resize;
+    background: transparent;
+}
 .chart-position-handle {
     position: absolute;
     width: 12px;
@@ -175,6 +183,49 @@
     pointer-events: auto;
     cursor: ns-resize;
     box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.95);
+}
+.chart-position-width-handle {
+    position: absolute;
+    width: 12px;
+    border-radius: 999px;
+    pointer-events: auto;
+    cursor: ew-resize;
+    background: rgba(226, 232, 240, 0.92);
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.95);
+}
+.chart-position-open-btn {
+    position: absolute;
+    pointer-events: auto;
+    z-index: 5;
+    min-height: 24px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid rgba(16, 185, 129, 0.38);
+    background: rgba(16, 185, 129, 0.92);
+    color: #052e16;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1.1;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(16, 185, 129, 0.22);
+}
+.chart-position-open-btn:hover {
+    filter: brightness(1.04);
+}
+.chart-position-drag-info {
+    position: absolute;
+    pointer-events: none;
+    z-index: 5;
+    min-height: 22px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgba(15, 23, 42, 0.94);
+    color: #e2e8f0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    white-space: nowrap;
+    box-shadow: 0 8px 18px rgba(2, 6, 23, 0.35);
 }
 .chart-position-area {
     position: absolute;
@@ -337,6 +388,27 @@
     border-radius: 2px;
     pointer-events: none;
     box-shadow: 0 0 8px rgba(15, 23, 42, 0.35);
+}
+.fvg-zone-badge {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.38);
+    background: rgba(15, 23, 42, 0.88);
+    color: #f8fafc;
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    box-shadow: 0 1px 6px rgba(15, 23, 42, 0.28);
+    pointer-events: none;
+    z-index: 3;
 }
 .fvg-zone.bullish_fvg {
     background: rgba(38, 166, 91, 0.18);
@@ -1690,11 +1762,12 @@ body.workbench-fullscreen .stats-bar {
     position: absolute;
     top: 0;
     right: 0;
-    width: 92px;
+    width: 132px;
     height: 100%;
     z-index: 9;
     cursor: ns-resize;
     background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.01));
+    touch-action: none;
 }
 .chart-price-pan-strip.active {
     background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(59, 130, 246, 0.12));
@@ -1976,7 +2049,7 @@ body.workbench-fullscreen .chart-main {
         <!-- Chart -->
         <div class="chart-container">
             <div id="chart-main" class="chart-main"></div>
-            <div id="chart-price-pan-strip" class="chart-price-pan-strip" title="Drag vertically to pan price scale"></div>
+            <div id="chart-price-pan-strip" class="chart-price-pan-strip" title="Drag vertically to zoom price scale. Shift+drag pans. Wheel zooms."></div>
             <div id="chart-trendilo-panel" class="chart-sub-panel d-none"></div>
             <div id="chart-stream-wrap" class="chart-stream-wrap d-none">
                 <div class="chart-stream-head">
@@ -2419,9 +2492,17 @@ body.workbench-fullscreen .chart-main {
                                 </select>
                             </div>
                             <div class="col-6">
+                                <label>Mode</label>
+                                <div class="form-check form-switch mt-1">
+                                    <input class="form-check-input" type="checkbox" id="position-planner-lock-targets">
+                                    <label class="form-check-label small" for="position-planner-lock-targets">Lock $ Targets</label>
+                                </div>
+                            </div>
+                            <div class="col-6">
                                 <label>Target R</label>
                                 <input type="number" id="position-planner-target-r" class="form-control form-control-sm" value="2.0" min="0.2" max="20" step="0.1">
                             </div>
+                            <div class="col-6"></div>
                             <div class="col-6">
                                 <label>Stop (ATR20 pts)</label>
                                 <input type="number" id="position-planner-stop-points" class="form-control form-control-sm" value="" min="0.1" step="0.1" placeholder="ATR20">
@@ -2435,8 +2516,8 @@ body.workbench-fullscreen .chart-main {
                                 <input type="number" id="position-planner-reward-usd" class="form-control form-control-sm" value="10" min="0.01" step="0.01">
                             </div>
                             <div class="col-6">
-                                <label>Lot (auto)</label>
-                                <input type="number" id="position-planner-lot" class="form-control form-control-sm" value="" step="0.01" readonly>
+                                <label>Lot (auto / editable)</label>
+                                <input type="number" id="position-planner-lot" class="form-control form-control-sm" value="" step="0.001" placeholder="Auto-filled, but you can override">
                             </div>
                         </div>
                         <div class="tool-actions">
@@ -2459,10 +2540,12 @@ body.workbench-fullscreen .chart-main {
                                 <span id="position-planner-status" class="planner-status">No draft on chart.</span>
                             </div>
                             <div class="position-planner-metrics">
+                                <div class="planner-metric-row"><span class="planner-metric-label">Mode</span><span id="position-planner-metric-mode">AUTO</span></div>
                                 <div class="planner-metric-row"><span class="planner-metric-label">Entry</span><span id="position-planner-metric-entry">-</span></div>
                                 <div class="planner-metric-row"><span class="planner-metric-label">SL</span><span id="position-planner-metric-sl">-</span></div>
                                 <div class="planner-metric-row"><span class="planner-metric-label">TP</span><span id="position-planner-metric-tp">-</span></div>
-                                <div class="planner-metric-row"><span class="planner-metric-label">Risk / Reward</span><span id="position-planner-metric-risk-reward">-</span></div>
+                                <div class="planner-metric-row"><span class="planner-metric-label">Requested</span><span id="position-planner-metric-requested">-</span></div>
+                                <div class="planner-metric-row"><span class="planner-metric-label">Actual</span><span id="position-planner-metric-risk-reward">-</span></div>
                             </div>
                         </div>
                     </div>

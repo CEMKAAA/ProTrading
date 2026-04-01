@@ -639,6 +639,11 @@ class LiveControlRequest(BaseModel):
         return mode
 
 
+class SessionContextUpdateRequest(BaseModel):
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+
+
 class AdvanceRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=500)
     indicators_mode: str = "delta"  # "delta" (fast) | "full" (compat)
@@ -5876,6 +5881,43 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
             for t in trades
         ],
     }
+
+
+@router.post("/sessions/{session_id}/context")
+def update_session_context(session_id: int, req: SessionContextUpdateRequest, db: Session = Depends(get_db)):
+    """Update workbench session chart context in-place without creating a new session."""
+    session = db.query(SimulationSession).get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    next_symbol = str(req.symbol or session.symbol or "").strip().upper()
+    next_timeframe = str(req.timeframe or session.timeframe or "").strip().upper()
+    if not next_symbol:
+        raise HTTPException(400, "symbol is required")
+    if not next_timeframe:
+        raise HTTPException(400, "timeframe is required")
+
+    changed = False
+    if str(session.symbol or "").strip().upper() != next_symbol:
+        session.symbol = next_symbol
+        changed = True
+    if str(session.timeframe or "").strip().upper() != next_timeframe:
+        session.timeframe = next_timeframe
+        changed = True
+
+    if changed and str(session.mode or "").strip().lower() == "live":
+        session.current_bar = 0
+        session.total_bars = 0
+    if changed:
+        session.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(session)
+
+    payload = get_session(session_id=session_id, db=db)
+    if isinstance(payload, dict):
+        payload["ok"] = True
+        payload["context_updated"] = bool(changed)
+    return payload
 
 
 @router.get("/sessions/{session_id}/open-positions")

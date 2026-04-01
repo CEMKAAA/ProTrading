@@ -401,10 +401,61 @@ function resetManualChartPriceRange() {
     _applyManualChartPriceRange(null);
 }
 
+function fitChartToPositionDraft(draftLike, paddingFrac = 0.18) {
+    const draft = (draftLike && typeof draftLike === 'object') ? draftLike : null;
+    if (!draft) return;
+    const prices = [
+        Number(draft.entryPrice),
+        Number(draft.stopPrice),
+        Number(draft.targetPrice),
+    ].filter((x) => Number.isFinite(x));
+    if (prices.length < 2) return;
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const span = Math.max(1e-9, max - min);
+    const pad = Math.max(span * Number(paddingFrac || 0.18), span * 0.05);
+    _applyManualChartPriceRange({
+        min: min - pad,
+        max: max + pad,
+    });
+}
+
+function syncPositionPlannerDraftToMarket() {
+    const draft = (positionPlannerDraft && typeof positionPlannerDraft === 'object') ? positionPlannerDraft : null;
+    if (!draft) return;
+    const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const nextEntryRaw = Number(lastBar?.close);
+    const nextAnchorTime = Number(lastBar?.time);
+    if (!Number.isFinite(nextEntryRaw) || nextEntryRaw <= 0 || !Number.isFinite(nextAnchorTime) || nextAnchorTime <= 0) return;
+    const decimals = getPriceDecimalsForSymbol(draft.symbol);
+    const nextEntry = Number(nextEntryRaw.toFixed(decimals));
+    draft.anchorTime = nextAnchorTime;
+    draft.entryPrice = nextEntry;
+    if (String(draft.plannerMode || '').toLowerCase() === 'lock') {
+        positionPlannerDraft = reconcilePositionPlannerDraft(draft, 'follow') || { ...draft };
+    } else {
+        const prevEntry = Number(positionPlannerDraft.entryPrice);
+        const stopOffset = Number(positionPlannerDraft.stopPrice) - prevEntry;
+        const targetOffset = Number(positionPlannerDraft.targetPrice) - prevEntry;
+        if (!Number.isFinite(prevEntry) || !Number.isFinite(stopOffset) || !Number.isFinite(targetOffset)) return;
+        draft.stopPrice = Number((nextEntry + stopOffset).toFixed(decimals));
+        draft.targetPrice = Number((nextEntry + targetOffset).toFixed(decimals));
+        positionPlannerDraft = { ...draft };
+    }
+    if (positionDraftRenderer) positionDraftRenderer.setDraft(positionPlannerDraft);
+    updatePositionPlannerUi(positionPlannerDraft, { source: 'follow' });
+}
+
 function installChartPricePan() {
     const strip = document.getElementById('chart-price-pan-strip');
     const container = document.getElementById('chart-main');
     if (!strip || !container || strip.dataset.bound === '1') return;
+
+    const isInRightScaleZone = (event) => {
+        const rect = container.getBoundingClientRect();
+        const x = Number(event?.clientX || 0) - rect.left;
+        return x >= Math.max(0, rect.width - Math.max(132, CHART_RIGHT_SCALE_MIN_WIDTH + 60));
+    };
 
     const stopPan = () => {
         chartPricePanState = null;
@@ -419,27 +470,82 @@ function installChartPricePan() {
         const span = chartPricePanState.startMax - chartPricePanState.startMin;
         if (!(rect.height > 0) || !(span > 0)) return;
         const deltaPx = Number(event.clientY) - chartPricePanState.startY;
-        const deltaPrice = (deltaPx / rect.height) * span;
+        if (chartPricePanState.mode === 'pan') {
+            const deltaPrice = (deltaPx / rect.height) * span;
+            _applyManualChartPriceRange({
+                min: chartPricePanState.startMin + deltaPrice,
+                max: chartPricePanState.startMax + deltaPrice,
+            });
+            return;
+        }
+        const startSpan = chartPricePanState.startMax - chartPricePanState.startMin;
+        if (!(startSpan > 0)) return;
+        const factor = Math.exp(deltaPx / Math.max(120, rect.height * 0.35));
+        const nextSpan = Math.max(startSpan * 0.03, Math.min(startSpan * 30, startSpan * factor));
+        const anchorRatio = Number.isFinite(Number(chartPricePanState.anchorRatio))
+            ? Math.max(0, Math.min(1, Number(chartPricePanState.anchorRatio)))
+            : 0.5;
+        const anchorPrice = Number(chartPricePanState.anchorPrice);
+        if (!Number.isFinite(anchorPrice)) return;
         _applyManualChartPriceRange({
-            min: chartPricePanState.startMin + deltaPrice,
-            max: chartPricePanState.startMax + deltaPrice,
+            min: anchorPrice - (nextSpan * (1 - anchorRatio)),
+            max: anchorPrice + (nextSpan * anchorRatio),
         });
     };
 
-    strip.addEventListener('mousedown', (event) => {
+    const beginPan = (event) => {
+        if (!isInRightScaleZone(event)) return;
+        if (Number(event.button) !== 0) return;
         event.preventDefault();
         event.stopPropagation();
         const range = manualChartPriceRange || _getVisibleMainPriceRange();
         if (!range) return;
+        const rect = container.getBoundingClientRect();
+        const localY = Math.max(0, Math.min(rect.height, Number(event.clientY || 0) - rect.top));
+        const startMin = Number(range.min);
+        const startMax = Number(range.max);
+        const startSpan = startMax - startMin;
+        const anchorRatio = rect.height > 0 ? (localY / rect.height) : 0.5;
         chartPricePanState = {
+            mode: event.shiftKey ? 'pan' : 'zoom',
             startY: Number(event.clientY || 0),
-            startMin: Number(range.min),
-            startMax: Number(range.max),
+            startMin,
+            startMax,
+            anchorRatio,
+            anchorPrice: startMax - (startSpan * anchorRatio),
         };
         strip.classList.add('active');
         window.addEventListener('mousemove', handlePanMove);
         window.addEventListener('mouseup', stopPan);
-    });
+    };
+
+    const handleWheelZoom = (event) => {
+        if (!isInRightScaleZone(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const baseRange = manualChartPriceRange || _getVisibleMainPriceRange();
+        if (!baseRange) return;
+        const min = Number(baseRange.min);
+        const max = Number(baseRange.max);
+        const span = max - min;
+        if (!(span > 0)) return;
+        const zoomIn = Number(event.deltaY) < 0;
+        const factor = zoomIn ? 0.88 : 1.14;
+        const nextSpan = Math.max(span * 0.04, Math.min(span * 25, span * factor));
+        const rect = container.getBoundingClientRect();
+        const localY = Math.max(0, Math.min(rect.height, Number(event.clientY || 0) - rect.top));
+        const anchorRatio = rect.height > 0 ? (localY / rect.height) : 0.5;
+        const anchorPrice = max - (span * anchorRatio);
+        const nextMin = anchorPrice - (nextSpan * (1 - anchorRatio));
+        const nextMax = anchorPrice + (nextSpan * anchorRatio);
+        _applyManualChartPriceRange({
+            min: nextMin,
+            max: nextMax,
+        });
+    };
+
+    strip.addEventListener('mousedown', beginPan, true);
+    container.addEventListener('mousedown', beginPan, true);
 
     strip.addEventListener('dblclick', (event) => {
         event.preventDefault();
@@ -447,6 +553,9 @@ function installChartPricePan() {
         resetManualChartPriceRange();
         showStatus('Price scale reset to auto.', 'info');
     });
+
+    strip.addEventListener('wheel', handleWheelZoom, { passive: false, capture: true });
+    container.addEventListener('wheel', handleWheelZoom, { passive: false, capture: true });
 
     strip.dataset.bound = '1';
 }
@@ -659,6 +768,7 @@ function syncFullscreenMarketControlsFromMain() {
 }
 
 async function applyFullscreenMarketSwitch() {
+    const prevSymbol = String(document.getElementById('sim-symbol')?.value || '').toUpperCase();
     const nextSymbol = String(document.getElementById('fs-market-symbol')?.value || document.getElementById('sim-symbol')?.value || 'XAUUSD').toUpperCase();
     const nextTf = normalizeTimeframeLabel(document.getElementById('fs-market-timeframe')?.value || document.getElementById('sim-timeframe')?.value || 'M15', 'M15');
     const nextSource = String(document.getElementById('fs-market-source')?.value || document.getElementById('live-source')?.value || 'mt5').toLowerCase() === 'databento' ? 'databento' : 'mt5';
@@ -693,7 +803,7 @@ async function applyFullscreenMarketSwitch() {
     try {
         showStatus(`Switching live feed to ${nextSymbol} ${nextTf} (${getLiveSourceLabel(nextSource)})...`, 'info');
         stopLiveFeed();
-        await startLiveFeed(false);
+        await startLiveFeed(false, { preserveSessionContext: prevSymbol === nextSymbol });
     } catch (err) {
         showStatus(`Live context switch failed: ${err?.message || err}`, 'danger');
     }
@@ -706,9 +816,10 @@ async function autoSwitchLiveContextFromInputs(reasonLabel = 'context change') {
     const symbol = String(document.getElementById('sim-symbol')?.value || 'XAUUSD').toUpperCase();
     const tf = normalizeTimeframeLabel(document.getElementById('sim-timeframe')?.value || 'M15', 'M15');
     const src = String(document.getElementById('live-source')?.value || 'mt5').toLowerCase() === 'databento' ? 'databento' : 'mt5';
+    const preserveSessionContext = String(reasonLabel || '').trim().toLowerCase() !== 'symbol change';
     showStatus(`Switching ${reasonLabel}: ${symbol} ${tf} (${getLiveSourceLabel(src)})...`, 'info');
     stopLiveFeed();
-    await startLiveFeed(false);
+    await startLiveFeed(false, { preserveSessionContext });
 }
 
 // â”€â”€ Utility Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -770,12 +881,146 @@ function _parseUiDecimal(rawValue, fallback = null) {
     return n;
 }
 
+function _normalizeSymbolForPriceFormat(symbolLike) {
+    return String(symbolLike || '').trim().toUpperCase();
+}
+
+function _getEconomicsDigitsForSymbol(symbolLike) {
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const requested = _normalizeSymbolForPriceFormat(symbolLike || getCostModelSymbol());
+    const econSymbol = _normalizeSymbolForPriceFormat(econ?.resolved_symbol || econ?.requested_symbol || '');
+    const digits = Number(econ?.digits);
+    if (!econ || !Number.isFinite(digits) || digits < 0) return null;
+    if (!econSymbol || !requested || econSymbol === requested) {
+        return Math.max(0, Math.min(8, Math.round(digits)));
+    }
+    return null;
+}
+
+function applyChartPricePrecision(symbolLike = null) {
+    const symbol = String(symbolLike || getCostModelSymbol() || document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    const digits = getPriceDecimalsForSymbol(symbol);
+    const minMove = Math.pow(10, -Math.max(0, digits));
+    const priceFormat = { type: 'price', precision: digits, minMove };
+    try {
+        candleSeries?.applyOptions?.({ priceFormat });
+    } catch (_) { /* ignore */ }
+    try {
+        mainCrosshairSeries?.applyOptions?.({ priceFormat });
+    } catch (_) { /* ignore */ }
+    try {
+        automationChartCandles?.applyOptions?.({ priceFormat });
+    } catch (_) { /* ignore */ }
+}
+
+function getPositionPlannerLotOverride() {
+    const lotEl = document.getElementById('position-planner-lot');
+    if (!lotEl) return null;
+    const raw = String(lotEl.value || '').trim();
+    if (!raw) {
+        delete lotEl.dataset.manualOverride;
+        return null;
+    }
+    const lot = _parseUiDecimal(raw, NaN);
+    if (!Number.isFinite(lot) || lot <= 0) return null;
+    if (String(lotEl.dataset.manualOverride || '') === '1') {
+        return lot;
+    }
+    return null;
+}
+
+function getPositionPlannerMode() {
+    return document.getElementById('position-planner-lock-targets')?.checked ? 'lock' : 'free';
+}
+
+function computePositionPlannerLotForDistance(priceDistance, riskUsd) {
+    const econ = (sessionSymbolEconomics && typeof sessionSymbolEconomics === 'object') ? sessionSymbolEconomics : null;
+    const valuePer1Lot = Number(econ?.point_value_per_1lot);
+    const distance = Number(priceDistance);
+    const risk = Number(riskUsd);
+    if (!Number.isFinite(valuePer1Lot) || valuePer1Lot <= 0) return NaN;
+    if (!Number.isFinite(distance) || distance <= 0) return NaN;
+    if (!Number.isFinite(risk) || risk <= 0) return NaN;
+    return normalizeLotForEconomics(risk / (distance * valuePer1Lot));
+}
+
+function computePositionPlannerActualMetrics(draftLike) {
+    const draft = (draftLike && typeof draftLike === 'object') ? draftLike : null;
+    if (!draft) return null;
+    const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
+    const entry = Number(draft.entryPrice);
+    const stop = Number(draft.stopPrice);
+    const target = Number(draft.targetPrice);
+    const lot = Number(draft.lotSize);
+    if (![entry, stop, target, lot].every((x) => Number.isFinite(x))) return null;
+    const riskDistance = Math.abs(entry - stop);
+    const rewardDistance = Math.abs(target - entry);
+    const riskUsd = Number.isFinite(valuePer1Lot) ? (riskDistance * valuePer1Lot * lot) : NaN;
+    const rewardUsd = Number.isFinite(valuePer1Lot) ? (rewardDistance * valuePer1Lot * lot) : NaN;
+    return {
+        riskDistance,
+        rewardDistance,
+        riskUsd,
+        rewardUsd,
+        rr: rewardDistance > 0 && riskDistance > 0 ? (rewardDistance / riskDistance) : NaN,
+    };
+}
+
+function reconcilePositionPlannerDraft(draftLike, changedKind = 'create') {
+    const draft = (draftLike && typeof draftLike === 'object') ? { ...draftLike } : null;
+    if (!draft) return null;
+    const side = String(draft.side || 'BUY').trim().toUpperCase();
+    const entry = Number(draft.entryPrice);
+    const stop = Number(draft.stopPrice);
+    const target = Number(draft.targetPrice);
+    const requestedRiskUsd = Number(draft.riskUsd);
+    const requestedRewardUsd = Number(draft.rewardUsd);
+    const decimals = getPriceDecimalsForSymbol(draft.symbol || getCostModelSymbol());
+    const mode = String(draft.plannerMode || getPositionPlannerMode()).toLowerCase();
+    draft.plannerMode = mode === 'lock' ? 'lock' : 'free';
+    if (!['BUY', 'SELL'].includes(side)) return draft;
+    if (![entry, stop, target].every((x) => Number.isFinite(x))) return draft;
+    if (draft.plannerMode !== 'lock') return draft;
+
+    const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
+    if (!Number.isFinite(valuePer1Lot) || valuePer1Lot <= 0) return draft;
+
+    let nextLot = Number(draft.lotSize);
+    let nextStopDistance = Math.abs(entry - stop);
+    let nextRewardDistance = Math.abs(target - entry);
+
+    if (changedKind === 'stop') {
+        nextStopDistance = Math.max(1e-9, Math.abs(entry - stop));
+        nextLot = computePositionPlannerLotForDistance(nextStopDistance, requestedRiskUsd);
+        nextRewardDistance = requestedRewardUsd / Math.max(1e-12, valuePer1Lot * nextLot);
+    } else if (changedKind === 'target') {
+        nextRewardDistance = Math.max(1e-9, Math.abs(target - entry));
+        nextLot = normalizeLotForEconomics(requestedRewardUsd / Math.max(1e-12, valuePer1Lot * nextRewardDistance));
+        nextStopDistance = requestedRiskUsd / Math.max(1e-12, valuePer1Lot * nextLot);
+    } else {
+        nextLot = Number.isFinite(nextLot) && nextLot > 0 ? normalizeLotForEconomics(nextLot) : NaN;
+        nextStopDistance = requestedRiskUsd / Math.max(1e-12, valuePer1Lot * nextLot);
+        nextRewardDistance = requestedRewardUsd / Math.max(1e-12, valuePer1Lot * nextLot);
+    }
+
+    if (!Number.isFinite(nextLot) || nextLot <= 0) return draft;
+    if (!Number.isFinite(nextStopDistance) || nextStopDistance <= 0) return draft;
+    if (!Number.isFinite(nextRewardDistance) || nextRewardDistance <= 0) return draft;
+
+    draft.lotSize = Number(nextLot.toFixed(4));
+    draft.stopPrice = Number((side === 'BUY' ? (entry - nextStopDistance) : (entry + nextStopDistance)).toFixed(decimals));
+    draft.targetPrice = Number((side === 'BUY' ? (entry + nextRewardDistance) : (entry - nextRewardDistance)).toFixed(decimals));
+    draft.targetR = Number((requestedRewardUsd / Math.max(1e-12, requestedRiskUsd)).toFixed(2));
+    return draft;
+}
+
 function renderSymbolEconomicsHint(snapshotLike = null) {
     if (snapshotLike && typeof snapshotLike === 'object') {
         sessionSymbolEconomics = { ...snapshotLike };
     } else if (!sessionSymbolEconomics) {
         sessionSymbolEconomics = null;
     }
+    applyChartPricePrecision();
     const el = document.getElementById('symbol-econ-hint');
     if (!el) return;
     const s = sessionSymbolEconomics;
@@ -2240,25 +2485,58 @@ function renderAgentState(state) {
     }
     // Reflect auto-scanned zones (if any) on chart so autonomous scans are visible.
     const snapshotToolState = state?.last_snapshot?.tool_state || {};
+    const multiFvgPreview = (snapshotToolState && typeof snapshotToolState.fvg_multi_zones_preview === 'object')
+        ? snapshotToolState.fvg_multi_zones_preview
+        : null;
     const autoFvgZones = Array.isArray(snapshotToolState?.fvg_zones_preview) ? snapshotToolState.fvg_zones_preview : [];
+    const multiFvgZonesFlat = [];
+    if (multiFvgPreview && typeof multiFvgPreview === 'object' && !Array.isArray(multiFvgPreview)) {
+        Object.entries(multiFvgPreview).forEach(([tf, rows]) => {
+            if (!Array.isArray(rows)) return;
+            const normTf = normalizeTimeframeLabel(tf, getChartTimeframe());
+            rows.forEach((z) => {
+                if (!z || typeof z !== 'object') return;
+                multiFvgZonesFlat.push({
+                    ...z,
+                    scan_timeframe: normalizeTimeframeLabel(z.scan_timeframe || normTf, normTf),
+                });
+            });
+        });
+    }
     const movementSnapshot = snapshotToolState?.fvg_movement_strength || snapshotToolState?.movement_strength || {};
     if (!toolStates.fvg) toolStates.fvg = {};
     if (movementSnapshot && typeof movementSnapshot === 'object' && Object.keys(movementSnapshot).length > 0) {
         toolStates.fvg.movement_strength = movementSnapshot;
         updateFvgStrengthBadge(movementSnapshot);
     }
-    const zoneSig = JSON.stringify(autoFvgZones.slice(0, 20));
+    const zoneSig = JSON.stringify((multiFvgZonesFlat.length > 0 ? multiFvgZonesFlat : autoFvgZones).slice(0, 60));
     if (zoneRenderer && zoneSig !== lastAgentZoneSignature) {
         lastAgentZoneSignature = zoneSig;
-        if (autoFvgZones.length > 0) {
+        if (multiFvgZonesFlat.length > 0 || autoFvgZones.length > 0) {
             const fvgCfg = snapshotToolState?.fvg_config || {};
-            const autoTf = normalizeTimeframeLabel(fvgCfg.timeframe || toolStates.fvg.detect_timeframe || getChartTimeframe(), getChartTimeframe());
-            const adaptedZones = autoFvgZones.map((z) => ({
-                ...z,
-                scan_timeframe: autoTf,
-                style: getFvgTfStyle(autoTf, z?.type),
-            }));
-            fvgZonesByTimeframe[autoTf] = adaptedZones;
+            if (multiFvgZonesFlat.length > 0) {
+                const grouped = {};
+                multiFvgZonesFlat.forEach((z) => {
+                    const tf = normalizeTimeframeLabel(z.scan_timeframe || getChartTimeframe(), getChartTimeframe());
+                    if (!grouped[tf]) grouped[tf] = [];
+                    grouped[tf].push({
+                        ...z,
+                        scan_timeframe: tf,
+                        style: getFvgTfStyle(tf, z?.type),
+                    });
+                });
+                Object.entries(grouped).forEach(([tf, rows]) => {
+                    fvgZonesByTimeframe[tf] = rows;
+                });
+            } else {
+                const autoTf = normalizeTimeframeLabel(fvgCfg.timeframe || toolStates.fvg.detect_timeframe || getChartTimeframe(), getChartTimeframe());
+                const adaptedZones = autoFvgZones.map((z) => ({
+                    ...z,
+                    scan_timeframe: autoTf,
+                    style: getFvgTfStyle(autoTf, z?.type),
+                }));
+                fvgZonesByTimeframe[autoTf] = adaptedZones;
+            }
             renderAllFvgOverlays();
             rebuildFvgNavigation();
             if (!toolStates.fvg) toolStates.fvg = {};
@@ -2311,10 +2589,17 @@ function renderAgentState(state) {
             }
             const trend = snapshotToolState?.fvg_trend || snapshotToolState?.trend || {};
             const movement = snapshotToolState?.fvg_movement_strength || snapshotToolState?.movement_strength || {};
-            const trendLabel = (trend && trend.direction)
-                ? `agent_auto ${autoTf} | ${String(trend.direction)} @ ${String(trend.trend_timeframe || '')}`.trim()
-                : `agent_auto ${autoTf}`;
-            renderFvgInspector(adaptedZones, trendLabel);
+            const trendLabel = multiFvgZonesFlat.length > 0
+                ? 'agent_auto multi_tf'
+                : (
+                    (trend && trend.direction)
+                        ? `agent_auto ${normalizeTimeframeLabel(fvgCfg.timeframe || toolStates.fvg.detect_timeframe || getChartTimeframe(), getChartTimeframe())} | ${String(trend.direction)} @ ${String(trend.trend_timeframe || '')}`.trim()
+                        : `agent_auto ${normalizeTimeframeLabel(fvgCfg.timeframe || toolStates.fvg.detect_timeframe || getChartTimeframe(), getChartTimeframe())}`
+                );
+            renderFvgInspector(multiFvgZonesFlat.length > 0 ? mergedZones : autoFvgZones.map((z) => ({
+                ...z,
+                scan_timeframe: normalizeTimeframeLabel(fvgCfg.timeframe || toolStates.fvg.detect_timeframe || getChartTimeframe(), getChartTimeframe()),
+            })), trendLabel);
             toolStates.fvg.movement_strength = movement;
             updateFvgStrengthBadge(movement);
         }
@@ -5130,6 +5415,20 @@ function _automationChartEnsureMain() {
             horzLines: { color: '#1e222d' },
         },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+        },
+        handleScale: {
+            axisPressedMouseMove: {
+                time: true,
+                price: true,
+            },
+            mouseWheel: true,
+            pinch: true,
+        },
         rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
         timeScale: {
             borderColor: '#2a2e39',
@@ -5149,6 +5448,7 @@ function _automationChartEnsureMain() {
         wickDownColor: '#ef5350',
         wickUpColor: '#26a69a',
     });
+    applyChartPricePrecision();
     automationChartVolume = automationChartMain.addHistogramSeries({
         color: '#385263',
         priceFormat: { type: 'volume' },
@@ -8657,6 +8957,7 @@ function applyIndicatorVisibility() {
 
 function updateIndicatorsOnChart() {
     if (!chart || !candleSeries) return;
+    syncPositionPlannerDraftToMarket();
     applyIndicatorVisibility();
     const bars = getVisibleBarsForIndicators();
     const hasSelection = indicatorSelection.smaEma
@@ -8967,8 +9268,11 @@ function getZonePriceDecimals() {
 }
 
 function getPriceDecimalsForSymbol(symbolLike) {
-    const symbol = String(symbolLike || 'XAUUSD').toUpperCase();
-    if (symbol.includes('USD') && (symbol.startsWith('EUR') || symbol.startsWith('GBP'))) return 5;
+    const symbol = _normalizeSymbolForPriceFormat(symbolLike || 'XAUUSD');
+    const econDigits = _getEconomicsDigitsForSymbol(symbol);
+    if (Number.isFinite(econDigits)) return econDigits;
+    if (/^[A-Z]{3}JPY(M)?$/.test(symbol)) return 3;
+    if (/^[A-Z]{6}(M)?$/.test(symbol) && !symbol.includes('JPY')) return 5;
     if (symbol.includes('NAS') || symbol.includes('US500') || symbol.includes('SPX') || symbol.includes('DJI')) return 1;
     return 2;
 }
@@ -9238,6 +9542,8 @@ class ChartZoneRenderer {
         div.className = `fvg-zone ${zone.type}${zone.filled ? ' filled' : ''}`;
         div.dataset.zoneId = String(zone.bar_index);
         div.dataset.scanTf = String(zone.scan_timeframe || '');
+        const badge = document.createElement('div');
+        badge.className = 'fvg-zone-badge';
         const type = String(zone.type || '');
         let direction = 'Zone';
         if (type === 'bullish_fvg') direction = 'Bullish FVG';
@@ -9262,12 +9568,15 @@ class ChartZoneRenderer {
         const statusLabel = zone.filled ? 'Filled' : 'Active';
         const extra = zLabel !== null ? ` | Z: ${zLabel}` : '';
         const scanTf = String(zone.scan_timeframe || '').toUpperCase();
+        badge.textContent = scanTf || normalizeTimeframeLabel(getChartTimeframe(), 'M15');
         div.title = `${direction}${scanTf ? ` [${scanTf}]` : ''} | Range: ${rangeLabel} | OrigRange: ${originRangeLabel} | Gap: ${gapLabel} | OrigGap: ${originalGapLabel}${extra} | ${statusLabel}${mitigationCount > 0 ? ` | Mitigations: ${mitigationCount}` : ''}`;
 
         const colorCfg = zone.style || getFvgTfStyle(scanTf || getChartTimeframe(), type);
         if (colorCfg && typeof colorCfg === 'object') {
             if (colorCfg.bg) div.style.backgroundColor = String(colorCfg.bg);
             if (colorCfg.border) div.style.border = `1px solid ${String(colorCfg.border)}`;
+            if (colorCfg.border) badge.style.borderColor = String(colorCfg.border);
+            if (colorCfg.line) badge.style.color = String(colorCfg.line);
         }
 
         let topLine = null;
@@ -9291,8 +9600,9 @@ class ChartZoneRenderer {
         }
 
         this.overlayContainer.appendChild(div);
-        this.zones.push({ data: zone, el: div, topLine, bottomLine });
-        this._positionZone(zone, div, topLine, bottomLine);
+        this.overlayContainer.appendChild(badge);
+        this.zones.push({ data: zone, el: div, topLine, bottomLine, badge });
+        this._positionZone(zone, div, topLine, bottomLine, badge);
     }
 
     _resolveBoundaryStarts(zone) {
@@ -9332,7 +9642,7 @@ class ChartZoneRenderer {
         return Number.isFinite(Number(fallback)) ? Number(fallback) : 0;
     }
 
-    _positionZone(zone, div, topLine = null, bottomLine = null) {
+    _positionZone(zone, div, topLine = null, bottomLine = null, badge = null) {
         const timeScale = this.chart.timeScale();
         const x1 = timeScale.timeToCoordinate(zone.start_time_unix);
         const x2 = timeScale.timeToCoordinate(zone.end_time_unix);
@@ -9343,6 +9653,7 @@ class ChartZoneRenderer {
             div.style.display = 'none';
             if (topLine) topLine.style.display = 'none';
             if (bottomLine) bottomLine.style.display = 'none';
+            if (badge) badge.style.display = 'none';
             return;
         }
 
@@ -9354,6 +9665,7 @@ class ChartZoneRenderer {
                 div.style.display = 'none';
                 if (topLine) topLine.style.display = 'none';
                 if (bottomLine) bottomLine.style.display = 'none';
+                if (badge) badge.style.display = 'none';
                 return;
             }
         }
@@ -9366,6 +9678,7 @@ class ChartZoneRenderer {
             div.style.display = 'none';
             if (topLine) topLine.style.display = 'none';
             if (bottomLine) bottomLine.style.display = 'none';
+            if (badge) badge.style.display = 'none';
             return;
         }
         // Current active gap starts where BOTH current boundaries are valid.
@@ -9384,6 +9697,14 @@ class ChartZoneRenderer {
         div.style.top = `${Math.min(y1, y2)}px`;
         div.style.width = `${width}px`;
         div.style.height = `${Math.max(Math.abs(y2 - y1), 2)}px`;
+
+        if (badge) {
+            const badgeTopPreferred = Math.min(y1, y2) - 18;
+            const badgeTop = badgeTopPreferred >= 2 ? badgeTopPreferred : (Math.min(y1, y2) + 2);
+            badge.style.display = 'inline-flex';
+            badge.style.left = `${Math.max(2, left + 4)}px`;
+            badge.style.top = `${Math.max(2, badgeTop)}px`;
+        }
 
         if (topLine && bottomLine) {
             const yTop = Math.min(y1, y2);
@@ -9405,7 +9726,7 @@ class ChartZoneRenderer {
 
     _repositionAll() {
         for (const z of this.zones) {
-            this._positionZone(z.data, z.el, z.topLine, z.bottomLine);
+            this._positionZone(z.data, z.el, z.topLine, z.bottomLine, z.badge);
         }
     }
 
@@ -9414,6 +9735,7 @@ class ChartZoneRenderer {
             z.el.remove();
             if (z.topLine) z.topLine.remove();
             if (z.bottomLine) z.bottomLine.remove();
+            if (z.badge) z.badge.remove();
         }
         this.zones = [];
     }
@@ -9527,6 +9849,11 @@ class ChartPositionDraftRenderer {
         if (this.targetLabelEl) this.targetLabelEl.style.display = 'none';
         if (this.stopHandleEl) this.stopHandleEl.style.display = 'none';
         if (this.targetHandleEl) this.targetHandleEl.style.display = 'none';
+        if (this.stopHitEl) this.stopHitEl.style.display = 'none';
+        if (this.targetHitEl) this.targetHitEl.style.display = 'none';
+        if (this.widthHandleEl) this.widthHandleEl.style.display = 'none';
+        if (this.openTradeBtnEl) this.openTradeBtnEl.style.display = 'none';
+        if (this.dragInfoEl) this.dragInfoEl.style.display = 'none';
     }
 
     _ensureElements() {
@@ -9564,6 +9891,49 @@ class ChartPositionDraftRenderer {
             this.overlayContainer.appendChild(el);
             return el;
         };
+        const mkLineHit = (kind) => {
+            const el = document.createElement('div');
+            el.className = 'chart-position-line-hit';
+            el.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.dragKind = kind;
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkWidthHandle = () => {
+            const el = document.createElement('div');
+            el.className = 'chart-position-width-handle';
+            el.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.dragKind = 'width';
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkOpenTradeBtn = () => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'chart-position-open-btn';
+            el.textContent = 'Open Trade';
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void openPositionPlannerDraftTrade();
+            });
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
+        const mkDragInfo = () => {
+            const el = document.createElement('div');
+            el.className = 'chart-position-drag-info';
+            this.overlayContainer.appendChild(el);
+            return el;
+        };
         this.rewardAreaEl = mkArea('reward buy');
         this.riskAreaEl = mkArea('risk buy');
         this.entryLineEl = mkLine('entry', '#e2e8f0');
@@ -9574,6 +9944,11 @@ class ChartPositionDraftRenderer {
         this.targetLabelEl = mkLabel('buy');
         this.stopHandleEl = mkHandle('stop', '#ef5350');
         this.targetHandleEl = mkHandle('target', '#26a69a');
+        this.stopHitEl = mkLineHit('stop');
+        this.targetHitEl = mkLineHit('target');
+        this.widthHandleEl = mkWidthHandle();
+        this.openTradeBtnEl = mkOpenTradeBtn();
+        this.dragInfoEl = mkDragInfo();
     }
 
     _bindDrag() {
@@ -9589,6 +9964,7 @@ class ChartPositionDraftRenderer {
     _stopDrag() {
         this.dragKind = null;
         this._unbindDrag();
+        if (this.dragInfoEl) this.dragInfoEl.style.display = 'none';
     }
 
     _onPointerMove(event) {
@@ -9614,10 +9990,17 @@ class ChartPositionDraftRenderer {
             if (side === 'BUY' && nextPrice <= entry) return;
             if (side === 'SELL' && nextPrice >= entry) return;
             this.draft.targetPrice = nextPrice;
+        } else if (this.dragKind === 'width') {
+            const rect = this.container.getBoundingClientRect();
+            const x = Math.max(0, Math.min(rect.width, Number(event.clientX) - Number(rect.left)));
+            const xRaw = this.chart.timeScale().timeToCoordinate(Number(this.draft.anchorTime));
+            const xLeft = Number.isFinite(Number(xRaw)) ? Number(xRaw) : Math.max(24, Number(rect.width) * 0.55);
+            this.draft.boxWidthPx = Math.max(60, Math.min(Math.max(80, rect.width - 8), x - xLeft));
         } else {
             return;
         }
-        if (this.onDraftChange) this.onDraftChange({ ...this.draft }, { source: 'drag' });
+        this.draft = reconcilePositionPlannerDraft(this.draft, this.dragKind) || this.draft;
+        if (this.onDraftChange) this.onDraftChange({ ...this.draft }, { source: 'drag', dragKind: this.dragKind });
         this._reposition();
     }
 
@@ -9639,7 +10022,8 @@ class ChartPositionDraftRenderer {
 
         const xRaw = this.chart.timeScale().timeToCoordinate(Number(this.draft.anchorTime));
         const xLeft = Number.isFinite(Number(xRaw)) ? Number(xRaw) : Math.max(24, width * 0.55);
-        const xRight = Math.max(xLeft + 40, width - 8);
+        const desiredWidth = Math.max(60, Math.min(width - xLeft - 8, Number(this.draft.boxWidthPx || 180)));
+        const xRight = xLeft + desiredWidth;
         const entryY = this.series.priceToCoordinate(Number(this.draft.entryPrice));
         const stopY = this.series.priceToCoordinate(Number(this.draft.stopPrice));
         const targetY = this.series.priceToCoordinate(Number(this.draft.targetPrice));
@@ -9653,7 +10037,7 @@ class ChartPositionDraftRenderer {
         const rewardHeight = Math.max(2, Math.abs(Number(entryY) - Number(targetY)));
         const boxWidth = Math.max(40, xRight - xLeft);
 
-        const applyLine = (lineEl, labelEl, handleEl, y, color, text) => {
+        const applyLine = (lineEl, labelEl, handleEl, hitEl, y, color, text) => {
             lineEl.style.display = 'block';
             lineEl.style.left = `${xLeft}px`;
             lineEl.style.top = `${Number(y)}px`;
@@ -9667,6 +10051,12 @@ class ChartPositionDraftRenderer {
                 handleEl.style.display = 'block';
                 handleEl.style.left = `${xRight}px`;
                 handleEl.style.top = `${Number(y)}px`;
+            }
+            if (hitEl) {
+                hitEl.style.display = 'block';
+                hitEl.style.left = `${xLeft}px`;
+                hitEl.style.top = `${Number(y)}px`;
+                hitEl.style.width = `${boxWidth}px`;
             }
         };
 
@@ -9682,9 +10072,32 @@ class ChartPositionDraftRenderer {
         this.riskAreaEl.style.width = `${boxWidth}px`;
         this.riskAreaEl.style.height = `${riskHeight}px`;
 
-        applyLine(this.entryLineEl, this.entryLabelEl, null, entryY, '#e2e8f0', `Entry ${formatZonePrice(Number(this.draft.entryPrice))}`);
-        applyLine(this.stopLineEl, this.stopLabelEl, this.stopHandleEl, stopY, '#ef5350', `SL ${formatZonePrice(Number(this.draft.stopPrice))}`);
-        applyLine(this.targetLineEl, this.targetLabelEl, this.targetHandleEl, targetY, '#10b981', `TP ${formatZonePrice(Number(this.draft.targetPrice))}`);
+        applyLine(this.entryLineEl, this.entryLabelEl, null, null, entryY, '#e2e8f0', `Entry ${formatZonePrice(Number(this.draft.entryPrice))}`);
+        applyLine(this.stopLineEl, this.stopLabelEl, this.stopHandleEl, this.stopHitEl, stopY, '#ef5350', `SL ${formatZonePrice(Number(this.draft.stopPrice))}`);
+        applyLine(this.targetLineEl, this.targetLabelEl, this.targetHandleEl, this.targetHitEl, targetY, '#10b981', `TP ${formatZonePrice(Number(this.draft.targetPrice))}`);
+
+        if (this.widthHandleEl) {
+            this.widthHandleEl.style.display = 'block';
+            this.widthHandleEl.style.left = `${xRight}px`;
+            this.widthHandleEl.style.top = `${Math.min(riskTop, rewardTop)}px`;
+            this.widthHandleEl.style.height = `${Math.max(riskTop + riskHeight, rewardTop + rewardHeight) - Math.min(riskTop, rewardTop)}px`;
+        }
+        if (this.openTradeBtnEl) {
+            this.openTradeBtnEl.style.display = 'inline-flex';
+            this.openTradeBtnEl.style.left = `${Math.max(6, xRight - 96)}px`;
+            this.openTradeBtnEl.style.top = `${Math.max(6, Math.min(riskTop, rewardTop) - 30)}px`;
+        }
+        if (this.dragInfoEl) {
+            const metrics = computePositionPlannerActualMetrics(this.draft);
+            if ((this.dragKind === 'stop' || this.dragKind === 'target') && metrics) {
+                this.dragInfoEl.style.display = 'block';
+                this.dragInfoEl.style.left = `${Math.max(6, xRight - 148)}px`;
+                this.dragInfoEl.style.top = `${Math.max(6, (this.dragKind === 'stop' ? Number(stopY) : Number(targetY)) - 48)}px`;
+                this.dragInfoEl.textContent = `SL $${Number(metrics.riskUsd || 0).toFixed(2)} | TP $${Number(metrics.rewardUsd || 0).toFixed(2)} | ${Number(metrics.rr || 0).toFixed(2)}R`;
+            } else {
+                this.dragInfoEl.style.display = 'none';
+            }
+        }
     }
 }
 
@@ -9890,6 +10303,20 @@ function initChart() {
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
         },
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+        },
+        handleScale: {
+            axisPressedMouseMove: {
+                time: true,
+                price: true,
+            },
+            mouseWheel: true,
+            pinch: true,
+        },
         rightPriceScale: { borderColor: '#2a2e39', minimumWidth: CHART_RIGHT_SCALE_MIN_WIDTH },
         timeScale: {
             borderColor: '#2a2e39',
@@ -9929,6 +10356,7 @@ function initChart() {
         lastValueVisible: false,
         priceLineVisible: false,
     });
+    applyChartPricePrecision();
     chart.priceScale('volume').applyOptions({
         scaleMargins: { top: 0.85, bottom: 0 },
     });
@@ -9968,7 +10396,7 @@ function initChart() {
     zoneRenderer = new ChartZoneRenderer(chart, candleSeries);
     triggerMapRenderer = new ChartTriggerMapRenderer(chart, candleSeries);
     positionDraftRenderer = new ChartPositionDraftRenderer(chart, candleSeries, (draft, meta) => {
-        positionPlannerDraft = { ...draft };
+        positionPlannerDraft = reconcilePositionPlannerDraft({ ...draft }, meta?.dragKind || meta?.source || 'manual') || { ...draft };
         updatePositionPlannerUi(positionPlannerDraft, meta);
     });
     if (chartClickHandler) {
@@ -10772,6 +11200,18 @@ function bindEvents() {
     document.getElementById('position-planner-risk-usd')?.addEventListener('input', () => syncPositionPlannerInputs('risk'));
     document.getElementById('position-planner-reward-usd')?.addEventListener('input', () => syncPositionPlannerInputs('reward'));
     document.getElementById('position-planner-target-r')?.addEventListener('input', () => syncPositionPlannerInputs('r'));
+    document.getElementById('position-planner-lock-targets')?.addEventListener('change', () => syncPositionPlannerInputs('mode'));
+    document.getElementById('position-planner-lot')?.addEventListener('input', (e) => {
+        const el = e?.target;
+        if (!el) return;
+        const lot = _parseUiDecimal(el.value, NaN);
+        if (Number.isFinite(lot) && lot > 0) {
+            el.dataset.manualOverride = '1';
+        } else {
+            delete el.dataset.manualOverride;
+        }
+        syncPositionPlannerInputs('lot');
+    });
 
     // Agent loop events (copilot-backed runtime)
     document.getElementById('btn-agent-start')?.addEventListener('click', startAgentLoop);
@@ -11261,7 +11701,38 @@ function _buildLiveWsUrl(source, symbol, timeframe, historyBars) {
     return `${wsProtocol}://${wsHost}/api/v1/simulation/ws/mt5/live?${params.toString()}`;
 }
 
-async function startLiveFeed(isReconnect = false) {
+async function updateSessionContextInPlace(symbol, timeframe) {
+    if (!(sessionId && Number.isFinite(Number(sessionId)) && Number(sessionId) > 0)) return null;
+    const payload = {
+        symbol: String(symbol || '').trim().toUpperCase(),
+        timeframe: normalizeTimeframeLabel(timeframe || 'M15', 'M15'),
+    };
+    const res = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}/context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.error) {
+        throw new Error(data?.error || `context update failed (${res.status})`);
+    }
+    if (data?.live_control || data?.live_account) {
+        setSessionLiveExecutionModeFromLiveControl(data?.live_control || null, data?.live_account || null);
+    }
+    renderSymbolEconomicsHint(data?.symbol_economics || null);
+    updateSessionIdStat();
+    if (typeof data?.symbol === 'string') {
+        const symEl = document.getElementById('sim-symbol');
+        if (symEl) setSelectValueCaseInsensitive(symEl, data.symbol);
+    }
+    if (typeof data?.timeframe === 'string') {
+        const tfEl = document.getElementById('sim-timeframe');
+        if (tfEl) tfEl.value = normalizeTimeframeLabel(data.timeframe, 'M15');
+    }
+    return data;
+}
+
+async function startLiveFeed(isReconnect = false, options = {}) {
     if (getWorkbenchMode() !== 'live') {
         showStatus('Switch mode to "Normal (Live Feed)" to use live bars.', 'warning');
         return;
@@ -11280,7 +11751,7 @@ async function startLiveFeed(isReconnect = false) {
         liveFeedReconnectAttempts = 0;
     }
 
-    const hasSession = await ensureSessionForLive(symbol, timeframe, source);
+    const hasSession = await ensureSessionForLive(symbol, timeframe, source, options);
     if (!hasSession) {
         if (!isReconnect) liveFeedRequested = false;
         return;
@@ -11450,7 +11921,8 @@ async function startLiveFeed(isReconnect = false) {
     }
 }
 
-async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
+async function ensureSessionForLive(symbol, timeframe, source = 'mt5', options = {}) {
+    const preserveSessionContext = !!options?.preserveSessionContext;
     if (sessionId && !_shouldCreateFreshSession()) {
         try {
             const existingRes = await fetch(`${API_BASE}/api/simulation/sessions/${sessionId}`);
@@ -11466,6 +11938,19 @@ async function ensureSessionForLive(symbol, timeframe, source = 'mt5') {
                     void refreshAgentMemoryList('');
                     void refreshAgentIdentity(false);
                     return true;
+                }
+                if (preserveSessionContext && String(existing.mode || '').trim().toLowerCase() === 'live') {
+                    const updated = await updateSessionContextInPlace(symbol, timeframe);
+                    if (updated?.id) {
+                        await refreshSessionCatalog(false);
+                        void refreshAgentMemoryList('');
+                        void refreshAgentIdentity(false);
+                        showStatus(
+                            `Updated active session #${updated.id} to ${String(updated.symbol || symbol).toUpperCase()} ${normalizeTimeframeLabel(updated.timeframe || timeframe, 'M15')}.`,
+                            'info'
+                        );
+                        return true;
+                    }
                 }
                 showStatus(
                     `Creating a new live session for ${symbol} ${timeframe} (existing session #${existing.id} is preserved).`,
@@ -12789,15 +13274,23 @@ function buildPositionPlannerDraft() {
     const targetR = _parseUiDecimal(document.getElementById('position-planner-target-r')?.value, NaN);
     const entryPrice = getLastMarketPrice();
     const pointSize = getSymbolPointSize();
-    const lot = computePositionPlannerLot(stopPoints, riskUsd);
+    const manualLot = getPositionPlannerLotOverride();
+    const lot = Number.isFinite(manualLot) && manualLot > 0
+        ? normalizeLotForEconomics(manualLot)
+        : computePositionPlannerLot(stopPoints, riskUsd);
+    const plannerMode = getPositionPlannerMode();
     if (!['BUY', 'SELL'].includes(side)) throw new Error('Invalid side');
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('Current market price unavailable');
     if (!Number.isFinite(stopPoints) || stopPoints <= 0) throw new Error('Stop points unavailable');
     if (!Number.isFinite(pointSize) || pointSize <= 0) throw new Error('Symbol point size unavailable');
     if (!Number.isFinite(lot) || lot <= 0) throw new Error('Lot calculation failed');
     const decimals = getPriceDecimalsForSymbol(getCostModelSymbol());
-    const riskDistance = stopPoints * pointSize;
+    let riskDistance = stopPoints * pointSize;
     let rewardDistance = NaN;
+    if (plannerMode === 'lock') {
+        const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
+        riskDistance = riskUsd / Math.max(1e-12, valuePer1Lot * lot);
+    }
     if (Number.isFinite(rewardUsd) && rewardUsd > 0) {
         const valuePer1Lot = Number(sessionSymbolEconomics?.point_value_per_1lot);
         rewardDistance = rewardUsd / Math.max(1e-12, valuePer1Lot * lot);
@@ -12810,6 +13303,8 @@ function buildPositionPlannerDraft() {
     const stopPrice = side === 'BUY' ? entryPrice - riskDistance : entryPrice + riskDistance;
     const targetPrice = side === 'BUY' ? entryPrice + rewardDistance : entryPrice - rewardDistance;
     const lastBar = Array.isArray(allBars) && allBars.length > 0 ? allBars[allBars.length - 1] : null;
+    const chartMainEl = document.getElementById('chart-main');
+    const defaultBoxWidthPx = Math.max(120, Math.min(320, Math.round(Number(chartMainEl?.clientWidth || 0) * 0.22 || 180)));
     return {
         side,
         symbol: getCostModelSymbol(),
@@ -12820,26 +13315,32 @@ function buildPositionPlannerDraft() {
         stopPoints: Number(stopPoints),
         riskUsd: Number(riskUsd),
         rewardUsd: Number((Number.isFinite(rewardUsd) && rewardUsd > 0 ? rewardUsd : (riskUsd * targetR)).toFixed(2)),
-        targetR: Number((rewardDistance / riskDistance).toFixed(2)),
+        targetR: Number(((Number.isFinite(rewardUsd) && rewardUsd > 0 ? (rewardUsd / Math.max(1e-12, riskUsd)) : targetR)).toFixed(2)),
         lotSize: Number(lot.toFixed(4)),
+        boxWidthPx: defaultBoxWidthPx,
+        plannerMode,
     };
 }
 
 function updatePositionPlannerUi(draft, meta = {}) {
     const statusEl = document.getElementById('position-planner-status');
+    const modeEl = document.getElementById('position-planner-metric-mode');
     const entryEl = document.getElementById('position-planner-metric-entry');
     const slEl = document.getElementById('position-planner-metric-sl');
     const tpEl = document.getElementById('position-planner-metric-tp');
+    const requestedEl = document.getElementById('position-planner-metric-requested');
     const rrEl = document.getElementById('position-planner-metric-risk-reward');
     const lotEl = document.getElementById('position-planner-lot');
-    if (!statusEl || !entryEl || !slEl || !tpEl || !rrEl || !lotEl) return;
+    if (!statusEl || !modeEl || !entryEl || !slEl || !tpEl || !requestedEl || !rrEl || !lotEl) return;
 
     if (!draft || typeof draft !== 'object') {
         statusEl.textContent = 'No draft on chart.';
         statusEl.className = 'planner-status';
+        modeEl.textContent = 'AUTO';
         entryEl.textContent = '-';
         slEl.textContent = '-';
         tpEl.textContent = '-';
+        requestedEl.textContent = '-';
         rrEl.textContent = '-';
         lotEl.value = '';
         return;
@@ -12850,19 +13351,28 @@ function updatePositionPlannerUi(draft, meta = {}) {
     const riskUsd = Number.isFinite(valuePer1Lot) ? (riskDistance * valuePer1Lot * Number(draft.lotSize || 0)) : Number(draft.riskUsd || 0);
     const rewardUsd = Number.isFinite(valuePer1Lot) ? (rewardDistance * valuePer1Lot * Number(draft.lotSize || 0)) : Number(draft.rewardUsd || 0);
     const rr = rewardDistance > 0 && riskDistance > 0 ? rewardDistance / riskDistance : NaN;
+    const manualMode = String(lotEl.dataset.manualOverride || '') === '1';
 
-    statusEl.textContent = meta?.source === 'drag' ? 'Draft updated live by drag.' : 'Draft ready on chart. Drag SL/TP handles.';
+    statusEl.textContent = meta?.source === 'drag'
+        ? 'Draft updated live by drag.'
+        : (meta?.source === 'follow'
+            ? 'Draft is tracking live price until you open the trade.'
+            : 'Draft ready on chart. Drag SL/TP lines or right edge.');
     statusEl.className = 'planner-status ready';
+    modeEl.textContent = `${draft.plannerMode === 'lock' ? 'LOCK $' : 'FREE'} · ${manualMode ? 'MANUAL LOT' : 'AUTO LOT'}`;
     entryEl.textContent = formatZonePrice(Number(draft.entryPrice));
     slEl.textContent = formatZonePrice(Number(draft.stopPrice));
     tpEl.textContent = formatZonePrice(Number(draft.targetPrice));
+    requestedEl.textContent = `${Number.isFinite(Number(draft.riskUsd)) ? `$${Number(draft.riskUsd).toFixed(2)}` : '-'} / ${Number.isFinite(Number(draft.rewardUsd)) ? `$${Number(draft.rewardUsd).toFixed(2)}` : '-'} | ${Number.isFinite(Number(draft.targetR)) ? Number(draft.targetR).toFixed(2) : '-'}R`;
     rrEl.textContent = `${Number.isFinite(riskUsd) ? `$${riskUsd.toFixed(2)}` : '-'} / ${Number.isFinite(rewardUsd) ? `$${rewardUsd.toFixed(2)}` : '-'} | ${Number.isFinite(rr) ? rr.toFixed(2) : '-'}R`;
-    lotEl.value = Number.isFinite(Number(draft.lotSize)) ? Number(draft.lotSize).toFixed(4) : '';
+    if (draft.plannerMode === 'lock' || String(lotEl.dataset.manualOverride || '') !== '1' || !String(lotEl.value || '').trim()) {
+        lotEl.value = Number.isFinite(Number(draft.lotSize)) ? Number(draft.lotSize).toFixed(4) : '';
+    }
     const rewardInput = document.getElementById('position-planner-reward-usd');
     const targetRInput = document.getElementById('position-planner-target-r');
     const stopInput = document.getElementById('position-planner-stop-points');
-    if (rewardInput && Number.isFinite(rewardUsd)) rewardInput.value = rewardUsd.toFixed(2);
-    if (targetRInput && Number.isFinite(rr)) targetRInput.value = rr.toFixed(2);
+    if (rewardInput && Number.isFinite(Number(draft.rewardUsd))) rewardInput.value = Number(draft.rewardUsd).toFixed(2);
+    if (targetRInput && Number.isFinite(Number(draft.targetR))) targetRInput.value = Number(draft.targetR).toFixed(2);
     if (stopInput) {
         const pointSize = getSymbolPointSize(draft.symbol);
         const stopPts = riskDistance > 0 && pointSize > 0 ? (riskDistance / pointSize) : NaN;
@@ -12876,7 +13386,11 @@ function syncPositionPlannerInputs(source = 'manual') {
     const rInput = document.getElementById('position-planner-target-r');
     const stopInput = document.getElementById('position-planner-stop-points');
     const sideInput = document.getElementById('position-planner-side');
+    const lotEl = document.getElementById('position-planner-lot');
     if (!riskInput || !rewardInput || !rInput || !stopInput || !sideInput) return;
+    if (lotEl && source !== 'lot') {
+        delete lotEl.dataset.manualOverride;
+    }
     const riskUsd = _parseUiDecimal(riskInput.value, NaN);
     const rewardUsd = _parseUiDecimal(rewardInput.value, NaN);
     const targetR = _parseUiDecimal(rInput.value, NaN);
@@ -12887,13 +13401,25 @@ function syncPositionPlannerInputs(source = 'manual') {
     }
     const stopPts = _parseUiDecimal(stopInput.value, NaN);
     const lot = computePositionPlannerLot(stopPts, _parseUiDecimal(riskInput.value, NaN));
-    const lotEl = document.getElementById('position-planner-lot');
-    if (lotEl) lotEl.value = Number.isFinite(lot) ? lot.toFixed(4) : '';
+    const manualLot = getPositionPlannerLotOverride();
+    if (lotEl && !(Number.isFinite(manualLot) && manualLot > 0)) {
+        lotEl.value = Number.isFinite(lot) ? lot.toFixed(4) : '';
+    }
     if (positionPlannerDraft && typeof positionPlannerDraft === 'object') {
         try {
-            const nextDraft = buildPositionPlannerDraft();
+            const nextDraft = reconcilePositionPlannerDraft(buildPositionPlannerDraft(), source) || buildPositionPlannerDraft();
+            const builtEntry = Number(nextDraft.entryPrice);
+            const preservedEntry = Number(positionPlannerDraft.entryPrice);
             nextDraft.anchorTime = positionPlannerDraft.anchorTime;
-            nextDraft.entryPrice = positionPlannerDraft.entryPrice;
+            if (Number.isFinite(builtEntry) && Number.isFinite(preservedEntry)) {
+                const delta = preservedEntry - builtEntry;
+                nextDraft.entryPrice = preservedEntry;
+                nextDraft.stopPrice = Number(Number(nextDraft.stopPrice + delta).toFixed(getPriceDecimalsForSymbol(nextDraft.symbol)));
+                nextDraft.targetPrice = Number(Number(nextDraft.targetPrice + delta).toFixed(getPriceDecimalsForSymbol(nextDraft.symbol)));
+            } else {
+                nextDraft.entryPrice = positionPlannerDraft.entryPrice;
+            }
+            nextDraft.boxWidthPx = Number(positionPlannerDraft.boxWidthPx || nextDraft.boxWidthPx || 180);
             positionPlannerDraft = nextDraft;
             if (positionDraftRenderer) positionDraftRenderer.setDraft(positionPlannerDraft);
             updatePositionPlannerUi(positionPlannerDraft);
@@ -12924,10 +13450,11 @@ function createPositionPlannerDraft() {
         if ((!Number.isFinite(stopPoints) || stopPoints <= 0) && stopInput) {
             loadPositionPlannerAtrDefault();
         }
-        positionPlannerDraft = buildPositionPlannerDraft();
+        positionPlannerDraft = reconcilePositionPlannerDraft(buildPositionPlannerDraft(), 'create') || buildPositionPlannerDraft();
+        fitChartToPositionDraft(positionPlannerDraft);
         if (positionDraftRenderer) positionDraftRenderer.setDraft(positionPlannerDraft);
         updatePositionPlannerUi(positionPlannerDraft);
-        showStatus('Position draft created on chart. Drag SL/TP handles to fine-tune.', 'success');
+        showStatus('Position draft created on chart. Drag SL/TP lines and right edge to fine-tune.', 'success');
     } catch (err) {
         showStatus(`Position planner error: ${err.message}`, 'warning');
     }

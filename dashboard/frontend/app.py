@@ -1139,6 +1139,21 @@ def sim_update_live_control(session_id):
     return jsonify(res)
 
 
+@app.route('/api/simulation/sessions/<int:session_id>/context', methods=['POST'])
+def sim_update_session_context(session_id):
+    data = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        f'/api/v1/simulation/sessions/{session_id}/context',
+        data=data,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'error': err or 'Session context update failed'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/simulation/sessions/<int:session_id>/seek', methods=['POST'])
 def sim_seek(session_id):
     bar = request.args.get('bar', 0)
