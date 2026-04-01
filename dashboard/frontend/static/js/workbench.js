@@ -119,6 +119,12 @@ let positionPlannerDraft = null;
 let activeChartToolMode = null;
 let manualChartPriceRange = null;
 let chartPricePanState = null;
+let drawingRenderer = null;
+let chartDrawings = [];
+let selectedDrawingId = null;
+let chartDrawingDraft = null;
+let loadedDrawingsContextKey = '';
+let chartDrawingMode = 'cursor';
 
 const STRATEGY_ID = '_workbench';
 const API_BASE = '';
@@ -417,6 +423,90 @@ function fitChartToPositionDraft(draftLike, paddingFrac = 0.18) {
     _applyManualChartPriceRange({
         min: min - pad,
         max: max + pad,
+    });
+}
+
+function handleChartDrawingClick(param) {
+    if (chartDrawingMode === 'cursor') return false;
+    const ts = _resolveUnixFromChartTime(param?.time);
+    const y = Number(param?.point?.y);
+    const priceRaw = candleSeries?.coordinateToPrice?.(y);
+    const price = Number(Number(priceRaw || 0).toFixed(getPriceDecimalsForSymbol(getCostModelSymbol())));
+    if (!Number.isFinite(ts) || ts <= 0 || !Number.isFinite(price) || price <= 0) return true;
+
+    if (chartDrawingMode === 'hline') {
+        chartDrawings.push({ id: _newDrawingId(), type: 'hline', price, symbol: getCostModelSymbol() });
+        selectedDrawingId = chartDrawings[chartDrawings.length - 1].id;
+        persistChartDrawings();
+        drawingRenderer?.render(chartDrawings, selectedDrawingId);
+        return true;
+    }
+    if (chartDrawingMode === 'trend') {
+        if (!chartDrawingDraft) {
+            chartDrawingDraft = { type: 'trend', t1: ts, p1: price };
+            showStatus('Trend line: pick second point.', 'info');
+            return true;
+        }
+        chartDrawings.push({
+            id: _newDrawingId(),
+            type: 'trend',
+            t1: Number(chartDrawingDraft.t1),
+            p1: Number(chartDrawingDraft.p1),
+            t2: ts,
+            p2: price,
+            symbol: getCostModelSymbol(),
+        });
+        chartDrawingDraft = null;
+        selectedDrawingId = chartDrawings[chartDrawings.length - 1].id;
+        persistChartDrawings();
+        drawingRenderer?.render(chartDrawings, selectedDrawingId);
+        return true;
+    }
+    if (chartDrawingMode === 'rect') {
+        if (!chartDrawingDraft) {
+            chartDrawingDraft = { type: 'rect', t1: ts, p1: price };
+            showStatus('Rectangle: pick opposite corner.', 'info');
+            return true;
+        }
+        chartDrawings.push({
+            id: _newDrawingId(),
+            type: 'rect',
+            t1: Number(chartDrawingDraft.t1),
+            p1: Number(chartDrawingDraft.p1),
+            t2: ts,
+            p2: price,
+            symbol: getCostModelSymbol(),
+        });
+        chartDrawingDraft = null;
+        selectedDrawingId = chartDrawings[chartDrawings.length - 1].id;
+        persistChartDrawings();
+        drawingRenderer?.render(chartDrawings, selectedDrawingId);
+        return true;
+    }
+    return false;
+}
+
+function applySymbolSpecificDefaultPriceWindow(force = false) {
+    const symbol = String(getCostModelSymbol() || document.getElementById('sim-symbol')?.value || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}JPY(M)?$/.test(symbol)) return;
+    if (manualChartPriceRange && !force) return;
+    const bars = Array.isArray(allBars) ? allBars : [];
+    if (bars.length === 0) return;
+    const recent = bars.slice(Math.max(0, bars.length - 120));
+    const closes = recent.map((b) => Number(b?.close)).filter((x) => Number.isFinite(x));
+    const highs = recent.map((b) => Number(b?.high)).filter((x) => Number.isFinite(x));
+    const lows = recent.map((b) => Number(b?.low)).filter((x) => Number.isFinite(x));
+    const last = closes.length > 0 ? closes[closes.length - 1] : NaN;
+    const hi = highs.length > 0 ? Math.max(...highs) : last;
+    const lo = lows.length > 0 ? Math.min(...lows) : last;
+    if (![last, hi, lo].every((x) => Number.isFinite(x))) return;
+    const baseSpan = Math.max(0.20, (hi - lo) * 1.12);
+    const snappedSpan = Math.ceil(baseSpan / 0.02) * 0.02;
+    const half = snappedSpan / 2;
+    const center = Math.round(last / 0.01) * 0.01;
+    _applyManualChartPriceRange({
+        min: Number((center - half).toFixed(3)),
+        max: Number((center + half).toFixed(3)),
     });
 }
 
@@ -8958,6 +9048,7 @@ function applyIndicatorVisibility() {
 function updateIndicatorsOnChart() {
     if (!chart || !candleSeries) return;
     syncPositionPlannerDraftToMarket();
+    loadChartDrawingsForContext(false);
     applyIndicatorVisibility();
     const bars = getVisibleBarsForIndicators();
     const hasSelection = indicatorSelection.smaEma
@@ -9805,6 +9896,306 @@ class ChartTriggerMapRenderer {
     }
 }
 
+function getChartDrawingContextKey() {
+    const symbol = String(getCostModelSymbol() || document.getElementById('sim-symbol')?.value || 'XAUUSD').trim().toUpperCase();
+    return `workbench:drawings:${String(sessionId || 'global')}:${symbol}`;
+}
+
+function persistChartDrawings() {
+    try {
+        localStorage.setItem(getChartDrawingContextKey(), JSON.stringify(Array.isArray(chartDrawings) ? chartDrawings : []));
+    } catch (_) { /* ignore */ }
+}
+
+function loadChartDrawingsForContext(force = false) {
+    const nextKey = getChartDrawingContextKey();
+    if (!force && nextKey === loadedDrawingsContextKey) return;
+    loadedDrawingsContextKey = nextKey;
+    selectedDrawingId = null;
+    chartDrawingDraft = null;
+    try {
+        const raw = localStorage.getItem(nextKey);
+        const parsed = raw ? JSON.parse(raw) : [];
+        chartDrawings = Array.isArray(parsed) ? parsed.filter((x) => x && typeof x === 'object') : [];
+    } catch (_) {
+        chartDrawings = [];
+    }
+    drawingRenderer?.render(chartDrawings, selectedDrawingId);
+}
+
+function setChartDrawingMode(mode) {
+    chartDrawingMode = String(mode || 'cursor').trim().toLowerCase();
+    chartDrawingDraft = null;
+    ['cursor', 'hline', 'trend', 'rect'].forEach((id) => {
+        document.getElementById(`btn-draw-${id}`)?.classList.toggle('active', chartDrawingMode === id);
+    });
+}
+
+function deleteSelectedChartDrawing() {
+    if (!selectedDrawingId) return;
+    chartDrawings = chartDrawings.filter((d) => String(d.id) !== String(selectedDrawingId));
+    selectedDrawingId = null;
+    persistChartDrawings();
+    drawingRenderer?.render(chartDrawings, selectedDrawingId);
+}
+
+function clearAllChartDrawings() {
+    chartDrawings = [];
+    selectedDrawingId = null;
+    chartDrawingDraft = null;
+    persistChartDrawings();
+    drawingRenderer?.render(chartDrawings, selectedDrawingId);
+}
+
+function _drawingTimeFromX(renderer, x) {
+    const raw = renderer?.chart?.timeScale?.().coordinateToTime?.(x);
+    const ts = _resolveUnixFromChartTime(raw);
+    if (Number.isFinite(ts) && ts > 0) return ts;
+    const bars = Array.isArray(allBars) ? allBars : [];
+    if (bars.length === 0) return Math.floor(Date.now() / 1000);
+    const first = Number(bars[0]?.time || 0);
+    const last = Number(bars[bars.length - 1]?.time || 0);
+    return Number.isFinite(last) && last > 0 ? Math.max(first || last, Math.min(last, Math.floor(last))) : Math.floor(Date.now() / 1000);
+}
+
+function _newDrawingId() {
+    return `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+class ChartDrawingRenderer {
+    constructor(chartObj, series, onChange, onSelect) {
+        this.chart = chartObj;
+        this.series = series;
+        this.onChange = typeof onChange === 'function' ? onChange : null;
+        this.onSelect = typeof onSelect === 'function' ? onSelect : null;
+        this.container = chartObj.chartElement();
+        this.overlayContainer = document.createElement('div');
+        this.overlayContainer.className = 'chart-zones-overlay';
+        this.container.style.position = 'relative';
+        this.container.appendChild(this.overlayContainer);
+        this.drawings = [];
+        this.selectedId = null;
+        this.drag = null;
+        this.dragMove = (e) => this._onPointerMove(e);
+        this.dragStop = () => this._stopDrag();
+        this.resizeObserver = new ResizeObserver(() => this._reposition());
+        this.resizeObserver.observe(this.container);
+        this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => this._reposition());
+        this.series.subscribeDataChanged(() => this._reposition());
+    }
+
+    render(drawingsLike = [], selectedId = null) {
+        this.drawings = Array.isArray(drawingsLike) ? drawingsLike.map((x) => ({ ...x })) : [];
+        this.selectedId = selectedId ? String(selectedId) : null;
+        this.overlayContainer.innerHTML = '';
+        for (const d of this.drawings) {
+            this._mountDrawing(d);
+        }
+        this._reposition();
+    }
+
+    _mountDrawing(d) {
+        const type = String(d.type || '');
+        if (type === 'hline') {
+            const line = document.createElement('div');
+            line.className = 'chart-drawing-line';
+            const label = document.createElement('div');
+            label.className = 'chart-drawing-label';
+            line.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+                this.drag = { id: d.id, kind: 'hline' };
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(line);
+            this.overlayContainer.appendChild(label);
+            d._els = { line, label };
+            return;
+        }
+        if (type === 'trend') {
+            const line = document.createElement('div');
+            line.className = 'chart-drawing-trend';
+            const h1 = document.createElement('div');
+            const h2 = document.createElement('div');
+            h1.className = 'chart-drawing-handle';
+            h2.className = 'chart-drawing-handle';
+            const label = document.createElement('div');
+            label.className = 'chart-drawing-label';
+            line.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+            });
+            h1.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+                this.drag = { id: d.id, kind: 'trend_p1' };
+                this._bindDrag();
+            });
+            h2.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+                this.drag = { id: d.id, kind: 'trend_p2' };
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(line);
+            this.overlayContainer.appendChild(h1);
+            this.overlayContainer.appendChild(h2);
+            this.overlayContainer.appendChild(label);
+            d._els = { line, h1, h2, label };
+            return;
+        }
+        if (type === 'rect') {
+            const rect = document.createElement('div');
+            rect.className = 'chart-drawing-rect';
+            const h1 = document.createElement('div');
+            const h2 = document.createElement('div');
+            h1.className = 'chart-drawing-handle';
+            h2.className = 'chart-drawing-handle';
+            const label = document.createElement('div');
+            label.className = 'chart-drawing-label';
+            rect.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+            });
+            h1.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+                this.drag = { id: d.id, kind: 'rect_p1' };
+                this._bindDrag();
+            });
+            h2.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._select(d.id);
+                this.drag = { id: d.id, kind: 'rect_p2' };
+                this._bindDrag();
+            });
+            this.overlayContainer.appendChild(rect);
+            this.overlayContainer.appendChild(h1);
+            this.overlayContainer.appendChild(h2);
+            this.overlayContainer.appendChild(label);
+            d._els = { rect, h1, h2, label };
+        }
+    }
+
+    _select(id) {
+        this.selectedId = id ? String(id) : null;
+        if (this.onSelect) this.onSelect(this.selectedId);
+        this._reposition();
+    }
+
+    _bindDrag() {
+        window.addEventListener('mousemove', this.dragMove);
+        window.addEventListener('mouseup', this.dragStop);
+    }
+
+    _stopDrag() {
+        this.drag = null;
+        window.removeEventListener('mousemove', this.dragMove);
+        window.removeEventListener('mouseup', this.dragStop);
+        if (this.onChange) this.onChange(this.drawings);
+    }
+
+    _onPointerMove(event) {
+        if (!this.drag) return;
+        const target = this.drawings.find((d) => String(d.id) === String(this.drag.id));
+        if (!target) return;
+        const rect = this.container.getBoundingClientRect();
+        const x = Math.max(0, Math.min(rect.width, Number(event.clientX) - rect.left));
+        const y = Math.max(0, Math.min(rect.height, Number(event.clientY) - rect.top));
+        const time = _drawingTimeFromX(this, x);
+        const nextPriceRaw = this.series.coordinateToPrice(y);
+        const nextPrice = Number(Number(nextPriceRaw || 0).toFixed(getPriceDecimalsForSymbol(getCostModelSymbol())));
+        if (!Number.isFinite(nextPrice) || nextPrice <= 0) return;
+        if (this.drag.kind === 'hline') {
+            target.price = nextPrice;
+        } else if (this.drag.kind === 'trend_p1') {
+            target.t1 = time; target.p1 = nextPrice;
+        } else if (this.drag.kind === 'trend_p2') {
+            target.t2 = time; target.p2 = nextPrice;
+        } else if (this.drag.kind === 'rect_p1') {
+            target.t1 = time; target.p1 = nextPrice;
+        } else if (this.drag.kind === 'rect_p2') {
+            target.t2 = time; target.p2 = nextPrice;
+        }
+        this._reposition();
+        if (this.onChange) this.onChange(this.drawings, { live: true });
+    }
+
+    _reposition() {
+        const timeScale = this.chart.timeScale();
+        const width = Number(this.container.clientWidth || this.overlayContainer.clientWidth || 0);
+        for (const d of this.drawings) {
+            const selected = this.selectedId && String(this.selectedId) === String(d.id);
+            if (d.type === 'hline' && d._els) {
+                const y = this.series.priceToCoordinate(Number(d.price));
+                if (!Number.isFinite(Number(y))) continue;
+                d._els.line.style.left = '0px';
+                d._els.line.style.top = `${Number(y)}px`;
+                d._els.line.style.width = `${Math.max(50, width - 8)}px`;
+                d._els.line.classList.toggle('chart-drawing-selected', !!selected);
+                d._els.label.style.left = `${Math.max(6, width - 106)}px`;
+                d._els.label.style.top = `${Math.max(2, Number(y) - 13)}px`;
+                d._els.label.textContent = `H ${formatZonePrice(Number(d.price))}`;
+            } else if (d.type === 'trend' && d._els) {
+                const x1 = timeScale.timeToCoordinate(Number(d.t1));
+                const x2 = timeScale.timeToCoordinate(Number(d.t2));
+                const y1 = this.series.priceToCoordinate(Number(d.p1));
+                const y2 = this.series.priceToCoordinate(Number(d.p2));
+                if (![x1, x2, y1, y2].every((v) => Number.isFinite(Number(v)))) continue;
+                const dx = Number(x2) - Number(x1);
+                const dy = Number(y2) - Number(y1);
+                const len = Math.max(8, Math.sqrt(dx * dx + dy * dy));
+                const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+                d._els.line.style.left = `${Number(x1)}px`;
+                d._els.line.style.top = `${Number(y1)}px`;
+                d._els.line.style.width = `${len}px`;
+                d._els.line.style.transform = `rotate(${angle}deg)`;
+                d._els.line.classList.toggle('chart-drawing-selected', !!selected);
+                d._els.h1.style.left = `${Number(x1) - 5}px`;
+                d._els.h1.style.top = `${Number(y1) - 5}px`;
+                d._els.h2.style.left = `${Number(x2) - 5}px`;
+                d._els.h2.style.top = `${Number(y2) - 5}px`;
+                d._els.h1.style.display = selected ? 'block' : 'none';
+                d._els.h2.style.display = selected ? 'block' : 'none';
+                d._els.label.style.left = `${Math.max(6, Math.min(Number(x1), Number(x2)) + 8)}px`;
+                d._els.label.style.top = `${Math.max(4, Math.min(Number(y1), Number(y2)) - 18)}px`;
+                d._els.label.textContent = 'Trend';
+            } else if (d.type === 'rect' && d._els) {
+                const x1 = timeScale.timeToCoordinate(Number(d.t1));
+                const x2 = timeScale.timeToCoordinate(Number(d.t2));
+                const y1 = this.series.priceToCoordinate(Number(d.p1));
+                const y2 = this.series.priceToCoordinate(Number(d.p2));
+                if (![x1, x2, y1, y2].every((v) => Number.isFinite(Number(v)))) continue;
+                const left = Math.min(Number(x1), Number(x2));
+                const top = Math.min(Number(y1), Number(y2));
+                const w = Math.max(6, Math.abs(Number(x2) - Number(x1)));
+                const h = Math.max(6, Math.abs(Number(y2) - Number(y1)));
+                d._els.rect.style.left = `${left}px`;
+                d._els.rect.style.top = `${top}px`;
+                d._els.rect.style.width = `${w}px`;
+                d._els.rect.style.height = `${h}px`;
+                d._els.rect.classList.toggle('chart-drawing-selected', !!selected);
+                d._els.h1.style.left = `${Number(x1) - 5}px`;
+                d._els.h1.style.top = `${Number(y1) - 5}px`;
+                d._els.h2.style.left = `${Number(x2) - 5}px`;
+                d._els.h2.style.top = `${Number(y2) - 5}px`;
+                d._els.h1.style.display = selected ? 'block' : 'none';
+                d._els.h2.style.display = selected ? 'block' : 'none';
+                d._els.label.style.left = `${Math.max(6, left + 6)}px`;
+                d._els.label.style.top = `${Math.max(4, top - 18)}px`;
+                d._els.label.textContent = 'Zone';
+            }
+        }
+    }
+}
+
 class ChartPositionDraftRenderer {
     constructor(chartObj, series, onDraftChange) {
         this.chart = chartObj;
@@ -10134,6 +10525,11 @@ function initWorkbenchState() {
     clearOpenPositionProtectionLines();
     renderQuickOpenTrades([]);
     fvgZonesByTimeframe = {};
+    chartDrawings = [];
+    selectedDrawingId = null;
+    chartDrawingDraft = null;
+    loadedDrawingsContextKey = '';
+    setChartDrawingMode('cursor');
     fvgNavigationList = [];
     fvgNavigationIndex = -1;
     lastFvgInspectorZones = [];
@@ -10394,6 +10790,12 @@ function initChart() {
 
     // Initialize zone renderer
     zoneRenderer = new ChartZoneRenderer(chart, candleSeries);
+    drawingRenderer = new ChartDrawingRenderer(chart, candleSeries, (nextDrawings) => {
+        chartDrawings = Array.isArray(nextDrawings) ? nextDrawings.map((x) => ({ ...x })) : [];
+        persistChartDrawings();
+    }, (selectedId) => {
+        selectedDrawingId = selectedId || null;
+    });
     triggerMapRenderer = new ChartTriggerMapRenderer(chart, candleSeries);
     positionDraftRenderer = new ChartPositionDraftRenderer(chart, candleSeries, (draft, meta) => {
         positionPlannerDraft = reconcilePositionPlannerDraft({ ...draft }, meta?.dragKind || meta?.source || 'manual') || { ...draft };
@@ -10402,8 +10804,12 @@ function initChart() {
     if (chartClickHandler) {
         try { chart.unsubscribeClick(chartClickHandler); } catch (_) { /* ignore */ }
     }
-    chartClickHandler = (param) => { void handleDrawFvgChartClick(param); };
+    chartClickHandler = (param) => {
+        if (handleChartDrawingClick(param)) return;
+        void handleDrawFvgChartClick(param);
+    };
     chart.subscribeClick(chartClickHandler);
+    loadChartDrawingsForContext(true);
 }
 
 function bindEvents() {
@@ -11056,6 +11462,13 @@ function bindEvents() {
         showStatus(`Adaptive speed ${adaptiveSpeedEnabled ? 'enabled' : 'disabled'}`, 'info');
     });
 
+    document.getElementById('btn-draw-cursor')?.addEventListener('click', () => setChartDrawingMode('cursor'));
+    document.getElementById('btn-draw-hline')?.addEventListener('click', () => setChartDrawingMode('hline'));
+    document.getElementById('btn-draw-trend')?.addEventListener('click', () => setChartDrawingMode('trend'));
+    document.getElementById('btn-draw-rect')?.addEventListener('click', () => setChartDrawingMode('rect'));
+    document.getElementById('btn-draw-delete')?.addEventListener('click', () => deleteSelectedChartDrawing());
+    document.getElementById('btn-draw-clear-all')?.addEventListener('click', () => clearAllChartDrawings());
+
     // Trade buttons
     document.getElementById('btn-buy')?.addEventListener('click', () => executeTrade('BUY'));
     document.getElementById('btn-sell')?.addEventListener('click', () => executeTrade('SELL'));
@@ -11090,6 +11503,7 @@ function bindEvents() {
             case 'Space': e.preventDefault(); togglePlay(); break;
             case 'ArrowRight': advanceBars(1); break;
             case 'ArrowLeft': advanceBars(-1); break;
+            case 'Delete': deleteSelectedChartDrawing(); break;
         }
     });
 
@@ -11839,6 +12253,7 @@ async function startLiveFeed(isReconnect = false, options = {}) {
                     if (snapshotLastBar && Number.isFinite(Number(snapshotLastBar.close))) {
                         void maybeQuickTpAutoClose(Number(snapshotLastBar.close));
                     }
+                    applySymbolSpecificDefaultPriceWindow();
                     try { chart?.timeScale()?.fitContent(); } catch (_) { /* ignore */ }
                     void maybePushLiveAgentTick(true);
                     return;
@@ -11864,6 +12279,7 @@ async function startLiveFeed(isReconnect = false, options = {}) {
                     if (tickLastBar && Number.isFinite(Number(tickLastBar.close))) {
                         void maybeQuickTpAutoClose(Number(tickLastBar.close));
                     }
+                    applySymbolSpecificDefaultPriceWindow();
                     void maybePushLiveAgentTick(false);
                     return;
                 }

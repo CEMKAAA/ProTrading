@@ -227,6 +227,83 @@
     white-space: nowrap;
     box-shadow: 0 8px 18px rgba(2, 6, 23, 0.35);
 }
+.chart-drawing-toolbar {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 6;
+    display: inline-flex;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    box-shadow: 0 10px 24px rgba(2, 6, 23, 0.25);
+}
+.chart-drawing-btn {
+    min-width: 34px;
+    height: 32px;
+    padding: 0 9px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: rgba(30, 41, 59, 0.92);
+    color: #e2e8f0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.chart-drawing-btn.active {
+    background: rgba(37, 99, 235, 0.92);
+    border-color: rgba(96, 165, 250, 0.6);
+    color: #eff6ff;
+}
+.chart-drawing-line,
+.chart-drawing-trend,
+.chart-drawing-rect {
+    position: absolute;
+    pointer-events: auto;
+}
+.chart-drawing-line {
+    border-top: 2px solid rgba(251, 191, 36, 0.95);
+    cursor: ns-resize;
+}
+.chart-drawing-trend {
+    height: 2px;
+    transform-origin: 0 50%;
+    background: rgba(56, 189, 248, 0.95);
+    cursor: pointer;
+}
+.chart-drawing-rect {
+    border: 2px solid rgba(168, 85, 247, 0.92);
+    background: rgba(168, 85, 247, 0.10);
+    cursor: pointer;
+}
+.chart-drawing-selected {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18), 0 0 18px rgba(255, 255, 255, 0.1);
+}
+.chart-drawing-label {
+    position: absolute;
+    pointer-events: none;
+    z-index: 5;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.92);
+    color: #e2e8f0;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+.chart-drawing-handle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: #f8fafc;
+    border: 2px solid rgba(15, 23, 42, 0.95);
+    pointer-events: auto;
+    z-index: 6;
+    cursor: move;
+}
 .chart-position-area {
     position: absolute;
     pointer-events: none;
@@ -2048,6 +2125,14 @@ body.workbench-fullscreen .chart-main {
         </div>
         <!-- Chart -->
         <div class="chart-container">
+            <div class="chart-drawing-toolbar">
+                <button type="button" class="chart-drawing-btn active" id="btn-draw-cursor" title="Cursor"><i class="bi bi-cursor"></i></button>
+                <button type="button" class="chart-drawing-btn" id="btn-draw-hline" title="Horizontal Line"><i class="bi bi-distribute-horizontal"></i></button>
+                <button type="button" class="chart-drawing-btn" id="btn-draw-trend" title="Trend Line"><i class="bi bi-slash-lg"></i></button>
+                <button type="button" class="chart-drawing-btn" id="btn-draw-rect" title="Rectangle Zone"><i class="bi bi-bounding-box"></i></button>
+                <button type="button" class="chart-drawing-btn" id="btn-draw-delete" title="Delete Selected"><i class="bi bi-trash3"></i></button>
+                <button type="button" class="chart-drawing-btn" id="btn-draw-clear-all" title="Clear All"><i class="bi bi-x-circle"></i></button>
+            </div>
             <div id="chart-main" class="chart-main"></div>
             <div id="chart-price-pan-strip" class="chart-price-pan-strip" title="Drag vertically to zoom price scale. Shift+drag pans. Wheel zooms."></div>
             <div id="chart-trendilo-panel" class="chart-sub-panel d-none"></div>
@@ -4195,6 +4280,6 @@ body.workbench-fullscreen .chart-main {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/workbench.js', v='20260324_quick_tp_usd') }}"></script>
+<script src="{{ url_for('static', filename='js/workbench.js', v='20260401_tdi_exit_drawtools') }}"></script>
 {% endblock %}
 
