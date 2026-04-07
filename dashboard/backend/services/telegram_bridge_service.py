@@ -933,16 +933,17 @@ class TelegramBridgeService:
         raw = str(text or "").replace("\r", "\n")
         if not raw.strip():
             return None
+        # Normalize styled/Unicode numerals and separators (e.g. TP¹, SL¹, full-width glyphs).
+        raw_norm = unicodedata.normalize("NFKC", raw)
         head = re.search(
-            r"(?im)^\s*([A-Z]{3,12})\s+(BUY|SELL)\s+NOW\s+([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)\s*$",
-            raw,
+            (
+                r"(?im)^\s*#?\s*([A-Z]{3,12})"
+                r"\s*(?:[_-]\s*|\s+)(BUY|SELL)\s+"
+                r"(?:NOW\s+)?([0-9]+(?:\.[0-9]+)?)"
+                r"(?:\s*/\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
+            ),
+            raw_norm,
         )
-        if head is None:
-            # Alternate format (e.g. GOLD SELL 4653/4655)
-            head = re.search(
-                r"(?im)^\s*([A-Z]{3,12})\s+(BUY|SELL)\s+([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)\s*$",
-                raw,
-            )
         if head is None:
             return None
         symbol_raw = str(head.group(1) or "").strip().upper()
@@ -950,12 +951,18 @@ class TelegramBridgeService:
         direction = str(head.group(2) or "").strip().upper()
         try:
             entry_a = float(head.group(3))
-            entry_b = float(head.group(4))
+            entry_b = float(head.group(4)) if str(head.group(4) or "").strip() else float(entry_a)
         except Exception:
             return None
-        tp_matches = re.findall(r"(?im)^\s*TP\s*([1-9]\d*)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw)
+        tp_matches = re.findall(
+            r"(?im)^\s*TP\s+([1-9]\d*)(?:\s*[:\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\s*$",
+            raw_norm,
+        )
         if not tp_matches:
-            tp_matches = re.findall(r"(?im)^\s*TP([1-9]\d*)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw)
+            tp_matches = re.findall(
+                r"(?im)^\s*TP([1-9]\d*)(?:\s*[:\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\s*$",
+                raw_norm,
+            )
         tps: List[Dict[str, Any]] = []
         seen_idx: set[int] = set()
         if tp_matches:
@@ -971,7 +978,7 @@ class TelegramBridgeService:
                 tps.append({"index": int(idx), "price": float(px)})
         else:
             # Alternate format (e.g. TP: 4651 repeated lines without explicit index)
-            tp_plain = re.findall(r"(?im)^\s*TP\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw)
+            tp_plain = re.findall(r"(?im)^\s*TP\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw_norm)
             idx = 0
             for px_raw in tp_plain:
                 try:
@@ -983,7 +990,7 @@ class TelegramBridgeService:
                 idx += 1
                 tps.append({"index": int(idx), "price": float(px)})
         tps.sort(key=lambda r: int(r.get("index") or 0))
-        sl_match = re.search(r"(?im)^\s*SL\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw)
+        sl_match = re.search(r"(?im)^\s*SL(?:[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*$", raw_norm)
         if sl_match is None or not tps:
             return None
         try:

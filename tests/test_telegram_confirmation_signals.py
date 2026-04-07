@@ -52,6 +52,82 @@ SL: 4663
     assert [row["price"] for row in parsed["tps"]] == [4651.0, 4649.0, 4647.0, 4645.0, 4643.0, 4641.0, 4639.0]
 
 
+def test_parse_confirmation_signal_gold_vip_plain_tp_and_sl():
+    raw = """
+XAUUSD BUY 4608/4605
+
+TP 4613
+TP 4617
+TP 4622
+TP 4626
+TP 4631
+TP 4636
+TP 4641
+TP 4646
+TP 4651
+TP 4656
+TP 4661
+SL 4592
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "BUY"
+    assert parsed["entry_low"] == 4605.0
+    assert parsed["entry_high"] == 4608.0
+    assert parsed["stop_loss"] == 4592.0
+    assert [row["index"] for row in parsed["tps"]] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert [row["price"] for row in parsed["tps"]] == [4613.0, 4617.0, 4622.0, 4626.0, 4631.0, 4636.0, 4641.0, 4646.0, 4651.0, 4656.0, 4661.0]
+
+
+def test_parse_confirmation_signal_fx_mastermind_hash_and_superscripts():
+    raw = """
+#XAUUSD_SELL 4650/4655.00
+
+TP¹ 4647.00
+TP² 4644.00
+TP³ 4641.00
+TP⁴ 4638.00
+TP⁵ 4635.00
+TP⁶ 4632.00
+
+SL¹ 4665.00
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "SELL"
+    assert parsed["entry_low"] == 4650.0
+    assert parsed["entry_high"] == 4655.0
+    assert parsed["stop_loss"] == 4665.0
+    assert [row["index"] for row in parsed["tps"]] == [1, 2, 3, 4, 5, 6]
+    assert [row["price"] for row in parsed["tps"]] == [4647.0, 4644.0, 4641.0, 4638.0, 4635.0, 4632.0]
+
+
+def test_parse_confirmation_signal_market_analysis_king_single_entry():
+    raw = """
+XAUUSD SELL 4664
+
+TP 4662
+TP 4660
+TP 4658
+TP 4656
+TP 4654
+
+SL 4674
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "SELL"
+    assert parsed["entry_low"] == 4664.0
+    assert parsed["entry_high"] == 4664.0
+    assert parsed["entry_mid"] == 4664.0
+    assert parsed["stop_loss"] == 4674.0
+    assert [row["index"] for row in parsed["tps"]] == [1, 2, 3, 4, 5]
+    assert [row["price"] for row in parsed["tps"]] == [4662.0, 4660.0, 4658.0, 4656.0, 4654.0]
+
+
 def test_confirmation_signal_source_match_channel_title():
     msg = {"text": "XAUUSD SELL NOW 4630/4635", "chat": {"id": -1001}}
     chat = {"id": -1001, "title": "Elite Pips Academy", "type": "channel"}
