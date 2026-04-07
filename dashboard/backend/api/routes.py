@@ -339,6 +339,69 @@ def telegram_user_listener_verify_code(payload: Dict[str, Any]):
         raise HTTPException(500, f"telegram_user_listener_verify_code_failed:{type(exc).__name__}:{str(exc)[:180]}")
 
 
+@router.get("/mt4/log-automation/state")
+def mt4_log_automation_state(limit: int = Query(200, ge=20, le=1000)):
+    """MT4 log automation state and discovered indicator activity."""
+    try:
+        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+
+        svc = mt4_log_automation_service
+        if svc is None:
+            return {"ok": False, "error": "mt4_log_automation_unavailable"}
+        return svc.get_state(limit=int(limit))
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_automation_state_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/mt4/log-automation/config")
+def mt4_log_automation_config(payload: Dict[str, Any]):
+    """Persist MT4 log automation config and apply runtime changes."""
+    try:
+        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+
+        svc = mt4_log_automation_service
+        if svc is None:
+            return {"ok": False, "error": "mt4_log_automation_unavailable"}
+        return svc.update_config(payload if isinstance(payload, dict) else {})
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_automation_config_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/mt4/log-automation/indicator-automation")
+def mt4_log_indicator_automation(payload: Dict[str, Any]):
+    """Enable/disable automation for a discovered indicator profile."""
+    try:
+        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+
+        svc = mt4_log_automation_service
+        if svc is None:
+            return {"ok": False, "error": "mt4_log_automation_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        indicator = str(p.get("indicator") or "").strip()
+        enabled = bool(p.get("enabled"))
+        return svc.set_indicator_automation(indicator=indicator, enabled=enabled)
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_indicator_automation_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.get("/mt4/log-automation/indicator-logs")
+def mt4_log_indicator_logs(
+    indicator: str = Query(..., min_length=1),
+    limit: int = Query(200, ge=20, le=1000),
+    alerts_only: bool = Query(True),
+):
+    """Get latest log rows for a specific indicator profile."""
+    try:
+        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+
+        svc = mt4_log_automation_service
+        if svc is None:
+            return {"ok": False, "error": "mt4_log_automation_unavailable"}
+        return svc.get_indicator_logs_filtered(indicator=str(indicator), limit=int(limit), alerts_only=bool(alerts_only))
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_indicator_logs_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
 def _safe_optional_float(value) -> Optional[float]:
     """Return finite float or None for nullable DB fields."""
     try:

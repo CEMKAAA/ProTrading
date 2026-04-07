@@ -10,6 +10,7 @@
         channels: document.getElementById('tg-channels'),
         timeframe: document.getElementById('tg-timeframe'),
         lot: document.getElementById('tg-lot'),
+        forceSingle01: document.getElementById('tg-force-single-01'),
         distribution: document.getElementById('tg-distribution'),
         confirmWindow: document.getElementById('tg-confirm-window'),
         evalMode: document.getElementById('tg-eval-mode'),
@@ -41,6 +42,7 @@
         userForwardFail: document.getElementById('tg-ul-forward-fail'),
         userFlowLine: document.getElementById('tg-ul-flow-line'),
         userPipelineLine: document.getElementById('tg-ul-pipeline-line'),
+        userChannelLine: document.getElementById('tg-ul-channel-line'),
         userSaveBtn: document.getElementById('tg-ul-save-btn'),
         userSendCodeBtn: document.getElementById('tg-ul-send-code-btn'),
         userVerifyBtn: document.getElementById('tg-ul-verify-btn'),
@@ -103,6 +105,7 @@
         if (els.channels) els.channels.value = toLines(c.channels);
         if (els.timeframe) els.timeframe.value = String(c.default_timeframe || 'M5');
         if (els.lot) els.lot.value = Number(c.default_lot || 0.05).toFixed(2);
+        if (els.forceSingle01) els.forceSingle01.checked = !!c.force_single_trade_01;
         if (els.distribution) els.distribution.value = String(c.distribution_mode || 'equal');
         if (els.confirmWindow) els.confirmWindow.value = String(parseInt(c.confirm_window_sec || 1800, 10));
         if (els.evalMode) els.evalMode.value = String(c.evaluation_mode || 'deterministic');
@@ -166,6 +169,19 @@
         }
         if (els.userPipelineLine) {
             els.userPipelineLine.textContent = `Pipeline: ${pipelineConnected ? 'connected' : 'not connected'} -> ${pipelineTarget}`;
+        }
+        if (els.userChannelLine) {
+            const rows = Array.isArray(s.channel_health) ? s.channel_health : [];
+            if (!rows.length) {
+                els.userChannelLine.textContent = 'Channel coverage: no resolved channel yet';
+            } else {
+                const parts = rows.map((r) => {
+                    const name = String(r.spec || r.title || r.id || '').trim() || 'channel';
+                    const last = Number(r.last_seen_msg_id || 0);
+                    return `${name} (last_msg:${last > 0 ? last : '-'})`;
+                });
+                els.userChannelLine.textContent = `Channel coverage: ${parts.join(' | ')}`;
+            }
         }
     }
 
@@ -308,6 +324,7 @@
             channels: channelLines,
             default_timeframe: String((els.timeframe && els.timeframe.value) || 'M5').trim().toUpperCase(),
             default_lot: parseFloat((els.lot && els.lot.value) || '0.05'),
+            force_single_trade_01: !!(els.forceSingle01 && els.forceSingle01.checked),
             distribution_mode: String((els.distribution && els.distribution.value) || 'equal').trim(),
             confirm_window_sec: parseInt((els.confirmWindow && els.confirmWindow.value) || '1800', 10),
             evaluation_mode: String((els.evalMode && els.evalMode.value) || 'deterministic').trim(),
@@ -387,7 +404,7 @@
     async function init() {
         const mainInputs = [
             els.enabled, els.requireConfirm, els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
-            els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
+            els.forceSingle01, els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
         ].filter(Boolean);
         const userInputs = [
             els.userEnabled, els.userApiId, els.userApiHash, els.userSessionPath,

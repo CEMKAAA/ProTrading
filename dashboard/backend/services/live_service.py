@@ -878,7 +878,8 @@ class LiveTradingService:
                     "comment": str(getattr(result, "comment", "") or ""),
                     "order": int(getattr(result, "order", 0) or 0),
                     "deal": int(getattr(result, "deal", 0) or 0),
-                    "position": int(getattr(result, "order", 0) or 0),
+                    # MT5 result.position is the true position ticket when available.
+                    "position": int(getattr(result, "position", 0) or 0),
                     "request": request,
                 }
                 if ok:

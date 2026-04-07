@@ -227,10 +227,12 @@ class TelegramBridgeService:
         self._active_confirmation_signal_ladders: Dict[str, Dict[str, Any]] = {}
         self._pending_confirmation_signals: Dict[str, Dict[str, Any]] = {}
         self._confirm_signal_feed: List[Dict[str, Any]] = []
+        self._confirm_signal_feed_keys: set[str] = set()
         self._confirm_signal_feed_next_id: int = 0
         self._confirm_signal_feed_max: int = 5000
         self._last_confirmation_signal_key: str = ""
         self._last_confirmation_signal_ts: float = 0.0
+        self._mt4_signal_dedupe: Dict[str, float] = {}
 
     def _warn_throttled(self, key: str, message: str, *, min_interval_sec: float = 30.0) -> None:
         now_ts = time.time()
@@ -398,6 +400,12 @@ class TelegramBridgeService:
         return float(max(0.001, min(100.0, float(raw))))
 
     @staticmethod
+    def _confirm_signal_force_single_trade_01() -> bool:
+        # Emergency fallback: disable partial ladder and open one 0.01 trade.
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_FORCE_SINGLE_TRADE_01", "0")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
     def _confirm_signal_eval_mode() -> str:
         raw = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_EVAL_MODE", "deterministic")).strip().lower()
         if raw in {"ai", "ai_assist", "assist"}:
@@ -503,7 +511,19 @@ class TelegramBridgeService:
         r = cls._normalize_confirm_source_name(rule_name)
         if not s or not r:
             return False
-        return bool(s == r or s in r or r in s)
+        if s == r or s in r or r in s:
+            return True
+        # Extra tolerance for channel aliases like:
+        # "PAROZGOLD_TRADER" vs "PAROZ GOLD TRADER" vs "t.me/PAROZGOLD_TRADER"
+        s_compact = re.sub(r"[^a-z0-9]+", "", s)
+        r_compact = re.sub(r"[^a-z0-9]+", "", r)
+        if not s_compact or not r_compact:
+            return False
+        return bool(
+            s_compact == r_compact
+            or s_compact in r_compact
+            or r_compact in s_compact
+        )
 
     @classmethod
     def _confirm_signal_requires_confirm_for_source(cls, source_name: Any) -> bool:
@@ -515,6 +535,26 @@ class TelegramBridgeService:
         for row in require_confirm:
             if cls._source_matches_rule(source_name, row):
                 return True
+        return bool(cls._confirm_signal_requires_confirm())
+
+    @classmethod
+    def _confirm_signal_requires_confirm_for_sources(cls, source_names: List[Any]) -> bool:
+        names = [x for x in (source_names or []) if str(x).strip()]
+        if not names:
+            return bool(cls._confirm_signal_requires_confirm())
+        no_confirm = [x for x in cls._confirm_signal_no_confirm_titles() if str(x).strip()]
+        for name in names:
+            for rule in no_confirm:
+                if cls._source_matches_rule(name, rule):
+                    return False
+        require_confirm = [x for x in cls._confirm_signal_require_confirm_titles() if str(x).strip()]
+        for name in names:
+            for rule in require_confirm:
+                if cls._source_matches_rule(name, rule):
+                    return True
+        # If an explicit require-confirm list exists, only those sources should require confirm.
+        if require_confirm:
+            return False
         return bool(cls._confirm_signal_requires_confirm())
 
     @classmethod
@@ -594,6 +634,10 @@ class TelegramBridgeService:
         event_ts: Optional[Any] = None,
         source_message_id: Optional[int] = None,
     ) -> None:
+        src = str(source or "").strip() or "unknown"
+        src_norm = self._normalize_confirm_source_name(src)
+        src_msg_id = int(source_message_id or 0)
+        dedupe_key = f"{src_norm}|{int(src_msg_id)}" if src_msg_id > 0 else ""
         event_unix = _to_unix_or_none(event_ts)
         event_iso = None
         if isinstance(event_ts, datetime):
@@ -611,25 +655,61 @@ class TelegramBridgeService:
             "ts": self._now_iso(),
             "event_ts": str(event_iso or self._now_iso()),
             "event_unix": float(event_unix if event_unix is not None else time.time()),
-            "source_message_id": int(source_message_id or 0),
-            "source": str(source or "").strip() or "unknown",
+            "source_message_id": int(src_msg_id),
+            "source": str(src),
             "chat_title": str((chat or {}).get("title") or "").strip(),
             "kind": str(kind or "other"),
             "text": str(text or "").strip()[:4000],
             "parsed": dict(parsed) if isinstance(parsed, dict) else None,
         }
         with self._lock:
+            if dedupe_key and dedupe_key in self._confirm_signal_feed_keys:
+                return
             self._confirm_signal_feed_next_id = int(row["id"])
             self._confirm_signal_feed.append(row)
+            if dedupe_key:
+                self._confirm_signal_feed_keys.add(str(dedupe_key))
             if len(self._confirm_signal_feed) > int(self._confirm_signal_feed_max):
                 self._confirm_signal_feed = self._confirm_signal_feed[-int(self._confirm_signal_feed_max):]
+                rebuilt: set[str] = set()
+                for r in self._confirm_signal_feed:
+                    try:
+                        smid = int((r or {}).get("source_message_id") or 0)
+                    except Exception:
+                        smid = 0
+                    if smid <= 0:
+                        continue
+                    sname = self._normalize_confirm_source_name((r or {}).get("source"))
+                    if not sname:
+                        continue
+                    rebuilt.add(f"{sname}|{int(smid)}")
+                self._confirm_signal_feed_keys = rebuilt
 
     def get_telegram_automation_state(self, *, limit: int = 120) -> Dict[str, Any]:
         lim = int(max(20, min(500, int(limit or 120))))
         with self._lock:
-            feed = [dict(r) for r in self._confirm_signal_feed[-lim:]]
+            raw_feed = [dict(r) for r in self._confirm_signal_feed[-(lim * 4) :]]
             pending = [dict(v) for v in self._pending_confirmation_signals.values()]
             active = [dict(v) for v in self._active_confirmation_signal_ladders.values()]
+        # Defensive read-time de-duplication so legacy duplicated rows do not spam UI.
+        # Keep newest instance for source_message_id-keyed events.
+        deduped_rev: List[Dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        for r in reversed(raw_feed):
+            try:
+                smid = int((r or {}).get("source_message_id") or 0)
+            except Exception:
+                smid = 0
+            if smid > 0:
+                sname = self._normalize_confirm_source_name((r or {}).get("source"))
+                key = f"{sname}|{int(smid)}" if sname else f"|{int(smid)}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+            deduped_rev.append(dict(r))
+            if len(deduped_rev) >= lim:
+                break
+        feed = list(reversed(deduped_rev))
         return {
             "ok": True,
             "config": {
@@ -637,6 +717,7 @@ class TelegramBridgeService:
                 "channels": list(self._confirm_signal_channel_titles()),
                 "default_timeframe": str(self._confirm_signal_default_timeframe()),
                 "default_lot": float(self._confirm_signal_default_lot()),
+                "force_single_trade_01": bool(self._confirm_signal_force_single_trade_01()),
                 "distribution_mode": str(self._confirm_signal_tp_distribution_mode()),
                 "require_confirm": bool(self._confirm_signal_requires_confirm()),
                 "require_confirm_channels": list(self._confirm_signal_require_confirm_titles()),
@@ -672,6 +753,8 @@ class TelegramBridgeService:
             lot = _to_float_or_none(p.get("default_lot"))
             if lot is not None and lot > 0.0:
                 updates["TELEGRAM_CONFIRM_SIGNAL_DEFAULT_LOT"] = f"{float(lot):.4f}"
+        if "force_single_trade_01" in p:
+            updates["TELEGRAM_CONFIRM_SIGNAL_FORCE_SINGLE_TRADE_01"] = "1" if bool(p.get("force_single_trade_01")) else "0"
         if "distribution_mode" in p:
             mode = str(p.get("distribution_mode") or "equal").strip().lower()
             if mode not in {"equal", "front_loaded", "runner"}:
@@ -922,6 +1005,413 @@ class TelegramBridgeService:
             "tps": list(tps),
             "raw_text": raw.strip(),
         }
+
+    @staticmethod
+    def _mt4_exec_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_MT4_EXECUTION_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _mt4_exec_max_signal_age_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_MT4_MAX_SIGNAL_AGE_SEC", "0"))
+        except Exception:
+            raw = 0.0
+        if not math.isfinite(float(raw)):
+            raw = 0.0
+        return max(0.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_dedupe_window_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_MT4_DEDUPE_WINDOW_SEC", "3600"))
+        except Exception:
+            raw = 3600.0
+        if not math.isfinite(float(raw)):
+            raw = 3600.0
+        return max(30.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_enabled(profile: str) -> bool:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_ENABLED"
+        default_val = "1" if p in {"hydra", "intrepid", "fxnuke", "uranus"} else "0"
+        v = str(TelegramBridgeService._get_env_value(key, default_val)).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _mt4_exec_profile_lot(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_LOT"
+        raw = _to_float_or_none(TelegramBridgeService._get_env_value(key, ""))
+        if raw is None or float(raw) <= 0.0:
+            raw = 0.05
+        # MT4 indicator automation uses 5-stage partial TP ladder; keep minimum lot at 0.05
+        # so each stage can close 0.01 on symbols with 0.01 volume_step.
+        return max(0.05, min(100.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_atr_period(profile: str) -> int:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_ATR_PERIOD"
+        try:
+            raw = int(float(TelegramBridgeService._get_env_value(key, "14")))
+        except Exception:
+            raw = 14
+        return max(5, min(100, int(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_sl_atr(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_SL_ATR"
+        try:
+            raw = float(TelegramBridgeService._get_env_value(key, "1.5"))
+        except Exception:
+            raw = 1.5
+        if not math.isfinite(float(raw)):
+            raw = 1.5
+        return max(0.2, min(10.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_tp_r_start(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_R_START"
+        try:
+            raw = float(TelegramBridgeService._get_env_value(key, "0.5"))
+        except Exception:
+            raw = 0.5
+        if not math.isfinite(float(raw)):
+            raw = 0.5
+        return max(0.1, min(5.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_tp_r_step(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_R_STEP"
+        try:
+            raw = float(TelegramBridgeService._get_env_value(key, "0.5"))
+        except Exception:
+            raw = 0.5
+        if not math.isfinite(float(raw)):
+            raw = 0.5
+        return max(0.1, min(5.0, float(raw)))
+
+    @staticmethod
+    def _calc_atr_from_bars(bars: Any, period: int = 14) -> Optional[float]:
+        if not isinstance(bars, list) or len(bars) < 3:
+            return None
+        rows = [dict(x) for x in bars if isinstance(x, dict)]
+        if len(rows) < 3:
+            return None
+        trs: List[float] = []
+        for i in range(1, len(rows)):
+            try:
+                h = float(rows[i].get("high"))
+                l = float(rows[i].get("low"))
+                pc = float(rows[i - 1].get("close"))
+            except Exception:
+                continue
+            if not all(math.isfinite(v) for v in (h, l, pc)):
+                continue
+            tr = max(abs(h - l), abs(h - pc), abs(l - pc))
+            if math.isfinite(float(tr)) and float(tr) > 0.0:
+                trs.append(float(tr))
+        if not trs:
+            return None
+        n = max(1, min(int(period or 14), len(trs)))
+        v = sum(trs[-n:]) / float(n)
+        if not math.isfinite(float(v)) or float(v) <= 0.0:
+            return None
+        return float(v)
+
+    def _close_mt4_reverse_positions(
+        self,
+        *,
+        symbol: str,
+        incoming_direction: str,
+    ) -> Dict[str, Any]:
+        sym = str(symbol or "").strip().upper()
+        incoming = str(incoming_direction or "").strip().upper()
+        if not sym or incoming not in {"BUY", "SELL"}:
+            return {"ok": False, "error": "invalid_reverse_close_payload"}
+        opposite = "SELL" if incoming == "BUY" else "BUY"
+        svc = self._get_live_service()
+
+        with self._lock:
+            ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
+
+        remove_keys: List[str] = []
+        closed_tickets: set[int] = set()
+        failed: List[str] = []
+        closed_count = 0
+
+        for key, row in ladders.items():
+            row_sym = str((row or {}).get("symbol") or "").strip().upper()
+            row_dir = str((row or {}).get("direction") or "").strip().upper()
+            row_tag = str((row or {}).get("source_tag") or "").strip().lower()
+            ticket = int((row or {}).get("broker_ticket") or 0)
+            if row_sym != sym or row_dir != opposite or ticket <= 0:
+                continue
+            if not row_tag.startswith("mt4|"):
+                continue
+            out = svc.close_position(
+                symbol=str(sym),
+                position_ticket=int(ticket),
+                comment="mt4_reverse_close",
+            )
+            if bool((out or {}).get("ok")):
+                closed_count += 1
+                closed_tickets.add(int(ticket))
+                remove_keys.append(str(key))
+            else:
+                failed.append(f"ladder#{int(ticket)}:{str((out or {}).get('error') or 'close_failed')[:120]}")
+
+        # Fallback: close MT4-tagged opposite positions not tracked in active ladder map.
+        try:
+            open_rows = svc.get_open_positions(symbol=str(sym)) or []
+        except Exception:
+            open_rows = []
+        for pos in open_rows:
+            ticket = int((pos or {}).get("ticket") or 0)
+            pos_dir = str((pos or {}).get("direction") or "").strip().upper()
+            comment = str((pos or {}).get("comment") or "").strip().lower()
+            if ticket <= 0 or pos_dir != opposite:
+                continue
+            if int(ticket) in closed_tickets:
+                continue
+            if not comment.startswith("mt4"):
+                continue
+            out = svc.close_position(
+                symbol=str(sym),
+                position_ticket=int(ticket),
+                comment="mt4_reverse_close",
+            )
+            if bool((out or {}).get("ok")):
+                closed_count += 1
+                closed_tickets.add(int(ticket))
+                # if this ticket exists in ladder map, remove it too
+                for key, row in ladders.items():
+                    if int((row or {}).get("broker_ticket") or 0) == int(ticket):
+                        remove_keys.append(str(key))
+            else:
+                failed.append(f"pos#{int(ticket)}:{str((out or {}).get('error') or 'close_failed')[:120]}")
+
+        if remove_keys:
+            with self._lock:
+                for key in set(remove_keys):
+                    self._active_confirmation_signal_ladders.pop(str(key), None)
+
+        if failed:
+            return {
+                "ok": False,
+                "closed_count": int(closed_count),
+                "failed_count": int(len(failed)),
+                "errors": failed[:8],
+            }
+        return {"ok": True, "closed_count": int(closed_count), "failed_count": 0}
+
+    def ingest_mt4_indicator_signal(self, *, payload: Dict[str, Any]) -> Dict[str, Any]:
+        p = payload if isinstance(payload, dict) else {}
+        indicator = str(p.get("indicator") or "").strip() or "MT4Indicator"
+        profile = str(p.get("signal_profile") or "").strip().lower() or "generic"
+        hint = str(p.get("signal_hint") or "").strip().upper()
+        symbol_raw = str(p.get("symbol") or "").strip().upper()
+        symbol = str(self._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
+        timeframe = str(p.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
+        message = str(p.get("message") or "").strip()
+        event_ts = p.get("event_ts")
+        source = f"MT4:{indicator}"
+
+        if hint not in {"BUY", "SELL"}:
+            return {"ok": False, "error": "invalid_direction", "executed": False}
+        if not symbol:
+            return {"ok": False, "error": "missing_symbol", "executed": False}
+
+        ev_unix = _to_unix_or_none(event_ts)
+        now_ts = time.time()
+        max_age = float(self._mt4_exec_max_signal_age_sec())
+        if max_age > 0.0 and ev_unix is not None and (float(now_ts) - float(ev_unix)) > float(max_age):
+            return {"ok": True, "executed": False, "reason": "stale_signal"}
+
+        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
+        dedupe_key = f"{profile}|{symbol}|{timeframe}|{hint}|{msg_norm}"
+        with self._lock:
+            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
+                return {"ok": True, "executed": False, "reason": "duplicate_signal"}
+            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
+            if len(self._mt4_signal_dedupe) > 10000:
+                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
+                self._mt4_signal_dedupe = {
+                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
+                }
+
+        if not self._mt4_exec_enabled():
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_signal",
+                parsed={"symbol": str(symbol), "direction": str(hint), "profile": str(profile)},
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": True, "executed": False, "reason": "mt4_execution_disabled"}
+
+        if not self._mt4_exec_profile_enabled(profile):
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_signal",
+                parsed={"symbol": str(symbol), "direction": str(hint), "profile": str(profile)},
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": True, "executed": False, "reason": f"profile_disabled:{profile}"}
+
+        svc = self._get_live_service()
+        info = svc.get_symbol_info(symbol=str(symbol))
+        if isinstance(info, dict) and str(info.get("error") or "").strip():
+            return {"ok": False, "executed": False, "error": str(info.get("error"))[:220]}
+        symbol_exec_raw = str((info or {}).get("resolved_symbol") or symbol).strip() or str(symbol)
+        symbol_exec = str(symbol_exec_raw).strip().upper()
+        digits = int((info or {}).get("digits") or 2)
+        point = _to_float_or_none((info or {}).get("point")) or (0.01 if digits <= 2 else 0.0001)
+        min_stops_points = _to_float_or_none((info or {}).get("trade_stops_level")) or 0.0
+        min_stop_dist = float(max(0.0, float(min_stops_points) * float(point)))
+
+        tick = svc.get_symbol_tick(symbol=str(symbol_exec_raw), resolve_symbol=False)
+        ask = _to_float_or_none((tick or {}).get("ask"))
+        bid = _to_float_or_none((tick or {}).get("bid"))
+        last = _to_float_or_none((tick or {}).get("last"))
+
+        bars = svc.get_recent_candles(
+            symbol=str(symbol_exec_raw),
+            timeframe=str(timeframe),
+            count=max(40, self._mt4_exec_profile_atr_period(profile) + 10),
+            resolve_symbol=False,
+        )
+        atr = self._calc_atr_from_bars(bars, period=self._mt4_exec_profile_atr_period(profile))
+
+        entry_price = ask if hint == "BUY" else bid
+        if entry_price is None:
+            entry_price = last
+        if entry_price is None and isinstance(bars, list) and bars:
+            entry_price = _to_float_or_none((bars[-1] or {}).get("close"))
+        if entry_price is None or (not math.isfinite(float(entry_price))) or float(entry_price) <= 0.0:
+            return {"ok": False, "executed": False, "error": "entry_price_unavailable"}
+
+        default_dist = max(float(point) * 120.0, abs(float(entry_price)) * 0.001)
+        sl_distance = float(atr or default_dist) * float(self._mt4_exec_profile_sl_atr(profile))
+        sl_distance = max(float(sl_distance), float(min_stop_dist) * 1.25, float(point) * 10.0)
+        tp_r_start = float(self._mt4_exec_profile_tp_r_start(profile))
+        tp_r_step = float(self._mt4_exec_profile_tp_r_step(profile))
+        tp_multipliers = [float(tp_r_start + tp_r_step * i) for i in range(5)]
+
+        if hint == "BUY":
+            stop_loss = float(entry_price - sl_distance)
+            tp_prices = [float(entry_price + sl_distance * float(rm)) for rm in tp_multipliers]
+        else:
+            stop_loss = float(entry_price + sl_distance)
+            tp_prices = [float(entry_price - sl_distance * float(rm)) for rm in tp_multipliers]
+
+        stop_loss = round(float(stop_loss), int(max(0, digits)))
+        tps = [{"index": int(i + 1), "price": round(float(px), int(max(0, digits)))} for i, px in enumerate(tp_prices)]
+        signal = {
+            "symbol": str(symbol_exec_raw),
+            "direction": str(hint),
+            "entry_low": round(float(entry_price), int(max(0, digits))),
+            "entry_high": round(float(entry_price), int(max(0, digits))),
+            "entry_mid": round(float(entry_price), int(max(0, digits))),
+            "stop_loss": float(stop_loss),
+            "tps": list(tps),
+            "raw_text": str(message),
+            "timeframe": str(timeframe),
+        }
+        reverse_out = self._close_mt4_reverse_positions(
+            symbol=str(symbol_exec_raw),
+            incoming_direction=str(hint),
+        )
+        if not bool((reverse_out or {}).get("ok")):
+            reverse_msg = (
+                "reverse_close_failed: "
+                + " | ".join(str(x) for x in ((reverse_out or {}).get("errors") or [])[:3])
+            )
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_reverse_close_failed",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "reverse_close": dict(reverse_out or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": False, "executed": False, "error": str(reverse_msg)[:220]}
+        if int((reverse_out or {}).get("closed_count") or 0) > 0:
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_reverse_close_done",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "reverse_close": dict(reverse_out or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+        lot = float(self._mt4_exec_profile_lot(profile))
+        chat_id = int(self._allowed_chat_id() or 0)
+        exec_msg = self._execute_confirmation_signal_auto(
+            chat_id=int(chat_id),
+            signal=dict(signal),
+            lot_override=float(lot),
+            source_tag=f"mt4|{str(profile)}|{str(indicator).strip().lower()}",
+            comment_prefix="mt4",
+        )
+        executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
+
+        self._append_confirm_signal_feed(
+            source=str(source),
+            chat={"title": str(source), "type": "channel"},
+            text=str(message),
+            kind=("mt4_exec" if executed else "mt4_exec_failed"),
+            parsed={
+                "symbol": str(symbol_exec_raw),
+                "direction": str(hint),
+                "profile": str(profile),
+                "timeframe": str(timeframe),
+                "lot": float(lot),
+                "sl_atr": float(self._mt4_exec_profile_sl_atr(profile)),
+                "tp_r_start": float(tp_r_start),
+                "tp_r_step": float(tp_r_step),
+                "signal": dict(signal),
+                "execution_message": str(exec_msg),
+            },
+            event_ts=event_ts,
+            source_message_id=None,
+        )
+        return {"ok": True, "executed": bool(executed), "message": str(exec_msg)}
 
     def _get_live_service(self) -> LiveTradingService:
         svc = self._live_service
@@ -1296,6 +1786,8 @@ class TelegramBridgeService:
         broker_ticket: int,
         stage_lots: List[float],
         tps: List[Dict[str, Any]],
+        source_tag: Optional[str] = None,
+        order_comment: Optional[str] = None,
     ) -> None:
         key = f"{int(chat_id)}:{int(session_id)}:{int(trade_id)}:{int(broker_ticket)}"
         row = {
@@ -1310,26 +1802,69 @@ class TelegramBridgeService:
             "tps": [dict(x) for x in tps[:5] if isinstance(x, dict)],
             "next_tp_index": 1,
             "created_at": self._now_iso(),
+            "source_tag": str(source_tag or "").strip().lower(),
+            "order_comment": str(order_comment or "").strip(),
         }
         with self._lock:
             self._active_confirmation_signal_ladders[str(key)] = row
 
-    def _execute_confirmation_signal_auto(self, *, chat_id: int, signal: Dict[str, Any]) -> str:
+    def _execute_confirmation_signal_auto(
+        self,
+        *,
+        chat_id: int,
+        signal: Dict[str, Any],
+        lot_override: Optional[float] = None,
+        source_tag: Optional[str] = None,
+        comment_prefix: str = "tgc",
+    ) -> str:
         symbol = str(signal.get("symbol") or "").strip().upper()
         direction = str(signal.get("direction") or "").strip().upper()
         stop_loss = _to_float_or_none(signal.get("stop_loss"))
         timeframe = str(signal.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
-        tps = [dict(r) for r in (signal.get("tps") if isinstance(signal.get("tps"), list) else []) if isinstance(r, dict)]
-        take_profit = _to_float_or_none((tps[-1] or {}).get("price")) if tps else None
-        if direction not in {"BUY", "SELL"} or stop_loss is None or take_profit is None or not symbol or len(tps) < 5:
+        tps_all = [dict(r) for r in (signal.get("tps") if isinstance(signal.get("tps"), list) else []) if isinstance(r, dict)]
+        if direction not in {"BUY", "SELL"} or stop_loss is None or not symbol or (not tps_all):
             return "Signal payload invalid for auto 5TP execution."
         lot = float(self._confirm_signal_default_lot())
+        lot_ovr = _to_float_or_none(lot_override)
+        if lot_ovr is not None and float(lot_ovr) > 0.0:
+            lot = float(lot_ovr)
         stage_mode = str(self._confirm_signal_tp_distribution_mode())
-        stage_lots, stage_err = self._build_confirmation_ladder_lots(symbol=str(symbol), total_lot=float(lot), stage_count=5)
+        force_single = bool(self._confirm_signal_force_single_trade_01())
+        if force_single:
+            lot = 0.01
+            desired_stages = 1
+            stage_mode = "single_01"
+        else:
+            desired_stages = int(max(1, min(5, len(tps_all))))
+        active_tps: List[Dict[str, Any]] = [dict(x) for x in tps_all[:desired_stages]]
+        stage_lots, stage_err = self._build_confirmation_ladder_lots(
+            symbol=str(symbol),
+            total_lot=float(lot),
+            stage_count=int(desired_stages),
+        )
+        if stage_lots is None:
+            # Fallback: if lot is too small for full 5-stage split, degrade to max feasible stages.
+            try:
+                info = self._get_live_service().get_symbol_info(symbol=str(symbol))
+            except Exception:
+                info = {}
+            vol_step = _to_float_or_none((info or {}).get("volume_step")) or 0.01
+            max_stages = int(math.floor(float(lot) / float(max(vol_step, 1e-6))))
+            max_stages = int(max(1, min(int(desired_stages), int(max_stages))))
+            active_tps = [dict(x) for x in tps_all[:max_stages]]
+            stage_lots, stage_err = self._build_confirmation_ladder_lots(
+                symbol=str(symbol),
+                total_lot=float(lot),
+                stage_count=int(max_stages),
+            )
         if stage_lots is None:
             return f"Confirmation trade failed: {str(stage_err)}"
+        take_profit = _to_float_or_none((active_tps[-1] or {}).get("price")) if active_tps else None
+        if take_profit is None:
+            return "Confirmation trade failed: invalid_take_profit"
         svc = self._get_live_service()
-        marker = f"tgc{int(time.time() * 1000) % 10000000000:010d}"
+        pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "tgc").strip().lower())[:8] or "tgc"
+        marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
         try:
             data = svc.place_market_order(
                 symbol=str(symbol),
@@ -1346,19 +1881,19 @@ class TelegramBridgeService:
                 broker_ticket = int(_to_float_or_none((data or {}).get("order")) or 0)
             if broker_ticket <= 0:
                 broker_ticket = int(_to_float_or_none((data or {}).get("deal")) or 0)
-            if broker_ticket <= 0:
-                try:
-                    rows = svc.get_open_positions(symbol=str(symbol))
-                except Exception:
-                    rows = []
-                by_marker = [
-                    dict(r)
-                    for r in (rows or [])
-                    if str((r or {}).get("direction") or "").strip().upper() == str(direction)
-                    and str((r or {}).get("comment") or "").strip() == str(marker)
-                ]
-                if by_marker:
-                    broker_ticket = int(max(int((r or {}).get("ticket") or 0) for r in by_marker))
+            try:
+                rows = svc.get_open_positions(symbol=str(symbol))
+            except Exception:
+                rows = []
+            by_marker = [
+                dict(r)
+                for r in (rows or [])
+                if str((r or {}).get("direction") or "").strip().upper() == str(direction)
+                and str((r or {}).get("comment") or "").strip() == str(marker)
+            ]
+            if by_marker:
+                # Prefer marker-resolved live position ticket for ladder tracking.
+                broker_ticket = int(max(int((r or {}).get("ticket") or 0) for r in by_marker))
             if broker_ticket > 0:
                 self._register_confirmation_ladder(
                     chat_id=int(chat_id),
@@ -1369,11 +1904,13 @@ class TelegramBridgeService:
                     trade_id=0,
                     broker_ticket=int(broker_ticket),
                     stage_lots=list(stage_lots),
-                    tps=list(tps),
+                    tps=list(active_tps),
+                    source_tag=source_tag,
+                    order_comment=str(marker),
                 )
             stage_desc = " | ".join(
                 f"TP{int((row or {}).get('index') or 0)}={float((row or {}).get('price') or 0.0):.5f}"
-                for row in tps[:5]
+                for row in active_tps
             )
             lot_desc = " / ".join(f"{float(x):.4f}" for x in stage_lots)
             return (
@@ -1384,6 +1921,7 @@ class TelegramBridgeService:
                 f"SL: {float(stop_loss):.5f}\n"
                 f"Final TP: {float(take_profit):.5f}\n"
                 f"Lot: {float((data or {}).get('lot_size') or lot):.4f}\n"
+                f"Stages: {int(len(stage_lots))}/{int(len(tps_all))}\n"
                 f"Stage mode: {stage_mode}\n"
                 f"Stage lots: {lot_desc}\n"
                 f"Targets: {stage_desc}\n"
@@ -1508,7 +2046,7 @@ class TelegramBridgeService:
             event_ts=((msg or {}).get("date") if isinstance(msg, dict) else None),
             source_message_id=int(((msg or {}).get("message_id") if isinstance(msg, dict) else 0) or 0),
         )
-        require_confirm = self._confirm_signal_requires_confirm_for_source(source_label)
+        require_confirm = self._confirm_signal_requires_confirm_for_sources(source_names)
 
         if require_confirm and self._is_confirm_signal_message(text):
             candidates: List[str] = []

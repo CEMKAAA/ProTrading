@@ -22,6 +22,7 @@ from .services.agent_live_tick_service import AgentLiveTickService
 from .services.agent_watchdog_service import get_agent_watchdog_service
 from .services.telegram_bridge_service import TelegramBridgeService
 from .services.telegram_user_listener_service import TelegramUserListenerService
+from .services.mt4_log_automation_service import MT4LogAutomationService
 from .services.youtube_colorflip_service import YouTubeColorFlipService
 
 # Auto-retrain service singleton
@@ -34,6 +35,17 @@ telegram_bridge_service = TelegramBridgeService()
 telegram_user_listener_service = TelegramUserListenerService(
     on_message=telegram_bridge_service.ingest_external_channel_message
 )
+
+
+def _on_mt4_indicator_signal(**payload):
+    """Forward MT4 indicator signals into execution + unified feed pipeline."""
+    try:
+        telegram_bridge_service.ingest_mt4_indicator_signal(payload=dict(payload or {}))
+    except Exception:
+        logger.exception("mt4_indicator_signal_forward_failed")
+
+
+mt4_log_automation_service = MT4LogAutomationService(on_indicator_signal=_on_mt4_indicator_signal)
 youtube_colorflip_service = YouTubeColorFlipService(
     profile="PRIMARY",
     default_url="https://www.youtube.com/watch?v=fFrLWCCUY68",
@@ -164,6 +176,12 @@ async def startup_event():
         logger.info("Telegram user listener service initialized")
     except Exception:
         logger.exception("Telegram user listener service failed to start")
+    # Start MT4 log automation listener (optional, env-gated)
+    try:
+        mt4_log_automation_service.start()
+        logger.info("MT4 log automation service initialized")
+    except Exception:
+        logger.exception("MT4 log automation service failed to start")
 
     # Start YouTube frame colorflip watcher (optional, env-gated)
     try:
@@ -192,6 +210,7 @@ async def shutdown_event():
     youtube_colorflip_service_forex2.stop()
     youtube_colorflip_service_forex.stop()
     youtube_colorflip_service.stop()
+    mt4_log_automation_service.stop()
     telegram_user_listener_service.stop()
     telegram_bridge_service.stop()
     agent_live_tick_service.stop()

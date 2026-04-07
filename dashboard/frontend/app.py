@@ -1005,6 +1005,12 @@ def telegram_automation():
     return render_template('telegram_automation.html')
 
 
+@app.route('/mt4-log-automation')
+def mt4_log_automation():
+    """MT4 log-based indicator automation control panel."""
+    return render_template('mt4_log_automation.html')
+
+
 # Guided trading simulation workspace (control-plane UX)
 @app.route('/trading-simulation/<strategy_id>')
 def trading_simulation_workspace(strategy_id):
@@ -1420,6 +1426,74 @@ def telegram_user_listener_verify_code_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to verify telegram login code'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/mt4/log-automation/state')
+def mt4_log_automation_state_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        '/api/v1/mt4/log-automation/state',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load MT4 log automation state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/mt4/log-automation/config', methods=['POST'])
+def mt4_log_automation_config_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/mt4/log-automation/config',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update MT4 log automation config'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/mt4/log-automation/indicator-automation', methods=['POST'])
+def mt4_log_indicator_automation_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/mt4/log-automation/indicator-automation',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update indicator automation state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/mt4/log-automation/indicator-logs')
+def mt4_log_indicator_logs_proxy():
+    params = {}
+    if request.args.get('indicator') is not None:
+        params['indicator'] = request.args.get('indicator')
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    if request.args.get('alerts_only') is not None:
+        params['alerts_only'] = request.args.get('alerts_only')
+    res, err = api_request(
+        'GET',
+        '/api/v1/mt4/log-automation/indicator-logs',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load indicator logs'}), 500
     return jsonify(res)
 
 

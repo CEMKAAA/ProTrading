@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}MT4 Log Automation - ProTrading Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="mb-0">MT4 Log Automation</h2>
+        <div class="small text-muted">Indicator discovery + per-indicator automation control</div>
+    </div>
+
+    <div id="mt4la-alert"></div>
+
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <strong>Listener Config</strong>
+                </div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="mt4la-enabled">
+                        <label class="form-check-label" for="mt4la-enabled">Enable MT4 log listener</label>
+                    </div>
+                    <div class="mb-2">
+                        <label for="mt4la-data-path" class="form-label">MT4 Data Path</label>
+                        <input id="mt4la-data-path" class="form-control" placeholder="C:\Users\...\MetaQuotes\Terminal\...\">
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label for="mt4la-poll-sec" class="form-label">Poll sec</label>
+                            <input id="mt4la-poll-sec" class="form-control" type="number" min="0.5" max="30" step="0.5" value="2">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="mt4la-backfill-lines" class="form-label">Backfill lines</label>
+                            <input id="mt4la-backfill-lines" class="form-control" type="number" min="0" max="2000" step="50" value="200">
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 mt-3">
+                        <button id="mt4la-save-btn" class="btn btn-primary btn-sm">Save Config</button>
+                        <button id="mt4la-refresh-btn" class="btn btn-outline-secondary btn-sm">Refresh</button>
+                    </div>
+                    <div id="mt4la-status-line" class="small text-muted mt-2">Status: -</div>
+                    <div id="mt4la-files-line" class="small text-muted">Watched files: -</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header d-flex justify-content-between">
+                    <strong>Runtime</strong>
+                    <span id="mt4la-updated" class="small text-muted">-</span>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Running</div>
+                                <div id="mt4la-running" class="fs-6">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Indicators</div>
+                                <div id="mt4la-indicator-count" class="fs-6">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Event Rows</div>
+                                <div id="mt4la-event-count" class="fs-6">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Forward OK/Fail</div>
+                                <div id="mt4la-forward" class="fs-6">0 / 0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="mt4la-forward-line" class="small text-muted mt-2">Forward: -</div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <strong>Discovered Indicators</strong>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 320px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th>Indicator</th>
+                                    <th>Symbol/TF</th>
+                                    <th>Events</th>
+                                    <th>Signals</th>
+                                    <th>Last Signal</th>
+                                    <th>Last Seen</th>
+                                    <th>Automation</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mt4la-indicator-body">
+                                <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow-sm mt-3">
+        <div class="card-header d-flex justify-content-between">
+            <strong id="mt4la-log-title">Indicator Alert Logs</strong>
+            <span class="small text-muted">Only MT4 Alert lines | Latest first</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 420px;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th style="min-width:140px;">Time</th>
+                            <th style="min-width:90px;">Type</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mt4la-log-body">
+                        <tr><td colspan="3" class="text-muted text-center py-3">Select an indicator to view logs.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260407_mt4_log_automation_v4') }}"></script>
+{% endblock %}

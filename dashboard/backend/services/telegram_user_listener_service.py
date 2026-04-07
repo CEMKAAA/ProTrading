@@ -226,6 +226,7 @@ class TelegramUserListenerService:
             last_tick = str(self._last_tick_iso or "")
             resolved = [dict(x) for x in self._resolved_channels]
             skipped = [dict(x) for x in self._skipped_specs]
+            last_seen_map = dict(self._last_seen_msg_id)
             forward_total = int(self._forward_total)
             forward_ok = int(self._forward_ok)
             forward_fail = int(self._forward_fail)
@@ -233,6 +234,20 @@ class TelegramUserListenerService:
             last_forward_error = str(self._last_forward_error or "")
             last_forward_source = str(self._last_forward_source or "")
             last_forward_message_id = int(self._last_forward_message_id or 0)
+        channel_health: List[Dict[str, Any]] = []
+        for row in resolved:
+            rid = int((row or {}).get("id") or 0)
+            key = str(rid)
+            last_seen = int(last_seen_map.get(key, 0) or 0)
+            channel_health.append(
+                {
+                    "spec": str((row or {}).get("spec") or ""),
+                    "title": str((row or {}).get("title") or ""),
+                    "id": int(rid),
+                    "last_seen_msg_id": int(last_seen),
+                    "active": bool(last_seen > 0),
+                }
+            )
         return {
             "ok": True,
             "enabled": bool(self._enabled()),
@@ -259,6 +274,7 @@ class TelegramUserListenerService:
             "last_forward_error": last_forward_error,
             "last_forward_source": last_forward_source,
             "last_forward_message_id": last_forward_message_id,
+            "channel_health": channel_health,
             "resolved_channels": resolved,
             "skipped_specs": skipped,
         }
