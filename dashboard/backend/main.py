@@ -21,6 +21,7 @@ from .services.workbench_copilot_worker import WorkbenchCopilotWorkerService
 from .services.agent_live_tick_service import AgentLiveTickService
 from .services.agent_watchdog_service import get_agent_watchdog_service
 from .services.telegram_bridge_service import TelegramBridgeService
+from .services.telegram_user_listener_service import TelegramUserListenerService
 from .services.youtube_colorflip_service import YouTubeColorFlipService
 
 # Auto-retrain service singleton
@@ -30,6 +31,9 @@ workbench_copilot_worker = WorkbenchCopilotWorkerService()
 agent_watchdog_service: Optional[object] = None
 agent_live_tick_service = AgentLiveTickService()
 telegram_bridge_service = TelegramBridgeService()
+telegram_user_listener_service = TelegramUserListenerService(
+    on_message=telegram_bridge_service.ingest_external_channel_message
+)
 youtube_colorflip_service = YouTubeColorFlipService(
     profile="PRIMARY",
     default_url="https://www.youtube.com/watch?v=fFrLWCCUY68",
@@ -154,6 +158,12 @@ async def startup_event():
         logger.info("Telegram bridge service initialized")
     except Exception:
         logger.exception("Telegram bridge service failed to start")
+    # Start Telegram user listener (optional, env-gated)
+    try:
+        telegram_user_listener_service.start()
+        logger.info("Telegram user listener service initialized")
+    except Exception:
+        logger.exception("Telegram user listener service failed to start")
 
     # Start YouTube frame colorflip watcher (optional, env-gated)
     try:
@@ -182,6 +192,7 @@ async def shutdown_event():
     youtube_colorflip_service_forex2.stop()
     youtube_colorflip_service_forex.stop()
     youtube_colorflip_service.stop()
+    telegram_user_listener_service.stop()
     telegram_bridge_service.stop()
     agent_live_tick_service.stop()
     if agent_watchdog_service is not None:

@@ -1382,6 +1382,68 @@ def test_process_update_screener_attaches_inline_markup(monkeypatch):
     assert isinstance(rm.get("inline_keyboard"), list)
 
 
+def test_process_update_channel_post_records_feed_without_allowed_chat(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: None)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda _msg, _chat: True)
+    svc._process_update(
+        {
+            "channel_post": {
+                "chat": {"id": -1001, "title": "Elite Pips Academy", "type": "channel"},
+                "text": "TP 1 HIT\n50+PIPS PROFIT DONE ENJOY",
+            }
+        }
+    )
+    state = svc.get_telegram_automation_state(limit=20)
+    feed = state.get("feed") if isinstance(state, dict) else []
+    assert isinstance(feed, list) and feed
+    assert str(feed[-1].get("kind") or "") == "tp_hit"
+
+
+def test_process_update_channel_post_uses_caption_text(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    seen = {}
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: 7119946313)
+
+    def _fake_handle_confirmation_signal_message(*, chat_id, msg, chat, text, push_only):
+        seen["chat_id"] = int(chat_id)
+        seen["text"] = str(text)
+        seen["push_only"] = bool(push_only)
+        return ""
+
+    monkeypatch.setattr(svc, "_handle_confirmation_signal_message", _fake_handle_confirmation_signal_message)
+    svc._process_update(
+        {
+            "channel_post": {
+                "chat": {"id": -1001, "title": "Elite Pips Academy", "type": "channel"},
+                "caption": "Confirm Signal",
+            }
+        }
+    )
+    assert seen.get("chat_id") == 7119946313
+    assert seen.get("text") == "Confirm Signal"
+    assert seen.get("push_only") is True
+
+
+def test_process_update_channel_post_source_mismatch_still_visible_in_feed(monkeypatch):
+    svc = tbs.TelegramBridgeService()
+    monkeypatch.setattr(svc, "_allowed_chat_id", lambda: 7119946313)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda _msg, _chat: False)
+    svc._process_update(
+        {
+            "channel_post": {
+                "chat": {"id": -1001, "title": "Some Other Channel", "type": "channel"},
+                "text": "Random message from untracked source",
+            }
+        }
+    )
+    state = svc.get_telegram_automation_state(limit=20)
+    feed = state.get("feed") if isinstance(state, dict) else []
+    assert isinstance(feed, list) and feed
+    assert str(feed[-1].get("source") or "") == "Some Other Channel"
+    assert "Random message" in str(feed[-1].get("text") or "")
+
+
 def test_build_screener_inline_keyboard_paginates(monkeypatch):
     svc = tbs.TelegramBridgeService()
     chat_id = 7119946313

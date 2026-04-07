@@ -999,6 +999,12 @@ def trader_workbench():
     return render_template('workbench.html', data_files=data_files or [])
 
 
+@app.route('/telegram-automation')
+def telegram_automation():
+    """Telegram signal automation control panel."""
+    return render_template('telegram_automation.html')
+
+
 # Guided trading simulation workspace (control-plane UX)
 @app.route('/trading-simulation/<strategy_id>')
 def trading_simulation_workspace(strategy_id):
@@ -1297,6 +1303,124 @@ def sim_live_history():
 def sim_workbench_tools():
     res = api_request('GET', '/api/v1/simulation/workbench/tools')
     return jsonify(res or [])
+
+
+@app.route('/api/telegram/automation/state')
+def telegram_automation_state_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        '/api/v1/telegram/automation/state',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load telegram automation state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/automation/config', methods=['POST'])
+def telegram_automation_config_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/automation/config',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update telegram automation config'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/state')
+def telegram_user_listener_state_proxy():
+    res, err = api_request(
+        'GET',
+        '/api/v1/telegram/user-listener/state',
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load telegram user listener state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/config', methods=['POST'])
+def telegram_user_listener_config_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/user-listener/config',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update telegram user listener config'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/start', methods=['POST'])
+def telegram_user_listener_start_proxy():
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/user-listener/start',
+        data={},
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to start telegram user listener'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/stop', methods=['POST'])
+def telegram_user_listener_stop_proxy():
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/user-listener/stop',
+        data={},
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to stop telegram user listener'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/send-code', methods=['POST'])
+def telegram_user_listener_send_code_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/user-listener/send-code',
+        data=payload,
+        return_error=True,
+        timeout_sec=40,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to send telegram login code'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/telegram/user-listener/verify-code', methods=['POST'])
+def telegram_user_listener_verify_code_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/telegram/user-listener/verify-code',
+        data=payload,
+        return_error=True,
+        timeout_sec=40,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to verify telegram login code'}), 500
+    return jsonify(res)
 
 
 @app.route('/api/simulation/sessions/<int:session_id>/tools/<tool_id>/scan', methods=['POST'])

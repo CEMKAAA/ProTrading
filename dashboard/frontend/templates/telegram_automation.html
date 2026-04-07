@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+
+{% block title %}Telegram Automation - ProTrading Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="mb-0">Telegram Automation</h2>
+        <div class="small text-muted">Multi-channel confirmation signal control</div>
+    </div>
+
+    <div id="tg-auto-alert"></div>
+
+    <div class="row g-3">
+        <div class="col-lg-5">
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <strong>Execution Config</strong>
+                </div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="tg-enabled">
+                        <label class="form-check-label" for="tg-enabled">Enable confirmation automation</label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="tg-require-confirm">
+                        <label class="form-check-label" for="tg-require-confirm">Require "Confirm Signal" before entry</label>
+                    </div>
+
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label for="tg-require-confirm-channels" class="form-label">Confirm Required Channels</label>
+                            <textarea id="tg-require-confirm-channels" class="form-control" rows="2" placeholder="Elite Pips Academy"></textarea>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="tg-no-confirm-channels" class="form-label">No Confirm Channels</label>
+                            <textarea id="tg-no-confirm-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="tg-channels" class="form-label">Tracked channels (one per line)</label>
+                        <textarea id="tg-channels" class="form-control" rows="4" placeholder="Elite Pips Academy"></textarea>
+                    </div>
+
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label for="tg-timeframe" class="form-label">Default Timeframe</label>
+                            <input id="tg-timeframe" class="form-control" value="M5">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="tg-lot" class="form-label">Total Lot (5 TP split)</label>
+                            <input id="tg-lot" class="form-control" type="number" min="0.01" step="0.01" value="0.05">
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-6">
+                            <label for="tg-distribution" class="form-label">TP Distribution</label>
+                            <select id="tg-distribution" class="form-select">
+                                <option value="equal">Equal</option>
+                                <option value="front_loaded">Front Loaded</option>
+                                <option value="runner">Runner</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="tg-confirm-window" class="form-label">Confirm Window (sec)</label>
+                            <input id="tg-confirm-window" class="form-control" type="number" min="30" step="30" value="1800">
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label for="tg-eval-mode" class="form-label">Evaluation Mode</label>
+                            <select id="tg-eval-mode" class="form-select">
+                                <option value="deterministic">Deterministic</option>
+                                <option value="ai_assist">AI Assist</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="tg-ai-provider" class="form-label">AI Provider</label>
+                            <select id="tg-ai-provider" class="form-select">
+                                <option value="claude">Claude</option>
+                                <option value="openai">OpenAI</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-8">
+                            <label for="tg-ai-model" class="form-label">AI Model</label>
+                            <input id="tg-ai-model" class="form-control" placeholder="claude-3-5-haiku-latest">
+                        </div>
+                        <div class="col-md-4">
+                            <label for="tg-ai-timeout" class="form-label">AI Timeout (sec)</label>
+                            <input id="tg-ai-timeout" class="form-control" type="number" min="2" max="30" step="1" value="10">
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 mt-3">
+                        <button id="tg-save-btn" class="btn btn-primary">Save Config</button>
+                        <button id="tg-refresh-btn" class="btn btn-outline-secondary">Refresh</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mt-3">
+                <div class="card-header">
+                    <strong>Channel Reader (No Admin Needed)</strong>
+                </div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="tg-ul-enabled">
+                        <label class="form-check-label" for="tg-ul-enabled">Enable user-account listener</label>
+                    </div>
+
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label for="tg-ul-api-id" class="form-label">API ID</label>
+                            <input id="tg-ul-api-id" class="form-control" type="number" min="0" step="1" placeholder="12345678">
+                        </div>
+                        <div class="col-md-8">
+                            <label for="tg-ul-api-hash" class="form-label">API Hash</label>
+                            <input id="tg-ul-api-hash" class="form-control" type="password" placeholder="Telegram API hash">
+                        </div>
+                    </div>
+
+                    <div class="mb-2 mt-2">
+                        <label for="tg-ul-session-path" class="form-label">Session Path</label>
+                        <input id="tg-ul-session-path" class="form-control" placeholder="dashboard/data/telegram_user_listener">
+                    </div>
+
+                    <div class="mb-2">
+                        <label for="tg-ul-channels" class="form-label">Reader channels/usernames (one per line)</label>
+                        <textarea id="tg-ul-channels" class="form-control" rows="3" placeholder="@elitepipacademy"></textarea>
+                    </div>
+
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label for="tg-ul-poll-sec" class="form-label">Poll sec</label>
+                            <input id="tg-ul-poll-sec" class="form-control" type="number" min="1" max="30" step="1" value="3">
+                        </div>
+                        <div class="col-md-4">
+                            <label for="tg-ul-backfill-count" class="form-label">Feed Backfill</label>
+                            <input id="tg-ul-backfill-count" class="form-control" type="number" min="0" max="50" step="1" value="8">
+                        </div>
+                        <div class="col-md-4">
+                            <label for="tg-ul-phone" class="form-label">Phone (+countrycode)</label>
+                            <input id="tg-ul-phone" class="form-control" placeholder="+905xxxxxxxxx">
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-4">
+                            <label for="tg-ul-code" class="form-label">Code</label>
+                            <input id="tg-ul-code" class="form-control" placeholder="12345">
+                        </div>
+                        <div class="col-md-8">
+                            <label for="tg-ul-password" class="form-label">2FA Password (optional)</label>
+                            <input id="tg-ul-password" class="form-control" type="password" placeholder="Telegram 2FA">
+                        </div>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2 mt-3">
+                        <button id="tg-ul-save-btn" class="btn btn-primary btn-sm">Save Reader Config</button>
+                        <button id="tg-ul-send-code-btn" class="btn btn-outline-primary btn-sm">Send Code</button>
+                        <button id="tg-ul-verify-btn" class="btn btn-outline-success btn-sm">Verify Login</button>
+                        <button id="tg-ul-stop-btn" class="btn btn-outline-danger btn-sm">Stop</button>
+                    </div>
+                    <div class="small text-muted mt-2" id="tg-ul-status-line">Reader status: -</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header d-flex justify-content-between">
+                    <strong>Runtime Status</strong>
+                    <span id="tg-status-updated" class="small text-muted">-</span>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Pending Confirm</div>
+                                <div id="tg-pending-count" class="fs-4">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Active Ladders</div>
+                                <div id="tg-active-count" class="fs-4">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Feed Rows</div>
+                                <div id="tg-feed-count" class="fs-4">0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Listener</div>
+                                <div id="tg-ul-run-state" class="fs-6">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Forward OK</div>
+                                <div id="tg-ul-forward-ok" class="fs-6">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Forward Fail</div>
+                                <div id="tg-ul-forward-fail" class="fs-6">0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="small text-muted mt-2" id="tg-ul-flow-line">Listener flow: -</div>
+                    <div class="small text-muted" id="tg-ul-pipeline-line">Pipeline: -</div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm">
+                <div class="card-header d-flex justify-content-between">
+                    <strong>Tracked Channel Feed</strong>
+                    <span class="small text-muted">Auto refresh: 5s</span>
+                </div>
+                <div class="card-body border-bottom py-2">
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label for="tg-feed-source-filter" class="form-label form-label-sm mb-1">Channel Filter</label>
+                            <select id="tg-feed-source-filter" class="form-select form-select-sm">
+                                <option value="__all__">All sources</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="form-check mb-1">
+                                <input class="form-check-input" type="checkbox" id="tg-feed-signals-only" checked>
+                                <label class="form-check-label" for="tg-feed-signals-only">Show only signal / TP / SL / Confirm</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 560px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="min-width: 140px;">Time</th>
+                                    <th style="min-width: 160px;">Source</th>
+                                    <th style="min-width: 110px;">Type</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tg-feed-body">
+                                <tr><td colspan="4" class="text-muted text-center py-3">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260407_telegram_automation_panel_v6') }}"></script>
+{% endblock %}

@@ -89,6 +89,256 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+@router.get("/telegram/automation/state")
+def telegram_automation_state(limit: int = Query(120, ge=20, le=500)):
+    """Telegram confirmation automation control-panel state."""
+    try:
+        from ..main import telegram_bridge_service, telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        out = svc.get_telegram_automation_state(limit=int(limit))
+        try:
+            out["user_listener"] = telegram_user_listener_service.status() if telegram_user_listener_service is not None else {"ok": False, "error": "user_listener_unavailable"}
+        except Exception as exc:
+            out["user_listener"] = {"ok": False, "error": f"user_listener_state_failed:{type(exc).__name__}:{str(exc)[:180]}"}
+        return out
+    except Exception as exc:
+        # Do not break UI polling loop on transient runtime errors.
+        return {
+            "ok": False,
+            "error": f"telegram_automation_state_failed:{type(exc).__name__}:{str(exc)[:180]}",
+            "config": {
+                "enabled": False,
+                "channels": [],
+                "default_timeframe": "M5",
+                "default_lot": 0.05,
+                "distribution_mode": "equal",
+                "require_confirm": True,
+                "confirm_window_sec": 1800.0,
+                "evaluation_mode": "deterministic",
+                "ai_provider": "claude",
+                "ai_model": "",
+                "ai_timeout_sec": 10.0,
+            },
+            "pending_confirm_count": 0,
+            "active_ladder_count": 0,
+            "feed": [],
+            "user_listener": {"ok": False, "error": "state_unavailable"},
+        }
+
+
+@router.post("/telegram/automation/config")
+def telegram_automation_config(payload: Dict[str, Any]):
+    """Persist Telegram confirmation automation config into dashboard/.env and return refreshed state."""
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        return svc.update_telegram_automation_config(payload if isinstance(payload, dict) else {})
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_automation_config_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/automation/simulate-message")
+def telegram_automation_simulate_message(payload: Dict[str, Any]):
+    """
+    Inject a synthetic channel message into telegram automation flow.
+    Intended for smoke tests of signal parsing -> execution path.
+    """
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        text = str(p.get("text") or "").strip()
+        if not text:
+            return {"ok": False, "error": "missing_text"}
+        source_title = str(p.get("source_title") or "Synthetic Channel").strip() or "Synthetic Channel"
+        source_username = str(p.get("source_username") or "").strip() or None
+        source_id = int(float(p.get("source_id") or -9001))
+        chat_id_raw = p.get("chat_id")
+        if chat_id_raw is None:
+            chat_id = int(svc._allowed_chat_id() or 900001)  # type: ignore[attr-defined]
+        else:
+            chat_id = int(float(chat_id_raw))
+        push_only = bool(p.get("push_only", False))
+
+        chat = {
+            "id": int(source_id),
+            "type": "channel",
+            "title": str(source_title),
+            "username": source_username,
+        }
+        msg = {
+            "text": str(text),
+            "chat": dict(chat),
+            "sender_chat": dict(chat),
+            "message_id": int(float(p.get("message_id") or 0)),
+            "date": datetime.now(timezone.utc).isoformat(),
+        }
+
+        out = svc._handle_confirmation_signal_message(  # type: ignore[attr-defined]
+            chat_id=int(chat_id),
+            msg=msg,
+            chat=chat,
+            text=str(text),
+            push_only=bool(push_only),
+        )
+        state = svc.get_telegram_automation_state(limit=80)
+
+        # Include quick MT5 snapshot for smoke-test evidence.
+        live = LiveTradingService()
+        acc = live.get_account_info()
+        positions = live.get_open_positions(symbol=None)
+        xau_deals = live.get_recent_deals(days=1, symbol="XAUUSD")
+        return {
+            "ok": True,
+            "simulated": {
+                "chat_id": int(chat_id),
+                "source_title": str(source_title),
+                "push_only": bool(push_only),
+            },
+            "result_text": ("" if out is None else str(out)),
+            "state": {
+                "pending_confirm_count": int(state.get("pending_confirm_count") or 0),
+                "active_ladder_count": int(state.get("active_ladder_count") or 0),
+                "feed_rows": len(state.get("feed") or []),
+            },
+            "mt5": {
+                "account_ok": bool(isinstance(acc, dict) and "error" not in acc),
+                "account_login": (acc.get("login") if isinstance(acc, dict) else None),
+                "open_positions_count": len(positions or []),
+                "xau_deals_1d_count": len(xau_deals or []),
+                "open_positions_preview": [
+                    {
+                        "ticket": int((r or {}).get("ticket") or 0),
+                        "symbol": str((r or {}).get("symbol") or ""),
+                        "direction": str((r or {}).get("direction") or ""),
+                        "lot_size": float((r or {}).get("lot_size") or 0.0),
+                        "comment": str((r or {}).get("comment") or ""),
+                    }
+                    for r in (positions or [])[:8]
+                ],
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_automation_simulate_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/telegram/user-listener/state")
+def telegram_user_listener_state():
+    """State for Telethon-based channel listener (non-bot Telegram account)."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        return svc.status()
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_state_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/user-listener/config")
+def telegram_user_listener_config(payload: Dict[str, Any]):
+    """Persist user-listener config in dashboard/.env and return refreshed state."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        return svc.update_config(payload if isinstance(payload, dict) else {})
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_config_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/user-listener/start")
+def telegram_user_listener_start():
+    """Start user-listener immediately (if enabled/configured)."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        svc.start()
+        out = svc.status()
+        out["action"] = "start"
+        return out
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_start_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/user-listener/stop")
+def telegram_user_listener_stop():
+    """Stop user-listener runtime loop."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        svc.stop()
+        out = svc.status()
+        out["action"] = "stop"
+        return out
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_stop_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/user-listener/send-code")
+def telegram_user_listener_send_code(payload: Dict[str, Any]):
+    """Request Telegram login code for a phone number."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        phone = str((payload or {}).get("phone") or "").strip()
+        if not phone:
+            return {"ok": False, "error": "missing_phone"}
+        out = svc.send_login_code(phone)
+        state = svc.status()
+        return {"ok": bool(out.get("ok")), "result": out, "state": state}
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_send_code_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/telegram/user-listener/verify-code")
+def telegram_user_listener_verify_code(payload: Dict[str, Any]):
+    """Verify Telegram login code (and optional 2FA password)."""
+    try:
+        from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_user_listener_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_user_listener_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        phone = str(p.get("phone") or "").strip()
+        code = str(p.get("code") or "").strip()
+        password = p.get("password")
+        out = svc.verify_login_code(phone=phone, code=code, password=(str(password).strip() if password is not None else None))
+        if bool(out.get("ok")):
+            # If listener is enabled in config, automatically start after successful login.
+            try:
+                if bool(svc.status().get("enabled")):
+                    svc.start()
+            except Exception:
+                pass
+        state = svc.status()
+        return {"ok": bool(out.get("ok")), "result": out, "state": state}
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_user_listener_verify_code_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
 def _safe_optional_float(value) -> Optional[float]:
     """Return finite float or None for nullable DB fields."""
     try:
