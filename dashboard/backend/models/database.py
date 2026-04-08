@@ -1130,6 +1130,36 @@ class WorkbenchAgentMemoryModel(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
+class TelegramAutomationExecutionLogModel(Base):
+    """Persistent execution audit rows for telegram + indicator automations."""
+    __tablename__ = "telegram_automation_execution_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    event_ts = Column(DateTime, nullable=True, index=True)
+
+    source_type = Column(String(40), nullable=False, default="unknown", index=True)
+    source_name = Column(String(160), nullable=False, default="unknown", index=True)
+    trigger = Column(String(64), nullable=False, default="unknown", index=True)
+    status = Column(String(24), nullable=False, default="unknown", index=True)
+
+    symbol = Column(String(32), nullable=True, index=True)
+    timeframe = Column(String(16), nullable=True, index=True)
+    direction = Column(String(16), nullable=True, index=True)
+    lot = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    final_tp = Column(Float, nullable=True)
+    stages_total = Column(Integer, nullable=True)
+    stages_opened = Column(Integer, nullable=True)
+    ticket = Column(Integer, nullable=True, index=True)
+
+    profile = Column(String(40), nullable=True, index=True)
+    indicator = Column(String(120), nullable=True, index=True)
+    source_tag = Column(String(80), nullable=True, index=True)
+    message = Column(Text, nullable=True)
+    extra_json = Column(JSON, nullable=True)
+
+
 def get_db():
     """Dependency for getting database sessions"""
     db = SessionLocal()

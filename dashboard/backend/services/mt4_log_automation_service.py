@@ -1,8 +1,8 @@
 """
-MT4 Log Automation Service
+MT4/MT5 Log Automation Service
 
-Reads MT4 terminal logs, discovers indicator activity, and exposes
-indicator-level automation toggles for downstream strategy workflows.
+Reads MetaTrader terminal logs (MQL4 + MQL5), discovers indicator activity,
+and exposes indicator-level automation toggles for downstream strategy workflows.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import unicodedata
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -39,6 +40,7 @@ class MT4LogAutomationService:
 
         self._indicator_logs: Dict[str, List[Dict[str, Any]]] = {}
         self._indicator_stats: Dict[str, Dict[str, Any]] = {}
+        self._instance_stats: Dict[str, Dict[str, Any]] = {}
         self._file_offsets: Dict[str, int] = {}
 
         self._forward_total: int = 0
@@ -49,6 +51,10 @@ class MT4LogAutomationService:
         self._last_forward_error: str = ""
         self._forward_skip_stale: int = 0
         self._forward_skip_duplicate: int = 0
+        self._forward_skip_backfill: int = 0
+        self._forward_skip_disabled: int = 0
+        self._forward_skip_no_hint: int = 0
+        self._forward_skip_no_callback: int = 0
         self._forward_seen_keys: Dict[str, float] = {}
 
     @staticmethod
@@ -136,13 +142,29 @@ class MT4LogAutomationService:
         return str(cls._get_env_value("MT4_LOG_AUTOMATION_DATA_PATH", "")).strip()
 
     @classmethod
+    def _data_paths(cls) -> List[str]:
+        raw = str(cls._data_path() or "").strip()
+        if not raw:
+            return []
+        parts = [str(x).strip() for x in re.split(r"[|\n;]+", raw) if str(x).strip()]
+        out: List[str] = []
+        seen: set[str] = set()
+        for p in parts:
+            k = str(Path(p)).strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(str(p))
+        return out
+
+    @classmethod
     def _poll_sec(cls) -> float:
         try:
-            raw = float(cls._get_env_value("MT4_LOG_AUTOMATION_POLL_SEC", "2"))
+            raw = float(cls._get_env_value("MT4_LOG_AUTOMATION_POLL_SEC", "0.5"))
         except Exception:
-            raw = 2.0
+            raw = 0.5
         if not math.isfinite(float(raw)):
-            raw = 2.0
+            raw = 0.5
         return float(max(0.5, min(30.0, float(raw))))
 
     @classmethod
@@ -157,6 +179,199 @@ class MT4LogAutomationService:
     def _active_indicator_names(cls) -> List[str]:
         raw = str(cls._get_env_value("MT4_LOG_AUTOMATION_ACTIVE_INDICATORS", "")).strip()
         return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    @classmethod
+    def _default_indicator_lot(cls) -> float:
+        try:
+            raw = float(cls._get_env_value("MT4_LOG_AUTOMATION_DEFAULT_INDICATOR_LOT", "0.05"))
+        except Exception:
+            raw = 0.05
+        if not math.isfinite(float(raw)) or float(raw) <= 0.0:
+            raw = 0.05
+        return float(max(0.01, min(100.0, float(raw))))
+
+    @classmethod
+    def _indicator_lot_overrides(cls) -> Dict[str, float]:
+        raw = str(cls._get_env_value("MT4_LOG_AUTOMATION_INDICATOR_LOTS", "{}")).strip()
+        if not raw:
+            return {}
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return {}
+        out: Dict[str, float] = {}
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            key = cls._indicator_key(k)
+            if not key:
+                continue
+            try:
+                lot = float(v)
+            except Exception:
+                continue
+            if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                continue
+            out[key] = float(max(0.01, min(100.0, float(lot))))
+        return out
+
+    @classmethod
+    def _serialize_indicator_lot_overrides(cls, lot_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, float] = {}
+        for k, v in (lot_map or {}).items():
+            key = cls._indicator_key(k)
+            if not key:
+                continue
+            try:
+                lot = float(v)
+            except Exception:
+                continue
+            if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                continue
+            cleaned[key] = float(max(0.01, min(100.0, float(lot))))
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _indicator_lot_for_key(cls, key: str) -> float:
+        k = cls._indicator_key(key)
+        if not k:
+            return float(cls._default_indicator_lot())
+        lot_map = cls._indicator_lot_overrides()
+        if k in lot_map:
+            return float(lot_map[k])
+        return float(cls._default_indicator_lot())
+
+    @classmethod
+    def _active_instance_keys(cls) -> List[str]:
+        raw = str(cls._get_env_value("MT4_LOG_AUTOMATION_ACTIVE_INSTANCES", "[]")).strip()
+        if not raw:
+            return []
+        items: List[str] = []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                items = [str(x or "").strip() for x in parsed]
+            elif isinstance(parsed, dict):
+                items = [str(k or "").strip() for k, v in parsed.items() if bool(v)]
+            elif isinstance(parsed, str):
+                items = [str(x).strip() for x in parsed.split("|")]
+        except Exception:
+            items = [str(x).strip() for x in raw.split("|")]
+        out: List[str] = []
+        seen: set[str] = set()
+        for item in items:
+            k = str(item or "").strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(str(item).strip())
+        return out
+
+    @classmethod
+    def _instance_automation_overrides(cls) -> Dict[str, bool]:
+        raw = str(cls._get_env_value("MT4_LOG_AUTOMATION_INSTANCE_AUTOMATION", "{}")).strip()
+        out: Dict[str, bool] = {}
+        if raw:
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        key = str(k or "").strip().lower()
+                        if not key:
+                            continue
+                        out[key] = bool(v)
+            except Exception:
+                out = {}
+        # Backward compatibility: if only ACTIVE_INSTANCES exists,
+        # treat them as explicit ON overrides.
+        for k in cls._active_instance_keys():
+            kk = str(k or "").strip().lower()
+            if kk and kk not in out:
+                out[kk] = True
+        return out
+
+    @classmethod
+    def _serialize_instance_automation_overrides(cls, overrides: Dict[str, Any]) -> str:
+        cleaned: Dict[str, bool] = {}
+        for k, v in (overrides or {}).items():
+            key = str(k or "").strip().lower()
+            if not key:
+                continue
+            cleaned[key] = bool(v)
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _instance_lot_overrides(cls) -> Dict[str, float]:
+        raw = str(cls._get_env_value("MT4_LOG_AUTOMATION_INSTANCE_LOTS", "{}")).strip()
+        if not raw:
+            return {}
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return {}
+        if not isinstance(obj, dict):
+            return {}
+        out: Dict[str, float] = {}
+        for k, v in obj.items():
+            key = str(k or "").strip().lower()
+            if not key:
+                continue
+            try:
+                lot = float(v)
+            except Exception:
+                continue
+            if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                continue
+            out[key] = float(max(0.01, min(100.0, float(lot))))
+        return out
+
+    @classmethod
+    def _serialize_instance_lot_overrides(cls, lot_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, float] = {}
+        for k, v in (lot_map or {}).items():
+            key = str(k or "").strip().lower()
+            if not key:
+                continue
+            try:
+                lot = float(v)
+            except Exception:
+                continue
+            if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                continue
+            cleaned[key] = float(max(0.01, min(100.0, float(lot))))
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _instance_key(cls, *, indicator: str, symbol: str, timeframe: str) -> str:
+        ik = cls._indicator_key(indicator)
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper()
+        if not ik or not sym or not tf:
+            return ""
+        return f"{ik}|{sym}|{tf}"
+
+    @classmethod
+    def _instance_key_parts(cls, key: str) -> Tuple[str, str, str]:
+        raw = str(key or "").strip()
+        if not raw:
+            return "", "", ""
+        parts = raw.split("|")
+        if len(parts) < 3:
+            return raw, "", ""
+        return str(parts[0] or ""), str(parts[1] or "").upper(), str(parts[2] or "").upper()
+
+    @classmethod
+    def _instance_lot_for_key(cls, key: str) -> float:
+        k = str(key or "").strip().lower()
+        if not k:
+            return float(cls._default_indicator_lot())
+        inst_lots = cls._instance_lot_overrides()
+        if k in inst_lots:
+            return float(inst_lots[k])
+        ik, _sym, _tf = cls._instance_key_parts(k)
+        if ik:
+            return float(cls._indicator_lot_for_key(ik))
+        return float(cls._default_indicator_lot())
 
     @classmethod
     def _restore_active_indicators_on_start(cls) -> bool:
@@ -184,6 +399,21 @@ class MT4LogAutomationService:
         if not math.isfinite(float(raw)):
             raw = 3600.0
         return float(max(30.0, min(86400.0, float(raw))))
+
+    @classmethod
+    def _forward_new_file_grace_sec(cls) -> float:
+        """
+        When a brand-new log file appears while listener is already running
+        (daily rotation/session restart), allow forwarding only for very recent
+        rows from its initial backfill window so fresh signals are not lost.
+        """
+        try:
+            raw = float(cls._get_env_value("MT4_LOG_AUTOMATION_FORWARD_NEW_FILE_GRACE_SEC", "120"))
+        except Exception:
+            raw = 120.0
+        if not math.isfinite(float(raw)):
+            raw = 120.0
+        return float(max(5.0, min(600.0, float(raw))))
 
     @staticmethod
     def _now_iso() -> str:
@@ -220,7 +450,20 @@ class MT4LogAutomationService:
 
     @staticmethod
     def _safe_decode(raw: bytes) -> str:
-        for enc in ("utf-8-sig", "utf-16", "cp1254", "latin-1"):
+        if not raw:
+            return ""
+        # MT5 MQL5\Logs are commonly UTF-16 LE; decode those first.
+        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            try:
+                return raw.decode("utf-16", errors="ignore")
+            except Exception:
+                pass
+        if b"\x00" in raw[:200]:
+            try:
+                return raw.decode("utf-16-le", errors="ignore")
+            except Exception:
+                pass
+        for enc in ("utf-8-sig", "cp1254", "latin-1"):
             try:
                 return raw.decode(enc, errors="ignore")
             except Exception:
@@ -293,6 +536,10 @@ class MT4LogAutomationService:
             return "fxnuke"
         if "uranus" in m:
             return "uranus"
+        if "forexcypersytem" in m or "forex cypersytem" in m or "forexcyper" in m or "forex cyper" in m:
+            return "forexcyper"
+        if "alchemy pulse" in m or "alchemypulse" in m or "alchemy" in m:
+            return "alchemy"
         return "generic"
 
     @classmethod
@@ -318,9 +565,23 @@ class MT4LogAutomationService:
             if re.search(r"\bfxnuke\b.*\bsell\b", m):
                 return "SELL"
         if p == "uranus":
+            if re.search(r"\bturned\s+up\b", m):
+                return "BUY"
+            if re.search(r"\bturned\s+down\b", m):
+                return "SELL"
             if re.search(r"\buranus\b.*\bbuy\b", m):
                 return "BUY"
             if re.search(r"\buranus\b.*\bsell\b", m):
+                return "SELL"
+        if p == "alchemy":
+            if re.search(r"\b(buy|long|bull(?:ish)?|turned\s+up|cross(?:ed)?\s+up|signal\s+up)\b", m):
+                return "BUY"
+            if re.search(r"\b(sell|short|bear(?:ish)?|turned\s+down|cross(?:ed)?\s+down|signal\s+down)\b", m):
+                return "SELL"
+        if p == "forexcyper":
+            if re.search(r"\b(buy|long|bull(?:ish)?|turned\s+up|cross(?:ed)?\s+up|signal\s+up|uptrend)\b", m):
+                return "BUY"
+            if re.search(r"\b(sell|short|bear(?:ish)?|turned\s+down|cross(?:ed)?\s+down|signal\s+down|downtrend)\b", m):
                 return "SELL"
 
         # Generic fallback mappings.
@@ -342,7 +603,7 @@ class MT4LogAutomationService:
 
     def _discover_active_files(self, base_path: Path) -> List[Path]:
         out: List[Path] = []
-        candidates = [base_path / "logs", base_path / "MQL4" / "Logs"]
+        candidates = [base_path / "logs", base_path / "MQL4" / "Logs", base_path / "MQL5" / "Logs"]
         for d in candidates:
             if not d.exists() or not d.is_dir():
                 continue
@@ -386,6 +647,7 @@ class MT4LogAutomationService:
                         "last_signal_seen": "",
                         "last_signal_message": "",
                         "automation_enabled": False,
+                        "lot_size": float(self._indicator_lot_for_key(indicator_key)),
                         "last_seen": "",
                         "last_symbol": "",
                         "last_timeframe": "",
@@ -404,20 +666,107 @@ class MT4LogAutomationService:
                 st["last_seen"] = str(event.get("event_ts") or self._now_iso())
                 st["last_symbol"] = str(event.get("symbol") or "")
                 st["last_timeframe"] = str(event.get("timeframe") or "")
+                lot_raw = st.get("lot_size")
+                if lot_raw:
+                    try:
+                        lot = float(lot_raw)
+                        if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                            st["lot_size"] = float(self._indicator_lot_for_key(indicator_key))
+                    except Exception:
+                        st["lot_size"] = float(self._indicator_lot_for_key(indicator_key))
+                else:
+                    st["lot_size"] = float(self._indicator_lot_for_key(indicator_key))
+
+            symbol = str(event.get("symbol") or "").strip().upper()
+            timeframe = str(event.get("timeframe") or "").strip().upper()
+            inst_key = self._instance_key(indicator=indicator, symbol=symbol, timeframe=timeframe)
+            if inst_key:
+                overrides = self._instance_automation_overrides()
+                explicit_flag = inst_key.lower() in overrides
+                explicit_enabled = bool(overrides.get(inst_key.lower()))
+                row = self._instance_stats.setdefault(
+                    inst_key,
+                    {
+                        "instance_key": inst_key,
+                        "indicator": indicator,
+                        "indicator_key": indicator_key,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "event_count": 0,
+                        "signal_hint_count": 0,
+                        "last_signal_hint": "",
+                        "last_signal_profile": "",
+                        "last_signal_seen": "",
+                        "last_signal_message": "",
+                        "automation_enabled": bool(explicit_enabled) if explicit_flag else False,
+                        "automation_mode": "explicit" if explicit_flag else "inherit",
+                        "lot_size": float(self._instance_lot_for_key(inst_key)),
+                        "last_seen": "",
+                        "forward_ok": 0,
+                        "forward_fail": 0,
+                    },
+                )
+                row["indicator"] = indicator or row.get("indicator") or indicator_key
+                row["indicator_key"] = indicator_key
+                row["symbol"] = symbol
+                row["timeframe"] = timeframe
+                row["event_count"] = int(row.get("event_count") or 0) + 1
+                if str(event.get("signal_hint") or ""):
+                    row["signal_hint_count"] = int(row.get("signal_hint_count") or 0) + 1
+                    row["last_signal_hint"] = str(event.get("signal_hint") or "")
+                    row["last_signal_profile"] = str(event.get("signal_profile") or "")
+                    row["last_signal_seen"] = str(event.get("event_ts") or self._now_iso())
+                    row["last_signal_message"] = str(event.get("message") or "")[:240]
+                row["last_seen"] = str(event.get("event_ts") or self._now_iso())
+                if str(row.get("automation_mode") or "") != "explicit":
+                    row["automation_enabled"] = False
+                lot_raw = row.get("lot_size")
+                if lot_raw:
+                    try:
+                        lot = float(lot_raw)
+                        if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                            row["lot_size"] = float(self._instance_lot_for_key(inst_key))
+                    except Exception:
+                        row["lot_size"] = float(self._instance_lot_for_key(inst_key))
+                else:
+                    row["lot_size"] = float(self._instance_lot_for_key(inst_key))
 
     def _parse_line(self, *, line: str, source_file: str, file_date: str) -> Optional[Dict[str, Any]]:
         raw = str(line or "").strip()
         if not raw:
             return None
-        m = re.match(r"^\s*(\d+)\t([0-9:.]+)\t(.*)$", raw)
-        if not m:
-            return None
-        level = int(m.group(1))
-        tpart = str(m.group(2) or "").strip()
-        payload = str(m.group(3) or "").strip()
-        indicator, symbol, timeframe, message = self._extract_indicator_parts(payload)
+        level = 0
+        tpart = ""
+        indicator = ""
+        symbol = ""
+        timeframe = ""
+        message = ""
+
+        # MT4-style: "<level>\t<time>\t<payload>"
+        m_mt4 = re.match(r"^\s*(\d+)\t([0-9:.]+)\t(.*)$", raw)
+        if m_mt4:
+            level = int(m_mt4.group(1))
+            tpart = str(m_mt4.group(2) or "").strip()
+            payload = str(m_mt4.group(3) or "").strip()
+            indicator, symbol, timeframe, message = self._extract_indicator_parts(payload)
+        else:
+            # MT5-style: "<code>\t<level>\t<time>\t<source>\t<message>"
+            m_mt5 = re.match(r"^\s*([A-Z0-9]{1,6})\t(\d+)\t([0-9:.]+)\t([^\t]+)\t(.*)$", raw, flags=re.IGNORECASE)
+            if not m_mt5:
+                return None
+            level = int(m_mt5.group(2))
+            tpart = str(m_mt5.group(3) or "").strip()
+            source = str(m_mt5.group(4) or "").strip()
+            message = str(m_mt5.group(5) or "").strip()
+            mm = re.match(r"^(.+?)\s*\(([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\)\s*$", source, flags=re.IGNORECASE)
+            if mm:
+                indicator = str(mm.group(1) or "").strip()
+                symbol = str(mm.group(2) or "").upper()
+                timeframe = str(mm.group(3) or "").upper()
+            else:
+                indicator = str(source).strip()
         if not message:
-            message = payload
+            message = raw
         kind = self._classify_kind(message)
         profile = self._signal_profile(indicator=indicator, message=message)
         hint = self._signal_hint(indicator=indicator, message=message)
@@ -445,20 +794,58 @@ class MT4LogAutomationService:
         }
 
     def _maybe_forward_signal(self, event: Dict[str, Any], *, from_backfill: bool = False) -> None:
-        if self._on_indicator_signal is None:
+        callback = self._on_indicator_signal
+        if callback is None:
+            # Safety fallback: if callback wasn't bound (or was lost after reload),
+            # try forwarding directly via telegram bridge singleton.
+            try:
+                from ..main import telegram_bridge_service  # local import to avoid hard dependency at module import time
+
+                if telegram_bridge_service is not None:
+                    callback = lambda **payload: telegram_bridge_service.ingest_mt4_indicator_signal(payload=dict(payload or {}))
+            except Exception:
+                callback = None
+        if callback is None:
+            with self._lock:
+                self._forward_skip_no_callback += 1
             return
         if bool(from_backfill):
+            with self._lock:
+                self._forward_skip_backfill += 1
             return
         indicator = str(event.get("indicator") or "").strip()
         k = self._indicator_key(indicator)
         if not k:
             return
+        symbol = str(event.get("symbol") or "").strip().upper()
+        timeframe = str(event.get("timeframe") or "").strip().upper()
+        inst_key = self._instance_key(indicator=indicator, symbol=symbol, timeframe=timeframe)
+        lot_override = float(self._indicator_lot_for_key(k))
+        enabled = False
         with self._lock:
             st = self._indicator_stats.get(k) or {}
-            enabled = bool(st.get("automation_enabled"))
+            ind_enabled = bool(st.get("automation_enabled"))
+            enabled = bool(ind_enabled)
+            try:
+                lot_override = float(st.get("lot_size") or self._indicator_lot_for_key(k))
+            except Exception:
+                lot_override = float(self._indicator_lot_for_key(k))
+            if inst_key:
+                inst = self._instance_stats.get(inst_key) or {}
+                mode = str(inst.get("automation_mode") or "inherit").strip().lower()
+                if mode == "explicit":
+                    enabled = bool(inst.get("automation_enabled"))
+                try:
+                    lot_override = float(inst.get("lot_size") or self._instance_lot_for_key(inst_key) or lot_override)
+                except Exception:
+                    lot_override = float(self._instance_lot_for_key(inst_key) or lot_override)
         if not enabled:
+            with self._lock:
+                self._forward_skip_disabled += 1
             return
         if not str(event.get("signal_hint") or ""):
+            with self._lock:
+                self._forward_skip_no_hint += 1
             return
         now_ts = time.time()
         max_age = float(self._forward_max_signal_age_sec())
@@ -469,8 +856,6 @@ class MT4LogAutomationService:
             return
         profile = str(event.get("signal_profile") or "").strip().lower()
         hint = str(event.get("signal_hint") or "").strip().upper()
-        symbol = str(event.get("symbol") or "").strip().upper()
-        timeframe = str(event.get("timeframe") or "").strip().upper()
         msg_norm = re.sub(r"\s+", " ", str(event.get("message") or "").strip().lower())
         dedupe_key = f"{k}|{profile}|{symbol}|{timeframe}|{hint}|{msg_norm}"
         with self._lock:
@@ -495,9 +880,11 @@ class MT4LogAutomationService:
             "signal_profile": str(profile),
             "message": str(event.get("message") or ""),
             "event_ts": str(event.get("event_ts") or ""),
+            "instance_key": str(inst_key or ""),
+            "lot_override": float(max(0.01, min(100.0, lot_override))),
         }
         try:
-            self._on_indicator_signal(**payload)
+            callback(**payload)
             with self._lock:
                 self._forward_total += 1
                 self._forward_ok += 1
@@ -506,6 +893,8 @@ class MT4LogAutomationService:
                 self._last_forward_error = ""
                 if k in self._indicator_stats:
                     self._indicator_stats[k]["forward_ok"] = int(self._indicator_stats[k].get("forward_ok") or 0) + 1
+                if inst_key and inst_key in self._instance_stats:
+                    self._instance_stats[inst_key]["forward_ok"] = int(self._instance_stats[inst_key].get("forward_ok") or 0) + 1
         except Exception as exc:
             with self._lock:
                 self._forward_total += 1
@@ -515,22 +904,35 @@ class MT4LogAutomationService:
                 self._last_forward_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                 if k in self._indicator_stats:
                     self._indicator_stats[k]["forward_fail"] = int(self._indicator_stats[k].get("forward_fail") or 0) + 1
+                if inst_key and inst_key in self._instance_stats:
+                    self._instance_stats[inst_key]["forward_fail"] = int(self._instance_stats[inst_key].get("forward_fail") or 0) + 1
 
-    def _process_file_backfill(self, p: Path, max_lines: int) -> None:
+    def _process_file_backfill(self, p: Path, max_lines: int, *, allow_runtime_forward_recent: bool = False) -> None:
         try:
-            rows = p.read_bytes().splitlines()
+            raw = p.read_bytes()
         except Exception:
             return
+        rows = self._safe_decode(raw).splitlines()
         if max_lines > 0 and len(rows) > max_lines:
             rows = rows[-max_lines:]
         file_date = p.stem if re.match(r"^\d{8}$", p.stem or "") else ""
-        for b in rows:
-            text = self._safe_decode(bytes(b))
+        now_unix = float(time.time())
+        grace_sec = float(self._forward_new_file_grace_sec())
+        for text in rows:
             ev = self._parse_line(line=text, source_file=str(p.name), file_date=file_date)
             if not isinstance(ev, dict):
                 continue
             self._append_event(ev)
-            self._maybe_forward_signal(ev, from_backfill=True)
+            if allow_runtime_forward_recent:
+                ev_unix = self._to_unix_or_none(ev.get("event_ts"))
+                is_recent = (
+                    ev_unix is not None
+                    and float(ev_unix) <= (now_unix + 5.0)
+                    and (now_unix - float(ev_unix)) <= grace_sec
+                )
+                self._maybe_forward_signal(ev, from_backfill=not bool(is_recent))
+            else:
+                self._maybe_forward_signal(ev, from_backfill=True)
         try:
             self._file_offsets[str(p.resolve())] = int(p.stat().st_size)
         except Exception:
@@ -599,11 +1001,30 @@ class MT4LogAutomationService:
                 self._running = False
 
     def _run_loop(self) -> None:
-        path_raw = self._data_path()
-        base = Path(path_raw) if path_raw else None
-        if not base or (not base.exists()) or (not base.is_dir()):
+        bases: List[Path] = []
+        for path_raw in self._data_paths():
+            p = Path(path_raw)
+            if p.exists() and p.is_dir():
+                bases.append(p)
+        if not bases:
             self._set_error("invalid_mt4_data_path")
             return
+
+        def collect_files() -> List[Path]:
+            all_rows: List[Path] = []
+            seen: set[str] = set()
+            for b in bases:
+                for p in self._discover_active_files(b):
+                    k = str(p.resolve())
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    all_rows.append(p)
+            return sorted(
+                all_rows,
+                key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+                reverse=True,
+            )
 
         if self._restore_active_indicators_on_start():
             active_names = {self._indicator_key(x) for x in self._active_indicator_names()}
@@ -621,6 +1042,7 @@ class MT4LogAutomationService:
                             "last_signal_seen": "",
                             "last_signal_message": "",
                             "automation_enabled": True,
+                            "lot_size": float(self._indicator_lot_for_key(k)),
                             "last_seen": "",
                             "last_symbol": "",
                             "last_timeframe": "",
@@ -629,19 +1051,52 @@ class MT4LogAutomationService:
                         },
                     )
                     st["automation_enabled"] = True
+                    st["lot_size"] = float(self._indicator_lot_for_key(k))
+            instance_overrides = self._instance_automation_overrides()
+            with self._lock:
+                for inst_key, enabled_flag in instance_overrides.items():
+                    ik, sym, tf = self._instance_key_parts(inst_key)
+                    row = self._instance_stats.setdefault(
+                        inst_key,
+                        {
+                            "instance_key": inst_key,
+                            "indicator": ik,
+                            "indicator_key": ik,
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "event_count": 0,
+                            "signal_hint_count": 0,
+                            "last_signal_hint": "",
+                            "last_signal_profile": "",
+                            "last_signal_seen": "",
+                            "last_signal_message": "",
+                            "automation_enabled": bool(enabled_flag),
+                            "automation_mode": "explicit",
+                            "lot_size": float(self._instance_lot_for_key(inst_key)),
+                            "last_seen": "",
+                            "forward_ok": 0,
+                            "forward_fail": 0,
+                        },
+                    )
+                    row["automation_enabled"] = bool(enabled_flag)
+                    row["automation_mode"] = "explicit"
+                    row["lot_size"] = float(self._instance_lot_for_key(inst_key))
 
-        files = self._discover_active_files(base)
+        files = collect_files()
         if not files:
             self._set_error("no_log_files_found")
             return
         for p in files:
-            self._process_file_backfill(p, self._backfill_lines())
+            # Startup backfill: never auto-trade historical rows.
+            self._process_file_backfill(p, self._backfill_lines(), allow_runtime_forward_recent=False)
         self._touch()
         while not self._stop.is_set():
-            files = self._discover_active_files(base)
+            files = collect_files()
             for p in files:
                 if str(p.resolve()) not in self._file_offsets:
-                    self._process_file_backfill(p, self._backfill_lines())
+                    # Runtime-discovered new file: forward only very recent rows
+                    # from initial window so first fresh signals are not dropped.
+                    self._process_file_backfill(p, self._backfill_lines(), allow_runtime_forward_recent=True)
                 else:
                     self._process_file_incremental(p)
             self._touch()
@@ -649,9 +1104,114 @@ class MT4LogAutomationService:
 
     def get_state(self, *, limit: int = 200) -> Dict[str, Any]:
         lim = int(max(20, min(1000, int(limit or 200))))
+        active_cfg = [str(x).strip() for x in self._active_indicator_names() if str(x).strip()]
+        lot_overrides = self._indicator_lot_overrides()
+        instance_automation = self._instance_automation_overrides()
+        active_instance_cfg = sorted([str(k) for k, v in instance_automation.items() if bool(v)])
+        instance_lot_overrides = self._instance_lot_overrides()
         with self._lock:
             events = [dict(x) for x in self._events[-lim:]]
-            stats = [dict(v) for v in self._indicator_stats.values()]
+            stats_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._indicator_stats.items()}
+            instance_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._instance_stats.items()}
+            for name in active_cfg:
+                key = self._indicator_key(name)
+                if not key:
+                    continue
+                row = stats_map.setdefault(
+                    key,
+                    {
+                        "indicator": name,
+                        "key": key,
+                        "event_count": 0,
+                        "signal_hint_count": 0,
+                        "last_signal_hint": "",
+                        "last_signal_profile": "",
+                        "last_signal_seen": "",
+                        "last_signal_message": "",
+                        "automation_enabled": False,
+                        "lot_size": float(lot_overrides.get(key) or self._default_indicator_lot()),
+                        "last_seen": "",
+                        "last_symbol": "",
+                        "last_timeframe": "",
+                        "forward_ok": 0,
+                        "forward_fail": 0,
+                    },
+                )
+                row["indicator"] = str(row.get("indicator") or name or key)
+                row["automation_enabled"] = bool(row.get("automation_enabled"))
+                try:
+                    lot = float(row.get("lot_size") or 0.0)
+                    if not math.isfinite(float(lot)) or float(lot) <= 0.0:
+                        row["lot_size"] = float(lot_overrides.get(key) or self._default_indicator_lot())
+                except Exception:
+                    row["lot_size"] = float(lot_overrides.get(key) or self._default_indicator_lot())
+            for inst_key_raw, inst_enabled in instance_automation.items():
+                k = str(inst_key_raw or "").strip()
+                if not k:
+                    continue
+                ik, sym, tf = self._instance_key_parts(k)
+                row = instance_map.setdefault(
+                    k,
+                    {
+                        "instance_key": k,
+                        "indicator": ik,
+                        "indicator_key": ik,
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "event_count": 0,
+                        "signal_hint_count": 0,
+                        "last_signal_hint": "",
+                        "last_signal_profile": "",
+                        "last_signal_seen": "",
+                        "last_signal_message": "",
+                        "automation_enabled": bool(inst_enabled),
+                        "automation_mode": "explicit",
+                        "lot_size": float(instance_lot_overrides.get(k.lower()) or self._instance_lot_for_key(k)),
+                        "last_seen": "",
+                        "forward_ok": 0,
+                        "forward_fail": 0,
+                    },
+                )
+                row["automation_mode"] = "explicit"
+                row["automation_enabled"] = bool(inst_enabled)
+                row["lot_size"] = float(instance_lot_overrides.get(k.lower()) or row.get("lot_size") or self._instance_lot_for_key(k))
+
+            normalized_instances: List[Dict[str, Any]] = []
+            for k, row in instance_map.items():
+                inst_key = str(k or "").strip()
+                indicator_key = str((row or {}).get("indicator_key") or "")
+                indicator_name = str((row or {}).get("indicator") or indicator_key or "")
+                sym = str((row or {}).get("symbol") or "").strip().upper()
+                tf = str((row or {}).get("timeframe") or "").strip().upper()
+                if (not sym or not tf) and inst_key:
+                    ik2, sym2, tf2 = self._instance_key_parts(inst_key)
+                    indicator_key = indicator_key or ik2
+                    indicator_name = indicator_name or ik2
+                    sym = sym or sym2
+                    tf = tf or tf2
+                mode = str((row or {}).get("automation_mode") or "inherit").strip().lower()
+                explicit_enabled = bool((row or {}).get("automation_enabled"))
+                indicator_enabled = bool((stats_map.get(indicator_key, {}) or {}).get("automation_enabled"))
+                effective_enabled = bool(explicit_enabled) if mode == "explicit" else bool(indicator_enabled)
+                lot_raw = (row or {}).get("lot_size")
+                try:
+                    lot_val = float(lot_raw if lot_raw is not None else 0.0)
+                except Exception:
+                    lot_val = 0.0
+                if not math.isfinite(float(lot_val)) or float(lot_val) <= 0.0:
+                    lot_val = float(instance_lot_overrides.get(inst_key.lower()) or self._instance_lot_for_key(inst_key))
+                norm = dict(row or {})
+                norm["instance_key"] = inst_key
+                norm["indicator_key"] = indicator_key
+                norm["indicator"] = indicator_name
+                norm["symbol"] = sym
+                norm["timeframe"] = tf
+                norm["automation_mode"] = "explicit" if mode == "explicit" else "inherit"
+                norm["automation_enabled"] = bool(explicit_enabled)
+                norm["effective_automation_enabled"] = bool(effective_enabled)
+                norm["lot_size"] = float(max(0.01, min(100.0, float(lot_val))))
+                normalized_instances.append(norm)
+            stats = list(stats_map.values())
             files = list(self._file_offsets.keys())
             out = {
                 "ok": True,
@@ -660,8 +1220,10 @@ class MT4LogAutomationService:
                     "data_path": str(self._data_path()),
                     "poll_sec": float(self._poll_sec()),
                     "backfill_lines": int(self._backfill_lines()),
-                    "active_indicators": list(self._active_indicator_names()),
+                    "active_indicators": list(active_cfg),
+                    "active_instances": list(active_instance_cfg),
                     "restore_active_on_start": bool(self._restore_active_indicators_on_start()),
+                    "default_indicator_lot": float(self._default_indicator_lot()),
                 },
                 "running": bool(self._running),
                 "last_error": str(self._last_error or ""),
@@ -671,13 +1233,19 @@ class MT4LogAutomationService:
                 "forward_fail": int(self._forward_fail),
                 "forward_skip_stale": int(self._forward_skip_stale),
                 "forward_skip_duplicate": int(self._forward_skip_duplicate),
+                "forward_skip_backfill": int(self._forward_skip_backfill),
+                "forward_skip_disabled": int(self._forward_skip_disabled),
+                "forward_skip_no_hint": int(self._forward_skip_no_hint),
+                "forward_skip_no_callback": int(self._forward_skip_no_callback),
                 "last_forward": str(self._last_forward_iso or ""),
                 "last_forward_indicator": str(self._last_forward_indicator or ""),
                 "last_forward_error": str(self._last_forward_error or ""),
                 "watched_files_count": int(len(files)),
                 "watched_files": files[-12:],
                 "indicator_count": int(len(stats)),
+                "instance_count": int(len(normalized_instances)),
                 "indicators": sorted(stats, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
+                "instances": sorted(normalized_instances, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
                 "events": events,
             }
         return out
@@ -716,11 +1284,37 @@ class MT4LogAutomationService:
         out["updated"] = {str(k): str(v) for k, v in updates.items()}
         return out
 
-    def set_indicator_automation(self, *, indicator: str, enabled: bool) -> Dict[str, Any]:
+    def update_indicator_settings(
+        self,
+        *,
+        indicator: str,
+        enabled: Optional[bool] = None,
+        lot_size: Optional[float] = None,
+    ) -> Dict[str, Any]:
         name = str(indicator or "").strip()
         if not name:
             return {"ok": False, "error": "missing_indicator"}
         key = self._indicator_key(name)
+        if not key:
+            return {"ok": False, "error": "invalid_indicator"}
+
+        lot_value: Optional[float] = None
+        if lot_size is not None:
+            try:
+                lv = float(lot_size)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_size"}
+            if not math.isfinite(float(lv)) or float(lv) <= 0.0:
+                return {"ok": False, "error": "invalid_lot_size"}
+            lot_value = float(max(0.01, min(100.0, float(lv))))
+
+        persisted_active_by_key: Dict[str, str] = {
+            self._indicator_key(x): str(x).strip()
+            for x in self._active_indicator_names()
+            if self._indicator_key(x)
+        }
+        persisted_lots = self._indicator_lot_overrides()
+
         with self._lock:
             st = self._indicator_stats.setdefault(
                 key,
@@ -733,7 +1327,8 @@ class MT4LogAutomationService:
                     "last_signal_profile": "",
                     "last_signal_seen": "",
                     "last_signal_message": "",
-                    "automation_enabled": bool(enabled),
+                    "automation_enabled": False,
+                    "lot_size": float(persisted_lots.get(key) or self._default_indicator_lot()),
                     "last_seen": "",
                     "last_symbol": "",
                     "last_timeframe": "",
@@ -742,19 +1337,142 @@ class MT4LogAutomationService:
                 },
             )
             st["indicator"] = name or st.get("indicator") or key
-            st["automation_enabled"] = bool(enabled)
-            names = [
-                str(v.get("indicator") or "").strip()
-                for v in self._indicator_stats.values()
-                if bool(v.get("automation_enabled")) and str(v.get("indicator") or "").strip()
+            if enabled is not None:
+                st["automation_enabled"] = bool(enabled)
+            if lot_value is not None:
+                st["lot_size"] = float(lot_value)
+                persisted_lots[key] = float(lot_value)
+            else:
+                current_lot = persisted_lots.get(key) or st.get("lot_size") or self._default_indicator_lot()
+                st["lot_size"] = float(max(0.01, min(100.0, float(current_lot))))
+                persisted_lots[key] = float(st["lot_size"])
+
+            if enabled is not None:
+                if bool(enabled):
+                    persisted_active_by_key[key] = str(st.get("indicator") or name or key)
+                else:
+                    persisted_active_by_key.pop(key, None)
+
+            active_names = [
+                str(v).strip()
+                for _k, v in sorted(persisted_active_by_key.items(), key=lambda it: str(it[1]).lower())
+                if str(v).strip()
             ]
-        names = sorted(set(names), key=lambda x: x.lower())
-        ok, status = self._upsert_env_values({"MT4_LOG_AUTOMATION_ACTIVE_INDICATORS": "|".join(names)})
+
+        updates = {
+            "MT4_LOG_AUTOMATION_ACTIVE_INDICATORS": "|".join(active_names),
+            "MT4_LOG_AUTOMATION_INDICATOR_LOTS": self._serialize_indicator_lot_overrides(persisted_lots),
+        }
+        ok, status = self._upsert_env_values(updates)
         out = self.get_state(limit=200)
         out["persist_ok"] = bool(ok)
         out["persist_status"] = str(status)
-        out["updated"] = {"MT4_LOG_AUTOMATION_ACTIVE_INDICATORS": "|".join(names)}
+        out["updated"] = dict(updates)
         return out
+
+    def update_instance_settings(
+        self,
+        *,
+        indicator: str,
+        symbol: str,
+        timeframe: str,
+        enabled: Optional[bool] = None,
+        lot_size: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        name = str(indicator or "").strip()
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper()
+        if not name:
+            return {"ok": False, "error": "missing_indicator"}
+        if not sym or not tf:
+            return {"ok": False, "error": "missing_symbol_or_timeframe"}
+        inst_key = self._instance_key(indicator=name, symbol=sym, timeframe=tf)
+        if not inst_key:
+            return {"ok": False, "error": "invalid_instance_key"}
+        ik = self._indicator_key(name)
+
+        lot_value: Optional[float] = None
+        if lot_size is not None:
+            try:
+                lv = float(lot_size)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_size"}
+            if not math.isfinite(float(lv)) or float(lv) <= 0.0:
+                return {"ok": False, "error": "invalid_lot_size"}
+            lot_value = float(max(0.01, min(100.0, float(lv))))
+
+        persisted_automation = self._instance_automation_overrides()
+        persisted_lots = self._instance_lot_overrides()
+
+        with self._lock:
+            row = self._instance_stats.setdefault(
+                inst_key,
+                {
+                    "instance_key": inst_key,
+                    "indicator": name,
+                    "indicator_key": ik,
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "event_count": 0,
+                    "signal_hint_count": 0,
+                    "last_signal_hint": "",
+                    "last_signal_profile": "",
+                    "last_signal_seen": "",
+                    "last_signal_message": "",
+                    "automation_enabled": False,
+                    "automation_mode": "inherit",
+                    "lot_size": float(persisted_lots.get(inst_key.lower()) or self._instance_lot_for_key(inst_key)),
+                    "last_seen": "",
+                    "forward_ok": 0,
+                    "forward_fail": 0,
+                },
+            )
+            row["indicator"] = name
+            row["indicator_key"] = ik
+            row["symbol"] = sym
+            row["timeframe"] = tf
+
+            if enabled is not None:
+                row["automation_mode"] = "explicit"
+                row["automation_enabled"] = bool(enabled)
+                persisted_automation[inst_key.lower()] = bool(enabled)
+
+            if lot_value is not None:
+                row["lot_size"] = float(lot_value)
+                persisted_lots[inst_key.lower()] = float(lot_value)
+            else:
+                try:
+                    current_lot = float(row.get("lot_size") or 0.0)
+                except Exception:
+                    current_lot = 0.0
+                if not math.isfinite(float(current_lot)) or float(current_lot) <= 0.0:
+                    row["lot_size"] = float(persisted_lots.get(inst_key.lower()) or self._instance_lot_for_key(inst_key))
+                persisted_lots[inst_key.lower()] = float(row.get("lot_size") or self._instance_lot_for_key(inst_key))
+
+        active_instances = sorted([str(k) for k, v in persisted_automation.items() if bool(v)])
+        updates = {
+            "MT4_LOG_AUTOMATION_ACTIVE_INSTANCES": json.dumps(active_instances, ensure_ascii=True, separators=(",", ":")),
+            "MT4_LOG_AUTOMATION_INSTANCE_AUTOMATION": self._serialize_instance_automation_overrides(persisted_automation),
+            "MT4_LOG_AUTOMATION_INSTANCE_LOTS": self._serialize_instance_lot_overrides(persisted_lots),
+        }
+        ok, status = self._upsert_env_values(updates)
+        out = self.get_state(limit=200)
+        out["persist_ok"] = bool(ok)
+        out["persist_status"] = str(status)
+        out["updated"] = dict(updates)
+        return out
+
+    def set_indicator_automation(self, *, indicator: str, enabled: bool) -> Dict[str, Any]:
+        return self.update_indicator_settings(indicator=indicator, enabled=bool(enabled), lot_size=None)
+
+    def set_instance_automation(self, *, indicator: str, symbol: str, timeframe: str, enabled: bool) -> Dict[str, Any]:
+        return self.update_instance_settings(
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+            enabled=bool(enabled),
+            lot_size=None,
+        )
 
     def get_indicator_logs(self, *, indicator: str, limit: int = 120) -> Dict[str, Any]:
         return self.get_indicator_logs_filtered(indicator=indicator, limit=limit, alerts_only=False)

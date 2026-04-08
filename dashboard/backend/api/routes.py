@@ -125,6 +125,7 @@ def telegram_automation_state(limit: int = Query(120, ge=20, le=500)):
             "pending_confirm_count": 0,
             "active_ladder_count": 0,
             "feed": [],
+            "execution_logs": [],
             "user_listener": {"ok": False, "error": "state_unavailable"},
         }
 
@@ -296,6 +297,7 @@ def telegram_user_listener_stop():
 @router.post("/telegram/user-listener/send-code")
 def telegram_user_listener_send_code(payload: Dict[str, Any]):
     """Request Telegram login code for a phone number."""
+    svc = None
     try:
         from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
 
@@ -309,12 +311,21 @@ def telegram_user_listener_send_code(payload: Dict[str, Any]):
         state = svc.status()
         return {"ok": bool(out.get("ok")), "result": out, "state": state}
     except Exception as exc:
-        raise HTTPException(500, f"telegram_user_listener_send_code_failed:{type(exc).__name__}:{str(exc)[:180]}")
+        try:
+            state = svc.status() if svc is not None else {"ok": False, "error": "telegram_user_listener_unavailable"}
+        except Exception:
+            state = {"ok": False, "error": "state_unavailable"}
+        return {
+            "ok": False,
+            "result": {"ok": False, "error": f"telegram_user_listener_send_code_failed:{type(exc).__name__}:{str(exc)[:180]}"},
+            "state": state,
+        }
 
 
 @router.post("/telegram/user-listener/verify-code")
 def telegram_user_listener_verify_code(payload: Dict[str, Any]):
     """Verify Telegram login code (and optional 2FA password)."""
+    svc = None
     try:
         from ..main import telegram_user_listener_service  # local import to avoid module-cycle at import time
 
@@ -325,7 +336,13 @@ def telegram_user_listener_verify_code(payload: Dict[str, Any]):
         phone = str(p.get("phone") or "").strip()
         code = str(p.get("code") or "").strip()
         password = p.get("password")
-        out = svc.verify_login_code(phone=phone, code=code, password=(str(password).strip() if password is not None else None))
+        out = svc.verify_login_code(
+            phone=phone,
+            code=code,
+            password=(str(password).strip() if password is not None else None),
+            phone_code_hash=(str(p.get("phone_code_hash") or "").strip() or None),
+            pending_session=(str(p.get("pending_session") or "").strip() or None),
+        )
         if bool(out.get("ok")):
             # If listener is enabled in config, automatically start after successful login.
             try:
@@ -336,19 +353,35 @@ def telegram_user_listener_verify_code(payload: Dict[str, Any]):
         state = svc.status()
         return {"ok": bool(out.get("ok")), "result": out, "state": state}
     except Exception as exc:
-        raise HTTPException(500, f"telegram_user_listener_verify_code_failed:{type(exc).__name__}:{str(exc)[:180]}")
+        try:
+            state = svc.status() if svc is not None else {"ok": False, "error": "telegram_user_listener_unavailable"}
+        except Exception:
+            state = {"ok": False, "error": "state_unavailable"}
+        return {
+            "ok": False,
+            "result": {"ok": False, "error": f"telegram_user_listener_verify_code_failed:{type(exc).__name__}:{str(exc)[:180]}"},
+            "state": state,
+        }
 
 
 @router.get("/mt4/log-automation/state")
 def mt4_log_automation_state(limit: int = Query(200, ge=20, le=1000)):
     """MT4 log automation state and discovered indicator activity."""
     try:
-        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+        from ..main import mt4_log_automation_service, telegram_bridge_service  # local import to avoid module-cycle at import time
 
         svc = mt4_log_automation_service
         if svc is None:
             return {"ok": False, "error": "mt4_log_automation_unavailable"}
-        return svc.get_state(limit=int(limit))
+        out = svc.get_state(limit=int(limit))
+        try:
+            if telegram_bridge_service is not None:
+                out["execution_logs"] = telegram_bridge_service.get_automation_execution_logs(limit=min(300, int(limit)))
+            else:
+                out["execution_logs"] = []
+        except Exception:
+            out["execution_logs"] = []
+        return out
     except Exception as exc:
         raise HTTPException(500, f"mt4_log_automation_state_failed:{type(exc).__name__}:{str(exc)[:180]}")
 
@@ -378,10 +411,59 @@ def mt4_log_indicator_automation(payload: Dict[str, Any]):
             return {"ok": False, "error": "mt4_log_automation_unavailable"}
         p = payload if isinstance(payload, dict) else {}
         indicator = str(p.get("indicator") or "").strip()
-        enabled = bool(p.get("enabled"))
-        return svc.set_indicator_automation(indicator=indicator, enabled=enabled)
+        enabled = p.get("enabled") if "enabled" in p else None
+        lot_size = p.get("lot_size") if "lot_size" in p else None
+        enabled_bool: Optional[bool] = None
+        if enabled is not None:
+            enabled_bool = bool(enabled)
+        lot_val: Optional[float] = None
+        if lot_size is not None:
+            try:
+                lot_val = float(lot_size)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_size"}
+        return svc.update_indicator_settings(
+            indicator=indicator,
+            enabled=enabled_bool,
+            lot_size=lot_val,
+        )
     except Exception as exc:
         raise HTTPException(500, f"mt4_log_indicator_automation_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/mt4/log-automation/instance-automation")
+def mt4_log_instance_automation(payload: Dict[str, Any]):
+    """Enable/disable automation for a specific indicator chart instance (indicator+symbol+timeframe)."""
+    try:
+        from ..main import mt4_log_automation_service  # local import to avoid module-cycle at import time
+
+        svc = mt4_log_automation_service
+        if svc is None:
+            return {"ok": False, "error": "mt4_log_automation_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        indicator = str(p.get("indicator") or "").strip()
+        symbol = str(p.get("symbol") or "").strip().upper()
+        timeframe = str(p.get("timeframe") or "").strip().upper()
+        enabled = p.get("enabled") if "enabled" in p else None
+        lot_size = p.get("lot_size") if "lot_size" in p else None
+        enabled_bool: Optional[bool] = None
+        if enabled is not None:
+            enabled_bool = bool(enabled)
+        lot_val: Optional[float] = None
+        if lot_size is not None:
+            try:
+                lot_val = float(lot_size)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_size"}
+        return svc.update_instance_settings(
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+            enabled=enabled_bool,
+            lot_size=lot_val,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_instance_automation_failed:{type(exc).__name__}:{str(exc)[:180]}")
 
 
 @router.get("/mt4/log-automation/indicator-logs")
@@ -400,6 +482,59 @@ def mt4_log_indicator_logs(
         return svc.get_indicator_logs_filtered(indicator=str(indicator), limit=int(limit), alerts_only=bool(alerts_only))
     except Exception as exc:
         raise HTTPException(500, f"mt4_log_indicator_logs_failed:{type(exc).__name__}:{str(exc)[:180]}")
+
+
+@router.post("/mt4/log-automation/simulate-signal")
+def mt4_log_simulate_signal(payload: Dict[str, Any]):
+    """
+    Inject a synthetic MT indicator signal into the live bridge pipeline.
+    Useful for production diagnostics of: listener -> bridge ingest -> MT5 execution.
+    """
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        indicator = str(p.get("indicator") or "").strip() or "Alchemy Pulse Indicateor"
+        signal_hint = str(p.get("signal_hint") or "").strip().upper() or "SELL"
+        symbol = str(p.get("symbol") or "").strip().upper() or "XAUUSDM"
+        timeframe = str(p.get("timeframe") or "").strip().upper() or "M1"
+        message = str(p.get("message") or "").strip() or f"{indicator}: {signal_hint} {symbol}"
+        event_ts = str(p.get("event_ts") or datetime.now(timezone.utc).isoformat())
+        signal_profile = str(p.get("signal_profile") or "").strip().lower()
+        lot_override = p.get("lot_override")
+
+        mt_payload: Dict[str, Any] = {
+            "indicator": indicator,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "signal_hint": signal_hint,
+            "signal_profile": signal_profile,
+            "message": message,
+            "event_ts": event_ts,
+        }
+        if lot_override is not None:
+            try:
+                mt_payload["lot_override"] = float(lot_override)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_override"}
+
+        out = svc.ingest_mt4_indicator_signal(payload=mt_payload)
+        state = svc.get_telegram_automation_state(limit=80)
+        return {
+            "ok": True,
+            "input": mt_payload,
+            "result": out,
+            "state": {
+                "pending_confirm_count": int(state.get("pending_confirm_count") or 0),
+                "active_ladder_count": int(state.get("active_ladder_count") or 0),
+                "execution_logs_count": len(state.get("execution_logs") or []),
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_log_simulate_signal_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 def _safe_optional_float(value) -> Optional[float]:

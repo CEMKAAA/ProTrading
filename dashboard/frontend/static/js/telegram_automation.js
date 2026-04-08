@@ -5,11 +5,13 @@
         alert: document.getElementById('tg-auto-alert'),
         enabled: document.getElementById('tg-enabled'),
         requireConfirm: document.getElementById('tg-require-confirm'),
+        waitEntryZone: document.getElementById('tg-wait-entry-zone'),
         requireConfirmChannels: document.getElementById('tg-require-confirm-channels'),
         noConfirmChannels: document.getElementById('tg-no-confirm-channels'),
         channels: document.getElementById('tg-channels'),
         timeframe: document.getElementById('tg-timeframe'),
         lot: document.getElementById('tg-lot'),
+        lotModeHint: document.getElementById('tg-lot-mode-hint'),
         forceSingle01: document.getElementById('tg-force-single-01'),
         distribution: document.getElementById('tg-distribution'),
         confirmWindow: document.getElementById('tg-confirm-window'),
@@ -23,7 +25,9 @@
         activeCount: document.getElementById('tg-active-count'),
         feedCount: document.getElementById('tg-feed-count'),
         feedBody: document.getElementById('tg-feed-body'),
+        execLogBody: document.getElementById('tg-exec-log-body'),
         feedSourceFilter: document.getElementById('tg-feed-source-filter'),
+        feedKindFilter: document.getElementById('tg-feed-kind-filter'),
         feedSignalsOnly: document.getElementById('tg-feed-signals-only'),
         updated: document.getElementById('tg-status-updated'),
         userEnabled: document.getElementById('tg-ul-enabled'),
@@ -54,6 +58,11 @@
     let userFormDirty = false;
     let suppressDirtyTracking = false;
     let latestFeedRows = [];
+    let latestExecLogs = [];
+    let pendingLoginCtx = {
+        phoneCodeHash: '',
+        pendingSession: ''
+    };
 
     function showAlert(message, kind) {
         const cls = kind === 'error' ? 'alert-danger' : (kind === 'success' ? 'alert-success' : 'alert-info');
@@ -100,6 +109,7 @@
         suppressDirtyTracking = true;
         if (els.enabled) els.enabled.checked = !!c.enabled;
         if (els.requireConfirm) els.requireConfirm.checked = !!c.require_confirm;
+        if (els.waitEntryZone) els.waitEntryZone.checked = (c.wait_entry_zone !== false);
         if (els.requireConfirmChannels) els.requireConfirmChannels.value = toLines(c.require_confirm_channels);
         if (els.noConfirmChannels) els.noConfirmChannels.value = toLines(c.no_confirm_channels);
         if (els.channels) els.channels.value = toLines(c.channels);
@@ -113,6 +123,14 @@
         if (els.aiModel) els.aiModel.value = String(c.ai_model || '');
         if (els.aiTimeout) els.aiTimeout.value = String(parseInt(c.ai_timeout_sec || 10, 10));
         suppressDirtyTracking = false;
+        syncEmergencyLotUi();
+    }
+
+    function syncEmergencyLotUi() {
+        const isEmergency = !!(els.forceSingle01 && els.forceSingle01.checked);
+        if (els.lotModeHint) {
+            els.lotModeHint.classList.toggle('d-none', !isEmergency);
+        }
     }
 
     function fillUserListenerForm(state, opts) {
@@ -231,6 +249,7 @@
     function renderFeed(rows) {
         const all = Array.isArray(rows) ? rows.slice() : [];
         const selectedSource = String((els.feedSourceFilter && els.feedSourceFilter.value) || '__all__');
+        const selectedKind = String((els.feedKindFilter && els.feedKindFilter.value) || '__all__').toLowerCase();
         const sources = [];
         const seen = new Set();
         for (const r of all) {
@@ -251,20 +270,30 @@
         }
         const activeSource = String((els.feedSourceFilter && els.feedSourceFilter.value) || '__all__');
         const signalsOnly = !!(els.feedSignalsOnly && els.feedSignalsOnly.checked);
-        const isSignalRow = (r) => {
+        const inferKind = (r) => {
             const kind = String((r && r.kind) || '').toLowerCase();
-            if (kind === 'signal' || kind === 'confirm_signal' || kind === 'tp_hit' || kind === 'sl_hit') return true;
-            const txt = String((r && r.text) || '').trim();
-            if (!txt) return false;
-            if (/^\s*[A-Z]{3,12}\s+(BUY|SELL)\s+NOW\b/im.test(txt)) return true;
-            if (/\bTP\s*([1-9]\d*)\s*HIT\b/im.test(txt)) return true;
-            if (/\bCONFIRM\s+SIGNAL\b/im.test(txt)) return true;
-            if (/\bSL\b.*\bHIT\b/im.test(txt)) return true;
-            return false;
+            if (kind) return kind;
+            const txtRaw = String((r && r.text) || '').trim();
+            const txt = (typeof txtRaw.normalize === 'function') ? txtRaw.normalize('NFKC') : txtRaw;
+            if (!txt) return 'other';
+            if (/\bCONFIRM\s+SIGNAL\b/im.test(txt)) return 'confirm_signal';
+            if (/\bTP\s*(?:[1-9]\d*)?\s*HIT\b/im.test(txt) || /\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b/im.test(txt) || /\btarget(?:s)?\s+completed\b/im.test(txt)) return 'tp_hit';
+            if (/\b(?:SL(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b.*\bHIT\b/im.test(txt)) return 'sl_hit';
+            if (/\bCLOSE\s+IT\b/im.test(txt) || /\bCLOSE\s+NOW\b/im.test(txt)) return 'close_instruction';
+            if (
+                /^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:\/|-|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$/im.test(txt) ||
+                /^\s*[A-Z]{3,12}\s+(BUY|SELL)\s+NOW\b/im.test(txt)
+            ) return 'signal';
+            return 'other';
+        };
+        const isSignalRow = (r) => {
+            const k = inferKind(r);
+            return k === 'signal' || k === 'confirm_signal' || k === 'tp_hit' || k === 'sl_hit' || k === 'close_instruction';
         };
         const filtered = all.filter((r) => {
             if (activeSource !== '__all__' && String((r && r.source) || '') !== activeSource) return false;
             if (signalsOnly && !isSignalRow(r)) return false;
+            if (selectedKind !== '__all__' && inferKind(r) !== selectedKind) return false;
             return true;
         });
         const items = filtered.sort((a, b) => {
@@ -286,9 +315,39 @@
             const ts = String(r.event_ts || r.ts || '-');
             const tsLabel = formatFeedTimestamp(ts);
             const src = String(r.source || '-');
-            const kind = String(r.kind || 'other');
+            const kind = inferKind(r);
             const txt = escapeHtml(String(r.text || ''));
             return `<tr><td class="small text-muted">${tsLabel}</td><td>${src}</td><td><span class="badge text-bg-secondary">${kind}</span></td><td style="white-space: pre-wrap;">${txt}</td></tr>`;
+        }).join('');
+    }
+
+    function renderExecutionLogs(rows) {
+        const items = Array.isArray(rows) ? rows.slice() : [];
+        if (!els.execLogBody) return;
+        if (!items.length) {
+            els.execLogBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">No execution logs yet.</td></tr>';
+            return;
+        }
+        items.sort((a, b) => {
+            const ta = Date.parse(String((a && (a.event_ts || a.ts)) || '')) || 0;
+            const tb = Date.parse(String((b && (b.event_ts || b.ts)) || '')) || 0;
+            return tb - ta;
+        });
+        els.execLogBody.innerHTML = items.map((r) => {
+            const ts = formatFeedTimestamp((r && (r.event_ts || r.ts)) || '');
+            const srcType = escapeHtml(String((r && r.source_type) || '-'));
+            const srcName = escapeHtml(String((r && r.source_name) || '-'));
+            const sym = String((r && r.symbol) || '').trim();
+            const tf = String((r && r.timeframe) || '').trim();
+            const symTf = escapeHtml((sym || tf) ? `${sym}${tf ? ` ${tf}` : ''}` : '-');
+            const dir = escapeHtml(String((r && r.direction) || '-'));
+            const lotRaw = Number((r && r.lot) || 0);
+            const lot = Number.isFinite(lotRaw) && lotRaw > 0 ? lotRaw.toFixed(2) : '-';
+            const status = escapeHtml(String((r && r.status) || '-'));
+            const ticketRaw = Number((r && r.ticket) || 0);
+            const ticket = ticketRaw > 0 ? String(ticketRaw) : '-';
+            const msg = escapeHtml(String((r && r.message) || ''));
+            return `<tr><td class="small text-muted">${ts}</td><td>${srcType}</td><td>${srcName}</td><td>${symTf}</td><td>${dir}</td><td>${lot}</td><td><span class="badge text-bg-secondary">${status}</span></td><td>${ticket}</td><td>${msg}</td></tr>`;
         }).join('');
     }
 
@@ -299,6 +358,8 @@
         if (els.activeCount) els.activeCount.textContent = String(data.active_ladder_count || 0);
         latestFeedRows = Array.isArray(data.feed) ? data.feed.slice() : [];
         renderFeed(latestFeedRows);
+        latestExecLogs = Array.isArray(data.execution_logs) ? data.execution_logs.slice() : [];
+        renderExecutionLogs(latestExecLogs);
         fillUserListenerForm(data.user_listener || {}, { force: !!force });
         renderUserListenerStatus(data.user_listener || {});
         renderListenerFlowStatus(data.user_listener || {});
@@ -313,6 +374,7 @@
         return {
             enabled: !!(els.enabled && els.enabled.checked),
             require_confirm: !!(els.requireConfirm && els.requireConfirm.checked),
+            wait_entry_zone: !!(els.waitEntryZone && els.waitEntryZone.checked),
             require_confirm_channels: String((els.requireConfirmChannels && els.requireConfirmChannels.value) || '')
                 .split('\n')
                 .map((x) => x.trim())
@@ -349,6 +411,8 @@
         if (els.activeCount) els.activeCount.textContent = String((data && data.active_ladder_count) || 0);
         latestFeedRows = Array.isArray((data && data.feed)) ? (data.feed).slice() : [];
         renderFeed(latestFeedRows);
+        latestExecLogs = Array.isArray((data && data.execution_logs)) ? (data.execution_logs).slice() : [];
+        renderExecutionLogs(latestExecLogs);
         showAlert('Telegram automation config saved.', 'success');
     }
 
@@ -403,7 +467,7 @@
 
     async function init() {
         const mainInputs = [
-            els.enabled, els.requireConfirm, els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
+            els.enabled, els.requireConfirm, els.waitEntryZone, els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
             els.forceSingle01, els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
         ].filter(Boolean);
         const userInputs = [
@@ -416,6 +480,11 @@
             });
             el.addEventListener('change', () => {
                 if (!suppressDirtyTracking) mainFormDirty = true;
+            });
+        }
+        if (els.forceSingle01) {
+            els.forceSingle01.addEventListener('change', () => {
+                syncEmergencyLotUi();
             });
         }
         for (const el of userInputs) {
@@ -460,6 +529,11 @@
                 renderFeed(latestFeedRows);
             });
         }
+        if (els.feedKindFilter) {
+            els.feedKindFilter.addEventListener('change', () => {
+                renderFeed(latestFeedRows);
+            });
+        }
         if (els.feedSignalsOnly) {
             els.feedSignalsOnly.addEventListener('change', () => {
                 renderFeed(latestFeedRows);
@@ -487,7 +561,10 @@
                 }
                 els.userSendCodeBtn.disabled = true;
                 try {
-                    await userAction('/api/telegram/user-listener/send-code', { phone }, 'Login code sent.');
+                    const out = await userAction('/api/telegram/user-listener/send-code', { phone }, 'Login code sent.');
+                    const r = (out && out.result) || {};
+                    pendingLoginCtx.phoneCodeHash = String(r.phone_code_hash || '').trim();
+                    pendingLoginCtx.pendingSession = String(r.pending_session || '').trim();
                 } catch (err) {
                     showAlert(`Send code failed: ${String(err.message || err)}`, 'error');
                 } finally {
@@ -506,7 +583,14 @@
                 }
                 els.userVerifyBtn.disabled = true;
                 try {
-                    await userAction('/api/telegram/user-listener/verify-code', { phone, code, password }, 'Login verified. Listener auto-starts when enabled.');
+                    await userAction('/api/telegram/user-listener/verify-code', {
+                        phone,
+                        code,
+                        password,
+                        phone_code_hash: String(pendingLoginCtx.phoneCodeHash || '').trim() || undefined,
+                        pending_session: String(pendingLoginCtx.pendingSession || '').trim() || undefined
+                    }, 'Login verified. Listener auto-starts when enabled.');
+                    pendingLoginCtx = { phoneCodeHash: '', pendingSession: '' };
                     userFormDirty = false;
                     await loadState(true);
                 } catch (err) {

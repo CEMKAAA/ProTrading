@@ -30,11 +30,13 @@ class TelegramUserListenerService:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.RLock()
+        self._telethon_auth_lock = threading.Lock()
         self._running: bool = False
         self._last_error: str = ""
         self._last_tick_iso: str = ""
         self._last_seen_msg_id: Dict[str, int] = {}
         self._pending_phone_hash_by_phone: Dict[str, str] = {}
+        self._pending_login_session_by_phone: Dict[str, str] = {}
         self._resolved_channels: List[Dict[str, Any]] = []
         self._skipped_specs: List[Dict[str, Any]] = []
         self._forward_total: int = 0
@@ -143,6 +145,28 @@ class TelegramUserListenerService:
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    @staticmethod
+    def _phone_key(value: Any) -> str:
+        # Keep leading '+'; strip spaces and punctuation.
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        keep_plus = raw.startswith("+")
+        digits = "".join(ch for ch in raw if str(ch).isdigit())
+        if not digits:
+            return ""
+        return f"+{digits}" if keep_plus else digits
+
+    @classmethod
+    def _phone_for_telegram(cls, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        key = cls._phone_key(raw)
+        if not key:
+            return raw
+        return key if str(key).startswith("+") else raw
+
     @classmethod
     def _enabled(cls) -> bool:
         v = str(cls._get_env_value("TELEGRAM_USER_LISTENER_ENABLED", "0")).strip().lower()
@@ -165,6 +189,10 @@ class TelegramUserListenerService:
         return raw or "dashboard/data/telegram_user_listener"
 
     @classmethod
+    def _session_string(cls) -> str:
+        return str(cls._get_env_value("TELEGRAM_USER_SESSION_STRING", "")).strip()
+
+    @classmethod
     def _channels(cls) -> List[str]:
         raw = str(cls._get_env_value("TELEGRAM_USER_CHANNELS", "")).strip()
         items = [str(x).strip() for x in raw.split("|") if str(x).strip()]
@@ -173,12 +201,17 @@ class TelegramUserListenerService:
     @classmethod
     def _poll_sec(cls) -> float:
         try:
-            raw = float(cls._get_env_value("TELEGRAM_USER_POLL_SEC", "3"))
+            raw = float(cls._get_env_value("TELEGRAM_USER_POLL_SEC", "1"))
         except Exception:
-            raw = 3.0
+            raw = 1.0
         if not math.isfinite(float(raw)):
-            raw = 3.0
+            raw = 1.0
         return float(max(1.0, min(30.0, float(raw))))
+
+    @classmethod
+    def _realtime_events_enabled(cls) -> bool:
+        v = str(cls._get_env_value("TELEGRAM_USER_REALTIME_EVENTS_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
 
     @classmethod
     def _skip_history_on_start(cls) -> bool:
@@ -210,6 +243,57 @@ class TelegramUserListenerService:
         except Exception:
             raw = 2000
         return int(max(100, min(10000, int(raw))))
+
+    @staticmethod
+    def _is_db_locked_error(exc: Exception) -> bool:
+        msg = str(exc or "").strip().lower()
+        return ("database is locked" in msg) or ("sqlite" in msg and "locked" in msg)
+
+    def _build_telethon_client(self, TelegramClient: Any, *, api_id: int, api_hash: str, use_ephemeral_session: bool = False) -> Any:
+        if use_ephemeral_session:
+            try:
+                from telethon.sessions import StringSession  # type: ignore
+
+                return TelegramClient(StringSession(), int(api_id), str(api_hash))
+            except Exception:
+                # Fallback to file-session mode if StringSession is unavailable.
+                pass
+        sess = str(self._session_string() or "").strip()
+        if sess:
+            try:
+                from telethon.sessions import StringSession  # type: ignore
+
+                return TelegramClient(StringSession(sess), int(api_id), str(api_hash))
+            except Exception as exc:
+                logger.warning("telegram_user_listener_string_session_failed err=%s", str(exc)[:160])
+        return TelegramClient(str(self._session_path()), int(api_id), str(api_hash))
+
+    @staticmethod
+    def _build_telethon_client_from_session_string(
+        TelegramClient: Any,
+        *,
+        api_id: int,
+        api_hash: str,
+        session_string: str,
+    ) -> Any:
+        from telethon.sessions import StringSession  # type: ignore
+
+        return TelegramClient(StringSession(str(session_string or "").strip()), int(api_id), str(api_hash))
+
+    def _persist_session_string_from_client(self, client: Any) -> Tuple[bool, str]:
+        try:
+            session_obj = getattr(client, "session", None)
+            if session_obj is None or not hasattr(session_obj, "save"):
+                return False, "session_save_not_supported"
+            session_string = str(session_obj.save() or "").strip()
+            if not session_string:
+                return False, "empty_session_string"
+            ok, status = self._upsert_env_values({"TELEGRAM_USER_SESSION_STRING": session_string})
+            if ok:
+                os.environ["TELEGRAM_USER_SESSION_STRING"] = session_string
+            return bool(ok), str(status)
+        except Exception as exc:
+            return False, f"persist_session_string_failed:{type(exc).__name__}:{str(exc)[:140]}"
 
     def status(self) -> Dict[str, Any]:
         _client, _pwd, telethon_err = self._import_telethon()
@@ -259,8 +343,10 @@ class TelegramUserListenerService:
             "api_id_set": bool(self._api_id() > 0),
             "api_hash_set": bool(bool(self._api_hash())),
             "session_path": str(self._session_path()),
+            "session_string_set": bool(bool(self._session_string())),
             "channels": list(self._channels()),
             "poll_sec": float(self._poll_sec()),
+            "realtime_events_enabled": bool(self._realtime_events_enabled()),
             "skip_history_on_start": bool(self._skip_history_on_start()),
             "feed_backfill_count": int(self._feed_backfill_count()),
             "feed_backfill_hours": float(self._feed_backfill_hours()),
@@ -294,6 +380,8 @@ class TelegramUserListenerService:
             updates["TELEGRAM_USER_API_HASH"] = str(p.get("api_hash") or "").strip()
         if "session_path" in p:
             updates["TELEGRAM_USER_SESSION_PATH"] = str(p.get("session_path") or "").strip()
+        if "session_string" in p:
+            updates["TELEGRAM_USER_SESSION_STRING"] = str(p.get("session_string") or "").strip()
         if "channels" in p:
             ch_raw = p.get("channels")
             channels: List[str] = []
@@ -306,9 +394,11 @@ class TelegramUserListenerService:
             try:
                 sec = float(p.get("poll_sec"))
             except Exception:
-                sec = 3.0
+                sec = 1.0
             sec = max(1.0, min(30.0, sec))
             updates["TELEGRAM_USER_POLL_SEC"] = f"{sec:.1f}"
+        if "realtime_events_enabled" in p:
+            updates["TELEGRAM_USER_REALTIME_EVENTS_ENABLED"] = "1" if bool(p.get("realtime_events_enabled")) else "0"
         if "skip_history_on_start" in p:
             updates["TELEGRAM_USER_SKIP_HISTORY_ON_START"] = "1" if bool(p.get("skip_history_on_start")) else "0"
         if "feed_backfill_count" in p:
@@ -428,11 +518,57 @@ class TelegramUserListenerService:
             with self._lock:
                 self._running = False
 
+    def _process_live_message(self, *, ent: Any, key: str, m: Any, started_at_utc: datetime) -> None:
+        try:
+            mid = int(getattr(m, "id", 0) or 0)
+        except Exception:
+            mid = 0
+        if mid <= 0:
+            return
+        eid = str(getattr(ent, "id", key))
+        last_seen = int(self._last_seen_msg_id.get(eid, 0))
+        if mid <= last_seen:
+            return
+        mdate = getattr(m, "date", None)
+        try:
+            if isinstance(mdate, datetime):
+                md = mdate if mdate.tzinfo is not None else mdate.replace(tzinfo=timezone.utc)
+                if md < started_at_utc:
+                    self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
+                    return
+        except Exception:
+            pass
+        text = str(getattr(m, "message", "") or "")
+        if not text:
+            text = str(getattr(m, "raw_text", "") or "")
+        if not text:
+            self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
+            return
+        title = str(getattr(ent, "title", "") or key)
+        username = str(getattr(ent, "username", "") or "")
+        try:
+            self._forward_message(
+                source_title=title,
+                text=text,
+                source_username=(username or None),
+                source_id=int(getattr(ent, "id", 0) or 0),
+                source_message_ts=getattr(m, "date", None),
+                source_message_id=int(mid),
+            )
+        except Exception:
+            logger.exception("telegram_user_listener_on_message_failed")
+        self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
+
     async def _run_loop(self) -> None:
+        realtime_handler = None
         TelegramClient, _SessionPasswordNeededError, telethon_err = self._import_telethon()
         if TelegramClient is None:
             self._set_error(f"telethon_import_failed:{type(telethon_err).__name__}:{str(telethon_err)[:180]}")
             return
+        try:
+            from telethon import events as telethon_events  # type: ignore
+        except Exception:
+            telethon_events = None
         api_id = int(self._api_id())
         api_hash = str(self._api_hash())
         channels = list(self._channels())
@@ -442,8 +578,11 @@ class TelegramUserListenerService:
         if not channels:
             self._set_error("no_channels_configured")
             return
-        session_path = str(self._session_path())
-        client = TelegramClient(session_path, api_id, api_hash)
+        try:
+            client = self._build_telethon_client(TelegramClient, api_id=api_id, api_hash=api_hash, use_ephemeral_session=False)
+        except Exception as exc:
+            self._set_error(f"client_init_failed:{type(exc).__name__}:{str(exc)[:180]}")
+            return
         await client.connect()
         try:
             if not await client.is_user_authorized():
@@ -481,6 +620,14 @@ class TelegramUserListenerService:
             if not entities:
                 self._set_error("no_resolved_channels")
                 return
+            entity_by_id: Dict[int, Any] = {}
+            for _spec, ent in list(entities.items()):
+                try:
+                    eid = int(getattr(ent, "id", 0) or 0)
+                except Exception:
+                    eid = 0
+                if eid > 0:
+                    entity_by_id[int(eid)] = ent
             if self._skip_history_on_start():
                 for _key, ent in list(entities.items()):
                     try:
@@ -528,51 +675,60 @@ class TelegramUserListenerService:
                     except Exception:
                         continue
             started_at_utc = datetime.now(timezone.utc)
+            realtime_handler = None
+            if bool(self._realtime_events_enabled()) and telethon_events is not None:
+                async def _on_new_message(event: Any) -> None:
+                    try:
+                        m = getattr(event, "message", None)
+                        if m is None:
+                            return
+                        chat_id = int(getattr(event, "chat_id", 0) or 0)
+                        ent = entity_by_id.get(int(chat_id))
+                        if ent is None:
+                            try:
+                                chat_obj = await event.get_chat()
+                            except Exception:
+                                chat_obj = None
+                            if chat_obj is not None:
+                                ent = chat_obj
+                                try:
+                                    cid = int(getattr(chat_obj, "id", 0) or 0)
+                                except Exception:
+                                    cid = 0
+                                if cid > 0:
+                                    entity_by_id[int(cid)] = chat_obj
+                        if ent is None:
+                            return
+                        self._process_live_message(
+                            ent=ent,
+                            key=str(chat_id or getattr(ent, "id", "event")),
+                            m=m,
+                            started_at_utc=started_at_utc,
+                        )
+                    except Exception:
+                        logger.exception("telegram_user_listener_event_handler_failed")
+                realtime_handler = _on_new_message
+                try:
+                    client.add_event_handler(realtime_handler, telethon_events.NewMessage(chats=list(entities.values())))
+                except Exception as exc:
+                    logger.warning("telegram_user_listener_realtime_registration_failed err=%s", str(exc)[:160])
+                    realtime_handler = None
             while not self._stop.is_set():
                 for key, ent in list(entities.items()):
                     try:
                         msgs = await client.get_messages(ent, limit=40)
-                        eid = str(getattr(ent, "id", key))
-                        last_seen = int(self._last_seen_msg_id.get(eid, 0))
                         for m in reversed(list(msgs or [])):
-                            mid = int(getattr(m, "id", 0) or 0)
-                            if mid <= 0 or mid <= last_seen:
-                                continue
-                            mdate = getattr(m, "date", None)
-                            try:
-                                if isinstance(mdate, datetime):
-                                    md = mdate if mdate.tzinfo is not None else mdate.replace(tzinfo=timezone.utc)
-                                    if md < started_at_utc:
-                                        self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
-                                        continue
-                            except Exception:
-                                pass
-                            text = str(getattr(m, "message", "") or "")
-                            if not text:
-                                text = str(getattr(m, "raw_text", "") or "")
-                            if not text:
-                                # Keep media-only messages out for now.
-                                self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
-                                continue
-                            title = str(getattr(ent, "title", "") or key)
-                            username = str(getattr(ent, "username", "") or "")
-                            try:
-                                self._forward_message(
-                                    source_title=title,
-                                    text=text,
-                                    source_username=(username or None),
-                                    source_id=int(getattr(ent, "id", 0) or 0),
-                                    source_message_ts=getattr(m, "date", None),
-                                    source_message_id=int(mid),
-                                )
-                            except Exception:
-                                logger.exception("telegram_user_listener_on_message_failed")
-                            self._last_seen_msg_id[eid] = int(max(self._last_seen_msg_id.get(eid, 0), mid))
+                            self._process_live_message(ent=ent, key=str(key), m=m, started_at_utc=started_at_utc)
                     except Exception as exc:
                         self._set_error(f"poll_channel_failed:{str(key)}:{type(exc).__name__}:{str(exc)[:120]}")
                 self._touch()
                 await asyncio.sleep(float(self._poll_sec()))
         finally:
+            try:
+                if realtime_handler is not None:
+                    client.remove_event_handler(realtime_handler)
+            except Exception:
+                pass
             try:
                 await client.disconnect()
             except Exception:
@@ -635,13 +791,14 @@ class TelegramUserListenerService:
 
     def send_login_code(self, phone: str) -> Dict[str, Any]:
         was_running = bool(self.is_running())
-        if was_running:
-            self.stop()
-        try:
-            return asyncio.run(self._send_login_code_async(phone))
-        finally:
-            if was_running and self._enabled():
-                self.start()
+        with self._telethon_auth_lock:
+            if was_running:
+                self.stop()
+            try:
+                return asyncio.run(self._send_login_code_async(phone))
+            finally:
+                if was_running and self._enabled():
+                    self.start()
 
     async def _send_login_code_async(self, phone: str) -> Dict[str, Any]:
         TelegramClient, _SessionPasswordNeededError, telethon_err = self._import_telethon()
@@ -654,33 +811,89 @@ class TelegramUserListenerService:
         ph = str(phone or "").strip()
         if not ph:
             return {"ok": False, "error": "missing_phone"}
-        client = TelegramClient(str(self._session_path()), api_id, api_hash)
-        await client.connect()
-        try:
-            sent = await client.send_code_request(ph)
-            code_hash = str(getattr(sent, "phone_code_hash", "") or "").strip()
-            with self._lock:
-                self._pending_phone_hash_by_phone[ph] = code_hash
-            return {"ok": True, "phone": ph}
-        except Exception as exc:
-            return {"ok": False, "error": f"send_code_failed:{type(exc).__name__}:{str(exc)[:180]}"}
-        finally:
+        ph_key = self._phone_key(ph) or ph
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            client = None
             try:
-                await client.disconnect()
-            except Exception:
-                pass
+                client = self._build_telethon_client(
+                    TelegramClient,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                    use_ephemeral_session=True,
+                )
+                await client.connect()
+                sent = await client.send_code_request(ph)
+                code_hash = str(getattr(sent, "phone_code_hash", "") or "").strip()
+                pending_session = ""
+                try:
+                    session_obj = getattr(client, "session", None)
+                    if session_obj is not None and hasattr(session_obj, "save"):
+                        pending_session = str(session_obj.save() or "").strip()
+                except Exception:
+                    pending_session = ""
+                with self._lock:
+                    self._pending_phone_hash_by_phone[ph_key] = code_hash
+                    if pending_session:
+                        self._pending_login_session_by_phone[ph_key] = pending_session
+                return {
+                    "ok": True,
+                    "phone": ph,
+                    "phone_key": ph_key,
+                    "phone_code_hash": code_hash,
+                    "pending_session": pending_session,
+                }
+            except Exception as exc:
+                last_err = exc
+                if self._is_db_locked_error(exc) and attempt < 2:
+                    await asyncio.sleep(0.5 * float(attempt + 1))
+                    continue
+                return {"ok": False, "error": f"send_code_failed:{type(exc).__name__}:{str(exc)[:180]}"}
+            finally:
+                try:
+                    if client is not None:
+                        await client.disconnect()
+                except Exception:
+                    pass
+        if last_err is not None:
+            return {"ok": False, "error": f"send_code_failed:{type(last_err).__name__}:{str(last_err)[:180]}"}
+        return {"ok": False, "error": "send_code_failed:unknown"}
 
-    def verify_login_code(self, phone: str, code: str, password: Optional[str] = None) -> Dict[str, Any]:
+    def verify_login_code(
+        self,
+        phone: str,
+        code: str,
+        password: Optional[str] = None,
+        phone_code_hash: Optional[str] = None,
+        pending_session: Optional[str] = None,
+    ) -> Dict[str, Any]:
         was_running = bool(self.is_running())
-        if was_running:
-            self.stop()
-        try:
-            return asyncio.run(self._verify_login_code_async(phone=phone, code=code, password=password))
-        finally:
-            if was_running and self._enabled():
-                self.start()
+        with self._telethon_auth_lock:
+            if was_running:
+                self.stop()
+            try:
+                return asyncio.run(
+                    self._verify_login_code_async(
+                        phone=phone,
+                        code=code,
+                        password=password,
+                        phone_code_hash=phone_code_hash,
+                        pending_session=pending_session,
+                    )
+                )
+            finally:
+                if was_running and self._enabled():
+                    self.start()
 
-    async def _verify_login_code_async(self, *, phone: str, code: str, password: Optional[str]) -> Dict[str, Any]:
+    async def _verify_login_code_async(
+        self,
+        *,
+        phone: str,
+        code: str,
+        password: Optional[str],
+        phone_code_hash: Optional[str],
+        pending_session: Optional[str],
+    ) -> Dict[str, Any]:
         TelegramClient, SessionPasswordNeededError, telethon_err = self._import_telethon()
         if TelegramClient is None:
             return {"ok": False, "error": f"telethon_import_failed:{type(telethon_err).__name__}"}
@@ -692,16 +905,44 @@ class TelegramUserListenerService:
         pin = str(code or "").strip()
         if not ph or not pin:
             return {"ok": False, "error": "missing_phone_or_code"}
+        # Telegram usually sends numeric OTP; make pasted values resilient (e.g., "12 345").
+        pin_digits = "".join(ch for ch in pin if str(ch).isdigit())
+        if pin_digits and len(pin_digits) >= 4:
+            pin = pin_digits
+        ph_api = self._phone_for_telegram(ph)
+        ph_key = self._phone_key(ph) or ph
         with self._lock:
-            code_hash = str(self._pending_phone_hash_by_phone.get(ph) or "").strip()
-        client = TelegramClient(str(self._session_path()), api_id, api_hash)
+            code_hash = str(self._pending_phone_hash_by_phone.get(ph_key) or "").strip()
+            pending_session_mem = str(self._pending_login_session_by_phone.get(ph_key) or "").strip()
+        code_hash_payload = str(phone_code_hash or "").strip()
+        pending_session_payload = str(pending_session or "").strip()
+        if code_hash_payload:
+            code_hash = code_hash_payload
+        pending_session_final = pending_session_payload or pending_session_mem
+        try:
+            if pending_session_final:
+                client = self._build_telethon_client_from_session_string(
+                    TelegramClient,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                    session_string=pending_session_final,
+                )
+            else:
+                client = self._build_telethon_client(
+                    TelegramClient,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                    use_ephemeral_session=False,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"verify_client_init_failed:{type(exc).__name__}:{str(exc)[:180]}"}
         await client.connect()
         try:
             try:
                 if code_hash:
-                    await client.sign_in(phone=ph, code=pin, phone_code_hash=code_hash)
+                    await client.sign_in(phone=ph_api, code=pin, phone_code_hash=code_hash)
                 else:
-                    await client.sign_in(phone=ph, code=pin)
+                    await client.sign_in(phone=ph_api, code=pin)
             except SessionPasswordNeededError:
                 pwd = str(password or "").strip()
                 if not pwd:
@@ -710,10 +951,22 @@ class TelegramUserListenerService:
             ok = bool(await client.is_user_authorized())
             if ok:
                 with self._lock:
-                    self._pending_phone_hash_by_phone.pop(ph, None)
-                return {"ok": True, "authorized": True}
+                    self._pending_phone_hash_by_phone.pop(ph_key, None)
+                    self._pending_login_session_by_phone.pop(ph_key, None)
+                persisted, persist_status = self._persist_session_string_from_client(client)
+                return {
+                    "ok": True,
+                    "authorized": True,
+                    "session_persisted": bool(persisted),
+                    "session_persist_status": str(persist_status),
+                }
             return {"ok": False, "error": "not_authorized"}
         except Exception as exc:
+            err_name = str(type(exc).__name__ or "")
+            if err_name in {"PhoneCodeExpiredError", "PhoneCodeInvalidError", "PhoneCodeHashEmptyError"}:
+                with self._lock:
+                    self._pending_phone_hash_by_phone.pop(ph_key, None)
+                    self._pending_login_session_by_phone.pop(ph_key, None)
             return {"ok": False, "error": f"verify_code_failed:{type(exc).__name__}:{str(exc)[:180]}"}
         finally:
             try:

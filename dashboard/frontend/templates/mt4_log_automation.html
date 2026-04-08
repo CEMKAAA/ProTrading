@@ -1,12 +1,12 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
-{% block title %}MT4 Log Automation - ProTrading Dashboard{% endblock %}
+{% block title %}MT4/MT5 Log Automation - ProTrading Dashboard{% endblock %}
 
 {% block content %}
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="mb-0">MT4 Log Automation</h2>
-        <div class="small text-muted">Indicator discovery + per-indicator automation control</div>
+        <h2 class="mb-0">MT4/MT5 Log Automation</h2>
+        <div class="small text-muted">Indicator discovery (MQL4 + MQL5) + per-chart (symbol/timeframe) automation control</div>
     </div>
 
     <div id="mt4la-alert"></div>
@@ -20,11 +20,13 @@
                 <div class="card-body">
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="mt4la-enabled">
-                        <label class="form-check-label" for="mt4la-enabled">Enable MT4 log listener</label>
+                        <label class="form-check-label" for="mt4la-enabled">Enable MT4/MT5 log listener</label>
+                        <div class="form-text">Acikken MT4/MT5 log dosyalari surekli izlenir; yeni alarm satirlari anlik olarak otomasyona aktarilir.</div>
                     </div>
                     <div class="mb-2">
-                        <label for="mt4la-data-path" class="form-label">MT4 Data Path</label>
-                        <input id="mt4la-data-path" class="form-control" placeholder="C:\Users\...\MetaQuotes\Terminal\...\">
+                        <label for="mt4la-data-path" class="form-label">MetaTrader Data Path(s)</label>
+                        <input id="mt4la-data-path" class="form-control" placeholder="C:\...\Terminal\MT4_ID|C:\...\Terminal\MT5_ID">
+                        <div class="form-text">Use <code>|</code> to monitor multiple terminal roots (MT4 + MT5).</div>
                     </div>
                     <div class="row g-2">
                         <div class="col-md-6">
@@ -54,16 +56,22 @@
                 </div>
                 <div class="card-body">
                     <div class="row g-2">
-                        <div class="col-md-3">
+                        <div class="col-md-2">
                             <div class="border rounded p-2">
                                 <div class="small text-muted">Running</div>
                                 <div id="mt4la-running" class="fs-6">-</div>
                             </div>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-2">
                             <div class="border rounded p-2">
                                 <div class="small text-muted">Indicators</div>
                                 <div id="mt4la-indicator-count" class="fs-6">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="border rounded p-2">
+                                <div class="small text-muted">Instances</div>
+                                <div id="mt4la-instance-count" class="fs-6">0</div>
                             </div>
                         </div>
                         <div class="col-md-3">
@@ -84,8 +92,9 @@
             </div>
 
             <div class="card shadow-sm">
-                <div class="card-header">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
                     <strong>Discovered Indicators</strong>
+                    <input id="mt4la-indicator-search" type="text" class="form-control form-control-sm" placeholder="Search indicator name..." style="max-width: 280px;">
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive" style="max-height: 320px;">
@@ -99,11 +108,42 @@
                                     <th>Last Signal</th>
                                     <th>Last Seen</th>
                                     <th>Automation</th>
+                                    <th>Lot</th>
                                     <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody id="mt4la-indicator-body">
-                                <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mt-3">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                    <strong>Discovered Chart Instances</strong>
+                    <input id="mt4la-instance-search" type="text" class="form-control form-control-sm" placeholder="Search indicator / symbol / tf..." style="max-width: 320px;">
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 320px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th>Indicator</th>
+                                    <th>Symbol</th>
+                                    <th>TF</th>
+                                    <th>Events</th>
+                                    <th>Signals</th>
+                                    <th>Last Signal</th>
+                                    <th>Last Seen</th>
+                                    <th>Mode/Status</th>
+                                    <th>Lot</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mt4la-instance-body">
+                                <tr><td colspan="10" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -115,7 +155,7 @@
     <div class="card shadow-sm mt-3">
         <div class="card-header d-flex justify-content-between">
             <strong id="mt4la-log-title">Indicator Alert Logs</strong>
-            <span class="small text-muted">Only MT4 Alert lines | Latest first</span>
+            <span class="small text-muted">Only Alert lines (MT4/MT5) | Latest first</span>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive" style="max-height: 420px;">
@@ -134,9 +174,38 @@
             </div>
         </div>
     </div>
+
+    <div class="card shadow-sm mt-3">
+        <div class="card-header d-flex justify-content-between">
+            <strong>Execution Audit Log</strong>
+            <span class="small text-muted">Channel + indicator executions</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 360px;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th style="min-width:140px;">Time</th>
+                            <th style="min-width:120px;">Source Type</th>
+                            <th style="min-width:180px;">Source</th>
+                            <th style="min-width:120px;">Symbol/TF</th>
+                            <th style="min-width:80px;">Dir</th>
+                            <th style="min-width:80px;">Lot</th>
+                            <th style="min-width:90px;">Status</th>
+                            <th style="min-width:120px;">Ticket</th>
+                            <th>Note</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mt4la-exec-body">
+                        <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260407_mt4_log_automation_v4') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260408_mt4_log_automation_v9') }}"></script>
 {% endblock %}
