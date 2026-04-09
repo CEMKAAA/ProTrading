@@ -41,6 +41,10 @@
     let selectedChartGroup = 'all';
     let selectedChartInstance = 'all';
     let latestExecLogs = [];
+    let latestChartEvents = [];
+    const latestChartEventKeys = new Map();
+    let chartSocket = null;
+    let chartSocketRetryMs = 1000;
     const lotDraftByIndicator = new Map();
     const lotDraftByInstance = new Map();
     const ALLOWED_INDICATOR_TOKENS = [
@@ -153,6 +157,51 @@
         return explicitAlert || obviousSignal;
     }
 
+    function chartEventKey(ev) {
+        const e = ev || {};
+        const src = String(e.source_path || e.source_file || '').trim();
+        const t = String(e.time || '').trim();
+        const raw = String(e.raw || e.message || '').trim();
+        const ts = String(e.event_ts || '').trim();
+        return `${src}|${t}|${raw}|${ts}`;
+    }
+
+    function rebuildChartEventKeyIndex(rows) {
+        latestChartEventKeys.clear();
+        const items = Array.isArray(rows) ? rows : [];
+        for (const ev of items) {
+            const key = chartEventKey(ev);
+            if (key) latestChartEventKeys.set(key, Date.now());
+        }
+    }
+
+    function compactChartEventKeyIndex() {
+        if (latestChartEventKeys.size <= 10000) return;
+        const cutoff = Date.now() - (6 * 60 * 60 * 1000);
+        for (const [k, ts] of latestChartEventKeys.entries()) {
+            if (Number(ts || 0) < cutoff) latestChartEventKeys.delete(k);
+        }
+    }
+
+    function chartState(base) {
+        const s = Object.assign({}, base || {});
+        s.events_recent_24h = Array.isArray(latestChartEvents) ? latestChartEvents.slice() : [];
+        return s;
+    }
+
+    function ingestRealtimeChartEvent(ev) {
+        if (!ev || typeof ev !== 'object') return false;
+        if (!isWithinLastHours(ev.event_ts || '', 24)) return false;
+        if (!isAlarmLikeEvent(ev)) return false;
+        const key = chartEventKey(ev);
+        if (key && latestChartEventKeys.has(key)) return false;
+        latestChartEvents.unshift(ev);
+        if (latestChartEvents.length > 3000) latestChartEvents = latestChartEvents.slice(0, 3000);
+        if (key) latestChartEventKeys.set(key, Date.now());
+        compactChartEventKeyIndex();
+        return true;
+    }
+
     function chartGroupLabel(v) {
         const key = String(v || '').trim().toLowerCase();
         if (key === 'mt4') return 'MT4';
@@ -213,7 +262,9 @@
             ? state.chart_instances
             : (Array.isArray((state || {}).instances) ? state.instances : []);
         const instances = chartInstances.slice();
-        const events = Array.isArray((state || {}).events) ? state.events : [];
+        const events = Array.isArray((state || {}).events_recent_24h)
+            ? state.events_recent_24h
+            : (Array.isArray((state || {}).events) ? state.events : []);
 
         const groups = new Set(['mt4', 'mt5', 'mt5_demo']);
         for (const ev of events) groups.add(eventChartGroup(ev));
@@ -286,7 +337,9 @@
 
     function renderChartAlarmLogs(state) {
         if (!els.chartLogBody) return;
-        const rows = Array.isArray((state || {}).events) ? state.events.slice() : [];
+        const rows = Array.isArray((state || {}).events_recent_24h)
+            ? state.events_recent_24h.slice()
+            : (Array.isArray((state || {}).events) ? state.events.slice() : []);
         const groupFilter = String(selectedChartGroup || 'all').toLowerCase();
         const instanceFilter = String(selectedChartInstance || 'all').toLowerCase();
 
@@ -564,6 +617,73 @@
         }).join('');
     }
 
+    function chartSocketUrl() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsHost = window.location.host;
+        return `${wsProtocol}://${wsHost}/ws/mt4-log-automation`;
+    }
+
+    function sendChartSocketFilter() {
+        if (!chartSocket || chartSocket.readyState !== WebSocket.OPEN) return;
+        chartSocket.send(JSON.stringify({
+            type: 'set_filter',
+            chart_group: String(selectedChartGroup || 'all').toLowerCase(),
+            instance_key: String(selectedChartInstance || 'all').toLowerCase()
+        }));
+    }
+
+    function connectChartSocket() {
+        try {
+            if (chartSocket) {
+                try { chartSocket.close(); } catch (_) { /* ignore */ }
+                chartSocket = null;
+            }
+            chartSocket = new WebSocket(chartSocketUrl());
+        } catch (_) {
+            chartSocket = null;
+            return;
+        }
+
+        chartSocket.onopen = () => {
+            chartSocketRetryMs = 1000;
+            sendChartSocketFilter();
+            if (els.chartStats) {
+                const base = String(els.chartStats.textContent || 'Latest first');
+                const clean = base.replace(/\s*\|\s*WS:\s*\w+/i, '').trim();
+                els.chartStats.textContent = `${clean} | WS: LIVE`;
+            }
+        };
+
+        chartSocket.onmessage = (evt) => {
+            let payload = null;
+            try { payload = JSON.parse(String(evt.data || '{}')); } catch (_) { payload = null; }
+            if (!payload || typeof payload !== 'object') return;
+            if (String(payload.type || '').trim() !== 'mt4la_alert_event') return;
+            const ev = payload.event;
+            if (!ingestRealtimeChartEvent(ev)) return;
+            const s = chartState(latestState || {});
+            rebuildChartSelectors(s);
+            renderChartAlarmLogs(s);
+        };
+
+        chartSocket.onclose = () => {
+            if (els.chartStats) {
+                const base = String(els.chartStats.textContent || 'Latest first');
+                const clean = base.replace(/\s*\|\s*WS:\s*\w+/i, '').trim();
+                els.chartStats.textContent = `${clean} | WS: OFF`;
+            }
+            const nextMs = Math.min(15000, Math.max(1000, chartSocketRetryMs));
+            chartSocketRetryMs = Math.min(15000, nextMs * 2);
+            window.setTimeout(() => {
+                connectChartSocket();
+            }, nextMs);
+        };
+
+        chartSocket.onerror = () => {
+            // rely on onclose reconnect
+        };
+    }
+
     async function loadIndicatorLogs(indicator) {
         const name = String(indicator || '').trim();
         if (!name) return;
@@ -574,12 +694,15 @@
     async function loadState(force) {
         const data = await req('/api/mt4/log-automation/state?limit=1000');
         latestState = data || {};
+        latestChartEvents = Array.isArray((data || {}).events_recent_24h) ? (data.events_recent_24h).slice() : [];
+        rebuildChartEventKeyIndex(latestChartEvents);
         fillForm((data || {}).config || {}, !!force);
         renderStatus(data || {});
         renderIndicators(data || {});
         renderInstances(data || {});
-        rebuildChartSelectors(data || {});
-        renderChartAlarmLogs(data || {});
+        const s = chartState(data || {});
+        rebuildChartSelectors(s);
+        renderChartAlarmLogs(s);
         latestExecLogs = Array.isArray((data || {}).execution_logs) ? (data.execution_logs).slice() : [];
         renderExecutionLogs(latestExecLogs);
         if (selectedIndicator) {
@@ -607,8 +730,11 @@
         renderStatus(data || {});
         renderIndicators(data || {});
         renderInstances(data || {});
-        rebuildChartSelectors(data || {});
-        renderChartAlarmLogs(data || {});
+        latestChartEvents = Array.isArray((data || {}).events_recent_24h) ? (data.events_recent_24h).slice() : latestChartEvents;
+        rebuildChartEventKeyIndex(latestChartEvents);
+        const s = chartState(data || {});
+        rebuildChartSelectors(s);
+        renderChartAlarmLogs(s);
         showAlert('MT4/MT5 log automation config saved.', 'success');
     }
 
@@ -631,8 +757,11 @@
         latestState = data || latestState || {};
         renderStatus(latestState || {});
         renderIndicators(latestState || {});
-        rebuildChartSelectors(latestState || {});
-        renderChartAlarmLogs(latestState || {});
+        latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
+        rebuildChartEventKeyIndex(latestChartEvents);
+        const s = chartState(latestState || {});
+        rebuildChartSelectors(s);
+        renderChartAlarmLogs(s);
         latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
         renderExecutionLogs(latestExecLogs);
         return latestState;
@@ -673,8 +802,11 @@
         renderStatus(latestState || {});
         renderIndicators(latestState || {});
         renderInstances(latestState || {});
-        rebuildChartSelectors(latestState || {});
-        renderChartAlarmLogs(latestState || {});
+        latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
+        rebuildChartEventKeyIndex(latestChartEvents);
+        const s = chartState(latestState || {});
+        rebuildChartSelectors(s);
+        renderChartAlarmLogs(s);
         latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
         renderExecutionLogs(latestExecLogs);
         return latestState;
@@ -846,15 +978,19 @@
         if (els.chartGroup) {
             els.chartGroup.addEventListener('change', () => {
                 selectedChartGroup = String((els.chartGroup && els.chartGroup.value) || 'all').toLowerCase();
-                rebuildChartSelectors(latestState || {});
-                renderChartAlarmLogs(latestState || {});
+                const s = chartState(latestState || {});
+                rebuildChartSelectors(s);
+                renderChartAlarmLogs(s);
+                sendChartSocketFilter();
             });
         }
 
         if (els.chartInstance) {
             els.chartInstance.addEventListener('change', () => {
                 selectedChartInstance = String((els.chartInstance && els.chartInstance.value) || 'all').toLowerCase();
-                renderChartAlarmLogs(latestState || {});
+                const s = chartState(latestState || {});
+                renderChartAlarmLogs(s);
+                sendChartSocketFilter();
             });
         }
 
@@ -864,6 +1000,13 @@
             showAlert(`Load failed: ${String(err.message || err)}`, 'error');
         }
 
+        connectChartSocket();
+        window.addEventListener('beforeunload', () => {
+            try {
+                if (chartSocket) chartSocket.close();
+            } catch (_) { /* ignore */ }
+        });
+
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(async () => {
             try {
@@ -871,7 +1014,7 @@
             } catch (_) {
                 // keep silent in poll loop
             }
-        }, 2000);
+        }, 10000);
     }
 
     if (document.readyState === 'loading') {

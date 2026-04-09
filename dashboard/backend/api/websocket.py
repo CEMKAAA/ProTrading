@@ -20,10 +20,17 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self.backtest_subscribers: Dict[int, List[WebSocket]] = {}
+        self.mt4la_subscribers: Dict[WebSocket, Dict[str, Any]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection"""
         await websocket.accept()
+        if self._loop is None:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except Exception:
+                self._loop = None
         self.active_connections.append(websocket)
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
@@ -38,6 +45,8 @@ class ConnectionManager:
                 self.backtest_subscribers[result_id].remove(websocket)
                 if not self.backtest_subscribers[result_id]:
                     del self.backtest_subscribers[result_id]
+        if websocket in self.mt4la_subscribers:
+            self.mt4la_subscribers.pop(websocket, None)
 
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
@@ -86,6 +95,54 @@ class ConnectionManager:
 
         for conn in disconnected:
             self.disconnect(conn)
+
+    def subscribe_mt4la(self, websocket: WebSocket, chart_group: str = "all", instance_key: str = "all"):
+        cg = str(chart_group or "all").strip().lower() or "all"
+        ik = str(instance_key or "all").strip().lower() or "all"
+        self.mt4la_subscribers[websocket] = {"chart_group": cg, "instance_key": ik}
+
+    def _matches_mt4la_filter(self, event: Dict[str, Any], sub: Dict[str, Any]) -> bool:
+        ev = event if isinstance(event, dict) else {}
+        cg = str((sub or {}).get("chart_group") or "all").strip().lower()
+        ik = str((sub or {}).get("instance_key") or "all").strip().lower()
+        if cg not in {"", "all"}:
+            ev_group = str(ev.get("terminal_group") or "").strip().lower()
+            if ev_group != cg:
+                return False
+        if ik not in {"", "all"}:
+            ev_ik = str(ev.get("instance_key") or "").strip().lower()
+            if ev_ik != ik:
+                return False
+        return True
+
+    async def send_mt4la_event(self, event: Dict[str, Any]):
+        if not self.mt4la_subscribers:
+            return
+        payload = {
+            "type": "mt4la_alert_event",
+            "event": dict(event or {}),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        disconnected: List[WebSocket] = []
+        for websocket, sub in list(self.mt4la_subscribers.items()):
+            if not self._matches_mt4la_filter(payload.get("event") or {}, sub):
+                continue
+            try:
+                await websocket.send_json(payload)
+            except Exception as e:
+                logger.error(f"Error sending mt4la event: {e}")
+                disconnected.append(websocket)
+        for conn in disconnected:
+            self.disconnect(conn)
+
+    def publish_mt4la_event_from_thread(self, event: Dict[str, Any]) -> None:
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self.send_mt4la_event(event), loop)
+        except Exception as e:
+            logger.error(f"Failed to schedule mt4la event from thread: {e}")
 
 
 # Global connection manager
@@ -198,6 +255,41 @@ async def live_trading_websocket(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+@websocket_router.websocket("/ws/mt4-log-automation")
+async def mt4_log_automation_websocket(websocket: WebSocket):
+    """WebSocket endpoint for MT4/MT5 log automation alert stream."""
+    await manager.connect(websocket)
+    manager.subscribe_mt4la(websocket, chart_group="all", instance_key="all")
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = str((data or {}).get("type") or "").strip().lower()
+            if msg_type == "ping":
+                await manager.send_personal_message(
+                    {"type": "pong", "timestamp": datetime.utcnow().isoformat()},
+                    websocket,
+                )
+                continue
+            if msg_type == "set_filter":
+                chart_group = str((data or {}).get("chart_group") or "all")
+                instance_key = str((data or {}).get("instance_key") or "all")
+                manager.subscribe_mt4la(websocket, chart_group=chart_group, instance_key=instance_key)
+                await manager.send_personal_message(
+                    {
+                        "type": "filter_applied",
+                        "chart_group": str(chart_group).strip().lower() or "all",
+                        "instance_key": str(instance_key).strip().lower() or "all",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                    websocket,
+                )
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"MT4 log automation WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+
 # Helper functions for sending updates from services
 
 async def send_backtest_progress(result_id: int, progress: float, message: str):
@@ -238,3 +330,8 @@ async def send_live_status_update(status_data: Dict[str, Any]):
         "data": status_data,
         "timestamp": datetime.utcnow().isoformat()
     })
+
+
+def publish_mt4la_alert_event(event_data: Dict[str, Any]):
+    """Thread-safe publish helper for MT4/MT5 log automation alert events."""
+    manager.publish_mt4la_event_from_thread(dict(event_data or {}))

@@ -220,6 +220,31 @@ def test_append_event_sets_instance_key():
     assert rows and str(rows[-1].get("instance_key") or "").endswith("|USDJPYM|M1")
 
 
+def test_append_event_dedupes_same_ingest_line(monkeypatch):
+    svc = MT4LogAutomationService()
+    monkeypatch.setattr(svc, "_ingest_dedupe_window_sec", lambda: 3600.0)
+    ev = {
+        "event_ts": "2026-04-09T00:00:00+00:00",
+        "source_file": "20260409.log",
+        "source_path": r"C:\MT5\DEMO\MQL5\Logs\20260409.log",
+        "time": "12:00:00.123",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "alchemy",
+        "message": "BUY",
+        "raw": "MO\t0\t12:00:00.123\tAlchemy Pulse Indicateor (USDJPYm,M1)\tAlert BUY",
+    }
+    svc._append_event(dict(ev))
+    svc._append_event(dict(ev))
+    st = svc.get_state(limit=100)
+    rows = st.get("events") or []
+    assert len(rows) == 1
+
+
 def test_indicator_last_symbol_timeframe_not_overwritten_by_empty_event():
     svc = MT4LogAutomationService()
     ev1 = {
@@ -256,6 +281,87 @@ def test_indicator_last_symbol_timeframe_not_overwritten_by_empty_event():
     assert isinstance(alchemy, dict)
     assert str(alchemy.get("last_symbol") or "") == "USDJPYM"
     assert str(alchemy.get("last_timeframe") or "") == "M1"
+
+
+def test_get_state_includes_events_recent_24h():
+    svc = MT4LogAutomationService()
+    old_ev = {
+        "event_ts": "2025-01-01T00:00:00+00:00",
+        "source_file": "20250101.log",
+        "source_path": r"C:\MT5\DEMO\MQL5\Logs\20250101.log",
+        "time": "00:00:00.000",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "alchemy",
+        "message": "BUY",
+        "raw": "old",
+    }
+    new_ev = {
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "source_file": "20260409.log",
+        "source_path": r"C:\MT5\DEMO\MQL5\Logs\20260409.log",
+        "time": "12:00:00.000",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "alchemy",
+        "message": "BUY",
+        "raw": "new",
+    }
+    svc._append_event(old_ev)
+    svc._append_event(new_ev)
+    st = svc.get_state(limit=200)
+    recent = st.get("events_recent_24h") or []
+    assert any(str(r.get("raw") or "") == "new" for r in recent)
+    assert not any(str(r.get("raw") or "") == "old" for r in recent)
+
+
+def test_realtime_log_callback_emits_only_non_backfill_alarm_like():
+    calls = {"n": 0}
+
+    def _on_log_event(**payload):
+        if isinstance(payload.get("event"), dict):
+            calls["n"] += 1
+
+    svc = MT4LogAutomationService(on_log_event=_on_log_event)
+    noisy_alert = {
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "source_file": "20260409.log",
+        "source_path": r"C:\MT5\DEMO\MQL5\Logs\20260409.log",
+        "time": "12:00:00.000",
+        "indicator": "Trend-Cross Alert",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "",
+        "signal_profile": "generic",
+        "message": "custom indicator Trend-Cross Alert (USDJPYm,M1) removed",
+        "raw": "removed",
+    }
+    live_signal = dict(noisy_alert)
+    live_signal["signal_hint"] = "BUY"
+    live_signal["message"] = "Alert: BUY"
+    live_signal["raw"] = "buy"
+    live_signal["time"] = "12:00:00.001"
+
+    svc._append_event(noisy_alert, from_backfill=False)
+    assert calls["n"] == 0
+
+    svc._append_event(live_signal, from_backfill=True)
+    assert calls["n"] == 0
+
+    live_signal_2 = dict(live_signal)
+    live_signal_2["time"] = "12:00:00.002"
+    live_signal_2["raw"] = "buy2"
+    svc._append_event(live_signal_2, from_backfill=False)
+    assert calls["n"] == 1
 
 
 def test_safe_decode_handles_utf16_mql5_rows():

@@ -33,8 +33,13 @@ class MT4LogAutomationService:
         "intrepid trend direction",
     )
 
-    def __init__(self, on_indicator_signal: Optional[Callable[..., None]] = None) -> None:
+    def __init__(
+        self,
+        on_indicator_signal: Optional[Callable[..., None]] = None,
+        on_log_event: Optional[Callable[..., None]] = None,
+    ) -> None:
         self._on_indicator_signal = on_indicator_signal
+        self._on_log_event = on_log_event
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.RLock()
@@ -65,6 +70,7 @@ class MT4LogAutomationService:
         self._forward_skip_no_hint: int = 0
         self._forward_skip_no_callback: int = 0
         self._forward_seen_keys: Dict[str, float] = {}
+        self._ingest_seen_keys: Dict[str, float] = {}
 
     @staticmethod
     def _read_env_file_value(var_name: str) -> Optional[str]:
@@ -424,6 +430,16 @@ class MT4LogAutomationService:
             raw = 120.0
         return float(max(5.0, min(600.0, float(raw))))
 
+    @classmethod
+    def _ingest_dedupe_window_sec(cls) -> float:
+        try:
+            raw = float(cls._get_env_value("MT4_LOG_AUTOMATION_INGEST_DEDUPE_WINDOW_SEC", "21600"))
+        except Exception:
+            raw = 21600.0
+        if not math.isfinite(float(raw)):
+            raw = 21600.0
+        return float(max(60.0, min(86400.0, float(raw))))
+
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -690,10 +706,31 @@ class MT4LogAutomationService:
             unique.append(p)
         return unique
 
-    def _append_event(self, event: Dict[str, Any]) -> None:
+    def _append_event(self, event: Dict[str, Any], *, from_backfill: bool = False) -> None:
         indicator = str(event.get("indicator") or "").strip()
         indicator_key = self._indicator_key(indicator)
         with self._lock:
+            ingest_now = float(time.time())
+            ingest_key = "|".join(
+                [
+                    str(event.get("source_path") or event.get("source_file") or ""),
+                    str(event.get("time") or ""),
+                    str(event.get("raw") or ""),
+                ]
+            ).strip()
+            if ingest_key:
+                prev_ingest_ts = float(self._ingest_seen_keys.get(ingest_key) or 0.0)
+                if prev_ingest_ts > 0.0 and (ingest_now - prev_ingest_ts) <= float(self._ingest_dedupe_window_sec()):
+                    return
+                self._ingest_seen_keys[ingest_key] = ingest_now
+                if len(self._ingest_seen_keys) > 30000:
+                    ingest_cutoff = ingest_now - float(max(self._ingest_dedupe_window_sec(), 600.0))
+                    self._ingest_seen_keys = {
+                        str(k): float(ts)
+                        for k, ts in self._ingest_seen_keys.items()
+                        if float(ts) >= float(ingest_cutoff)
+                    }
+
             symbol = str(event.get("symbol") or "").strip().upper()
             timeframe = str(event.get("timeframe") or "").strip().upper()
             if indicator_key and (not symbol or not timeframe):
@@ -833,6 +870,7 @@ class MT4LogAutomationService:
                         row["lot_size"] = float(self._instance_lot_for_key(inst_key))
                 else:
                     row["lot_size"] = float(self._instance_lot_for_key(inst_key))
+        self._emit_log_event(event, from_backfill=bool(from_backfill))
 
     def _parse_line(
         self,
@@ -942,6 +980,42 @@ class MT4LogAutomationService:
             )
             row["instance_key"] = str(ik or "")
         return row
+
+    @staticmethod
+    def _is_alarm_like_event(event: Dict[str, Any]) -> bool:
+        ev = event if isinstance(event, dict) else {}
+        sh = str(ev.get("signal_hint") or "").strip().upper()
+        if sh in {"BUY", "SELL"}:
+            return True
+        msg = str(ev.get("message") or "").strip()
+        kind = str(ev.get("kind") or "").strip().lower()
+        if kind == "alert":
+            lower_msg = msg.lower()
+            noisy_lifecycle = (
+                lower_msg.startswith("custom indicator ")
+                and any(tok in lower_msg for tok in (" loaded", " removed", " initialized", " deinitialized", " uninit", " succes"))
+            )
+            if noisy_lifecycle and not re.search(r"\b(buy|sell|long|short|signal|turned up|turned down)\b", msg, flags=re.IGNORECASE):
+                return False
+            return True
+        if re.search(r"\b(buy|sell|long|short)\b", msg, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\bturned\s+up\b|\bturned\s+down\b|\bsignal\b|\balert\b|\balarm\b", msg, flags=re.IGNORECASE):
+            return True
+        return False
+
+    def _emit_log_event(self, event: Dict[str, Any], *, from_backfill: bool = False) -> None:
+        if bool(from_backfill):
+            return
+        cb = self._on_log_event
+        if cb is None:
+            return
+        if not self._is_alarm_like_event(event):
+            return
+        try:
+            cb(event=dict(event or {}))
+        except Exception:
+            logger.exception("mt4_log_event_callback_failed")
 
     def _maybe_forward_signal(self, event: Dict[str, Any], *, from_backfill: bool = False) -> None:
         callback = self._on_indicator_signal
@@ -1081,7 +1155,7 @@ class MT4LogAutomationService:
             )
             if not isinstance(ev, dict):
                 continue
-            self._append_event(ev)
+            is_recent = False
             if allow_runtime_forward_recent:
                 ev_unix = self._to_unix_or_none(ev.get("event_ts"))
                 is_recent = (
@@ -1089,6 +1163,8 @@ class MT4LogAutomationService:
                     and float(ev_unix) <= (now_unix + 5.0)
                     and (now_unix - float(ev_unix)) <= grace_sec
                 )
+            self._append_event(ev, from_backfill=not bool(is_recent))
+            if allow_runtime_forward_recent:
                 self._maybe_forward_signal(ev, from_backfill=not bool(is_recent))
             else:
                 self._maybe_forward_signal(ev, from_backfill=True)
@@ -1126,7 +1202,7 @@ class MT4LogAutomationService:
             )
             if not isinstance(ev, dict):
                 continue
-            self._append_event(ev)
+            self._append_event(ev, from_backfill=False)
             self._maybe_forward_signal(ev)
 
     def is_running(self) -> bool:
@@ -1291,7 +1367,16 @@ class MT4LogAutomationService:
         )
         instance_lot_overrides = self._instance_lot_overrides()
         with self._lock:
-            events = [self._enrich_event_for_view(dict(x)) for x in self._events[-lim:]]
+            events_all = [self._enrich_event_for_view(dict(x)) for x in self._events]
+            events = events_all[-lim:]
+            cutoff_24h = float(time.time()) - 86400.0
+            events_recent_24h = [
+                dict(e)
+                for e in events_all
+                if (self._to_unix_or_none((e or {}).get("event_ts")) or 0.0) >= cutoff_24h
+            ]
+            if len(events_recent_24h) > 3000:
+                events_recent_24h = events_recent_24h[-3000:]
             stats_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._indicator_stats.items()}
             instance_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._instance_stats.items()}
             for name in active_cfg:
@@ -1454,6 +1539,7 @@ class MT4LogAutomationService:
                 "instances": sorted(normalized_instances, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
                 "chart_instances": sorted(chart_instances_all, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
                 "events": events,
+                "events_recent_24h": events_recent_24h,
                 "chart_groups": chart_groups_sorted,
             }
         return out

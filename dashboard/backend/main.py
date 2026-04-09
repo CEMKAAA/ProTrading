@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router as api_router
-from .api.websocket import websocket_router
+from .api.websocket import websocket_router, publish_mt4la_alert_event
 from .models.database import init_db
 from .services.ml_auto_retrain import AutoRetrainService
 from .services.portfolio_risk_service import PortfolioRiskGovernorService
@@ -45,7 +45,18 @@ def _on_mt4_indicator_signal(**payload):
         logger.exception("mt4_indicator_signal_forward_failed")
 
 
-mt4_log_automation_service = MT4LogAutomationService(on_indicator_signal=_on_mt4_indicator_signal)
+def _on_mt4_log_event(*, event):
+    """Forward MT4/MT5 alert-like log events to websocket listeners."""
+    try:
+        publish_mt4la_alert_event(dict(event or {}))
+    except Exception:
+        logger.exception("mt4_log_event_ws_publish_failed")
+
+
+mt4_log_automation_service = MT4LogAutomationService(
+    on_indicator_signal=_on_mt4_indicator_signal,
+    on_log_event=_on_mt4_log_event,
+)
 youtube_colorflip_service = YouTubeColorFlipService(
     profile="PRIMARY",
     default_url="https://www.youtube.com/watch?v=fFrLWCCUY68",
