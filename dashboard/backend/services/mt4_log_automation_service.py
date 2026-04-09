@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 
 class MT4LogAutomationService:
+    _ALLOWED_AUTOMATION_TOKENS: Tuple[str, ...] = (
+        "hydra signals indicator",
+        "forex uranus direction",
+        "forexcypersystem",
+        "forexcyper",
+        "alchemy pulse",
+        "intrepid trend direction",
+    )
+
     def __init__(self, on_indicator_signal: Optional[Callable[..., None]] = None) -> None:
         self._on_indicator_signal = on_indicator_signal
         self._thread: Optional[threading.Thread] = None
@@ -448,6 +457,13 @@ class MT4LogAutomationService:
         s = re.sub(r"\s+", " ", s)
         return s
 
+    @classmethod
+    def _is_indicator_automation_allowed(cls, name_or_key: Any) -> bool:
+        key = cls._indicator_key(name_or_key)
+        if not key:
+            return False
+        return any(str(tok) in key for tok in cls._ALLOWED_AUTOMATION_TOKENS)
+
     @staticmethod
     def _safe_decode(raw: bytes) -> str:
         if not raw:
@@ -470,6 +486,27 @@ class MT4LogAutomationService:
                 continue
         return raw.decode(errors="ignore")
 
+    @staticmethod
+    def _terminal_group_from_path(path_value: str) -> str:
+        p = str(path_value or "").strip().lower().replace("/", "\\")
+        if not p:
+            return "unknown"
+        is_mt5 = "\\mql5\\logs\\" in p
+        is_mt4 = "\\mql4\\logs\\" in p or ("\\logs\\" in p and not is_mt5)
+        if is_mt5 and ("\\demo\\" in p or " demo" in p or "_demo" in p or "-demo" in p):
+            return "mt5_demo"
+        if is_mt5:
+            return "mt5"
+        if is_mt4:
+            return "mt4"
+        if "\\mt5\\" in p and ("\\demo\\" in p or " demo" in p or "_demo" in p or "-demo" in p):
+            return "mt5_demo"
+        if "\\mt5\\" in p:
+            return "mt5"
+        if "\\mt4\\" in p:
+            return "mt4"
+        return "unknown"
+
     @classmethod
     def _extract_indicator_parts(cls, payload: str) -> Tuple[str, str, str, str]:
         txt = str(payload or "").strip()
@@ -485,9 +522,43 @@ class MT4LogAutomationService:
             raw_name = str(m_custom.group(1) or "").strip()
             clean = raw_name.split("\\")[-1].strip() if raw_name else raw_name
             return clean, str(m_custom.group(2) or "").upper(), str(m_custom.group(3) or "").upper(), str(m_custom.group(4) or "")
+        # Parenthesized format: "IndicatorName (SYMBOL,TF): message"
+        m_paren = re.match(
+            r"^(.+?)\s*\(([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\)\s*:?\s*(.*)$",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        if m_paren:
+            name = str(m_paren.group(1) or "").strip()
+            name = re.sub(r"^\s*custom\s+indicator\s+", "", name, flags=re.IGNORECASE).strip()
+            if "\\" in name:
+                name = name.split("\\")[-1].strip()
+            return (
+                str(name or "").strip(),
+                str(m_paren.group(2) or "").upper(),
+                str(m_paren.group(3) or "").upper(),
+                str(m_paren.group(4) or ""),
+            )
+        # Space-delimited format: "IndicatorName SYMBOL TF: message"
+        m_space = re.match(
+            r"^(.+?)\s+([A-Z0-9._#-]{3,20})\s+([A-Z0-9]+)\s*:?\s*(.*)$",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        if m_space:
+            name = str(m_space.group(1) or "").strip()
+            name = re.sub(r"^\s*custom\s+indicator\s+", "", name, flags=re.IGNORECASE).strip()
+            if "\\" in name:
+                name = name.split("\\")[-1].strip()
+            return (
+                str(name or "").strip(),
+                str(m_space.group(2) or "").upper(),
+                str(m_space.group(3) or "").upper(),
+                str(m_space.group(4) or ""),
+            )
         # Generic indicator output line
         m_line = re.match(
-            r"^(.+?)\s+([A-Z0-9]{3,12}),([A-Z0-9]+):\s*(.*)$",
+            r"^(.+?)\s+([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\s*:?\s*(.*)$",
             txt,
             flags=re.IGNORECASE,
         )
@@ -623,6 +694,37 @@ class MT4LogAutomationService:
         indicator = str(event.get("indicator") or "").strip()
         indicator_key = self._indicator_key(indicator)
         with self._lock:
+            symbol = str(event.get("symbol") or "").strip().upper()
+            timeframe = str(event.get("timeframe") or "").strip().upper()
+            if indicator_key and (not symbol or not timeframe):
+                try:
+                    candidates = {
+                        (
+                            str((row or {}).get("symbol") or "").strip().upper(),
+                            str((row or {}).get("timeframe") or "").strip().upper(),
+                        )
+                        for row in self._instance_stats.values()
+                        if self._indicator_key((row or {}).get("indicator_key") or (row or {}).get("indicator")) == indicator_key
+                    }
+                    candidates = {(s, tf) for (s, tf) in candidates if s and tf}
+                except Exception:
+                    candidates = set()
+                if len(candidates) == 1:
+                    s0, tf0 = next(iter(candidates))
+                    if not symbol:
+                        symbol = str(s0 or "").strip().upper()
+                    if not timeframe:
+                        timeframe = str(tf0 or "").strip().upper()
+                prev_st = self._indicator_stats.get(indicator_key) or {}
+                if not symbol:
+                    symbol = str(prev_st.get("last_symbol") or "").strip().upper()
+                if not timeframe:
+                    timeframe = str(prev_st.get("last_timeframe") or "").strip().upper()
+            event["symbol"] = str(symbol or "")
+            event["timeframe"] = str(timeframe or "")
+            inst_key = self._instance_key(indicator=indicator, symbol=symbol, timeframe=timeframe)
+            event["instance_key"] = str(inst_key or "")
+
             self._event_next_id += 1
             event["id"] = int(self._event_next_id)
             self._events.append(dict(event))
@@ -664,8 +766,10 @@ class MT4LogAutomationService:
                     st["last_signal_seen"] = str(event.get("event_ts") or self._now_iso())
                     st["last_signal_message"] = str(event.get("message") or "")[:240]
                 st["last_seen"] = str(event.get("event_ts") or self._now_iso())
-                st["last_symbol"] = str(event.get("symbol") or "")
-                st["last_timeframe"] = str(event.get("timeframe") or "")
+                if str(event.get("symbol") or "").strip():
+                    st["last_symbol"] = str(event.get("symbol") or "")
+                if str(event.get("timeframe") or "").strip():
+                    st["last_timeframe"] = str(event.get("timeframe") or "")
                 lot_raw = st.get("lot_size")
                 if lot_raw:
                     try:
@@ -677,9 +781,6 @@ class MT4LogAutomationService:
                 else:
                     st["lot_size"] = float(self._indicator_lot_for_key(indicator_key))
 
-            symbol = str(event.get("symbol") or "").strip().upper()
-            timeframe = str(event.get("timeframe") or "").strip().upper()
-            inst_key = self._instance_key(indicator=indicator, symbol=symbol, timeframe=timeframe)
             if inst_key:
                 overrides = self._instance_automation_overrides()
                 explicit_flag = inst_key.lower() in overrides
@@ -702,6 +803,7 @@ class MT4LogAutomationService:
                         "automation_mode": "explicit" if explicit_flag else "inherit",
                         "lot_size": float(self._instance_lot_for_key(inst_key)),
                         "last_seen": "",
+                        "last_terminal_group": "",
                         "forward_ok": 0,
                         "forward_fail": 0,
                     },
@@ -718,6 +820,7 @@ class MT4LogAutomationService:
                     row["last_signal_seen"] = str(event.get("event_ts") or self._now_iso())
                     row["last_signal_message"] = str(event.get("message") or "")[:240]
                 row["last_seen"] = str(event.get("event_ts") or self._now_iso())
+                row["last_terminal_group"] = str(event.get("terminal_group") or row.get("last_terminal_group") or "")
                 if str(row.get("automation_mode") or "") != "explicit":
                     row["automation_enabled"] = False
                 lot_raw = row.get("lot_size")
@@ -731,7 +834,14 @@ class MT4LogAutomationService:
                 else:
                     row["lot_size"] = float(self._instance_lot_for_key(inst_key))
 
-    def _parse_line(self, *, line: str, source_file: str, file_date: str) -> Optional[Dict[str, Any]]:
+    def _parse_line(
+        self,
+        *,
+        line: str,
+        source_file: str,
+        file_date: str,
+        source_path: str = "",
+    ) -> Optional[Dict[str, Any]]:
         raw = str(line or "").strip()
         if not raw:
             return None
@@ -765,6 +875,17 @@ class MT4LogAutomationService:
                 timeframe = str(mm.group(3) or "").upper()
             else:
                 indicator = str(source).strip()
+                src_norm = str(source or "").strip().lower()
+                if src_norm in {"indicators", "indicator", "experts", "expert", "scripts", "script"}:
+                    p_ind, p_sym, p_tf, p_msg = self._extract_indicator_parts(message)
+                    if str(p_ind or "").strip():
+                        indicator = str(p_ind or "").strip()
+                    if str(p_sym or "").strip():
+                        symbol = str(p_sym or "").strip().upper()
+                    if str(p_tf or "").strip():
+                        timeframe = str(p_tf or "").strip().upper()
+                    if str(p_msg or "").strip():
+                        message = str(p_msg or "").strip()
         if not message:
             message = raw
         kind = self._classify_kind(message)
@@ -780,6 +901,8 @@ class MT4LogAutomationService:
         return {
             "event_ts": ts_iso,
             "source_file": str(source_file),
+            "source_path": str(source_path or ""),
+            "terminal_group": str(self._terminal_group_from_path(str(source_path or source_file))),
             "level": int(level),
             "time": str(tpart),
             "indicator": str(indicator or "").strip(),
@@ -792,6 +915,33 @@ class MT4LogAutomationService:
             "message": str(message or "").strip()[:2000],
             "raw": raw[:3000],
         }
+
+    def _enrich_event_for_view(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(event or {})
+        indicator = str(row.get("indicator") or "").strip()
+        symbol = str(row.get("symbol") or "").strip().upper()
+        timeframe = str(row.get("timeframe") or "").strip().upper()
+        needs_parse = (not symbol or not timeframe or indicator.lower() in {"indicator", "indicators"})
+        if needs_parse:
+            p_ind, p_sym, p_tf, _p_msg = self._extract_indicator_parts(str(row.get("message") or ""))
+            if str(p_ind or "").strip() and indicator.lower() in {"indicator", "indicators", ""}:
+                indicator = str(p_ind or "").strip()
+            if str(p_sym or "").strip() and not symbol:
+                symbol = str(p_sym or "").strip().upper()
+            if str(p_tf or "").strip() and not timeframe:
+                timeframe = str(p_tf or "").strip().upper()
+        row["indicator"] = str(indicator or row.get("indicator") or "")
+        row["indicator_key"] = self._indicator_key(row.get("indicator"))
+        row["symbol"] = str(symbol or "")
+        row["timeframe"] = str(timeframe or "")
+        if not str(row.get("instance_key") or "").strip():
+            ik = self._instance_key(
+                indicator=str(row.get("indicator") or ""),
+                symbol=str(row.get("symbol") or ""),
+                timeframe=str(row.get("timeframe") or ""),
+            )
+            row["instance_key"] = str(ik or "")
+        return row
 
     def _maybe_forward_signal(self, event: Dict[str, Any], *, from_backfill: bool = False) -> None:
         callback = self._on_indicator_signal
@@ -816,6 +966,10 @@ class MT4LogAutomationService:
         indicator = str(event.get("indicator") or "").strip()
         k = self._indicator_key(indicator)
         if not k:
+            return
+        if not self._is_indicator_automation_allowed(k):
+            with self._lock:
+                self._forward_skip_disabled += 1
             return
         symbol = str(event.get("symbol") or "").strip().upper()
         timeframe = str(event.get("timeframe") or "").strip().upper()
@@ -919,7 +1073,12 @@ class MT4LogAutomationService:
         now_unix = float(time.time())
         grace_sec = float(self._forward_new_file_grace_sec())
         for text in rows:
-            ev = self._parse_line(line=text, source_file=str(p.name), file_date=file_date)
+            ev = self._parse_line(
+                line=text,
+                source_file=str(p.name),
+                file_date=file_date,
+                source_path=str(p.resolve()),
+            )
             if not isinstance(ev, dict):
                 continue
             self._append_event(ev)
@@ -959,7 +1118,12 @@ class MT4LogAutomationService:
         lines = self._safe_decode(raw).splitlines()
         file_date = p.stem if re.match(r"^\d{8}$", p.stem or "") else ""
         for text in lines:
-            ev = self._parse_line(line=text, source_file=str(p.name), file_date=file_date)
+            ev = self._parse_line(
+                line=text,
+                source_file=str(p.name),
+                file_date=file_date,
+                source_path=str(p.resolve()),
+            )
             if not isinstance(ev, dict):
                 continue
             self._append_event(ev)
@@ -1027,7 +1191,11 @@ class MT4LogAutomationService:
             )
 
         if self._restore_active_indicators_on_start():
-            active_names = {self._indicator_key(x) for x in self._active_indicator_names()}
+            active_names = {
+                self._indicator_key(x)
+                for x in self._active_indicator_names()
+                if self._is_indicator_automation_allowed(x)
+            }
             with self._lock:
                 for k in active_names:
                     st = self._indicator_stats.setdefault(
@@ -1056,6 +1224,8 @@ class MT4LogAutomationService:
             with self._lock:
                 for inst_key, enabled_flag in instance_overrides.items():
                     ik, sym, tf = self._instance_key_parts(inst_key)
+                    if not self._is_indicator_automation_allowed(ik):
+                        continue
                     row = self._instance_stats.setdefault(
                         inst_key,
                         {
@@ -1074,6 +1244,7 @@ class MT4LogAutomationService:
                             "automation_mode": "explicit",
                             "lot_size": float(self._instance_lot_for_key(inst_key)),
                             "last_seen": "",
+                            "last_terminal_group": "",
                             "forward_ok": 0,
                             "forward_fail": 0,
                         },
@@ -1104,13 +1275,23 @@ class MT4LogAutomationService:
 
     def get_state(self, *, limit: int = 200) -> Dict[str, Any]:
         lim = int(max(20, min(1000, int(limit or 200))))
-        active_cfg = [str(x).strip() for x in self._active_indicator_names() if str(x).strip()]
+        active_cfg = [
+            str(x).strip()
+            for x in self._active_indicator_names()
+            if str(x).strip() and self._is_indicator_automation_allowed(x)
+        ]
         lot_overrides = self._indicator_lot_overrides()
         instance_automation = self._instance_automation_overrides()
-        active_instance_cfg = sorted([str(k) for k, v in instance_automation.items() if bool(v)])
+        active_instance_cfg = sorted(
+            [
+                str(k)
+                for k, v in instance_automation.items()
+                if bool(v) and self._is_indicator_automation_allowed(self._instance_key_parts(str(k))[0])
+            ]
+        )
         instance_lot_overrides = self._instance_lot_overrides()
         with self._lock:
-            events = [dict(x) for x in self._events[-lim:]]
+            events = [self._enrich_event_for_view(dict(x)) for x in self._events[-lim:]]
             stats_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._indicator_stats.items()}
             instance_map: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in self._instance_stats.items()}
             for name in active_cfg:
@@ -1168,6 +1349,7 @@ class MT4LogAutomationService:
                         "automation_mode": "explicit",
                         "lot_size": float(instance_lot_overrides.get(k.lower()) or self._instance_lot_for_key(k)),
                         "last_seen": "",
+                        "last_terminal_group": "",
                         "forward_ok": 0,
                         "forward_fail": 0,
                     },
@@ -1211,8 +1393,32 @@ class MT4LogAutomationService:
                 norm["effective_automation_enabled"] = bool(effective_enabled)
                 norm["lot_size"] = float(max(0.01, min(100.0, float(lot_val))))
                 normalized_instances.append(norm)
-            stats = list(stats_map.values())
+            chart_instances_all = [dict(x) for x in normalized_instances]
+            stats = [
+                dict(x)
+                for x in stats_map.values()
+                if self._is_indicator_automation_allowed((x or {}).get("indicator_key") or (x or {}).get("indicator"))
+            ]
             files = list(self._file_offsets.keys())
+            normalized_instances = [
+                dict(x)
+                for x in normalized_instances
+                if self._is_indicator_automation_allowed((x or {}).get("indicator_key") or (x or {}).get("indicator"))
+            ]
+            chart_groups_seen: set[str] = set()
+            for ev in events:
+                g = str((ev or {}).get("terminal_group") or "").strip().lower()
+                if g:
+                    chart_groups_seen.add(g)
+            for inst in normalized_instances:
+                g = str((inst or {}).get("last_terminal_group") or "").strip().lower()
+                if g:
+                    chart_groups_seen.add(g)
+            preferred_chart_groups = ["mt4", "mt5", "mt5_demo", "unknown"]
+            chart_groups_sorted = [g for g in preferred_chart_groups if g in chart_groups_seen]
+            for g in sorted(chart_groups_seen):
+                if g not in chart_groups_sorted:
+                    chart_groups_sorted.append(g)
             out = {
                 "ok": True,
                 "config": {
@@ -1246,7 +1452,9 @@ class MT4LogAutomationService:
                 "instance_count": int(len(normalized_instances)),
                 "indicators": sorted(stats, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
                 "instances": sorted(normalized_instances, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
+                "chart_instances": sorted(chart_instances_all, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),
                 "events": events,
+                "chart_groups": chart_groups_sorted,
             }
         return out
 
@@ -1297,6 +1505,18 @@ class MT4LogAutomationService:
         key = self._indicator_key(name)
         if not key:
             return {"ok": False, "error": "invalid_indicator"}
+        if not self._is_indicator_automation_allowed(key):
+            return {
+                "ok": False,
+                "error": "indicator_not_allowed_for_automation",
+                "allowed": [
+                    "Hydra Signals Indicator",
+                    "Forex Uranus direction",
+                    "ForexCyperSystem",
+                    "Alchemy Pulse",
+                    "Intrepid Trend Direction",
+                ],
+            }
 
         lot_value: Optional[float] = None
         if lot_size is not None:
@@ -1386,6 +1606,18 @@ class MT4LogAutomationService:
             return {"ok": False, "error": "missing_indicator"}
         if not sym or not tf:
             return {"ok": False, "error": "missing_symbol_or_timeframe"}
+        if not self._is_indicator_automation_allowed(name):
+            return {
+                "ok": False,
+                "error": "indicator_not_allowed_for_automation",
+                "allowed": [
+                    "Hydra Signals Indicator",
+                    "Forex Uranus direction",
+                    "ForexCyperSystem",
+                    "Alchemy Pulse",
+                    "Intrepid Trend Direction",
+                ],
+            }
         inst_key = self._instance_key(indicator=name, symbol=sym, timeframe=tf)
         if not inst_key:
             return {"ok": False, "error": "invalid_instance_key"}

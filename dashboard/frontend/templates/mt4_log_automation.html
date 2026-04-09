@@ -149,6 +149,48 @@
                     </div>
                 </div>
             </div>
+
+            <div class="card shadow-sm mt-3">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                    <strong>Chart Alarm Viewer</strong>
+                    <span id="mt4la-chart-stats" class="small text-muted">Latest first</span>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label for="mt4la-chart-group" class="form-label">Chart Group</label>
+                            <select id="mt4la-chart-group" class="form-select form-select-sm">
+                                <option value="all">All</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <label for="mt4la-chart-instance" class="form-label">Chart Instance</label>
+                            <select id="mt4la-chart-instance" class="form-select form-select-sm">
+                                <option value="all">All Charts</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 360px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="min-width:140px;">Time</th>
+                                    <th style="min-width:90px;">Group</th>
+                                    <th style="min-width:230px;">Chart</th>
+                                    <th style="min-width:90px;">Type</th>
+                                    <th>Message</th>
+                                    <th style="min-width:170px;">File</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mt4la-chart-log-body">
+                                <tr><td colspan="6" class="text-muted text-center py-3">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -207,5 +249,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260408_mt4_log_automation_v9') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260409_mt4_log_automation_v15') }}"></script>
 {% endblock %}

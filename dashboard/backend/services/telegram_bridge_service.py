@@ -1646,17 +1646,80 @@ class TelegramBridgeService:
         return max(0.2, min(10.0, float(raw)))
 
     @staticmethod
+    def _mt4_exec_profile_tp_atr(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_ATR"
+        try:
+            # Indicator TP base distance in ATR units.
+            raw = float(TelegramBridgeService._get_env_value(key, "1.0"))
+        except Exception:
+            raw = 1.0
+        if not math.isfinite(float(raw)):
+            raw = 1.0
+        return max(0.3, min(20.0, float(raw)))
+
+    @staticmethod
+    def _mt4_exec_profile_tp_levels(profile: str) -> List[float]:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_LEVELS"
+        raw = str(TelegramBridgeService._get_env_value(key, "0.6,1.0,1.5,2.2,3.2") or "").strip()
+        vals: List[float] = []
+        for part in re.split(r"[,;| ]+", raw):
+            s = str(part or "").strip()
+            if not s:
+                continue
+            try:
+                v = float(s)
+            except Exception:
+                continue
+            if math.isfinite(float(v)) and float(v) > 0.0:
+                vals.append(float(v))
+        if not vals:
+            vals = [0.6, 1.0, 1.5, 2.2, 3.2]
+        vals = sorted(float(x) for x in vals if float(x) > 0.0)
+        if len(vals) > 12:
+            vals = vals[:12]
+        return list(vals)
+
+    @staticmethod
+    def _mt4_exec_profile_stage_weights(profile: str) -> List[float]:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_STAGE_WEIGHTS"
+        raw = str(TelegramBridgeService._get_env_value(key, "40,25,15,10,10") or "").strip()
+        vals: List[float] = []
+        for part in re.split(r"[,;| ]+", raw):
+            s = str(part or "").strip()
+            if not s:
+                continue
+            try:
+                v = float(s)
+            except Exception:
+                continue
+            if math.isfinite(float(v)) and float(v) > 0.0:
+                vals.append(float(v))
+        if not vals:
+            vals = [40.0, 25.0, 15.0, 10.0, 10.0]
+        return list(vals)
+
+    @staticmethod
     def _mt4_exec_profile_tp_r_start(profile: str) -> float:
         p = str(profile or "generic").strip().lower() or "generic"
         if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
             p = "generic"
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_R_START"
         try:
-            raw = float(TelegramBridgeService._get_env_value(key, "0.5"))
+            # Wider-by-default TP ladder for indicator automation.
+            raw = float(TelegramBridgeService._get_env_value(key, "1.4"))
         except Exception:
-            raw = 0.5
+            raw = 1.4
         if not math.isfinite(float(raw)):
-            raw = 0.5
+            raw = 1.4
         return max(0.1, min(5.0, float(raw)))
 
     @staticmethod
@@ -1666,11 +1729,11 @@ class TelegramBridgeService:
             p = "generic"
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_R_STEP"
         try:
-            raw = float(TelegramBridgeService._get_env_value(key, "0.5"))
+            raw = float(TelegramBridgeService._get_env_value(key, "0.7"))
         except Exception:
-            raw = 0.5
+            raw = 0.7
         if not math.isfinite(float(raw)):
-            raw = 0.5
+            raw = 0.7
         return max(0.1, min(5.0, float(raw)))
 
     @staticmethod
@@ -1927,20 +1990,23 @@ class TelegramBridgeService:
 
         default_dist = max(float(point) * 120.0, abs(float(entry_price)) * 0.001)
         sl_distance = float(atr or default_dist) * float(self._mt4_exec_profile_sl_atr(profile))
-        # Keep SL looser than broker min-stop and micro-noise ranges.
+        # Keep reference SL distance loose (used as volatility/risk reference only).
         sl_distance = max(float(sl_distance), float(min_stop_dist) * 1.80, float(point) * 25.0)
+        tp_base_distance = float(atr or default_dist) * float(self._mt4_exec_profile_tp_atr(profile))
+        # Keep TP distance away from micro-noise and broker min-stop constraints.
+        tp_base_distance = max(float(tp_base_distance), float(min_stop_dist) * 2.20, float(point) * 40.0)
         tp_r_start = float(self._mt4_exec_profile_tp_r_start(profile))
         tp_r_step = float(self._mt4_exec_profile_tp_r_step(profile))
-        tp_multipliers = [float(tp_r_start + tp_r_step * i) for i in range(5)]
+        tp_multipliers = [float(x) for x in self._mt4_exec_profile_tp_levels(profile)]
+        if not tp_multipliers:
+            tp_multipliers = [float(tp_r_start + tp_r_step * i) for i in range(5)]
+        stage_weights = [float(x) for x in self._mt4_exec_profile_stage_weights(profile)]
 
         if hint == "BUY":
-            stop_loss = float(entry_price - sl_distance)
-            tp_prices = [float(entry_price + sl_distance * float(rm)) for rm in tp_multipliers]
+            tp_prices = [float(entry_price + tp_base_distance * float(rm)) for rm in tp_multipliers]
         else:
-            stop_loss = float(entry_price + sl_distance)
-            tp_prices = [float(entry_price - sl_distance * float(rm)) for rm in tp_multipliers]
+            tp_prices = [float(entry_price - tp_base_distance * float(rm)) for rm in tp_multipliers]
 
-        stop_loss = round(float(stop_loss), int(max(0, digits)))
         tps = [{"index": int(i + 1), "price": round(float(px), int(max(0, digits)))} for i, px in enumerate(tp_prices)]
         signal = {
             "symbol": str(symbol_exec_raw),
@@ -1948,10 +2014,13 @@ class TelegramBridgeService:
             "entry_low": round(float(entry_price), int(max(0, digits))),
             "entry_high": round(float(entry_price), int(max(0, digits))),
             "entry_mid": round(float(entry_price), int(max(0, digits))),
-            "stop_loss": float(stop_loss),
+            "stop_loss": None,
+            "no_stop_loss": True,
             "tps": list(tps),
             "raw_text": str(message),
             "timeframe": str(timeframe),
+            "virtual_sl_distance": float(sl_distance),
+            "stage_weights": list(stage_weights),
         }
         reverse_out = self._close_mt4_reverse_positions(
             symbol=str(symbol_exec_raw),
@@ -2027,8 +2096,11 @@ class TelegramBridgeService:
                 "timeframe": str(timeframe),
                 "lot": float(lot),
                 "sl_atr": float(self._mt4_exec_profile_sl_atr(profile)),
+                "tp_atr": float(self._mt4_exec_profile_tp_atr(profile)),
                 "tp_r_start": float(tp_r_start),
                 "tp_r_step": float(tp_r_step),
+                "tp_levels": list(tp_multipliers),
+                "stage_weights": list(stage_weights),
                 "signal": dict(signal),
                 "execution_message": str(exec_msg),
             },
@@ -2732,6 +2804,102 @@ class TelegramBridgeService:
             return []
         return out
 
+    @staticmethod
+    def _build_weighted_stage_units(*, total_units: int, stage_count: int, weights: List[float]) -> List[int]:
+        total = int(total_units)
+        stages = int(stage_count)
+        if total <= 0 or stages <= 0 or total < stages:
+            return []
+        w_in = [float(x) for x in (weights or []) if math.isfinite(float(x)) and float(x) > 0.0]
+        if not w_in:
+            w_in = [1.0 for _ in range(stages)]
+        if len(w_in) < stages:
+            w_in.extend([float(w_in[-1])] * (stages - len(w_in)))
+        elif len(w_in) > stages:
+            w_in = w_in[:stages]
+        wsum = float(sum(w_in))
+        if wsum <= 0.0:
+            return []
+
+        # Largest remainder on total units for closest weighted allocation.
+        base = [0 for _ in range(stages)]
+        frac_rows: List[Tuple[float, int]] = []
+        assigned = 0
+        for i in range(stages):
+            exact = (float(total) * float(w_in[i])) / float(wsum)
+            fu = int(math.floor(exact + 1e-12))
+            base[i] = int(max(0, fu))
+            assigned += int(base[i])
+            frac_rows.append((float(exact - float(fu)), int(i)))
+
+        leftovers = int(total - assigned)
+        if leftovers > 0:
+            frac_rows.sort(key=lambda x: (-float(x[0]), int(x[1])))
+            for j in range(leftovers):
+                idx = int(frac_rows[j % len(frac_rows)][1])
+                base[idx] = int(base[idx] + 1)
+
+        # Enforce at least 1 unit per stage by borrowing from the largest buckets.
+        for i in range(stages):
+            if int(base[i]) > 0:
+                continue
+            donor = -1
+            donor_units = 0
+            for d in range(stages):
+                u = int(base[d])
+                if u > 1 and u > donor_units:
+                    donor = int(d)
+                    donor_units = int(u)
+            if donor < 0:
+                return []
+            base[donor] = int(base[donor] - 1)
+            base[i] = int(base[i] + 1)
+
+        if sum(int(x) for x in base) != total:
+            return []
+        if any(int(x) < 1 for x in base):
+            return []
+        return [int(x) for x in base]
+
+    def _build_confirmation_ladder_lots_weighted(
+        self,
+        *,
+        symbol: str,
+        total_lot: float,
+        stage_count: int,
+        weights: List[float],
+    ) -> Tuple[Optional[List[float]], Optional[str]]:
+        svc = self._get_live_service()
+        info = svc.get_symbol_info(symbol=str(symbol))
+        if isinstance(info, dict) and str(info.get("error") or "").strip():
+            return None, f"Symbol info unavailable for {str(symbol).upper()}: {str(info.get('error'))[:140]}"
+        vol_min = _to_float_or_none((info or {}).get("volume_min")) or 0.01
+        vol_step = _to_float_or_none((info or {}).get("volume_step")) or 0.01
+        vol_max = _to_float_or_none((info or {}).get("volume_max")) or float(total_lot)
+        vol_step = max(1e-6, float(vol_step))
+        vol_min = max(float(vol_step), float(vol_min))
+        total = max(0.0, min(float(total_lot), float(max(vol_min, vol_max))))
+        step_units_total = int(math.floor(float(total) / float(vol_step) + 1e-9))
+        if step_units_total < int(stage_count):
+            min_required = float(vol_step) * float(stage_count)
+            return None, (
+                f"default_lot_too_small_for_weighted_stages: lot={float(total):.4f} "
+                f"min_required={float(min_required):.4f} step={float(vol_step):.4f}"
+            )
+        units = self._build_weighted_stage_units(
+            total_units=int(step_units_total),
+            stage_count=int(stage_count),
+            weights=list(weights or []),
+        )
+        if not units:
+            return None, "invalid_weighted_stage_distribution"
+        lots: List[float] = [float(u) * float(vol_step) for u in units]
+        if not lots or any(float(x) < float(vol_min) - 1e-12 for x in lots):
+            return None, "weighted_stage_lot_below_symbol_min"
+        # Ensure exact sum after float rounding drift.
+        lots[-1] = float(max(vol_min, round(float(step_units_total) * float(vol_step) - sum(lots[:-1]), 8)))
+        return lots, None
+
     def _register_confirmation_ladder(
         self,
         *,
@@ -2792,9 +2960,10 @@ class TelegramBridgeService:
         symbol = str(signal.get("symbol") or "").strip().upper()
         direction = str(signal.get("direction") or "").strip().upper()
         stop_loss = _to_float_or_none(signal.get("stop_loss"))
+        allow_no_sl = bool(signal.get("no_stop_loss"))
         timeframe = str(signal.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
         tps_all = [dict(r) for r in (signal.get("tps") if isinstance(signal.get("tps"), list) else []) if isinstance(r, dict)]
-        if direction not in {"BUY", "SELL"} or stop_loss is None or not symbol or (not tps_all):
+        if direction not in {"BUY", "SELL"} or (not symbol) or (not tps_all) or ((not allow_no_sl) and stop_loss is None):
             self._append_automation_execution_log(
                 source_type=audit_source_type,
                 source_name=audit_source_name,
@@ -2828,11 +2997,31 @@ class TelegramBridgeService:
             force_single=bool(force_single),
         )
         desired_stages = int(max(1, len(active_tps)))
-        stage_lots, stage_err = self._build_confirmation_ladder_lots(
-            symbol=str(symbol),
-            total_lot=float(lot),
-            stage_count=int(desired_stages),
+        weighted_stage_mode = bool(
+            (str(audit_source_type).strip().lower() == "mt_indicator")
+            and isinstance(signal.get("stage_weights"), list)
+            and len(signal.get("stage_weights") or []) > 0
         )
+        stage_weights = [
+            float(x)
+            for x in (signal.get("stage_weights") if isinstance(signal.get("stage_weights"), list) else [])
+            if _to_float_or_none(x) is not None and float(_to_float_or_none(x) or 0.0) > 0.0
+        ]
+        if weighted_stage_mode and (not force_single):
+            stage_mode = "weighted_indicator"
+        if weighted_stage_mode:
+            stage_lots, stage_err = self._build_confirmation_ladder_lots_weighted(
+                symbol=str(symbol),
+                total_lot=float(lot),
+                stage_count=int(desired_stages),
+                weights=list(stage_weights),
+            )
+        else:
+            stage_lots, stage_err = self._build_confirmation_ladder_lots(
+                symbol=str(symbol),
+                total_lot=float(lot),
+                stage_count=int(desired_stages),
+            )
         if stage_lots is None:
             # Fallback: if lot is too small for full 5-stage split, degrade to max feasible stages.
             try:
@@ -2846,11 +3035,19 @@ class TelegramBridgeService:
                 active_tps = [dict(x) for x in active_tps[:max_stages]]
             else:
                 active_tps = self._compress_tps_for_stage_count(list(active_tps), int(max_stages))
-            stage_lots, stage_err = self._build_confirmation_ladder_lots(
-                symbol=str(symbol),
-                total_lot=float(lot),
-                stage_count=int(len(active_tps)),
-            )
+            if weighted_stage_mode:
+                stage_lots, stage_err = self._build_confirmation_ladder_lots_weighted(
+                    symbol=str(symbol),
+                    total_lot=float(lot),
+                    stage_count=int(len(active_tps)),
+                    weights=list(stage_weights),
+                )
+            else:
+                stage_lots, stage_err = self._build_confirmation_ladder_lots(
+                    symbol=str(symbol),
+                    total_lot=float(lot),
+                    stage_count=int(len(active_tps)),
+                )
         if stage_lots is None:
             self._append_automation_execution_log(
                 source_type=audit_source_type,
@@ -2894,26 +3091,37 @@ class TelegramBridgeService:
         pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "tgc").strip().lower())[:8] or "tgc"
         marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
         try:
+            order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
             data = svc.place_market_order(
                 symbol=str(symbol),
                 direction=str(direction),
                 lot_size=float(lot),
-                stop_loss=float(stop_loss),
+                stop_loss=order_stop_loss,
                 take_profit=float(take_profit),
                 comment=str(marker),
             )
             if not bool((data or {}).get("ok")):
                 err_txt = str((data or {}).get("error") or "order_failed")
                 if self._is_invalid_stops_error(err_txt):
-                    retry_data = self._retry_order_for_invalid_stops(
-                        svc=svc,
-                        symbol=str(symbol),
-                        direction=str(direction),
-                        lot=float(lot),
-                        stop_loss=float(stop_loss),
-                        take_profit=float(take_profit),
-                        comment=str(marker),
-                    )
+                    if bool(allow_no_sl):
+                        retry_data = self._retry_order_for_invalid_tp_only(
+                            svc=svc,
+                            symbol=str(symbol),
+                            direction=str(direction),
+                            lot=float(lot),
+                            take_profit=float(take_profit),
+                            comment=str(marker),
+                        )
+                    else:
+                        retry_data = self._retry_order_for_invalid_stops(
+                            svc=svc,
+                            symbol=str(symbol),
+                            direction=str(direction),
+                            lot=float(lot),
+                            stop_loss=float(stop_loss),
+                            take_profit=float(take_profit),
+                            comment=str(marker),
+                        )
                     if bool((retry_data or {}).get("ok")):
                         data = dict(retry_data or {})
                     else:
@@ -3008,7 +3216,7 @@ class TelegramBridgeService:
                 "Execution: standalone_mt5\n"
                 f"Symbol: {str(symbol)} {str(timeframe)}\n"
                 f"Direction: {str(direction)}\n"
-                f"SL: {float(stop_loss):.5f}\n"
+                f"SL: {('none (indicator mode)' if allow_no_sl else f'{float(stop_loss):.5f}')}\n"
                 f"Final TP: {float(take_profit):.5f}\n"
                 f"Lot: {float((data or {}).get('lot_size') or lot):.4f}\n"
                 f"Stages: {int(len(stage_lots))}/{int(len(tps_all))}\n"
@@ -3071,6 +3279,78 @@ class TelegramBridgeService:
         except Exception:
             d = 5
         return float(round(float(price), d))
+
+    def _retry_order_for_invalid_tp_only(
+        self,
+        *,
+        svc: LiveTradingService,
+        symbol: str,
+        direction: str,
+        lot: float,
+        take_profit: float,
+        comment: str,
+    ) -> Dict[str, Any]:
+        try:
+            info = svc.get_symbol_info(symbol=str(symbol))
+        except Exception:
+            info = {}
+        resolved_symbol = str((info or {}).get("resolved_symbol") or symbol).strip() or str(symbol)
+        digits = int((info or {}).get("digits") or 5)
+        point = _to_float_or_none((info or {}).get("point")) or (0.01 if digits <= 2 else 0.0001)
+        stops_pts = _to_float_or_none((info or {}).get("trade_stops_level")) or 0.0
+        freeze_pts = _to_float_or_none((info or {}).get("trade_freeze_level")) or 0.0
+        min_dist = float(max(stops_pts, freeze_pts, 10.0)) * float(point)
+
+        try:
+            tick = svc.get_symbol_tick(symbol=str(resolved_symbol), resolve_symbol=False)
+        except Exception:
+            tick = {}
+        if not isinstance(tick, dict) or str((tick or {}).get("error") or "").strip():
+            try:
+                tick = svc.get_symbol_tick(symbol=str(symbol), resolve_symbol=True)
+            except Exception:
+                tick = {}
+        ask = _to_float_or_none((tick or {}).get("ask"))
+        bid = _to_float_or_none((tick or {}).get("bid"))
+        last = _to_float_or_none((tick or {}).get("last"))
+        entry = ask if str(direction).upper() == "BUY" else bid
+        if entry is None:
+            entry = last
+        if entry is None:
+            try:
+                bars = svc.get_recent_candles(
+                    symbol=str(resolved_symbol),
+                    timeframe="M1",
+                    count=1,
+                    resolve_symbol=False,
+                )
+            except Exception:
+                bars = []
+            if isinstance(bars, list) and bars and isinstance(bars[-1], dict):
+                entry = _to_float_or_none((bars[-1] or {}).get("close"))
+        if entry is None or float(entry) <= 0.0:
+            return {"ok": False, "error": "retry_entry_price_unavailable"}
+
+        tp_dist = abs(float(take_profit) - float(entry))
+        want = float(max(min_dist * 1.8, float(point) * 40.0))
+        tp_dist = max(float(tp_dist), float(want))
+
+        if str(direction).upper() == "BUY":
+            tp2 = self._normalize_price(float(entry) + float(tp_dist), digits)
+        else:
+            tp2 = self._normalize_price(float(entry) - float(tp_dist), digits)
+
+        try:
+            return svc.place_market_order(
+                symbol=str(resolved_symbol),
+                direction=str(direction),
+                lot_size=float(lot),
+                stop_loss=None,
+                take_profit=float(tp2),
+                comment=str(comment),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"retry_exception:{type(exc).__name__}:{str(exc)[:180]}"}
 
     def _retry_order_for_invalid_stops(
         self,

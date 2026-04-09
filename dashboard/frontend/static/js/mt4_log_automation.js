@@ -22,6 +22,10 @@
         indicatorSearch: document.getElementById('mt4la-indicator-search'),
         instanceBody: document.getElementById('mt4la-instance-body'),
         instanceSearch: document.getElementById('mt4la-instance-search'),
+        chartGroup: document.getElementById('mt4la-chart-group'),
+        chartInstance: document.getElementById('mt4la-chart-instance'),
+        chartStats: document.getElementById('mt4la-chart-stats'),
+        chartLogBody: document.getElementById('mt4la-chart-log-body'),
         logTitle: document.getElementById('mt4la-log-title'),
         logBody: document.getElementById('mt4la-log-body'),
         execBody: document.getElementById('mt4la-exec-body')
@@ -34,9 +38,19 @@
     let latestState = null;
     let indicatorSearchText = '';
     let instanceSearchText = '';
+    let selectedChartGroup = 'all';
+    let selectedChartInstance = 'all';
     let latestExecLogs = [];
     const lotDraftByIndicator = new Map();
     const lotDraftByInstance = new Map();
+    const ALLOWED_INDICATOR_TOKENS = [
+        'hydra signals indicator',
+        'forex uranus direction',
+        'forexcypersystem',
+        'forexcyper',
+        'alchemy pulse',
+        'intrepid trend direction'
+    ];
 
     function showAlert(message, kind) {
         const cls = kind === 'error' ? 'alert-danger' : (kind === 'success' ? 'alert-success' : 'alert-info');
@@ -89,6 +103,241 @@
         }).format(dt);
     }
 
+    function normalizeIndicatorName(v) {
+        return String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function isAllowedIndicator(v) {
+        const key = normalizeIndicatorName(v);
+        if (!key) return false;
+        return ALLOWED_INDICATOR_TOKENS.some((tok) => key.includes(tok));
+    }
+
+    function prettySymbol(raw) {
+        const sym = String(raw || '').trim().toUpperCase();
+        if (!sym) return '-';
+        if (sym.length >= 4 && sym.endsWith('M')) {
+            const base = sym.slice(0, -1);
+            if (base) return `${sym} (${base})`;
+        }
+        return sym;
+    }
+
+    function isWithinLastHours(ts, hours) {
+        const raw = String(ts || '').trim();
+        if (!raw) return false;
+        const dt = new Date(raw);
+        if (Number.isNaN(dt.getTime())) return false;
+        const maxAgeMs = Math.max(1, Number(hours || 24)) * 60 * 60 * 1000;
+        return (Date.now() - dt.getTime()) <= maxAgeMs;
+    }
+
+    function isAlarmLikeEvent(ev) {
+        const signalHint = String((ev && ev.signal_hint) || '').trim().toUpperCase();
+        if (signalHint === 'BUY' || signalHint === 'SELL') return true;
+
+        const message = String((ev && ev.message) || '').trim();
+        const msg = message.toLowerCase();
+        const kind = String((ev && ev.kind) || '').trim().toLowerCase();
+        const explicitAlert = kind === 'alert' || /\balert\s*[:\-]/i.test(message) || /\balarm\b/i.test(message);
+        const obviousSignal =
+            /\b(buy|sell|long|short)\b/i.test(message) ||
+            /\bturned\s+up\b/i.test(message) ||
+            /\bturned\s+down\b/i.test(message) ||
+            /\bsignal\b/i.test(message);
+        const noisyLifecycle =
+            /^custom indicator /i.test(message) &&
+            (/\b(loaded|removed|initialized|deinitialized|uninit)\b/i.test(message) || /\bsucces+fully\b/i.test(message));
+
+        if (noisyLifecycle && !obviousSignal && !signalHint) return false;
+        return explicitAlert || obviousSignal;
+    }
+
+    function chartGroupLabel(v) {
+        const key = String(v || '').trim().toLowerCase();
+        if (key === 'mt4') return 'MT4';
+        if (key === 'mt5') return 'MT5';
+        if (key === 'mt5_demo') return 'MT5-DEMO';
+        if (key === 'unknown') return 'Unknown';
+        return key ? key.toUpperCase() : 'Unknown';
+    }
+
+    function normalizeChartGroup(v) {
+        const key = String(v || '').trim().toLowerCase();
+        if (!key) return 'unknown';
+        if (key === 'mt4' || key === 'mt5' || key === 'mt5_demo' || key === 'unknown') return key;
+        if (key.includes('mql4') || key.includes('\\mt4\\')) return 'mt4';
+        if (key.includes('demo') && (key.includes('mql5') || key.includes('\\mt5\\'))) return 'mt5_demo';
+        if (key.includes('mql5') || key.includes('\\mt5\\')) return 'mt5';
+        return 'unknown';
+    }
+
+    function eventChartGroup(ev) {
+        const explicit = normalizeChartGroup((ev && ev.terminal_group) || '');
+        if (explicit !== 'unknown') return explicit;
+        const src = String((ev && (ev.source_path || ev.source_file)) || '');
+        return normalizeChartGroup(src);
+    }
+
+    function eventInstanceKey(ev) {
+        const raw = String((ev && ev.instance_key) || '').trim();
+        if (raw) return raw.toLowerCase();
+        const parsed = parseLegacyChartFromEvent(ev);
+        const ind = normalizeIndicatorName(parsed.indicator || ((ev && ev.indicator) || ''));
+        const sym = String(parsed.symbol || ((ev && ev.symbol) || '')).trim().toUpperCase();
+        const tf = String(parsed.timeframe || ((ev && ev.timeframe) || '')).trim().toUpperCase();
+        if (!ind || !sym || !tf) return '';
+        return `${ind}|${sym}|${tf}`.toLowerCase();
+    }
+
+    function parseLegacyChartFromEvent(ev) {
+        const out = { indicator: '', symbol: '', timeframe: '' };
+        const indicatorRaw = String((ev && ev.indicator) || '').trim();
+        const message = String((ev && ev.message) || '').trim();
+        const needsParse = !indicatorRaw || /^indicators?$/i.test(indicatorRaw);
+        if (!needsParse && String((ev && ev.symbol) || '').trim() && String((ev && ev.timeframe) || '').trim()) {
+            return out;
+        }
+        const m = message.match(/(?:custom\s+indicator\s+)?(.+?)\s*\(([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\)/i);
+        if (!m) return out;
+        const name = String(m[1] || '').trim();
+        out.indicator = name;
+        out.symbol = String(m[2] || '').trim().toUpperCase();
+        out.timeframe = String(m[3] || '').trim().toUpperCase();
+        return out;
+    }
+
+    function rebuildChartSelectors(state) {
+        if (!els.chartGroup || !els.chartInstance) return;
+        const chartInstances = Array.isArray((state || {}).chart_instances)
+            ? state.chart_instances
+            : (Array.isArray((state || {}).instances) ? state.instances : []);
+        const instances = chartInstances.slice();
+        const events = Array.isArray((state || {}).events) ? state.events : [];
+
+        const groups = new Set(['mt4', 'mt5', 'mt5_demo']);
+        for (const ev of events) groups.add(eventChartGroup(ev));
+        for (const row of instances) groups.add(normalizeChartGroup((row && row.last_terminal_group) || ''));
+
+        const groupOrder = ['mt4', 'mt5', 'mt5_demo', 'unknown'];
+        const availableGroups = groupOrder.filter((g) => groups.has(g));
+
+        const wantedGroup = String(selectedChartGroup || 'all').toLowerCase();
+        const validGroup = (wantedGroup === 'all' || availableGroups.includes(wantedGroup)) ? wantedGroup : 'all';
+        selectedChartGroup = validGroup;
+
+        const groupOptions = [`<option value="all">All Groups</option>`];
+        for (const g of availableGroups) {
+            groupOptions.push(`<option value="${escapeHtml(g)}"${g === validGroup ? ' selected' : ''}>${escapeHtml(chartGroupLabel(g))}</option>`);
+        }
+        els.chartGroup.innerHTML = groupOptions.join('');
+
+        const chartRowsBase = instances
+            .map((r) => {
+                const indicator = String((r && r.indicator) || '').trim();
+                const symbol = String((r && r.symbol) || '').trim().toUpperCase();
+                const timeframe = String((r && r.timeframe) || '').trim().toUpperCase();
+                const key = String((r && r.instance_key) || '').trim().toLowerCase();
+                const g = normalizeChartGroup((r && r.last_terminal_group) || '');
+                return { indicator, symbol, timeframe, key, group: g };
+            })
+            .filter((r) => r.key && r.indicator && r.symbol && r.timeframe);
+
+        const chartRowsFromEvents = events
+            .filter((ev) => isAlarmLikeEvent(ev))
+            .filter((ev) => isWithinLastHours((ev && ev.event_ts) || '', 24))
+            .map((ev) => {
+                const parsed = parseLegacyChartFromEvent(ev);
+                const indicator = String(parsed.indicator || (ev && ev.indicator) || '').trim();
+                const symbol = String(parsed.symbol || (ev && ev.symbol) || '').trim().toUpperCase();
+                const timeframe = String(parsed.timeframe || (ev && ev.timeframe) || '').trim().toUpperCase();
+                const g = eventChartGroup(ev);
+                const key = eventInstanceKey(ev);
+                return { indicator, symbol, timeframe, key, group: g };
+            })
+            .filter((r) => r.key && r.indicator && r.symbol && r.timeframe);
+
+        const chartRowsMap = new Map();
+        for (const row of chartRowsBase) chartRowsMap.set(row.key, row);
+        for (const row of chartRowsFromEvents) {
+            if (!chartRowsMap.has(row.key)) chartRowsMap.set(row.key, row);
+        }
+        const chartRows = Array.from(chartRowsMap.values())
+            .filter((r) => validGroup === 'all' || r.group === validGroup)
+            .sort((a, b) => {
+                const ka = `${a.indicator}|${a.symbol}|${a.timeframe}`.toLowerCase();
+                const kb = `${b.indicator}|${b.symbol}|${b.timeframe}`.toLowerCase();
+                if (ka < kb) return -1;
+                if (ka > kb) return 1;
+                return 0;
+            });
+
+        const wantedInst = String(selectedChartInstance || 'all').toLowerCase();
+        const validInst = (wantedInst === 'all' || chartRows.some((r) => r.key === wantedInst)) ? wantedInst : 'all';
+        selectedChartInstance = validInst;
+
+        const chartOptions = [`<option value="all">All Charts</option>`];
+        for (const row of chartRows) {
+            const lbl = `${row.indicator} | ${prettySymbol(row.symbol)} ${row.timeframe} [${chartGroupLabel(row.group)}]`;
+            chartOptions.push(`<option value="${escapeHtml(row.key)}"${row.key === validInst ? ' selected' : ''}>${escapeHtml(lbl)}</option>`);
+        }
+        els.chartInstance.innerHTML = chartOptions.join('');
+    }
+
+    function renderChartAlarmLogs(state) {
+        if (!els.chartLogBody) return;
+        const rows = Array.isArray((state || {}).events) ? state.events.slice() : [];
+        const groupFilter = String(selectedChartGroup || 'all').toLowerCase();
+        const instanceFilter = String(selectedChartInstance || 'all').toLowerCase();
+
+        const filtered = rows
+            .filter((ev) => isAlarmLikeEvent(ev))
+            .filter((ev) => isWithinLastHours((ev && ev.event_ts) || '', 24))
+            .filter((ev) => {
+                if (groupFilter === 'all') return true;
+                return eventChartGroup(ev) === groupFilter;
+            })
+            .filter((ev) => {
+                if (instanceFilter === 'all') return true;
+                return eventInstanceKey(ev) === instanceFilter;
+            })
+            .sort((a, b) => {
+                const ta = Date.parse(String((a && a.event_ts) || '')) || 0;
+                const tb = Date.parse(String((b && b.event_ts) || '')) || 0;
+                return tb - ta;
+            });
+
+        if (els.chartStats) {
+            els.chartStats.textContent = `Rows: ${filtered.length} | Last 24h | Latest first`;
+        }
+
+        if (!filtered.length) {
+            els.chartLogBody.innerHTML = '<tr><td colspan="6" class="text-muted text-center py-3">No alarm rows in the last 24 hours for selected filter.</td></tr>';
+            return;
+        }
+
+        els.chartLogBody.innerHTML = filtered.map((ev) => {
+            const ts = formatTs((ev && ev.event_ts) || '');
+            const group = chartGroupLabel(eventChartGroup(ev));
+            const parsed = parseLegacyChartFromEvent(ev);
+            const indicator = String(parsed.indicator || (ev && ev.indicator) || '').trim();
+            const symbol = String(parsed.symbol || (ev && ev.symbol) || '').trim().toUpperCase();
+            const tf = String(parsed.timeframe || (ev && ev.timeframe) || '').trim().toUpperCase();
+            const chart = `${indicator || '-'}${(symbol || tf) ? ` | ${prettySymbol(symbol)}${tf ? ` ${tf}` : ''}` : ''}`;
+            const kind = String((ev && ev.kind) || 'log').trim().toLowerCase();
+            const msg = String((ev && ev.message) || (ev && ev.raw) || '').trim();
+            const file = String((ev && (ev.source_file || ev.source_path)) || '').trim();
+            return `<tr>
+                <td class="small text-muted">${escapeHtml(ts)}</td>
+                <td><span class="badge text-bg-dark">${escapeHtml(group)}</span></td>
+                <td>${escapeHtml(chart)}</td>
+                <td><span class="badge text-bg-secondary">${escapeHtml(kind.toUpperCase())}</span></td>
+                <td style="white-space: pre-wrap;">${escapeHtml(msg)}</td>
+                <td class="small text-muted">${escapeHtml(file || '-')}</td>
+            </tr>`;
+        }).join('');
+    }
+
     function fillForm(cfg, force) {
         if (!force && formDirty) return;
         const c = cfg || {};
@@ -134,7 +383,9 @@
     }
 
     function renderIndicators(state) {
-        const allRows = Array.isArray((state || {}).indicators) ? state.indicators.slice() : [];
+        const allRows = Array.isArray((state || {}).indicators)
+            ? state.indicators.slice().filter((r) => isAllowedIndicator(String((r || {}).indicator || (r || {}).key || '')))
+            : [];
         const filter = String(indicatorSearchText || '').trim().toLowerCase();
         const rows = filter
             ? allRows.filter((r) => String((r || {}).indicator || (r || {}).key || '').trim().toLowerCase().includes(filter))
@@ -151,6 +402,7 @@
         els.indicatorBody.innerHTML = rows.map((r) => {
             const indicator = String(r.indicator || r.key || '').trim();
             const symbol = String(r.last_symbol || '').trim();
+            const symbolPretty = prettySymbol(symbol);
             const tf = String(r.last_timeframe || '').trim();
             const eventCount = Number(r.event_count || 0);
             const signalCount = Number(r.signal_hint_count || 0);
@@ -168,7 +420,7 @@
             return `
                 <tr data-indicator="${escapeHtml(indicator)}">
                     <td>${escapeHtml(indicator)}</td>
-                    <td>${escapeHtml((symbol && tf) ? `${symbol} ${tf}` : (symbol || tf || '-'))}</td>
+                    <td>${escapeHtml((symbolPretty !== '-' && tf) ? `${symbolPretty} ${tf}` : ((symbolPretty !== '-' ? symbolPretty : (tf || '-'))))}</td>
                     <td>${eventCount}</td>
                     <td>${signalCount}</td>
                     <td>${escapeHtml(signalText)}</td>
@@ -190,7 +442,9 @@
     }
 
     function renderInstances(state) {
-        const allRows = Array.isArray((state || {}).instances) ? state.instances.slice() : [];
+        const allRows = Array.isArray((state || {}).instances)
+            ? state.instances.slice().filter((r) => isAllowedIndicator(String((r || {}).indicator || (r || {}).indicator_key || '')))
+            : [];
         const filter = String(instanceSearchText || '').trim().toLowerCase();
         const rows = filter
             ? allRows.filter((r) => {
@@ -212,6 +466,7 @@
         els.instanceBody.innerHTML = rows.map((r) => {
             const indicator = String(r.indicator || '').trim();
             const symbol = String(r.symbol || '').trim().toUpperCase();
+            const symbolPretty = prettySymbol(symbol);
             const timeframe = String(r.timeframe || '').trim().toUpperCase();
             const instanceKey = String(r.instance_key || '').trim();
             const eventCount = Number(r.event_count || 0);
@@ -233,7 +488,7 @@
             return `
                 <tr data-instance-key="${escapeHtml(instanceKey)}" data-indicator="${escapeHtml(indicator)}" data-symbol="${escapeHtml(symbol)}" data-timeframe="${escapeHtml(timeframe)}">
                     <td>${escapeHtml(indicator)}</td>
-                    <td>${escapeHtml(symbol)}</td>
+                    <td>${escapeHtml(symbolPretty)}</td>
                     <td>${escapeHtml(timeframe)}</td>
                     <td>${eventCount}</td>
                     <td>${signalCount}</td>
@@ -317,12 +572,14 @@
     }
 
     async function loadState(force) {
-        const data = await req('/api/mt4/log-automation/state?limit=500');
+        const data = await req('/api/mt4/log-automation/state?limit=1000');
         latestState = data || {};
         fillForm((data || {}).config || {}, !!force);
         renderStatus(data || {});
         renderIndicators(data || {});
         renderInstances(data || {});
+        rebuildChartSelectors(data || {});
+        renderChartAlarmLogs(data || {});
         latestExecLogs = Array.isArray((data || {}).execution_logs) ? (data.execution_logs).slice() : [];
         renderExecutionLogs(latestExecLogs);
         if (selectedIndicator) {
@@ -350,6 +607,8 @@
         renderStatus(data || {});
         renderIndicators(data || {});
         renderInstances(data || {});
+        rebuildChartSelectors(data || {});
+        renderChartAlarmLogs(data || {});
         showAlert('MT4/MT5 log automation config saved.', 'success');
     }
 
@@ -372,6 +631,8 @@
         latestState = data || latestState || {};
         renderStatus(latestState || {});
         renderIndicators(latestState || {});
+        rebuildChartSelectors(latestState || {});
+        renderChartAlarmLogs(latestState || {});
         latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
         renderExecutionLogs(latestExecLogs);
         return latestState;
@@ -412,6 +673,8 @@
         renderStatus(latestState || {});
         renderIndicators(latestState || {});
         renderInstances(latestState || {});
+        rebuildChartSelectors(latestState || {});
+        renderChartAlarmLogs(latestState || {});
         latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
         renderExecutionLogs(latestExecLogs);
         return latestState;
@@ -580,6 +843,21 @@
             });
         }
 
+        if (els.chartGroup) {
+            els.chartGroup.addEventListener('change', () => {
+                selectedChartGroup = String((els.chartGroup && els.chartGroup.value) || 'all').toLowerCase();
+                rebuildChartSelectors(latestState || {});
+                renderChartAlarmLogs(latestState || {});
+            });
+        }
+
+        if (els.chartInstance) {
+            els.chartInstance.addEventListener('change', () => {
+                selectedChartInstance = String((els.chartInstance && els.chartInstance.value) || 'all').toLowerCase();
+                renderChartAlarmLogs(latestState || {});
+            });
+        }
+
         try {
             await loadState(true);
         } catch (err) {
@@ -593,7 +871,7 @@
             } catch (_) {
                 // keep silent in poll loop
             }
-        }, 5000);
+        }, 2000);
     }
 
     if (document.readyState === 'loading') {

@@ -1360,6 +1360,81 @@ def test_execute_confirmation_retries_invalid_stops_and_succeeds():
     assert calls["n"] == 2
 
 
+def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"comment": "", "open_stop_loss": "sentinel", "close_calls": []}
+
+    class FakeLiveService:
+        @staticmethod
+        def place_market_order(symbol, direction, lot_size, stop_loss, take_profit, comment):
+            obs["comment"] = str(comment)
+            obs["open_stop_loss"] = stop_loss
+            return {"ok": True, "position": 880001, "lot_size": float(lot_size)}
+
+        @staticmethod
+        def get_open_positions(symbol):
+            # Keep price above TP1; ladder runner closes one stage per poll tick.
+            return [
+                {
+                    "ticket": 880001,
+                    "direction": "BUY",
+                    "comment": str(obs.get("comment") or ""),
+                    "current_price": 4801.0,
+                }
+            ]
+
+        @staticmethod
+        def close_position(symbol, position_ticket, lot_size=None, comment=None):
+            obs["close_calls"].append(
+                {"symbol": symbol, "ticket": int(position_ticket), "lot_size": float(lot_size or 0.0), "comment": str(comment or "")}
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {"volume_min": 0.01, "volume_step": 0.01, "volume_max": 100.0}
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_default_lot", lambda: 0.20)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "stop_loss": None,
+        "no_stop_loss": True,
+        "stage_weights": [40, 25, 15, 10, 10],
+        "tps": [
+            {"index": 1, "price": 4790.0},
+            {"index": 2, "price": 4793.0},
+            {"index": 3, "price": 4796.0},
+            {"index": 4, "price": 4799.0},
+            {"index": 5, "price": 4802.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_auto(
+        chat_id=1,
+        signal=signal,
+        audit_ctx={
+            "source_type": "mt_indicator",
+            "source_name": "Hydra Signals Indicator",
+            "trigger": "indicator_signal",
+            "profile": "hydra",
+            "indicator": "Hydra Signals Indicator",
+        },
+    )
+    assert "Confirmation ladder executed" in out
+    assert "Stage mode: weighted_indicator" in out
+    assert "Stage lots: 0.0800 / 0.0500 / 0.0300 / 0.0200 / 0.0200" in out
+    assert obs["open_stop_loss"] is None
+
+    svc._push_confirmation_signal_ladders()
+    assert len(obs["close_calls"]) == 1
+    assert abs(float(obs["close_calls"][0]["lot_size"]) - 0.08) < 1e-9
+    assert str(obs["close_calls"][0]["comment"]) == "tg_confirm_tp1"
+
+
 def test_confirm_signal_feed_dedupes_same_source_and_message_id():
     svc = TelegramBridgeService()
     source = "Elite Pips Academy"

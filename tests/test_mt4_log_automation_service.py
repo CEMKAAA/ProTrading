@@ -147,6 +147,117 @@ def test_parse_line_supports_mql5_alert_format():
     assert str(row.get("signal_hint")) == "BUY"
 
 
+def test_parse_line_sets_terminal_group_from_source_path():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="MH\t0\t12:33:02.585\tAlchemy Pulse Indicateor (USDJPYm,M1)\tAlert: AlchemyPulse | M1 USDJPYm | BUY",
+        source_file="20260407.log",
+        file_date="20260407",
+        source_path=r"C:\MT5\DEMO\MQL5\Logs\20260407.log",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("terminal_group") or "") == "mt5_demo"
+
+
+def test_parse_line_supports_mt4_parenthesized_symbol_tf():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="0\t12:33:02.585\tAlchemy Pulse Indicateor (USDCADm,M1): Alert: SELL",
+        source_file="20260407.log",
+        file_date="20260407",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("symbol") or "") == "USDCADM"
+    assert str(row.get("timeframe") or "") == "M1"
+
+
+def test_parse_line_mt5_indicators_source_extracts_custom_indicator_chart():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="MO\t0\t10:55:35.648\tIndicators\tcustom indicator Trend-Cross Alert (US500m,M15) removed",
+        source_file="20260405.log",
+        file_date="20260405",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("indicator") or "") == "Trend-Cross Alert"
+    assert str(row.get("symbol") or "") == "US500M"
+    assert str(row.get("timeframe") or "") == "M15"
+
+
+def test_enrich_event_for_view_repairs_generic_indicators_event():
+    svc = MT4LogAutomationService()
+    ev = {
+        "indicator": "Indicators",
+        "symbol": "",
+        "timeframe": "",
+        "message": "custom indicator Trend-Cross Alert (USDJPYm,M15) removed",
+    }
+    out = svc._enrich_event_for_view(ev)
+    assert str(out.get("indicator") or "") == "Trend-Cross Alert"
+    assert str(out.get("symbol") or "") == "USDJPYM"
+    assert str(out.get("timeframe") or "") == "M15"
+    assert str(out.get("instance_key") or "").endswith("|USDJPYM|M15")
+
+
+def test_append_event_sets_instance_key():
+    svc = MT4LogAutomationService()
+    ev = {
+        "event_ts": "2026-04-09T00:00:00+00:00",
+        "source_file": "20260409.log",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "alchemy",
+        "message": "BUY",
+        "raw": "raw",
+    }
+    svc._append_event(ev)
+    st = svc.get_state(limit=50)
+    rows = st.get("events") or []
+    assert rows and str(rows[-1].get("instance_key") or "").endswith("|USDJPYM|M1")
+
+
+def test_indicator_last_symbol_timeframe_not_overwritten_by_empty_event():
+    svc = MT4LogAutomationService()
+    ev1 = {
+        "event_ts": "2026-04-09T00:00:00+00:00",
+        "source_file": "20260409.log",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "alchemy",
+        "message": "BUY",
+        "raw": "raw",
+    }
+    ev2 = {
+        "event_ts": "2026-04-09T00:01:00+00:00",
+        "source_file": "20260409.log",
+        "indicator": "Alchemy Pulse Indicateor",
+        "indicator_key": "alchemy pulse indicateor",
+        "symbol": "",
+        "timeframe": "",
+        "kind": "log",
+        "signal_hint": "",
+        "signal_profile": "alchemy",
+        "message": "heartbeat",
+        "raw": "raw",
+    }
+    svc._append_event(ev1)
+    svc._append_event(ev2)
+    st = svc.get_state(limit=80)
+    rows = [dict(x) for x in (st.get("indicators") or [])]
+    alchemy = next((r for r in rows if str(r.get("indicator") or "").strip().lower() == "alchemy pulse indicateor"), None)
+    assert isinstance(alchemy, dict)
+    assert str(alchemy.get("last_symbol") or "") == "USDJPYM"
+    assert str(alchemy.get("last_timeframe") or "") == "M1"
+
+
 def test_safe_decode_handles_utf16_mql5_rows():
     svc = MT4LogAutomationService()
     text = "MH\t0\t12:33:02.585\tAlchemy Pulse Indicateor (USDJPYm,M1)\tAlert: AlchemyPulse | M1 USDJPYm | BUY"
@@ -417,3 +528,70 @@ def test_update_instance_settings_persists_explicit_false(monkeypatch):
     automation_raw = str(updated.get("MT4_LOG_AUTOMATION_INSTANCE_AUTOMATION") or "{}")
     automation = json.loads(automation_raw)
     assert automation.get("forexcypersytem|XAUUSD|M5".lower()) is False
+
+
+def test_update_indicator_settings_rejects_non_whitelisted_indicator():
+    svc = MT4LogAutomationService()
+    out = svc.update_indicator_settings(indicator="Random Noise Indicator", enabled=True)
+    assert bool(out.get("ok")) is False
+    assert str(out.get("error") or "") == "indicator_not_allowed_for_automation"
+
+
+def test_get_state_filters_non_whitelisted_rows(monkeypatch):
+    svc = MT4LogAutomationService()
+    monkeypatch.setattr(svc, "_active_indicator_names", lambda: [])
+    monkeypatch.setattr(svc, "_instance_automation_overrides", lambda: {})
+    monkeypatch.setattr(svc, "_instance_lot_overrides", lambda: {})
+
+    svc._indicator_stats = {
+        "hydra signals indicator": {
+            "indicator": "Hydra Signals Indicator",
+            "indicator_key": "hydra signals indicator",
+            "key": "hydra signals indicator",
+            "event_count": 1,
+            "automation_enabled": True,
+            "lot_size": 0.05,
+            "last_seen": "",
+        },
+        "totally custom indicator": {
+            "indicator": "Totally Custom Indicator",
+            "indicator_key": "totally custom indicator",
+            "key": "totally custom indicator",
+            "event_count": 1,
+            "automation_enabled": True,
+            "lot_size": 0.05,
+            "last_seen": "",
+        },
+    }
+    svc._instance_stats = {
+        "hydra signals indicator|USDJPY|M5": {
+            "instance_key": "hydra signals indicator|USDJPY|M5",
+            "indicator": "Hydra Signals Indicator",
+            "indicator_key": "hydra signals indicator",
+            "symbol": "USDJPY",
+            "timeframe": "M5",
+            "automation_enabled": True,
+            "automation_mode": "explicit",
+            "lot_size": 0.05,
+            "last_seen": "",
+        },
+        "totally custom indicator|USDJPY|M5": {
+            "instance_key": "totally custom indicator|USDJPY|M5",
+            "indicator": "Totally Custom Indicator",
+            "indicator_key": "totally custom indicator",
+            "symbol": "USDJPY",
+            "timeframe": "M5",
+            "automation_enabled": True,
+            "automation_mode": "explicit",
+            "lot_size": 0.05,
+            "last_seen": "",
+        },
+    }
+
+    out = svc.get_state(limit=200)
+    indicators = [str((r or {}).get("indicator") or "") for r in (out.get("indicators") or [])]
+    instances = [str((r or {}).get("indicator") or "") for r in (out.get("instances") or [])]
+    assert "Hydra Signals Indicator" in indicators
+    assert "Totally Custom Indicator" not in indicators
+    assert "Hydra Signals Indicator" in instances
+    assert "Totally Custom Indicator" not in instances
