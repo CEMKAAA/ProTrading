@@ -1363,7 +1363,7 @@ def test_execute_confirmation_retries_invalid_stops_and_succeeds():
 
 def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
     svc = TelegramBridgeService()
-    obs = {"comment": "", "open_stop_loss": "sentinel", "close_calls": []}
+    obs = {"comment": "", "open_stop_loss": "sentinel", "close_calls": [], "sl_updates": []}
 
     class FakeLiveService:
         @staticmethod
@@ -1381,6 +1381,9 @@ def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
                     "direction": "BUY",
                     "comment": str(obs.get("comment") or ""),
                     "current_price": 4801.0,
+                    "entry_price": 4785.0,
+                    "stop_loss": 0.0,
+                    "take_profit": 4802.0,
                 }
             ]
 
@@ -1394,6 +1397,19 @@ def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
         @staticmethod
         def get_symbol_info(symbol):
             return {"volume_min": 0.01, "volume_step": 0.01, "volume_max": 100.0}
+
+        @staticmethod
+        def modify_position_sl_tp(symbol, position_ticket, stop_loss=None, take_profit=None, comment=None):
+            obs["sl_updates"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "stop_loss": float(stop_loss or 0.0),
+                    "take_profit": (float(take_profit) if take_profit is not None else None),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
 
     svc._live_service = FakeLiveService()
     monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
@@ -1434,6 +1450,9 @@ def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
     assert len(obs["close_calls"]) == 1
     assert abs(float(obs["close_calls"][0]["lot_size"]) - 0.08) < 1e-9
     assert str(obs["close_calls"][0]["comment"]) == "tg_confirm_tp1"
+    assert len(obs["sl_updates"]) == 1
+    assert str(obs["sl_updates"][0]["comment"]) == "tg_sl_tp1"
+    assert float(obs["sl_updates"][0]["stop_loss"]) > 4785.0
 
 
 def test_confirm_signal_feed_dedupes_same_source_and_message_id():
@@ -2186,6 +2205,57 @@ def test_register_indicator_bridge_instance_and_monitors_by_family(monkeypatch):
     assert len(mt5.get("bot_rows") or []) == 1
     assert str(mt5["bot_rows"][0]["indicator"]) == "Alchemy Pulse Indicateor"
     assert str(mt5["bot_rows"][0]["terminal_family"]) == "mt5"
+
+
+def test_register_indicator_bridge_instance_repeated_same_key(monkeypatch):
+    svc = TelegramBridgeService()
+
+    def _fake_runtime(**kwargs):
+        family = str(kwargs.get("family") or "mt4").strip().lower()
+        indicator = str(kwargs.get("indicator") or "").strip()
+        symbol = str(kwargs.get("symbol") or "").strip().upper()
+        timeframe = str(kwargs.get("timeframe") or "").strip().upper()
+        return {
+            "terminal_family": family,
+            "indicator": indicator,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "instance_key": f"{family}|{indicator.lower()}|{symbol}|{timeframe}",
+            "automation_mode": "inherit",
+            "automation_enabled": False,
+            "effective_automation_enabled": False,
+            "lot_size": 0.05,
+        }
+
+    monkeypatch.setattr(svc, "_resolve_indicator_bridge_instance_runtime_config", _fake_runtime)
+
+    first = svc.register_indicator_bridge_instance(
+        terminal_family="mt4",
+        payload={
+            "indicator": "Intrepid Trend Direction",
+            "symbol": "USDJPYM",
+            "timeframe": "M1",
+            "signal_profile": "intrepid",
+            "bridge_event_type": "register",
+            "event_ts": "2026-04-10T09:00:00+00:00",
+        },
+    )
+    second = svc.register_indicator_bridge_instance(
+        terminal_family="mt4",
+        payload={
+            "indicator": "Intrepid Trend Direction",
+            "symbol": "USDJPYM",
+            "timeframe": "M1",
+            "signal_profile": "intrepid",
+            "bridge_event_type": "heartbeat",
+            "event_ts": "2026-04-10T09:05:00+00:00",
+        },
+    )
+
+    assert str(first.get("instance_key") or "") == "mt4|intrepid trend direction|USDJPYM|M1"
+    assert str(second.get("instance_key") or "") == "mt4|intrepid trend direction|USDJPYM|M1"
+    assert str(second.get("bridge_event_type") or "") == "heartbeat"
+    assert str(second.get("last_seen") or "") == "2026-04-10T09:05:00+00:00"
 
 
 def test_ingest_indicator_bridge_signal_register_only(monkeypatch):

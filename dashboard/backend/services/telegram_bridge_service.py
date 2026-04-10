@@ -1103,6 +1103,19 @@ class TelegramBridgeService:
             "indicator": str(indicator or "").strip(),
             "source_tag": str(source_tag or "").strip().lower(),
         }
+        # Strict bridge hygiene: indicator automation audit rows must carry a
+        # deterministic MT4/MT5 bridge source tag. Reject malformed indicator rows.
+        if str(row.get("source_type") or "").strip().lower() == "mt_indicator":
+            if not self._is_bridge_source_tag(row.get("source_tag")):
+                logger.warning(
+                    "indicator_execution_log_rejected_invalid_source_tag source=%s indicator=%s symbol=%s timeframe=%s tag=%s",
+                    str(row.get("source_name") or ""),
+                    str(row.get("indicator") or ""),
+                    str(row.get("symbol") or ""),
+                    str(row.get("timeframe") or ""),
+                    str(row.get("source_tag") or ""),
+                )
+                return
         for attempt in range(3):
             db = SessionLocal()
             try:
@@ -1318,6 +1331,15 @@ class TelegramBridgeService:
             "last_close_ts": str(last_close_ts or ""),
         }
 
+    @staticmethod
+    def _is_bridge_source_tag(value: Any) -> bool:
+        tag = str(value or "").strip().lower()
+        return bool(tag.startswith("mt4|") or tag.startswith("mt5|"))
+
+    @classmethod
+    def _source_type_from_source_tag(cls, value: Any) -> str:
+        return "mt_indicator" if cls._is_bridge_source_tag(value) else "telegram_channel"
+
     def _append_closed_execution_log_from_row(
         self,
         *,
@@ -1349,14 +1371,14 @@ class TelegramBridgeService:
                 total_lot += float(v)
         lot_val = float(total_lot) if total_lot > 0.0 else None
         combo_key = self._build_execution_combo_key(
-            source_type=("mt_indicator" if str(meta.get("source_tag") or "").strip().lower().startswith("mt4|") else "telegram_channel"),
+            source_type=self._source_type_from_source_tag(meta.get("source_tag")),
             source_name=str(meta.get("source_name") or "unknown"),
             indicator=str(meta.get("indicator") or "").strip(),
             symbol=symbol,
             timeframe=str(meta.get("timeframe") or "").strip().upper(),
         )
         self._append_automation_execution_log(
-            source_type=("mt_indicator" if str(meta.get("source_tag") or "").strip().lower().startswith("mt4|") else "telegram_channel"),
+            source_type=self._source_type_from_source_tag(meta.get("source_tag")),
             source_name=str(meta.get("source_name") or "unknown"),
             trigger="position_closed",
             status="closed",
@@ -2162,6 +2184,12 @@ class TelegramBridgeService:
         return max(60.0, min(604800.0, float(raw)))
 
     @staticmethod
+    def _legacy_mt4_log_ingest_enabled() -> bool:
+        # Bridge-first architecture: keep legacy log-ingest path off by default.
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ALLOW_LEGACY_MT4_LOG_INGEST", "0")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
     def _mt4_exec_profile_enabled(profile: str) -> bool:
         p = str(profile or "generic").strip().lower() or "generic"
         if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
@@ -2179,7 +2207,7 @@ class TelegramBridgeService:
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_LOT"
         raw = _to_float_or_none(TelegramBridgeService._get_env_value(key, ""))
         if raw is None or float(raw) <= 0.0:
-            raw = 0.05
+            raw = 0.10
         # MT4 indicator automation uses 5-stage partial TP ladder; keep minimum lot at 0.05
         # so each stage can close 0.01 on symbols with 0.01 volume_step.
         return max(0.05, min(100.0, float(raw)))
@@ -2239,9 +2267,9 @@ class TelegramBridgeService:
     @classmethod
     def _indicator_bridge_default_lot(cls, family: Any) -> float:
         key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "DEFAULT_LOT")
-        raw = _to_float_or_none(cls._get_env_value(key, "0.05"))
+        raw = _to_float_or_none(cls._get_env_value(key, "0.10"))
         if raw is None or float(raw) <= 0.0:
-            raw = 0.05
+            raw = 0.10
         return float(max(0.01, min(100.0, float(raw))))
 
     @classmethod
@@ -2491,7 +2519,13 @@ class TelegramBridgeService:
             prev = self._indicator_bridge_instances.get(str(instance_key))
             if isinstance(prev, dict):
                 merged = dict(prev)
-                merged.update({k: v for k, v in row.items() if v not in {None, "", []}})
+                merged.update(
+                    {
+                        k: v
+                        for k, v in row.items()
+                        if v is not None and v != "" and v != []
+                    }
+                )
                 row = merged
             self._indicator_bridge_instances[str(instance_key)] = dict(row)
             if len(self._indicator_bridge_instances) > 5000:
@@ -2725,6 +2759,8 @@ class TelegramBridgeService:
             if not isinstance(row, dict):
                 continue
             if str(row.get("source_type") or "").strip().lower() != "mt_indicator":
+                continue
+            if not self._is_bridge_source_tag(row.get("source_tag")):
                 continue
             opened_at = str(row.get("opened_at") or "").strip()
             event_ts = str(row.get("event_ts") or row.get("ts") or "").strip()
@@ -3010,10 +3046,24 @@ class TelegramBridgeService:
         if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
             p = "generic"
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_HARD_SL_MODE"
-        raw = str(TelegramBridgeService._get_env_value(key, "none") or "").strip().lower()
-        if raw in {"none", "atr"}:
+        raw = str(TelegramBridgeService._get_env_value(key, "catastrophic") or "").strip().lower()
+        if raw in {"none", "atr", "catastrophic"}:
             return str(raw)
-        return "none"
+        return "catastrophic"
+
+    @staticmethod
+    def _mt4_exec_profile_catastrophic_sl_atr(profile: str) -> float:
+        p = str(profile or "generic").strip().lower() or "generic"
+        if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
+            p = "generic"
+        key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_CATASTROPHIC_SL_ATR"
+        try:
+            raw = float(TelegramBridgeService._get_env_value(key, "9.0"))
+        except Exception:
+            raw = 9.0
+        if not math.isfinite(float(raw)):
+            raw = 9.0
+        return max(2.0, min(40.0, float(raw)))
 
     @staticmethod
     def _mt4_exec_profile_regime_er_threshold(profile: str) -> float:
@@ -3213,7 +3263,7 @@ class TelegramBridgeService:
                 continue
             if wanted_tag and row_tag != wanted_tag:
                 continue
-            if not row_tag.startswith("mt4|"):
+            if not self._is_bridge_source_tag(row_tag):
                 continue
             out = svc.close_position(
                 symbol=str(sym),
@@ -3469,12 +3519,16 @@ class TelegramBridgeService:
         hard_sl_mode = str(self._mt4_exec_profile_hard_sl_mode(profile))
         stop_loss: Optional[float] = None
         no_stop_loss = True
-        if hard_sl_mode == "atr":
+        if hard_sl_mode in {"atr", "catastrophic"}:
+            sl_order_distance = float(sl_distance)
+            if hard_sl_mode == "catastrophic":
+                sl_order_distance = float(atr or default_dist) * float(self._mt4_exec_profile_catastrophic_sl_atr(profile))
+                sl_order_distance = max(float(sl_order_distance), float(min_stop_dist) * 3.0, float(point) * 120.0)
             if hint == "BUY":
-                stop_loss = float(entry_price - sl_distance)
+                stop_loss = float(entry_price - sl_order_distance)
                 stop_loss = min(float(stop_loss), float(entry_price - max(min_stop_dist * 1.10, point * 2.0)))
             else:
-                stop_loss = float(entry_price + sl_distance)
+                stop_loss = float(entry_price + sl_order_distance)
                 stop_loss = max(float(stop_loss), float(entry_price + max(min_stop_dist * 1.10, point * 2.0)))
             stop_loss = round(float(stop_loss), int(max(0, digits)))
             no_stop_loss = False
@@ -3577,6 +3631,8 @@ class TelegramBridgeService:
                 self._mt4_bridge_combo_registry = {
                     str(k): float(v) for k, v in self._mt4_bridge_combo_registry.items() if float(v) >= float(cutoff)
                 }
+        if ingest_source == "log" and (not self._legacy_mt4_log_ingest_enabled()):
+            return {"ok": True, "executed": False, "reason": "legacy_mt4_log_ingest_disabled"}
 
         ev_unix = _to_unix_or_none(event_ts)
         max_age = float(self._mt4_exec_max_signal_age_sec())
@@ -3736,12 +3792,16 @@ class TelegramBridgeService:
         hard_sl_mode = str(self._mt4_exec_profile_hard_sl_mode(profile))
         stop_loss: Optional[float] = None
         no_stop_loss = True
-        if hard_sl_mode == "atr":
+        if hard_sl_mode in {"atr", "catastrophic"}:
+            sl_order_distance = float(sl_distance)
+            if hard_sl_mode == "catastrophic":
+                sl_order_distance = float(atr or default_dist) * float(self._mt4_exec_profile_catastrophic_sl_atr(profile))
+                sl_order_distance = max(float(sl_order_distance), float(min_stop_dist) * 3.0, float(point) * 120.0)
             if hint == "BUY":
-                stop_loss = float(entry_price - sl_distance)
+                stop_loss = float(entry_price - sl_order_distance)
                 stop_loss = min(float(stop_loss), float(entry_price - max(min_stop_dist * 1.10, point * 2.0)))
             else:
-                stop_loss = float(entry_price + sl_distance)
+                stop_loss = float(entry_price + sl_order_distance)
                 stop_loss = max(float(stop_loss), float(entry_price + max(min_stop_dist * 1.10, point * 2.0)))
             stop_loss = round(float(stop_loss), int(max(0, digits)))
             no_stop_loss = False
@@ -3853,6 +3913,7 @@ class TelegramBridgeService:
                 "efficiency_ratio": _to_float_or_none((regime_info or {}).get("efficiency_ratio")),
                 "donchian_atr_ratio": _to_float_or_none((regime_info or {}).get("donchian_atr_ratio")),
                 "hard_sl_mode": str(hard_sl_mode),
+                "catastrophic_sl_atr": float(self._mt4_exec_profile_catastrophic_sl_atr(profile)),
                 "tp_levels": list(tp_multipliers),
                 "stage_weights": list(stage_weights),
                 "signal": dict(signal),
@@ -4677,6 +4738,9 @@ class TelegramBridgeService:
         indicator: Optional[str] = None,
         profit_lock_retrace_pct: Optional[float] = None,
         profit_lock_arm_after_tp: Optional[int] = None,
+        entry_price: Optional[float] = None,
+        initial_stop_loss: Optional[float] = None,
+        no_stop_loss: Optional[bool] = None,
     ) -> None:
         key = f"{int(chat_id)}:{int(session_id)}:{int(trade_id)}:{int(broker_ticket)}"
         row = {
@@ -4701,6 +4765,11 @@ class TelegramBridgeService:
             "max_loss": None,
             "profit_lock_retrace_pct": (_to_float_or_none(profit_lock_retrace_pct) if profit_lock_retrace_pct is not None else None),
             "profit_lock_arm_after_tp": (int(profit_lock_arm_after_tp) if profit_lock_arm_after_tp is not None else None),
+            "entry_price": _to_float_or_none(entry_price),
+            "initial_stop_loss": _to_float_or_none(initial_stop_loss),
+            "no_stop_loss": bool(no_stop_loss) if no_stop_loss is not None else None,
+            "last_sl_update_tp_index": 0,
+            "last_applied_sl": None,
         }
         with self._lock:
             self._active_confirmation_signal_ladders[str(key)] = row
@@ -4956,6 +5025,9 @@ class TelegramBridgeService:
                     indicator=str(audit_indicator),
                     profit_lock_retrace_pct=_to_float_or_none(signal.get("profit_lock_retrace_pct")),
                     profit_lock_arm_after_tp=int(_to_float_or_none(signal.get("profit_lock_arm_after_tp")) or 0),
+                    entry_price=_to_float_or_none(signal.get("entry_mid")),
+                    initial_stop_loss=_to_float_or_none(order_stop_loss),
+                    no_stop_loss=bool(allow_no_sl),
                 )
             self._append_automation_execution_log(
                 source_type=audit_source_type,
@@ -5246,6 +5318,164 @@ class TelegramBridgeService:
             raw = 0.0
         return max(0.0, min(1000000.0, float(raw)))
 
+    @staticmethod
+    def _confirm_sl_guard_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SL_GUARD_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _confirm_sl_guard_start_tp() -> int:
+        try:
+            raw = int(float(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SL_GUARD_START_TP", "1")))
+        except Exception:
+            raw = 1
+        return max(1, min(5, int(raw)))
+
+    @staticmethod
+    def _confirm_sl_guard_lock_ratios() -> List[float]:
+        raw = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SL_GUARD_LOCK_RATIOS", "")).strip()
+        parsed: List[float] = []
+        if raw:
+            for tok in re.split(r"[,\|; ]+", raw):
+                t = str(tok or "").strip()
+                if not t:
+                    continue
+                try:
+                    v = float(t)
+                except Exception:
+                    continue
+                if not math.isfinite(float(v)):
+                    continue
+                parsed.append(max(0.0, min(0.99, float(v))))
+        if not parsed:
+            parsed = [0.00, 0.35, 0.55, 0.72, 0.85]
+        while len(parsed) < 5:
+            parsed.append(float(parsed[-1]))
+        return [float(x) for x in parsed[:5]]
+
+    def _apply_confirmation_guard_stop(
+        self,
+        *,
+        svc: LiveTradingService,
+        row: Dict[str, Any],
+        pos: Dict[str, Any],
+        hit_tp_index: int,
+        target_px: float,
+    ) -> Dict[str, Any]:
+        if not bool(self._confirm_sl_guard_enabled()):
+            return {"ok": True, "updated": False, "reason": "sl_guard_disabled"}
+        tp_idx = int(max(1, int(hit_tp_index or 1)))
+        if tp_idx < int(self._confirm_sl_guard_start_tp()):
+            return {"ok": True, "updated": False, "reason": "sl_guard_not_armed"}
+
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        direction = str((row or {}).get("direction") or "").strip().upper()
+        ticket = int(_to_float_or_none((row or {}).get("broker_ticket")) or 0)
+        if not sym or direction not in {"BUY", "SELL"} or ticket <= 0:
+            return {"ok": False, "updated": False, "error": "invalid_ladder_row"}
+
+        entry = _to_float_or_none((pos or {}).get("entry_price"))
+        if entry is None:
+            entry = _to_float_or_none((row or {}).get("entry_price"))
+        if entry is None or float(entry) <= 0.0:
+            return {"ok": False, "updated": False, "error": "entry_price_unavailable"}
+
+        info: Dict[str, Any] = {}
+        try:
+            info = dict(svc.get_symbol_info(symbol=str(sym)) or {})
+        except Exception:
+            info = {}
+        digits = int(_to_float_or_none(info.get("digits")) or 5)
+        point = _to_float_or_none(info.get("point")) or (0.0001 if digits >= 3 else 0.01)
+        stops_points = _to_float_or_none(info.get("trade_stops_level")) or 0.0
+        freeze_points = _to_float_or_none(info.get("trade_freeze_level")) or 0.0
+        min_stop_dist = float(max(0.0, float(stops_points + freeze_points) * float(point)))
+
+        ratios = list(self._confirm_sl_guard_lock_ratios())
+        ratio = float(ratios[min(len(ratios) - 1, max(0, tp_idx - 1))])
+        be_buffer = float(max(float(point) * 4.0, float(min_stop_dist) * 0.20))
+        profit_span = abs(float(target_px) - float(entry))
+        lock_dist = float(max(float(be_buffer), float(profit_span) * float(ratio)))
+        desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
+
+        tick: Dict[str, Any] = {}
+        try:
+            tick = dict(svc.get_symbol_tick(symbol=str(sym), resolve_symbol=False) or {})
+        except Exception:
+            tick = {}
+        bid = _to_float_or_none(tick.get("bid"))
+        ask = _to_float_or_none(tick.get("ask"))
+        market_px = _to_float_or_none((pos or {}).get("current_price"))
+        if direction == "BUY":
+            ref = bid if bid is not None else market_px
+            if ref is not None and float(ref) > 0.0:
+                desired = min(float(desired), float(ref) - max(float(min_stop_dist), float(point) * 2.0))
+        else:
+            ref = ask if ask is not None else market_px
+            if ref is not None and float(ref) > 0.0:
+                desired = max(float(desired), float(ref) + max(float(min_stop_dist), float(point) * 2.0))
+
+        existing_sl = _to_float_or_none((pos or {}).get("stop_loss"))
+        if existing_sl is not None and float(existing_sl) > 0.0:
+            if direction == "BUY":
+                desired = max(float(desired), float(existing_sl))
+            else:
+                desired = min(float(desired), float(existing_sl))
+
+        if not math.isfinite(float(desired)) or float(desired) <= 0.0:
+            return {"ok": False, "updated": False, "error": "invalid_sl_target"}
+        desired = round(float(desired), int(max(0, digits)))
+
+        if existing_sl is not None and abs(float(desired) - float(existing_sl)) < max(float(point), 1e-9):
+            return {"ok": True, "updated": False, "reason": "sl_unchanged", "stop_loss": float(existing_sl)}
+
+        out = svc.modify_position_sl_tp(
+            symbol=str(sym),
+            position_ticket=int(ticket),
+            stop_loss=float(desired),
+            take_profit=_to_float_or_none((pos or {}).get("take_profit")),
+            comment=f"tg_sl_tp{int(tp_idx)}",
+        )
+        if bool((out or {}).get("ok")):
+            row["last_sl_update_tp_index"] = int(tp_idx)
+            row["last_applied_sl"] = float(desired)
+            self._append_automation_execution_log(
+                source_type=self._source_type_from_source_tag((row or {}).get("source_tag")),
+                source_name=str((row or {}).get("source_name") or "unknown"),
+                trigger="sl_guard_update",
+                status="success",
+                symbol=str(sym),
+                timeframe=str((row or {}).get("timeframe") or ""),
+                direction=str(direction),
+                ticket=int(ticket),
+                message=f"sl_moved_tp{int(tp_idx)}:{float(desired):.5f}",
+                profile=str((row or {}).get("profile") or "").strip().lower(),
+                indicator=str((row or {}).get("indicator") or "").strip(),
+                source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
+                max_profit=_to_float_or_none((row or {}).get("max_profit")),
+                max_loss=_to_float_or_none((row or {}).get("max_loss")),
+            )
+            return {"ok": True, "updated": True, "stop_loss": float(desired)}
+
+        err_txt = str((out or {}).get("error") or "modify_failed")[:180]
+        self._append_automation_execution_log(
+            source_type=self._source_type_from_source_tag((row or {}).get("source_tag")),
+            source_name=str((row or {}).get("source_name") or "unknown"),
+            trigger="sl_guard_update",
+            status="failed",
+            symbol=str(sym),
+            timeframe=str((row or {}).get("timeframe") or ""),
+            direction=str(direction),
+            ticket=int(ticket),
+            message=f"sl_move_failed_tp{int(tp_idx)}:{err_txt}",
+            profile=str((row or {}).get("profile") or "").strip().lower(),
+            indicator=str((row or {}).get("indicator") or "").strip(),
+            source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
+            max_profit=_to_float_or_none((row or {}).get("max_profit")),
+            max_loss=_to_float_or_none((row or {}).get("max_loss")),
+        )
+        return {"ok": False, "updated": False, "error": err_txt}
+
     def _push_confirmation_signal_ladders(self) -> None:
         with self._lock:
             ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
@@ -5355,8 +5585,15 @@ class TelegramBridgeService:
                 comment=f"tg_confirm_tp{int(next_idx)}",
             )
             if bool((out or {}).get("ok")):
+                _ = self._apply_confirmation_guard_stop(
+                    svc=svc,
+                    row=row,
+                    pos=pos,
+                    hit_tp_index=int(next_idx),
+                    target_px=float(target_px),
+                )
                 self._append_automation_execution_log(
-                    source_type=("mt_indicator" if str(row.get("source_tag") or "").strip().lower().startswith("mt4|") else "telegram_channel"),
+                    source_type=self._source_type_from_source_tag(row.get("source_tag")),
                     source_name=str(row.get("source_name") or "unknown"),
                     trigger="tp_hit",
                     status="tp_partial",

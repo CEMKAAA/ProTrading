@@ -185,3 +185,39 @@ def test_close_position_falls_back_across_filling_modes(monkeypatch):
     assert out["ok"] is True
     assert out["retcode"] == 10009
     assert calls[:2] == [3, 1]
+
+
+def test_modify_position_sl_tp_success(monkeypatch):
+    service = ls.LiveTradingService()
+    service._mt5_initialized = True
+
+    monkeypatch.setattr(service, "_ensure_mt5", lambda **_kwargs: True)
+    monkeypatch.setattr(service, "resolve_symbol_name", lambda _s: "USDJPYm")
+    monkeypatch.setattr(ls.mt5, "symbol_select", lambda *_args, **_kwargs: True, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_ACTION_SLTP", 6, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_DONE", 10009, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_PLACED", 10008, raising=False)
+    monkeypatch.setattr(ls.mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010, raising=False)
+
+    pos = types.SimpleNamespace(ticket=24680, sl=158.100, tp=159.200)
+    monkeypatch.setattr(ls.mt5, "positions_get", lambda **_kwargs: [pos], raising=False)
+    sent = {}
+
+    def _fake_order_send(req):
+        sent.update(dict(req or {}))
+        return types.SimpleNamespace(retcode=10009, comment="done")
+
+    monkeypatch.setattr(ls.mt5, "order_send", _fake_order_send, raising=False)
+
+    out = service.modify_position_sl_tp(
+        symbol="USDJPY",
+        position_ticket=24680,
+        stop_loss=158.321,
+        take_profit=None,
+        comment="sl_guard",
+    )
+    assert out.get("ok") is True
+    assert int(sent.get("action") or 0) == 6
+    assert int(sent.get("position") or 0) == 24680
+    assert abs(float(sent.get("sl") or 0.0) - 158.321) < 1e-9
+    assert abs(float(sent.get("tp") or 0.0) - 159.2) < 1e-9

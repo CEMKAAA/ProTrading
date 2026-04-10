@@ -533,8 +533,8 @@ def mt4_log_indicator_logs(
 @router.post("/mt4/log-automation/simulate-signal")
 def mt4_log_simulate_signal(payload: Dict[str, Any]):
     """
-    Inject a synthetic MT indicator signal into the live bridge pipeline.
-    Useful for production diagnostics of: listener -> bridge ingest -> MT5 execution.
+    Inject a synthetic MT4 bridge signal (diagnostics only).
+    This endpoint now uses the bridge ingest path directly.
     """
     try:
         from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
@@ -560,6 +560,8 @@ def mt4_log_simulate_signal(payload: Dict[str, Any]):
             "signal_profile": signal_profile,
             "message": message,
             "event_ts": event_ts,
+            "ingest_source": "bridge",
+            "bridge_event_type": "signal",
         }
         if lot_override is not None:
             try:
@@ -567,7 +569,7 @@ def mt4_log_simulate_signal(payload: Dict[str, Any]):
             except Exception:
                 return {"ok": False, "error": "invalid_lot_override"}
 
-        out = svc.ingest_mt4_indicator_signal(payload=mt_payload)
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=mt_payload)
         state = svc.get_telegram_automation_state(limit=80)
         return {
             "ok": True,

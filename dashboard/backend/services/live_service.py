@@ -1048,6 +1048,90 @@ class LiveTradingService:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)}"}
 
+    def modify_position_sl_tp(
+        self,
+        *,
+        symbol: str,
+        position_ticket: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        comment: str = "",
+    ) -> Dict[str, Any]:
+        """Modify broker-side SL/TP for an existing MT5 position."""
+        if not self._ensure_mt5():
+            return {"ok": False, "error": "MT5 not connected"}
+        try:
+            symbol_req = str(symbol or "").strip().upper()
+            if not symbol_req:
+                return {"ok": False, "error": "symbol is required"}
+            try:
+                pos_ticket = int(position_ticket or 0)
+            except Exception:
+                pos_ticket = 0
+            if pos_ticket <= 0:
+                return {"ok": False, "error": "position_ticket must be > 0"}
+
+            symbol_resolved = self.resolve_symbol_name(symbol_req)
+            if not symbol_resolved:
+                return {"ok": False, "error": f"symbol_not_found:{symbol_req}"}
+            try:
+                mt5.symbol_select(symbol_resolved, True)
+            except Exception:
+                pass
+
+            try:
+                rows = mt5.positions_get(ticket=int(pos_ticket))
+            except Exception:
+                rows = None
+            positions = list(rows or [])
+            if not positions:
+                return {"ok": False, "error": "position_not_found"}
+            pos = positions[0]
+
+            sl_in = _to_float_or_none(stop_loss)
+            tp_in = _to_float_or_none(take_profit)
+            cur_sl = _to_float_or_none(getattr(pos, "sl", None))
+            cur_tp = _to_float_or_none(getattr(pos, "tp", None))
+            sl = float(sl_in) if sl_in is not None and float(sl_in) > 0.0 else (float(cur_sl) if cur_sl is not None and float(cur_sl) > 0.0 else 0.0)
+            tp = float(tp_in) if tp_in is not None and float(tp_in) > 0.0 else (float(cur_tp) if cur_tp is not None and float(cur_tp) > 0.0 else 0.0)
+
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_SLTP", 6)),
+                "symbol": symbol_resolved,
+                "position": int(getattr(pos, "ticket", 0) or pos_ticket),
+                "sl": float(sl),
+                "tp": float(tp),
+                "magic": 970001,
+                "comment": str(comment or "")[:31],
+            }
+            result = mt5.order_send(req)
+            if result is None:
+                return {"ok": False, "error": f"order_send_none:last_error={mt5.last_error()}"}
+            retcode = int(getattr(result, "retcode", 0) or 0)
+            retcode_name = self._retcode_name(retcode)
+            ok = retcode in {
+                int(getattr(mt5, "TRADE_RETCODE_DONE", 10009)),
+                int(getattr(mt5, "TRADE_RETCODE_PLACED", 10008)),
+                int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)),
+            }
+            payload = {
+                "ok": bool(ok),
+                "requested_symbol": symbol_req,
+                "symbol": symbol_resolved,
+                "position_ticket": int(getattr(pos, "ticket", 0) or pos_ticket),
+                "sl": (float(sl) if float(sl) > 0.0 else None),
+                "tp": (float(tp) if float(tp) > 0.0 else None),
+                "retcode": int(retcode),
+                "retcode_name": str(retcode_name),
+                "comment": str(getattr(result, "comment", "") or ""),
+                "request": req,
+            }
+            if not ok:
+                payload["error"] = f"{retcode}:{retcode_name}:{payload.get('comment')}"
+            return payload
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)}"}
+
     def close(self):
         """Cleanup MT5 connection"""
         if self._mt5_initialized:
