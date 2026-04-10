@@ -38,11 +38,13 @@ telegram_user_listener_service = TelegramUserListenerService(
 
 
 def _on_mt4_indicator_signal(**payload):
-    """Forward MT4 indicator signals into execution + unified feed pipeline."""
-    try:
-        telegram_bridge_service.ingest_mt4_indicator_signal(payload=dict(payload or {}))
-    except Exception:
-        logger.exception("mt4_indicator_signal_forward_failed")
+    """Legacy log parser callback kept detached from live execution."""
+    logger.info(
+        "mt_log_indicator_signal_ignored indicator=%s symbol=%s timeframe=%s",
+        str((payload or {}).get("indicator") or ""),
+        str((payload or {}).get("symbol") or ""),
+        str((payload or {}).get("timeframe") or ""),
+    )
 
 
 def _on_mt4_log_event(*, event):
@@ -88,6 +90,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _legacy_mt_log_automation_enabled() -> bool:
+    raw = str(os.getenv("ENABLE_LEGACY_MT_LOG_AUTOMATION", "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 # runtime note: notification services are env-gated from dashboard/.env
 
 # Create FastAPI app
@@ -187,12 +194,15 @@ async def startup_event():
         logger.info("Telegram user listener service initialized")
     except Exception:
         logger.exception("Telegram user listener service failed to start")
-    # Start MT4 log automation listener (optional, env-gated)
-    try:
-        mt4_log_automation_service.start()
-        logger.info("MT4 log automation service initialized")
-    except Exception:
-        logger.exception("MT4 log automation service failed to start")
+    # Legacy MT4/MT5 log automation is disabled by default in bridge-only mode.
+    if _legacy_mt_log_automation_enabled():
+        try:
+            mt4_log_automation_service.start()
+            logger.info("MT4 log automation service initialized")
+        except Exception:
+            logger.exception("MT4 log automation service failed to start")
+    else:
+        logger.info("MT4 log automation service disabled (bridge-only mode)")
 
     # Start YouTube frame colorflip watcher (optional, env-gated)
     try:

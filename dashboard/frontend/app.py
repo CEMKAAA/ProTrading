@@ -1007,7 +1007,7 @@ def telegram_automation():
 
 @app.route('/mt4-log-automation')
 def mt4_log_automation():
-    """MT4 log-based indicator automation control panel."""
+    """Bridge-only MT4/MT5 indicator automation control panel."""
     return render_template('mt4_log_automation.html')
 
 
@@ -1495,6 +1495,61 @@ def mt4_log_indicator_logs_proxy():
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to load indicator logs'}), 500
     return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/state')
+def indicator_bridge_state_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/state',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/instance-automation', methods=['POST'])
+def indicator_bridge_instance_automation_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/instance-automation',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update indicator bridge instance state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/execution-log/export')
+def indicator_bridge_execution_log_export_proxy():
+    params = {}
+    if request.args.get('format') is not None:
+        params['format'] = request.args.get('format')
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/api/v1/indicator-bridge/execution-log/export",
+            params=params,
+            timeout=60,
+        )
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': f'Failed to export indicator execution log: {type(exc).__name__}: {str(exc)[:180]}'}), 500
+    if not response.ok:
+        return jsonify({'ok': False, 'error': response.text[:240] or 'Failed to export indicator execution log'}), response.status_code
+    out = make_response(response.content)
+    out.headers['Content-Type'] = response.headers.get('Content-Type', 'application/octet-stream')
+    out.headers['Content-Disposition'] = response.headers.get('Content-Disposition', 'attachment; filename="indicator_execution_audit.bin"')
+    return out
 
 
 @app.route('/api/simulation/sessions/<int:session_id>/tools/<tool_id>/scan', methods=['POST'])

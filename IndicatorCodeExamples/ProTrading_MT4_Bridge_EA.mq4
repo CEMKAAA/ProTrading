@@ -23,6 +23,8 @@ input bool   InpResetDirectionOnNoSignal = true;  // true => NONE resets directi
 input int    InpResendSameDirectionAfterSeconds = 0; // 0 disables periodic resend
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
 input bool   InpInvertDirection = false; // quick fix for indicators with reversed buffers
+input bool   InpSendRegistrationOnInit = true;
+input int    InpHeartbeatSeconds = 60;
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
 input bool   InpAllowSell = true;
@@ -39,6 +41,7 @@ int      g_lastSentDir = 0; // 1=BUY, -1=SELL
 int      g_lastObservedDir = 0; // 1=BUY, -1=SELL, 0=none
 datetime g_lastSentAt = 0;
 datetime g_lastFailedSendAt = 0;
+datetime g_lastHeartbeatAt = 0;
 bool     g_observedInitialized = false;
 double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
@@ -231,7 +234,7 @@ double _icustom_value(int bufferIndex, int barShift)
    return EMPTY_VALUE;
 }
 
-bool _post_signal(string direction, double signalValue, datetime signalBarTime)
+bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime)
 {
    string symbol = Symbol();
    string timeframe = _tf_to_string(Period());
@@ -239,14 +242,21 @@ bool _post_signal(string direction, double signalValue, datetime signalBarTime)
    string endpointLocalhost = _build_endpoint("http://localhost", InpApiPath);
    string endpointLoopback = _build_endpoint("http://127.0.0.1", InpApiPath);
 
-   string msg = StringFormat("%s %s %s buffer=%g shift=%d", InpIndicatorName, symbol, direction, signalValue, InpSignalShift);
+   string eventKind = _trim(eventType);
+   string dir = _trim(direction);
+   string msg = "";
+   if(StringLen(dir) > 0)
+      msg = StringFormat("%s %s %s buffer=%g shift=%d", InpIndicatorName, symbol, dir, signalValue, InpSignalShift);
+   else
+      msg = StringFormat("MT4Bridge %s %s | %s %s", eventKind, InpIndicatorName, symbol, timeframe);
    string body =
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
-      "\"signal_hint\":\"" + _json_escape(direction) + "\","
+      "\"signal_hint\":\"" + _json_escape(dir) + "\","
       "\"symbol\":\"" + _json_escape(symbol) + "\","
       "\"timeframe\":\"" + _json_escape(timeframe) + "\","
       "\"signal_profile\":\"" + _json_escape(InpSignalProfile) + "\","
+      "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
       "\"message\":\"" + _json_escape(msg) + "\","
       "\"bridge_token\":\"" + _json_escape(InpBridgeToken) + "\""
       "}";
@@ -285,7 +295,7 @@ bool _post_signal(string direction, double signalValue, datetime signalBarTime)
       if(httpCode >= 200 && httpCode < 300)
       {
          if(InpDebugPrint)
-            Print("MT4Bridge sent ", direction, " ", symbol, " ", timeframe,
+            Print("MT4Bridge sent ", eventKind, " ", dir, " ", symbol, " ", timeframe,
                   " bar=", TimeToString(signalBarTime, TIME_DATE|TIME_SECONDS),
                   " endpoint=", endpoint, " response=", resultText);
          return true;
@@ -401,7 +411,7 @@ void _check_and_send()
    if(!shouldSend)
       return;
 
-   if(_post_signal(dirText, signalPrice, barTime))
+   if(_post_bridge_event("signal", dirText, signalPrice, barTime))
    {
       g_lastSentBar = barTime;
       g_lastSentDir = direction;
@@ -445,6 +455,14 @@ int OnInit()
       Print("MT4Bridge endpoint(fallback2): ", _build_endpoint("http://127.0.0.1", InpApiPath));
       Print("MT4Bridge reminder: add URL to MT4 WebRequest whitelist.");
    }
+   if(InpSendRegistrationOnInit)
+   {
+      datetime nowTs = TimeCurrent();
+      if(nowTs <= 0)
+         nowTs = TimeLocal();
+      if(_post_bridge_event("register", "", 0.0, nowTs))
+         g_lastHeartbeatAt = nowTs;
+   }
    return(INIT_SUCCEEDED);
 }
 
@@ -460,5 +478,16 @@ void OnTick()
 
 void OnTimer()
 {
+   if(InpHeartbeatSeconds > 0)
+   {
+      datetime nowTs = TimeCurrent();
+      if(nowTs <= 0)
+         nowTs = TimeLocal();
+      if(nowTs > 0 && (g_lastHeartbeatAt <= 0 || (nowTs - g_lastHeartbeatAt) >= InpHeartbeatSeconds))
+      {
+         if(_post_bridge_event("heartbeat", "", 0.0, nowTs))
+            g_lastHeartbeatAt = nowTs;
+      }
+   }
    _check_and_send();
 }

@@ -267,6 +267,7 @@ class TelegramBridgeService:
         self._source_reentry_guard: Dict[str, Dict[str, Any]] = {}
         self._mt4_signal_dedupe: Dict[str, float] = {}
         self._mt4_bridge_combo_registry: Dict[str, float] = {}
+        self._indicator_bridge_instances: Dict[str, Dict[str, Any]] = {}
         self._automation_execution_logs: List[Dict[str, Any]] = []
         self._automation_execution_logs_next_id: int = 0
         self._automation_execution_logs_max: int = 5000
@@ -2183,6 +2184,187 @@ class TelegramBridgeService:
         # so each stage can close 0.01 on symbols with 0.01 volume_step.
         return max(0.05, min(100.0, float(raw)))
 
+    @staticmethod
+    def _indicator_bridge_family(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw == "mt5":
+            return "mt5"
+        return "mt4"
+
+    @staticmethod
+    def _indicator_bridge_env_key(family: str, suffix: str) -> str:
+        fam = "MT5" if str(family or "").strip().lower() == "mt5" else "MT4"
+        return f"INDICATOR_BRIDGE_{fam}_{str(suffix or '').strip().upper()}"
+
+    @staticmethod
+    def _upsert_indicator_bridge_env_values(updates: Dict[str, Any]) -> Tuple[bool, str]:
+        if not isinstance(updates, dict) or not updates:
+            return False, "no_updates"
+        repo_root = Path(__file__).resolve().parents[3]
+        env_path = repo_root / "dashboard" / ".env"
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        except Exception as exc:
+            return False, f"read_env_failed:{type(exc).__name__}:{str(exc)[:140]}"
+        normalized: Dict[str, str] = {}
+        for k, v in updates.items():
+            key = str(k or "").strip().upper()
+            if not key.startswith("INDICATOR_BRIDGE_"):
+                continue
+            normalized[key] = str(v if v is not None else "").strip()
+        if not normalized:
+            return False, "no_valid_updates"
+        out_lines: List[str] = []
+        replaced: set[str] = set()
+        for line in lines:
+            raw = str(line or "")
+            if "=" not in raw:
+                out_lines.append(raw)
+                continue
+            key = str(raw.split("=", 1)[0]).strip().upper()
+            if key in normalized:
+                out_lines.append(f"{key}={normalized[key]}")
+                replaced.add(key)
+            else:
+                out_lines.append(raw)
+        for key, val in normalized.items():
+            if key not in replaced:
+                out_lines.append(f"{key}={val}")
+        try:
+            env_path.write_text("\n".join(out_lines).rstrip() + "\n", encoding="utf-8")
+        except Exception as exc:
+            return False, f"write_env_failed:{type(exc).__name__}:{str(exc)[:140]}"
+        return True, "ok"
+
+    @classmethod
+    def _indicator_bridge_default_lot(cls, family: Any) -> float:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "DEFAULT_LOT")
+        raw = _to_float_or_none(cls._get_env_value(key, "0.05"))
+        if raw is None or float(raw) <= 0.0:
+            raw = 0.05
+        return float(max(0.01, min(100.0, float(raw))))
+
+    @classmethod
+    def _indicator_bridge_instance_key(
+        cls,
+        *,
+        family: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+    ) -> str:
+        fam = cls._indicator_bridge_family(family)
+        indicator_key = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
+        symbol_key = str(symbol or "").strip().upper()
+        timeframe_key = str(timeframe or "").strip().upper()
+        if not indicator_key or not symbol_key or not timeframe_key:
+            return ""
+        return f"{fam}|{indicator_key}|{symbol_key}|{timeframe_key}"
+
+    @classmethod
+    def _indicator_bridge_instance_automation_overrides(cls, family: Any) -> Dict[str, bool]:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_AUTOMATION")
+        raw = str(cls._get_env_value(key, "{}")).strip()
+        out: Dict[str, bool] = {}
+        if not raw:
+            return out
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return out
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            out[item] = bool(v)
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_instance_automation_overrides(cls, overrides: Dict[str, Any]) -> str:
+        cleaned: Dict[str, bool] = {}
+        for k, v in (overrides or {}).items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            cleaned[item] = bool(v)
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _indicator_bridge_instance_lot_overrides(cls, family: Any) -> Dict[str, float]:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_LOTS")
+        raw = str(cls._get_env_value(key, "{}")).strip()
+        out: Dict[str, float] = {}
+        if not raw:
+            return out
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return out
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            lot = _to_float_or_none(v)
+            if lot is None or float(lot) <= 0.0:
+                continue
+            out[item] = float(max(0.01, min(100.0, float(lot))))
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_instance_lot_overrides(cls, lot_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, float] = {}
+        for k, v in (lot_map or {}).items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            lot = _to_float_or_none(v)
+            if lot is None or float(lot) <= 0.0:
+                continue
+            cleaned[item] = float(max(0.01, min(100.0, float(lot))))
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def _resolve_indicator_bridge_instance_runtime_config(
+        self,
+        *,
+        family: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+    ) -> Dict[str, Any]:
+        terminal_family = self._indicator_bridge_family(family)
+        indicator_name = self._normalize_mt4_indicator_name(indicator) or str(indicator or "").strip()
+        symbol_name = str(symbol or "").strip().upper()
+        timeframe_name = str(timeframe or "").strip().upper()
+        instance_key = self._indicator_bridge_instance_key(
+            family=terminal_family,
+            indicator=indicator_name,
+            symbol=symbol_name,
+            timeframe=timeframe_name,
+        )
+        overrides = self._indicator_bridge_instance_automation_overrides(terminal_family)
+        instance_key_l = str(instance_key or "").strip().lower()
+        explicit_present = bool(instance_key_l and instance_key_l in overrides)
+        explicit_enabled = bool(overrides.get(instance_key_l)) if explicit_present else False
+        lot_overrides = self._indicator_bridge_instance_lot_overrides(terminal_family)
+        lot_size = _to_float_or_none(lot_overrides.get(instance_key_l))
+        if lot_size is None or float(lot_size) <= 0.0:
+            lot_size = float(self._indicator_bridge_default_lot(terminal_family))
+        return {
+            "terminal_family": str(terminal_family),
+            "indicator": str(indicator_name),
+            "symbol": str(symbol_name),
+            "timeframe": str(timeframe_name),
+            "instance_key": str(instance_key),
+            "automation_mode": ("explicit" if explicit_present else "inherit"),
+            "automation_enabled": bool(explicit_enabled),
+            "effective_automation_enabled": bool(explicit_enabled),
+            "lot_size": _to_float_or_none(lot_size),
+        }
+
     def _resolve_mt4_instance_runtime_config(
         self,
         *,
@@ -2254,6 +2436,350 @@ class TelegramBridgeService:
             }
         )
         return out
+
+    def register_indicator_bridge_instance(
+        self,
+        *,
+        terminal_family: Any,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        family = self._indicator_bridge_family(terminal_family)
+        p = payload if isinstance(payload, dict) else {}
+        indicator_raw = str(p.get("indicator") or p.get("indicator_name") or "").strip()
+        indicator = self._normalize_mt4_indicator_name(indicator_raw) or indicator_raw or f"{family.upper()}Bridge"
+        symbol_raw = str(p.get("symbol") or p.get("pair") or "").strip().upper()
+        symbol = str(self._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
+        timeframe = str(p.get("timeframe") or p.get("tf") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
+        profile = str(p.get("signal_profile") or p.get("profile") or "").strip().lower()
+        message = str(p.get("message") or p.get("raw_text") or "").strip()
+        event_ts = str(p.get("event_ts") or self._now_iso()).strip() or self._now_iso()
+        bridge_event_type = str(p.get("bridge_event_type") or p.get("event_type") or "signal").strip().lower() or "signal"
+        instance_key = self._indicator_bridge_instance_key(
+            family=family,
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
+            family=family,
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        row = {
+            "terminal_family": str(family),
+            "indicator": str(indicator),
+            "profile": str(profile),
+            "symbol": str(symbol),
+            "timeframe": str(timeframe),
+            "instance_key": str(instance_key),
+            "last_seen": str(event_ts),
+            "bridge_event_type": str(bridge_event_type),
+            "message": str(message),
+            "automation_mode": str(runtime_cfg.get("automation_mode") or "inherit"),
+            "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
+            "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
+            "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
+            "source_tag": (
+                f"{family}|{str(profile or 'generic').strip().lower()}|"
+                f"{self._normalize_mt_indicator_key(indicator)}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}"
+            ),
+        }
+        if not instance_key:
+            return row
+        with self._lock:
+            prev = self._indicator_bridge_instances.get(str(instance_key))
+            if isinstance(prev, dict):
+                merged = dict(prev)
+                merged.update({k: v for k, v in row.items() if v not in {None, "", []}})
+                row = merged
+            self._indicator_bridge_instances[str(instance_key)] = dict(row)
+            if len(self._indicator_bridge_instances) > 5000:
+                cutoff = time.time() - (7.0 * 86400.0)
+                compacted: Dict[str, Dict[str, Any]] = {}
+                for k, v in self._indicator_bridge_instances.items():
+                    seen_ts = _to_unix_or_none((v or {}).get("last_seen"))
+                    if seen_ts is None or float(seen_ts) >= float(cutoff):
+                        compacted[str(k)] = dict(v)
+                self._indicator_bridge_instances = compacted
+        return dict(row)
+
+    def update_indicator_bridge_instance_settings(
+        self,
+        *,
+        terminal_family: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+        enabled: Optional[bool] = None,
+        lot_size: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        family = self._indicator_bridge_family(terminal_family)
+        instance_key = self._indicator_bridge_instance_key(
+            family=family,
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        if not instance_key:
+            return {"ok": False, "error": "invalid_instance_key"}
+        auto_map = self._indicator_bridge_instance_automation_overrides(family)
+        lot_map = self._indicator_bridge_instance_lot_overrides(family)
+        if enabled is not None:
+            auto_map[str(instance_key).lower()] = bool(enabled)
+        if lot_size is not None:
+            lot_val = _to_float_or_none(lot_size)
+            if lot_val is None or float(lot_val) <= 0.0:
+                return {"ok": False, "error": "invalid_lot_size"}
+            lot_map[str(instance_key).lower()] = float(max(0.01, min(100.0, float(lot_val))))
+        ok, status = self._upsert_indicator_bridge_env_values(
+            {
+                self._indicator_bridge_env_key(family, "INSTANCE_AUTOMATION"): self._serialize_indicator_bridge_instance_automation_overrides(auto_map),
+                self._indicator_bridge_env_key(family, "INSTANCE_LOTS"): self._serialize_indicator_bridge_instance_lot_overrides(lot_map),
+            }
+        )
+        runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
+            family=family,
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        with self._lock:
+            prev = self._indicator_bridge_instances.get(str(instance_key))
+            if isinstance(prev, dict):
+                prev["automation_mode"] = str(runtime_cfg.get("automation_mode") or "inherit")
+                prev["automation_enabled"] = bool(runtime_cfg.get("automation_enabled"))
+                prev["effective_automation_enabled"] = bool(runtime_cfg.get("effective_automation_enabled"))
+                prev["lot_size"] = _to_float_or_none(runtime_cfg.get("lot_size"))
+                self._indicator_bridge_instances[str(instance_key)] = dict(prev)
+        return {
+            "ok": bool(ok),
+            "persist_status": str(status),
+            "runtime": runtime_cfg,
+        }
+
+    def _get_indicator_bridge_bot_monitor(
+        self,
+        *,
+        terminal_family: Any,
+        limit: int = 300,
+    ) -> Dict[str, Any]:
+        family = self._indicator_bridge_family(terminal_family)
+        lim = int(max(10, min(1000, int(limit or 300))))
+        ttl_sec = 7.0 * 86400.0
+        now_ts = time.time()
+        with self._lock:
+            ladders = [dict(v) for v in self._active_confirmation_signal_ladders.values() if isinstance(v, dict)]
+            registry_rows = [dict(v) for v in self._indicator_bridge_instances.values() if isinstance(v, dict)]
+        family_prefix = f"{family}|"
+        ladder_rows = [r for r in ladders if str(r.get("source_tag") or "").strip().lower().startswith(family_prefix)]
+        svc = self._get_live_service()
+        symbols = sorted({str(r.get("symbol") or "").strip().upper() for r in ladder_rows if str(r.get("symbol") or "").strip()})
+        open_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+        for sym in symbols:
+            try:
+                open_by_symbol[str(sym)] = [dict(x) for x in (svc.get_open_positions(symbol=str(sym)) or []) if isinstance(x, dict)]
+            except Exception:
+                open_by_symbol[str(sym)] = []
+
+        open_rows: List[Dict[str, Any]] = []
+        ladder_by_instance: Dict[str, Dict[str, Any]] = {}
+        for row in ladder_rows:
+            ticket = int(_to_float_or_none(row.get("broker_ticket")) or 0)
+            symbol = str(row.get("symbol") or "").strip().upper()
+            timeframe = str(row.get("timeframe") or "").strip().upper()
+            direction = str(row.get("direction") or "").strip().upper()
+            indicator = str(row.get("indicator") or row.get("source_name") or "unknown").strip() or "unknown"
+            instance_key = self._indicator_bridge_instance_key(
+                family=family,
+                indicator=indicator,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            pos_rows = list(open_by_symbol.get(symbol) or [])
+            live_pos = next((p for p in pos_rows if int(_to_float_or_none(p.get("ticket")) or 0) == ticket), None)
+            current_profit = _to_float_or_none((live_pos or {}).get("profit_loss"))
+            current_price = _to_float_or_none((live_pos or {}).get("current_price"))
+            out_row = {
+                "terminal_family": str(family),
+                "instance_key": str(instance_key),
+                "indicator": str(indicator),
+                "symbol": str(symbol),
+                "timeframe": str(timeframe),
+                "direction": str(direction),
+                "ticket": int(ticket),
+                "opened_at": str(row.get("created_at") or ""),
+                "state": "OPEN",
+                "max_profit": _to_float_or_none(row.get("max_profit")),
+                "max_loss": _to_float_or_none(row.get("max_loss")),
+                "current_profit": _to_float_or_none(current_profit),
+                "current_price": _to_float_or_none(current_price),
+                "source_tag": str(row.get("source_tag") or "").strip().lower(),
+                "profile": str(row.get("profile") or "").strip().lower(),
+                "combo_key": self._build_execution_combo_key(
+                    source_type="mt_indicator",
+                    source_name=str(indicator),
+                    indicator=str(indicator),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                ),
+            }
+            open_rows.append(out_row)
+            ladder_by_instance[str(instance_key).lower()] = dict(out_row)
+
+        bot_rows: List[Dict[str, Any]] = []
+        for row in registry_rows:
+            if str(row.get("terminal_family") or "").strip().lower() != family:
+                continue
+            seen_unix = _to_unix_or_none(row.get("last_seen"))
+            if seen_unix is not None and (float(now_ts) - float(seen_unix)) > float(ttl_sec):
+                continue
+            indicator = str(row.get("indicator") or "").strip()
+            symbol = str(row.get("symbol") or "").strip().upper()
+            timeframe = str(row.get("timeframe") or "").strip().upper()
+            instance_key = str(row.get("instance_key") or "").strip()
+            if not indicator or not symbol or not timeframe or not instance_key:
+                continue
+            runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
+                family=family,
+                indicator=indicator,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            linked = dict(ladder_by_instance.get(str(instance_key).lower()) or {})
+            merged = dict(row)
+            merged.update(
+                {
+                    "terminal_family": str(family),
+                    "instance_key": str(instance_key),
+                    "indicator": str(indicator),
+                    "symbol": str(symbol),
+                    "timeframe": str(timeframe),
+                    "automation_mode": str(runtime_cfg.get("automation_mode") or "inherit"),
+                    "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
+                    "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
+                    "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
+                    "state": ("OPEN" if linked else "IDLE"),
+                    "has_open_ladder": bool(linked),
+                    "ticket": int(_to_float_or_none(linked.get("ticket")) or 0),
+                    "direction": str(linked.get("direction") or "").strip().upper(),
+                    "opened_at": str(linked.get("opened_at") or ""),
+                    "max_profit": _to_float_or_none(linked.get("max_profit")),
+                    "max_loss": _to_float_or_none(linked.get("max_loss")),
+                    "current_profit": _to_float_or_none(linked.get("current_profit")),
+                    "current_price": _to_float_or_none(linked.get("current_price")),
+                    "combo_key": str(linked.get("combo_key") or self._build_execution_combo_key(
+                        source_type="mt_indicator",
+                        source_name=str(indicator),
+                        indicator=str(indicator),
+                        symbol=str(symbol),
+                        timeframe=str(timeframe),
+                    )),
+                }
+            )
+            bot_rows.append(merged)
+        bot_rows.sort(key=lambda r: (str(r.get("opened_at") or ""), str(r.get("last_seen") or "")), reverse=True)
+        bot_rows = bot_rows[:lim]
+        return {
+            "ok": True,
+            "terminal_family": str(family),
+            "updated_at": self._now_iso(),
+            "rows": open_rows[:lim],
+            "bot_rows": bot_rows,
+            "bot_active_count": int(len([r for r in bot_rows if bool(r.get("effective_automation_enabled"))])),
+            "bot_open_count": int(len([r for r in bot_rows if bool(r.get("has_open_ladder"))])),
+            "bot_idle_count": int(len([r for r in bot_rows if bool(r.get("effective_automation_enabled")) and not bool(r.get("has_open_ladder"))])),
+        }
+
+    def get_mt5_indicator_bot_monitor(self, *, limit: int = 300) -> Dict[str, Any]:
+        return self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=limit)
+
+    @staticmethod
+    def _execution_terminal_family_from_row(row: Dict[str, Any]) -> str:
+        source_tag = str((row or {}).get("source_tag") or "").strip().lower()
+        if source_tag.startswith("mt5|"):
+            return "MT5"
+        if source_tag.startswith("mt4|"):
+            return "MT4"
+        return "-"
+
+    @staticmethod
+    def _execution_session_name(value: Any) -> str:
+        unix_ts = _to_unix_or_none(value)
+        if unix_ts is None:
+            return "-"
+        dt = datetime.fromtimestamp(float(unix_ts), tz=timezone.utc)
+        mins = int(dt.hour) * 60 + int(dt.minute)
+        if 0 <= mins < 9 * 60:
+            return "tokyo"
+        if 7 * 60 <= mins < 16 * 60:
+            return "london"
+        if 13 * 60 <= mins < 22 * 60:
+            return "new_york"
+        return "off_session"
+
+    def get_indicator_execution_audit_rows(self, *, limit: int = 500) -> Dict[str, Any]:
+        raw_rows = self.get_automation_execution_logs(limit=max(100, min(5000, int(limit or 500))))
+        out_rows: List[Dict[str, Any]] = []
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source_type") or "").strip().lower() != "mt_indicator":
+                continue
+            opened_at = str(row.get("opened_at") or "").strip()
+            event_ts = str(row.get("event_ts") or row.get("ts") or "").strip()
+            status = str(row.get("status") or "").strip().lower()
+            out_rows.append(
+                {
+                    "id": int(row.get("id") or 0),
+                    "terminal_family": self._execution_terminal_family_from_row(row),
+                    "indicator": str(row.get("indicator") or row.get("source_name") or "").strip(),
+                    "source_name": str(row.get("source_name") or "").strip(),
+                    "symbol": str(row.get("symbol") or "").strip().upper(),
+                    "timeframe": str(row.get("timeframe") or "").strip().upper(),
+                    "direction": str(row.get("direction") or "").strip().upper(),
+                    "lot": _to_float_or_none(row.get("lot")),
+                    "status": str(status),
+                    "ticket": int(_to_float_or_none(row.get("ticket")) or 0) or None,
+                    "opened_at": str(opened_at),
+                    "closed_at": (str(event_ts) if status == "closed" else ""),
+                    "session_name": self._execution_session_name(opened_at or event_ts),
+                    "max_profit": _to_float_or_none(row.get("max_profit")),
+                    "max_loss": _to_float_or_none(row.get("max_loss")),
+                    "realized_pnl": _to_float_or_none(row.get("realized_pnl")),
+                    "close_reason": str(row.get("close_reason") or "").strip(),
+                    "final_tp": _to_float_or_none(row.get("final_tp")),
+                    "stop_loss": _to_float_or_none(row.get("stop_loss")),
+                    "event_ts": str(event_ts),
+                    "message": str(row.get("message") or "").strip(),
+                    "source_tag": str(row.get("source_tag") or "").strip().lower(),
+                    "combo_key": str(row.get("combo_key") or "").strip().lower(),
+                }
+            )
+        out_rows.sort(key=lambda r: str(r.get("event_ts") or r.get("opened_at") or ""), reverse=True)
+        lim = int(max(20, min(5000, int(limit or 500))))
+        out_rows = out_rows[:lim]
+        return {
+            "ok": True,
+            "rows": out_rows,
+            "count": int(len(out_rows)),
+            "generated_at": self._now_iso(),
+        }
+
+    def get_indicator_bridge_state(self, *, limit: int = 300) -> Dict[str, Any]:
+        lim = int(max(20, min(1000, int(limit or 300))))
+        mt4_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt4", limit=lim)
+        mt5_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=lim)
+        execution_logs = self.get_indicator_execution_audit_rows(limit=max(200, lim))
+        execution_report = self.get_automation_execution_report(limit=200)
+        return {
+            "ok": True,
+            "updated_at": self._now_iso(),
+            "mt4_monitor": mt4_monitor,
+            "mt5_monitor": mt5_monitor,
+            "execution_logs": execution_logs,
+            "execution_report": execution_report,
+        }
 
     @staticmethod
     def _mt4_exec_profile_atr_period(profile: str) -> int:
@@ -2771,6 +3297,251 @@ class TelegramBridgeService:
             }
         return {"ok": True, "closed_count": int(closed_count), "failed_count": 0}
 
+    def ingest_indicator_bridge_signal(
+        self,
+        *,
+        terminal_family: Any,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        family = self._indicator_bridge_family(terminal_family)
+        p = payload if isinstance(payload, dict) else {}
+        bridge_event_type = str(p.get("bridge_event_type") or p.get("event_type") or "signal").strip().lower() or "signal"
+        registered = self.register_indicator_bridge_instance(terminal_family=family, payload=p)
+
+        indicator_raw = str(p.get("indicator") or "").strip()
+        indicator = self._normalize_mt4_indicator_name(indicator_raw) or indicator_raw or f"{family.upper()}Indicator"
+        indicator_key = self._normalize_mt_indicator_key(indicator)
+        profile = str(p.get("signal_profile") or p.get("profile") or "").strip().lower() or "generic"
+        ingest_source = str(p.get("ingest_source") or "bridge").strip().lower() or "bridge"
+        hint = str(p.get("signal_hint") or p.get("direction") or "").strip().upper()
+        symbol_raw = str(p.get("symbol") or "").strip().upper()
+        symbol = str(self._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
+        timeframe = str(p.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
+        message = str(p.get("message") or "").strip()
+        event_ts = p.get("event_ts")
+        source = f"{family.upper()}:{indicator}"
+
+        if bridge_event_type in {"register", "heartbeat", "status", "init"} and hint not in {"BUY", "SELL"}:
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "bridge_registered",
+                "runtime": self._resolve_indicator_bridge_instance_runtime_config(
+                    family=family,
+                    indicator=indicator,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                ),
+                "bridge": registered,
+            }
+
+        if hint not in {"BUY", "SELL"}:
+            return {"ok": False, "error": "invalid_direction", "executed": False}
+        if not symbol:
+            return {"ok": False, "error": "missing_symbol", "executed": False}
+
+        now_ts = time.time()
+        combo_key = f"{family}|{indicator_key}|{symbol}|{timeframe}"
+        lock_sec = float(self._mt4_bridge_source_lock_sec())
+        with self._lock:
+            if ingest_source == "bridge" and combo_key:
+                self._mt4_bridge_combo_registry[str(combo_key)] = float(now_ts)
+            elif combo_key:
+                bridge_seen_ts = float(self._mt4_bridge_combo_registry.get(str(combo_key)) or 0.0)
+                if bridge_seen_ts > 0.0 and (float(now_ts) - float(bridge_seen_ts)) <= float(lock_sec):
+                    return {"ok": True, "executed": False, "reason": "bridge_source_locked"}
+            if len(self._mt4_bridge_combo_registry) > 5000:
+                cutoff = float(now_ts) - float(lock_sec)
+                self._mt4_bridge_combo_registry = {
+                    str(k): float(v) for k, v in self._mt4_bridge_combo_registry.items() if float(v) >= float(cutoff)
+                }
+
+        ev_unix = _to_unix_or_none(event_ts)
+        max_age = float(self._mt4_exec_max_signal_age_sec())
+        if max_age > 0.0 and ev_unix is not None and (float(now_ts) - float(ev_unix)) > float(max_age):
+            return {"ok": True, "executed": False, "reason": "stale_signal"}
+
+        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
+        dedupe_key = f"{family}|{profile}|{indicator_key}|{symbol}|{timeframe}|{hint}|{msg_norm}"
+        with self._lock:
+            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
+                return {"ok": True, "executed": False, "reason": "duplicate_signal"}
+            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
+            if len(self._mt4_signal_dedupe) > 10000:
+                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
+                self._mt4_signal_dedupe = {
+                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
+                }
+
+        if not self._mt4_exec_enabled():
+            return {"ok": True, "executed": False, "reason": "indicator_execution_disabled"}
+
+        if not self._mt4_exec_profile_enabled(profile):
+            return {"ok": True, "executed": False, "reason": f"profile_disabled:{profile}"}
+
+        runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
+            family=family,
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        if not bool(runtime_cfg.get("effective_automation_enabled")):
+            return {"ok": True, "executed": False, "reason": "instance_disabled", "runtime": runtime_cfg}
+
+        svc = self._get_live_service()
+        info = svc.get_symbol_info(symbol=str(symbol))
+        if isinstance(info, dict) and str(info.get("error") or "").strip():
+            return {"ok": False, "executed": False, "error": str(info.get("error"))[:220]}
+        symbol_exec_raw = str((info or {}).get("resolved_symbol") or symbol).strip() or str(symbol)
+        symbol_exec = str(symbol_exec_raw).strip().upper()
+        digits = int((info or {}).get("digits") or 2)
+        point = _to_float_or_none((info or {}).get("point")) or (0.01 if digits <= 2 else 0.0001)
+        min_stops_points = _to_float_or_none((info or {}).get("trade_stops_level")) or 0.0
+        min_stop_dist = float(max(0.0, float(min_stops_points) * float(point)))
+
+        tick = svc.get_symbol_tick(symbol=str(symbol_exec_raw), resolve_symbol=False)
+        ask = _to_float_or_none((tick or {}).get("ask"))
+        bid = _to_float_or_none((tick or {}).get("bid"))
+        last = _to_float_or_none((tick or {}).get("last"))
+
+        bars = svc.get_recent_candles(
+            symbol=str(symbol_exec_raw),
+            timeframe=str(timeframe),
+            count=max(40, self._mt4_exec_profile_atr_period(profile) + 10),
+            resolve_symbol=False,
+        )
+        atr_period = int(self._mt4_exec_profile_atr_period(profile))
+        atr = self._calc_robust_atr_from_bars(bars, period=int(atr_period))
+
+        entry_price = ask if hint == "BUY" else bid
+        if entry_price is None:
+            entry_price = last
+        if entry_price is None and isinstance(bars, list) and bars:
+            entry_price = _to_float_or_none((bars[-1] or {}).get("close"))
+        if entry_price is None or (not math.isfinite(float(entry_price))) or float(entry_price) <= 0.0:
+            return {"ok": False, "executed": False, "error": "entry_price_unavailable"}
+
+        default_dist = max(float(point) * 120.0, abs(float(entry_price)) * 0.001)
+        sl_distance = float(atr or default_dist) * float(self._mt4_exec_profile_sl_atr(profile))
+        sl_distance = max(float(sl_distance), float(min_stop_dist) * 1.80, float(point) * 25.0)
+        tp_base_distance = float(atr or default_dist) * float(self._mt4_exec_profile_tp_atr(profile))
+        tp_base_distance = max(float(tp_base_distance), float(min_stop_dist) * 2.20, float(point) * 40.0)
+        tp_r_start = float(self._mt4_exec_profile_tp_r_start(profile))
+        tp_r_step = float(self._mt4_exec_profile_tp_r_step(profile))
+        base_tp_multipliers = [float(x) for x in self._mt4_exec_profile_tp_levels(profile)]
+        if not base_tp_multipliers:
+            base_tp_multipliers = [float(tp_r_start + tp_r_step * i) for i in range(5)]
+        base_stage_weights = [float(x) for x in self._mt4_exec_profile_stage_weights(profile)]
+        regime_mode = str(self._mt4_exec_profile_regime_mode(profile))
+        regime_info = self._estimate_mt4_market_regime(
+            bars=bars,
+            atr_value=atr,
+            efficiency_lookback=max(8, min(80, int(atr_period))),
+            er_threshold=float(self._mt4_exec_profile_regime_er_threshold(profile)),
+            donchian_atr_threshold=float(self._mt4_exec_profile_regime_donchian_atr_threshold(profile)),
+        )
+        inferred_regime = str((regime_info or {}).get("regime") or "unknown").strip().lower() or "unknown"
+        active_regime = str(regime_mode)
+        if active_regime not in {"trend", "range"}:
+            active_regime = "trend" if inferred_regime == "trend" else "range"
+        if active_regime == "trend":
+            tp_multipliers = [float(x) for x in self._mt4_exec_profile_tp_levels_trend(profile)]
+            stage_weights = [float(x) for x in self._mt4_exec_profile_stage_weights_trend(profile)]
+        elif active_regime == "range":
+            tp_multipliers = [float(x) for x in self._mt4_exec_profile_tp_levels_range(profile)]
+            stage_weights = [float(x) for x in self._mt4_exec_profile_stage_weights_range(profile)]
+        else:
+            tp_multipliers = list(base_tp_multipliers)
+            stage_weights = list(base_stage_weights)
+        if not tp_multipliers:
+            tp_multipliers = list(base_tp_multipliers)
+        if not stage_weights:
+            stage_weights = list(base_stage_weights)
+        if not tp_multipliers:
+            tp_multipliers = [float(tp_r_start + tp_r_step * i) for i in range(5)]
+
+        if hint == "BUY":
+            tp_prices = [float(entry_price + tp_base_distance * float(rm)) for rm in tp_multipliers]
+        else:
+            tp_prices = [float(entry_price - tp_base_distance * float(rm)) for rm in tp_multipliers]
+
+        hard_sl_mode = str(self._mt4_exec_profile_hard_sl_mode(profile))
+        stop_loss: Optional[float] = None
+        no_stop_loss = True
+        if hard_sl_mode == "atr":
+            if hint == "BUY":
+                stop_loss = float(entry_price - sl_distance)
+                stop_loss = min(float(stop_loss), float(entry_price - max(min_stop_dist * 1.10, point * 2.0)))
+            else:
+                stop_loss = float(entry_price + sl_distance)
+                stop_loss = max(float(stop_loss), float(entry_price + max(min_stop_dist * 1.10, point * 2.0)))
+            stop_loss = round(float(stop_loss), int(max(0, digits)))
+            no_stop_loss = False
+
+        tps = [{"index": int(i + 1), "price": round(float(px), int(max(0, digits)))} for i, px in enumerate(tp_prices)]
+        signal = {
+            "symbol": str(symbol_exec_raw),
+            "direction": str(hint),
+            "entry_low": round(float(entry_price), int(max(0, digits))),
+            "entry_high": round(float(entry_price), int(max(0, digits))),
+            "entry_mid": round(float(entry_price), int(max(0, digits))),
+            "stop_loss": (_to_float_or_none(stop_loss) if stop_loss is not None else None),
+            "no_stop_loss": bool(no_stop_loss),
+            "tps": list(tps),
+            "raw_text": str(message),
+            "timeframe": str(timeframe),
+            "virtual_sl_distance": float(sl_distance),
+            "stage_weights": list(stage_weights),
+            "market_regime": str(active_regime),
+            "hard_sl_mode": str(hard_sl_mode),
+            "profit_lock_retrace_pct": (0.45 if str(active_regime) == "trend" else 0.28),
+            "profit_lock_arm_after_tp": (2 if str(active_regime) == "trend" else 1),
+        }
+        combo_source_tag = (
+            f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
+        )
+        reverse_out = self._close_mt4_reverse_positions(
+            symbol=str(symbol_exec_raw),
+            incoming_direction=str(hint),
+            timeframe=str(timeframe),
+            source_tag=str(combo_source_tag),
+        )
+        if not bool((reverse_out or {}).get("ok")):
+            reverse_msg = "reverse_close_failed: " + " | ".join(str(x) for x in ((reverse_out or {}).get("errors") or [])[:3])
+            return {"ok": False, "executed": False, "error": str(reverse_msg)[:220]}
+
+        lot = float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile))
+        lot_override = _to_float_or_none(p.get("lot_override"))
+        if lot_override is not None and float(lot_override) > 0.0:
+            lot = float(max(0.01, min(100.0, float(lot_override))))
+        chat_id = int(self._allowed_chat_id() or 0)
+        exec_msg = self._execute_confirmation_signal_auto(
+            chat_id=int(chat_id),
+            signal=dict(signal),
+            lot_override=float(lot),
+            source_tag=str(combo_source_tag),
+            comment_prefix=str(family),
+            audit_ctx={
+                "source_type": "mt_indicator",
+                "source_name": str(indicator),
+                "trigger": "indicator_signal",
+                "profile": str(profile),
+                "indicator": str(indicator),
+                "event_ts": event_ts,
+            },
+        )
+        executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
+        deferred_market_closed = str(exec_msg or "").strip().lower().startswith("confirmation deferred: market closed")
+        return {
+            "ok": True,
+            "executed": bool(executed),
+            "message": str(exec_msg),
+            "reason": ("market_closed" if deferred_market_closed else ""),
+            "runtime": runtime_cfg,
+            "bridge": registered,
+        }
+
     def ingest_mt4_indicator_signal(self, *, payload: Dict[str, Any]) -> Dict[str, Any]:
         p = payload if isinstance(payload, dict) else {}
         indicator_raw = str(p.get("indicator") or "").strip()
@@ -3094,6 +3865,9 @@ class TelegramBridgeService:
         if deferred_market_closed:
             out["reason"] = "market_closed"
         return out
+
+    def ingest_mt5_indicator_signal(self, *, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.ingest_indicator_bridge_signal(terminal_family="mt5", payload=payload)
 
     def _get_live_service(self) -> LiveTradingService:
         svc = self._live_service

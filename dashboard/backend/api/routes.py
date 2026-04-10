@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+from openpyxl import Workbook
 
 from ..models.database import (
     get_db, init_db,
@@ -630,6 +631,7 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "message": str(p.get("message") or p.get("raw_text") or "").strip(),
             "event_ts": str(p.get("event_ts") or datetime.now(timezone.utc).isoformat()),
             "ingest_source": "bridge",
+            "bridge_event_type": str(p.get("bridge_event_type") or p.get("event_type") or "signal").strip().lower() or "signal",
         }
         lot_override = p.get("lot_override")
         if lot_override is not None:
@@ -638,7 +640,7 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             except Exception:
                 return {"ok": False, "error": "invalid_lot_override"}
 
-        out = svc.ingest_mt4_indicator_signal(payload=bridge_payload)
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=bridge_payload)
         return {
             "ok": bool((out or {}).get("ok", True)),
             "result": out,
@@ -648,6 +650,193 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
         raise
     except Exception as exc:
         raise HTTPException(500, f"mt4_bridge_signal_ingest_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/mt5/bridge/signal")
+def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
+    """Direct MT5 iCustom bridge ingest endpoint."""
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+        from ..services.telegram_bridge_service import TelegramBridgeService
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+
+        p = payload if isinstance(payload, dict) else {}
+        expected_token = str(TelegramBridgeService._get_env_value("MT5_BRIDGE_INGEST_TOKEN", "")).strip()
+        provided_token = str(request.headers.get("x-mt5-bridge-token") or p.get("bridge_token") or "").strip()
+        if expected_token and (provided_token != expected_token):
+            raise HTTPException(status_code=401, detail="mt5_bridge_auth_failed")
+
+        direction_raw = str(p.get("signal_hint") or p.get("direction") or "").strip().upper()
+        direction = "BUY" if direction_raw in {"BUY", "LONG", "UP"} else ("SELL" if direction_raw in {"SELL", "SHORT", "DOWN"} else direction_raw)
+
+        tf_raw = str(p.get("timeframe") or p.get("tf") or "").strip().upper()
+        tf_map = {
+            "1": "M1",
+            "5": "M5",
+            "15": "M15",
+            "30": "M30",
+            "60": "H1",
+            "240": "H4",
+            "1440": "D1",
+            "10080": "W1",
+            "43200": "MN1",
+        }
+        timeframe = tf_map.get(tf_raw, tf_raw or "M5")
+
+        bridge_payload: Dict[str, Any] = {
+            "indicator": str(p.get("indicator") or p.get("indicator_name") or "MT5Bridge"),
+            "signal_hint": str(direction or ""),
+            "symbol": str(p.get("symbol") or p.get("pair") or "").strip().upper(),
+            "timeframe": str(timeframe or "M5"),
+            "signal_profile": str(p.get("signal_profile") or p.get("profile") or "generic").strip().lower(),
+            "message": str(p.get("message") or p.get("raw_text") or "").strip(),
+            "event_ts": str(p.get("event_ts") or datetime.now(timezone.utc).isoformat()),
+            "ingest_source": "bridge",
+            "bridge_event_type": str(p.get("bridge_event_type") or p.get("event_type") or "signal").strip().lower() or "signal",
+        }
+        lot_override = p.get("lot_override")
+        if lot_override is not None:
+            try:
+                bridge_payload["lot_override"] = float(lot_override)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_override"}
+
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=bridge_payload)
+        return {
+            "ok": bool((out or {}).get("ok", True)),
+            "result": out,
+            "accepted_payload": bridge_payload,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"mt5_bridge_signal_ingest_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/state")
+def indicator_bridge_state(limit: int = Query(300, ge=20, le=2000)):
+    """Bridge-only MT4/MT5 indicator bot monitor state."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        return svc.get_indicator_bridge_state(limit=int(limit))
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/instance-automation")
+def indicator_bridge_instance_automation(payload: Dict[str, Any]):
+    """Enable/disable automation for a specific MT4/MT5 bridge chart instance."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        terminal_family = str(p.get("terminal_family") or p.get("family") or "mt4").strip().lower() or "mt4"
+        indicator = str(p.get("indicator") or "").strip()
+        symbol = str(p.get("symbol") or "").strip().upper()
+        timeframe = str(p.get("timeframe") or "").strip().upper()
+        enabled = p.get("enabled") if "enabled" in p else None
+        lot_size = p.get("lot_size") if "lot_size" in p else None
+        lot_val = None
+        if lot_size is not None:
+            try:
+                lot_val = float(lot_size)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_size"}
+        result = svc.update_indicator_bridge_instance_settings(
+            terminal_family=str(terminal_family),
+            indicator=str(indicator),
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+            enabled=(bool(enabled) if enabled is not None else None),
+            lot_size=lot_val,
+        )
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_instance_automation_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/execution-log/export")
+def indicator_bridge_execution_log_export(
+    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    limit: int = Query(1000, ge=20, le=5000),
+):
+    """Export MT4/MT5 indicator execution audit rows as CSV or XLSX."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            raise HTTPException(500, "telegram_bridge_unavailable")
+        audit = svc.get_indicator_execution_audit_rows(limit=int(limit))
+        rows = audit.get("rows") if isinstance(audit, dict) else []
+        rows = rows if isinstance(rows, list) else []
+        columns = [
+            ("event_ts", "Event Time"),
+            ("opened_at", "Opened At"),
+            ("closed_at", "Closed At"),
+            ("terminal_family", "Terminal"),
+            ("indicator", "Indicator"),
+            ("symbol", "Symbol"),
+            ("timeframe", "Timeframe"),
+            ("direction", "Direction"),
+            ("lot", "Lot"),
+            ("status", "Status"),
+            ("ticket", "Ticket"),
+            ("session_name", "Session"),
+            ("max_profit", "Max Profit"),
+            ("max_loss", "Max Loss"),
+            ("realized_pnl", "Realized PnL"),
+            ("stop_loss", "Stop Loss"),
+            ("final_tp", "Final TP"),
+            ("close_reason", "Close Reason"),
+            ("message", "Message"),
+            ("combo_key", "Combo Key"),
+            ("source_tag", "Source Tag"),
+        ]
+        ts_label = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        if str(format).lower() == "xlsx":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Indicator Audit"
+            ws.append([label for _key, label in columns])
+            for row in rows:
+                item = row if isinstance(row, dict) else {}
+                ws.append([item.get(key) for key, _label in columns])
+            out = io.BytesIO()
+            wb.save(out)
+            out.seek(0)
+            headers = {"Content-Disposition": f'attachment; filename="indicator_execution_audit_{ts_label}.xlsx"'}
+            return StreamingResponse(
+                out,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers=headers,
+            )
+
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow([label for _key, label in columns])
+        for row in rows:
+            item = row if isinstance(row, dict) else {}
+            writer.writerow([item.get(key) for key, _label in columns])
+        data = io.BytesIO(out.getvalue().encode("utf-8-sig"))
+        headers = {"Content-Disposition": f'attachment; filename="indicator_execution_audit_{ts_label}.csv"'}
+        return StreamingResponse(data, media_type="text/csv; charset=utf-8", headers=headers)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_execution_log_export_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 def _safe_optional_float(value) -> Optional[float]:

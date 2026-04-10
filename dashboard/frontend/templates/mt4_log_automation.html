@@ -1,195 +1,147 @@
 ﻿{% extends "base.html" %}
 
-{% block title %}MT4/MT5 Log Automation - ProTrading Dashboard{% endblock %}
+{% block title %}Indicator Bridge Automation - ProTrading Dashboard{% endblock %}
 
 {% block content %}
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="mb-0">MT4/MT5 Log Automation</h2>
-        <div class="small text-muted">Indicator discovery (MQL4 + MQL5) + per-chart (symbol/timeframe) automation control</div>
+        <div>
+            <h2 class="mb-0">Indicator Bridge Automation</h2>
+            <div class="small text-muted">Bridge-only MT4/MT5 indicator bots. Log listener is no longer part of live trade execution.</div>
+        </div>
+        <button id="bridge-refresh-btn" class="btn btn-outline-secondary btn-sm">Refresh</button>
     </div>
 
-    <div id="mt4la-alert"></div>
+    <div id="bridge-alert"></div>
+
+    <div class="card shadow-sm mb-3">
+        <div class="card-body py-3">
+            <div class="row g-3 align-items-center">
+                <div class="col-lg-8">
+                    <div class="fw-semibold">Execution Path</div>
+                    <div class="small text-muted">
+                        MT4/MT5 chart -> iCustom Bridge EA -> backend bridge endpoint -> indicator trade engine -> unified execution audit log
+                    </div>
+                </div>
+                <div class="col-lg-4 text-lg-end">
+                    <div id="bridge-updated" class="small text-muted">Updated: -</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="small text-muted">MT4 Bots</div>
+                    <div id="bridge-mt4-count" class="fs-4">0</div>
+                    <div class="small text-muted">registered bridge charts</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="small text-muted">MT5 Bots</div>
+                    <div id="bridge-mt5-count" class="fs-4">0</div>
+                    <div class="small text-muted">registered bridge charts</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="small text-muted">Open Indicator Trades</div>
+                    <div id="bridge-open-count" class="fs-4">0</div>
+                    <div class="small text-muted">live ladder positions</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <div class="small text-muted">Audit Rows</div>
+                    <div id="bridge-audit-count" class="fs-4">0</div>
+                    <div class="small text-muted">persistent MT4/MT5 execution rows</div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <div class="row g-3">
-        <div class="col-lg-4">
-            <div class="card shadow-sm">
-                <div class="card-header">
-                    <strong>Listener Config</strong>
+        <div class="col-xl-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                    <div>
+                        <strong>MT4 Bot Monitor</strong>
+                        <div class="small text-muted">Only MT4 bridge charts are shown here.</div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button id="bridge-mt4-start-all" class="btn btn-sm btn-outline-success">Start All</button>
+                        <button id="bridge-mt4-stop-all" class="btn btn-sm btn-outline-danger">Stop All</button>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <div class="form-check form-switch mb-3">
-                        <input class="form-check-input" type="checkbox" id="mt4la-enabled">
-                        <label class="form-check-label" for="mt4la-enabled">Enable MT4/MT5 log listener</label>
-                        <div class="form-text">Acikken MT4/MT5 log dosyalari surekli izlenir; yeni alarm satirlari anlik olarak otomasyona aktarilir.</div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 420px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="min-width:140px;">Last Seen</th>
+                                    <th style="min-width:220px;">Indicator</th>
+                                    <th style="min-width:120px;">Symbol/TF</th>
+                                    <th style="min-width:80px;">Dir</th>
+                                    <th style="min-width:110px;">Ticket</th>
+                                    <th style="min-width:90px;">State</th>
+                                    <th style="min-width:150px;">Automation</th>
+                                    <th style="min-width:170px;">Lot</th>
+                                    <th style="min-width:100px;">Max+</th>
+                                    <th style="min-width:100px;">Max-</th>
+                                    <th style="min-width:100px;">Live PnL</th>
+                                    <th style="min-width:110px;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bridge-mt4-body">
+                                <tr><td colspan="12" class="text-muted text-center py-3">Loading...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
-                    <div class="mb-2">
-                        <label for="mt4la-data-path" class="form-label">MetaTrader Data Path(s)</label>
-                        <input id="mt4la-data-path" class="form-control" placeholder="C:\...\Terminal\MT4_ID|C:\...\Terminal\MT5_ID">
-                        <div class="form-text">Use <code>|</code> to monitor multiple terminal roots (MT4 + MT5).</div>
-                    </div>
-                    <div class="row g-2">
-                        <div class="col-md-6">
-                            <label for="mt4la-poll-sec" class="form-label">Poll sec</label>
-                            <input id="mt4la-poll-sec" class="form-control" type="number" min="0.5" max="30" step="0.5" value="2">
-                        </div>
-                        <div class="col-md-6">
-                            <label for="mt4la-backfill-lines" class="form-label">Backfill lines</label>
-                            <input id="mt4la-backfill-lines" class="form-control" type="number" min="0" max="2000" step="50" value="200">
-                        </div>
-                    </div>
-                    <div class="d-flex gap-2 mt-3">
-                        <button id="mt4la-save-btn" class="btn btn-primary btn-sm">Save Config</button>
-                        <button id="mt4la-refresh-btn" class="btn btn-outline-secondary btn-sm">Refresh</button>
-                    </div>
-                    <div id="mt4la-status-line" class="small text-muted mt-2">Status: -</div>
-                    <div id="mt4la-files-line" class="small text-muted">Watched files: -</div>
                 </div>
             </div>
         </div>
-
-        <div class="col-lg-8">
-            <div class="card shadow-sm mb-3">
-                <div class="card-header d-flex justify-content-between">
-                    <strong>Runtime</strong>
-                    <span id="mt4la-updated" class="small text-muted">-</span>
-                </div>
-                <div class="card-body">
-                    <div class="row g-2">
-                        <div class="col-md-2">
-                            <div class="border rounded p-2">
-                                <div class="small text-muted">Running</div>
-                                <div id="mt4la-running" class="fs-6">-</div>
-                            </div>
-                        </div>
-                        <div class="col-md-2">
-                            <div class="border rounded p-2">
-                                <div class="small text-muted">Indicators</div>
-                                <div id="mt4la-indicator-count" class="fs-6">0</div>
-                            </div>
-                        </div>
-                        <div class="col-md-2">
-                            <div class="border rounded p-2">
-                                <div class="small text-muted">Instances</div>
-                                <div id="mt4la-instance-count" class="fs-6">0</div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="border rounded p-2">
-                                <div class="small text-muted">Event Rows</div>
-                                <div id="mt4la-event-count" class="fs-6">0</div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="border rounded p-2">
-                                <div class="small text-muted">Forward OK/Fail</div>
-                                <div id="mt4la-forward" class="fs-6">0 / 0</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="mt4la-forward-line" class="small text-muted mt-2">Forward: -</div>
-                </div>
-            </div>
-
-            <div class="card shadow-sm">
+        <div class="col-xl-6">
+            <div class="card shadow-sm h-100">
                 <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                    <strong>Discovered Indicators</strong>
-                    <input id="mt4la-indicator-search" type="text" class="form-control form-control-sm" placeholder="Search indicator name..." style="max-width: 280px;">
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive" style="max-height: 320px;">
-                        <table class="table table-sm table-hover mb-0">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th>Indicator</th>
-                                    <th>Symbol/TF</th>
-                                    <th>Events</th>
-                                    <th>Signals</th>
-                                    <th>Last Signal</th>
-                                    <th>Last Seen</th>
-                                    <th>Automation</th>
-                                    <th>Lot</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mt4la-indicator-body">
-                                <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
-                            </tbody>
-                        </table>
+                    <div>
+                        <strong>MT5 Bot Monitor</strong>
+                        <div class="small text-muted">Only MT5 bridge charts are shown here.</div>
                     </div>
-                </div>
-            </div>
-
-            <div class="card shadow-sm mt-3">
-                <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                    <strong>Discovered Chart Instances</strong>
-                    <input id="mt4la-instance-search" type="text" class="form-control form-control-sm" placeholder="Search indicator / symbol / tf..." style="max-width: 320px;">
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive" style="max-height: 320px;">
-                        <table class="table table-sm table-hover mb-0">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th>Indicator</th>
-                                    <th>Symbol</th>
-                                    <th>TF</th>
-                                    <th>Events</th>
-                                    <th>Signals</th>
-                                    <th>Last Signal</th>
-                                    <th>Last Seen</th>
-                                    <th>Mode/Status</th>
-                                    <th>Lot</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mt4la-instance-body">
-                                <tr><td colspan="10" class="text-muted text-center py-3">Loading...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card shadow-sm mt-3">
-                <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                    <strong>Chart Alarm Viewer</strong>
-                    <span id="mt4la-chart-stats" class="small text-muted">Latest first</span>
-                </div>
-                <div class="card-body">
-                    <div class="row g-2">
-                        <div class="col-md-4">
-                            <label for="mt4la-chart-group" class="form-label">Chart Group</label>
-                            <select id="mt4la-chart-group" class="form-select form-select-sm">
-                                <option value="all">All</option>
-                            </select>
-                        </div>
-                        <div class="col-md-8">
-                            <label for="mt4la-chart-instance" class="form-label">Chart Instance</label>
-                            <select id="mt4la-chart-instance" class="form-select form-select-sm">
-                                <option value="all">All Charts</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="d-flex align-items-center gap-2 mt-3">
-                        <button id="mt4la-chart-automation-btn" type="button" class="btn btn-sm btn-outline-success">Start Automation</button>
-                        <span id="mt4la-chart-automation-state" class="small text-muted">Controls all chart instances currently visible in the table filter.</span>
+                    <div class="d-flex gap-2">
+                        <button id="bridge-mt5-start-all" class="btn btn-sm btn-outline-success">Start All</button>
+                        <button id="bridge-mt5-stop-all" class="btn btn-sm btn-outline-danger">Stop All</button>
                     </div>
                 </div>
                 <div class="card-body p-0">
-                    <div class="table-responsive" style="max-height: 360px;">
+                    <div class="table-responsive" style="max-height: 420px;">
                         <table class="table table-sm table-hover mb-0">
                             <thead class="table-light sticky-top">
                                 <tr>
-                                    <th style="min-width:140px;">Time</th>
-                                    <th style="min-width:90px;">Group</th>
-                                    <th style="min-width:230px;">Chart</th>
-                                    <th style="min-width:90px;">Type</th>
-                                    <th>Message</th>
-                                    <th style="min-width:170px;">File</th>
+                                    <th style="min-width:140px;">Last Seen</th>
+                                    <th style="min-width:220px;">Indicator</th>
+                                    <th style="min-width:120px;">Symbol/TF</th>
+                                    <th style="min-width:80px;">Dir</th>
+                                    <th style="min-width:110px;">Ticket</th>
+                                    <th style="min-width:90px;">State</th>
+                                    <th style="min-width:150px;">Automation</th>
+                                    <th style="min-width:170px;">Lot</th>
+                                    <th style="min-width:100px;">Max+</th>
+                                    <th style="min-width:100px;">Max-</th>
+                                    <th style="min-width:100px;">Live PnL</th>
+                                    <th style="min-width:110px;">Action</th>
                                 </tr>
                             </thead>
-                            <tbody id="mt4la-chart-log-body">
-                                <tr><td colspan="6" class="text-muted text-center py-3">Loading...</td></tr>
+                            <tbody id="bridge-mt5-body">
+                                <tr><td colspan="12" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -199,123 +151,41 @@
     </div>
 
     <div class="card shadow-sm mt-3">
-        <div class="card-header d-flex justify-content-between">
-            <strong id="mt4la-log-title">Indicator Alert Logs</strong>
-            <span class="small text-muted">Only Alert lines (MT4/MT5) | Latest first</span>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 420px;">
-                <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light sticky-top">
-                        <tr>
-                            <th style="min-width:140px;">Time</th>
-                            <th style="min-width:90px;">Type</th>
-                            <th>Message</th>
-                        </tr>
-                    </thead>
-                    <tbody id="mt4la-log-body">
-                        <tr><td colspan="3" class="text-muted text-center py-3">Select an indicator to view logs.</td></tr>
-                    </tbody>
-                </table>
+        <div class="card-header d-flex justify-content-between align-items-center gap-2">
+            <div>
+                <strong>Execution Audit Log</strong>
+                <div class="small text-muted">Unified MT4 + MT5 indicator execution history for analysis and ML export.</div>
             </div>
-        </div>
-    </div>
-
-    <div class="card shadow-sm mt-3">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <strong>MT4 Bot Monitor</strong>
-            <span id="mt4la-bot-updated" class="small text-muted">-</span>
-        </div>
-        <div class="card-body">
-            <div class="d-flex align-items-center gap-2 mb-2">
-                <button id="mt4la-bot-start-btn" type="button" class="btn btn-sm btn-outline-success">Start Visible Bots</button>
-                <button id="mt4la-bot-stop-btn" type="button" class="btn btn-sm btn-outline-danger">Stop Visible Bots</button>
-                <span class="small text-muted">Chart filterindeki tum MT4 chart-instance botlarini toplu kontrol eder.</span>
-            </div>
-            <div class="small text-muted">
-                Enabled bots: <span id="mt4la-bot-enabled-count">0</span>
-                | Active ladders: <span id="mt4la-bot-active-count">0</span>
+            <div class="d-flex gap-2">
+                <a class="btn btn-sm btn-outline-primary" href="/api/indicator-bridge/execution-log/export?format=csv&limit=5000">Export CSV</a>
+                <a class="btn btn-sm btn-outline-success" href="/api/indicator-bridge/execution-log/export?format=xlsx&limit=5000">Export Excel</a>
             </div>
         </div>
         <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 300px;">
+            <div class="table-responsive" style="max-height: 480px;">
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
+                            <th style="min-width:140px;">Event</th>
                             <th style="min-width:140px;">Opened</th>
+                            <th style="min-width:140px;">Closed</th>
+                            <th style="min-width:80px;">Terminal</th>
                             <th style="min-width:220px;">Indicator</th>
-                            <th style="min-width:120px;">Symbol/TF</th>
-                            <th style="min-width:80px;">Dir</th>
-                            <th style="min-width:120px;">Ticket</th>
-                            <th style="min-width:90px;">State</th>
-                            <th style="min-width:140px;">Automation</th>
-                            <th style="min-width:170px;">Lot</th>
-                            <th style="min-width:110px;">Max+</th>
-                            <th style="min-width:110px;">Max-</th>
-                            <th style="min-width:110px;">Live PnL</th>
-                            <th style="min-width:110px;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="mt4la-bot-body">
-                        <tr><td colspan="12" class="text-muted text-center py-3">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <div class="card shadow-sm mt-3">
-        <div class="card-header d-flex justify-content-between">
-            <strong>Execution Performance Report</strong>
-            <span id="mt4la-exec-report-meta" class="small text-muted">By source + symbol/timeframe (highest pnl first)</span>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 260px;">
-                <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light sticky-top">
-                        <tr>
-                            <th style="min-width:260px;">Combo</th>
-                            <th style="min-width:90px;">Opened</th>
-                            <th style="min-width:90px;">Closed</th>
-                            <th style="min-width:90px;">Win %</th>
-                            <th style="min-width:120px;">Total PnL</th>
-                            <th style="min-width:120px;">Avg PnL</th>
-                            <th style="min-width:120px;">Best</th>
-                            <th style="min-width:120px;">Worst</th>
-                        </tr>
-                    </thead>
-                    <tbody id="mt4la-exec-report-body">
-                        <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <div class="card shadow-sm mt-3">
-        <div class="card-header d-flex justify-content-between">
-            <strong>Execution Audit Log</strong>
-            <span class="small text-muted">Channel + indicator executions</span>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 360px;">
-                <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light sticky-top">
-                        <tr>
-                            <th style="min-width:140px;">Time</th>
-                            <th style="min-width:140px;">Opened At</th>
-                            <th style="min-width:120px;">Source Type</th>
-                            <th style="min-width:180px;">Source</th>
                             <th style="min-width:120px;">Symbol/TF</th>
                             <th style="min-width:80px;">Dir</th>
                             <th style="min-width:80px;">Lot</th>
                             <th style="min-width:90px;">Status</th>
-                            <th style="min-width:120px;">Ticket</th>
-                            <th>Note</th>
+                            <th style="min-width:110px;">Ticket</th>
+                            <th style="min-width:110px;">Session</th>
+                            <th style="min-width:100px;">Max+</th>
+                            <th style="min-width:100px;">Max-</th>
+                            <th style="min-width:110px;">Realized</th>
+                            <th style="min-width:140px;">Close Reason</th>
+                            <th>Message</th>
                         </tr>
                     </thead>
-                    <tbody id="mt4la-exec-body">
-                        <tr><td colspan="10" class="text-muted text-center py-3">Loading...</td></tr>
+                    <tbody id="bridge-audit-body">
+                        <tr><td colspan="16" class="text-muted text-center py-3">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -325,5 +195,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260410_mt4_log_automation_v24') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260410_indicator_bridge_v1') }}"></script>
 {% endblock %}

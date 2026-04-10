@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 import time
 
@@ -2129,3 +2130,278 @@ def test_ingest_mt4_indicator_signal_uses_instance_lot_override(monkeypatch):
     assert out.get("ok") is True
     assert out.get("executed") is True
     assert abs(float(observed.get("lot") or 0.0) - 0.17) < 1e-9
+
+
+def test_register_indicator_bridge_instance_and_monitors_by_family(monkeypatch):
+    svc = TelegramBridgeService()
+
+    def _fake_runtime(**kwargs):
+        family = str(kwargs.get("family") or "mt4").strip().lower()
+        indicator = str(kwargs.get("indicator") or "").strip()
+        symbol = str(kwargs.get("symbol") or "").strip().upper()
+        timeframe = str(kwargs.get("timeframe") or "").strip().upper()
+        return {
+            "terminal_family": family,
+            "indicator": indicator,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "instance_key": f"{family}|{indicator.lower()}|{symbol}|{timeframe}",
+            "automation_mode": "explicit",
+            "automation_enabled": True,
+            "effective_automation_enabled": True,
+            "lot_size": 0.05 if family == "mt4" else 0.02,
+        }
+
+    monkeypatch.setattr(svc, "_resolve_indicator_bridge_instance_runtime_config", _fake_runtime)
+
+    svc.register_indicator_bridge_instance(
+        terminal_family="mt4",
+        payload={
+            "indicator": "Intrepid Trend Direction",
+            "symbol": "USDJPYM",
+            "timeframe": "M1",
+            "signal_profile": "intrepid",
+            "bridge_event_type": "register",
+            "event_ts": "2026-04-10T09:00:00+00:00",
+        },
+    )
+    svc.register_indicator_bridge_instance(
+        terminal_family="mt5",
+        payload={
+            "indicator": "Alchemy Pulse Indicateor",
+            "symbol": "USDCADM",
+            "timeframe": "M1",
+            "signal_profile": "alchemy",
+            "bridge_event_type": "register",
+            "event_ts": "2026-04-10T09:01:00+00:00",
+        },
+    )
+
+    mt4 = svc._get_indicator_bridge_bot_monitor(terminal_family="mt4", limit=50)
+    mt5 = svc.get_mt5_indicator_bot_monitor(limit=50)
+
+    assert len(mt4.get("bot_rows") or []) == 1
+    assert str(mt4["bot_rows"][0]["indicator"]) == "Intrepid Trend Direction"
+    assert str(mt4["bot_rows"][0]["symbol"]) == "USDJPYM"
+    assert len(mt5.get("bot_rows") or []) == 1
+    assert str(mt5["bot_rows"][0]["indicator"]) == "Alchemy Pulse Indicateor"
+    assert str(mt5["bot_rows"][0]["terminal_family"]) == "mt5"
+
+
+def test_ingest_indicator_bridge_signal_register_only(monkeypatch):
+    svc = TelegramBridgeService()
+
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt5",
+            "indicator": str(kwargs.get("indicator") or ""),
+            "symbol": str(kwargs.get("symbol") or "").upper(),
+            "timeframe": str(kwargs.get("timeframe") or "").upper(),
+            "instance_key": "mt5|alchemy pulse indicateor|USDCADM|M1",
+            "automation_mode": "inherit",
+            "automation_enabled": False,
+            "effective_automation_enabled": False,
+            "lot_size": 0.02,
+        },
+    )
+
+    out = svc.ingest_indicator_bridge_signal(
+        terminal_family="mt5",
+        payload={
+            "indicator": "Alchemy Pulse Indicateor",
+            "symbol": "USDCADM",
+            "timeframe": "M1",
+            "signal_profile": "alchemy",
+            "bridge_event_type": "register",
+            "message": "MT5Bridge register",
+            "event_ts": "2026-04-10T09:05:00+00:00",
+        },
+    )
+
+    assert bool(out.get("ok")) is True
+    assert bool(out.get("executed")) is False
+    assert str(out.get("reason") or "") == "bridge_registered"
+
+    mt5 = svc.get_mt5_indicator_bot_monitor(limit=50)
+    assert len(mt5.get("bot_rows") or []) == 1
+    assert str(mt5["bot_rows"][0]["indicator"]) == "Alchemy Pulse Indicateor"
+
+
+def test_ingest_indicator_bridge_signal_respects_instance_disabled_by_family(monkeypatch):
+    svc = TelegramBridgeService()
+
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda _profile: True)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt5",
+            "indicator": str(kwargs.get("indicator") or ""),
+            "symbol": str(kwargs.get("symbol") or "").upper(),
+            "timeframe": str(kwargs.get("timeframe") or "").upper(),
+            "instance_key": "mt5|alchemy pulse indicateor|USDCADM|M1",
+            "automation_mode": "explicit",
+            "automation_enabled": False,
+            "effective_automation_enabled": False,
+            "lot_size": 0.02,
+        },
+    )
+
+    out = svc.ingest_indicator_bridge_signal(
+        terminal_family="mt5",
+        payload={
+            "indicator": "Alchemy Pulse Indicateor",
+            "signal_profile": "alchemy",
+            "signal_hint": "BUY",
+            "symbol": "USDCADM",
+            "timeframe": "M1",
+            "message": "Alchemy BUY",
+            "event_ts": "2026-04-10T09:10:00+00:00",
+        },
+    )
+
+    assert bool(out.get("ok")) is True
+    assert bool(out.get("executed")) is False
+    assert str(out.get("reason") or "") == "instance_disabled"
+
+
+def test_indicator_execution_audit_rows_include_family_and_metrics():
+    svc = TelegramBridgeService()
+    svc.get_automation_execution_logs = lambda limit=200: [  # type: ignore[method-assign]
+        {
+            "id": 1,
+            "source_type": "mt_indicator",
+            "source_name": "Alchemy Pulse Indicateor",
+            "indicator": "Alchemy Pulse Indicateor",
+            "source_tag": "mt5|alchemy|alchemy pulse indicateor|USDCADM|M1",
+            "symbol": "USDCADM",
+            "timeframe": "M1",
+            "direction": "BUY",
+            "lot": 0.02,
+            "status": "closed",
+            "ticket": 123456,
+            "opened_at": "2026-04-10T00:30:00+00:00",
+            "event_ts": "2026-04-10T00:45:00+00:00",
+            "max_profit": 12.5,
+            "max_loss": -4.0,
+            "realized_pnl": 8.0,
+            "close_reason": "tp_hit",
+            "message": "closed",
+            "final_tp": 1.2345,
+            "stop_loss": 1.22,
+            "combo_key": "mt_indicator|alchemy pulse indicateor|USDCADM|M1",
+        }
+    ]
+
+    out = svc.get_indicator_execution_audit_rows(limit=100)
+    rows = out.get("rows") or []
+    assert len(rows) == 1
+    row = rows[0]
+    assert str(row.get("terminal_family") or "") == "MT5"
+    assert str(row.get("session_name") or "") == "tokyo"
+    assert abs(float(row.get("max_profit") or 0.0) - 12.5) < 1e-9
+    assert abs(float(row.get("max_loss") or 0.0) - (-4.0)) < 1e-9
+    assert abs(float(row.get("realized_pnl") or 0.0) - 8.0) < 1e-9
+    assert str(row.get("closed_at") or "") == "2026-04-10T00:45:00+00:00"
+
+
+async def _collect_streaming_bytes(response):
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(bytes(chunk))
+    return b"".join(chunks)
+
+
+def test_indicator_bridge_execution_log_export_csv(monkeypatch):
+    from dashboard.backend.api import routes
+    from dashboard.backend import main as backend_main
+
+    class _Svc:
+        def get_indicator_execution_audit_rows(self, *, limit=500):
+            return {
+                "ok": True,
+                "rows": [
+                    {
+                        "event_ts": "2026-04-10T09:00:00+00:00",
+                        "opened_at": "2026-04-10T08:59:00+00:00",
+                        "closed_at": "",
+                        "terminal_family": "MT4",
+                        "indicator": "Intrepid Trend Direction",
+                        "symbol": "USDJPY",
+                        "timeframe": "M1",
+                        "direction": "BUY",
+                        "lot": 0.05,
+                        "status": "opened",
+                        "ticket": 1425000001,
+                        "session_name": "london",
+                        "max_profit": 1.5,
+                        "max_loss": -0.4,
+                        "realized_pnl": None,
+                        "stop_loss": None,
+                        "final_tp": 159.123,
+                        "close_reason": "",
+                        "message": "bridge execution",
+                        "combo_key": "mt_indicator|intrepid trend direction|USDJPY|M1",
+                        "source_tag": "mt4|intrepid|intrepid trend direction|USDJPY|M1",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(backend_main, "telegram_bridge_service", _Svc())
+
+    response = routes.indicator_bridge_execution_log_export(format="csv", limit=100)
+    payload = asyncio.run(_collect_streaming_bytes(response)).decode("utf-8-sig")
+
+    assert response.media_type == "text/csv; charset=utf-8"
+    assert "attachment; filename=\"indicator_execution_audit_" in str(response.headers.get("content-disposition") or "")
+    assert "Event Time,Opened At,Closed At,Terminal,Indicator" in payload
+    assert "Intrepid Trend Direction" in payload
+    assert "USDJPY" in payload
+
+
+def test_indicator_bridge_execution_log_export_xlsx(monkeypatch):
+    from dashboard.backend.api import routes
+    from dashboard.backend import main as backend_main
+
+    class _Svc:
+        def get_indicator_execution_audit_rows(self, *, limit=500):
+            return {
+                "ok": True,
+                "rows": [
+                    {
+                        "event_ts": "2026-04-10T09:00:00+00:00",
+                        "opened_at": "2026-04-10T08:59:00+00:00",
+                        "closed_at": "2026-04-10T09:05:00+00:00",
+                        "terminal_family": "MT5",
+                        "indicator": "Alchemy Pulse Indicateor",
+                        "symbol": "USDCADM",
+                        "timeframe": "M1",
+                        "direction": "SELL",
+                        "lot": 0.02,
+                        "status": "closed",
+                        "ticket": 1425000002,
+                        "session_name": "london",
+                        "max_profit": 5.0,
+                        "max_loss": -1.0,
+                        "realized_pnl": 3.4,
+                        "stop_loss": None,
+                        "final_tp": 1.2456,
+                        "close_reason": "tp_hit",
+                        "message": "bridge execution",
+                        "combo_key": "mt_indicator|alchemy pulse indicateor|USDCADM|M1",
+                        "source_tag": "mt5|alchemy|alchemy pulse indicateor|USDCADM|M1",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(backend_main, "telegram_bridge_service", _Svc())
+
+    response = routes.indicator_bridge_execution_log_export(format="xlsx", limit=100)
+    payload = asyncio.run(_collect_streaming_bytes(response))
+
+    assert response.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert "attachment; filename=\"indicator_execution_audit_" in str(response.headers.get("content-disposition") or "")
+    assert payload[:2] == b"PK"
