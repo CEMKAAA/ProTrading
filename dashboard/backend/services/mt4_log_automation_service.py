@@ -1093,6 +1093,13 @@ class MT4LogAutomationService:
             with self._lock:
                 self._forward_skip_backfill += 1
             return
+        terminal_group = str(event.get("terminal_group") or "").strip().lower()
+        if terminal_group == "mt4":
+            # MT4 execution is bridge-only. Log parser still records/chart-streams
+            # alarms, but must not drive trade execution for MT4 charts.
+            with self._lock:
+                self._forward_skip_disabled += 1
+            return
         indicator = str(event.get("indicator") or "").strip()
         k = self._indicator_key(indicator)
         if not k:

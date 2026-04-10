@@ -142,6 +142,15 @@
         return sym;
     }
 
+    function canonicalMtChartSymbol(raw) {
+        const sym = String(raw || '').trim().toUpperCase();
+        if (!sym) return '';
+        if (sym.length >= 4 && sym.endsWith('M')) {
+            return sym.slice(0, -1);
+        }
+        return sym;
+    }
+
     function compactPath(raw) {
         const p = String(raw || '').trim();
         if (!p) return '-';
@@ -311,6 +320,12 @@
         return rows.slice();
     }
 
+    function allBotRows(state) {
+        const s = state || {};
+        const monitor = (s && s.mt4_bot_monitor && typeof s.mt4_bot_monitor === 'object') ? s.mt4_bot_monitor : {};
+        return Array.isArray(monitor.bot_rows) ? monitor.bot_rows.slice() : [];
+    }
+
     function findInstanceRowByKey(state, key) {
         const k = String(key || '').trim().toLowerCase();
         if (!k || k === 'all') return null;
@@ -321,24 +336,27 @@
 
     function refreshChartAutomationActionState(state) {
         if (!els.chartAutomationBtn || !els.chartAutomationState) return;
-        const targets = getVisibleChartAutomationTargets(state || latestState || {});
+        const currentState = state || latestState || {};
+        const targets = getVisibleChartAutomationTargets(currentState);
+        const botTargets = getVisibleBotAutomationTargets(currentState);
         if (!targets.length) {
             els.chartAutomationBtn.disabled = true;
             els.chartAutomationBtn.className = 'btn btn-sm btn-outline-success';
             els.chartAutomationBtn.textContent = 'Start Automation';
             els.chartAutomationState.textContent = 'No chart instance found in current table filter.';
-            if (els.botStartBtn) els.botStartBtn.disabled = true;
-            if (els.botStopBtn) els.botStopBtn.disabled = true;
+            if (els.botStartBtn) els.botStartBtn.disabled = (botTargets.length <= 0);
+            if (els.botStopBtn) els.botStopBtn.disabled = (botTargets.filter((x) => !!x.enabled).length <= 0);
             return;
         }
         const enabledCount = targets.filter((x) => !!x.enabled).length;
         const allEnabled = enabledCount === targets.length;
+        const botEnabledCount = botTargets.filter((x) => !!x.enabled).length;
         els.chartAutomationBtn.disabled = false;
         els.chartAutomationBtn.className = `btn btn-sm btn-outline-${allEnabled ? 'danger' : 'success'}`;
         els.chartAutomationBtn.textContent = `${allEnabled ? 'Stop' : 'Start'} Automation (${targets.length})`;
         els.chartAutomationState.textContent = `${enabledCount}/${targets.length} charts running in current table filter.`;
-        if (els.botStartBtn) els.botStartBtn.disabled = allEnabled;
-        if (els.botStopBtn) els.botStopBtn.disabled = !enabledCount;
+        if (els.botStartBtn) els.botStartBtn.disabled = (botTargets.length <= 0 || botEnabledCount === botTargets.length);
+        if (els.botStopBtn) els.botStopBtn.disabled = (botEnabledCount <= 0);
     }
 
     function rebuildChartSelectors(state) {
@@ -394,9 +412,24 @@
             })
             .filter((r) => r.key && r.indicator && r.symbol && r.timeframe);
 
+        const chartRowsFromBots = allBotRows(state)
+            .map((r) => {
+                const indicator = String((r && r.indicator) || '').trim();
+                const symbol = String((r && r.symbol) || '').trim().toUpperCase();
+                const timeframe = String((r && r.timeframe) || '').trim().toUpperCase();
+                const key = String((r && r.instance_key) || '').trim().toLowerCase()
+                    || `${normalizeIndicatorName(indicator)}|${symbol}|${timeframe}`.toLowerCase();
+                return { indicator, symbol, timeframe, key, group: 'mt4' };
+            })
+            .filter((r) => isAllowedIndicator(r.indicator))
+            .filter((r) => r.key && r.indicator && r.symbol && r.timeframe);
+
         const chartRowsMap = new Map();
         for (const row of chartRowsBase) chartRowsMap.set(row.key, row);
         for (const row of chartRowsFromEvents) {
+            if (!chartRowsMap.has(row.key)) chartRowsMap.set(row.key, row);
+        }
+        for (const row of chartRowsFromBots) {
             if (!chartRowsMap.has(row.key)) chartRowsMap.set(row.key, row);
         }
         const chartRows = Array.from(chartRowsMap.values())
@@ -447,9 +480,28 @@
     }
 
     function getVisibleChartAutomationTargets(state) {
-        const filtered = getFilteredChartAlarmEvents(state || {});
         const current = state || latestState || {};
         const byKey = new Map();
+
+        for (const bot of allBotRows(current)) {
+            const indicator = String((bot && bot.indicator) || '').trim();
+            const symbol = String((bot && bot.symbol) || '').trim().toUpperCase();
+            const timeframe = String((bot && bot.timeframe) || '').trim().toUpperCase();
+            const instanceKey = String((bot && bot.instance_key) || '').trim().toLowerCase()
+                || `${normalizeIndicatorName(indicator)}|${symbol}|${timeframe}`.toLowerCase();
+            if (!indicator || !symbol || !timeframe || !instanceKey || !isAllowedIndicator(indicator)) continue;
+            if (String(selectedChartGroup || 'all').toLowerCase() !== 'all' && String(selectedChartGroup || 'all').toLowerCase() !== 'mt4') continue;
+            if (String(selectedChartInstance || 'all').toLowerCase() !== 'all' && String(selectedChartInstance || 'all').toLowerCase() !== instanceKey) continue;
+            byKey.set(instanceKey, {
+                key: instanceKey,
+                indicator,
+                symbol,
+                timeframe,
+                enabled: !!(bot && bot.effective_automation_enabled),
+            });
+        }
+
+        const filtered = getFilteredChartAlarmEvents(current);
         for (const ev of filtered) {
             const key = String(eventInstanceKey(ev) || '').trim().toLowerCase();
             if (!key || byKey.has(key)) continue;
@@ -468,6 +520,30 @@
             });
         }
         return Array.from(byKey.values());
+    }
+
+    function getVisibleBotAutomationTargets(state) {
+        const current = state || latestState || {};
+        const groupFilter = String(selectedChartGroup || 'all').toLowerCase();
+        const instanceFilter = String(selectedChartInstance || 'all').toLowerCase();
+        return allBotRows(current)
+            .map((bot) => {
+                const indicator = String((bot && bot.indicator) || '').trim();
+                const symbol = String((bot && bot.symbol) || '').trim().toUpperCase();
+                const timeframe = String((bot && bot.timeframe) || '').trim().toUpperCase();
+                const instanceKey = String((bot && bot.instance_key) || '').trim().toLowerCase()
+                    || `${normalizeIndicatorName(indicator)}|${symbol}|${timeframe}`.toLowerCase();
+                return {
+                    key: instanceKey,
+                    indicator,
+                    symbol,
+                    timeframe,
+                    enabled: !!(bot && bot.effective_automation_enabled),
+                };
+            })
+            .filter((r) => r.key && r.indicator && r.symbol && r.timeframe && isAllowedIndicator(r.indicator))
+            .filter((r) => groupFilter === 'all' || groupFilter === 'mt4')
+            .filter((r) => instanceFilter === 'all' || instanceFilter === r.key);
     }
 
     function renderChartAlarmLogs(state) {
@@ -755,7 +831,10 @@
             els.botUpdated.textContent = `Updated: ${formatTs(m.updated_at || '')}`;
         }
         if (els.botEnabledCount) {
-            const enabled = Number(m.bot_active_count || botRows.length || 0);
+            const enabledRaw = Number(m.bot_active_count);
+            const enabled = Number.isFinite(enabledRaw)
+                ? enabledRaw
+                : botRows.filter((r) => !!(r && r.effective_automation_enabled)).length;
             els.botEnabledCount.textContent = String(enabled);
         }
         if (els.botActiveCount) {
@@ -765,9 +844,19 @@
 
         const normalizeIndicator = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
         const comboKey = (indicator, symbol, timeframe) =>
-            `${normalizeIndicator(indicator)}|${String(symbol || '').trim().toUpperCase()}|${String(timeframe || '').trim().toUpperCase()}`;
+            `${normalizeIndicator(indicator)}|${canonicalMtChartSymbol(symbol)}|${String(timeframe || '').trim().toUpperCase()}`;
+        const currentGroupFilter = String(selectedChartGroup || 'all').toLowerCase();
+        const currentInstanceFilter = String(selectedChartInstance || 'all').toLowerCase();
 
         const ladderByCombo = new Map();
+        const botByCombo = new Map();
+        const botByInstance = new Map();
+        for (const bot of botRows) {
+            const key = comboKey((bot && bot.indicator) || '', (bot && bot.symbol) || '', (bot && bot.timeframe) || '');
+            if (key) botByCombo.set(key, bot);
+            const instKey = String((bot && bot.instance_key) || '').trim().toLowerCase();
+            if (instKey) botByInstance.set(instKey, bot);
+        }
         for (const row of ladderRows) {
             const key = comboKey((row && (row.indicator || row.source_name)) || '', (row && row.symbol) || '', (row && row.timeframe) || '');
             if (!key) continue;
@@ -776,7 +865,9 @@
 
         const displayRows = [];
         for (const row of ladderRows) {
-            displayRows.push(Object.assign({}, row, { _state: 'OPEN' }));
+            const key = comboKey((row && (row.indicator || row.source_name)) || '', (row && row.symbol) || '', (row && row.timeframe) || '');
+            const bot = botByCombo.get(key);
+            displayRows.push(Object.assign({}, row, bot || {}, { _state: 'OPEN' }));
         }
         for (const bot of botRows) {
             const key = comboKey((bot && bot.indicator) || '', (bot && bot.symbol) || '', (bot && bot.timeframe) || '');
@@ -793,21 +884,33 @@
                 max_profit: null,
                 max_loss: null,
                 current_profit: null,
-                _state: 'IDLE'
+                _state: 'IDLE',
+                effective_automation_enabled: !!(bot && bot.effective_automation_enabled),
+                automation_mode: String((bot && bot.automation_mode) || 'inherit'),
+                lot_size: Number((bot && bot.lot_size) || 0),
+                instance_key: String((bot && bot.instance_key) || '').trim(),
             });
         }
 
-        if (!displayRows.length) {
-            els.botBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">No active MT4 bots.</td></tr>';
+        const filteredRows = displayRows.filter((r) => {
+            if (currentGroupFilter !== 'all' && currentGroupFilter !== 'mt4') return false;
+            const instanceKey = String((r && r.instance_key) || '').trim().toLowerCase()
+                || `${normalizeIndicator((r && (r.indicator || r.source_name)) || '')}|${String((r && r.symbol) || '').trim().toUpperCase()}|${String((r && r.timeframe) || '').trim().toUpperCase()}`.toLowerCase();
+            if (currentInstanceFilter !== 'all' && currentInstanceFilter !== instanceKey) return false;
+            return true;
+        });
+
+        if (!filteredRows.length) {
+            els.botBody.innerHTML = '<tr><td colspan="12" class="text-muted text-center py-3">No active MT4 bots.</td></tr>';
             return;
         }
 
-        displayRows.sort((a, b) => {
+        filteredRows.sort((a, b) => {
             const ta = Date.parse(String((a && a.opened_at) || '')) || 0;
             const tb = Date.parse(String((b && b.opened_at) || '')) || 0;
             return tb - ta;
         });
-        els.botBody.innerHTML = displayRows.map((r) => {
+        els.botBody.innerHTML = filteredRows.map((r) => {
             const opened = formatTs((r && r.opened_at) || '');
             const indicator = String((r && (r.indicator || r.source_name)) || '-').trim();
             const sym = String((r && r.symbol) || '').trim().toUpperCase();
@@ -825,6 +928,15 @@
             const maxP = formatPnl((r && r.max_profit));
             const maxL = formatPnl((r && r.max_loss));
             const live = formatPnl((r && r.current_profit));
+            const enabled = !!(r && r.effective_automation_enabled);
+            const mode = String((r && (r.control_mode || r.automation_mode)) || 'inherit').trim().toLowerCase();
+            const lotRaw = Number((r && r.lot_size) || 0);
+            const lot = Number.isFinite(lotRaw) && lotRaw > 0 ? lotRaw.toFixed(2) : '0.05';
+            const instanceKey = String((r && r.instance_key) || '').trim()
+                || `${normalizeIndicator(indicator)}|${sym}|${tf}`.toLowerCase();
+            const statusBadge = enabled ? 'text-bg-success' : 'text-bg-secondary';
+            const modeBadge = mode === 'explicit' ? 'text-bg-primary' : 'text-bg-light text-dark';
+            const toggleLabel = enabled ? 'Stop' : 'Start';
             return `<tr>
                 <td class="small text-muted">${escapeHtml(opened)}</td>
                 <td>${escapeHtml(indicator)}</td>
@@ -832,9 +944,28 @@
                 <td>${escapeHtml(dir)}</td>
                 <td>${escapeHtml(ticket)}</td>
                 <td>${escapeHtml(nextTpText)}</td>
+                <td>
+                    <span class="badge ${modeBadge} me-1">${mode === 'explicit' ? 'EXPLICIT' : 'INHERIT'}</span>
+                    <span class="badge ${statusBadge}">${enabled ? 'ON' : 'OFF'}</span>
+                </td>
+                <td style="min-width: 170px;">
+                    <div class="input-group input-group-sm">
+                        <input type="number" class="form-control mt4la-bot-lot-input" min="0.01" step="0.01" value="${escapeHtml(lot)}">
+                        <button class="btn btn-outline-secondary mt4la-bot-lot-save-btn" type="button">Apply</button>
+                    </div>
+                </td>
                 <td>${escapeHtml(maxP)}</td>
                 <td>${escapeHtml(maxL)}</td>
                 <td>${escapeHtml(live)}</td>
+                <td>
+                    <button
+                        class="btn btn-outline-${enabled ? 'danger' : 'success'} btn-sm mt4la-bot-toggle-btn"
+                        data-instance-key="${escapeHtml(instanceKey)}"
+                        data-indicator="${escapeHtml(indicator)}"
+                        data-symbol="${escapeHtml(sym)}"
+                        data-timeframe="${escapeHtml(tf)}"
+                    >${toggleLabel}</button>
+                </td>
             </tr>`;
         }).join('');
     }
@@ -865,6 +996,36 @@
         await loadState(false);
         showAlert(
             `${desired ? 'Started' : 'Stopped'} automation for ${okCount}/${targets.length} charts.${failCount ? ` Failed: ${failCount}.` : ''}`,
+            failCount ? 'info' : 'success'
+        );
+    }
+
+    async function setVisibleBotAutomation(desiredEnabled) {
+        const targets = getVisibleBotAutomationTargets(latestState || {});
+        if (!targets.length) {
+            showAlert('No MT4 bridge bot found in current filter.', 'error');
+            return;
+        }
+        const desired = !!desiredEnabled;
+        let okCount = 0;
+        let failCount = 0;
+        for (const t of targets) {
+            try {
+                await updateInstanceSettings(
+                    t.indicator,
+                    t.symbol,
+                    t.timeframe,
+                    { enabled: desired },
+                    { render: false }
+                );
+                okCount += 1;
+            } catch (_) {
+                failCount += 1;
+            }
+        }
+        await loadState(false);
+        showAlert(
+            `${desired ? 'Started' : 'Stopped'} automation for ${okCount}/${targets.length} MT4 bridge bots.${failCount ? ` Failed: ${failCount}.` : ''}`,
             failCount ? 'info' : 'success'
         );
     }
@@ -1072,18 +1233,7 @@
             throw new Error(String(data.error || 'indicator_settings_update_failed'));
         }
         latestState = data || latestState || {};
-        renderStatus(latestState || {});
-        renderIndicators(latestState || {});
-        latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
-        rebuildChartEventKeyIndex(latestChartEvents);
-        const s = chartState(latestState || {});
-        rebuildChartSelectors(s);
-        renderChartAlarmLogs(s);
-        refreshChartAutomationActionState(latestState || {});
-        latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
-        renderExecutionLogs(latestExecLogs);
-        renderExecutionReport((latestState || {}).execution_report || {});
-        renderBotMonitor((latestState || {}).mt4_bot_monitor || {});
+        await loadState(false);
         return latestState;
     }
 
@@ -1121,18 +1271,7 @@
         const render = !uiOptions || uiOptions.render !== false;
         latestState = data || latestState || {};
         if (render) {
-            renderStatus(latestState || {});
-            renderIndicators(latestState || {});
-            renderInstances(latestState || {});
-            latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
-            rebuildChartEventKeyIndex(latestChartEvents);
-            const s = chartState(latestState || {});
-            rebuildChartSelectors(s);
-            renderChartAlarmLogs(s);
-            refreshChartAutomationActionState(latestState || {});
-            latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
-            renderExecutionLogs(latestExecLogs);
-            renderExecutionReport((latestState || {}).execution_report || {});
+            await loadState(false);
         }
         return latestState;
     }
@@ -1345,7 +1484,7 @@
             els.botStartBtn.addEventListener('click', async () => {
                 els.botStartBtn.disabled = true;
                 try {
-                    await setVisibleChartAutomation(true);
+                    await setVisibleBotAutomation(true);
                 } catch (err) {
                     showAlert(`Start bots failed: ${String(err.message || err)}`, 'error');
                 } finally {
@@ -1357,11 +1496,61 @@
             els.botStopBtn.addEventListener('click', async () => {
                 els.botStopBtn.disabled = true;
                 try {
-                    await setVisibleChartAutomation(false);
+                    await setVisibleBotAutomation(false);
                 } catch (err) {
                     showAlert(`Stop bots failed: ${String(err.message || err)}`, 'error');
                 } finally {
                     refreshChartAutomationActionState(latestState || {});
+                }
+            });
+        }
+
+        if (els.botBody) {
+            els.botBody.addEventListener('click', async (ev) => {
+                const target = ev.target;
+                if (!target || !(target instanceof HTMLElement)) return;
+                const row = target.closest('tr');
+                if (!row) return;
+                const toggleBtn = target.closest('.mt4la-bot-toggle-btn');
+                if (toggleBtn instanceof HTMLElement) {
+                    const indicator = String(toggleBtn.getAttribute('data-indicator') || '').trim();
+                    const symbol = String(toggleBtn.getAttribute('data-symbol') || '').trim().toUpperCase();
+                    const timeframe = String(toggleBtn.getAttribute('data-timeframe') || '').trim().toUpperCase();
+                    const instanceKey = String(toggleBtn.getAttribute('data-instance-key') || '').trim().toLowerCase();
+                    if (!indicator || !symbol || !timeframe) return;
+                    const bot = allBotRows(latestState || {}).find((x) => {
+                        const curKey = String((x && x.instance_key) || '').trim().toLowerCase()
+                            || `${normalizeIndicatorName((x && x.indicator) || '')}|${String((x && x.symbol) || '').trim().toUpperCase()}|${String((x && x.timeframe) || '').trim().toUpperCase()}`.toLowerCase();
+                        return curKey === instanceKey;
+                    });
+                    const enabledNow = !!(bot && bot.effective_automation_enabled);
+                    try {
+                        await updateInstanceSettings(indicator, symbol, timeframe, { enabled: !enabledNow }, { render: true });
+                        showAlert(`${!enabledNow ? 'Started' : 'Stopped'} automation for ${indicator} ${symbol} ${timeframe}.`, 'success');
+                    } catch (err) {
+                        showAlert(`Bot toggle failed: ${String(err.message || err)}`, 'error');
+                    }
+                    return;
+                }
+                if (target.classList.contains('mt4la-bot-lot-save-btn')) {
+                    const toggleBtn = row.querySelector('.mt4la-bot-toggle-btn');
+                    if (!toggleBtn) return;
+                    const indicator = String(toggleBtn.getAttribute('data-indicator') || '').trim();
+                    const symbol = String(toggleBtn.getAttribute('data-symbol') || '').trim().toUpperCase();
+                    const timeframe = String(toggleBtn.getAttribute('data-timeframe') || '').trim().toUpperCase();
+                    if (!indicator || !symbol || !timeframe) return;
+                    const lotInput = row.querySelector('.mt4la-bot-lot-input');
+                    const lotValue = parseLotInput(lotInput && lotInput.value);
+                    if (lotValue === null) {
+                        showAlert('Invalid lot size. Use a value > 0.', 'error');
+                        return;
+                    }
+                    try {
+                        await updateInstanceSettings(indicator, symbol, timeframe, { lot_size: Number(lotValue) }, { render: true });
+                        showAlert(`Bot lot updated for ${indicator} ${symbol} ${timeframe}.`, 'success');
+                    } catch (err) {
+                        showAlert(`Bot lot update failed: ${String(err.message || err)}`, 'error');
+                    }
                 }
             });
         }

@@ -1482,6 +1482,85 @@ class TelegramBridgeService:
                 f"{str(timeframe_name or '').strip().upper()}"
             ).lower()
 
+        def _extract_bridge_chart_row(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            if not isinstance(ev, dict):
+                return None
+            if str(ev.get("terminal_group") or "").strip().lower() != "mt4":
+                return None
+            ind_key = str(ev.get("indicator_key") or "").strip().lower()
+            ind_name = str(ev.get("indicator") or "").strip().lower()
+            if ind_key != "protrading_mt4_bridge_ea" and "protrading_mt4_bridge_ea" not in ind_name:
+                return None
+
+            symbol = str(ev.get("symbol") or "").strip().upper()
+            timeframe = str(ev.get("timeframe") or "").strip().upper()
+            msg = str(ev.get("message") or ev.get("raw") or "").strip()
+            ev_ts = str(ev.get("event_ts") or "").strip()
+            profile = str(ev.get("signal_profile") or "").strip().lower()
+            resolved_indicator = ""
+
+            m_init = re.search(
+                r"MT4Bridge initialized:\s*(.+?)\s*\|\s*([A-Z0-9_]+)\s+([A-Z0-9_]+)",
+                msg,
+                flags=re.IGNORECASE,
+            )
+            if m_init:
+                resolved_indicator = str(m_init.group(1) or "").strip()
+                symbol = symbol or str(m_init.group(2) or "").strip().upper()
+                timeframe = timeframe or str(m_init.group(3) or "").strip().upper()
+
+            if not resolved_indicator:
+                m_input_indicator = re.search(r"InpIndicatorName\s*=\s*([^;\r\n]+)", msg, flags=re.IGNORECASE)
+                if m_input_indicator:
+                    resolved_indicator = str(m_input_indicator.group(1) or "").strip()
+            if not profile:
+                m_input_profile = re.search(r"InpSignalProfile\s*=\s*([^;\r\n]+)", msg, flags=re.IGNORECASE)
+                if m_input_profile:
+                    profile = str(m_input_profile.group(1) or "").strip().lower()
+            if not resolved_indicator:
+                m_json = re.search(r"\"indicator\"\s*:\s*\"([^\"]+)\"", msg)
+                if m_json:
+                    resolved_indicator = str(m_json.group(1) or "").strip()
+
+            resolved_indicator = self._normalize_mt4_indicator_name(resolved_indicator) or resolved_indicator
+            if not resolved_indicator or not symbol or not timeframe:
+                return None
+
+            profile = str(profile or _infer_profile_from_indicator(resolved_indicator)).strip().lower()
+            if not profile or profile == "generic":
+                return None
+            runtime_cfg = self._resolve_mt4_instance_runtime_config(
+                indicator=str(resolved_indicator),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+            )
+
+            combo_key = self._build_execution_combo_key(
+                source_type="mt_indicator",
+                source_name=resolved_indicator,
+                indicator=resolved_indicator,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            ckey = str(combo_key or "").strip().lower()
+            if not ckey:
+                return None
+            return {
+                "indicator": str(resolved_indicator),
+                "symbol": str(symbol),
+                "timeframe": str(timeframe),
+                "instance_key": str(runtime_cfg.get("instance_key") or ev.get("instance_key") or f"{resolved_indicator}|{symbol}|{timeframe}"),
+                "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
+                "automation_mode": "bridge",
+                "control_mode": str(runtime_cfg.get("automation_mode") or "inherit"),
+                "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
+                "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
+                "last_seen": str(ev_ts),
+                "source_tag": f"mt4|{profile}|{self._normalize_mt_indicator_key(resolved_indicator)}|{symbol}|{timeframe}",
+                "combo_key": ckey,
+                "bridge_active": True,
+            }
+
         ladder_by_instance: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             ckey = _instance_combo_key(
@@ -1501,7 +1580,11 @@ class TelegramBridgeService:
                 if not effective_enabled:
                     continue
                 group = str(inst.get("last_terminal_group") or "").strip().lower()
-                if group and group not in {"mt4", "unknown"}:
+                if group == "mt4":
+                    # MT4 charts are bridge-driven. Do not surface log-instance
+                    # rows here, otherwise monitor mixes bridge and log sources.
+                    continue
+                if group and group not in {"mt5", "mt5_demo", "unknown"}:
                     continue
                 indicator = str(inst.get("indicator") or inst.get("indicator_key") or "").strip()
                 symbol = str(inst.get("symbol") or "").strip().upper()
@@ -1543,54 +1626,13 @@ class TelegramBridgeService:
             existing_combo_keys = {str(r.get("combo_key") or "").strip().lower() for r in bot_rows}
             bridge_by_key: Dict[str, Dict[str, Any]] = {}
             for ev in recent_events:
-                if not isinstance(ev, dict):
+                row = _extract_bridge_chart_row(ev)
+                if not isinstance(row, dict):
                     continue
-                ind_key = str(ev.get("indicator_key") or "").strip().lower()
-                ind_name = str(ev.get("indicator") or "").strip().lower()
-                if ind_key != "protrading_mt4_bridge_ea" and "protrading_mt4_bridge_ea" not in ind_name:
-                    continue
-                symbol = str(ev.get("symbol") or "").strip().upper()
-                timeframe = str(ev.get("timeframe") or "").strip().upper()
-                if not symbol or not timeframe:
-                    continue
-                profile = str(ev.get("signal_profile") or "").strip().lower() or "generic"
-                msg = str(ev.get("message") or ev.get("raw") or "").strip()
-                ev_ts = str(ev.get("event_ts") or "").strip()
-                resolved_indicator = ""
-                m1 = re.search(r"MT4Bridge initialized:\s*(.+?)\s*\|\s*[A-Z0-9_]+\s+[A-Z0-9_]+", msg, flags=re.IGNORECASE)
-                if m1:
-                    resolved_indicator = str(m1.group(1) or "").strip()
-                if not resolved_indicator:
-                    m2 = re.search(r"\"indicator\":\"([^\"]+)\"", msg)
-                    if m2:
-                        resolved_indicator = str(m2.group(1) or "").strip()
-                resolved_indicator = self._normalize_mt4_indicator_name(resolved_indicator) or resolved_indicator
-                if not resolved_indicator:
-                    resolved_indicator = f"Bridge ({profile})"
-                combo_key = self._build_execution_combo_key(
-                    source_type="mt_indicator",
-                    source_name=resolved_indicator,
-                    indicator=resolved_indicator,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                ckey = str(combo_key or "").strip().lower()
-                if not ckey:
-                    continue
+                ckey = str(row.get("combo_key") or "").strip().lower()
                 prev = bridge_by_key.get(ckey)
-                if prev is None or str(ev_ts) > str(prev.get("last_seen") or ""):
-                    bridge_by_key[ckey] = {
-                        "indicator": str(resolved_indicator),
-                        "symbol": str(symbol),
-                        "timeframe": str(timeframe),
-                        "instance_key": str(ev.get("instance_key") or f"{resolved_indicator}|{symbol}|{timeframe}"),
-                        "lot_size": None,
-                        "automation_mode": "bridge",
-                        "effective_automation_enabled": True,
-                        "last_seen": str(ev_ts),
-                        "source_tag": f"mt4|{profile}|{self._normalize_mt_indicator_key(resolved_indicator)}|{symbol}|{timeframe}",
-                        "combo_key": ckey,
-                    }
+                if prev is None or str(row.get("last_seen") or "") > str(prev.get("last_seen") or ""):
+                    bridge_by_key[ckey] = dict(row)
             for ckey, row in bridge_by_key.items():
                 if ckey in existing_combo_keys:
                     for idx, existing in enumerate(bot_rows):
@@ -1598,9 +1640,13 @@ class TelegramBridgeService:
                             continue
                         merged_existing = dict(existing or {})
                         merged_existing["automation_mode"] = "bridge"
-                        merged_existing["effective_automation_enabled"] = True
+                        merged_existing["control_mode"] = str(row.get("control_mode") or merged_existing.get("control_mode") or merged_existing.get("automation_mode") or "inherit")
+                        merged_existing["automation_enabled"] = bool(row.get("automation_enabled"))
+                        merged_existing["effective_automation_enabled"] = bool(row.get("effective_automation_enabled"))
+                        merged_existing["lot_size"] = _to_float_or_none(row.get("lot_size")) or _to_float_or_none(merged_existing.get("lot_size"))
                         merged_existing["bridge_active"] = True
                         merged_existing["last_seen"] = str(row.get("last_seen") or merged_existing.get("last_seen") or "")
+                        merged_existing["instance_key"] = str(row.get("instance_key") or merged_existing.get("instance_key") or "")
                         bot_rows[idx] = merged_existing
                         break
                     continue
@@ -1619,13 +1665,13 @@ class TelegramBridgeService:
         bot_rows.sort(key=lambda r: str(r.get("last_seen") or ""), reverse=True)
         bot_rows = bot_rows[:lim]
         bot_open_count = len([r for r in bot_rows if bool(r.get("has_open_ladder"))])
-        bot_idle_count = len([r for r in bot_rows if not bool(r.get("has_open_ladder"))])
+        bot_idle_count = len([r for r in bot_rows if bool(r.get("effective_automation_enabled")) and not bool(r.get("has_open_ladder"))])
         return {
             "ok": True,
             "updated_at": self._now_iso(),
             "active_count": int(len(rows)),
             "rows": rows,
-            "bot_active_count": int(len(bot_rows)),
+            "bot_active_count": int(len([r for r in bot_rows if bool(r.get("effective_automation_enabled"))])),
             "bot_open_count": int(bot_open_count),
             "bot_idle_count": int(bot_idle_count),
             "bot_rows": bot_rows,
@@ -2136,6 +2182,78 @@ class TelegramBridgeService:
         # MT4 indicator automation uses 5-stage partial TP ladder; keep minimum lot at 0.05
         # so each stage can close 0.01 on symbols with 0.01 volume_step.
         return max(0.05, min(100.0, float(raw)))
+
+    def _resolve_mt4_instance_runtime_config(
+        self,
+        *,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+    ) -> Dict[str, Any]:
+        indicator_name = self._normalize_mt4_indicator_name(indicator) or str(indicator or "").strip()
+        symbol_name = str(symbol or "").strip().upper()
+        timeframe_name = str(timeframe or "").strip().upper()
+        out: Dict[str, Any] = {
+            "indicator": str(indicator_name),
+            "symbol": str(symbol_name),
+            "timeframe": str(timeframe_name),
+            "instance_key": "",
+            "automation_mode": "inherit",
+            "automation_enabled": False,
+            "effective_automation_enabled": False,
+            "lot_size": None,
+            "indicator_allowed": False,
+            "indicator_enabled": False,
+        }
+        if not indicator_name or not symbol_name or not timeframe_name:
+            return out
+        try:
+            from .mt4_log_automation_service import MT4LogAutomationService
+        except Exception:
+            return out
+
+        allowed = bool(MT4LogAutomationService._is_indicator_automation_allowed(indicator_name))
+        indicator_key = str(MT4LogAutomationService._indicator_key(indicator_name) or "").strip()
+        instance_key = str(
+            MT4LogAutomationService._instance_key(
+                indicator=str(indicator_name),
+                symbol=str(symbol_name),
+                timeframe=str(timeframe_name),
+            )
+            or ""
+        ).strip()
+        indicator_enabled = False
+        if indicator_key:
+            active_indicator_keys = {
+                str(MT4LogAutomationService._indicator_key(x) or "").strip()
+                for x in (MT4LogAutomationService._active_indicator_names() or [])
+                if str(MT4LogAutomationService._indicator_key(x) or "").strip()
+            }
+            indicator_enabled = bool(indicator_key in active_indicator_keys)
+        instance_overrides = MT4LogAutomationService._instance_automation_overrides()
+        instance_key_l = str(instance_key or "").strip().lower()
+        explicit_present = bool(instance_key_l and instance_key_l in instance_overrides)
+        explicit_enabled = bool(instance_overrides.get(instance_key_l)) if explicit_present else False
+        effective_enabled = bool(explicit_enabled) if explicit_present else bool(indicator_enabled)
+        if not allowed:
+            effective_enabled = False
+        lot_size = None
+        if instance_key:
+            lot_size = _to_float_or_none(MT4LogAutomationService._instance_lot_for_key(instance_key))
+        if lot_size is None or float(lot_size) <= 0.0:
+            lot_size = _to_float_or_none(self._mt4_exec_profile_lot("generic"))
+        out.update(
+            {
+                "instance_key": str(instance_key),
+                "automation_mode": ("explicit" if explicit_present else "inherit"),
+                "automation_enabled": bool(explicit_enabled),
+                "effective_automation_enabled": bool(effective_enabled),
+                "lot_size": _to_float_or_none(lot_size),
+                "indicator_allowed": bool(allowed),
+                "indicator_enabled": bool(indicator_enabled),
+            }
+        )
+        return out
 
     @staticmethod
     def _mt4_exec_profile_atr_period(profile: str) -> int:
@@ -2731,6 +2849,40 @@ class TelegramBridgeService:
             )
             return {"ok": True, "executed": False, "reason": f"profile_disabled:{profile}"}
 
+        runtime_cfg = self._resolve_mt4_instance_runtime_config(
+            indicator=str(indicator),
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+        )
+        if not bool(runtime_cfg.get("indicator_allowed")):
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_signal_rejected",
+                parsed={"symbol": str(symbol), "direction": str(hint), "profile": str(profile), "reason": "indicator_not_allowed"},
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": True, "executed": False, "reason": "indicator_not_allowed"}
+        if not bool(runtime_cfg.get("effective_automation_enabled")):
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_signal_disabled",
+                parsed={
+                    "symbol": str(symbol),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "instance_key": str(runtime_cfg.get("instance_key") or ""),
+                    "reason": "instance_disabled",
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": True, "executed": False, "reason": "instance_disabled"}
+
         svc = self._get_live_service()
         info = svc.get_symbol_info(symbol=str(symbol))
         if isinstance(info, dict) and str(info.get("error") or "").strip():
@@ -2886,7 +3038,7 @@ class TelegramBridgeService:
                 event_ts=event_ts,
                 source_message_id=None,
             )
-        lot = float(self._mt4_exec_profile_lot(profile))
+        lot = float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile))
         lot_override = _to_float_or_none(p.get("lot_override"))
         if lot_override is not None and float(lot_override) > 0.0:
             lot = float(max(0.01, min(100.0, float(lot_override))))

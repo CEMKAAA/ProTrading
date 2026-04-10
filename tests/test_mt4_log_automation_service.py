@@ -78,6 +78,34 @@ def test_indicator_signal_forward_requires_automation_enabled():
     assert calls["n"] == 1
 
 
+def test_indicator_signal_forward_skips_mt4_log_events_even_when_enabled():
+    calls = {"n": 0}
+
+    def _on_signal(**_kwargs):
+        calls["n"] += 1
+
+    svc = MT4LogAutomationService(on_indicator_signal=_on_signal)
+    key = "intrepid trend direction"
+    svc._indicator_stats[key] = {
+        "indicator": "Intrepid Trend Direction",
+        "key": key,
+        "automation_enabled": True,
+    }
+    ev = {
+        "indicator": "Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "BUY",
+        "symbol": "USDJPY",
+        "timeframe": "M1",
+        "message": "Intrepid BUY",
+        "event_ts": "2026-04-10T10:00:00+00:00",
+        "terminal_group": "mt4",
+    }
+
+    svc._maybe_forward_signal(dict(ev), from_backfill=False)
+    assert calls["n"] == 0
+
+
 def test_discover_active_files_includes_mql5_logs():
     tmp_dir = _mk_workspace_tmp_dir()
     try:
