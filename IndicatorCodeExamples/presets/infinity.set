@@ -1,0 +1,9 @@
+period=10
+multiplier=4.0
+alertsOn=false
+alertsOnCurrent=false
+alertsMessage=true
+alertsSound=false
+alertsNotify=false
+alertsEmail=false
+soundFile=alert2.wav

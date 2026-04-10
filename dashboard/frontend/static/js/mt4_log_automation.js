@@ -25,10 +25,20 @@
         chartGroup: document.getElementById('mt4la-chart-group'),
         chartInstance: document.getElementById('mt4la-chart-instance'),
         chartStats: document.getElementById('mt4la-chart-stats'),
+        chartAutomationBtn: document.getElementById('mt4la-chart-automation-btn'),
+        chartAutomationState: document.getElementById('mt4la-chart-automation-state'),
         chartLogBody: document.getElementById('mt4la-chart-log-body'),
+        botStartBtn: document.getElementById('mt4la-bot-start-btn'),
+        botStopBtn: document.getElementById('mt4la-bot-stop-btn'),
+        botUpdated: document.getElementById('mt4la-bot-updated'),
+        botEnabledCount: document.getElementById('mt4la-bot-enabled-count'),
+        botActiveCount: document.getElementById('mt4la-bot-active-count'),
+        botBody: document.getElementById('mt4la-bot-body'),
         logTitle: document.getElementById('mt4la-log-title'),
         logBody: document.getElementById('mt4la-log-body'),
-        execBody: document.getElementById('mt4la-exec-body')
+        execBody: document.getElementById('mt4la-exec-body'),
+        execReportBody: document.getElementById('mt4la-exec-report-body'),
+        execReportMeta: document.getElementById('mt4la-exec-report-meta')
     };
 
     let pollTimer = null;
@@ -49,11 +59,16 @@
     const lotDraftByInstance = new Map();
     const ALLOWED_INDICATOR_TOKENS = [
         'hydra signals indicator',
+        'hydra',
         'forex uranus direction',
+        'uranus',
+        'fxnukeesc',
+        'fxnuke',
         'forexcypersystem',
         'forexcyper',
         'alchemy pulse',
-        'intrepid trend direction'
+        'intrepid trend direction',
+        'intrepid'
     ];
 
     function showAlert(message, kind) {
@@ -127,6 +142,15 @@
         return sym;
     }
 
+    function compactPath(raw) {
+        const p = String(raw || '').trim();
+        if (!p) return '-';
+        const norm = p.replace(/\//g, '\\');
+        const parts = norm.split('\\').filter(Boolean);
+        if (parts.length <= 6) return norm;
+        return `...\\${parts.slice(-6).join('\\')}`;
+    }
+
     function isWithinLastHours(ts, hours) {
         const raw = String(ts || '').trim();
         if (!raw) return false;
@@ -136,7 +160,18 @@
         return (Date.now() - dt.getTime()) <= maxAgeMs;
     }
 
+    function eventIndicatorName(ev) {
+        const parsed = parseLegacyChartFromEvent(ev);
+        const indicator = String(parsed.indicator || ((ev && ev.indicator) || '')).trim();
+        return indicator;
+    }
+
+    function isStrongIndicatorEvent(ev) {
+        return isAllowedIndicator(eventIndicatorName(ev));
+    }
+
     function isAlarmLikeEvent(ev) {
+        if (!isStrongIndicatorEvent(ev)) return false;
         const signalHint = String((ev && ev.signal_hint) || '').trim().toUpperCase();
         if (signalHint === 'BUY' || signalHint === 'SELL') return true;
 
@@ -256,6 +291,56 @@
         return out;
     }
 
+    function parseInstanceKeyParts(rawKey) {
+        const key = String(rawKey || '').trim().toLowerCase();
+        if (!key || key === 'all') return { indicator: '', symbol: '', timeframe: '' };
+        const parts = key.split('|');
+        if (parts.length < 3) return { indicator: '', symbol: '', timeframe: '' };
+        return {
+            indicator: String(parts[0] || '').trim(),
+            symbol: String(parts[1] || '').trim().toUpperCase(),
+            timeframe: String(parts[2] || '').trim().toUpperCase()
+        };
+    }
+
+    function allInstanceRows(state) {
+        const s = state || {};
+        const rows = Array.isArray(s.chart_instances)
+            ? s.chart_instances
+            : (Array.isArray(s.instances) ? s.instances : []);
+        return rows.slice();
+    }
+
+    function findInstanceRowByKey(state, key) {
+        const k = String(key || '').trim().toLowerCase();
+        if (!k || k === 'all') return null;
+        const rows = allInstanceRows(state);
+        const row = rows.find((x) => String((x || {}).instance_key || '').trim().toLowerCase() === k);
+        return row || null;
+    }
+
+    function refreshChartAutomationActionState(state) {
+        if (!els.chartAutomationBtn || !els.chartAutomationState) return;
+        const targets = getVisibleChartAutomationTargets(state || latestState || {});
+        if (!targets.length) {
+            els.chartAutomationBtn.disabled = true;
+            els.chartAutomationBtn.className = 'btn btn-sm btn-outline-success';
+            els.chartAutomationBtn.textContent = 'Start Automation';
+            els.chartAutomationState.textContent = 'No chart instance found in current table filter.';
+            if (els.botStartBtn) els.botStartBtn.disabled = true;
+            if (els.botStopBtn) els.botStopBtn.disabled = true;
+            return;
+        }
+        const enabledCount = targets.filter((x) => !!x.enabled).length;
+        const allEnabled = enabledCount === targets.length;
+        els.chartAutomationBtn.disabled = false;
+        els.chartAutomationBtn.className = `btn btn-sm btn-outline-${allEnabled ? 'danger' : 'success'}`;
+        els.chartAutomationBtn.textContent = `${allEnabled ? 'Stop' : 'Start'} Automation (${targets.length})`;
+        els.chartAutomationState.textContent = `${enabledCount}/${targets.length} charts running in current table filter.`;
+        if (els.botStartBtn) els.botStartBtn.disabled = allEnabled;
+        if (els.botStopBtn) els.botStopBtn.disabled = !enabledCount;
+    }
+
     function rebuildChartSelectors(state) {
         if (!els.chartGroup || !els.chartInstance) return;
         const chartInstances = Array.isArray((state || {}).chart_instances)
@@ -292,6 +377,7 @@
                 const g = normalizeChartGroup((r && r.last_terminal_group) || '');
                 return { indicator, symbol, timeframe, key, group: g };
             })
+            .filter((r) => isAllowedIndicator(r.indicator))
             .filter((r) => r.key && r.indicator && r.symbol && r.timeframe);
 
         const chartRowsFromEvents = events
@@ -335,15 +421,14 @@
         els.chartInstance.innerHTML = chartOptions.join('');
     }
 
-    function renderChartAlarmLogs(state) {
-        if (!els.chartLogBody) return;
+    function getFilteredChartAlarmEvents(state) {
         const rows = Array.isArray((state || {}).events_recent_24h)
             ? state.events_recent_24h.slice()
             : (Array.isArray((state || {}).events) ? state.events.slice() : []);
         const groupFilter = String(selectedChartGroup || 'all').toLowerCase();
         const instanceFilter = String(selectedChartInstance || 'all').toLowerCase();
 
-        const filtered = rows
+        return rows
             .filter((ev) => isAlarmLikeEvent(ev))
             .filter((ev) => isWithinLastHours((ev && ev.event_ts) || '', 24))
             .filter((ev) => {
@@ -359,6 +444,35 @@
                 const tb = Date.parse(String((b && b.event_ts) || '')) || 0;
                 return tb - ta;
             });
+    }
+
+    function getVisibleChartAutomationTargets(state) {
+        const filtered = getFilteredChartAlarmEvents(state || {});
+        const current = state || latestState || {};
+        const byKey = new Map();
+        for (const ev of filtered) {
+            const key = String(eventInstanceKey(ev) || '').trim().toLowerCase();
+            if (!key || byKey.has(key)) continue;
+            const row = findInstanceRowByKey(current, key);
+            const parsed = parseLegacyChartFromEvent(ev);
+            const indicator = String((row && row.indicator) || parsed.indicator || (ev && ev.indicator) || '').trim();
+            const symbol = String((row && row.symbol) || parsed.symbol || (ev && ev.symbol) || '').trim().toUpperCase();
+            const timeframe = String((row && row.timeframe) || parsed.timeframe || (ev && ev.timeframe) || '').trim().toUpperCase();
+            if (!indicator || !symbol || !timeframe || !isAllowedIndicator(indicator)) continue;
+            byKey.set(key, {
+                key,
+                indicator,
+                symbol,
+                timeframe,
+                enabled: !!(row && row.effective_automation_enabled),
+            });
+        }
+        return Array.from(byKey.values());
+    }
+
+    function renderChartAlarmLogs(state) {
+        if (!els.chartLogBody) return;
+        const filtered = getFilteredChartAlarmEvents(state || {});
 
         if (els.chartStats) {
             els.chartStats.textContent = `Rows: ${filtered.length} | Last 24h | Latest first`;
@@ -379,7 +493,7 @@
             const chart = `${indicator || '-'}${(symbol || tf) ? ` | ${prettySymbol(symbol)}${tf ? ` ${tf}` : ''}` : ''}`;
             const kind = String((ev && ev.kind) || 'log').trim().toLowerCase();
             const msg = String((ev && ev.message) || (ev && ev.raw) || '').trim();
-            const file = String((ev && (ev.source_file || ev.source_path)) || '').trim();
+            const file = compactPath(String((ev && (ev.source_path || ev.source_file)) || '').trim());
             return `<tr>
                 <td class="small text-muted">${escapeHtml(ts)}</td>
                 <td><span class="badge text-bg-dark">${escapeHtml(group)}</span></td>
@@ -418,7 +532,12 @@
             els.statusLine.textContent = `Status: ${run ? 'running' : 'stopped'}${err ? ` | err: ${err}` : ''}`;
         }
         if (els.filesLine) {
-            els.filesLine.textContent = `Watched files: ${Number(s.watched_files_count || 0)}`;
+            const count = Number(s.watched_files_count || 0);
+            const stale = Number(s.watched_files_stale_count || 0);
+            const newestAge = Number(s.watched_files_newest_age_sec || 0);
+            const newestTs = formatTs(s.watched_files_newest_ts || '');
+            const newestPath = compactPath(s.watched_files_newest_path || '');
+            els.filesLine.textContent = `Watched files: ${count} | stale: ${stale} | newest write: ${newestTs} (${Math.round(newestAge)}s ago) | ${newestPath}`;
         }
         if (els.forwardLine) {
             const lf = String(s.last_forward || '').trim();
@@ -591,7 +710,7 @@
         const items = Array.isArray(rows) ? rows.slice() : [];
         if (!els.execBody) return;
         if (!items.length) {
-            els.execBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">No execution logs yet.</td></tr>';
+            els.execBody.innerHTML = '<tr><td colspan="10" class="text-muted text-center py-3">No execution logs yet.</td></tr>';
             return;
         }
         items.sort((a, b) => {
@@ -601,6 +720,7 @@
         });
         els.execBody.innerHTML = items.map((r) => {
             const ts = formatTs((r && (r.event_ts || r.ts)) || '');
+            const openedAt = formatTs((r && r.opened_at) || '');
             const srcType = escapeHtml(String((r && r.source_type) || '-'));
             const srcName = escapeHtml(String((r && r.source_name) || '-'));
             const sym = String((r && r.symbol) || '').trim();
@@ -612,12 +732,201 @@
             const status = escapeHtml(String((r && r.status) || '-'));
             const ticketRaw = Number((r && r.ticket) || 0);
             const ticket = ticketRaw > 0 ? String(ticketRaw) : '-';
-            const msg = escapeHtml(String((r && r.message) || ''));
-            return `<tr><td class="small text-muted">${ts}</td><td>${srcType}</td><td>${srcName}</td><td>${symTf}</td><td>${dir}</td><td>${lot}</td><td><span class="badge text-bg-secondary">${status}</span></td><td>${ticket}</td><td>${msg}</td></tr>`;
+            const baseMsg = String((r && r.message) || '').trim();
+            const realized = Number((r && r.realized_pnl));
+            const maxProfit = Number((r && r.max_profit));
+            const maxLoss = Number((r && r.max_loss));
+            const closeReason = String((r && r.close_reason) || '').trim();
+            const extra = [];
+            if (Number.isFinite(realized)) extra.push(`realized=${formatPnl(realized)}`);
+            if (Number.isFinite(maxProfit)) extra.push(`max=${formatPnl(maxProfit)}`);
+            if (Number.isFinite(maxLoss)) extra.push(`min=${formatPnl(maxLoss)}`);
+            if (closeReason) extra.push(`reason=${closeReason}`);
+            const msg = escapeHtml([baseMsg, extra.join(' | ')].filter(Boolean).join(' | '));
+            return `<tr><td class="small text-muted">${ts}</td><td class="small text-muted">${openedAt}</td><td>${srcType}</td><td>${srcName}</td><td>${symTf}</td><td>${dir}</td><td>${lot}</td><td><span class="badge text-bg-secondary">${status}</span></td><td>${ticket}</td><td>${msg}</td></tr>`;
+        }).join('');
+    }
+
+    function renderBotMonitor(monitor) {
+        const m = monitor && typeof monitor === 'object' ? monitor : {};
+        const ladderRows = Array.isArray(m.rows) ? m.rows.slice() : [];
+        const botRows = Array.isArray(m.bot_rows) ? m.bot_rows.slice() : [];
+        if (els.botUpdated) {
+            els.botUpdated.textContent = `Updated: ${formatTs(m.updated_at || '')}`;
+        }
+        if (els.botEnabledCount) {
+            const enabled = Number(m.bot_active_count || botRows.length || 0);
+            els.botEnabledCount.textContent = String(enabled);
+        }
+        if (els.botActiveCount) {
+            els.botActiveCount.textContent = String(Number(m.active_count || ladderRows.length || 0));
+        }
+        if (!els.botBody) return;
+
+        const normalizeIndicator = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const comboKey = (indicator, symbol, timeframe) =>
+            `${normalizeIndicator(indicator)}|${String(symbol || '').trim().toUpperCase()}|${String(timeframe || '').trim().toUpperCase()}`;
+
+        const ladderByCombo = new Map();
+        for (const row of ladderRows) {
+            const key = comboKey((row && (row.indicator || row.source_name)) || '', (row && row.symbol) || '', (row && row.timeframe) || '');
+            if (!key) continue;
+            ladderByCombo.set(key, row);
+        }
+
+        const displayRows = [];
+        for (const row of ladderRows) {
+            displayRows.push(Object.assign({}, row, { _state: 'OPEN' }));
+        }
+        for (const bot of botRows) {
+            const key = comboKey((bot && bot.indicator) || '', (bot && bot.symbol) || '', (bot && bot.timeframe) || '');
+            if (!key || ladderByCombo.has(key) || !bot || bot.has_open_ladder) continue;
+            displayRows.push({
+                opened_at: String((bot && bot.last_seen) || ''),
+                indicator: String((bot && bot.indicator) || ''),
+                symbol: String((bot && bot.symbol) || '').toUpperCase(),
+                timeframe: String((bot && bot.timeframe) || '').toUpperCase(),
+                direction: '-',
+                ticket: 0,
+                next_tp_index: 0,
+                total_tps: 0,
+                max_profit: null,
+                max_loss: null,
+                current_profit: null,
+                _state: 'IDLE'
+            });
+        }
+
+        if (!displayRows.length) {
+            els.botBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">No active MT4 bots.</td></tr>';
+            return;
+        }
+
+        displayRows.sort((a, b) => {
+            const ta = Date.parse(String((a && a.opened_at) || '')) || 0;
+            const tb = Date.parse(String((b && b.opened_at) || '')) || 0;
+            return tb - ta;
+        });
+        els.botBody.innerHTML = displayRows.map((r) => {
+            const opened = formatTs((r && r.opened_at) || '');
+            const indicator = String((r && (r.indicator || r.source_name)) || '-').trim();
+            const sym = String((r && r.symbol) || '').trim().toUpperCase();
+            const tf = String((r && r.timeframe) || '').trim().toUpperCase();
+            const symTf = (sym || tf) ? `${sym}${tf ? ` ${tf}` : ''}` : '-';
+            const dir = String((r && r.direction) || '-').trim().toUpperCase() || '-';
+            const ticketRaw = Number((r && r.ticket) || 0);
+            const ticket = ticketRaw > 0 ? String(ticketRaw) : '-';
+            const nextTp = Number((r && r.next_tp_index) || 0);
+            const totalTp = Number((r && r.total_tps) || 0);
+            const rowState = String((r && r._state) || '').toUpperCase();
+            const nextTpText = rowState === 'IDLE'
+                ? 'IDLE'
+                : (nextTp > 0 && totalTp > 0 ? `TP${nextTp}/${totalTp}` : 'OPEN');
+            const maxP = formatPnl((r && r.max_profit));
+            const maxL = formatPnl((r && r.max_loss));
+            const live = formatPnl((r && r.current_profit));
+            return `<tr>
+                <td class="small text-muted">${escapeHtml(opened)}</td>
+                <td>${escapeHtml(indicator)}</td>
+                <td>${escapeHtml(symTf)}</td>
+                <td>${escapeHtml(dir)}</td>
+                <td>${escapeHtml(ticket)}</td>
+                <td>${escapeHtml(nextTpText)}</td>
+                <td>${escapeHtml(maxP)}</td>
+                <td>${escapeHtml(maxL)}</td>
+                <td>${escapeHtml(live)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    async function setVisibleChartAutomation(desiredEnabled) {
+        const targets = getVisibleChartAutomationTargets(latestState || {});
+        if (!targets.length) {
+            showAlert('No chart found in current table filter.', 'error');
+            return;
+        }
+        const desired = !!desiredEnabled;
+        let okCount = 0;
+        let failCount = 0;
+        for (const t of targets) {
+            try {
+                await updateInstanceSettings(
+                    t.indicator,
+                    t.symbol,
+                    t.timeframe,
+                    { enabled: desired },
+                    { render: false }
+                );
+                okCount += 1;
+            } catch (_) {
+                failCount += 1;
+            }
+        }
+        await loadState(false);
+        showAlert(
+            `${desired ? 'Started' : 'Stopped'} automation for ${okCount}/${targets.length} charts.${failCount ? ` Failed: ${failCount}.` : ''}`,
+            failCount ? 'info' : 'success'
+        );
+    }
+
+    function formatPnl(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return '-';
+        const sign = n > 0 ? '+' : '';
+        return `${sign}${n.toFixed(2)}`;
+    }
+
+    function renderExecutionReport(report) {
+        if (!els.execReportBody) return;
+        const rows = Array.isArray((report && report.rows) ? report.rows : [])
+            ? report.rows.slice()
+            : [];
+        if (els.execReportMeta) {
+            const ts = formatTs((report && report.generated_at) || '');
+            els.execReportMeta.textContent = `By source + symbol/timeframe (highest pnl first) | Updated: ${ts}`;
+        }
+        if (!rows.length) {
+            els.execReportBody.innerHTML = '<tr><td colspan="8" class="text-muted text-center py-3">No performance rows yet.</td></tr>';
+            return;
+        }
+        els.execReportBody.innerHTML = rows.map((r) => {
+            const sourceType = String((r && r.source_type) || '').trim().toLowerCase();
+            const baseName = String((r && (r.combo_name || r.source_name || r.indicator)) || '-').trim();
+            const symbol = String((r && r.symbol) || '').trim().toUpperCase();
+            const tf = String((r && r.timeframe) || '').trim().toUpperCase();
+            const combo = `${baseName}${(symbol || tf) ? ` | ${symbol}${tf ? ` ${tf}` : ''}` : ''}`;
+            const opened = Number((r && r.opened_count) || 0);
+            const closed = Number((r && r.closed_count) || 0);
+            const winRate = Number((r && r.win_rate_pct) || 0);
+            const totalPnl = formatPnl((r && r.total_realized_pnl));
+            const avgPnl = formatPnl((r && r.avg_realized_pnl));
+            const best = formatPnl((r && r.best_trade_pnl));
+            const worst = formatPnl((r && r.worst_trade_pnl));
+            const srcBadge = sourceType === 'mt_indicator' ? 'text-bg-primary' : 'text-bg-dark';
+            return `<tr>
+                <td><span class="badge ${srcBadge} me-1">${escapeHtml(sourceType || 'unknown')}</span>${escapeHtml(combo)}</td>
+                <td>${opened}</td>
+                <td>${closed}</td>
+                <td>${winRate.toFixed(1)}%</td>
+                <td>${escapeHtml(totalPnl)}</td>
+                <td>${escapeHtml(avgPnl)}</td>
+                <td>${escapeHtml(best)}</td>
+                <td>${escapeHtml(worst)}</td>
+            </tr>`;
         }).join('');
     }
 
     function chartSocketUrl() {
+        const configuredApiBase = String((window && window.PROTRADING_API_BASE_URL) || '').trim();
+        if (configuredApiBase) {
+            try {
+                const apiUrl = new URL(configuredApiBase, window.location.origin);
+                const wsProtocol = apiUrl.protocol === 'https:' ? 'wss' : 'ws';
+                return `${wsProtocol}://${apiUrl.host}/ws/mt4-log-automation`;
+            } catch (_) {
+                // fallback below
+            }
+        }
         const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         const wsHost = window.location.host;
         return `${wsProtocol}://${wsHost}/ws/mt4-log-automation`;
@@ -703,8 +1012,11 @@
         const s = chartState(data || {});
         rebuildChartSelectors(s);
         renderChartAlarmLogs(s);
+        refreshChartAutomationActionState(data || {});
         latestExecLogs = Array.isArray((data || {}).execution_logs) ? (data.execution_logs).slice() : [];
         renderExecutionLogs(latestExecLogs);
+        renderExecutionReport((data || {}).execution_report || {});
+        renderBotMonitor((data || {}).mt4_bot_monitor || {});
         if (selectedIndicator) {
             await loadIndicatorLogs(selectedIndicator);
         }
@@ -735,6 +1047,11 @@
         const s = chartState(data || {});
         rebuildChartSelectors(s);
         renderChartAlarmLogs(s);
+        refreshChartAutomationActionState(data || {});
+        latestExecLogs = Array.isArray((data || {}).execution_logs) ? (data.execution_logs).slice() : latestExecLogs;
+        renderExecutionLogs(latestExecLogs);
+        renderExecutionReport((data || {}).execution_report || {});
+        renderBotMonitor((data || {}).mt4_bot_monitor || {});
         showAlert('MT4/MT5 log automation config saved.', 'success');
     }
 
@@ -762,8 +1079,11 @@
         const s = chartState(latestState || {});
         rebuildChartSelectors(s);
         renderChartAlarmLogs(s);
+        refreshChartAutomationActionState(latestState || {});
         latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
         renderExecutionLogs(latestExecLogs);
+        renderExecutionReport((latestState || {}).execution_report || {});
+        renderBotMonitor((latestState || {}).mt4_bot_monitor || {});
         return latestState;
     }
 
@@ -778,7 +1098,7 @@
         showAlert(`Lot updated for ${indicator}.`, 'success');
     }
 
-    async function updateInstanceSettings(indicator, symbol, timeframe, options) {
+    async function updateInstanceSettings(indicator, symbol, timeframe, options, uiOptions) {
         const payload = {
             indicator: String(indicator || ''),
             symbol: String(symbol || '').toUpperCase(),
@@ -798,17 +1118,22 @@
         if (data && data.ok === false) {
             throw new Error(String(data.error || 'instance_settings_update_failed'));
         }
+        const render = !uiOptions || uiOptions.render !== false;
         latestState = data || latestState || {};
-        renderStatus(latestState || {});
-        renderIndicators(latestState || {});
-        renderInstances(latestState || {});
-        latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
-        rebuildChartEventKeyIndex(latestChartEvents);
-        const s = chartState(latestState || {});
-        rebuildChartSelectors(s);
-        renderChartAlarmLogs(s);
-        latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
-        renderExecutionLogs(latestExecLogs);
+        if (render) {
+            renderStatus(latestState || {});
+            renderIndicators(latestState || {});
+            renderInstances(latestState || {});
+            latestChartEvents = Array.isArray((latestState || {}).events_recent_24h) ? (latestState.events_recent_24h).slice() : latestChartEvents;
+            rebuildChartEventKeyIndex(latestChartEvents);
+            const s = chartState(latestState || {});
+            rebuildChartSelectors(s);
+            renderChartAlarmLogs(s);
+            refreshChartAutomationActionState(latestState || {});
+            latestExecLogs = Array.isArray((latestState || {}).execution_logs) ? (latestState.execution_logs).slice() : latestExecLogs;
+            renderExecutionLogs(latestExecLogs);
+            renderExecutionReport((latestState || {}).execution_report || {});
+        }
         return latestState;
     }
 
@@ -981,6 +1306,7 @@
                 const s = chartState(latestState || {});
                 rebuildChartSelectors(s);
                 renderChartAlarmLogs(s);
+                refreshChartAutomationActionState(latestState || {});
                 sendChartSocketFilter();
             });
         }
@@ -990,7 +1316,53 @@
                 selectedChartInstance = String((els.chartInstance && els.chartInstance.value) || 'all').toLowerCase();
                 const s = chartState(latestState || {});
                 renderChartAlarmLogs(s);
+                refreshChartAutomationActionState(latestState || {});
                 sendChartSocketFilter();
+            });
+        }
+
+        if (els.chartAutomationBtn) {
+            els.chartAutomationBtn.addEventListener('click', async () => {
+                els.chartAutomationBtn.disabled = true;
+                try {
+                    const targets = getVisibleChartAutomationTargets(latestState || {});
+                    if (!targets.length) {
+                        showAlert('No chart found in current table filter.', 'error');
+                        return;
+                    }
+                    const allEnabled = targets.every((t) => !!t.enabled);
+                    await setVisibleChartAutomation(!allEnabled);
+                } catch (err) {
+                    showAlert(`Chart automation toggle failed: ${String(err.message || err)}`, 'error');
+                } finally {
+                    els.chartAutomationBtn.disabled = false;
+                    refreshChartAutomationActionState(latestState || {});
+                }
+            });
+        }
+
+        if (els.botStartBtn) {
+            els.botStartBtn.addEventListener('click', async () => {
+                els.botStartBtn.disabled = true;
+                try {
+                    await setVisibleChartAutomation(true);
+                } catch (err) {
+                    showAlert(`Start bots failed: ${String(err.message || err)}`, 'error');
+                } finally {
+                    refreshChartAutomationActionState(latestState || {});
+                }
+            });
+        }
+        if (els.botStopBtn) {
+            els.botStopBtn.addEventListener('click', async () => {
+                els.botStopBtn.disabled = true;
+                try {
+                    await setVisibleChartAutomation(false);
+                } catch (err) {
+                    showAlert(`Stop bots failed: ${String(err.message || err)}`, 'error');
+                } finally {
+                    refreshChartAutomationActionState(latestState || {});
+                }
             });
         }
 
@@ -1023,3 +1395,4 @@
         init();
     }
 })();
+

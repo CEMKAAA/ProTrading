@@ -1,0 +1,11 @@
+TimeFrame=0
+Amplitude=4
+ChannelDeviation=6.0
+alertsOn=true
+alertsOnCurrent=false
+alertsMessage=true
+alertsSound=true
+alertsEmail=false
+ShowChannels=true
+ShowArrows=true
+ArrowsOnFirstBar=true

@@ -3214,8 +3214,11 @@ def format_percent(value):
 
 @app.context_processor
 def inject_now():
-    """Inject datetime.now into templates"""
-    return {'now': datetime.now}
+    """Inject shared template globals."""
+    return {
+        'now': datetime.now,
+        'api_base_url': str(API_BASE_URL or '').strip(),
+    }
 
 
 if __name__ == '__main__':

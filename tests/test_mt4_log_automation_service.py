@@ -184,6 +184,67 @@ def test_parse_line_mt5_indicators_source_extracts_custom_indicator_chart():
     assert str(row.get("timeframe") or "") == "M15"
 
 
+def test_parse_line_mt5_source_embedded_chart_merges_alert_context():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="AA\t0\t13:08:11.100\tFXNUKESC USDCAD,M1: Alert: | FXNUKE SELL\tSIGNAL USDCAD",
+        source_file="20260409.log",
+        file_date="20260409",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("indicator") or "") == "FXNUKESC"
+    assert str(row.get("symbol") or "") == "USDCAD"
+    assert str(row.get("timeframe") or "") == "M1"
+    msg = str(row.get("message") or "")
+    assert "FXNUKE SELL" in msg
+    assert "SIGNAL USDCAD" in msg
+    assert str(row.get("signal_hint") or "") == "SELL"
+
+
+def test_parse_line_mt5_source_embedded_intrepid_turned_down_detects_sell():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="AA\t0\t14:32:10.000\tIntrepid Trend Direction USDJPYm,M5: Alert: Turned Down\tSignal USDJPY",
+        source_file="20260409.log",
+        file_date="20260409",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("indicator") or "") == "Intrepid Trend Direction"
+    assert str(row.get("symbol") or "") == "USDJPYM"
+    assert str(row.get("timeframe") or "") == "M5"
+    assert str(row.get("signal_profile") or "") == "intrepid"
+    assert str(row.get("signal_hint") or "") == "SELL"
+
+
+def test_signal_hint_intrepid_buy_sell_keywords_are_mapped():
+    svc = MT4LogAutomationService()
+    buy = svc._signal_hint(
+        indicator="Intrepid",
+        message="Intrepid BUY signal confirmed",
+    )
+    sell = svc._signal_hint(
+        indicator="Intrepid",
+        message="Intrepid SELL signal confirmed",
+    )
+    assert buy == "BUY"
+    assert sell == "SELL"
+
+
+def test_parse_line_mt4_intrepid_buy_signal_is_detected():
+    svc = MT4LogAutomationService()
+    row = svc._parse_line(
+        line="0\t14:32:10.000\tIntrepid Trend Direction USDJPYm,M5: Alert: Intrepid BUY SIGNAL",
+        source_file="20260409.log",
+        file_date="20260409",
+    )
+    assert isinstance(row, dict)
+    assert str(row.get("indicator") or "") == "Intrepid Trend Direction"
+    assert str(row.get("symbol") or "") == "USDJPYM"
+    assert str(row.get("timeframe") or "") == "M5"
+    assert str(row.get("signal_profile") or "") == "intrepid"
+    assert str(row.get("signal_hint") or "") == "BUY"
+
+
 def test_enrich_event_for_view_repairs_generic_indicators_event():
     svc = MT4LogAutomationService()
     ev = {
@@ -336,13 +397,13 @@ def test_realtime_log_callback_emits_only_non_backfill_alarm_like():
         "source_file": "20260409.log",
         "source_path": r"C:\MT5\DEMO\MQL5\Logs\20260409.log",
         "time": "12:00:00.000",
-        "indicator": "Trend-Cross Alert",
+        "indicator": "ForexCyperSystem (1)",
         "symbol": "USDJPYM",
         "timeframe": "M1",
         "kind": "alert",
         "signal_hint": "",
         "signal_profile": "generic",
-        "message": "custom indicator Trend-Cross Alert (USDJPYm,M1) removed",
+        "message": "custom indicator ForexCyperSystem (1) (USDJPYm,M1) removed",
         "raw": "removed",
     }
     live_signal = dict(noisy_alert)
@@ -362,6 +423,32 @@ def test_realtime_log_callback_emits_only_non_backfill_alarm_like():
     live_signal_2["raw"] = "buy2"
     svc._append_event(live_signal_2, from_backfill=False)
     assert calls["n"] == 1
+
+
+def test_realtime_log_callback_ignores_non_allowed_indicator():
+    calls = {"n": 0}
+
+    def _on_log_event(**payload):
+        if isinstance(payload.get("event"), dict):
+            calls["n"] += 1
+
+    svc = MT4LogAutomationService(on_log_event=_on_log_event)
+    ev = {
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "source_file": "20260409.log",
+        "source_path": r"C:\MT5\DEMO\MQL5\Logs\20260409.log",
+        "time": "12:30:00.000",
+        "indicator": "Trades | FAILED MARKET",
+        "symbol": "XAUUSDM",
+        "timeframe": "M1",
+        "kind": "alert",
+        "signal_hint": "BUY",
+        "signal_profile": "generic",
+        "message": "failed market buy",
+        "raw": "trades",
+    }
+    svc._append_event(ev, from_backfill=False)
+    assert calls["n"] == 0
 
 
 def test_safe_decode_handles_utf16_mql5_rows():

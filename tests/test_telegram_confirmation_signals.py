@@ -1533,3 +1533,387 @@ def test_ingest_mt4_indicator_signal_rejects_stale_event(monkeypatch):
     assert out.get("ok") is True
     assert out.get("executed") is False
     assert out.get("reason") == "stale_signal"
+
+
+def test_ingest_mt4_indicator_signal_bridge_locks_out_log_source(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: False)
+    monkeypatch.setattr(svc, "_mt4_bridge_source_lock_sec", lambda: 3600.0)
+
+    bridge_payload = {
+        "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "BUY",
+        "symbol": "USDJPY",
+        "timeframe": "M1",
+        "message": "bridge buy",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "ingest_source": "bridge",
+    }
+    log_payload = {
+        "indicator": "Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "SELL",
+        "symbol": "USDJPY",
+        "timeframe": "M1",
+        "message": "log sell",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "ingest_source": "log",
+    }
+
+    first = svc.ingest_mt4_indicator_signal(payload=bridge_payload)
+    second = svc.ingest_mt4_indicator_signal(payload=log_payload)
+
+    assert first.get("ok") is True
+    assert first.get("reason") == "mt4_execution_disabled"
+    assert second.get("ok") is True
+    assert second.get("executed") is False
+    assert second.get("reason") == "bridge_source_locked"
+
+
+def test_estimate_mt4_market_regime_trend_vs_range():
+    trend_bars = []
+    px = 100.0
+    for i in range(40):
+        trend_bars.append(
+            {
+                "time": i,
+                "open": px,
+                "high": px + 0.30,
+                "low": px - 0.10,
+                "close": px + 0.20,
+            }
+        )
+        px += 0.20
+    trend = TelegramBridgeService._estimate_mt4_market_regime(
+        bars=trend_bars,
+        atr_value=0.30,
+        efficiency_lookback=16,
+        er_threshold=0.40,
+        donchian_atr_threshold=3.0,
+    )
+    assert str(trend.get("regime")) == "trend"
+    assert float(trend.get("efficiency_ratio") or 0.0) > 0.40
+
+    range_bars = []
+    vals = [100.0, 100.2, 99.9, 100.1, 99.95, 100.05] * 8
+    for i, v in enumerate(vals):
+        range_bars.append(
+            {
+                "time": i,
+                "open": v,
+                "high": v + 0.12,
+                "low": v - 0.12,
+                "close": v,
+            }
+        )
+    rng = TelegramBridgeService._estimate_mt4_market_regime(
+        bars=range_bars,
+        atr_value=0.30,
+        efficiency_lookback=16,
+        er_threshold=0.40,
+        donchian_atr_threshold=3.0,
+    )
+    assert str(rng.get("regime")) == "range"
+    assert float(rng.get("efficiency_ratio") or 1.0) < 0.40
+
+
+def test_ingest_mt4_indicator_signal_hard_sl_atr(monkeypatch):
+    svc = TelegramBridgeService()
+    observed = {"signal": None}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "resolved_symbol": "USDJPYM",
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 20,
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+            }
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            return {"bid": 159.100, "ask": 159.102, "last": 159.101}
+
+        @staticmethod
+        def get_recent_candles(symbol, timeframe, count, resolve_symbol=False):
+            out = []
+            base = 159.0
+            for i in range(int(count)):
+                c = base + 0.01 * i
+                out.append({"time": i, "open": c - 0.01, "high": c + 0.03, "low": c - 0.03, "close": c})
+            return out
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_close_mt4_reverse_positions", lambda **kwargs: {"ok": True, "closed_count": 0, "failed_count": 0})
+    monkeypatch.setattr(svc, "_mt4_exec_profile_hard_sl_mode", lambda _profile: "atr")
+    monkeypatch.setattr(svc, "_mt4_exec_profile_regime_mode", lambda _profile: "range")
+
+    def _fake_exec(*, chat_id, signal, lot_override=None, source_tag=None, comment_prefix="tgc", audit_ctx=None):
+        observed["signal"] = dict(signal or {})
+        return "Confirmation ladder executed\nTicket: 1"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+    payload = {
+        "indicator": "Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "BUY",
+        "symbol": "USDJPY",
+        "timeframe": "M1",
+        "message": "INTREPID BUY SIGNAL USDJPY",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+    }
+    out = svc.ingest_mt4_indicator_signal(payload=payload)
+    assert out.get("ok") is True
+    assert out.get("executed") is True
+    sig = dict(observed.get("signal") or {})
+    assert bool(sig.get("no_stop_loss")) is False
+    assert isinstance(sig.get("stop_loss"), float)
+    assert float(sig.get("stop_loss")) < float(sig.get("entry_mid"))
+    assert str(sig.get("market_regime")) == "range"
+
+
+def test_close_mt4_reverse_positions_isolated_by_source_tag(monkeypatch):
+    svc = TelegramBridgeService()
+    closed = []
+
+    class FakeLiveService:
+        @staticmethod
+        def close_position(symbol, position_ticket, comment=None):
+            closed.append((str(symbol), int(position_ticket), str(comment or "")))
+            return {"ok": True}
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_append_closed_execution_log_from_row", lambda **kwargs: None)
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "k1": {
+                "symbol": "XAUUSD",
+                "direction": "SELL",
+                "timeframe": "M5",
+                "broker_ticket": 111,
+                "source_tag": "mt4|intrepid|intrepid trend direction|XAUUSD|M5",
+            },
+            "k2": {
+                "symbol": "XAUUSD",
+                "direction": "SELL",
+                "timeframe": "M5",
+                "broker_ticket": 222,
+                "source_tag": "mt4|hydra|hydra signals indicator|XAUUSD|M5",
+            },
+        }
+
+    out = svc._close_mt4_reverse_positions(
+        symbol="XAUUSD",
+        incoming_direction="BUY",
+        timeframe="M5",
+        source_tag="mt4|intrepid|intrepid trend direction|XAUUSD|M5",
+    )
+    assert out.get("ok") is True
+    assert int(out.get("closed_count") or 0) == 1
+    assert closed == [("XAUUSD", 111, "mt4_reverse_close")]
+    with svc._lock:
+        keys = set(svc._active_confirmation_signal_ladders.keys())
+    assert "k1" not in keys
+    assert "k2" in keys
+
+
+def test_get_mt4_indicator_bot_monitor_shows_active_rows():
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            if str(symbol).upper() == "USDJPYM":
+                return [{"ticket": 9001, "profit_loss": 12.5, "current_price": 159.123}]
+            return []
+
+    svc._live_service = FakeLiveService()
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "m1": {
+                "symbol": "USDJPYM",
+                "timeframe": "M1",
+                "direction": "BUY",
+                "broker_ticket": 9001,
+                "next_tp_index": 2,
+                "tps": [{"index": 1, "price": 1.0}, {"index": 2, "price": 2.0}],
+                "source_tag": "mt4|intrepid|intrepid trend direction|USDJPYM|M1",
+                "source_name": "Intrepid Trend Direction",
+                "indicator": "Intrepid Trend Direction",
+                "profile": "intrepid",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "max_profit": 14.0,
+                "max_loss": -3.0,
+            },
+            "t1": {
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "direction": "SELL",
+                "broker_ticket": 7001,
+                "source_tag": "profile:elite",
+                "source_name": "Elite Pips Academy",
+            },
+        }
+
+    out = svc.get_mt4_indicator_bot_monitor(limit=100)
+    assert out.get("ok") is True
+    assert int(out.get("active_count") or 0) == 1
+    rows = out.get("rows") or []
+    assert len(rows) == 1
+    r = dict(rows[0])
+    assert str(r.get("indicator") or "") == "Intrepid Trend Direction"
+    assert str(r.get("symbol") or "") == "USDJPYM"
+    assert str(r.get("timeframe") or "") == "M1"
+    assert int(r.get("ticket") or 0) == 9001
+    assert float(r.get("current_profit") or 0.0) == 12.5
+    assert float(r.get("max_profit") or 0.0) == 14.0
+    assert float(r.get("max_loss") or 0.0) == -3.0
+
+
+def test_get_mt4_indicator_bot_monitor_includes_enabled_instances_without_open_ladder():
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {}
+
+    out = svc.get_mt4_indicator_bot_monitor(
+        limit=100,
+        instance_rows=[
+            {
+                "instance_key": "intrepid trend direction|USDJPYM|M1",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "USDJPYM",
+                "timeframe": "M1",
+                "effective_automation_enabled": True,
+                "last_terminal_group": "mt4",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "instance_key": "alchemy pulse|USDJPYM|M1",
+                "indicator": "Alchemy Pulse",
+                "symbol": "USDJPYM",
+                "timeframe": "M1",
+                "effective_automation_enabled": False,
+                "last_terminal_group": "mt4",
+            },
+        ],
+    )
+
+    assert out.get("ok") is True
+    assert int(out.get("active_count") or 0) == 0
+    assert int(out.get("bot_active_count") or 0) == 1
+    assert int(out.get("bot_idle_count") or 0) == 1
+    rows = out.get("bot_rows") or []
+    assert len(rows) == 1
+    r = dict(rows[0])
+    assert str(r.get("indicator") or "") == "Intrepid Trend Direction"
+    assert str(r.get("symbol") or "") == "USDJPYM"
+    assert str(r.get("timeframe") or "") == "M1"
+    assert bool(r.get("has_open_ladder")) is False
+
+
+def test_get_mt4_indicator_bot_monitor_includes_bridge_events_when_instance_disabled():
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    out = svc.get_mt4_indicator_bot_monitor(
+        limit=100,
+        instance_rows=[
+            {
+                "instance_key": "intrepid trend direction|USDJPY|M1",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "USDJPY",
+                "timeframe": "M1",
+                "effective_automation_enabled": False,
+                "last_terminal_group": "mt4",
+            }
+        ],
+        recent_events=[
+            {
+                "indicator": "ProTrading_MT4_Bridge_EA",
+                "indicator_key": "protrading_mt4_bridge_ea",
+                "symbol": "USDJPY",
+                "timeframe": "M1",
+                "signal_profile": "intrepid",
+                "event_ts": now_iso,
+                "instance_key": "protrading_mt4_bridge_ea|USDJPY|M1",
+                "message": 'MT4Bridge sent BUY USDJPY M1 ... "indicator":"IntrepidIndicator\\\\Intrepid Trend Direction"',
+            }
+        ],
+    )
+
+    assert out.get("ok") is True
+    assert int(out.get("active_count") or 0) == 0
+    assert int(out.get("bot_active_count") or 0) == 1
+    rows = out.get("bot_rows") or []
+    assert len(rows) == 1
+    r = dict(rows[0])
+    assert str(r.get("symbol") or "") == "USDJPY"
+    assert str(r.get("timeframe") or "") == "M1"
+    assert bool(r.get("effective_automation_enabled")) is True
+
+
+def test_get_mt4_indicator_bot_monitor_bridge_overrides_instance_mode():
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    out = svc.get_mt4_indicator_bot_monitor(
+        limit=100,
+        instance_rows=[
+            {
+                "instance_key": "intrepid trend direction|USDJPY|M1",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "USDJPY",
+                "timeframe": "M1",
+                "effective_automation_enabled": True,
+                "automation_mode": "explicit",
+                "last_terminal_group": "mt4",
+                "last_seen": "2026-04-10T07:00:00+00:00",
+            }
+        ],
+        recent_events=[
+            {
+                "indicator": "ProTrading_MT4_Bridge_EA",
+                "indicator_key": "protrading_mt4_bridge_ea",
+                "symbol": "USDJPY",
+                "timeframe": "M1",
+                "signal_profile": "intrepid",
+                "event_ts": "2026-04-10T07:01:00+00:00",
+                "message": 'MT4Bridge sent BUY USDJPY M1 ... "indicator":"IntrepidIndicator\\\\Intrepid Trend Direction"',
+            }
+        ],
+    )
+    rows = out.get("bot_rows") or []
+    assert len(rows) == 1
+    r = dict(rows[0])
+    assert str(r.get("automation_mode") or "") == "bridge"
+    assert bool(r.get("bridge_active")) is True

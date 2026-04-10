@@ -170,6 +170,10 @@
                             </select>
                         </div>
                     </div>
+                    <div class="d-flex align-items-center gap-2 mt-3">
+                        <button id="mt4la-chart-automation-btn" type="button" class="btn btn-sm btn-outline-success">Start Automation</button>
+                        <span id="mt4la-chart-automation-state" class="small text-muted">Controls all chart instances currently visible in the table filter.</span>
+                    </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive" style="max-height: 360px;">
@@ -218,6 +222,74 @@
     </div>
 
     <div class="card shadow-sm mt-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>MT4 Bot Monitor</strong>
+            <span id="mt4la-bot-updated" class="small text-muted">-</span>
+        </div>
+        <div class="card-body">
+            <div class="d-flex align-items-center gap-2 mb-2">
+                <button id="mt4la-bot-start-btn" type="button" class="btn btn-sm btn-outline-success">Start Visible Bots</button>
+                <button id="mt4la-bot-stop-btn" type="button" class="btn btn-sm btn-outline-danger">Stop Visible Bots</button>
+                <span class="small text-muted">Chart filterindeki tum MT4 chart-instance botlarini toplu kontrol eder.</span>
+            </div>
+            <div class="small text-muted">
+                Enabled bots: <span id="mt4la-bot-enabled-count">0</span>
+                | Active ladders: <span id="mt4la-bot-active-count">0</span>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 300px;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th style="min-width:140px;">Opened</th>
+                            <th style="min-width:220px;">Indicator</th>
+                            <th style="min-width:120px;">Symbol/TF</th>
+                            <th style="min-width:80px;">Dir</th>
+                            <th style="min-width:120px;">Ticket</th>
+                            <th style="min-width:90px;">Next TP</th>
+                            <th style="min-width:110px;">Max+</th>
+                            <th style="min-width:110px;">Max-</th>
+                            <th style="min-width:110px;">Live PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mt4la-bot-body">
+                        <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow-sm mt-3">
+        <div class="card-header d-flex justify-content-between">
+            <strong>Execution Performance Report</strong>
+            <span id="mt4la-exec-report-meta" class="small text-muted">By source + symbol/timeframe (highest pnl first)</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 260px;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th style="min-width:260px;">Combo</th>
+                            <th style="min-width:90px;">Opened</th>
+                            <th style="min-width:90px;">Closed</th>
+                            <th style="min-width:90px;">Win %</th>
+                            <th style="min-width:120px;">Total PnL</th>
+                            <th style="min-width:120px;">Avg PnL</th>
+                            <th style="min-width:120px;">Best</th>
+                            <th style="min-width:120px;">Worst</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mt4la-exec-report-body">
+                        <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow-sm mt-3">
         <div class="card-header d-flex justify-content-between">
             <strong>Execution Audit Log</strong>
             <span class="small text-muted">Channel + indicator executions</span>
@@ -228,6 +300,7 @@
                     <thead class="table-light sticky-top">
                         <tr>
                             <th style="min-width:140px;">Time</th>
+                            <th style="min-width:140px;">Opened At</th>
                             <th style="min-width:120px;">Source Type</th>
                             <th style="min-width:180px;">Source</th>
                             <th style="min-width:120px;">Symbol/TF</th>
@@ -239,7 +312,7 @@
                         </tr>
                     </thead>
                     <tbody id="mt4la-exec-body">
-                        <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
+                        <tr><td colspan="10" class="text-muted text-center py-3">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -249,5 +322,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260409_mt4_log_automation_v17') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260410_mt4_log_automation_v24') }}"></script>
 {% endblock %}

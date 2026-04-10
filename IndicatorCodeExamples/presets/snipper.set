@@ -1,0 +1,8 @@
+TimeFrame=0
+SignalSpeed=25
+alertsOn=true
+alertsMessage=true
+alertsNotificaton=true
+alertsSound=true
+alertsEmail=true
+ShowArrows=true

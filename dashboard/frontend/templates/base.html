@@ -233,6 +233,9 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    <script>
+        window.PROTRADING_API_BASE_URL = {{ api_base_url|tojson }};
+    </script>
     <!-- Sidebar -->
     <nav class="sidebar d-flex flex-column">
         <div class="brand">

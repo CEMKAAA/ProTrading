@@ -126,8 +126,23 @@ def telegram_automation_state(limit: int = Query(120, ge=20, le=500)):
             "active_ladder_count": 0,
             "feed": [],
             "execution_logs": [],
+            "execution_report": {"ok": True, "rows": [], "count": 0, "generated_at": datetime.now(timezone.utc).isoformat()},
             "user_listener": {"ok": False, "error": "state_unavailable"},
         }
+
+
+@router.get("/telegram/automation/execution-report")
+def telegram_automation_execution_report(limit: int = Query(200, ge=10, le=1000)):
+    """Aggregated execution performance report by source+symbol+timeframe combo."""
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+        return svc.get_automation_execution_report(limit=int(limit))
+    except Exception as exc:
+        raise HTTPException(500, f"telegram_automation_execution_report_failed:{type(exc).__name__}:{str(exc)[:180]}")
 
 
 @router.post("/telegram/automation/config")
@@ -377,10 +392,40 @@ def mt4_log_automation_state(limit: int = Query(200, ge=20, le=1000)):
         try:
             if telegram_bridge_service is not None:
                 out["execution_logs"] = telegram_bridge_service.get_automation_execution_logs(limit=min(300, int(limit)))
+                out["execution_report"] = telegram_bridge_service.get_automation_execution_report(limit=200)
+                out["mt4_bot_monitor"] = telegram_bridge_service.get_mt4_indicator_bot_monitor(
+                    limit=300,
+                    instance_rows=(out.get("instances") if isinstance(out.get("instances"), list) else []),
+                    recent_events=(
+                        out.get("events_recent_24h")
+                        if isinstance(out.get("events_recent_24h"), list)
+                        else (out.get("events") if isinstance(out.get("events"), list) else [])
+                    ),
+                )
             else:
                 out["execution_logs"] = []
+                out["execution_report"] = {"ok": True, "rows": [], "count": 0}
+                out["mt4_bot_monitor"] = {
+                    "ok": True,
+                    "rows": [],
+                    "active_count": 0,
+                    "bot_rows": [],
+                    "bot_active_count": 0,
+                    "bot_open_count": 0,
+                    "bot_idle_count": 0,
+                }
         except Exception:
             out["execution_logs"] = []
+            out["execution_report"] = {"ok": True, "rows": [], "count": 0}
+            out["mt4_bot_monitor"] = {
+                "ok": True,
+                "rows": [],
+                "active_count": 0,
+                "bot_rows": [],
+                "bot_active_count": 0,
+                "bot_open_count": 0,
+                "bot_idle_count": 0,
+            }
         return out
     except Exception as exc:
         raise HTTPException(500, f"mt4_log_automation_state_failed:{type(exc).__name__}:{str(exc)[:180]}")
@@ -535,6 +580,74 @@ def mt4_log_simulate_signal(payload: Dict[str, Any]):
         }
     except Exception as exc:
         raise HTTPException(500, f"mt4_log_simulate_signal_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/mt4/bridge/signal")
+def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
+    """
+    Direct MT4 bridge ingest endpoint.
+
+    Intended for MT4 EAs/scripts that POST BUY/SELL signals directly to backend,
+    bypassing terminal log-tail dependency.
+    """
+    try:
+        from ..main import telegram_bridge_service  # local import to avoid module-cycle at import time
+        from ..services.telegram_bridge_service import TelegramBridgeService
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+
+        p = payload if isinstance(payload, dict) else {}
+        expected_token = str(TelegramBridgeService._get_env_value("MT4_BRIDGE_INGEST_TOKEN", "")).strip()
+        provided_token = str(request.headers.get("x-mt4-bridge-token") or p.get("bridge_token") or "").strip()
+        if expected_token and (provided_token != expected_token):
+            raise HTTPException(status_code=401, detail="mt4_bridge_auth_failed")
+
+        direction_raw = str(p.get("signal_hint") or p.get("direction") or "").strip().upper()
+        direction = "BUY" if direction_raw in {"BUY", "LONG", "UP"} else ("SELL" if direction_raw in {"SELL", "SHORT", "DOWN"} else direction_raw)
+
+        tf_raw = str(p.get("timeframe") or p.get("tf") or "").strip().upper()
+        tf_map = {
+            "1": "M1",
+            "5": "M5",
+            "15": "M15",
+            "30": "M30",
+            "60": "H1",
+            "240": "H4",
+            "1440": "D1",
+            "10080": "W1",
+            "43200": "MN1",
+        }
+        timeframe = tf_map.get(tf_raw, tf_raw or "M5")
+
+        bridge_payload: Dict[str, Any] = {
+            "indicator": str(p.get("indicator") or p.get("indicator_name") or "MT4Bridge"),
+            "signal_hint": str(direction or ""),
+            "symbol": str(p.get("symbol") or p.get("pair") or "").strip().upper(),
+            "timeframe": str(timeframe or "M5"),
+            "signal_profile": str(p.get("signal_profile") or p.get("profile") or "generic").strip().lower(),
+            "message": str(p.get("message") or p.get("raw_text") or "").strip(),
+            "event_ts": str(p.get("event_ts") or datetime.now(timezone.utc).isoformat()),
+            "ingest_source": "bridge",
+        }
+        lot_override = p.get("lot_override")
+        if lot_override is not None:
+            try:
+                bridge_payload["lot_override"] = float(lot_override)
+            except Exception:
+                return {"ok": False, "error": "invalid_lot_override"}
+
+        out = svc.ingest_mt4_indicator_signal(payload=bridge_payload)
+        return {
+            "ok": bool((out or {}).get("ok", True)),
+            "result": out,
+            "accepted_payload": bridge_payload,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"mt4_bridge_signal_ingest_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 def _safe_optional_float(value) -> Optional[float]:

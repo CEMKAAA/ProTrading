@@ -26,11 +26,16 @@ logger = logging.getLogger(__name__)
 class MT4LogAutomationService:
     _ALLOWED_AUTOMATION_TOKENS: Tuple[str, ...] = (
         "hydra signals indicator",
+        "hydra",
         "forex uranus direction",
+        "uranus",
+        "fxnukeesc",
+        "fxnuke",
         "forexcypersystem",
         "forexcyper",
         "alchemy pulse",
         "intrepid trend direction",
+        "intrepid",
     )
 
     def __init__(
@@ -507,20 +512,33 @@ class MT4LogAutomationService:
         p = str(path_value or "").strip().lower().replace("/", "\\")
         if not p:
             return "unknown"
-        is_mt5 = "\\mql5\\logs\\" in p
-        is_mt4 = "\\mql4\\logs\\" in p or ("\\logs\\" in p and not is_mt5)
-        if is_mt5 and ("\\demo\\" in p or " demo" in p or "_demo" in p or "-demo" in p):
-            return "mt5_demo"
-        if is_mt5:
-            return "mt5"
-        if is_mt4:
+        has_demo_hint = ("\\demo\\" in p or " demo" in p or "_demo" in p or "-demo" in p)
+        has_mt5_hint = ("\\mt5\\" in p or "\\mql5\\" in p)
+        has_mt4_hint = ("\\mt4\\" in p or "\\mql4\\" in p)
+
+        if has_mt5_hint:
+            return "mt5_demo" if has_demo_hint else "mt5"
+        if has_mt4_hint:
             return "mt4"
-        if "\\mt5\\" in p and ("\\demo\\" in p or " demo" in p or "_demo" in p or "-demo" in p):
-            return "mt5_demo"
-        if "\\mt5\\" in p:
-            return "mt5"
-        if "\\mt4\\" in p:
-            return "mt4"
+
+        # Hash-based MetaQuotes data folders can be ambiguous:
+        #   ...\Terminal\<HASH>\logs\YYYYMMDD.log
+        # Infer terminal type from sibling directories.
+        try:
+            fp = Path(path_value).resolve()
+            term_root = fp.parent.parent if str(fp.parent.name).lower() == "logs" else fp.parent
+            has_mql5 = (term_root / "MQL5" / "Logs").exists()
+            has_mql4 = (term_root / "MQL4" / "Logs").exists()
+            if has_mql5 and not has_mql4:
+                return "mt5_demo" if has_demo_hint else "mt5"
+            if has_mql4 and not has_mql5:
+                return "mt4"
+        except Exception:
+            pass
+
+        # Final fallback for generic logs paths.
+        if "\\logs\\" in p:
+            return "mt5_demo" if has_demo_hint else "mt4"
         return "unknown"
 
     @classmethod
@@ -555,6 +573,15 @@ class MT4LogAutomationService:
                 str(m_paren.group(3) or "").upper(),
                 str(m_paren.group(4) or ""),
             )
+        # Generic indicator output line
+        m_line = re.match(
+            r"^(.+?)\s+([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\s*:?\s*(.*)$",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        if m_line:
+            name = str(m_line.group(1) or "").strip()
+            return name, str(m_line.group(2) or "").upper(), str(m_line.group(3) or "").upper(), str(m_line.group(4) or "")
         # Space-delimited format: "IndicatorName SYMBOL TF: message"
         m_space = re.match(
             r"^(.+?)\s+([A-Z0-9._#-]{3,20})\s+([A-Z0-9]+)\s*:?\s*(.*)$",
@@ -572,15 +599,6 @@ class MT4LogAutomationService:
                 str(m_space.group(3) or "").upper(),
                 str(m_space.group(4) or ""),
             )
-        # Generic indicator output line
-        m_line = re.match(
-            r"^(.+?)\s+([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\s*:?\s*(.*)$",
-            txt,
-            flags=re.IGNORECASE,
-        )
-        if m_line:
-            name = str(m_line.group(1) or "").strip()
-            return name, str(m_line.group(2) or "").upper(), str(m_line.group(3) or "").upper(), str(m_line.group(4) or "")
         return "", "", "", txt
 
     @staticmethod
@@ -641,6 +659,10 @@ class MT4LogAutomationService:
             if re.search(r"\bturned\s+up\b", m):
                 return "BUY"
             if re.search(r"\bturned\s+down\b", m):
+                return "SELL"
+            if re.search(r"\b(buy|long|bull(?:ish)?)\b", m):
+                return "BUY"
+            if re.search(r"\b(sell|short|bear(?:ish)?)\b", m):
                 return "SELL"
         if p == "hydra":
             h = re.search(r"\bhydra\s*:\s*(buy|sell)\b", m)
@@ -914,6 +936,36 @@ class MT4LogAutomationService:
             else:
                 indicator = str(source).strip()
                 src_norm = str(source or "").strip().lower()
+                # Some MT4/MT5 builds put chart+alert context into `source`, e.g.:
+                #   "FXNUKESC USDCAD,M1: Alert: | FXNUKE SELL"
+                # Parse only strict chart formats from source to avoid false positives.
+                if src_norm not in {"indicators", "indicator", "experts", "expert", "scripts", "script"}:
+                    src_paren = re.match(
+                        r"^(.+?)\s*\(([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\)\s*:?\s*(.*)$",
+                        source,
+                        flags=re.IGNORECASE,
+                    )
+                    src_inline = re.match(
+                        r"^(.+?)\s+([A-Z0-9._#-]{3,20}),([A-Z0-9]+)\s*:?\s*(.*)$",
+                        source,
+                        flags=re.IGNORECASE,
+                    )
+                    src_match = src_paren or src_inline
+                    if src_match:
+                        src_name = str(src_match.group(1) or "").strip()
+                        src_name = re.sub(r"^\s*custom\s+indicator\s+", "", src_name, flags=re.IGNORECASE).strip()
+                        if "\\" in src_name:
+                            src_name = src_name.split("\\")[-1].strip()
+                        indicator = str(src_name or indicator or "").strip()
+                        symbol = str(src_match.group(2) or "").strip().upper() or symbol
+                        timeframe = str(src_match.group(3) or "").strip().upper() or timeframe
+                        src_msg = str(src_match.group(4) or "").strip()
+                        if src_msg:
+                            tail = str(message or "").strip()
+                            if tail:
+                                message = f"{src_msg} | {tail}"
+                            else:
+                                message = src_msg
                 if src_norm in {"indicators", "indicator", "experts", "expert", "scripts", "script"}:
                     p_ind, p_sym, p_tf, p_msg = self._extract_indicator_parts(message)
                     if str(p_ind or "").strip():
@@ -1010,10 +1062,14 @@ class MT4LogAutomationService:
         cb = self._on_log_event
         if cb is None:
             return
-        if not self._is_alarm_like_event(event):
+        ev = self._enrich_event_for_view(dict(event or {}))
+        indicator = str((ev or {}).get("indicator") or "").strip()
+        if not self._is_indicator_automation_allowed(indicator):
+            return
+        if not self._is_alarm_like_event(ev):
             return
         try:
-            cb(event=dict(event or {}))
+            cb(event=dict(ev or {}))
         except Exception:
             logger.exception("mt4_log_event_callback_failed")
 
@@ -1110,6 +1166,7 @@ class MT4LogAutomationService:
             "event_ts": str(event.get("event_ts") or ""),
             "instance_key": str(inst_key or ""),
             "lot_override": float(max(0.01, min(100.0, lot_override))),
+            "ingest_source": "log",
         }
         try:
             callback(**payload)
@@ -1485,6 +1542,25 @@ class MT4LogAutomationService:
                 if self._is_indicator_automation_allowed((x or {}).get("indicator_key") or (x or {}).get("indicator"))
             ]
             files = list(self._file_offsets.keys())
+            now_unix = float(time.time())
+            file_health: List[Dict[str, Any]] = []
+            for fp in files:
+                try:
+                    mtime = float(Path(fp).stat().st_mtime)
+                except Exception:
+                    continue
+                age_sec = max(0.0, now_unix - float(mtime))
+                file_health.append(
+                    {
+                        "path": str(fp),
+                        "last_write_ts": datetime.fromtimestamp(float(mtime), tz=timezone.utc).isoformat(),
+                        "age_sec": float(age_sec),
+                    }
+                )
+            file_health = sorted(file_health, key=lambda r: float((r or {}).get("age_sec") or 0.0))
+            newest_file = file_health[0] if file_health else {}
+            stale_threshold_sec = max(180.0, float(self._poll_sec()) * 8.0)
+            stale_count = len([x for x in file_health if float((x or {}).get("age_sec") or 0.0) > stale_threshold_sec])
             normalized_instances = [
                 dict(x)
                 for x in normalized_instances
@@ -1533,6 +1609,12 @@ class MT4LogAutomationService:
                 "last_forward_error": str(self._last_forward_error or ""),
                 "watched_files_count": int(len(files)),
                 "watched_files": files[-12:],
+                "watched_files_health": file_health[:80],
+                "watched_files_newest_age_sec": float((newest_file or {}).get("age_sec") or 0.0),
+                "watched_files_newest_ts": str((newest_file or {}).get("last_write_ts") or ""),
+                "watched_files_newest_path": str((newest_file or {}).get("path") or ""),
+                "watched_files_stale_threshold_sec": float(stale_threshold_sec),
+                "watched_files_stale_count": int(stale_count),
                 "indicator_count": int(len(stats)),
                 "instance_count": int(len(normalized_instances)),
                 "indicators": sorted(stats, key=lambda r: str((r or {}).get("last_seen") or ""), reverse=True),

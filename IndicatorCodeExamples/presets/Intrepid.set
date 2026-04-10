@@ -1,0 +1,9 @@
+PerATR=40
+kATR=2.0
+Signal_Alert_Popup=true
+Signal_Alert_Email=true
+Signal_Alert_Push_Notification=true
+useNewTrendSig=true
+BuySellLevelDrawMode=1
+FloorCeilLevelDrawMode=1
+TimeFrame=0

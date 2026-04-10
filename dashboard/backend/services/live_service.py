@@ -505,17 +505,31 @@ class LiveTradingService:
             logger.error(f"Error getting account info: {e}")
             return {"error": str(e)}
 
-    def get_recent_deals(self, days: int = 1, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
-        """Get recent closed deals for given symbol"""
+    def get_recent_deals(
+        self,
+        days: int = 1,
+        symbol: Optional[str] = "XAUUSD",
+        position_ticket: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent deals.
+
+        - When `symbol` is provided, results are filtered to resolved symbol.
+        - When `symbol` is None/empty, returns deals across all symbols.
+        - When `position_ticket` is provided, results are additionally filtered
+          to matching MT5 position id.
+        """
         if not self._ensure_mt5():
             return []
 
         try:
             from datetime import timedelta
-            symbol_req = str(symbol or "XAUUSD").upper()
-            symbol_resolved = self.resolve_symbol_name(symbol_req)
-            if not symbol_resolved:
+            symbol_raw = str(symbol or "").strip()
+            symbol_req = str(symbol_raw).upper() if symbol_raw else ""
+            symbol_resolved = self.resolve_symbol_name(symbol_req) if symbol_req else None
+            if symbol_req and (not symbol_resolved):
                 return []
+            wanted_pos = int(position_ticket) if position_ticket is not None else 0
 
             # Get deals from last N days
             to_time = datetime.now()
@@ -527,17 +541,35 @@ class LiveTradingService:
 
             result = []
             for deal in deals:
-                if str(deal.symbol or "").upper() != str(symbol_resolved).upper():
+                d_symbol = str(deal.symbol or "").upper()
+                if symbol_resolved and d_symbol != str(symbol_resolved).upper():
                     continue
+                pos_id = int(getattr(deal, "position_id", 0) or 0)
+                if wanted_pos > 0 and pos_id != wanted_pos:
+                    continue
+                entry_code = int(getattr(deal, "entry", 0) or 0)
+                # MT5 deal.entry map: 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
+                if entry_code == 0:
+                    entry_name = "IN"
+                elif entry_code == 1:
+                    entry_name = "OUT"
+                elif entry_code == 2:
+                    entry_name = "INOUT"
+                elif entry_code == 3:
+                    entry_name = "OUT_BY"
+                else:
+                    entry_name = str(entry_code)
 
                 result.append({
                     "ticket": deal.ticket,
                     "order": deal.order,
-                    "requested_symbol": symbol_req,
-                    "symbol": symbol_resolved,
+                    "position_id": pos_id,
+                    "requested_symbol": symbol_req or d_symbol,
+                    "symbol": d_symbol,
                     "time": datetime.fromtimestamp(deal.time, tz=timezone.utc).isoformat(),
                     "type": "BUY" if deal.type in [0, 2] else "SELL",
-                    "entry": "IN" if deal.entry == 0 else "OUT",
+                    "entry": entry_name,
+                    "entry_code": entry_code,
                     "price": deal.price,
                     "volume": deal.volume,
                     "profit": deal.profit,
@@ -552,6 +584,22 @@ class LiveTradingService:
         except Exception as e:
             logger.error(f"Error getting deals: {e}")
             return []
+
+    def get_position_deals(
+        self,
+        *,
+        position_ticket: int,
+        days: int = 14,
+        symbol: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Convenience wrapper for position-id scoped deal history."""
+        try:
+            pos = int(position_ticket)
+        except Exception:
+            pos = 0
+        if pos <= 0:
+            return []
+        return self.get_recent_deals(days=int(max(1, min(60, int(days or 14)))), symbol=symbol, position_ticket=pos)
 
     def get_symbol_info(self, symbol: str = "XAUUSD") -> Dict[str, Any]:
         """Get symbol information"""
