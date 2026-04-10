@@ -267,6 +267,7 @@ class TelegramBridgeService:
         self._source_reentry_guard: Dict[str, Dict[str, Any]] = {}
         self._mt4_signal_dedupe: Dict[str, float] = {}
         self._mt4_bridge_combo_registry: Dict[str, float] = {}
+        self._indicator_reversal_pending: Dict[str, Dict[str, Any]] = {}
         self._indicator_bridge_instances: Dict[str, Dict[str, Any]] = {}
         self._automation_execution_logs: List[Dict[str, Any]] = []
         self._automation_execution_logs_next_id: int = 0
@@ -2184,6 +2185,16 @@ class TelegramBridgeService:
         return max(60.0, min(604800.0, float(raw)))
 
     @staticmethod
+    def _indicator_reversal_confirm_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_REVERSAL_CONFIRM_SEC", "20"))
+        except Exception:
+            raw = 20.0
+        if not math.isfinite(float(raw)):
+            raw = 20.0
+        return max(0.0, min(300.0, float(raw)))
+
+    @staticmethod
     def _legacy_mt4_log_ingest_enabled() -> bool:
         # Bridge-first architecture: keep legacy log-ingest path off by default.
         v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ALLOW_LEGACY_MT4_LOG_INGEST", "0")).strip().lower()
@@ -3347,6 +3358,78 @@ class TelegramBridgeService:
             }
         return {"ok": True, "closed_count": int(closed_count), "failed_count": 0}
 
+    def _check_indicator_reversal_stability(
+        self,
+        *,
+        combo_source_tag: str,
+        incoming_direction: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        combo = str(combo_source_tag or "").strip().lower()
+        direction = str(incoming_direction or "").strip().upper()
+        if not combo or direction not in {"BUY", "SELL"}:
+            return {"ok": True, "ready": True, "reason": "invalid_guard_input"}
+
+        wait_sec = float(self._indicator_reversal_confirm_sec())
+        if wait_sec <= 0.0:
+            return {"ok": True, "ready": True, "reason": "guard_disabled"}
+
+        opposite = "SELL" if direction == "BUY" else "BUY"
+        with self._lock:
+            has_opposite_active = any(
+                isinstance(v, dict)
+                and str((v or {}).get("source_tag") or "").strip().lower() == combo
+                and str((v or {}).get("direction") or "").strip().upper() == opposite
+                and int(_to_float_or_none((v or {}).get("broker_ticket")) or 0) > 0
+                for v in self._active_confirmation_signal_ladders.values()
+            )
+            pending = dict(self._indicator_reversal_pending.get(str(combo)) or {})
+
+        if not bool(has_opposite_active):
+            with self._lock:
+                self._indicator_reversal_pending.pop(str(combo), None)
+            return {"ok": True, "ready": True, "reason": "no_opposite_active"}
+
+        first_seen_ts = float(now_ts)
+        if str(pending.get("direction") or "").strip().upper() == direction:
+            first_seen_ts = float(_to_float_or_none(pending.get("first_seen_ts")) or now_ts)
+
+        elapsed = float(max(0.0, float(now_ts) - float(first_seen_ts)))
+        if elapsed < float(wait_sec):
+            remaining = float(max(0.0, float(wait_sec) - float(elapsed)))
+            with self._lock:
+                self._indicator_reversal_pending[str(combo)] = {
+                    "direction": str(direction),
+                    "first_seen_ts": float(first_seen_ts),
+                    "last_seen_ts": float(now_ts),
+                    "required_sec": float(wait_sec),
+                }
+                if len(self._indicator_reversal_pending) > 5000:
+                    cutoff = float(now_ts) - 86400.0
+                    self._indicator_reversal_pending = {
+                        str(k): dict(v)
+                        for k, v in self._indicator_reversal_pending.items()
+                        if float(_to_float_or_none((v or {}).get("last_seen_ts")) or 0.0) >= cutoff
+                    }
+            return {
+                "ok": True,
+                "ready": False,
+                "reason": "reversal_guard_waiting",
+                "required_sec": float(wait_sec),
+                "elapsed_sec": float(elapsed),
+                "remaining_sec": float(remaining),
+            }
+
+        with self._lock:
+            self._indicator_reversal_pending.pop(str(combo), None)
+        return {
+            "ok": True,
+            "ready": True,
+            "reason": "reversal_guard_passed",
+            "required_sec": float(wait_sec),
+            "elapsed_sec": float(elapsed),
+        }
+
     def ingest_indicator_bridge_signal(
         self,
         *,
@@ -3410,19 +3493,6 @@ class TelegramBridgeService:
         max_age = float(self._mt4_exec_max_signal_age_sec())
         if max_age > 0.0 and ev_unix is not None and (float(now_ts) - float(ev_unix)) > float(max_age):
             return {"ok": True, "executed": False, "reason": "stale_signal"}
-
-        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
-        dedupe_key = f"{family}|{profile}|{indicator_key}|{symbol}|{timeframe}|{hint}|{msg_norm}"
-        with self._lock:
-            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
-            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
-                return {"ok": True, "executed": False, "reason": "duplicate_signal"}
-            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
-            if len(self._mt4_signal_dedupe) > 10000:
-                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
-                self._mt4_signal_dedupe = {
-                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
-                }
 
         if not self._mt4_exec_enabled():
             return {"ok": True, "executed": False, "reason": "indicator_execution_disabled"}
@@ -3555,6 +3625,37 @@ class TelegramBridgeService:
         combo_source_tag = (
             f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
         )
+        guard = self._check_indicator_reversal_stability(
+            combo_source_tag=str(combo_source_tag),
+            incoming_direction=str(hint),
+            now_ts=float(now_ts),
+        )
+        if not bool((guard or {}).get("ready")):
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "reversal_guard_waiting",
+                "wait": guard,
+                "runtime": runtime_cfg,
+                "bridge": registered,
+            }
+
+        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
+        dedupe_key = (
+            f"{family}|{profile}|{indicator_key}|{str(symbol_exec).strip().upper()}|"
+            f"{str(timeframe).strip().upper()}|{hint}|{msg_norm}"
+        )
+        with self._lock:
+            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
+                return {"ok": True, "executed": False, "reason": "duplicate_signal", "runtime": runtime_cfg, "bridge": registered}
+            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
+            if len(self._mt4_signal_dedupe) > 10000:
+                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
+                self._mt4_signal_dedupe = {
+                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
+                }
+
         reverse_out = self._close_mt4_reverse_positions(
             symbol=str(symbol_exec_raw),
             incoming_direction=str(hint),
@@ -3638,19 +3739,6 @@ class TelegramBridgeService:
         max_age = float(self._mt4_exec_max_signal_age_sec())
         if max_age > 0.0 and ev_unix is not None and (float(now_ts) - float(ev_unix)) > float(max_age):
             return {"ok": True, "executed": False, "reason": "stale_signal"}
-
-        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
-        dedupe_key = f"{profile}|{indicator_key}|{symbol}|{timeframe}|{hint}|{msg_norm}"
-        with self._lock:
-            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
-            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
-                return {"ok": True, "executed": False, "reason": "duplicate_signal"}
-            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
-            if len(self._mt4_signal_dedupe) > 10000:
-                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
-                self._mt4_signal_dedupe = {
-                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
-                }
 
         if not self._mt4_exec_enabled():
             self._append_confirm_signal_feed(
@@ -3828,6 +3916,44 @@ class TelegramBridgeService:
         combo_source_tag = (
             f"mt4|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
         )
+        guard = self._check_indicator_reversal_stability(
+            combo_source_tag=str(combo_source_tag),
+            incoming_direction=str(hint),
+            now_ts=float(now_ts),
+        )
+        if not bool((guard or {}).get("ready")):
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_reversal_guard_waiting",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "wait": dict(guard or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {"ok": True, "executed": False, "reason": "reversal_guard_waiting", "wait": guard, "runtime": runtime_cfg}
+
+        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
+        dedupe_key = (
+            f"{profile}|{indicator_key}|{str(symbol_exec).strip().upper()}|"
+            f"{str(timeframe).strip().upper()}|{hint}|{msg_norm}"
+        )
+        with self._lock:
+            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
+                return {"ok": True, "executed": False, "reason": "duplicate_signal", "runtime": runtime_cfg}
+            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
+            if len(self._mt4_signal_dedupe) > 10000:
+                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
+                self._mt4_signal_dedupe = {
+                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
+                }
+
         reverse_out = self._close_mt4_reverse_positions(
             symbol=str(symbol_exec_raw),
             incoming_direction=str(hint),

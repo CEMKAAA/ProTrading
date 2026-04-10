@@ -1697,6 +1697,109 @@ def test_ingest_mt4_indicator_signal_hard_sl_atr(monkeypatch):
     assert str(sig.get("market_regime")) == "range"
 
 
+def test_ingest_indicator_bridge_signal_reversal_guard_waits_then_executes(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"close_calls": 0, "exec_calls": 0}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "resolved_symbol": "USDJPYM",
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 20,
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+            }
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            return {"bid": 159.100, "ask": 159.102, "last": 159.101}
+
+        @staticmethod
+        def get_recent_candles(symbol, timeframe, count, resolve_symbol=False):
+            out = []
+            base = 159.0
+            for i in range(int(count)):
+                c = base + 0.01 * i
+                out.append({"time": i, "open": c - 0.01, "high": c + 0.03, "low": c - 0.03, "close": c})
+            return out
+
+    svc._live_service = FakeLiveService()
+
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda _profile: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_regime_mode", lambda _profile: "range")
+    monkeypatch.setattr(svc, "_indicator_reversal_confirm_sec", lambda: 20.0)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt4",
+            "indicator": "Intrepid Trend Direction",
+            "symbol": "USDJPYM",
+            "timeframe": "M1",
+            "instance_key": "mt4|intrepid trend direction|USDJPYM|M1",
+            "automation_mode": "explicit",
+            "automation_enabled": True,
+            "effective_automation_enabled": True,
+            "lot_size": 0.1,
+        },
+    )
+
+    def _fake_close_reverse(**kwargs):
+        obs["close_calls"] += 1
+        return {"ok": True, "closed_count": 1, "failed_count": 0}
+
+    monkeypatch.setattr(svc, "_close_mt4_reverse_positions", _fake_close_reverse)
+
+    def _fake_exec(**kwargs):
+        obs["exec_calls"] += 1
+        return "Confirmation ladder executed\nTicket: 1"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "k1": {
+                "symbol": "USDJPYM",
+                "timeframe": "M1",
+                "direction": "SELL",
+                "broker_ticket": 12345,
+                "source_tag": "mt4|intrepid|intrepid trend direction|USDJPYM|M1",
+            }
+        }
+
+    t0 = 1_000_000.0
+    monkeypatch.setattr("dashboard.backend.services.telegram_bridge_service.time.time", lambda: t0)
+    payload = {
+        "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "BUY",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "message": "INTREPID BUY SIGNAL USDJPY",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "ingest_source": "bridge",
+        "bridge_event_type": "signal",
+    }
+    first = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+    assert first.get("ok") is True
+    assert first.get("executed") is False
+    assert first.get("reason") == "reversal_guard_waiting"
+    assert obs["close_calls"] == 0
+    assert obs["exec_calls"] == 0
+
+    monkeypatch.setattr("dashboard.backend.services.telegram_bridge_service.time.time", lambda: t0 + 21.0)
+    second = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+    assert second.get("ok") is True
+    assert second.get("executed") is True
+    assert obs["close_calls"] == 1
+    assert obs["exec_calls"] == 1
+
+
 def test_close_mt4_reverse_positions_isolated_by_source_tag(monkeypatch):
     svc = TelegramBridgeService()
     closed = []
