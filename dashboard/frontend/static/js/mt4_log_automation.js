@@ -107,7 +107,7 @@
         const body = String(family).toLowerCase() === 'mt5' ? els.mt5Body : els.mt4Body;
         if (!body) return;
         if (!rows.length) {
-            body.innerHTML = '<tr><td colspan="12" class="text-muted text-center py-3">No active bridge charts registered yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="13" class="text-muted text-center py-3">No active bridge charts registered yet.</td></tr>';
             return;
         }
         body.innerHTML = rows.map((row) => {
@@ -119,6 +119,8 @@
             const badgeCls = state === 'OPEN' ? 'bg-success' : 'bg-secondary';
             const autoCls = enabled ? 'bg-success' : 'bg-secondary';
             const lotValue = Number(row.lot_size || 0);
+            const modeAdvanced = !!row.mode_advanced_enabled;
+            const modeNormal = !!row.mode_normal_enabled;
             const instanceKey = String(row.instance_key || '').trim();
             return `
                 <tr data-family="${escapeHtml(String(family).toLowerCase())}" data-instance-key="${escapeHtml(instanceKey)}" data-indicator="${escapeHtml(indicator)}" data-symbol="${escapeHtml(symbol)}" data-timeframe="${escapeHtml(timeframe)}">
@@ -129,6 +131,18 @@
                     <td>${row.ticket ? escapeHtml(String(row.ticket)) : '-'}</td>
                     <td><span class="badge ${badgeCls}">${escapeHtml(state)}</span></td>
                     <td><span class="badge ${autoCls}">${enabled ? 'ON' : 'OFF'}</span></td>
+                    <td>
+                        <div class="d-flex flex-column gap-1">
+                            <label class="form-check-label small">
+                                <input type="checkbox" class="form-check-input me-1 bridge-mode-toggle" data-mode="advanced" ${modeAdvanced ? 'checked' : ''}>
+                                Advanced
+                            </label>
+                            <label class="form-check-label small">
+                                <input type="checkbox" class="form-check-input me-1 bridge-mode-toggle" data-mode="normal" ${modeNormal ? 'checked' : ''}>
+                                Normal
+                            </label>
+                        </div>
+                    </td>
                     <td>
                         <div class="input-group input-group-sm" style="min-width:150px;">
                             <input type="number" class="form-control bridge-lot-input" min="0.01" step="0.01" value="${Number.isFinite(lotValue) && lotValue > 0 ? escapeHtml(lotValue.toFixed(2)) : '0.05'}">
@@ -150,7 +164,7 @@
         const rows = auditRows();
         if (!els.auditBody) return;
         if (!rows.length) {
-            els.auditBody.innerHTML = '<tr><td colspan="16" class="text-muted text-center py-3">No indicator execution rows yet.</td></tr>';
+            els.auditBody.innerHTML = '<tr><td colspan="17" class="text-muted text-center py-3">No indicator execution rows yet.</td></tr>';
             return;
         }
         els.auditBody.innerHTML = rows.map((row) => `
@@ -164,6 +178,7 @@
                 <td>${escapeHtml(String(row.direction || '-'))}</td>
                 <td>${escapeHtml(formatNum(row.lot, 2))}</td>
                 <td>${escapeHtml(String(row.status || '-').toUpperCase())}</td>
+                <td>${escapeHtml(String(row.execution_mode || '-').toUpperCase())}</td>
                 <td>${row.ticket ? escapeHtml(String(row.ticket)) : '-'}</td>
                 <td>${escapeHtml(String(row.session_name || '-'))}</td>
                 <td>${escapeHtml(formatNum(row.max_profit, 2))}</td>
@@ -246,6 +261,21 @@
             updateInstance(family, indicator, symbol, timeframe, { lot_size: lot })
                 .then(() => showAlert(`Lot updated for ${indicator} ${symbol} ${timeframe}.`, 'success'))
                 .catch((err) => showAlert(`Lot update failed: ${String(err.message || err)}`, 'error'));
+            return;
+        }
+        if (target.classList.contains('bridge-mode-toggle')) {
+            const mode = String(target.getAttribute('data-mode') || '').trim().toLowerCase();
+            const checked = !!target.checked;
+            if (mode !== 'advanced' && mode !== 'normal') return;
+            const payload = (mode === 'advanced')
+                ? { mode_advanced_enabled: checked }
+                : { mode_normal_enabled: checked };
+            updateInstance(family, indicator, symbol, timeframe, payload)
+                .then(() => showAlert(`Mode updated (${mode}) for ${indicator} ${symbol} ${timeframe}.`, 'success'))
+                .catch((err) => {
+                    showAlert(`Mode update failed: ${String(err.message || err)}`, 'error');
+                    loadState(false).catch(() => {});
+                });
         }
     }
 

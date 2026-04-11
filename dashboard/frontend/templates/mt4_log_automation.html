@@ -94,6 +94,7 @@
                                     <th style="min-width:110px;">Ticket</th>
                                     <th style="min-width:90px;">State</th>
                                     <th style="min-width:150px;">Automation</th>
+                                    <th style="min-width:150px;">Mode</th>
                                     <th style="min-width:170px;">Lot</th>
                                     <th style="min-width:100px;">Max+</th>
                                     <th style="min-width:100px;">Max-</th>
@@ -102,7 +103,7 @@
                                 </tr>
                             </thead>
                             <tbody id="bridge-mt4-body">
-                                <tr><td colspan="12" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="13" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -133,6 +134,7 @@
                                     <th style="min-width:110px;">Ticket</th>
                                     <th style="min-width:90px;">State</th>
                                     <th style="min-width:150px;">Automation</th>
+                                    <th style="min-width:150px;">Mode</th>
                                     <th style="min-width:170px;">Lot</th>
                                     <th style="min-width:100px;">Max+</th>
                                     <th style="min-width:100px;">Max-</th>
@@ -141,7 +143,7 @@
                                 </tr>
                             </thead>
                             <tbody id="bridge-mt5-body">
-                                <tr><td colspan="12" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="13" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -175,6 +177,7 @@
                             <th style="min-width:80px;">Dir</th>
                             <th style="min-width:80px;">Lot</th>
                             <th style="min-width:90px;">Status</th>
+                            <th style="min-width:100px;">Mode</th>
                             <th style="min-width:110px;">Ticket</th>
                             <th style="min-width:110px;">Session</th>
                             <th style="min-width:100px;">Max+</th>
@@ -185,7 +188,7 @@
                         </tr>
                     </thead>
                     <tbody id="bridge-audit-body">
-                        <tr><td colspan="16" class="text-muted text-center py-3">Loading...</td></tr>
+                        <tr><td colspan="17" class="text-muted text-center py-3">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -195,5 +198,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260410_indicator_bridge_v1') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260411_indicator_bridge_modes_v1') }}"></script>
 {% endblock %}

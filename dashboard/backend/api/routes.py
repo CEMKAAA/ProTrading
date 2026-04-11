@@ -748,6 +748,8 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         timeframe = str(p.get("timeframe") or "").strip().upper()
         enabled = p.get("enabled") if "enabled" in p else None
         lot_size = p.get("lot_size") if "lot_size" in p else None
+        mode_advanced_enabled = p.get("mode_advanced_enabled") if "mode_advanced_enabled" in p else None
+        mode_normal_enabled = p.get("mode_normal_enabled") if "mode_normal_enabled" in p else None
         lot_val = None
         if lot_size is not None:
             try:
@@ -761,6 +763,8 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             timeframe=str(timeframe),
             enabled=(bool(enabled) if enabled is not None else None),
             lot_size=lot_val,
+            mode_advanced_enabled=(bool(mode_advanced_enabled) if mode_advanced_enabled is not None else None),
+            mode_normal_enabled=(bool(mode_normal_enabled) if mode_normal_enabled is not None else None),
         )
         state = svc.get_indicator_bridge_state(limit=300)
         state["update_result"] = result
@@ -795,6 +799,7 @@ def indicator_bridge_execution_log_export(
             ("direction", "Direction"),
             ("lot", "Lot"),
             ("status", "Status"),
+            ("execution_mode", "Execution Mode"),
             ("ticket", "Ticket"),
             ("session_name", "Session"),
             ("max_profit", "Max Profit"),

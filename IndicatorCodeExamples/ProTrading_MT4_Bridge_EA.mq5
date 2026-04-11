@@ -23,6 +23,7 @@ input int    InpHeartbeatSeconds = 300; // keepalive every 5 minutes
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
 input bool   InpAllowSell = true;
+input int    InpAmbiguousPolicy = 0; // 0=skip, 1=force BUY, 2=force SELL
 
 input string InpApiBaseUrl = "http://127.0.0.1:8000";
 input string InpApiPath = "/api/v1/mt5/bridge/signal";
@@ -38,6 +39,7 @@ datetime g_lastSentAt = 0;
 datetime g_lastFailedSendAt = 0;
 datetime g_lastHeartbeatAt = 0;
 bool     g_observedInitialized = false;
+string   g_activeIndicatorName = "";
 double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
 int      g_indicatorHandle = INVALID_HANDLE;
@@ -144,7 +146,7 @@ bool _parse_iCustom_params()
       else if(lower == "false")
          val = 0.0;
       else
-         val = StrToDouble(token);
+         val = StringToDouble(token);
 
       if(val == 0.0 && token != "0" && token != "0.0" && lower != "false")
       {
@@ -162,20 +164,66 @@ bool _parse_iCustom_params()
    return true;
 }
 
-int _create_indicator_handle()
+bool _is_digits_only(string s)
 {
+   int n = StringLen(s);
+   if(n <= 0)
+      return false;
+   for(int i = 0; i < n; i++)
+   {
+      int ch = StringGetCharacter(s, i);
+      if(ch < 48 || ch > 57)
+         return false;
+   }
+   return true;
+}
+
+string _strip_trailing_instance_suffix(string name)
+{
+   string raw = _trim(name);
+   int n = StringLen(raw);
+   if(n < 5)
+      return raw;
+   if(StringSubstr(raw, n - 1, 1) != ")")
+      return raw;
+
+   int pos = -1;
+   int probe = StringFind(raw, " (");
+   while(probe >= 0)
+   {
+      pos = probe;
+      probe = StringFind(raw, " (", probe + 1);
+   }
+   if(pos <= 0)
+      return raw;
+
+   string inside = StringSubstr(raw, pos + 2, n - pos - 3);
+   if(!_is_digits_only(inside))
+      return raw;
+
+   string base = _trim(StringSubstr(raw, 0, pos));
+   if(StringLen(base) <= 0)
+      return raw;
+   return base;
+}
+
+int _create_indicator_handle_with_name(string indicatorName, bool useParams)
+{
+   string ind = _trim(indicatorName);
+   if(StringLen(ind) <= 0)
+      return INVALID_HANDLE;
    int c = g_iCustomParamCount;
-   if(c <= 0)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName);
-   if(c == 1)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0]);
-   if(c == 2)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1]);
-   if(c == 3)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2]);
-   if(c == 4)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3]);
-   if(c == 5)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4]);
-   if(c == 6)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5]);
-   if(c == 7)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6]);
-   if(c == 8)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7]);
-   if(c == 9)  return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8]);
-   if(c == 10) return iCustom(_Symbol, PERIOD_CURRENT, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9]);
+   if(!useParams || c <= 0)  return iCustom(_Symbol, PERIOD_CURRENT, ind);
+   if(c == 1)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0]);
+   if(c == 2)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1]);
+   if(c == 3)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2]);
+   if(c == 4)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3]);
+   if(c == 5)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4]);
+   if(c == 6)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5]);
+   if(c == 7)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6]);
+   if(c == 8)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7]);
+   if(c == 9)  return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8]);
+   if(c == 10) return iCustom(_Symbol, PERIOD_CURRENT, ind, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9]);
 
    Print("MT5Bridge too many InpICustomParamsCsv values: ", c, " (max supported: 10)");
    return INVALID_HANDLE;
@@ -185,13 +233,56 @@ bool _ensure_indicator_handle()
 {
    if(g_indicatorHandle != INVALID_HANDLE)
       return true;
-   g_indicatorHandle = _create_indicator_handle();
-   if(g_indicatorHandle == INVALID_HANDLE)
+
+   string primary = _trim(InpIndicatorName);
+   string alias = _strip_trailing_instance_suffix(primary);
+   bool hasAlias = (StringLen(alias) > 0 && alias != primary);
+
+   g_indicatorHandle = _create_indicator_handle_with_name(primary, true);
+   if(g_indicatorHandle != INVALID_HANDLE)
    {
-      Print("MT5Bridge failed to create indicator handle for ", InpIndicatorName, " last_error=", GetLastError());
-      return false;
+      g_activeIndicatorName = primary;
+      return true;
    }
-   return true;
+   int err1 = GetLastError();
+
+   if(hasAlias)
+   {
+      g_indicatorHandle = _create_indicator_handle_with_name(alias, true);
+      if(g_indicatorHandle != INVALID_HANDLE)
+      {
+         g_activeIndicatorName = alias;
+         if(InpDebugPrint)
+            Print("MT5Bridge indicator fallback: using alias with params: ", alias, " (from ", primary, ")");
+         return true;
+      }
+   }
+
+   if(g_iCustomParamCount > 0)
+   {
+      g_indicatorHandle = _create_indicator_handle_with_name(primary, false);
+      if(g_indicatorHandle != INVALID_HANDLE)
+      {
+         g_activeIndicatorName = primary;
+         if(InpDebugPrint)
+            Print("MT5Bridge indicator fallback: using no iCustom params for ", primary);
+         return true;
+      }
+      if(hasAlias)
+      {
+         g_indicatorHandle = _create_indicator_handle_with_name(alias, false);
+         if(g_indicatorHandle != INVALID_HANDLE)
+         {
+            g_activeIndicatorName = alias;
+            if(InpDebugPrint)
+               Print("MT5Bridge indicator fallback: using alias without params: ", alias, " (from ", primary, ")");
+            return true;
+         }
+      }
+   }
+
+   Print("MT5Bridge failed to create indicator handle for ", primary, " last_error=", GetLastError(), " first_error=", err1);
+   return false;
 }
 
 double _buffer_value(int bufferIndex, int barShift)
@@ -211,17 +302,18 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
    string symbol = _Symbol;
    string timeframe = _tf_to_string((ENUM_TIMEFRAMES)_Period);
    string endpoint = _build_endpoint(InpApiBaseUrl, InpApiPath);
+   string indicatorForEvent = (StringLen(g_activeIndicatorName) > 0) ? g_activeIndicatorName : InpIndicatorName;
    string eventKind = _trim(eventType);
    string dir = _trim(direction);
    string msg = "";
    if(StringLen(dir) > 0)
-      msg = StringFormat("%s %s %s buffer=%g shift=%d", InpIndicatorName, symbol, dir, signalValue, InpSignalShift);
+      msg = StringFormat("%s %s %s buffer=%g shift=%d", indicatorForEvent, symbol, dir, signalValue, InpSignalShift);
    else
-      msg = StringFormat("MT5Bridge %s %s | %s %s", eventKind, InpIndicatorName, symbol, timeframe);
+      msg = StringFormat("MT5Bridge %s %s | %s %s", eventKind, indicatorForEvent, symbol, timeframe);
 
    string body =
       "{" 
-      "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\"," 
+      "\"indicator\":\"" + _json_escape(indicatorForEvent) + "\"," 
       "\"signal_hint\":\"" + _json_escape(dir) + "\"," 
       "\"symbol\":\"" + _json_escape(symbol) + "\"," 
       "\"timeframe\":\"" + _json_escape(timeframe) + "\"," 
@@ -273,9 +365,24 @@ void _check_and_send()
 
    if(buySignal && sellSignal)
    {
-      if(InpDebugPrint)
-         Print("MT5Bridge ambiguous signal (both BUY/SELL active): ", InpIndicatorName, " ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
-      return;
+      if(InpAmbiguousPolicy == 1)
+      {
+         sellSignal = false;
+         if(InpDebugPrint)
+            Print("MT5Bridge ambiguous resolved as BUY by policy for ", InpIndicatorName, " ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
+      }
+      else if(InpAmbiguousPolicy == 2)
+      {
+         buySignal = false;
+         if(InpDebugPrint)
+            Print("MT5Bridge ambiguous resolved as SELL by policy for ", InpIndicatorName, " ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
+      }
+      else
+      {
+         if(InpDebugPrint)
+            Print("MT5Bridge ambiguous signal (both BUY/SELL active): ", InpIndicatorName, " ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
+         return;
+      }
    }
 
    int direction = 0;
@@ -387,7 +494,8 @@ int OnInit()
    EventSetTimer((InpPollSeconds < 1) ? 1 : InpPollSeconds);
    if(InpDebugPrint)
    {
-      Print("MT5Bridge initialized: ", InpIndicatorName, " | ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
+      string indDbg = (StringLen(g_activeIndicatorName) > 0) ? g_activeIndicatorName : InpIndicatorName;
+      Print("MT5Bridge initialized: ", indDbg, " | ", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period));
       Print("MT5Bridge terminal data path: ", TerminalInfoString(TERMINAL_DATA_PATH));
       Print("MT5Bridge iCustom params count: ", IntegerToString(g_iCustomParamCount), " | raw='", InpICustomParamsCsv, "'");
       Print("MT5Bridge endpoint(primary): ", _build_endpoint(InpApiBaseUrl, InpApiPath));

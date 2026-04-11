@@ -1071,6 +1071,7 @@ class TelegramBridgeService:
         close_reason: Optional[str] = None,
         opened_at: Optional[Any] = None,
         combo_key: Optional[str] = None,
+        execution_mode: Optional[str] = None,
     ) -> None:
         self._ensure_execution_log_table()
         event_unix = _to_unix_or_none(event_ts)
@@ -1149,6 +1150,7 @@ class TelegramBridgeService:
                         "close_reason": str(close_reason or "").strip() or None,
                         "opened_at": str(opened_at or "").strip() or None,
                         "combo_key": str(combo_key or "").strip().lower() or None,
+                        "execution_mode": str(execution_mode or "").strip().lower() or None,
                     },
                 )
                 db.add(model)
@@ -1233,6 +1235,7 @@ class TelegramBridgeService:
                     "close_reason": str((_json_obj(r.extra_json or {})).get("close_reason") or ""),
                     "opened_at": str((_json_obj(r.extra_json or {})).get("opened_at") or ""),
                     "combo_key": str((_json_obj(r.extra_json or {})).get("combo_key") or ""),
+                    "execution_mode": str((_json_obj(r.extra_json or {})).get("execution_mode") or ""),
                 }
             )
         return out
@@ -1399,6 +1402,7 @@ class TelegramBridgeService:
             close_reason=str(reason or "").strip() or "closed",
             opened_at=str(meta.get("created_at") or "").strip() or None,
             combo_key=str(combo_key),
+            execution_mode=str(meta.get("execution_mode") or "").strip().lower() or None,
         )
 
     @staticmethod
@@ -1579,6 +1583,8 @@ class TelegramBridgeService:
                 "control_mode": str(runtime_cfg.get("automation_mode") or "inherit"),
                 "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
                 "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
+                "mode_advanced_enabled": bool(runtime_cfg.get("mode_advanced_enabled")),
+                "mode_normal_enabled": bool(runtime_cfg.get("mode_normal_enabled")),
                 "last_seen": str(ev_ts),
                 "source_tag": f"mt4|{profile}|{self._normalize_mt_indicator_key(resolved_indicator)}|{symbol}|{timeframe}",
                 "combo_key": ckey,
@@ -2366,6 +2372,44 @@ class TelegramBridgeService:
             cleaned[item] = float(max(0.01, min(100.0, float(lot))))
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
+    @classmethod
+    def _indicator_bridge_instance_mode_overrides(cls, family: Any) -> Dict[str, Dict[str, bool]]:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_MODES")
+        raw = str(cls._get_env_value(key, "{}")).strip()
+        out: Dict[str, Dict[str, bool]] = {}
+        if not raw:
+            return out
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return out
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            cfg = v if isinstance(v, dict) else {}
+            out[item] = {
+                "advanced": bool(cfg.get("advanced", True)),
+                "normal": bool(cfg.get("normal", False)),
+            }
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_instance_mode_overrides(cls, mode_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, Dict[str, bool]] = {}
+        for k, v in (mode_map or {}).items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            cfg = v if isinstance(v, dict) else {}
+            cleaned[item] = {
+                "advanced": bool(cfg.get("advanced", True)),
+                "normal": bool(cfg.get("normal", False)),
+            }
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
     def _resolve_indicator_bridge_instance_runtime_config(
         self,
         *,
@@ -2392,6 +2436,10 @@ class TelegramBridgeService:
         lot_size = _to_float_or_none(lot_overrides.get(instance_key_l))
         if lot_size is None or float(lot_size) <= 0.0:
             lot_size = float(self._indicator_bridge_default_lot(terminal_family))
+        mode_overrides = self._indicator_bridge_instance_mode_overrides(terminal_family)
+        mode_cfg = mode_overrides.get(instance_key_l) if instance_key_l else {}
+        mode_advanced = bool((mode_cfg or {}).get("advanced", True))
+        mode_normal = bool((mode_cfg or {}).get("normal", False))
         return {
             "terminal_family": str(terminal_family),
             "indicator": str(indicator_name),
@@ -2402,6 +2450,12 @@ class TelegramBridgeService:
             "automation_enabled": bool(explicit_enabled),
             "effective_automation_enabled": bool(explicit_enabled),
             "lot_size": _to_float_or_none(lot_size),
+            "execution_modes": {
+                "advanced": bool(mode_advanced),
+                "normal": bool(mode_normal),
+            },
+            "mode_advanced_enabled": bool(mode_advanced),
+            "mode_normal_enabled": bool(mode_normal),
         }
 
     def _resolve_mt4_instance_runtime_config(
@@ -2519,6 +2573,9 @@ class TelegramBridgeService:
             "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
             "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
             "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
+            "execution_modes": dict(runtime_cfg.get("execution_modes") or {}),
+            "mode_advanced_enabled": bool(runtime_cfg.get("mode_advanced_enabled")),
+            "mode_normal_enabled": bool(runtime_cfg.get("mode_normal_enabled")),
             "source_tag": (
                 f"{family}|{str(profile or 'generic').strip().lower()}|"
                 f"{self._normalize_mt_indicator_key(indicator)}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}"
@@ -2558,6 +2615,8 @@ class TelegramBridgeService:
         timeframe: Any,
         enabled: Optional[bool] = None,
         lot_size: Optional[float] = None,
+        mode_advanced_enabled: Optional[bool] = None,
+        mode_normal_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
         family = self._indicator_bridge_family(terminal_family)
         instance_key = self._indicator_bridge_instance_key(
@@ -2570,6 +2629,7 @@ class TelegramBridgeService:
             return {"ok": False, "error": "invalid_instance_key"}
         auto_map = self._indicator_bridge_instance_automation_overrides(family)
         lot_map = self._indicator_bridge_instance_lot_overrides(family)
+        mode_map = self._indicator_bridge_instance_mode_overrides(family)
         if enabled is not None:
             auto_map[str(instance_key).lower()] = bool(enabled)
         if lot_size is not None:
@@ -2577,10 +2637,19 @@ class TelegramBridgeService:
             if lot_val is None or float(lot_val) <= 0.0:
                 return {"ok": False, "error": "invalid_lot_size"}
             lot_map[str(instance_key).lower()] = float(max(0.01, min(100.0, float(lot_val))))
+        if mode_advanced_enabled is not None or mode_normal_enabled is not None:
+            mk = str(instance_key).lower()
+            prev = dict(mode_map.get(mk) or {"advanced": True, "normal": False})
+            if mode_advanced_enabled is not None:
+                prev["advanced"] = bool(mode_advanced_enabled)
+            if mode_normal_enabled is not None:
+                prev["normal"] = bool(mode_normal_enabled)
+            mode_map[mk] = {"advanced": bool(prev.get("advanced", True)), "normal": bool(prev.get("normal", False))}
         ok, status = self._upsert_indicator_bridge_env_values(
             {
                 self._indicator_bridge_env_key(family, "INSTANCE_AUTOMATION"): self._serialize_indicator_bridge_instance_automation_overrides(auto_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_LOTS"): self._serialize_indicator_bridge_instance_lot_overrides(lot_map),
+                self._indicator_bridge_env_key(family, "INSTANCE_MODES"): self._serialize_indicator_bridge_instance_mode_overrides(mode_map),
             }
         )
         runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
@@ -2596,6 +2665,9 @@ class TelegramBridgeService:
                 prev["automation_enabled"] = bool(runtime_cfg.get("automation_enabled"))
                 prev["effective_automation_enabled"] = bool(runtime_cfg.get("effective_automation_enabled"))
                 prev["lot_size"] = _to_float_or_none(runtime_cfg.get("lot_size"))
+                prev["execution_modes"] = dict(runtime_cfg.get("execution_modes") or {})
+                prev["mode_advanced_enabled"] = bool(runtime_cfg.get("mode_advanced_enabled"))
+                prev["mode_normal_enabled"] = bool(runtime_cfg.get("mode_normal_enabled"))
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
         return {
             "ok": bool(ok),
@@ -2651,6 +2723,7 @@ class TelegramBridgeService:
                 "indicator": str(indicator),
                 "symbol": str(symbol),
                 "timeframe": str(timeframe),
+                "execution_mode": str(row.get("execution_mode") or "advanced").strip().lower(),
                 "direction": str(direction),
                 "ticket": int(ticket),
                 "opened_at": str(row.get("created_at") or ""),
@@ -2704,8 +2777,12 @@ class TelegramBridgeService:
                     "automation_enabled": bool(runtime_cfg.get("automation_enabled")),
                     "effective_automation_enabled": bool(runtime_cfg.get("effective_automation_enabled")),
                     "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
+                    "execution_modes": dict(runtime_cfg.get("execution_modes") or {}),
+                    "mode_advanced_enabled": bool(runtime_cfg.get("mode_advanced_enabled")),
+                    "mode_normal_enabled": bool(runtime_cfg.get("mode_normal_enabled")),
                     "state": ("OPEN" if linked else "IDLE"),
                     "has_open_ladder": bool(linked),
+                    "active_execution_mode": str(linked.get("execution_mode") or "").strip().lower(),
                     "ticket": int(_to_float_or_none(linked.get("ticket")) or 0),
                     "direction": str(linked.get("direction") or "").strip().upper(),
                     "opened_at": str(linked.get("opened_at") or ""),
@@ -2797,6 +2874,7 @@ class TelegramBridgeService:
                     "close_reason": str(row.get("close_reason") or "").strip(),
                     "final_tp": _to_float_or_none(row.get("final_tp")),
                     "stop_loss": _to_float_or_none(row.get("stop_loss")),
+                    "execution_mode": str(row.get("execution_mode") or "").strip().lower(),
                     "event_ts": str(event_ts),
                     "message": str(row.get("message") or "").strip(),
                     "source_tag": str(row.get("source_tag") or "").strip().lower(),
@@ -2926,7 +3004,8 @@ class TelegramBridgeService:
         if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
             p = "generic"
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_TP_LEVELS_TREND"
-        raw = str(TelegramBridgeService._get_env_value(key, "0.80,1.35,2.10,3.20,4.80") or "").strip()
+        # Trend runner defaults: push the last target further so winners can run.
+        raw = str(TelegramBridgeService._get_env_value(key, "0.90,1.60,2.60,4.00,6.20") or "").strip()
         vals: List[float] = []
         for part in re.split(r"[,;| ]+", raw):
             s = str(part or "").strip()
@@ -2939,7 +3018,7 @@ class TelegramBridgeService:
             if math.isfinite(float(v)) and float(v) > 0.0:
                 vals.append(float(v))
         if not vals:
-            vals = [0.80, 1.35, 2.10, 3.20, 4.80]
+            vals = [0.90, 1.60, 2.60, 4.00, 6.20]
         vals = sorted(float(x) for x in vals if float(x) > 0.0)
         if len(vals) > 12:
             vals = vals[:12]
@@ -2995,7 +3074,8 @@ class TelegramBridgeService:
         if p not in {"hydra", "intrepid", "generic", "fxnuke", "uranus", "alchemy", "forexcyper"}:
             p = "generic"
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_STAGE_WEIGHTS_TREND"
-        raw = str(TelegramBridgeService._get_env_value(key, "30,22,16,12,20") or "").strip()
+        # Trend runner defaults: keep more size for late trend extension.
+        raw = str(TelegramBridgeService._get_env_value(key, "15,15,20,20,30") or "").strip()
         vals: List[float] = []
         for part in re.split(r"[,;| ]+", raw):
             s = str(part or "").strip()
@@ -3008,7 +3088,7 @@ class TelegramBridgeService:
             if math.isfinite(float(v)) and float(v) > 0.0:
                 vals.append(float(v))
         if not vals:
-            vals = [30.0, 22.0, 16.0, 12.0, 20.0]
+            vals = [15.0, 15.0, 20.0, 20.0, 30.0]
         return list(vals)
 
     @staticmethod
@@ -3619,8 +3699,9 @@ class TelegramBridgeService:
             "stage_weights": list(stage_weights),
             "market_regime": str(active_regime),
             "hard_sl_mode": str(hard_sl_mode),
-            "profit_lock_retrace_pct": (0.45 if str(active_regime) == "trend" else 0.28),
-            "profit_lock_arm_after_tp": (2 if str(active_regime) == "trend" else 1),
+            # Trend mode: arm later and allow deeper retrace before forced lock exit.
+            "profit_lock_retrace_pct": (0.65 if str(active_regime) == "trend" else 0.28),
+            "profit_lock_arm_after_tp": (3 if str(active_regime) == "trend" else 1),
         }
         combo_source_tag = (
             f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
@@ -3656,45 +3737,115 @@ class TelegramBridgeService:
                     str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
                 }
 
-        reverse_out = self._close_mt4_reverse_positions(
-            symbol=str(symbol_exec_raw),
-            incoming_direction=str(hint),
-            timeframe=str(timeframe),
-            source_tag=str(combo_source_tag),
-        )
-        if not bool((reverse_out or {}).get("ok")):
-            reverse_msg = "reverse_close_failed: " + " | ".join(str(x) for x in ((reverse_out or {}).get("errors") or [])[:3])
-            return {"ok": False, "executed": False, "error": str(reverse_msg)[:220]}
-
         lot = float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile))
         lot_override = _to_float_or_none(p.get("lot_override"))
         if lot_override is not None and float(lot_override) > 0.0:
             lot = float(max(0.01, min(100.0, float(lot_override))))
         chat_id = int(self._allowed_chat_id() or 0)
-        exec_msg = self._execute_confirmation_signal_auto(
-            chat_id=int(chat_id),
-            signal=dict(signal),
-            lot_override=float(lot),
-            source_tag=str(combo_source_tag),
-            comment_prefix=str(family),
-            audit_ctx={
-                "source_type": "mt_indicator",
-                "source_name": str(indicator),
-                "trigger": "indicator_signal",
-                "profile": str(profile),
-                "indicator": str(indicator),
-                "event_ts": event_ts,
-            },
-        )
-        executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
-        deferred_market_closed = str(exec_msg or "").strip().lower().startswith("confirmation deferred: market closed")
+        mode_cfg = dict(runtime_cfg.get("execution_modes") or {})
+        mode_plan = [
+            ("advanced", bool(mode_cfg.get("advanced", True))),
+            ("normal", bool(mode_cfg.get("normal", False))),
+        ]
+        selected_modes = [m for m, en in mode_plan if bool(en)]
+        if not selected_modes:
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "no_execution_mode_enabled",
+                "runtime": runtime_cfg,
+                "bridge": registered,
+            }
+
+        mode_results: List[Dict[str, Any]] = []
+        executed_any = False
+        market_closed_only = True
+        first_message = ""
+        for mode in selected_modes:
+            mode_source_tag = f"{str(combo_source_tag)}|{str(mode)}"
+            reverse_out = self._close_mt4_reverse_positions(
+                symbol=str(symbol_exec_raw),
+                incoming_direction=str(hint),
+                timeframe=str(timeframe),
+                source_tag=str(mode_source_tag),
+            )
+            if not bool((reverse_out or {}).get("ok")):
+                reverse_msg = "reverse_close_failed: " + " | ".join(str(x) for x in ((reverse_out or {}).get("errors") or [])[:3])
+                mode_results.append(
+                    {
+                        "mode": str(mode),
+                        "ok": False,
+                        "executed": False,
+                        "reason": "reverse_close_failed",
+                        "message": str(reverse_msg)[:220],
+                    }
+                )
+                market_closed_only = False
+                continue
+
+            if str(mode) == "normal":
+                exec_msg = self._execute_indicator_normal_signal(
+                    chat_id=int(chat_id),
+                    symbol=str(symbol_exec_raw),
+                    timeframe=str(timeframe),
+                    direction=str(hint),
+                    lot=float(lot),
+                    source_tag=str(mode_source_tag),
+                    comment_prefix=str(family),
+                    audit_ctx={
+                        "source_type": "mt_indicator",
+                        "source_name": str(indicator),
+                        "trigger": "indicator_signal",
+                        "profile": str(profile),
+                        "indicator": str(indicator),
+                        "event_ts": event_ts,
+                    },
+                )
+                executed = str(exec_msg or "").strip().lower().startswith("normal mode order executed")
+                deferred_market_closed = str(exec_msg or "").strip().lower().startswith("normal mode deferred: market closed")
+            else:
+                exec_msg = self._execute_confirmation_signal_auto(
+                    chat_id=int(chat_id),
+                    signal=dict(signal),
+                    lot_override=float(lot),
+                    source_tag=str(mode_source_tag),
+                    comment_prefix=str(family),
+                    audit_ctx={
+                        "source_type": "mt_indicator",
+                        "source_name": str(indicator),
+                        "trigger": "indicator_signal",
+                        "profile": str(profile),
+                        "indicator": str(indicator),
+                        "event_ts": event_ts,
+                    },
+                    execution_mode="advanced",
+                )
+                executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
+                deferred_market_closed = str(exec_msg or "").strip().lower().startswith("confirmation deferred: market closed")
+
+            executed_any = bool(executed_any or executed)
+            if not deferred_market_closed:
+                market_closed_only = False
+            mode_results.append(
+                {
+                    "mode": str(mode),
+                    "ok": True,
+                    "executed": bool(executed),
+                    "reason": ("market_closed" if deferred_market_closed else ""),
+                    "message": str(exec_msg),
+                }
+            )
+            if not first_message:
+                first_message = str(exec_msg or "")
+
         return {
             "ok": True,
-            "executed": bool(executed),
-            "message": str(exec_msg),
-            "reason": ("market_closed" if deferred_market_closed else ""),
+            "executed": bool(executed_any),
+            "message": str(first_message),
+            "reason": ("market_closed" if (market_closed_only and not executed_any) else ""),
             "runtime": runtime_cfg,
             "bridge": registered,
+            "mode_results": mode_results,
         }
 
     def ingest_mt4_indicator_signal(self, *, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3739,6 +3890,24 @@ class TelegramBridgeService:
         max_age = float(self._mt4_exec_max_signal_age_sec())
         if max_age > 0.0 and ev_unix is not None and (float(now_ts) - float(ev_unix)) > float(max_age):
             return {"ok": True, "executed": False, "reason": "stale_signal"}
+
+        # Apply deterministic dedupe even when execution is disabled/profile-gated,
+        # so repeated identical payloads don't flood monitoring/logging surfaces.
+        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
+        dedupe_key = (
+            f"{profile}|{indicator_key}|{str(symbol).strip().upper()}|"
+            f"{str(timeframe).strip().upper()}|{hint}|{msg_norm}"
+        )
+        with self._lock:
+            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
+                return {"ok": True, "executed": False, "reason": "duplicate_signal"}
+            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
+            if len(self._mt4_signal_dedupe) > 10000:
+                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
+                self._mt4_signal_dedupe = {
+                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
+                }
 
         if not self._mt4_exec_enabled():
             self._append_confirm_signal_feed(
@@ -3910,8 +4079,9 @@ class TelegramBridgeService:
             "stage_weights": list(stage_weights),
             "market_regime": str(active_regime),
             "hard_sl_mode": str(hard_sl_mode),
-            "profit_lock_retrace_pct": (0.45 if str(active_regime) == "trend" else 0.28),
-            "profit_lock_arm_after_tp": (2 if str(active_regime) == "trend" else 1),
+            # Trend mode: arm later and allow deeper retrace before forced lock exit.
+            "profit_lock_retrace_pct": (0.65 if str(active_regime) == "trend" else 0.28),
+            "profit_lock_arm_after_tp": (3 if str(active_regime) == "trend" else 1),
         }
         combo_source_tag = (
             f"mt4|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
@@ -3937,22 +4107,6 @@ class TelegramBridgeService:
                 source_message_id=None,
             )
             return {"ok": True, "executed": False, "reason": "reversal_guard_waiting", "wait": guard, "runtime": runtime_cfg}
-
-        msg_norm = re.sub(r"\s+", " ", str(message or "").strip().lower())
-        dedupe_key = (
-            f"{profile}|{indicator_key}|{str(symbol_exec).strip().upper()}|"
-            f"{str(timeframe).strip().upper()}|{hint}|{msg_norm}"
-        )
-        with self._lock:
-            prev = float(self._mt4_signal_dedupe.get(dedupe_key) or 0.0)
-            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(self._mt4_exec_dedupe_window_sec()):
-                return {"ok": True, "executed": False, "reason": "duplicate_signal", "runtime": runtime_cfg}
-            self._mt4_signal_dedupe[dedupe_key] = float(now_ts)
-            if len(self._mt4_signal_dedupe) > 10000:
-                cutoff = float(now_ts) - float(max(self._mt4_exec_dedupe_window_sec(), 600.0))
-                self._mt4_signal_dedupe = {
-                    str(k): float(v) for k, v in self._mt4_signal_dedupe.items() if float(v) >= float(cutoff)
-                }
 
         reverse_out = self._close_mt4_reverse_positions(
             symbol=str(symbol_exec_raw),
@@ -4862,6 +5016,7 @@ class TelegramBridgeService:
         source_name: Optional[str] = None,
         profile: Optional[str] = None,
         indicator: Optional[str] = None,
+        execution_mode: Optional[str] = None,
         profit_lock_retrace_pct: Optional[float] = None,
         profit_lock_arm_after_tp: Optional[int] = None,
         entry_price: Optional[float] = None,
@@ -4887,6 +5042,7 @@ class TelegramBridgeService:
             "source_name": str(source_name or "").strip(),
             "profile": str(profile or "").strip().lower(),
             "indicator": str(indicator or "").strip(),
+            "execution_mode": str(execution_mode or "").strip().lower() or "advanced",
             "max_profit": None,
             "max_loss": None,
             "profit_lock_retrace_pct": (_to_float_or_none(profit_lock_retrace_pct) if profit_lock_retrace_pct is not None else None),
@@ -4909,6 +5065,7 @@ class TelegramBridgeService:
         source_tag: Optional[str] = None,
         comment_prefix: str = "tgc",
         audit_ctx: Optional[Dict[str, Any]] = None,
+        execution_mode: str = "advanced",
     ) -> str:
         audit = dict(audit_ctx or {})
         audit_source_type = str(audit.get("source_type") or "telegram_channel").strip() or "telegram_channel"
@@ -4918,6 +5075,7 @@ class TelegramBridgeService:
         audit_profile = str(audit.get("profile") or "").strip().lower()
         audit_indicator = str(audit.get("indicator") or "").strip()
         audit_event_ts = audit.get("event_ts")
+        exec_mode = str(execution_mode or "advanced").strip().lower() or "advanced"
 
         symbol = str(signal.get("symbol") or "").strip().upper()
         direction = str(signal.get("direction") or "").strip().upper()
@@ -4941,6 +5099,7 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
+                execution_mode=exec_mode,
             )
             return "Signal payload invalid for auto TP execution."
         lot = float(self._confirm_signal_default_lot())
@@ -5027,6 +5186,7 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
+                execution_mode=exec_mode,
             )
             return f"Confirmation trade failed: {str(stage_err)}"
         take_profit = _to_float_or_none((active_tps[-1] or {}).get("price")) if active_tps else None
@@ -5047,6 +5207,7 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
+                execution_mode=exec_mode,
             )
             return "Confirmation trade failed: invalid_take_profit"
         svc = self._get_live_service()
@@ -5110,6 +5271,7 @@ class TelegramBridgeService:
                         indicator=audit_indicator,
                         source_tag=source_tag,
                         event_ts=audit_event_ts,
+                        execution_mode=exec_mode,
                     )
                     if market_closed:
                         return "Confirmation deferred: market closed (broker retcode 10018)."
@@ -5149,6 +5311,7 @@ class TelegramBridgeService:
                     source_name=str(audit_source_name),
                     profile=str(audit_profile),
                     indicator=str(audit_indicator),
+                    execution_mode=exec_mode,
                     profit_lock_retrace_pct=_to_float_or_none(signal.get("profit_lock_retrace_pct")),
                     profit_lock_arm_after_tp=int(_to_float_or_none(signal.get("profit_lock_arm_after_tp")) or 0),
                     entry_price=_to_float_or_none(signal.get("entry_mid")),
@@ -5182,6 +5345,7 @@ class TelegramBridgeService:
                     symbol=symbol,
                     timeframe=timeframe,
                 ),
+                execution_mode=exec_mode,
             )
             stage_desc = " | ".join(
                 f"TP{int((row or {}).get('index') or 0)}={float((row or {}).get('price') or 0.0):.5f}"
@@ -5220,8 +5384,183 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
+                execution_mode=exec_mode,
             )
             return f"Confirmation trade failed: {type(exc).__name__}: {str(exc)[:220]}"
+
+    def _execute_indicator_normal_signal(
+        self,
+        *,
+        chat_id: int,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        lot: float,
+        source_tag: Optional[str],
+        audit_ctx: Optional[Dict[str, Any]] = None,
+        comment_prefix: str = "mt",
+    ) -> str:
+        audit = dict(audit_ctx or {})
+        audit_source_type = str(audit.get("source_type") or "mt_indicator").strip() or "mt_indicator"
+        audit_source_name = str(audit.get("source_name") or "unknown").strip() or "unknown"
+        audit_source_key = str(audit.get("source_key") or "").strip()
+        audit_trigger = str(audit.get("trigger") or "indicator_signal").strip() or "indicator_signal"
+        audit_profile = str(audit.get("profile") or "").strip().lower()
+        audit_indicator = str(audit.get("indicator") or "").strip()
+        audit_event_ts = audit.get("event_ts")
+        exec_mode = "normal"
+
+        sym = str(symbol or "").strip().upper()
+        tf = str(timeframe or "").strip().upper() or "M5"
+        side = str(direction or "").strip().upper()
+        qty = float(max(0.01, min(100.0, float(_to_float_or_none(lot) or 0.01))))
+        if side not in {"BUY", "SELL"} or not sym:
+            self._append_automation_execution_log(
+                source_type=audit_source_type,
+                source_name=audit_source_name,
+                trigger=audit_trigger,
+                status="rejected",
+                symbol=sym,
+                timeframe=tf,
+                direction=side,
+                lot=qty,
+                message="invalid_normal_signal_payload",
+                profile=audit_profile,
+                indicator=audit_indicator,
+                source_tag=source_tag,
+                event_ts=audit_event_ts,
+                execution_mode=exec_mode,
+            )
+            return "Normal mode trade failed: invalid payload."
+
+        svc = self._get_live_service()
+        pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "mt").strip().lower())[:8] or "mt"
+        marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
+        try:
+            data = svc.place_market_order(
+                symbol=str(sym),
+                direction=str(side),
+                lot_size=float(qty),
+                stop_loss=None,
+                take_profit=None,
+                comment=str(marker),
+            )
+            if not bool((data or {}).get("ok")):
+                err_txt = str((data or {}).get("error") or "order_failed")
+                market_closed = self._is_market_closed_error(err_txt)
+                self._append_automation_execution_log(
+                    source_type=audit_source_type,
+                    source_name=audit_source_name,
+                    trigger=audit_trigger,
+                    status=("deferred" if market_closed else "failed"),
+                    symbol=sym,
+                    timeframe=tf,
+                    direction=side,
+                    lot=qty,
+                    message=("market_closed" if market_closed else err_txt),
+                    profile=audit_profile,
+                    indicator=audit_indicator,
+                    source_tag=source_tag,
+                    event_ts=audit_event_ts,
+                    execution_mode=exec_mode,
+                )
+                if market_closed:
+                    return "Normal mode deferred: market closed."
+                return f"Normal mode trade failed: {err_txt[:220]}"
+
+            broker_ticket = int(_to_float_or_none((data or {}).get("position")) or 0)
+            if broker_ticket <= 0:
+                broker_ticket = int(_to_float_or_none((data or {}).get("order")) or 0)
+            if broker_ticket <= 0:
+                broker_ticket = int(_to_float_or_none((data or {}).get("deal")) or 0)
+            try:
+                rows = svc.get_open_positions(symbol=str(sym))
+            except Exception:
+                rows = []
+            by_marker = [
+                dict(r)
+                for r in (rows or [])
+                if str((r or {}).get("direction") or "").strip().upper() == str(side)
+                and str((r or {}).get("comment") or "").strip() == str(marker)
+            ]
+            if by_marker:
+                broker_ticket = int(max(int((r or {}).get("ticket") or 0) for r in by_marker))
+
+            if broker_ticket > 0:
+                self._register_confirmation_ladder(
+                    chat_id=int(chat_id),
+                    session_id=0,
+                    symbol=str(sym),
+                    timeframe=str(tf),
+                    direction=str(side),
+                    trade_id=0,
+                    broker_ticket=int(broker_ticket),
+                    stage_lots=[float(qty)],
+                    tps=[{"index": 1, "price": 0.0}],
+                    source_tag=source_tag,
+                    order_comment=str(marker),
+                    source_key=str(audit_source_key),
+                    source_name=str(audit_source_name),
+                    profile=str(audit_profile),
+                    indicator=str(audit_indicator),
+                    execution_mode=exec_mode,
+                    entry_price=None,
+                    initial_stop_loss=None,
+                    no_stop_loss=True,
+                )
+            self._append_automation_execution_log(
+                source_type=audit_source_type,
+                source_name=audit_source_name,
+                trigger=audit_trigger,
+                status="opened",
+                symbol=sym,
+                timeframe=tf,
+                direction=side,
+                lot=float((data or {}).get("lot_size") or qty),
+                ticket=int(broker_ticket) if broker_ticket > 0 else None,
+                message="order_opened",
+                profile=audit_profile,
+                indicator=audit_indicator,
+                source_tag=source_tag,
+                event_ts=audit_event_ts,
+                opened_at=self._now_iso(),
+                combo_key=self._build_execution_combo_key(
+                    source_type=audit_source_type,
+                    source_name=audit_source_name,
+                    indicator=audit_indicator,
+                    symbol=sym,
+                    timeframe=tf,
+                ),
+                execution_mode=exec_mode,
+            )
+            return (
+                "Normal mode order executed\n"
+                "Execution: standalone_mt5\n"
+                f"Symbol: {str(sym)} {str(tf)}\n"
+                f"Direction: {str(side)}\n"
+                "SL: none\n"
+                "TP: none\n"
+                f"Lot: {float((data or {}).get('lot_size') or qty):.4f}\n"
+                f"Ticket: {int(broker_ticket)}"
+            )
+        except Exception as exc:
+            self._append_automation_execution_log(
+                source_type=audit_source_type,
+                source_name=audit_source_name,
+                trigger=audit_trigger,
+                status="failed",
+                symbol=sym,
+                timeframe=tf,
+                direction=side,
+                lot=qty,
+                message=f"{type(exc).__name__}: {str(exc)[:220]}",
+                profile=audit_profile,
+                indicator=audit_indicator,
+                source_tag=source_tag,
+                event_ts=audit_event_ts,
+                execution_mode=exec_mode,
+            )
+            return f"Normal mode trade failed: {type(exc).__name__}: {str(exc)[:220]}"
 
     @staticmethod
     def _is_market_closed_error(err: Any) -> bool:
@@ -5580,6 +5919,7 @@ class TelegramBridgeService:
                 source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
                 max_profit=_to_float_or_none((row or {}).get("max_profit")),
                 max_loss=_to_float_or_none((row or {}).get("max_loss")),
+                execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
             )
             return {"ok": True, "updated": True, "stop_loss": float(desired)}
 
@@ -5599,6 +5939,7 @@ class TelegramBridgeService:
             source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
             max_profit=_to_float_or_none((row or {}).get("max_profit")),
             max_loss=_to_float_or_none((row or {}).get("max_loss")),
+            execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
         )
         return {"ok": False, "updated": False, "error": err_txt}
 
@@ -5617,10 +5958,14 @@ class TelegramBridgeService:
             sym = str(row.get("symbol") or "").strip().upper()
             ticket = int(row.get("broker_ticket") or 0)
             direction = str(row.get("direction") or "").strip().upper()
+            execution_mode = str(row.get("execution_mode") or "advanced").strip().lower() or "advanced"
             next_idx = int(row.get("next_tp_index") or 1)
             tps = row.get("tps") if isinstance(row.get("tps"), list) else []
             stage_lots = row.get("stage_lots") if isinstance(row.get("stage_lots"), list) else []
-            if not sym or ticket <= 0 or direction not in {"BUY", "SELL"} or next_idx <= 0 or next_idx > len(tps):
+            if not sym or ticket <= 0 or direction not in {"BUY", "SELL"}:
+                remove_keys.append(str(key))
+                continue
+            if execution_mode != "normal" and (next_idx <= 0 or next_idx > len(tps)):
                 remove_keys.append(str(key))
                 continue
             try:
@@ -5642,6 +5987,10 @@ class TelegramBridgeService:
                 prev_min = _to_float_or_none(row.get("max_loss"))
                 row["max_profit"] = float(cur_profit) if (prev_max is None or float(cur_profit) > float(prev_max)) else float(prev_max)
                 row["max_loss"] = float(cur_profit) if (prev_min is None or float(cur_profit) < float(prev_min)) else float(prev_min)
+            if execution_mode == "normal":
+                with self._lock:
+                    self._active_confirmation_signal_ladders[str(key)] = dict(row)
+                continue
             current_price = _to_float_or_none(pos.get("current_price"))
             target_row = dict(tps[next_idx - 1]) if (next_idx - 1) < len(tps) else {}
             target_px = _to_float_or_none(target_row.get("price"))
@@ -5734,6 +6083,7 @@ class TelegramBridgeService:
                     source_tag=str(row.get("source_tag") or "").strip().lower(),
                     max_profit=_to_float_or_none(row.get("max_profit")),
                     max_loss=_to_float_or_none(row.get("max_loss")),
+                    execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
                 )
                 self._send_text(
                     int(row.get("chat_id") or 0),
