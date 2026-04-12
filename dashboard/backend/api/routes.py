@@ -719,7 +719,10 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
 
 
 @router.get("/indicator-bridge/state")
-def indicator_bridge_state(limit: int = Query(300, ge=20, le=2000)):
+def indicator_bridge_state(
+    limit: int = Query(300, ge=20, le=2000),
+    active_only: bool = Query(False),
+):
     """Bridge-only MT4/MT5 indicator bot monitor state."""
     try:
         from ..main import telegram_bridge_service
@@ -727,7 +730,7 @@ def indicator_bridge_state(limit: int = Query(300, ge=20, le=2000)):
         svc = telegram_bridge_service
         if svc is None:
             return {"ok": False, "error": "telegram_bridge_unavailable"}
-        return svc.get_indicator_bridge_state(limit=int(limit))
+        return svc.get_indicator_bridge_state(limit=int(limit), active_only=bool(active_only))
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
@@ -750,12 +753,38 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         lot_size = p.get("lot_size") if "lot_size" in p else None
         mode_advanced_enabled = p.get("mode_advanced_enabled") if "mode_advanced_enabled" in p else None
         mode_normal_enabled = p.get("mode_normal_enabled") if "mode_normal_enabled" in p else None
+        mode_sync_enabled = p.get("mode_sync_enabled") if "mode_sync_enabled" in p else None
+        mode_advanced_lot = p.get("mode_advanced_lot") if "mode_advanced_lot" in p else None
+        mode_normal_lot = p.get("mode_normal_lot") if "mode_normal_lot" in p else None
+        mode_sync_lot = p.get("mode_sync_lot") if "mode_sync_lot" in p else None
+        sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
+        sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
+        sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
+        sync_reentry_enabled = p.get("sync_reentry_enabled") if "sync_reentry_enabled" in p else None
         lot_val = None
         if lot_size is not None:
             try:
                 lot_val = float(lot_size)
             except Exception:
                 return {"ok": False, "error": "invalid_lot_size"}
+        mode_advanced_lot_val = None
+        if mode_advanced_lot is not None:
+            try:
+                mode_advanced_lot_val = float(mode_advanced_lot)
+            except Exception:
+                return {"ok": False, "error": "invalid_mode_advanced_lot"}
+        mode_normal_lot_val = None
+        if mode_normal_lot is not None:
+            try:
+                mode_normal_lot_val = float(mode_normal_lot)
+            except Exception:
+                return {"ok": False, "error": "invalid_mode_normal_lot"}
+        mode_sync_lot_val = None
+        if mode_sync_lot is not None:
+            try:
+                mode_sync_lot_val = float(mode_sync_lot)
+            except Exception:
+                return {"ok": False, "error": "invalid_mode_sync_lot"}
         result = svc.update_indicator_bridge_instance_settings(
             terminal_family=str(terminal_family),
             indicator=str(indicator),
@@ -765,6 +794,14 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             lot_size=lot_val,
             mode_advanced_enabled=(bool(mode_advanced_enabled) if mode_advanced_enabled is not None else None),
             mode_normal_enabled=(bool(mode_normal_enabled) if mode_normal_enabled is not None else None),
+            mode_sync_enabled=(bool(mode_sync_enabled) if mode_sync_enabled is not None else None),
+            mode_advanced_lot=mode_advanced_lot_val,
+            mode_normal_lot=mode_normal_lot_val,
+            mode_sync_lot=mode_sync_lot_val,
+            sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
+            sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
+            sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),
+            sync_reentry_enabled=(bool(sync_reentry_enabled) if sync_reentry_enabled is not None else None),
         )
         state = svc.get_indicator_bridge_state(limit=300)
         state["update_result"] = result
@@ -801,6 +838,7 @@ def indicator_bridge_execution_log_export(
             ("status", "Status"),
             ("execution_mode", "Execution Mode"),
             ("ticket", "Ticket"),
+            ("order_number", "Order Number"),
             ("session_name", "Session"),
             ("max_profit", "Max Profit"),
             ("max_loss", "Max Loss"),

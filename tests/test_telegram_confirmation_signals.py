@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import time
+import threading
 
 from dashboard.backend.services.telegram_bridge_service import TelegramBridgeService
 
@@ -1789,15 +1790,126 @@ def test_ingest_indicator_bridge_signal_reversal_guard_waits_then_executes(monke
     assert first.get("ok") is True
     assert first.get("executed") is False
     assert first.get("reason") == "reversal_guard_waiting"
-    assert obs["close_calls"] == 0
+    # Reverse close must happen immediately; only new open waits for guard.
+    assert obs["close_calls"] == 1
     assert obs["exec_calls"] == 0
 
     monkeypatch.setattr("dashboard.backend.services.telegram_bridge_service.time.time", lambda: t0 + 21.0)
-    second = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+    payload2 = dict(payload)
+    payload2["message"] = "INTREPID BUY SIGNAL USDJPY CONFIRMED"
+    second = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload2)
     assert second.get("ok") is True
     assert second.get("executed") is True
-    assert obs["close_calls"] == 1
+    assert obs["close_calls"] == 2
     assert obs["exec_calls"] == 1
+
+
+def test_ingest_indicator_bridge_signal_reversal_guard_timer_replays_without_new_signal(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"close_calls": 0, "exec_calls": 0}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "resolved_symbol": "USDJPYM",
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 20,
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+            }
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            return {"bid": 159.100, "ask": 159.102, "last": 159.101}
+
+        @staticmethod
+        def get_recent_candles(symbol, timeframe, count, resolve_symbol=False):
+            out = []
+            base = 159.0
+            for i in range(int(count)):
+                c = base + 0.01 * i
+                out.append({"time": i, "open": c - 0.01, "high": c + 0.03, "low": c - 0.03, "close": c})
+            return out
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda _profile: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_regime_mode", lambda _profile: "range")
+    monkeypatch.setattr(svc, "_indicator_reversal_confirm_sec", lambda: 0.20)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt4",
+            "indicator": "Intrepid Trend Direction",
+            "symbol": "USDJPYM",
+            "timeframe": "M1",
+            "instance_key": "mt4|intrepid trend direction|USDJPYM|M1",
+            "automation_mode": "explicit",
+            "automation_enabled": True,
+            "effective_automation_enabled": True,
+            "lot_size": 0.1,
+            "execution_modes": {"advanced": True, "normal": False, "sync": False},
+            "mode_lots": {"advanced": 0.1},
+            "sync": {"direction_tf": "M5", "entry_tf": "M1", "exit_tf": "M1", "reentry_enabled": True},
+        },
+    )
+
+    def _fake_close_reverse(**kwargs):
+        obs["close_calls"] += 1
+        with svc._lock:
+            svc._active_confirmation_signal_ladders.clear()
+        return {"ok": True, "closed_count": (1 if obs["close_calls"] == 1 else 0), "failed_count": 0}
+
+    monkeypatch.setattr(svc, "_close_mt4_reverse_positions", _fake_close_reverse)
+
+    def _fake_exec(**kwargs):
+        obs["exec_calls"] += 1
+        return "Confirmation ladder executed\nTicket: 1"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "k1": {
+                "symbol": "USDJPYM",
+                "timeframe": "M1",
+                "direction": "SELL",
+                "broker_ticket": 12345,
+                "source_tag": "mt4|intrepid|intrepid trend direction|USDJPYM|M1|advanced",
+            }
+        }
+
+    payload = {
+        "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "BUY",
+        "symbol": "USDJPYM",
+        "timeframe": "M1",
+        "message": "INTREPID BUY SIGNAL USDJPY",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "ingest_source": "bridge",
+        "bridge_event_type": "signal",
+    }
+    first = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+    assert first.get("ok") is True
+    assert first.get("executed") is False
+    assert first.get("reason") == "reversal_guard_waiting"
+    assert obs["close_calls"] >= 1
+    assert obs["exec_calls"] == 0
+
+    # No second signal event is injected here. Timer fallback must replay and execute.
+    t_end = time.time() + 2.0
+    while time.time() < t_end and obs["exec_calls"] == 0:
+        time.sleep(0.05)
+
+    assert obs["exec_calls"] >= 1
+    with svc._lock:
+        assert "mt4|intrepid|intrepid trend direction|USDJPYM|M1|advanced" not in svc._indicator_reversal_pending
+    svc.stop()
 
 
 def test_close_mt4_reverse_positions_isolated_by_source_tag(monkeypatch):
@@ -1847,6 +1959,44 @@ def test_close_mt4_reverse_positions_isolated_by_source_tag(monkeypatch):
         keys = set(svc._active_confirmation_signal_ladders.keys())
     assert "k1" not in keys
     assert "k2" in keys
+
+
+def test_close_mt4_reverse_positions_prunes_stale_not_found_without_blocking(monkeypatch):
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def close_position(symbol, position_ticket, comment=None):
+            return {"ok": False, "error": "position_not_found"}
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_find_orphan_open_tickets_for_source_tag", lambda **kwargs: [])
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "k1": {
+                "symbol": "BTCUSDM",
+                "direction": "SELL",
+                "timeframe": "M1",
+                "broker_ticket": 111,
+                "source_tag": "mt4|intrepid|intrepid trend direction|BTCUSDM|M1|advanced",
+            }
+        }
+
+    out = svc._close_mt4_reverse_positions(
+        symbol="BTCUSDM",
+        incoming_direction="BUY",
+        timeframe="M1",
+        source_tag="mt4|intrepid|intrepid trend direction|BTCUSDM|M1|advanced",
+    )
+    assert out.get("ok") is True
+    assert int(out.get("closed_count") or 0) == 0
+    assert int(out.get("failed_count") or 0) == 0
+    with svc._lock:
+        assert "k1" not in svc._active_confirmation_signal_ladders
 
 
 def test_get_mt4_indicator_bot_monitor_shows_active_rows():
@@ -2578,3 +2728,120 @@ def test_indicator_bridge_execution_log_export_xlsx(monkeypatch):
     assert response.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert "attachment; filename=\"indicator_execution_audit_" in str(response.headers.get("content-disposition") or "")
     assert payload[:2] == b"PK"
+
+
+def test_ingest_indicator_bridge_signal_serializes_open_per_mode_source_tag(monkeypatch):
+    svc = TelegramBridgeService()
+
+    class _LiveStub:
+        def get_symbol_info(self, *, symbol):
+            return {
+                "resolved_symbol": str(symbol),
+                "digits": 2,
+                "point": 0.01,
+                "trade_stops_level": 0,
+            }
+
+        def get_symbol_tick(self, *, symbol, resolve_symbol=False):
+            return {"ask": 73001.0, "bid": 73000.0, "last": 73000.5}
+
+        def get_recent_candles(self, *, symbol, timeframe, count, resolve_symbol=False):
+            return [
+                {"open": 73000.0, "high": 73010.0, "low": 72990.0, "close": 73000.0}
+                for _ in range(max(1, int(count)))
+            ]
+
+    monkeypatch.setattr(svc, "_get_live_service", lambda: _LiveStub())
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda profile: True)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "instance_key": "mt4|intrepid trend direction|BTCUSDM|M1",
+            "effective_automation_enabled": True,
+            "lot_size": 0.5,
+            "execution_modes": {"advanced": True, "normal": False, "sync": False},
+            "mode_lots": {"advanced": 0.5, "normal": 0.5, "sync": 0.5},
+            "sync": {},
+        },
+    )
+    monkeypatch.setattr(
+        svc,
+        "_close_mt4_reverse_positions",
+        lambda **kwargs: {"ok": True, "closed_count": 0, "errors": []},
+    )
+    monkeypatch.setattr(
+        svc,
+        "_check_indicator_reversal_stability",
+        lambda **kwargs: {"ok": True, "ready": True, "reason": "guard_disabled"},
+    )
+
+    opened = {"value": False}
+    open_calls = {"count": 0}
+
+    def _fake_has_live_open(**kwargs):
+        return bool(opened["value"])
+
+    def _fake_exec(**kwargs):
+        source_tag = str(kwargs.get("source_tag") or "")
+        ticket = int(990000 + int(open_calls["count"]))
+        time.sleep(0.08)
+        svc._register_confirmation_ladder(
+            chat_id=1,
+            session_id=0,
+            symbol="BTCUSDm",
+            timeframe="M1",
+            direction="SELL",
+            trade_id=0,
+            broker_ticket=ticket,
+            stage_lots=[0.5],
+            tps=[{"index": 1, "price": 72900.0}],
+            source_tag=source_tag,
+            source_name="Intrepid Trend Direction",
+            profile="intrepid",
+            indicator="Intrepid Trend Direction",
+            execution_mode="advanced",
+        )
+        opened["value"] = True
+        open_calls["count"] += 1
+        return "Confirmation ladder executed\nExecution: standalone_mt5\nTicket: 990001"
+
+    monkeypatch.setattr(svc, "_has_live_open_for_source_tag_direction", _fake_has_live_open)
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    payload_base = {
+        "indicator": "Intrepid Trend Direction",
+        "signal_profile": "intrepid",
+        "signal_hint": "SELL",
+        "symbol": "BTCUSDm",
+        "timeframe": "M1",
+        "bridge_event_type": "signal",
+        "ingest_source": "bridge",
+    }
+
+    results = []
+    barrier = threading.Barrier(2)
+
+    def _worker(msg_text: str):
+        barrier.wait()
+        out = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={**payload_base, "message": str(msg_text)},
+        )
+        results.append(dict(out or {}))
+
+    t1 = threading.Thread(target=_worker, args=("Alert one",), daemon=True)
+    t2 = threading.Thread(target=_worker, args=("Alert two",), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(3.0)
+    t2.join(3.0)
+
+    assert open_calls["count"] == 1
+    assert len(results) == 2
+    mode_rows = []
+    for out in results:
+        mode_rows.extend([dict(x) for x in (out.get("mode_results") or []) if isinstance(x, dict)])
+    same_dir_skips = [r for r in mode_rows if str(r.get("reason") or "") == "same_direction_already_open"]
+    assert same_dir_skips

@@ -78,6 +78,7 @@
                         <div class="small text-muted">Only MT4 bridge charts are shown here.</div>
                     </div>
                     <div class="d-flex gap-2">
+                        <button id="bridge-mt4-active-only" class="btn btn-sm btn-outline-primary">Active Only: OFF</button>
                         <button id="bridge-mt4-start-all" class="btn btn-sm btn-outline-success">Start All</button>
                         <button id="bridge-mt4-stop-all" class="btn btn-sm btn-outline-danger">Stop All</button>
                     </div>
@@ -90,20 +91,25 @@
                                     <th style="min-width:140px;">Last Seen</th>
                                     <th style="min-width:220px;">Indicator</th>
                                     <th style="min-width:120px;">Symbol/TF</th>
-                                    <th style="min-width:80px;">Dir</th>
-                                    <th style="min-width:110px;">Ticket</th>
                                     <th style="min-width:90px;">State</th>
                                     <th style="min-width:150px;">Automation</th>
                                     <th style="min-width:150px;">Mode</th>
                                     <th style="min-width:170px;">Lot</th>
-                                    <th style="min-width:100px;">Max+</th>
-                                    <th style="min-width:100px;">Max-</th>
-                                    <th style="min-width:100px;">Live PnL</th>
                                     <th style="min-width:110px;">Action</th>
+                                </tr>
+                                <tr>
+                                    <th><input id="bridge-mt4-filter-lastseen" class="form-control form-control-sm" placeholder="last seen"></th>
+                                    <th><input id="bridge-mt4-filter-indicator" class="form-control form-control-sm" placeholder="indicator"></th>
+                                    <th><input id="bridge-mt4-filter-symboltf" class="form-control form-control-sm" placeholder="symbol/tf"></th>
+                                    <th><input id="bridge-mt4-filter-state" class="form-control form-control-sm" placeholder="state"></th>
+                                    <th><input id="bridge-mt4-filter-auto" class="form-control form-control-sm" placeholder="on/off"></th>
+                                    <th><input id="bridge-mt4-filter-mode" class="form-control form-control-sm" placeholder="mode"></th>
+                                    <th><input id="bridge-mt4-filter-lot" class="form-control form-control-sm" placeholder="lot"></th>
+                                    <th><input class="form-control form-control-sm" disabled placeholder="-"></th>
                                 </tr>
                             </thead>
                             <tbody id="bridge-mt4-body">
-                                <tr><td colspan="13" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -118,6 +124,7 @@
                         <div class="small text-muted">Only MT5 bridge charts are shown here.</div>
                     </div>
                     <div class="d-flex gap-2">
+                        <button id="bridge-mt5-active-only" class="btn btn-sm btn-outline-primary">Active Only: OFF</button>
                         <button id="bridge-mt5-start-all" class="btn btn-sm btn-outline-success">Start All</button>
                         <button id="bridge-mt5-stop-all" class="btn btn-sm btn-outline-danger">Stop All</button>
                     </div>
@@ -130,20 +137,25 @@
                                     <th style="min-width:140px;">Last Seen</th>
                                     <th style="min-width:220px;">Indicator</th>
                                     <th style="min-width:120px;">Symbol/TF</th>
-                                    <th style="min-width:80px;">Dir</th>
-                                    <th style="min-width:110px;">Ticket</th>
                                     <th style="min-width:90px;">State</th>
                                     <th style="min-width:150px;">Automation</th>
                                     <th style="min-width:150px;">Mode</th>
                                     <th style="min-width:170px;">Lot</th>
-                                    <th style="min-width:100px;">Max+</th>
-                                    <th style="min-width:100px;">Max-</th>
-                                    <th style="min-width:100px;">Live PnL</th>
                                     <th style="min-width:110px;">Action</th>
+                                </tr>
+                                <tr>
+                                    <th><input id="bridge-mt5-filter-lastseen" class="form-control form-control-sm" placeholder="last seen"></th>
+                                    <th><input id="bridge-mt5-filter-indicator" class="form-control form-control-sm" placeholder="indicator"></th>
+                                    <th><input id="bridge-mt5-filter-symboltf" class="form-control form-control-sm" placeholder="symbol/tf"></th>
+                                    <th><input id="bridge-mt5-filter-state" class="form-control form-control-sm" placeholder="state"></th>
+                                    <th><input id="bridge-mt5-filter-auto" class="form-control form-control-sm" placeholder="on/off"></th>
+                                    <th><input id="bridge-mt5-filter-mode" class="form-control form-control-sm" placeholder="mode"></th>
+                                    <th><input id="bridge-mt5-filter-lot" class="form-control form-control-sm" placeholder="lot"></th>
+                                    <th><input class="form-control form-control-sm" disabled placeholder="-"></th>
                                 </tr>
                             </thead>
                             <tbody id="bridge-mt5-body">
-                                <tr><td colspan="13" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -179,6 +191,7 @@
                             <th style="min-width:90px;">Status</th>
                             <th style="min-width:100px;">Mode</th>
                             <th style="min-width:110px;">Ticket</th>
+                            <th style="min-width:110px;">Order #</th>
                             <th style="min-width:110px;">Session</th>
                             <th style="min-width:100px;">Max+</th>
                             <th style="min-width:100px;">Max-</th>
@@ -186,9 +199,29 @@
                             <th style="min-width:140px;">Close Reason</th>
                             <th>Message</th>
                         </tr>
+                        <tr>
+                            <th><input id="audit-filter-event" class="form-control form-control-sm" placeholder="event"></th>
+                            <th><input id="audit-filter-opened" class="form-control form-control-sm" placeholder="opened"></th>
+                            <th><input id="audit-filter-closed" class="form-control form-control-sm" placeholder="closed"></th>
+                            <th><input id="audit-filter-terminal" class="form-control form-control-sm" placeholder="terminal"></th>
+                            <th><input id="audit-filter-indicator" class="form-control form-control-sm" placeholder="indicator"></th>
+                            <th><input id="audit-filter-symboltf" class="form-control form-control-sm" placeholder="symbol/tf"></th>
+                            <th><input id="audit-filter-direction" class="form-control form-control-sm" placeholder="dir"></th>
+                            <th><input id="audit-filter-lot" class="form-control form-control-sm" placeholder="lot"></th>
+                            <th><input id="audit-filter-status" class="form-control form-control-sm" placeholder="status"></th>
+                            <th><input id="audit-filter-mode" class="form-control form-control-sm" placeholder="mode"></th>
+                            <th><input id="audit-filter-ticket" class="form-control form-control-sm" placeholder="ticket"></th>
+                            <th><input id="audit-filter-order" class="form-control form-control-sm" placeholder="order"></th>
+                            <th><input id="audit-filter-session" class="form-control form-control-sm" placeholder="session"></th>
+                            <th><input id="audit-filter-maxp" class="form-control form-control-sm" placeholder="max+"></th>
+                            <th><input id="audit-filter-maxl" class="form-control form-control-sm" placeholder="max-"></th>
+                            <th><input id="audit-filter-realized" class="form-control form-control-sm" placeholder="realized"></th>
+                            <th><input id="audit-filter-close-reason" class="form-control form-control-sm" placeholder="close reason"></th>
+                            <th><input id="audit-filter-message" class="form-control form-control-sm" placeholder="message"></th>
+                        </tr>
                     </thead>
                     <tbody id="bridge-audit-body">
-                        <tr><td colspan="17" class="text-muted text-center py-3">Loading...</td></tr>
+                        <tr><td colspan="18" class="text-muted text-center py-3">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -198,5 +231,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260411_indicator_bridge_modes_v1') }}"></script>
+<script src="{{ url_for('static', filename='js/mt4_log_automation.js', v='20260412_indicator_bridge_mode_panel_persist_v1') }}"></script>
 {% endblock %}

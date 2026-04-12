@@ -1502,6 +1502,8 @@ def indicator_bridge_state_proxy():
     params = {}
     if request.args.get('limit') is not None:
         params['limit'] = request.args.get('limit')
+    if request.args.get('active_only') is not None:
+        params['active_only'] = request.args.get('active_only')
     res, err = api_request(
         'GET',
         '/api/v1/indicator-bridge/state',
