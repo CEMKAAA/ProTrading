@@ -1,0 +1,4 @@
+separator1=*** Indicator Settings ***
+drawIndicatorTrendLines=true
+drawPriceTrendLines=true
+displayAlert=true
