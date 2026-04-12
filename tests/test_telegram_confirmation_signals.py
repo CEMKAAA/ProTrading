@@ -1999,6 +1999,113 @@ def test_close_mt4_reverse_positions_prunes_stale_not_found_without_blocking(mon
         assert "k1" not in svc._active_confirmation_signal_ladders
 
 
+def test_has_live_open_for_source_tag_direction_uses_historical_fallback(monkeypatch):
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return [
+                {
+                    "ticket": 777001,
+                    "direction": "SELL",
+                    "symbol": "BTCUSDM",
+                    "comment": "mt49999999999",
+                }
+            ]
+
+    monkeypatch.setattr(svc, "_find_orphan_open_tickets_for_source_tag", lambda **kwargs: [])
+    monkeypatch.setattr(svc, "_find_historical_tickets_for_source_tag", lambda **kwargs: {777001})
+    ok = svc._has_live_open_for_source_tag_direction(
+        source_tag="mt4|intrepid|intrepid trend direction|BTCUSDM|M1|advanced",
+        symbol="BTCUSDM",
+        timeframe="M1",
+        direction="SELL",
+        svc=FakeLiveService(),
+    )
+    assert ok is True
+
+
+def test_push_confirmation_signal_ladders_tolerates_transient_missing_position(monkeypatch):
+    svc = TelegramBridgeService()
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_retries", lambda: 2)
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_grace_sec", lambda: 0.0)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "k1": {
+                "chat_id": 1,
+                "session_id": 0,
+                "trade_id": 0,
+                "broker_ticket": 991001,
+                "symbol": "BTCUSDM",
+                "timeframe": "M1",
+                "direction": "BUY",
+                "stage_lots": [0.4],
+                "tps": [{"index": 1, "price": 71900.0}],
+                "next_tp_index": 1,
+                "created_at": "2026-04-12T00:00:00+00:00",
+                "source_tag": "mt4|intrepid|intrepid trend direction|BTCUSDM|M1|normal",
+                "execution_mode": "normal",
+                "missing_seen_count": 0,
+                "missing_first_ts": None,
+            }
+        }
+
+    svc._push_confirmation_signal_ladders()
+    with svc._lock:
+        assert "k1" in svc._active_confirmation_signal_ladders
+        assert int((svc._active_confirmation_signal_ladders["k1"] or {}).get("missing_seen_count") or 0) == 1
+
+    svc._push_confirmation_signal_ladders()
+    with svc._lock:
+        assert "k1" not in svc._active_confirmation_signal_ladders
+
+
+def test_close_mt4_reverse_positions_closes_live_historical_ticket_when_orphan_set_empty(monkeypatch):
+    svc = TelegramBridgeService()
+    closed_calls = []
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return [
+                {
+                    "ticket": 888001,
+                    "direction": "SELL",
+                    "symbol": "BTCUSDM",
+                    "comment": "mt40000000001",
+                }
+            ]
+
+        @staticmethod
+        def close_position(symbol, position_ticket, comment=None):
+            closed_calls.append((str(symbol), int(position_ticket), str(comment or "")))
+            return {"ok": True}
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_find_orphan_open_tickets_for_source_tag", lambda **kwargs: [])
+    monkeypatch.setattr(svc, "_find_historical_tickets_for_source_tag", lambda **kwargs: {888001})
+
+    out = svc._close_mt4_reverse_positions(
+        symbol="BTCUSDM",
+        incoming_direction="BUY",
+        timeframe="M1",
+        source_tag="mt4|intrepid|intrepid trend direction|BTCUSDM|M1|advanced",
+    )
+    assert out.get("ok") is True
+    assert int(out.get("closed_count") or 0) == 1
+    assert closed_calls
+    assert closed_calls[0][1] == 888001
+
+
 def test_get_mt4_indicator_bot_monitor_shows_active_rows():
     svc = TelegramBridgeService()
 
