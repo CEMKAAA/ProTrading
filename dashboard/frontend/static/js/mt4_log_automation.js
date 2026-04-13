@@ -9,8 +9,10 @@
         mt5Count: document.getElementById('bridge-mt5-count'),
         openCount: document.getElementById('bridge-open-count'),
         auditCount: document.getElementById('bridge-audit-count'),
+        rsiUpdated: document.getElementById('bridge-rsi-updated'),
         mt4Body: document.getElementById('bridge-mt4-body'),
         mt5Body: document.getElementById('bridge-mt5-body'),
+        rsiBody: document.getElementById('bridge-rsi-body'),
         auditBody: document.getElementById('bridge-audit-body'),
         mt4StartAll: document.getElementById('bridge-mt4-start-all'),
         mt4StopAll: document.getElementById('bridge-mt4-stop-all'),
@@ -64,6 +66,8 @@
 
     let latestState = null;
     let pollTimer = null;
+    let rsiStream = null;
+    let rsiStreamRetryTimer = null;
     const monitorActiveOnly = { mt4: false, mt5: false };
     const modeUpdatePendingByInstance = {};
     const modePanelOpenByInstance = {};
@@ -131,6 +135,45 @@
         const num = Number(value);
         if (!Number.isFinite(num)) return '-';
         return num.toFixed(digits);
+    }
+
+    function renderRsiFeed() {
+        const telemetry = (latestState && latestState.rsi_telemetry && typeof latestState.rsi_telemetry === 'object')
+            ? latestState.rsi_telemetry
+            : { rows: [], count: 0, updated_at: '' };
+        const rows = Array.isArray(telemetry.rows) ? telemetry.rows.slice(0, 120) : [];
+        if (els.rsiUpdated) {
+            const ts = telemetry.updated_at || '';
+            els.rsiUpdated.textContent = `RSI updated: ${formatTs(ts)}`;
+        }
+        if (!els.rsiBody) return;
+        if (!rows.length) {
+            els.rsiBody.innerHTML = '<tr><td colspan="6" class="text-muted text-center py-3">Waiting for RSI telemetry...</td></tr>';
+            return;
+        }
+        els.rsiBody.innerHTML = rows.map((row) => {
+            const family = String(row.terminal_family || '-').toUpperCase();
+            const indicator = String(row.indicator || '-');
+            const symbol = String(row.symbol || '-').toUpperCase();
+            const tf = String(row.timeframe || '-').toUpperCase();
+            const rsiVal = Number(row.rsi_value);
+            const rsiText = Number.isFinite(rsiVal) ? rsiVal.toFixed(2) : '-';
+            const rsiCls = Number.isFinite(rsiVal)
+                ? (rsiVal >= 70 ? 'text-danger fw-semibold' : (rsiVal <= 30 ? 'text-success fw-semibold' : ''))
+                : 'text-muted';
+            const indTf = String(row.indicator_tf || '-').toUpperCase() || '-';
+            const seen = String(row.seen_at || row.last_seen || '');
+            return `
+                <tr>
+                    <td>${escapeHtml(family)}</td>
+                    <td>${escapeHtml(indicator)}</td>
+                    <td>${escapeHtml(symbol)} ${escapeHtml(tf)}</td>
+                    <td class="${rsiCls}">${escapeHtml(rsiText)}</td>
+                    <td>${escapeHtml(indTf)}</td>
+                    <td>${escapeHtml(formatTs(seen))}</td>
+                </tr>
+            `;
+        }).join('');
     }
 
     function parseLotInput(rawValue) {
@@ -441,6 +484,7 @@
 
     function renderAll() {
         refreshSummary();
+        renderRsiFeed();
         renderMonitor('mt4');
         renderMonitor('mt5');
         renderAudit();
@@ -451,6 +495,7 @@
             latestState = await req('/api/indicator-bridge/state?limit=500&active_only=0');
             if (!forceMonitorRender && isMonitorEditInProgress()) {
                 refreshSummary();
+                renderRsiFeed();
                 renderAudit();
             } else {
                 renderAll();
@@ -631,6 +676,40 @@
         modePanelOpenByInstance[domKey] = !!target.open;
     }
 
+    function scheduleRsiStreamReconnect() {
+        if (rsiStreamRetryTimer) return;
+        rsiStreamRetryTimer = setTimeout(() => {
+            rsiStreamRetryTimer = null;
+            connectRsiStream();
+        }, 3000);
+    }
+
+    function connectRsiStream() {
+        if (rsiStream) {
+            try { rsiStream.close(); } catch (_) {}
+            rsiStream = null;
+        }
+        try {
+            const es = new EventSource('/api/indicator-bridge/rsi-telemetry/stream?limit=500');
+            es.addEventListener('rsi', (ev) => {
+                try {
+                    const payload = JSON.parse(String(ev.data || '{}'));
+                    if (!latestState || typeof latestState !== 'object') latestState = {};
+                    latestState.rsi_telemetry = payload;
+                    renderRsiFeed();
+                } catch (_) {}
+            });
+            es.addEventListener('error', () => {
+                try { es.close(); } catch (_) {}
+                if (rsiStream === es) rsiStream = null;
+                scheduleRsiStreamReconnect();
+            });
+            rsiStream = es;
+        } catch (_) {
+            scheduleRsiStreamReconnect();
+        }
+    }
+
     async function init() {
         if (els.refreshBtn) {
             els.refreshBtn.addEventListener('click', async () => {
@@ -681,10 +760,24 @@
             return;
         }
 
+        connectRsiStream();
+
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(() => {
             loadState(false, false).catch(() => {});
         }, 5000);
+
+        window.addEventListener('beforeunload', () => {
+            if (pollTimer) clearInterval(pollTimer);
+            if (rsiStream) {
+                try { rsiStream.close(); } catch (_) {}
+                rsiStream = null;
+            }
+            if (rsiStreamRetryTimer) {
+                clearTimeout(rsiStreamRetryTimer);
+                rsiStreamRetryTimer = null;
+            }
+        });
     }
 
     if (document.readyState === 'loading') {

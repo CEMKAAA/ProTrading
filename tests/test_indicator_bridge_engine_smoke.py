@@ -757,3 +757,87 @@ def test_smoke_mt5_recent_open_debounce_blocks_duplicate_open_when_broker_visibi
             assert len(broker._positions) == 1
     finally:
         svc.stop()
+
+
+def test_smoke_rsi_telemetry_ingest_and_snapshot(monkeypatch):
+    svc, _broker = _build_service(monkeypatch)
+    try:
+        out = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={
+                "indicator": "H1_RSI_Line_Cem",
+                "signal_profile": "rsi_telemetry",
+                "symbol": "BTCUSDm",
+                "timeframe": "M1",
+                "bridge_event_type": "rsi_telemetry",
+                "rsi_value": 63.25,
+                "indicator_tf": "H1",
+                "rsi_period": 14,
+                "ingest_source": "bridge",
+            },
+        )
+        assert out.get("ok") is True
+        assert out.get("executed") is False
+        assert str(out.get("reason") or "") == "rsi_telemetry_recorded"
+        snap = svc.get_indicator_rsi_telemetry(limit=20, terminal_family="mt4")
+        assert snap.get("ok") is True
+        assert int(snap.get("count") or 0) >= 1
+        rows = list(snap.get("rows") or [])
+        row = rows[0]
+        assert str(row.get("terminal_family") or "").lower() == "mt4"
+        assert str(row.get("symbol") or "").upper() == "BTCUSDM"
+        assert str(row.get("timeframe") or "").upper() == "M1"
+        assert abs(float(row.get("rsi_value") or 0.0) - 63.25) < 1e-9
+    finally:
+        svc.stop()
+
+
+def test_smoke_monitor_rows_include_latest_rsi(monkeypatch):
+    svc, _broker = _build_service(monkeypatch)
+    try:
+        reg = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={
+                "indicator": "Intrepid Trend Direction",
+                "signal_profile": "intrepid",
+                "symbol": "BTCUSDm",
+                "timeframe": "M1",
+                "bridge_event_type": "register",
+                "ingest_source": "bridge",
+            },
+        )
+        assert reg.get("ok") is True
+
+        telem = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={
+                "indicator": "H1_RSI_Line_Cem",
+                "signal_profile": "rsi_telemetry",
+                "symbol": "BTCUSDm",
+                "timeframe": "M1",
+                "bridge_event_type": "rsi_telemetry",
+                "rsi_value": 48.10,
+                "indicator_tf": "H1",
+                "rsi_period": 14,
+                "ingest_source": "bridge",
+            },
+        )
+        assert telem.get("ok") is True
+
+        state = svc.get_indicator_bridge_state(limit=50)
+        mt4_rows = list((((state or {}).get("mt4_monitor") or {}).get("bot_rows") or []))
+        assert mt4_rows
+        row = next(
+            (
+                r
+                for r in mt4_rows
+                if str(r.get("symbol") or "").upper() == "BTCUSDM"
+                and str(r.get("timeframe") or "").upper() == "M1"
+            ),
+            None,
+        )
+        assert row is not None
+        assert abs(float(row.get("rsi_value") or 0.0) - 48.10) < 1e-9
+        assert str(row.get("rsi_indicator_tf") or "").upper() == "H1"
+    finally:
+        svc.stop()

@@ -735,6 +735,74 @@ def indicator_bridge_state(
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.get("/indicator-bridge/rsi-telemetry")
+def indicator_bridge_rsi_telemetry(
+    limit: int = Query(500, ge=20, le=5000),
+    terminal_family: str = Query("", pattern="^(|mt4|mt5)$"),
+):
+    """Latest RSI telemetry rows pushed by dedicated MT4/MT5 RSI bridge EAs."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0, "seq": 0}
+        fam = str(terminal_family or "").strip().lower() or None
+        return svc.get_indicator_rsi_telemetry(limit=int(limit), terminal_family=fam)
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_rsi_telemetry_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/rsi-telemetry/stream")
+def indicator_bridge_rsi_telemetry_stream(
+    limit: int = Query(500, ge=20, le=5000),
+    terminal_family: str = Query("", pattern="^(|mt4|mt5)$"),
+):
+    """Server-Sent Events stream for real-time RSI telemetry UI updates."""
+
+    fam = str(terminal_family or "").strip().lower() or None
+    lim = int(max(20, min(5000, int(limit or 500))))
+
+    def _event_gen():
+        last_seq = -1
+        idle_loops = 0
+        while True:
+            try:
+                from ..main import telegram_bridge_service
+
+                svc = telegram_bridge_service
+                if svc is None:
+                    payload = {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0, "seq": 0}
+                else:
+                    payload = svc.get_indicator_rsi_telemetry(limit=lim, terminal_family=fam)
+                seq = int((payload or {}).get("seq") or 0)
+                if seq != last_seq:
+                    last_seq = int(seq)
+                    idle_loops = 0
+                    yield "event: rsi\n"
+                    yield f"id: {last_seq}\n"
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                else:
+                    idle_loops += 1
+                    if idle_loops >= 10:
+                        idle_loops = 0
+                        yield ": keepalive\n\n"
+            except GeneratorExit:
+                break
+            except Exception as exc:
+                err = {"ok": False, "error": f"rsi_stream_failed:{type(exc).__name__}:{str(exc)[:180]}"}
+                yield "event: error\n"
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+            time.sleep(1.0)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(_event_gen(), media_type="text/event-stream", headers=headers)
+
+
 @router.post("/indicator-bridge/instance-automation")
 def indicator_bridge_instance_automation(payload: Dict[str, Any]):
     """Enable/disable automation for a specific MT4/MT5 bridge chart instance."""

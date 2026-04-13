@@ -273,6 +273,8 @@ class TelegramBridgeService:
         self._indicator_recent_open: Dict[str, Dict[str, Any]] = {}
         self._indicator_sync_last_dir: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._indicator_bridge_instances: Dict[str, Dict[str, Any]] = {}
+        self._indicator_rsi_telemetry: Dict[str, Dict[str, Any]] = {}
+        self._indicator_rsi_telemetry_seq: int = 0
         self._automation_execution_logs: List[Dict[str, Any]] = []
         self._automation_execution_logs_next_id: int = 0
         self._automation_execution_logs_max: int = 5000
@@ -3275,6 +3277,12 @@ class TelegramBridgeService:
             is_live_heartbeat = bool(last_seen_unix is not None and (float(now_ts) - float(last_seen_unix)) <= float(heartbeat_live_sec))
             is_configured = bool(str(row.get("bridge_event_type") or "").strip().lower() == "configured")
             inferred_state = "CONFIGURED" if is_configured else ("IDLE" if is_live_heartbeat else "STALE")
+            latest_rsi = self._latest_indicator_rsi_telemetry(
+                family=str(family),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                max_age_sec=86400.0,
+            )
             merged.update(
                 {
                     "terminal_family": str(family),
@@ -3312,6 +3320,16 @@ class TelegramBridgeService:
                         symbol=str(symbol),
                         timeframe=str(timeframe),
                     )),
+                    "rsi_value": (_to_float_or_none((latest_rsi or {}).get("rsi_value")) if isinstance(latest_rsi, dict) else None),
+                    "rsi_seen_ts": (_to_float_or_none((latest_rsi or {}).get("seen_ts")) if isinstance(latest_rsi, dict) else None),
+                    "rsi_seen_at": (
+                        datetime.fromtimestamp(float(_to_float_or_none((latest_rsi or {}).get("seen_ts")) or 0.0), tz=timezone.utc).isoformat()
+                        if isinstance(latest_rsi, dict) and _to_float_or_none((latest_rsi or {}).get("seen_ts")) is not None
+                        else ""
+                    ),
+                    "rsi_indicator": (str((latest_rsi or {}).get("indicator") or "") if isinstance(latest_rsi, dict) else ""),
+                    "rsi_indicator_tf": (str((latest_rsi or {}).get("indicator_tf") or "") if isinstance(latest_rsi, dict) else ""),
+                    "rsi_period": (_to_float_or_none((latest_rsi or {}).get("rsi_period")) if isinstance(latest_rsi, dict) else None),
                 }
             )
             if active_only:
@@ -3419,6 +3437,7 @@ class TelegramBridgeService:
         mt5_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=lim, active_only=active_only)
         execution_logs = self.get_indicator_execution_audit_rows(limit=max(200, lim))
         execution_report = self.get_automation_execution_report(limit=200)
+        rsi_telemetry = self.get_indicator_rsi_telemetry(limit=max(200, lim))
         return {
             "ok": True,
             "updated_at": self._now_iso(),
@@ -3427,6 +3446,7 @@ class TelegramBridgeService:
             "mt5_monitor": mt5_monitor,
             "execution_logs": execution_logs,
             "execution_report": execution_report,
+            "rsi_telemetry": rsi_telemetry,
         }
 
     @staticmethod
@@ -4497,6 +4517,108 @@ class TelegramBridgeService:
             return str(side)
         return None
 
+    def _record_indicator_rsi_telemetry(
+        self,
+        *,
+        family: str,
+        symbol: str,
+        timeframe: str,
+        indicator: str,
+        profile: str,
+        rsi_value: float,
+        now_ts: float,
+        event_ts: Any = None,
+        indicator_tf: Any = None,
+        rsi_period: Any = None,
+    ) -> Dict[str, Any]:
+        fam = str(self._indicator_bridge_family(family))
+        sym = str(symbol or "").strip().upper()
+        tf = self._normalize_tf_token(timeframe, "M5")
+        ind = str(indicator or "").strip() or "RSI"
+        prof = str(profile or "").strip().lower() or "rsi_telemetry"
+        key = f"{fam}|{sym}|{tf}"
+        row: Dict[str, Any] = {
+            "key": str(key),
+            "terminal_family": str(fam),
+            "symbol": str(sym),
+            "timeframe": str(tf),
+            "indicator": str(ind),
+            "signal_profile": str(prof),
+            "rsi_value": float(rsi_value),
+            "seen_ts": float(now_ts),
+            "event_ts": event_ts,
+            "indicator_tf": str(indicator_tf or "").strip().upper(),
+            "rsi_period": (_to_float_or_none(rsi_period)),
+        }
+        with self._lock:
+            self._indicator_rsi_telemetry_seq = int(self._indicator_rsi_telemetry_seq) + 1
+            row["seq"] = int(self._indicator_rsi_telemetry_seq)
+            self._indicator_rsi_telemetry[str(key)] = dict(row)
+            if len(self._indicator_rsi_telemetry) > 10000:
+                cutoff = float(now_ts) - 86400.0
+                self._indicator_rsi_telemetry = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_rsi_telemetry.items()
+                    if float(_to_float_or_none((v or {}).get("seen_ts")) or 0.0) >= cutoff
+                }
+        return dict(row)
+
+    def _latest_indicator_rsi_telemetry(
+        self,
+        *,
+        family: str,
+        symbol: str,
+        timeframe: str,
+        max_age_sec: float = 300.0,
+    ) -> Optional[Dict[str, Any]]:
+        fam = str(self._indicator_bridge_family(family))
+        sym = str(symbol or "").strip().upper()
+        tf = self._normalize_tf_token(timeframe, "M5")
+        key = f"{fam}|{sym}|{tf}"
+        with self._lock:
+            row = dict(self._indicator_rsi_telemetry.get(str(key)) or {})
+        if not row:
+            return None
+        seen_ts = float(_to_float_or_none(row.get("seen_ts")) or 0.0)
+        if seen_ts <= 0.0:
+            return None
+        if float(max_age_sec) > 0.0 and (time.time() - float(seen_ts)) > float(max_age_sec):
+            return None
+        val = _to_float_or_none(row.get("rsi_value"))
+        if val is None or (not math.isfinite(float(val))):
+            return None
+        row["rsi_value"] = float(val)
+        return dict(row)
+
+    def get_indicator_rsi_telemetry(
+        self,
+        *,
+        limit: int = 300,
+        terminal_family: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        lim = int(max(10, min(5000, int(limit or 300))))
+        family_filter = str(terminal_family or "").strip().lower()
+        with self._lock:
+            seq = int(self._indicator_rsi_telemetry_seq)
+            rows = [dict(v) for v in self._indicator_rsi_telemetry.values() if isinstance(v, dict)]
+        if family_filter in {"mt4", "mt5"}:
+            rows = [r for r in rows if str(r.get("terminal_family") or "").strip().lower() == family_filter]
+        rows.sort(key=lambda r: float(_to_float_or_none(r.get("seen_ts")) or 0.0), reverse=True)
+        rows = rows[:lim]
+        for row in rows:
+            seen_ts = _to_float_or_none(row.get("seen_ts"))
+            if seen_ts is None:
+                row["seen_at"] = ""
+            else:
+                row["seen_at"] = datetime.fromtimestamp(float(seen_ts), tz=timezone.utc).isoformat()
+        return {
+            "ok": True,
+            "rows": rows,
+            "count": int(len(rows)),
+            "seq": int(seq),
+            "updated_at": self._now_iso(),
+        }
+
     def _check_indicator_reversal_stability(
         self,
         *,
@@ -4916,6 +5038,32 @@ class TelegramBridgeService:
                 "bridge": registered,
             }
 
+        if bridge_event_type in {"rsi_telemetry", "telemetry_rsi", "rsi_metric"}:
+            rsi_val = _to_float_or_none(p.get("rsi_value"))
+            if rsi_val is None:
+                rsi_val = _to_float_or_none(p.get("value"))
+            if rsi_val is None or (not math.isfinite(float(rsi_val))):
+                return {"ok": False, "executed": False, "error": "invalid_rsi_telemetry"}
+            telem = self._record_indicator_rsi_telemetry(
+                family=str(family),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                indicator=str(indicator),
+                profile=str(profile),
+                rsi_value=float(rsi_val),
+                now_ts=float(time.time()),
+                event_ts=event_ts,
+                indicator_tf=p.get("indicator_tf"),
+                rsi_period=p.get("rsi_period"),
+            )
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "rsi_telemetry_recorded",
+                "telemetry": telem,
+                "bridge": registered,
+            }
+
         if bridge_event_type in {"signal_clear", "clear", "state_clear"} or hint in neutral_hints:
             removed = self._clear_indicator_reversal_pending_for_combo_prefix(combo_prefix=str(combo_prefix))
             return {
@@ -5111,6 +5259,18 @@ class TelegramBridgeService:
             "profit_lock_min_hold_sec": (480.0 if str(active_regime) == "trend" else 150.0),
             "profit_lock_min_close_usd": (25.0 if str(active_regime) == "trend" else 8.0),
         }
+        latest_rsi = self._latest_indicator_rsi_telemetry(
+            family=str(family),
+            symbol=str(symbol_exec),
+            timeframe=str(timeframe),
+            max_age_sec=300.0,
+        )
+        if isinstance(latest_rsi, dict) and _to_float_or_none(latest_rsi.get("rsi_value")) is not None:
+            signal["rsi_value"] = float(_to_float_or_none(latest_rsi.get("rsi_value")) or 0.0)
+            signal["rsi_indicator"] = str(latest_rsi.get("indicator") or "")
+            signal["rsi_indicator_tf"] = str(latest_rsi.get("indicator_tf") or "")
+            signal["rsi_period"] = _to_float_or_none(latest_rsi.get("rsi_period"))
+            signal["rsi_seen_ts"] = _to_float_or_none(latest_rsi.get("seen_ts"))
         combo_source_tag = (
             f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
         )
