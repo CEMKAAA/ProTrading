@@ -191,6 +191,7 @@ def _build_service(
     terminal_family: str = "mt4",
     mode_advanced: bool = True,
     mode_normal: bool = True,
+    signal_confirm_sec: float = 0.0,
 ):
     svc = TelegramBridgeService()
     fam = str(terminal_family).strip().lower() or "mt4"
@@ -218,9 +219,11 @@ def _build_service(
             },
             "mode_lots": {
                 "advanced": 0.5,
+                "advanced_v2": 0.5,
                 "normal": 0.4,
                 "sync": 0.1,
             },
+            "signal_confirm_sec": float(signal_confirm_sec),
             "sync": {
                 "direction_tf": "M5",
                 "entry_tf": "M1",
@@ -278,14 +281,38 @@ def test_smoke_bridge_listener_register_and_signal_flow(monkeypatch):
 
 
 def test_smoke_bridge_reverse_close_then_guard_replay_reopens(monkeypatch):
-    svc, broker = _build_service(monkeypatch)
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.20)
     try:
         first = svc.ingest_indicator_bridge_signal(
             terminal_family="mt4",
             payload=_payload(hint="SELL", message="SMOKE SELL A"),
         )
-        assert first.get("executed") is True
-        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+        assert first.get("ok") is True
+        assert first.get("executed") is False
+        assert str(first.get("reason") or "") == "reversal_guard_waiting"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        # Replay first direction after wait window.
+        deadline0 = time.time() + 1.2
+        opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        while len(opened_sell) < 2 and time.time() < deadline0:
+            time.sleep(0.05)
+            opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        if len(opened_sell) < 2:
+            replay_first = dict(_payload(hint="SELL", message="SMOKE SELL A"))
+            replay_first["__guard_replay"] = True
+            first_replay = svc.ingest_indicator_bridge_signal(
+                terminal_family="mt4",
+                payload=replay_first,
+            )
+            assert first_replay.get("ok") is True
+            deadline0b = time.time() + 0.8
+            opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+            while len(opened_sell) < 2 and time.time() < deadline0b:
+                time.sleep(0.05)
+                opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        assert len(opened_sell) == 2
+        assert {str(r.get("direction")) for r in opened_sell} == {"SELL"}
 
         second = svc.ingest_indicator_bridge_signal(
             terminal_family="mt4",
@@ -418,14 +445,37 @@ def test_smoke_mt5_bridge_listener_register_and_signal_flow(monkeypatch):
 
 
 def test_smoke_mt5_bridge_reverse_close_then_guard_replay_reopens(monkeypatch):
-    svc, broker = _build_service(monkeypatch, terminal_family="mt5")
+    svc, broker = _build_service(monkeypatch, terminal_family="mt5", signal_confirm_sec=0.20)
     try:
         first = svc.ingest_indicator_bridge_signal(
             terminal_family="mt5",
             payload=_payload(hint="SELL", message="MT5 SMOKE SELL A"),
         )
-        assert first.get("executed") is True
-        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+        assert first.get("ok") is True
+        assert first.get("executed") is False
+        assert str(first.get("reason") or "") == "reversal_guard_waiting"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        deadline0 = time.time() + 1.2
+        opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        while len(opened_sell) < 2 and time.time() < deadline0:
+            time.sleep(0.05)
+            opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        if len(opened_sell) < 2:
+            replay_first = dict(_payload(hint="SELL", message="MT5 SMOKE SELL A"))
+            replay_first["__guard_replay"] = True
+            first_replay = svc.ingest_indicator_bridge_signal(
+                terminal_family="mt5",
+                payload=replay_first,
+            )
+            assert first_replay.get("ok") is True
+            deadline0b = time.time() + 0.8
+            opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+            while len(opened_sell) < 2 and time.time() < deadline0b:
+                time.sleep(0.05)
+                opened_sell = broker.get_open_positions(symbol="BTCUSDm")
+        assert len(opened_sell) == 2
+        assert {str(r.get("direction")) for r in opened_sell} == {"SELL"}
 
         second = svc.ingest_indicator_bridge_signal(
             terminal_family="mt5",
@@ -525,6 +575,100 @@ def test_smoke_mt5_transient_missing_position_not_marked_closed_immediately(monk
             assert k0 in svc._active_confirmation_signal_ladders
             miss = int((svc._active_confirmation_signal_ladders.get(k0) or {}).get("missing_seen_count") or 0)
         assert miss == 1
+    finally:
+        svc.stop()
+
+
+def test_smoke_signal_clear_cancels_pending_open(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.35)
+    try:
+        first = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload=_payload(hint="BUY", message="SMOKE BUY WAIT"),
+        )
+        assert first.get("ok") is True
+        assert first.get("executed") is False
+        assert str(first.get("reason") or "") == "reversal_guard_waiting"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        clear_out = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={
+                "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+                "signal_profile": "intrepid",
+                "symbol": "BTCUSDm",
+                "timeframe": "M1",
+                "signal_hint": "NONE",
+                "bridge_event_type": "signal_clear",
+                "ingest_source": "bridge",
+            },
+        )
+        assert clear_out.get("ok") is True
+        assert clear_out.get("executed") is False
+        assert str(clear_out.get("reason") or "") == "signal_cleared"
+        assert int(clear_out.get("cleared_pending_count") or 0) >= 1
+
+        # Wait longer than confirm window; open should stay canceled.
+        deadline = time.time() + 1.2
+        while time.time() < deadline:
+            assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+            time.sleep(0.05)
+    finally:
+        svc.stop()
+
+
+def test_smoke_advanced_v2_runner_stage_registered(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=False, mode_normal=False, signal_confirm_sec=0.0)
+    try:
+        monkeypatch.setattr(
+            svc,
+            "_resolve_indicator_bridge_instance_runtime_config",
+            lambda **kwargs: {
+                "terminal_family": "mt4",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "BTCUSDM",
+                "timeframe": "M1",
+                "instance_key": "mt4|intrepid trend direction|BTCUSDM|M1",
+                "automation_enabled": True,
+                "effective_automation_enabled": True,
+                "lot_size": 0.5,
+                "execution_modes": {
+                    "advanced": False,
+                    "advanced_v2": True,
+                    "normal": False,
+                    "sync": False,
+                },
+                "mode_lots": {
+                    "advanced": 0.5,
+                    "advanced_v2": 0.5,
+                    "normal": 0.4,
+                    "sync": 0.1,
+                },
+                "signal_confirm_sec": 0.0,
+                "sync": {
+                    "direction_tf": "M5",
+                    "entry_tf": "M1",
+                    "exit_tf": "M1",
+                    "reentry_enabled": True,
+                },
+            },
+        )
+        out = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload=_payload(hint="SELL", message="SMOKE ADV2 SELL"),
+        )
+        assert out.get("ok") is True
+        assert out.get("executed") is True
+        open_rows = broker.get_open_positions(symbol="BTCUSDm")
+        assert len(open_rows) == 1
+        with svc._lock:
+            ladders = [dict(v) for v in svc._active_confirmation_signal_ladders.values() if isinstance(v, dict)]
+        assert len(ladders) == 1
+        row = ladders[0]
+        assert str(row.get("execution_mode") or "") == "advanced_v2"
+        tps = list(row.get("tps") or [])
+        assert len(tps) == 4
+        assert (tps[-1] or {}).get("price") is None
     finally:
         svc.stop()
 

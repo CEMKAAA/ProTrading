@@ -403,8 +403,13 @@ void _check_and_send()
    }
    else
    {
+      bool hadDirection = (g_lastObservedDir != 0);
       if(InpResetDirectionOnNoSignal)
          g_lastObservedDir = 0;
+      if(hadDirection)
+      {
+         _post_bridge_event("signal_clear", "NONE", 0.0, barTime);
+      }
       g_observedInitialized = true;
       return;
    }

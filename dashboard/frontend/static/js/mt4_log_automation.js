@@ -73,8 +73,10 @@
         if (!(active instanceof HTMLElement)) return false;
         return active.classList.contains('bridge-lot-input')
             || active.classList.contains('bridge-mode-lot-advanced')
+            || active.classList.contains('bridge-mode-lot-advanced-v2')
             || active.classList.contains('bridge-mode-lot-normal')
             || active.classList.contains('bridge-mode-lot-sync')
+            || active.classList.contains('bridge-signal-confirm-sec')
             || active.classList.contains('bridge-sync-direction')
             || active.classList.contains('bridge-sync-entry')
             || active.classList.contains('bridge-sync-exit');
@@ -170,6 +172,7 @@
             const auto = !!row.effective_automation_enabled ? 'ON' : 'OFF';
             const mode = [
                 row.mode_advanced_enabled ? 'ADVANCED' : '',
+                row.mode_advanced_v2_enabled ? 'ADV_V2' : '',
                 row.mode_normal_enabled ? 'NORMAL' : '',
                 row.mode_sync_enabled ? 'SYNC' : ''
             ].filter(Boolean).join('|');
@@ -281,15 +284,18 @@
             const autoCls = enabled ? 'bg-success' : 'bg-secondary';
             const lotValue = Number(row.lot_size || 0);
             const modeAdvanced = !!row.mode_advanced_enabled;
+            const modeAdvancedV2 = !!row.mode_advanced_v2_enabled;
             const modeNormal = !!row.mode_normal_enabled;
             const modeSync = !!row.mode_sync_enabled;
-            const modeSummary = [modeAdvanced ? 'ADV' : '', modeNormal ? 'NORM' : '', modeSync ? 'SYNC' : '']
+            const modeSummary = [modeAdvanced ? 'ADV' : '', modeAdvancedV2 ? 'ADV_V2' : '', modeNormal ? 'NORM' : '', modeSync ? 'SYNC' : '']
                 .filter(Boolean)
                 .join(' | ') || 'NO MODE';
             const modeLots = (row.mode_lots && typeof row.mode_lots === 'object') ? row.mode_lots : {};
             const modeAdvancedLot = Number(modeLots.advanced || lotValue || 0);
+            const modeAdvancedV2Lot = Number(modeLots.advanced_v2 || lotValue || 0);
             const modeNormalLot = Number(modeLots.normal || lotValue || 0);
             const modeSyncLot = Number(modeLots.sync || lotValue || 0);
+            const signalConfirmSec = Number(row.signal_confirm_sec || 0);
             const syncCfg = (row.sync && typeof row.sync === 'object') ? row.sync : {};
             const syncDirectionTf = String(syncCfg.direction_tf || 'M5').toUpperCase();
             const syncEntryTf = String(syncCfg.entry_tf || 'M1').toUpperCase();
@@ -314,6 +320,10 @@
                                     Advanced
                                 </label>
                                 <label class="form-check-label small">
+                                    <input type="checkbox" class="form-check-input me-1 bridge-mode-toggle" data-mode="advanced_v2" ${modeAdvancedV2 ? 'checked' : ''}>
+                                    Advanced v2
+                                </label>
+                                <label class="form-check-label small">
                                     <input type="checkbox" class="form-check-input me-1 bridge-mode-toggle" data-mode="normal" ${modeNormal ? 'checked' : ''}>
                                     Normal
                                 </label>
@@ -327,6 +337,10 @@
                                     <div class="col-8">
                                         <input type="number" class="form-control form-control-sm bridge-mode-lot-advanced" min="0.01" step="0.01" value="${Number.isFinite(modeAdvancedLot) && modeAdvancedLot > 0 ? escapeHtml(modeAdvancedLot.toFixed(2)) : '0.05'}">
                                     </div>
+                                    <div class="col-4 small text-muted">Adv v2</div>
+                                    <div class="col-8">
+                                        <input type="number" class="form-control form-control-sm bridge-mode-lot-advanced-v2" min="0.01" step="0.01" value="${Number.isFinite(modeAdvancedV2Lot) && modeAdvancedV2Lot > 0 ? escapeHtml(modeAdvancedV2Lot.toFixed(2)) : '0.05'}">
+                                    </div>
                                     <div class="col-4 small text-muted">Norm</div>
                                     <div class="col-8">
                                         <input type="number" class="form-control form-control-sm bridge-mode-lot-normal" min="0.01" step="0.01" value="${Number.isFinite(modeNormalLot) && modeNormalLot > 0 ? escapeHtml(modeNormalLot.toFixed(2)) : '0.05'}">
@@ -337,6 +351,15 @@
                                     </div>
                                     <div class="col-12 text-end">
                                         <button type="button" class="btn btn-outline-secondary btn-sm bridge-save-mode-lots-btn">Save Mode Lots</button>
+                                    </div>
+                                </div>
+                                <div class="row g-1 align-items-center border-top pt-2 mt-1">
+                                    <div class="col-4 small text-muted">Signal Wait (sec)</div>
+                                    <div class="col-8">
+                                        <input type="number" class="form-control form-control-sm bridge-signal-confirm-sec" min="0" max="300" step="1" value="${Number.isFinite(signalConfirmSec) ? escapeHtml(signalConfirmSec.toFixed(0)) : '20'}">
+                                    </div>
+                                    <div class="col-12 text-end">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm bridge-save-signal-confirm-btn">Save Wait</button>
                                     </div>
                                 </div>
                                 <div class="row g-1 align-items-center">
@@ -459,9 +482,11 @@
         const syncEl = rowEl.querySelector('.bridge-mode-toggle[data-mode="sync"]');
         return {
             advancedEl,
+            advancedV2El: rowEl.querySelector('.bridge-mode-toggle[data-mode="advanced_v2"]'),
             normalEl,
             syncEl,
             advanced: !!(advancedEl && advancedEl.checked),
+            advanced_v2: !!(rowEl.querySelector('.bridge-mode-toggle[data-mode="advanced_v2"]')?.checked),
             normal: !!(normalEl && normalEl.checked),
             sync: !!(syncEl && syncEl.checked)
         };
@@ -515,17 +540,20 @@
         }
         if (target.classList.contains('bridge-save-mode-lots-btn')) {
             const advancedInput = row.querySelector('.bridge-mode-lot-advanced');
+            const advancedV2Input = row.querySelector('.bridge-mode-lot-advanced-v2');
             const normalInput = row.querySelector('.bridge-mode-lot-normal');
             const syncInput = row.querySelector('.bridge-mode-lot-sync');
             const advancedLot = parseLotInput(advancedInput && advancedInput.value);
+            const advancedV2Lot = parseLotInput(advancedV2Input && advancedV2Input.value);
             const normalLot = parseLotInput(normalInput && normalInput.value);
             const syncLot = parseLotInput(syncInput && syncInput.value);
-            if (advancedLot === null || normalLot === null || syncLot === null) {
+            if (advancedLot === null || advancedV2Lot === null || normalLot === null || syncLot === null) {
                 showAlert('Invalid mode lots. Use values > 0.', 'error');
                 return;
             }
             updateInstance(family, indicator, symbol, timeframe, {
                 mode_advanced_lot: advancedLot,
+                mode_advanced_v2_lot: advancedV2Lot,
                 mode_normal_lot: normalLot,
                 mode_sync_lot: syncLot
             })
@@ -535,12 +563,13 @@
         }
         if (target.classList.contains('bridge-mode-toggle')) {
             const mode = String(target.getAttribute('data-mode') || '').trim().toLowerCase();
-            if (mode !== 'advanced' && mode !== 'normal' && mode !== 'sync') return;
+            if (mode !== 'advanced' && mode !== 'advanced_v2' && mode !== 'normal' && mode !== 'sync') return;
             const instanceKey = String(row.getAttribute('data-instance-key') || '').trim().toLowerCase();
             if (modeUpdatePendingByInstance[instanceKey]) return;
             const finalState = rowModeValues(row); // keep multi-select; send all three each update
             const payload = {
                 mode_advanced_enabled: !!finalState.advanced,
+                mode_advanced_v2_enabled: !!finalState.advanced_v2,
                 mode_normal_enabled: !!finalState.normal,
                 mode_sync_enabled: !!finalState.sync
             };
@@ -556,6 +585,20 @@
                     modeUpdatePendingByInstance[instanceKey] = false;
                     setModeInputsDisabled(row, false);
                 });
+            return;
+        }
+        if (target.classList.contains('bridge-save-signal-confirm-btn')) {
+            const input = row.querySelector('.bridge-signal-confirm-sec');
+            const raw = Number(String(input && input.value || '').trim());
+            if (!Number.isFinite(raw) || raw < 0 || raw > 300) {
+                showAlert('Invalid wait seconds. Use 0..300.', 'error');
+                return;
+            }
+            updateInstance(family, indicator, symbol, timeframe, {
+                signal_confirm_sec: Math.round(raw)
+            })
+                .then(() => showAlert(`Signal wait updated for ${indicator} ${symbol} ${timeframe}.`, 'success'))
+                .catch((err) => showAlert(`Signal wait update failed: ${String(err.message || err)}`, 'error'));
             return;
         }
         if (target.classList.contains('bridge-save-sync-btn')) {

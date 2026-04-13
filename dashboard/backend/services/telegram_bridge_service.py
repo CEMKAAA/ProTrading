@@ -2541,7 +2541,7 @@ class TelegramBridgeService:
                 continue
             cfg = v if isinstance(v, dict) else {}
             row: Dict[str, float] = {}
-            for m in ("advanced", "normal", "sync"):
+            for m in ("advanced", "advanced_v2", "normal", "sync"):
                 lot = _to_float_or_none(cfg.get(m))
                 if lot is None or float(lot) <= 0.0:
                     continue
@@ -2559,7 +2559,7 @@ class TelegramBridgeService:
                 continue
             cfg = v if isinstance(v, dict) else {}
             row: Dict[str, float] = {}
-            for m in ("advanced", "normal", "sync"):
+            for m in ("advanced", "advanced_v2", "normal", "sync"):
                 lot = _to_float_or_none(cfg.get(m))
                 if lot is None or float(lot) <= 0.0:
                     continue
@@ -2588,6 +2588,7 @@ class TelegramBridgeService:
             cfg = v if isinstance(v, dict) else {}
             out[item] = {
                 "advanced": bool(cfg.get("advanced", True)),
+                "advanced_v2": bool(cfg.get("advanced_v2", False)),
                 "normal": bool(cfg.get("normal", False)),
                 "sync": bool(cfg.get("sync", False)),
             }
@@ -2603,9 +2604,63 @@ class TelegramBridgeService:
             cfg = v if isinstance(v, dict) else {}
             cleaned[item] = {
                 "advanced": bool(cfg.get("advanced", True)),
+                "advanced_v2": bool(cfg.get("advanced_v2", False)),
                 "normal": bool(cfg.get("normal", False)),
                 "sync": bool(cfg.get("sync", False)),
             }
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _indicator_bridge_default_signal_confirm_sec(timeframe: Any) -> float:
+        tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
+        if str(tf) == "M5":
+            key = "INDICATOR_BRIDGE_SIGNAL_CONFIRM_SEC_M5"
+            default_raw = "60"
+        else:
+            key = "INDICATOR_BRIDGE_SIGNAL_CONFIRM_SEC"
+            default_raw = str(TelegramBridgeService._indicator_reversal_confirm_sec())
+        try:
+            raw = float(TelegramBridgeService._get_env_value(key, default_raw))
+        except Exception:
+            raw = float(default_raw)
+        if not math.isfinite(float(raw)):
+            raw = float(default_raw)
+        return float(max(0.0, min(300.0, float(raw))))
+
+    @classmethod
+    def _indicator_bridge_instance_signal_confirm_overrides(cls, family: Any) -> Dict[str, float]:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_SIGNAL_CONFIRM_SEC")
+        raw = str(cls._get_env_value(key, "{}")).strip()
+        out: Dict[str, float] = {}
+        if not raw:
+            return out
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return out
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            sec = _to_float_or_none(v)
+            if sec is None or (not math.isfinite(float(sec))):
+                continue
+            out[item] = float(max(0.0, min(300.0, float(sec))))
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_instance_signal_confirm_overrides(cls, sec_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, float] = {}
+        for k, v in (sec_map or {}).items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            sec = _to_float_or_none(v)
+            if sec is None or (not math.isfinite(float(sec))):
+                continue
+            cleaned[item] = float(max(0.0, min(300.0, float(sec))))
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
@@ -2704,10 +2759,13 @@ class TelegramBridgeService:
         mode_lot_overrides = self._indicator_bridge_instance_mode_lot_overrides(terminal_family)
         mode_lot_cfg = dict(mode_lot_overrides.get(instance_key_l) or {})
         mode_advanced_lot = _to_float_or_none(mode_lot_cfg.get("advanced"))
+        mode_advanced_v2_lot = _to_float_or_none(mode_lot_cfg.get("advanced_v2"))
         mode_normal_lot = _to_float_or_none(mode_lot_cfg.get("normal"))
         mode_sync_lot = _to_float_or_none(mode_lot_cfg.get("sync"))
         if mode_advanced_lot is None or float(mode_advanced_lot) <= 0.0:
             mode_advanced_lot = float(lot_size)
+        if mode_advanced_v2_lot is None or float(mode_advanced_v2_lot) <= 0.0:
+            mode_advanced_v2_lot = float(lot_size)
         if mode_normal_lot is None or float(mode_normal_lot) <= 0.0:
             mode_normal_lot = float(lot_size)
         if mode_sync_lot is None or float(mode_sync_lot) <= 0.0:
@@ -2715,8 +2773,13 @@ class TelegramBridgeService:
         mode_overrides = self._indicator_bridge_instance_mode_overrides(terminal_family)
         mode_cfg = mode_overrides.get(instance_key_l) if instance_key_l else {}
         mode_advanced = bool((mode_cfg or {}).get("advanced", True))
+        mode_advanced_v2 = bool((mode_cfg or {}).get("advanced_v2", False))
         mode_normal = bool((mode_cfg or {}).get("normal", False))
         mode_sync = bool((mode_cfg or {}).get("sync", False))
+        signal_confirm_overrides = self._indicator_bridge_instance_signal_confirm_overrides(terminal_family)
+        signal_confirm_sec = _to_float_or_none(signal_confirm_overrides.get(instance_key_l))
+        if signal_confirm_sec is None:
+            signal_confirm_sec = float(self._indicator_bridge_default_signal_confirm_sec(timeframe_name))
         sync_overrides = self._indicator_bridge_instance_sync_overrides(terminal_family)
         sync_cfg = dict(sync_overrides.get(instance_key_l) or {})
         sync_direction_tf = self._normalize_tf_token(sync_cfg.get("direction_tf"), "M5")
@@ -2735,20 +2798,25 @@ class TelegramBridgeService:
             "lot_size": _to_float_or_none(lot_size),
             "execution_modes": {
                 "advanced": bool(mode_advanced),
+                "advanced_v2": bool(mode_advanced_v2),
                 "normal": bool(mode_normal),
                 "sync": bool(mode_sync),
             },
             "mode_advanced_enabled": bool(mode_advanced),
+            "mode_advanced_v2_enabled": bool(mode_advanced_v2),
             "mode_normal_enabled": bool(mode_normal),
             "mode_sync_enabled": bool(mode_sync),
             "mode_lots": {
                 "advanced": float(mode_advanced_lot),
+                "advanced_v2": float(mode_advanced_v2_lot),
                 "normal": float(mode_normal_lot),
                 "sync": float(mode_sync_lot),
             },
             "mode_advanced_lot": float(mode_advanced_lot),
+            "mode_advanced_v2_lot": float(mode_advanced_v2_lot),
             "mode_normal_lot": float(mode_normal_lot),
             "mode_sync_lot": float(mode_sync_lot),
+            "signal_confirm_sec": float(max(0.0, min(300.0, float(signal_confirm_sec)))),
             "sync": {
                 "direction_tf": str(sync_direction_tf),
                 "entry_tf": str(sync_entry_tf),
@@ -2918,11 +2986,14 @@ class TelegramBridgeService:
         enabled: Optional[bool] = None,
         lot_size: Optional[float] = None,
         mode_advanced_enabled: Optional[bool] = None,
+        mode_advanced_v2_enabled: Optional[bool] = None,
         mode_normal_enabled: Optional[bool] = None,
         mode_sync_enabled: Optional[bool] = None,
         mode_advanced_lot: Optional[float] = None,
+        mode_advanced_v2_lot: Optional[float] = None,
         mode_normal_lot: Optional[float] = None,
         mode_sync_lot: Optional[float] = None,
+        signal_confirm_sec: Optional[float] = None,
         sync_direction_tf: Optional[str] = None,
         sync_entry_tf: Optional[str] = None,
         sync_exit_tf: Optional[str] = None,
@@ -2941,6 +3012,7 @@ class TelegramBridgeService:
         lot_map = self._indicator_bridge_instance_lot_overrides(family)
         mode_map = self._indicator_bridge_instance_mode_overrides(family)
         mode_lot_map = self._indicator_bridge_instance_mode_lot_overrides(family)
+        signal_confirm_map = self._indicator_bridge_instance_signal_confirm_overrides(family)
         sync_map = self._indicator_bridge_instance_sync_overrides(family)
         if enabled is not None:
             auto_map[str(instance_key).lower()] = bool(enabled)
@@ -2949,21 +3021,24 @@ class TelegramBridgeService:
             if lot_val is None or float(lot_val) <= 0.0:
                 return {"ok": False, "error": "invalid_lot_size"}
             lot_map[str(instance_key).lower()] = float(max(0.01, min(100.0, float(lot_val))))
-        if mode_advanced_enabled is not None or mode_normal_enabled is not None or mode_sync_enabled is not None:
+        if mode_advanced_enabled is not None or mode_advanced_v2_enabled is not None or mode_normal_enabled is not None or mode_sync_enabled is not None:
             mk = str(instance_key).lower()
-            prev = dict(mode_map.get(mk) or {"advanced": True, "normal": False, "sync": False})
+            prev = dict(mode_map.get(mk) or {"advanced": True, "advanced_v2": False, "normal": False, "sync": False})
             if mode_advanced_enabled is not None:
                 prev["advanced"] = bool(mode_advanced_enabled)
+            if mode_advanced_v2_enabled is not None:
+                prev["advanced_v2"] = bool(mode_advanced_v2_enabled)
             if mode_normal_enabled is not None:
                 prev["normal"] = bool(mode_normal_enabled)
             if mode_sync_enabled is not None:
                 prev["sync"] = bool(mode_sync_enabled)
             mode_map[mk] = {
                 "advanced": bool(prev.get("advanced", True)),
+                "advanced_v2": bool(prev.get("advanced_v2", False)),
                 "normal": bool(prev.get("normal", False)),
                 "sync": bool(prev.get("sync", False)),
             }
-        if mode_advanced_lot is not None or mode_normal_lot is not None or mode_sync_lot is not None:
+        if mode_advanced_lot is not None or mode_advanced_v2_lot is not None or mode_normal_lot is not None or mode_sync_lot is not None:
             mk = str(instance_key).lower()
             prev_lots = dict(mode_lot_map.get(mk) or {})
             if mode_advanced_lot is not None:
@@ -2971,6 +3046,11 @@ class TelegramBridgeService:
                 if v is None or float(v) <= 0.0:
                     return {"ok": False, "error": "invalid_mode_advanced_lot"}
                 prev_lots["advanced"] = float(max(0.01, min(100.0, float(v))))
+            if mode_advanced_v2_lot is not None:
+                v = _to_float_or_none(mode_advanced_v2_lot)
+                if v is None or float(v) <= 0.0:
+                    return {"ok": False, "error": "invalid_mode_advanced_v2_lot"}
+                prev_lots["advanced_v2"] = float(max(0.01, min(100.0, float(v))))
             if mode_normal_lot is not None:
                 v = _to_float_or_none(mode_normal_lot)
                 if v is None or float(v) <= 0.0:
@@ -2982,6 +3062,12 @@ class TelegramBridgeService:
                     return {"ok": False, "error": "invalid_mode_sync_lot"}
                 prev_lots["sync"] = float(max(0.01, min(100.0, float(v))))
             mode_lot_map[mk] = dict(prev_lots)
+        if signal_confirm_sec is not None:
+            mk = str(instance_key).lower()
+            v = _to_float_or_none(signal_confirm_sec)
+            if v is None or (not math.isfinite(float(v))):
+                return {"ok": False, "error": "invalid_signal_confirm_sec"}
+            signal_confirm_map[mk] = float(max(0.0, min(300.0, float(v))))
         if (
             sync_direction_tf is not None
             or sync_entry_tf is not None
@@ -3010,6 +3096,7 @@ class TelegramBridgeService:
                 self._indicator_bridge_env_key(family, "INSTANCE_LOTS"): self._serialize_indicator_bridge_instance_lot_overrides(lot_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_MODES"): self._serialize_indicator_bridge_instance_mode_overrides(mode_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_MODE_LOTS"): self._serialize_indicator_bridge_instance_mode_lot_overrides(mode_lot_map),
+                self._indicator_bridge_env_key(family, "INSTANCE_SIGNAL_CONFIRM_SEC"): self._serialize_indicator_bridge_instance_signal_confirm_overrides(signal_confirm_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_SYNC"): self._serialize_indicator_bridge_instance_sync_overrides(sync_map),
             }
         )
@@ -3028,9 +3115,11 @@ class TelegramBridgeService:
                 prev["lot_size"] = _to_float_or_none(runtime_cfg.get("lot_size"))
                 prev["execution_modes"] = dict(runtime_cfg.get("execution_modes") or {})
                 prev["mode_advanced_enabled"] = bool(runtime_cfg.get("mode_advanced_enabled"))
+                prev["mode_advanced_v2_enabled"] = bool(runtime_cfg.get("mode_advanced_v2_enabled"))
                 prev["mode_normal_enabled"] = bool(runtime_cfg.get("mode_normal_enabled"))
                 prev["mode_sync_enabled"] = bool(runtime_cfg.get("mode_sync_enabled"))
                 prev["mode_lots"] = dict(runtime_cfg.get("mode_lots") or {})
+                prev["signal_confirm_sec"] = _to_float_or_none(runtime_cfg.get("signal_confirm_sec"))
                 prev["sync"] = dict(runtime_cfg.get("sync") or {})
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
         return {
@@ -3059,10 +3148,18 @@ class TelegramBridgeService:
         lot_map = self._indicator_bridge_instance_lot_overrides(family)
         mode_map = self._indicator_bridge_instance_mode_overrides(family)
         mode_lot_map = self._indicator_bridge_instance_mode_lot_overrides(family)
+        signal_confirm_map = self._indicator_bridge_instance_signal_confirm_overrides(family)
         sync_map = self._indicator_bridge_instance_sync_overrides(family)
         configured_keys = {
             str(k or "").strip().lower()
-            for k in (list(auto_map.keys()) + list(lot_map.keys()) + list(mode_map.keys()) + list(mode_lot_map.keys()) + list(sync_map.keys()))
+            for k in (
+                list(auto_map.keys())
+                + list(lot_map.keys())
+                + list(mode_map.keys())
+                + list(mode_lot_map.keys())
+                + list(signal_confirm_map.keys())
+                + list(sync_map.keys())
+            )
             if str(k or "").strip()
         }
         include_configured_rows = bool(self._indicator_bridge_include_configured_rows())
@@ -3191,9 +3288,11 @@ class TelegramBridgeService:
                     "lot_size": _to_float_or_none(runtime_cfg.get("lot_size")),
                     "execution_modes": dict(runtime_cfg.get("execution_modes") or {}),
                     "mode_advanced_enabled": bool(runtime_cfg.get("mode_advanced_enabled")),
+                    "mode_advanced_v2_enabled": bool(runtime_cfg.get("mode_advanced_v2_enabled")),
                     "mode_normal_enabled": bool(runtime_cfg.get("mode_normal_enabled")),
                     "mode_sync_enabled": bool(runtime_cfg.get("mode_sync_enabled")),
                     "mode_lots": dict(runtime_cfg.get("mode_lots") or {}),
+                    "signal_confirm_sec": _to_float_or_none(runtime_cfg.get("signal_confirm_sec")),
                     "sync": dict(runtime_cfg.get("sync") or {}),
                     "state": ("OPEN" if linked else inferred_state),
                     "has_open_ladder": bool(linked),
@@ -3681,6 +3780,93 @@ class TelegramBridgeService:
         if not math.isfinite(float(robust)) or float(robust) <= 0.0:
             return None
         return float(robust)
+
+    @staticmethod
+    def _calc_adx_from_bars(bars: Any, period: int = 14) -> Optional[float]:
+        rows = [dict(x) for x in (bars or []) if isinstance(x, dict)]
+        p = int(max(5, min(50, int(period or 14))))
+        if len(rows) < int((p * 3) + 5):
+            return None
+        highs: List[float] = []
+        lows: List[float] = []
+        closes: List[float] = []
+        for r in rows:
+            h = _to_float_or_none(r.get("high"))
+            l = _to_float_or_none(r.get("low"))
+            c = _to_float_or_none(r.get("close"))
+            if h is None or l is None or c is None:
+                continue
+            if not (math.isfinite(float(h)) and math.isfinite(float(l)) and math.isfinite(float(c))):
+                continue
+            highs.append(float(h))
+            lows.append(float(l))
+            closes.append(float(c))
+        if len(highs) < int((p * 3) + 5):
+            return None
+        tr: List[float] = []
+        pdm: List[float] = []
+        mdm: List[float] = []
+        for i in range(1, len(highs)):
+            up_move = float(highs[i] - highs[i - 1])
+            dn_move = float(lows[i - 1] - lows[i])
+            plus_dm = up_move if (up_move > dn_move and up_move > 0.0) else 0.0
+            minus_dm = dn_move if (dn_move > up_move and dn_move > 0.0) else 0.0
+            t = max(
+                abs(float(highs[i] - lows[i])),
+                abs(float(highs[i] - closes[i - 1])),
+                abs(float(lows[i] - closes[i - 1])),
+            )
+            tr.append(float(max(t, 0.0)))
+            pdm.append(float(max(plus_dm, 0.0)))
+            mdm.append(float(max(minus_dm, 0.0)))
+        if len(tr) < int(p + 2):
+            return None
+        # Wilder smoothing
+        tr14 = sum(tr[:p])
+        pdm14 = sum(pdm[:p])
+        mdm14 = sum(mdm[:p])
+        dx_vals: List[float] = []
+        for i in range(p, len(tr)):
+            tr14 = float(tr14 - (tr14 / float(p)) + tr[i])
+            pdm14 = float(pdm14 - (pdm14 / float(p)) + pdm[i])
+            mdm14 = float(mdm14 - (mdm14 / float(p)) + mdm[i])
+            if tr14 <= 0.0:
+                continue
+            plus_di = float(100.0 * (pdm14 / tr14))
+            minus_di = float(100.0 * (mdm14 / tr14))
+            denom = float(plus_di + minus_di)
+            if denom <= 0.0:
+                continue
+            dx = float(100.0 * abs(plus_di - minus_di) / denom)
+            if math.isfinite(dx):
+                dx_vals.append(float(dx))
+        if len(dx_vals) < p:
+            return None
+        adx = float(sum(dx_vals[-p:]) / float(p))
+        if not math.isfinite(adx):
+            return None
+        return float(max(0.0, min(100.0, adx)))
+
+    @staticmethod
+    def _calc_bb_width_from_bars(bars: Any, period: int = 20, stdev_mult: float = 2.0) -> Optional[float]:
+        rows = [dict(x) for x in (bars or []) if isinstance(x, dict)]
+        p = int(max(5, min(100, int(period or 20))))
+        closes: List[float] = []
+        for r in rows:
+            c = _to_float_or_none(r.get("close"))
+            if c is None or (not math.isfinite(float(c))):
+                continue
+            closes.append(float(c))
+        if len(closes) < p:
+            return None
+        bucket = closes[-p:]
+        mean = float(sum(bucket) / float(p))
+        var = float(sum((x - mean) ** 2 for x in bucket) / float(p))
+        std = float(math.sqrt(max(0.0, var)))
+        width = float((mean + stdev_mult * std) - (mean - stdev_mult * std))
+        if not math.isfinite(width):
+            return None
+        return float(max(0.0, width))
 
     @staticmethod
     def _estimate_mt4_market_regime(
@@ -4318,13 +4504,17 @@ class TelegramBridgeService:
         incoming_direction: str,
         now_ts: float,
         force_wait: bool = False,
+        confirm_sec: Optional[float] = None,
     ) -> Dict[str, Any]:
         combo = str(combo_source_tag or "").strip().lower()
         direction = str(incoming_direction or "").strip().upper()
         if not combo or direction not in {"BUY", "SELL"}:
             return {"ok": True, "ready": True, "reason": "invalid_guard_input"}
 
-        wait_sec = float(self._indicator_reversal_confirm_sec())
+        wait_sec = _to_float_or_none(confirm_sec)
+        if wait_sec is None:
+            wait_sec = float(self._indicator_reversal_confirm_sec())
+        wait_sec = float(max(0.0, min(300.0, float(wait_sec))))
         if wait_sec <= 0.0:
             return {"ok": True, "ready": True, "reason": "guard_disabled"}
 
@@ -4348,8 +4538,10 @@ class TelegramBridgeService:
             return {"ok": True, "ready": True, "reason": "no_reverse_guard_needed"}
 
         first_seen_ts = float(now_ts)
+        seen_count = 1
         if has_pending_same_dir:
             first_seen_ts = float(_to_float_or_none(pending.get("first_seen_ts")) or now_ts)
+            seen_count = int(_to_float_or_none(pending.get("seen_count")) or 1) + 1
 
         elapsed = float(max(0.0, float(now_ts) - float(first_seen_ts)))
         if elapsed < float(wait_sec):
@@ -4361,6 +4553,7 @@ class TelegramBridgeService:
                     "first_seen_ts": float(first_seen_ts),
                     "last_seen_ts": float(now_ts),
                     "required_sec": float(wait_sec),
+                    "seen_count": int(max(1, int(seen_count))),
                 }
                 for extra_key in (
                     "replay_terminal_family",
@@ -4396,6 +4589,20 @@ class TelegramBridgeService:
             "required_sec": float(wait_sec),
             "elapsed_sec": float(elapsed),
         }
+
+    def _clear_indicator_reversal_pending_for_combo_prefix(self, *, combo_prefix: str) -> int:
+        prefix = str(combo_prefix or "").strip().lower()
+        if not prefix:
+            return 0
+        removed = 0
+        with self._lock:
+            keys = list((self._indicator_reversal_pending or {}).keys())
+            for k in keys:
+                kk = str(k or "").strip().lower()
+                if kk == prefix or kk.startswith(prefix + "|"):
+                    self._indicator_reversal_pending.pop(str(k), None)
+                    removed += 1
+        return int(removed)
 
     def _queue_indicator_reversal_replay(
         self,
@@ -4536,6 +4743,7 @@ class TelegramBridgeService:
         now_ts: float,
         mode_source_tag: str,
         sync_cfg: Dict[str, Any],
+        signal_confirm_sec: Optional[float],
         audit_event_ts: Any,
     ) -> Dict[str, Any]:
         direction_tf = self._normalize_tf_token((sync_cfg or {}).get("direction_tf"), "M5")
@@ -4603,21 +4811,6 @@ class TelegramBridgeService:
                 "direction_dir": str(direction_dir or ""),
             }
 
-        guard = self._check_indicator_reversal_stability(
-            combo_source_tag=str(mode_source_tag),
-            incoming_direction=str(side),
-            now_ts=float(now_ts),
-            force_wait=(int((reverse_out or {}).get("closed_count") or 0) > 0),
-        )
-        if not bool((guard or {}).get("ready")):
-            return {
-                "ok": True,
-                "executed": False,
-                "reason": "reversal_guard_waiting",
-                "wait": dict(guard or {}),
-                "reverse_close": dict(reverse_out or {}),
-            }
-
         svc = self._get_live_service()
         if self._has_live_open_for_source_tag_direction(
             source_tag=str(mode_source_tag),
@@ -4630,6 +4823,22 @@ class TelegramBridgeService:
                 "ok": True,
                 "executed": False,
                 "reason": "same_direction_already_open",
+                "reverse_close": dict(reverse_out or {}),
+            }
+
+        guard = self._check_indicator_reversal_stability(
+            combo_source_tag=str(mode_source_tag),
+            incoming_direction=str(side),
+            now_ts=float(now_ts),
+            force_wait=True,
+            confirm_sec=signal_confirm_sec,
+        )
+        if not bool((guard or {}).get("ready")):
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "reversal_guard_waiting",
+                "wait": dict(guard or {}),
                 "reverse_close": dict(reverse_out or {}),
             }
 
@@ -4688,12 +4897,32 @@ class TelegramBridgeService:
         message = str(p.get("message") or "").strip()
         event_ts = p.get("event_ts")
         source = f"{family.upper()}:{indicator}"
+        combo_prefix = (
+            f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}"
+        )
+        neutral_hints = {"", "NONE", "NEUTRAL", "FLAT", "OFF", "CLEAR", "0"}
 
         if bridge_event_type in {"register", "heartbeat", "status", "init"} and hint not in {"BUY", "SELL"}:
             return {
                 "ok": True,
                 "executed": False,
                 "reason": "bridge_registered",
+                "runtime": self._resolve_indicator_bridge_instance_runtime_config(
+                    family=family,
+                    indicator=indicator,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                ),
+                "bridge": registered,
+            }
+
+        if bridge_event_type in {"signal_clear", "clear", "state_clear"} or hint in neutral_hints:
+            removed = self._clear_indicator_reversal_pending_for_combo_prefix(combo_prefix=str(combo_prefix))
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "signal_cleared",
+                "cleared_pending_count": int(removed),
                 "runtime": self._resolve_indicator_bridge_instance_runtime_config(
                     family=family,
                     indicator=indicator,
@@ -4859,6 +5088,10 @@ class TelegramBridgeService:
             "entry_low": round(float(entry_price), int(max(0, digits))),
             "entry_high": round(float(entry_price), int(max(0, digits))),
             "entry_mid": round(float(entry_price), int(max(0, digits))),
+            "digits": int(digits),
+            "point": float(point),
+            "min_stop_dist": float(min_stop_dist),
+            "atr": _to_float_or_none(atr),
             "stop_loss": (_to_float_or_none(stop_loss) if stop_loss is not None else None),
             "no_stop_loss": bool(no_stop_loss),
             "tps": list(tps),
@@ -4910,6 +5143,7 @@ class TelegramBridgeService:
         sync_cfg = dict(runtime_cfg.get("sync") or {})
         mode_plan = [
             ("advanced", bool(mode_cfg.get("advanced", True))),
+            ("advanced_v2", bool(mode_cfg.get("advanced_v2", False))),
             ("normal", bool(mode_cfg.get("normal", False))),
             ("sync", bool(mode_cfg.get("sync", False))),
         ]
@@ -4955,6 +5189,7 @@ class TelegramBridgeService:
                         now_ts=float(now_ts),
                         mode_source_tag=str(mode_source_tag),
                         sync_cfg=dict(sync_cfg),
+                        signal_confirm_sec=_to_float_or_none(runtime_cfg.get("signal_confirm_sec")),
                         audit_event_ts=event_ts,
                     )
                 executed = bool((sync_out or {}).get("executed"))
@@ -5026,44 +5261,6 @@ class TelegramBridgeService:
                 if int((reverse_out or {}).get("closed_count") or 0) > 0:
                     self._clear_indicator_recent_open(source_tag=str(mode_source_tag))
 
-                mode_guard = self._check_indicator_reversal_stability(
-                    combo_source_tag=str(mode_source_tag),
-                    incoming_direction=str(hint),
-                    now_ts=float(now_ts),
-                    force_wait=(int((reverse_out or {}).get("closed_count") or 0) > 0),
-                )
-                if not bool((mode_guard or {}).get("ready")):
-                    any_waiting = True
-                    if waiting_detail is None:
-                        waiting_detail = dict(mode_guard or {})
-                    mode_results.append(
-                        {
-                            "mode": str(mode),
-                            "ok": True,
-                            "executed": False,
-                            "reason": "reversal_guard_waiting",
-                            "message": "reversal_guard_waiting_after_close",
-                            "wait": dict(mode_guard or {}),
-                        }
-                    )
-                    self._queue_indicator_reversal_replay(
-                        combo_source_tag=str(mode_source_tag),
-                        terminal_family=str(family),
-                        payload={
-                            "indicator": str(indicator),
-                            "signal_profile": str(profile),
-                            "signal_hint": str(hint),
-                            "symbol": str(symbol_exec).strip().upper(),
-                            "timeframe": str(timeframe).strip().upper(),
-                            "message": str(message),
-                            "event_ts": event_ts,
-                            "bridge_event_type": "signal",
-                            "ingest_source": "bridge",
-                        },
-                        now_ts=float(now_ts),
-                    )
-                    continue
-
                 if self._has_live_open_for_source_tag_direction(
                     source_tag=str(mode_source_tag),
                     symbol=str(symbol_exec_raw),
@@ -5097,6 +5294,45 @@ class TelegramBridgeService:
                         }
                     )
                     market_closed_only = False
+                    continue
+
+                mode_guard = self._check_indicator_reversal_stability(
+                    combo_source_tag=str(mode_source_tag),
+                    incoming_direction=str(hint),
+                    now_ts=float(now_ts),
+                    force_wait=True,
+                    confirm_sec=_to_float_or_none(runtime_cfg.get("signal_confirm_sec")),
+                )
+                if not bool((mode_guard or {}).get("ready")):
+                    any_waiting = True
+                    if waiting_detail is None:
+                        waiting_detail = dict(mode_guard or {})
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "ok": True,
+                            "executed": False,
+                            "reason": "reversal_guard_waiting",
+                            "message": "reversal_guard_waiting_after_close",
+                            "wait": dict(mode_guard or {}),
+                        }
+                    )
+                    self._queue_indicator_reversal_replay(
+                        combo_source_tag=str(mode_source_tag),
+                        terminal_family=str(family),
+                        payload={
+                            "indicator": str(indicator),
+                            "signal_profile": str(profile),
+                            "signal_hint": str(hint),
+                            "symbol": str(symbol_exec).strip().upper(),
+                            "timeframe": str(timeframe).strip().upper(),
+                            "message": str(message),
+                            "event_ts": event_ts,
+                            "bridge_event_type": "signal",
+                            "ingest_source": "bridge",
+                        },
+                        now_ts=float(now_ts),
+                    )
                     continue
 
                 if str(mode) == "normal":
@@ -5134,7 +5370,7 @@ class TelegramBridgeService:
                             "indicator": str(indicator),
                             "event_ts": event_ts,
                         },
-                        execution_mode="advanced",
+                        execution_mode=("advanced_v2" if str(mode) == "advanced_v2" else "advanced"),
                     )
                     executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
                     deferred_market_closed = str(exec_msg or "").strip().lower().startswith("confirmation deferred: market closed")
@@ -5397,6 +5633,10 @@ class TelegramBridgeService:
             "entry_low": round(float(entry_price), int(max(0, digits))),
             "entry_high": round(float(entry_price), int(max(0, digits))),
             "entry_mid": round(float(entry_price), int(max(0, digits))),
+            "digits": int(digits),
+            "point": float(point),
+            "min_stop_dist": float(min_stop_dist),
+            "atr": _to_float_or_none(atr),
             "stop_loss": (_to_float_or_none(stop_loss) if stop_loss is not None else None),
             "no_stop_loss": bool(no_stop_loss),
             "tps": list(tps),
@@ -6423,6 +6663,7 @@ class TelegramBridgeService:
         entry_price: Optional[float] = None,
         initial_stop_loss: Optional[float] = None,
         no_stop_loss: Optional[bool] = None,
+        extra_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         key = f"{int(chat_id)}:{int(session_id)}:{int(trade_id)}:{int(broker_ticket)}"
         row = {
@@ -6460,8 +6701,70 @@ class TelegramBridgeService:
             "missing_seen_count": 0,
             "missing_first_ts": None,
         }
+        if isinstance(extra_state, dict) and extra_state:
+            for k, v in extra_state.items():
+                key_name = str(k or "").strip()
+                if not key_name:
+                    continue
+                row[key_name] = v
         with self._lock:
             self._active_confirmation_signal_ladders[str(key)] = row
+
+    def _build_advanced_v2_signal_plan(
+        self,
+        *,
+        signal: Dict[str, Any],
+        direction: str,
+        entry_price: float,
+        digits: int,
+        point: float,
+        min_stop_dist: float,
+        atr: Optional[float],
+    ) -> Dict[str, Any]:
+        side = str(direction or "").strip().upper()
+        d = 1.0 if side == "BUY" else -1.0
+        entry = float(entry_price)
+        slippage_buffer_pct = 0.0008
+        stop_loss_raw = _to_float_or_none(signal.get("stop_loss"))
+        if stop_loss_raw is not None and math.isfinite(float(stop_loss_raw)):
+            r_dist = abs(float(entry) - float(stop_loss_raw))
+        else:
+            r_dist = _to_float_or_none(signal.get("virtual_sl_distance")) or _to_float_or_none(atr) or 0.0
+        r_dist = float(max(float(r_dist), float(min_stop_dist) * 1.80, float(point) * 25.0, abs(float(entry)) * 0.0005))
+        raw_sl = float(entry - (d * float(r_dist)))
+        buffer_abs = float(abs(entry) * float(slippage_buffer_pct))
+        internal_sl = float(raw_sl - (d * buffer_abs))
+        tp_rr = [1.0, 2.0, 3.0, None]
+        tps = []
+        for idx, rr in enumerate(tp_rr, start=1):
+            if rr is None:
+                tps.append({"index": int(idx), "price": None})
+            else:
+                px = float(entry + (d * r_dist * float(rr)))
+                tps.append({"index": int(idx), "price": round(float(px), int(max(0, digits)))})
+        plan = {
+            "tps": list(tps),
+            "stage_weights": [0.25, 0.25, 0.25, 0.25],
+            "profit_lock_enabled": False,
+            "profit_lock_retrace_pct": None,
+            "profit_lock_arm_after_tp": None,
+            "profit_lock_min_peak_usd": None,
+            "profit_lock_min_hold_sec": None,
+            "profit_lock_min_close_usd": None,
+            "v2_cfg": {
+                "r_distance": float(r_dist),
+                "slippage_buffer_pct": float(slippage_buffer_pct),
+                "raw_sl": round(float(raw_sl), int(max(0, digits))),
+                "internal_sl": round(float(internal_sl), int(max(0, digits))),
+                "trail_atr_mult": 1.5,
+                "trail_chandelier": 2.0,
+                "trail_widen_adx": 40.0,
+                "cons_adx_thresh": 25.0,
+                "cons_atr_ratio": 0.7,
+                "cons_bb_thresh": 0.4,
+            },
+        }
+        return plan
 
     def _execute_confirmation_signal_auto(
         self,
@@ -6516,6 +6819,37 @@ class TelegramBridgeService:
         stage_mode = str(self._confirm_signal_tp_distribution_mode())
         force_single = bool(self._confirm_signal_force_single_trade_01())
         signal_profile = str(signal.get("source_profile") or audit_profile or "").strip().lower()
+        extra_ladder_state: Dict[str, Any] = {}
+        if str(exec_mode) == "advanced_v2":
+            digits_v2 = int(_to_float_or_none(signal.get("digits")) or 5)
+            point_v2 = _to_float_or_none(signal.get("point")) or 0.0001
+            min_stop_dist_v2 = _to_float_or_none(signal.get("min_stop_dist")) or 0.0
+            atr_v2 = _to_float_or_none(signal.get("atr"))
+            entry_v2 = _to_float_or_none(signal.get("entry_mid"))
+            if entry_v2 is None or float(entry_v2) <= 0.0:
+                entry_v2 = _to_float_or_none(signal.get("entry_high"))
+            if entry_v2 is None or float(entry_v2) <= 0.0:
+                entry_v2 = _to_float_or_none(signal.get("entry_low"))
+            if entry_v2 is not None and float(entry_v2) > 0.0:
+                v2_plan = self._build_advanced_v2_signal_plan(
+                    signal=signal,
+                    direction=direction,
+                    entry_price=float(entry_v2),
+                    digits=int(digits_v2),
+                    point=float(point_v2),
+                    min_stop_dist=float(min_stop_dist_v2),
+                    atr=_to_float_or_none(atr_v2),
+                )
+                tps_all = [dict(x) for x in (v2_plan.get("tps") or []) if isinstance(x, dict)]
+                signal["stage_weights"] = list(v2_plan.get("stage_weights") or [])
+                signal["profit_lock_enabled"] = v2_plan.get("profit_lock_enabled")
+                signal["profit_lock_retrace_pct"] = v2_plan.get("profit_lock_retrace_pct")
+                signal["profit_lock_arm_after_tp"] = v2_plan.get("profit_lock_arm_after_tp")
+                signal["profit_lock_min_peak_usd"] = v2_plan.get("profit_lock_min_peak_usd")
+                signal["profit_lock_min_hold_sec"] = v2_plan.get("profit_lock_min_hold_sec")
+                signal["profit_lock_min_close_usd"] = v2_plan.get("profit_lock_min_close_usd")
+                stage_mode = "advanced_v2_rr4"
+                extra_ladder_state["advanced_v2_cfg"] = dict(v2_plan.get("v2_cfg") or {})
         if force_single:
             # Emergency mode disables partial laddering, but keeps operator-selected lot sizing.
             stage_mode = "single_trade"
@@ -6597,7 +6931,7 @@ class TelegramBridgeService:
             )
             return f"Confirmation trade failed: {str(stage_err)}"
         take_profit = _to_float_or_none((active_tps[-1] or {}).get("price")) if active_tps else None
-        if take_profit is None:
+        if take_profit is None and str(exec_mode) != "advanced_v2":
             self._append_automation_execution_log(
                 source_type=audit_source_type,
                 source_name=audit_source_name,
@@ -6621,19 +6955,34 @@ class TelegramBridgeService:
         pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "tgc").strip().lower())[:8] or "tgc"
         marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
         try:
-            order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
+            if str(exec_mode) == "advanced_v2":
+                order_stop_loss = None
+            else:
+                order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
             data = svc.place_market_order(
                 symbol=str(symbol),
                 direction=str(direction),
                 lot_size=float(lot),
                 stop_loss=order_stop_loss,
-                take_profit=float(take_profit),
+                take_profit=(None if take_profit is None else float(take_profit)),
                 comment=str(marker),
             )
             if not bool((data or {}).get("ok")):
                 err_txt = str((data or {}).get("error") or "order_failed")
                 if self._is_invalid_stops_error(err_txt):
-                    if bool(allow_no_sl):
+                    if bool(allow_no_sl) or str(exec_mode) == "advanced_v2":
+                        if take_profit is None:
+                            retry_data = dict(data or {})
+                        else:
+                            retry_data = self._retry_order_for_invalid_tp_only(
+                                svc=svc,
+                                symbol=str(symbol),
+                                direction=str(direction),
+                                lot=float(lot),
+                                take_profit=float(take_profit),
+                                comment=str(marker),
+                            )
+                    elif bool(allow_no_sl):
                         retry_data = self._retry_order_for_invalid_tp_only(
                             svc=svc,
                             symbol=str(symbol),
@@ -6728,6 +7077,7 @@ class TelegramBridgeService:
                     entry_price=_to_float_or_none(signal.get("entry_mid")),
                     initial_stop_loss=_to_float_or_none(order_stop_loss),
                     no_stop_loss=bool(allow_no_sl),
+                    extra_state=dict(extra_ladder_state or {}),
                 )
             if broker_ticket > 0:
                 self._mark_indicator_recent_open(
@@ -6767,17 +7117,23 @@ class TelegramBridgeService:
                 deal_number=(int(_to_float_or_none((data or {}).get("deal")) or 0) or None),
             )
             stage_desc = " | ".join(
-                f"TP{int((row or {}).get('index') or 0)}={float((row or {}).get('price') or 0.0):.5f}"
+                (
+                    f"TP{int((row or {}).get('index') or 0)}=RUNNER"
+                    if _to_float_or_none((row or {}).get("price")) is None
+                    else f"TP{int((row or {}).get('index') or 0)}={float((row or {}).get('price') or 0.0):.5f}"
+                )
                 for row in active_tps
             )
             lot_desc = " / ".join(f"{float(x):.4f}" for x in stage_lots)
+            sl_text = "none (indicator mode)" if order_stop_loss is None else f"{float(order_stop_loss):.5f}"
+            final_tp_text = "runner_only" if take_profit is None else f"{float(take_profit):.5f}"
             return (
                 "Confirmation ladder executed\n"
                 "Execution: standalone_mt5\n"
                 f"Symbol: {str(symbol)} {str(timeframe)}\n"
                 f"Direction: {str(direction)}\n"
-                f"SL: {('none (indicator mode)' if allow_no_sl else f'{float(stop_loss):.5f}')}\n"
-                f"Final TP: {float(take_profit):.5f}\n"
+                f"SL: {sl_text}\n"
+                f"Final TP: {final_tp_text}\n"
                 f"Lot: {float((data or {}).get('lot_size') or lot):.4f}\n"
                 f"Stages: {int(len(stage_lots))}/{int(len(tps_all))}\n"
                 f"Stage mode: {stage_mode}\n"
@@ -7310,6 +7666,9 @@ class TelegramBridgeService:
         if entry is None or float(entry) <= 0.0:
             return {"ok": False, "updated": False, "error": "entry_price_unavailable"}
 
+        exec_mode = str((row or {}).get("execution_mode") or "").strip().lower()
+        is_v2 = str(exec_mode) == "advanced_v2"
+
         info: Dict[str, Any] = {}
         try:
             info = dict(svc.get_symbol_info(symbol=str(sym)) or {})
@@ -7321,12 +7680,69 @@ class TelegramBridgeService:
         freeze_points = _to_float_or_none(info.get("trade_freeze_level")) or 0.0
         min_stop_dist = float(max(0.0, float(stops_points + freeze_points) * float(point)))
 
-        ratios = list(self._confirm_sl_guard_lock_ratios())
-        ratio = float(ratios[min(len(ratios) - 1, max(0, tp_idx - 1))])
-        be_buffer = float(max(float(point) * 4.0, float(min_stop_dist) * 0.20))
-        profit_span = abs(float(target_px) - float(entry))
-        lock_dist = float(max(float(be_buffer), float(profit_span) * float(ratio)))
-        desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
+        if bool(is_v2):
+            v2_cfg = dict((row or {}).get("advanced_v2_cfg") or {})
+            r_dist = _to_float_or_none(v2_cfg.get("r_distance"))
+            if r_dist is None or float(r_dist) <= 0.0:
+                r_dist = abs(float(target_px) - float(entry))
+            r_dist = float(max(float(r_dist or 0.0), float(point) * 10.0))
+            slip_pct = _to_float_or_none(v2_cfg.get("slippage_buffer_pct"))
+            slip_pct = float(slip_pct) if (slip_pct is not None and math.isfinite(float(slip_pct))) else 0.0008
+            # TP1 -> BE(+buffer), TP2 -> +0.5R, TP3 -> +1R, TP4 no fixed SL move
+            if int(tp_idx) == 1:
+                be_off = float(max(float(point) * 2.0, abs(float(entry)) * float(slip_pct) * 0.5))
+                desired = float(entry + (be_off if direction == "BUY" else -be_off))
+            elif int(tp_idx) == 2:
+                desired = float(entry + ((0.5 * float(r_dist)) if direction == "BUY" else (-0.5 * float(r_dist))))
+            elif int(tp_idx) == 3:
+                desired = float(entry + ((1.0 * float(r_dist)) if direction == "BUY" else (-1.0 * float(r_dist))))
+            else:
+                return {"ok": True, "updated": False, "reason": "v2_runner_no_fixed_sl_move"}
+
+            existing_internal = _to_float_or_none(v2_cfg.get("internal_sl"))
+            if existing_internal is not None:
+                if direction == "BUY":
+                    desired = max(float(desired), float(existing_internal))
+                else:
+                    desired = min(float(desired), float(existing_internal))
+            if not math.isfinite(float(desired)) or float(desired) <= 0.0:
+                return {"ok": False, "updated": False, "error": "invalid_v2_internal_sl"}
+            desired = round(float(desired), int(max(0, digits)))
+            if existing_internal is not None and abs(float(desired) - float(existing_internal)) < max(float(point), 1e-9):
+                return {"ok": True, "updated": False, "reason": "v2_internal_sl_unchanged", "stop_loss": float(existing_internal)}
+
+            raw_visible = float(desired + ((abs(float(entry)) * float(slip_pct)) if direction == "BUY" else (-abs(float(entry)) * float(slip_pct))))
+            raw_visible = round(float(raw_visible), int(max(0, digits)))
+            v2_cfg["internal_sl"] = float(desired)
+            v2_cfg["raw_sl"] = float(raw_visible)
+            row["advanced_v2_cfg"] = dict(v2_cfg)
+            row["last_sl_update_tp_index"] = int(tp_idx)
+            row["last_applied_sl"] = float(desired)
+            self._append_automation_execution_log(
+                source_type=self._source_type_from_source_tag((row or {}).get("source_tag")),
+                source_name=str((row or {}).get("source_name") or "unknown"),
+                trigger="sl_guard_update",
+                status="success",
+                symbol=str(sym),
+                timeframe=str((row or {}).get("timeframe") or ""),
+                direction=str(direction),
+                ticket=int(ticket),
+                message=f"sl_moved_tp{int(tp_idx)}:{float(desired):.5f}",
+                profile=str((row or {}).get("profile") or "").strip().lower(),
+                indicator=str((row or {}).get("indicator") or "").strip(),
+                source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
+                max_profit=_to_float_or_none((row or {}).get("max_profit")),
+                max_loss=_to_float_or_none((row or {}).get("max_loss")),
+                execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
+            )
+            return {"ok": True, "updated": True, "stop_loss": float(desired), "raw_sl": float(raw_visible)}
+        else:
+            ratios = list(self._confirm_sl_guard_lock_ratios())
+            ratio = float(ratios[min(len(ratios) - 1, max(0, tp_idx - 1))])
+            be_buffer = float(max(float(point) * 4.0, float(min_stop_dist) * 0.20))
+            profit_span = abs(float(target_px) - float(entry))
+            lock_dist = float(max(float(be_buffer), float(profit_span) * float(ratio)))
+            desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
 
         tick: Dict[str, Any] = {}
         try:
@@ -7408,6 +7824,171 @@ class TelegramBridgeService:
         )
         return {"ok": False, "updated": False, "error": err_txt}
 
+    def _apply_confirmation_dynamic_stop(
+        self,
+        *,
+        svc: LiveTradingService,
+        row: Dict[str, Any],
+        pos: Dict[str, Any],
+        desired_stop: float,
+        reason_tag: str,
+    ) -> Dict[str, Any]:
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        direction = str((row or {}).get("direction") or "").strip().upper()
+        ticket = int(_to_float_or_none((row or {}).get("broker_ticket")) or 0)
+        if not sym or direction not in {"BUY", "SELL"} or ticket <= 0:
+            return {"ok": False, "updated": False, "error": "invalid_ladder_row"}
+        info: Dict[str, Any] = {}
+        try:
+            info = dict(svc.get_symbol_info(symbol=str(sym)) or {})
+        except Exception:
+            info = {}
+        digits = int(_to_float_or_none(info.get("digits")) or 5)
+        point = _to_float_or_none(info.get("point")) or (0.0001 if digits >= 3 else 0.01)
+        stops_points = _to_float_or_none(info.get("trade_stops_level")) or 0.0
+        freeze_points = _to_float_or_none(info.get("trade_freeze_level")) or 0.0
+        min_stop_dist = float(max(0.0, float(stops_points + freeze_points) * float(point)))
+        desired = _to_float_or_none(desired_stop)
+        if desired is None or (not math.isfinite(float(desired))) or float(desired) <= 0.0:
+            return {"ok": False, "updated": False, "error": "invalid_dynamic_sl"}
+        tick: Dict[str, Any] = {}
+        try:
+            tick = dict(svc.get_symbol_tick(symbol=str(sym), resolve_symbol=False) or {})
+        except Exception:
+            tick = {}
+        bid = _to_float_or_none(tick.get("bid"))
+        ask = _to_float_or_none(tick.get("ask"))
+        market_px = _to_float_or_none((pos or {}).get("current_price"))
+        if direction == "BUY":
+            ref = bid if bid is not None else market_px
+            if ref is not None and float(ref) > 0.0:
+                desired = min(float(desired), float(ref) - max(float(min_stop_dist), float(point) * 2.0))
+        else:
+            ref = ask if ask is not None else market_px
+            if ref is not None and float(ref) > 0.0:
+                desired = max(float(desired), float(ref) + max(float(min_stop_dist), float(point) * 2.0))
+        existing_sl = _to_float_or_none((pos or {}).get("stop_loss"))
+        if existing_sl is not None and float(existing_sl) > 0.0:
+            if direction == "BUY":
+                desired = max(float(desired), float(existing_sl))
+            else:
+                desired = min(float(desired), float(existing_sl))
+        desired = round(float(desired), int(max(0, digits)))
+        if existing_sl is not None and abs(float(desired) - float(existing_sl)) < max(float(point), 1e-9):
+            return {"ok": True, "updated": False, "reason": "sl_unchanged", "stop_loss": float(existing_sl)}
+        out = svc.modify_position_sl_tp(
+            symbol=str(sym),
+            position_ticket=int(ticket),
+            stop_loss=float(desired),
+            take_profit=_to_float_or_none((pos or {}).get("take_profit")),
+            comment=f"tg_{str(reason_tag or 'dynamic_sl')[:24]}",
+        )
+        if bool((out or {}).get("ok")):
+            row["last_applied_sl"] = float(desired)
+            self._append_automation_execution_log(
+                source_type=self._source_type_from_source_tag((row or {}).get("source_tag")),
+                source_name=str((row or {}).get("source_name") or "unknown"),
+                trigger="sl_guard_update",
+                status="success",
+                symbol=str(sym),
+                timeframe=str((row or {}).get("timeframe") or ""),
+                direction=str(direction),
+                ticket=int(ticket),
+                message=f"{str(reason_tag)}:{float(desired):.5f}",
+                profile=str((row or {}).get("profile") or "").strip().lower(),
+                indicator=str((row or {}).get("indicator") or "").strip(),
+                source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
+                max_profit=_to_float_or_none((row or {}).get("max_profit")),
+                max_loss=_to_float_or_none((row or {}).get("max_loss")),
+                execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
+            )
+            return {"ok": True, "updated": True, "stop_loss": float(desired)}
+        return {"ok": False, "updated": False, "error": str((out or {}).get("error") or "modify_failed")[:180]}
+
+    def _update_advanced_v2_runner_stop(
+        self,
+        *,
+        svc: LiveTradingService,
+        row: Dict[str, Any],
+        pos: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        direction = str((row or {}).get("direction") or "").strip().upper()
+        if direction not in {"BUY", "SELL"}:
+            return {"ok": False, "updated": False, "error": "invalid_direction"}
+        next_idx = int(_to_float_or_none((row or {}).get("next_tp_index")) or 1)
+        # Runner trailing after TP3.
+        if int(next_idx) < 4:
+            return {"ok": True, "updated": False, "reason": "runner_not_armed"}
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        tf = str((row or {}).get("timeframe") or "M5").strip().upper() or "M5"
+        bars = svc.get_recent_candles(symbol=str(sym), timeframe=str(tf), count=80, resolve_symbol=False)
+        atr_now = _to_float_or_none(self._calc_robust_atr_from_bars(bars, period=14))
+        if atr_now is None or float(atr_now) <= 0.0:
+            return {"ok": False, "updated": False, "error": "atr_unavailable"}
+        atr_20 = _to_float_or_none(self._calc_robust_atr_from_bars(bars, period=20))
+        adx = _to_float_or_none(self._calc_adx_from_bars(bars, period=14))
+        bb_width = _to_float_or_none(self._calc_bb_width_from_bars(bars, period=20, stdev_mult=2.0))
+        cfg = dict((row or {}).get("advanced_v2_cfg") or {})
+        trail_atr_mult = _to_float_or_none(cfg.get("trail_atr_mult"))
+        trail_chandelier = _to_float_or_none(cfg.get("trail_chandelier"))
+        trail_widen_adx = _to_float_or_none(cfg.get("trail_widen_adx"))
+        slip_pct = _to_float_or_none(cfg.get("slippage_buffer_pct"))
+        slip_pct = float(slip_pct) if (slip_pct is not None and math.isfinite(float(slip_pct))) else 0.0008
+        mult = float(trail_atr_mult) if trail_atr_mult is not None else 1.5
+        if adx is not None and float(adx) >= float(trail_widen_adx if trail_widen_adx is not None else 40.0):
+            mult = float(trail_chandelier) if trail_chandelier is not None else 2.0
+        current_price = _to_float_or_none((pos or {}).get("current_price"))
+        if current_price is None or float(current_price) <= 0.0:
+            return {"ok": False, "updated": False, "error": "current_price_unavailable"}
+        if direction == "BUY":
+            desired = float(current_price) - float(mult) * float(atr_now)
+        else:
+            desired = float(current_price) + float(mult) * float(atr_now)
+        info: Dict[str, Any] = {}
+        try:
+            info = dict(svc.get_symbol_info(symbol=str(sym)) or {})
+        except Exception:
+            info = {}
+        digits = int(_to_float_or_none(info.get("digits")) or 5)
+        point = _to_float_or_none(info.get("point")) or (0.0001 if digits >= 3 else 0.01)
+        desired = round(float(desired), int(max(0, digits)))
+        existing_internal = _to_float_or_none(cfg.get("internal_sl"))
+        if existing_internal is not None:
+            if direction == "BUY":
+                desired = max(float(desired), float(existing_internal))
+            else:
+                desired = min(float(desired), float(existing_internal))
+        if existing_internal is not None and abs(float(desired) - float(existing_internal)) < max(float(point), 1e-9):
+            return {"ok": True, "updated": False, "reason": "v2_internal_sl_unchanged"}
+        cfg["internal_sl"] = float(desired)
+        # Keep a visible/raw counterpart for audit readability.
+        entry = _to_float_or_none((pos or {}).get("entry_price"))
+        if entry is None or float(entry) <= 0.0:
+            entry = _to_float_or_none((row or {}).get("entry_price"))
+        if entry is not None and float(entry) > 0.0:
+            raw_visible = float(desired + ((abs(float(entry)) * float(slip_pct)) if direction == "BUY" else (-abs(float(entry)) * float(slip_pct))))
+            cfg["raw_sl"] = round(float(raw_visible), int(max(0, digits)))
+        row["advanced_v2_cfg"] = dict(cfg)
+        row["last_applied_sl"] = float(desired)
+        self._append_automation_execution_log(
+            source_type=self._source_type_from_source_tag((row or {}).get("source_tag")),
+            source_name=str((row or {}).get("source_name") or "unknown"),
+            trigger="sl_guard_update",
+            status="success",
+            symbol=str(sym),
+            timeframe=str((row or {}).get("timeframe") or ""),
+            direction=str(direction),
+            ticket=int(_to_float_or_none((row or {}).get("broker_ticket")) or 0),
+            message=f"sl_trail_v2_tp{int(next_idx)}:{float(desired):.5f}",
+            profile=str((row or {}).get("profile") or "").strip().lower(),
+            indicator=str((row or {}).get("indicator") or "").strip(),
+            source_tag=str((row or {}).get("source_tag") or "").strip().lower(),
+            max_profit=_to_float_or_none((row or {}).get("max_profit")),
+            max_loss=_to_float_or_none((row or {}).get("max_loss")),
+            execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
+        )
+        return {"ok": True, "updated": True, "stop_loss": float(desired)}
+
     def _push_confirmation_signal_ladders(self) -> None:
         with self._lock:
             ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
@@ -7476,12 +8057,50 @@ class TelegramBridgeService:
             current_price = _to_float_or_none(pos.get("current_price"))
             target_row = dict(tps[next_idx - 1]) if (next_idx - 1) < len(tps) else {}
             target_px = _to_float_or_none(target_row.get("price"))
-            if current_price is None or target_px is None:
+            if current_price is None:
+                with self._lock:
+                    self._active_confirmation_signal_ladders[str(key)] = dict(row)
+                continue
+            if execution_mode == "advanced_v2":
+                v2_cfg = dict((row or {}).get("advanced_v2_cfg") or {})
+                internal_sl = _to_float_or_none(v2_cfg.get("internal_sl"))
+                if internal_sl is not None:
+                    sl_hit = bool(float(current_price) < float(internal_sl)) if direction == "BUY" else bool(float(current_price) > float(internal_sl))
+                    if bool(sl_hit):
+                        close_out = svc.close_position(
+                            symbol=str(sym),
+                            position_ticket=int(ticket),
+                            comment="tg_sl_v2",
+                        )
+                        if bool((close_out or {}).get("ok")):
+                            self._append_closed_execution_log_from_row(
+                                row=dict(row),
+                                reason="sl_hit_v2",
+                                svc=svc,
+                            )
+                            remove_keys.append(str(key))
+                            continue
+            if target_px is None:
+                if execution_mode == "advanced_v2":
+                    _ = self._update_advanced_v2_runner_stop(
+                        svc=svc,
+                        row=row,
+                        pos=pos,
+                    )
                 with self._lock:
                     self._active_confirmation_signal_ladders[str(key)] = dict(row)
                 continue
             hit = bool(float(current_price) >= float(target_px)) if direction == "BUY" else bool(float(current_price) <= float(target_px))
             if not hit:
+                if execution_mode == "advanced_v2":
+                    _ = self._update_advanced_v2_runner_stop(
+                        svc=svc,
+                        row=row,
+                        pos=pos,
+                    )
+                    with self._lock:
+                        self._active_confirmation_signal_ladders[str(key)] = dict(row)
+                    continue
                 # Profit-lock: after configured TP stage, if live PnL retraces from peak by pct, close full.
                 row_profit_lock_enabled = (row.get("profit_lock_enabled") if "profit_lock_enabled" in row else None)
                 effective_profit_lock_enabled = bool(profit_lock_enabled) if row_profit_lock_enabled is None else bool(row_profit_lock_enabled)

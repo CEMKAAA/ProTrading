@@ -752,11 +752,14 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         enabled = p.get("enabled") if "enabled" in p else None
         lot_size = p.get("lot_size") if "lot_size" in p else None
         mode_advanced_enabled = p.get("mode_advanced_enabled") if "mode_advanced_enabled" in p else None
+        mode_advanced_v2_enabled = p.get("mode_advanced_v2_enabled") if "mode_advanced_v2_enabled" in p else None
         mode_normal_enabled = p.get("mode_normal_enabled") if "mode_normal_enabled" in p else None
         mode_sync_enabled = p.get("mode_sync_enabled") if "mode_sync_enabled" in p else None
         mode_advanced_lot = p.get("mode_advanced_lot") if "mode_advanced_lot" in p else None
+        mode_advanced_v2_lot = p.get("mode_advanced_v2_lot") if "mode_advanced_v2_lot" in p else None
         mode_normal_lot = p.get("mode_normal_lot") if "mode_normal_lot" in p else None
         mode_sync_lot = p.get("mode_sync_lot") if "mode_sync_lot" in p else None
+        signal_confirm_sec = p.get("signal_confirm_sec") if "signal_confirm_sec" in p else None
         sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
         sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
@@ -773,6 +776,12 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
                 mode_advanced_lot_val = float(mode_advanced_lot)
             except Exception:
                 return {"ok": False, "error": "invalid_mode_advanced_lot"}
+        mode_advanced_v2_lot_val = None
+        if mode_advanced_v2_lot is not None:
+            try:
+                mode_advanced_v2_lot_val = float(mode_advanced_v2_lot)
+            except Exception:
+                return {"ok": False, "error": "invalid_mode_advanced_v2_lot"}
         mode_normal_lot_val = None
         if mode_normal_lot is not None:
             try:
@@ -785,6 +794,12 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
                 mode_sync_lot_val = float(mode_sync_lot)
             except Exception:
                 return {"ok": False, "error": "invalid_mode_sync_lot"}
+        signal_confirm_sec_val = None
+        if signal_confirm_sec is not None:
+            try:
+                signal_confirm_sec_val = float(signal_confirm_sec)
+            except Exception:
+                return {"ok": False, "error": "invalid_signal_confirm_sec"}
         result = svc.update_indicator_bridge_instance_settings(
             terminal_family=str(terminal_family),
             indicator=str(indicator),
@@ -793,11 +808,14 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             enabled=(bool(enabled) if enabled is not None else None),
             lot_size=lot_val,
             mode_advanced_enabled=(bool(mode_advanced_enabled) if mode_advanced_enabled is not None else None),
+            mode_advanced_v2_enabled=(bool(mode_advanced_v2_enabled) if mode_advanced_v2_enabled is not None else None),
             mode_normal_enabled=(bool(mode_normal_enabled) if mode_normal_enabled is not None else None),
             mode_sync_enabled=(bool(mode_sync_enabled) if mode_sync_enabled is not None else None),
             mode_advanced_lot=mode_advanced_lot_val,
+            mode_advanced_v2_lot=mode_advanced_v2_lot_val,
             mode_normal_lot=mode_normal_lot_val,
             mode_sync_lot=mode_sync_lot_val,
+            signal_confirm_sec=signal_confirm_sec_val,
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),
