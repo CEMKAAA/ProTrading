@@ -299,9 +299,12 @@ class TelegramBridgeService:
         self._confirm_signal_dedupe: Dict[str, float] = {}
         self._source_reentry_guard: Dict[str, Dict[str, Any]] = {}
         self._mt4_signal_dedupe: Dict[str, float] = {}
+        self._indicator_event_id_seen: Dict[str, float] = {}
         self._mt4_bridge_combo_registry: Dict[str, float] = {}
         self._indicator_reversal_pending: Dict[str, Dict[str, Any]] = {}
         self._indicator_reversal_replay_inflight: set[str] = set()
+        self._indicator_last_valid_signal: Dict[str, Dict[str, Any]] = {}
+        self._indicator_clear_fallback_last_ts: Dict[str, float] = {}
         self._indicator_mode_exec_locks: Dict[str, threading.Lock] = {}
         self._indicator_recent_open: Dict[str, Dict[str, Any]] = {}
         self._indicator_sync_last_dir: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -787,6 +790,21 @@ class TelegramBridgeService:
         return float(max(300.0, min(172800.0, float(raw))))
 
     @staticmethod
+    def _confirm_signal_reentry_guard_stale_no_active_sec() -> float:
+        try:
+            raw = float(
+                TelegramBridgeService._get_env_value(
+                    "TELEGRAM_CONFIRM_SIGNAL_REENTRY_GUARD_STALE_NO_ACTIVE_SEC",
+                    "120",
+                )
+            )
+        except Exception:
+            raw = 120.0
+        if not math.isfinite(float(raw)):
+            raw = 120.0
+        return float(max(10.0, min(3600.0, float(raw))))
+
+    @staticmethod
     def _profile_requires_tp_progress_gate(profile: Any) -> bool:
         p = str(profile or "").strip().lower()
         return p in {"henry", "gold_vip"}
@@ -820,6 +838,7 @@ class TelegramBridgeService:
         key = self._reentry_guard_key(str(source_key), str(symbol), str(direction))
         now_ts = float(time.time())
         ttl = float(self._confirm_signal_reentry_guard_ttl_sec())
+        stale_no_active_sec = float(self._confirm_signal_reentry_guard_stale_no_active_sec())
         with self._lock:
             row = self._source_reentry_guard.get(str(key))
             if not isinstance(row, dict):
@@ -832,6 +851,29 @@ class TelegramBridgeService:
                 row["updated_ts"] = float(now_ts)
                 self._source_reentry_guard[str(key)] = dict(row)
                 return False
+            if waiting and updated_ts > 0.0 and (now_ts - float(updated_ts)) > stale_no_active_sec:
+                has_active_ladder = False
+                for ladder in self._active_confirmation_signal_ladders.values():
+                    if not isinstance(ladder, dict):
+                        continue
+                    ladder_src = str(ladder.get("source_key") or "").strip()
+                    ladder_sym = self._normalize_signal_symbol(ladder.get("symbol"))
+                    ladder_dir = str(ladder.get("direction") or "").strip().upper()
+                    if ladder_src != str(source_key).strip():
+                        continue
+                    if ladder_sym != str(symbol):
+                        continue
+                    if ladder_dir != str(direction):
+                        continue
+                    has_active_ladder = True
+                    break
+                if not has_active_ladder:
+                    # Self-heal stale guard records left behind by older flows.
+                    row["awaiting_tp"] = False
+                    row["updated_ts"] = float(now_ts)
+                    row["last_event"] = "stale_guard_auto_cleared"
+                    self._source_reentry_guard[str(key)] = dict(row)
+                    return False
             return bool(waiting)
 
     def _mark_reentry_signal_started(self, *, source_key: str, signal: Dict[str, Any], profile: str) -> None:
@@ -858,6 +900,36 @@ class TelegramBridgeService:
             },
         }
         with self._lock:
+            self._source_reentry_guard[str(key)] = dict(row)
+
+    def _mark_reentry_progress_from_execution(
+        self,
+        *,
+        source_key: str,
+        symbol: Any,
+        direction: Any,
+        event_kind: str,
+    ) -> None:
+        src = str(source_key or "").strip()
+        sym = self._normalize_signal_symbol(symbol)
+        side = str(direction or "").strip().upper()
+        evt = str(event_kind or "").strip().lower()
+        if not src or not sym or side not in {"BUY", "SELL"}:
+            return
+        key = self._reentry_guard_key(str(src), str(sym), str(side))
+        now_ts = float(time.time())
+        with self._lock:
+            row = dict(self._source_reentry_guard.get(str(key)) or {})
+            if not isinstance(row, dict) or not row:
+                return
+            if evt == "tp_hit":
+                row["awaiting_tp"] = False
+                row["tp_seen"] = True
+                row["last_event"] = "tp_hit_exec"
+            else:
+                row["awaiting_tp"] = False
+                row["last_event"] = (str(evt) if str(evt) else "closed_exec")
+            row["updated_ts"] = float(now_ts)
             self._source_reentry_guard[str(key)] = dict(row)
 
     def _apply_reentry_progress_from_message(self, *, source_key: str, text: Any, msg_kind: str) -> None:
@@ -1086,6 +1158,7 @@ class TelegramBridgeService:
         if (
             re.search(r"(?im)\bclose\s+it\b", raw_norm)
             or re.search(r"(?im)\bclose\s+now\b", raw_norm)
+            or re.search(r"(?im)\bsave\s+(?:your\s+)?profit(?:s)?\b", raw_norm)
             or re.search(r"(?im)\bwait\s+for\s+better\s+sniper\s+entry\b", raw_norm)
         ):
             return "close_instruction"
@@ -1127,6 +1200,7 @@ class TelegramBridgeService:
         if not (
             re.search(r"(?im)\bclose\s+it\b", raw)
             or re.search(r"(?im)\bclose\s+now\b", raw)
+            or re.search(r"(?im)\bsave\s+(?:your\s+)?profit(?:s)?\b", raw)
             or re.search(r"(?im)\bwait\s+for\s+better\s+sniper\s+entry\b", raw)
         ):
             return {}
@@ -1592,6 +1666,12 @@ class TelegramBridgeService:
             stage="position_close",
             stage_status="closed",
             error_code=str(reason or "").strip().lower() or None,
+        )
+        self._mark_reentry_progress_from_execution(
+            source_key=str(meta.get("source_key") or ""),
+            symbol=str(symbol),
+            direction=str(meta.get("direction") or "").strip().upper(),
+            event_kind=str(reason or "closed"),
         )
 
     @staticmethod
@@ -2378,12 +2458,13 @@ class TelegramBridgeService:
     @staticmethod
     def _mt4_exec_dedupe_window_sec() -> float:
         try:
-            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_MT4_DEDUPE_WINDOW_SEC", "3600"))
+            # Bridge dedupe is for near-term retry noise, not long-term direction memory.
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_MT4_DEDUPE_WINDOW_SEC", "30"))
         except Exception:
-            raw = 3600.0
+            raw = 30.0
         if not math.isfinite(float(raw)):
-            raw = 3600.0
-        return max(30.0, min(86400.0, float(raw)))
+            raw = 30.0
+        return max(5.0, min(86400.0, float(raw)))
 
     @staticmethod
     def _mt4_bridge_source_lock_sec() -> float:
@@ -2404,6 +2485,41 @@ class TelegramBridgeService:
         if not math.isfinite(float(raw)):
             raw = 20.0
         return max(0.0, min(300.0, float(raw)))
+
+    @staticmethod
+    def _indicator_clear_fallback_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _indicator_clear_fallback_max_age_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_MAX_AGE_SEC", "1800"))
+        except Exception:
+            raw = 1800.0
+        if not math.isfinite(float(raw)):
+            raw = 1800.0
+        return max(5.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _indicator_clear_fallback_cooldown_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_COOLDOWN_SEC", "20"))
+        except Exception:
+            raw = 20.0
+        if not math.isfinite(float(raw)):
+            raw = 20.0
+        return max(1.0, min(600.0, float(raw)))
+
+    @staticmethod
+    def _indicator_event_id_window_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_EVENT_ID_WINDOW_SEC", "86400"))
+        except Exception:
+            raw = 86400.0
+        if not math.isfinite(float(raw)):
+            raw = 86400.0
+        return max(60.0, min(7.0 * 86400.0, float(raw)))
 
     @staticmethod
     def _legacy_mt4_log_ingest_enabled() -> bool:
@@ -4792,6 +4908,155 @@ class TelegramBridgeService:
                     removed += 1
         return int(removed)
 
+    def _clear_indicator_signal_dedupe_for_combo_prefix(self, *, combo_prefix: str) -> int:
+        prefix = str(combo_prefix or "").strip().lower()
+        if not prefix:
+            return 0
+        match_prefix = str(prefix) + "|"
+        removed = 0
+        with self._lock:
+            keys = list((self._mt4_signal_dedupe or {}).keys())
+            for k in keys:
+                kk = str(k or "").strip().lower()
+                if kk.startswith(match_prefix):
+                    self._mt4_signal_dedupe.pop(str(k), None)
+                    removed += 1
+        return int(removed)
+
+    def _check_and_mark_indicator_event_id(
+        self,
+        *,
+        family: str,
+        indicator_key: str,
+        symbol: str,
+        timeframe: str,
+        event_id: str,
+        now_ts: float,
+    ) -> bool:
+        eid = str(event_id or "").strip()
+        if not eid:
+            return True
+        key = (
+            f"{str(family or '').strip().lower()}|{str(indicator_key or '').strip().lower()}|"
+            f"{str(symbol or '').strip().upper()}|{str(timeframe or '').strip().upper()}|{eid}"
+        )
+        win = float(self._indicator_event_id_window_sec())
+        with self._lock:
+            prev = float(self._indicator_event_id_seen.get(str(key)) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) <= float(win):
+                return False
+            self._indicator_event_id_seen[str(key)] = float(now_ts)
+            if len(self._indicator_event_id_seen) > 20000:
+                cutoff = float(now_ts) - float(win)
+                self._indicator_event_id_seen = {
+                    str(k): float(v)
+                    for k, v in self._indicator_event_id_seen.items()
+                    if float(v) >= float(cutoff)
+                }
+        return True
+
+    def _record_indicator_last_valid_direction(
+        self,
+        *,
+        combo_prefix: str,
+        direction: str,
+        now_ts: float,
+        indicator: str,
+        profile: str,
+        symbol: str,
+        timeframe: str,
+    ) -> None:
+        combo = str(combo_prefix or "").strip().lower()
+        side = str(direction or "").strip().upper()
+        if not combo or side not in {"BUY", "SELL"}:
+            return
+        with self._lock:
+            prev_row = dict(self._indicator_last_valid_signal.get(str(combo)) or {})
+        current_dir = str(prev_row.get("direction") or "").strip().upper()
+        previous_dir = str(prev_row.get("previous_direction") or "").strip().upper()
+        current_seen = float(_to_float_or_none(prev_row.get("seen_ts")) or 0.0)
+        previous_seen = float(_to_float_or_none(prev_row.get("previous_seen_ts")) or 0.0)
+
+        if side != current_dir:
+            if current_dir in {"BUY", "SELL"}:
+                previous_dir = str(current_dir)
+                previous_seen = float(current_seen or now_ts)
+            current_dir = str(side)
+            current_seen = float(now_ts)
+        else:
+            current_seen = float(now_ts)
+
+        row = {
+            "direction": str(current_dir),
+            "seen_ts": float(current_seen),
+            "previous_direction": (str(previous_dir) if previous_dir in {"BUY", "SELL"} else ""),
+            "previous_seen_ts": (float(previous_seen) if previous_dir in {"BUY", "SELL"} else 0.0),
+            "indicator": str(indicator or ""),
+            "profile": str(profile or ""),
+            "symbol": str(symbol or "").strip().upper(),
+            "timeframe": str(timeframe or "").strip().upper(),
+        }
+        with self._lock:
+            self._indicator_last_valid_signal[str(combo)] = dict(row)
+            if len(self._indicator_last_valid_signal) > 10000:
+                cutoff = float(now_ts) - float(self._indicator_clear_fallback_max_age_sec())
+                self._indicator_last_valid_signal = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_last_valid_signal.items()
+                    if float(_to_float_or_none((v or {}).get("seen_ts")) or 0.0) >= cutoff
+                }
+
+    def _read_indicator_last_valid_direction(self, *, combo_prefix: str, now_ts: float) -> Tuple[Optional[str], float]:
+        combo = str(combo_prefix or "").strip().lower()
+        if not combo:
+            return (None, 0.0)
+        with self._lock:
+            row = dict(self._indicator_last_valid_signal.get(str(combo)) or {})
+        side_current = str((row or {}).get("direction") or "").strip().upper()
+        ts_current = float(_to_float_or_none((row or {}).get("seen_ts")) or 0.0)
+        side_prev = str((row or {}).get("previous_direction") or "").strip().upper()
+        ts_prev = float(_to_float_or_none((row or {}).get("previous_seen_ts")) or 0.0)
+
+        # Clear fallback should prefer previous stable direction when available.
+        if side_prev in {"BUY", "SELL"} and ts_prev > 0.0:
+            side = str(side_prev)
+            seen_ts = float(ts_prev)
+        else:
+            side = str(side_current)
+            seen_ts = float(ts_current)
+
+        age = float(max(0.0, float(now_ts) - float(seen_ts))) if seen_ts > 0.0 else 0.0
+        if side not in {"BUY", "SELL"} or seen_ts <= 0.0:
+            return (None, age)
+        if age > float(self._indicator_clear_fallback_max_age_sec()):
+            return (None, age)
+        return (str(side), age)
+
+    def _check_indicator_clear_fallback_cooldown(self, *, combo_prefix: str, now_ts: float) -> bool:
+        combo = str(combo_prefix or "").strip().lower()
+        if not combo:
+            return False
+        cool = float(self._indicator_clear_fallback_cooldown_sec())
+        with self._lock:
+            prev = float(self._indicator_clear_fallback_last_ts.get(str(combo)) or 0.0)
+        if prev > 0.0 and (float(now_ts) - float(prev)) < float(cool):
+            return False
+        return True
+
+    def _mark_indicator_clear_fallback(self, *, combo_prefix: str, now_ts: float) -> None:
+        combo = str(combo_prefix or "").strip().lower()
+        if not combo:
+            return
+        with self._lock:
+            self._indicator_clear_fallback_last_ts[str(combo)] = float(now_ts)
+            if len(self._indicator_clear_fallback_last_ts) > 10000:
+                cutoff = float(now_ts) - float(max(60.0, self._indicator_clear_fallback_max_age_sec()))
+                self._indicator_clear_fallback_last_ts = {
+                    str(k): float(v)
+                    for k, v in self._indicator_clear_fallback_last_ts.items()
+                    if float(v) >= cutoff
+                }
+
     def _queue_indicator_reversal_replay(
         self,
         *,
@@ -5084,6 +5349,7 @@ class TelegramBridgeService:
         timeframe = str(p.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
         message = str(p.get("message") or "").strip()
         event_ts = p.get("event_ts")
+        event_id = str(p.get("event_id") or "").strip()
         source = f"{family.upper()}:{indicator}"
         combo_prefix = (
             f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}"
@@ -5132,17 +5398,93 @@ class TelegramBridgeService:
 
         if bridge_event_type in {"signal_clear", "clear", "state_clear"} or hint in neutral_hints:
             removed = self._clear_indicator_reversal_pending_for_combo_prefix(combo_prefix=str(combo_prefix))
+            removed_dedupe = self._clear_indicator_signal_dedupe_for_combo_prefix(combo_prefix=str(combo_prefix))
+            runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
+                family=family,
+                indicator=indicator,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            fallback_result: Optional[Dict[str, Any]] = None
+            fallback_reason = ""
+            fallback_dir = ""
+            fallback_age_sec: Optional[float] = None
+            now_clear_ts = float(time.time())
+            if self._indicator_clear_fallback_enabled():
+                fallback_dir, fallback_age = self._read_indicator_last_valid_direction(
+                    combo_prefix=str(combo_prefix),
+                    now_ts=float(now_clear_ts),
+                )
+                fallback_age_sec = float(fallback_age)
+                if fallback_dir in {"BUY", "SELL"} and self._check_indicator_clear_fallback_cooldown(
+                    combo_prefix=str(combo_prefix),
+                    now_ts=float(now_clear_ts),
+                ):
+                    self._mark_indicator_clear_fallback(
+                        combo_prefix=str(combo_prefix),
+                        now_ts=float(now_clear_ts),
+                    )
+                    fallback_reason = "fallback_to_latest_valid_after_clear"
+                    fallback_payload = {
+                        "indicator": str(indicator),
+                        "signal_profile": str(profile),
+                        "signal_hint": str(fallback_dir),
+                        "symbol": str(symbol),
+                        "timeframe": str(timeframe),
+                        "message": str(fallback_reason),
+                        "event_ts": datetime.now(timezone.utc).isoformat(),
+                        "ingest_source": "bridge",
+                        "bridge_event_type": "signal",
+                    }
+                    try:
+                        fb = self.ingest_indicator_bridge_signal(
+                            terminal_family=str(family),
+                            payload=dict(fallback_payload),
+                        )
+                        fallback_result = dict(fb or {})
+                    except Exception as exc:
+                        fallback_result = {
+                            "ok": False,
+                            "executed": False,
+                            "error": f"fallback_exception:{type(exc).__name__}:{str(exc)[:180]}",
+                        }
+                elif fallback_dir in {"BUY", "SELL"}:
+                    fallback_reason = "fallback_skipped_cooldown"
+                else:
+                    fallback_reason = "fallback_unavailable_no_last_valid"
+            if str(fallback_reason or "").strip():
+                self._append_automation_execution_log(
+                    source_type="mt_indicator",
+                    source_name=str(indicator),
+                    trigger="signal_clear_fallback",
+                    status=("executed" if bool((fallback_result or {}).get("executed")) else "skipped"),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    direction=(str(fallback_dir) if fallback_dir in {"BUY", "SELL"} else None),
+                    profile=str(profile),
+                    indicator=str(indicator),
+                    source_tag=str(combo_prefix),
+                    message=str(fallback_reason),
+                    stage="fallback",
+                    stage_status=("executed" if bool((fallback_result or {}).get("executed")) else "skipped"),
+                    stage_payload={
+                        "fallback_direction": (str(fallback_dir) if fallback_dir in {"BUY", "SELL"} else ""),
+                        "fallback_age_sec": (_to_float_or_none(fallback_age_sec)),
+                        "fallback_result": (dict(fallback_result) if isinstance(fallback_result, dict) else None),
+                    },
+                    error_code=(None if bool((fallback_result or {}).get("executed")) else str(fallback_reason)),
+                )
             return {
                 "ok": True,
                 "executed": False,
                 "reason": "signal_cleared",
                 "cleared_pending_count": int(removed),
-                "runtime": self._resolve_indicator_bridge_instance_runtime_config(
-                    family=family,
-                    indicator=indicator,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                ),
+                "cleared_dedupe_count": int(removed_dedupe),
+                "fallback_reason": str(fallback_reason),
+                "fallback_direction": (str(fallback_dir) if fallback_dir in {"BUY", "SELL"} else ""),
+                "fallback_age_sec": (_to_float_or_none(fallback_age_sec)),
+                "fallback_result": (dict(fallback_result) if isinstance(fallback_result, dict) else None),
+                "runtime": runtime_cfg,
                 "bridge": registered,
             }
 
@@ -5152,6 +5494,22 @@ class TelegramBridgeService:
             return {"ok": False, "error": "missing_symbol", "executed": False}
 
         now_ts = time.time()
+        if event_id:
+            if not self._check_and_mark_indicator_event_id(
+                family=str(family),
+                indicator_key=str(indicator_key),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                event_id=str(event_id),
+                now_ts=float(now_ts),
+            ):
+                return {
+                    "ok": True,
+                    "executed": False,
+                    "reason": "duplicate_event_id",
+                    "event_id": str(event_id),
+                    "bridge": registered,
+                }
         combo_key = f"{family}|{indicator_key}|{symbol}|{timeframe}"
         lock_sec = float(self._mt4_bridge_source_lock_sec())
         with self._lock:
@@ -5615,6 +5973,24 @@ class TelegramBridgeService:
             )
             if not first_message:
                 first_message = str(exec_msg or "")
+
+        has_stable_direction_signal = bool(executed_any)
+        if not has_stable_direction_signal:
+            for row in (mode_results or []):
+                reason_row = str((row or {}).get("reason") or "").strip().lower()
+                if reason_row in {"same_direction_already_open", "recent_open_debounce"}:
+                    has_stable_direction_signal = True
+                    break
+        if has_stable_direction_signal:
+            self._record_indicator_last_valid_direction(
+                combo_prefix=str(combo_prefix),
+                direction=str(hint),
+                now_ts=float(now_ts),
+                indicator=str(indicator),
+                profile=str(profile),
+                symbol=str(symbol_exec),
+                timeframe=str(timeframe),
+            )
 
         if (not executed_any) and bool(any_waiting):
             return {
@@ -6616,9 +6992,16 @@ class TelegramBridgeService:
                 audit_ctx=dict(row.get("audit_ctx") or {}),
             )
             msg_l = str(exec_msg or "").strip().lower()
-            ok_opened = msg_l.startswith("confirmation ladder executed")
+            ok_opened = self._is_confirmation_exec_opened(exec_msg)
             deferred = msg_l.startswith("confirmation deferred: market closed")
             if ok_opened:
+                src_profile = str(signal.get("source_profile") or "").strip().lower()
+                if self._profile_requires_tp_progress_gate(src_profile):
+                    self._mark_reentry_signal_started(
+                        source_key=str(row.get("source_key") or ""),
+                        signal=dict(signal),
+                        profile=str(src_profile),
+                    )
                 remove_keys.append(str(key))
                 self._send_text(
                     int(row.get("chat_id") or 0),
@@ -7096,6 +7479,17 @@ class TelegramBridgeService:
         }
         return plan
 
+    @staticmethod
+    def _is_confirmation_exec_opened(exec_msg: Any) -> bool:
+        msg = str(exec_msg or "").strip().lower()
+        if not msg:
+            return False
+        return bool(
+            msg.startswith("confirmation ladder executed")
+            or msg.startswith("normal mode order executed")
+            or msg == "exec_ok"
+        )
+
     def _execute_confirmation_signal_auto(
         self,
         *,
@@ -7124,6 +7518,9 @@ class TelegramBridgeService:
         allow_no_sl = bool(signal.get("no_stop_loss"))
         timeframe = str(signal.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper() or "M5"
         tps_all = [dict(r) for r in (signal.get("tps") if isinstance(signal.get("tps"), list) else []) if isinstance(r, dict)]
+        signal_profile = str(signal.get("source_profile") or audit_profile or "").strip().lower()
+        if (not audit_profile) and signal_profile:
+            audit_profile = str(signal_profile)
         if not trace_id:
             trace_id = self._build_execution_trace_id(
                 source_key=str(audit_source_key),
@@ -7193,7 +7590,6 @@ class TelegramBridgeService:
             self._confirm_signal_force_single_trade_01()
             or (allow_msg_single and bool(signal.get("force_single_trade")))
         )
-        signal_profile = str(signal.get("source_profile") or audit_profile or "").strip().lower()
         extra_ladder_state: Dict[str, Any] = {}
         if str(exec_mode) == "advanced_v2":
             digits_v2 = int(_to_float_or_none(signal.get("digits")) or 5)
@@ -7546,6 +7942,12 @@ class TelegramBridgeService:
                     "active_tps": [dict(x) for x in active_tps],
                 },
             )
+            if self._profile_requires_tp_progress_gate(signal_profile) and str(audit_source_key).strip():
+                self._mark_reentry_signal_started(
+                    source_key=str(audit_source_key),
+                    signal=dict(signal),
+                    profile=str(signal_profile),
+                )
             stage_desc = " | ".join(
                 (
                     f"TP{int((row or {}).get('index') or 0)}=RUNNER"
@@ -8651,6 +9053,12 @@ class TelegramBridgeService:
                     hit_tp_index=int(next_idx),
                     target_px=float(target_px),
                 )
+                self._mark_reentry_progress_from_execution(
+                    source_key=str(row.get("source_key") or ""),
+                    symbol=str(sym),
+                    direction=str(direction),
+                    event_kind="tp_hit",
+                )
                 self._append_automation_execution_log(
                     source_type=self._source_type_from_source_tag(row.get("source_tag")),
                     source_name=str(row.get("source_name") or "unknown"),
@@ -8999,6 +9407,14 @@ class TelegramBridgeService:
                     "trace_id": str(signal.get("trace_id") or "").strip() or None,
                 },
             )
+            source_profile = str((signal or {}).get("source_profile") or "").strip().lower()
+            pending_source_key = str(pending_row.get("source_key") or fallback_key)
+            if self._profile_requires_tp_progress_gate(source_profile) and self._is_confirmation_exec_opened(exec_msg):
+                self._mark_reentry_signal_started(
+                    source_key=str(pending_source_key),
+                    signal=dict(signal),
+                    profile=str(source_profile),
+                )
             out = f"Confirm Signal received.\n\n{exec_msg}"
             if push_only:
                 self._send_text(int(chat_id), out, reply_markup=None)
@@ -9160,12 +9576,6 @@ class TelegramBridgeService:
             source_label=str(source_label),
         )
         if require_confirm:
-            if self._profile_requires_tp_progress_gate(source_profile):
-                self._mark_reentry_signal_started(
-                    source_key=str(source_key),
-                    signal=dict(signal),
-                    profile=str(source_profile),
-                )
             queued_confirm = self._queue_pending_confirmation_signal(
                 chat_id=int(chat_id),
                 source_label=str(source_label),
@@ -9193,12 +9603,6 @@ class TelegramBridgeService:
             out = f"{message}\n\nPending confirmation stored. Waiting for message: Confirm Signal"
         else:
             if self._confirm_signal_wait_entry_zone():
-                if self._profile_requires_tp_progress_gate(source_profile):
-                    self._mark_reentry_signal_started(
-                        source_key=str(source_key),
-                        signal=dict(signal),
-                        profile=str(source_profile),
-                    )
                 queued = self._queue_entry_signal(
                     chat_id=int(chat_id),
                     signal=dict(signal),
@@ -9240,12 +9644,6 @@ class TelegramBridgeService:
                     f"Queue ID: {str((queued or {}).get('id') or '-')}"
                 )
             else:
-                if self._profile_requires_tp_progress_gate(source_profile):
-                    self._mark_reentry_signal_started(
-                        source_key=str(source_key),
-                        signal=dict(signal),
-                        profile=str(source_profile),
-                    )
                 exec_msg = self._execute_confirmation_signal_auto(
                     chat_id=int(chat_id),
                     signal=signal,
@@ -9258,6 +9656,12 @@ class TelegramBridgeService:
                         "trace_id": str(trace_id),
                     },
                 )
+                if self._profile_requires_tp_progress_gate(source_profile) and self._is_confirmation_exec_opened(exec_msg):
+                    self._mark_reentry_signal_started(
+                        source_key=str(source_key),
+                        signal=dict(signal),
+                        profile=str(source_profile),
+                    )
                 out = f"{message}\n\n{exec_msg}"
         if push_only:
             self._send_text(int(chat_id), out, reply_markup=None)

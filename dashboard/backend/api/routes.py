@@ -641,6 +641,31 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
                 bridge_payload["lot_override"] = float(lot_override)
             except Exception:
                 return {"ok": False, "error": "invalid_lot_override"}
+        # Pass-through telemetry fields used by RSI bridge EAs.
+        if "rsi_value" in p:
+            try:
+                bridge_payload["rsi_value"] = float(p.get("rsi_value"))
+            except Exception:
+                return {"ok": False, "error": "invalid_rsi_value"}
+        if "value" in p and "rsi_value" not in bridge_payload:
+            try:
+                bridge_payload["value"] = float(p.get("value"))
+            except Exception:
+                return {"ok": False, "error": "invalid_telemetry_value"}
+        if "indicator_tf" in p:
+            bridge_payload["indicator_tf"] = str(p.get("indicator_tf") or "").strip().upper()
+        if "rsi_period" in p:
+            try:
+                bridge_payload["rsi_period"] = float(p.get("rsi_period"))
+            except Exception:
+                return {"ok": False, "error": "invalid_rsi_period"}
+        if p.get("event_id") is not None:
+            bridge_payload["event_id"] = str(p.get("event_id") or "").strip()
+        if p.get("event_attempt") is not None:
+            try:
+                bridge_payload["event_attempt"] = int(float(p.get("event_attempt")))
+            except Exception:
+                return {"ok": False, "error": "invalid_event_attempt"}
 
         out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=bridge_payload)
         return {
@@ -705,6 +730,31 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
                 bridge_payload["lot_override"] = float(lot_override)
             except Exception:
                 return {"ok": False, "error": "invalid_lot_override"}
+        # Pass-through telemetry fields used by RSI bridge EAs.
+        if "rsi_value" in p:
+            try:
+                bridge_payload["rsi_value"] = float(p.get("rsi_value"))
+            except Exception:
+                return {"ok": False, "error": "invalid_rsi_value"}
+        if "value" in p and "rsi_value" not in bridge_payload:
+            try:
+                bridge_payload["value"] = float(p.get("value"))
+            except Exception:
+                return {"ok": False, "error": "invalid_telemetry_value"}
+        if "indicator_tf" in p:
+            bridge_payload["indicator_tf"] = str(p.get("indicator_tf") or "").strip().upper()
+        if "rsi_period" in p:
+            try:
+                bridge_payload["rsi_period"] = float(p.get("rsi_period"))
+            except Exception:
+                return {"ok": False, "error": "invalid_rsi_period"}
+        if p.get("event_id") is not None:
+            bridge_payload["event_id"] = str(p.get("event_id") or "").strip()
+        if p.get("event_attempt") is not None:
+            try:
+                bridge_payload["event_attempt"] = int(float(p.get("event_attempt")))
+            except Exception:
+                return {"ok": False, "error": "invalid_event_attempt"}
 
         out = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=bridge_payload)
         return {

@@ -395,6 +395,16 @@ We have done already 100+ Pips profit
     assert str(hint.get("direction") or "") == "SELL"
 
 
+def test_save_profit_message_classified_as_close_instruction():
+    raw = "Save Profit Guys 4761"
+    assert TelegramBridgeService._classify_confirm_signal_message(raw) == "close_instruction"
+    hint = TelegramBridgeService._parse_close_instruction_signal_hint(raw)
+    assert bool(hint.get("is_close_instruction")) is True
+    # Save-profit style messages usually have no symbol/direction hint.
+    assert str(hint.get("symbol") or "") == ""
+    assert str(hint.get("direction") or "") == ""
+
+
 def test_classify_fx_mastermind_tp_hit_with_superscript_is_not_signal():
     raw = """
 #XAUUSD_BUY
@@ -509,6 +519,85 @@ SL 4787 Use lot size small
     )
     assert isinstance(out_b_after_tp, str) and "EXEC_OK" in out_b_after_tp
     assert seen["exec"] == 2
+
+
+def test_henry_require_confirm_does_not_arm_reentry_before_execution(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
+    monkeypatch.setattr(svc, "_confirm_signal_requires_confirm_for_sources", lambda source_names: True)
+    monkeypatch.setattr(svc, "_confirm_signal_wait_entry_zone", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_dedupe_window_sec", lambda: 0.0)
+
+    chat = {"id": -77, "title": "HENRY TRADER", "type": "channel"}
+    msg = {"chat": chat}
+    sig_a = """
+#XAUUSD_BUY 4805 / 4800
+TP 4808- TP 4811 - TP 4814
+TP 4817- TP 4820- TP 4823
+TP 4830
+SL 4792 Use lot size small
+"""
+    sig_b = """
+#XAUUSD_BUY 4801 / 4798
+TP 4804- TP 4807 - TP 4810
+TP 4813- TP 4816- TP 4820
+TP 4823
+SL 4787 Use lot size small
+"""
+
+    out_a = svc._handle_confirmation_signal_message(
+        chat_id=123,
+        msg=msg,
+        chat=chat,
+        text=sig_a,
+        push_only=False,
+    )
+    out_b = svc._handle_confirmation_signal_message(
+        chat_id=123,
+        msg=msg,
+        chat=chat,
+        text=sig_b,
+        push_only=False,
+    )
+
+    assert isinstance(out_a, str) and "Pending confirmation stored" in out_a
+    assert isinstance(out_b, str) and "Pending confirmation stored" in out_b
+    assert "Signal ignored (previous cycle still has no TP progress)" not in str(out_b)
+
+
+def test_reentry_progress_from_execution_tp_hit_releases_gate():
+    svc = TelegramBridgeService()
+    source_key = "123:henry trader"
+    signal = {"symbol": "XAUUSD", "direction": "BUY", "entry_low": 1.0, "entry_high": 2.0, "stop_loss": 0.5}
+    svc._mark_reentry_signal_started(source_key=source_key, signal=signal, profile="henry")
+    assert svc._should_block_reentry_before_tp(source_key=source_key, signal=signal) is True
+
+    svc._mark_reentry_progress_from_execution(
+        source_key=source_key,
+        symbol="XAUUSD",
+        direction="BUY",
+        event_kind="tp_hit",
+    )
+    assert svc._should_block_reentry_before_tp(source_key=source_key, signal=signal) is False
+
+
+def test_reentry_guard_auto_clears_when_stale_without_active_ladder(monkeypatch):
+    svc = TelegramBridgeService()
+    source_key = "123:henry trader"
+    signal = {"symbol": "XAUUSD", "direction": "BUY", "entry_low": 1.0, "entry_high": 2.0, "stop_loss": 0.5}
+    svc._mark_reentry_signal_started(source_key=source_key, signal=signal, profile="henry")
+    key = svc._reentry_guard_key(source_key, "XAUUSD", "BUY")
+    with svc._lock:
+        row = dict(svc._source_reentry_guard.get(key) or {})
+        row["updated_ts"] = float(time.time()) - 300.0
+        svc._source_reentry_guard[key] = row
+    monkeypatch.setattr(svc, "_confirm_signal_reentry_guard_stale_no_active_sec", lambda: 30.0)
+
+    assert svc._should_block_reentry_before_tp(source_key=source_key, signal=signal) is False
+    with svc._lock:
+        row2 = dict(svc._source_reentry_guard.get(key) or {})
+    assert bool(row2.get("awaiting_tp", True)) is False
 
 
 def test_confirmation_signal_waits_for_confirm_before_execute(monkeypatch):
@@ -2435,6 +2524,137 @@ def test_ingest_indicator_bridge_signal_reversal_guard_timer_replays_without_new
     svc.stop()
 
 
+def test_indicator_signal_clear_fallback_reopens_previous_valid_direction(monkeypatch):
+    svc = TelegramBridgeService()
+    state = {"open_dir": None, "exec_dirs": []}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "resolved_symbol": "BTCUSDM",
+                "digits": 2,
+                "point": 0.01,
+                "trade_stops_level": 10,
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+            }
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            return {"bid": 74000.0, "ask": 74001.0, "last": 74000.5}
+
+        @staticmethod
+        def get_recent_candles(symbol, timeframe, count, resolve_symbol=False):
+            out = []
+            base = 73900.0
+            for i in range(int(count)):
+                c = base + i
+                out.append({"time": i, "open": c - 0.5, "high": c + 1.0, "low": c - 1.0, "close": c})
+            return out
+
+        @staticmethod
+        def get_open_positions(symbol):
+            if str(state.get("open_dir") or "") in {"BUY", "SELL"}:
+                return [{"ticket": 900001, "direction": str(state.get("open_dir")), "symbol": "BTCUSDM"}]
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda _profile: True)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_regime_mode", lambda _profile: "range")
+    monkeypatch.setattr(svc, "_indicator_clear_fallback_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_indicator_clear_fallback_max_age_sec", lambda: 3600.0)
+    monkeypatch.setattr(svc, "_indicator_clear_fallback_cooldown_sec", lambda: 0.0)
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt5",
+            "indicator": "ZULU",
+            "symbol": "BTCUSDM",
+            "timeframe": "M1",
+            "instance_key": "mt5|zulu|BTCUSDM|M1",
+            "automation_mode": "explicit",
+            "automation_enabled": True,
+            "effective_automation_enabled": True,
+            "lot_size": 0.5,
+            "execution_modes": {"advanced": True, "advanced_v2": False, "normal": False, "sync": False},
+            "mode_lots": {"advanced": 0.5},
+            "sync": {"direction_tf": "M5", "entry_tf": "M1", "exit_tf": "M1", "reentry_enabled": True},
+        },
+    )
+    monkeypatch.setattr(
+        svc,
+        "_check_indicator_reversal_stability",
+        lambda **kwargs: {"ok": True, "ready": True, "reason": "reversal_guard_passed"},
+    )
+
+    def _fake_close_reverse(**kwargs):
+        incoming = str(kwargs.get("incoming_direction") or "").strip().upper()
+        if str(state.get("open_dir") or "") in {"BUY", "SELL"} and str(state.get("open_dir")) != incoming:
+            state["open_dir"] = None
+            return {"ok": True, "closed_count": 1, "failed_count": 0}
+        return {"ok": True, "closed_count": 0, "failed_count": 0}
+
+    monkeypatch.setattr(svc, "_close_mt4_reverse_positions", _fake_close_reverse)
+
+    def _fake_has_live(**kwargs):
+        wanted = str(kwargs.get("direction") or "").strip().upper()
+        return str(state.get("open_dir") or "") == wanted
+
+    monkeypatch.setattr(svc, "_has_live_open_for_source_tag_direction", _fake_has_live)
+
+    def _fake_exec(**kwargs):
+        sig = dict(kwargs.get("signal") or {})
+        d = str(sig.get("direction") or "").strip().upper()
+        state["open_dir"] = d
+        state["exec_dirs"].append(str(d))
+        return "Confirmation ladder executed\nTicket: 777"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    base_payload = {
+        "indicator": "SupplyDemand\\ZULU_Wave_ArrowsV3Alerts @FundedMillionAiress",
+        "signal_profile": "supplydemand",
+        "symbol": "BTCUSDM",
+        "timeframe": "M1",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+        "ingest_source": "bridge",
+        "bridge_event_type": "signal",
+    }
+
+    p_buy = dict(base_payload)
+    p_buy["signal_hint"] = "BUY"
+    p_buy["message"] = "buy_steady"
+    out_buy = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=p_buy)
+    assert out_buy.get("ok") is True
+    assert out_buy.get("executed") is True
+    assert state["open_dir"] == "BUY"
+
+    p_sell = dict(base_payload)
+    p_sell["signal_hint"] = "SELL"
+    p_sell["message"] = "sell_steady"
+    out_sell = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=p_sell)
+    assert out_sell.get("ok") is True
+    assert out_sell.get("executed") is True
+    assert state["open_dir"] == "SELL"
+
+    p_clear = dict(base_payload)
+    p_clear["bridge_event_type"] = "signal_clear"
+    p_clear["signal_hint"] = "NONE"
+    p_clear["message"] = "clear_after_sell"
+    out_clear = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=p_clear)
+    assert out_clear.get("ok") is True
+    assert out_clear.get("reason") == "signal_cleared"
+    assert str(out_clear.get("fallback_direction") or "") == "BUY"
+    fb = dict(out_clear.get("fallback_result") or {})
+    assert bool(fb.get("executed")) is True
+    assert state["open_dir"] == "BUY"
+    assert state["exec_dirs"][-1] == "BUY"
+
+
 def test_close_mt4_reverse_positions_isolated_by_source_tag(monkeypatch):
     svc = TelegramBridgeService()
     closed = []
@@ -3180,6 +3400,56 @@ def test_ingest_indicator_bridge_signal_register_only(monkeypatch):
     mt5 = svc.get_mt5_indicator_bot_monitor(limit=50)
     assert len(mt5.get("bot_rows") or []) == 1
     assert str(mt5["bot_rows"][0]["indicator"]) == "Alchemy Pulse Indicateor"
+
+
+def test_ingest_indicator_bridge_signal_event_id_idempotent(monkeypatch):
+    svc = TelegramBridgeService()
+
+    monkeypatch.setattr(
+        svc,
+        "_resolve_indicator_bridge_instance_runtime_config",
+        lambda **kwargs: {
+            "terminal_family": "mt5",
+            "indicator": str(kwargs.get("indicator") or ""),
+            "symbol": str(kwargs.get("symbol") or "").upper(),
+            "timeframe": str(kwargs.get("timeframe") or "").upper(),
+            "instance_key": "mt5|alchemy pulse indicateor|USDCADM|M1",
+            "automation_mode": "explicit",
+            "automation_enabled": False,
+            "effective_automation_enabled": False,
+            "lot_size": 0.02,
+        },
+    )
+    monkeypatch.setattr(svc, "_indicator_event_id_window_sec", lambda: 3600.0)
+
+    payload = {
+        "indicator": "Alchemy Pulse Indicateor",
+        "signal_profile": "alchemy",
+        "signal_hint": "BUY",
+        "symbol": "USDCADM",
+        "timeframe": "M1",
+        "bridge_event_type": "signal",
+        "event_id": "evt-bridge-001",
+        "event_attempt": 1,
+        "message": "Alchemy BUY",
+        "event_ts": "2026-04-10T09:10:00+00:00",
+    }
+
+    first = svc.ingest_indicator_bridge_signal(
+        terminal_family="mt5",
+        payload=dict(payload),
+    )
+    assert bool(first.get("ok")) is True
+    assert str(first.get("reason") or "") == "instance_disabled"
+
+    second = svc.ingest_indicator_bridge_signal(
+        terminal_family="mt5",
+        payload=dict(payload),
+    )
+    assert bool(second.get("ok")) is True
+    assert bool(second.get("executed")) is False
+    assert str(second.get("reason") or "") == "duplicate_event_id"
+    assert str(second.get("event_id") or "") == "evt-bridge-001"
 
 
 def test_ingest_indicator_bridge_signal_respects_instance_disabled_by_family(monkeypatch):

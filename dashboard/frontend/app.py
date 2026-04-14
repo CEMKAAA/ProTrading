@@ -3,7 +3,7 @@ ProTrading Dashboard - Flask Frontend Application
 Enterprise-level trading dashboard with backtesting capabilities
 """
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, make_response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, make_response, Response, stream_with_context
 import requests
 from datetime import datetime
 import os
@@ -1552,6 +1552,72 @@ def indicator_bridge_execution_log_export_proxy():
     out.headers['Content-Type'] = response.headers.get('Content-Type', 'application/octet-stream')
     out.headers['Content-Disposition'] = response.headers.get('Content-Disposition', 'attachment; filename="indicator_execution_audit.bin"')
     return out
+
+
+@app.route('/api/indicator-bridge/rsi-telemetry')
+def indicator_bridge_rsi_telemetry_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    if request.args.get('terminal_family') is not None:
+        params['terminal_family'] = request.args.get('terminal_family')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/rsi-telemetry',
+        params=params,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load RSI telemetry'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/rsi-telemetry/stream')
+def indicator_bridge_rsi_telemetry_stream_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    if request.args.get('terminal_family') is not None:
+        params['terminal_family'] = request.args.get('terminal_family')
+
+    upstream_url = f"{API_BASE_URL}/api/v1/indicator-bridge/rsi-telemetry/stream"
+    try:
+        upstream = requests.get(
+            upstream_url,
+            params=params,
+            stream=True,
+            timeout=(5, 65),
+        )
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': f'RSI stream backend unreachable: {type(exc).__name__}: {str(exc)[:180]}'}), 502
+
+    if not upstream.ok:
+        body = ''
+        try:
+            body = upstream.text[:240]
+        except Exception:
+            body = ''
+        return jsonify({'ok': False, 'error': body or 'Failed to open RSI telemetry stream'}), upstream.status_code
+
+    def _generate():
+        try:
+            for line in upstream.iter_lines(decode_unicode=True):
+                if line is None:
+                    continue
+                yield f"{line}\n"
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+
+    headers = {
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive',
+    }
+    return Response(stream_with_context(_generate()), mimetype='text/event-stream', headers=headers)
 
 
 @app.route('/api/simulation/sessions/<int:session_id>/tools/<tool_id>/scan', methods=['POST'])

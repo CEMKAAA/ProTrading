@@ -15,13 +15,14 @@ input int    InpBuyBufferIndex = 0;
 input int    InpSellBufferIndex = 1;
 input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g. "14,0,1"
 input int    InpSignalShift = 0;     // 0=current bar, 1=closed bar
-input int    InpPollSeconds = 1;     // timer interval
+input int    InpPollSeconds = 3;     // timer interval (default 3s, min 1s)
 input bool   InpOneSignalPerBar = true;
 input bool   InpEmitOnlyOnDirectionChange = true; // true => emit only BUY<->SELL flips
 input bool   InpSendInitialSignalOnStart = true;  // true => first observed direction is emitted
 input bool   InpResetDirectionOnNoSignal = true;  // true => NONE resets direction state
 input int    InpResendSameDirectionAfterSeconds = 0; // 0 disables periodic resend
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
+input int    InpMaxPendingEvents = 200;
 input bool   InpInvertDirection = false; // quick fix for indicators with reversed buffers
 input bool   InpSendRegistrationOnInit = true;
 input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for fast BUY/SELL map check
@@ -47,6 +48,19 @@ datetime g_lastHeartbeatAt = 0;
 bool     g_observedInitialized = false;
 double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
+
+struct PendingBridgeEvent
+{
+   string eventType;
+   string direction;
+   double signalValue;
+   datetime signalBarTime;
+   string eventId;
+   int attempts;
+   datetime lastAttemptAt;
+};
+
+PendingBridgeEvent g_pendingEvents[];
 
 string _tf_to_string(int tf)
 {
@@ -105,6 +119,161 @@ string _normalize_path(string apiPath)
 string _build_endpoint(string baseUrl, string apiPath)
 {
    return _normalize_base_url(baseUrl) + _normalize_path(apiPath);
+}
+
+string _build_event_id(string eventType, string direction, datetime signalBarTime)
+{
+   string seed = StringFormat(
+      "%s|%s|%s|%s|%s|%I64d",
+      _trim(eventType),
+      _trim(direction),
+      Symbol(),
+      _tf_to_string(Period()),
+      InpIndicatorName,
+      (long)signalBarTime
+   );
+   return seed;
+}
+
+int _find_pending_event_by_id(string eventId)
+{
+   string eid = _trim(eventId);
+   if(StringLen(eid) <= 0)
+      return -1;
+   int n = ArraySize(g_pendingEvents);
+   for(int i = 0; i < n; i++)
+   {
+      if(g_pendingEvents[i].eventId == eid)
+         return i;
+   }
+   return -1;
+}
+
+void _remove_pending_event_at(int idx)
+{
+   int n = ArraySize(g_pendingEvents);
+   if(idx < 0 || idx >= n)
+      return;
+   for(int i = idx; i < n - 1; i++)
+      g_pendingEvents[i] = g_pendingEvents[i + 1];
+   ArrayResize(g_pendingEvents, n - 1);
+}
+
+void _mark_send_success(string eventType, string direction, datetime signalBarTime)
+{
+   string evt = _trim(eventType);
+   string dir = _trim(direction);
+   if(evt == "signal")
+   {
+      int d = 0;
+      if(dir == "BUY")
+         d = 1;
+      else if(dir == "SELL")
+         d = -1;
+      if(d != 0)
+      {
+         g_lastSentBar = signalBarTime;
+         g_lastSentDir = d;
+         g_lastSentAt = TimeCurrent();
+         if(g_lastSentAt <= 0)
+            g_lastSentAt = TimeLocal();
+         g_lastFailedSendAt = 0;
+      }
+   }
+   else if(evt == "heartbeat" || evt == "register")
+   {
+      datetime nowTs = TimeCurrent();
+      if(nowTs <= 0)
+         nowTs = TimeLocal();
+      g_lastHeartbeatAt = nowTs;
+   }
+}
+
+void _queue_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId)
+{
+   string eid = _trim(eventId);
+   if(StringLen(eid) <= 0)
+      eid = _build_event_id(eventType, direction, signalBarTime);
+
+   int existing = _find_pending_event_by_id(eid);
+   if(existing >= 0)
+   {
+      g_pendingEvents[existing].eventType = _trim(eventType);
+      g_pendingEvents[existing].direction = _trim(direction);
+      g_pendingEvents[existing].signalValue = signalValue;
+      g_pendingEvents[existing].signalBarTime = signalBarTime;
+      return;
+   }
+
+   int n = ArraySize(g_pendingEvents);
+   int maxN = InpMaxPendingEvents;
+   if(maxN < 10)
+      maxN = 10;
+   if(maxN > 2000)
+      maxN = 2000;
+   if(n >= maxN)
+   {
+      _remove_pending_event_at(0);
+      n = ArraySize(g_pendingEvents);
+   }
+
+   ArrayResize(g_pendingEvents, n + 1);
+   g_pendingEvents[n].eventType = _trim(eventType);
+   g_pendingEvents[n].direction = _trim(direction);
+   g_pendingEvents[n].signalValue = signalValue;
+   g_pendingEvents[n].signalBarTime = signalBarTime;
+   g_pendingEvents[n].eventId = eid;
+   g_pendingEvents[n].attempts = 0;
+   g_pendingEvents[n].lastAttemptAt = 0;
+}
+
+bool _flush_pending_events()
+{
+   int n = ArraySize(g_pendingEvents);
+   if(n <= 0)
+      return true;
+
+   datetime nowTs = TimeCurrent();
+   if(nowTs <= 0)
+      nowTs = TimeLocal();
+   int retrySec = InpRetryFailedSendEverySeconds;
+   if(retrySec < 1)
+      retrySec = 1;
+
+   for(int i = 0; i < ArraySize(g_pendingEvents); i++)
+   {
+      PendingBridgeEvent ev = g_pendingEvents[i];
+      if(ev.attempts > 0 && ev.lastAttemptAt > 0 && nowTs > 0 && (nowTs - ev.lastAttemptAt) < retrySec)
+         continue;
+      int nextAttempt = ev.attempts + 1;
+      bool ok = _post_bridge_event(ev.eventType, ev.direction, ev.signalValue, ev.signalBarTime, ev.eventId, nextAttempt);
+      if(ok)
+      {
+         _mark_send_success(ev.eventType, ev.direction, ev.signalBarTime);
+         _remove_pending_event_at(i);
+         i--;
+         continue;
+      }
+      g_pendingEvents[i].attempts = nextAttempt;
+      g_pendingEvents[i].lastAttemptAt = nowTs;
+      return false;
+   }
+   return (ArraySize(g_pendingEvents) == 0);
+}
+
+bool _send_or_queue_event(string eventType, string direction, double signalValue, datetime signalBarTime)
+{
+   string eid = _build_event_id(eventType, direction, signalBarTime);
+   bool ok = _post_bridge_event(eventType, direction, signalValue, signalBarTime, eid, 1);
+   if(ok)
+   {
+      _mark_send_success(eventType, direction, signalBarTime);
+      _flush_pending_events();
+      return true;
+   }
+   _queue_bridge_event(eventType, direction, signalValue, signalBarTime, eid);
+   _flush_pending_events();
+   return false;
 }
 
 bool _is_supported_webrequest_endpoint(string endpoint, string &reason)
@@ -289,7 +458,7 @@ void _debug_startup_snapshot()
    }
 }
 
-bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime)
+bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId = "", int eventAttempt = 1)
 {
    string symbol = Symbol();
    string timeframe = _tf_to_string(Period());
@@ -312,6 +481,8 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"timeframe\":\"" + _json_escape(timeframe) + "\","
       "\"signal_profile\":\"" + _json_escape(InpSignalProfile) + "\","
       "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
+      "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\","
+      "\"event_attempt\":" + IntegerToString((eventAttempt < 1) ? 1 : eventAttempt) + ","
       "\"message\":\"" + _json_escape(msg) + "\","
       "\"bridge_token\":\"" + _json_escape(InpBridgeToken) + "\""
       "}";
@@ -352,12 +523,18 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
          if(InpDebugPrint)
             Print("MT4Bridge sent ", eventKind, " ", dir, " ", symbol, " ", timeframe,
                   " bar=", TimeToString(signalBarTime, TIME_DATE|TIME_SECONDS),
+                  " event_id=", _trim(eventId),
+                  " attempt=", IntegerToString((eventAttempt < 1) ? 1 : eventAttempt),
                   " endpoint=", endpoint, " response=", resultText);
          return true;
       }
 
       if(InpDebugPrint)
-         Print("MT4Bridge POST failed code=", httpCode, " err=", err, " endpoint=", endpoint, " response=", resultText);
+         Print("MT4Bridge POST failed code=", httpCode, " err=", err,
+               " event=", eventKind, " dir=", dir,
+               " event_id=", _trim(eventId),
+               " attempt=", IntegerToString((eventAttempt < 1) ? 1 : eventAttempt),
+               " endpoint=", endpoint, " response=", resultText);
    }
 
    return false;
@@ -406,7 +583,7 @@ void _check_and_send()
          g_lastObservedDir = 0;
       if(hadDirection)
       {
-         _post_bridge_event("signal_clear", "NONE", 0.0, barTime);
+         _send_or_queue_event("signal_clear", "NONE", 0.0, barTime);
       }
       g_observedInitialized = true;
       return;
@@ -471,16 +648,7 @@ void _check_and_send()
    if(!shouldSend)
       return;
 
-   if(_post_bridge_event("signal", dirText, signalPrice, barTime))
-   {
-      g_lastSentBar = barTime;
-      g_lastSentDir = direction;
-      g_lastSentAt = TimeCurrent();
-      if(g_lastSentAt <= 0)
-         g_lastSentAt = TimeLocal();
-      g_lastFailedSendAt = 0;
-   }
-   else
+   if(!_send_or_queue_event("signal", dirText, signalPrice, barTime))
    {
       g_lastFailedSendAt = TimeCurrent();
       if(g_lastFailedSendAt <= 0)
@@ -521,8 +689,7 @@ int OnInit()
       datetime nowTs = TimeCurrent();
       if(nowTs <= 0)
          nowTs = TimeLocal();
-      if(_post_bridge_event("register", "", 0.0, nowTs))
-         g_lastHeartbeatAt = nowTs;
+      _send_or_queue_event("register", "", 0.0, nowTs);
    }
    // Try one immediate read/send at startup so current direction is visible without waiting for timer.
    _check_and_send();
@@ -548,9 +715,10 @@ void OnTimer()
          nowTs = TimeLocal();
       if(nowTs > 0 && (g_lastHeartbeatAt <= 0 || (nowTs - g_lastHeartbeatAt) >= InpHeartbeatSeconds))
       {
-         if(_post_bridge_event("heartbeat", "", 0.0, nowTs))
-            g_lastHeartbeatAt = nowTs;
+         _send_or_queue_event("heartbeat", "", 0.0, nowTs);
       }
    }
+   _flush_pending_events();
    _check_and_send();
+   _flush_pending_events();
 }
