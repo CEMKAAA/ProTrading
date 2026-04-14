@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| ProTrading MT5 Bridge EA                                         |
 //| Sends indicator BUY/SELL signals directly to ProTrading backend. |
 //| File name intentionally matches existing MT4 bridge naming.      |
@@ -19,6 +19,8 @@ input int    InpResendSameDirectionAfterSeconds = 0;
 input int    InpRetryFailedSendEverySeconds = 2;
 input bool   InpInvertDirection = false;
 input bool   InpSendRegistrationOnInit = true;
+input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for fast BUY/SELL map check
+input int    InpStartupProbeMaxBuffer = 8; // probe [0..N-1] on init when debug is enabled
 input int    InpHeartbeatSeconds = 300; // keepalive every 5 minutes
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
@@ -112,6 +114,17 @@ bool _is_signal_value(double v)
    if(MathAbs(v) < InpSignalAbsMin)
       return false;
    return true;
+}
+
+string _signal_state_text(bool buySignal, bool sellSignal)
+{
+   if(buySignal && sellSignal)
+      return "AMBIGUOUS";
+   if(buySignal)
+      return "BUY";
+   if(sellSignal)
+      return "SELL";
+   return "NONE";
 }
 
 bool _parse_iCustom_params()
@@ -295,6 +308,49 @@ double _buffer_value(int bufferIndex, int barShift)
    if(copied < 1)
       return EMPTY_VALUE;
    return values[0];
+}
+
+void _debug_startup_snapshot()
+{
+   if(!InpDebugPrint || !InpStartupProbeOnInit)
+      return;
+
+   datetime barTime = iTime(_Symbol, PERIOD_CURRENT, InpSignalShift);
+   double buyVal = _buffer_value(InpBuyBufferIndex, InpSignalShift);
+   double sellVal = _buffer_value(InpSellBufferIndex, InpSignalShift);
+   bool buySignal = InpAllowBuy && _is_signal_value(buyVal);
+   bool sellSignal = InpAllowSell && _is_signal_value(sellVal);
+   string stateText = _signal_state_text(buySignal, sellSignal);
+   string indicatorForLog = (StringLen(g_activeIndicatorName) > 0) ? g_activeIndicatorName : InpIndicatorName;
+
+   if(InpInvertDirection)
+   {
+      if(stateText == "BUY")
+         stateText = "SELL";
+      else if(stateText == "SELL")
+         stateText = "BUY";
+   }
+
+   Print("MT5Bridge startup snapshot: indicator=", indicatorForLog,
+         " shift=", IntegerToString(InpSignalShift),
+         " bar=", TimeToString(barTime, TIME_DATE|TIME_SECONDS),
+         " buy[", IntegerToString(InpBuyBufferIndex), "]=", DoubleToString(buyVal, 8),
+         " sell[", IntegerToString(InpSellBufferIndex), "]=", DoubleToString(sellVal, 8),
+         " state=", stateText,
+         " invert=", (InpInvertDirection ? "true" : "false"));
+
+   int maxBuf = InpStartupProbeMaxBuffer;
+   if(maxBuf < 0)
+      maxBuf = 0;
+   if(maxBuf > 32)
+      maxBuf = 32;
+   for(int i = 0; i < maxBuf; i++)
+   {
+      double v = _buffer_value(i, InpSignalShift);
+      bool active = _is_signal_value(v);
+      Print("MT5Bridge startup probe: buffer[", IntegerToString(i), "]=",
+            DoubleToString(v, 8), " active=", (active ? "true" : "false"));
+   }
 }
 
 bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime)
@@ -506,6 +562,7 @@ int OnInit()
       Print("MT5Bridge endpoint(primary): ", _build_endpoint(InpApiBaseUrl, InpApiPath));
       Print("MT5Bridge reminder: add URL to MT5 WebRequest whitelist.");
    }
+   _debug_startup_snapshot();
    if(InpSendRegistrationOnInit)
    {
       datetime nowTs = TimeCurrent();
@@ -514,6 +571,8 @@ int OnInit()
       if(_post_bridge_event("register", "", 0.0, nowTs))
          g_lastHeartbeatAt = nowTs;
    }
+   // Try one immediate read/send at startup so current direction is visible without waiting for timer.
+   _check_and_send();
    return INIT_SUCCEEDED;
 }
 

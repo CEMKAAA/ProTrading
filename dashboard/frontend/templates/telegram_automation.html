@@ -33,20 +33,11 @@
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="tg-wait-entry-zone">
                         <label class="form-check-label" for="tg-wait-entry-zone">Wait Entry Signal (Zone)</label>
-                        <div class="form-text">Açıkken (no-confirm kanallarda) fiyat entry aralığına gelince emir açılır. Kapalıyken mesaj gelir gelmez açılır.</div>
+                        <div id="tg-wait-entry-zone-hint" class="form-text">Açıkken (no-confirm kanallarda) fiyat entry aralığına gelince emir açılır. Kapalıyken mesaj gelir gelmez açılır.</div>
                     </div>
 
-                    <div class="row g-2 mb-2">
-                        <div class="col-md-6">
-                            <label for="tg-require-confirm-channels" class="form-label">Confirm Required Channels</label>
-                            <textarea id="tg-require-confirm-channels" class="form-control" rows="2" placeholder="Elite Pips Academy"></textarea>
-                            <div class="form-text">Bu listede olan kanallarda işlem açmadan önce mutlaka onay mesajı gerekir.</div>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="tg-no-confirm-channels" class="form-label">No Confirm Channels</label>
-                            <textarea id="tg-no-confirm-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
-                            <div class="form-text">Bu listede olan kanallarda onay beklenmez, sinyal doğrudan giriş akışına alınır.</div>
-                        </div>
+                    <div id="tg-mode-summary" class="small text-muted border rounded p-2 mb-3">
+                        Mode summary: -
                     </div>
 
                     <div class="mb-3">
@@ -68,55 +59,77 @@
                         </div>
                     </div>
 
-                    <div class="row g-2 mt-1">
-                        <div class="col-md-6">
-                            <label for="tg-distribution" class="form-label">TP Distribution</label>
-                            <select id="tg-distribution" class="form-select">
-                                <option value="equal">Equal</option>
-                                <option value="front_loaded">Front Loaded</option>
-                                <option value="runner">Runner</option>
-                            </select>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="tg-confirm-window" class="form-label">Confirm Window (sec)</label>
-                            <input id="tg-confirm-window" class="form-control" type="number" min="30" step="30" value="1800">
-                        </div>
-                    </div>
                     <div class="form-check form-switch mt-2">
                         <input class="form-check-input" type="checkbox" id="tg-force-single-01">
                         <label class="form-check-label" for="tg-force-single-01">Emergency Mode: single trade (no partial TP ladder)</label>
                         <div class="form-text">Açıkken 5 kademe TP yerine tek pozisyon açılır. Kademeli partial-close devre dışı kalır.</div>
                     </div>
-
-                    <hr>
-
-                    <div class="row g-2">
-                        <div class="col-md-6">
-                            <label for="tg-eval-mode" class="form-label">Evaluation Mode</label>
-                            <select id="tg-eval-mode" class="form-select">
-                                <option value="deterministic">Deterministic</option>
-                                <option value="ai_assist">AI Assist</option>
-                            </select>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="tg-ai-provider" class="form-label">AI Provider</label>
-                            <select id="tg-ai-provider" class="form-select">
-                                <option value="claude">Claude</option>
-                                <option value="openai">OpenAI</option>
-                            </select>
-                        </div>
+                    <div class="form-check form-switch mt-2">
+                        <input class="form-check-input" type="checkbox" id="tg-allow-message-single-trade-override">
+                        <label class="form-check-label" for="tg-allow-message-single-trade-override">Allow sender override: NO PARTIAL / SINGLE TP</label>
+                        <div class="form-text">Açıkken sinyali atan kişi mesaj içinde <code>NO PARTIAL</code>, <code>SINGLE TP</code> gibi komutlarla tek-trade modunu sinyal bazında açabilir.</div>
                     </div>
 
-                    <div class="row g-2 mt-1">
-                        <div class="col-md-8">
-                            <label for="tg-ai-model" class="form-label">AI Model</label>
-                            <input id="tg-ai-model" class="form-control" placeholder="claude-3-5-haiku-latest">
+                    <details class="mt-3">
+                        <summary class="small fw-semibold">Advanced Routing & AI Settings</summary>
+                        <div class="pt-2">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label for="tg-require-confirm-channels" class="form-label">Confirm Required Channels</label>
+                                    <textarea id="tg-require-confirm-channels" class="form-control" rows="2" placeholder="Elite Pips Academy"></textarea>
+                                    <div class="form-text">Bu listede olan kanallarda işlem açmadan önce mutlaka onay mesajı gerekir.</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="tg-no-confirm-channels" class="form-label">No Confirm Channels</label>
+                                    <textarea id="tg-no-confirm-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
+                                    <div class="form-text">Bu listede olan kanallarda onay beklenmez, sinyal doğrudan giriş akışına alınır.</div>
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mt-1">
+                                <div class="col-md-6">
+                                    <label for="tg-distribution" class="form-label">TP Distribution</label>
+                                    <select id="tg-distribution" class="form-select">
+                                        <option value="equal">Equal</option>
+                                        <option value="front_loaded">Front Loaded</option>
+                                        <option value="runner">Runner</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="tg-confirm-window" class="form-label">Confirm Window (sec)</label>
+                                    <input id="tg-confirm-window" class="form-control" type="number" min="30" step="30" value="1800">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mt-2">
+                                <div class="col-md-6">
+                                    <label for="tg-eval-mode" class="form-label">Evaluation Mode</label>
+                                    <select id="tg-eval-mode" class="form-select">
+                                        <option value="deterministic">Deterministic</option>
+                                        <option value="ai_assist">AI Assist</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="tg-ai-provider" class="form-label">AI Provider</label>
+                                    <select id="tg-ai-provider" class="form-select">
+                                        <option value="claude">Claude</option>
+                                        <option value="openai">OpenAI</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mt-1">
+                                <div class="col-md-8">
+                                    <label for="tg-ai-model" class="form-label">AI Model</label>
+                                    <input id="tg-ai-model" class="form-control" placeholder="claude-3-5-haiku-latest">
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="tg-ai-timeout" class="form-label">AI Timeout (sec)</label>
+                                    <input id="tg-ai-timeout" class="form-control" type="number" min="2" max="30" step="1" value="10">
+                                </div>
+                            </div>
                         </div>
-                        <div class="col-md-4">
-                            <label for="tg-ai-timeout" class="form-label">AI Timeout (sec)</label>
-                            <input id="tg-ai-timeout" class="form-control" type="number" min="2" max="30" step="1" value="10">
-                        </div>
-                    </div>
+                    </details>
 
                     <div class="d-flex gap-2 mt-3">
                         <button id="tg-save-btn" class="btn btn-primary">Save Config</button>
@@ -305,24 +318,43 @@
                     <strong>Execution Audit Log</strong>
                     <span class="small text-muted">Entries opened by channel + indicator automation</span>
                 </div>
+                <div class="card-body border-bottom py-2">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label for="tg-exec-source-filter" class="form-label form-label-sm mb-1">Source Filter</label>
+                            <select id="tg-exec-source-filter" class="form-select form-select-sm">
+                                <option value="__all__">All sources</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="tg-exec-trigger-filter" class="form-label form-label-sm mb-1">Stage Filter</label>
+                            <select id="tg-exec-trigger-filter" class="form-select form-select-sm">
+                                <option value="__all__">All stages</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="tg-exec-trace-search" class="form-label form-label-sm mb-1">Trace ID</label>
+                            <input id="tg-exec-trace-search" class="form-control form-control-sm" placeholder="tgx-...">
+                        </div>
+                    </div>
+                </div>
                 <div class="card-body p-0">
                     <div class="table-responsive" style="max-height: 360px;">
                         <table class="table table-sm table-hover mb-0">
                             <thead class="table-light sticky-top">
                                 <tr>
                                     <th style="min-width: 140px;">Time</th>
-                                    <th style="min-width: 120px;">Source Type</th>
                                     <th style="min-width: 180px;">Source</th>
                                     <th style="min-width: 120px;">Symbol/TF</th>
-                                    <th style="min-width: 90px;">Dir</th>
-                                    <th style="min-width: 90px;">Lot</th>
-                                    <th style="min-width: 100px;">Status</th>
+                                    <th style="min-width: 90px;">Dir/Lot</th>
+                                    <th style="min-width: 170px;">Stage</th>
                                     <th style="min-width: 120px;">Ticket</th>
+                                    <th style="min-width: 160px;">Trace</th>
                                     <th>Note</th>
                                 </tr>
                             </thead>
                             <tbody id="tg-exec-log-body">
-                                <tr><td colspan="9" class="text-muted text-center py-3">Loading...</td></tr>
+                                <tr><td colspan="8" class="text-muted text-center py-3">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -334,7 +366,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260408_telegram_automation_panel_v12') }}"></script>
+<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260414_telegram_automation_panel_v14') }}"></script>
 {% endblock %}
 
 

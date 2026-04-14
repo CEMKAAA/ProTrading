@@ -173,6 +173,20 @@ SL 4787 Use lot size small
     assert [row["price"] for row in parsed["tps"]] == [4804.0, 4807.0, 4610.0, 4813.0, 4816.0, 4820.0, 4823.0]
 
 
+def test_parse_confirmation_signal_detects_no_partial_override():
+    raw = """
+XAUUSD BUY NOW 4608/4605
+TP1 4613
+TP2 4617
+TP3 4622
+SL 4592
+NO PARTIAL
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert bool(parsed.get("force_single_trade")) is True
+
+
 def test_classify_confirmation_signal_henry_header_as_signal():
     raw = "#XAUUSD #GOLD BUY 4805 - 4800"
     assert TelegramBridgeService._classify_confirm_signal_message(raw) == "signal"
@@ -639,6 +653,73 @@ SL: 4663
     st1 = svc.get_telegram_automation_state(limit=50)
     assert int(st1.get("pending_entry_count") or 0) == 0
     assert seen["n"] == 1
+    logs = [dict(x) for x in (st1.get("execution_logs") or [])]
+    assert any(str((r or {}).get("trigger") or "") == "signal_pending_entry_zone" for r in logs)
+    assert any(str((r or {}).get("trigger") or "") == "entry_wait_trigger" for r in logs)
+
+
+def test_signal_received_log_has_trace_id(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
+    monkeypatch.setattr(svc, "_confirm_signal_requires_confirm", lambda: True)
+    monkeypatch.setattr(svc, "_confirm_signal_require_confirm_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_no_confirm_titles", lambda: ["PAROZGOLD_TRADER"])
+    monkeypatch.setattr(svc, "_confirm_signal_wait_entry_zone", lambda: True)
+
+    raw = """
+GOLD SELL 4653/4655
+TP: 4651
+TP: 4649
+TP: 4647
+TP: 4645
+TP: 4643
+SL: 4663
+"""
+    _ = svc._handle_confirmation_signal_message(
+        chat_id=123,
+        msg={"chat": {"id": -12, "title": "PAROZGOLD_TRADER"}},
+        chat={"id": -12, "title": "PAROZGOLD_TRADER", "type": "channel"},
+        text=raw,
+        push_only=False,
+    )
+    st = svc.get_telegram_automation_state(limit=200)
+    logs = [dict(x) for x in (st.get("execution_logs") or [])]
+    row = next((r for r in logs if str((r or {}).get("trigger") or "") == "signal_received"), None)
+    assert isinstance(row, dict)
+    assert str((row or {}).get("trace_id") or "").startswith("tgx-")
+
+
+def test_pending_entry_wait_expired_creates_trace_log(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_entry_wait_max_sec", lambda: 1.0)
+    monkeypatch.setattr(svc, "_confirm_signal_entry_attempt_cooldown_sec", lambda: 0.0)
+    monkeypatch.setattr(svc, "_signal_live_price", lambda *, signal: None)
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "entry_low": 4660.0,
+        "entry_high": 4665.0,
+        "stop_loss": 4670.0,
+        "tps": [{"index": 1, "price": 4655.0}],
+        "trace_id": "tgx-test-expire-001",
+    }
+    q = svc._queue_entry_signal(
+        chat_id=1,
+        signal=signal,
+        source_label="PAROZ",
+        source_key="1:paroz",
+        audit_ctx={"source_type": "telegram_channel"},
+    )
+    with svc._lock:
+        cur = dict(svc._pending_entry_signals.get(str(q.get("id"))) or {})
+        cur["created_ts"] = float(time.time() - 3.0)
+        svc._pending_entry_signals[str(q.get("id"))] = dict(cur)
+    svc._push_pending_entry_signals()
+    logs = svc.get_automation_execution_logs(limit=200)
+    row = next((r for r in logs if str((r or {}).get("trigger") or "") == "entry_wait_expired"), None)
+    assert isinstance(row, dict)
+    assert str((row or {}).get("trace_id") or "") == "tgx-test-expire-001"
 
 
 def test_pending_entry_executes_on_cross_without_inside(monkeypatch):
@@ -1137,6 +1218,110 @@ def test_execute_confirmation_force_single_trade_mode_uses_operator_lot(monkeypa
     assert observed["stages"] == 1
 
 
+def test_execute_confirmation_signal_level_force_single_trade_override(monkeypatch):
+    svc = TelegramBridgeService()
+    observed = {"lot": None, "stages": None}
+
+    class FakeLiveService:
+        @staticmethod
+        def place_market_order(symbol, direction, lot_size, stop_loss, take_profit, comment):
+            return {
+                "ok": True,
+                "position": 12346,
+                "lot_size": float(lot_size),
+            }
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_allow_message_single_trade_override", lambda: True)
+    monkeypatch.setattr(svc, "_confirm_signal_default_lot", lambda: 0.05)
+
+    def _fake_build_lots(*, symbol, total_lot, stage_count):
+        observed["lot"] = float(total_lot)
+        observed["stages"] = int(stage_count)
+        return [float(total_lot)], None
+
+    monkeypatch.setattr(svc, "_build_confirmation_ladder_lots", _fake_build_lots)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "stop_loss": 4670.0,
+        "timeframe": "M5",
+        "force_single_trade": True,
+        "tps": [
+            {"index": 1, "price": 4655.0},
+            {"index": 2, "price": 4650.0},
+            {"index": 3, "price": 4645.0},
+            {"index": 4, "price": 4640.0},
+            {"index": 5, "price": 4630.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_auto(chat_id=1, signal=signal)
+    assert "Confirmation ladder executed" in out
+    assert "Stages: 1/5" in out
+    assert "Stage mode: single_trade" in out
+    assert "Final TP: 4630.00000" in out
+    assert observed["lot"] == 0.05
+    assert observed["stages"] == 1
+
+
+def test_execute_confirmation_signal_level_force_single_trade_ignored_when_override_disabled(monkeypatch):
+    svc = TelegramBridgeService()
+    observed = {"lot": None, "stages": None}
+
+    class FakeLiveService:
+        @staticmethod
+        def place_market_order(symbol, direction, lot_size, stop_loss, take_profit, comment):
+            return {
+                "ok": True,
+                "position": 12347,
+                "lot_size": float(lot_size),
+            }
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_allow_message_single_trade_override", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_default_lot", lambda: 0.05)
+
+    def _fake_build_lots(*, symbol, total_lot, stage_count):
+        observed["lot"] = float(total_lot)
+        observed["stages"] = int(stage_count)
+        per = float(total_lot) / float(max(1, int(stage_count)))
+        return [per for _ in range(int(stage_count))], None
+
+    monkeypatch.setattr(svc, "_build_confirmation_ladder_lots", _fake_build_lots)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "stop_loss": 4670.0,
+        "timeframe": "M5",
+        "force_single_trade": True,
+        "tps": [
+            {"index": 1, "price": 4655.0},
+            {"index": 2, "price": 4650.0},
+            {"index": 3, "price": 4645.0},
+            {"index": 4, "price": 4640.0},
+            {"index": 5, "price": 4630.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_auto(chat_id=1, signal=signal)
+    assert "Confirmation ladder executed" in out
+    assert "Stages: 5/5" in out
+    assert "Stage mode: single_trade" not in out
+    assert observed["lot"] == 0.05
+    assert observed["stages"] == 5
+
+
 def test_execute_confirmation_gold_vip_many_tps_keeps_last_target_when_stage_reduced(monkeypatch):
     svc = TelegramBridgeService()
     observed = {"tp": None}
@@ -1454,6 +1639,344 @@ def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
     assert len(obs["sl_updates"]) == 1
     assert str(obs["sl_updates"][0]["comment"]) == "tg_sl_tp1"
     assert float(obs["sl_updates"][0]["stop_loss"]) > 4785.0
+
+
+def test_xau_sell_tp1_not_triggered_until_ask_reaches_target(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"close_calls": [], "sl_updates": []}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return [
+                {
+                    "ticket": 1441720128,
+                    "direction": "SELL",
+                    "comment": "tgc6127187485",
+                    # Would look like TP hit if we incorrectly use bid/current.
+                    "current_price": 4764.10,
+                    "entry_price": 4769.566,
+                    "stop_loss": 4782.0,
+                    "take_profit": 4760.0,
+                    "profit_loss": 0.20,
+                }
+            ]
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            # SELL closes on ask; ask is still ABOVE TP1 => not hit yet.
+            return {"bid": 4764.05, "ask": 4764.30, "last": 4764.18}
+
+        @staticmethod
+        def close_position(symbol, position_ticket, lot_size=None, comment=None):
+            obs["close_calls"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "lot_size": float(lot_size or 0.0),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def modify_position_sl_tp(symbol, position_ticket, stop_loss=None, take_profit=None, comment=None):
+            obs["sl_updates"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "stop_loss": float(stop_loss or 0.0),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 0,
+                "trade_freeze_level": 0,
+            }
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_retries", lambda: 3)
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_grace_sec", lambda: 30.0)
+    monkeypatch.setattr(svc, "_confirm_sl_guard_enabled", lambda: True)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "xau_sell_1": {
+                "chat_id": 1,
+                "session_id": 0,
+                "trade_id": 0,
+                "broker_ticket": 1441720128,
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "direction": "SELL",
+                "stage_lots": [0.01, 0.01],
+                "tps": [{"index": 1, "price": 4764.181}, {"index": 2, "price": 4760.000}],
+                "next_tp_index": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source_tag": "telegram_noconfirm",
+                "source_name": "Nexus",
+                "profile": "generic",
+                "indicator": "",
+                "execution_mode": "advanced",
+                "entry_price": 4769.566,
+            }
+        }
+
+    svc._push_confirmation_signal_ladders()
+    assert len(obs["close_calls"]) == 0
+    assert len(obs["sl_updates"]) == 0
+    with svc._lock:
+        row = dict(svc._active_confirmation_signal_ladders.get("xau_sell_1") or {})
+    assert int(row.get("next_tp_index") or 0) == 1
+
+
+def test_xau_sell_tp1_triggers_when_ask_reaches_target(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"close_calls": [], "sl_updates": []}
+
+    class FakeLiveService:
+        @staticmethod
+        def get_open_positions(symbol):
+            return [
+                {
+                    "ticket": 1441720128,
+                    "direction": "SELL",
+                    "comment": "tgc6127187485",
+                    "current_price": 4764.18,
+                    "entry_price": 4769.566,
+                    "stop_loss": 4782.0,
+                    "take_profit": 4760.0,
+                    "profit_loss": 5.39,
+                }
+            ]
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            # SELL closes on ask; ask is now BELOW TP1 => hit.
+            return {"bid": 4764.10, "ask": 4764.17, "last": 4764.14}
+
+        @staticmethod
+        def close_position(symbol, position_ticket, lot_size=None, comment=None):
+            obs["close_calls"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "lot_size": float(lot_size or 0.0),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def modify_position_sl_tp(symbol, position_ticket, stop_loss=None, take_profit=None, comment=None):
+            obs["sl_updates"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "stop_loss": float(stop_loss or 0.0),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 0,
+                "trade_freeze_level": 0,
+            }
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_sl_guard_enabled", lambda: True)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "xau_sell_2": {
+                "chat_id": 1,
+                "session_id": 0,
+                "trade_id": 0,
+                "broker_ticket": 1441720128,
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "direction": "SELL",
+                "stage_lots": [0.01, 0.01],
+                "tps": [{"index": 1, "price": 4764.181}, {"index": 2, "price": 4760.000}],
+                "next_tp_index": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source_tag": "telegram_noconfirm",
+                "source_name": "Nexus",
+                "profile": "generic",
+                "indicator": "",
+                "execution_mode": "advanced",
+                "entry_price": 4769.566,
+            }
+        }
+
+    svc._push_confirmation_signal_ladders()
+    assert len(obs["close_calls"]) == 1
+    assert str(obs["close_calls"][0]["comment"]) == "tg_confirm_tp1"
+    assert abs(float(obs["close_calls"][0]["lot_size"]) - 0.01) < 1e-9
+    assert len(obs["sl_updates"]) == 1
+    assert str(obs["sl_updates"][0]["comment"]) == "tg_sl_tp1"
+    with svc._lock:
+        row = dict(svc._active_confirmation_signal_ladders.get("xau_sell_2") or {})
+    assert int(row.get("next_tp_index") or 0) == 2
+
+
+def test_xau_tp1_then_missing_position_logs_closed(monkeypatch):
+    svc = TelegramBridgeService()
+    obs = {"close_calls": [], "closed_reasons": []}
+
+    class FakeLiveService:
+        state = {"present": True}
+
+        @classmethod
+        def get_open_positions(cls, symbol):
+            if not cls.state["present"]:
+                return []
+            return [
+                {
+                    "ticket": 1442784000,
+                    "direction": "SELL",
+                    "comment": "tgc6145738320",
+                    "current_price": 4762.80,
+                    "entry_price": 4764.715,
+                    "stop_loss": 4742.0,
+                    "take_profit": 4778.0,
+                    "profit_loss": 2.09,
+                }
+            ]
+
+        @staticmethod
+        def get_symbol_tick(symbol, resolve_symbol=False):
+            return {"bid": 4762.70, "ask": 4762.62, "last": 4762.65}
+
+        @staticmethod
+        def close_position(symbol, position_ticket, lot_size=None, comment=None):
+            obs["close_calls"].append(
+                {
+                    "symbol": str(symbol),
+                    "ticket": int(position_ticket),
+                    "lot_size": float(lot_size or 0.0),
+                    "comment": str(comment or ""),
+                }
+            )
+            return {"ok": True}
+
+        @staticmethod
+        def modify_position_sl_tp(symbol, position_ticket, stop_loss=None, take_profit=None, comment=None):
+            return {"ok": True}
+
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+                "digits": 3,
+                "point": 0.001,
+                "trade_stops_level": 0,
+                "trade_freeze_level": 0,
+            }
+
+    svc._live_service = FakeLiveService()
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_retries", lambda: 1)
+    monkeypatch.setattr(svc, "_confirm_ladder_missing_grace_sec", lambda: 0.0)
+
+    def _fake_closed_log(*, row, reason, svc=None, event_ts=None):
+        obs["closed_reasons"].append(str(reason))
+
+    monkeypatch.setattr(svc, "_append_closed_execution_log_from_row", _fake_closed_log)
+
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            "xau_sell_3": {
+                "chat_id": 1,
+                "session_id": 0,
+                "trade_id": 0,
+                "broker_ticket": 1442784000,
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "direction": "SELL",
+                "stage_lots": [0.01, 0.01],
+                "tps": [{"index": 1, "price": 4762.627}, {"index": 2, "price": 4760.000}],
+                "next_tp_index": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source_tag": "telegram_noconfirm",
+                "source_name": "Nexus",
+                "profile": "generic",
+                "indicator": "",
+                "execution_mode": "advanced",
+                "entry_price": 4764.715,
+            }
+        }
+
+    # Tick#1: TP1 partial closes.
+    svc._push_confirmation_signal_ladders()
+    assert len(obs["close_calls"]) == 1
+    assert str(obs["close_calls"][0]["comment"]) == "tg_confirm_tp1"
+    # Tick#2: position gone at broker side (SL/BE/manual); ladder should log closure and prune.
+    FakeLiveService.state["present"] = False
+    svc._push_confirmation_signal_ladders()
+    assert "position_closed_or_stopped" in obs["closed_reasons"]
+    with svc._lock:
+        assert "xau_sell_3" not in svc._active_confirmation_signal_ladders
+
+
+def test_confirmation_signal_dedupe_blocks_replay_after_intervening_signal(monkeypatch):
+    svc = TelegramBridgeService()
+    seen = {"exec": 0}
+
+    monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_confirm_signal_requires_confirm", lambda: False)
+    monkeypatch.setattr(svc, "_confirm_signal_wait_entry_zone", lambda: False)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
+    monkeypatch.setattr(svc, "_confirm_signal_dedupe_window_sec", lambda: 300.0)
+
+    def _fake_exec(**kwargs):
+        seen["exec"] += 1
+        return "EXEC_OK"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    chat = {"id": -1001, "title": "Nexus", "type": "channel"}
+    msg = {"chat": chat}
+
+    sig_a = """
+XAUUSD SELL NOW 4769/4770
+TP1 4764.181
+TP2 4760.000
+SL 4782.000
+"""
+    sig_b = """
+XAUUSD BUY NOW 4773/4774
+TP1 4778.100
+TP2 4782.200
+SL 4760.000
+"""
+
+    out1 = svc._handle_confirmation_signal_message(chat_id=123, msg=msg, chat=chat, text=sig_a, push_only=False)
+    out2 = svc._handle_confirmation_signal_message(chat_id=123, msg=msg, chat=chat, text=sig_b, push_only=False)
+    out3 = svc._handle_confirmation_signal_message(chat_id=123, msg=msg, chat=chat, text=sig_a, push_only=False)
+
+    assert isinstance(out1, str) and "EXEC_OK" in out1
+    assert isinstance(out2, str) and "EXEC_OK" in out2
+    assert out3 is None
+    assert int(seen["exec"]) == 2
 
 
 def test_confirm_signal_feed_dedupes_same_source_and_message_id():

@@ -12,7 +12,10 @@
         timeframe: document.getElementById('tg-timeframe'),
         lot: document.getElementById('tg-lot'),
         lotModeHint: document.getElementById('tg-lot-mode-hint'),
+        modeSummary: document.getElementById('tg-mode-summary'),
+        waitEntryZoneHint: document.getElementById('tg-wait-entry-zone-hint'),
         forceSingle01: document.getElementById('tg-force-single-01'),
+        allowMessageSingleTradeOverride: document.getElementById('tg-allow-message-single-trade-override'),
         distribution: document.getElementById('tg-distribution'),
         confirmWindow: document.getElementById('tg-confirm-window'),
         evalMode: document.getElementById('tg-eval-mode'),
@@ -26,6 +29,9 @@
         feedCount: document.getElementById('tg-feed-count'),
         feedBody: document.getElementById('tg-feed-body'),
         execLogBody: document.getElementById('tg-exec-log-body'),
+        execSourceFilter: document.getElementById('tg-exec-source-filter'),
+        execTriggerFilter: document.getElementById('tg-exec-trigger-filter'),
+        execTraceSearch: document.getElementById('tg-exec-trace-search'),
         feedSourceFilter: document.getElementById('tg-feed-source-filter'),
         feedKindFilter: document.getElementById('tg-feed-kind-filter'),
         feedSignalsOnly: document.getElementById('tg-feed-signals-only'),
@@ -116,6 +122,9 @@
         if (els.timeframe) els.timeframe.value = String(c.default_timeframe || 'M5');
         if (els.lot) els.lot.value = Number(c.default_lot || 0.05).toFixed(2);
         if (els.forceSingle01) els.forceSingle01.checked = !!c.force_single_trade_01;
+        if (els.allowMessageSingleTradeOverride) {
+            els.allowMessageSingleTradeOverride.checked = (c.allow_message_single_trade_override !== false);
+        }
         if (els.distribution) els.distribution.value = String(c.distribution_mode || 'equal');
         if (els.confirmWindow) els.confirmWindow.value = String(parseInt(c.confirm_window_sec || 1800, 10));
         if (els.evalMode) els.evalMode.value = String(c.evaluation_mode || 'deterministic');
@@ -128,8 +137,38 @@
 
     function syncEmergencyLotUi() {
         const isEmergency = !!(els.forceSingle01 && els.forceSingle01.checked);
+        const allowMsgOverride = !!(els.allowMessageSingleTradeOverride && els.allowMessageSingleTradeOverride.checked);
+        const requireConfirm = !!(els.requireConfirm && els.requireConfirm.checked);
         if (els.lotModeHint) {
             els.lotModeHint.classList.toggle('d-none', !isEmergency);
+        }
+        if (els.allowMessageSingleTradeOverride) {
+            els.allowMessageSingleTradeOverride.disabled = isEmergency;
+        }
+        if (els.distribution) {
+            els.distribution.disabled = isEmergency;
+        }
+        if (els.waitEntryZone) {
+            // Entry-zone wait is meaningful only for no-confirm flow.
+            els.waitEntryZone.disabled = requireConfirm;
+        }
+        if (els.waitEntryZoneHint) {
+            if (requireConfirm) {
+                els.waitEntryZoneHint.textContent = 'Require Confirm açıksa bu seçenek kullanılmaz. Confirm sonrası giriş doğrudan execute edilir.';
+            } else {
+                els.waitEntryZoneHint.textContent = 'Açıkken (no-confirm kanallarda) fiyat entry aralığına gelince emir açılır. Kapalıyken mesaj gelir gelmez açılır.';
+            }
+        }
+        if (els.modeSummary) {
+            const modeTxt = isEmergency
+                ? 'Global mode: single_trade (no partial), distribution devre dışı.'
+                : (allowMsgOverride
+                    ? 'Global mode: ladder. Mesaj bazlı NO PARTIAL / SINGLE TP override açık.'
+                    : 'Global mode: ladder. Mesaj bazlı single-trade override kapalı.');
+            const confirmTxt = requireConfirm
+                ? 'Confirm workflow: onay mesajı zorunlu.'
+                : 'Confirm workflow: no-confirm akışı aktif (entry-zone seçeneğine göre).';
+            els.modeSummary.textContent = `${modeTxt} ${confirmTxt}`;
         }
     }
 
@@ -322,10 +361,56 @@
     }
 
     function renderExecutionLogs(rows) {
-        const items = Array.isArray(rows) ? rows.slice() : [];
+        const all = Array.isArray(rows) ? rows.slice() : [];
+        const selectedSource = String((els.execSourceFilter && els.execSourceFilter.value) || '__all__');
+        const selectedTrigger = String((els.execTriggerFilter && els.execTriggerFilter.value) || '__all__').toLowerCase();
+        const traceSearch = String((els.execTraceSearch && els.execTraceSearch.value) || '').trim().toLowerCase();
+        const sources = [];
+        const triggers = [];
+        const seenSrc = new Set();
+        const seenTr = new Set();
+        for (const r of all) {
+            const src = String((r && r.source_name) || '').trim();
+            const tr = String((r && (r.trigger || r.stage)) || '').trim().toLowerCase();
+            if (src && !seenSrc.has(src)) {
+                seenSrc.add(src);
+                sources.push(src);
+            }
+            if (tr && !seenTr.has(tr)) {
+                seenTr.add(tr);
+                triggers.push(tr);
+            }
+        }
+        sources.sort((a, b) => a.localeCompare(b));
+        triggers.sort((a, b) => a.localeCompare(b));
+        if (els.execSourceFilter) {
+            const prev = selectedSource;
+            const opts = ['<option value="__all__">All sources</option>']
+                .concat(sources.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`));
+            els.execSourceFilter.innerHTML = opts.join('');
+            els.execSourceFilter.value = (prev === '__all__' || sources.includes(prev)) ? prev : '__all__';
+        }
+        if (els.execTriggerFilter) {
+            const prev = selectedTrigger;
+            const opts = ['<option value="__all__">All stages</option>']
+                .concat(triggers.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`));
+            els.execTriggerFilter.innerHTML = opts.join('');
+            els.execTriggerFilter.value = (prev === '__all__' || triggers.includes(prev)) ? prev : '__all__';
+        }
+        const activeSource = String((els.execSourceFilter && els.execSourceFilter.value) || '__all__');
+        const activeTrigger = String((els.execTriggerFilter && els.execTriggerFilter.value) || '__all__').toLowerCase();
+        const items = all.filter((r) => {
+            const src = String((r && r.source_name) || '').trim();
+            const tr = String((r && (r.trigger || r.stage)) || '').trim().toLowerCase();
+            const trace = String((r && r.trace_id) || '').trim().toLowerCase();
+            if (activeSource !== '__all__' && src !== activeSource) return false;
+            if (activeTrigger !== '__all__' && tr !== activeTrigger) return false;
+            if (traceSearch && !trace.includes(traceSearch)) return false;
+            return true;
+        });
         if (!els.execLogBody) return;
         if (!items.length) {
-            els.execLogBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">No execution logs yet.</td></tr>';
+            els.execLogBody.innerHTML = '<tr><td colspan="8" class="text-muted text-center py-3">No execution logs yet.</td></tr>';
             return;
         }
         items.sort((a, b) => {
@@ -335,7 +420,6 @@
         });
         els.execLogBody.innerHTML = items.map((r) => {
             const ts = formatFeedTimestamp((r && (r.event_ts || r.ts)) || '');
-            const srcType = escapeHtml(String((r && r.source_type) || '-'));
             const srcName = escapeHtml(String((r && r.source_name) || '-'));
             const sym = String((r && r.symbol) || '').trim();
             const tf = String((r && r.timeframe) || '').trim();
@@ -344,10 +428,18 @@
             const lotRaw = Number((r && r.lot) || 0);
             const lot = Number.isFinite(lotRaw) && lotRaw > 0 ? lotRaw.toFixed(2) : '-';
             const status = escapeHtml(String((r && r.status) || '-'));
+            const trigger = escapeHtml(String((r && (r.trigger || r.stage)) || '-'));
+            const stageStatus = escapeHtml(String((r && r.stage_status) || ''));
             const ticketRaw = Number((r && r.ticket) || 0);
             const ticket = ticketRaw > 0 ? String(ticketRaw) : '-';
             const msg = escapeHtml(String((r && r.message) || ''));
-            return `<tr><td class="small text-muted">${ts}</td><td>${srcType}</td><td>${srcName}</td><td>${symTf}</td><td>${dir}</td><td>${lot}</td><td><span class="badge text-bg-secondary">${status}</span></td><td>${ticket}</td><td>${msg}</td></tr>`;
+            const trace = escapeHtml(String((r && r.trace_id) || '-'));
+            const mode = escapeHtml(String((r && r.execution_mode) || '-'));
+            const stageTxt = `${trigger}${stageStatus ? ` / ${stageStatus}` : ''} / ${status}`;
+            const detailBits = [];
+            if (mode && mode !== '-') detailBits.push(`mode=${mode}`);
+            if (msg) detailBits.push(msg);
+            return `<tr><td class="small text-muted">${ts}</td><td>${srcName}</td><td>${symTf}</td><td>${dir} / ${lot}</td><td>${stageTxt}</td><td>${ticket}</td><td><code>${trace}</code></td><td>${detailBits.join(' | ')}</td></tr>`;
         }).join('');
     }
 
@@ -387,6 +479,7 @@
             default_timeframe: String((els.timeframe && els.timeframe.value) || 'M5').trim().toUpperCase(),
             default_lot: parseFloat((els.lot && els.lot.value) || '0.05'),
             force_single_trade_01: !!(els.forceSingle01 && els.forceSingle01.checked),
+            allow_message_single_trade_override: !!(els.allowMessageSingleTradeOverride && els.allowMessageSingleTradeOverride.checked),
             distribution_mode: String((els.distribution && els.distribution.value) || 'equal').trim(),
             confirm_window_sec: parseInt((els.confirmWindow && els.confirmWindow.value) || '1800', 10),
             evaluation_mode: String((els.evalMode && els.evalMode.value) || 'deterministic').trim(),
@@ -468,7 +561,7 @@
     async function init() {
         const mainInputs = [
             els.enabled, els.requireConfirm, els.waitEntryZone, els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
-            els.forceSingle01, els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
+            els.forceSingle01, els.allowMessageSingleTradeOverride, els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
         ].filter(Boolean);
         const userInputs = [
             els.userEnabled, els.userApiId, els.userApiHash, els.userSessionPath,
@@ -484,6 +577,16 @@
         }
         if (els.forceSingle01) {
             els.forceSingle01.addEventListener('change', () => {
+                syncEmergencyLotUi();
+            });
+        }
+        if (els.allowMessageSingleTradeOverride) {
+            els.allowMessageSingleTradeOverride.addEventListener('change', () => {
+                syncEmergencyLotUi();
+            });
+        }
+        if (els.requireConfirm) {
+            els.requireConfirm.addEventListener('change', () => {
                 syncEmergencyLotUi();
             });
         }
@@ -537,6 +640,21 @@
         if (els.feedSignalsOnly) {
             els.feedSignalsOnly.addEventListener('change', () => {
                 renderFeed(latestFeedRows);
+            });
+        }
+        if (els.execSourceFilter) {
+            els.execSourceFilter.addEventListener('change', () => {
+                renderExecutionLogs(latestExecLogs);
+            });
+        }
+        if (els.execTriggerFilter) {
+            els.execTriggerFilter.addEventListener('change', () => {
+                renderExecutionLogs(latestExecLogs);
+            });
+        }
+        if (els.execTraceSearch) {
+            els.execTraceSearch.addEventListener('input', () => {
+                renderExecutionLogs(latestExecLogs);
             });
         }
         if (els.userSaveBtn) {

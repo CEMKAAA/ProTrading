@@ -24,6 +24,8 @@ input int    InpResendSameDirectionAfterSeconds = 0; // 0 disables periodic rese
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
 input bool   InpInvertDirection = false; // quick fix for indicators with reversed buffers
 input bool   InpSendRegistrationOnInit = true;
+input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for fast BUY/SELL map check
+input int    InpStartupProbeMaxBuffer = 8; // probe [0..N-1] on init when debug is enabled
 input int    InpHeartbeatSeconds = 300; // keepalive every 5 minutes
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
@@ -164,6 +166,17 @@ bool _is_signal_value(double v)
    return true;
 }
 
+string _signal_state_text(bool buySignal, bool sellSignal)
+{
+   if(buySignal && sellSignal)
+      return "AMBIGUOUS";
+   if(buySignal)
+      return "BUY";
+   if(sellSignal)
+      return "SELL";
+   return "NONE";
+}
+
 bool _parse_iCustom_params()
 {
    ArrayResize(g_iCustomParams, 0);
@@ -232,6 +245,48 @@ double _icustom_value(int bufferIndex, int barShift)
    // Safety cap for generic adapter.
    Print("MT4Bridge too many InpICustomParamsCsv values: ", c, " (max supported: 10)");
    return EMPTY_VALUE;
+}
+
+void _debug_startup_snapshot()
+{
+   if(!InpDebugPrint || !InpStartupProbeOnInit)
+      return;
+
+   datetime barTime = iTime(NULL, 0, InpSignalShift);
+   double buyVal = _icustom_value(InpBuyBufferIndex, InpSignalShift);
+   double sellVal = _icustom_value(InpSellBufferIndex, InpSignalShift);
+   bool buySignal = InpAllowBuy && _is_signal_value(buyVal);
+   bool sellSignal = InpAllowSell && _is_signal_value(sellVal);
+   string stateText = _signal_state_text(buySignal, sellSignal);
+
+   if(InpInvertDirection)
+   {
+      if(stateText == "BUY")
+         stateText = "SELL";
+      else if(stateText == "SELL")
+         stateText = "BUY";
+   }
+
+   Print("MT4Bridge startup snapshot: indicator=", InpIndicatorName,
+         " shift=", IntegerToString(InpSignalShift),
+         " bar=", TimeToString(barTime, TIME_DATE|TIME_SECONDS),
+         " buy[", IntegerToString(InpBuyBufferIndex), "]=", DoubleToString(buyVal, 8),
+         " sell[", IntegerToString(InpSellBufferIndex), "]=", DoubleToString(sellVal, 8),
+         " state=", stateText,
+         " invert=", (InpInvertDirection ? "true" : "false"));
+
+   int maxBuf = InpStartupProbeMaxBuffer;
+   if(maxBuf < 0)
+      maxBuf = 0;
+   if(maxBuf > 32)
+      maxBuf = 32;
+   for(int i = 0; i < maxBuf; i++)
+   {
+      double v = _icustom_value(i, InpSignalShift);
+      bool active = _is_signal_value(v);
+      Print("MT4Bridge startup probe: buffer[", IntegerToString(i), "]=",
+            DoubleToString(v, 8), " active=", (active ? "true" : "false"));
+   }
 }
 
 bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime)
@@ -460,6 +515,7 @@ int OnInit()
       Print("MT4Bridge endpoint(fallback2): ", _build_endpoint("http://127.0.0.1", InpApiPath));
       Print("MT4Bridge reminder: add URL to MT4 WebRequest whitelist.");
    }
+   _debug_startup_snapshot();
    if(InpSendRegistrationOnInit)
    {
       datetime nowTs = TimeCurrent();
@@ -468,6 +524,8 @@ int OnInit()
       if(_post_bridge_event("register", "", 0.0, nowTs))
          g_lastHeartbeatAt = nowTs;
    }
+   // Try one immediate read/send at startup so current direction is visible without waiting for timer.
+   _check_and_send();
    return(INIT_SUCCEEDED);
 }
 
