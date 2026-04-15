@@ -106,7 +106,8 @@ class TelegramBridgeService:
         ("paroz", ("PAROZGOLD_TRADER", "PAROZ GOLD TRADER")),
         ("fx_mastermind", ("Trade With Fx Mastermind", "FxMasterMindOfficial2652")),
         ("market_king", ("MARKET ANALYSIS KING",)),
-        ("gold_vip", ("GOLD VIP SIGNALS",)),
+        ("gold_vip", ("GOLD VIP SIGNALS", "XAUUSD GOLD VIP", "XAUUSD Signal")),
+        ("bull_traders", ("BULL TRADERS",)),
         ("henry", ("HENRY TRADER",)),
     )
     _CONFIRM_SIGNAL_SYMBOL_ALIASES: Dict[str, str] = {
@@ -581,6 +582,16 @@ class TelegramBridgeService:
         return float(max(0.001, min(100.0, float(raw))))
 
     @staticmethod
+    def _confirm_signal_advanced_lot_per_tp() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_ADVANCED_LOT_PER_TP", "0.2"))
+        except Exception:
+            raw = 0.2
+        if not math.isfinite(float(raw)) or float(raw) <= 0.0:
+            raw = 0.2
+        return float(max(0.01, min(5.0, float(raw))))
+
+    @staticmethod
     def _confirm_signal_force_single_trade_01() -> bool:
         # Emergency fallback: disable partial ladder and open one 0.01 trade.
         v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_FORCE_SINGLE_TRADE_01", "0")).strip().lower()
@@ -693,6 +704,70 @@ class TelegramBridgeService:
         # Execute only when live price enters [entry_low, entry_high] inclusive.
         v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_WAIT_ENTRY_ZONE", "1")).strip().lower()
         return v in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _confirm_signal_wait_entry_zone_titles(cls) -> List[str]:
+        raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_WAIT_ENTRY_ZONE_CHANNEL_TITLES", "")).strip()
+        return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    @classmethod
+    def _confirm_signal_no_wait_entry_zone_titles(cls) -> List[str]:
+        raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_NO_WAIT_ENTRY_ZONE_CHANNEL_TITLES", "")).strip()
+        return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    @classmethod
+    def _confirm_signal_advanced_mode_titles(cls) -> List[str]:
+        raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_ADVANCED_CHANNEL_TITLES", "")).strip()
+        return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    @classmethod
+    def _confirm_signal_emergency_mode_titles(cls) -> List[str]:
+        raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_EMERGENCY_CHANNEL_TITLES", "")).strip()
+        return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    def _confirm_signal_channel_modes_for_sources(self, source_names: List[Any]) -> Dict[str, Any]:
+        names = [str(x).strip() for x in (source_names or []) if str(x).strip()]
+        adv_rules = [x for x in self._confirm_signal_advanced_mode_titles() if str(x).strip()]
+        em_rules = [x for x in self._confirm_signal_emergency_mode_titles() if str(x).strip()]
+        has_rules = bool(adv_rules or em_rules)
+
+        adv = False
+        em = False
+        for name in names:
+            if (not adv) and any(self._source_matches_rule(name, r) for r in adv_rules):
+                adv = True
+            if (not em) and any(self._source_matches_rule(name, r) for r in em_rules):
+                em = True
+
+        if not has_rules:
+            # Legacy default: if no channel-specific mode rules are provided, keep advanced enabled.
+            adv = True
+
+        return {
+            "advanced": bool(adv),
+            "emergency": bool(em),
+            "has_rules": bool(has_rules),
+            "source_names": list(names),
+        }
+
+    def _confirm_signal_wait_entry_zone_for_sources(self, source_names: List[Any]) -> bool:
+        names = [str(x).strip() for x in (source_names or []) if str(x).strip()]
+
+        no_wait_rules = [x for x in self._confirm_signal_no_wait_entry_zone_titles() if str(x).strip()]
+        for name in names:
+            for rule in no_wait_rules:
+                if self._source_matches_rule(name, rule):
+                    return False
+
+        wait_only_rules = [x for x in self._confirm_signal_wait_entry_zone_titles() if str(x).strip()]
+        if wait_only_rules:
+            for name in names:
+                for rule in wait_only_rules:
+                    if self._source_matches_rule(name, rule):
+                        return True
+            return False
+
+        return bool(self._confirm_signal_wait_entry_zone())
 
     @staticmethod
     def _confirm_signal_entry_wait_max_sec() -> float:
@@ -809,9 +884,23 @@ class TelegramBridgeService:
         p = str(profile or "").strip().lower()
         return p in {"henry", "gold_vip"}
 
+    @staticmethod
+    def _normalize_signal_text_for_parse(text: Any) -> str:
+        # Telegram messages often contain zero-width spaces and other format
+        # controls around TP/SL lines. Remove them before regex parsing.
+        # Some signal channels also prefix semantic lines with decorative
+        # emojis (e.g. "🔴XAUUSD", "✔TP", "🫵SL"). Strip those per line
+        # so detection depends on the actual trading payload, not styling.
+        norm = unicodedata.normalize("NFKC", str(text or ""))
+        norm = "".join(ch for ch in norm if unicodedata.category(ch) != "Cf")
+        lines = []
+        for line in str(norm).splitlines():
+            lines.append(re.sub(r"^\s*[^A-Za-z0-9#]+", "", str(line)))
+        return "\n".join(lines)
+
     @classmethod
     def _extract_signal_hint_from_text(cls, text: Any) -> Dict[str, str]:
-        raw = unicodedata.normalize("NFKC", str(text or ""))
+        raw = cls._normalize_signal_text_for_parse(text)
         if not raw.strip():
             return {"symbol": "", "direction": ""}
         symbol = ""
@@ -997,9 +1086,21 @@ class TelegramBridgeService:
     @classmethod
     def _profile_accepts_signal_text(cls, text: Any, source_profile: str) -> bool:
         profile = str(source_profile or "generic").strip().lower() or "generic"
-        raw = unicodedata.normalize("NFKC", str(text or ""))
+        raw = cls._normalize_signal_text_for_parse(text)
         if not raw.strip():
             return False
+        tp_count_loose = len(
+            re.findall(
+                r"(?im)(?<!SL\.)(?<!SL )\bTP\s*(?:[1-9]\d*)?\s*[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+                raw,
+            )
+        )
+        has_sl_loose = bool(
+            re.search(
+                r"(?im)\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+                raw,
+            )
+        )
         if profile == "elite":
             return bool(
                 re.search(r"(?im)\bNOW\b", raw)
@@ -1009,32 +1110,41 @@ class TelegramBridgeService:
         if profile == "paroz":
             return bool(
                 re.search(r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\b", raw)
-                and len(re.findall(r"(?im)\bTP\s*[:\-]\s*[0-9]+(?:\.[0-9]+)?\b", raw)) >= 2
-                and re.search(r"(?im)\bSL\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)
+                and int(tp_count_loose) >= 2
+                and bool(has_sl_loose)
             )
         if profile == "fx_mastermind":
             return bool(
                 re.search(r"(?im)^\s*#\s*[A-Z]{3,12}\s*[_\-\s]+(BUY|SELL)\b", raw)
-                and re.search(r"(?im)\bSL(?:\s*[1-9]\d*)?\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)
-                and re.search(r"(?im)\bTP", raw)
+                and bool(has_sl_loose)
+                and int(tp_count_loose) >= 1
             )
         if profile == "market_king":
             return bool(
                 re.search(r"(?im)^\s*(?:#?\s*XAUUSD)\s+(BUY|SELL)\b", raw)
-                and len(re.findall(r"(?im)\bTP\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)) >= 2
-                and re.search(r"(?im)\bSL\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)
+                and int(tp_count_loose) >= 2
+                and bool(has_sl_loose)
             )
         if profile == "gold_vip":
             return bool(
                 re.search(r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\b", raw)
-                and len(re.findall(r"(?im)\bTP\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)) >= 2
-                and re.search(r"(?im)\bSL\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)
+                and int(tp_count_loose) >= 2
+                and bool(has_sl_loose)
+            )
+        if profile == "bull_traders":
+            return bool(
+                re.search(
+                    r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$",
+                    raw,
+                )
+                and int(tp_count_loose) >= 2
+                and bool(has_sl_loose)
             )
         if profile == "henry":
             return bool(
                 re.search(r"(?im)^\s*#?\s*XAUUSD(?:\s+#?\s*GOLD)?\s*[_\-\s]+(BUY|SELL)\s+[0-9]+(?:\.[0-9]+)?\s*(?:/|-)\s*[0-9]+(?:\.[0-9]+)?\s*$", raw)
-                and re.search(r"(?im)\bSL\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b", raw)
-                and re.search(r"(?im)\bTP", raw)
+                and bool(has_sl_loose)
+                and int(tp_count_loose) >= 1
             )
         return True
 
@@ -1062,6 +1172,9 @@ class TelegramBridgeService:
     ) -> str:
         kind = cls._classify_confirm_signal_message(text)
         if str(kind) != "signal":
+            parsed_anyway = cls._parse_confirmation_signal_for_sources(text, source_names=list(source_names or []))
+            if isinstance(parsed_anyway, dict):
+                return "signal"
             return str(kind)
         parsed = cls._parse_confirmation_signal_for_sources(text, source_names=list(source_names or []))
         return "signal" if isinstance(parsed, dict) else "other"
@@ -1152,7 +1265,7 @@ class TelegramBridgeService:
         raw = str(text or "").replace("\r", "\n").strip()
         if not raw:
             return "empty"
-        raw_norm = unicodedata.normalize("NFKC", raw)
+        raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
         if TelegramBridgeService._is_confirm_signal_message(raw_norm):
             return "confirm_signal"
         if (
@@ -1165,6 +1278,9 @@ class TelegramBridgeService:
             return "close_instruction"
         if (
             re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\s*HIT\b", raw_norm)
+            or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\s*DONE\b", raw_norm)
+            or re.search(r"(?im)\bTP\s*[,.\s]*ALL\s*(?:HIT|DONE)\b", raw_norm)
+            or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\b[^\n]{0,24}\bSUCCESS(?:FUL|FULLY)?\s+HIT\b", raw_norm)
             or re.search(r"(?im)\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b", raw_norm)
             or re.search(r"(?im)\btarget(?:s)?\s+completed\b", raw_norm)
         ):
@@ -1172,17 +1288,6 @@ class TelegramBridgeService:
         if re.search(r"(?im)\b(?:SL(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b.*\bHIT\b", raw_norm):
             return "sl_hit"
         if TelegramBridgeService._parse_confirmation_signal(raw_norm):
-            return "signal"
-        if re.search(
-            (
-                r"(?im)^\s*#?\s*[A-Z]{3,12}"
-                r"(?:\s+#?\s*[A-Z]{3,12})?"
-                r"\s*(?:[_\-\s]+)(BUY|SELL)\s+"
-                r"(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?"
-                r"(?:\s*(?:/|-|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$"
-            ),
-            raw_norm,
-        ):
             return "signal"
         return "other"
 
@@ -1237,6 +1342,29 @@ class TelegramBridgeService:
         src_norm = self._normalize_confirm_source_name(src)
         src_msg_id = int(source_message_id or 0)
         dedupe_key = f"{src_norm}|{int(src_msg_id)}" if src_msg_id > 0 else ""
+        row_kind = str(kind or "other").strip().lower() or "other"
+        row_parsed = dict(parsed) if isinstance(parsed, dict) else None
+        if row_kind == "other":
+            source_names = [src, str((chat or {}).get("title") or "").strip(), str((chat or {}).get("username") or "").strip()]
+            source_names = [x for x in source_names if x]
+            re_kind = self._classify_confirm_signal_message_for_sources(text, source_names=source_names)
+            if str(re_kind) != "other":
+                row_kind = str(re_kind)
+                if row_kind == "signal":
+                    reparsed = self._parse_confirmation_signal_for_sources(text, source_names=source_names)
+                    if not isinstance(reparsed, dict):
+                        reparsed = self._parse_confirmation_signal(text)
+                    row_parsed = dict(reparsed) if isinstance(reparsed, dict) else row_parsed
+        elif row_kind == "signal" and not isinstance(row_parsed, dict):
+            source_names = [src, str((chat or {}).get("title") or "").strip(), str((chat or {}).get("username") or "").strip()]
+            source_names = [x for x in source_names if x]
+            reparsed = self._parse_confirmation_signal_for_sources(text, source_names=source_names)
+            if not isinstance(reparsed, dict):
+                reparsed = self._parse_confirmation_signal(text)
+            if isinstance(reparsed, dict):
+                row_parsed = dict(reparsed)
+            else:
+                row_kind = "other"
         event_unix = _to_unix_or_none(event_ts)
         event_iso = None
         if isinstance(event_ts, datetime):
@@ -1257,9 +1385,9 @@ class TelegramBridgeService:
             "source_message_id": int(src_msg_id),
             "source": str(src),
             "chat_title": str((chat or {}).get("title") or "").strip(),
-            "kind": str(kind or "other"),
+            "kind": str(row_kind or "other"),
             "text": str(text or "").strip()[:4000],
-            "parsed": dict(parsed) if isinstance(parsed, dict) else None,
+            "parsed": dict(row_parsed) if isinstance(row_parsed, dict) else None,
         }
         with self._lock:
             if dedupe_key and dedupe_key in self._confirm_signal_feed_keys:
@@ -2076,7 +2204,37 @@ class TelegramBridgeService:
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
-            deduped_rev.append(dict(r))
+            row = dict(r)
+            # Older feed rows can be stored as "other" before parser/profile
+            # support is added. Reclassify on read so the operator UI reflects
+            # the current production parser without waiting for a new message.
+            if str(row.get("kind") or "").strip().lower() == "other":
+                source_names = [
+                    str(row.get("source") or "").strip(),
+                    str(row.get("chat_title") or "").strip(),
+                ]
+                source_names = [x for x in source_names if x]
+                text = str(row.get("text") or "")
+                new_kind = self._classify_confirm_signal_message_for_sources(text, source_names=source_names)
+                if str(new_kind) != "other":
+                    parsed = self._parse_confirmation_signal_for_sources(text, source_names=source_names) if str(new_kind) == "signal" else None
+                    row["kind"] = str(new_kind)
+                    row["parsed"] = dict(parsed) if isinstance(parsed, dict) else row.get("parsed")
+            elif str(row.get("kind") or "").strip().lower() == "signal" and not isinstance(row.get("parsed"), dict):
+                source_names = [
+                    str(row.get("source") or "").strip(),
+                    str(row.get("chat_title") or "").strip(),
+                ]
+                source_names = [x for x in source_names if x]
+                text = str(row.get("text") or "")
+                parsed = self._parse_confirmation_signal_for_sources(text, source_names=source_names)
+                if not isinstance(parsed, dict):
+                    parsed = self._parse_confirmation_signal(text)
+                if isinstance(parsed, dict):
+                    row["parsed"] = dict(parsed)
+                else:
+                    row["kind"] = "other"
+            deduped_rev.append(dict(row))
             if len(deduped_rev) >= lim:
                 break
         feed = list(reversed(deduped_rev))
@@ -2087,6 +2245,7 @@ class TelegramBridgeService:
                 "channels": list(self._confirm_signal_channel_titles()),
                 "default_timeframe": str(self._confirm_signal_default_timeframe()),
                 "default_lot": float(self._confirm_signal_default_lot()),
+                "advanced_lot_per_tp": float(self._confirm_signal_advanced_lot_per_tp()),
                 "force_single_trade_01": bool(self._confirm_signal_force_single_trade_01()),
                 "allow_message_single_trade_override": bool(self._confirm_signal_allow_message_single_trade_override()),
                 "distribution_mode": str(self._confirm_signal_tp_distribution_mode()),
@@ -2095,6 +2254,10 @@ class TelegramBridgeService:
                 "no_confirm_channels": list(self._confirm_signal_no_confirm_titles()),
                 "confirm_window_sec": float(self._confirm_signal_confirm_window_sec()),
                 "wait_entry_zone": bool(self._confirm_signal_wait_entry_zone()),
+                "wait_entry_zone_channels": list(self._confirm_signal_wait_entry_zone_titles()),
+                "no_wait_entry_zone_channels": list(self._confirm_signal_no_wait_entry_zone_titles()),
+                "advanced_mode_channels": list(self._confirm_signal_advanced_mode_titles()),
+                "emergency_mode_channels": list(self._confirm_signal_emergency_mode_titles()),
                 "entry_wait_max_sec": float(self._confirm_signal_entry_wait_max_sec()),
                 "entry_attempt_cooldown_sec": float(self._confirm_signal_entry_attempt_cooldown_sec()),
                 "entry_watch_interval_sec": float(self._confirm_signal_entry_watch_interval_sec()),
@@ -2131,6 +2294,10 @@ class TelegramBridgeService:
             lot = _to_float_or_none(p.get("default_lot"))
             if lot is not None and lot > 0.0:
                 updates["TELEGRAM_CONFIRM_SIGNAL_DEFAULT_LOT"] = f"{float(lot):.4f}"
+        if "advanced_lot_per_tp" in p:
+            lot_per_tp = _to_float_or_none(p.get("advanced_lot_per_tp"))
+            if lot_per_tp is not None and float(lot_per_tp) > 0.0:
+                updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_LOT_PER_TP"] = f"{float(max(0.01, min(5.0, float(lot_per_tp)))):.3f}"
         if "force_single_trade_01" in p:
             updates["TELEGRAM_CONFIRM_SIGNAL_FORCE_SINGLE_TRADE_01"] = "1" if bool(p.get("force_single_trade_01")) else "0"
         if "allow_message_single_trade_override" in p:
@@ -2166,6 +2333,38 @@ class TelegramBridgeService:
                 updates["TELEGRAM_CONFIRM_SIGNAL_CONFIRM_WINDOW_SEC"] = f"{int(max(30, min(7200, int(sec))))}"
         if "wait_entry_zone" in p:
             updates["TELEGRAM_CONFIRM_SIGNAL_WAIT_ENTRY_ZONE"] = "1" if bool(p.get("wait_entry_zone")) else "0"
+        if "wait_entry_zone_channels" in p:
+            raw = p.get("wait_entry_zone_channels")
+            vals: List[str] = []
+            if isinstance(raw, str):
+                vals = [str(x).strip() for x in re.split(r"[\n|,]+", raw) if str(x).strip()]
+            elif isinstance(raw, list):
+                vals = [str(x).strip() for x in raw if str(x).strip()]
+            updates["TELEGRAM_CONFIRM_SIGNAL_WAIT_ENTRY_ZONE_CHANNEL_TITLES"] = "|".join(vals)
+        if "no_wait_entry_zone_channels" in p:
+            raw = p.get("no_wait_entry_zone_channels")
+            vals: List[str] = []
+            if isinstance(raw, str):
+                vals = [str(x).strip() for x in re.split(r"[\n|,]+", raw) if str(x).strip()]
+            elif isinstance(raw, list):
+                vals = [str(x).strip() for x in raw if str(x).strip()]
+            updates["TELEGRAM_CONFIRM_SIGNAL_NO_WAIT_ENTRY_ZONE_CHANNEL_TITLES"] = "|".join(vals)
+        if "advanced_mode_channels" in p:
+            raw = p.get("advanced_mode_channels")
+            vals: List[str] = []
+            if isinstance(raw, str):
+                vals = [str(x).strip() for x in re.split(r"[\n|,]+", raw) if str(x).strip()]
+            elif isinstance(raw, list):
+                vals = [str(x).strip() for x in raw if str(x).strip()]
+            updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_CHANNEL_TITLES"] = "|".join(vals)
+        if "emergency_mode_channels" in p:
+            raw = p.get("emergency_mode_channels")
+            vals: List[str] = []
+            if isinstance(raw, str):
+                vals = [str(x).strip() for x in re.split(r"[\n|,]+", raw) if str(x).strip()]
+            elif isinstance(raw, list):
+                vals = [str(x).strip() for x in raw if str(x).strip()]
+            updates["TELEGRAM_CONFIRM_SIGNAL_EMERGENCY_CHANNEL_TITLES"] = "|".join(vals)
         if "entry_wait_max_sec" in p:
             sec = _to_float_or_none(p.get("entry_wait_max_sec"))
             if sec is not None and sec > 0:
@@ -2330,14 +2529,14 @@ class TelegramBridgeService:
         if not raw.strip():
             return None
         # Normalize styled/Unicode numerals and separators (e.g. TP1, SL1, full-width glyphs).
-        raw_norm = unicodedata.normalize("NFKC", raw)
+        raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
         head = re.search(
             (
                 r"(?im)^\s*#?\s*([A-Z]{3,12})"
                 r"(?:\s+#?\s*([A-Z]{3,12}))?"
                 r"\s*(?:[_\-\s]+)(BUY|SELL)\s+"
                 r"(?:NOW\s+)?([0-9]+(?:\.[0-9]+)?)"
-                r"(?:\s*(?:/|-|TO)\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
+                r"(?:\s*(?:/|-|=|TO)\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
             ),
             raw_norm,
         )
@@ -2365,7 +2564,7 @@ class TelegramBridgeService:
         indexed_spans: List[Tuple[int, int]] = []
 
         tp_indexed_iter = re.finditer(
-            r"(?im)\bTP\s*([1-9]\d*)(?:\s*[:\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)(?<!SL\.)(?<!SL )\bTP\s*([1-9]\d*)\s*(?:[:,\.\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         for m in tp_indexed_iter:
@@ -2383,7 +2582,7 @@ class TelegramBridgeService:
             tps.append({"index": int(idx), "price": float(px)})
 
         tp_plain_iter = re.finditer(
-            r"(?im)\bTP\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)(?<!SL\.)(?<!SL )\bTP\s*[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         for m in tp_plain_iter:
@@ -2411,7 +2610,10 @@ class TelegramBridgeService:
 
         tps.sort(key=lambda r: int(r.get("index") or 0))
 
-        sl_match = re.search(r"(?im)\bSL(?:[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b", raw_norm)
+        sl_match = re.search(
+            r"(?im)\bSL(?:\s*\.?\s*TP)?(?:[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
         if sl_match is None or not tps:
             return None
         try:
@@ -5198,8 +5400,8 @@ class TelegramBridgeService:
         now_ts: float,
         mode_source_tag: str,
         sync_cfg: Dict[str, Any],
-        signal_confirm_sec: Optional[float],
-        audit_event_ts: Any,
+        signal_confirm_sec: Optional[float] = None,
+        audit_event_ts: Any = None,
     ) -> Dict[str, Any]:
         direction_tf = self._normalize_tf_token((sync_cfg or {}).get("direction_tf"), "M5")
         entry_tf = self._normalize_tf_token((sync_cfg or {}).get("entry_tf"), "M1")
@@ -6985,13 +7187,22 @@ class TelegramBridgeService:
                     "live_price": _to_float_or_none(live_px),
                 },
             )
-            exec_msg = self._execute_confirmation_signal_auto(
+            audit_ctx_row = dict(row.get("audit_ctx") or {})
+            source_names = [str(x).strip() for x in (audit_ctx_row.get("source_names") or []) if str(x).strip()]
+            if not source_names:
+                source_names = [str(row.get("source_label") or "").strip()]
+            exec_msg = self._execute_confirmation_signal_with_channel_modes(
                 chat_id=int(row.get("chat_id") or 0),
                 signal=dict(signal),
+                source_names=list(source_names),
+                source_label=str(row.get("source_label") or "unknown"),
+                source_key=str(row.get("source_key") or ""),
                 lot_override=_to_float_or_none(row.get("lot_override")),
                 source_tag=str(row.get("source_tag") or ""),
                 comment_prefix=str(row.get("comment_prefix") or "tgc"),
-                audit_ctx=dict(row.get("audit_ctx") or {}),
+                trigger=str(audit_ctx_row.get("trigger") or "entry_signal"),
+                event_ts=audit_ctx_row.get("event_ts"),
+                trace_id=str(audit_ctx_row.get("trace_id") or signal.get("trace_id") or "").strip() or None,
             )
             msg_l = str(exec_msg or "").strip().lower()
             ok_opened = self._is_confirmation_exec_opened(exec_msg)
@@ -7095,7 +7306,7 @@ class TelegramBridgeService:
     ) -> str:
         tps = signal.get("tps") if isinstance(signal.get("tps"), list) else []
         tp_lines: List[str] = []
-        for row in tps[:5]:
+        for row in tps:
             if not isinstance(row, dict):
                 continue
             idx = int(row.get("index") or 0)
@@ -7487,10 +7698,114 @@ class TelegramBridgeService:
         if not msg:
             return False
         return bool(
-            msg.startswith("confirmation ladder executed")
-            or msg.startswith("normal mode order executed")
-            or msg == "exec_ok"
+            ("confirmation ladder executed" in msg)
+            or ("normal mode order executed" in msg)
+            or ("exec_ok" in msg)
         )
+
+    def _execute_confirmation_signal_with_channel_modes(
+        self,
+        *,
+        chat_id: int,
+        signal: Dict[str, Any],
+        source_names: List[Any],
+        source_label: str,
+        source_key: str,
+        lot_override: Optional[float] = None,
+        source_tag: Optional[str] = None,
+        comment_prefix: str = "tgc",
+        trigger: str = "entry_signal",
+        event_ts: Optional[Any] = None,
+        trace_id: Optional[str] = None,
+    ) -> str:
+        def _call_exec_auto(*, sig: Dict[str, Any], mode: str, mode_lot_override: Optional[float], mode_name: str) -> str:
+            audit_ctx = {
+                "source_type": "telegram_channel",
+                "source_name": str(source_label),
+                "source_key": str(source_key),
+                "trigger": str(trigger),
+                "event_ts": event_ts,
+                "trace_id": str(trace_id or sig.get("trace_id") or "").strip() or None,
+                "channel_mode": str(mode_name),
+                "channel_mode_policy": dict(policy),
+            }
+            kwargs_full = {
+                "chat_id": int(chat_id),
+                "signal": dict(sig),
+                "lot_override": (_to_float_or_none(mode_lot_override) if mode_lot_override is not None else None),
+                "source_tag": source_tag,
+                "comment_prefix": comment_prefix,
+                "audit_ctx": dict(audit_ctx),
+                "execution_mode": str(mode),
+            }
+            try:
+                return str(self._execute_confirmation_signal_auto(**kwargs_full))
+            except TypeError:
+                # Backward-compatible path for tests/monkeypatches that keep a reduced signature.
+                return str(
+                    self._execute_confirmation_signal_auto(
+                        chat_id=int(chat_id),
+                        signal=dict(sig),
+                        audit_ctx=dict(audit_ctx),
+                    )
+                )
+
+        policy = self._confirm_signal_channel_modes_for_sources(source_names=source_names)
+        adv_on = bool(policy.get("advanced"))
+        em_on = bool(policy.get("emergency"))
+        if (not adv_on) and (not em_on):
+            self._append_automation_execution_log(
+                source_type="telegram_channel",
+                source_name=str(source_label or "unknown"),
+                trigger=str(trigger or "entry_signal"),
+                status="ignored",
+                symbol=str((signal or {}).get("symbol") or "").strip().upper(),
+                timeframe=str((signal or {}).get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper(),
+                direction=str((signal or {}).get("direction") or "").strip().upper(),
+                stop_loss=_to_float_or_none((signal or {}).get("stop_loss")),
+                stages_total=len((signal or {}).get("tps") or []),
+                message="channel_modes_disabled",
+                event_ts=event_ts,
+                trace_id=str(trace_id or (signal or {}).get("trace_id") or "").strip() or None,
+                stage="mode_router",
+                stage_status="ignored",
+                error_code="channel_modes_disabled",
+                stage_payload={"policy": dict(policy)},
+            )
+            return "Channel execution skipped: both advanced and emergency modes are disabled for this source."
+
+        outputs: List[str] = []
+        if adv_on:
+            sig_adv = dict(signal or {})
+            sig_adv["channel_advanced_fixed_02"] = True
+            # Channel advanced uses ATR-based stop progression. Keep the legacy
+            # break-even jump available only when explicitly requested.
+            sig_adv["channel_advanced_move_sl_to_entry"] = False
+            sig_adv["ignore_global_force_single"] = True
+            tp_rows = [dict(x) for x in (sig_adv.get("tps") if isinstance(sig_adv.get("tps"), list) else []) if isinstance(x, dict)]
+            adv_tp_count = int(max(1, len(tp_rows)))
+            adv_lot_per_tp = float(self._confirm_signal_advanced_lot_per_tp())
+            adv_lot = float(max(0.01, min(100.0, float(adv_tp_count) * float(adv_lot_per_tp))))
+            adv_out = _call_exec_auto(
+                sig=dict(sig_adv),
+                mode="advanced",
+                mode_lot_override=float(adv_lot),
+                mode_name="advanced",
+            )
+            outputs.append(f"[ADVANCED]\n{str(adv_out)}")
+
+        if em_on:
+            sig_em = dict(signal or {})
+            sig_em["force_single_trade"] = True
+            em_out = _call_exec_auto(
+                sig=dict(sig_em),
+                mode="emergency",
+                mode_lot_override=(_to_float_or_none(lot_override) if lot_override is not None else None),
+                mode_name="emergency",
+            )
+            outputs.append(f"[EMERGENCY]\n{str(em_out)}")
+
+        return "\n\n".join([str(x).strip() for x in outputs if str(x).strip()])
 
     def _execute_confirmation_signal_auto(
         self,
@@ -7588,10 +7903,13 @@ class TelegramBridgeService:
             lot = float(lot_ovr)
         stage_mode = str(self._confirm_signal_tp_distribution_mode())
         allow_msg_single = bool(self._confirm_signal_allow_message_single_trade_override())
-        force_single = bool(
-            self._confirm_signal_force_single_trade_01()
-            or (allow_msg_single and bool(signal.get("force_single_trade")))
+        global_force_single = bool(
+            str(exec_mode) != "advanced_v2"
+            and (not bool(signal.get("ignore_global_force_single")))
+            and self._confirm_signal_force_single_trade_01()
         )
+        force_single = bool(global_force_single or (allow_msg_single and bool(signal.get("force_single_trade"))))
+        channel_advanced_fixed = bool(signal.get("channel_advanced_fixed_02")) and str(exec_mode) == "advanced" and (not force_single)
         extra_ladder_state: Dict[str, Any] = {}
         if str(exec_mode) == "advanced_v2":
             digits_v2 = int(_to_float_or_none(signal.get("digits")) or 5)
@@ -7626,6 +7944,10 @@ class TelegramBridgeService:
         if force_single:
             # Emergency mode disables partial laddering, but keeps operator-selected lot sizing.
             stage_mode = "single_trade"
+        elif channel_advanced_fixed:
+            stage_mode = "channel_advanced_0p2"
+            extra_ladder_state["force_be_after_tp"] = bool(signal.get("channel_advanced_move_sl_to_entry", False))
+            extra_ladder_state["channel_mode"] = "advanced"
         active_tps: List[Dict[str, Any]] = self._select_execution_tps(
             tps_all=list(tps_all),
             source_profile=str(signal_profile),
@@ -7759,6 +8081,7 @@ class TelegramBridgeService:
                 "active_tps": [dict(x) for x in active_tps],
                 "stage_lots": [float(x) for x in stage_lots],
                 "force_single": bool(force_single),
+                "channel_advanced_fixed_02": bool(channel_advanced_fixed),
                 "allow_message_single_override": bool(allow_msg_single),
             },
         )
@@ -8489,6 +8812,37 @@ class TelegramBridgeService:
             parsed.append(float(parsed[-1]))
         return [float(x) for x in parsed[:5]]
 
+    @staticmethod
+    def _confirm_advanced_sl_atr_period() -> int:
+        try:
+            raw = int(float(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_ADVANCED_SL_ATR_PERIOD", "14")))
+        except Exception:
+            raw = 14
+        return int(max(5, min(100, int(raw))))
+
+    @staticmethod
+    def _confirm_advanced_sl_atr_multipliers() -> List[float]:
+        raw = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_ADVANCED_SL_ATR_MULTS", "")).strip()
+        parsed: List[float] = []
+        if raw:
+            for tok in re.split(r"[,\|; ]+", raw):
+                t = str(tok or "").strip()
+                if not t:
+                    continue
+                try:
+                    v = float(t)
+                except Exception:
+                    continue
+                if not math.isfinite(float(v)):
+                    continue
+                parsed.append(float(max(0.0, min(10.0, float(v)))))
+        if not parsed:
+            # TP1 -> BE, TP2 -> BE+0.25*ATR, TP3 -> BE+0.50*ATR, TP4 -> BE+0.75*ATR, TP5 -> BE+1.00*ATR
+            parsed = [0.00, 0.25, 0.50, 0.75, 1.00]
+        while len(parsed) < 5:
+            parsed.append(float(parsed[-1]))
+        return [float(x) for x in parsed[:5]]
+
     def _apply_confirmation_guard_stop(
         self,
         *,
@@ -8498,10 +8852,11 @@ class TelegramBridgeService:
         hit_tp_index: int,
         target_px: float,
     ) -> Dict[str, Any]:
-        if not bool(self._confirm_sl_guard_enabled()):
+        force_be_after_tp = bool((row or {}).get("force_be_after_tp"))
+        if (not bool(self._confirm_sl_guard_enabled())) and (not force_be_after_tp):
             return {"ok": True, "updated": False, "reason": "sl_guard_disabled"}
         tp_idx = int(max(1, int(hit_tp_index or 1)))
-        if tp_idx < int(self._confirm_sl_guard_start_tp()):
+        if (not force_be_after_tp) and tp_idx < int(self._confirm_sl_guard_start_tp()):
             return {"ok": True, "updated": False, "reason": "sl_guard_not_armed"}
 
         sym = str((row or {}).get("symbol") or "").strip().upper()
@@ -8529,6 +8884,15 @@ class TelegramBridgeService:
         stops_points = _to_float_or_none(info.get("trade_stops_level")) or 0.0
         freeze_points = _to_float_or_none(info.get("trade_freeze_level")) or 0.0
         min_stop_dist = float(max(0.0, float(stops_points + freeze_points) * float(point)))
+        sl_debug_payload: Dict[str, Any] = {
+            "tp_index": int(tp_idx),
+            "entry_price": float(entry),
+            "target_price": (_to_float_or_none(target_px) if target_px is not None else None),
+            "point": float(point),
+            "min_stop_dist": float(min_stop_dist),
+            "execution_mode": str(exec_mode),
+            "sl_guard_mode": ("advanced_v2" if bool(is_v2) else ("force_be" if bool(force_be_after_tp) else ("advanced_atr" if str(exec_mode) == "advanced" else "ratio_lock"))),
+        }
 
         if bool(is_v2):
             v2_cfg = dict((row or {}).get("advanced_v2_cfg") or {})
@@ -8563,6 +8927,14 @@ class TelegramBridgeService:
 
             raw_visible = float(desired + ((abs(float(entry)) * float(slip_pct)) if direction == "BUY" else (-abs(float(entry)) * float(slip_pct))))
             raw_visible = round(float(raw_visible), int(max(0, digits)))
+            sl_debug_payload.update(
+                {
+                    "r_distance": float(r_dist),
+                    "slippage_buffer_pct": float(slip_pct),
+                    "internal_sl": float(desired),
+                    "raw_visible_sl": float(raw_visible),
+                }
+            )
             v2_cfg["internal_sl"] = float(desired)
             v2_cfg["raw_sl"] = float(raw_visible)
             row["advanced_v2_cfg"] = dict(v2_cfg)
@@ -8587,15 +8959,73 @@ class TelegramBridgeService:
                 trace_id=str((row or {}).get("trace_id") or "").strip() or None,
                 stage="sl_update",
                 stage_status="success",
+                stage_payload=dict(sl_debug_payload),
             )
             return {"ok": True, "updated": True, "stop_loss": float(desired), "raw_sl": float(raw_visible)}
         else:
-            ratios = list(self._confirm_sl_guard_lock_ratios())
-            ratio = float(ratios[min(len(ratios) - 1, max(0, tp_idx - 1))])
-            be_buffer = float(max(float(point) * 4.0, float(min_stop_dist) * 0.20))
-            profit_span = abs(float(target_px) - float(entry))
-            lock_dist = float(max(float(be_buffer), float(profit_span) * float(ratio)))
-            desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
+            if bool(force_be_after_tp):
+                desired = float(entry)
+                sl_debug_payload["lock_dist"] = 0.0
+            else:
+                if str(exec_mode) == "advanced":
+                    tf = str((row or {}).get("timeframe") or "M5").strip().upper() or "M5"
+                    atr_period = int(self._confirm_advanced_sl_atr_period())
+                    atr_mults = list(self._confirm_advanced_sl_atr_multipliers())
+                    atr_mult = float(atr_mults[min(len(atr_mults) - 1, max(0, tp_idx - 1))])
+                    bars: List[Dict[str, Any]] = []
+                    atr_fetch_error = ""
+                    try:
+                        bars = list(
+                            svc.get_recent_candles(
+                                symbol=str(sym),
+                                timeframe=str(tf),
+                                count=max(60, int(atr_period * 4)),
+                                resolve_symbol=True,
+                            )
+                            or []
+                        )
+                    except Exception as exc:
+                        bars = []
+                        atr_fetch_error = f"{type(exc).__name__}:{str(exc)[:120]}"
+                    atr_px = _to_float_or_none(self._calc_robust_atr_from_bars(bars, period=int(atr_period)))
+                    atr_source = "robust_atr"
+                    if atr_px is None or float(atr_px) <= 0.0:
+                        # conservative fallback if ATR cannot be computed
+                        atr_px = abs(float(target_px) - float(entry))
+                        atr_source = "fallback_target_entry_span"
+                    if atr_px is None or float(atr_px) <= 0.0:
+                        atr_px = float(point) * 10.0
+                        atr_source = "fallback_point_x10"
+                    lock_dist = float(max(float(point) * 2.0, float(atr_px) * float(atr_mult)))
+                    desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
+                    sl_debug_payload.update(
+                        {
+                            "atr_symbol": str(sym),
+                            "atr_timeframe": str(tf),
+                            "atr_period": int(atr_period),
+                            "atr_mult": float(atr_mult),
+                            "atr_value": float(atr_px),
+                            "atr_source": str(atr_source),
+                            "atr_candles_count": int(len(bars)),
+                            "atr_fetch_error": (str(atr_fetch_error) if atr_fetch_error else None),
+                            "lock_dist": float(lock_dist),
+                        }
+                    )
+                else:
+                    ratios = list(self._confirm_sl_guard_lock_ratios())
+                    ratio = float(ratios[min(len(ratios) - 1, max(0, tp_idx - 1))])
+                    be_buffer = float(max(float(point) * 4.0, float(min_stop_dist) * 0.20))
+                    profit_span = abs(float(target_px) - float(entry))
+                    lock_dist = float(max(float(be_buffer), float(profit_span) * float(ratio)))
+                    desired = (float(entry) + float(lock_dist)) if direction == "BUY" else (float(entry) - float(lock_dist))
+                    sl_debug_payload.update(
+                        {
+                            "lock_ratio": float(ratio),
+                            "lock_dist": float(lock_dist),
+                            "be_buffer": float(be_buffer),
+                            "profit_span": float(profit_span),
+                        }
+                    )
 
         tick: Dict[str, Any] = {}
         try:
@@ -8624,6 +9054,8 @@ class TelegramBridgeService:
         if not math.isfinite(float(desired)) or float(desired) <= 0.0:
             return {"ok": False, "updated": False, "error": "invalid_sl_target"}
         desired = round(float(desired), int(max(0, digits)))
+        sl_debug_payload["applied_stop_loss"] = float(desired)
+        sl_debug_payload["existing_stop_loss"] = (float(existing_sl) if existing_sl is not None else None)
 
         if existing_sl is not None and abs(float(desired) - float(existing_sl)) < max(float(point), 1e-9):
             return {"ok": True, "updated": False, "reason": "sl_unchanged", "stop_loss": float(existing_sl)}
@@ -8657,6 +9089,7 @@ class TelegramBridgeService:
                 trace_id=str((row or {}).get("trace_id") or "").strip() or None,
                 stage="sl_update",
                 stage_status="success",
+                stage_payload=dict(sl_debug_payload),
             )
             return {"ok": True, "updated": True, "stop_loss": float(desired)}
 
@@ -8679,7 +9112,9 @@ class TelegramBridgeService:
             execution_mode=str((row or {}).get("execution_mode") or "").strip().lower() or None,
             trace_id=str((row or {}).get("trace_id") or "").strip() or None,
             stage="sl_update",
-            stage_status="success",
+            stage_status="failed",
+            stage_payload=dict(sl_debug_payload),
+            error_code="sl_modify_failed",
         )
         return {"ok": False, "updated": False, "error": err_txt}
 
@@ -9397,7 +9832,7 @@ class TelegramBridgeService:
                 stage="confirm",
                 stage_status="dispatch",
             )
-            if self._confirm_signal_wait_entry_zone():
+            if self._confirm_signal_wait_entry_zone_for_sources(source_names):
                 live_px = self._signal_live_price(signal=dict(signal))
                 if not self._is_price_inside_entry_zone(dict(signal), live_px):
                     queued = self._queue_entry_signal(
@@ -9415,6 +9850,7 @@ class TelegramBridgeService:
                             "trigger": "confirm_signal",
                             "event_ts": msg_event_ts,
                             "trace_id": str(signal.get("trace_id") or "").strip() or None,
+                            "source_names": [str(source_label)],
                         },
                     )
                     zone_state = self._signal_price_zone_state(dict(signal), live_px)
@@ -9449,17 +9885,15 @@ class TelegramBridgeService:
                         self._send_text(int(chat_id), out, reply_markup=None)
                         return ""
                     return out
-            exec_msg = self._execute_confirmation_signal_auto(
+            exec_msg = self._execute_confirmation_signal_with_channel_modes(
                 chat_id=int(chat_id),
                 signal=dict(signal),
-                audit_ctx={
-                    "source_type": "telegram_channel",
-                    "source_name": str(source_label),
-                    "source_key": str(pending_row.get("source_key") or fallback_key),
-                    "trigger": "confirm_signal",
-                    "event_ts": msg_event_ts,
-                    "trace_id": str(signal.get("trace_id") or "").strip() or None,
-                },
+                source_names=[str(pending_row.get("source_label") or source_label)],
+                source_label=str(pending_row.get("source_label") or source_label),
+                source_key=str(pending_row.get("source_key") or fallback_key),
+                trigger="confirm_signal",
+                event_ts=msg_event_ts,
+                trace_id=str(signal.get("trace_id") or "").strip() or None,
             )
             source_profile = str((signal or {}).get("source_profile") or "").strip().lower()
             pending_source_key = str(pending_row.get("source_key") or fallback_key)
@@ -9656,7 +10090,7 @@ class TelegramBridgeService:
             )
             out = f"{message}\n\nPending confirmation stored. Waiting for message: Confirm Signal"
         else:
-            if self._confirm_signal_wait_entry_zone():
+            if self._confirm_signal_wait_entry_zone_for_sources(source_names):
                 queued = self._queue_entry_signal(
                     chat_id=int(chat_id),
                     signal=dict(signal),
@@ -9672,6 +10106,7 @@ class TelegramBridgeService:
                         "trigger": "entry_signal",
                         "event_ts": msg_event_ts,
                         "trace_id": str(trace_id),
+                        "source_names": [str(x) for x in source_names if str(x).strip()],
                     },
                 )
                 self._append_automation_execution_log(
@@ -9698,17 +10133,15 @@ class TelegramBridgeService:
                     f"Queue ID: {str((queued or {}).get('id') or '-')}"
                 )
             else:
-                exec_msg = self._execute_confirmation_signal_auto(
+                exec_msg = self._execute_confirmation_signal_with_channel_modes(
                     chat_id=int(chat_id),
-                    signal=signal,
-                    audit_ctx={
-                        "source_type": "telegram_channel",
-                        "source_name": str(source_label),
-                        "source_key": str(source_key),
-                        "trigger": "entry_signal",
-                        "event_ts": msg_event_ts,
-                        "trace_id": str(trace_id),
-                    },
+                    signal=dict(signal),
+                    source_names=[str(x) for x in source_names if str(x).strip()],
+                    source_label=str(source_label),
+                    source_key=str(source_key),
+                    trigger="entry_signal",
+                    event_ts=msg_event_ts,
+                    trace_id=str(trace_id),
                 )
                 if self._profile_requires_tp_progress_gate(source_profile) and self._is_confirmation_exec_opened(exec_msg):
                     self._mark_reentry_signal_started(

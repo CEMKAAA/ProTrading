@@ -6,6 +6,11 @@
         enabled: document.getElementById('tg-enabled'),
         requireConfirm: document.getElementById('tg-require-confirm'),
         waitEntryZone: document.getElementById('tg-wait-entry-zone'),
+        waitEntryZoneChannels: document.getElementById('tg-wait-entry-zone-channels'),
+        noWaitEntryZoneChannels: document.getElementById('tg-no-wait-entry-zone-channels'),
+        advancedModeChannels: document.getElementById('tg-advanced-mode-channels'),
+        emergencyModeChannels: document.getElementById('tg-emergency-mode-channels'),
+        advancedLotPerTp: document.getElementById('tg-advanced-lot-per-tp'),
         requireConfirmChannels: document.getElementById('tg-require-confirm-channels'),
         noConfirmChannels: document.getElementById('tg-no-confirm-channels'),
         channels: document.getElementById('tg-channels'),
@@ -116,6 +121,11 @@
         if (els.enabled) els.enabled.checked = !!c.enabled;
         if (els.requireConfirm) els.requireConfirm.checked = !!c.require_confirm;
         if (els.waitEntryZone) els.waitEntryZone.checked = (c.wait_entry_zone !== false);
+        if (els.waitEntryZoneChannels) els.waitEntryZoneChannels.value = toLines(c.wait_entry_zone_channels);
+        if (els.noWaitEntryZoneChannels) els.noWaitEntryZoneChannels.value = toLines(c.no_wait_entry_zone_channels);
+        if (els.advancedModeChannels) els.advancedModeChannels.value = toLines(c.advanced_mode_channels);
+        if (els.emergencyModeChannels) els.emergencyModeChannels.value = toLines(c.emergency_mode_channels);
+        if (els.advancedLotPerTp) els.advancedLotPerTp.value = Number(c.advanced_lot_per_tp || 0.2).toFixed(2);
         if (els.requireConfirmChannels) els.requireConfirmChannels.value = toLines(c.require_confirm_channels);
         if (els.noConfirmChannels) els.noConfirmChannels.value = toLines(c.no_confirm_channels);
         if (els.channels) els.channels.value = toLines(c.channels);
@@ -311,18 +321,33 @@
         const signalsOnly = !!(els.feedSignalsOnly && els.feedSignalsOnly.checked);
         const inferKind = (r) => {
             const kind = String((r && r.kind) || '').toLowerCase();
-            if (kind) return kind;
+            const parsedObj = !!(r && r.parsed && typeof r.parsed === 'object');
+            if (kind && kind !== 'other' && kind !== 'signal') return kind;
+            if (kind === 'signal' && parsedObj) return kind;
             const txtRaw = String((r && r.text) || '').trim();
-            const txt = (typeof txtRaw.normalize === 'function') ? txtRaw.normalize('NFKC') : txtRaw;
+            const superscriptDigits = {
+                '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+                '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+            };
+            let txt = (typeof txtRaw.normalize === 'function') ? txtRaw.normalize('NFKC') : txtRaw;
+            txt = txt
+                .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (ch) => superscriptDigits[ch] || ch)
+                .replace(/[\u200B-\u200F\uFEFF]/g, '')
+                .split(/\r?\n/)
+                .map((line) => String(line || '').replace(/^\s*[^A-Za-z0-9#]+/, ''))
+                .join('\n');
             if (!txt) return 'other';
             if (/\bCONFIRM\s+SIGNAL\b/im.test(txt)) return 'confirm_signal';
-            if (/\bTP\s*(?:[1-9]\d*)?\s*HIT\b/im.test(txt) || /\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b/im.test(txt) || /\btarget(?:s)?\s+completed\b/im.test(txt)) return 'tp_hit';
+            if (/\bTP\s*(?:[1-9]\d*)?\s*HIT\b/im.test(txt) || /\bTP\s*(?:[1-9]\d*)?\s*DONE\b/im.test(txt) || /\bTP\s*[,.\s]*ALL\s*(?:HIT|DONE)\b/im.test(txt) || /\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b/im.test(txt) || /\btarget(?:s)?\s+completed\b/im.test(txt)) return 'tp_hit';
             if (/\b(?:SL(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b.*\bHIT\b/im.test(txt)) return 'sl_hit';
-            if (/\bCLOSE\s+IT\b/im.test(txt) || /\bCLOSE\s+NOW\b/im.test(txt)) return 'close_instruction';
-            if (
-                /^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:\/|-|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$/im.test(txt) ||
-                /^\s*[A-Z]{3,12}\s+(BUY|SELL)\s+NOW\b/im.test(txt)
-            ) return 'signal';
+            if (/\bCLOSE\s+IT\b/im.test(txt) || /\bCLOSE\s+NOW\b/im.test(txt) || /\bSAVE\s+(?:YOUR\s+)?PROFIT(?:S)?\b/im.test(txt) || /\b(?:SECURE|BOOK|TAKE)\s+(?:YOUR\s+)?PROFIT(?:S)?\b/im.test(txt)) return 'close_instruction';
+            const hasHeader = /^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:\/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$/im.test(txt);
+            const hasTp = (
+                /\bTP\s*(?:[1-9]\d*)?\s*[:,.\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt)
+                || /\bTP\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+\s*[:,.\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt)
+            );
+            const hasSl = /\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt);
+            if (hasHeader && hasTp && hasSl) return 'signal';
             return 'other';
         };
         const isSignalRow = (r) => {
@@ -467,6 +492,23 @@
             enabled: !!(els.enabled && els.enabled.checked),
             require_confirm: !!(els.requireConfirm && els.requireConfirm.checked),
             wait_entry_zone: !!(els.waitEntryZone && els.waitEntryZone.checked),
+            wait_entry_zone_channels: String((els.waitEntryZoneChannels && els.waitEntryZoneChannels.value) || '')
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean),
+            no_wait_entry_zone_channels: String((els.noWaitEntryZoneChannels && els.noWaitEntryZoneChannels.value) || '')
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean),
+            advanced_mode_channels: String((els.advancedModeChannels && els.advancedModeChannels.value) || '')
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean),
+            emergency_mode_channels: String((els.emergencyModeChannels && els.emergencyModeChannels.value) || '')
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean),
+            advanced_lot_per_tp: parseFloat((els.advancedLotPerTp && els.advancedLotPerTp.value) || '0.2'),
             require_confirm_channels: String((els.requireConfirmChannels && els.requireConfirmChannels.value) || '')
                 .split('\n')
                 .map((x) => x.trim())
@@ -560,7 +602,10 @@
 
     async function init() {
         const mainInputs = [
-            els.enabled, els.requireConfirm, els.waitEntryZone, els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
+            els.enabled, els.requireConfirm, els.waitEntryZone, els.waitEntryZoneChannels, els.noWaitEntryZoneChannels,
+            els.advancedModeChannels, els.emergencyModeChannels,
+            els.advancedLotPerTp,
+            els.requireConfirmChannels, els.noConfirmChannels, els.channels, els.timeframe, els.lot,
             els.forceSingle01, els.allowMessageSingleTradeOverride, els.distribution, els.confirmWindow, els.evalMode, els.aiProvider, els.aiModel, els.aiTimeout
         ].filter(Boolean);
         const userInputs = [

@@ -85,6 +85,37 @@
                                     <div class="form-text">Bu listede olan kanallarda onay beklenmez, sinyal doğrudan giriş akışına alınır.</div>
                                 </div>
                             </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label for="tg-wait-entry-zone-channels" class="form-label">Wait Entry Zone Channels</label>
+                                    <textarea id="tg-wait-entry-zone-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
+                                    <div class="form-text">Doluysa yalnızca bu listedeki kanallar entry-zone bekler.</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="tg-no-wait-entry-zone-channels" class="form-label">No Wait Entry Zone Channels</label>
+                                    <textarea id="tg-no-wait-entry-zone-channels" class="form-control" rows="2" placeholder="XAUUSD GOLD VIP"></textarea>
+                                    <div class="form-text">Bu listedeki kanallar entry-zone beklemeden doğrudan execute edilir.</div>
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label for="tg-advanced-mode-channels" class="form-label">Advanced Mode Channels</label>
+                                    <textarea id="tg-advanced-mode-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
+                                    <div class="form-text">Bu listedeki kanallarda Advanced execution açılır (TP sayısı x 0.20 lot, TP başına 0.20 close).</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="tg-emergency-mode-channels" class="form-label">Emergency Mode Channels</label>
+                                    <textarea id="tg-emergency-mode-channels" class="form-control" rows="2" placeholder="XAUUSD GOLD VIP"></textarea>
+                                    <div class="form-text">Bu listedeki kanallarda Emergency execution açılır (single trade, SL=signal SL, TP=max TP).</div>
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label for="tg-advanced-lot-per-tp" class="form-label">Advanced Lot Per TP</label>
+                                    <input id="tg-advanced-lot-per-tp" class="form-control" type="number" min="0.01" max="5.00" step="0.01" value="0.20">
+                                    <div class="form-text">Advanced toplam lot hesaplaması: <code>TP sayısı x bu değer</code>.</div>
+                                </div>
+                            </div>
 
                             <div class="row g-2 mt-1">
                                 <div class="col-md-6">
@@ -366,7 +397,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260414_telegram_automation_panel_v14') }}"></script>
+<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260415_telegram_automation_panel_v19') }}"></script>
 {% endblock %}
 
 
