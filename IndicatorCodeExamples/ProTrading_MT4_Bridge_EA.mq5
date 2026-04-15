@@ -27,6 +27,7 @@ input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
 input bool   InpAllowSell = true;
 input int    InpAmbiguousPolicy = 0; // 0=skip, 1=force BUY, 2=force SELL
+input int    InpBufferDirectionMode = 0; // 0=buffer index, 1=arrow price vs bar midpoint
 input int    InpSignalSourceMode = 0; // 0=buffers, 1=chart objects
 input string InpObjectBuyNamePattern = "buy";
 input string InpObjectSellNamePattern = "sell";
@@ -34,6 +35,20 @@ input string InpObjectBuyArrowCodesCsv = "233,241,217,225";
 input string InpObjectSellArrowCodesCsv = "234,242,218,226";
 input int    InpObjectLookbackSeconds = 180;
 input bool   InpObjectUsePriceHeuristic = true;
+input bool   InpObjectUseColorHeuristic = true;
+input color  InpObjectBuyColor = clrBlue;
+input color  InpObjectSellColor = clrRed;
+input bool   InpObjectOnlyArrowObjects = true;
+input string InpObjectIgnoreNamePatterns = "autotrade,->";
+input bool   InpObjectScanButton = true;
+input string InpObjectScanButtonName = "BTN_SCAN_ARROWS";
+input int    InpObjectScanButtonX = 20;
+input int    InpObjectScanButtonY = 50;
+input int    InpObjectScanMaxRows = 80;
+input bool   InpObjectScanLogAllObjects = true;
+input bool   InpObjectScanAlsoBuffers = true;
+input int    InpObjectScanBufferMax = 32;
+input int    InpObjectScanShiftMax = 6;
 
 input string InpApiBaseUrl = "http://127.0.0.1:8000";
 input string InpApiPath = "/api/v1/mt5/bridge/signal";
@@ -53,6 +68,7 @@ string   g_activeIndicatorName = "";
 double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
 int      g_indicatorHandle = INVALID_HANDLE;
+string   g_scanButtonName = "";
 
 struct PendingBridgeEvent
 {
@@ -357,6 +373,39 @@ bool _csv_has_int_code(string csv, long code)
    return false;
 }
 
+bool _csv_name_hit(string csv, string name)
+{
+   string raw = _trim(csv);
+   if(StringLen(raw) <= 0)
+      return false;
+   StringReplace(raw, ";", ",");
+   StringReplace(raw, "|", ",");
+
+   string parts[];
+   int n = StringSplit(raw, ',', parts);
+   if(n <= 0)
+      return false;
+   for(int i = 0; i < n; i++)
+   {
+      string t = _trim(parts[i]);
+      if(StringLen(t) <= 0)
+         continue;
+      if(_contains_ci(name, t))
+         return true;
+   }
+   return false;
+}
+
+bool _is_ignored_object_name(string objName)
+{
+   return _csv_name_hit(InpObjectIgnoreNamePatterns, objName);
+}
+
+bool _is_arrow_object_type(ENUM_OBJECT type)
+{
+   return (type == OBJ_ARROW || type == OBJ_ARROW_BUY || type == OBJ_ARROW_SELL);
+}
+
 int _direction_from_object_arrowcode(string objName)
 {
    long code = (long)ObjectGetInteger(0, objName, OBJPROP_ARROWCODE, 0);
@@ -370,6 +419,68 @@ int _direction_from_object_arrowcode(string objName)
    if(_csv_has_int_code(InpObjectSellArrowCodesCsv, code))
       return -1;
    return 0;
+}
+
+string _dir_to_text(int dir)
+{
+   if(dir > 0)
+      return "BUY";
+   if(dir < 0)
+      return "SELL";
+   return "UNKNOWN";
+}
+
+string _color_to_hex(color c)
+{
+   int r = ((int)c) & 0xFF;
+   int g = (((int)c) >> 8) & 0xFF;
+   int b = (((int)c) >> 16) & 0xFF;
+   return StringFormat("#%02X%02X%02X", r, g, b);
+}
+
+int _color_distance(color a, color b)
+{
+   int ar = ((int)a) & 0xFF;
+   int ag = (((int)a) >> 8) & 0xFF;
+   int ab = (((int)a) >> 16) & 0xFF;
+   int br = ((int)b) & 0xFF;
+   int bg = (((int)b) >> 8) & 0xFF;
+   int bb = (((int)b) >> 16) & 0xFF;
+   return MathAbs(ar - br) + MathAbs(ag - bg) + MathAbs(ab - bb);
+}
+
+int _direction_from_color_value(color c)
+{
+   if(!InpObjectUseColorHeuristic)
+      return 0;
+
+   // Exact or near-configured colors win first.
+   if(_color_distance(c, InpObjectBuyColor) <= 30)
+      return 1;
+   if(_color_distance(c, InpObjectSellColor) <= 30)
+      return -1;
+
+   int r = ((int)c) & 0xFF;
+   int g = (((int)c) >> 8) & 0xFF;
+   int b = (((int)c) >> 16) & 0xFF;
+
+   bool reddish = (r >= 120 && r > (g + 40) && r > (b + 40));
+   bool bluish = (b >= 120 && b > (r + 40) && b > (g + 20));
+   bool greenish = (g >= 120 && g > (r + 40) && g > (b + 20));
+
+   if(bluish || greenish)
+      return 1;
+   if(reddish)
+      return -1;
+   return 0;
+}
+
+int _direction_from_object_color(string objName)
+{
+   color c = (color)ObjectGetInteger(0, objName, OBJPROP_COLOR, 0);
+   if((int)c == 0)
+      c = (color)ObjectGetInteger(0, objName, OBJPROP_COLOR);
+   return _direction_from_color_value(c);
 }
 
 int _direction_from_object_price(datetime objTime, double objPrice)
@@ -394,7 +505,68 @@ int _direction_from_object_price(datetime objTime, double objPrice)
    return 0;
 }
 
-bool _detect_object_signal(int &direction, double &signalPrice, datetime &signalTime, string &objectName)
+int _direction_from_signal_price(datetime signalTime, double signalPrice)
+{
+   if(!_is_signal_value(signalPrice))
+      return 0;
+   int shift = iBarShift(_Symbol, PERIOD_CURRENT, signalTime, false);
+   if(shift < 0)
+      return 0;
+   double high = iHigh(_Symbol, PERIOD_CURRENT, shift);
+   double low = iLow(_Symbol, PERIOD_CURRENT, shift);
+   if(!_is_signal_value(high) || !_is_signal_value(low) || high <= low)
+      return 0;
+   double mid = low + (high - low) * 0.5;
+   if(signalPrice >= mid)
+      return -1;
+   return 1;
+}
+
+int _direction_from_object_anchor(string objName)
+{
+   if(!InpObjectUsePriceHeuristic)
+      return 0;
+   long anchor = ObjectGetInteger(0, objName, OBJPROP_ANCHOR, 0);
+   if(anchor == ANCHOR_BOTTOM)
+      return 1;
+   if(anchor == ANCHOR_TOP)
+      return -1;
+   return 0;
+}
+
+int _majority_direction(int nameDir, int codeDir, int colorDir, int priceDir)
+{
+   int upVotes = 0;
+   int downVotes = 0;
+
+   // Object names are intentional when available, so weight them slightly higher.
+   if(nameDir > 0) upVotes += 2;
+   if(nameDir < 0) downVotes += 2;
+   if(codeDir > 0) upVotes++;
+   if(codeDir < 0) downVotes++;
+   if(colorDir > 0) upVotes++;
+   if(colorDir < 0) downVotes++;
+   if(priceDir > 0) upVotes++;
+   if(priceDir < 0) downVotes++;
+
+   if(upVotes > downVotes)
+      return 1;
+   if(downVotes > upVotes)
+      return -1;
+   return 0;
+}
+
+int _direction_from_object_all(string objName, datetime objTime, double objPrice)
+{
+   int nameDir = _direction_from_object_name(objName);
+   int codeDir = _direction_from_object_arrowcode(objName);
+   int colorDir = _direction_from_object_color(objName);
+   int anchorDir = _direction_from_object_anchor(objName);
+   int priceDir = (anchorDir != 0) ? anchorDir : _direction_from_object_price(objTime, objPrice);
+   return _majority_direction(nameDir, codeDir, colorDir, priceDir);
+}
+
+bool _detect_object_signal(int &direction, double &signalPrice, datetime &signalTime, string &objectName, bool ignoreProcessed = false)
 {
    direction = 0;
    signalPrice = 0.0;
@@ -422,13 +594,19 @@ bool _detect_object_signal(int &direction, double &signalPrice, datetime &signal
       string nm = ObjectName(0, i, -1, -1);
       if(StringLen(nm) <= 0)
          continue;
+      if(_is_ignored_object_name(nm))
+         continue;
+
+      ENUM_OBJECT type = (ENUM_OBJECT)ObjectGetInteger(0, nm, OBJPROP_TYPE, 0);
+      if(InpObjectOnlyArrowObjects && !_is_arrow_object_type(type))
+         continue;
 
       datetime ot = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
       if(ot <= 0)
          ot = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME);
       if(ot <= 0)
          continue;
-      if(ot <= g_lastObjectProcessedAt)
+      if(!ignoreProcessed && ot <= g_lastObjectProcessedAt)
          continue;
       if(minTs > 0 && ot < minTs)
          continue;
@@ -437,11 +615,7 @@ bool _detect_object_signal(int &direction, double &signalPrice, datetime &signal
       if(!_is_signal_value(op))
          op = ObjectGetDouble(0, nm, OBJPROP_PRICE);
 
-      int dir = _direction_from_object_name(nm);
-      if(dir == 0)
-         dir = _direction_from_object_arrowcode(nm);
-      if(dir == 0)
-         dir = _direction_from_object_price(ot, op);
+      int dir = _direction_from_object_all(nm, ot, op);
       if(dir == 0)
          continue;
 
@@ -851,6 +1025,15 @@ void _check_and_send()
       sellVal = _buffer_value(InpSellBufferIndex, InpSignalShift);
       buySignal = InpAllowBuy && _is_signal_value(buyVal);
       sellSignal = InpAllowSell && _is_signal_value(sellVal);
+      if(InpDebugPrint && (buySignal || sellSignal))
+      {
+         Print("MT5Bridge buffer decision snapshot: buy[", IntegerToString(InpBuyBufferIndex), "]=",
+               DoubleToString(buyVal, _Digits), " active=", (buySignal ? "true" : "false"),
+               " sell[", IntegerToString(InpSellBufferIndex), "]=",
+               DoubleToString(sellVal, _Digits), " active=", (sellSignal ? "true" : "false"),
+               " bar=", TimeToString(barTime, TIME_DATE|TIME_SECONDS),
+               " direction_mode=", IntegerToString(InpBufferDirectionMode));
+      }
    }
 
    if(buySignal && sellSignal)
@@ -902,6 +1085,25 @@ void _check_and_send()
       }
       g_observedInitialized = true;
       return;
+   }
+
+   if(sourceMode == 0 && InpBufferDirectionMode == 1)
+   {
+      int priceDir = _direction_from_signal_price(barTime, signalPrice);
+      if(priceDir != 0)
+      {
+         if(InpDebugPrint)
+            Print("MT5Bridge buffer price-direction override: raw_dir=", dirText,
+                  " price=", DoubleToString(signalPrice, _Digits),
+                  " resolved_dir=", (priceDir > 0 ? "BUY" : "SELL"));
+         direction = priceDir;
+         dirText = (direction > 0) ? "BUY" : "SELL";
+      }
+      else if(InpDebugPrint)
+      {
+         Print("MT5Bridge buffer price-direction unresolved; keeping raw_dir=", dirText,
+               " price=", DoubleToString(signalPrice, _Digits));
+      }
    }
 
    if(InpInvertDirection)
@@ -969,6 +1171,253 @@ void _check_and_send()
    }
 }
 
+void _create_object_scan_button()
+{
+   if(!InpObjectScanButton)
+      return;
+
+   g_scanButtonName = _trim(InpObjectScanButtonName);
+   if(StringLen(g_scanButtonName) <= 0)
+      g_scanButtonName = "BTN_SCAN_ARROWS";
+
+   if(ObjectFind(0, g_scanButtonName) >= 0)
+      ObjectDelete(0, g_scanButtonName);
+
+   if(!ObjectCreate(0, g_scanButtonName, OBJ_BUTTON, 0, 0, 0))
+   {
+      if(InpDebugPrint)
+         Print("MT5Bridge arrow scan button create failed: ", g_scanButtonName, " err=", GetLastError());
+      return;
+   }
+
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_XDISTANCE, InpObjectScanButtonX);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_YDISTANCE, InpObjectScanButtonY);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_XSIZE, 160);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_YSIZE, 30);
+   ObjectSetString(0, g_scanButtonName, OBJPROP_TEXT, "SCAN ARROWS");
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_BGCOLOR, C'30,90,180');
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_BORDER_COLOR, C'20,60,130');
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_FONTSIZE, 10);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_scanButtonName, OBJPROP_HIDDEN, true);
+   ChartRedraw(0);
+}
+
+void _delete_object_scan_button()
+{
+   string name = (StringLen(g_scanButtonName) > 0) ? g_scanButtonName : _trim(InpObjectScanButtonName);
+   if(StringLen(name) > 0 && ObjectFind(0, name) >= 0)
+      ObjectDelete(0, name);
+}
+
+datetime _object_time(string name)
+{
+   datetime t = (datetime)ObjectGetInteger(0, name, OBJPROP_TIME, 0);
+   if(t <= 0)
+      t = (datetime)ObjectGetInteger(0, name, OBJPROP_TIME);
+   return t;
+}
+
+double _object_price(string name)
+{
+   double p = ObjectGetDouble(0, name, OBJPROP_PRICE, 0);
+   if(!_is_signal_value(p))
+      p = ObjectGetDouble(0, name, OBJPROP_PRICE);
+   return p;
+}
+
+long _object_arrow_code(string name)
+{
+   long code = (long)ObjectGetInteger(0, name, OBJPROP_ARROWCODE, 0);
+   if(code <= 0)
+      code = (long)ObjectGetInteger(0, name, OBJPROP_ARROWCODE);
+   return code;
+}
+
+void _print_buffer_scan_report()
+{
+   if(!InpObjectScanAlsoBuffers)
+      return;
+
+   int maxBuffer = InpObjectScanBufferMax;
+   if(maxBuffer < 1)
+      maxBuffer = 1;
+   if(maxBuffer > 128)
+      maxBuffer = 128;
+
+   int maxShift = InpObjectScanShiftMax;
+   if(maxShift < 1)
+      maxShift = 1;
+   if(maxShift > 100)
+      maxShift = 100;
+
+   Print("MT5Bridge BUFFER SCAN | indicator=", ((StringLen(g_activeIndicatorName) > 0) ? g_activeIndicatorName : InpIndicatorName),
+         " buffers=0..", IntegerToString(maxBuffer - 1),
+         " shifts=0..", IntegerToString(maxShift - 1),
+         " active_min=", DoubleToString(InpSignalAbsMin, 10));
+
+   if(!_ensure_indicator_handle())
+   {
+      Print("MT5Bridge BUFFER SCAN failed: indicator handle could not be created.");
+      return;
+   }
+
+   int activeCount = 0;
+   for(int b = 0; b < maxBuffer; b++)
+   {
+      string row = "";
+      bool rowActive = false;
+      for(int sh = 0; sh < maxShift; sh++)
+      {
+         double v = _buffer_value(b, sh);
+         bool active = _is_signal_value(v);
+         if(active)
+         {
+            rowActive = true;
+            activeCount++;
+         }
+         row += StringFormat(" sh%d=%s%s", sh, DoubleToString(v, _Digits), (active ? "*" : ""));
+      }
+      if(rowActive)
+         Print("MT5Bridge BUFFER SCAN buffer[", IntegerToString(b), "]", row);
+   }
+
+   if(activeCount <= 0)
+      Print("MT5Bridge BUFFER SCAN active values: NONE");
+   else
+      Print("MT5Bridge BUFFER SCAN active values: ", IntegerToString(activeCount), " (* marks active/non-empty)");
+}
+
+void _print_object_scan_report()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   int maxRows = InpObjectScanMaxRows;
+   if(maxRows < 10)
+      maxRows = 10;
+   if(maxRows > 500)
+      maxRows = 500;
+
+   Print("------------------------------------------------------------");
+   Print("MT5Bridge ARROW SCAN | chart=", _Symbol, " ", _tf_to_string((ENUM_TIMEFRAMES)_Period),
+         " | objects=", IntegerToString(total),
+         " | source_mode=", (InpSignalSourceMode == 1 ? "objects" : "buffers"));
+   Print("MT5Bridge ARROW SCAN config | buy_color=", _color_to_hex(InpObjectBuyColor),
+         " sell_color=", _color_to_hex(InpObjectSellColor),
+         " buy_codes='", InpObjectBuyArrowCodesCsv,
+         "' sell_codes='", InpObjectSellArrowCodesCsv,
+         "' lookback_sec=", IntegerToString(InpObjectLookbackSeconds),
+         " only_arrow_objects=", (InpObjectOnlyArrowObjects ? "true" : "false"),
+         " ignore='", InpObjectIgnoreNamePatterns, "'");
+
+   int printed = 0;
+   int arrowLike = 0;
+   int finalBuy = 0;
+   int finalSell = 0;
+   int finalUnknown = 0;
+   int ignoredByName = 0;
+   int ignoredByType = 0;
+   datetime nowTs = TimeCurrent();
+   if(nowTs <= 0)
+      nowTs = TimeLocal();
+
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, -1, -1);
+      if(StringLen(name) <= 0)
+         continue;
+      if(name == g_scanButtonName)
+         continue;
+      if(_is_ignored_object_name(name))
+      {
+         ignoredByName++;
+         continue;
+      }
+
+      ENUM_OBJECT type = (ENUM_OBJECT)ObjectGetInteger(0, name, OBJPROP_TYPE, 0);
+      bool ignoredByObjectType = (InpObjectOnlyArrowObjects && !_is_arrow_object_type(type));
+      if(ignoredByObjectType)
+         ignoredByType++;
+      datetime t = _object_time(name);
+      double p = _object_price(name);
+      long code = _object_arrow_code(name);
+      color c = (color)ObjectGetInteger(0, name, OBJPROP_COLOR, 0);
+      long anchor = ObjectGetInteger(0, name, OBJPROP_ANCHOR, 0);
+      long width = ObjectGetInteger(0, name, OBJPROP_WIDTH, 0);
+
+      int nameDir = _direction_from_object_name(name);
+      int codeDir = _direction_from_object_arrowcode(name);
+      int colorDir = _direction_from_color_value(c);
+      int anchorDir = _direction_from_object_anchor(name);
+      int priceDir = (anchorDir != 0) ? anchorDir : _direction_from_object_price(t, p);
+      int finalDir = _majority_direction(nameDir, codeDir, colorDir, priceDir);
+      bool isArrowCandidate = (!ignoredByObjectType && (_is_arrow_object_type(type) || code > 0 || finalDir != 0));
+
+      if(isArrowCandidate)
+         arrowLike++;
+      if(finalDir > 0)
+         finalBuy++;
+      else if(finalDir < 0)
+         finalSell++;
+      else
+         finalUnknown++;
+
+      if(!InpObjectScanLogAllObjects && !isArrowCandidate)
+         continue;
+      if(printed >= maxRows)
+         continue;
+
+      string ageText = "-";
+      if(t > 0 && nowTs > 0)
+         ageText = IntegerToString((int)(nowTs - t)) + "s";
+
+      PrintFormat(
+         "MT5Bridge ARROW SCAN row=%03d type=%s candidate=%s type_filtered=%s name='%s' time=%s age=%s price=%s code=%d color=%s anchor=%d width=%d dir_name=%s dir_code=%s dir_color=%s dir_price=%s final=%s",
+         i,
+         EnumToString(type),
+         (isArrowCandidate ? "true" : "false"),
+         (ignoredByObjectType ? "true" : "false"),
+         name,
+         (t > 0 ? TimeToString(t, TIME_DATE|TIME_SECONDS) : "-"),
+         ageText,
+         DoubleToString(p, _Digits),
+         (int)code,
+         _color_to_hex(c),
+         (int)anchor,
+         (int)width,
+         _dir_to_text(nameDir),
+         _dir_to_text(codeDir),
+         _dir_to_text(colorDir),
+         _dir_to_text(priceDir),
+         _dir_to_text(finalDir)
+      );
+      printed++;
+   }
+
+   int detectedDir = 0;
+   double detectedPx = 0.0;
+   datetime detectedTs = 0;
+   string detectedName = "";
+   bool detected = _detect_object_signal(detectedDir, detectedPx, detectedTs, detectedName, true);
+   Print("MT5Bridge ARROW SCAN summary | arrow_like=", IntegerToString(arrowLike),
+         " final_buy=", IntegerToString(finalBuy),
+         " final_sell=", IntegerToString(finalSell),
+         " final_unknown=", IntegerToString(finalUnknown),
+         " printed=", IntegerToString(printed),
+         " ignored_name=", IntegerToString(ignoredByName),
+         " ignored_type=", IntegerToString(ignoredByType));
+   if(detected)
+      Print("MT5Bridge ARROW SCAN detected_next_signal | name='", detectedName,
+            "' dir=", _dir_to_text(detectedDir),
+            " time=", TimeToString(detectedTs, TIME_DATE|TIME_SECONDS),
+            " price=", DoubleToString(detectedPx, _Digits));
+   else
+      Print("MT5Bridge ARROW SCAN detected_next_signal | NONE");
+   _print_buffer_scan_report();
+   Print("------------------------------------------------------------");
+}
+
 int OnInit()
 {
    if(!_parse_iCustom_params())
@@ -983,6 +1432,7 @@ int OnInit()
          return INIT_FAILED;
    }
 
+   _create_object_scan_button();
    EventSetTimer((InpPollSeconds < 1) ? 1 : InpPollSeconds);
    if(InpDebugPrint)
    {
@@ -1010,10 +1460,25 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   _delete_object_scan_button();
    if(g_indicatorHandle != INVALID_HANDLE)
    {
       IndicatorRelease(g_indicatorHandle);
       g_indicatorHandle = INVALID_HANDLE;
+   }
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_OBJECT_CLICK)
+   {
+      string buttonName = (StringLen(g_scanButtonName) > 0) ? g_scanButtonName : _trim(InpObjectScanButtonName);
+      if(StringLen(buttonName) > 0 && sparam == buttonName)
+      {
+         ObjectSetInteger(0, buttonName, OBJPROP_STATE, false);
+         ChartRedraw(0);
+         _print_object_scan_report();
+      }
    }
 }
 

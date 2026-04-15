@@ -1159,6 +1159,7 @@ class TelegramBridgeService:
             re.search(r"(?im)\bclose\s+it\b", raw_norm)
             or re.search(r"(?im)\bclose\s+now\b", raw_norm)
             or re.search(r"(?im)\bsave\s+(?:your\s+)?profit(?:s)?\b", raw_norm)
+            or re.search(r"(?im)\b(?:secure|book|take)\s+(?:your\s+)?profit(?:s)?\b", raw_norm)
             or re.search(r"(?im)\bwait\s+for\s+better\s+sniper\s+entry\b", raw_norm)
         ):
             return "close_instruction"
@@ -1201,6 +1202,7 @@ class TelegramBridgeService:
             re.search(r"(?im)\bclose\s+it\b", raw)
             or re.search(r"(?im)\bclose\s+now\b", raw)
             or re.search(r"(?im)\bsave\s+(?:your\s+)?profit(?:s)?\b", raw)
+            or re.search(r"(?im)\b(?:secure|book|take)\s+(?:your\s+)?profit(?:s)?\b", raw)
             or re.search(r"(?im)\bwait\s+for\s+better\s+sniper\s+entry\b", raw)
         ):
             return {}
@@ -8454,7 +8456,7 @@ class TelegramBridgeService:
 
     @staticmethod
     def _confirm_sl_guard_enabled() -> bool:
-        v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SL_GUARD_ENABLED", "1")).strip().lower()
+        v = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SL_GUARD_ENABLED", "0")).strip().lower()
         return v in {"1", "true", "yes", "on"}
 
     @staticmethod
@@ -9395,6 +9397,58 @@ class TelegramBridgeService:
                 stage="confirm",
                 stage_status="dispatch",
             )
+            if self._confirm_signal_wait_entry_zone():
+                live_px = self._signal_live_price(signal=dict(signal))
+                if not self._is_price_inside_entry_zone(dict(signal), live_px):
+                    queued = self._queue_entry_signal(
+                        chat_id=int(chat_id),
+                        signal=dict(signal),
+                        source_label=str(source_label),
+                        source_key=str(pending_row.get("source_key") or fallback_key),
+                        lot_override=None,
+                        source_tag="telegram_confirm",
+                        comment_prefix="tgc",
+                        audit_ctx={
+                            "source_type": "telegram_channel",
+                            "source_name": str(source_label),
+                            "source_key": str(pending_row.get("source_key") or fallback_key),
+                            "trigger": "confirm_signal",
+                            "event_ts": msg_event_ts,
+                            "trace_id": str(signal.get("trace_id") or "").strip() or None,
+                        },
+                    )
+                    zone_state = self._signal_price_zone_state(dict(signal), live_px)
+                    self._append_automation_execution_log(
+                        source_type="telegram_channel",
+                        source_name=str(source_label),
+                        trigger="signal_pending_entry_zone",
+                        status="queued",
+                        symbol=str(signal.get("symbol") or "").strip().upper(),
+                        timeframe=str(signal.get("timeframe") or self._confirm_signal_default_timeframe()).strip().upper(),
+                        direction=str(signal.get("direction") or "").strip().upper(),
+                        stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                        stages_total=len(signal.get("tps") or []),
+                        message="waiting_entry_zone_after_confirm",
+                        event_ts=msg_event_ts,
+                        trace_id=str(signal.get("trace_id") or "").strip() or None,
+                        stage="entry_wait",
+                        stage_status="queued",
+                        stage_payload={
+                            "queue_id": str((queued or {}).get("id") or ""),
+                            "live_price": _to_float_or_none(live_px),
+                            "zone_state": str(zone_state),
+                        },
+                    )
+                    out = (
+                        "Confirm Signal received.\n\n"
+                        "Signal queued. Waiting for live price to reach entry zone "
+                        "(lower/upper inclusive).\n"
+                        f"Queue ID: {str((queued or {}).get('id') or '-')}"
+                    )
+                    if push_only:
+                        self._send_text(int(chat_id), out, reply_markup=None)
+                        return ""
+                    return out
             exec_msg = self._execute_confirmation_signal_auto(
                 chat_id=int(chat_id),
                 signal=dict(signal),

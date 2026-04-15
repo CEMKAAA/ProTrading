@@ -405,6 +405,13 @@ def test_save_profit_message_classified_as_close_instruction():
     assert str(hint.get("direction") or "") == ""
 
 
+def test_take_profit_style_messages_classified_as_close_instruction():
+    for raw in ["Take Profit Guys 4761", "Secure profit now", "Book your profits"]:
+        assert TelegramBridgeService._classify_confirm_signal_message(raw) == "close_instruction"
+        hint = TelegramBridgeService._parse_close_instruction_signal_hint(raw)
+        assert bool(hint.get("is_close_instruction")) is True
+
+
 def test_classify_fx_mastermind_tp_hit_with_superscript_is_not_signal():
     raw = """
 #XAUUSD_BUY
@@ -652,7 +659,7 @@ Follow risk management guys
     assert "EXEC_OK" in second
 
 
-def test_confirm_signal_executes_direct_even_if_wait_entry_zone_enabled(monkeypatch):
+def test_confirm_signal_waits_for_entry_zone_when_enabled(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
     monkeypatch.setattr(svc, "_confirm_signal_requires_confirm", lambda: True)
@@ -660,7 +667,15 @@ def test_confirm_signal_executes_direct_even_if_wait_entry_zone_enabled(monkeypa
     monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
     monkeypatch.setattr(svc, "_confirm_signal_require_confirm_titles", lambda: ["Elite Pips Academy"])
     monkeypatch.setattr(svc, "_confirm_signal_no_confirm_titles", lambda: [])
-    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", lambda *, chat_id, signal, audit_ctx=None: "EXEC_OK")
+    monkeypatch.setattr(svc, "_signal_live_price", lambda *, signal: 4620.0)
+
+    seen = {"exec": 0}
+
+    def _fake_exec(**kwargs):
+        seen["exec"] += 1
+        return "EXEC_OK"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
 
     raw_signal = """
 XAUUSD SELL NOW 4630/4635
@@ -692,9 +707,10 @@ SL 4641
         push_only=False,
     )
     assert isinstance(second, str)
-    assert "EXEC_OK" in second
+    assert "Signal queued" in second
+    assert seen["exec"] == 0
     st = svc.get_telegram_automation_state(limit=20)
-    assert int(st.get("pending_entry_count") or 0) == 0
+    assert int(st.get("pending_entry_count") or 0) == 1
 
 
 def test_no_confirm_signal_waits_for_entry_zone_then_executes(monkeypatch):
@@ -1725,9 +1741,7 @@ def test_mt_indicator_no_sl_weighted_ladder_and_partial_close(monkeypatch):
     assert len(obs["close_calls"]) == 1
     assert abs(float(obs["close_calls"][0]["lot_size"]) - 0.08) < 1e-9
     assert str(obs["close_calls"][0]["comment"]) == "tg_confirm_tp1"
-    assert len(obs["sl_updates"]) == 1
-    assert str(obs["sl_updates"][0]["comment"]) == "tg_sl_tp1"
-    assert float(obs["sl_updates"][0]["stop_loss"]) > 4785.0
+    assert obs["sl_updates"] == []
 
 
 def test_xau_sell_tp1_not_triggered_until_ask_reaches_target(monkeypatch):
