@@ -1894,6 +1894,81 @@ def test_pending_entry_executes_on_recent_touch_fallback(monkeypatch):
     assert seen["n"] == 1
 
 
+def test_pending_entry_dispatch_claim_blocks_duplicate_threads(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_entry_wait_max_sec", lambda: 300.0)
+    monkeypatch.setattr(svc, "_confirm_signal_entry_attempt_cooldown_sec", lambda: 0.0)
+    monkeypatch.setattr(svc, "_signal_live_price", lambda *, signal: 4662.0)  # inside zone
+    monkeypatch.setattr(svc, "_send_text", lambda *args, **kwargs: {})
+
+    barrier = threading.Barrier(2)
+
+    def _recent_touch(*, signal):
+        barrier.wait(timeout=2.0)
+        return False
+
+    monkeypatch.setattr(svc, "_signal_recent_zone_touch", _recent_touch)
+
+    seen = {"n": 0}
+    seen_lock = threading.Lock()
+
+    def _fake_exec(**kwargs):
+        with seen_lock:
+            seen["n"] += 1
+        time.sleep(0.05)
+        return "Confirmation ladder executed\nTicket: 1"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_with_channel_modes", _fake_exec)
+    trace_id = f"tgx-test-claim-{int(time.time() * 1000000)}"
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "entry_low": 4660.0,
+        "entry_high": 4665.0,
+        "stop_loss": 4670.0,
+        "tps": [{"index": 1, "price": 4655.0}],
+        "trace_id": str(trace_id),
+    }
+    svc._queue_entry_signal(
+        chat_id=1,
+        signal=signal,
+        source_label="PAROZ",
+        source_key="1:paroz",
+    )
+
+    errors = []
+
+    def _worker():
+        try:
+            svc._push_pending_entry_signals()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    t1 = threading.Thread(target=_worker)
+    t2 = threading.Thread(target=_worker)
+    t1.start()
+    t2.start()
+    t1.join(timeout=5.0)
+    t2.join(timeout=5.0)
+
+    assert errors == []
+    assert not t1.is_alive()
+    assert not t2.is_alive()
+    assert seen["n"] == 1
+
+    st = svc.get_telegram_automation_state(limit=50)
+    assert int(st.get("pending_entry_count") or 0) == 0
+    logs = [dict(x) for x in (st.get("execution_logs") or [])]
+    triggers = [
+        r
+        for r in logs
+        if str((r or {}).get("trigger") or "") == "entry_wait_trigger"
+        and str((r or {}).get("trace_id") or "") == str(trace_id)
+    ]
+    assert len(triggers) == 1
+
+
 def test_close_instruction_closes_only_matching_source_position(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)

@@ -89,6 +89,7 @@ def _to_unix_or_none(value: Any) -> Optional[float]:
 
 
 class TelegramBridgeService:
+    _PENDING_ENTRY_DISPATCH_STALE_SEC: float = 30.0
     _DEADZONE_WATCH_BASE: List[Tuple[str, List[str]]] = [
         ("BTCUSD", ["BTCUSD", "BTCUSDM", "BTCUSDm", "BTCUSDT"]),
         ("ETHUSD", ["ETHUSD", "ETHUSDM", "ETHUSDm", "ETHUSDT"]),
@@ -7090,6 +7091,62 @@ class TelegramBridgeService:
                     best_ts = float(created_ts)
         return best_key, best_row
 
+    def _claim_pending_entry_signal(
+        self,
+        key: Any,
+        *,
+        zone_state: str,
+        live_px: Optional[float],
+        now_ts: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        claim_ts = float(now_ts if now_ts is not None else time.time())
+        stale_after = float(max(1.0, self._PENDING_ENTRY_DISPATCH_STALE_SEC))
+        with self._lock:
+            cur = self._pending_entry_signals.get(str(key))
+            if not isinstance(cur, dict):
+                return None
+            dispatching = bool(cur.get("dispatching"))
+            dispatch_started_ts = _to_float_or_none(cur.get("dispatch_started_ts")) or 0.0
+            if dispatching and dispatch_started_ts > 0.0 and (claim_ts - float(dispatch_started_ts)) < stale_after:
+                return None
+            cur["last_zone_state"] = str(zone_state)
+            cur["dispatching"] = True
+            cur["dispatch_started_ts"] = float(claim_ts)
+            cur["dispatch_live_price"] = _to_float_or_none(live_px)
+            self._pending_entry_signals[str(key)] = dict(cur)
+            return dict(cur)
+
+    def _settle_pending_entry_signal(
+        self,
+        key: Any,
+        *,
+        remove: bool = False,
+        last_zone_state: Optional[str] = None,
+        last_attempt_ts: Optional[float] = None,
+        last_error: Optional[str] = None,
+        increment_attempt: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            if remove:
+                self._pending_entry_signals.pop(str(key), None)
+                return None
+            cur = self._pending_entry_signals.get(str(key))
+            if not isinstance(cur, dict):
+                return None
+            if last_zone_state is not None:
+                cur["last_zone_state"] = str(last_zone_state)
+            if last_attempt_ts is not None:
+                cur["last_attempt_ts"] = float(last_attempt_ts)
+            if increment_attempt:
+                cur["attempt_count"] = int(cur.get("attempt_count") or 0) + 1
+            if last_error is not None:
+                cur["last_error"] = str(last_error or "")
+            cur["dispatching"] = False
+            cur["dispatch_started_ts"] = 0.0
+            cur["dispatch_live_price"] = None
+            self._pending_entry_signals[str(key)] = dict(cur)
+            return dict(cur)
+
     def _push_pending_entry_signals(self) -> None:
         with self._lock:
             queue_rows = {str(k): dict(v) for k, v in self._pending_entry_signals.items()}
@@ -7162,48 +7219,89 @@ class TelegramBridgeService:
                     self._pending_entry_signals[str(key)] = dict(cur)
             if not (inside_zone or crossed_zone or touched_recently):
                 continue
-            self._append_automation_execution_log(
-                source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
-                source_name=str(row.get("source_label") or "unknown"),
-                trigger="entry_wait_trigger",
-                status="dispatch",
-                symbol=str(signal.get("symbol") or "").strip().upper(),
-                timeframe=str(signal.get("timeframe") or "").strip().upper(),
-                direction=str(signal.get("direction") or "").strip().upper(),
-                lot=_to_float_or_none(row.get("lot_override")),
-                stop_loss=_to_float_or_none(signal.get("stop_loss")),
-                message=f"entry_trigger:{zone_state}",
-                source_tag=str(row.get("source_tag") or "").strip().lower() or None,
-                execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
-                trace_id=trace_id,
-                stage="entry_wait",
-                stage_status="triggered",
-                stage_payload={
-                    "queue_id": str(row.get("id") or ""),
-                    "zone_state": str(zone_state),
-                    "inside_zone": bool(inside_zone),
-                    "crossed_zone": bool(crossed_zone),
-                    "touched_recently": bool(touched_recently),
-                    "live_price": _to_float_or_none(live_px),
-                },
+            claimed_row = self._claim_pending_entry_signal(
+                key,
+                zone_state=str(zone_state),
+                live_px=_to_float_or_none(live_px),
+                now_ts=float(now_ts),
             )
-            audit_ctx_row = dict(row.get("audit_ctx") or {})
-            source_names = [str(x).strip() for x in (audit_ctx_row.get("source_names") or []) if str(x).strip()]
-            if not source_names:
-                source_names = [str(row.get("source_label") or "").strip()]
-            exec_msg = self._execute_confirmation_signal_with_channel_modes(
-                chat_id=int(row.get("chat_id") or 0),
-                signal=dict(signal),
-                source_names=list(source_names),
-                source_label=str(row.get("source_label") or "unknown"),
-                source_key=str(row.get("source_key") or ""),
-                lot_override=_to_float_or_none(row.get("lot_override")),
-                source_tag=str(row.get("source_tag") or ""),
-                comment_prefix=str(row.get("comment_prefix") or "tgc"),
-                trigger=str(audit_ctx_row.get("trigger") or "entry_signal"),
-                event_ts=audit_ctx_row.get("event_ts"),
-                trace_id=str(audit_ctx_row.get("trace_id") or signal.get("trace_id") or "").strip() or None,
-            )
+            if not isinstance(claimed_row, dict):
+                continue
+            row = dict(claimed_row)
+            try:
+                self._append_automation_execution_log(
+                    source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
+                    source_name=str(row.get("source_label") or "unknown"),
+                    trigger="entry_wait_trigger",
+                    status="dispatch",
+                    symbol=str(signal.get("symbol") or "").strip().upper(),
+                    timeframe=str(signal.get("timeframe") or "").strip().upper(),
+                    direction=str(signal.get("direction") or "").strip().upper(),
+                    lot=_to_float_or_none(row.get("lot_override")),
+                    stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                    message=f"entry_trigger:{zone_state}",
+                    source_tag=str(row.get("source_tag") or "").strip().lower() or None,
+                    execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
+                    trace_id=trace_id,
+                    stage="entry_wait",
+                    stage_status="triggered",
+                    stage_payload={
+                        "queue_id": str(row.get("id") or ""),
+                        "zone_state": str(zone_state),
+                        "inside_zone": bool(inside_zone),
+                        "crossed_zone": bool(crossed_zone),
+                        "touched_recently": bool(touched_recently),
+                        "live_price": _to_float_or_none(live_px),
+                    },
+                )
+                audit_ctx_row = dict(row.get("audit_ctx") or {})
+                source_names = [str(x).strip() for x in (audit_ctx_row.get("source_names") or []) if str(x).strip()]
+                if not source_names:
+                    source_names = [str(row.get("source_label") or "").strip()]
+                exec_msg = self._execute_confirmation_signal_with_channel_modes(
+                    chat_id=int(row.get("chat_id") or 0),
+                    signal=dict(signal),
+                    source_names=list(source_names),
+                    source_label=str(row.get("source_label") or "unknown"),
+                    source_key=str(row.get("source_key") or ""),
+                    lot_override=_to_float_or_none(row.get("lot_override")),
+                    source_tag=str(row.get("source_tag") or ""),
+                    comment_prefix=str(row.get("comment_prefix") or "tgc"),
+                    trigger=str(audit_ctx_row.get("trigger") or "entry_signal"),
+                    event_ts=audit_ctx_row.get("event_ts"),
+                    trace_id=str(audit_ctx_row.get("trace_id") or signal.get("trace_id") or "").strip() or None,
+                )
+            except Exception as exc:
+                err_text = f"entry_dispatch_exception:{str(exc)[:220]}"
+                self._settle_pending_entry_signal(
+                    key,
+                    last_zone_state=str(zone_state),
+                    last_attempt_ts=float(now_ts),
+                    last_error=err_text,
+                    increment_attempt=True,
+                )
+                self._append_automation_execution_log(
+                    source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
+                    source_name=str(row.get("source_label") or "unknown"),
+                    trigger="entry_wait_execute_failed",
+                    status="failed",
+                    symbol=str(signal.get("symbol") or "").strip().upper(),
+                    timeframe=str(signal.get("timeframe") or "").strip().upper(),
+                    direction=str(signal.get("direction") or "").strip().upper(),
+                    lot=_to_float_or_none(row.get("lot_override")),
+                    stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                    message=str(err_text)[:260],
+                    source_tag=str(row.get("source_tag") or "").strip().lower() or None,
+                    execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
+                    trace_id=trace_id,
+                    stage="entry_wait",
+                    stage_status="failed",
+                    error_code="execution_exception",
+                    stage_payload={
+                        "queue_id": str(row.get("id") or ""),
+                    },
+                )
+                continue
             msg_l = str(exec_msg or "").strip().lower()
             ok_opened = self._is_confirmation_exec_opened(exec_msg)
             deferred = msg_l.startswith("confirmation deferred: market closed")
@@ -7215,7 +7313,10 @@ class TelegramBridgeService:
                         signal=dict(signal),
                         profile=str(src_profile),
                     )
-                remove_keys.append(str(key))
+                self._settle_pending_entry_signal(
+                    key,
+                    remove=True,
+                )
                 self._send_text(
                     int(row.get("chat_id") or 0),
                     (
@@ -7225,13 +7326,13 @@ class TelegramBridgeService:
                     ),
                 )
                 continue
-            with self._lock:
-                cur = self._pending_entry_signals.get(str(key))
-                if isinstance(cur, dict):
-                    cur["last_attempt_ts"] = float(now_ts)
-                    cur["attempt_count"] = int(cur.get("attempt_count") or 0) + 1
-                    cur["last_error"] = str(exec_msg or "")
-                    self._pending_entry_signals[str(key)] = dict(cur)
+            updated_row = self._settle_pending_entry_signal(
+                key,
+                last_zone_state=str(zone_state),
+                last_attempt_ts=float(now_ts),
+                last_error=str(exec_msg or ""),
+                increment_attempt=True,
+            ) or {}
             if deferred:
                 continue
             self._append_automation_execution_log(
@@ -7253,7 +7354,7 @@ class TelegramBridgeService:
                 error_code="execution_failed",
                 stage_payload={
                     "queue_id": str(row.get("id") or ""),
-                    "attempt_count": int((self._pending_entry_signals.get(str(key), {}) or {}).get("attempt_count") or 0),
+                    "attempt_count": int((updated_row or {}).get("attempt_count") or 0),
                 },
             )
             # For non-market-closed failures keep queued until wait timeout, but do not spam every tick.
