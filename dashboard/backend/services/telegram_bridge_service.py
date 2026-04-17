@@ -107,7 +107,18 @@ class TelegramBridgeService:
         ("paroz", ("PAROZGOLD_TRADER", "PAROZ GOLD TRADER")),
         ("fx_mastermind", ("Trade With Fx Mastermind", "FxMasterMindOfficial2652")),
         ("market_king", ("MARKET ANALYSIS KING",)),
-        ("gold_vip", ("GOLD VIP SIGNALS", "XAUUSD GOLD VIP", "XAUUSD Signal")),
+        (
+            "gold_vip",
+            (
+                "GOLD VIP SIGNALS",
+                "XAUUSD GOLD VIP",
+                "XAUUSD Signal",
+                "JOAN USA GOLD TRADER FX",
+                "JOAN USA GOLD FX",
+                "JOAN USA FOREX TEAM",
+                "MASTER IN GOLD",
+            ),
+        ),
         ("bull_traders", ("BULL TRADERS",)),
         ("henry", ("HENRY TRADER",)),
     )
@@ -1090,6 +1101,20 @@ class TelegramBridgeService:
         raw = cls._normalize_signal_text_for_parse(text)
         if not raw.strip():
             return False
+        has_compact_short_entry = bool(
+            re.search(
+                (
+                    r"(?im)^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*"
+                    r"(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?\s*"
+                    r"(?:/|-|=|TO)\s*([0-9]{1,3})\s*$"
+                ),
+                raw,
+            )
+        )
+        # Compact range like 4845/50 is channel-specific. Reject everywhere
+        # except profiles that intentionally use this notation.
+        if bool(has_compact_short_entry) and profile not in {"gold_vip"}:
+            return False
         tp_count_loose = len(
             re.findall(
                 r"(?im)(?<!SL\.)(?<!SL )\bTP\s*(?:[1-9]\d*)?\s*[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
@@ -1098,7 +1123,7 @@ class TelegramBridgeService:
         )
         has_sl_loose = bool(
             re.search(
-                r"(?im)\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+                r"(?im)\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[_:,\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
                 raw,
             )
         )
@@ -1282,6 +1307,8 @@ class TelegramBridgeService:
             or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\s*DONE\b", raw_norm)
             or re.search(r"(?im)\bTP\s*[,.\s]*ALL\s*(?:HIT|DONE)\b", raw_norm)
             or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\b[^\n]{0,24}\bSUCCESS(?:FUL|FULLY)?\s+HIT\b", raw_norm)
+            or re.search(r"(?im)\bALL\s*TP\b[^\n]{0,24}\bSUCCESS(?:FUL|FULLY)?\b", raw_norm)
+            or re.search(r"(?im)\bTARGET\s*(?:[1-9]\d*)\s*(?:COMPLETE|COMPLETED|HIT)\b", raw_norm)
             or re.search(r"(?im)\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b", raw_norm)
             or re.search(r"(?im)\btarget(?:s)?\s+completed\b", raw_norm)
         ):
@@ -2525,6 +2552,28 @@ class TelegramBridgeService:
         return False
 
     @staticmethod
+    def _resolve_compact_entry_price(entry_a: float, entry_b_raw: Optional[str]) -> Optional[float]:
+        raw = str(entry_b_raw or "").strip()
+        if not raw:
+            return None
+        try:
+            if "." in raw:
+                return float(raw)
+            if len(raw) >= 4:
+                return float(raw)
+            suffix = int(raw)
+            if suffix < 0:
+                return None
+            base = int(round(float(entry_a)))
+            step = int(10 ** len(raw))
+            prefix = int(base // step)
+            candidates = [int((prefix + d) * step + suffix) for d in (-1, 0, 1)]
+            best = min(candidates, key=lambda x: abs(float(x) - float(entry_a)))
+            return float(best)
+        except Exception:
+            return None
+
+    @staticmethod
     def _parse_confirmation_signal(text: Any) -> Optional[Dict[str, Any]]:
         raw = str(text or "").replace("\r", "\n")
         if not raw.strip():
@@ -2555,7 +2604,9 @@ class TelegramBridgeService:
         direction = str(head.group(3) or "").strip().upper()
         try:
             entry_a = float(head.group(4))
-            entry_b = float(head.group(5)) if str(head.group(5) or "").strip() else float(entry_a)
+            entry_b = TelegramBridgeService._resolve_compact_entry_price(entry_a, head.group(5))
+            if entry_b is None:
+                entry_b = float(entry_a)
         except Exception:
             return None
 
@@ -2612,7 +2663,7 @@ class TelegramBridgeService:
         tps.sort(key=lambda r: int(r.get("index") or 0))
 
         sl_match = re.search(
-            r"(?im)\bSL(?:\s*\.?\s*TP)?(?:[1-9]\d*)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)\bSL(?:\s*\.?\s*TP)?(?:[1-9]\d*)?\s*[_:,\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         if sl_match is None or not tps:

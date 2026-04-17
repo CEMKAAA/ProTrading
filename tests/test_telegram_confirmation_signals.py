@@ -206,6 +206,51 @@ SL 4787 Use lot size small
     assert [row["price"] for row in parsed["tps"]] == [4804.0, 4807.0, 4610.0, 4813.0, 4816.0, 4820.0, 4823.0]
 
 
+def test_parse_confirmation_signal_supports_compact_second_entry_and_sl_underscore():
+    raw = """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+SL_ 4861
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "SELL"
+    assert parsed["entry_low"] == 4845.0
+    assert parsed["entry_high"] == 4850.0
+    assert parsed["stop_loss"] == 4861.0
+    assert [row["index"] for row in parsed["tps"]] == [1, 2, 3]
+    assert [row["price"] for row in parsed["tps"]] == [4840.0, 4835.0, 4830.0]
+
+
+def test_parse_confirmation_signal_master_in_gold_single_entry_with_superscript_tps():
+    raw = """
+XAUUSD BUY 4780
+
+TP¹ 4783
+TP² 4786
+TP³ 4789
+TP⁴ 4792
+TP⁵ 4795
+TP⁶ 4798
+TP⁷ 4801
+TP⁸ 4804
+TP⁹ 4807
+SL   4767
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "BUY"
+    assert parsed["entry_low"] == 4780.0
+    assert parsed["entry_high"] == 4780.0
+    assert parsed["stop_loss"] == 4767.0
+    assert [row["index"] for row in parsed["tps"]] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert [row["price"] for row in parsed["tps"]] == [4783.0, 4786.0, 4789.0, 4792.0, 4795.0, 4798.0, 4801.0, 4804.0, 4807.0]
+
+
 def test_parse_confirmation_signal_detects_no_partial_override():
     raw = """
 XAUUSD BUY NOW 4608/4605
@@ -281,6 +326,87 @@ SL 4792
     parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
         raw,
         source_names=["Elite Pips Academy"],
+    )
+    assert kind == "other"
+    assert parsed is None
+
+
+def test_source_scoped_classifier_rejects_compact_entry_range_on_elite_channel():
+    raw = """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+SL 4861
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["Elite Pips Academy"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["Elite Pips Academy"],
+    )
+    assert kind == "other"
+    assert parsed is None
+
+
+def test_source_scoped_classifier_accepts_compact_entry_range_on_joan_channel():
+    raw = """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+SL_ 4861
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["JOAN USA FOREX TEAM"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["JOAN USA FOREX TEAM"],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "gold_vip"
+
+
+def test_source_scoped_classifier_rejects_compact_entry_range_on_henry_channel():
+    raw = """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+SL 4861
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["HENRY TRADER"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["HENRY TRADER"],
+    )
+    assert kind == "other"
+    assert parsed is None
+
+
+def test_source_scoped_classifier_rejects_compact_entry_range_on_paroz_channel():
+    raw = """
+GOLD SELL NOW 4845/50
+TP: 4840
+TP: 4835
+TP: 4830
+SL: 4861
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["PAROZGOLD_TRADER"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["PAROZGOLD_TRADER"],
     )
     assert kind == "other"
     assert parsed is None
@@ -563,6 +689,24 @@ def test_classify_bull_traders_tp_successfully_hit_as_tp_hit():
     assert TelegramBridgeService._classify_confirm_signal_message(raw) == "tp_hit"
 
 
+def test_classify_joan_target_complete_as_tp_hit():
+    raw = """
+XAUUSD -SELLL
+
+TARGET 1 COMPLETE 50+ PIPS DONE
+"""
+    assert TelegramBridgeService._classify_confirm_signal_message(raw) == "tp_hit"
+
+
+def test_classify_master_in_gold_all_tp_successful_as_tp_hit():
+    raw = """
+GOLD SELL✅
+
+ALL TP    Successful
+"""
+    assert TelegramBridgeService._classify_confirm_signal_message(raw) == "tp_hit"
+
+
 @pytest.mark.parametrize(
     "title,profile,raw,direction,tp_count",
     [
@@ -699,6 +843,53 @@ TP\u2079: 4794
             "BUY",
             4,
         ),
+        (
+            "JOAN USA GOLD TRADER FX",
+            "gold_vip",
+            """
+XAUUSD BUY NOW 4784/4880
+TP1 4787
+TP2 4790
+TP3 4794
+TP4 4797
+SL 4770
+""",
+            "BUY",
+            4,
+        ),
+        (
+            "JOAN USA FOREX TEAM",
+            "gold_vip",
+            """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+TP4 4825
+SL_ 4861
+""",
+            "SELL",
+            4,
+        ),
+        (
+            "MASTER IN GOLD",
+            "gold_vip",
+            """
+XAUUSD BUY 4780
+TP1 4783
+TP2 4786
+TP3 4789
+TP4 4792
+TP5 4795
+TP6 4798
+TP7 4801
+TP8 4804
+TP9 4807
+SL 4767
+""",
+            "BUY",
+            9,
+        ),
     ],
 )
 def test_source_scoped_channel_signal_matrix_parses(title, profile, raw, direction, tp_count):
@@ -789,6 +980,47 @@ TP\u2077: 4827
 TP\u2078: 4835
 TP\u2079: 4843
 \u200bSL: 4791
+""",
+            9,
+        ),
+        (
+            "JOAN USA GOLD TRADER FX",
+            """
+XAUUSD BUY NOW 4784/4880
+TP1 4787
+TP2 4790
+TP3 4794
+TP4 4797
+SL 4770
+""",
+            4,
+        ),
+        (
+            "JOAN USA FOREX TEAM",
+            """
+XAUUSD SELL NOW 4845/50
+TP1 4840
+TP2 4835
+TP3 4830
+TP4 4825
+SL_ 4861
+""",
+            4,
+        ),
+        (
+            "MASTER IN GOLD",
+            """
+XAUUSD BUY 4780
+TP1 4783
+TP2 4786
+TP3 4789
+TP4 4792
+TP5 4795
+TP6 4798
+TP7 4801
+TP8 4804
+TP9 4807
+SL 4767
 """,
             9,
         ),
