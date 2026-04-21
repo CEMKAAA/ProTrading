@@ -1183,12 +1183,25 @@ class TelegramBridgeService:
                 and int(tp_count_loose) >= 1
             )
         if profile == "forex_market_makers":
-            has_range = bool(
+            has_range_primary = bool(
                 re.search(
                     r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
                     raw,
                 )
             )
+            has_dir_symbol = bool(
+                re.search(
+                    r"(?is)\b(BUY|SELL)\b[\s\S]{0,60}?\b(?:XAU\s*USD|XAUUSD|GOLD)\b",
+                    raw,
+                )
+            )
+            has_entry_zone_range = bool(
+                re.search(
+                    r"(?is)\bENTRY(?:\s*ZONE)?\b[\s\S]{0,24}?([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                    raw,
+                )
+            )
+            has_range = bool(has_range_primary or (has_dir_symbol and has_entry_zone_range))
             has_take_profit_block = bool(re.search(r"(?im)\bTAKE\s*PROFITS?\b", raw))
             tp_price_lines = len(re.findall(r"(?im)^\s*[0-9]+(?:\.[0-9]+)?\s*(?:[^\n0-9]+)?\s*$", raw))
             return bool(has_range and bool(has_sl_loose) and (int(tp_count_loose) >= 1 or (has_take_profit_block and int(tp_price_lines) >= 1)))
@@ -1233,6 +1246,13 @@ class TelegramBridgeService:
             # AZZAM recap-style outcomes are not fresh entries, but should be
             # tracked as TP/progress events instead of generic 'other'.
             profile = cls._resolve_confirm_signal_source_profile(list(source_names or []))
+            # Channel-scoped recovery only for Forex Market Makers:
+            # if a message is misclassified as close_instruction but parses as
+            # a valid entry setup, treat it as signal.
+            if str(kind) == "close_instruction" and str(profile) == "forex_market_makers":
+                parsed_fmm = cls._parse_confirmation_signal_forex_market_makers(text)
+                if isinstance(parsed_fmm, dict) and cls._profile_accepts_signal_text(text, profile):
+                    return "signal"
             if str(kind) == "other" and str(profile) == "gold_vip":
                 azzam_rules = ("AZZAM - Gold Trading Pro", "AZZAM GOLD PRO", "azzamgoldpro")
                 is_azzam_source = any(
@@ -2856,25 +2876,53 @@ class TelegramBridgeService:
             "force_single_trade": False,
             "raw_text": raw.strip(),
         }
-
     @staticmethod
     def _parse_confirmation_signal_forex_market_makers(text: Any) -> Optional[Dict[str, Any]]:
         raw = str(text or "").replace("\r", "\n")
         if not raw.strip():
             return None
         raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
+
+        # Primary layout: "XAUUSD SELL 4795-4798" (symbol first)
         head = re.search(
-            r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+            r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
             raw_norm,
         )
-        if head is None:
+
+        direction = ""
+        a = None
+        b = None
+        if head is not None:
+            direction = str(head.group(1) or "").strip().upper()
+            try:
+                a = float(head.group(2))
+                b = float(head.group(3))
+            except Exception:
+                a = None
+                b = None
+
+        # Alternate layout: "BUY XAU USD" + "Entry Zone: 4769 - 4765"
+        if a is None or b is None or direction not in {"BUY", "SELL"}:
+            m_dir = re.search(
+                r"(?is)\b(BUY|SELL)\b[\s\S]{0,60}?\b(?:XAU\s*USD|XAUUSD|GOLD)\b",
+                raw_norm,
+            )
+            m_range = re.search(
+                r"(?is)\bENTRY(?:\s*ZONE)?\b[\s\S]{0,24}?([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                raw_norm,
+            )
+            if m_dir is None or m_range is None:
+                return None
+            direction = str(m_dir.group(1) or "").strip().upper()
+            try:
+                a = float(m_range.group(1))
+                b = float(m_range.group(2))
+            except Exception:
+                return None
+
+        if direction not in {"BUY", "SELL"} or a is None or b is None:
             return None
-        direction = str(head.group(1) or "").strip().upper()
-        try:
-            a = float(head.group(2))
-            b = float(head.group(3))
-        except Exception:
-            return None
+
         entry_low = float(min(a, b))
         entry_high = float(max(a, b))
         entry_mid = float((entry_low + entry_high) * 0.5)
@@ -2898,7 +2946,7 @@ class TelegramBridgeService:
         indexed_spans: List[Tuple[int, int]] = []
 
         tp_indexed_iter = re.finditer(
-            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?([1-9]\d*)\s*(?:(?:[:,\.\-]|->|→|[^0-9A-Z\n]{1,4})\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?([1-9]\d*)\s*(?:(?:[:,\.\-]|->|[^0-9A-Z\n]{1,4})\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         for m in tp_indexed_iter:
@@ -7186,9 +7234,11 @@ class TelegramBridgeService:
         hi = _to_float_or_none(signal.get("entry_high"))
         if px is None or lo is None or hi is None:
             return "unknown"
-        if float(lo) <= float(px) <= float(hi):
+        low = float(min(lo, hi))
+        high = float(max(lo, hi))
+        if float(low) <= float(px) <= float(high):
             return "inside_zone"
-        if float(px) < float(lo):
+        if float(px) < float(low):
             return "below_zone"
         return "above_zone"
 
@@ -7280,18 +7330,18 @@ class TelegramBridgeService:
         z_high = float(max(lo, hi))
         svc = self._get_live_service()
         try:
-            # M1 high/low catches very short "touch then reverse" moves that can be missed by one-off ticks.
+            # M1 high/low catches short "touch then reverse" moves that can be missed by one-off ticks.
             bars = svc.get_recent_candles(
                 symbol=str(symbol),
                 timeframe="M1",
-                count=2,
+                count=5,
                 resolve_symbol=True,
             )
         except Exception:
             bars = []
         if not isinstance(bars, list):
             return False
-        for b in bars[-2:]:
+        for b in bars[-5:]:
             if not isinstance(b, dict):
                 continue
             bh = _to_float_or_none((b or {}).get("high"))
@@ -7538,8 +7588,9 @@ class TelegramBridgeService:
                 and zone_state in {"below_zone", "above_zone"}
                 and prev_state != zone_state
             )
-            age_sec = float(now_ts - float(created_ts)) if created_ts > 0.0 else 999999.0
-            touched_recently = bool(age_sec <= 70.0 and self._signal_recent_zone_touch(signal=signal))
+            touched_recently = False
+            if not (inside_zone or crossed_zone):
+                touched_recently = bool(self._signal_recent_zone_touch(signal=signal))
             with self._lock:
                 cur = self._pending_entry_signals.get(str(key))
                 if isinstance(cur, dict):

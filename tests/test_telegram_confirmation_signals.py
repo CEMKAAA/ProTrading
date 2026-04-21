@@ -2126,6 +2126,55 @@ def test_pending_entry_executes_on_recent_touch_fallback(monkeypatch):
     assert seen["n"] == 1
 
 
+def test_pending_entry_executes_on_recent_touch_even_after_initial_window(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_entry_wait_max_sec", lambda: 300.0)
+    monkeypatch.setattr(svc, "_confirm_signal_entry_attempt_cooldown_sec", lambda: 0.0)
+    monkeypatch.setattr(svc, "_signal_live_price", lambda *, signal: 4668.0)  # outside zone
+    monkeypatch.setattr(svc, "_signal_recent_zone_touch", lambda *, signal: True)
+
+    seen = {"n": 0}
+
+    def _fake_exec(**kwargs):
+        seen["n"] += 1
+        return "Confirmation ladder executed"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "entry_low": 4660.0,
+        "entry_high": 4665.0,
+        "stop_loss": 4670.0,
+        "tps": [{"index": 1, "price": 4655.0}],
+    }
+    q = svc._queue_entry_signal(
+        chat_id=1,
+        signal=signal,
+        source_label="PAROZ",
+        source_key="1:paroz",
+    )
+    with svc._lock:
+        cur = dict(svc._pending_entry_signals.get(str(q.get("id"))) or {})
+        cur["created_ts"] = float(time.time() - 120.0)
+        svc._pending_entry_signals[str(q.get("id"))] = dict(cur)
+    svc._push_pending_entry_signals()
+    st = svc.get_telegram_automation_state(limit=20)
+    assert int(st.get("pending_entry_count") or 0) == 0
+    assert seen["n"] == 1
+
+
+def test_signal_price_zone_state_normalizes_reversed_zone_bounds():
+    signal = {
+        "entry_low": 4783.0,
+        "entry_high": 4779.0,
+    }
+    assert TelegramBridgeService._signal_price_zone_state(signal, 4781.0) == "inside_zone"
+    assert TelegramBridgeService._signal_price_zone_state(signal, 4778.5) == "below_zone"
+    assert TelegramBridgeService._signal_price_zone_state(signal, 4783.5) == "above_zone"
+
+
 def test_pending_entry_dispatch_claim_blocks_duplicate_threads(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_confirm_signal_entry_wait_max_sec", lambda: 300.0)
