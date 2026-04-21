@@ -113,12 +113,23 @@ class TelegramBridgeService:
                 "GOLD VIP SIGNALS",
                 "XAUUSD GOLD VIP",
                 "XAUUSD Signal",
+                "EURJPY XAUUSD USDCHF SIGNALS",
+                "EURUSD XAUUSD USDJPY SIGNALS",
+                "EURJPYXAUUSDUSDCHF",
+                "EURUSDXAUUSDSIGNALS",
+                "AZZAM - Gold Trading Pro",
+                "AZZAM GOLD PRO",
+                "azzamgoldpro",
+                "David's Gold Strategy",
+                "Davidwithforex",
                 "JOAN USA GOLD TRADER FX",
                 "JOAN USA GOLD FX",
                 "JOAN USA FOREX TEAM",
                 "MASTER IN GOLD",
             ),
         ),
+        ("forex_market_makers", ("FOREX MARKET MAKERS",)),
+        ("gib_elite", ("GIB ELITE FOREX SCALP SIGNAL", "gbprot")),
         ("bull_traders", ("BULL TRADERS",)),
         ("henry", ("HENRY TRADER",)),
     )
@@ -1117,13 +1128,13 @@ class TelegramBridgeService:
             return False
         tp_count_loose = len(
             re.findall(
-                r"(?im)(?<!SL\.)(?<!SL )\bTP\s*(?:[1-9]\d*)?\s*[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+                r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?(?:[1-9]\d*)?\s*(?:(?:[:,\.\-]|->|→)|[^0-9A-Z\n]{1,4})?\s*([0-9]+(?:\.[0-9]+)?)\b",
                 raw,
             )
         )
         has_sl_loose = bool(
             re.search(
-                r"(?im)\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[_:,\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+                r"(?im)\b(?:SL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b(?:\s*\([A-Z]{2,8}\))?\s*[_:@,\-\)\( ]*\s*([0-9]+(?:\.[0-9]+)?)\b",
                 raw,
             )
         )
@@ -1154,17 +1165,16 @@ class TelegramBridgeService:
         if profile == "gold_vip":
             return bool(
                 re.search(r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\b", raw)
-                and int(tp_count_loose) >= 2
+                and int(tp_count_loose) >= 1
                 and bool(has_sl_loose)
             )
         if profile == "bull_traders":
             return bool(
                 re.search(
-                    r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$",
+                    r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\s+(?:NOW\s+)?(?:FROM\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$",
                     raw,
                 )
                 and int(tp_count_loose) >= 2
-                and bool(has_sl_loose)
             )
         if profile == "henry":
             return bool(
@@ -1172,6 +1182,24 @@ class TelegramBridgeService:
                 and bool(has_sl_loose)
                 and int(tp_count_loose) >= 1
             )
+        if profile == "forex_market_makers":
+            has_range = bool(
+                re.search(
+                    r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                    raw,
+                )
+            )
+            has_take_profit_block = bool(re.search(r"(?im)\bTAKE\s*PROFITS?\b", raw))
+            tp_price_lines = len(re.findall(r"(?im)^\s*[0-9]+(?:\.[0-9]+)?\s*(?:[^\n0-9]+)?\s*$", raw))
+            return bool(has_range and bool(has_sl_loose) and (int(tp_count_loose) >= 1 or (has_take_profit_block and int(tp_price_lines) >= 1)))
+        if profile == "gib_elite":
+            has_range = bool(
+                re.search(
+                    r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                    raw,
+                )
+            )
+            return bool(has_range and bool(has_sl_loose) and int(tp_count_loose) >= 1)
         return True
 
     @classmethod
@@ -1180,10 +1208,14 @@ class TelegramBridgeService:
         text: Any,
         source_names: Optional[List[Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        profile = cls._resolve_confirm_signal_source_profile(list(source_names or []))
         parsed = cls._parse_confirmation_signal(text)
+        if not isinstance(parsed, dict) and str(profile) == "bull_traders":
+            parsed = cls._parse_confirmation_signal_bull_no_sl(text)
+        if not isinstance(parsed, dict) and str(profile) in {"forex_market_makers", "gib_elite"}:
+            parsed = cls._parse_confirmation_signal_forex_market_makers(text)
         if not isinstance(parsed, dict):
             return None
-        profile = cls._resolve_confirm_signal_source_profile(list(source_names or []))
         if not cls._profile_accepts_signal_text(text, profile):
             return None
         out = dict(parsed)
@@ -1198,6 +1230,29 @@ class TelegramBridgeService:
     ) -> str:
         kind = cls._classify_confirm_signal_message(text)
         if str(kind) != "signal":
+            # AZZAM recap-style outcomes are not fresh entries, but should be
+            # tracked as TP/progress events instead of generic 'other'.
+            profile = cls._resolve_confirm_signal_source_profile(list(source_names or []))
+            if str(kind) == "other" and str(profile) == "gold_vip":
+                azzam_rules = ("AZZAM - Gold Trading Pro", "AZZAM GOLD PRO", "azzamgoldpro")
+                is_azzam_source = any(
+                    cls._source_matches_rule(name, rule)
+                    for name in list(source_names or [])
+                    for rule in azzam_rules
+                )
+                if is_azzam_source:
+                    raw = cls._normalize_signal_text_for_parse(text)
+                    if (
+                        re.search(r"(?im)\bPIPS?\s+SECURED\b", raw)
+                        or (
+                            re.search(r"(?im)\bTRADE\s+RECAP\b", raw)
+                            and re.search(
+                                r"(?im)\b(BUY|SELL)\b\s*(?:[^0-9A-Z\n]{0,4})?\s*[0-9]+(?:\.[0-9]+)?\s*(?:/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?",
+                                raw,
+                            )
+                        )
+                    ):
+                        return "tp_hit"
             parsed_anyway = cls._parse_confirmation_signal_for_sources(text, source_names=list(source_names or []))
             if isinstance(parsed_anyway, dict):
                 return "signal"
@@ -1304,7 +1359,10 @@ class TelegramBridgeService:
             return "close_instruction"
         if (
             re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\s*HIT\b", raw_norm)
+            or re.search(r"(?im)\bHIT\s*TP\s*(?:[1-9]\d*)\b", raw_norm)
+            or re.search(r"(?im)\bTOUCH(?:ED)?\s*TP\s*(?:[1-9]\d*)\b", raw_norm)
             or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\s*DONE\b", raw_norm)
+            or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)\s*(?:ACHIEVED|REACHED)\b", raw_norm)
             or re.search(r"(?im)\bTP\s*[,.\s]*ALL\s*(?:HIT|DONE)\b", raw_norm)
             or re.search(r"(?im)\bTP\s*(?:[1-9]\d*)?\b[^\n]{0,24}\bSUCCESS(?:FUL|FULLY)?\s+HIT\b", raw_norm)
             or re.search(r"(?im)\bALL\s*TP\b[^\n]{0,24}\bSUCCESS(?:FUL|FULLY)?\b", raw_norm)
@@ -2585,7 +2643,8 @@ class TelegramBridgeService:
                 r"(?im)^\s*#?\s*([A-Z]{3,12})"
                 r"(?:\s+#?\s*([A-Z]{3,12}))?"
                 r"\s*(?:[_\-\s]+)(BUY|SELL)\s+"
-                r"(?:NOW\s+)?([0-9]+(?:\.[0-9]+)?)"
+                r"(?:(?:NOW|LIMIT|ZONE)\s*[@:=\-]?\s*)?"
+                r"(?:(?:FROM)\s+)?([0-9]+(?:\.[0-9]+)?)"
                 r"(?:\s*(?:/|-|=|TO)\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
             ),
             raw_norm,
@@ -2616,7 +2675,7 @@ class TelegramBridgeService:
         indexed_spans: List[Tuple[int, int]] = []
 
         tp_indexed_iter = re.finditer(
-            r"(?im)(?<!SL\.)(?<!SL )\bTP\s*([1-9]\d*)\s*(?:[:,\.\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?([1-9]\d*)\s*(?:[:,\.\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         for m in tp_indexed_iter:
@@ -2634,7 +2693,7 @@ class TelegramBridgeService:
             tps.append({"index": int(idx), "price": float(px)})
 
         tp_plain_iter = re.finditer(
-            r"(?im)(?<!SL\.)(?<!SL )\bTP\s*[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\b\s*(?:[^0-9A-Z\n]{0,6})?[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         for m in tp_plain_iter:
@@ -2663,7 +2722,7 @@ class TelegramBridgeService:
         tps.sort(key=lambda r: int(r.get("index") or 0))
 
         sl_match = re.search(
-            r"(?im)\bSL(?:\s*\.?\s*TP)?(?:[1-9]\d*)?\s*[_:,\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            r"(?im)\b(?:SL(?:\s*\.?\s*TP)?(?:[1-9]\d*)?|STOP\s*LOSS)\s*[_:,\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
             raw_norm,
         )
         if sl_match is None or not tps:
@@ -2693,6 +2752,224 @@ class TelegramBridgeService:
             "stop_loss": float(stop_loss),
             "tps": list(tps),
             "force_single_trade": bool(force_single_trade),
+            "raw_text": raw.strip(),
+        }
+
+    @staticmethod
+    def _parse_confirmation_signal_bull_no_sl(text: Any) -> Optional[Dict[str, Any]]:
+        raw = str(text or "").replace("\r", "\n")
+        if not raw.strip():
+            return None
+        raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
+        head = re.search(
+            (
+                r"(?im)^\s*#?\s*([A-Z]{3,12})"
+                r"(?:\s+#?\s*([A-Z]{3,12}))?"
+                r"\s*(?:[_\-\s]+)(BUY|SELL)\s+"
+                r"(?:(?:NOW|LIMIT|ZONE)\s*[@:=\-]?\s*)?"
+                r"(?:(?:FROM)\s+)?([0-9]+(?:\.[0-9]+)?)"
+                r"(?:\s*(?:/|-|=|TO)\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
+            ),
+            raw_norm,
+        )
+        if head is None:
+            return None
+
+        symbol_raw = str(head.group(1) or "").strip().upper()
+        symbol_alt_raw = str(head.group(2) or "").strip().upper()
+        symbol = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
+        if symbol_alt_raw:
+            symbol_alt = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_alt_raw, symbol_alt_raw))
+            if symbol_alt and symbol_alt != symbol and symbol_raw in {"GOLD", "XAU"}:
+                symbol = symbol_alt
+        direction = str(head.group(3) or "").strip().upper()
+        try:
+            entry_a = float(head.group(4))
+            entry_b = TelegramBridgeService._resolve_compact_entry_price(entry_a, head.group(5))
+            if entry_b is None:
+                entry_b = float(entry_a)
+        except Exception:
+            return None
+
+        tps: List[Dict[str, Any]] = []
+        seen_idx: set[int] = set()
+        tp_unindexed: List[float] = []
+        indexed_spans: List[Tuple[int, int]] = []
+
+        tp_indexed_iter = re.finditer(
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?([1-9]\d*)\s*(?:[:,\.\-]\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
+        for m in tp_indexed_iter:
+            try:
+                idx = int(str(m.group(1) or "").strip())
+                px = float(str(m.group(2) or "").strip())
+            except Exception:
+                continue
+            if idx <= 0 or (not math.isfinite(float(px))) or float(px) <= 0.0 or idx in seen_idx:
+                continue
+            seen_idx.add(idx)
+            indexed_spans.append((int(m.start()), int(m.end())))
+            tps.append({"index": int(idx), "price": float(px)})
+
+        tp_plain_iter = re.finditer(
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\b\s*(?:[^0-9A-Z\n]{0,6})?[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
+        for m in tp_plain_iter:
+            s = int(m.start())
+            e = int(m.end())
+            if any(s < se and e > ss for ss, se in indexed_spans):
+                continue
+            try:
+                px = float(str(m.group(1) or "").strip())
+            except Exception:
+                continue
+            if (not math.isfinite(float(px))) or float(px) <= 0.0:
+                continue
+            tp_unindexed.append(float(px))
+
+        if tp_unindexed:
+            next_idx = int(max(seen_idx) + 1) if seen_idx else 1
+            for px in tp_unindexed:
+                while next_idx in seen_idx:
+                    next_idx += 1
+                seen_idx.add(next_idx)
+                tps.append({"index": int(next_idx), "price": float(px)})
+                next_idx += 1
+        tps.sort(key=lambda r: int(r.get("index") or 0))
+        if not tps:
+            return None
+
+        entry_low = float(min(entry_a, entry_b))
+        entry_high = float(max(entry_a, entry_b))
+        entry_mid = float((entry_low + entry_high) * 0.5)
+        return {
+            "symbol": str(symbol),
+            "direction": str(direction),
+            "entry_low": float(entry_low),
+            "entry_high": float(entry_high),
+            "entry_mid": float(entry_mid),
+            "stop_loss": None,
+            "no_stop_loss": True,
+            "tps": list(tps),
+            "force_single_trade": False,
+            "raw_text": raw.strip(),
+        }
+
+    @staticmethod
+    def _parse_confirmation_signal_forex_market_makers(text: Any) -> Optional[Dict[str, Any]]:
+        raw = str(text or "").replace("\r", "\n")
+        if not raw.strip():
+            return None
+        raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
+        head = re.search(
+            r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+            raw_norm,
+        )
+        if head is None:
+            return None
+        direction = str(head.group(1) or "").strip().upper()
+        try:
+            a = float(head.group(2))
+            b = float(head.group(3))
+        except Exception:
+            return None
+        entry_low = float(min(a, b))
+        entry_high = float(max(a, b))
+        entry_mid = float((entry_low + entry_high) * 0.5)
+
+        sl_match = re.search(
+            r"(?im)\b(?:SL|STOPLOSS|STOP\s*LOSS)\b(?:\s*\([A-Z]{2,8}\))?\s*[@:_,\-\)\( ]*\s*([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
+        if sl_match is None:
+            return None
+        try:
+            stop_loss = float(sl_match.group(1))
+        except Exception:
+            return None
+        if (not math.isfinite(float(stop_loss))) or float(stop_loss) <= 0.0:
+            return None
+
+        tps: List[Dict[str, Any]] = []
+        seen_idx: set[int] = set()
+        tp_unindexed: List[float] = []
+        indexed_spans: List[Tuple[int, int]] = []
+
+        tp_indexed_iter = re.finditer(
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\s*(?:[^0-9A-Z\n]{0,6})?([1-9]\d*)\s*(?:(?:[:,\.\-]|->|→|[^0-9A-Z\n]{1,4})\s*|\s+)([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
+        for m in tp_indexed_iter:
+            try:
+                idx = int(str(m.group(1) or "").strip())
+                px = float(str(m.group(2) or "").strip())
+            except Exception:
+                continue
+            if idx <= 0 or (not math.isfinite(float(px))) or float(px) <= 0.0 or idx in seen_idx:
+                continue
+            seen_idx.add(idx)
+            indexed_spans.append((int(m.start()), int(m.end())))
+            tps.append({"index": int(idx), "price": float(px)})
+
+        tp_plain_iter = re.finditer(
+            r"(?im)(?<!SL\.)(?<!SL )\b(?:TP|TAKE\s*PROFIT)\b\s*(?:[^0-9A-Z\n]{0,6})?[:,\.\-]?\s*([0-9]+(?:\.[0-9]+)?)\b",
+            raw_norm,
+        )
+        for m in tp_plain_iter:
+            s = int(m.start())
+            e = int(m.end())
+            if any(s < se and e > ss for ss, se in indexed_spans):
+                continue
+            try:
+                px = float(str(m.group(1) or "").strip())
+            except Exception:
+                continue
+            if (not math.isfinite(float(px))) or float(px) <= 0.0:
+                continue
+            tp_unindexed.append(float(px))
+
+        if not tp_unindexed:
+            m_block = re.search(r"(?is)\bTAKE\s*PROFITS?\b[\s:\-\u2714\u2705\*]*([\s\S]+)$", raw_norm)
+            if m_block is not None:
+                for ln in str(m_block.group(1) or "").splitlines():
+                    s_ln = str(ln or "").strip()
+                    if not s_ln:
+                        continue
+                    if re.search(r"(?im)\b(?:SL|STOPLOSS|STOP\s*LOSS)\b", s_ln):
+                        break
+                    m_num = re.search(r"([0-9]+(?:\.[0-9]+)?)", s_ln)
+                    if m_num is None:
+                        continue
+                    try:
+                        px = float(m_num.group(1))
+                    except Exception:
+                        continue
+                    if math.isfinite(float(px)) and float(px) > 0.0:
+                        tp_unindexed.append(float(px))
+
+        if tp_unindexed:
+            next_idx = int(max(seen_idx) + 1) if seen_idx else 1
+            for px in tp_unindexed:
+                while next_idx in seen_idx:
+                    next_idx += 1
+                seen_idx.add(next_idx)
+                tps.append({"index": int(next_idx), "price": float(px)})
+                next_idx += 1
+
+        tps.sort(key=lambda r: int(r.get("index") or 0))
+        if not tps:
+            return None
+        return {
+            "symbol": "XAUUSD",
+            "direction": str(direction),
+            "entry_low": float(entry_low),
+            "entry_high": float(entry_high),
+            "entry_mid": float(entry_mid),
+            "stop_loss": float(stop_loss),
+            "tps": list(tps),
+            "force_single_trade": False,
             "raw_text": raw.strip(),
         }
 
@@ -9563,7 +9840,11 @@ class TelegramBridgeService:
                     continue
                 # Profit-lock: after configured TP stage, if live PnL retraces from peak by pct, close full.
                 row_profit_lock_enabled = (row.get("profit_lock_enabled") if "profit_lock_enabled" in row else None)
-                effective_profit_lock_enabled = bool(profit_lock_enabled) if row_profit_lock_enabled is None else bool(row_profit_lock_enabled)
+                # Global master switch: when disabled, never allow row/channel overrides to re-enable.
+                if not bool(profit_lock_enabled):
+                    effective_profit_lock_enabled = False
+                else:
+                    effective_profit_lock_enabled = True if row_profit_lock_enabled is None else bool(row_profit_lock_enabled)
                 if effective_profit_lock_enabled and cur_profit is not None and float(cur_profit) > 0.0:
                     row_retrace = _to_float_or_none(row.get("profit_lock_retrace_pct"))
                     row_arm_after_tp = int(_to_float_or_none(row.get("profit_lock_arm_after_tp")) or 0)
