@@ -340,6 +340,124 @@ class TelegramBridgeService:
         self._automation_execution_logs_max: int = 5000
         self._execution_log_table_ready: bool = False
         self._execution_close_dedupe: Dict[int, float] = {}
+        self._restore_pending_entry_signals()
+
+    @staticmethod
+    def _pending_entry_persist_enabled() -> bool:
+        # Keep unit tests deterministic unless explicitly enabled.
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            raw_test = str(os.getenv("TELEGRAM_CONFIRM_SIGNAL_PERSIST_PENDING_ENTRY", "") or "").strip().lower()
+            if raw_test in {"1", "true", "yes", "on"}:
+                return True
+            return False
+        raw = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_PERSIST_PENDING_ENTRY", "1")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _pending_entry_state_path() -> Path:
+        raw = str(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_PENDING_ENTRY_STATE_PATH", "") or "").strip()
+        if raw:
+            p = Path(raw)
+            if not p.is_absolute():
+                repo_root = Path(__file__).resolve().parents[3]
+                p = repo_root / p
+            return p
+        repo_root = Path(__file__).resolve().parents[3]
+        return repo_root / "dashboard" / "data" / "telegram_pending_entry_signals.json"
+
+    def _persist_pending_entry_signals(self) -> None:
+        if not bool(self._pending_entry_persist_enabled()):
+            return
+        with self._lock:
+            rows = [dict(v) for v in self._pending_entry_signals.values() if isinstance(v, dict)]
+        payload = {
+            "version": 1,
+            "saved_at": self._now_iso(),
+            "count": int(len(rows)),
+            "rows": rows,
+        }
+        state_path = self._pending_entry_state_path()
+        tmp_path = Path(str(state_path) + ".tmp")
+        raw = json.dumps(payload, ensure_ascii=False)
+        last_err: Optional[Exception] = None
+        for attempt in range(6):
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path.write_text(raw, encoding="utf-8")
+                os.replace(str(tmp_path), str(state_path))
+                return
+            except PermissionError as exc:
+                last_err = exc
+                time.sleep(0.05 * float(attempt + 1))
+            except Exception as exc:
+                last_err = exc
+                break
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        if last_err is not None:
+            logger.warning("pending_entry_state_persist_failed err=%s", str(last_err)[:220])
+
+    def _restore_pending_entry_signals(self) -> None:
+        if not bool(self._pending_entry_persist_enabled()):
+            return
+        state_path = self._pending_entry_state_path()
+        if not state_path.exists():
+            return
+        try:
+            data = _json_obj(state_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("pending_entry_state_read_failed err=%s", str(exc)[:220])
+            return
+        rows = data.get("rows") if isinstance(data.get("rows"), list) else []
+        if not rows:
+            return
+        wait_max = float(self._confirm_signal_entry_wait_max_sec())
+        now_ts = float(time.time())
+        restored: Dict[str, Dict[str, Any]] = {}
+        dropped = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                dropped += 1
+                continue
+            qid = str(row.get("id") or "").strip()
+            signal = row.get("signal") if isinstance(row.get("signal"), dict) else None
+            if not qid or not isinstance(signal, dict):
+                dropped += 1
+                continue
+            created_ts = _to_float_or_none(row.get("created_ts")) or 0.0
+            if created_ts > 0.0 and (now_ts - float(created_ts)) > float(wait_max):
+                dropped += 1
+                continue
+            clean = dict(row)
+            clean["id"] = str(qid)
+            clean["signal"] = dict(signal)
+            clean["chat_id"] = int(_to_float_or_none(clean.get("chat_id")) or 0)
+            clean["source_label"] = str(clean.get("source_label") or "unknown").strip() or "unknown"
+            clean["source_key"] = str(clean.get("source_key") or "unknown").strip() or "unknown"
+            clean["trace_id"] = str(clean.get("trace_id") or "").strip()
+            clean["lot_override"] = _to_float_or_none(clean.get("lot_override"))
+            clean["source_tag"] = str(clean.get("source_tag") or "").strip()
+            clean["comment_prefix"] = str(clean.get("comment_prefix") or "tgc").strip() or "tgc"
+            clean["audit_ctx"] = dict(clean.get("audit_ctx") or {})
+            clean["created_ts"] = float(created_ts if created_ts > 0.0 else now_ts)
+            clean["last_attempt_ts"] = float(_to_float_or_none(clean.get("last_attempt_ts")) or 0.0)
+            clean["attempt_count"] = int(_to_float_or_none(clean.get("attempt_count")) or 0)
+            clean["last_error"] = str(clean.get("last_error") or "")
+            clean["last_zone_state"] = str(clean.get("last_zone_state") or "unknown")
+            clean["dispatching"] = False
+            clean["dispatch_started_ts"] = 0.0
+            clean["dispatch_live_price"] = None
+            restored[str(qid)] = clean
+        if not restored:
+            return
+        with self._lock:
+            for k, v in restored.items():
+                if str(k) not in self._pending_entry_signals:
+                    self._pending_entry_signals[str(k)] = dict(v)
+        logger.info("pending_entry_state_restored restored=%d dropped=%d", int(len(restored)), int(dropped))
 
     def _warn_throttled(self, key: str, message: str, *, min_interval_sec: float = 30.0) -> None:
         now_ts = time.time()
@@ -1134,7 +1252,7 @@ class TelegramBridgeService:
         )
         has_sl_loose = bool(
             re.search(
-                r"(?im)\b(?:SL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b(?:\s*\([A-Z]{2,8}\))?\s*[_:@,\-\)\( ]*\s*([0-9]+(?:\.[0-9]+)?)\b",
+                r"(?im)(?<![A-Z0-9])(?:SL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?|STOP\s*LOSS)(?![A-Z0-9])(?:\s*\([A-Z]{2,8}\))?\s*[_:@,\-\)\( ]*\s*([0-9]+(?:\.[0-9]+)?)\b",
                 raw,
             )
         )
@@ -7397,6 +7515,7 @@ class TelegramBridgeService:
                 row["id"] = str(qid)
                 row["created_ts"] = float(now_ts)
             self._pending_entry_signals[str(qid)] = dict(row)
+        self._persist_pending_entry_signals()
         return dict(row)
 
     def _queue_pending_confirmation_signal(
@@ -7492,7 +7611,9 @@ class TelegramBridgeService:
             cur["dispatch_started_ts"] = float(claim_ts)
             cur["dispatch_live_price"] = _to_float_or_none(live_px)
             self._pending_entry_signals[str(key)] = dict(cur)
-            return dict(cur)
+            out = dict(cur)
+        self._persist_pending_entry_signals()
+        return out
 
     def _settle_pending_entry_signal(
         self,
@@ -7504,26 +7625,34 @@ class TelegramBridgeService:
         last_error: Optional[str] = None,
         increment_attempt: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        mutated = False
         with self._lock:
             if remove:
                 self._pending_entry_signals.pop(str(key), None)
-                return None
-            cur = self._pending_entry_signals.get(str(key))
-            if not isinstance(cur, dict):
-                return None
-            if last_zone_state is not None:
-                cur["last_zone_state"] = str(last_zone_state)
-            if last_attempt_ts is not None:
-                cur["last_attempt_ts"] = float(last_attempt_ts)
-            if increment_attempt:
-                cur["attempt_count"] = int(cur.get("attempt_count") or 0) + 1
-            if last_error is not None:
-                cur["last_error"] = str(last_error or "")
-            cur["dispatching"] = False
-            cur["dispatch_started_ts"] = 0.0
-            cur["dispatch_live_price"] = None
-            self._pending_entry_signals[str(key)] = dict(cur)
-            return dict(cur)
+                mutated = True
+                out = None
+            else:
+                cur = self._pending_entry_signals.get(str(key))
+                if not isinstance(cur, dict):
+                    out = None
+                else:
+                    if last_zone_state is not None:
+                        cur["last_zone_state"] = str(last_zone_state)
+                    if last_attempt_ts is not None:
+                        cur["last_attempt_ts"] = float(last_attempt_ts)
+                    if increment_attempt:
+                        cur["attempt_count"] = int(cur.get("attempt_count") or 0) + 1
+                    if last_error is not None:
+                        cur["last_error"] = str(last_error or "")
+                    cur["dispatching"] = False
+                    cur["dispatch_started_ts"] = 0.0
+                    cur["dispatch_live_price"] = None
+                    self._pending_entry_signals[str(key)] = dict(cur)
+                    mutated = True
+                    out = dict(cur)
+        if mutated:
+            self._persist_pending_entry_signals()
+        return out
 
     def _push_pending_entry_signals(self) -> None:
         with self._lock:
@@ -7742,6 +7871,7 @@ class TelegramBridgeService:
             with self._lock:
                 for key in remove_keys:
                     self._pending_entry_signals.pop(str(key), None)
+            self._persist_pending_entry_signals()
 
     def _build_confirmation_signal_markup(self, chat_id: int, signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         tps = signal.get("tps") if isinstance(signal.get("tps"), list) else []

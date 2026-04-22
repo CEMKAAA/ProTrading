@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import time
 import threading
+from pathlib import Path
 import pytest
 
 from dashboard.backend.services.telegram_bridge_service import TelegramBridgeService
@@ -2173,6 +2174,51 @@ def test_signal_price_zone_state_normalizes_reversed_zone_bounds():
     assert TelegramBridgeService._signal_price_zone_state(signal, 4781.0) == "inside_zone"
     assert TelegramBridgeService._signal_price_zone_state(signal, 4778.5) == "below_zone"
     assert TelegramBridgeService._signal_price_zone_state(signal, 4783.5) == "above_zone"
+
+
+def test_pending_entry_queue_restores_after_service_restart(monkeypatch):
+    state_path = Path("dashboard/data/test_pending_entry_state.json")
+    try:
+        if state_path.exists():
+            state_path.unlink()
+    except Exception:
+        pass
+    monkeypatch.setenv("TELEGRAM_CONFIRM_SIGNAL_PERSIST_PENDING_ENTRY", "1")
+    monkeypatch.setenv("TELEGRAM_CONFIRM_SIGNAL_ENTRY_WAIT_MAX_SEC", "7200")
+    monkeypatch.setattr(TelegramBridgeService, "_pending_entry_state_path", staticmethod(lambda: state_path.resolve()))
+
+    svc1 = TelegramBridgeService()
+    assert bool(svc1._pending_entry_persist_enabled()) is True
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "SELL",
+        "entry_low": 4779.0,
+        "entry_high": 4783.0,
+        "stop_loss": 4789.0,
+        "tps": [{"index": 1, "price": 4773.0}],
+        "trace_id": "tgx-test-persist-001",
+    }
+    queued = svc1._queue_entry_signal(
+        chat_id=1,
+        signal=signal,
+        source_label="AZZAM - Gold Trading Pro",
+        source_key="1:azzam-gold",
+    )
+    assert state_path.exists()
+    qid = str(queued.get("id") or "")
+    assert qid
+
+    svc2 = TelegramBridgeService()
+    st = svc2.get_telegram_automation_state(limit=50)
+    assert int(st.get("pending_entry_count") or 0) >= 1
+    with svc2._lock:
+        rows = [dict(v) for v in svc2._pending_entry_signals.values() if isinstance(v, dict)]
+    assert any(str((r or {}).get("id") or "") == qid for r in rows)
+    try:
+        if state_path.exists():
+            state_path.unlink()
+    except Exception:
+        pass
 
 
 def test_pending_entry_dispatch_claim_blocks_duplicate_threads(monkeypatch):
