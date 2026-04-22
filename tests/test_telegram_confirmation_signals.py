@@ -14,6 +14,7 @@ def _isolate_channel_rule_env(monkeypatch):
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_wait_entry_zone_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_no_wait_entry_zone_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_mode_titles", classmethod(lambda cls: []))
+    monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_v2_mode_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_emergency_mode_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_lot_per_tp", classmethod(lambda cls: 0.2))
 
@@ -1532,8 +1533,49 @@ SL.TP 4804.00
         push_only=False,
     )
     assert isinstance(out, str)
-    assert "both advanced and emergency modes are disabled" in out.lower()
+    assert "modes are all disabled" in out.lower()
     assert seen["n"] == 0
+
+
+def test_channel_mode_router_runs_advanced_and_advanced_v2_together(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_mode_titles", lambda: ["XAUUSD GOLD VIP"])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_v2_mode_titles", lambda: ["XAUUSD GOLD VIP"])
+    monkeypatch.setattr(svc, "_confirm_signal_emergency_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_lot_per_tp", lambda: 0.2)
+
+    seen_modes = []
+
+    def _fake_exec(**kwargs):
+        seen_modes.append(str(kwargs.get("execution_mode") or ""))
+        return "Confirmation ladder executed"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4800.0,
+        "entry_high": 4805.0,
+        "stop_loss": 4790.0,
+        "tps": [
+            {"index": 1, "price": 4810.0},
+            {"index": 2, "price": 4815.0},
+            {"index": 3, "price": 4820.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_with_channel_modes(
+        chat_id=1,
+        signal=dict(signal),
+        source_names=["XAUUSD GOLD VIP"],
+        source_label="XAUUSD GOLD VIP",
+        source_key="1:goldvip",
+    )
+
+    assert "[ADVANCED]" in str(out)
+    assert "[ADVANCED_V2]" in str(out)
+    assert seen_modes == ["advanced", "advanced_v2"]
 
 
 def test_entry_zone_smoke_queue_then_trigger_exec_with_channel_modes(monkeypatch):
@@ -1781,6 +1823,113 @@ def test_advanced_force_be_after_tp_moves_sl_to_entry_on_tp1_tp2_tp3():
     assert abs(float((r3 or {}).get("stop_loss") or 0.0) - 100.0) < 1e-9
     assert len(fake.calls) == 3
     assert all(abs(float(c.get("stop_loss") or 0.0) - 100.0) < 1e-9 for c in fake.calls)
+
+
+def test_advanced_v2_be_trigger_from_tp_count_for_telegram_plan():
+    svc = TelegramBridgeService()
+
+    signal_3 = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "entry_mid": 100.0,
+        "stop_loss": 95.0,
+        "tps": [
+            {"index": 1, "price": 101.0},
+            {"index": 2, "price": 102.0},
+            {"index": 3, "price": 103.0},
+        ],
+    }
+    plan_3 = svc._build_advanced_v2_signal_plan(
+        signal=dict(signal_3),
+        direction="BUY",
+        entry_price=100.0,
+        digits=2,
+        point=0.01,
+        min_stop_dist=0.0,
+        atr=1.0,
+        prefer_signal_tps=True,
+    )
+    assert int(((plan_3.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 2
+    assert str(((plan_3.get("v2_cfg") or {}).get("sl_progression") or "")) == "be_on_tp_index"
+    assert len(plan_3.get("tps") or []) == 3
+
+    signal_5 = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "entry_mid": 100.0,
+        "stop_loss": 95.0,
+        "tps": [
+            {"index": 1, "price": 101.0},
+            {"index": 2, "price": 102.0},
+            {"index": 3, "price": 103.0},
+            {"index": 4, "price": 104.0},
+            {"index": 5, "price": 105.0},
+        ],
+    }
+    plan_5 = svc._build_advanced_v2_signal_plan(
+        signal=dict(signal_5),
+        direction="BUY",
+        entry_price=100.0,
+        digits=2,
+        point=0.01,
+        min_stop_dist=0.0,
+        atr=1.0,
+        prefer_signal_tps=True,
+    )
+    assert int(((plan_5.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 2
+    assert len(plan_5.get("tps") or []) == 5
+
+
+def test_advanced_v2_guard_moves_to_breakeven_when_be_tp_reached():
+    svc = TelegramBridgeService()
+
+    class FakeSvc:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {"digits": 2, "point": 0.01, "trade_stops_level": 0, "trade_freeze_level": 0}
+
+    row = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "broker_ticket": 777,
+        "execution_mode": "advanced_v2",
+        "source_name": "unit",
+        "source_tag": "telegram_noconfirm",
+        "advanced_v2_cfg": {
+            "sl_progression": "be_on_tp_index",
+            "be_trigger_tp": 2,
+            "internal_sl": 90.0,
+            "slippage_buffer_pct": 0.0008,
+        },
+    }
+    pos = {
+        "entry_price": 100.0,
+        "current_price": 110.0,
+        "stop_loss": None,
+        "take_profit": 120.0,
+    }
+
+    r1 = svc._apply_confirmation_guard_stop(
+        svc=FakeSvc(),
+        row=dict(row),
+        pos=dict(pos),
+        hit_tp_index=1,
+        target_px=101.0,
+    )
+    assert bool((r1 or {}).get("ok")) is True
+    assert bool((r1 or {}).get("updated")) is False
+    assert str((r1 or {}).get("reason") or "") == "v2_be_not_armed"
+
+    r2 = svc._apply_confirmation_guard_stop(
+        svc=FakeSvc(),
+        row=dict(row),
+        pos=dict(pos),
+        hit_tp_index=2,
+        target_px=102.0,
+    )
+    assert bool((r2 or {}).get("ok")) is True
+    assert bool((r2 or {}).get("updated")) is True
+    assert abs(float((r2 or {}).get("stop_loss") or 0.0) - 100.0) < 1e-9
 
 
 def test_advanced_sl_guard_uses_atr_with_signal_symbol_timeframe(monkeypatch):
