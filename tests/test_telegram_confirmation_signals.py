@@ -15,6 +15,7 @@ def _isolate_channel_rule_env(monkeypatch):
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_no_wait_entry_zone_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_mode_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_v2_mode_titles", classmethod(lambda cls: []))
+    monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_v3_mode_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_emergency_mode_titles", classmethod(lambda cls: []))
     monkeypatch.setattr(TelegramBridgeService, "_confirm_signal_advanced_lot_per_tp", classmethod(lambda cls: 0.2))
 
@@ -1578,6 +1579,47 @@ def test_channel_mode_router_runs_advanced_and_advanced_v2_together(monkeypatch)
     assert seen_modes == ["advanced", "advanced_v2"]
 
 
+def test_channel_mode_router_runs_advanced_v3(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_v2_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_v3_mode_titles", lambda: ["XAUUSD GOLD VIP"])
+    monkeypatch.setattr(svc, "_confirm_signal_emergency_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_lot_per_tp", lambda: 0.2)
+
+    seen_modes = []
+
+    def _fake_exec(**kwargs):
+        seen_modes.append(str(kwargs.get("execution_mode") or ""))
+        return "Confirmation ladder executed"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4800.0,
+        "entry_high": 4805.0,
+        "stop_loss": 4790.0,
+        "tps": [
+            {"index": 1, "price": 4810.0},
+            {"index": 2, "price": 4815.0},
+            {"index": 3, "price": 4820.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_with_channel_modes(
+        chat_id=1,
+        signal=dict(signal),
+        source_names=["XAUUSD GOLD VIP"],
+        source_label="XAUUSD GOLD VIP",
+        source_key="1:goldvip",
+    )
+
+    assert "[ADVANCED_V3]" in str(out)
+    assert seen_modes == ["advanced_v3"]
+
+
 def test_entry_zone_smoke_queue_then_trigger_exec_with_channel_modes(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
@@ -1849,7 +1891,7 @@ def test_advanced_v2_be_trigger_from_tp_count_for_telegram_plan():
         atr=1.0,
         prefer_signal_tps=True,
     )
-    assert int(((plan_3.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 2
+    assert int(((plan_3.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 1
     assert str(((plan_3.get("v2_cfg") or {}).get("sl_progression") or "")) == "be_on_tp_index"
     assert len(plan_3.get("tps") or []) == 3
 
@@ -1878,6 +1920,51 @@ def test_advanced_v2_be_trigger_from_tp_count_for_telegram_plan():
     )
     assert int(((plan_5.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 2
     assert len(plan_5.get("tps") or []) == 5
+
+
+def test_advanced_v3_be_trigger_floor_rule():
+    svc = TelegramBridgeService()
+
+    signal_5 = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "entry_mid": 100.0,
+        "stop_loss": 95.0,
+        "tps": [
+            {"index": 1, "price": 101.0},
+            {"index": 2, "price": 102.0},
+            {"index": 3, "price": 103.0},
+            {"index": 4, "price": 104.0},
+            {"index": 5, "price": 105.0},
+        ],
+    }
+    plan_5 = svc._build_advanced_v2_signal_plan(
+        signal=dict(signal_5),
+        direction="BUY",
+        entry_price=100.0,
+        digits=2,
+        point=0.01,
+        min_stop_dist=0.0,
+        atr=1.0,
+        prefer_signal_tps=True,
+        be_trigger_rule="floor",
+    )
+    assert int(((plan_5.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 1
+
+    signal_6 = dict(signal_5)
+    signal_6["tps"] = list(signal_5["tps"]) + [{"index": 6, "price": 106.0}]
+    plan_6 = svc._build_advanced_v2_signal_plan(
+        signal=dict(signal_6),
+        direction="BUY",
+        entry_price=100.0,
+        digits=2,
+        point=0.01,
+        min_stop_dist=0.0,
+        atr=1.0,
+        prefer_signal_tps=True,
+        be_trigger_rule="floor",
+    )
+    assert int(((plan_6.get("v2_cfg") or {}).get("be_trigger_tp") or 0)) == 2
 
 
 def test_advanced_v2_guard_moves_to_breakeven_when_be_tp_reached():
@@ -1930,6 +2017,74 @@ def test_advanced_v2_guard_moves_to_breakeven_when_be_tp_reached():
     assert bool((r2 or {}).get("ok")) is True
     assert bool((r2 or {}).get("updated")) is True
     assert abs(float((r2 or {}).get("stop_loss") or 0.0) - 100.0) < 1e-9
+
+
+def test_advanced_v2_v3_send_initial_stop_loss_on_open(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_default_lot", lambda: 0.03)
+    monkeypatch.setattr(svc, "_confirm_signal_tp_distribution_mode", lambda: "equal")
+    monkeypatch.setattr(svc, "_confirm_signal_allow_message_single_trade_override", lambda: True)
+    monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
+
+    seen = {"v2": None, "v3": None}
+
+    class FakeLive:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "digits": 2,
+                "point": 0.01,
+                "volume_min": 0.01,
+                "volume_step": 0.01,
+                "volume_max": 100.0,
+            }
+
+        def place_market_order(self, symbol, direction, lot_size, stop_loss, take_profit, comment):
+            key = "v3" if str(comment).startswith("tg3") else "v2"
+            seen[key] = (float(stop_loss) if stop_loss is not None else None)
+            return {"ok": True, "position": 999001, "order": 999001, "deal": 999001, "lot_size": float(lot_size)}
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    fake = FakeLive()
+    monkeypatch.setattr(svc, "_get_live_service", lambda: fake)
+
+    base_signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4738.0,
+        "entry_high": 4741.0,
+        "entry_mid": 4740.0,
+        "stop_loss": 4733.0,
+        "tps": [
+            {"index": 1, "price": 4747.0},
+            {"index": 2, "price": 4765.0},
+            {"index": 3, "price": 4772.0},
+        ],
+    }
+
+    out_v2 = svc._execute_confirmation_signal_auto(
+        chat_id=1,
+        signal=dict(base_signal),
+        execution_mode="advanced_v2",
+        audit_ctx={"source_type": "telegram_channel", "source_name": "unit", "source_key": "u1"},
+        comment_prefix="tg2",
+    )
+    out_v3 = svc._execute_confirmation_signal_auto(
+        chat_id=1,
+        signal=dict(base_signal),
+        execution_mode="advanced_v3",
+        audit_ctx={"source_type": "telegram_channel", "source_name": "unit", "source_key": "u1"},
+        comment_prefix="tg3",
+    )
+
+    assert "Confirmation ladder executed" in str(out_v2)
+    assert "Confirmation ladder executed" in str(out_v3)
+    assert abs(float(seen["v2"] or 0.0) - 4733.0) < 1e-9
+    assert abs(float(seen["v3"] or 0.0) - 4733.0) < 1e-9
 
 
 def test_advanced_sl_guard_uses_atr_with_signal_symbol_timeframe(monkeypatch):

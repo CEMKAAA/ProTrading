@@ -10,6 +10,7 @@
         noWaitEntryZoneChannels: document.getElementById('tg-no-wait-entry-zone-channels'),
         advancedModeChannels: document.getElementById('tg-advanced-mode-channels'),
         advancedV2ModeChannels: document.getElementById('tg-advanced-v2-mode-channels'),
+        advancedV3ModeChannels: document.getElementById('tg-advanced-v3-mode-channels'),
         emergencyModeChannels: document.getElementById('tg-emergency-mode-channels'),
         advancedLotPerTp: document.getElementById('tg-advanced-lot-per-tp'),
         requireConfirmChannels: document.getElementById('tg-require-confirm-channels'),
@@ -126,6 +127,7 @@
         if (els.noWaitEntryZoneChannels) els.noWaitEntryZoneChannels.value = toLines(c.no_wait_entry_zone_channels);
         if (els.advancedModeChannels) els.advancedModeChannels.value = toLines(c.advanced_mode_channels);
         if (els.advancedV2ModeChannels) els.advancedV2ModeChannels.value = toLines(c.advanced_v2_mode_channels);
+        if (els.advancedV3ModeChannels) els.advancedV3ModeChannels.value = toLines(c.advanced_v3_mode_channels);
         if (els.emergencyModeChannels) els.emergencyModeChannels.value = toLines(c.emergency_mode_channels);
         if (els.advancedLotPerTp) els.advancedLotPerTp.value = Number(c.advanced_lot_per_tp || 0.2).toFixed(2);
         if (els.requireConfirmChannels) els.requireConfirmChannels.value = toLines(c.require_confirm_channels);
@@ -507,6 +509,10 @@
                 .map((x) => x.trim())
                 .filter(Boolean),
             advanced_v2_mode_channels: String((els.advancedV2ModeChannels && els.advancedV2ModeChannels.value) || '')
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean),
+            advanced_v3_mode_channels: String((els.advancedV3ModeChannels && els.advancedV3ModeChannels.value) || '')
                 .split('\n')
                 .map((x) => x.trim())
                 .filter(Boolean),

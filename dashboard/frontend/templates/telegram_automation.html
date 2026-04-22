@@ -115,6 +115,11 @@
                                     <textarea id="tg-advanced-v2-mode-channels" class="form-control" rows="2" placeholder="XAUUSD MOVEMENT BY LEO"></textarea>
                                     <div class="form-text">Bu listedeki kanallarda Advanced_v2 execution açılır (BE lock kuralları ve kanal bazlı TP planı).</div>
                                 </div>
+                                <div class="col-md-6">
+                                    <label for="tg-advanced-v3-mode-channels" class="form-label">Advanced_v3 Mode Channels</label>
+                                    <textarea id="tg-advanced-v3-mode-channels" class="form-control" rows="2" placeholder="AZZAM - Gold Trading Pro"></textarea>
+                                    <div class="form-text">Bu listedeki kanallarda Advanced_v3 execution açılır (Advanced_v2 ile aynı, BE trigger = floor(TP/3)).</div>
+                                </div>
                             </div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
@@ -404,7 +409,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260422_advanced_v2_channels_v20') }}"></script>
+<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260422_advanced_v3_channels_v21') }}"></script>
 {% endblock %}
 
 

@@ -868,6 +868,11 @@ class TelegramBridgeService:
         return [str(x).strip() for x in raw.split("|") if str(x).strip()]
 
     @classmethod
+    def _confirm_signal_advanced_v3_mode_titles(cls) -> List[str]:
+        raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_ADVANCED_V3_CHANNEL_TITLES", "")).strip()
+        return [str(x).strip() for x in raw.split("|") if str(x).strip()]
+
+    @classmethod
     def _confirm_signal_emergency_mode_titles(cls) -> List[str]:
         raw = str(cls._get_env_value("TELEGRAM_CONFIRM_SIGNAL_EMERGENCY_CHANNEL_TITLES", "")).strip()
         return [str(x).strip() for x in raw.split("|") if str(x).strip()]
@@ -876,17 +881,21 @@ class TelegramBridgeService:
         names = [str(x).strip() for x in (source_names or []) if str(x).strip()]
         adv_rules = [x for x in self._confirm_signal_advanced_mode_titles() if str(x).strip()]
         adv2_rules = [x for x in self._confirm_signal_advanced_v2_mode_titles() if str(x).strip()]
+        adv3_rules = [x for x in self._confirm_signal_advanced_v3_mode_titles() if str(x).strip()]
         em_rules = [x for x in self._confirm_signal_emergency_mode_titles() if str(x).strip()]
-        has_rules = bool(adv_rules or adv2_rules or em_rules)
+        has_rules = bool(adv_rules or adv2_rules or adv3_rules or em_rules)
 
         adv = False
         adv2 = False
+        adv3 = False
         em = False
         for name in names:
             if (not adv) and any(self._source_matches_rule(name, r) for r in adv_rules):
                 adv = True
             if (not adv2) and any(self._source_matches_rule(name, r) for r in adv2_rules):
                 adv2 = True
+            if (not adv3) and any(self._source_matches_rule(name, r) for r in adv3_rules):
+                adv3 = True
             if (not em) and any(self._source_matches_rule(name, r) for r in em_rules):
                 em = True
 
@@ -897,6 +906,7 @@ class TelegramBridgeService:
         return {
             "advanced": bool(adv),
             "advanced_v2": bool(adv2),
+            "advanced_v3": bool(adv3),
             "emergency": bool(em),
             "has_rules": bool(has_rules),
             "source_names": list(names),
@@ -2696,6 +2706,7 @@ class TelegramBridgeService:
                 "no_wait_entry_zone_channels": list(self._confirm_signal_no_wait_entry_zone_titles()),
                 "advanced_mode_channels": list(self._confirm_signal_advanced_mode_titles()),
                 "advanced_v2_mode_channels": list(self._confirm_signal_advanced_v2_mode_titles()),
+                "advanced_v3_mode_channels": list(self._confirm_signal_advanced_v3_mode_titles()),
                 "emergency_mode_channels": list(self._confirm_signal_emergency_mode_titles()),
                 "entry_wait_max_sec": float(self._confirm_signal_entry_wait_max_sec()),
                 "entry_attempt_cooldown_sec": float(self._confirm_signal_entry_attempt_cooldown_sec()),
@@ -2804,6 +2815,14 @@ class TelegramBridgeService:
             elif isinstance(raw, list):
                 vals = [str(x).strip() for x in raw if str(x).strip()]
             updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_V2_CHANNEL_TITLES"] = "|".join(vals)
+        if "advanced_v3_mode_channels" in p:
+            raw = p.get("advanced_v3_mode_channels")
+            vals: List[str] = []
+            if isinstance(raw, str):
+                vals = [str(x).strip() for x in re.split(r"[\n|,]+", raw) if str(x).strip()]
+            elif isinstance(raw, list):
+                vals = [str(x).strip() for x in raw if str(x).strip()]
+            updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_V3_CHANNEL_TITLES"] = "|".join(vals)
         if "emergency_mode_channels" in p:
             raw = p.get("emergency_mode_channels")
             vals: List[str] = []
@@ -8480,6 +8499,7 @@ class TelegramBridgeService:
         min_stop_dist: float,
         atr: Optional[float],
         prefer_signal_tps: bool = False,
+        be_trigger_rule: str = "ceil",
     ) -> Dict[str, Any]:
         side = str(direction or "").strip().upper()
         d = 1.0 if side == "BUY" else -1.0
@@ -8517,7 +8537,10 @@ class TelegramBridgeService:
                     px = float(entry + (d * r_dist * float(rr)))
                     tps.append({"index": int(idx), "price": round(float(px), int(max(0, digits)))})
             tp_count_for_be = int(len([x for x in tps if _to_float_or_none((x or {}).get("price")) is not None]))
-        be_trigger_tp = int(self._calc_advanced_v2_be_trigger_tp(int(tp_count_for_be)))
+        if str(be_trigger_rule).strip().lower() == "floor":
+            be_trigger_tp = int(self._calc_advanced_v3_be_trigger_tp(int(tp_count_for_be)))
+        else:
+            be_trigger_tp = int(self._calc_advanced_v2_be_trigger_tp(int(tp_count_for_be)))
         stage_count = int(max(1, len(tps)))
         equal_weights = [float(1.0 / float(stage_count)) for _ in range(stage_count)]
         plan = {
@@ -8549,10 +8572,14 @@ class TelegramBridgeService:
     @staticmethod
     def _calc_advanced_v2_be_trigger_tp(tp_count: int) -> int:
         c = int(max(1, int(tp_count or 0)))
-        base = int(round(float(c) / 3.0))
-        # Keep BE trigger conservative on tiny ladders; examples:
-        # 3 TP -> TP2, 5 TP -> TP2
-        return int(max(1, min(c, max(2, int(base)))))
+        base = int(math.ceil(float(c) / 3.0))
+        return int(max(1, min(c, int(base))))
+
+    @staticmethod
+    def _calc_advanced_v3_be_trigger_tp(tp_count: int) -> int:
+        c = int(max(1, int(tp_count or 0)))
+        base = int(math.floor(float(c) / 3.0))
+        return int(max(1, min(c, int(base))))
 
     @staticmethod
     def _is_confirmation_exec_opened(exec_msg: Any) -> bool:
@@ -8615,8 +8642,9 @@ class TelegramBridgeService:
         policy = self._confirm_signal_channel_modes_for_sources(source_names=source_names)
         adv_on = bool(policy.get("advanced"))
         adv2_on = bool(policy.get("advanced_v2"))
+        adv3_on = bool(policy.get("advanced_v3"))
         em_on = bool(policy.get("emergency"))
-        if (not adv_on) and (not adv2_on) and (not em_on):
+        if (not adv_on) and (not adv2_on) and (not adv3_on) and (not em_on):
             self._append_automation_execution_log(
                 source_type="telegram_channel",
                 source_name=str(source_label or "unknown"),
@@ -8635,7 +8663,7 @@ class TelegramBridgeService:
                 error_code="channel_modes_disabled",
                 stage_payload={"policy": dict(policy)},
             )
-            return "Channel execution skipped: advanced, advanced_v2 and emergency modes are all disabled for this source."
+            return "Channel execution skipped: advanced, advanced_v2, advanced_v3 and emergency modes are all disabled for this source."
 
         outputs: List[str] = []
         if adv_on:
@@ -8671,6 +8699,21 @@ class TelegramBridgeService:
                 mode_name="advanced_v2",
             )
             outputs.append(f"[ADVANCED_V2]\n{str(adv2_out)}")
+
+        if adv3_on:
+            sig_adv3 = dict(signal or {})
+            sig_adv3["ignore_global_force_single"] = True
+            tp_rows = [dict(x) for x in (sig_adv3.get("tps") if isinstance(sig_adv3.get("tps"), list) else []) if isinstance(x, dict)]
+            adv3_tp_count = int(max(1, len(tp_rows)))
+            adv3_lot_per_tp = float(self._confirm_signal_advanced_lot_per_tp())
+            adv3_lot = float(max(0.01, min(100.0, float(adv3_tp_count) * float(adv3_lot_per_tp))))
+            adv3_out = _call_exec_auto(
+                sig=dict(sig_adv3),
+                mode="advanced_v3",
+                mode_lot_override=float(adv3_lot),
+                mode_name="advanced_v3",
+            )
+            outputs.append(f"[ADVANCED_V3]\n{str(adv3_out)}")
 
         if em_on:
             sig_em = dict(signal or {})
@@ -8782,14 +8825,14 @@ class TelegramBridgeService:
         stage_mode = str(self._confirm_signal_tp_distribution_mode())
         allow_msg_single = bool(self._confirm_signal_allow_message_single_trade_override())
         global_force_single = bool(
-            str(exec_mode) != "advanced_v2"
+            str(exec_mode) not in {"advanced_v2", "advanced_v3"}
             and (not bool(signal.get("ignore_global_force_single")))
             and self._confirm_signal_force_single_trade_01()
         )
         force_single = bool(global_force_single or (allow_msg_single and bool(signal.get("force_single_trade"))))
         channel_advanced_fixed = bool(signal.get("channel_advanced_fixed_02")) and str(exec_mode) == "advanced" and (not force_single)
         extra_ladder_state: Dict[str, Any] = {}
-        if str(exec_mode) == "advanced_v2":
+        if str(exec_mode) in {"advanced_v2", "advanced_v3"}:
             prefer_signal_tps_v2 = bool(str(audit_source_type).strip().lower() == "telegram_channel")
             digits_v2 = int(_to_float_or_none(signal.get("digits")) or 5)
             point_v2 = _to_float_or_none(signal.get("point")) or 0.0001
@@ -8810,6 +8853,7 @@ class TelegramBridgeService:
                     min_stop_dist=float(min_stop_dist_v2),
                     atr=_to_float_or_none(atr_v2),
                     prefer_signal_tps=bool(prefer_signal_tps_v2),
+                    be_trigger_rule=("floor" if str(exec_mode) == "advanced_v3" else "ceil"),
                 )
                 tps_all = [dict(x) for x in (v2_plan.get("tps") or []) if isinstance(x, dict)]
                 signal["stage_weights"] = list(v2_plan.get("stage_weights") or [])
@@ -8819,7 +8863,10 @@ class TelegramBridgeService:
                 signal["profit_lock_min_peak_usd"] = v2_plan.get("profit_lock_min_peak_usd")
                 signal["profit_lock_min_hold_sec"] = v2_plan.get("profit_lock_min_hold_sec")
                 signal["profit_lock_min_close_usd"] = v2_plan.get("profit_lock_min_close_usd")
-                stage_mode = ("advanced_v2_be_lock" if bool(prefer_signal_tps_v2) else "advanced_v2_rr4")
+                if str(exec_mode) == "advanced_v3":
+                    stage_mode = ("advanced_v3_be_lock" if bool(prefer_signal_tps_v2) else "advanced_v3_rr4")
+                else:
+                    stage_mode = ("advanced_v2_be_lock" if bool(prefer_signal_tps_v2) else "advanced_v2_rr4")
                 extra_ladder_state["advanced_v2_cfg"] = dict(v2_plan.get("v2_cfg") or {})
         if force_single:
             # Emergency mode disables partial laddering, but keeps operator-selected lot sizing.
@@ -8910,7 +8957,7 @@ class TelegramBridgeService:
             )
             return f"Confirmation trade failed: {str(stage_err)}"
         take_profit = _to_float_or_none((active_tps[-1] or {}).get("price")) if active_tps else None
-        if take_profit is None and str(exec_mode) != "advanced_v2":
+        if take_profit is None and str(exec_mode) not in {"advanced_v2", "advanced_v3"}:
             self._append_automation_execution_log(
                 source_type=audit_source_type,
                 source_name=audit_source_name,
@@ -8969,10 +9016,7 @@ class TelegramBridgeService:
         pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "tgc").strip().lower())[:8] or "tgc"
         marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
         try:
-            if str(exec_mode) == "advanced_v2":
-                order_stop_loss = None
-            else:
-                order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
+            order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
             data = svc.place_market_order(
                 symbol=str(symbol),
                 direction=str(direction),
@@ -8984,7 +9028,7 @@ class TelegramBridgeService:
             if not bool((data or {}).get("ok")):
                 err_txt = str((data or {}).get("error") or "order_failed")
                 if self._is_invalid_stops_error(err_txt):
-                    if bool(allow_no_sl) or str(exec_mode) == "advanced_v2":
+                    if bool(allow_no_sl):
                         if take_profit is None:
                             retry_data = dict(data or {})
                         else:
@@ -8996,15 +9040,6 @@ class TelegramBridgeService:
                                 take_profit=float(take_profit),
                                 comment=str(marker),
                             )
-                    elif bool(allow_no_sl):
-                        retry_data = self._retry_order_for_invalid_tp_only(
-                            svc=svc,
-                            symbol=str(symbol),
-                            direction=str(direction),
-                            lot=float(lot),
-                            take_profit=float(take_profit),
-                            comment=str(marker),
-                        )
                     else:
                         retry_data = self._retry_order_for_invalid_stops(
                             svc=svc,
@@ -9736,7 +9771,7 @@ class TelegramBridgeService:
     ) -> Dict[str, Any]:
         force_be_after_tp = bool((row or {}).get("force_be_after_tp"))
         exec_mode = str((row or {}).get("execution_mode") or "").strip().lower()
-        is_v2 = str(exec_mode) == "advanced_v2"
+        is_v2 = str(exec_mode) in {"advanced_v2", "advanced_v3"}
         if (not bool(self._confirm_sl_guard_enabled())) and (not force_be_after_tp) and (not bool(is_v2)):
             return {"ok": True, "updated": False, "reason": "sl_guard_disabled"}
         tp_idx = int(max(1, int(hit_tp_index or 1)))
@@ -9772,7 +9807,11 @@ class TelegramBridgeService:
             "point": float(point),
             "min_stop_dist": float(min_stop_dist),
             "execution_mode": str(exec_mode),
-            "sl_guard_mode": ("advanced_v2" if bool(is_v2) else ("force_be" if bool(force_be_after_tp) else ("advanced_atr" if str(exec_mode) == "advanced" else "ratio_lock"))),
+            "sl_guard_mode": (
+                ("advanced_v3" if str(exec_mode) == "advanced_v3" else "advanced_v2")
+                if bool(is_v2)
+                else ("force_be" if bool(force_be_after_tp) else ("advanced_atr" if str(exec_mode) == "advanced" else "ratio_lock"))
+            ),
         }
 
         if bool(is_v2):
@@ -10264,7 +10303,7 @@ class TelegramBridgeService:
                 with self._lock:
                     self._active_confirmation_signal_ladders[str(key)] = dict(row)
                 continue
-            if execution_mode == "advanced_v2":
+            if execution_mode in {"advanced_v2", "advanced_v3"}:
                 v2_cfg = dict((row or {}).get("advanced_v2_cfg") or {})
                 internal_sl = _to_float_or_none(v2_cfg.get("internal_sl"))
                 if internal_sl is not None:
@@ -10284,7 +10323,7 @@ class TelegramBridgeService:
                             remove_keys.append(str(key))
                             continue
             if target_px is None:
-                if execution_mode == "advanced_v2":
+                if execution_mode in {"advanced_v2", "advanced_v3"}:
                     _ = self._update_advanced_v2_runner_stop(
                         svc=svc,
                         row=row,
@@ -10295,7 +10334,7 @@ class TelegramBridgeService:
                 continue
             hit = bool(float(close_ref_price) >= float(target_px)) if direction == "BUY" else bool(float(close_ref_price) <= float(target_px))
             if not hit:
-                if execution_mode == "advanced_v2":
+                if execution_mode in {"advanced_v2", "advanced_v3"}:
                     _ = self._update_advanced_v2_runner_stop(
                         svc=svc,
                         row=row,
