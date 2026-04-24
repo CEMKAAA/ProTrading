@@ -337,6 +337,7 @@
             txt = txt
                 .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (ch) => superscriptDigits[ch] || ch)
                 .replace(/[\u200B-\u200F\uFEFF]/g, '')
+                .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
                 .split(/\r?\n/)
                 .map((line) => String(line || '').replace(/^\s*[^A-Za-z0-9#]+/, ''))
                 .join('\n');
@@ -345,13 +346,14 @@
             if (/\bTP\s*(?:[1-9]\d*)?\s*HIT\b/im.test(txt) || /\bTP\s*(?:[1-9]\d*)?\s*DONE\b/im.test(txt) || /\bTP\s*[,.\s]*ALL\s*(?:HIT|DONE)\b/im.test(txt) || /\ball\s+target(?:s)?\s+(?:successfully\s+)?(?:hit|completed)\b/im.test(txt) || /\btarget(?:s)?\s+completed\b/im.test(txt)) return 'tp_hit';
             if (/\b(?:SL(?:\s*[1-9]\d*)?|STOP\s*LOSS)\b.*\bHIT\b/im.test(txt)) return 'sl_hit';
             if (/\bCLOSE\s+IT\b/im.test(txt) || /\bCLOSE\s+NOW\b/im.test(txt) || /\bSAVE\s+(?:YOUR\s+)?PROFIT(?:S)?\b/im.test(txt) || /\b(?:SECURE|BOOK|TAKE)\s+(?:YOUR\s+)?PROFIT(?:S)?\b/im.test(txt)) return 'close_instruction';
-            const hasHeader = /^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:\/|-|=|TO)\s*[0-9]+(?:\.[0-9]+)?)?\s*$/im.test(txt);
+            const hasHeader = /^\s*#?\s*[A-Z]{3,12}(?:\s+#?\s*[A-Z]{3,12})?\s*(?:[_\-\s]+)(BUY|SELL)\s+(?:NOW\s+)?[0-9]+(?:\.[0-9]+)?(?:\s*(?:\/|-|=|TO|[^\dA-Z\n]{1,4})\s*[0-9]+(?:\.[0-9]+)?)?\s*$/im.test(txt);
+            const hasSplitHeader = /^(?:\s*(?:XAU\s*USD|XAUUSD|GOLD)\s*)$[\s\S]{0,120}^\s*(BUY|SELL)\b\s*(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?)?\s*[:=@\-]?\s*[0-9]+(?:\.[0-9]+)?\s*(?:\/|-|=|TO|[^\dA-Z\n]{1,4})\s*[0-9]+(?:\.[0-9]+)?(?:\s*[^0-9\n]+)?\s*$/im.test(txt);
             const hasTp = (
                 /\bTP\s*(?:[1-9]\d*)?\s*[:,.\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt)
                 || /\bTP\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+\s*[:,.\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt)
             );
             const hasSl = /\bSL(?:\s*\.?\s*TP)?(?:\s*[1-9]\d*)?\s*[:\-]?\s*[0-9]+(?:\.[0-9]+)?\b/im.test(txt);
-            if (hasHeader && hasTp && hasSl) return 'signal';
+            if ((hasHeader || hasSplitHeader) && hasTp && hasSl) return 'signal';
             return 'other';
         };
         const isSignalRow = (r) => {

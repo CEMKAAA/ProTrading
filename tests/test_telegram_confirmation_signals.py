@@ -69,6 +69,52 @@ SL: 4663
     assert [row["price"] for row in parsed["tps"]] == [4651.0, 4649.0, 4647.0, 4645.0, 4643.0, 4641.0, 4639.0]
 
 
+def test_parse_confirmation_signal_repairs_xau_hundred_miss_in_second_entry_leg():
+    raw = """
+GOLD SELL 4675/4578
+
+TP: 4673
+TP: 4671
+TP: 4669
+TP: 4667
+TP: 4665
+TP: 4663
+TP: 4661
+
+SL: 4685
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "SELL"
+    assert parsed["entry_low"] == 4675.0
+    assert parsed["entry_high"] == 4678.0
+    assert parsed["stop_loss"] == 4685.0
+
+
+def test_parse_confirmation_signal_repairs_xau_hundred_miss_when_zone_overlaps_tp_side():
+    raw = """
+GOLD SELL 4675/4678
+
+TP: 4773
+TP: 4771
+TP: 4769
+TP: 4767
+TP: 4765
+TP: 4763
+TP: 4761
+
+SL: 4785
+"""
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert isinstance(parsed, dict)
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["direction"] == "SELL"
+    assert parsed["entry_low"] == 4775.0
+    assert parsed["entry_high"] == 4778.0
+    assert parsed["stop_loss"] == 4785.0
+
+
 def test_parse_confirmation_signal_gold_vip_plain_tp_and_sl():
     raw = """
 XAUUSD BUY 4608/4605
@@ -644,6 +690,390 @@ SL.TP 4804.00
     assert isinstance(parsed, dict)
 
 
+def test_source_scoped_classifier_accepts_vip_product_format():
+    raw = """
+Product: Gold (XAUUSD)
+
+BUY:4700-4705
+
+TP1:4710
+TP2:4715
+TP3:4720
+TP4:OPEN
+
+SL:4690
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["V I P"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["V I P"],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "gold_vip"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4700.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4705.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4690.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+@pytest.mark.parametrize(
+    "title,raw,direction,entry_low,entry_high,stop_loss,tp_count",
+    [
+        (
+            "ClayTraderI787",
+            """
+XAUUSD SELL 4792/4795
+TP1 4788
+TP2 4784
+TP3 4780
+SL 4803
+""",
+            "SELL",
+            4792.0,
+            4795.0,
+            4803.0,
+            3,
+        ),
+        (
+            "HERREY GOLD (Analysis) Expert",
+            """
+XAUUSD BUY NOW 4725/20
+TP1 4730
+TP2 4735
+TP3 4740
+SL 4709
+""",
+            "BUY",
+            4720.0,
+            4725.0,
+            4709.0,
+            3,
+        ),
+        (
+            "SHAKOOR TRADING EXPERT",
+            """
+Gold sell limit 4832 - 4836
+SL 4842
+Tp 4826
+Tp 4800
+""",
+            "SELL",
+            4832.0,
+            4836.0,
+            4842.0,
+            2,
+        ),
+    ],
+)
+def test_source_scoped_new_candidates_parse_signal_payload(title, raw, direction, entry_low, entry_high, stop_loss, tp_count):
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=[title],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=[title],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == str(direction)
+    assert float((parsed or {}).get("entry_low") or 0.0) == float(entry_low)
+    assert float((parsed or {}).get("entry_high") or 0.0) == float(entry_high)
+    assert float((parsed or {}).get("stop_loss") or 0.0) == float(stop_loss)
+    assert len((parsed or {}).get("tps") or []) == int(tp_count)
+
+
+def test_source_scoped_vip_tp_messages_classify_as_tp_hit():
+    assert (
+        TelegramBridgeService._classify_confirm_signal_message_for_sources(
+            "TP2 reached Profit of 110 PIPS",
+            source_names=["V I P"],
+        )
+        == "tp_hit"
+    )
+    assert (
+        TelegramBridgeService._classify_confirm_signal_message_for_sources(
+            "TP1 hit! +60PIPS",
+            source_names=["V I P"],
+        )
+        == "tp_hit"
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "EURUSD XAUUSD USDJPY SIGNALS",
+        "EURJPY XAUUSD USDCHF SIGNALS",
+    ],
+)
+def test_source_scoped_gold_vip_single_entry_price_parses_signal(title):
+    raw = """
+Gold buy  - 4720
+
+Sl : 4715
+
+tp1 : 4730
+tp2 : 4740
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=[title],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=[title],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "gold_vip"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4720.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4715.0
+    assert len((parsed or {}).get("tps") or []) == 2
+
+
+def test_parse_confirmation_signal_supports_split_symbol_and_setup_lines():
+    raw = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message(raw)
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+def test_source_scoped_gold_vip_accepts_split_symbol_and_buy_now_lines():
+    raw = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["EURJPY XAUUSD USDCHF SIGNALS"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["EURJPY XAUUSD USDCHF SIGNALS"],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "gold_vip"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+def test_source_scoped_gold_vip_accepts_split_symbol_with_compact_username_alias():
+    raw = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["EURUSDXAUUSDUSDJPYSIGNALS"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["EURUSDXAUUSDUSDJPYSIGNALS"],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "gold_vip"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+
+
+def test_parse_confirmation_signal_supports_split_symbol_and_setup_lines_with_suffix_emoji():
+    raw = """
+XAU USD
+
+BUY now  : 4720-4715 ✅
+
+sl : 4708 ⛔️
+
+tp1 : 4724 ✔️
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message(raw)
+    parsed = TelegramBridgeService._parse_confirmation_signal(raw)
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+
+
+@pytest.mark.parametrize("source_title", ["FOREX MARKET MAKERS", "FX MARKET MAKERS"])
+def test_source_scoped_forex_market_makers_accepts_split_symbol_buy_now_format(source_title):
+    raw = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708 ⛔️
+
+tp1 : 4724 ✔️
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "forex_market_makers"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+@pytest.mark.parametrize("source_title", ["FOREX MARKET MAKERS", "FX MARKET MAKERS"])
+@pytest.mark.parametrize("sep", ["\u2013", "\u2014", "\u2011", "\u2212"])
+def test_source_scoped_forex_market_makers_accepts_unicode_dash_ranges(source_title, sep):
+    raw = f"""
+XAU USD
+
+BUY now  : 4720{sep}4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3 : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "forex_market_makers"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+@pytest.mark.parametrize("source_title", ["FOREX MARKET MAKERS", "FX MARKET MAKERS"])
+@pytest.mark.parametrize("sep", ["â€“", "â€”", "â€‘", "âˆ’", "Ã¢â‚¬â€œ", "Ã¢â‚¬â€"])
+def test_source_scoped_forex_market_makers_accepts_mojibake_dash_ranges(source_title, sep):
+    raw = f"""
+XAU USD
+
+BUY now  : 4720{sep}4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3 : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=[source_title],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
+def test_source_scoped_forex_market_makers_accepts_decorative_symbol_and_setup_line():
+    raw = """
+XAU USD 🕯
+
+BUY now 🔼 : 4720-4715
+
+sl : 4708 ⛔️
+
+tp1 : 4724 ✔️
+tp2 : 4729
+tp3  : 4738
+"""
+    kind = TelegramBridgeService._classify_confirm_signal_message_for_sources(
+        raw,
+        source_names=["FOREX MARKET MAKERS"],
+    )
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        raw,
+        source_names=["FOREX MARKET MAKERS"],
+    )
+    assert kind == "signal"
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "forex_market_makers"
+    assert str((parsed or {}).get("symbol") or "") == "XAUUSD"
+    assert str((parsed or {}).get("direction") or "") == "BUY"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+    assert float((parsed or {}).get("stop_loss") or 0.0) == 4708.0
+    assert len((parsed or {}).get("tps") or []) == 3
+
+
 def test_source_scoped_classifier_accepts_bull_traders_now_format():
     raw = """
 \U0001f4a5Gold Buy Now 4810
@@ -1065,7 +1495,10 @@ def test_channel_listener_to_trade_engine_smoke_dual_modes(monkeypatch, title, r
     em = next((x for x in seen if str(x.get("execution_mode") or "") == "emergency"), None)
     assert isinstance(adv, dict)
     assert isinstance(em, dict)
-    assert abs(float(adv.get("lot_override") or 0.0) - (float(expected_tp_count) * 0.2)) < 1e-9
+    stages = int(max(1, int(expected_tp_count)))
+    per_stage = (int((float(0.2) / float(stages)) / 0.01 + 1e-12)) * 0.01
+    expected_lot = max(0.01, float(per_stage) * float(stages))
+    assert abs(float(adv.get("lot_override") or 0.0) - float(expected_lot)) < 1e-9
     assert bool((adv.get("signal") or {}).get("channel_advanced_fixed_02")) is True
     assert bool((adv.get("signal") or {}).get("channel_advanced_move_sl_to_entry")) is False
     assert bool((em.get("signal") or {}).get("force_single_trade")) is True
@@ -1438,6 +1871,111 @@ SL: 4663
     assert any(str((r or {}).get("trigger") or "") == "entry_wait_trigger" for r in logs)
 
 
+def test_david_hit_entry_message_dispatches_pending_entry(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
+
+    seen = {"n": 0}
+
+    def _fake_exec(**kwargs):
+        seen["n"] += 1
+        return "Confirmation ladder executed\nSymbol: XAUUSD"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_with_channel_modes", _fake_exec)
+
+    chat_id = 7119946313
+    source_label = "David's Gold Strategy"
+    source_key = svc._confirm_signal_source_key(chat_id, source_label)
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4722.0,
+        "entry_high": 4725.0,
+        "entry_mid": 4723.5,
+        "stop_loss": 4717.0,
+        "tps": [{"index": 1, "price": 4730.0}, {"index": 2, "price": 4739.0}],
+        "trace_id": "tgx-test-david-hit-entry-001",
+    }
+    svc._queue_entry_signal(
+        chat_id=chat_id,
+        signal=dict(signal),
+        source_label=source_label,
+        source_key=source_key,
+        audit_ctx={"source_names": [source_label], "trigger": "entry_signal"},
+    )
+
+    out = svc._handle_confirmation_signal_message(
+        chat_id=chat_id,
+        msg={"chat": {"id": -9001, "title": source_label}},
+        chat={"id": -9001, "title": source_label, "type": "channel"},
+        text="Hit Entry 4725",
+        push_only=False,
+    )
+    assert isinstance(out, str)
+    assert "Entry trigger message matched, order executed" in out
+    assert seen["n"] == 1
+
+    st = svc.get_telegram_automation_state(limit=50)
+    assert int(st.get("pending_entry_count") or 0) == 0
+    logs = [dict(x) for x in (st.get("execution_logs") or [])]
+    manual_triggers = [
+        r for r in logs
+        if str((r or {}).get("trigger") or "") == "entry_wait_trigger"
+        and bool(((r or {}).get("stage_payload") or {}).get("manual_hit_entry"))
+    ]
+    assert len(manual_triggers) >= 1
+
+
+def test_hit_entry_message_only_applies_to_david_channel(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_message_matches_confirm_signal_source", lambda msg, chat: True)
+
+    seen = {"n": 0}
+
+    def _fake_exec(**kwargs):
+        seen["n"] += 1
+        return "Confirmation ladder executed\nSymbol: XAUUSD"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_with_channel_modes", _fake_exec)
+
+    chat_id = 7119946313
+    source_label = "David's Gold Strategy"
+    source_key = svc._confirm_signal_source_key(chat_id, source_label)
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4722.0,
+        "entry_high": 4725.0,
+        "entry_mid": 4723.5,
+        "stop_loss": 4717.0,
+        "tps": [{"index": 1, "price": 4730.0}],
+        "trace_id": "tgx-test-david-hit-entry-002",
+    }
+    svc._queue_entry_signal(
+        chat_id=chat_id,
+        signal=dict(signal),
+        source_label=source_label,
+        source_key=source_key,
+        audit_ctx={"source_names": [source_label], "trigger": "entry_signal"},
+    )
+
+    out = svc._handle_confirmation_signal_message(
+        chat_id=chat_id,
+        msg={"chat": {"id": -9002, "title": "PAROZGOLD_TRADER"}},
+        chat={"id": -9002, "title": "PAROZGOLD_TRADER", "type": "channel"},
+        text="Hit Entry 4725",
+        push_only=False,
+    )
+    assert out is None
+    assert seen["n"] == 0
+    st = svc.get_telegram_automation_state(limit=20)
+    assert int(st.get("pending_entry_count") or 0) == 1
+
+
 def test_wait_entry_zone_channel_overrides_work(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_confirm_signal_wait_entry_zone", lambda: False)
@@ -1493,7 +2031,7 @@ SL.TP 4804.00
     em = next((x for x in seen if str(x.get("execution_mode") or "") == "emergency"), None)
     assert isinstance(adv, dict)
     assert isinstance(em, dict)
-    assert abs(float(adv.get("lot_override") or 0.0) - 0.8) < 1e-9
+    assert abs(float(adv.get("lot_override") or 0.0) - 0.2) < 1e-9
     assert bool((adv.get("signal") or {}).get("channel_advanced_fixed_02")) is True
     assert bool((adv.get("signal") or {}).get("channel_advanced_move_sl_to_entry")) is False
     assert bool((em.get("signal") or {}).get("force_single_trade")) is True
@@ -1577,6 +2115,53 @@ def test_channel_mode_router_runs_advanced_and_advanced_v2_together(monkeypatch)
     assert "[ADVANCED]" in str(out)
     assert "[ADVANCED_V2]" in str(out)
     assert seen_modes == ["advanced", "advanced_v2"]
+
+
+@pytest.mark.parametrize(
+    "tp_count,expected_lot",
+    [
+        (3, 0.09),
+        (5, 0.10),
+    ],
+)
+def test_channel_mode_router_advanced_uses_trade_budget_floor_split(monkeypatch, tp_count, expected_lot):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_mode_titles", lambda: ["XAUUSD GOLD VIP"])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_v2_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_v3_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_emergency_mode_titles", lambda: [])
+    monkeypatch.setattr(svc, "_confirm_signal_advanced_lot_per_tp", lambda: 0.1)
+
+    seen = []
+
+    def _fake_exec(**kwargs):
+        seen.append(dict(kwargs))
+        return "Confirmation ladder executed"
+
+    monkeypatch.setattr(svc, "_execute_confirmation_signal_auto", _fake_exec)
+
+    tps = [{"index": i + 1, "price": 4810.0 + float(i)} for i in range(int(tp_count))]
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4800.0,
+        "entry_high": 4805.0,
+        "stop_loss": 4790.0,
+        "tps": tps,
+    }
+    out = svc._execute_confirmation_signal_with_channel_modes(
+        chat_id=1,
+        signal=dict(signal),
+        source_names=["XAUUSD GOLD VIP"],
+        source_label="XAUUSD GOLD VIP",
+        source_key="1:goldvip",
+    )
+
+    assert "[ADVANCED]" in str(out)
+    assert len(seen) == 1
+    assert str((seen[0] or {}).get("execution_mode") or "") == "advanced"
+    assert abs(float((seen[0] or {}).get("lot_override") or 0.0) - float(expected_lot)) < 1e-9
 
 
 def test_channel_mode_router_runs_advanced_v3(monkeypatch):
@@ -1674,7 +2259,7 @@ SL.TP 4804.00
     assert int(st1.get("pending_entry_count") or 0) == 0
     assert len(seen) == 1
     assert str((seen[0] or {}).get("execution_mode") or "") == "advanced"
-    assert abs(float((seen[0] or {}).get("lot_override") or 0.0) - 0.8) < 1e-9
+    assert abs(float((seen[0] or {}).get("lot_override") or 0.0) - 0.2) < 1e-9
     assert bool(((seen[0] or {}).get("signal") or {}).get("channel_advanced_move_sl_to_entry")) is False
 
 
@@ -2017,6 +2602,151 @@ def test_advanced_v2_guard_moves_to_breakeven_when_be_tp_reached():
     assert bool((r2 or {}).get("ok")) is True
     assert bool((r2 or {}).get("updated")) is True
     assert abs(float((r2 or {}).get("stop_loss") or 0.0) - 100.0) < 1e-9
+
+
+def test_resolve_tp_index_for_stop_guard_prefers_original_tp_index():
+    svc = TelegramBridgeService()
+    tps = [
+        {"index": 1, "price": 4703.0},
+        {"index": 5, "price": 4715.0},
+        {"index": 9, "price": 4740.0},
+    ]
+    assert int(svc._resolve_tp_index_for_stop_guard(tps=list(tps), stage_index=1)) == 1
+    assert int(svc._resolve_tp_index_for_stop_guard(tps=list(tps), stage_index=2)) == 5
+    assert int(svc._resolve_tp_index_for_stop_guard(tps=list(tps), stage_index=3)) == 9
+    assert int(svc._resolve_tp_index_for_stop_guard(tps=list(tps), stage_index=99)) == 99
+
+
+def test_advanced_v2_guard_arms_with_original_tp_index_after_tp_compression():
+    svc = TelegramBridgeService()
+
+    class FakeSvc:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {"digits": 2, "point": 0.01, "trade_stops_level": 0, "trade_freeze_level": 0}
+
+    row = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "broker_ticket": 777,
+        "execution_mode": "advanced_v2",
+        "source_name": "unit",
+        "source_tag": "telegram_noconfirm",
+        "advanced_v2_cfg": {
+            "sl_progression": "be_on_tp_index",
+            "be_trigger_tp": 3,
+            "internal_sl": 90.0,
+            "slippage_buffer_pct": 0.0008,
+        },
+    }
+    pos = {
+        "entry_price": 100.0,
+        "current_price": 110.0,
+        "stop_loss": None,
+        "take_profit": 120.0,
+    }
+
+    # Original signal had many TPs and got compressed to stage TP indices 1/5/9.
+    guard_hit_idx = svc._resolve_tp_index_for_stop_guard(
+        tps=[
+            {"index": 1, "price": 101.0},
+            {"index": 5, "price": 105.0},
+            {"index": 9, "price": 109.0},
+        ],
+        stage_index=2,
+    )
+    assert int(guard_hit_idx) == 5
+
+    out = svc._apply_confirmation_guard_stop(
+        svc=FakeSvc(),
+        row=dict(row),
+        pos=dict(pos),
+        hit_tp_index=int(guard_hit_idx),
+        target_px=105.0,
+    )
+    assert bool((out or {}).get("ok")) is True
+    assert bool((out or {}).get("updated")) is True
+    assert abs(float((out or {}).get("stop_loss") or 0.0) - 100.0) < 1e-9
+
+
+def test_ensure_tp_anchor_in_active_tps_replaces_mid_stage():
+    svc = TelegramBridgeService()
+    tps_all = [
+        {"index": 1, "price": 4703.0},
+        {"index": 2, "price": 4706.0},
+        {"index": 3, "price": 4709.0},
+        {"index": 4, "price": 4712.0},
+        {"index": 5, "price": 4715.0},
+        {"index": 6, "price": 4720.0},
+        {"index": 7, "price": 4725.0},
+        {"index": 8, "price": 4730.0},
+        {"index": 9, "price": 4740.0},
+    ]
+    active = [
+        {"index": 1, "price": 4703.0},
+        {"index": 5, "price": 4715.0},
+        {"index": 9, "price": 4740.0},
+    ]
+    out = svc._ensure_tp_anchor_in_active_tps(
+        tps_all=list(tps_all),
+        active_tps=list(active),
+        anchor_tp_index=3,
+    )
+    assert [int(x.get("index") or 0) for x in out] == [1, 3, 9]
+
+
+def test_advanced_v2_low_lot_keeps_be_anchor_tp_in_targets(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_confirm_signal_default_lot", lambda: 0.03)
+    monkeypatch.setattr(svc, "_confirm_signal_tp_distribution_mode", lambda: "equal")
+    monkeypatch.setattr(svc, "_confirm_signal_allow_message_single_trade_override", lambda: True)
+    monkeypatch.setattr(svc, "_confirm_signal_force_single_trade_01", lambda: False)
+
+    class FakeLive:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {"digits": 2, "point": 0.01, "volume_min": 0.01, "volume_step": 0.01, "volume_max": 100.0}
+
+        @staticmethod
+        def place_market_order(symbol, direction, lot_size, stop_loss, take_profit, comment):
+            return {"ok": True, "position": 777001, "order": 777001, "deal": 777001, "lot_size": float(lot_size)}
+
+        @staticmethod
+        def get_open_positions(symbol):
+            return []
+
+    monkeypatch.setattr(svc, "_get_live_service", lambda: FakeLive())
+
+    signal = {
+        "symbol": "XAUUSD",
+        "direction": "BUY",
+        "timeframe": "M5",
+        "entry_low": 4697.0,
+        "entry_high": 4700.0,
+        "entry_mid": 4698.5,
+        "stop_loss": 4687.0,
+        "tps": [
+            {"index": 1, "price": 4703.0},
+            {"index": 2, "price": 4706.0},
+            {"index": 3, "price": 4709.0},
+            {"index": 4, "price": 4712.0},
+            {"index": 5, "price": 4715.0},
+            {"index": 6, "price": 4720.0},
+            {"index": 7, "price": 4725.0},
+            {"index": 8, "price": 4730.0},
+            {"index": 9, "price": 4740.0},
+        ],
+    }
+    out = svc._execute_confirmation_signal_auto(
+        chat_id=1,
+        signal=dict(signal),
+        execution_mode="advanced_v2",
+        audit_ctx={"source_type": "telegram_channel", "source_name": "unit", "source_key": "u1"},
+        comment_prefix="tg2",
+    )
+    out_txt = str(out or "")
+    assert "Confirmation ladder executed" in out_txt
+    assert "Targets: TP1=4703.00000 | TP3=4709.00000 | TP9=4740.00000" in out_txt
 
 
 def test_advanced_v2_v3_send_initial_stop_loss_on_open(monkeypatch):
@@ -3834,6 +4564,98 @@ def test_confirm_signal_feed_keeps_same_message_id_for_different_sources():
     assert len(rows) == 2
 
 
+def test_confirm_signal_feed_upgrades_duplicate_message_from_other_to_signal():
+    svc = TelegramBridgeService()
+    source = "FX MARKET MAKERS"
+    chat = {"id": -1007001, "title": source, "type": "channel"}
+    signal_text = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3 : 4738
+"""
+    svc._append_confirm_signal_feed(
+        source=source,
+        chat=chat,
+        text=signal_text,
+        kind="other",
+        parsed=None,
+        source_message_id=991122,
+    )
+    # Simulate same message id being seen again (edited/re-ingested) with
+    # upgraded classification; row must be upgraded instead of dropped.
+    parsed = TelegramBridgeService._parse_confirmation_signal_for_sources(
+        signal_text,
+        source_names=[source],
+    )
+    svc._append_confirm_signal_feed(
+        source=source,
+        chat=chat,
+        text=signal_text,
+        kind="signal",
+        parsed=parsed if isinstance(parsed, dict) else None,
+        source_message_id=991122,
+    )
+    state = svc.get_telegram_automation_state(limit=100)
+    feed = state.get("feed") if isinstance(state, dict) else []
+    rows = [
+        r for r in (feed or [])
+        if int((r or {}).get("source_message_id") or 0) == 991122
+        and str((r or {}).get("source") or "") == source
+    ]
+    assert len(rows) == 1
+    row = dict(rows[0] or {})
+    assert str(row.get("kind") or "") == "signal"
+    assert isinstance(row.get("parsed"), dict)
+
+
+def test_get_state_promotes_legacy_other_row_for_forex_market_makers():
+    svc = TelegramBridgeService()
+    source = "FOREX MARKET MAKERS"
+    text = """
+XAU USD
+
+BUY now  : 4720-4715
+
+sl : 4708
+
+tp1 : 4724
+tp2 : 4729
+tp3 : 4738
+"""
+    with svc._lock:
+        svc._confirm_signal_feed = [
+            {
+                "id": 1,
+                "ts": svc._now_iso(),
+                "event_ts": svc._now_iso(),
+                "event_unix": float(time.time()),
+                "source_message_id": 555001,
+                "source": source,
+                "chat_title": source,
+                "kind": "other",
+                "text": text,
+                "parsed": None,
+            }
+        ]
+        svc._confirm_signal_feed_next_id = 1
+    state = svc.get_telegram_automation_state(limit=50)
+    feed = state.get("feed") if isinstance(state, dict) else []
+    row = next((r for r in (feed or []) if int((r or {}).get("source_message_id") or 0) == 555001), None)
+    assert isinstance(row, dict)
+    assert str((row or {}).get("kind") or "") == "signal"
+    parsed = (row or {}).get("parsed")
+    assert isinstance(parsed, dict)
+    assert str((parsed or {}).get("source_profile") or "") == "forex_market_makers"
+    assert float((parsed or {}).get("entry_low") or 0.0) == 4715.0
+    assert float((parsed or {}).get("entry_high") or 0.0) == 4720.0
+
+
 def test_ingest_mt4_indicator_signal_dedupes_duplicate_payload(monkeypatch):
     svc = TelegramBridgeService()
     monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: False)
@@ -3878,6 +4700,37 @@ def test_ingest_mt4_indicator_signal_rejects_stale_event(monkeypatch):
     assert out.get("ok") is True
     assert out.get("executed") is False
     assert out.get("reason") == "stale_signal"
+
+
+def test_mt4_exec_resolve_profile_maps_generic_buysell_to_buysell():
+    svc = TelegramBridgeService()
+    p1 = svc._mt4_exec_resolve_profile(profile="generic", indicator=r"BuySell\Buy-Sell Signal")
+    p2 = svc._mt4_exec_resolve_profile(profile="", indicator="Buy-Sell Signal")
+    p3 = svc._mt4_exec_resolve_profile(profile="intrepid", indicator="Buy-Sell Signal")
+    assert str(p1) == "buysell"
+    assert str(p2) == "buysell"
+    assert str(p3) == "intrepid"
+
+
+def test_ingest_indicator_bridge_signal_generic_buysell_is_not_profile_disabled(monkeypatch):
+    svc = TelegramBridgeService()
+    monkeypatch.setattr(svc, "_mt4_exec_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_mt4_exec_max_signal_age_sec", lambda: 300.0)
+    monkeypatch.setattr(svc, "_mt4_exec_profile_enabled", lambda profile: str(profile) == "buysell")
+
+    payload = {
+        "indicator": r"BuySell\Buy-Sell Signal",
+        "signal_profile": "generic",
+        "signal_hint": "SELL",
+        "symbol": "XAUUSD",
+        "timeframe": "M1",
+        "message": "Buy-Sell SELL",
+        "event_ts": datetime.now(timezone.utc).isoformat(),
+    }
+    out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+    assert out.get("ok") is True
+    assert out.get("executed") is False
+    assert str(out.get("reason") or "") != "profile_disabled:generic"
 
 
 def test_ingest_mt4_indicator_signal_bridge_locks_out_log_source(monkeypatch):

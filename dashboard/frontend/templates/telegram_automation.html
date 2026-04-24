@@ -101,7 +101,7 @@
                                 <div class="col-md-6">
                                     <label for="tg-advanced-mode-channels" class="form-label">Advanced Mode Channels</label>
                                     <textarea id="tg-advanced-mode-channels" class="form-control" rows="2" placeholder="PAROZGOLD_TRADER"></textarea>
-                                    <div class="form-text">Bu listedeki kanallarda Advanced execution açılır (TP sayısı x 0.20 lot, TP başına 0.20 close).</div>
+                                    <div class="form-text">Bu listedeki kanallarda Advanced execution açılır (lot-per-trade bütçesi TP sayısına bölünür, stage lotlar floor edilir).</div>
                                 </div>
                                 <div class="col-md-6">
                                     <label for="tg-emergency-mode-channels" class="form-label">Emergency Mode Channels</label>
@@ -123,9 +123,9 @@
                             </div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
-                                    <label for="tg-advanced-lot-per-tp" class="form-label">Advanced Lot Per TP</label>
-                                    <input id="tg-advanced-lot-per-tp" class="form-control" type="number" min="0.01" max="5.00" step="0.01" value="0.20">
-                                    <div class="form-text">Advanced toplam lot hesaplaması: <code>TP sayısı x bu değer</code>.</div>
+                                    <label for="tg-advanced-lot-per-tp" class="form-label">Advanced Lot Per Trade</label>
+                                    <input id="tg-advanced-lot-per-tp" class="form-control" type="number" min="0.01" max="100.00" step="0.01" value="0.20">
+                                    <div class="form-text">Advanced / Advanced_v2 / Advanced_v3 için toplam trade lot bütçesi. TP başına kapanış lotu: <code>floor((lot/TP sayısı)/volume_step) x volume_step</code>.</div>
                                 </div>
                             </div>
 
@@ -409,7 +409,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260422_advanced_v3_channels_v21') }}"></script>
+<script src="{{ url_for('static', filename='js/telegram_automation.js', v='20260423_feed_kind_fix_v22') }}"></script>
 {% endblock %}
 
 

@@ -27,6 +27,8 @@ input bool   InpInvertDirection = false; // quick fix for indicators with revers
 input bool   InpSendRegistrationOnInit = true;
 input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for fast BUY/SELL map check
 input int    InpStartupProbeMaxBuffer = 8; // probe [0..N-1] on init when debug is enabled
+input bool   InpStartupRecentSignalDebug = true; // scan recent bars on init and print latest resolved signal
+input int    InpStartupRecentSignalLookbackBars = 30; // recent bars to scan for latest BUY/SELL debug snapshot
 input int    InpHeartbeatSeconds = 300; // keepalive every 5 minutes
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
@@ -410,9 +412,19 @@ double _icustom_value(int bufferIndex, int barShift)
    if(c == 8)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], bufferIndex, barShift);
    if(c == 9)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], bufferIndex, barShift);
    if(c == 10) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], bufferIndex, barShift);
+   if(c == 11) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], bufferIndex, barShift);
+   if(c == 12) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], bufferIndex, barShift);
+   if(c == 13) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], bufferIndex, barShift);
+   if(c == 14) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], bufferIndex, barShift);
+   if(c == 15) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], bufferIndex, barShift);
+   if(c == 16) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], bufferIndex, barShift);
+   if(c == 17) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], bufferIndex, barShift);
+   if(c == 18) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], bufferIndex, barShift);
+   if(c == 19) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], g_iCustomParams[18], bufferIndex, barShift);
+   if(c == 20) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], g_iCustomParams[18], g_iCustomParams[19], bufferIndex, barShift);
 
    // Safety cap for generic adapter.
-   Print("MT4Bridge too many InpICustomParamsCsv values: ", c, " (max supported: 10)");
+   Print("MT4Bridge too many InpICustomParamsCsv values: ", c, " (max supported: 20)");
    return EMPTY_VALUE;
 }
 
@@ -456,6 +468,64 @@ void _debug_startup_snapshot()
       Print("MT4Bridge startup probe: buffer[", IntegerToString(i), "]=",
             DoubleToString(v, 8), " active=", (active ? "true" : "false"));
    }
+}
+
+void _debug_recent_signal_snapshot()
+{
+   if(!InpDebugPrint || !InpStartupRecentSignalDebug)
+      return;
+
+   int lookback = InpStartupRecentSignalLookbackBars;
+   if(lookback < 1)
+      return;
+
+   if(lookback > Bars)
+      lookback = Bars;
+
+   for(int shift = 0; shift < lookback; shift++)
+   {
+      datetime barTime = iTime(NULL, 0, shift);
+      if(barTime <= 0)
+         continue;
+
+      double buyVal = _icustom_value(InpBuyBufferIndex, shift);
+      double sellVal = _icustom_value(InpSellBufferIndex, shift);
+      bool buySignal = _is_signal_value(buyVal);
+      bool sellSignal = _is_signal_value(sellVal);
+
+      if(buySignal && sellSignal)
+      {
+         Print("MT4Bridge startup recent scan ambiguous bar: shift=", IntegerToString(shift),
+               " bar=", TimeToString(barTime, TIME_DATE|TIME_SECONDS),
+               " buy[", IntegerToString(InpBuyBufferIndex), "]=", DoubleToString(buyVal, 8),
+               " sell[", IntegerToString(InpSellBufferIndex), "]=", DoubleToString(sellVal, 8));
+         continue;
+      }
+
+      if(!buySignal && !sellSignal)
+         continue;
+
+      string resolved = buySignal ? "BUY" : "SELL";
+      if(InpInvertDirection)
+      {
+         if(resolved == "BUY")
+            resolved = "SELL";
+         else
+            resolved = "BUY";
+      }
+
+      Print("MT4Bridge startup recent last signal: lookback=", IntegerToString(lookback),
+            " shift=", IntegerToString(shift),
+            " bar=", TimeToString(barTime, TIME_DATE|TIME_SECONDS),
+            " raw_buy[", IntegerToString(InpBuyBufferIndex), "]=", DoubleToString(buyVal, 8),
+            " raw_sell[", IntegerToString(InpSellBufferIndex), "]=", DoubleToString(sellVal, 8),
+            " resolved=", resolved,
+            " invert=", (InpInvertDirection ? "true" : "false"));
+      return;
+   }
+
+   Print("MT4Bridge startup recent last signal: NONE within lookback=",
+         IntegerToString(lookback));
 }
 
 bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId = "", int eventAttempt = 1)
@@ -578,10 +648,10 @@ void _check_and_send()
    }
    else
    {
-      bool hadDirection = (g_lastObservedDir != 0);
+      bool shouldClear = (InpResetDirectionOnNoSignal && g_lastObservedDir != 0);
       if(InpResetDirectionOnNoSignal)
          g_lastObservedDir = 0;
-      if(hadDirection)
+      if(shouldClear)
       {
          _send_or_queue_event("signal_clear", "NONE", 0.0, barTime);
       }
@@ -684,6 +754,7 @@ int OnInit()
       Print("MT4Bridge reminder: add URL to MT4 WebRequest whitelist.");
    }
    _debug_startup_snapshot();
+   _debug_recent_signal_snapshot();
    if(InpSendRegistrationOnInit)
    {
       datetime nowTs = TimeCurrent();

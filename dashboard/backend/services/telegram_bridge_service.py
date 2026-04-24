@@ -116,7 +116,9 @@ class TelegramBridgeService:
                 "EURJPY XAUUSD USDCHF SIGNALS",
                 "EURUSD XAUUSD USDJPY SIGNALS",
                 "EURJPYXAUUSDUSDCHF",
+                "EURJPYXAUUSDUSDCHFSIGNALS",
                 "EURUSDXAUUSDSIGNALS",
+                "EURUSDXAUUSDUSDJPYSIGNALS",
                 "AZZAM - Gold Trading Pro",
                 "AZZAM GOLD PRO",
                 "azzamgoldpro",
@@ -126,9 +128,10 @@ class TelegramBridgeService:
                 "JOAN USA GOLD FX",
                 "JOAN USA FOREX TEAM",
                 "MASTER IN GOLD",
+                "HERREY GOLD (Analysis) Expert",
             ),
         ),
-        ("forex_market_makers", ("FOREX MARKET MAKERS",)),
+        ("forex_market_makers", ("FOREX MARKET MAKERS", "FX MARKET MAKERS")),
         ("gib_elite", ("GIB ELITE FOREX SCALP SIGNAL", "gbprot")),
         ("bull_traders", ("BULL TRADERS",)),
         ("henry", ("HENRY TRADER",)),
@@ -142,6 +145,7 @@ class TelegramBridgeService:
             "hydra",
             "intrepid",
             "generic",
+            "buysell",
             "fxnuke",
             "uranus",
             "alchemy",
@@ -153,6 +157,7 @@ class TelegramBridgeService:
         {
             "hydra",
             "intrepid",
+            "buysell",
             "fxnuke",
             "uranus",
             "alchemy",
@@ -725,13 +730,43 @@ class TelegramBridgeService:
 
     @staticmethod
     def _confirm_signal_advanced_lot_per_tp() -> float:
+        # Backward-compatible key name retained for UI/API compatibility.
+        # Semantics: this is the total trade budget lot for advanced modes.
         try:
             raw = float(TelegramBridgeService._get_env_value("TELEGRAM_CONFIRM_SIGNAL_ADVANCED_LOT_PER_TP", "0.2"))
         except Exception:
             raw = 0.2
         if not math.isfinite(float(raw)) or float(raw) <= 0.0:
             raw = 0.2
-        return float(max(0.01, min(5.0, float(raw))))
+        return float(max(0.01, min(100.0, float(raw))))
+
+    def _compute_floor_split_trade_lot(
+        self,
+        *,
+        symbol: str,
+        trade_budget_lot: float,
+        tp_count: int,
+    ) -> float:
+        budget = _to_float_or_none(trade_budget_lot)
+        stages = int(max(1, int(tp_count)))
+        if budget is None or float(budget) <= 0.0:
+            return 0.0
+        vol_step = 0.01
+        try:
+            info = self._get_live_service().get_symbol_info(symbol=str(symbol))
+            vol_step_v = _to_float_or_none((info or {}).get("volume_step"))
+            if vol_step_v is not None and float(vol_step_v) > 0.0:
+                vol_step = float(vol_step_v)
+        except Exception:
+            vol_step = 0.01
+        vol_step = float(max(1e-6, float(vol_step)))
+        per_stage_raw = float(budget) / float(stages)
+        per_stage_units = int(math.floor(float(per_stage_raw) / float(vol_step) + 1e-12))
+        if per_stage_units <= 0:
+            return float(max(0.01, min(100.0, float(budget))))
+        total_units = int(per_stage_units * stages)
+        total_lot = float(total_units) * float(vol_step)
+        return float(max(0.01, min(100.0, float(total_lot))))
 
     @staticmethod
     def _confirm_signal_force_single_trade_01() -> bool:
@@ -1054,6 +1089,32 @@ class TelegramBridgeService:
         # emojis (e.g. "🔴XAUUSD", "✔TP", "🫵SL"). Strip those per line
         # so detection depends on the actual trading payload, not styling.
         norm = unicodedata.normalize("NFKC", str(text or ""))
+        # Normalize dash variants so range parsing works for messages like
+        # "4720–4715" or "4720—4715" (Telegram often sends these).
+        norm = norm.translate(
+            str.maketrans(
+                {
+                    "\u2010": "-",  # hyphen
+                    "\u2011": "-",  # non-breaking hyphen
+                    "\u2012": "-",  # figure dash
+                    "\u2013": "-",  # en dash
+                    "\u2014": "-",  # em dash
+                    "\u2015": "-",  # horizontal bar
+                    "\u2212": "-",  # minus sign
+                }
+            )
+        )
+        # Defensive cleanup for mojibake dashes that can appear when upstream
+        # text encoding is corrupted before we receive the payload.
+        for bad in (
+            "â€“",      # en dash mojibake
+            "â€”",      # em dash mojibake
+            "â€‘",      # non-breaking hyphen mojibake
+            "âˆ’",      # minus sign mojibake
+            "Ã¢â‚¬â€œ",  # double-encoded en dash mojibake
+            "Ã¢â‚¬â€",  # double-encoded em dash mojibake
+        ):
+            norm = norm.replace(str(bad), "-")
         norm = "".join(ch for ch in norm if unicodedata.category(ch) != "Cf")
         lines = []
         for line in str(norm).splitlines():
@@ -1302,10 +1363,26 @@ class TelegramBridgeService:
                 and bool(has_sl_loose)
             )
         if profile == "gold_vip":
-            return bool(
+            has_classic_header = bool(
                 re.search(r"(?im)^\s*(?:#?\s*(?:XAUUSD|GOLD))\s+(BUY|SELL)\b", raw)
-                and int(tp_count_loose) >= 1
-                and bool(has_sl_loose)
+            )
+            has_product_style_range = bool(
+                re.search(
+                    r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?))?\s*(?:[^0-9A-Z\n]{0,12})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|â€“|â€”|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                    raw,
+                )
+            )
+            has_split_symbol_setup = bool(
+                re.search(
+                    r"(?is)^\s*(?:XAU\s*USD|XAUUSD|GOLD)\b(?:\s*[^A-Z0-9\n]+)?\s*$[\s\S]{0,80}^\s*(BUY|SELL)\b\s*(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?)?\s*(?:[^0-9A-Z\n]{0,12})?(?:[@:=\-]\s*)?[0-9]+(?:\.[0-9]+)?\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*[0-9]+(?:\.[0-9]+)?(?:\s*[^0-9\n]+)?\s*$",
+                    raw,
+                    re.MULTILINE,
+                )
+            )
+            return bool(
+                (has_classic_header and int(tp_count_loose) >= 1 and bool(has_sl_loose))
+                or (has_product_style_range and bool(has_sl_loose) and int(tp_count_loose) >= 1)
+                or (has_split_symbol_setup and bool(has_sl_loose) and int(tp_count_loose) >= 1)
             )
         if profile == "bull_traders":
             return bool(
@@ -1324,7 +1401,7 @@ class TelegramBridgeService:
         if profile == "forex_market_makers":
             has_range_primary = bool(
                 re.search(
-                    r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+                    r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?))?\s*(?:[^0-9A-Z\n]{0,12})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|–|—|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
                     raw,
                 )
             )
@@ -1340,7 +1417,14 @@ class TelegramBridgeService:
                     raw,
                 )
             )
-            has_range = bool(has_range_primary or (has_dir_symbol and has_entry_zone_range))
+            has_split_symbol_setup = bool(
+                re.search(
+                    r"(?is)^\s*(?:XAU\s*USD|XAUUSD|GOLD)\b(?:\s*[^A-Z0-9\n]+)?\s*$[\s\S]{0,80}^\s*(BUY|SELL)\b\s*(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?)?\s*(?:[^0-9A-Z\n]{0,12})?(?:[@:=\-]\s*)?[0-9]+(?:\.[0-9]+)?\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*[0-9]+(?:\.[0-9]+)?(?:\s*[^0-9\n]+)?\s*$",
+                    raw,
+                    re.MULTILINE,
+                )
+            )
+            has_range = bool(has_range_primary or (has_dir_symbol and has_entry_zone_range) or has_split_symbol_setup)
             has_take_profit_block = bool(re.search(r"(?im)\bTAKE\s*PROFITS?\b", raw))
             tp_price_lines = len(re.findall(r"(?im)^\s*[0-9]+(?:\.[0-9]+)?\s*(?:[^\n0-9]+)?\s*$", raw))
             return bool(has_range and bool(has_sl_loose) and (int(tp_count_loose) >= 1 or (has_take_profit_block and int(tp_price_lines) >= 1)))
@@ -1364,7 +1448,7 @@ class TelegramBridgeService:
         parsed = cls._parse_confirmation_signal(text)
         if not isinstance(parsed, dict) and str(profile) == "bull_traders":
             parsed = cls._parse_confirmation_signal_bull_no_sl(text)
-        if not isinstance(parsed, dict) and str(profile) in {"forex_market_makers", "gib_elite"}:
+        if not isinstance(parsed, dict) and str(profile) in {"forex_market_makers", "gib_elite", "gold_vip"}:
             parsed = cls._parse_confirmation_signal_forex_market_makers(text)
         if not isinstance(parsed, dict):
             return None
@@ -1592,6 +1676,7 @@ class TelegramBridgeService:
         if row_kind == "other":
             source_names = [src, str((chat or {}).get("title") or "").strip(), str((chat or {}).get("username") or "").strip()]
             source_names = [x for x in source_names if x]
+            source_profile = self._resolve_confirm_signal_source_profile(source_names)
             re_kind = self._classify_confirm_signal_message_for_sources(text, source_names=source_names)
             if str(re_kind) != "other":
                 row_kind = str(re_kind)
@@ -1600,6 +1685,17 @@ class TelegramBridgeService:
                     if not isinstance(reparsed, dict):
                         reparsed = self._parse_confirmation_signal(text)
                     row_parsed = dict(reparsed) if isinstance(reparsed, dict) else row_parsed
+            elif str(source_profile) == "forex_market_makers":
+                # Source-scoped fallback: some FMM posts arrive with mojibake separators
+                # and can be valid signals although profile-gated classification returned "other".
+                reparsed = self._parse_confirmation_signal(text)
+                if not isinstance(reparsed, dict):
+                    reparsed = self._parse_confirmation_signal_forex_market_makers(text)
+                if isinstance(reparsed, dict):
+                    row_kind = "signal"
+                    rp = dict(reparsed)
+                    rp["source_profile"] = str(source_profile)
+                    row_parsed = rp
         elif row_kind == "signal" and not isinstance(row_parsed, dict):
             source_names = [src, str((chat or {}).get("title") or "").strip(), str((chat or {}).get("username") or "").strip()]
             source_names = [x for x in source_names if x]
@@ -1636,6 +1732,40 @@ class TelegramBridgeService:
         }
         with self._lock:
             if dedupe_key and dedupe_key in self._confirm_signal_feed_keys:
+                # Upgrade existing feed row on duplicate message-id arrivals
+                # (e.g., late parser improvements / edited-message re-ingest),
+                # instead of dropping the newer classification blindly.
+                target_idx: Optional[int] = None
+                for i in range(len(self._confirm_signal_feed) - 1, -1, -1):
+                    rr = self._confirm_signal_feed[i] if i < len(self._confirm_signal_feed) else None
+                    if not isinstance(rr, dict):
+                        continue
+                    try:
+                        rr_mid = int((rr or {}).get("source_message_id") or 0)
+                    except Exception:
+                        rr_mid = 0
+                    if int(rr_mid) != int(src_msg_id):
+                        continue
+                    rr_src = self._normalize_confirm_source_name((rr or {}).get("source"))
+                    if rr_src == str(src_norm):
+                        target_idx = int(i)
+                        break
+                if target_idx is not None and target_idx < len(self._confirm_signal_feed):
+                    cur = dict(self._confirm_signal_feed[int(target_idx)] or {})
+                    cur_kind = str(cur.get("kind") or "other").strip().lower() or "other"
+                    new_kind = str(row.get("kind") or "other").strip().lower() or "other"
+                    cur_parsed_ok = isinstance(cur.get("parsed"), dict)
+                    new_parsed_ok = isinstance(row.get("parsed"), dict)
+                    # Always keep latest text/title if different; kind/parsed only
+                    # moves forward (never downgrades to noisier state).
+                    cur["text"] = str(row.get("text") or cur.get("text") or "")
+                    cur["chat_title"] = str(row.get("chat_title") or cur.get("chat_title") or "")
+                    cur["source"] = str(row.get("source") or cur.get("source") or "")
+                    if cur_kind == "other" and new_kind != "other":
+                        cur["kind"] = str(new_kind)
+                    if (not cur_parsed_ok) and new_parsed_ok:
+                        cur["parsed"] = dict(row.get("parsed") or {})
+                    self._confirm_signal_feed[int(target_idx)] = dict(cur)
                 return
             self._confirm_signal_feed_next_id = int(row["id"])
             self._confirm_signal_feed.append(row)
@@ -2338,6 +2468,8 @@ class TelegramBridgeService:
             key = self._normalize_mt_indicator_key(indicator_name)
             if ("supply demand" in key) or ("zulu wave arrows" in key):
                 return "supplydemand"
+            if ("buy sell signal" in key) or ("buysell" in key):
+                return "buysell"
             if "intrepid" in key:
                 return "intrepid"
             if "hydra" in key:
@@ -2668,6 +2800,19 @@ class TelegramBridgeService:
                     parsed = self._parse_confirmation_signal_for_sources(text, source_names=source_names) if str(new_kind) == "signal" else None
                     row["kind"] = str(new_kind)
                     row["parsed"] = dict(parsed) if isinstance(parsed, dict) else row.get("parsed")
+                else:
+                    # Source-scoped recovery path for legacy/styled FMM rows:
+                    # if parser sees a valid signal payload, surface it as signal in UI.
+                    source_profile = self._resolve_confirm_signal_source_profile(source_names)
+                    if str(source_profile) == "forex_market_makers":
+                        parsed = self._parse_confirmation_signal(text)
+                        if not isinstance(parsed, dict):
+                            parsed = self._parse_confirmation_signal_forex_market_makers(text)
+                        if isinstance(parsed, dict):
+                            row["kind"] = "signal"
+                            rp = dict(parsed)
+                            rp["source_profile"] = str(source_profile)
+                            row["parsed"] = rp
             elif str(row.get("kind") or "").strip().lower() == "signal" and not isinstance(row.get("parsed"), dict):
                 source_names = [
                     str(row.get("source") or "").strip(),
@@ -2747,7 +2892,7 @@ class TelegramBridgeService:
         if "advanced_lot_per_tp" in p:
             lot_per_tp = _to_float_or_none(p.get("advanced_lot_per_tp"))
             if lot_per_tp is not None and float(lot_per_tp) > 0.0:
-                updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_LOT_PER_TP"] = f"{float(max(0.01, min(5.0, float(lot_per_tp)))):.3f}"
+                updates["TELEGRAM_CONFIRM_SIGNAL_ADVANCED_LOT_PER_TP"] = f"{float(max(0.01, min(100.0, float(lot_per_tp)))):.3f}"
         if "force_single_trade_01" in p:
             updates["TELEGRAM_CONFIRM_SIGNAL_FORCE_SINGLE_TRADE_01"] = "1" if bool(p.get("force_single_trade_01")) else "0"
         if "allow_message_single_trade_override" in p:
@@ -3012,38 +3157,195 @@ class TelegramBridgeService:
             return None
 
     @staticmethod
+    def _repair_xau_entry_range_with_context(
+        *,
+        symbol: Any,
+        direction: Any,
+        entry_a: float,
+        entry_b: float,
+        entry_a_raw: Optional[str],
+        entry_b_raw: Optional[str],
+        stop_loss: float,
+        tps: List[Dict[str, Any]],
+    ) -> Tuple[float, float]:
+        sym = str(symbol or "").strip().upper()
+        side = str(direction or "").strip().upper()
+        if side not in {"BUY", "SELL"}:
+            return float(entry_a), float(entry_b)
+        if not (sym.startswith("XAU") or sym in {"GOLD", "XAU"}):
+            return float(entry_a), float(entry_b)
+        try:
+            a0 = float(entry_a)
+            b0 = float(entry_b)
+            sl = float(stop_loss)
+        except Exception:
+            return float(entry_a), float(entry_b)
+        if (not math.isfinite(a0)) or (not math.isfinite(b0)) or (not math.isfinite(sl)):
+            return float(entry_a), float(entry_b)
+
+        tp_prices: List[float] = []
+        for row in list(tps or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                px = float(row.get("price"))
+            except Exception:
+                continue
+            if math.isfinite(px) and px > 0.0:
+                tp_prices.append(float(px))
+        if not tp_prices:
+            return float(entry_a), float(entry_b)
+
+        if side == "SELL":
+            tp_refs = [float(x) for x in tp_prices if float(x) <= float(sl) + 5.0]
+            if not tp_refs:
+                tp_refs = list(tp_prices)
+            tp_anchor = float(max(tp_refs))
+        else:
+            tp_refs = [float(x) for x in tp_prices if float(x) >= float(sl) - 5.0]
+            if not tp_refs:
+                tp_refs = list(tp_prices)
+            tp_anchor = float(min(tp_refs))
+
+        def _score(a: float, b: float) -> float:
+            low = float(min(a, b))
+            high = float(max(a, b))
+            width = float(high - low)
+            score = float(width)
+            # Prefer small edits over aggressive jumps when multiple candidates fit.
+            score += 0.15 * (abs(float(a) - float(a0)) + abs(float(b) - float(b0)))
+            if width > 40.0:
+                score += 800.0
+            if width > 20.0:
+                score += 120.0
+
+            if side == "SELL":
+                # SELL entry zone should sit above TP side and below SL side.
+                if low <= tp_anchor:
+                    score += 1000.0 + (tp_anchor - low) * 10.0
+                if high > sl + 3.0:
+                    score += 400.0 + (high - (sl + 3.0)) * 8.0
+                if high < tp_anchor:
+                    score += 500.0
+            else:
+                # BUY entry zone should sit above SL side and below TP side.
+                if low < sl - 3.0:
+                    score += 400.0 + ((sl - 3.0) - low) * 8.0
+                if high >= tp_anchor:
+                    score += 1000.0 + (high - tp_anchor) * 10.0
+                if low > tp_anchor:
+                    score += 500.0
+            return float(score)
+
+        current_score = _score(a0, b0)
+        low0 = float(min(a0, b0))
+        high0 = float(max(a0, b0))
+        anomalous = False
+        if side == "SELL":
+            anomalous = bool((low0 <= tp_anchor) or ((high0 - low0) > 40.0))
+        else:
+            anomalous = bool((high0 >= tp_anchor) or ((high0 - low0) > 40.0))
+        if not anomalous:
+            return float(entry_a), float(entry_b)
+
+        cand_pairs: List[Tuple[float, float]] = [(a0, b0)]
+        for delta in (-100.0, 100.0):
+            cand_pairs.append((a0 + delta, b0))
+            cand_pairs.append((a0, b0 + delta))
+            cand_pairs.append((a0 + delta, b0 + delta))
+
+        raw_a = re.sub(r"[^0-9]", "", str(entry_a_raw or ""))
+        raw_b = re.sub(r"[^0-9]", "", str(entry_b_raw or ""))
+        for suffix_len in (2, 1):
+            if len(raw_b) >= suffix_len:
+                cand_b = TelegramBridgeService._resolve_compact_entry_price(a0, raw_b[-suffix_len:])
+                if cand_b is not None and math.isfinite(float(cand_b)):
+                    cand_pairs.append((a0, float(cand_b)))
+            if len(raw_a) >= suffix_len:
+                cand_a = TelegramBridgeService._resolve_compact_entry_price(b0, raw_a[-suffix_len:])
+                if cand_a is not None and math.isfinite(float(cand_a)):
+                    cand_pairs.append((float(cand_a), b0))
+
+        best_pair = (a0, b0)
+        best_score = float(current_score)
+        for ca, cb in cand_pairs:
+            if not (math.isfinite(float(ca)) and math.isfinite(float(cb))):
+                continue
+            if float(ca) <= 0.0 or float(cb) <= 0.0:
+                continue
+            sc = _score(float(ca), float(cb))
+            if sc < best_score:
+                best_score = float(sc)
+                best_pair = (float(ca), float(cb))
+
+        # Apply only when confidence gap is meaningful.
+        if best_score + 50.0 < current_score:
+            return float(best_pair[0]), float(best_pair[1])
+        return float(entry_a), float(entry_b)
+
+    @staticmethod
     def _parse_confirmation_signal(text: Any) -> Optional[Dict[str, Any]]:
         raw = str(text or "").replace("\r", "\n")
         if not raw.strip():
             return None
         # Normalize styled/Unicode numerals and separators (e.g. TP1, SL1, full-width glyphs).
         raw_norm = TelegramBridgeService._normalize_signal_text_for_parse(raw)
+        symbol_raw = ""
+        symbol_alt_raw = ""
+        direction = ""
+        entry_a_raw: Optional[str] = None
+        entry_b_raw: Optional[str] = None
         head = re.search(
             (
                 r"(?im)^\s*#?\s*([A-Z]{3,12})"
                 r"(?:\s+#?\s*([A-Z]{3,12}))?"
                 r"\s*(?:[_\-\s]+)(BUY|SELL)\s+"
-                r"(?:(?:NOW|LIMIT|ZONE)\s*[@:=\-]?\s*)?"
+                r"(?:(?:NOW|LIMIT|ZONE)\s*(?:[^0-9A-Z\n]{0,12})?[@:=\-]?\s*)?"
                 r"(?:(?:FROM)\s+)?([0-9]+(?:\.[0-9]+)?)"
-                r"(?:\s*(?:/|-|=|TO)\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
+                r"(?:\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?))?\s*$"
             ),
             raw_norm,
         )
-        if head is None:
-            return None
+        if head is not None:
+            symbol_raw = str(head.group(1) or "").strip().upper()
+            symbol_alt_raw = str(head.group(2) or "").strip().upper()
+            direction = str(head.group(3) or "").strip().upper()
+            entry_a_raw = str(head.group(4) or "").strip()
+            entry_b_raw = str(head.group(5) or "").strip()
+        else:
+            # Fallback for formats where symbol is on its own line:
+            #   XAU USD
+            #   BUY now : 4720-4715
+            symbol_line = re.search(r"(?im)^\s*#?\s*(XAU\s*USD|XAUUSD|GOLD|XAU)\b(?:\s*[^A-Z0-9\n]+)?\s*$", raw_norm)
+            if symbol_line is None:
+                return None
+            tail = str(raw_norm[symbol_line.end() :])
+            setup_line = re.search(
+                r"(?im)^\s*(BUY|SELL)\b\s*(?:(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?)\s*)?(?:[^0-9A-Z\n]{0,12})?(?:[@:=\-]\s*)?([0-9]+(?:\.[0-9]+)?)(?:\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?))?(?:\s*[^0-9\n]+)?\s*$",
+                tail,
+            )
+            if setup_line is None:
+                return None
+            symbol_raw = str(symbol_line.group(1) or "").strip().upper()
+            symbol_alt_raw = ""
+            direction = str(setup_line.group(1) or "").strip().upper()
+            entry_a_raw = str(setup_line.group(2) or "").strip()
+            entry_b_raw = str(setup_line.group(3) or "").strip()
 
-        symbol_raw = str(head.group(1) or "").strip().upper()
-        symbol_alt_raw = str(head.group(2) or "").strip().upper()
+        symbol_raw = re.sub(r"\s+", "", str(symbol_raw or "").strip().upper())
+        symbol_alt_raw = re.sub(r"\s+", "", str(symbol_alt_raw or "").strip().upper())
         symbol = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
         if symbol_alt_raw:
             symbol_alt = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_alt_raw, symbol_alt_raw))
-            if symbol_alt and symbol_alt != symbol and symbol_raw in {"GOLD", "XAU"}:
+            symbol_alt_valid = bool(
+                symbol_alt in {"GOLD", "XAU"} or re.match(r"^XAU[A-Z0-9]*$", str(symbol_alt))
+            )
+            if symbol_alt and symbol_alt != symbol and symbol_raw in {"GOLD", "XAU"} and symbol_alt_valid:
                 symbol = symbol_alt
 
-        direction = str(head.group(3) or "").strip().upper()
         try:
-            entry_a = float(head.group(4))
-            entry_b = TelegramBridgeService._resolve_compact_entry_price(entry_a, head.group(5))
+            entry_a = float(str(entry_a_raw or "").strip())
+            entry_b = TelegramBridgeService._resolve_compact_entry_price(entry_a, entry_b_raw)
             if entry_b is None:
                 entry_b = float(entry_a)
         except Exception:
@@ -3114,6 +3416,17 @@ class TelegramBridgeService:
         if (not math.isfinite(float(stop_loss))) or float(stop_loss) <= 0.0:
             return None
 
+        entry_a, entry_b = TelegramBridgeService._repair_xau_entry_range_with_context(
+            symbol=str(symbol),
+            direction=str(direction),
+            entry_a=float(entry_a),
+            entry_b=float(entry_b),
+            entry_a_raw=entry_a_raw,
+            entry_b_raw=entry_b_raw,
+            stop_loss=float(stop_loss),
+            tps=list(tps),
+        )
+
         entry_low = float(min(entry_a, entry_b))
         entry_high = float(max(entry_a, entry_b))
         entry_mid = float((entry_low + entry_high) * 0.5)
@@ -3160,7 +3473,10 @@ class TelegramBridgeService:
         symbol = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_raw, symbol_raw))
         if symbol_alt_raw:
             symbol_alt = str(TelegramBridgeService._CONFIRM_SIGNAL_SYMBOL_ALIASES.get(symbol_alt_raw, symbol_alt_raw))
-            if symbol_alt and symbol_alt != symbol and symbol_raw in {"GOLD", "XAU"}:
+            symbol_alt_valid = bool(
+                symbol_alt in {"GOLD", "XAU"} or re.match(r"^XAU[A-Z0-9]*$", str(symbol_alt))
+            )
+            if symbol_alt and symbol_alt != symbol and symbol_raw in {"GOLD", "XAU"} and symbol_alt_valid:
                 symbol = symbol_alt
         direction = str(head.group(3) or "").strip().upper()
         try:
@@ -3245,7 +3561,7 @@ class TelegramBridgeService:
 
         # Primary layout: "XAUUSD SELL 4795-4798" (symbol first)
         head = re.search(
-            r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+ENTRY\s*ZONE)?\s*(?:[^0-9A-Z\n]{0,8})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
+            r"(?is)\b(?:XAU\s*USD|XAUUSD|GOLD)\b[\s\S]{0,90}?\b(BUY|SELL)\b(?:\s+(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?))?\s*(?:[^0-9A-Z\n]{0,12})?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/|-|=|TO|[^0-9A-Z\n]{1,4})\s*([0-9]+(?:\.[0-9]+)?)",
             raw_norm,
         )
 
@@ -3260,6 +3576,25 @@ class TelegramBridgeService:
             except Exception:
                 a = None
                 b = None
+
+        # Single-entry fallback (line format):
+        #   Gold buy - 4720
+        #   XAUUSD SELL NOW: 4790
+        # Treat as entry_low == entry_high.
+        if a is None or b is None or direction not in {"BUY", "SELL"}:
+            head_single = re.search(
+                r"(?im)^\s*(?:#?\s*(?:XAU\s*USD|XAUUSD|GOLD))\s+(BUY|SELL)\b(?:\s+(?:NOW|LIMIT|ZONE|ENTRY(?:\s*ZONE)?))?\s*(?:[^0-9A-Z\n]{0,12})\s*([0-9]+(?:\.[0-9]+)?)\s*$",
+                raw_norm,
+            )
+            if head_single is not None:
+                direction = str(head_single.group(1) or "").strip().upper()
+                try:
+                    px = float(head_single.group(2))
+                    a = float(px)
+                    b = float(px)
+                except Exception:
+                    a = None
+                    b = None
 
         # Alternate layout: "BUY XAU USD" + "Entry Zone: 4769 - 4765"
         if a is None or b is None or direction not in {"BUY", "SELL"}:
@@ -3499,6 +3834,18 @@ class TelegramBridgeService:
         if p not in TelegramBridgeService._MT4_EXEC_KNOWN_PROFILES:
             p = "generic"
         return str(p)
+
+    @classmethod
+    def _mt4_exec_resolve_profile(cls, *, profile: str, indicator: Any) -> str:
+        p = cls._mt4_exec_normalized_profile(profile)
+        if p != "generic":
+            return str(p)
+        ikey = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
+        if not ikey:
+            return "generic"
+        if ("buy sell signal" in ikey) or ("buysell" in ikey):
+            return "buysell"
+        return "generic"
 
     @staticmethod
     def _mt4_exec_profile_lot(profile: str) -> float:
@@ -6283,6 +6630,7 @@ class TelegramBridgeService:
         indicator = self._normalize_mt4_indicator_name(indicator_raw) or indicator_raw or f"{family.upper()}Indicator"
         indicator_key = self._normalize_mt_indicator_key(indicator)
         profile = str(p.get("signal_profile") or p.get("profile") or "").strip().lower() or "generic"
+        profile = self._mt4_exec_resolve_profile(profile=str(profile), indicator=str(indicator))
         ingest_source = str(p.get("ingest_source") or "bridge").strip().lower() or "bridge"
         hint = str(p.get("signal_hint") or p.get("direction") or "").strip().upper()
         symbol_raw = str(p.get("symbol") or "").strip().upper()
@@ -6960,6 +7308,7 @@ class TelegramBridgeService:
         indicator = self._normalize_mt4_indicator_name(indicator_raw) or indicator_raw or "MT4Indicator"
         indicator_key = self._normalize_mt_indicator_key(indicator)
         profile = str(p.get("signal_profile") or "").strip().lower() or "generic"
+        profile = self._mt4_exec_resolve_profile(profile=str(profile), indicator=str(indicator))
         ingest_source = str(p.get("ingest_source") or "unknown").strip().lower() or "unknown"
         hint = str(p.get("signal_hint") or "").strip().upper()
         symbol_raw = str(p.get("symbol") or "").strip().upper()
@@ -7678,6 +8027,16 @@ class TelegramBridgeService:
             return ask if ask is not None else (fallback if fallback is not None else (last if last is not None else bid))
         return fallback if fallback is not None else (last if last is not None else (bid if bid is not None else ask))
 
+    @staticmethod
+    def _resolve_tp_index_for_stop_guard(*, tps: List[Dict[str, Any]], stage_index: int) -> int:
+        stage = int(max(1, int(stage_index or 1)))
+        try:
+            row = dict(tps[stage - 1]) if isinstance(tps, list) and (stage - 1) < len(tps) else {}
+        except Exception:
+            row = {}
+        original_idx = int(_to_float_or_none((row or {}).get("index")) or 0)
+        return int(original_idx) if int(original_idx) > 0 else int(stage)
+
     def _signal_recent_zone_touch(self, *, signal: Dict[str, Any]) -> bool:
         symbol = str(signal.get("symbol") or "").strip()
         if not symbol:
@@ -7829,6 +8188,41 @@ class TelegramBridgeService:
                     best_row = dict(v)
                     best_ts = float(created_ts)
         return best_key, best_row
+
+    def _pick_pending_entry_signal(
+        self,
+        *,
+        candidate_source_keys: List[str],
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        candidates = [str(x).strip() for x in (candidate_source_keys or []) if str(x).strip()]
+        if not candidates:
+            return None, None
+        with self._lock:
+            best_key: Optional[str] = None
+            best_row: Optional[Dict[str, Any]] = None
+            best_ts: float = -1.0
+            for k, v in self._pending_entry_signals.items():
+                if not isinstance(v, dict):
+                    continue
+                row_source_key = str(v.get("source_key") or k)
+                if row_source_key not in candidates:
+                    continue
+                signal = v.get("signal") if isinstance(v.get("signal"), dict) else None
+                if not isinstance(signal, dict):
+                    continue
+                created_ts = _to_float_or_none(v.get("created_ts")) or 0.0
+                if best_row is None or float(created_ts) >= float(best_ts):
+                    best_key = str(k)
+                    best_row = dict(v)
+                    best_ts = float(created_ts)
+        return best_key, best_row
+
+    @staticmethod
+    def _is_hit_entry_message(text: Any) -> bool:
+        raw = str(text or "")
+        if not raw:
+            return False
+        return bool(re.search(r"(?is)\bhit\s*entry\b", raw))
 
     def _claim_pending_entry_signal(
         self,
@@ -8261,6 +8655,52 @@ class TelegramBridgeService:
             last = int(idx)
         return [dict(rows[i]) for i in selected]
 
+    @staticmethod
+    def _ensure_tp_anchor_in_active_tps(
+        *,
+        tps_all: List[Dict[str, Any]],
+        active_tps: List[Dict[str, Any]],
+        anchor_tp_index: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        rows_all = [dict(x) for x in (tps_all or []) if isinstance(x, dict)]
+        rows_active = [dict(x) for x in (active_tps or []) if isinstance(x, dict)]
+        anchor = int(_to_float_or_none(anchor_tp_index) or 0)
+        if anchor <= 0 or len(rows_active) < 3:
+            return rows_active
+        active_indices = [int(_to_float_or_none((r or {}).get("index")) or 0) for r in rows_active]
+        if anchor in active_indices:
+            return rows_active
+        anchor_row = next((dict(r) for r in rows_all if int(_to_float_or_none((r or {}).get("index")) or 0) == anchor), None)
+        if not isinstance(anchor_row, dict):
+            return rows_active
+        first_idx = int(_to_float_or_none((rows_active[0] or {}).get("index")) or 0)
+        last_idx = int(_to_float_or_none((rows_active[-1] or {}).get("index")) or 0)
+        if first_idx > 0 and last_idx > 0 and (anchor <= first_idx or anchor >= last_idx):
+            return rows_active
+        out = list(rows_active)
+        mid_candidates = list(range(1, max(1, len(out) - 1)))
+        if not mid_candidates:
+            return rows_active
+        replace_i = min(
+            mid_candidates,
+            key=lambda i: abs(
+                int(_to_float_or_none((out[i] or {}).get("index")) or 0) - int(anchor)
+            ),
+        )
+        out[replace_i] = dict(anchor_row)
+        out.sort(key=lambda r: int(_to_float_or_none((r or {}).get("index")) or 0))
+        dedup: List[Dict[str, Any]] = []
+        seen: set = set()
+        for r in out:
+            idx = int(_to_float_or_none((r or {}).get("index")) or 0)
+            if idx <= 0 or idx in seen:
+                continue
+            seen.add(idx)
+            dedup.append(dict(r))
+        if len(dedup) != len(rows_active):
+            return rows_active
+        return dedup
+
     @classmethod
     def _select_execution_tps(cls, *, tps_all: List[Dict[str, Any]], source_profile: str, force_single: bool) -> List[Dict[str, Any]]:
         rows = [dict(x) for x in (tps_all or []) if isinstance(x, dict)]
@@ -8675,8 +9115,14 @@ class TelegramBridgeService:
             sig_adv["ignore_global_force_single"] = True
             tp_rows = [dict(x) for x in (sig_adv.get("tps") if isinstance(sig_adv.get("tps"), list) else []) if isinstance(x, dict)]
             adv_tp_count = int(max(1, len(tp_rows)))
-            adv_lot_per_tp = float(self._confirm_signal_advanced_lot_per_tp())
-            adv_lot = float(max(0.01, min(100.0, float(adv_tp_count) * float(adv_lot_per_tp))))
+            adv_trade_budget = float(self._confirm_signal_advanced_lot_per_tp())
+            adv_lot = float(
+                self._compute_floor_split_trade_lot(
+                    symbol=str(sig_adv.get("symbol") or ""),
+                    trade_budget_lot=float(adv_trade_budget),
+                    tp_count=int(adv_tp_count),
+                )
+            )
             adv_out = _call_exec_auto(
                 sig=dict(sig_adv),
                 mode="advanced",
@@ -8690,8 +9136,14 @@ class TelegramBridgeService:
             sig_adv2["ignore_global_force_single"] = True
             tp_rows = [dict(x) for x in (sig_adv2.get("tps") if isinstance(sig_adv2.get("tps"), list) else []) if isinstance(x, dict)]
             adv2_tp_count = int(max(1, len(tp_rows)))
-            adv2_lot_per_tp = float(self._confirm_signal_advanced_lot_per_tp())
-            adv2_lot = float(max(0.01, min(100.0, float(adv2_tp_count) * float(adv2_lot_per_tp))))
+            adv2_trade_budget = float(self._confirm_signal_advanced_lot_per_tp())
+            adv2_lot = float(
+                self._compute_floor_split_trade_lot(
+                    symbol=str(sig_adv2.get("symbol") or ""),
+                    trade_budget_lot=float(adv2_trade_budget),
+                    tp_count=int(adv2_tp_count),
+                )
+            )
             adv2_out = _call_exec_auto(
                 sig=dict(sig_adv2),
                 mode="advanced_v2",
@@ -8705,8 +9157,14 @@ class TelegramBridgeService:
             sig_adv3["ignore_global_force_single"] = True
             tp_rows = [dict(x) for x in (sig_adv3.get("tps") if isinstance(sig_adv3.get("tps"), list) else []) if isinstance(x, dict)]
             adv3_tp_count = int(max(1, len(tp_rows)))
-            adv3_lot_per_tp = float(self._confirm_signal_advanced_lot_per_tp())
-            adv3_lot = float(max(0.01, min(100.0, float(adv3_tp_count) * float(adv3_lot_per_tp))))
+            adv3_trade_budget = float(self._confirm_signal_advanced_lot_per_tp())
+            adv3_lot = float(
+                self._compute_floor_split_trade_lot(
+                    symbol=str(sig_adv3.get("symbol") or ""),
+                    trade_budget_lot=float(adv3_trade_budget),
+                    tp_count=int(adv3_tp_count),
+                )
+            )
             adv3_out = _call_exec_auto(
                 sig=dict(sig_adv3),
                 mode="advanced_v3",
@@ -8880,6 +9338,13 @@ class TelegramBridgeService:
             source_profile=str(signal_profile),
             force_single=bool(force_single),
         )
+        if str(exec_mode) in {"advanced_v2", "advanced_v3"}:
+            be_anchor_idx = int(_to_float_or_none(((extra_ladder_state.get("advanced_v2_cfg") or {}).get("be_trigger_tp"))) or 0)
+            active_tps = self._ensure_tp_anchor_in_active_tps(
+                tps_all=list(tps_all),
+                active_tps=list(active_tps),
+                anchor_tp_index=int(be_anchor_idx),
+            )
         desired_stages = int(max(1, len(active_tps)))
         weighted_stage_mode = bool(
             (str(audit_source_type).strip().lower() == "mt_indicator")
@@ -8919,6 +9384,13 @@ class TelegramBridgeService:
                 active_tps = [dict(x) for x in active_tps[:max_stages]]
             else:
                 active_tps = self._compress_tps_for_stage_count(list(active_tps), int(max_stages))
+            if str(exec_mode) in {"advanced_v2", "advanced_v3"}:
+                be_anchor_idx = int(_to_float_or_none(((extra_ladder_state.get("advanced_v2_cfg") or {}).get("be_trigger_tp"))) or 0)
+                active_tps = self._ensure_tp_anchor_in_active_tps(
+                    tps_all=list(tps_all),
+                    active_tps=list(active_tps),
+                    anchor_tp_index=int(be_anchor_idx),
+                )
             if weighted_stage_mode:
                 stage_lots, stage_err = self._build_confirmation_ladder_lots_weighted(
                     symbol=str(symbol),
@@ -10421,11 +10893,15 @@ class TelegramBridgeService:
                 comment=f"tg_confirm_tp{int(next_idx)}",
             )
             if bool((out or {}).get("ok")):
-                _ = self._apply_confirmation_guard_stop(
+                guard_tp_idx = self._resolve_tp_index_for_stop_guard(
+                    tps=list(tps),
+                    stage_index=int(next_idx),
+                )
+                guard_out = self._apply_confirmation_guard_stop(
                     svc=svc,
                     row=row,
                     pos=pos,
-                    hit_tp_index=int(next_idx),
+                    hit_tp_index=int(guard_tp_idx),
                     target_px=float(target_px),
                 )
                 self._mark_reentry_progress_from_execution(
@@ -10464,12 +10940,38 @@ class TelegramBridgeService:
                         "next_tp_index_after": int(next_idx + 1),
                     },
                 )
+                source_disp = str(row.get("source_name") or "unknown").strip() or "unknown"
+                be_line = ""
+                try:
+                    sl_after = _to_float_or_none((guard_out or {}).get("stop_loss"))
+                    entry_ref = _to_float_or_none((pos or {}).get("entry_price"))
+                    if entry_ref is None:
+                        entry_ref = _to_float_or_none((row or {}).get("entry_price"))
+                    point_hint = _to_float_or_none((row or {}).get("point"))
+                    if point_hint is None or float(point_hint) <= 0.0:
+                        sym_u = str(sym).upper()
+                        if sym_u.startswith("XAU") or sym_u.startswith("BTC") or sym_u.startswith("ETH"):
+                            point_hint = 0.01
+                        else:
+                            point_hint = 0.0001
+                    tol = float(max(1e-6, float(point_hint) * 2.0))
+                    if (
+                        bool((guard_out or {}).get("updated"))
+                        and sl_after is not None
+                        and entry_ref is not None
+                        and abs(float(sl_after) - float(entry_ref)) <= tol
+                    ):
+                        be_line = f"\nSL -> BE: {float(sl_after):.5f}"
+                except Exception:
+                    be_line = ""
                 self._send_text(
                     int(row.get("chat_id") or 0),
                     (
                         f"Confirmation ladder partial TP done\n"
+                        f"Source: {source_disp}\n"
                         f"{sym} {direction} | TP{int(next_idx)} hit @ {float(target_px):.5f}\n"
-                        f"Closed lot: {float(close_lot):.4f}\n"
+                        f"Closed lot: {float(close_lot):.4f}"
+                        f"{str(be_line)}\n"
                         f"Ticket: #{int(ticket)}"
                     ),
                 )
@@ -10670,6 +11172,169 @@ class TelegramBridgeService:
         )
         source_key = self._confirm_signal_source_key(int(chat_id), source_label)
         msg_event_ts = ((msg or {}).get("date") if isinstance(msg, dict) else None)
+        is_david_channel = any(
+            self._source_matches_rule(name, "David's Gold Strategy")
+            for name in (source_names or [])
+        )
+        if bool(is_david_channel) and self._is_hit_entry_message(text):
+            candidates: List[str] = []
+            for name in source_names:
+                key = self._confirm_signal_source_key(int(chat_id), name)
+                if key not in candidates:
+                    candidates.append(key)
+            fallback_key = self._confirm_signal_source_key(int(chat_id), source_label)
+            if fallback_key not in candidates:
+                candidates.append(fallback_key)
+            pending_key, pending_row = self._pick_pending_entry_signal(
+                candidate_source_keys=list(candidates),
+            )
+            if isinstance(pending_row, dict) and pending_key:
+                signal = pending_row.get("signal") if isinstance(pending_row.get("signal"), dict) else None
+                if isinstance(signal, dict):
+                    now_ts = float(time.time())
+                    live_px = self._signal_live_price(signal=signal)
+                    claimed_row = self._claim_pending_entry_signal(
+                        pending_key,
+                        zone_state="manual_hit_entry",
+                        live_px=_to_float_or_none(live_px),
+                        now_ts=float(now_ts),
+                    )
+                    if isinstance(claimed_row, dict):
+                        row = dict(claimed_row)
+                        trace_id = str(row.get("trace_id") or signal.get("trace_id") or "").strip() or None
+                        self._append_automation_execution_log(
+                            source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
+                            source_name=str(row.get("source_label") or "unknown"),
+                            trigger="entry_wait_trigger",
+                            status="dispatch",
+                            symbol=str(signal.get("symbol") or "").strip().upper(),
+                            timeframe=str(signal.get("timeframe") or "").strip().upper(),
+                            direction=str(signal.get("direction") or "").strip().upper(),
+                            lot=_to_float_or_none(row.get("lot_override")),
+                            stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                            message="entry_trigger:manual_hit_entry",
+                            source_tag=str(row.get("source_tag") or "").strip().lower() or None,
+                            execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
+                            trace_id=trace_id,
+                            stage="entry_wait",
+                            stage_status="triggered",
+                            stage_payload={
+                                "queue_id": str(row.get("id") or ""),
+                                "zone_state": "manual_hit_entry",
+                                "manual_hit_entry": True,
+                                "live_price": _to_float_or_none(live_px),
+                            },
+                        )
+                        audit_ctx_row = dict(row.get("audit_ctx") or {})
+                        source_names_row = [str(x).strip() for x in (audit_ctx_row.get("source_names") or []) if str(x).strip()]
+                        if not source_names_row:
+                            source_names_row = [str(row.get("source_label") or "").strip()]
+                        try:
+                            exec_msg = self._execute_confirmation_signal_with_channel_modes(
+                                chat_id=int(row.get("chat_id") or 0),
+                                signal=dict(signal),
+                                source_names=list(source_names_row),
+                                source_label=str(row.get("source_label") or "unknown"),
+                                source_key=str(row.get("source_key") or ""),
+                                lot_override=_to_float_or_none(row.get("lot_override")),
+                                source_tag=str(row.get("source_tag") or ""),
+                                comment_prefix=str(row.get("comment_prefix") or "tgc"),
+                                trigger=str(audit_ctx_row.get("trigger") or "entry_signal"),
+                                event_ts=audit_ctx_row.get("event_ts"),
+                                trace_id=str(audit_ctx_row.get("trace_id") or signal.get("trace_id") or "").strip() or None,
+                            )
+                        except Exception as exc:
+                            err_text = f"entry_dispatch_exception:{str(exc)[:220]}"
+                            self._settle_pending_entry_signal(
+                                pending_key,
+                                last_zone_state="manual_hit_entry",
+                                last_attempt_ts=float(now_ts),
+                                last_error=err_text,
+                                increment_attempt=True,
+                            )
+                            self._append_automation_execution_log(
+                                source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
+                                source_name=str(row.get("source_label") or "unknown"),
+                                trigger="entry_wait_execute_failed",
+                                status="failed",
+                                symbol=str(signal.get("symbol") or "").strip().upper(),
+                                timeframe=str(signal.get("timeframe") or "").strip().upper(),
+                                direction=str(signal.get("direction") or "").strip().upper(),
+                                lot=_to_float_or_none(row.get("lot_override")),
+                                stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                                message=str(err_text)[:260],
+                                source_tag=str(row.get("source_tag") or "").strip().lower() or None,
+                                execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
+                                trace_id=trace_id,
+                                stage="entry_wait",
+                                stage_status="failed",
+                                error_code="execution_exception",
+                                stage_payload={
+                                    "queue_id": str(row.get("id") or ""),
+                                    "manual_hit_entry": True,
+                                },
+                            )
+                            if not push_only:
+                                return "Hit Entry trigger received, but execution failed."
+                            return ""
+                        msg_l = str(exec_msg or "").strip().lower()
+                        ok_opened = self._is_confirmation_exec_opened(exec_msg)
+                        deferred = msg_l.startswith("confirmation deferred: market closed")
+                        if ok_opened:
+                            src_profile = str(signal.get("source_profile") or "").strip().lower()
+                            if self._profile_requires_tp_progress_gate(src_profile):
+                                self._mark_reentry_signal_started(
+                                    source_key=str(row.get("source_key") or ""),
+                                    signal=dict(signal),
+                                    profile=str(src_profile),
+                                )
+                            self._settle_pending_entry_signal(
+                                pending_key,
+                                remove=True,
+                            )
+                            out = (
+                                "Entry trigger message matched, order executed\n"
+                                f"Source: {str(row.get('source_label') or 'unknown')}\n"
+                                f"{str(exec_msg)}"
+                            )
+                            if push_only:
+                                self._send_text(int(row.get("chat_id") or chat_id), out)
+                                return ""
+                            return out
+                        updated_row = self._settle_pending_entry_signal(
+                            pending_key,
+                            last_zone_state="manual_hit_entry",
+                            last_attempt_ts=float(now_ts),
+                            last_error=str(exec_msg or ""),
+                            increment_attempt=True,
+                        ) or {}
+                        if not deferred:
+                            self._append_automation_execution_log(
+                                source_type=str((row.get("audit_ctx") or {}).get("source_type") or "telegram_channel"),
+                                source_name=str(row.get("source_label") or "unknown"),
+                                trigger="entry_wait_execute_failed",
+                                status="failed",
+                                symbol=str(signal.get("symbol") or "").strip().upper(),
+                                timeframe=str(signal.get("timeframe") or "").strip().upper(),
+                                direction=str(signal.get("direction") or "").strip().upper(),
+                                lot=_to_float_or_none(row.get("lot_override")),
+                                stop_loss=_to_float_or_none(signal.get("stop_loss")),
+                                message=str(exec_msg or "")[:260],
+                                source_tag=str(row.get("source_tag") or "").strip().lower() or None,
+                                execution_mode=str((row.get("audit_ctx") or {}).get("execution_mode") or "").strip().lower() or None,
+                                trace_id=trace_id,
+                                stage="entry_wait",
+                                stage_status="failed",
+                                error_code="execution_failed",
+                                stage_payload={
+                                    "queue_id": str(row.get("id") or ""),
+                                    "attempt_count": int((updated_row or {}).get("attempt_count") or 0),
+                                    "manual_hit_entry": True,
+                                },
+                            )
+                        if not push_only:
+                            return f"Hit Entry trigger received, but execution did not open.\n{str(exec_msg)}"
+                        return ""
         if msg_kind in {"tp_hit", "sl_hit", "close_instruction"}:
             self._apply_reentry_progress_from_message(
                 source_key=str(source_key),

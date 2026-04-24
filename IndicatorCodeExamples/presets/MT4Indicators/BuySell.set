@@ -1,0 +1,7 @@
+Sensitivity=5
+alertsOn=true
+alertsMessage=true
+alertsEmail=true
+alertsNotify=true
+alertsSound=true
+soundFile=alert.wav
