@@ -146,6 +146,7 @@ class TelegramBridgeService:
             "intrepid",
             "generic",
             "buysell",
+            "kforex",
             "fxnuke",
             "uranus",
             "alchemy",
@@ -158,6 +159,7 @@ class TelegramBridgeService:
             "hydra",
             "intrepid",
             "buysell",
+            "kforex",
             "fxnuke",
             "uranus",
             "alchemy",
@@ -2470,6 +2472,8 @@ class TelegramBridgeService:
                 return "supplydemand"
             if ("buy sell signal" in key) or ("buysell" in key):
                 return "buysell"
+            if "kforex" in key:
+                return "kforex"
             if "intrepid" in key:
                 return "intrepid"
             if "hydra" in key:
@@ -3845,6 +3849,8 @@ class TelegramBridgeService:
             return "generic"
         if ("buy sell signal" in ikey) or ("buysell" in ikey):
             return "buysell"
+        if "kforex" in ikey:
+            return "kforex"
         return "generic"
 
     @staticmethod

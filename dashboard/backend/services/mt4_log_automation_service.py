@@ -27,6 +27,7 @@ class MT4LogAutomationService:
     _ALLOWED_AUTOMATION_TOKENS: Tuple[str, ...] = (
         "hydra signals indicator",
         "hydra",
+        "kforex",
         "forex uranus direction",
         "uranus",
         "fxnukeesc",
@@ -635,6 +636,8 @@ class MT4LogAutomationService:
             return ""
         if "intrepid" in m:
             return "intrepid"
+        if "kforex" in m:
+            return "kforex"
         if "hydra" in m:
             return "hydra"
         if "fxnuke" in m:
