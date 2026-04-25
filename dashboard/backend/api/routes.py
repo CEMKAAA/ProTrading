@@ -666,6 +666,21 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
                 bridge_payload["event_attempt"] = int(float(p.get("event_attempt")))
             except Exception:
                 return {"ok": False, "error": "invalid_event_attempt"}
+        for key in (
+            "bridge_version",
+            "resolved_signal",
+            "confirmed_direction",
+            "pending_direction",
+            "pending_age_sec",
+            "confirm_seconds",
+            "resolved_signal_shift",
+            "resolved_signal_bar_time",
+            "resolved_signal_bar_unix",
+            "resolved_raw_buy",
+            "resolved_raw_sell",
+        ):
+            if key in p:
+                bridge_payload[key] = p.get(key)
 
         out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=bridge_payload)
         return {
@@ -755,6 +770,21 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
                 bridge_payload["event_attempt"] = int(float(p.get("event_attempt")))
             except Exception:
                 return {"ok": False, "error": "invalid_event_attempt"}
+        for key in (
+            "bridge_version",
+            "resolved_signal",
+            "confirmed_direction",
+            "pending_direction",
+            "pending_age_sec",
+            "confirm_seconds",
+            "resolved_signal_shift",
+            "resolved_signal_bar_time",
+            "resolved_signal_bar_unix",
+            "resolved_raw_buy",
+            "resolved_raw_sell",
+        ):
+            if key in p:
+                bridge_payload[key] = p.get(key)
 
         out = svc.ingest_indicator_bridge_signal(terminal_family="mt5", payload=bridge_payload)
         return {
@@ -877,6 +907,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         mode_advanced_v2_lot = p.get("mode_advanced_v2_lot") if "mode_advanced_v2_lot" in p else None
         mode_normal_lot = p.get("mode_normal_lot") if "mode_normal_lot" in p else None
         mode_sync_lot = p.get("mode_sync_lot") if "mode_sync_lot" in p else None
+        advanced_v2_policies = p.get("advanced_v2_policies") if "advanced_v2_policies" in p else None
         signal_confirm_sec = p.get("signal_confirm_sec") if "signal_confirm_sec" in p else None
         sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
@@ -933,6 +964,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             mode_advanced_v2_lot=mode_advanced_v2_lot_val,
             mode_normal_lot=mode_normal_lot_val,
             mode_sync_lot=mode_sync_lot_val,
+            advanced_v2_policies=(dict(advanced_v2_policies) if isinstance(advanced_v2_policies, dict) else None),
             signal_confirm_sec=signal_confirm_sec_val,
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),

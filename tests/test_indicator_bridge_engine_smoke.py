@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from dashboard.backend.models.database import SessionLocal, TelegramAutomationExecutionLogModel
 from dashboard.backend.services.telegram_bridge_service import TelegramBridgeService
 
 
@@ -249,6 +250,22 @@ def _payload(*, hint: str, message: str, event_ts: str | None = None) -> Dict[st
     }
 
 
+def _cleanup_execution_logs_for_tickets(*tickets: int) -> None:
+    clean = [int(t) for t in tickets if int(t or 0) > 0]
+    if not clean:
+        return
+    db = SessionLocal()
+    try:
+        (
+            db.query(TelegramAutomationExecutionLogModel)
+            .filter(TelegramAutomationExecutionLogModel.ticket.in_(clean))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_smoke_bridge_listener_register_and_signal_flow(monkeypatch):
     svc, broker = _build_service(monkeypatch)
     try:
@@ -276,6 +293,87 @@ def test_smoke_bridge_listener_register_and_signal_flow(monkeypatch):
         # advanced(0.5) + normal(0.4)
         assert len(open_rows) == 2
         assert {str(r.get("direction")) for r in open_rows} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_confirmed_signal_bypasses_backend_wait(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=20.0)
+    try:
+        payload = _payload(hint="SELL", message="V2 CONFIRMED SELL")
+        payload["bridge_event_type"] = "confirmed_signal"
+        payload["bridge_version"] = "v2"
+        payload["confirmed_direction"] = "SELL"
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert out.get("ok") is True
+        assert out.get("executed") is True
+        open_rows = broker.get_open_positions(symbol="BTCUSDm")
+        assert len(open_rows) == 2
+        assert {str(r.get("direction")) for r in open_rows} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_resolved_state_corrects_stuck_reverse(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=20.0)
+    try:
+        sell_payload = _payload(hint="SELL", message="V2 CONFIRMED SELL FIRST")
+        sell_payload["bridge_event_type"] = "confirmed_signal"
+        sell_payload["bridge_version"] = "v2"
+        sell_payload["confirmed_direction"] = "SELL"
+        first = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=sell_payload)
+        assert first.get("ok") is True
+        assert first.get("executed") is True
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "BUY",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "message": "V2 RESOLVED STATE BUY",
+            "event_ts": datetime.now(timezone.utc).isoformat(),
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "confirmed_direction": "BUY",
+            "pending_direction": "",
+            "ingest_source": "bridge",
+        }
+        rec = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert rec.get("ok") is True
+        reconcile = dict(rec.get("reconcile") or {})
+        assert reconcile.get("reason") == "conflict_forwarded_as_confirmed_signal"
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"BUY"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_resolved_state_does_not_reconcile_while_pending(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        sell_payload = _payload(hint="SELL", message="V2 CONFIRMED SELL PENDING TEST")
+        sell_payload["bridge_event_type"] = "confirmed_signal"
+        sell_payload["bridge_version"] = "v2"
+        sell_payload["confirmed_direction"] = "SELL"
+        first = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=sell_payload)
+        assert first.get("executed") is True
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "BUY",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "confirmed_direction": "BUY",
+            "pending_direction": "BUY",
+            "ingest_source": "bridge",
+        }
+        rec = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert rec.get("ok") is True
+        assert dict(rec.get("reconcile") or {}).get("reason") == "pending_signal_in_progress"
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
     finally:
         svc.stop()
 
@@ -670,6 +768,339 @@ def test_smoke_advanced_v2_runner_stage_registered(monkeypatch):
         assert len(tps) == 4
         assert (tps[-1] or {}).get("price") is None
     finally:
+        svc.stop()
+
+
+def test_smoke_v2_indicator_advanced_v2_policies_open_distinct_ladders(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=False, mode_normal=False, signal_confirm_sec=0.0)
+    try:
+        monkeypatch.setattr(
+            svc,
+            "_resolve_indicator_bridge_instance_runtime_config",
+            lambda **kwargs: {
+                "terminal_family": "mt4",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "BTCUSDM",
+                "timeframe": "M1",
+                "instance_key": "mt4|intrepid trend direction|BTCUSDM|M1",
+                "automation_enabled": True,
+                "effective_automation_enabled": True,
+                "lot_size": 0.5,
+                "execution_modes": {
+                    "advanced": False,
+                    "advanced_v2": True,
+                    "normal": False,
+                    "sync": False,
+                },
+                "advanced_v2_policies": {
+                    "conservative": True,
+                    "balanced": False,
+                    "advanced": True,
+                },
+                "mode_lots": {
+                    "advanced": 0.5,
+                    "advanced_v2": 0.5,
+                    "normal": 0.4,
+                    "sync": 0.1,
+                },
+                "signal_confirm_sec": 0.0,
+                "sync": {
+                    "direction_tf": "M5",
+                    "entry_tf": "M1",
+                    "exit_tf": "M1",
+                    "reentry_enabled": True,
+                },
+            },
+        )
+        payload = _payload(hint="SELL", message="V2 POLICY SELL")
+        payload["bridge_event_type"] = "confirmed_signal"
+        payload["bridge_version"] = "v2"
+        payload["confirmed_direction"] = "SELL"
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert out.get("ok") is True
+        assert out.get("executed") is True
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+        with svc._lock:
+            ladders = [dict(v) for v in svc._active_confirmation_signal_ladders.values() if isinstance(v, dict)]
+        assert len(ladders) == 2
+        assert {str((r.get("advanced_v2_cfg") or {}).get("policy")) for r in ladders} == {"conservative", "advanced"}
+        assert {str(r.get("source_tag") or "").split("|")[-1] for r in ladders} == {
+            "advanced_v2_conservative",
+            "advanced_v2_advanced",
+        }
+    finally:
+        svc.stop()
+
+
+def test_smoke_v2_indicator_advanced_v2_conservative_moves_sl_to_be_on_tp1(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=False, mode_normal=False, signal_confirm_sec=0.0)
+    try:
+        monkeypatch.setattr(
+            svc,
+            "_resolve_indicator_bridge_instance_runtime_config",
+            lambda **kwargs: {
+                "terminal_family": "mt4",
+                "indicator": "Intrepid Trend Direction",
+                "symbol": "BTCUSDM",
+                "timeframe": "M1",
+                "instance_key": "mt4|intrepid trend direction|BTCUSDM|M1",
+                "automation_enabled": True,
+                "effective_automation_enabled": True,
+                "lot_size": 0.5,
+                "execution_modes": {
+                    "advanced": False,
+                    "advanced_v2": True,
+                    "normal": False,
+                    "sync": False,
+                },
+                "advanced_v2_policies": {
+                    "conservative": True,
+                    "balanced": False,
+                    "advanced": False,
+                },
+                "mode_lots": {
+                    "advanced": 0.5,
+                    "advanced_v2": 0.5,
+                    "normal": 0.4,
+                    "sync": 0.1,
+                },
+                "signal_confirm_sec": 0.0,
+                "sync": {
+                    "direction_tf": "M5",
+                    "entry_tf": "M1",
+                    "exit_tf": "M1",
+                    "reentry_enabled": True,
+                },
+            },
+        )
+        payload = _payload(hint="BUY", message="V2 CONS BUY")
+        payload["bridge_event_type"] = "confirmed_signal"
+        payload["bridge_version"] = "v2"
+        payload["confirmed_direction"] = "BUY"
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert out.get("ok") is True
+        assert out.get("executed") is True
+        with svc._lock:
+            ladders = [dict(v) for v in svc._active_confirmation_signal_ladders.values() if isinstance(v, dict)]
+        assert len(ladders) == 1
+        row = ladders[0]
+        ticket = int(row.get("broker_ticket") or 0)
+        entry = float(row.get("entry_price") or 0.0)
+        tp1 = float((row.get("tps") or [])[0].get("price"))
+        broker.set_tick(ask=float(tp1 + 0.20), bid=float(tp1 + 0.10))
+        svc._push_confirmation_signal_ladders()
+        positions = broker.get_open_positions(symbol="BTCUSDm")
+        pos = next((p for p in positions if int(p.get("ticket") or 0) == ticket), None)
+        assert pos is not None
+        assert float(pos.get("lot_size") or 0.0) < 0.5
+        assert abs(float(pos.get("stop_loss") or 0.0) - float(entry)) <= 0.02
+        with svc._lock:
+            updated = next(dict(v) for v in svc._active_confirmation_signal_ladders.values() if int(v.get("broker_ticket") or 0) == ticket)
+        assert int(updated.get("last_sl_update_tp_index") or 0) == 1
+        assert abs(float(updated.get("last_applied_sl") or 0.0) - float(entry)) <= 0.02
+    finally:
+        svc.stop()
+
+
+def test_indicator_bridge_state_recovers_live_open_trade_from_audit_when_ladder_memory_missing(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=False, mode_normal=True, signal_confirm_sec=0.0)
+    expected_ticket = 0
+    try:
+        expected_ticket = 987000000 + int(time.time_ns() % 1000000)
+        with broker._lock:
+            broker._next_ticket = int(expected_ticket)
+        data = broker.place_market_order(
+            symbol="BTCUSDM",
+            direction="SELL",
+            lot_size=0.10,
+            stop_loss=None,
+            take_profit=None,
+            comment="mt4recover",
+        )
+        ticket = int(data.get("position") or 0)
+        assert ticket == int(expected_ticket)
+        source_tag = "mt4|generic|intrepid trend direction|BTCUSDM|M1|normal"
+        svc._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name="Intrepid Trend Direction",
+            trigger="indicator_signal",
+            status="opened",
+            symbol="BTCUSDM",
+            timeframe="M1",
+            direction="SELL",
+            lot=0.10,
+            ticket=int(ticket),
+            message="order_opened",
+            profile="generic",
+            indicator="Intrepid Trend Direction",
+            source_tag=str(source_tag),
+            opened_at=svc._now_iso(),
+            execution_mode="normal",
+        )
+        reg = svc.ingest_indicator_bridge_signal(
+            terminal_family="mt4",
+            payload={
+                "indicator": "Intrepid Trend Direction",
+                "signal_profile": "generic",
+                "symbol": "BTCUSDm",
+                "timeframe": "M1",
+                "bridge_event_type": "register",
+                "bridge_version": "v2",
+                "ingest_source": "bridge",
+            },
+        )
+        assert reg.get("ok") is True
+        state = svc.get_indicator_bridge_state(limit=50)
+        rows = list(((state.get("open_trades") or {}).get("rows") or []))
+        recovered = next((r for r in rows if int(r.get("ticket") or 0) == int(ticket)), None)
+        assert recovered is not None
+        assert recovered.get("recovered_from_audit") is True
+        assert str(recovered.get("execution_mode") or "") == "normal"
+        assert str(recovered.get("direction") or "") == "SELL"
+    finally:
+        _cleanup_execution_logs_for_tickets(int(expected_ticket))
+        svc.stop()
+
+
+def test_indicator_bridge_reconcile_logs_closed_indicator_signal_trade(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=True, mode_normal=False, signal_confirm_sec=0.0)
+    expected_ticket = 0
+    try:
+        monkeypatch.setattr(svc, "_execution_reconcile_interval_sec", lambda: 0.0)
+        monkeypatch.setattr(broker, "get_live_status", lambda: {"mt5_available": True}, raising=False)
+
+        expected_ticket = 988000000 + int(time.time_ns() % 1000000)
+        with broker._lock:
+            broker._next_ticket = int(expected_ticket)
+        data = broker.place_market_order(
+            symbol="BTCUSDM",
+            direction="SELL",
+            lot_size=0.10,
+            stop_loss=77531.78,
+            take_profit=77281.03,
+            comment="mt4reconcile",
+        )
+        ticket = int(data.get("position") or 0)
+        assert ticket == int(expected_ticket)
+        source_tag = "mt4|kforex|kforex scalping|BTCUSDM|M1|advanced"
+        opened_at = svc._now_iso()
+        svc._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name="kforex Scalping",
+            trigger="indicator_signal",
+            status="opened",
+            symbol="BTCUSDM",
+            timeframe="M1",
+            direction="SELL",
+            lot=0.10,
+            stop_loss=77531.78,
+            final_tp=77281.03,
+            stages_total=5,
+            stages_opened=5,
+            ticket=int(ticket),
+            message="order_opened",
+            profile="kforex",
+            indicator="kforex Scalping",
+            source_tag=str(source_tag),
+            opened_at=str(opened_at),
+            execution_mode="advanced",
+            stage="entry",
+            stage_status="success",
+            stage_payload={
+                "stage_lots": [0.04, 0.03, 0.01, 0.01, 0.01],
+                "active_tps": [
+                    {"index": 1, "price": 77481.03},
+                    {"index": 2, "price": 77431.03},
+                    {"index": 3, "price": 77381.03},
+                    {"index": 4, "price": 77331.03},
+                    {"index": 5, "price": 77281.03},
+                ],
+            },
+        )
+
+        def _fake_deals(*, position_ticket, days=14, symbol=None):
+            assert int(position_ticket) == int(ticket)
+            return [
+                {
+                    "entry_code": 1,
+                    "profit": 4.37,
+                    "commission": 0.0,
+                    "swap": 0.0,
+                    "time": "2026-04-25T19:29:12+00:00",
+                    "order": 1393642347,
+                    "ticket": 1393642347,
+                    "comment": "[tp 77281.03000]",
+                    "price": 77281.03,
+                }
+            ]
+
+        monkeypatch.setattr(broker, "get_position_deals", _fake_deals, raising=False)
+        with broker._lock:
+            broker._positions.pop(int(ticket), None)
+
+        svc._reconcile_execution_ticket_state(force=True)
+
+        logs = svc.get_automation_execution_logs(limit=200)
+        close_rows = [
+            r
+            for r in logs
+            if int(r.get("ticket") or 0) == int(ticket)
+            and str(r.get("status") or "").lower() == "closed"
+            and str(r.get("trigger") or "") == "position_closed"
+        ]
+        assert close_rows
+        row = close_rows[-1]
+        assert str(row.get("source_type") or "") == "mt_indicator"
+        assert str(row.get("message") or "") == "reconciled_closed_after_restart"
+        assert abs(float(row.get("realized_pnl") or 0.0) - 4.37) < 1e-9
+        assert abs(float(row.get("close_price") or 0.0) - 77281.03) < 1e-9
+        assert int(row.get("deal_number") or 0) == 1393642347
+    finally:
+        _cleanup_execution_logs_for_tickets(int(expected_ticket))
+        svc.stop()
+
+
+def test_indicator_bridge_reconcile_does_not_close_when_open_snapshot_empty_without_deal(monkeypatch):
+    svc, broker = _build_service(monkeypatch, mode_advanced=True, mode_normal=False, signal_confirm_sec=0.0)
+    expected_ticket = 0
+    try:
+        monkeypatch.setattr(svc, "_execution_reconcile_interval_sec", lambda: 0.0)
+        monkeypatch.setattr(broker, "get_live_status", lambda: {"mt5_available": True}, raising=False)
+        monkeypatch.setattr(broker, "get_position_deals", lambda **kwargs: [], raising=False)
+
+        expected_ticket = 989000000 + int(time.time_ns() % 1000000)
+        source_tag = "mt4|kforex|kforex scalping|BTCUSDM|M5|advanced"
+        svc._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name="kforex Scalping",
+            trigger="indicator_signal",
+            status="opened",
+            symbol="BTCUSDM",
+            timeframe="M5",
+            direction="BUY",
+            lot=0.10,
+            ticket=int(expected_ticket),
+            message="order_opened",
+            profile="kforex",
+            indicator="kforex Scalping",
+            source_tag=str(source_tag),
+            opened_at=svc._now_iso(),
+            execution_mode="advanced",
+        )
+
+        svc._reconcile_execution_ticket_state(force=True)
+
+        logs = svc.get_automation_execution_logs(limit=200)
+        close_rows = [
+            r
+            for r in logs
+            if int(r.get("ticket") or 0) == int(expected_ticket)
+            and str(r.get("status") or "").lower() == "closed"
+            and str(r.get("trigger") or "") == "position_closed"
+        ]
+        assert close_rows == []
+    finally:
+        _cleanup_execution_logs_for_tickets(int(expected_ticket))
         svc.stop()
 
 

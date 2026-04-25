@@ -186,7 +186,9 @@
     function monitorRows(family) {
         const key = String(family || '').toLowerCase() === 'mt5' ? 'mt5_monitor' : 'mt4_monitor';
         const monitor = (latestState && latestState[key] && typeof latestState[key] === 'object') ? latestState[key] : {};
-        const rows = Array.isArray(monitor.bot_rows) ? monitor.bot_rows.slice() : [];
+        const rows = Array.isArray(monitor.bot_rows)
+            ? monitor.bot_rows.filter((row) => String((row || {}).bridge_version || '').trim().toLowerCase() !== 'v2')
+            : [];
         const fam = String(family || 'mt4').toLowerCase();
         if (!monitorActiveOnly[fam]) return rows;
         return rows.filter((r) => !!(r && r.effective_automation_enabled));
@@ -286,10 +288,9 @@
     }
 
     function refreshSummary() {
-        const mt4Monitor = (latestState && latestState.mt4_monitor) || {};
-        const mt5Monitor = (latestState && latestState.mt5_monitor) || {};
         const audit = (latestState && latestState.execution_logs) || {};
-        const openCount = Number(mt4Monitor.bot_open_count || 0) + Number(mt5Monitor.bot_open_count || 0);
+        const openCount = monitorRows('mt4').filter((row) => !!(row && row.has_open_ladder)).length
+            + monitorRows('mt5').filter((row) => !!(row && row.has_open_ladder)).length;
         if (els.mt4Count) els.mt4Count.textContent = String((monitorRows('mt4')).length);
         if (els.mt5Count) els.mt5Count.textContent = String((monitorRows('mt5')).length);
         if (els.openCount) els.openCount.textContent = String(openCount);

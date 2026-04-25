@@ -315,6 +315,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'indicator_automation_v2' %}active{% endif %}" href="{{ url_for('indicator_automation_v2') }}">
+                    <i class="bi bi-diagram-3"></i> Indicator V2
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link {% if request.endpoint == 'live_performance' %}active{% endif %}" href="{{ url_for('live_performance') }}">
                     <i class="bi bi-graph-up-arrow"></i> Live Performance
                 </a>

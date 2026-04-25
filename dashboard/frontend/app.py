@@ -1011,6 +1011,12 @@ def mt4_log_automation():
     return render_template('mt4_log_automation.html')
 
 
+@app.route('/indicator-automation-v2')
+def indicator_automation_v2():
+    """V2 indicator automation control panel."""
+    return render_template('indicator_automation_v2.html')
+
+
 # Guided trading simulation workspace (control-plane UX)
 @app.route('/trading-simulation/<strategy_id>')
 def trading_simulation_workspace(strategy_id):

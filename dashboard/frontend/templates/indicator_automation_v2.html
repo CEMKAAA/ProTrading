@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}Indicator Automation V2 - ProTrading Dashboard{% endblock %}
+
+{% block extra_css %}
+<style>
+    .v2-hero {
+        background: linear-gradient(135deg, #0f172a 0%, #164e63 52%, #365314 100%);
+        color: #f8fafc;
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+    }
+    .v2-hero .muted { color: rgba(248, 250, 252, 0.74); }
+    .v2-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: rgba(255,255,255,0.12);
+        color: #f8fafc;
+        font-size: 12px;
+        border: 1px solid rgba(255,255,255,0.14);
+    }
+    .v2-card {
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    .v2-table-wrap { max-height: 430px; overflow: auto; }
+    .v2-state-open { color: #16a34a; font-weight: 700; }
+    .v2-state-stale { color: #d97706; font-weight: 700; }
+    .v2-state-idle { color: #475569; font-weight: 700; }
+    .v2-state-conflict { color: #dc2626; font-weight: 800; }
+    .v2-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .v2-lot-input { width: 86px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="v2-hero mb-3">
+        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
+            <div>
+                <h2 class="mb-1">Indicator Automation V2</h2>
+                <div class="muted">EA-confirmed signals + resolved-state reconciliation. Existing Indicator Bots page remains untouched.</div>
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                    <span class="v2-pill"><i class="bi bi-shield-check"></i> confirmed_signal only opens trades</span>
+                    <span class="v2-pill"><i class="bi bi-arrow-repeat"></i> resolved_state reconciles conflicts</span>
+                    <span class="v2-pill"><i class="bi bi-sign-stop"></i> pending state blocks premature correction</span>
+                </div>
+            </div>
+            <div class="text-end">
+                <button id="v2-refresh" class="btn btn-light btn-sm">Refresh</button>
+                <div id="v2-updated" class="small muted mt-2">Updated: -</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="v2-alert"></div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT4 Instances</div><div id="v2-mt4-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT5 Instances</div><div id="v2-mt5-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Open Indicator Trades</div><div id="v2-open-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Audit Rows</div><div id="v2-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
+    </div>
+
+    <div class="card v2-card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong>Open Automation Trades</strong>
+                <div class="small text-muted">Live MT4/MT5 indicator trades resolved from source tags.</div>
+            </div>
+            <input id="v2-open-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="ticket / indicator / symbol">
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive v2-table-wrap">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Ticket</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>Mode</th><th>Dir</th><th>PnL</th><th>Opened</th><th>Source Tag</th>
+                        </tr>
+                    </thead>
+                    <tbody id="v2-open-body"><tr><td colspan="9" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card v2-card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong>Bridge Instances</strong>
+                <div class="small text-muted">Look for bridge_version=v2, confirmed direction and pending state.</div>
+            </div>
+            <input id="v2-instance-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="indicator / symbol / state">
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive v2-table-wrap">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Last Seen</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>State</th><th>Automation</th><th>Modes</th><th>Resolved</th><th>Confirmed</th><th>Pending</th><th>Lot</th><th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="v2-instance-body"><tr><td colspan="12" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card v2-card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong>Readable Execution Audit</strong>
+                <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed.</div>
+            </div>
+            <input id="v2-audit-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="ticket / status / message">
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive v2-table-wrap">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Event</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>Mode</th><th>Dir</th><th>Lot</th><th>Ticket</th><th>PnL</th><th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="v2-audit-body"><tr><td colspan="10" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}"></script>
+{% endblock %}
