@@ -17,7 +17,7 @@ input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g.
 input int    InpSignalShift = 0;     // 0=current bar, 1=closed bar
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
-input int    InpConfirmBars = 4;     // if >0, require this many chart bars instead of InpConfirmSeconds
+input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
 input bool   InpSendInitialConfirmedOnStart = false; // false prevents startup duplicate entries
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST

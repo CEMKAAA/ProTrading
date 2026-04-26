@@ -6492,6 +6492,20 @@ class TelegramBridgeService:
         incoming = str(direction or "").strip().upper()
         if incoming not in {"BUY", "SELL"}:
             return {"allow": False, "reason": "invalid_direction"}
+        mode_norm = str(mode or "").strip().lower()
+        if mode_norm != "advanced_v2":
+            return {
+                "allow": True,
+                "reason": "mode_governor_not_applicable",
+                "decision": "allow_full",
+                "checks": {
+                    "mode": str(mode_norm),
+                    "policy": str(policy_name or ""),
+                    "timeframe": str(tf),
+                    "direction": str(incoming),
+                    "governor_scope": "advanced_v2_only",
+                },
+            }
 
         checks: Dict[str, Any] = {
             "mode": str(mode or ""),
