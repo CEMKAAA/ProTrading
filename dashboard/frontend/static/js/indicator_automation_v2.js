@@ -156,6 +156,86 @@
         return rows.filter(row => keys.has(auditMatchKey(row)));
     }
 
+    function rowMode(row) {
+        return String((row || {}).execution_mode || '-').trim() || '-';
+    }
+
+    function auditTimeMs(row) {
+        const raw = String((row || {}).event_ts || (row || {}).opened_at || '').trim();
+        const dt = raw ? new Date(raw) : null;
+        return dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : 0;
+    }
+
+    function chopGuardReason(row) {
+        const msg = String((row || {}).message || '').trim();
+        if (!msg.toLowerCase().startsWith('chop_guard_blocked')) return '';
+        const idx = msg.indexOf(':');
+        return idx >= 0 ? msg.slice(idx + 1).trim() : 'chop_guard_blocked';
+    }
+
+    function isChopGuardRow(row) {
+        return String((row || {}).status || '').toLowerCase() === 'skipped'
+            && String((row || {}).message || '').toLowerCase().startsWith('chop_guard_blocked:');
+    }
+
+    function groupAuditRows(rows) {
+        const out = [];
+        const groups = new Map();
+        const order = [];
+        rows.forEach(row => {
+            if (!isChopGuardRow(row)) {
+                out.push(row);
+                return;
+            }
+            // Backend still stores one row per mode. UI groups only near-identical guard decisions.
+            const bucket = Math.floor((auditTimeMs(row) || Date.now()) / 5000) * 5000;
+            const key = [
+                'chop',
+                bucket,
+                String(row.terminal_family || '').toUpperCase(),
+                String(row.indicator || row.source_name || '').toLowerCase(),
+                String(row.symbol || '').toUpperCase(),
+                String(row.timeframe || '').toUpperCase(),
+                String(row.direction || '').toUpperCase(),
+                chopGuardReason(row)
+            ].join('|');
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    base: Object.assign({}, row),
+                    modes: [],
+                    count: 0,
+                    rows: [],
+                    key
+                });
+                order.push(key);
+            }
+            const g = groups.get(key);
+            const mode = rowMode(row);
+            if (!g.modes.includes(mode)) g.modes.push(mode);
+            g.count += 1;
+            g.rows.push(row);
+        });
+        order.forEach(key => {
+            const g = groups.get(key);
+            if (!g) return;
+            if (g.count <= 1) {
+                out.push(g.base);
+                return;
+            }
+            const base = g.base;
+            out.push(Object.assign({}, base, {
+                status: `${base.status || 'skipped'} x${g.count}`,
+                execution_mode: `${g.count} modes`,
+                grouped_modes: g.modes.join(', '),
+                message: `${base.message || 'chop_guard_blocked'} (grouped ${g.count} mode rows)`,
+                _audit_grouped: true,
+                _audit_group_count: g.count,
+                _audit_group_rows: g.rows
+            }));
+        });
+        return out.sort((a, b) => auditTimeMs(b) - auditTimeMs(a));
+    }
+
     function modeText(row) {
         const p = row.mode_advanced_v2_enabled ? (row.advanced_v2_policies || {}) : {};
         const adv2 = row.mode_advanced_v2_enabled
@@ -253,14 +333,23 @@
 
     function renderAudit() {
         const q = els.auditFilter ? els.auditFilter.value : '';
-        const meaningful = auditRows().filter(row => {
+        const meaningfulRaw = auditRows().filter(row => {
             const status = String(row.status || '').toLowerCase();
             const msg = String(row.message || '').toLowerCase();
             return ['opened', 'closed', 'failed', 'partial'].some(x => status.includes(x) || msg.includes(x))
                 || msg.includes('reconcile')
+                || msg.includes('chop_guard')
                 || msg.includes('sl -> be')
                 || msg.includes('tp');
-        }).filter(r => textMatch(r, q)).slice(0, 300);
+        }).filter(r => {
+            if (textMatch(r, q)) return true;
+            if (!q || !isChopGuardRow(r)) return false;
+            return textMatch({
+                grouped_modes: rowMode(r),
+                reason: chopGuardReason(r)
+            }, q);
+        });
+        const meaningful = groupAuditRows(meaningfulRaw).slice(0, 300);
         if (!els.auditBody) return;
         if (!meaningful.length) {
             els.auditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No meaningful audit rows yet.</td></tr>';
@@ -270,7 +359,12 @@
             const pnl = Number(row.realized_pnl);
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const modeDisabled = row.mode_currently_enabled === false;
-            const modeLabel = `${esc(row.execution_mode || '-')}${modeDisabled ? '<div class="small text-warning">disabled now</div>' : ''}`;
+            const groupedModes = row._audit_grouped && row.grouped_modes
+                ? `<div class="small text-info">${esc(row.grouped_modes)}</div>`
+                : '';
+            const modeLabel = `${esc(row.execution_mode || '-')}${modeDisabled ? '<div class="small text-warning">disabled now</div>' : ''}${groupedModes}`;
+            const shadow = row.shadow_outcome ? `<div class="small text-info">shadow: ${esc(row.shadow_outcome)}${row.shadow_reason ? ` / ${esc(row.shadow_reason)}` : ''}</div>` : '';
+            const grouped = row._audit_grouped ? `<div class="small text-muted">grouped ${esc(row._audit_group_count || '')} guard rows</div>` : '';
             return `<tr>
                 <td>${esc(row.status || row.trigger || '-')}<div class="small text-muted">${esc(fmtTs(row.event_ts || row.opened_at))}</div></td>
                 <td>${esc(row.terminal_family || '-')}</td>
@@ -281,7 +375,7 @@
                 <td>${fmtNum(row.lot, 2)}</td>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td class="${pnlCls}">${fmtNum(row.realized_pnl, 2)}</td>
-                <td>${esc(row.message || row.close_reason || '-')}</td>
+                <td>${esc(row.message || row.close_reason || '-')}${grouped}${shadow}</td>
             </tr>`;
         }).join('');
     }

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import hashlib
 import threading
 import time
 import json
@@ -350,6 +351,9 @@ class TelegramBridgeService:
         self._execution_realized_stats_cache: Dict[str, Dict[str, Any]] = {}
         self._execution_reconcile_last_ts: float = 0.0
         self._indicator_open_recovery_cache: Dict[str, Dict[str, Any]] = {}
+        self._indicator_chop_guard_cache: Dict[str, Dict[str, Any]] = {}
+        self._indicator_chop_guard_last_log: Dict[str, float] = {}
+        self._indicator_shadow_eval_cache: Dict[str, Dict[str, Any]] = {}
         self._restore_pending_entry_signals()
 
     @staticmethod
@@ -2287,6 +2291,54 @@ class TelegramBridgeService:
     def _source_type_from_source_tag(cls, value: Any) -> str:
         return "mt_indicator" if cls._is_bridge_source_tag(value) else "telegram_channel"
 
+    def _find_execution_open_meta_for_ticket(self, ticket: int) -> Dict[str, Any]:
+        t = int(_to_float_or_none(ticket) or 0)
+        if t <= 0:
+            return {}
+        self._ensure_execution_log_table()
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(TelegramAutomationExecutionLogModel)
+                .filter(TelegramAutomationExecutionLogModel.ticket == int(t))
+                .filter(TelegramAutomationExecutionLogModel.status == "opened")
+                .order_by(TelegramAutomationExecutionLogModel.id.desc())
+                .first()
+            )
+            if row is None:
+                return {}
+            meta = self._build_reconcile_meta_from_log_row(row)
+            extra = _json_obj(row.extra_json or {})
+            return {
+                "row_id": int(row.id or 0),
+                "source_type": str(row.source_type or "").strip().lower(),
+                "source_name": str(row.source_name or "").strip(),
+                "trigger": str(row.trigger or "").strip(),
+                "symbol": str(row.symbol or "").strip().upper(),
+                "timeframe": str(row.timeframe or "").strip().upper(),
+                "direction": str(row.direction or "").strip().upper(),
+                "lot": _to_float_or_none(row.lot),
+                "profile": str(row.profile or "").strip().lower(),
+                "indicator": str(row.indicator or "").strip(),
+                "source_tag": str(row.source_tag or "").strip().lower(),
+                "message": str(row.message or "").strip(),
+                "execution_mode": str(extra.get("execution_mode") or "").strip().lower(),
+                "opened_at": str(extra.get("opened_at") or "").strip(),
+                "combo_key": str(extra.get("combo_key") or "").strip().lower(),
+                "trace_id": str(extra.get("trace_id") or "").strip(),
+                "broker_comment": str(extra.get("broker_comment") or "").strip(),
+                "stage_payload": _json_obj(extra.get("stage_payload")),
+                "reconcile_meta": dict(meta or {}),
+            }
+        except Exception:
+            logger.exception("execution_open_meta_lookup_failed ticket=%s", int(t))
+            return {}
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def _append_closed_execution_log_from_row(
         self,
         *,
@@ -2303,6 +2355,33 @@ class TelegramBridgeService:
             return
         service = svc if isinstance(svc, LiveTradingService) else self._get_live_service()
         symbol = str(meta.get("symbol") or "").strip().upper()
+        open_meta = self._find_execution_open_meta_for_ticket(int(ticket))
+        open_reconcile = dict((open_meta or {}).get("reconcile_meta") or {})
+        source_enriched = False
+        if isinstance(open_reconcile, dict) and open_reconcile:
+            if (not str(meta.get("source_name") or "").strip()) or str(meta.get("source_name") or "").strip().lower() == "unknown":
+                src = str(open_reconcile.get("source_name") or open_meta.get("source_name") or "").strip()
+                if src and src.lower() != "unknown":
+                    meta["source_name"] = str(src)
+                    source_enriched = True
+            for key in ("profile", "indicator", "source_tag", "execution_mode", "trace_id", "order_comment"):
+                if (not str(meta.get(key) or "").strip()) and str(open_reconcile.get(key) or "").strip():
+                    meta[key] = open_reconcile.get(key)
+            if not symbol and str(open_reconcile.get("symbol") or "").strip():
+                symbol = str(open_reconcile.get("symbol") or "").strip().upper()
+                meta["symbol"] = str(symbol)
+            if not str(meta.get("timeframe") or "").strip() and str(open_reconcile.get("timeframe") or "").strip():
+                meta["timeframe"] = str(open_reconcile.get("timeframe") or "").strip().upper()
+            if not str(meta.get("direction") or "").strip() and str(open_reconcile.get("direction") or "").strip():
+                meta["direction"] = str(open_reconcile.get("direction") or "").strip().upper()
+            if not isinstance(meta.get("stage_lots"), list) or not meta.get("stage_lots"):
+                if isinstance(open_reconcile.get("stage_lots"), list):
+                    meta["stage_lots"] = list(open_reconcile.get("stage_lots") or [])
+            if not isinstance(meta.get("tps"), list) or not meta.get("tps"):
+                if isinstance(open_reconcile.get("tps"), list):
+                    meta["tps"] = list(open_reconcile.get("tps") or [])
+            if not str(meta.get("created_at") or "").strip() and str(open_reconcile.get("created_at") or "").strip():
+                meta["created_at"] = str(open_reconcile.get("created_at") or "")
         pnl_stats = self._resolve_position_realized_stats(
             svc=service,
             ticket=int(ticket),
@@ -2316,7 +2395,7 @@ class TelegramBridgeService:
             v = _to_float_or_none(x)
             if v is not None and float(v) > 0.0:
                 total_lot += float(v)
-        lot_val = float(total_lot) if total_lot > 0.0 else None
+        lot_val = float(total_lot) if total_lot > 0.0 else _to_float_or_none(open_meta.get("lot"))
         combo_key = self._build_execution_combo_key(
             source_type=self._source_type_from_source_tag(meta.get("source_tag")),
             source_name=str(meta.get("source_name") or "unknown"),
@@ -2353,6 +2432,14 @@ class TelegramBridgeService:
             trace_id=str(meta.get("trace_id") or "").strip() or None,
             stage="position_close",
             stage_status="closed",
+            stage_payload={
+                "source_enriched_from_open_log": bool(source_enriched),
+                "open_log_id": int(open_meta.get("row_id") or 0) or None,
+                "open_source_name": str(open_meta.get("source_name") or "").strip() or None,
+                "open_execution_mode": str(open_meta.get("execution_mode") or "").strip() or None,
+                "pnl_resolution": ("history" if int(_to_float_or_none((pnl_stats or {}).get("close_count")) or 0) > 0 else "missing_history"),
+                "history_close_count": int(_to_float_or_none((pnl_stats or {}).get("close_count")) or 0),
+            },
             error_code=str(reason or "").strip().lower() or None,
         )
         self._mark_reentry_progress_from_execution(
@@ -3971,6 +4058,133 @@ class TelegramBridgeService:
         return max(10.0, min(86400.0, float(raw)))
 
     @staticmethod
+    def _indicator_chop_guard_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_GUARD_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _indicator_chop_guard_mtf_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_GUARD_MTF_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _indicator_chop_guard_regime_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_GUARD_REGIME_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _indicator_chop_guard_loss_window_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_REVERSE_LOSS_WINDOW_SEC", "1800"))
+        except Exception:
+            raw = 1800.0
+        if not math.isfinite(float(raw)):
+            raw = 1800.0
+        return max(60.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _indicator_chop_guard_cooldown_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_COOLDOWN_SEC", "1800"))
+        except Exception:
+            raw = 1800.0
+        if not math.isfinite(float(raw)):
+            raw = 1800.0
+        return max(60.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _indicator_chop_guard_reverse_loss_ticket_threshold() -> int:
+        try:
+            raw = int(float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_REVERSE_LOSS_TICKETS", "3")))
+        except Exception:
+            raw = 3
+        return int(max(1, min(100, int(raw))))
+
+    @staticmethod
+    def _indicator_chop_guard_min_loss_usd() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_MIN_REVERSE_LOSS_USD", "0.50"))
+        except Exception:
+            raw = 0.50
+        if not math.isfinite(float(raw)):
+            raw = 0.50
+        return max(0.0, min(100000.0, float(raw)))
+
+    @staticmethod
+    def _indicator_chop_guard_min_efficiency_ratio() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_MIN_EFFICIENCY_RATIO", "0.24"))
+        except Exception:
+            raw = 0.24
+        if not math.isfinite(float(raw)):
+            raw = 0.24
+        return max(0.0, min(1.0, float(raw)))
+
+    @staticmethod
+    def _indicator_chop_guard_min_donchian_atr_ratio() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_MIN_DONCHIAN_ATR_RATIO", "1.80"))
+        except Exception:
+            raw = 1.80
+        if not math.isfinite(float(raw)):
+            raw = 1.80
+        return max(0.0, min(20.0, float(raw)))
+
+    @staticmethod
+    def _indicator_chop_guard_higher_tf_max_age_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_MTF_MAX_AGE_SEC", "900"))
+        except Exception:
+            raw = 900.0
+        if not math.isfinite(float(raw)):
+            raw = 900.0
+        return max(30.0, min(86400.0, float(raw)))
+
+    @staticmethod
+    def _indicator_shadow_eval_enabled() -> bool:
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_SHADOW_EVAL_ENABLED", "1")).strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _indicator_shadow_eval_max_rows() -> int:
+        try:
+            raw = int(float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_SHADOW_EVAL_MAX_ROWS", "40")))
+        except Exception:
+            raw = 40
+        return int(max(1, min(500, int(raw))))
+
+    @staticmethod
+    def _indicator_shadow_eval_cache_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_SHADOW_EVAL_CACHE_SEC", "60"))
+        except Exception:
+            raw = 60.0
+        if not math.isfinite(float(raw)):
+            raw = 60.0
+        return max(5.0, min(3600.0, float(raw)))
+
+    @staticmethod
+    def _indicator_shadow_eval_horizon_sec(timeframe: Any) -> float:
+        tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
+        defaults = {
+            "M1": 3.0 * 3600.0,
+            "M5": 6.0 * 3600.0,
+            "M15": 12.0 * 3600.0,
+            "M30": 24.0 * 3600.0,
+            "H1": 48.0 * 3600.0,
+            "H4": 7.0 * 86400.0,
+            "D1": 14.0 * 86400.0,
+        }
+        default_raw = float(defaults.get(str(tf), 6.0 * 3600.0))
+        try:
+            raw = float(TelegramBridgeService._get_env_value(f"INDICATOR_BRIDGE_SHADOW_EVAL_HORIZON_SEC_{str(tf)}", str(default_raw)))
+        except Exception:
+            raw = default_raw
+        if not math.isfinite(float(raw)):
+            raw = default_raw
+        return max(60.0, min(30.0 * 86400.0, float(raw)))
+
+    @staticmethod
     def _mt4_exec_profile_enabled(profile: str) -> bool:
         p = TelegramBridgeService._mt4_exec_normalized_profile(profile)
         key = f"TELEGRAM_MT4_PROFILE_{str(p).upper()}_ENABLED"
@@ -4693,7 +4907,7 @@ class TelegramBridgeService:
                     {
                         k: v
                         for k, v in row.items()
-                        if v is not None and v != "" and v != []
+                        if v is not None and v != [] and (v != "" or str(k) in {"pending_direction"})
                     }
                 )
                 row = merged
@@ -5324,7 +5538,13 @@ class TelegramBridgeService:
             return "new_york"
         return "off_session"
 
-    def get_indicator_execution_audit_rows(self, *, limit: int = 500, resolve_history_pnl: bool = True) -> Dict[str, Any]:
+    def get_indicator_execution_audit_rows(
+        self,
+        *,
+        limit: int = 500,
+        resolve_history_pnl: bool = True,
+        evaluate_shadow: bool = True,
+    ) -> Dict[str, Any]:
         raw_rows = self.get_automation_execution_logs(limit=max(100, min(5000, int(limit or 500))))
         mode_overrides_by_family = {
             "mt4": self._indicator_bridge_instance_mode_overrides("mt4"),
@@ -5448,6 +5668,7 @@ class TelegramBridgeService:
                 lazy_pnl_resolve_count += 1
             mode_status = _current_mode_status(parsed_tag, source_tag)
             execution_mode_val = str(row.get("execution_mode") or parsed_tag.get("execution_mode") or "").strip().lower()
+            stage_payload_val = _json_obj(row.get("stage_payload") or {})
             out_rows.append(
                 {
                     "id": int(row.get("id") or 0),
@@ -5479,6 +5700,11 @@ class TelegramBridgeService:
                     "mode_config_status": str(mode_status.get("mode_config_status") or "unknown"),
                     "event_ts": str(event_ts),
                     "message": str(row.get("message") or "").strip(),
+                    "stage": str(row.get("stage") or "").strip().lower(),
+                    "stage_status": str(row.get("stage_status") or "").strip().lower(),
+                    "stage_payload": dict(stage_payload_val),
+                    "shadow_eval": {},
+                    "shadow_outcome": "",
                     "source_tag": str(source_tag),
                     "source_tag_base": str(parsed_tag.get("base_source_tag") or "").strip().lower(),
                     "instance_key": str(parsed_tag.get("instance_key") or "").strip(),
@@ -5488,6 +5714,36 @@ class TelegramBridgeService:
         out_rows.sort(key=lambda r: str(r.get("event_ts") or r.get("opened_at") or ""), reverse=True)
         lim = int(max(20, min(5000, int(limit or 500))))
         out_rows = out_rows[:lim]
+        if bool(evaluate_shadow) and bool(self._indicator_shadow_eval_enabled()):
+            shadow_eval_count = 0
+            shadow_eval_max = int(self._indicator_shadow_eval_max_rows())
+            shadow_svc: Optional[LiveTradingService] = None
+            for row in out_rows:
+                if shadow_eval_count >= shadow_eval_max:
+                    break
+                status_shadow = str(row.get("status") or "").strip().lower()
+                msg_shadow = str(row.get("message") or "").strip().lower()
+                stage_shadow = str(row.get("stage") or "").strip().lower()
+                payload_shadow = _json_obj(row.get("stage_payload") or {})
+                if status_shadow != "skipped" or "chop_guard_blocked" not in msg_shadow or stage_shadow != "chop_guard":
+                    continue
+                if not isinstance(payload_shadow.get("shadow_trade_plan"), dict):
+                    continue
+                if shadow_svc is None:
+                    shadow_svc = self._get_live_service()
+                shadow = self._evaluate_indicator_shadow_trade(
+                    row=dict(row),
+                    svc=shadow_svc,
+                    now_ts=float(time.time()),
+                )
+                row["shadow_eval"] = dict(shadow or {})
+                row["shadow_outcome"] = str((shadow or {}).get("outcome") or "")
+                row["shadow_reason"] = str((shadow or {}).get("reason") or "")
+                row["shadow_mfe_price"] = _to_float_or_none((shadow or {}).get("mfe_price"))
+                row["shadow_mae_price"] = _to_float_or_none((shadow or {}).get("mae_price"))
+                row["shadow_estimated_missed_profit_score"] = _to_float_or_none((shadow or {}).get("estimated_missed_profit_score"))
+                row["shadow_estimated_avoided_loss_score"] = _to_float_or_none((shadow or {}).get("estimated_avoided_loss_score"))
+                shadow_eval_count += 1
         lazy_pnl_resolve_count = 0
         # Resolve enough visible rows for morning audits without turning the
         # table into an unbounded MT5 history scanner. Results, including
@@ -6048,6 +6304,495 @@ class TelegramBridgeService:
             "efficiency_ratio": float(er),
             "donchian_atr_ratio": (_to_float_or_none(donchian_atr_ratio)),
         }
+
+    @staticmethod
+    def _indicator_bridge_tf_rank(timeframe: Any) -> int:
+        tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
+        order = {"M1": 1, "M5": 2, "M15": 3, "M30": 4, "H1": 5, "H4": 6, "D1": 7}
+        return int(order.get(str(tf), 0))
+
+    @staticmethod
+    def _indicator_bridge_tf_seconds(timeframe: Any) -> float:
+        tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
+        return float({
+            "M1": 60.0,
+            "M5": 300.0,
+            "M15": 900.0,
+            "M30": 1800.0,
+            "H1": 3600.0,
+            "H4": 14400.0,
+            "D1": 86400.0,
+        }.get(str(tf), 300.0))
+
+    @staticmethod
+    def _indicator_chop_guard_anchor_tf(timeframe: Any) -> str:
+        tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
+        mapping = {
+            "M1": "M5",
+            "M5": "M15",
+            "M15": "M30",
+            "M30": "H1",
+            "H1": "H4",
+        }
+        return str(mapping.get(str(tf), ""))
+
+    def _latest_indicator_bridge_instance_state(
+        self,
+        *,
+        family: str,
+        profile: str,
+        indicator_key: str,
+        symbol: str,
+        timeframe: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        fam = self._indicator_bridge_family(family)
+        prof = str(profile or "generic").strip().lower() or "generic"
+        ikey = str(indicator_key or "").strip().lower()
+        sym = str(symbol or "").strip().upper()
+        tf = self._normalize_tf_token(timeframe, "M5")
+        best: Optional[Dict[str, Any]] = None
+        best_seen = 0.0
+        with self._lock:
+            rows = [dict(v) for v in self._indicator_bridge_instances.values() if isinstance(v, dict)]
+        for row in rows:
+            row_fam = self._indicator_bridge_family(row.get("terminal_family"))
+            row_prof = str(row.get("profile") or "generic").strip().lower() or "generic"
+            row_key = self._normalize_mt_indicator_key(row.get("indicator"))
+            row_sym = str(row.get("symbol") or "").strip().upper()
+            row_tf = self._normalize_tf_token(row.get("timeframe"), "M5")
+            if row_fam != fam or row_prof != prof or row_key != ikey or row_sym != sym or row_tf != tf:
+                continue
+            seen = _to_unix_or_none(row.get("last_seen")) or 0.0
+            if float(seen) >= float(best_seen):
+                best = dict(row)
+                best_seen = float(seen)
+        if not isinstance(best, dict):
+            return {"available": False, "timeframe": str(tf)}
+        direction = self._bridge_direction(best.get("confirmed_direction")) or self._bridge_direction(best.get("resolved_signal"))
+        pending = self._bridge_direction(best.get("pending_direction"))
+        age = float(now_ts) - float(best_seen) if best_seen > 0.0 else None
+        return {
+            "available": True,
+            "timeframe": str(tf),
+            "direction": str(direction or ""),
+            "pending_direction": str(pending or ""),
+            "age_sec": (_to_float_or_none(age)),
+            "last_seen": str(best.get("last_seen") or ""),
+            "instance_key": str(best.get("instance_key") or ""),
+            "bridge_event_type": str(best.get("bridge_event_type") or ""),
+        }
+
+    def _indicator_chop_reverse_loss_stats(
+        self,
+        *,
+        combo_source_tag: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        prefix = str(combo_source_tag or "").strip().lower()
+        if not prefix:
+            return {"loss_count": 0, "loss_sum": 0.0, "newest_loss_age_sec": None, "tickets": []}
+        window_sec = float(self._indicator_chop_guard_loss_window_sec())
+        cache_key = f"{prefix}|{int(window_sec)}"
+        with self._lock:
+            cached = dict(self._indicator_chop_guard_cache.get(cache_key) or {})
+        if cached and (float(now_ts) - float(cached.get("ts") or 0.0)) <= 5.0:
+            return dict(cached.get("value") or {})
+
+        self._ensure_execution_log_table()
+        cutoff_dt = datetime.fromtimestamp(float(now_ts) - float(window_sec), tz=timezone.utc).replace(tzinfo=None)
+        min_loss = float(self._indicator_chop_guard_min_loss_usd())
+        rows: List[TelegramAutomationExecutionLogModel] = []
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TelegramAutomationExecutionLogModel)
+                .filter(TelegramAutomationExecutionLogModel.source_type == "mt_indicator")
+                .filter(TelegramAutomationExecutionLogModel.status == "closed")
+                .filter(TelegramAutomationExecutionLogModel.source_tag.like(f"{prefix}%"))
+                .filter(TelegramAutomationExecutionLogModel.created_at >= cutoff_dt)
+                .order_by(TelegramAutomationExecutionLogModel.id.desc())
+                .limit(500)
+                .all()
+            )
+        except Exception:
+            logger.exception("indicator_chop_guard_reverse_loss_query_failed prefix=%s", str(prefix))
+            rows = []
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+        loss_count = 0
+        loss_sum = 0.0
+        newest_loss_ts = 0.0
+        tickets: List[int] = []
+        for r in rows:
+            extra = _json_obj(getattr(r, "extra_json", {}) or {})
+            msg = str(getattr(r, "message", "") or "").strip().lower()
+            close_reason = str(extra.get("close_reason") or "").strip().lower()
+            if "reverse" not in msg and "reverse" not in close_reason:
+                continue
+            pnl = _to_float_or_none(extra.get("realized_pnl"))
+            if pnl is None or float(pnl) > -float(min_loss):
+                continue
+            loss_count += 1
+            loss_sum += float(pnl)
+            try:
+                t = int(getattr(r, "ticket", 0) or 0)
+            except Exception:
+                t = 0
+            if t > 0:
+                tickets.append(int(t))
+            created = getattr(r, "created_at", None)
+            seen = created.replace(tzinfo=timezone.utc).timestamp() if isinstance(created, datetime) else 0.0
+            newest_loss_ts = max(float(newest_loss_ts), float(seen))
+
+        value = {
+            "loss_count": int(loss_count),
+            "loss_sum": float(loss_sum),
+            "newest_loss_age_sec": (float(now_ts) - float(newest_loss_ts) if newest_loss_ts > 0.0 else None),
+            "window_sec": float(window_sec),
+            "min_loss_usd": float(min_loss),
+            "tickets": [int(x) for x in tickets[:20]],
+        }
+        with self._lock:
+            self._indicator_chop_guard_cache[str(cache_key)] = {"ts": float(now_ts), "value": dict(value)}
+            if len(self._indicator_chop_guard_cache) > 1000:
+                cutoff = float(now_ts) - 60.0
+                self._indicator_chop_guard_cache = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_chop_guard_cache.items()
+                    if float((v or {}).get("ts") or 0.0) >= float(cutoff)
+                }
+        return dict(value)
+
+    def _check_indicator_chop_governor(
+        self,
+        *,
+        family: str,
+        profile: str,
+        indicator: str,
+        indicator_key: str,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        mode: str,
+        policy_name: str,
+        combo_source_tag: str,
+        mode_source_tag: str,
+        now_ts: float,
+        regime_info: Dict[str, Any],
+        active_regime: str,
+    ) -> Dict[str, Any]:
+        if not bool(self._indicator_chop_guard_enabled()):
+            return {"allow": True, "reason": "disabled"}
+        tf = self._normalize_tf_token(timeframe, "M5")
+        incoming = str(direction or "").strip().upper()
+        if incoming not in {"BUY", "SELL"}:
+            return {"allow": False, "reason": "invalid_direction"}
+
+        checks: Dict[str, Any] = {
+            "mode": str(mode or ""),
+            "policy": str(policy_name or ""),
+            "timeframe": str(tf),
+            "direction": str(incoming),
+            "active_regime": str(active_regime or ""),
+            "regime_info": dict(regime_info or {}),
+        }
+
+        loss_stats = self._indicator_chop_reverse_loss_stats(combo_source_tag=str(combo_source_tag), now_ts=float(now_ts))
+        loss_threshold = int(self._indicator_chop_guard_reverse_loss_ticket_threshold())
+        cooldown_sec = float(self._indicator_chop_guard_cooldown_sec())
+        newest_age = _to_float_or_none((loss_stats or {}).get("newest_loss_age_sec"))
+        checks["reverse_loss"] = dict(loss_stats or {})
+        if int((loss_stats or {}).get("loss_count") or 0) >= int(loss_threshold):
+            if newest_age is None or float(newest_age) <= float(cooldown_sec):
+                return {
+                    "allow": False,
+                    "reason": "chop_reverse_loss_cooldown",
+                    "cooldown_sec": float(cooldown_sec),
+                    "loss_threshold": int(loss_threshold),
+                    "checks": dict(checks),
+                }
+
+        if bool(self._indicator_chop_guard_mtf_enabled()):
+            anchor_tf = self._indicator_chop_guard_anchor_tf(tf)
+            if anchor_tf:
+                anchor = self._latest_indicator_bridge_instance_state(
+                    family=str(family),
+                    profile=str(profile),
+                    indicator_key=str(indicator_key),
+                    symbol=str(symbol),
+                    timeframe=str(anchor_tf),
+                    now_ts=float(now_ts),
+                )
+                checks["mtf_anchor"] = dict(anchor or {})
+                if bool((anchor or {}).get("available")):
+                    age = _to_float_or_none((anchor or {}).get("age_sec"))
+                    max_age = float(self._indicator_chop_guard_higher_tf_max_age_sec())
+                    anchor_dir = str((anchor or {}).get("direction") or "").strip().upper()
+                    anchor_pending = str((anchor or {}).get("pending_direction") or "").strip().upper()
+                    if age is not None and float(age) > float(max_age):
+                        return {"allow": False, "reason": "mtf_anchor_stale", "checks": dict(checks), "max_age_sec": float(max_age)}
+                    if anchor_pending in {"BUY", "SELL"}:
+                        return {"allow": False, "reason": "mtf_anchor_pending", "checks": dict(checks)}
+                    if anchor_dir in {"BUY", "SELL"} and anchor_dir != incoming:
+                        return {"allow": False, "reason": "mtf_direction_mismatch", "checks": dict(checks)}
+
+        if bool(self._indicator_chop_guard_regime_enabled()) and self._indicator_bridge_tf_rank(tf) <= self._indicator_bridge_tf_rank("M5"):
+            er = _to_float_or_none((regime_info or {}).get("efficiency_ratio"))
+            don = _to_float_or_none((regime_info or {}).get("donchian_atr_ratio"))
+            er_min = float(self._indicator_chop_guard_min_efficiency_ratio())
+            don_min = float(self._indicator_chop_guard_min_donchian_atr_ratio())
+            checks["range_quality"] = {"efficiency_ratio": er, "min_efficiency_ratio": er_min, "donchian_atr_ratio": don, "min_donchian_atr_ratio": don_min}
+            if str(active_regime or "").strip().lower() == "range" and er is not None and float(er) < float(er_min):
+                if don is None or float(don) < float(don_min):
+                    return {"allow": False, "reason": "range_regime_chop", "checks": dict(checks)}
+
+        return {"allow": True, "reason": "allowed", "checks": dict(checks)}
+
+    def _append_indicator_chop_guard_log(
+        self,
+        *,
+        indicator: str,
+        profile: str,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        mode: str,
+        policy_name: str,
+        mode_source_tag: str,
+        combo_key: str,
+        event_ts: Any,
+        guard: Dict[str, Any],
+        signal_plan: Optional[Dict[str, Any]] = None,
+        now_ts: float,
+    ) -> None:
+        reason = str((guard or {}).get("reason") or "chop_guard_blocked").strip().lower()
+        log_key = f"{str(mode_source_tag).lower()}|{str(direction).upper()}|{reason}"
+        with self._lock:
+            prev = float(self._indicator_chop_guard_last_log.get(log_key) or 0.0)
+            if prev > 0.0 and (float(now_ts) - float(prev)) < 30.0:
+                return
+            self._indicator_chop_guard_last_log[str(log_key)] = float(now_ts)
+            if len(self._indicator_chop_guard_last_log) > 2000:
+                cutoff = float(now_ts) - 600.0
+                self._indicator_chop_guard_last_log = {
+                    str(k): float(v) for k, v in self._indicator_chop_guard_last_log.items() if float(v) >= float(cutoff)
+                }
+        suffix = f"_{str(policy_name)}" if policy_name else ""
+        payload = dict(guard or {})
+        if isinstance(signal_plan, dict) and signal_plan:
+            payload["shadow_trade_plan"] = dict(signal_plan)
+        self._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name=str(indicator),
+            trigger="indicator_signal",
+            status="skipped",
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+            direction=str(direction),
+            lot=0.0,
+            profile=str(profile),
+            indicator=str(indicator),
+            source_tag=str(mode_source_tag),
+            event_ts=event_ts,
+            message=f"chop_guard_blocked:{reason}",
+            combo_key=str(combo_key),
+            execution_mode=f"{str(mode)}{suffix}",
+            stage="chop_guard",
+            stage_status="blocked",
+            stage_payload=dict(payload),
+            error_code=str(reason),
+        )
+
+    def _evaluate_indicator_shadow_trade(
+        self,
+        *,
+        row: Dict[str, Any],
+        svc: Optional[LiveTradingService] = None,
+        now_ts: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        item = dict(row or {})
+        stage_payload = _json_obj(item.get("stage_payload") or {})
+        plan = _json_obj(stage_payload.get("shadow_trade_plan") or {})
+        if not plan:
+            return {"ok": False, "outcome": "not_shadow_trade", "reason": "missing_shadow_trade_plan"}
+        direction = str(item.get("direction") or plan.get("direction") or "").strip().upper()
+        if direction not in {"BUY", "SELL"}:
+            return {"ok": False, "outcome": "invalid", "reason": "invalid_direction"}
+        event_ts = str(item.get("event_ts") or item.get("opened_at") or "").strip()
+        start_ts = _to_unix_or_none(event_ts)
+        if start_ts is None or float(start_ts) <= 0.0:
+            return {"ok": False, "outcome": "invalid", "reason": "missing_event_ts"}
+        symbol = str(item.get("symbol") or "").strip() or str(plan.get("symbol") or "").strip()
+        timeframe = self._normalize_tf_token(item.get("timeframe") or plan.get("timeframe"), "M5")
+        entry = _to_float_or_none(plan.get("entry_price"))
+        if entry is None or float(entry) <= 0.0:
+            return {"ok": False, "outcome": "invalid", "reason": "missing_entry_price"}
+        stop_loss = _to_float_or_none(plan.get("stop_loss"))
+        tps_raw = plan.get("tps") if isinstance(plan.get("tps"), list) else []
+        tps: List[Dict[str, Any]] = []
+        for i, tp in enumerate(tps_raw or []):
+            p = tp if isinstance(tp, dict) else {}
+            px = _to_float_or_none(p.get("price") if isinstance(p, dict) else None)
+            if px is None:
+                px = _to_float_or_none(tp)
+            if px is None or float(px) <= 0.0:
+                continue
+            idx = int(_to_float_or_none((p or {}).get("index")) or (i + 1))
+            tps.append({"index": int(idx), "price": float(px)})
+        if not tps and stop_loss is None:
+            return {"ok": False, "outcome": "invalid", "reason": "missing_tp_and_sl"}
+
+        tps.sort(key=lambda x: float(x.get("price") or 0.0), reverse=(direction == "SELL"))
+        cache_sig = json.dumps(
+            {
+                "id": int(item.get("id") or 0),
+                "event_ts": str(event_ts),
+                "symbol": str(symbol),
+                "tf": str(timeframe),
+                "direction": str(direction),
+                "entry": float(entry),
+                "sl": stop_loss,
+                "tps": tps,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        cache_key = hashlib.sha1(cache_sig.encode("utf-8")).hexdigest()
+        now = float(now_ts if now_ts is not None else time.time())
+        with self._lock:
+            cached = dict(self._indicator_shadow_eval_cache.get(cache_key) or {})
+        if cached and (now - float(cached.get("ts") or 0.0)) <= float(self._indicator_shadow_eval_cache_sec()):
+            return dict(cached.get("value") or {})
+
+        horizon_sec = float(self._indicator_shadow_eval_horizon_sec(timeframe))
+        tf_sec = float(self._indicator_bridge_tf_seconds(timeframe))
+        count = int(max(20, min(10000, math.ceil(float(horizon_sec) / max(float(tf_sec), 1.0)) + 20)))
+        live = svc or self._get_live_service()
+        try:
+            bars = live.get_recent_candles(symbol=str(symbol), timeframe=str(timeframe), count=int(count), resolve_symbol=False)
+        except Exception as exc:
+            bars = []
+            logger.debug("indicator_shadow_eval_candles_failed symbol=%s tf=%s err=%s", str(symbol), str(timeframe), str(exc)[:160])
+        if not isinstance(bars, list) or not bars:
+            value = {
+                "ok": True,
+                "outcome": "unresolved",
+                "reason": "no_candles",
+                "horizon_sec": float(horizon_sec),
+                "evaluated_bars": 0,
+            }
+            with self._lock:
+                self._indicator_shadow_eval_cache[str(cache_key)] = {"ts": float(now), "value": dict(value)}
+            return dict(value)
+
+        max_fav = 0.0
+        max_adv = 0.0
+        hit_tps: List[int] = []
+        first_hit: Dict[str, Any] = {}
+        evaluated_until = ""
+        evaluated_bars = 0
+        ambiguous = False
+        horizon_end = float(start_ts) + float(horizon_sec)
+        # Skip the signal candle to avoid falsely crediting price action that
+        # happened before the block event inside the same OHLC bar.
+        min_bar_ts = float(start_ts) + max(1.0, min(float(tf_sec), 60.0))
+        for b in sorted([dict(x) for x in bars if isinstance(x, dict)], key=lambda x: int(x.get("time_unix") or x.get("time") or 0)):
+            bts = _to_float_or_none(b.get("time_unix"))
+            if bts is None:
+                bts = _to_unix_or_none(b.get("time"))
+            if bts is None or float(bts) < float(min_bar_ts):
+                continue
+            if float(bts) > float(horizon_end):
+                continue
+            high = _to_float_or_none(b.get("high"))
+            low = _to_float_or_none(b.get("low"))
+            close = _to_float_or_none(b.get("close"))
+            if high is None or low is None:
+                continue
+            evaluated_bars += 1
+            evaluated_until = str(b.get("time") or datetime.fromtimestamp(float(bts), tz=timezone.utc).isoformat())
+            if direction == "BUY":
+                max_fav = max(float(max_fav), float(high) - float(entry))
+                max_adv = max(float(max_adv), float(entry) - float(low))
+                hit_sl = bool(stop_loss is not None and float(low) <= float(stop_loss))
+                newly_hit = [int(tp["index"]) for tp in tps if float(high) >= float(tp["price"])]
+            else:
+                max_fav = max(float(max_fav), float(entry) - float(low))
+                max_adv = max(float(max_adv), float(high) - float(entry))
+                hit_sl = bool(stop_loss is not None and float(high) >= float(stop_loss))
+                newly_hit = [int(tp["index"]) for tp in tps if float(low) <= float(tp["price"])]
+            for idx in newly_hit:
+                if int(idx) not in hit_tps:
+                    hit_tps.append(int(idx))
+            hit_tp = bool(newly_hit)
+            if not first_hit and (hit_tp or hit_sl):
+                if hit_tp and hit_sl:
+                    ambiguous = True
+                    kind = "ambiguous_tp_sl_same_bar"
+                else:
+                    kind = "tp" if hit_tp else "sl"
+                first_hit = {
+                    "type": str(kind),
+                    "time": str(evaluated_until),
+                    "bar_time_unix": float(bts),
+                    "close": (_to_float_or_none(close)),
+                    "tp_indices": [int(x) for x in newly_hit],
+                }
+                if kind == "sl":
+                    break
+        hit_tps_sorted = sorted(set(int(x) for x in hit_tps))
+        max_tp = max(hit_tps_sorted) if hit_tps_sorted else None
+        if first_hit:
+            first_type = str(first_hit.get("type") or "")
+            if first_type == "tp":
+                outcome = "would_have_won"
+            elif first_type == "sl":
+                outcome = "would_have_lost"
+            else:
+                outcome = "ambiguous"
+        else:
+            outcome = "unresolved"
+
+        lot = _to_float_or_none(plan.get("lot")) or _to_float_or_none(item.get("lot")) or 0.0
+        first_tp_price = _to_float_or_none(tps[0].get("price")) if tps else None
+        tp_distance = abs(float(first_tp_price) - float(entry)) if first_tp_price is not None else None
+        sl_distance = abs(float(entry) - float(stop_loss)) if stop_loss is not None else None
+        value = {
+            "ok": True,
+            "outcome": str(outcome),
+            "reason": str(first_hit.get("type") or "no_hit_in_horizon"),
+            "first_hit": dict(first_hit or {}),
+            "hit_tp_indices": [int(x) for x in hit_tps_sorted],
+            "max_tp_index_hit": (int(max_tp) if max_tp is not None else None),
+            "mfe_price": float(max(0.0, max_fav)),
+            "mae_price": float(max(0.0, max_adv)),
+            "estimated_missed_profit_score": (float(tp_distance) * float(lot) if outcome in {"would_have_won", "ambiguous"} and tp_distance is not None else 0.0),
+            "estimated_avoided_loss_score": (float(sl_distance) * float(lot) if outcome == "would_have_lost" and sl_distance is not None else 0.0),
+            "estimate_unit": "price_distance_x_lot",
+            "ambiguous": bool(ambiguous),
+            "horizon_sec": float(horizon_sec),
+            "evaluated_bars": int(evaluated_bars),
+            "evaluated_until": str(evaluated_until),
+            "entry_price": float(entry),
+            "stop_loss": (_to_float_or_none(stop_loss)),
+            "first_tp_price": (_to_float_or_none(first_tp_price)),
+        }
+        with self._lock:
+            self._indicator_shadow_eval_cache[str(cache_key)] = {"ts": float(now), "value": dict(value)}
+            if len(self._indicator_shadow_eval_cache) > 2000:
+                cutoff = float(now) - float(self._indicator_shadow_eval_cache_sec()) * 2.0
+                self._indicator_shadow_eval_cache = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_shadow_eval_cache.items()
+                    if float((v or {}).get("ts") or 0.0) >= float(cutoff)
+                }
+        return dict(value)
 
     def _close_mt4_reverse_positions(
         self,
@@ -7970,6 +8715,79 @@ class TelegramBridgeService:
                     continue
                 if int((reverse_out or {}).get("closed_count") or 0) > 0:
                     self._clear_indicator_recent_open(source_tag=str(mode_source_tag))
+
+                chop_guard = self._check_indicator_chop_governor(
+                    family=str(family),
+                    profile=str(profile),
+                    indicator=str(indicator),
+                    indicator_key=str(indicator_key),
+                    symbol=str(symbol_exec).strip().upper(),
+                    timeframe=str(timeframe),
+                    direction=str(hint),
+                    mode=str(mode),
+                    policy_name=str(policy_name),
+                    combo_source_tag=str(combo_source_tag),
+                    mode_source_tag=str(mode_source_tag),
+                    now_ts=float(now_ts),
+                    regime_info=dict(regime_info or {}),
+                    active_regime=str(active_regime),
+                )
+                if not bool((chop_guard or {}).get("allow", True)):
+                    self._append_indicator_chop_guard_log(
+                        indicator=str(indicator),
+                        profile=str(profile),
+                        symbol=str(symbol_exec).strip().upper(),
+                        timeframe=str(timeframe),
+                        direction=str(hint),
+                        mode=str(mode),
+                        policy_name=str(policy_name),
+                        mode_source_tag=str(mode_source_tag),
+                        combo_key=self._build_execution_combo_key(
+                            source_type="mt_indicator",
+                            source_name=str(indicator),
+                            indicator=str(indicator),
+                            symbol=str(symbol_exec).strip().upper(),
+                            timeframe=str(timeframe),
+                        ),
+                        event_ts=event_ts,
+                        guard=dict(chop_guard or {}),
+                        signal_plan={
+                            "would_have_opened": True,
+                            "entry_price": _to_float_or_none(entry_price),
+                            "bid": _to_float_or_none(bid),
+                            "ask": _to_float_or_none(ask),
+                            "last": _to_float_or_none(last),
+                            "stop_loss": _to_float_or_none(stop_loss),
+                            "no_stop_loss": bool(no_stop_loss),
+                            "tps": list(tps),
+                            "tp_multipliers": [float(x) for x in (tp_multipliers or [])],
+                            "stage_weights": [float(x) for x in (stage_weights or [])],
+                            "lot": float(mode_lot),
+                            "mode": str(mode),
+                            "policy": str(policy_name),
+                            "atr": _to_float_or_none(atr),
+                            "sl_distance": _to_float_or_none(sl_distance),
+                            "tp_base_distance": _to_float_or_none(tp_base_distance),
+                            "market_regime": str(active_regime),
+                            "market_regime_info": dict(regime_info or {}),
+                            "hard_sl_mode": str(hard_sl_mode),
+                            "source_tag": str(mode_source_tag),
+                        },
+                        now_ts=float(now_ts),
+                    )
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "policy": str(policy_name),
+                            "ok": True,
+                            "executed": False,
+                            "reason": "chop_guard_blocked",
+                            "message": f"chop_guard_blocked:{str((chop_guard or {}).get('reason') or '')}",
+                            "chop_guard": dict(chop_guard or {}),
+                        }
+                    )
+                    market_closed_only = False
+                    continue
 
                 if self._has_live_open_for_source_tag_direction(
                     source_tag=str(mode_source_tag),
@@ -11920,6 +12738,20 @@ class TelegramBridgeService:
                 comment=f"tg_confirm_tp{int(next_idx)}",
             )
             if bool((out or {}).get("ok")):
+                partial_pnl_stats: Dict[str, Any] = {}
+                if self._source_type_from_source_tag(row.get("source_tag")) == "telegram_channel":
+                    try:
+                        partial_pnl_stats = self._resolve_position_partial_realized_stats(
+                            svc=svc,
+                            ticket=int(ticket),
+                            symbol=str(sym),
+                            order_number=(int(_to_float_or_none((out or {}).get("order")) or 0) or None),
+                            deal_number=(int(_to_float_or_none((out or {}).get("deal")) or 0) or None),
+                            event_ts=self._now_iso(),
+                            close_lot=float(close_lot),
+                        )
+                    except Exception:
+                        partial_pnl_stats = {}
                 guard_tp_idx = self._resolve_tp_index_for_stop_guard(
                     tps=list(tps),
                     stage_index=int(next_idx),
@@ -11953,10 +12785,12 @@ class TelegramBridgeService:
                     source_tag=str(row.get("source_tag") or "").strip().lower(),
                     max_profit=_to_float_or_none(row.get("max_profit")),
                     max_loss=_to_float_or_none(row.get("max_loss")),
+                    realized_pnl=_to_float_or_none((partial_pnl_stats or {}).get("realized_pnl")),
                     execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
                     order_number=(int(_to_float_or_none((out or {}).get("order")) or 0) or None),
                     deal_number=(int(_to_float_or_none((out or {}).get("deal")) or 0) or None),
                     broker_comment=str((out or {}).get("comment") or f"tg_confirm_tp{int(next_idx)}").strip() or None,
+                    close_price=_to_float_or_none((partial_pnl_stats or {}).get("last_close_price")),
                     trace_id=str(row.get("trace_id") or "").strip() or None,
                     stage="tp_partial",
                     stage_status="success",
@@ -11965,6 +12799,11 @@ class TelegramBridgeService:
                         "tp_target": float(target_px),
                         "close_lot": float(close_lot),
                         "next_tp_index_after": int(next_idx + 1),
+                        "pnl_resolution": (
+                            "history_partial"
+                            if int(_to_float_or_none((partial_pnl_stats or {}).get("close_count")) or 0) > 0
+                            else "missing_history"
+                        ),
                     },
                 )
                 source_disp = str(row.get("source_name") or "unknown").strip() or "unknown"
