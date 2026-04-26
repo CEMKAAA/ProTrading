@@ -347,7 +347,9 @@ class TelegramBridgeService:
         self._automation_execution_logs_max: int = 5000
         self._execution_log_table_ready: bool = False
         self._execution_close_dedupe: Dict[int, float] = {}
+        self._execution_realized_stats_cache: Dict[str, Dict[str, Any]] = {}
         self._execution_reconcile_last_ts: float = 0.0
+        self._indicator_open_recovery_cache: Dict[str, Dict[str, Any]] = {}
         self._restore_pending_entry_signals()
 
     @staticmethod
@@ -2100,6 +2102,17 @@ class TelegramBridgeService:
             )
         except Exception:
             deals = []
+        if not deals and str(symbol or "").strip():
+            # Broker history is position-id scoped; a stale display symbol should
+            # not prevent PnL recovery for restart reconciliation/audit reports.
+            try:
+                deals = svc.get_position_deals(
+                    position_ticket=int(t),
+                    days=int(self._execution_report_lookback_days()),
+                    symbol=None,
+                )
+            except Exception:
+                deals = []
         realized = 0.0
         close_count = 0
         last_close_ts: Optional[str] = None
@@ -2147,6 +2160,122 @@ class TelegramBridgeService:
             "last_close_deal": (int(last_close_deal) if last_close_deal is not None else None),
             "last_close_comment": str(last_close_comment or "").strip() or None,
             "last_close_price": _to_float_or_none(last_close_price),
+        }
+
+    def _resolve_position_realized_stats_cached(
+        self,
+        *,
+        svc: LiveTradingService,
+        ticket: int,
+        symbol: Optional[str] = None,
+        ttl_sec: float = 300.0,
+    ) -> Dict[str, Any]:
+        t = int(_to_float_or_none(ticket) or 0)
+        if t <= 0:
+            return {}
+        key = f"{int(t)}|{str(symbol or '').strip().upper()}"
+        now_ts = float(time.time())
+        with self._lock:
+            cached = dict(self._execution_realized_stats_cache.get(key) or {})
+            if cached and (now_ts - float(cached.get("_cached_at") or 0.0)) <= float(ttl_sec):
+                return {k: v for k, v in cached.items() if k != "_cached_at"}
+        stats = self._resolve_position_realized_stats(svc=svc, ticket=int(t), symbol=symbol)
+        cache_row = dict(stats or {})
+        cache_row["_cached_at"] = float(now_ts)
+        with self._lock:
+            self._execution_realized_stats_cache[key] = dict(cache_row)
+            if len(self._execution_realized_stats_cache) > 2000:
+                cutoff = now_ts - 3600.0
+                self._execution_realized_stats_cache = {
+                    str(k): dict(v)
+                    for k, v in self._execution_realized_stats_cache.items()
+                    if float((v or {}).get("_cached_at") or 0.0) >= cutoff
+                }
+        return dict(stats or {})
+
+    def _resolve_position_partial_realized_stats(
+        self,
+        *,
+        svc: LiveTradingService,
+        ticket: int,
+        symbol: Optional[str] = None,
+        order_number: Optional[int] = None,
+        deal_number: Optional[int] = None,
+        event_ts: Optional[Any] = None,
+        close_lot: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        t = int(_to_float_or_none(ticket) or 0)
+        if t <= 0:
+            return {"realized_pnl": None, "close_count": 0}
+        deals = []
+        try:
+            deals = svc.get_position_deals(
+                position_ticket=int(t),
+                days=int(self._execution_report_lookback_days()),
+                symbol=(str(symbol or "").strip() or None),
+            )
+        except Exception:
+            deals = []
+        if not deals and str(symbol or "").strip():
+            try:
+                deals = svc.get_position_deals(
+                    position_ticket=int(t),
+                    days=int(self._execution_report_lookback_days()),
+                    symbol=None,
+                )
+            except Exception:
+                deals = []
+        out_deals: List[Dict[str, Any]] = []
+        wanted_order = int(_to_float_or_none(order_number) or 0)
+        wanted_deal = int(_to_float_or_none(deal_number) or 0)
+        event_unix = _to_unix_or_none(event_ts) or 0.0
+        lot_wanted = _to_float_or_none(close_lot)
+        for d in deals:
+            if not isinstance(d, dict):
+                continue
+            entry_code = int(_to_float_or_none(d.get("entry_code")) or 0)
+            if entry_code not in {1, 2, 3}:
+                continue
+            if wanted_deal > 0 and int(_to_float_or_none(d.get("ticket")) or 0) == int(wanted_deal):
+                out_deals = [dict(d)]
+                break
+            if wanted_order > 0 and int(_to_float_or_none(d.get("order")) or 0) == int(wanted_order):
+                out_deals = [dict(d)]
+                break
+            out_deals.append(dict(d))
+        if (wanted_order > 0 or wanted_deal > 0) and len(out_deals) == 1:
+            selected = dict(out_deals[0])
+        else:
+            candidates = list(out_deals)
+            if lot_wanted is not None and float(lot_wanted) > 0.0:
+                lot_matches = [
+                    d for d in candidates
+                    if abs(float(_to_float_or_none(d.get("volume")) or 0.0) - float(lot_wanted)) <= 0.000001
+                ]
+                if lot_matches:
+                    candidates = lot_matches
+            if event_unix > 0.0:
+                selected = min(
+                    candidates,
+                    key=lambda d: abs(float((_to_unix_or_none((d or {}).get("time")) or 0.0)) - float(event_unix)),
+                    default={},
+                )
+            else:
+                selected = candidates[-1] if candidates else {}
+        if not isinstance(selected, dict) or not selected:
+            return {"realized_pnl": None, "close_count": 0}
+        profit = _to_float_or_none(selected.get("profit")) or 0.0
+        commission = _to_float_or_none(selected.get("commission")) or 0.0
+        swap = _to_float_or_none(selected.get("swap")) or 0.0
+        return {
+            "realized_pnl": float(profit + commission + swap),
+            "close_count": 1,
+            "last_close_ts": str(selected.get("time") or ""),
+            "last_close_order": int(_to_float_or_none(selected.get("order")) or 0) or None,
+            "last_close_deal": int(_to_float_or_none(selected.get("ticket")) or 0) or None,
+            "last_close_comment": str(selected.get("comment") or "").strip() or None,
+            "last_close_price": _to_float_or_none(selected.get("price")),
+            "last_close_lot": _to_float_or_none(selected.get("volume")),
         }
 
     @staticmethod
@@ -2367,14 +2496,6 @@ class TelegramBridgeService:
             return
 
         svc = self._get_live_service()
-        try:
-            ls = svc.get_live_status()
-            mt5_ok = bool((ls or {}).get("mt5_available"))
-        except Exception:
-            mt5_ok = False
-        if not bool(mt5_ok):
-            return
-
         try:
             open_rows = svc.get_open_positions(symbol=None)
         except Exception:
@@ -2706,9 +2827,12 @@ class TelegramBridgeService:
             "bot_rows": bot_rows,
         }
 
-    def get_automation_execution_report(self, *, limit: int = 200) -> Dict[str, Any]:
+    def get_automation_execution_report(self, *, limit: int = 200, resolve_history_pnl: bool = True) -> Dict[str, Any]:
         rows = self.get_automation_execution_logs(limit=max(200, min(5000, int(limit or 200))))
         combos: Dict[str, Dict[str, Any]] = {}
+        lazy_svc: Optional[LiveTradingService] = None
+        lazy_pnl_resolve_count = 0
+        lazy_pnl_resolve_max = 300
 
         for r in rows:
             if not isinstance(r, dict):
@@ -2748,6 +2872,18 @@ class TelegramBridgeService:
             elif status == "closed":
                 row["closed_count"] = int(row.get("closed_count") or 0) + 1
                 pnl = _to_float_or_none(r.get("realized_pnl"))
+                ticket = int(_to_float_or_none(r.get("ticket")) or 0)
+                if bool(resolve_history_pnl) and pnl is None and ticket > 0 and lazy_pnl_resolve_count < lazy_pnl_resolve_max:
+                    if lazy_svc is None:
+                        lazy_svc = self._get_live_service()
+                    stats = self._resolve_position_realized_stats_cached(
+                        svc=lazy_svc,
+                        ticket=int(ticket),
+                        symbol=str(symbol),
+                    )
+                    if int(_to_float_or_none((stats or {}).get("close_count")) or 0) > 0:
+                        pnl = _to_float_or_none((stats or {}).get("realized_pnl"))
+                    lazy_pnl_resolve_count += 1
                 if pnl is not None:
                     row["total_realized_pnl"] = float(row.get("total_realized_pnl") or 0.0) + float(pnl)
                     best = _to_float_or_none(row.get("best_trade_pnl"))
@@ -4186,19 +4322,24 @@ class TelegramBridgeService:
     @staticmethod
     def _indicator_bridge_default_signal_confirm_sec(timeframe: Any) -> float:
         tf = TelegramBridgeService._normalize_tf_token(timeframe, "M5")
-        if str(tf) == "M5":
-            key = "INDICATOR_BRIDGE_SIGNAL_CONFIRM_SEC_M5"
-            default_raw = "60"
-        else:
-            key = "INDICATOR_BRIDGE_SIGNAL_CONFIRM_SEC"
-            default_raw = str(TelegramBridgeService._indicator_reversal_confirm_sec())
+        tf_sec = {
+            "M1": 60.0,
+            "M5": 300.0,
+            "M15": 900.0,
+            "M30": 1800.0,
+            "H1": 3600.0,
+            "H4": 14400.0,
+            "D1": 86400.0,
+        }.get(str(tf), 300.0)
+        key = f"INDICATOR_BRIDGE_SIGNAL_CONFIRM_SEC_{str(tf)}"
+        default_raw = str(float(tf_sec) * 4.0)
         try:
             raw = float(TelegramBridgeService._get_env_value(key, default_raw))
         except Exception:
             raw = float(default_raw)
         if not math.isfinite(float(raw)):
             raw = float(default_raw)
-        return float(max(0.0, min(300.0, float(raw))))
+        return float(max(0.0, min(86400.0, float(raw))))
 
     @classmethod
     def _indicator_bridge_instance_signal_confirm_overrides(cls, family: Any) -> Dict[str, float]:
@@ -4220,7 +4361,7 @@ class TelegramBridgeService:
             sec = _to_float_or_none(v)
             if sec is None or (not math.isfinite(float(sec))):
                 continue
-            out[item] = float(max(0.0, min(300.0, float(sec))))
+            out[item] = float(max(0.0, min(86400.0, float(sec))))
         return out
 
     @classmethod
@@ -4233,7 +4374,7 @@ class TelegramBridgeService:
             sec = _to_float_or_none(v)
             if sec is None or (not math.isfinite(float(sec))):
                 continue
-            cleaned[item] = float(max(0.0, min(300.0, float(sec))))
+            cleaned[item] = float(max(0.0, min(86400.0, float(sec))))
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
@@ -4394,7 +4535,7 @@ class TelegramBridgeService:
             "mode_advanced_v2_lot": float(mode_advanced_v2_lot),
             "mode_normal_lot": float(mode_normal_lot),
             "mode_sync_lot": float(mode_sync_lot),
-            "signal_confirm_sec": float(max(0.0, min(300.0, float(signal_confirm_sec)))),
+            "signal_confirm_sec": float(max(0.0, min(86400.0, float(signal_confirm_sec)))),
             "sync": {
                 "direction_tf": str(sync_direction_tf),
                 "entry_tf": str(sync_entry_tf),
@@ -4666,7 +4807,7 @@ class TelegramBridgeService:
             v = _to_float_or_none(signal_confirm_sec)
             if v is None or (not math.isfinite(float(v))):
                 return {"ok": False, "error": "invalid_signal_confirm_sec"}
-            signal_confirm_map[mk] = float(max(0.0, min(300.0, float(v))))
+            signal_confirm_map[mk] = float(max(0.0, min(86400.0, float(v))))
         if (
             sync_direction_tf is not None
             or sync_entry_tf is not None
@@ -4827,11 +4968,12 @@ class TelegramBridgeService:
             for r in open_rows
             if int(_to_float_or_none((r or {}).get("ticket")) or 0) > 0
         }
+        recovery_limit = int(max(500, min(5000, max(int(lim) * 20, 1000))))
         recovered_open_rows = self._recover_live_indicator_open_rows_from_audit(
             terminal_family=str(family),
             svc=svc,
             existing_tickets=set(existing_open_tickets),
-            limit=50000,
+            limit=int(recovery_limit),
         )
         for out_row in recovered_open_rows:
             ticket = int(_to_float_or_none((out_row or {}).get("ticket")) or 0)
@@ -4986,6 +5128,12 @@ class TelegramBridgeService:
         family = self._indicator_bridge_family(terminal_family)
         prefix = f"{family}|"
         seen_tickets = {int(x) for x in (existing_tickets or set()) if int(x or 0) > 0}
+        cache_key = f"{family}|{int(max(200, min(50000, int(limit or 5000))))}|{','.join(str(x) for x in sorted(seen_tickets))}"
+        now_ts = float(time.time())
+        with self._lock:
+            cached = dict(self._indicator_open_recovery_cache.get(cache_key) or {})
+            if cached and (now_ts - float(cached.get("ts") or 0.0)) <= 5.0:
+                return [dict(x) for x in (cached.get("rows") or []) if isinstance(x, dict)]
         self._ensure_execution_log_table()
         db = SessionLocal()
         try:
@@ -5102,6 +5250,15 @@ class TelegramBridgeService:
                     "recovered_from_audit": True,
                 }
             )
+        with self._lock:
+            self._indicator_open_recovery_cache[cache_key] = {"ts": float(now_ts), "rows": [dict(x) for x in out]}
+            if len(self._indicator_open_recovery_cache) > 64:
+                cutoff = float(now_ts) - 30.0
+                self._indicator_open_recovery_cache = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_open_recovery_cache.items()
+                    if float((v or {}).get("ts") or 0.0) >= cutoff
+                }
         return out
 
     @staticmethod
@@ -5167,8 +5324,44 @@ class TelegramBridgeService:
             return "new_york"
         return "off_session"
 
-    def get_indicator_execution_audit_rows(self, *, limit: int = 500) -> Dict[str, Any]:
+    def get_indicator_execution_audit_rows(self, *, limit: int = 500, resolve_history_pnl: bool = True) -> Dict[str, Any]:
         raw_rows = self.get_automation_execution_logs(limit=max(100, min(5000, int(limit or 500))))
+        mode_overrides_by_family = {
+            "mt4": self._indicator_bridge_instance_mode_overrides("mt4"),
+            "mt5": self._indicator_bridge_instance_mode_overrides("mt5"),
+        }
+        policy_overrides_by_family = {
+            "mt4": self._indicator_bridge_instance_advanced_v2_policy_overrides("mt4"),
+            "mt5": self._indicator_bridge_instance_advanced_v2_policy_overrides("mt5"),
+        }
+
+        def _current_mode_status(parsed: Dict[str, str], source_tag: str) -> Dict[str, Any]:
+            family = str(source_tag or "").strip().lower().split("|", 1)[0]
+            if family not in {"mt4", "mt5"}:
+                return {"mode_currently_enabled": None, "mode_config_status": "unknown"}
+            instance_key = (
+                f"{family}|{str(parsed.get('indicator_key') or '').strip().lower()}|"
+                f"{str(parsed.get('symbol') or '').strip().upper()}|{str(parsed.get('timeframe') or '').strip().upper()}"
+            ).lower()
+            mode = str(self._mode_from_bridge_source_tag(source_tag) or "").strip().lower()
+            if not instance_key or not mode:
+                return {"mode_currently_enabled": None, "mode_config_status": "unknown"}
+            cfg = dict((mode_overrides_by_family.get(family) or {}).get(instance_key) or {})
+            if not cfg:
+                cfg = {"advanced": True, "advanced_v2": False, "normal": False, "sync": False}
+            enabled = bool(cfg.get(mode, False))
+            if enabled and mode == "advanced_v2":
+                last = str(source_tag or "").strip().lower().split("|")[-1]
+                if last.startswith("advanced_v2_"):
+                    policy = last.replace("advanced_v2_", "", 1).strip()
+                    policies = dict((policy_overrides_by_family.get(family) or {}).get(instance_key) or {})
+                    if policies:
+                        enabled = bool(policies.get(policy, False))
+            return {
+                "mode_currently_enabled": bool(enabled),
+                "mode_config_status": ("current_enabled" if bool(enabled) else "historical_disabled_now"),
+            }
+
         source_tag_display: Dict[str, Dict[str, str]] = {}
         for row in raw_rows:
             if not isinstance(row, dict):
@@ -5196,6 +5389,9 @@ class TelegramBridgeService:
                 source_tag_display.setdefault(base_tag, display)
 
         out_rows: List[Dict[str, Any]] = []
+        lazy_pnl_resolve_count = 0
+        lazy_pnl_resolve_max = 0
+        lazy_svc: Optional[LiveTradingService] = None
         for row in raw_rows:
             if not isinstance(row, dict):
                 continue
@@ -5214,29 +5410,73 @@ class TelegramBridgeService:
             opened_at = str(row.get("opened_at") or "").strip()
             event_ts = str(row.get("event_ts") or row.get("ts") or "").strip()
             status = str(row.get("status") or "").strip().lower()
+            ticket_val = int(_to_float_or_none(row.get("ticket")) or 0) or None
+            symbol_val = str(row.get("symbol") or parsed_tag.get("symbol") or "").strip().upper()
+            realized_pnl = _to_float_or_none(row.get("realized_pnl"))
+            pnl_resolution = "stored" if realized_pnl is not None else ""
+            close_deal_number = int(_to_float_or_none(row.get("deal_number")) or 0) or None
+            close_order_number = int(_to_float_or_none(row.get("order_number")) or 0) or None
+            close_price_val = _to_float_or_none(row.get("close_price"))
+            if bool(resolve_history_pnl) and status in {"closed", "tp_partial"} and realized_pnl is None and ticket_val and lazy_pnl_resolve_count < lazy_pnl_resolve_max:
+                if lazy_svc is None:
+                    lazy_svc = self._get_live_service()
+                if status == "tp_partial":
+                    stats = self._resolve_position_partial_realized_stats(
+                        svc=lazy_svc,
+                        ticket=int(ticket_val),
+                        symbol=str(symbol_val),
+                        order_number=close_order_number,
+                        deal_number=close_deal_number,
+                        event_ts=str(event_ts or row.get("ts") or ""),
+                        close_lot=_to_float_or_none(row.get("lot")),
+                    )
+                else:
+                    stats = self._resolve_position_realized_stats_cached(
+                        svc=lazy_svc,
+                        ticket=int(ticket_val),
+                        symbol=str(symbol_val),
+                    )
+                if int(_to_float_or_none((stats or {}).get("close_count")) or 0) > 0:
+                    realized_pnl = _to_float_or_none((stats or {}).get("realized_pnl"))
+                    event_ts = str(event_ts or (stats or {}).get("last_close_ts") or "")
+                    close_deal_number = int(_to_float_or_none((stats or {}).get("last_close_deal")) or 0) or close_deal_number
+                    close_order_number = int(_to_float_or_none((stats or {}).get("last_close_order")) or 0) or close_order_number
+                    close_price_val = _to_float_or_none((stats or {}).get("last_close_price")) or close_price_val
+                    pnl_resolution = "history_partial" if status == "tp_partial" else "history_lazy"
+                else:
+                    pnl_resolution = "missing_history"
+                lazy_pnl_resolve_count += 1
+            mode_status = _current_mode_status(parsed_tag, source_tag)
+            execution_mode_val = str(row.get("execution_mode") or parsed_tag.get("execution_mode") or "").strip().lower()
             out_rows.append(
                 {
                     "id": int(row.get("id") or 0),
                     "terminal_family": str(parsed_tag.get("terminal_family") or self._execution_terminal_family_from_row(row)),
                     "indicator": str(display_indicator),
                     "source_name": str(display_source_name),
-                    "symbol": str(row.get("symbol") or parsed_tag.get("symbol") or "").strip().upper(),
+                    "symbol": str(symbol_val),
                     "timeframe": str(row.get("timeframe") or parsed_tag.get("timeframe") or "").strip().upper(),
                     "direction": str(row.get("direction") or "").strip().upper(),
                     "lot": _to_float_or_none(row.get("lot")),
                     "status": str(status),
-                    "ticket": int(_to_float_or_none(row.get("ticket")) or 0) or None,
-                    "order_number": int(_to_float_or_none(row.get("order_number")) or 0) or None,
+                    "ticket": ticket_val,
+                    "order_number": close_order_number,
+                    "deal_number": close_deal_number,
                     "opened_at": str(opened_at),
                     "closed_at": (str(event_ts) if status == "closed" else ""),
                     "session_name": self._execution_session_name(opened_at or event_ts),
                     "max_profit": _to_float_or_none(row.get("max_profit")),
                     "max_loss": _to_float_or_none(row.get("max_loss")),
-                    "realized_pnl": _to_float_or_none(row.get("realized_pnl")),
+                    "realized_pnl": realized_pnl,
+                    "realized_pnl_source": str(pnl_resolution),
                     "close_reason": str(row.get("close_reason") or "").strip(),
+                    "close_price": close_price_val,
                     "final_tp": _to_float_or_none(row.get("final_tp")),
                     "stop_loss": _to_float_or_none(row.get("stop_loss")),
-                    "execution_mode": str(row.get("execution_mode") or parsed_tag.get("execution_mode") or "").strip().lower(),
+                    "execution_mode": str(execution_mode_val),
+                    "opened_execution_mode": str(execution_mode_val),
+                    "mode_currently_enabled": mode_status.get("mode_currently_enabled"),
+                    "mode_config_status": str(mode_status.get("mode_config_status") or "unknown"),
                     "event_ts": str(event_ts),
                     "message": str(row.get("message") or "").strip(),
                     "source_tag": str(source_tag),
@@ -5248,6 +5488,58 @@ class TelegramBridgeService:
         out_rows.sort(key=lambda r: str(r.get("event_ts") or r.get("opened_at") or ""), reverse=True)
         lim = int(max(20, min(5000, int(limit or 500))))
         out_rows = out_rows[:lim]
+        lazy_pnl_resolve_count = 0
+        # Resolve enough visible rows for morning audits without turning the
+        # table into an unbounded MT5 history scanner. Results, including
+        # misses, are cached per ticket for a short period.
+        lazy_pnl_resolve_max = int(min(500, max(120, len(out_rows))))
+        lazy_svc = None
+        if not bool(resolve_history_pnl):
+            return {
+                "ok": True,
+                "rows": out_rows,
+                "count": int(len(out_rows)),
+                "generated_at": self._now_iso(),
+            }
+        for row in out_rows:
+            status_check = str(row.get("status") or "").strip().lower()
+            if status_check not in {"closed", "tp_partial"}:
+                continue
+            if _to_float_or_none(row.get("realized_pnl")) is not None:
+                continue
+            ticket_val = int(_to_float_or_none(row.get("ticket")) or 0)
+            if ticket_val <= 0 or lazy_pnl_resolve_count >= lazy_pnl_resolve_max:
+                continue
+            if lazy_svc is None:
+                lazy_svc = self._get_live_service()
+            if status_check == "tp_partial":
+                stats = self._resolve_position_partial_realized_stats(
+                    svc=lazy_svc,
+                    ticket=int(ticket_val),
+                    symbol=str(row.get("symbol") or "").strip().upper(),
+                    order_number=int(_to_float_or_none(row.get("order_number")) or 0) or None,
+                    deal_number=int(_to_float_or_none(row.get("deal_number")) or 0) or None,
+                    event_ts=str(row.get("event_ts") or row.get("opened_at") or ""),
+                    close_lot=_to_float_or_none(row.get("lot")),
+                )
+            else:
+                stats = self._resolve_position_realized_stats_cached(
+                    svc=lazy_svc,
+                    ticket=int(ticket_val),
+                    symbol=str(row.get("symbol") or "").strip().upper(),
+                )
+            if int(_to_float_or_none((stats or {}).get("close_count")) or 0) > 0:
+                row["realized_pnl"] = _to_float_or_none((stats or {}).get("realized_pnl"))
+                row["realized_pnl_source"] = "history_partial" if status_check == "tp_partial" else "history_lazy"
+                if not str(row.get("event_ts") or "").strip():
+                    row["event_ts"] = str((stats or {}).get("last_close_ts") or "")
+                    row["closed_at"] = str((stats or {}).get("last_close_ts") or "")
+                row["deal_number"] = int(_to_float_or_none((stats or {}).get("last_close_deal")) or 0) or row.get("deal_number")
+                row["order_number"] = int(_to_float_or_none((stats or {}).get("last_close_order")) or 0) or row.get("order_number")
+                row["close_price"] = _to_float_or_none((stats or {}).get("last_close_price")) or row.get("close_price")
+            else:
+                row["realized_pnl_source"] = "missing_history"
+            lazy_pnl_resolve_count += 1
         return {
             "ok": True,
             "rows": out_rows,
@@ -5256,11 +5548,22 @@ class TelegramBridgeService:
         }
 
     def get_indicator_bridge_state(self, *, limit: int = 300, active_only: bool = False) -> Dict[str, Any]:
+        try:
+            # The dashboard is often the operator's first view after MT5 has
+            # already closed positions by TP/SL. Run the lightweight interval-
+            # gated reconcile here too so closed rows are not dependent on the
+            # background ladder loop being alive at the exact close moment.
+            self._reconcile_execution_ticket_state()
+        except Exception:
+            logger.exception("indicator_bridge_state_reconcile_failed")
         lim = int(max(20, min(1000, int(limit or 300))))
         mt4_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt4", limit=lim, active_only=active_only)
         mt5_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=lim, active_only=active_only)
-        execution_logs = self.get_indicator_execution_audit_rows(limit=max(200, lim))
-        execution_report = self.get_automation_execution_report(limit=200)
+        # Keep the live state endpoint responsive. History-based PnL recovery is
+        # available in the audit helpers, but the dashboard poll path must not
+        # fan out into many MT5 history calls when the terminal is unavailable.
+        execution_logs = self.get_indicator_execution_audit_rows(limit=max(120, min(300, lim)), resolve_history_pnl=False)
+        execution_report = self.get_automation_execution_report(limit=200, resolve_history_pnl=False)
         rsi_telemetry = self.get_indicator_rsi_telemetry(limit=max(200, lim))
         open_trades = list((mt4_monitor or {}).get("rows") or []) + list((mt5_monitor or {}).get("rows") or [])
         open_trades.sort(key=lambda r: str((r or {}).get("opened_at") or ""), reverse=True)
@@ -6435,7 +6738,7 @@ class TelegramBridgeService:
         wait_sec = _to_float_or_none(confirm_sec)
         if wait_sec is None:
             wait_sec = float(self._indicator_reversal_confirm_sec())
-        wait_sec = float(max(0.0, min(300.0, float(wait_sec))))
+        wait_sec = float(max(0.0, min(86400.0, float(wait_sec))))
         if wait_sec <= 0.0:
             return {"ok": True, "ready": True, "reason": "guard_disabled"}
 

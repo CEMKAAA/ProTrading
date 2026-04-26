@@ -269,12 +269,14 @@
         els.auditBody.innerHTML = meaningful.map(row => {
             const pnl = Number(row.realized_pnl);
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const modeDisabled = row.mode_currently_enabled === false;
+            const modeLabel = `${esc(row.execution_mode || '-')}${modeDisabled ? '<div class="small text-warning">disabled now</div>' : ''}`;
             return `<tr>
                 <td>${esc(row.status || row.trigger || '-')}<div class="small text-muted">${esc(fmtTs(row.event_ts || row.opened_at))}</div></td>
                 <td>${esc(row.terminal_family || '-')}</td>
                 <td>${esc(row.indicator || row.source_name || '-')}</td>
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</td>
-                <td>${esc(row.execution_mode || '-')}</td>
+                <td>${modeLabel}</td>
                 <td>${esc(row.direction || '-')}</td>
                 <td>${fmtNum(row.lot, 2)}</td>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>

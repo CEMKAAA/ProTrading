@@ -17,6 +17,7 @@ input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g.
 input int    InpSignalShift = 0;     // 0=current bar, 1=closed bar
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
+input int    InpConfirmBars = 4;     // if >0, require this many chart bars instead of InpConfirmSeconds
 input bool   InpSendInitialConfirmedOnStart = false; // false prevents startup duplicate entries
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
@@ -78,6 +79,28 @@ string _tf_to_string(int tf)
    if(tf == PERIOD_W1)   return "W1";
    if(tf == PERIOD_MN1)  return "MN1";
    return IntegerToString(tf);
+}
+
+int _tf_seconds(int tf)
+{
+   if(tf == PERIOD_M1)   return 60;
+   if(tf == PERIOD_M5)   return 300;
+   if(tf == PERIOD_M15)  return 900;
+   if(tf == PERIOD_M30)  return 1800;
+   if(tf == PERIOD_H1)   return 3600;
+   if(tf == PERIOD_H4)   return 14400;
+   if(tf == PERIOD_D1)   return 86400;
+   if(tf == PERIOD_W1)   return 604800;
+   if(tf == PERIOD_MN1)  return 2592000;
+   return MathMax(60, tf * 60);
+}
+
+int _effective_confirm_seconds()
+{
+   int bars = InpConfirmBars;
+   if(bars > 0)
+      return MathMax(0, _tf_seconds(Period()) * bars);
+   return MathMax(0, InpConfirmSeconds);
 }
 
 string _json_escape(string s)
@@ -615,9 +638,7 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       nowTs = TimeLocal();
    if(g_pendingDir != 0 && g_pendingStartedAt > 0 && nowTs > 0)
       pendingAge = (int)(nowTs - g_pendingStartedAt);
-   int confirmSec = InpConfirmSeconds;
-   if(confirmSec < 0)
-      confirmSec = 0;
+   int confirmSec = _effective_confirm_seconds();
 
    string body =
       "{"
@@ -628,6 +649,7 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"pending_direction\":\"" + _json_escape((g_pendingDir != 0) ? pendingText : "") + "\","
       "\"pending_age_sec\":" + IntegerToString(pendingAge) + ","
       "\"confirm_seconds\":" + IntegerToString(confirmSec) + ","
+      "\"confirm_bars\":" + IntegerToString(MathMax(0, InpConfirmBars)) + ","
       "\"bridge_version\":\"v2\","
       "\"symbol\":\"" + _json_escape(symbol) + "\","
       "\"timeframe\":\"" + _json_escape(timeframe) + "\","
@@ -714,9 +736,7 @@ void _check_and_send()
    datetime nowTs = TimeCurrent();
    if(nowTs <= 0)
       nowTs = TimeLocal();
-   int confirmSec = InpConfirmSeconds;
-   if(confirmSec < 0)
-      confirmSec = 0;
+   int confirmSec = _effective_confirm_seconds();
 
    if(!g_initializedState)
    {
