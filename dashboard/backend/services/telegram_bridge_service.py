@@ -4059,7 +4059,7 @@ class TelegramBridgeService:
 
     @staticmethod
     def _indicator_chop_guard_enabled() -> bool:
-        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_GUARD_ENABLED", "1")).strip().lower()
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CHOP_GUARD_ENABLED", "0")).strip().lower()
         return v in {"1", "true", "yes", "on"}
 
     @staticmethod
