@@ -13017,6 +13017,420 @@ class TelegramBridgeService:
             f"Ticket: {int(ticket)}"
         )
 
+    @classmethod
+    def _classify_david_channel_management_message(cls, text: Any) -> str:
+        raw = cls._normalize_signal_text_for_parse(text)
+        if not raw:
+            return ""
+        if re.search(r"(?im)\byou\s+can\s+close\s+all\b", raw) or re.search(r"(?im)\bclose\s+all\b", raw):
+            return "close_all"
+        wants_half = bool(
+            re.search(r"(?im)\bclose\s+half\b", raw)
+            or re.search(r"(?im)\bclose\s+(?:50|fifty)\s*(?:%|percent)?\b", raw)
+        )
+        wants_be = bool(re.search(r"(?im)\bset\s*(?:be|break\s*even|breakeven)\b", raw))
+        if wants_half and wants_be:
+            return "close_half_set_be"
+        if re.search(r"(?im)\btouch(?:ed)?\s+tp\b", raw) and re.search(r"(?im)\b[+ ]?\d+\s*pips?\b", raw):
+            return "close_half_set_be"
+        if wants_be and (
+            re.search(r"(?im)\bcheck\s+your\s+wallet\b", raw)
+            or re.search(r"(?im)\bset\s*(?:be|break\s*even|breakeven)\b", raw)
+        ):
+            return "set_be"
+        return ""
+
+    def _select_david_active_ladder_rows(
+        self,
+        *,
+        chat_id: int,
+        source_label: str,
+        source_names: List[Any],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        candidates: List[str] = []
+        for name in list(source_names or []) + [source_label, "David's Gold Strategy"]:
+            label = str(name or "").strip()
+            if not label:
+                continue
+            key = self._confirm_signal_source_key(int(chat_id), label)
+            if key not in candidates:
+                candidates.append(key)
+        with self._lock:
+            rows = [(str(k), dict(v)) for k, v in self._active_confirmation_signal_ladders.items() if isinstance(v, dict)]
+        matches: List[Tuple[str, Dict[str, Any], float]] = []
+        for key, row in rows:
+            row_source_key = str(row.get("source_key") or "").strip()
+            row_source_name = str(row.get("source_name") or "").strip()
+            source_key_ok = bool(row_source_key and row_source_key in candidates)
+            source_name_ok = bool(row_source_name and self._source_matches_rule(row_source_name, "David's Gold Strategy"))
+            if not source_key_ok and not source_name_ok:
+                continue
+            ticket = int(_to_float_or_none(row.get("broker_ticket")) or 0)
+            symbol = self._normalize_signal_symbol(row.get("symbol"))
+            direction = str(row.get("direction") or "").strip().upper()
+            if ticket <= 0 or not symbol or direction not in {"BUY", "SELL"}:
+                continue
+            created_ts = _to_unix_or_none(row.get("created_at")) or 0.0
+            matches.append((str(key), dict(row), float(created_ts)))
+        matches.sort(key=lambda x: float(x[2]), reverse=True)
+        return [(k, row) for k, row, _ts in matches]
+
+    @staticmethod
+    def _floor_lot_to_step(value: Any, step: Any, minimum: Any = 0.0) -> float:
+        raw = _to_float_or_none(value)
+        if raw is None or float(raw) <= 0.0:
+            return 0.0
+        step_v = _to_float_or_none(step) or 0.01
+        step_v = float(max(1e-6, float(step_v)))
+        min_v = _to_float_or_none(minimum) or 0.0
+        units = int(math.floor(float(raw) / float(step_v) + 1e-12))
+        out = float(units) * float(step_v)
+        if float(out) + 1e-12 < float(min_v):
+            return 0.0
+        return float(round(out, 8))
+
+    def _handle_david_channel_management_message(
+        self,
+        *,
+        chat_id: int,
+        source_label: str,
+        source_names: List[Any],
+        action: str,
+        event_ts: Optional[Any] = None,
+        source_message_id: Optional[int] = None,
+    ) -> str:
+        action_u = str(action or "").strip().lower()
+        if action_u not in {"set_be", "close_half_set_be", "close_all"}:
+            return "David management instruction ignored (unknown action)."
+        rows = self._select_david_active_ladder_rows(
+            chat_id=int(chat_id),
+            source_label=str(source_label),
+            source_names=list(source_names or []),
+        )
+        if not rows:
+            return "David management instruction received, but no active David ladder position found."
+
+        svc = self._get_live_service()
+        positions_by_symbol: Dict[str, Dict[int, Dict[str, Any]]] = {}
+
+        def get_position(symbol: str, ticket: int) -> Optional[Dict[str, Any]]:
+            sym = self._normalize_signal_symbol(symbol)
+            if not sym or int(ticket) <= 0:
+                return None
+            if sym not in positions_by_symbol:
+                by_ticket: Dict[int, Dict[str, Any]] = {}
+                try:
+                    for pos in list(svc.get_open_positions(symbol=str(sym)) or []):
+                        if not isinstance(pos, dict):
+                            continue
+                        pt = int(_to_float_or_none(pos.get("ticket")) or 0)
+                        if pt > 0:
+                            by_ticket[int(pt)] = dict(pos)
+                except Exception:
+                    by_ticket = {}
+                positions_by_symbol[sym] = by_ticket
+            return positions_by_symbol.get(sym, {}).get(int(ticket))
+
+        def symbol_volume_limits(symbol: str) -> Tuple[float, float]:
+            try:
+                info = dict(svc.get_symbol_info(symbol=str(symbol)) or {})
+            except Exception:
+                info = {}
+            step = _to_float_or_none(info.get("volume_step")) or 0.01
+            minimum = _to_float_or_none(info.get("volume_min")) or float(step)
+            return float(max(1e-6, float(step))), float(max(float(step), float(minimum)))
+
+        handled = 0
+        failed = 0
+        skipped = 0
+        remove_keys: List[str] = []
+        touched_rows: Dict[str, Dict[str, Any]] = {}
+
+        for key, row0 in rows:
+            row = dict(row0)
+            symbol = self._normalize_signal_symbol(row.get("symbol"))
+            direction = str(row.get("direction") or "").strip().upper()
+            ticket = int(_to_float_or_none(row.get("broker_ticket")) or 0)
+            pos = get_position(str(symbol), int(ticket))
+            if not isinstance(pos, dict):
+                skipped += 1
+                self._append_automation_execution_log(
+                    source_type="telegram_channel",
+                    source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                    trigger="david_channel_instruction",
+                    status="ignored",
+                    symbol=str(symbol),
+                    timeframe=str(row.get("timeframe") or ""),
+                    direction=str(direction),
+                    ticket=int(ticket),
+                    message=f"david_{action_u}:position_not_found",
+                    event_ts=event_ts,
+                    profile=str(row.get("profile") or "").strip().lower(),
+                    source_tag=str(row.get("source_tag") or "").strip().lower(),
+                    execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                    trace_id=str(row.get("trace_id") or "").strip() or None,
+                    stage="david_instruction",
+                    stage_status="ignored",
+                    error_code="position_not_found",
+                )
+                continue
+
+            if action_u == "close_all":
+                out = svc.close_position(
+                    symbol=str(symbol),
+                    position_ticket=int(ticket),
+                    comment="tg_david_close_all",
+                )
+                if bool((out or {}).get("ok")):
+                    handled += 1
+                    remove_keys.append(str(key))
+                    self._append_automation_execution_log(
+                        source_type="telegram_channel",
+                        source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                        trigger="david_channel_instruction",
+                        status="closed",
+                        symbol=str(symbol),
+                        timeframe=str(row.get("timeframe") or ""),
+                        direction=str(direction),
+                        lot=_to_float_or_none(pos.get("lot_size")),
+                        ticket=int(ticket),
+                        message="david_close_all",
+                        event_ts=event_ts,
+                        order_number=(int(_to_float_or_none((out or {}).get("order")) or 0) or None),
+                        deal_number=(int(_to_float_or_none((out or {}).get("deal")) or 0) or None),
+                        broker_comment=str((out or {}).get("comment") or "").strip() or None,
+                        profile=str(row.get("profile") or "").strip().lower(),
+                        source_tag=str(row.get("source_tag") or "").strip().lower(),
+                        execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                        trace_id=str(row.get("trace_id") or "").strip() or None,
+                        stage="david_instruction",
+                        stage_status="closed",
+                    )
+                    self._append_closed_execution_log_from_row(
+                        row=dict(row),
+                        reason="closed_by_david_close_all",
+                        svc=svc,
+                        event_ts=event_ts,
+                    )
+                else:
+                    failed += 1
+                    self._append_automation_execution_log(
+                        source_type="telegram_channel",
+                        source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                        trigger="david_channel_instruction",
+                        status="failed",
+                        symbol=str(symbol),
+                        timeframe=str(row.get("timeframe") or ""),
+                        direction=str(direction),
+                        lot=_to_float_or_none(pos.get("lot_size")),
+                        ticket=int(ticket),
+                        message=f"david_close_all_failed:{str((out or {}).get('error') or 'close_failed')[:160]}",
+                        event_ts=event_ts,
+                        profile=str(row.get("profile") or "").strip().lower(),
+                        source_tag=str(row.get("source_tag") or "").strip().lower(),
+                        execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                        trace_id=str(row.get("trace_id") or "").strip() or None,
+                        stage="david_instruction",
+                        stage_status="failed",
+                        error_code="close_failed",
+                    )
+                continue
+
+            if action_u == "close_half_set_be":
+                if bool(row.get("david_half_close_done")):
+                    skipped += 1
+                else:
+                    step, minimum = symbol_volume_limits(str(symbol))
+                    volume = _to_float_or_none(pos.get("lot_size")) or 0.0
+                    close_lot = self._floor_lot_to_step(float(volume) * 0.5, step, minimum)
+                    if close_lot <= 0.0 or close_lot >= float(volume) - 1e-12:
+                        skipped += 1
+                        row["david_half_close_skipped"] = True
+                    else:
+                        out = svc.close_position(
+                            symbol=str(symbol),
+                            position_ticket=int(ticket),
+                            lot_size=float(close_lot),
+                            comment="tg_david_half_be",
+                        )
+                        if bool((out or {}).get("ok")):
+                            handled += 1
+                            row["david_half_close_done"] = True
+                            row["david_half_close_msg_id"] = int(source_message_id or 0) or None
+                            partial_pnl_stats: Dict[str, Any] = {}
+                            try:
+                                partial_pnl_stats = self._resolve_position_partial_realized_stats(
+                                    svc=svc,
+                                    ticket=int(ticket),
+                                    symbol=str(symbol),
+                                    order_number=(int(_to_float_or_none((out or {}).get("order")) or 0) or None),
+                                    deal_number=(int(_to_float_or_none((out or {}).get("deal")) or 0) or None),
+                                    event_ts=event_ts or self._now_iso(),
+                                    close_lot=float(close_lot),
+                                )
+                            except Exception:
+                                partial_pnl_stats = {}
+                            self._append_automation_execution_log(
+                                source_type="telegram_channel",
+                                source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                                trigger="david_channel_instruction",
+                                status="tp_partial",
+                                symbol=str(symbol),
+                                timeframe=str(row.get("timeframe") or ""),
+                                direction=str(direction),
+                                lot=float(close_lot),
+                                ticket=int(ticket),
+                                message="david_half_closed_set_be",
+                                event_ts=event_ts,
+                                realized_pnl=_to_float_or_none((partial_pnl_stats or {}).get("realized_pnl")),
+                                order_number=(int(_to_float_or_none((out or {}).get("order")) or 0) or None),
+                                deal_number=(int(_to_float_or_none((out or {}).get("deal")) or 0) or None),
+                                broker_comment=str((out or {}).get("comment") or "tg_david_half_be").strip() or None,
+                                close_price=_to_float_or_none((partial_pnl_stats or {}).get("last_close_price")),
+                                profile=str(row.get("profile") or "").strip().lower(),
+                                source_tag=str(row.get("source_tag") or "").strip().lower(),
+                                execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                                trace_id=str(row.get("trace_id") or "").strip() or None,
+                                stage="tp_partial",
+                                stage_status="success",
+                                stage_payload={
+                                    "instruction": "close_half_set_be",
+                                    "close_lot": float(close_lot),
+                                    "source_message_id": int(source_message_id or 0) or None,
+                                    "pnl_resolution": (
+                                        "history_partial"
+                                        if int(_to_float_or_none((partial_pnl_stats or {}).get("close_count")) or 0) > 0
+                                        else "missing_history"
+                                    ),
+                                },
+                            )
+                            self._mark_reentry_progress_from_execution(
+                                source_key=str(row.get("source_key") or ""),
+                                symbol=str(symbol),
+                                direction=str(direction),
+                                event_kind="tp_hit",
+                            )
+                            # Refresh remaining position volume before moving SL.
+                            positions_by_symbol.pop(str(symbol), None)
+                            pos = get_position(str(symbol), int(ticket)) or pos
+                        else:
+                            failed += 1
+                            self._append_automation_execution_log(
+                                source_type="telegram_channel",
+                                source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                                trigger="david_channel_instruction",
+                                status="failed",
+                                symbol=str(symbol),
+                                timeframe=str(row.get("timeframe") or ""),
+                                direction=str(direction),
+                                lot=float(close_lot),
+                                ticket=int(ticket),
+                                message=f"david_half_close_failed:{str((out or {}).get('error') or 'close_failed')[:160]}",
+                                event_ts=event_ts,
+                                profile=str(row.get("profile") or "").strip().lower(),
+                                source_tag=str(row.get("source_tag") or "").strip().lower(),
+                                execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                                trace_id=str(row.get("trace_id") or "").strip() or None,
+                                stage="tp_partial",
+                                stage_status="failed",
+                                error_code="partial_close_failed",
+                            )
+                            touched_rows[str(key)] = dict(row)
+                            continue
+
+            entry = _to_float_or_none((pos or {}).get("entry_price"))
+            if entry is None:
+                entry = _to_float_or_none(row.get("entry_price"))
+            if entry is None or float(entry) <= 0.0:
+                failed += 1
+                self._append_automation_execution_log(
+                    source_type="telegram_channel",
+                    source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                    trigger="david_channel_instruction",
+                    status="failed",
+                    symbol=str(symbol),
+                    timeframe=str(row.get("timeframe") or ""),
+                    direction=str(direction),
+                    ticket=int(ticket),
+                    message=f"david_{action_u}:entry_price_unavailable",
+                    event_ts=event_ts,
+                    profile=str(row.get("profile") or "").strip().lower(),
+                    source_tag=str(row.get("source_tag") or "").strip().lower(),
+                    execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                    trace_id=str(row.get("trace_id") or "").strip() or None,
+                    stage="sl_update",
+                    stage_status="failed",
+                    error_code="entry_price_unavailable",
+                )
+                touched_rows[str(key)] = dict(row)
+                continue
+            be_out = self._apply_confirmation_dynamic_stop(
+                svc=svc,
+                row=row,
+                pos=pos,
+                desired_stop=float(entry),
+                reason_tag=f"david_{action_u}_be",
+            )
+            if bool((be_out or {}).get("ok")):
+                handled += 1
+                if not bool((be_out or {}).get("updated")):
+                    self._append_automation_execution_log(
+                        source_type="telegram_channel",
+                        source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                        trigger="david_channel_instruction",
+                        status="success",
+                        symbol=str(symbol),
+                        timeframe=str(row.get("timeframe") or ""),
+                        direction=str(direction),
+                        ticket=int(ticket),
+                        message=f"david_{action_u}_be:{str((be_out or {}).get('reason') or 'unchanged')}",
+                        event_ts=event_ts,
+                        profile=str(row.get("profile") or "").strip().lower(),
+                        source_tag=str(row.get("source_tag") or "").strip().lower(),
+                        execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                        trace_id=str(row.get("trace_id") or "").strip() or None,
+                        stage="sl_update",
+                        stage_status="success",
+                    )
+            else:
+                failed += 1
+                self._append_automation_execution_log(
+                    source_type="telegram_channel",
+                    source_name=str(row.get("source_name") or source_label or "David's Gold Strategy"),
+                    trigger="david_channel_instruction",
+                    status="failed",
+                    symbol=str(symbol),
+                    timeframe=str(row.get("timeframe") or ""),
+                    direction=str(direction),
+                    ticket=int(ticket),
+                    message=f"david_{action_u}_be_failed:{str((be_out or {}).get('error') or 'sl_failed')[:160]}",
+                    event_ts=event_ts,
+                    profile=str(row.get("profile") or "").strip().lower(),
+                    source_tag=str(row.get("source_tag") or "").strip().lower(),
+                    execution_mode=str(row.get("execution_mode") or "").strip().lower() or None,
+                    trace_id=str(row.get("trace_id") or "").strip() or None,
+                    stage="sl_update",
+                    stage_status="failed",
+                    error_code="sl_modify_failed",
+                )
+            touched_rows[str(key)] = dict(row)
+
+        if remove_keys or touched_rows:
+            with self._lock:
+                for key in remove_keys:
+                    self._active_confirmation_signal_ladders.pop(str(key), None)
+                for key, row in touched_rows.items():
+                    if str(key) in self._active_confirmation_signal_ladders:
+                        self._active_confirmation_signal_ladders[str(key)] = dict(row)
+
+        return (
+            "David management instruction processed\n"
+            f"Action: {str(action_u)}\n"
+            f"Handled: {int(handled)}\n"
+            f"Failed: {int(failed)}\n"
+            f"Skipped: {int(skipped)}"
+        )
+
     def _handle_confirmation_signal_message(
         self,
         *,
@@ -13039,7 +13453,18 @@ class TelegramBridgeService:
             if int(chat_id) != int(allowed or 0):
                 return None
             source_label = "manual paste"
+        is_david_channel = any(
+            self._source_matches_rule(name, "David's Gold Strategy")
+            for name in (source_names or [])
+        )
+        david_management_action = (
+            self._classify_david_channel_management_message(text)
+            if bool(is_david_channel)
+            else ""
+        )
         msg_kind = self._classify_confirm_signal_message_for_sources(text, source_names=source_names)
+        if david_management_action:
+            msg_kind = f"david_{david_management_action}"
         parsed_for_feed = self._parse_confirmation_signal_for_sources(text, source_names=source_names) if msg_kind == "signal" else None
         self._append_confirm_signal_feed(
             source=str(source_label),
@@ -13052,10 +13477,6 @@ class TelegramBridgeService:
         )
         source_key = self._confirm_signal_source_key(int(chat_id), source_label)
         msg_event_ts = ((msg or {}).get("date") if isinstance(msg, dict) else None)
-        is_david_channel = any(
-            self._source_matches_rule(name, "David's Gold Strategy")
-            for name in (source_names or [])
-        )
         if bool(is_david_channel) and self._is_hit_entry_message(text):
             candidates: List[str] = []
             for name in source_names:
@@ -13215,6 +13636,19 @@ class TelegramBridgeService:
                         if not push_only:
                             return f"Hit Entry trigger received, but execution did not open.\n{str(exec_msg)}"
                         return ""
+        if bool(is_david_channel) and david_management_action:
+            out = self._handle_david_channel_management_message(
+                chat_id=int(chat_id),
+                source_label=str(source_label),
+                source_names=list(source_names or []),
+                action=str(david_management_action),
+                event_ts=msg_event_ts,
+                source_message_id=int(((msg or {}).get("message_id") if isinstance(msg, dict) else 0) or 0),
+            )
+            if push_only:
+                self._send_text(int(chat_id), out, reply_markup=None)
+                return ""
+            return out
         if msg_kind in {"tp_hit", "sl_hit", "close_instruction"}:
             self._apply_reentry_progress_from_message(
                 source_key=str(source_key),
