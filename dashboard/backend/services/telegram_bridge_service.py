@@ -148,6 +148,15 @@ class TelegramBridgeService:
             "generic",
             "buysell",
             "kforex",
+            "arrowindikator",
+            "bsbrook",
+            "forexsignals30",
+            "supersignal",
+            "supersignalchannel",
+            "tarrow",
+            "tmaatr",
+            "triangularmacentered",
+            "payapa",
             "fxnuke",
             "uranus",
             "alchemy",
@@ -161,12 +170,41 @@ class TelegramBridgeService:
             "intrepid",
             "buysell",
             "kforex",
+            "arrowindikator",
+            "bsbrook",
+            "forexsignals30",
+            "supersignal",
+            "supersignalchannel",
+            "tarrow",
+            "tmaatr",
+            "triangularmacentered",
+            "payapa",
             "fxnuke",
             "uranus",
             "alchemy",
             "forexcyper",
             "supplydemand",
         }
+    )
+    _MT4_EXEC_INDICATOR_PROFILE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+        ("supplydemand", ("supply demand", "zulu wave arrows")),
+        ("buysell", ("buy sell signal", "buysell")),
+        ("kforex", ("kforex",)),
+        ("arrowindikator", ("arrow indicator", "arrow indikator", "arrowindikator")),
+        ("bsbrook", ("bsbrook",)),
+        ("forexsignals30", ("forexsignal30", "forex signals 30", "forexsignals30")),
+        ("supersignalchannel", ("super signals channel", "super signal channel", "supersignalchannel")),
+        ("supersignal", ("super signal v3", "super signal", "supersignal")),
+        ("tarrow", ("t arrow", "tarrow")),
+        ("tmaatr", ("tma atr channel", "tmaatr")),
+        ("triangularmacentered", ("triangular ma centered", "triangularmacentered")),
+        ("payapa", ("payapa",)),
+        ("intrepid", ("intrepid",)),
+        ("hydra", ("hydra",)),
+        ("uranus", ("uranus",)),
+        ("alchemy", ("alchemy",)),
+        ("fxnuke", ("fxnuke",)),
+        ("forexcyper", ("forexcyper", "forex cyper", "cyper")),
     )
 
     @staticmethod
@@ -223,6 +261,18 @@ class TelegramBridgeService:
             raw = str(raw.split("\\")[-1] or "").strip()
         raw = re.sub(r"\s+", " ", raw).strip()
         return raw
+
+    @classmethod
+    def _infer_mt4_exec_profile_from_indicator(cls, indicator: Any) -> str:
+        key = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
+        if not key:
+            return "generic"
+        for profile, needles in cls._MT4_EXEC_INDICATOR_PROFILE_RULES:
+            for needle in needles:
+                n = cls._normalize_mt_indicator_key(needle)
+                if n and n in key:
+                    return str(profile)
+        return "generic"
 
     @classmethod
     def _active_profile(cls) -> str:
@@ -2687,26 +2737,7 @@ class TelegramBridgeService:
         rows = rows[:lim]
 
         def _infer_profile_from_indicator(indicator_name: str) -> str:
-            key = self._normalize_mt_indicator_key(indicator_name)
-            if ("supply demand" in key) or ("zulu wave arrows" in key):
-                return "supplydemand"
-            if ("buy sell signal" in key) or ("buysell" in key):
-                return "buysell"
-            if "kforex" in key:
-                return "kforex"
-            if "intrepid" in key:
-                return "intrepid"
-            if "hydra" in key:
-                return "hydra"
-            if "uranus" in key:
-                return "uranus"
-            if "alchemy" in key:
-                return "alchemy"
-            if "fxnuke" in key:
-                return "fxnuke"
-            if "forexcyper" in key or "cyper" in key:
-                return "forexcyper"
-            return "generic"
+            return self._infer_mt4_exec_profile_from_indicator(indicator_name)
 
         def _instance_combo_key(indicator_name: str, symbol_name: str, timeframe_name: str) -> str:
             return (
@@ -4195,8 +4226,30 @@ class TelegramBridgeService:
     @staticmethod
     def _mt4_exec_normalized_profile(profile: str) -> str:
         p = str(profile or "generic").strip().lower() or "generic"
-        if p in {"supply_demand", "supply-demand"}:
-            p = "supplydemand"
+        aliases = {
+            "supply_demand": "supplydemand",
+            "supply-demand": "supplydemand",
+            "arrowindicator": "arrowindikator",
+            "arrow_indicator": "arrowindikator",
+            "arrow-indicator": "arrowindikator",
+            "arrow_indikator": "arrowindikator",
+            "forexsignal30": "forexsignals30",
+            "forex_signal30": "forexsignals30",
+            "forex-signals30": "forexsignals30",
+            "forex_signals30": "forexsignals30",
+            "super_signal": "supersignal",
+            "super-signal": "supersignal",
+            "super_signal_channel": "supersignalchannel",
+            "super-signals-channel": "supersignalchannel",
+            "t_arrow": "tarrow",
+            "t-arrow": "tarrow",
+            "tma_atr": "tmaatr",
+            "tma-atr": "tmaatr",
+            "tma_atr_channel": "tmaatr",
+            "triangular_ma_centered": "triangularmacentered",
+            "triangular-ma-centered": "triangularmacentered",
+        }
+        p = str(aliases.get(p, p))
         if p not in TelegramBridgeService._MT4_EXEC_KNOWN_PROFILES:
             p = "generic"
         return str(p)
@@ -4206,14 +4259,7 @@ class TelegramBridgeService:
         p = cls._mt4_exec_normalized_profile(profile)
         if p != "generic":
             return str(p)
-        ikey = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
-        if not ikey:
-            return "generic"
-        if ("buy sell signal" in ikey) or ("buysell" in ikey):
-            return "buysell"
-        if "kforex" in ikey:
-            return "kforex"
-        return "generic"
+        return str(cls._infer_mt4_exec_profile_from_indicator(indicator))
 
     @staticmethod
     def _mt4_exec_profile_lot(profile: str) -> float:

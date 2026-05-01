@@ -1,0 +1,11 @@
+FasterMovingAverage=5
+SlowerMovingAverage=12
+RSIPeriod=12
+MagicFilterPeriod=1
+BollingerbandsPeriod=10
+BollingerbandsShift=0
+BollingerbandsDeviation=0.5
+BullsPowerPeriod=50
+BearsPowerPeriod=50
+Alerts=true
+Utstup=10

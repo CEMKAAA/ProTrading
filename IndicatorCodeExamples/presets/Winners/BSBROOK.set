@@ -1,0 +1,8 @@
+Amplitude=2
+ShowBars=true
+ShowArrows=true
+alertsOn=true
+alertsOnCurrent=false
+alertsMessage=true
+alertsSound=true
+alertsEmail=false

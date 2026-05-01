@@ -1,0 +1,9 @@
+small_bar_count1=36
+medium_bar_count1=60
+big_bar_count1=156
+ArrowGap=2.0
+AlertsMessage=true
+AlertsSound=false
+AlertsEmail=false
+AlertsMobile=false
+SignalBar=0

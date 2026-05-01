@@ -1,0 +1,7 @@
+dist2=10
+dist1=10
+alertsOn=true
+alertsOnCurrent=true
+alertsMessage=true
+alertsSound=true
+alertsEmail=false

@@ -1,0 +1,14 @@
+TimeFrame=current time frame
+FastHalfLength=24
+SlowHalfLength=96
+Price=0
+Display=1
+TrendUP=7451452
+TrendDN=17919
+ZeroLine=6908265
+TrendSize=2
+ZRLSize=0
+TrendStyle=0
+ZRLStyle=0
+ShowZRL=true
+Interpolate=true
