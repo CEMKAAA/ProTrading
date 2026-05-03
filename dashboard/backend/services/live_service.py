@@ -823,6 +823,7 @@ class LiveTradingService:
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         comment: str = "",
+        magic: Optional[int] = None,
         deviation_points: int = 20,
     ) -> Dict[str, Any]:
         """Place a live MT5 market order."""
@@ -843,6 +844,10 @@ class LiveTradingService:
             tp = None if take_profit is None else float(take_profit)
             if tp is not None and tp <= 0.0:
                 return {"ok": False, "error": "take_profit must be > 0"}
+            try:
+                magic_value = int(magic) if magic is not None else 970001
+            except Exception:
+                magic_value = 970001
 
             symbol_resolved = self.resolve_symbol_name(symbol_req)
             if not symbol_resolved:
@@ -891,7 +896,7 @@ class LiveTradingService:
                     "sl": float(sl) if sl is not None else 0.0,
                     "tp": float(tp) if tp is not None else 0.0,
                     "deviation": int(max(1, min(5000, int(deviation_points or 20)))),
-                    "magic": 970001,
+                    "magic": int(magic_value),
                     "comment": str(comment or "")[:31],
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": int(fill_mode),

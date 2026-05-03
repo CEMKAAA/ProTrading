@@ -11332,6 +11332,11 @@ class TelegramBridgeService:
         svc = self._get_live_service()
         pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "tgc").strip().lower())[:8] or "tgc"
         marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
+        order_magic = (
+            self._indicator_v2_magic_for_timeframe(timeframe)
+            if str(audit_source_type).strip().lower() == "mt_indicator"
+            else None
+        )
         try:
             order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
             data = svc.place_market_order(
@@ -11341,6 +11346,7 @@ class TelegramBridgeService:
                 stop_loss=order_stop_loss,
                 take_profit=(None if take_profit is None else float(take_profit)),
                 comment=str(marker),
+                magic=order_magic,
             )
             if not bool((data or {}).get("ok")):
                 err_txt = str((data or {}).get("error") or "order_failed")
@@ -11356,6 +11362,7 @@ class TelegramBridgeService:
                                 lot=float(lot),
                                 take_profit=float(take_profit),
                                 comment=str(marker),
+                                magic=order_magic,
                             )
                     else:
                         retry_data = self._retry_order_for_invalid_stops(
@@ -11366,6 +11373,7 @@ class TelegramBridgeService:
                             stop_loss=float(stop_loss),
                             take_profit=float(take_profit),
                             comment=str(marker),
+                            magic=order_magic,
                         )
                     if bool((retry_data or {}).get("ok")):
                         data = dict(retry_data or {})
@@ -11614,6 +11622,11 @@ class TelegramBridgeService:
         svc = self._get_live_service()
         pref = re.sub(r"[^a-z0-9]", "", str(comment_prefix or "mt").strip().lower())[:8] or "mt"
         marker = f"{pref}{int(time.time() * 1000) % 10000000000:010d}"
+        order_magic = (
+            self._indicator_v2_magic_for_timeframe(tf)
+            if str(audit_source_type).strip().lower() == "mt_indicator"
+            else None
+        )
         try:
             data = svc.place_market_order(
                 symbol=str(sym),
@@ -11622,6 +11635,7 @@ class TelegramBridgeService:
                 stop_loss=None,
                 take_profit=None,
                 comment=str(marker),
+                magic=order_magic,
             )
             if not bool((data or {}).get("ok")):
                 err_txt = str((data or {}).get("error") or "order_failed")
@@ -11786,6 +11800,18 @@ class TelegramBridgeService:
             d = 5
         return float(round(float(price), d))
 
+    @staticmethod
+    def _indicator_v2_magic_for_timeframe(timeframe: Any) -> int:
+        tf = str(timeframe or "").strip().upper()
+        mapping = {
+            "M1": 970101,
+            "M5": 970105,
+            "M15": 970115,
+            "M30": 970130,
+            "H1": 970160,
+        }
+        return int(mapping.get(tf, 970100))
+
     def _retry_order_for_invalid_tp_only(
         self,
         *,
@@ -11795,6 +11821,7 @@ class TelegramBridgeService:
         lot: float,
         take_profit: float,
         comment: str,
+        magic: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
             info = svc.get_symbol_info(symbol=str(symbol))
@@ -11854,6 +11881,7 @@ class TelegramBridgeService:
                 stop_loss=None,
                 take_profit=float(tp2),
                 comment=str(comment),
+                magic=magic,
             )
         except Exception as exc:
             return {"ok": False, "error": f"retry_exception:{type(exc).__name__}:{str(exc)[:180]}"}
@@ -11868,6 +11896,7 @@ class TelegramBridgeService:
         stop_loss: float,
         take_profit: float,
         comment: str,
+        magic: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
             info = svc.get_symbol_info(symbol=str(symbol))
@@ -11936,6 +11965,7 @@ class TelegramBridgeService:
                 stop_loss=float(sl2),
                 take_profit=float(tp2),
                 comment=str(comment),
+                magic=magic,
             )
         except Exception as exc:
             return {"ok": False, "error": f"retry_exception:{type(exc).__name__}:{str(exc)[:180]}"}
