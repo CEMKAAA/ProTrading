@@ -936,8 +936,30 @@ class LiveTradingService:
                     "request": request,
                 }
                 if ok:
+                    logger.info(
+                        "mt5_market_order_sent symbol=%s direction=%s lot=%.4f magic=%s order=%s deal=%s position=%s comment=%s retcode=%s",
+                        str(symbol_resolved),
+                        str(direction_u),
+                        float(vol),
+                        int(magic_value),
+                        int(payload.get("order") or 0),
+                        int(payload.get("deal") or 0),
+                        int(payload.get("position") or 0),
+                        str(request.get("comment") or ""),
+                        str(retcode_name),
+                    )
                     return payload
                 last_err = f"{retcode}:{retcode_name}:{payload.get('comment')}"
+                logger.warning(
+                    "mt5_market_order_failed symbol=%s direction=%s lot=%.4f magic=%s retcode=%s comment=%s request_comment=%s",
+                    str(symbol_resolved),
+                    str(direction_u),
+                    float(vol),
+                    int(magic_value),
+                    str(retcode_name),
+                    str(payload.get("comment") or ""),
+                    str(request.get("comment") or ""),
+                )
             return {"ok": False, "error": f"order_send_failed:{last_err or mt5.last_error()}"}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)}"}

@@ -4,6 +4,12 @@
 //+------------------------------------------------------------------+
 #property strict
 
+enum TfProfitAction
+{
+   TF_PROFIT_CLOSE_ALL = 0,
+   TF_PROFIT_CLOSE_HALF = 1
+};
+
 input bool InpOnlyCurrentSymbol = false;       // false = whole MT4 terminal/account
 input int  InpMagicNumberFilter = -1;          // -1 = all magic numbers
 input bool InpClosePendingOrders = false;      // true = also delete pending orders
@@ -22,6 +28,13 @@ input string InpOpenComment = "manual_button";
 input bool InpAutoCloseProfitEnabled = false;         // Legacy chart-scope target. Keep false when using TF group governor.
 input double InpAutoCloseProfitTargetUsd = 50.0;      // Account currency target, e.g. 50 USD
 input bool InpTfGroupProfitEnabled = true;            // Auto-close TF magic groups by their own targets
+input TfProfitAction InpTfProfitAction = TF_PROFIT_CLOSE_HALF; // Secure half and leave runners by default.
+input double InpTfPartialClosePct = 50.0;
+input bool InpTfPartialMoveSlToBreakEven = true;
+input bool InpTfPartialCloseRunnerIfBeFails = true;
+input bool InpAuditCsvEnabled = true;
+input bool InpAuditUseCommonFiles = true;
+input string InpAuditCsvFileName = "ProfitGovernor_Audit_MT4.csv";
 input double InpTfTargetM1 = 20.0;
 input double InpTfTargetM5 = 40.0;
 input double InpTfTargetM15 = 100.0;
@@ -75,6 +88,7 @@ string BTN_TF_EDIT_M5 = "PT4_TF_EDIT_M5";
 string BTN_TF_EDIT_M15 = "PT4_TF_EDIT_M15";
 string BTN_TF_EDIT_M30 = "PT4_TF_EDIT_M30";
 string BTN_TF_EDIT_H1 = "PT4_TF_EDIT_H1";
+string PANEL_BG = "PT4_PROFIT_GOV_PANEL_BG";
 string LBL_TF_TITLE = "PT4_TF_TITLE";
 string LBL_TF_M1 = "PT4_TF_LBL_M1";
 string LBL_TF_M5 = "PT4_TF_LBL_M5";
@@ -101,7 +115,18 @@ int g_tf_count_m5 = 0;
 int g_tf_count_m15 = 0;
 int g_tf_count_m30 = 0;
 int g_tf_count_h1 = 0;
+double g_tf_sig_m1 = 0.0;
+double g_tf_sig_m5 = 0.0;
+double g_tf_sig_m15 = 0.0;
+double g_tf_sig_m30 = 0.0;
+double g_tf_sig_h1 = 0.0;
 string g_tf_status = "TF governor initialized";
+bool g_tf_armed_m1 = true;
+bool g_tf_armed_m5 = true;
+bool g_tf_armed_m15 = true;
+bool g_tf_armed_m30 = true;
+bool g_tf_armed_h1 = true;
+bool g_last_partial_unsecured_runner = false;
 
 string ChartTimeframeText()
 {
@@ -169,6 +194,130 @@ void SaveTfTargets()
    GlobalVariableSet(SettingsKey("M15"), g_tf_target_m15);
    GlobalVariableSet(SettingsKey("M30"), g_tf_target_m30);
    GlobalVariableSet(SettingsKey("H1"), g_tf_target_h1);
+}
+
+string TfArmedKey(const string tf)
+{
+   return SettingsKey("ARMED_" + tf);
+}
+
+bool LoadTfArmedValue(const string tf, const bool fallback)
+{
+   string key = TfArmedKey(tf);
+   if(!GlobalVariableCheck(key)) return fallback;
+   return (GlobalVariableGet(key) > 0.5);
+}
+
+void LoadTfArmedState()
+{
+   g_tf_armed_m1 = LoadTfArmedValue("M1", true);
+   g_tf_armed_m5 = LoadTfArmedValue("M5", true);
+   g_tf_armed_m15 = LoadTfArmedValue("M15", true);
+   g_tf_armed_m30 = LoadTfArmedValue("M30", true);
+   g_tf_armed_h1 = LoadTfArmedValue("H1", true);
+}
+
+void SaveTfArmedState(const string tf, const bool armed)
+{
+   GlobalVariableSet(TfArmedKey(tf), armed ? 1.0 : 0.0);
+}
+
+string AuditFileName()
+{
+   string name = InpAuditCsvFileName;
+   if(StringLen(name) <= 0) name = "ProfitGovernor_Audit_MT4.csv";
+   return name;
+}
+
+void AuditWrite(const string event_name,
+                const string tf,
+                const int ticket,
+                const string symbol,
+                const int magic,
+                const double volume,
+                const double pnl,
+                const double target,
+                const string result,
+                const string reason,
+                const string detail)
+{
+   if(!InpAuditCsvEnabled) return;
+
+   ResetLastError();
+   int flags = FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE;
+   if(InpAuditUseCommonFiles)
+      flags = flags | FILE_COMMON;
+   int h = FileOpen(AuditFileName(), flags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("ProfitGovernorMT4: audit csv open failed file=", AuditFileName(), " err=", GetLastError());
+      return;
+   }
+
+   bool writeHeader = (FileSize(h) == 0);
+   FileSeek(h, 0, SEEK_END);
+   if(writeHeader)
+   {
+      FileWrite(h,
+                "ts",
+                "account",
+                "terminal",
+                "event",
+                "tf",
+                "ticket",
+                "symbol",
+                "magic",
+                "volume",
+                "pnl",
+                "target",
+                "result",
+                "reason",
+                "detail");
+   }
+
+   FileWrite(h,
+             TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+             IntegerToString(AccountNumber()),
+             "MT4",
+             event_name,
+             tf,
+             IntegerToString(ticket),
+             symbol,
+             IntegerToString(magic),
+             DoubleToString(volume, 2),
+             DoubleToString(pnl, 2),
+             DoubleToString(target, 2),
+             result,
+             reason,
+             detail);
+   FileClose(h);
+}
+
+string TfDisarmSigKey(const string tf)
+{
+   return SettingsKey("DISARM_SIG_" + tf);
+}
+
+double TfCurrentSignature(const string tf)
+{
+   if(tf == "M1") return g_tf_sig_m1;
+   if(tf == "M5") return g_tf_sig_m5;
+   if(tf == "M15") return g_tf_sig_m15;
+   if(tf == "M30") return g_tf_sig_m30;
+   if(tf == "H1") return g_tf_sig_h1;
+   return 0.0;
+}
+
+double LoadTfDisarmSignature(const string tf)
+{
+   string key = TfDisarmSigKey(tf);
+   if(!GlobalVariableCheck(key)) return 0.0;
+   return GlobalVariableGet(key);
+}
+
+void SaveTfDisarmSignature(const string tf, const bool armed)
+{
+   GlobalVariableSet(TfDisarmSigKey(tf), armed ? 0.0 : TfCurrentSignature(tf));
 }
 
 double ParseEditDouble(const string objectName, const double fallback)
@@ -311,15 +460,26 @@ void ResetTfPnl()
    g_tf_pnl_m15 = 0.0; g_tf_count_m15 = 0;
    g_tf_pnl_m30 = 0.0; g_tf_count_m30 = 0;
    g_tf_pnl_h1 = 0.0; g_tf_count_h1 = 0;
+   g_tf_sig_m1 = 0.0;
+   g_tf_sig_m5 = 0.0;
+   g_tf_sig_m15 = 0.0;
+   g_tf_sig_m30 = 0.0;
+   g_tf_sig_h1 = 0.0;
 }
 
-void AddTfPnl(const int magic, const double pnl)
+double TicketSignatureValue(const int ticket)
 {
-   if(MagicBelongsToTf("M1", magic)) { g_tf_pnl_m1 += pnl; g_tf_count_m1++; return; }
-   if(MagicBelongsToTf("M5", magic)) { g_tf_pnl_m5 += pnl; g_tf_count_m5++; return; }
-   if(MagicBelongsToTf("M15", magic)) { g_tf_pnl_m15 += pnl; g_tf_count_m15++; return; }
-   if(MagicBelongsToTf("M30", magic)) { g_tf_pnl_m30 += pnl; g_tf_count_m30++; return; }
-   if(MagicBelongsToTf("H1", magic)) { g_tf_pnl_h1 += pnl; g_tf_count_h1++; return; }
+   return (double)ticket;
+}
+
+void AddTfPnl(const int magic, const double pnl, const int ticket)
+{
+   double sig = TicketSignatureValue(ticket);
+   if(MagicBelongsToTf("M1", magic)) { g_tf_pnl_m1 += pnl; g_tf_count_m1++; g_tf_sig_m1 += sig; return; }
+   if(MagicBelongsToTf("M5", magic)) { g_tf_pnl_m5 += pnl; g_tf_count_m5++; g_tf_sig_m5 += sig; return; }
+   if(MagicBelongsToTf("M15", magic)) { g_tf_pnl_m15 += pnl; g_tf_count_m15++; g_tf_sig_m15 += sig; return; }
+   if(MagicBelongsToTf("M30", magic)) { g_tf_pnl_m30 += pnl; g_tf_count_m30++; g_tf_sig_m30 += sig; return; }
+   if(MagicBelongsToTf("H1", magic)) { g_tf_pnl_h1 += pnl; g_tf_count_h1++; g_tf_sig_h1 += sig; return; }
 }
 
 void RefreshTfGroupPnl()
@@ -329,7 +489,7 @@ void RefreshTfGroupPnl()
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(!OrderAllowedForTfGovernor()) continue;
-      AddTfPnl(OrderMagicNumber(), OrderProfit() + OrderSwap() + OrderCommission());
+      AddTfPnl(OrderMagicNumber(), OrderProfit() + OrderSwap() + OrderCommission(), OrderTicket());
    }
 }
 
@@ -430,13 +590,14 @@ bool CloseSelectedOrder(const string reason)
 {
    int type = OrderType();
    int ticket = OrderTicket();
+   string symbol = OrderSymbol();
    double lots = OrderLots();
    RefreshRates();
-   double price = (type == OP_BUY) ? Bid : Ask;
+   double price = (type == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK);
    ResetLastError();
    bool ok = OrderClose(ticket, lots, price, InpSlippagePoints, clrSilver);
    if(!ok)
-      Print("ProfitGovernorMT4: close failed ticket=", ticket, " symbol=", OrderSymbol(), " reason=", reason, " err=", GetLastError());
+      Print("ProfitGovernorMT4: close failed ticket=", ticket, " symbol=", symbol, " reason=", reason, " err=", GetLastError());
    return ok;
 }
 
@@ -570,6 +731,306 @@ int CloseTfGroupOrders(const string tf, const string reason)
    return affected;
 }
 
+double TfPartialClosePct()
+{
+   if(InpTfPartialClosePct <= 0.0) return 50.0;
+   return MathMin(100.0, InpTfPartialClosePct);
+}
+
+bool OrderSlAtOrBetterBreakEven(const int type, const double sl, const double be)
+{
+   if(sl <= 0.0) return false;
+   if(type == OP_BUY) return (sl + 1e-8 >= be);
+   if(type == OP_SELL) return (sl - 1e-8 <= be);
+   return false;
+}
+
+bool BreakEvenStopAllowedNow(const string symbol, const int type, const double be)
+{
+   double point = MarketInfo(symbol, MODE_POINT);
+   if(point <= 0.0) point = 0.00001;
+   double minDistance = MarketInfo(symbol, MODE_STOPLEVEL) * point;
+   double bid = MarketInfo(symbol, MODE_BID);
+   double ask = MarketInfo(symbol, MODE_ASK);
+
+   if(type == OP_BUY) return (bid <= 0.0 || be <= bid - minDistance + 1e-8);
+   if(type == OP_SELL) return (ask <= 0.0 || be >= ask + minDistance - 1e-8);
+   return false;
+}
+
+bool MoveSelectedOrderStopToBreakEven(const string reason)
+{
+   int type = OrderType();
+   if(type != OP_BUY && type != OP_SELL) return false;
+
+   string symbol = OrderSymbol();
+   int ticket = OrderTicket();
+   int digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   double be = NormalizeDouble(OrderOpenPrice(), digits);
+   double sl = OrderStopLoss();
+   double tp = OrderTakeProfit();
+
+   if(OrderSlAtOrBetterBreakEven(type, sl, be)) return true;
+
+   if(!BreakEvenStopAllowedNow(symbol, type, be))
+   {
+      Print("ProfitGovernorMT4: SL->BE skipped stop-level ticket=", ticket,
+            " symbol=", symbol,
+            " be=", DoubleToString(be, digits),
+            " reason=", reason);
+      AuditWrite("sl_be_skipped_stop_level", "", ticket, symbol, OrderMagicNumber(), OrderLots(), OrderProfit() + OrderSwap() + OrderCommission(), 0.0, "skipped", reason, "be=" + DoubleToString(be, digits));
+      return false;
+   }
+
+   ResetLastError();
+   bool ok = OrderModify(ticket, OrderOpenPrice(), be, tp, 0, clrDodgerBlue);
+   if(ok)
+   {
+      AuditWrite("sl_be_success", "", ticket, symbol, OrderMagicNumber(), OrderLots(), OrderProfit() + OrderSwap() + OrderCommission(), 0.0, "ok", reason, "be=" + DoubleToString(be, digits));
+      return true;
+   }
+
+   Print("ProfitGovernorMT4: SL->BE failed ticket=", ticket,
+         " symbol=", symbol,
+         " be=", DoubleToString(be, digits),
+         " reason=", reason,
+         " err=", GetLastError());
+   AuditWrite("sl_be_failed", "", ticket, symbol, OrderMagicNumber(), OrderLots(), OrderProfit() + OrderSwap() + OrderCommission(), 0.0, "failed", reason, "be=" + DoubleToString(be, digits) + " err=" + IntegerToString(GetLastError()));
+   return false;
+}
+
+bool MoveRemainingOrderStopToBreakEven(const int originalTicket,
+                                       const string symbol,
+                                       const int type,
+                                       const int magic,
+                                       const double expectedRemaining,
+                                       const string reason)
+{
+   RefreshRates();
+   if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES))
+      return MoveSelectedOrderStopToBreakEven(reason);
+
+   double tolerance = MathMax(SymbolLotStep(symbol), 0.00001) + 1e-8;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderSymbol() != symbol || OrderType() != type || OrderMagicNumber() != magic) continue;
+      if(MathAbs(OrderLots() - expectedRemaining) > tolerance) continue;
+      return MoveSelectedOrderStopToBreakEven(reason);
+   }
+   Print("ProfitGovernorMT4: SL->BE skipped remaining order not found ticket=", originalTicket,
+         " symbol=", symbol,
+         " reason=", reason);
+   return false;
+}
+
+bool CloseRemainingOrderAfterBreakEvenFailure(const int originalTicket,
+                                              const string symbol,
+                                              const int type,
+                                              const int magic,
+                                              const double expectedRemaining,
+                                              const string reason)
+{
+   int maxPasses = MathMax(1, InpMaxClosePasses);
+   for(int pass = 0; pass < maxPasses; pass++)
+   {
+      RefreshRates();
+      if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+         double lots = OrderLots();
+         bool closed = CloseSelectedOrder(reason);
+         if(closed)
+         {
+            Print("ProfitGovernorMT4: runner closed because SL->BE failed ticket=", originalTicket,
+                  " symbol=", symbol,
+                  " reason=", reason,
+                  " pass=", pass + 1);
+            AuditWrite("runner_close_after_be_failed", "", originalTicket, symbol, magic, lots, pnl, 0.0, "ok", reason, "pass=" + IntegerToString(pass + 1));
+            return true;
+         }
+         AuditWrite("runner_close_after_be_failed", "", originalTicket, symbol, magic, lots, pnl, 0.0, "failed", reason, "pass=" + IntegerToString(pass + 1) + " err=" + IntegerToString(GetLastError()));
+      }
+      else
+      {
+         double tolerance = MathMax(SymbolLotStep(symbol), 0.00001) + 1e-8;
+         for(int i = OrdersTotal() - 1; i >= 0; i--)
+         {
+            if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+            if(OrderSymbol() != symbol || OrderType() != type || OrderMagicNumber() != magic) continue;
+            if(MathAbs(OrderLots() - expectedRemaining) > tolerance) continue;
+
+            int ticket = OrderTicket();
+            double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+            double lots = OrderLots();
+            bool closed = CloseSelectedOrder(reason);
+            if(closed)
+            {
+               Print("ProfitGovernorMT4: runner closed because SL->BE failed ticket=", ticket,
+                     " symbol=", symbol,
+                     " reason=", reason,
+                     " pass=", pass + 1);
+               AuditWrite("runner_close_after_be_failed", "", ticket, symbol, magic, lots, pnl, 0.0, "ok", reason, "pass=" + IntegerToString(pass + 1));
+               return true;
+            }
+            AuditWrite("runner_close_after_be_failed", "", ticket, symbol, magic, lots, pnl, 0.0, "failed", reason, "pass=" + IntegerToString(pass + 1) + " err=" + IntegerToString(GetLastError()));
+            break;
+         }
+      }
+      Sleep(250);
+   }
+
+   Print("ProfitGovernorMT4: runner close after SL->BE failure failed/skipped ticket=", originalTicket,
+         " symbol=", symbol,
+         " reason=", reason);
+   AuditWrite("runner_close_after_be_failed", "", originalTicket, symbol, magic, expectedRemaining, 0.0, 0.0, "failed_or_not_found", reason, "expectedRemaining=" + DoubleToString(expectedRemaining, 2));
+   return false;
+}
+
+int PartialCloseTfGroupOrders(const string tf, const string reason, const double pct)
+{
+   int targetMagic = TfMagicByName(tf);
+   if(targetMagic < 0) return 0;
+
+   int affected = 0;
+   int maxPasses = 1; // Partial profit securing must happen once per armed TF cycle.
+   g_last_partial_unsecured_runner = false;
+   for(int pass = 0; pass < maxPasses; pass++)
+   {
+      int changedThisPass = 0;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!OrderAllowedForTfGovernor() || !MagicBelongsToTf(tf, OrderMagicNumber())) continue;
+
+         string symbol = OrderSymbol();
+         int type = OrderType();
+         int ticket = OrderTicket();
+         int magic = OrderMagicNumber();
+         double volume = OrderLots();
+         double orderPnl = OrderProfit() + OrderSwap() + OrderCommission();
+         double minLot = SymbolMinLot(symbol);
+         double closeLots = NormalizeLot(symbol, volume * pct / 100.0);
+         double remaining = NormalizeDouble(volume - closeLots, 8);
+
+         if(closeLots + 1e-8 < minLot || remaining + 1e-8 < minLot)
+         {
+            Print("ProfitGovernorMT4: TF partial skipped unsplittable tf=", tf,
+                  " ticket=", ticket,
+                  " symbol=", symbol,
+                  " volume=", DoubleToString(volume, 2),
+                  " closeLots=", DoubleToString(closeLots, 2),
+                  " minLot=", DoubleToString(minLot, 2),
+                  " action=full_close");
+            AuditWrite("partial_unsplittable_full_close", tf, ticket, symbol, magic, volume, orderPnl, 0.0, "attempt", reason, "closeLots=" + DoubleToString(closeLots, 2) + " remaining=" + DoubleToString(remaining, 2) + " minLot=" + DoubleToString(minLot, 2));
+            bool closedUnsplittable = CloseRemainingOrderAfterBreakEvenFailure(ticket, symbol, type, magic, volume, "tf_partial_unsplittable_full_close");
+            if(closedUnsplittable)
+            {
+               affected++;
+               changedThisPass++;
+            }
+            else
+               g_last_partial_unsecured_runner = true;
+            continue;
+         }
+
+         RefreshRates();
+         double price = (type == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK);
+         ResetLastError();
+         bool ok = OrderClose(ticket, closeLots, price, InpSlippagePoints, clrDodgerBlue);
+         if(ok)
+         {
+            AuditWrite("partial_close_success", tf, ticket, symbol, magic, closeLots, orderPnl, 0.0, "ok", reason, "beforeVolume=" + DoubleToString(volume, 2) + " remaining=" + DoubleToString(remaining, 2));
+            if(InpTfPartialMoveSlToBreakEven)
+            {
+               Sleep(100);
+               bool beOk = MoveRemainingOrderStopToBreakEven(ticket, symbol, type, magic, remaining, "tf_partial_profit_target");
+               if(!beOk && InpTfPartialCloseRunnerIfBeFails)
+               {
+                  bool closedUnsafeRunner = CloseRemainingOrderAfterBreakEvenFailure(ticket, symbol, type, magic, remaining, "tf_partial_be_failed");
+                  if(!closedUnsafeRunner)
+                     g_last_partial_unsecured_runner = true;
+               }
+            }
+            affected++;
+            changedThisPass++;
+         }
+         else
+         {
+            Print("ProfitGovernorMT4: TF partial close failed tf=", tf,
+                  " ticket=", ticket,
+                  " symbol=", symbol,
+                  " closeLots=", DoubleToString(closeLots, 2),
+                  " reason=", reason,
+                  " err=", GetLastError());
+            AuditWrite("partial_close_failed", tf, ticket, symbol, magic, closeLots, orderPnl, 0.0, "failed", reason, "beforeVolume=" + DoubleToString(volume, 2) + " remaining=" + DoubleToString(remaining, 2) + " err=" + IntegerToString(GetLastError()));
+         }
+      }
+      if(changedThisPass <= 0) break;
+      Sleep(250);
+      RefreshRates();
+   }
+   Print("ProfitGovernorMT4: TF partial close completed tf=", tf,
+         " reason=", reason,
+         " pct=", DoubleToString(pct, 1),
+         " affected=", affected);
+   string unsecured = g_last_partial_unsecured_runner ? "1" : "0";
+   AuditWrite("tf_partial_complete", tf, 0, "", 0, 0.0, 0.0, 0.0, "complete", reason, "pct=" + DoubleToString(pct, 1) + " affected=" + IntegerToString(affected) + " unsecured=" + unsecured);
+   return affected;
+}
+
+bool TfGroupArmed(const string tf)
+{
+   if(tf == "M1") return g_tf_armed_m1;
+   if(tf == "M5") return g_tf_armed_m5;
+   if(tf == "M15") return g_tf_armed_m15;
+   if(tf == "M30") return g_tf_armed_m30;
+   if(tf == "H1") return g_tf_armed_h1;
+   return false;
+}
+
+void SetTfGroupArmed(const string tf, const bool armed)
+{
+   if(tf == "M1") { g_tf_armed_m1 = armed; SaveTfArmedState(tf, armed); SaveTfDisarmSignature(tf, armed); return; }
+   if(tf == "M5") { g_tf_armed_m5 = armed; SaveTfArmedState(tf, armed); SaveTfDisarmSignature(tf, armed); return; }
+   if(tf == "M15") { g_tf_armed_m15 = armed; SaveTfArmedState(tf, armed); SaveTfDisarmSignature(tf, armed); return; }
+   if(tf == "M30") { g_tf_armed_m30 = armed; SaveTfArmedState(tf, armed); SaveTfDisarmSignature(tf, armed); return; }
+   if(tf == "H1") { g_tf_armed_h1 = armed; SaveTfArmedState(tf, armed); SaveTfDisarmSignature(tf, armed); return; }
+}
+
+void RearmFlatTfGroups()
+{
+   if(!g_tf_armed_m1 && (g_tf_count_m1 <= 0 || MathAbs(LoadTfDisarmSignature("M1") - g_tf_sig_m1) > 0.5)) { SetTfGroupArmed("M1", true); AuditWrite("tf_rearmed", "M1", 0, "", 0, 0.0, g_tf_pnl_m1, g_tf_target_m1, "armed", "flat_or_signature_changed", "count=" + IntegerToString(g_tf_count_m1)); }
+   if(!g_tf_armed_m5 && (g_tf_count_m5 <= 0 || MathAbs(LoadTfDisarmSignature("M5") - g_tf_sig_m5) > 0.5)) { SetTfGroupArmed("M5", true); AuditWrite("tf_rearmed", "M5", 0, "", 0, 0.0, g_tf_pnl_m5, g_tf_target_m5, "armed", "flat_or_signature_changed", "count=" + IntegerToString(g_tf_count_m5)); }
+   if(!g_tf_armed_m15 && (g_tf_count_m15 <= 0 || MathAbs(LoadTfDisarmSignature("M15") - g_tf_sig_m15) > 0.5)) { SetTfGroupArmed("M15", true); AuditWrite("tf_rearmed", "M15", 0, "", 0, 0.0, g_tf_pnl_m15, g_tf_target_m15, "armed", "flat_or_signature_changed", "count=" + IntegerToString(g_tf_count_m15)); }
+   if(!g_tf_armed_m30 && (g_tf_count_m30 <= 0 || MathAbs(LoadTfDisarmSignature("M30") - g_tf_sig_m30) > 0.5)) { SetTfGroupArmed("M30", true); AuditWrite("tf_rearmed", "M30", 0, "", 0, 0.0, g_tf_pnl_m30, g_tf_target_m30, "armed", "flat_or_signature_changed", "count=" + IntegerToString(g_tf_count_m30)); }
+   if(!g_tf_armed_h1 && (g_tf_count_h1 <= 0 || MathAbs(LoadTfDisarmSignature("H1") - g_tf_sig_h1) > 0.5)) { SetTfGroupArmed("H1", true); AuditWrite("tf_rearmed", "H1", 0, "", 0, 0.0, g_tf_pnl_h1, g_tf_target_h1, "armed", "flat_or_signature_changed", "count=" + IntegerToString(g_tf_count_h1)); }
+}
+
+int ApplyTfProfitAction(const string tf, const string reason)
+{
+   int affected = 0;
+   g_last_partial_unsecured_runner = false;
+   if(InpTfProfitAction == TF_PROFIT_CLOSE_ALL)
+      affected = CloseTfGroupOrders(tf, reason);
+   else
+      affected = PartialCloseTfGroupOrders(tf, reason, TfPartialClosePct());
+
+   if(affected > 0 && !g_last_partial_unsecured_runner)
+   {
+      RefreshTfGroupPnl();
+      SetTfGroupArmed(tf, false);
+      AuditWrite("tf_disarmed_after_action", tf, 0, "", 0, 0.0, 0.0, 0.0, "disarmed", reason, "affected=" + IntegerToString(affected) + " sig=" + DoubleToString(TfCurrentSignature(tf), 0));
+   }
+   else if(affected > 0)
+   {
+      RefreshTfGroupPnl();
+      g_tf_status = tf + " unsafe runner close failed; governor remains armed";
+      AuditWrite("tf_remains_armed_after_unsafe_runner", tf, 0, "", 0, 0.0, 0.0, 0.0, "armed", reason, "affected=" + IntegerToString(affected));
+   }
+   return affected;
+}
+
 void CheckAutoCloseProfitTarget()
 {
    if(!InpAutoCloseProfitEnabled || InpAutoCloseProfitTargetUsd <= 0.0 || g_auto_close_in_progress) return;
@@ -595,6 +1056,11 @@ bool TfTargetHit(const double pnl, const int count, const double target)
    return (pnl + 1e-8 >= target);
 }
 
+bool TfTargetReady(const string tf, const double pnl, const int count, const double target)
+{
+   return (TfTargetHit(pnl, count, target) && TfGroupArmed(tf));
+}
+
 void CheckTfGroupProfitTargets()
 {
    if(!InpTfGroupProfitEnabled || g_auto_close_in_progress) return;
@@ -604,39 +1070,51 @@ void CheckTfGroupProfitTargets()
    if(g_last_auto_close_at > 0 && (nowTs - g_last_auto_close_at) < cooldown) return;
 
    RefreshTfGroupPnl();
+   RearmFlatTfGroups();
    bool anyHit = false;
-   if(TfTargetHit(g_tf_pnl_m1, g_tf_count_m1, g_tf_target_m1)) anyHit = true;
-   if(TfTargetHit(g_tf_pnl_m5, g_tf_count_m5, g_tf_target_m5)) anyHit = true;
-   if(TfTargetHit(g_tf_pnl_m15, g_tf_count_m15, g_tf_target_m15)) anyHit = true;
-   if(TfTargetHit(g_tf_pnl_m30, g_tf_count_m30, g_tf_target_m30)) anyHit = true;
-   if(TfTargetHit(g_tf_pnl_h1, g_tf_count_h1, g_tf_target_h1)) anyHit = true;
+   if(TfTargetReady("M1", g_tf_pnl_m1, g_tf_count_m1, g_tf_target_m1)) anyHit = true;
+   if(TfTargetReady("M5", g_tf_pnl_m5, g_tf_count_m5, g_tf_target_m5)) anyHit = true;
+   if(TfTargetReady("M15", g_tf_pnl_m15, g_tf_count_m15, g_tf_target_m15)) anyHit = true;
+   if(TfTargetReady("M30", g_tf_pnl_m30, g_tf_count_m30, g_tf_target_m30)) anyHit = true;
+   if(TfTargetReady("H1", g_tf_pnl_h1, g_tf_count_h1, g_tf_target_h1)) anyHit = true;
    if(!anyHit) return;
 
    g_auto_close_in_progress = true;
-   if(TfTargetHit(g_tf_pnl_m1, g_tf_count_m1, g_tf_target_m1))
+   int affected = 0;
+   if(TfTargetReady("M1", g_tf_pnl_m1, g_tf_count_m1, g_tf_target_m1))
    {
       g_tf_status = "Hit M1 pnl=" + DoubleToString(g_tf_pnl_m1, 2) + " target=" + DoubleToString(g_tf_target_m1, 2);
-      CloseTfGroupOrders("M1", "tf_profit_target");
+      AuditWrite("tf_target_hit", "M1", 0, "", 0, 0.0, g_tf_pnl_m1, g_tf_target_m1, "hit", "tf_profit_target", "count=" + IntegerToString(g_tf_count_m1) + " sig=" + DoubleToString(g_tf_sig_m1, 0));
+      affected = ApplyTfProfitAction("M1", "tf_profit_target");
+      g_tf_status = "M1 target action affected=" + IntegerToString(affected);
    }
-   if(TfTargetHit(g_tf_pnl_m5, g_tf_count_m5, g_tf_target_m5))
+   if(TfTargetReady("M5", g_tf_pnl_m5, g_tf_count_m5, g_tf_target_m5))
    {
       g_tf_status = "Hit M5 pnl=" + DoubleToString(g_tf_pnl_m5, 2) + " target=" + DoubleToString(g_tf_target_m5, 2);
-      CloseTfGroupOrders("M5", "tf_profit_target");
+      AuditWrite("tf_target_hit", "M5", 0, "", 0, 0.0, g_tf_pnl_m5, g_tf_target_m5, "hit", "tf_profit_target", "count=" + IntegerToString(g_tf_count_m5) + " sig=" + DoubleToString(g_tf_sig_m5, 0));
+      affected = ApplyTfProfitAction("M5", "tf_profit_target");
+      g_tf_status = "M5 target action affected=" + IntegerToString(affected);
    }
-   if(TfTargetHit(g_tf_pnl_m15, g_tf_count_m15, g_tf_target_m15))
+   if(TfTargetReady("M15", g_tf_pnl_m15, g_tf_count_m15, g_tf_target_m15))
    {
       g_tf_status = "Hit M15 pnl=" + DoubleToString(g_tf_pnl_m15, 2) + " target=" + DoubleToString(g_tf_target_m15, 2);
-      CloseTfGroupOrders("M15", "tf_profit_target");
+      AuditWrite("tf_target_hit", "M15", 0, "", 0, 0.0, g_tf_pnl_m15, g_tf_target_m15, "hit", "tf_profit_target", "count=" + IntegerToString(g_tf_count_m15) + " sig=" + DoubleToString(g_tf_sig_m15, 0));
+      affected = ApplyTfProfitAction("M15", "tf_profit_target");
+      g_tf_status = "M15 target action affected=" + IntegerToString(affected);
    }
-   if(TfTargetHit(g_tf_pnl_m30, g_tf_count_m30, g_tf_target_m30))
+   if(TfTargetReady("M30", g_tf_pnl_m30, g_tf_count_m30, g_tf_target_m30))
    {
       g_tf_status = "Hit M30 pnl=" + DoubleToString(g_tf_pnl_m30, 2) + " target=" + DoubleToString(g_tf_target_m30, 2);
-      CloseTfGroupOrders("M30", "tf_profit_target");
+      AuditWrite("tf_target_hit", "M30", 0, "", 0, 0.0, g_tf_pnl_m30, g_tf_target_m30, "hit", "tf_profit_target", "count=" + IntegerToString(g_tf_count_m30) + " sig=" + DoubleToString(g_tf_sig_m30, 0));
+      affected = ApplyTfProfitAction("M30", "tf_profit_target");
+      g_tf_status = "M30 target action affected=" + IntegerToString(affected);
    }
-   if(TfTargetHit(g_tf_pnl_h1, g_tf_count_h1, g_tf_target_h1))
+   if(TfTargetReady("H1", g_tf_pnl_h1, g_tf_count_h1, g_tf_target_h1))
    {
       g_tf_status = "Hit H1 pnl=" + DoubleToString(g_tf_pnl_h1, 2) + " target=" + DoubleToString(g_tf_target_h1, 2);
-      CloseTfGroupOrders("H1", "tf_profit_target");
+      AuditWrite("tf_target_hit", "H1", 0, "", 0, 0.0, g_tf_pnl_h1, g_tf_target_h1, "hit", "tf_profit_target", "count=" + IntegerToString(g_tf_count_h1) + " sig=" + DoubleToString(g_tf_sig_h1, 0));
+      affected = ApplyTfProfitAction("H1", "tf_profit_target");
+      g_tf_status = "H1 target action affected=" + IntegerToString(affected);
    }
    g_last_auto_close_at = nowTs;
    g_auto_close_in_progress = false;
@@ -663,6 +1141,22 @@ void CreateButtonSized(const string name, const string text, const int x, const 
 void CreateButton(const string name, const string text, const int x, const int y, const color bg)
 {
    CreateButtonSized(name, text, x, y, InpButtonWidth, bg);
+}
+
+void CreatePanelBackground(const int x, const int y, const int w, const int h)
+{
+   if(ObjectFind(0, PANEL_BG) >= 0) ObjectDelete(0, PANEL_BG);
+   ObjectCreate(0, PANEL_BG, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_BGCOLOR, clrWhite);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_BORDER_COLOR, clrDimGray);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_COLOR, clrDimGray);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, PANEL_BG, OBJPROP_HIDDEN, true);
 }
 
 void CreateEditBox(const string name, const string text, const int x, const int y, const int w, const int h)
@@ -705,36 +1199,36 @@ void CreateLabel(const string name, const string text, const int x, const int y,
 void CreateTfGovernorDashboard(const int x, const int y)
 {
    int rowH = 22;
-   CreateLabel(LBL_TF_TITLE, "TF Profit Governor MT4 | Target | Live PnL", x, y, 340, rowH, clrGold);
+   CreateLabel(LBL_TF_TITLE, "TF Profit Governor MT4 | Target | Live PnL", x, y, 340, rowH, clrNavy);
    int y0 = y + rowH;
 
-   CreateLabel(LBL_TF_M1, "M1", x, y0, 34, rowH, clrWhite);
+   CreateLabel(LBL_TF_M1, "M1", x, y0, 34, rowH, clrBlack);
    CreateEditBox(BTN_TF_EDIT_M1, DoubleToString(g_tf_target_m1, 2), x + 36, y0 - 4, 58, 22);
-   CreateLabel(LBL_TF_M1 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrWhite);
+   CreateLabel(LBL_TF_M1 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrBlack);
 
    y0 += rowH;
-   CreateLabel(LBL_TF_M5, "M5", x, y0, 34, rowH, clrWhite);
+   CreateLabel(LBL_TF_M5, "M5", x, y0, 34, rowH, clrBlack);
    CreateEditBox(BTN_TF_EDIT_M5, DoubleToString(g_tf_target_m5, 2), x + 36, y0 - 4, 58, 22);
-   CreateLabel(LBL_TF_M5 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrWhite);
+   CreateLabel(LBL_TF_M5 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrBlack);
 
    y0 += rowH;
-   CreateLabel(LBL_TF_M15, "M15", x, y0, 34, rowH, clrWhite);
+   CreateLabel(LBL_TF_M15, "M15", x, y0, 34, rowH, clrBlack);
    CreateEditBox(BTN_TF_EDIT_M15, DoubleToString(g_tf_target_m15, 2), x + 36, y0 - 4, 58, 22);
-   CreateLabel(LBL_TF_M15 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrWhite);
+   CreateLabel(LBL_TF_M15 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrBlack);
 
    y0 += rowH;
-   CreateLabel(LBL_TF_M30, "M30", x, y0, 34, rowH, clrWhite);
+   CreateLabel(LBL_TF_M30, "M30", x, y0, 34, rowH, clrBlack);
    CreateEditBox(BTN_TF_EDIT_M30, DoubleToString(g_tf_target_m30, 2), x + 36, y0 - 4, 58, 22);
-   CreateLabel(LBL_TF_M30 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrWhite);
+   CreateLabel(LBL_TF_M30 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrBlack);
 
    y0 += rowH;
-   CreateLabel(LBL_TF_H1, "H1", x, y0, 34, rowH, clrWhite);
+   CreateLabel(LBL_TF_H1, "H1", x, y0, 34, rowH, clrBlack);
    CreateEditBox(BTN_TF_EDIT_H1, DoubleToString(g_tf_target_h1, 2), x + 36, y0 - 4, 58, 22);
-   CreateLabel(LBL_TF_H1 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrWhite);
+   CreateLabel(LBL_TF_H1 + "_PNL", "pnl=0.00 count=0", x + 104, y0, 160, rowH, clrBlack);
 
    y0 += rowH + 2;
    CreateButtonSized(BTN_TF_SAVE, "Save TF TP", x, y0, 112, clrDarkSlateGray);
-   CreateLabel(LBL_TF_STATUS, g_tf_status, x + 124, y0 + 4, 280, rowH, clrSilver);
+   CreateLabel(LBL_TF_STATUS, g_tf_status, x + 124, y0 + 4, 280, rowH, clrDimGray);
 
    y0 += InpButtonHeight + 6;
    int closeW = 70;
@@ -783,6 +1277,7 @@ void ManualCloseTfGroup(const string tf)
 
 void DeleteButtons()
 {
+   ObjectDelete(0, PANEL_BG);
    string names[30];
    names[0] = BTN_CLOSE_BUY; names[1] = BTN_CLOSE_SELL; names[2] = BTN_CLOSE_ALL;
    names[3] = BTN_LOT_DOWN; names[4] = BTN_LOT_EDIT; names[5] = BTN_LOT_UP;
@@ -800,7 +1295,9 @@ int OnInit()
    int x = InpButtonX;
    int y = InpButtonY;
    LoadTfTargets();
+   LoadTfArmedState();
    SetLot(InpInitialLot);
+   CreatePanelBackground(x - 8, y - 8, 430, 292);
    CreateButton(BTN_CLOSE_BUY, "Close Buy", x, y, clrSeaGreen);
    CreateButton(BTN_CLOSE_SELL, "Close Sell", x + InpButtonWidth + InpButtonGap, y, clrFireBrick);
    CreateButton(BTN_CLOSE_ALL, "Close All", x + (InpButtonWidth + InpButtonGap) * 2, y, clrDimGray);

@@ -11337,6 +11337,16 @@ class TelegramBridgeService:
             if str(audit_source_type).strip().lower() == "mt_indicator"
             else None
         )
+        if str(audit_source_type).strip().lower() == "mt_indicator":
+            logger.info(
+                "indicator_v2_order_magic_selected mode=ladder symbol=%s timeframe=%s direction=%s profile=%s magic=%s trace_id=%s",
+                str(symbol),
+                str(timeframe),
+                str(direction),
+                str(audit_profile),
+                str(order_magic),
+                str(trace_id),
+            )
         try:
             order_stop_loss = None if bool(allow_no_sl) else float(stop_loss)
             data = svc.place_market_order(
@@ -11627,6 +11637,16 @@ class TelegramBridgeService:
             if str(audit_source_type).strip().lower() == "mt_indicator"
             else None
         )
+        if str(audit_source_type).strip().lower() == "mt_indicator":
+            logger.info(
+                "indicator_v2_order_magic_selected mode=normal symbol=%s timeframe=%s direction=%s profile=%s magic=%s trace_id=%s",
+                str(sym),
+                str(tf),
+                str(side),
+                str(audit_profile),
+                str(order_magic),
+                str(trace_id),
+            )
         try:
             data = svc.place_market_order(
                 symbol=str(sym),
