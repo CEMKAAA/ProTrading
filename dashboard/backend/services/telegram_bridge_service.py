@@ -148,7 +148,6 @@ class TelegramBridgeService:
             "generic",
             "buysell",
             "kforex",
-            "kayaka",
             "arrowindikator",
             "bsbrook",
             "forexsignals30",
@@ -171,7 +170,6 @@ class TelegramBridgeService:
             "intrepid",
             "buysell",
             "kforex",
-            "kayaka",
             "arrowindikator",
             "bsbrook",
             "forexsignals30",
@@ -192,7 +190,6 @@ class TelegramBridgeService:
         ("supplydemand", ("supply demand", "zulu wave arrows")),
         ("buysell", ("buy sell signal", "buysell")),
         ("kforex", ("kforex",)),
-        ("kayaka", ("kayaka",)),
         ("arrowindikator", ("arrow indicator", "arrow indikator", "arrowindikator")),
         ("bsbrook", ("bsbrook",)),
         ("forexsignals30", ("forexsignal30", "forex signals 30", "forexsignals30")),
@@ -4037,9 +4034,7 @@ class TelegramBridgeService:
 
     @staticmethod
     def _indicator_clear_fallback_enabled() -> bool:
-        # Neutral bridge events are state cleanup events by default. Replaying the
-        # last valid BUY/SELL after a NONE/clear can reopen positions unexpectedly.
-        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_ENABLED", "0")).strip().lower()
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_ENABLED", "1")).strip().lower()
         return v in {"1", "true", "yes", "on"}
 
     @staticmethod
@@ -4242,8 +4237,6 @@ class TelegramBridgeService:
             "forex_signal30": "forexsignals30",
             "forex-signals30": "forexsignals30",
             "forex_signals30": "forexsignals30",
-            "kayaka_indicator": "kayaka",
-            "kayaka-indicator": "kayaka",
             "super_signal": "supersignal",
             "super-signal": "supersignal",
             "super_signal_channel": "supersignalchannel",
@@ -8140,9 +8133,9 @@ class TelegramBridgeService:
             timeframe=timeframe,
         )
         resolved = self._bridge_direction(
-            (payload or {}).get("resolved_signal")
+            (payload or {}).get("confirmed_direction")
+            or (payload or {}).get("resolved_signal")
             or (payload or {}).get("signal_hint")
-            or (payload or {}).get("confirmed_direction")
         )
         pending = self._bridge_direction((payload or {}).get("pending_direction"))
         base = {
