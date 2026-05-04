@@ -78,6 +78,7 @@ class _FakeBridgeBroker:
         stop_loss: float | None,
         take_profit: float | None,
         comment: str,
+        magic: int | None = None,
     ) -> Dict[str, Any]:
         side = str(direction).strip().upper()
         if side not in {"BUY", "SELL"}:
@@ -99,6 +100,7 @@ class _FakeBridgeBroker:
                 "stop_loss": (float(stop_loss) if stop_loss is not None else 0.0),
                 "take_profit": (float(take_profit) if take_profit is not None else 0.0),
                 "comment": str(comment or ""),
+                "magic": (int(magic) if magic is not None else 0),
             }
         return {
             "ok": True,

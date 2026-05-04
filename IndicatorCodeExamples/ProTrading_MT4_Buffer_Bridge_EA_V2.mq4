@@ -310,6 +310,36 @@ bool _send_or_queue_event(string eventType, string direction, double signalValue
    return false;
 }
 
+void _clear_pending_state(string reason, datetime signalBarTime)
+{
+   if(g_pendingDir == 0)
+      return;
+
+   string pendingText = _direction_to_text(g_pendingDir);
+   int pendingAge = 0;
+   datetime nowTs = TimeCurrent();
+   if(nowTs <= 0)
+      nowTs = TimeLocal();
+   if(g_pendingStartedAt > 0 && nowTs > 0)
+      pendingAge = (int)(nowTs - g_pendingStartedAt);
+
+   g_pendingDir = 0;
+   g_pendingStartedAt = 0;
+   g_pendingBar = 0;
+   g_pendingSignalValue = 0.0;
+   g_lastFailedSendAt = 0;
+
+   if(signalBarTime <= 0)
+      signalBarTime = nowTs;
+
+   if(InpDebugPrint)
+      Print("MT4BridgeV2 pending cleared reason=", reason,
+            " previous_direction=", pendingText,
+            " age_sec=", IntegerToString(pendingAge));
+
+   _send_or_queue_event("signal_clear", "NONE", 0.0, signalBarTime);
+}
+
 bool _is_supported_webrequest_endpoint(string endpoint, string &reason)
 {
    reason = "";
@@ -632,6 +662,20 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
 
    string pendingText = _direction_to_text(g_pendingDir);
    string confirmedText = _direction_to_text(g_confirmedDir);
+   string resolvedPayload = confirmedText;
+   if(dirInt != 0)
+   {
+      resolvedPayload = _direction_to_text(dirInt);
+   }
+   else if(eventKind == "resolved_state" || eventKind == "signal_clear" || eventKind == "clear" || eventKind == "state_clear")
+   {
+      string dirUpper = dir;
+      StringToUpper(dirUpper);
+      if(dirUpper == "AMBIGUOUS")
+         resolvedPayload = "AMBIGUOUS";
+      else
+         resolvedPayload = "NONE";
+   }
    int pendingAge = 0;
    datetime nowTs = TimeCurrent();
    if(nowTs <= 0)
@@ -644,7 +688,7 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
       "\"signal_hint\":\"" + _json_escape(dir) + "\","
-      "\"resolved_signal\":\"" + _json_escape((dirInt != 0) ? _direction_to_text(dirInt) : confirmedText) + "\","
+      "\"resolved_signal\":\"" + _json_escape(resolvedPayload) + "\","
       "\"confirmed_direction\":\"" + _json_escape(confirmedText) + "\","
       "\"pending_direction\":\"" + _json_escape((g_pendingDir != 0) ? pendingText : "") + "\","
       "\"pending_age_sec\":" + IntegerToString(pendingAge) + ","
@@ -730,6 +774,8 @@ void _check_and_send()
       {
          Print("MT4BridgeV2 ambiguous signal (both BUY/SELL active): ", InpIndicatorName, " ", Symbol(), " ", _tf_to_string(Period()));
       }
+      if(g_pendingDir != 0)
+         _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
       return;
    }
 
@@ -861,7 +907,7 @@ void OnTimer()
          nowResolvedTs = TimeLocal();
       if(nowResolvedTs > 0 && (g_lastResolvedStateAt <= 0 || (nowResolvedTs - g_lastResolvedStateAt) >= InpResolvedStateSeconds))
       {
-         string resolvedText = _direction_to_text(g_confirmedDir);
+         string resolvedText = "NONE";
          double stateValue = 0.0;
          datetime stateBar = iTime(NULL, 0, InpSignalShift);
          int rawDir = 0;
@@ -869,7 +915,9 @@ void OnTimer()
          double rawBuy = EMPTY_VALUE;
          double rawSell = EMPTY_VALUE;
          _read_resolved_signal(InpSignalShift, rawDir, rawText, stateValue, stateBar, rawBuy, rawSell);
-         if(rawDir != 0)
+         if(rawText == "AMBIGUOUS")
+            resolvedText = "AMBIGUOUS";
+         else if(rawDir != 0)
             resolvedText = _direction_to_text(rawDir);
          _send_or_queue_event("resolved_state", resolvedText, stateValue, (stateBar > 0 ? stateBar : nowResolvedTs));
       }
