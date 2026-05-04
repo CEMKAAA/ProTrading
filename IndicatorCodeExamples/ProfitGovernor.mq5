@@ -56,7 +56,7 @@ input long InpIndicatorV2MagicM15 = 970115;
 input long InpIndicatorV2MagicM30 = 970130;
 input long InpIndicatorV2MagicH1 = 970160;
 input bool InpIncludeTmaProMagic = false;             // Optional: standalone TMA_MACD_PRO TF-offset magics.
-input string InpTmaMagicBasesCsv = "860500,860600,860700,860800,860900";
+input string InpTmaMagicBasesCsv = "860500,860600,860700,860800";
 input long InpTmaMagicOffsetM1 = 10000;
 input long InpTmaMagicOffsetM5 = 20000;
 input long InpTmaMagicOffsetM15 = 30000;
@@ -718,14 +718,6 @@ int PartialCloseTfGroupPositions(const string tf, const string reason, const dou
          long magic = PositionGetInteger(POSITION_MAGIC);
          if(!PositionAllowedForTfGovernor(symbol, magic) || !MagicBelongsToTf(tf, magic))
             continue;
-
-         ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         if(InpTfPartialMoveSlToBreakEven &&
-            PositionSlAtOrBetterBreakEven(type, PositionGetDouble(POSITION_SL), PositionGetDouble(POSITION_PRICE_OPEN)))
-         {
-            AuditWrite("partial_skip_secured_runner", tf, ticket, symbol, magic, PositionGetDouble(POSITION_VOLUME), PositionGetDouble(POSITION_PROFIT), 0.0, "skipped", reason, "sl_already_at_or_better_be");
-            continue;
-         }
 
          double volume = PositionGetDouble(POSITION_VOLUME);
          double positionPnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);

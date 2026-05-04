@@ -54,8 +54,8 @@ input int InpIndicatorV2MagicM5 = 970105;
 input int InpIndicatorV2MagicM15 = 970115;
 input int InpIndicatorV2MagicM30 = 970130;
 input int InpIndicatorV2MagicH1 = 970160;
-input bool InpIncludeTmaProMagic = true;              // Standalone TMA_MACD_PRO TF-offset magics.
-input string InpTmaMagicBasesCsv = "860500,860600,860700,860800,860900";
+input bool InpIncludeTmaProMagic = false;             // Optional: standalone TMA_MACD_PRO TF-offset magics.
+input string InpTmaMagicBasesCsv = "860500,860600,860700,860800";
 input int InpTmaMagicOffsetM1 = 10000;
 input int InpTmaMagicOffsetM5 = 20000;
 input int InpTmaMagicOffsetM15 = 30000;
@@ -807,18 +807,13 @@ bool MoveRemainingOrderStopToBreakEven(const int originalTicket,
                                        const string reason)
 {
    RefreshRates();
-   if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES) &&
-      OrderCloseTime() == 0 &&
-      OrderType() == type &&
-      OrderSymbol() == symbol &&
-      OrderMagicNumber() == magic)
+   if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES))
       return MoveSelectedOrderStopToBreakEven(reason);
 
    double tolerance = MathMax(SymbolLotStep(symbol), 0.00001) + 1e-8;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderCloseTime() != 0) continue;
       if(OrderSymbol() != symbol || OrderType() != type || OrderMagicNumber() != magic) continue;
       if(MathAbs(OrderLots() - expectedRemaining) > tolerance) continue;
       return MoveSelectedOrderStopToBreakEven(reason);
@@ -840,11 +835,7 @@ bool CloseRemainingOrderAfterBreakEvenFailure(const int originalTicket,
    for(int pass = 0; pass < maxPasses; pass++)
    {
       RefreshRates();
-      if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES) &&
-         OrderCloseTime() == 0 &&
-         OrderType() == type &&
-         OrderSymbol() == symbol &&
-         OrderMagicNumber() == magic)
+      if(OrderSelect(originalTicket, SELECT_BY_TICKET, MODE_TRADES))
       {
          double pnl = OrderProfit() + OrderSwap() + OrderCommission();
          double lots = OrderLots();
@@ -866,7 +857,6 @@ bool CloseRemainingOrderAfterBreakEvenFailure(const int originalTicket,
          for(int i = OrdersTotal() - 1; i >= 0; i--)
          {
             if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-            if(OrderCloseTime() != 0) continue;
             if(OrderSymbol() != symbol || OrderType() != type || OrderMagicNumber() != magic) continue;
             if(MathAbs(OrderLots() - expectedRemaining) > tolerance) continue;
 
@@ -917,14 +907,6 @@ int PartialCloseTfGroupOrders(const string tf, const string reason, const double
          int type = OrderType();
          int ticket = OrderTicket();
          int magic = OrderMagicNumber();
-
-         if(InpTfPartialMoveSlToBreakEven &&
-            OrderSlAtOrBetterBreakEven(type, OrderStopLoss(), OrderOpenPrice()))
-         {
-            AuditWrite("partial_skip_secured_runner", tf, ticket, symbol, magic, OrderLots(), OrderProfit() + OrderSwap() + OrderCommission(), 0.0, "skipped", reason, "sl_already_at_or_better_be");
-            continue;
-         }
-
          double volume = OrderLots();
          double orderPnl = OrderProfit() + OrderSwap() + OrderCommission();
          double minLot = SymbolMinLot(symbol);

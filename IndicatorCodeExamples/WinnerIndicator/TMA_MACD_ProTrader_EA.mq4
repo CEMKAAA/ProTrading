@@ -12,8 +12,7 @@ enum SignalMode
 {
    SIGNAL_STATE_BUFFERS = 0,      // Existing bridge style: Uptrend/Dntrend state buffers.
    SIGNAL_TREND_EVENTS = 1,       // Production event style: trend buffer 444/888/-444/-888.
-   SIGNAL_EVENTS_THEN_STATE = 2,  // Prefer event signals; fallback to state buffers.
-   SIGNAL_CHART_CLOSED_BAR_ARROWS = 3 // Trade only the chart arrow object on a closed bar.
+   SIGNAL_EVENTS_THEN_STATE = 2   // Prefer event signals; fallback to state buffers.
 };
 
 enum StopMode
@@ -78,7 +77,7 @@ input bool   InpEnableAdvancedMode = false;
 input double InpLot = 0.10;
 input int    InpSlippage = 30;
 input int    InpMagicBase = 860500;
-input bool   InpUseTfMagicOffset = true;   // Required for ProfitGovernor TF grouping; keeps each chart TF isolated.
+input bool   InpUseTfMagicOffset = false;  // Optional for standalone TMA governor; backend Indicator V2 does not need this.
 input bool   InpManageLegacyMagic = true;  // Also manage old InpMagicBase+1/+2 orders after enabling TF offset.
 input int    InpMagicOffsetM1 = 10000;
 input int    InpMagicOffsetM5 = 20000;
@@ -138,7 +137,6 @@ bool     g_runtimeNormal = true;
 bool     g_runtimeAdvanced = true;
 int      g_runtimeConfirmSeconds = 0;
 int      g_runtimeStateConfirmBars = 1;
-double   g_runtimeLot = 0.10;
 bool     g_dailyHardStop = false;
 int      g_confirmedDir = 0;
 int      g_pendingDir = 0;
@@ -209,44 +207,11 @@ int LegacyAdvancedMagic() { return InpMagicBase + 2; }
 
 int EffectiveSignalShift()
 {
-   if(InpSignalMode == SIGNAL_CHART_CLOSED_BAR_ARROWS && InpSignalShift < 1)
-      return 1;
    if(InpRequireClosedBar && InpSignalShift < 1)
       return 1;
    if(InpSignalShift < 0)
       return 0;
    return InpSignalShift;
-}
-
-int NextHigherTF(int tf)
-{
-   if(tf == 0) tf = Period();
-   if(tf == PERIOD_M1) return PERIOD_M5;
-   if(tf == PERIOD_M5) return PERIOD_M15;
-   if(tf == PERIOD_M15) return PERIOD_M30;
-   if(tf == PERIOD_M30) return PERIOD_H1;
-   if(tf == PERIOD_H1) return PERIOD_H4;
-   if(tf == PERIOD_H4) return PERIOD_D1;
-   if(tf == PERIOD_D1) return PERIOD_W1;
-   if(tf == PERIOD_W1) return PERIOD_MN1;
-   if(tf == PERIOD_MN1) return PERIOD_MN1;
-   return Period();
-}
-
-int EffectiveIndicatorTimeframe()
-{
-   int tf = InpIndicatorTimeFrame;
-   if(tf > Period()) return tf;
-   if(InpTimeFrameAuto == 1) return NextHigherTF(Period());
-   if(InpTimeFrameAuto == 2) return NextHigherTF(NextHigherTF(Period()));
-   if(InpTimeFrameAuto == 3) return NextHigherTF(NextHigherTF(NextHigherTF(Period())));
-   return Period();
-}
-
-string ArrowObjectPrefix()
-{
-   if(InpArrowsIdentifier != "") return InpArrowsIdentifier;
-   return TfToString(EffectiveIndicatorTimeframe()) + ": TMA MACD [" + IntegerToString(InpFastHalfLength) + "-" + IntegerToString(InpSlowHalfLength) + "]_";
 }
 
 int ClampInt(int value, int minValue, int maxValue)
@@ -265,34 +230,19 @@ void LoadRuntimeSettings()
 {
    g_runtimeConfirmSeconds = ClampInt(InpConfirmSeconds, 0, 86400);
    g_runtimeStateConfirmBars = ClampInt(InpStateConfirmBars, 1, 100);
-   g_runtimeLot = NormalizeLots(InpLot);
 
    string confirmKey = SettingsPrefix() + "confirm_seconds";
    string barsKey = SettingsPrefix() + "state_confirm_bars";
-   string lotKey = SettingsPrefix() + "lot";
    if(GlobalVariableCheck(confirmKey))
       g_runtimeConfirmSeconds = ClampInt((int)GlobalVariableGet(confirmKey), 0, 86400);
    if(GlobalVariableCheck(barsKey))
       g_runtimeStateConfirmBars = ClampInt((int)GlobalVariableGet(barsKey), 1, 100);
-   if(GlobalVariableCheck(lotKey))
-      g_runtimeLot = NormalizeLots(GlobalVariableGet(lotKey));
 }
 
 void SaveRuntimeSettings()
 {
    GlobalVariableSet(SettingsPrefix() + "confirm_seconds", g_runtimeConfirmSeconds);
    GlobalVariableSet(SettingsPrefix() + "state_confirm_bars", g_runtimeStateConfirmBars);
-   GlobalVariableSet(SettingsPrefix() + "lot", g_runtimeLot);
-}
-
-double ParseEditDouble(string name, double fallback)
-{
-   string raw = EditText(name);
-   if(raw == "") return fallback;
-   StringReplace(raw, ",", ".");
-   double value = StringToDouble(raw);
-   if(value <= 0.0) return fallback;
-   return value;
 }
 
 double NormalizeLots(double lots)
@@ -397,88 +347,6 @@ int DirectionFromStateBuffers(int shift)
    return dir;
 }
 
-int DirectionFromArrowObjectNameText(const string name)
-{
-   string upper = name;
-   StringToUpper(upper);
-   if(StringFind(upper, "BUY") >= 0) return 1;
-   if(StringFind(upper, "SELL") >= 0) return -1;
-
-   string text = "";
-   if(ObjectFind(0, name) >= 0)
-      text = ObjectGetString(0, name, OBJPROP_TEXT);
-   if(text == "")
-      text = ObjectDescription(name);
-   StringToUpper(text);
-   if(StringFind(text, "BUY") >= 0) return 1;
-   if(StringFind(text, "SELL") >= 0) return -1;
-   return 0;
-}
-
-int DirectionFromClosedBarArrowObjectAtTime(datetime targetTime, int calcShift, string context)
-{
-   if(targetTime <= 0) return 0;
-
-   // Force the hidden iCustom indicator instance to calculate/draw before scanning objects.
-   g_lastTrendBuffer = ICustomValue(InpTrendBufferIndex, MathMax(1, calcShift));
-
-   string prefix = ArrowObjectPrefix();
-   int buyCount = 0;
-   int sellCount = 0;
-   string matched = "";
-
-   for(int i = ObjectsTotal() - 1; i >= 0; i--)
-   {
-      string name = ObjectName(i);
-      if(StringSubstr(name, 0, StringLen(prefix)) != prefix) continue;
-      if(ObjectType(name) != OBJ_ARROW) continue;
-
-      datetime objTime = (datetime)ObjectGet(name, OBJPROP_TIME1);
-      if(objTime != targetTime) continue;
-
-      int dir = 0;
-      int arrowCode = (int)ObjectGet(name, OBJPROP_ARROWCODE);
-      if(arrowCode == InpArrowCodeUp) dir = 1;
-      else if(arrowCode == InpArrowCodeDown) dir = -1;
-      else dir = DirectionFromArrowObjectNameText(name);
-
-      if(dir > 0) buyCount++;
-      if(dir < 0) sellCount++;
-      if(matched == "") matched = name;
-      else matched = matched + "," + name;
-   }
-
-   if(buyCount > 0 && sellCount == 0)
-   {
-      if(InpDebugPrint)
-         Print("TMA MACD EA closed-bar arrow BUY context=", context, " bar=", TimeToString(targetTime, TIME_DATE|TIME_SECONDS), " objects=", matched);
-      return 1;
-   }
-   if(sellCount > 0 && buyCount == 0)
-   {
-      if(InpDebugPrint)
-         Print("TMA MACD EA closed-bar arrow SELL context=", context, " bar=", TimeToString(targetTime, TIME_DATE|TIME_SECONDS), " objects=", matched);
-      return -1;
-   }
-   if(buyCount > 0 && sellCount > 0)
-   {
-      if(InpDebugPrint)
-         Print("TMA MACD EA closed-bar arrow ambiguous context=", context, " bar=", TimeToString(targetTime, TIME_DATE|TIME_SECONDS), " buy=", buyCount, " sell=", sellCount, " objects=", matched);
-      return 0;
-   }
-
-   if(InpDebugPrint)
-      Print("TMA MACD EA closed-bar arrow none context=", context, " bar=", TimeToString(targetTime, TIME_DATE|TIME_SECONDS), " prefix=", prefix);
-   return 0;
-}
-
-int DirectionFromClosedBarArrowObject(int shift)
-{
-   int closedShift = MathMax(1, shift);
-   datetime targetTime = iTime(NULL, 0, closedShift);
-   return DirectionFromClosedBarArrowObjectAtTime(targetTime, closedShift, "current");
-}
-
 int ReadDirection()
 {
    int dir = 0;
@@ -489,9 +357,7 @@ int ReadDirection()
    g_lastReadAt = TimeCurrent();
    g_lastReadBar = iTime(NULL, 0, shift);
 
-   if(InpSignalMode == SIGNAL_CHART_CLOSED_BAR_ARROWS)
-      dir = DirectionFromClosedBarArrowObject(shift);
-   else if(InpSignalMode == SIGNAL_TREND_EVENTS)
+   if(InpSignalMode == SIGNAL_TREND_EVENTS)
       dir = DirectionFromEventBuffer(shift);
    else if(InpSignalMode == SIGNAL_EVENTS_THEN_STATE)
    {
@@ -887,7 +753,7 @@ int OpenModeOrder(int dir, int magic, string mode)
    if(!SpreadOkForEntry()) return -1;
 
    RefreshRates();
-   double lots = NormalizeLots(g_runtimeLot);
+   double lots = NormalizeLots(InpLot);
    int type = (dir > 0) ? OP_BUY : OP_SELL;
    double price = (dir > 0) ? Ask : Bid;
    double risk = StopDistance();
@@ -1089,17 +955,6 @@ void ProcessSignal()
    int shift = EffectiveSignalShift();
    int dir = ReadDirection();
    datetime barTime = iTime(NULL, 0, shift);
-
-   if(InpSignalMode == SIGNAL_CHART_CLOSED_BAR_ARROWS && g_pendingDir != 0 && g_pendingBarTime > 0)
-   {
-      int pendingDir = DirectionFromClosedBarArrowObjectAtTime(g_pendingBarTime, shift, "pending");
-      if(pendingDir == g_pendingDir && (dir == 0 || dir == g_pendingDir))
-      {
-         dir = pendingDir;
-         barTime = g_pendingBarTime;
-      }
-   }
-
    if(dir == 0)
    {
       if(g_pendingDir != 0)
@@ -1260,7 +1115,6 @@ string ModeName()
 {
    if(InpSignalMode == SIGNAL_TREND_EVENTS) return "EVENT";
    if(InpSignalMode == SIGNAL_EVENTS_THEN_STATE) return "EVENT+STATE";
-   if(InpSignalMode == SIGNAL_CHART_CLOSED_BAR_ARROWS) return "CLOSED_ARROW";
    return "STATE";
 }
 
@@ -1280,7 +1134,7 @@ void DrawDashboard()
    string status = g_dailyHardStop ? "DAILY HARD STOP" : (g_runtimePaused ? "PAUSED" : "RUNNING");
    color statusColor = g_dailyHardStop ? InpDashBad : (g_runtimePaused ? InpDashWarn : InpDashGood);
 
-   ObjPanel("panel", x - 8, y - 8, 390, 272, InpDashBg);
+   ObjPanel("panel", x - 8, y - 8, 390, 250, InpDashBg);
    ObjLabel("title", x, y, "TMA MACD PROTRADER  " + Symbol() + " " + TfToString(Period()), InpDashWarn, 10);
    ObjLabel("status", x, y + 18, "Status: " + status + " | Signal: " + ModeName() + " shift=" + IntegerToString(EffectiveSignalShift()) + " bars=" + IntegerToString(g_runtimeStateConfirmBars) + " confirm=" + IntegerToString(g_runtimeConfirmSeconds) + "s", statusColor, 9);
    ObjLabel("pnl1", x, y + 36, "Daily closed: " + DoubleToString(closed, 2) + " | Open: " + DoubleToString(open, 2) + " | Guard: " + DoubleToString(guard, 2), guardColor, 9);
@@ -1297,14 +1151,10 @@ void DrawDashboard()
    ObjEdit("edit_confirm_bars", x + 182, y + 170, 38, 18, IntegerToString(g_runtimeStateConfirmBars));
    ObjButton("btn_save_cfg", x + 230, y + 170, 74, 18, "SAVE CFG", clrDarkSlateGray);
 
-   ObjLabel("cfg3", x, y + 194, "Lot", InpDashText, 8);
-   ObjEdit("edit_lot", x + 36, y + 190, 58, 18, DoubleToString(g_runtimeLot, 2));
-   ObjLabel("cfg4", x + 104, y + 194, "applies to next opened trades", InpDashText, 8);
-
-   ObjButton("btn_pause", x, y + 230, 78, 20, g_runtimePaused ? "RESUME" : "PAUSE", g_runtimePaused ? clrDarkGreen : clrFireBrick);
-   ObjButton("btn_normal", x + 84, y + 230, 86, 20, g_runtimeNormal ? "NORMAL ON" : "NORMAL OFF", g_runtimeNormal ? clrDarkGreen : clrDimGray);
-   ObjButton("btn_adv", x + 176, y + 230, 86, 20, g_runtimeAdvanced ? "ADV ON" : "ADV OFF", g_runtimeAdvanced ? clrDarkGreen : clrDimGray);
-   ObjButton("btn_close", x + 268, y + 230, 76, 20, "CLOSE ALL", clrMaroon);
+   ObjButton("btn_pause", x, y + 208, 78, 20, g_runtimePaused ? "RESUME" : "PAUSE", g_runtimePaused ? clrDarkGreen : clrFireBrick);
+   ObjButton("btn_normal", x + 84, y + 208, 86, 20, g_runtimeNormal ? "NORMAL ON" : "NORMAL OFF", g_runtimeNormal ? clrDarkGreen : clrDimGray);
+   ObjButton("btn_adv", x + 176, y + 208, 86, 20, g_runtimeAdvanced ? "ADV ON" : "ADV OFF", g_runtimeAdvanced ? clrDarkGreen : clrDimGray);
+   ObjButton("btn_close", x + 268, y + 208, 76, 20, "CLOSE ALL", clrMaroon);
 }
 
 void DeleteDashboard()
@@ -1330,12 +1180,6 @@ int OnInit()
       Print("TMA MACD ProTrader initialized indicator=", InpIndicatorName, " mode=", ModeName(), " shift=", InpSignalShift, " stateConfirmBars=", g_runtimeStateConfirmBars, " confirm=", g_runtimeConfirmSeconds);
       if(InpRequireClosedBar && InpSignalShift < 1)
          Print("TMA MACD EA safety: InpSignalShift=0 requested, but InpRequireClosedBar=true so effective shift=1");
-      if(InpSignalMode == SIGNAL_CHART_CLOSED_BAR_ARROWS)
-      {
-         Print("TMA MACD EA closed-arrow mode: trades only OBJ_ARROW objects on a closed candle. prefix=", ArrowObjectPrefix());
-         if(InpShowArrows == 0)
-            Print("TMA MACD EA closed-arrow warning: InpShowArrows=0, so no chart arrow objects can be detected.");
-      }
    }
    PrimeStartupBaseline();
    RefreshOrderPresence();
@@ -1381,18 +1225,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       int newConfirm = ClampInt((int)StringToInteger(EditText("edit_confirm_sec")), 0, 86400);
       int newBars = ClampInt((int)StringToInteger(EditText("edit_confirm_bars")), 1, 100);
-      double newLot = NormalizeLots(ParseEditDouble("edit_lot", g_runtimeLot));
       g_runtimeConfirmSeconds = newConfirm;
       g_runtimeStateConfirmBars = newBars;
-      g_runtimeLot = newLot;
       SaveRuntimeSettings();
       SetEditText("edit_confirm_sec", IntegerToString(g_runtimeConfirmSeconds));
       SetEditText("edit_confirm_bars", IntegerToString(g_runtimeStateConfirmBars));
-      SetEditText("edit_lot", DoubleToString(g_runtimeLot, 2));
-      SetAction("config saved sec=" + IntegerToString(g_runtimeConfirmSeconds) + " bars=" + IntegerToString(g_runtimeStateConfirmBars) + " lot=" + DoubleToString(g_runtimeLot, 2));
+      SetAction("config saved sec=" + IntegerToString(g_runtimeConfirmSeconds) + " bars=" + IntegerToString(g_runtimeStateConfirmBars));
       SetBlock("-");
       if(InpDebugPrint)
-         Print("TMA MACD EA config saved confirm_sec=", g_runtimeConfirmSeconds, " state_confirm_bars=", g_runtimeStateConfirmBars, " lot=", DoubleToString(g_runtimeLot, 2));
+         Print("TMA MACD EA config saved confirm_sec=", g_runtimeConfirmSeconds, " state_confirm_bars=", g_runtimeStateConfirmBars);
    }
    g_lastDashAt = 0;
    DrawDashboard();
