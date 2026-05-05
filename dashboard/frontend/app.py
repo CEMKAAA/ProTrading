@@ -1552,6 +1552,21 @@ def indicator_bridge_open_trade_close_proxy():
     return jsonify(res)
 
 
+@app.route('/api/indicator-bridge/open-trade/sl-be', methods=['POST'])
+def indicator_bridge_open_trade_sl_be_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/open-trade/sl-be',
+        data=payload,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to move indicator bridge trade SL to BE'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/indicator-bridge/execution-log/export')
 def indicator_bridge_execution_log_export_proxy():
     params = {}

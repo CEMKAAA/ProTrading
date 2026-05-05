@@ -1080,6 +1080,95 @@ def indicator_bridge_open_trade_close(payload: Dict[str, Any]):
         raise HTTPException(500, f"indicator_bridge_open_trade_close_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.post("/indicator-bridge/open-trade/sl-be")
+def indicator_bridge_open_trade_sl_be(payload: Dict[str, Any]):
+    """Move a live broker position SL to break-even for Indicator Automation V2."""
+    try:
+        p = payload if isinstance(payload, dict) else {}
+        try:
+            ticket = int(float(p.get("ticket") or p.get("position_ticket") or 0))
+        except Exception:
+            ticket = 0
+        symbol = str(p.get("symbol") or "").strip().upper()
+        if ticket <= 0:
+            return {"ok": False, "error": "invalid_ticket"}
+        if not symbol:
+            return {"ok": False, "error": "missing_symbol"}
+
+        live = LiveTradingService()
+        positions = live.get_open_positions(symbol=str(symbol))
+        pos = None
+        for row in positions or []:
+            try:
+                if int(row.get("ticket") or 0) == int(ticket):
+                    pos = dict(row)
+                    break
+            except Exception:
+                continue
+        if not pos:
+            return {"ok": False, "error": "position_not_found", "ticket": int(ticket), "symbol": str(symbol)}
+
+        direction = str(pos.get("direction") or "").strip().upper()
+        entry = float(pos.get("entry_price") or 0.0)
+        cur_sl = _safe_optional_float(pos.get("stop_loss"))
+        cur_tp = _safe_optional_float(pos.get("take_profit"))
+        if direction not in {"BUY", "SELL"}:
+            return {"ok": False, "error": "invalid_position_direction", "ticket": int(ticket), "direction": direction}
+        if not math.isfinite(float(entry)) or float(entry) <= 0.0:
+            return {"ok": False, "error": "invalid_entry_price", "ticket": int(ticket), "entry_price": entry}
+
+        # Do not worsen an already protected runner. BE-or-better is a safe no-op.
+        if cur_sl is not None and float(cur_sl) > 0.0:
+            if direction == "BUY" and float(cur_sl) >= float(entry):
+                return {
+                    "ok": True,
+                    "executed": False,
+                    "updated": False,
+                    "reason": "sl_already_at_or_better_be",
+                    "ticket": int(ticket),
+                    "symbol": str(pos.get("symbol") or symbol),
+                    "direction": direction,
+                    "entry_price": float(entry),
+                    "stop_loss": float(cur_sl),
+                }
+            if direction == "SELL" and float(cur_sl) <= float(entry):
+                return {
+                    "ok": True,
+                    "executed": False,
+                    "updated": False,
+                    "reason": "sl_already_at_or_better_be",
+                    "ticket": int(ticket),
+                    "symbol": str(pos.get("symbol") or symbol),
+                    "direction": direction,
+                    "entry_price": float(entry),
+                    "stop_loss": float(cur_sl),
+                }
+
+        modify_result = live.modify_position_sl_tp(
+            symbol=str(pos.get("symbol") or symbol),
+            position_ticket=int(ticket),
+            stop_loss=float(entry),
+            take_profit=(float(cur_tp) if cur_tp is not None and float(cur_tp) > 0.0 else None),
+            comment="manual_sl_be",
+        )
+        ok = bool((modify_result or {}).get("ok"))
+        return {
+            "ok": bool(ok),
+            "executed": bool(ok),
+            "updated": bool(ok),
+            "ticket": int(ticket),
+            "symbol": str(pos.get("symbol") or symbol),
+            "direction": direction,
+            "entry_price": float(entry),
+            "previous_stop_loss": (float(cur_sl) if cur_sl is not None else None),
+            "stop_loss": float(entry) if ok else None,
+            "modify_result": modify_result,
+            "error": (None if ok else str((modify_result or {}).get("error") or "sl_be_failed")),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_open_trade_sl_be_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.get("/indicator-bridge/execution-log/export")
 def indicator_bridge_execution_log_export(
     format: str = Query("csv", pattern="^(csv|xlsx)$"),

@@ -261,6 +261,32 @@
         await loadState();
     }
 
+    async function moveOpenTradeSlToBe(row) {
+        const ticket = Number((row || {}).ticket || 0);
+        const symbol = String((row || {}).symbol || '').trim();
+        if (!Number.isFinite(ticket) || ticket <= 0 || !symbol) {
+            throw new Error('Invalid ticket/symbol for SL->BE action');
+        }
+        const res = await fetch('/api/indicator-bridge/open-trade/sl-be', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ticket: Math.trunc(ticket),
+                symbol,
+                terminal_family: String((row || {}).terminal_family || '').toLowerCase(),
+                source_tag: String((row || {}).source_tag || '')
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+            throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        }
+        const reason = data.reason ? ` (${data.reason})` : '';
+        showNotice(`SL->BE sent: ${symbol} #${Math.trunc(ticket)}${reason}`, 'success');
+        await loadState();
+    }
+
     function auditTimeMs(row) {
         const raw = String((row || {}).event_ts || (row || {}).opened_at || '').trim();
         const dt = raw ? new Date(raw) : null;
@@ -471,7 +497,12 @@
                 <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}</td>
                 <td>${esc(fmtTs(row.opened_at))}</td>
                 <td class="v2-mono small">${esc(row.source_tag || '-')}</td>
-                <td><button type="button" class="btn btn-sm btn-outline-danger v2-close-trade" data-ticket="${esc(row.ticket || '')}" ${canClose ? '' : 'disabled'}>Close</button></td>
+                <td>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-warning v2-sl-be-trade" data-ticket="${esc(row.ticket || '')}" ${canClose ? '' : 'disabled'}>SL-&gt;BE</button>
+                        <button type="button" class="btn btn-outline-danger v2-close-trade" data-ticket="${esc(row.ticket || '')}" ${canClose ? '' : 'disabled'}>Close</button>
+                    </div>
+                </td>
             </tr>`;
         }).join('');
     }
@@ -669,6 +700,21 @@
     }
     if (els.openBody) {
         els.openBody.addEventListener('click', ev => {
+            const beBtn = ev.target.closest('.v2-sl-be-trade');
+            if (beBtn) {
+                const ticket = String(beBtn.getAttribute('data-ticket') || '');
+                const row = openTrades().find(r => String((r || {}).ticket || '') === ticket);
+                if (!row) return;
+                beBtn.disabled = true;
+                beBtn.textContent = 'BE...';
+                moveOpenTradeSlToBe(row).catch(err => {
+                    showError(err);
+                    beBtn.disabled = false;
+                    beBtn.textContent = 'SL->BE';
+                });
+                return;
+            }
+
             const btn = ev.target.closest('.v2-close-trade');
             if (!btn) return;
             const ticket = String(btn.getAttribute('data-ticket') || '');
