@@ -678,6 +678,29 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "resolved_signal_bar_unix",
             "resolved_raw_buy",
             "resolved_raw_sell",
+            "secondary_enabled",
+            "secondary_indicator",
+            "secondary_signal",
+            "secondary_raw_signal",
+            "secondary_resolved_signal",
+            "secondary_signal_shift",
+            "secondary_bar_time",
+            "secondary_resolved_bar_time",
+            "secondary_raw_buy",
+            "secondary_raw_sell",
+            "secondary_require_agreement",
+            "secondary_governor_enabled",
+            "secondary_entry_gate_enabled",
+            "secondary_entry_enabled",
+            "secondary_entry",
+            "secondary_sl_enabled",
+            "secondary_stop_loss",
+            "secondary_tp_enabled",
+            "secondary_tp1",
+            "secondary_tp2",
+            "secondary_tp3",
+            "secondary_tp4",
+            "secondary_tp5",
         ):
             if key in p:
                 bridge_payload[key] = p.get(key)
@@ -782,6 +805,29 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "resolved_signal_bar_unix",
             "resolved_raw_buy",
             "resolved_raw_sell",
+            "secondary_enabled",
+            "secondary_indicator",
+            "secondary_signal",
+            "secondary_raw_signal",
+            "secondary_resolved_signal",
+            "secondary_signal_shift",
+            "secondary_bar_time",
+            "secondary_resolved_bar_time",
+            "secondary_raw_buy",
+            "secondary_raw_sell",
+            "secondary_require_agreement",
+            "secondary_governor_enabled",
+            "secondary_entry_gate_enabled",
+            "secondary_entry_enabled",
+            "secondary_entry",
+            "secondary_sl_enabled",
+            "secondary_stop_loss",
+            "secondary_tp_enabled",
+            "secondary_tp1",
+            "secondary_tp2",
+            "secondary_tp3",
+            "secondary_tp4",
+            "secondary_tp5",
         ):
             if key in p:
                 bridge_payload[key] = p.get(key)
@@ -976,6 +1022,62 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         return state
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_instance_automation_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/open-trade/close")
+def indicator_bridge_open_trade_close(payload: Dict[str, Any]):
+    """Manually close a live broker position shown in Indicator Automation V2."""
+    try:
+        from ..main import telegram_bridge_service
+
+        p = payload if isinstance(payload, dict) else {}
+        try:
+            ticket = int(float(p.get("ticket") or p.get("position_ticket") or 0))
+        except Exception:
+            ticket = 0
+        symbol = str(p.get("symbol") or "").strip().upper()
+        if ticket <= 0:
+            return {"ok": False, "error": "invalid_ticket"}
+        if not symbol:
+            return {"ok": False, "error": "missing_symbol"}
+
+        live = LiveTradingService()
+        close_result = live.close_position(
+            symbol=str(symbol),
+            position_ticket=int(ticket),
+            comment="manual_indicator_close",
+        )
+        ok = bool((close_result or {}).get("ok"))
+
+        audit_logged = False
+        if ok and telegram_bridge_service is not None:
+            try:
+                open_meta = telegram_bridge_service._find_execution_open_meta_for_ticket(int(ticket))  # type: ignore[attr-defined]
+                row = dict(open_meta or {})
+                row["broker_ticket"] = int(ticket)
+                row["symbol"] = str(symbol)
+                row["created_at"] = str(row.get("opened_at") or "")
+                telegram_bridge_service._append_closed_execution_log_from_row(  # type: ignore[attr-defined]
+                    row=row,
+                    reason="manual_close",
+                    svc=live,
+                    event_ts=datetime.now(timezone.utc),
+                )
+                audit_logged = True
+            except Exception:
+                audit_logged = False
+
+        return {
+            "ok": bool(ok),
+            "executed": bool(ok),
+            "ticket": int(ticket),
+            "symbol": str(symbol),
+            "close_result": close_result,
+            "audit_logged": bool(audit_logged),
+            "error": (None if ok else str((close_result or {}).get("error") or "close_failed")),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_open_trade_close_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.get("/indicator-bridge/execution-log/export")

@@ -34,6 +34,55 @@
     .v2-state-conflict { color: #dc2626; font-weight: 800; }
     .v2-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .v2-lot-input { width: 86px; }
+    .v2-dual-card {
+        background: linear-gradient(135deg, #f8fafc 0%, #ecfeff 48%, #f7fee7 100%);
+    }
+    .v2-dual-grid {
+        display: grid;
+        grid-template-columns: minmax(180px, 1fr) 150px minmax(180px, 1fr);
+        gap: 12px;
+        align-items: stretch;
+    }
+    .v2-dual-tile {
+        border: 1px solid #dbeafe;
+        background: rgba(255, 255, 255, 0.78);
+        border-radius: 14px;
+        padding: 12px;
+    }
+    .v2-dual-decision {
+        border: 1px solid #cbd5e1;
+        background: rgba(15, 23, 42, 0.92);
+        color: #f8fafc;
+        border-radius: 14px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        min-height: 112px;
+    }
+    .v2-signal-chip {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        min-width: 76px;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+    }
+    .v2-signal-buy { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .v2-signal-sell { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    .v2-signal-wait { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+    .v2-signal-idle { background: #e2e8f0; color: #334155; border: 1px solid #cbd5e1; }
+    .v2-signal-ambiguous { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; }
+    .v2-dual-instance + .v2-dual-instance { margin-top: 12px; }
+    @media (max-width: 768px) {
+        .v2-dual-grid { grid-template-columns: 1fr; }
+        .v2-dual-decision { min-height: 88px; }
+    }
 </style>
 {% endblock %}
 
@@ -59,6 +108,17 @@
 
     <div id="v2-alert"></div>
 
+    <div id="v2-dual-gate-panel" class="card v2-card v2-dual-card mb-3 d-none">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <strong>Dual Indicator Gate</strong>
+                <div class="small text-muted">Main signal + secondary entry gate/governor agreement before execution.</div>
+            </div>
+            <span class="badge text-bg-dark">live runtime state</span>
+        </div>
+        <div id="v2-dual-gate-body" class="card-body"></div>
+    </div>
+
     <div class="row g-3 mb-3">
         <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT4 Instances</div><div id="v2-mt4-count" class="fs-3 fw-bold">0</div></div></div></div>
         <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT5 Instances</div><div id="v2-mt5-count" class="fs-3 fw-bold">0</div></div></div></div>
@@ -79,10 +139,10 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Ticket</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>Mode</th><th>Dir</th><th>PnL</th><th>Opened</th><th>Source Tag</th>
+                            <th>Ticket</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>Mode</th><th>Dir</th><th>PnL</th><th>Opened</th><th>Source Tag</th><th>Action</th>
                         </tr>
                     </thead>
-                    <tbody id="v2-open-body"><tr><td colspan="9" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                    <tbody id="v2-open-body"><tr><td colspan="10" class="text-center text-muted py-3">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>

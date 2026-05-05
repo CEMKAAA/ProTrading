@@ -9,6 +9,8 @@
         mt5Count: document.getElementById('v2-mt5-count'),
         openCount: document.getElementById('v2-open-count'),
         auditCount: document.getElementById('v2-audit-count'),
+        dualGatePanel: document.getElementById('v2-dual-gate-panel'),
+        dualGateBody: document.getElementById('v2-dual-gate-body'),
         openBody: document.getElementById('v2-open-body'),
         instanceBody: document.getElementById('v2-instance-body'),
         auditBody: document.getElementById('v2-audit-body'),
@@ -95,6 +97,12 @@
         els.alert.innerHTML = `<div class="alert alert-danger">Indicator V2 state load failed: ${esc(err && err.message ? err.message : err)}</div>`;
     }
 
+    function showNotice(message, kind) {
+        if (!els.alert) return;
+        const cls = kind === 'success' ? 'alert-success' : (kind === 'warning' ? 'alert-warning' : 'alert-info');
+        els.alert.innerHTML = `<div class="alert ${cls}">${esc(message)}</div>`;
+    }
+
     function isV2Instance(row) {
         return String((row || {}).bridge_version || '').trim().toLowerCase() === 'v2';
     }
@@ -131,6 +139,74 @@
         return mt4.concat(mt5).filter(isV2Instance);
     }
 
+    function boolish(v) {
+        if (v === true || v === 1) return true;
+        const s = String(v == null ? '' : v).trim().toLowerCase();
+        return ['1', 'true', 'yes', 'on'].includes(s);
+    }
+
+    function normDirection(v) {
+        const s = String(v == null ? '' : v).trim().toUpperCase();
+        if (['BUY', 'SELL', 'NONE', 'AMBIGUOUS', 'WAIT'].includes(s)) return s;
+        return '';
+    }
+
+    function isDirectional(v) {
+        const s = normDirection(v);
+        return s === 'BUY' || s === 'SELL';
+    }
+
+    function signalChipClass(dir) {
+        const s = normDirection(dir);
+        if (s === 'BUY') return 'v2-signal-buy';
+        if (s === 'SELL') return 'v2-signal-sell';
+        if (s === 'AMBIGUOUS') return 'v2-signal-ambiguous';
+        if (s === 'WAIT') return 'v2-signal-wait';
+        return 'v2-signal-idle';
+    }
+
+    function displaySignal(dir) {
+        const s = normDirection(dir);
+        return s || 'NONE';
+    }
+
+    function isDualGateInstance(row) {
+        return boolish((row || {}).secondary_enabled)
+            && (boolish((row || {}).secondary_entry_gate_enabled) || boolish((row || {}).secondary_governor_enabled));
+    }
+
+    function dualGateMode(row) {
+        if (boolish((row || {}).secondary_entry_gate_enabled)) return 'ENTRY GATE';
+        if (boolish((row || {}).secondary_governor_enabled)) return 'GOVERNOR';
+        return 'SECONDARY';
+    }
+
+    function dualGateDecision(row) {
+        const pending = normDirection((row || {}).pending_direction);
+        const main = normDirection((row || {}).resolved_signal || (row || {}).confirmed_direction);
+        const secondary = normDirection((row || {}).secondary_resolved_signal || (row || {}).secondary_signal);
+        const age = (row || {}).pending_age_sec;
+        const confirm = (row || {}).confirm_seconds;
+
+        if (isDirectional(pending)) {
+            return {
+                label: 'WAIT',
+                cls: 'v2-signal-wait',
+                detail: `main pending ${pending}${age != null ? ` ${fmtNum(age, 0)}s` : ''}${confirm != null ? ` / ${fmtNum(confirm, 0)}s` : ''}`
+            };
+        }
+        if (!isDirectional(main)) {
+            return { label: 'WAIT', cls: 'v2-signal-wait', detail: 'main direction not confirmed' };
+        }
+        if (!isDirectional(secondary)) {
+            return { label: 'WAIT', cls: 'v2-signal-wait', detail: `secondary ${displaySignal(secondary)}` };
+        }
+        if (main !== secondary) {
+            return { label: 'WAIT', cls: 'v2-signal-wait', detail: `${main} / ${secondary} mismatch` };
+        }
+        return { label: main, cls: signalChipClass(main), detail: 'both signals approved' };
+    }
+
     function v2InstanceKeys() {
         const keys = new Set();
         allInstances().forEach(row => {
@@ -158,6 +234,31 @@
 
     function rowMode(row) {
         return String((row || {}).execution_mode || '-').trim() || '-';
+    }
+
+    async function closeOpenTrade(row) {
+        const ticket = Number((row || {}).ticket || 0);
+        const symbol = String((row || {}).symbol || '').trim();
+        if (!Number.isFinite(ticket) || ticket <= 0 || !symbol) {
+            throw new Error('Invalid ticket/symbol for close action');
+        }
+        const res = await fetch('/api/indicator-bridge/open-trade/close', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ticket: Math.trunc(ticket),
+                symbol,
+                terminal_family: String((row || {}).terminal_family || '').toLowerCase(),
+                source_tag: String((row || {}).source_tag || '')
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+            throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        }
+        showNotice(`Position close sent: ${symbol} #${Math.trunc(ticket)}`, 'success');
+        await loadState();
     }
 
     function auditTimeMs(row) {
@@ -276,17 +377,90 @@
         return 'v2-state-idle';
     }
 
+    function renderDualSignalTile(label, indicator, dir, meta, resolved) {
+        const shown = displaySignal(dir);
+        const resolvedShown = displaySignal(resolved);
+        return `<div class="v2-dual-tile">
+            <div class="small text-muted">${esc(label)}</div>
+            <div class="fw-bold text-truncate" title="${esc(indicator || '-')}">${esc(indicator || '-')}</div>
+            <div class="mt-2"><span class="v2-signal-chip ${signalChipClass(shown)}">${esc(shown)}</span></div>
+            <div class="small mt-2">
+                <span class="text-muted">resolved:</span>
+                <span class="fw-bold ${resolvedShown === 'BUY' ? 'text-success' : (resolvedShown === 'SELL' ? 'text-danger' : 'text-secondary')}">${esc(resolvedShown)}</span>
+            </div>
+            <div class="small text-muted mt-2">${esc(meta || '')}</div>
+        </div>`;
+    }
+
+    function renderDualGatePanel() {
+        if (!els.dualGatePanel || !els.dualGateBody) return;
+        const rows = allInstances().filter(isDualGateInstance).sort((a, b) => {
+            const aOn = boolish(a.effective_automation_enabled) ? 1 : 0;
+            const bOn = boolish(b.effective_automation_enabled) ? 1 : 0;
+            if (aOn !== bOn) return bOn - aOn;
+            return String(b.last_seen || '').localeCompare(String(a.last_seen || ''));
+        });
+        if (!rows.length) {
+            els.dualGatePanel.classList.add('d-none');
+            els.dualGateBody.innerHTML = '';
+            return;
+        }
+        els.dualGatePanel.classList.remove('d-none');
+        els.dualGateBody.innerHTML = rows.map(row => {
+            const decision = dualGateDecision(row);
+            const mainDir = normDirection(row.resolved_signal || row.confirmed_direction || row.pending_direction);
+            const secondaryDir = normDirection(row.secondary_raw_signal || row.secondary_signal);
+            const mainResolved = normDirection(row.resolved_signal);
+            const secondaryResolved = normDirection(row.secondary_resolved_signal || row.secondary_signal);
+            const pending = normDirection(row.pending_direction);
+            const mainMeta = pending
+                ? `pending ${pending}${row.pending_age_sec != null ? ` ${fmtNum(row.pending_age_sec, 0)}s` : ''}${row.confirm_seconds != null ? ` / ${fmtNum(row.confirm_seconds, 0)}s` : ''}`
+                : `resolved shift=${row.resolved_signal_shift != null ? row.resolved_signal_shift : '-'}`;
+            const secondaryMeta = `shift=${row.secondary_signal_shift != null ? row.secondary_signal_shift : '-'} bar=${row.secondary_bar_time || '-'} resolved_bar=${row.secondary_resolved_bar_time || '-'}`;
+            const key = esc(row.instance_key || '');
+            const isOn = boolish(row.effective_automation_enabled);
+            const auto = boolish(row.effective_automation_enabled)
+                ? '<span class="badge text-bg-success">ON</span>'
+                : '<span class="badge text-bg-secondary">OFF</span>';
+            const actionClass = isOn ? 'btn-outline-danger' : 'btn-outline-success';
+            const actionText = isOn ? 'Stop' : 'Start';
+            return `<div class="v2-dual-instance">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                    <div>
+                        <span class="badge text-bg-primary">${esc(dualGateMode(row))}</span>
+                        <span class="ms-2 fw-semibold">${esc(String(row.terminal_family || '').toUpperCase())} ${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</span>
+                        <span class="ms-2">${auto}</span>
+                    </div>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <div class="small text-muted">last seen ${esc(fmtTs(row.last_seen))}</div>
+                        <button type="button" class="btn btn-sm ${actionClass} v2-dual-instance-toggle" data-instance="${key}" data-enabled="${isOn ? '0' : '1'}">${actionText}</button>
+                    </div>
+                </div>
+                <div class="v2-dual-grid">
+                    ${renderDualSignalTile('Main', row.indicator || row.source_name || '-', mainDir, mainMeta, mainResolved)}
+                    <div class="v2-dual-decision">
+                        <span class="v2-signal-chip ${decision.cls}">${esc(decision.label)}</span>
+                        <div class="small mt-2">${esc(decision.detail)}</div>
+                    </div>
+                    ${renderDualSignalTile('Secondary', row.secondary_indicator || '-', secondaryDir, secondaryMeta, secondaryResolved)}
+                </div>
+            </div>`;
+        }).join('');
+    }
+
     function renderOpenTrades() {
         const q = els.openFilter ? els.openFilter.value : '';
         const rows = openTrades().filter(r => textMatch(r, q));
         if (!els.openBody) return;
         if (!rows.length) {
-            els.openBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No open indicator trades.</td></tr>';
+            els.openBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No open indicator trades.</td></tr>';
             return;
         }
         els.openBody.innerHTML = rows.map(row => {
             const pnl = Number(row.current_profit);
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const ticket = Number(row.ticket || 0);
+            const canClose = Number.isFinite(ticket) && ticket > 0 && String(row.symbol || '').trim();
             return `<tr>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
@@ -297,6 +471,7 @@
                 <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}</td>
                 <td>${esc(fmtTs(row.opened_at))}</td>
                 <td class="v2-mono small">${esc(row.source_tag || '-')}</td>
+                <td><button type="button" class="btn btn-sm btn-outline-danger v2-close-trade" data-ticket="${esc(row.ticket || '')}" ${canClose ? '' : 'disabled'}>Close</button></td>
             </tr>`;
         }).join('');
     }
@@ -389,6 +564,7 @@
         if (els.mt5Count) els.mt5Count.textContent = String(mt5Rows.length);
         if (els.openCount) els.openCount.textContent = String(openTrades().length);
         if (els.auditCount) els.auditCount.textContent = String(auditRows().length);
+        renderDualGatePanel();
         renderOpenTrades();
         renderInstances();
         renderAudit();
@@ -473,6 +649,41 @@
         els.instanceBody.addEventListener('keydown', ev => {
             const input = ev.target.closest('.v2-lot-input');
             if (input && ev.key === 'Enter') input.blur();
+        });
+    }
+    if (els.dualGateBody) {
+        els.dualGateBody.addEventListener('click', ev => {
+            const btn = ev.target.closest('.v2-dual-instance-toggle');
+            if (!btn) return;
+            const key = btn.getAttribute('data-instance') || '';
+            const row = allInstances().find(r => String(r.instance_key || '') === key);
+            if (!row) return;
+            btn.disabled = true;
+            btn.textContent = '...';
+            updateInstanceAutomation(row, btn.getAttribute('data-enabled') === '1').catch(err => {
+                showError(err);
+                btn.disabled = false;
+                renderDualGatePanel();
+            });
+        });
+    }
+    if (els.openBody) {
+        els.openBody.addEventListener('click', ev => {
+            const btn = ev.target.closest('.v2-close-trade');
+            if (!btn) return;
+            const ticket = String(btn.getAttribute('data-ticket') || '');
+            const row = openTrades().find(r => String((r || {}).ticket || '') === ticket);
+            if (!row) return;
+            const symbol = String(row.symbol || '').trim();
+            const ok = window.confirm(`Close ${symbol} #${ticket}?`);
+            if (!ok) return;
+            btn.disabled = true;
+            btn.textContent = 'Closing...';
+            closeOpenTrade(row).catch(err => {
+                showError(err);
+                btn.disabled = false;
+                btn.textContent = 'Close';
+            });
         });
     }
     if (els.refresh) els.refresh.addEventListener('click', () => loadState().catch(showError));

@@ -78,6 +78,7 @@ class _FakeBridgeBroker:
         stop_loss: float | None,
         take_profit: float | None,
         comment: str,
+        magic: int | None = None,
     ) -> Dict[str, Any]:
         side = str(direction).strip().upper()
         if side not in {"BUY", "SELL"}:
@@ -99,6 +100,7 @@ class _FakeBridgeBroker:
                 "stop_loss": (float(stop_loss) if stop_loss is not None else 0.0),
                 "take_profit": (float(take_profit) if take_profit is not None else 0.0),
                 "comment": str(comment or ""),
+                "magic": int(magic or 0),
             }
         return {
             "ok": True,
@@ -373,6 +375,183 @@ def test_smoke_bridge_v2_resolved_state_does_not_reconcile_while_pending(monkeyp
         rec = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
         assert rec.get("ok") is True
         assert dict(rec.get("reconcile") or {}).get("reason") == "pending_signal_in_progress"
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_secondary_governor_waits_for_agreement(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        payload = _payload(hint="SELL", message="SECONDARY GOV SELL WAIT")
+        payload.update(
+            {
+                "bridge_event_type": "confirmed_signal",
+                "bridge_version": "v2",
+                "secondary_enabled": True,
+                "secondary_governor_enabled": True,
+                "secondary_signal": "BUY",
+            }
+        )
+        wait_out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert wait_out.get("ok") is True
+        assert wait_out.get("executed") is False
+        assert str(wait_out.get("reason") or "") == "secondary_governor_waiting_direction_mismatch"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "SELL",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "resolved_signal": "SELL",
+            "confirmed_direction": "SELL",
+            "pending_direction": "",
+            "secondary_enabled": True,
+            "secondary_governor_enabled": True,
+            "secondary_signal": "SELL",
+            "ingest_source": "bridge",
+        }
+        rec = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert rec.get("ok") is True
+        assert dict(rec.get("reconcile") or {}).get("reason") == "secondary_governor_agreement_forwarded_as_confirmed_signal"
+        open_rows = broker.get_open_positions(symbol="BTCUSDm")
+        assert len(open_rows) == 2
+        assert {str(r.get("direction")) for r in open_rows} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_secondary_governor_closes_on_secondary_reverse(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        payload = _payload(hint="SELL", message="SECONDARY GOV SELL OPEN")
+        payload.update(
+            {
+                "bridge_event_type": "confirmed_signal",
+                "bridge_version": "v2",
+                "secondary_enabled": True,
+                "secondary_governor_enabled": True,
+                "secondary_signal": "SELL",
+            }
+        )
+        opened = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert opened.get("executed") is True
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+
+        reverse_state = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "SELL",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "resolved_signal": "SELL",
+            "confirmed_direction": "SELL",
+            "pending_direction": "",
+            "secondary_enabled": True,
+            "secondary_governor_enabled": True,
+            "secondary_signal": "BUY",
+            "ingest_source": "bridge",
+        }
+        closed = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=reverse_state)
+        assert closed.get("ok") is True
+        assert dict(closed.get("reconcile") or {}).get("reason") == "secondary_governor_waiting_direction_mismatch"
+        assert int((closed.get("secondary_governor_close") or {}).get("closed_count") or 0) == 2
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        aligned_again = dict(reverse_state)
+        aligned_again["secondary_signal"] = "SELL"
+        reopened = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=aligned_again)
+        assert reopened.get("ok") is True
+        assert dict(reopened.get("reconcile") or {}).get("reason") == "secondary_governor_agreement_forwarded_as_confirmed_signal"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_secondary_entry_gate_waits_without_secondary_exit(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        payload = _payload(hint="SELL", message="SECONDARY ENTRY GATE SELL WAIT")
+        payload.update(
+            {
+                "bridge_event_type": "confirmed_signal",
+                "bridge_version": "v2",
+                "secondary_enabled": True,
+                "secondary_entry_gate_enabled": True,
+                "secondary_signal": "BUY",
+            }
+        )
+        wait_out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert wait_out.get("ok") is True
+        assert wait_out.get("executed") is False
+        assert str(wait_out.get("reason") or "") == "secondary_entry_gate_waiting_direction_mismatch"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
+
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "SELL",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "resolved_signal": "SELL",
+            "confirmed_direction": "SELL",
+            "pending_direction": "",
+            "secondary_enabled": True,
+            "secondary_entry_gate_enabled": True,
+            "secondary_signal": "SELL",
+            "ingest_source": "bridge",
+        }
+        opened = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert opened.get("ok") is True
+        assert dict(opened.get("reconcile") or {}).get("reason") == "secondary_entry_gate_agreement_forwarded_as_confirmed_signal"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+
+        secondary_reverse = dict(state_payload)
+        secondary_reverse["secondary_signal"] = "BUY"
+        blocked = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=secondary_reverse)
+        assert blocked.get("ok") is True
+        assert dict(blocked.get("reconcile") or {}).get("reason") == "secondary_entry_gate_waiting_direction_mismatch"
+        # Entry-gate mode must not close the existing SELL just because secondary flipped.
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+        assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_secondary_entry_gate_uses_arrow_resolved_signal(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "SELL",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "resolved_signal": "SELL",
+            "confirmed_direction": "SELL",
+            "pending_direction": "",
+            "secondary_enabled": True,
+            "secondary_entry_gate_enabled": True,
+            "secondary_raw_signal": "NONE",
+            "secondary_signal": "SELL",
+            "secondary_resolved_signal": "SELL",
+            "ingest_source": "bridge",
+        }
+        opened = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert opened.get("ok") is True
+        assert dict(opened.get("reconcile") or {}).get("reason") == "secondary_entry_gate_agreement_forwarded_as_confirmed_signal"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
         assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
     finally:
         svc.stop()

@@ -15,6 +15,28 @@ input int    InpBuyBufferIndex = 0;
 input int    InpSellBufferIndex = 1;
 input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g. "14,0,1"
 input int    InpSignalShift = 0;     // 0=current bar, 1=closed bar
+input bool   InpSecondaryEnabled = false; // Optional helper indicator for confirmation/entry/TP context
+input string InpSecondaryIndicatorName = "";
+input string InpSecondaryICustomParamsCsv = "";
+input int    InpSecondarySignalShift = -1; // -1 = use InpSignalShift
+input bool   InpSecondaryRequireClosedBar = false; // true for arrow indicators: never read forming candle
+input int    InpSecondaryBuyBufferIndex = -1;
+input int    InpSecondarySellBufferIndex = -1;
+input bool   InpSecondaryUseLastSignalAsResolved = false; // true for arrow indicators: keep last BUY/SELL until opposite arrow
+input int    InpSecondaryResolvedLookbackBars = 300;
+input bool   InpRequireSecondaryAgreement = false;
+input bool   InpSecondaryGovernorMode = false; // backend waits for agreement and exits on secondary reverse
+input bool   InpSecondaryEntryGateMode = false; // backend waits for agreement but does not close on secondary reverse
+input bool   InpUseSecondaryEntry = false;
+input int    InpSecondaryEntryBufferIndex = -1;
+input bool   InpUseSecondaryStopLoss = false;
+input int    InpSecondaryStopLossBufferIndex = -1;
+input bool   InpUseSecondaryTakeProfits = false;
+input int    InpSecondaryTP1BufferIndex = -1;
+input int    InpSecondaryTP2BufferIndex = -1;
+input int    InpSecondaryTP3BufferIndex = -1;
+input int    InpSecondaryTP4BufferIndex = -1;
+input int    InpSecondaryTP5BufferIndex = -1;
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
 input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
@@ -53,6 +75,11 @@ datetime g_lastResolvedStateAt = 0;
 bool     g_initializedState = false;
 double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
+double   g_secondaryICustomParams[];
+int      g_secondaryICustomParamCount = 0;
+int      g_secondaryResolvedDir = 0;
+datetime g_secondaryResolvedBarTime = 0;
+double   g_secondaryResolvedValue = 0.0;
 
 struct PendingBridgeEvent
 {
@@ -310,6 +337,33 @@ bool _send_or_queue_event(string eventType, string direction, double signalValue
    return false;
 }
 
+void _clear_pending_state(string reason, datetime signalBarTime)
+{
+   if(g_pendingDir == 0)
+      return;
+
+   string pendingText = _direction_to_text(g_pendingDir);
+   int pendingAge = 0;
+   datetime nowTs = TimeCurrent();
+   if(nowTs <= 0)
+      nowTs = TimeLocal();
+   if(g_pendingStartedAt > 0 && nowTs > 0)
+      pendingAge = (int)(nowTs - g_pendingStartedAt);
+
+   g_pendingDir = 0;
+   g_pendingStartedAt = 0;
+   g_pendingBar = 0;
+   g_pendingSignalValue = 0.0;
+   g_lastFailedSendAt = 0;
+
+   if(InpDebugPrint)
+      Print("MT4BridgeV2 pending cleared reason=", reason,
+            " previous_direction=", pendingText,
+            " age_sec=", IntegerToString(pendingAge));
+
+   _send_or_queue_event("signal_clear", "NONE", 0.0, signalBarTime);
+}
+
 bool _is_supported_webrequest_endpoint(string endpoint, string &reason)
 {
    reason = "";
@@ -369,6 +423,55 @@ bool _is_signal_value(double v)
    return true;
 }
 
+bool _is_price_value(double v)
+{
+   if(!MathIsValidNumber(v))
+      return false;
+   if(v == EMPTY_VALUE)
+      return false;
+   if(v <= 0.0)
+      return false;
+   if(MathAbs(v) < InpSignalAbsMin)
+      return false;
+   return true;
+}
+
+string _json_bool(bool v)
+{
+   return (v ? "true" : "false");
+}
+
+string _json_number_or_null(double v, int digits = 8)
+{
+   if(!_is_price_value(v))
+      return "null";
+   return DoubleToString(v, digits);
+}
+
+string _json_raw_number_or_null(double v, int digits = 8)
+{
+   if(!MathIsValidNumber(v))
+      return "null";
+   if(v == EMPTY_VALUE)
+      return "null";
+   return DoubleToString(v, digits);
+}
+
+int _secondary_signal_shift()
+{
+   int shift = InpSignalShift;
+   if(InpSecondarySignalShift >= 0)
+      shift = InpSecondarySignalShift;
+   if(InpSecondaryRequireClosedBar)
+      shift = MathMax(1, shift);
+   return shift;
+}
+
+bool _secondary_active()
+{
+   return (InpSecondaryEnabled && StringLen(_trim(InpSecondaryIndicatorName)) > 0);
+}
+
 string _signal_state_text(bool buySignal, bool sellSignal)
 {
    if(buySignal && sellSignal)
@@ -380,12 +483,12 @@ string _signal_state_text(bool buySignal, bool sellSignal)
    return "NONE";
 }
 
-bool _parse_iCustom_params()
+bool _parse_params_csv(string rawInput, string label, double &targetParams[], int &targetCount)
 {
-   ArrayResize(g_iCustomParams, 0);
-   g_iCustomParamCount = 0;
+   ArrayResize(targetParams, 0);
+   targetCount = 0;
 
-   string raw = _trim(InpICustomParamsCsv);
+   string raw = _trim(rawInput);
    if(StringLen(raw) == 0)
       return true;
 
@@ -416,48 +519,70 @@ bool _parse_iCustom_params()
 
       if(val == 0.0 && token != "0" && token != "0.0" && lower != "false")
       {
-         Print("MT4Bridge invalid InpICustomParamsCsv token: ", token,
+         Print("MT4Bridge invalid ", label, " token: ", token,
                " | Only numeric/bool tokens are supported.");
          return false;
       }
 
-      int newCount = g_iCustomParamCount + 1;
-      ArrayResize(g_iCustomParams, newCount);
-      g_iCustomParams[g_iCustomParamCount] = val;
-      g_iCustomParamCount = newCount;
+      int newCount = targetCount + 1;
+      ArrayResize(targetParams, newCount);
+      targetParams[targetCount] = val;
+      targetCount = newCount;
    }
 
    return true;
 }
 
-double _icustom_value(int bufferIndex, int barShift)
+bool _parse_iCustom_params()
 {
-   int c = g_iCustomParamCount;
-   if(c <= 0)  return iCustom(NULL, 0, InpIndicatorName, bufferIndex, barShift);
-   if(c == 1)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], bufferIndex, barShift);
-   if(c == 2)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], bufferIndex, barShift);
-   if(c == 3)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], bufferIndex, barShift);
-   if(c == 4)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], bufferIndex, barShift);
-   if(c == 5)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], bufferIndex, barShift);
-   if(c == 6)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], bufferIndex, barShift);
-   if(c == 7)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], bufferIndex, barShift);
-   if(c == 8)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], bufferIndex, barShift);
-   if(c == 9)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], bufferIndex, barShift);
-   if(c == 10) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], bufferIndex, barShift);
-   if(c == 11) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], bufferIndex, barShift);
-   if(c == 12) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], bufferIndex, barShift);
-   if(c == 13) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], bufferIndex, barShift);
-   if(c == 14) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], bufferIndex, barShift);
-   if(c == 15) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], bufferIndex, barShift);
-   if(c == 16) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], bufferIndex, barShift);
-   if(c == 17) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], bufferIndex, barShift);
-   if(c == 18) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], bufferIndex, barShift);
-   if(c == 19) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], g_iCustomParams[18], bufferIndex, barShift);
-   if(c == 20) return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], g_iCustomParams[3], g_iCustomParams[4], g_iCustomParams[5], g_iCustomParams[6], g_iCustomParams[7], g_iCustomParams[8], g_iCustomParams[9], g_iCustomParams[10], g_iCustomParams[11], g_iCustomParams[12], g_iCustomParams[13], g_iCustomParams[14], g_iCustomParams[15], g_iCustomParams[16], g_iCustomParams[17], g_iCustomParams[18], g_iCustomParams[19], bufferIndex, barShift);
+   return _parse_params_csv(InpICustomParamsCsv, "InpICustomParamsCsv", g_iCustomParams, g_iCustomParamCount);
+}
+
+bool _parse_secondary_iCustom_params()
+{
+   return _parse_params_csv(InpSecondaryICustomParamsCsv, "InpSecondaryICustomParamsCsv", g_secondaryICustomParams, g_secondaryICustomParamCount);
+}
+
+double _icustom_value_for(string indicatorName, double &params[], int paramCount, int bufferIndex, int barShift)
+{
+   int c = paramCount;
+   if(c <= 0)  return iCustom(NULL, 0, indicatorName, bufferIndex, barShift);
+   if(c == 1)  return iCustom(NULL, 0, indicatorName, params[0], bufferIndex, barShift);
+   if(c == 2)  return iCustom(NULL, 0, indicatorName, params[0], params[1], bufferIndex, barShift);
+   if(c == 3)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], bufferIndex, barShift);
+   if(c == 4)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], bufferIndex, barShift);
+   if(c == 5)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], bufferIndex, barShift);
+   if(c == 6)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], bufferIndex, barShift);
+   if(c == 7)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], bufferIndex, barShift);
+   if(c == 8)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], bufferIndex, barShift);
+   if(c == 9)  return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], bufferIndex, barShift);
+   if(c == 10) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], bufferIndex, barShift);
+   if(c == 11) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], bufferIndex, barShift);
+   if(c == 12) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], bufferIndex, barShift);
+   if(c == 13) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], bufferIndex, barShift);
+   if(c == 14) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], bufferIndex, barShift);
+   if(c == 15) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], bufferIndex, barShift);
+   if(c == 16) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], params[15], bufferIndex, barShift);
+   if(c == 17) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], params[15], params[16], bufferIndex, barShift);
+   if(c == 18) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], params[15], params[16], params[17], bufferIndex, barShift);
+   if(c == 19) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], params[15], params[16], params[17], params[18], bufferIndex, barShift);
+   if(c == 20) return iCustom(NULL, 0, indicatorName, params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11], params[12], params[13], params[14], params[15], params[16], params[17], params[18], params[19], bufferIndex, barShift);
 
    // Safety cap for generic adapter.
-   Print("MT4Bridge too many InpICustomParamsCsv values: ", c, " (max supported: 20)");
+   Print("MT4Bridge too many iCustom parameter values: ", c, " (max supported: 20)");
    return EMPTY_VALUE;
+}
+
+double _icustom_value(int bufferIndex, int barShift)
+{
+   return _icustom_value_for(InpIndicatorName, g_iCustomParams, g_iCustomParamCount, bufferIndex, barShift);
+}
+
+double _secondary_icustom_value(int bufferIndex, int barShift)
+{
+   if(!_secondary_active() || bufferIndex < 0)
+      return EMPTY_VALUE;
+   return _icustom_value_for(InpSecondaryIndicatorName, g_secondaryICustomParams, g_secondaryICustomParamCount, bufferIndex, barShift);
 }
 
 void _debug_startup_snapshot()
@@ -613,6 +738,155 @@ bool _read_resolved_signal(int barShift, int &direction, string &dirText, double
    return true;
 }
 
+bool _read_secondary_direction_at(int shift, int &direction, string &stateText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
+{
+   direction = 0;
+   stateText = "NONE";
+   signalValue = 0.0;
+   rawBuy = EMPTY_VALUE;
+   rawSell = EMPTY_VALUE;
+   barTime = iTime(NULL, 0, shift);
+   if(barTime <= 0)
+   {
+      stateText = "NO_BAR";
+      return false;
+   }
+
+   if(InpSecondaryBuyBufferIndex >= 0)
+      rawBuy = _secondary_icustom_value(InpSecondaryBuyBufferIndex, shift);
+   if(InpSecondarySellBufferIndex >= 0)
+      rawSell = _secondary_icustom_value(InpSecondarySellBufferIndex, shift);
+   bool buySignal = (InpSecondaryBuyBufferIndex >= 0 && _is_signal_value(rawBuy));
+   bool sellSignal = (InpSecondarySellBufferIndex >= 0 && _is_signal_value(rawSell));
+   stateText = _signal_state_text(buySignal, sellSignal);
+   if(buySignal && sellSignal)
+      return false;
+   if(!buySignal && !sellSignal)
+      return true;
+
+   direction = buySignal ? 1 : -1;
+   signalValue = buySignal ? rawBuy : rawSell;
+   return true;
+}
+
+bool _scan_secondary_resolved_direction(int startShift)
+{
+   if(!InpSecondaryUseLastSignalAsResolved)
+      return false;
+   if(InpSecondaryBuyBufferIndex < 0 && InpSecondarySellBufferIndex < 0)
+      return false;
+
+   int lookback = MathMax(1, InpSecondaryResolvedLookbackBars);
+   int fromShift = MathMax(0, startShift);
+   for(int shift = fromShift; shift <= fromShift + lookback; shift++)
+   {
+      int direction = 0;
+      string stateText = "NONE";
+      double signalValue = 0.0;
+      datetime barTime = 0;
+      double rawBuy = EMPTY_VALUE;
+      double rawSell = EMPTY_VALUE;
+      if(!_read_secondary_direction_at(shift, direction, stateText, signalValue, barTime, rawBuy, rawSell))
+         continue;
+      if(direction == 0)
+         continue;
+      g_secondaryResolvedDir = direction;
+      g_secondaryResolvedBarTime = barTime;
+      g_secondaryResolvedValue = signalValue;
+      return true;
+   }
+   return false;
+}
+
+bool _read_secondary_context(int primaryDirection, string &stateText, double &rawBuy, double &rawSell,
+                             double &entryPrice, double &stopLoss, double &tp1, double &tp2,
+                             double &tp3, double &tp4, double &tp5, datetime &barTime,
+                             string &resolvedStateText, datetime &resolvedBarTime)
+{
+   stateText = "DISABLED";
+   resolvedStateText = "DISABLED";
+   rawBuy = EMPTY_VALUE;
+   rawSell = EMPTY_VALUE;
+   entryPrice = EMPTY_VALUE;
+   stopLoss = EMPTY_VALUE;
+   tp1 = EMPTY_VALUE;
+   tp2 = EMPTY_VALUE;
+   tp3 = EMPTY_VALUE;
+   tp4 = EMPTY_VALUE;
+   tp5 = EMPTY_VALUE;
+   barTime = 0;
+   resolvedBarTime = 0;
+
+   if(!_secondary_active())
+      return true;
+
+   int shift = _secondary_signal_shift();
+   barTime = iTime(NULL, 0, shift);
+   if(barTime <= 0)
+   {
+      stateText = "NO_BAR";
+      resolvedStateText = "NO_BAR";
+      return !InpRequireSecondaryAgreement;
+   }
+
+   bool hasDirectionBuffers = (InpSecondaryBuyBufferIndex >= 0 || InpSecondarySellBufferIndex >= 0);
+   int secondaryDirection = 0;
+   if(hasDirectionBuffers)
+   {
+      double secondaryValue = 0.0;
+      datetime rawBarTime = 0;
+      if(!_read_secondary_direction_at(shift, secondaryDirection, stateText, secondaryValue, rawBarTime, rawBuy, rawSell))
+      {
+         resolvedStateText = stateText;
+         resolvedBarTime = rawBarTime;
+         return !InpRequireSecondaryAgreement;
+      }
+      if(secondaryDirection != 0)
+      {
+         g_secondaryResolvedDir = secondaryDirection;
+         g_secondaryResolvedBarTime = rawBarTime;
+         g_secondaryResolvedValue = secondaryValue;
+      }
+      else if(InpSecondaryUseLastSignalAsResolved && g_secondaryResolvedDir == 0)
+      {
+         _scan_secondary_resolved_direction(shift);
+      }
+
+      int rawSecondaryDirection = secondaryDirection;
+      int effectiveSecondaryDirection = secondaryDirection;
+      if(InpSecondaryUseLastSignalAsResolved && effectiveSecondaryDirection == 0 && g_secondaryResolvedDir != 0)
+         effectiveSecondaryDirection = g_secondaryResolvedDir;
+
+      secondaryDirection = effectiveSecondaryDirection;
+      resolvedStateText = _direction_to_text(secondaryDirection);
+      resolvedBarTime = (InpSecondaryUseLastSignalAsResolved && rawSecondaryDirection == 0 && secondaryDirection != 0 && g_secondaryResolvedBarTime > 0)
+                        ? g_secondaryResolvedBarTime
+                        : rawBarTime;
+      if(InpRequireSecondaryAgreement && (secondaryDirection == 0 || secondaryDirection != primaryDirection))
+         return false;
+   }
+   else
+   {
+      stateText = "NO_DIRECTION_BUFFERS";
+      resolvedStateText = "NO_DIRECTION_BUFFERS";
+   }
+
+   if(InpUseSecondaryEntry && InpSecondaryEntryBufferIndex >= 0)
+      entryPrice = _secondary_icustom_value(InpSecondaryEntryBufferIndex, shift);
+   if(InpUseSecondaryStopLoss && InpSecondaryStopLossBufferIndex >= 0)
+      stopLoss = _secondary_icustom_value(InpSecondaryStopLossBufferIndex, shift);
+   if(InpUseSecondaryTakeProfits)
+   {
+      if(InpSecondaryTP1BufferIndex >= 0) tp1 = _secondary_icustom_value(InpSecondaryTP1BufferIndex, shift);
+      if(InpSecondaryTP2BufferIndex >= 0) tp2 = _secondary_icustom_value(InpSecondaryTP2BufferIndex, shift);
+      if(InpSecondaryTP3BufferIndex >= 0) tp3 = _secondary_icustom_value(InpSecondaryTP3BufferIndex, shift);
+      if(InpSecondaryTP4BufferIndex >= 0) tp4 = _secondary_icustom_value(InpSecondaryTP4BufferIndex, shift);
+      if(InpSecondaryTP5BufferIndex >= 0) tp5 = _secondary_icustom_value(InpSecondaryTP5BufferIndex, shift);
+   }
+
+   return true;
+}
+
 bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId = "", int eventAttempt = 1)
 {
    string symbol = Symbol();
@@ -632,6 +906,20 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
 
    string pendingText = _direction_to_text(g_pendingDir);
    string confirmedText = _direction_to_text(g_confirmedDir);
+   string resolvedPayload = confirmedText;
+   if(dirInt != 0)
+   {
+      resolvedPayload = _direction_to_text(dirInt);
+   }
+   else if(eventKind == "resolved_state" || eventKind == "signal_clear" || eventKind == "clear" || eventKind == "state_clear")
+   {
+      string dirUpper = dir;
+      StringToUpper(dirUpper);
+      if(dirUpper == "AMBIGUOUS")
+         resolvedPayload = "AMBIGUOUS";
+      else
+         resolvedPayload = "NONE";
+   }
    int pendingAge = 0;
    datetime nowTs = TimeCurrent();
    if(nowTs <= 0)
@@ -640,11 +928,29 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       pendingAge = (int)(nowTs - g_pendingStartedAt);
    int confirmSec = _effective_confirm_seconds();
 
+   string secondaryState = "";
+   string secondaryResolvedState = "";
+   double secondaryRawBuy = EMPTY_VALUE;
+   double secondaryRawSell = EMPTY_VALUE;
+   double secondaryEntry = EMPTY_VALUE;
+   double secondaryStopLoss = EMPTY_VALUE;
+   double secondaryTp1 = EMPTY_VALUE;
+   double secondaryTp2 = EMPTY_VALUE;
+   double secondaryTp3 = EMPTY_VALUE;
+   double secondaryTp4 = EMPTY_VALUE;
+   double secondaryTp5 = EMPTY_VALUE;
+   datetime secondaryBar = 0;
+   datetime secondaryResolvedBar = 0;
+   _read_secondary_context(dirInt, secondaryState, secondaryRawBuy, secondaryRawSell,
+                           secondaryEntry, secondaryStopLoss, secondaryTp1, secondaryTp2,
+                           secondaryTp3, secondaryTp4, secondaryTp5, secondaryBar,
+                           secondaryResolvedState, secondaryResolvedBar);
+
    string body =
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
       "\"signal_hint\":\"" + _json_escape(dir) + "\","
-      "\"resolved_signal\":\"" + _json_escape((dirInt != 0) ? _direction_to_text(dirInt) : confirmedText) + "\","
+      "\"resolved_signal\":\"" + _json_escape(resolvedPayload) + "\","
       "\"confirmed_direction\":\"" + _json_escape(confirmedText) + "\","
       "\"pending_direction\":\"" + _json_escape((g_pendingDir != 0) ? pendingText : "") + "\","
       "\"pending_age_sec\":" + IntegerToString(pendingAge) + ","
@@ -658,6 +964,29 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\","
       "\"event_attempt\":" + IntegerToString((eventAttempt < 1) ? 1 : eventAttempt) + ","
       "\"message\":\"" + _json_escape(msg) + "\","
+      "\"secondary_enabled\":" + _json_bool(_secondary_active()) + ","
+      "\"secondary_indicator\":\"" + _json_escape(InpSecondaryIndicatorName) + "\","
+      "\"secondary_signal\":\"" + _json_escape(secondaryResolvedState) + "\","
+      "\"secondary_raw_signal\":\"" + _json_escape(secondaryState) + "\","
+      "\"secondary_resolved_signal\":\"" + _json_escape(secondaryResolvedState) + "\","
+      "\"secondary_signal_shift\":" + IntegerToString(_secondary_signal_shift()) + ","
+      "\"secondary_bar_time\":\"" + _json_escape((secondaryBar > 0) ? TimeToString(secondaryBar, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"secondary_resolved_bar_time\":\"" + _json_escape((secondaryResolvedBar > 0) ? TimeToString(secondaryResolvedBar, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"secondary_raw_buy\":" + _json_raw_number_or_null(secondaryRawBuy) + ","
+      "\"secondary_raw_sell\":" + _json_raw_number_or_null(secondaryRawSell) + ","
+      "\"secondary_require_agreement\":" + _json_bool(InpRequireSecondaryAgreement) + ","
+      "\"secondary_governor_enabled\":" + _json_bool(InpSecondaryGovernorMode) + ","
+      "\"secondary_entry_gate_enabled\":" + _json_bool(InpSecondaryEntryGateMode) + ","
+      "\"secondary_entry_enabled\":" + _json_bool(InpUseSecondaryEntry) + ","
+      "\"secondary_entry\":" + _json_number_or_null(secondaryEntry) + ","
+      "\"secondary_sl_enabled\":" + _json_bool(InpUseSecondaryStopLoss) + ","
+      "\"secondary_stop_loss\":" + _json_number_or_null(secondaryStopLoss) + ","
+      "\"secondary_tp_enabled\":" + _json_bool(InpUseSecondaryTakeProfits) + ","
+      "\"secondary_tp1\":" + _json_number_or_null(secondaryTp1) + ","
+      "\"secondary_tp2\":" + _json_number_or_null(secondaryTp2) + ","
+      "\"secondary_tp3\":" + _json_number_or_null(secondaryTp3) + ","
+      "\"secondary_tp4\":" + _json_number_or_null(secondaryTp4) + ","
+      "\"secondary_tp5\":" + _json_number_or_null(secondaryTp5) + ","
       "\"bridge_token\":\"" + _json_escape(InpBridgeToken) + "\""
       "}";
 
@@ -730,6 +1059,36 @@ void _check_and_send()
       {
          Print("MT4BridgeV2 ambiguous signal (both BUY/SELL active): ", InpIndicatorName, " ", Symbol(), " ", _tf_to_string(Period()));
       }
+      if(g_pendingDir != 0)
+         _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
+      return;
+   }
+
+   string secondaryState = "";
+   double secondaryRawBuy = EMPTY_VALUE;
+   double secondaryRawSell = EMPTY_VALUE;
+   double secondaryEntry = EMPTY_VALUE;
+   double secondaryStopLoss = EMPTY_VALUE;
+   double secondaryTp1 = EMPTY_VALUE;
+   double secondaryTp2 = EMPTY_VALUE;
+   double secondaryTp3 = EMPTY_VALUE;
+   double secondaryTp4 = EMPTY_VALUE;
+   double secondaryTp5 = EMPTY_VALUE;
+   datetime secondaryBar = 0;
+   string secondaryResolvedState = "";
+   datetime secondaryResolvedBar = 0;
+   if(!InpSecondaryGovernorMode && !InpSecondaryEntryGateMode && !_read_secondary_context(direction, secondaryState, secondaryRawBuy, secondaryRawSell,
+                               secondaryEntry, secondaryStopLoss, secondaryTp1, secondaryTp2,
+                               secondaryTp3, secondaryTp4, secondaryTp5, secondaryBar,
+                               secondaryResolvedState, secondaryResolvedBar))
+   {
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 secondary agreement failed: primary=", dirText,
+               " secondary_state=", secondaryState,
+               " secondary=", InpSecondaryIndicatorName,
+               " ", Symbol(), " ", _tf_to_string(Period()));
+      if(g_pendingDir != 0)
+         _clear_pending_state("secondary_mismatch", (secondaryBar > 0 ? secondaryBar : barTime));
       return;
    }
 
@@ -805,6 +1164,8 @@ int OnInit()
 {
    if(!_parse_iCustom_params())
       return(INIT_PARAMETERS_INCORRECT);
+   if(!_parse_secondary_iCustom_params())
+      return(INIT_PARAMETERS_INCORRECT);
 
    string endpointPrimary = _build_endpoint(InpApiBaseUrl, InpApiPath);
    string reason = "";
@@ -823,6 +1184,12 @@ int OnInit()
       Print("MT4Bridge initialized: ", InpIndicatorName, " | ", Symbol(), " ", _tf_to_string(Period()));
       Print("MT4Bridge terminal data path: ", TerminalInfoString(TERMINAL_DATA_PATH));
       Print("MT4Bridge iCustom params count: ", IntegerToString(g_iCustomParamCount), " | raw='", InpICustomParamsCsv, "'");
+      Print("MT4Bridge secondary enabled=", (_secondary_active() ? "true" : "false"),
+            " indicator=", InpSecondaryIndicatorName,
+            " params count=", IntegerToString(g_secondaryICustomParamCount),
+            " require_agreement=", (InpRequireSecondaryAgreement ? "true" : "false"),
+            " governor=", (InpSecondaryGovernorMode ? "true" : "false"),
+            " entry_gate=", (InpSecondaryEntryGateMode ? "true" : "false"));
       Print("MT4Bridge endpoint(primary): ", endpointPrimary);
       Print("MT4Bridge endpoint(fallback1): ", _build_endpoint("http://localhost", InpApiPath));
       Print("MT4Bridge endpoint(fallback2): ", _build_endpoint("http://127.0.0.1", InpApiPath));
@@ -861,7 +1228,7 @@ void OnTimer()
          nowResolvedTs = TimeLocal();
       if(nowResolvedTs > 0 && (g_lastResolvedStateAt <= 0 || (nowResolvedTs - g_lastResolvedStateAt) >= InpResolvedStateSeconds))
       {
-         string resolvedText = _direction_to_text(g_confirmedDir);
+         string resolvedText = "NONE";
          double stateValue = 0.0;
          datetime stateBar = iTime(NULL, 0, InpSignalShift);
          int rawDir = 0;
@@ -871,6 +1238,8 @@ void OnTimer()
          _read_resolved_signal(InpSignalShift, rawDir, rawText, stateValue, stateBar, rawBuy, rawSell);
          if(rawDir != 0)
             resolvedText = _direction_to_text(rawDir);
+         else if(rawText == "AMBIGUOUS")
+            resolvedText = "AMBIGUOUS";
          _send_or_queue_event("resolved_state", resolvedText, stateValue, (stateBar > 0 ? stateBar : nowResolvedTs));
       }
    }

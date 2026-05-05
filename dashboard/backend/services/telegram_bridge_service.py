@@ -4034,7 +4034,9 @@ class TelegramBridgeService:
 
     @staticmethod
     def _indicator_clear_fallback_enabled() -> bool:
-        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_ENABLED", "1")).strip().lower()
+        # NONE/clear from bridge V2 means the signal is no longer stable. Replaying
+        # the last valid direction here can keep stale pending/execution alive.
+        v = str(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_CLEAR_FALLBACK_ENABLED", "0")).strip().lower()
         return v in {"1", "true", "yes", "on"}
 
     @staticmethod
@@ -4930,6 +4932,25 @@ class TelegramBridgeService:
             "resolved_signal_bar_unix": int(_to_float_or_none(p.get("resolved_signal_bar_unix")) or 0),
             "resolved_raw_buy": _to_float_or_none(p.get("resolved_raw_buy")),
             "resolved_raw_sell": _to_float_or_none(p.get("resolved_raw_sell")),
+            "secondary_enabled": str(p.get("secondary_enabled") or "").strip().lower() in {"1", "true", "yes", "on"},
+            "secondary_indicator": str(p.get("secondary_indicator") or "").strip(),
+            "secondary_signal": str(p.get("secondary_signal") or "").strip().upper(),
+            "secondary_raw_signal": str(p.get("secondary_raw_signal") or p.get("secondary_signal") or "").strip().upper(),
+            "secondary_resolved_signal": str(p.get("secondary_resolved_signal") or p.get("secondary_signal") or "").strip().upper(),
+            "secondary_signal_shift": int(_to_float_or_none(p.get("secondary_signal_shift")) or -1),
+            "secondary_bar_time": str(p.get("secondary_bar_time") or "").strip(),
+            "secondary_resolved_bar_time": str(p.get("secondary_resolved_bar_time") or "").strip(),
+            "secondary_raw_buy": _to_float_or_none(p.get("secondary_raw_buy")),
+            "secondary_raw_sell": _to_float_or_none(p.get("secondary_raw_sell")),
+            "secondary_governor_enabled": bool(self._secondary_governor_enabled_for_payload(p)),
+            "secondary_entry_gate_enabled": bool(self._secondary_entry_gate_enabled_for_payload(p)),
+            "secondary_entry": _to_float_or_none(p.get("secondary_entry")),
+            "secondary_stop_loss": _to_float_or_none(p.get("secondary_stop_loss")),
+            "secondary_tp1": _to_float_or_none(p.get("secondary_tp1")),
+            "secondary_tp2": _to_float_or_none(p.get("secondary_tp2")),
+            "secondary_tp3": _to_float_or_none(p.get("secondary_tp3")),
+            "secondary_tp4": _to_float_or_none(p.get("secondary_tp4")),
+            "secondary_tp5": _to_float_or_none(p.get("secondary_tp5")),
             "execution_modes": dict(runtime_cfg.get("execution_modes") or {}),
             "mode_advanced_enabled": bool(runtime_cfg.get("mode_advanced_enabled")),
             "mode_advanced_v2_enabled": bool(runtime_cfg.get("mode_advanced_v2_enabled")),
@@ -8062,6 +8083,82 @@ class TelegramBridgeService:
         d = str(value or "").strip().upper()
         return d if d in {"BUY", "SELL"} else ""
 
+    @staticmethod
+    def _truthy_bridge_value(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return bool(value)
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+    @classmethod
+    def _secondary_governor_enabled_for_payload(cls, payload: Dict[str, Any]) -> bool:
+        return bool(
+            cls._truthy_bridge_value((payload or {}).get("secondary_governor_enabled"), False)
+            and cls._truthy_bridge_value((payload or {}).get("secondary_enabled"), False)
+        )
+
+    @classmethod
+    def _secondary_entry_gate_enabled_for_payload(cls, payload: Dict[str, Any]) -> bool:
+        return bool(
+            cls._truthy_bridge_value((payload or {}).get("secondary_entry_gate_enabled"), False)
+            and cls._truthy_bridge_value((payload or {}).get("secondary_enabled"), False)
+        )
+
+    def _close_secondary_governor_conflicts(
+        self,
+        *,
+        family: str,
+        profile: str,
+        indicator_key: str,
+        symbol: str,
+        timeframe: str,
+        secondary_direction: str,
+        runtime_cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        sec_dir = self._bridge_direction(secondary_direction)
+        if not sec_dir:
+            return {"ok": True, "closed_count": 0, "mode_results": [], "reason": "secondary_not_directional"}
+
+        mode_results: List[Dict[str, Any]] = []
+        total_closed = 0
+        errors: List[str] = []
+        for mode_row in self._indicator_bridge_mode_source_tags(
+            family=str(family),
+            profile=str(profile),
+            indicator_key=str(indicator_key),
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+            runtime_cfg=dict(runtime_cfg or {}),
+        ):
+            tag = str((mode_row or {}).get("source_tag") or "").strip().lower()
+            if not tag:
+                continue
+            close_out = self._close_mt4_reverse_positions(
+                symbol=str(symbol),
+                incoming_direction=str(sec_dir),
+                timeframe=str(timeframe),
+                source_tag=str(tag),
+                close_reason="closed_by_secondary_governor",
+            )
+            total_closed += int((close_out or {}).get("closed_count") or 0)
+            if not bool((close_out or {}).get("ok", True)):
+                errors.extend([str(x) for x in ((close_out or {}).get("errors") or [])])
+            mode_results.append(
+                {
+                    "mode": str((mode_row or {}).get("mode") or ""),
+                    "policy": str((mode_row or {}).get("policy") or ""),
+                    "source_tag": str(tag),
+                    "close": dict(close_out or {}),
+                }
+            )
+        return {
+            "ok": not bool(errors),
+            "closed_count": int(total_closed),
+            "mode_results": list(mode_results),
+            "errors": list(errors),
+        }
+
     def _indicator_bridge_mode_source_tags(
         self,
         *,
@@ -8133,11 +8230,17 @@ class TelegramBridgeService:
             timeframe=timeframe,
         )
         resolved = self._bridge_direction(
-            (payload or {}).get("confirmed_direction")
-            or (payload or {}).get("resolved_signal")
+            (payload or {}).get("resolved_signal")
             or (payload or {}).get("signal_hint")
+            or (payload or {}).get("confirmed_direction")
         )
         pending = self._bridge_direction((payload or {}).get("pending_direction"))
+        secondary_governor = bool(self._secondary_governor_enabled_for_payload(payload or {}))
+        secondary_entry_gate = bool(self._secondary_entry_gate_enabled_for_payload(payload or {}))
+        secondary = self._bridge_direction(
+            (payload or {}).get("secondary_resolved_signal")
+            or (payload or {}).get("secondary_signal")
+        )
         base = {
             "ok": True,
             "executed": False,
@@ -8146,7 +8249,129 @@ class TelegramBridgeService:
             "bridge": registered,
             "resolved_direction": str(resolved),
             "pending_direction": str(pending),
+            "secondary_governor_enabled": bool(secondary_governor),
+            "secondary_entry_gate_enabled": bool(secondary_entry_gate),
+            "secondary_direction": str(secondary),
         }
+        if bool(secondary_governor):
+            close_out: Dict[str, Any] = {"ok": True, "closed_count": 0, "reason": "secondary_not_directional"}
+            if secondary:
+                close_out = self._close_secondary_governor_conflicts(
+                    family=str(family),
+                    profile=str(profile),
+                    indicator_key=str(indicator_key),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    secondary_direction=str(secondary),
+                    runtime_cfg=dict(runtime_cfg or {}),
+                )
+            base["secondary_governor_close"] = dict(close_out or {})
+
+            if not resolved:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "secondary_governor_waiting_no_main_direction"}
+                return base
+            if pending:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "pending_signal_in_progress"}
+                return base
+            if not secondary:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "secondary_governor_waiting_no_secondary_direction"}
+                return base
+            if str(secondary) != str(resolved):
+                base["reconcile"] = {
+                    "ok": bool((close_out or {}).get("ok", True)),
+                    "corrected": int((close_out or {}).get("closed_count") or 0) > 0,
+                    "reason": "secondary_governor_waiting_direction_mismatch",
+                    "close_result": dict(close_out or {}),
+                }
+                return base
+            if not bool(runtime_cfg.get("effective_automation_enabled")):
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "instance_disabled"}
+                return base
+
+            event_id = (
+                f"secondary_governor|{str(family).strip().lower()}|{str(profile).strip().lower()}|"
+                f"{str(indicator_key).strip().lower()}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}|"
+                f"{str(resolved)}|{int(time.time() * 1000)}"
+            )
+            signal_payload = dict(payload or {})
+            signal_payload.update(
+                {
+                    "indicator": str(indicator),
+                    "signal_profile": str(profile),
+                    "signal_hint": str(resolved),
+                    "symbol": str(symbol).strip().upper(),
+                    "timeframe": str(timeframe).strip().upper(),
+                    "message": f"secondary_governor_agreement:{str(resolved)}",
+                    "event_ts": datetime.now(timezone.utc).isoformat(),
+                    "event_id": str(event_id),
+                    "ingest_source": "bridge",
+                    "bridge_event_type": "confirmed_signal",
+                    "bridge_version": "v2",
+                    "__secondary_governor_replay": True,
+                }
+            )
+            out = self.ingest_indicator_bridge_signal(terminal_family=str(family), payload=signal_payload)
+            base["reconcile"] = {
+                "ok": bool((out or {}).get("ok", True)),
+                "corrected": bool((out or {}).get("executed")) or str((out or {}).get("reason") or "") == "reversal_guard_waiting",
+                "reason": "secondary_governor_agreement_forwarded_as_confirmed_signal",
+                "signal_result": dict(out or {}),
+                "close_result": dict(close_out or {}),
+            }
+            base["executed"] = bool((out or {}).get("executed"))
+            return base
+        if bool(secondary_entry_gate):
+            if not resolved:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "secondary_entry_gate_waiting_no_main_direction"}
+                return base
+            if pending:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "pending_signal_in_progress"}
+                return base
+            if not secondary:
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "secondary_entry_gate_waiting_no_secondary_direction"}
+                return base
+            if str(secondary) != str(resolved):
+                base["reconcile"] = {
+                    "ok": True,
+                    "corrected": False,
+                    "reason": "secondary_entry_gate_waiting_direction_mismatch",
+                }
+                return base
+            if not bool(runtime_cfg.get("effective_automation_enabled")):
+                base["reconcile"] = {"ok": True, "corrected": False, "reason": "instance_disabled"}
+                return base
+
+            event_id = (
+                f"secondary_entry_gate|{str(family).strip().lower()}|{str(profile).strip().lower()}|"
+                f"{str(indicator_key).strip().lower()}|{str(symbol).strip().upper()}|{str(timeframe).strip().upper()}|"
+                f"{str(resolved)}|{int(time.time() * 1000)}"
+            )
+            signal_payload = dict(payload or {})
+            signal_payload.update(
+                {
+                    "indicator": str(indicator),
+                    "signal_profile": str(profile),
+                    "signal_hint": str(resolved),
+                    "symbol": str(symbol).strip().upper(),
+                    "timeframe": str(timeframe).strip().upper(),
+                    "message": f"secondary_entry_gate_agreement:{str(resolved)}",
+                    "event_ts": datetime.now(timezone.utc).isoformat(),
+                    "event_id": str(event_id),
+                    "ingest_source": "bridge",
+                    "bridge_event_type": "confirmed_signal",
+                    "bridge_version": "v2",
+                    "__secondary_entry_gate_replay": True,
+                }
+            )
+            out = self.ingest_indicator_bridge_signal(terminal_family=str(family), payload=signal_payload)
+            base["reconcile"] = {
+                "ok": bool((out or {}).get("ok", True)),
+                "corrected": bool((out or {}).get("executed")) or str((out or {}).get("reason") or "") == "reversal_guard_waiting",
+                "reason": "secondary_entry_gate_agreement_forwarded_as_confirmed_signal",
+                "signal_result": dict(out or {}),
+            }
+            base["executed"] = bool((out or {}).get("executed"))
+            return base
         if not self._indicator_bridge_v2_reconcile_enabled():
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "v2_reconcile_disabled"}
             return base
@@ -8457,6 +8682,52 @@ class TelegramBridgeService:
         if not bool(runtime_cfg.get("effective_automation_enabled")):
             return {"ok": True, "executed": False, "reason": "instance_disabled", "runtime": runtime_cfg}
 
+        secondary_governor = bool(self._secondary_governor_enabled_for_payload(p))
+        secondary_entry_gate = bool(self._secondary_entry_gate_enabled_for_payload(p))
+        secondary_direction = self._bridge_direction(p.get("secondary_resolved_signal") or p.get("secondary_signal"))
+        if bool(secondary_governor) and str(secondary_direction) != str(hint):
+            close_out: Dict[str, Any] = {"ok": True, "closed_count": 0, "reason": "secondary_not_directional"}
+            if secondary_direction:
+                close_out = self._close_secondary_governor_conflicts(
+                    family=str(family),
+                    profile=str(profile),
+                    indicator_key=str(indicator_key),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    secondary_direction=str(secondary_direction),
+                    runtime_cfg=dict(runtime_cfg or {}),
+                )
+            return {
+                "ok": bool((close_out or {}).get("ok", True)),
+                "executed": False,
+                "reason": (
+                    "secondary_governor_waiting_no_secondary_direction"
+                    if not secondary_direction
+                    else "secondary_governor_waiting_direction_mismatch"
+                ),
+                "runtime": runtime_cfg,
+                "bridge": registered,
+                "secondary_governor_enabled": True,
+                "main_direction": str(hint),
+                "secondary_direction": str(secondary_direction),
+                "secondary_governor_close": dict(close_out or {}),
+            }
+        if bool(secondary_entry_gate) and str(secondary_direction) != str(hint):
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": (
+                    "secondary_entry_gate_waiting_no_secondary_direction"
+                    if not secondary_direction
+                    else "secondary_entry_gate_waiting_direction_mismatch"
+                ),
+                "runtime": runtime_cfg,
+                "bridge": registered,
+                "secondary_entry_gate_enabled": True,
+                "main_direction": str(hint),
+                "secondary_direction": str(secondary_direction),
+            }
+
         svc = self._get_live_service()
         info = svc.get_symbol_info(symbol=str(symbol))
         if isinstance(info, dict) and str(info.get("error") or "").strip():
@@ -8487,8 +8758,63 @@ class TelegramBridgeService:
             entry_price = last
         if entry_price is None and isinstance(bars, list) and bars:
             entry_price = _to_float_or_none((bars[-1] or {}).get("close"))
+
+        def _payload_bool(key: str, default: bool = False) -> bool:
+            raw = p.get(key)
+            if raw is None:
+                return bool(default)
+            if isinstance(raw, bool):
+                return bool(raw)
+            return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+        secondary_enabled = bool(_payload_bool("secondary_enabled", False))
+        secondary_entry_enabled = bool(secondary_enabled and _payload_bool("secondary_entry_enabled", False))
+        secondary_sl_enabled = bool(secondary_enabled and _payload_bool("secondary_sl_enabled", False))
+        secondary_tp_enabled = bool(secondary_enabled and _payload_bool("secondary_tp_enabled", False))
+        secondary_entry = _to_float_or_none(p.get("secondary_entry"))
+        secondary_stop_loss = _to_float_or_none(p.get("secondary_stop_loss"))
+        if (
+            secondary_entry_enabled
+            and secondary_entry is not None
+            and math.isfinite(float(secondary_entry))
+            and float(secondary_entry) > 0.0
+        ):
+            entry_price = float(secondary_entry)
         if entry_price is None or (not math.isfinite(float(entry_price))) or float(entry_price) <= 0.0:
             return {"ok": False, "executed": False, "error": "entry_price_unavailable"}
+
+        secondary_tps: List[Dict[str, Any]] = []
+        if bool(secondary_tp_enabled):
+            for idx in range(1, 6):
+                px = _to_float_or_none(p.get(f"secondary_tp{idx}"))
+                if px is None or (not math.isfinite(float(px))) or float(px) <= 0.0:
+                    continue
+                if str(hint) == "BUY" and float(px) <= float(entry_price):
+                    continue
+                if str(hint) == "SELL" and float(px) >= float(entry_price):
+                    continue
+                secondary_tps.append({"index": int(idx), "price": round(float(px), int(max(0, digits)))})
+            secondary_tps.sort(key=lambda r: int(_to_float_or_none((r or {}).get("index")) or 0))
+
+        secondary_context = {
+            "enabled": bool(secondary_enabled),
+            "indicator": str(p.get("secondary_indicator") or "").strip(),
+            "signal": str(p.get("secondary_resolved_signal") or p.get("secondary_signal") or "").strip().upper(),
+            "raw_signal": str(p.get("secondary_raw_signal") or p.get("secondary_signal") or "").strip().upper(),
+            "resolved_signal": str(p.get("secondary_resolved_signal") or p.get("secondary_signal") or "").strip().upper(),
+            "signal_shift": _to_float_or_none(p.get("secondary_signal_shift")),
+            "bar_time": str(p.get("secondary_bar_time") or "").strip(),
+            "resolved_bar_time": str(p.get("secondary_resolved_bar_time") or "").strip(),
+            "require_agreement": bool(_payload_bool("secondary_require_agreement", False)),
+            "raw_buy": _to_float_or_none(p.get("secondary_raw_buy")),
+            "raw_sell": _to_float_or_none(p.get("secondary_raw_sell")),
+            "entry_enabled": bool(secondary_entry_enabled),
+            "entry": _to_float_or_none(secondary_entry),
+            "sl_enabled": bool(secondary_sl_enabled),
+            "stop_loss": _to_float_or_none(secondary_stop_loss),
+            "tp_enabled": bool(secondary_tp_enabled),
+            "tps": list(secondary_tps),
+        }
 
         sync_base_key = self._indicator_sync_base_key(
             family=str(family),
@@ -8565,7 +8891,19 @@ class TelegramBridgeService:
             stop_loss = round(float(stop_loss), int(max(0, digits)))
             no_stop_loss = False
 
+        if (
+            bool(secondary_sl_enabled)
+            and secondary_stop_loss is not None
+            and math.isfinite(float(secondary_stop_loss))
+            and float(secondary_stop_loss) > 0.0
+            and ((str(hint) == "BUY" and float(secondary_stop_loss) < float(entry_price)) or (str(hint) == "SELL" and float(secondary_stop_loss) > float(entry_price)))
+        ):
+            stop_loss = round(float(secondary_stop_loss), int(max(0, digits)))
+            no_stop_loss = False
+
         tps = [{"index": int(i + 1), "price": round(float(px), int(max(0, digits)))} for i, px in enumerate(tp_prices)]
+        if bool(secondary_tps):
+            tps = list(secondary_tps)
         signal = {
             "symbol": str(symbol_exec_raw),
             "direction": str(hint),
@@ -8587,6 +8925,10 @@ class TelegramBridgeService:
             "market_regime": str(active_regime),
             "market_regime_info": dict(regime_info or {}),
             "hard_sl_mode": str(hard_sl_mode),
+            "secondary": dict(secondary_context),
+            "secondary_entry_enabled": bool(secondary_entry_enabled),
+            "secondary_tp_enabled": bool(secondary_tp_enabled and bool(secondary_tps)),
+            "secondary_sl_enabled": bool(secondary_sl_enabled and stop_loss is not None),
             # Advanced lock policy:
             # - Trend: default lock disabled (let winners run)
             # - Range: lock enabled with stricter arming and minimum close profit floor.
@@ -8831,6 +9173,7 @@ class TelegramBridgeService:
                             "market_regime": str(active_regime),
                             "market_regime_info": dict(regime_info or {}),
                             "hard_sl_mode": str(hard_sl_mode),
+                            "secondary": dict(secondary_context),
                             "source_tag": str(mode_source_tag),
                         },
                         now_ts=float(now_ts),
