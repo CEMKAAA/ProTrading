@@ -4,7 +4,7 @@ Live Trading Service - Interface with the running bot and MT5
 
 import MetaTrader5 as mt5
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 from pathlib import Path
 import json
 import re
@@ -42,6 +42,9 @@ BOT_STATE_FILES = {
 class LiveTradingService:
     """Service for interacting with live trading and MT5"""
 
+    _GLOBAL_SYMBOL_FILLING_MODE_CACHE: Dict[str, int] = {}
+    _GLOBAL_SYMBOL_INVALID_FILLING_MODES: Dict[str, Set[int]] = {}
+
     def __init__(self):
         self.ny_tz = pytz.timezone('America/New_York')
         self._mt5_initialized = False
@@ -52,6 +55,10 @@ class LiveTradingService:
         self._last_symbols_error: str = ""
         self._last_mt5_warn_msg: str = ""
         self._last_mt5_warn_ts: float = 0.0
+        # Shared across service instances in the same backend process. MT5 symbols often
+        # reject some filling modes; retrying known-bad modes on every order is noisy and slow.
+        self._symbol_filling_mode_cache = LiveTradingService._GLOBAL_SYMBOL_FILLING_MODE_CACHE
+        self._symbol_invalid_filling_modes = LiveTradingService._GLOBAL_SYMBOL_INVALID_FILLING_MODES
 
     def _warn_mt5_unavailable(self, err: Any) -> None:
         msg = str(err)
@@ -814,6 +821,62 @@ class LiveTradingService:
                 continue
         return ""
 
+    @staticmethod
+    def _filling_symbol_key(symbol: Any) -> str:
+        return str(symbol or "").strip().upper()
+
+    def _ordered_filling_candidates(
+        self,
+        *,
+        symbol: str,
+        info: Any,
+        fallback_modes: List[Any],
+    ) -> List[int]:
+        symbol_key = self._filling_symbol_key(symbol)
+        candidates: List[int] = []
+
+        cached = self._symbol_filling_mode_cache.get(symbol_key)
+        if cached is not None:
+            candidates.append(int(cached))
+
+        if info is not None:
+            try:
+                fm = int(getattr(info, "filling_mode", 0) or 0)
+                if fm not in candidates:
+                    candidates.append(fm)
+            except Exception:
+                pass
+
+        for c in fallback_modes:
+            try:
+                cv = int(c)
+            except Exception:
+                continue
+            if cv not in candidates:
+                candidates.append(cv)
+
+        invalid_modes = self._symbol_invalid_filling_modes.get(symbol_key, set())
+        filtered = [mode for mode in candidates if mode not in invalid_modes]
+        return filtered or candidates or [int(getattr(mt5, "ORDER_FILLING_RETURN", 0) or 0)]
+
+    def _remember_filling_success(self, *, symbol: str, fill_mode: int) -> None:
+        symbol_key = self._filling_symbol_key(symbol)
+        if not symbol_key:
+            return
+        mode = int(fill_mode)
+        self._symbol_filling_mode_cache[symbol_key] = mode
+        invalid_modes = self._symbol_invalid_filling_modes.get(symbol_key)
+        if invalid_modes is not None:
+            invalid_modes.discard(mode)
+
+    def _remember_filling_failure(self, *, symbol: str, fill_mode: int, retcode_name: str) -> None:
+        if str(retcode_name or "") != "TRADE_RETCODE_INVALID_FILL":
+            return
+        symbol_key = self._filling_symbol_key(symbol)
+        if not symbol_key:
+            return
+        self._symbol_invalid_filling_modes.setdefault(symbol_key, set()).add(int(fill_mode))
+
     def place_market_order(
         self,
         *,
@@ -868,22 +931,15 @@ class LiveTradingService:
             if requested_price <= 0.0:
                 return {"ok": False, "error": f"invalid_market_price:{symbol_resolved}"}
 
-            filling_candidates = []
-            try:
-                fm = int(getattr(info, "filling_mode", 0))
-                if fm > 0:
-                    filling_candidates.append(fm)
-            except Exception:
-                pass
-            for c in [getattr(mt5, "ORDER_FILLING_RETURN", 0), getattr(mt5, "ORDER_FILLING_IOC", 0), getattr(mt5, "ORDER_FILLING_FOK", 0)]:
-                try:
-                    cv = int(c)
-                except Exception:
-                    continue
-                if cv > 0 and cv not in filling_candidates:
-                    filling_candidates.append(cv)
-            if not filling_candidates:
-                filling_candidates = [getattr(mt5, "ORDER_FILLING_RETURN", 0)]
+            filling_candidates = self._ordered_filling_candidates(
+                symbol=symbol_resolved,
+                info=info,
+                fallback_modes=[
+                    getattr(mt5, "ORDER_FILLING_RETURN", 0),
+                    getattr(mt5, "ORDER_FILLING_IOC", 0),
+                    getattr(mt5, "ORDER_FILLING_FOK", 0),
+                ],
+            )
 
             last_err = ""
             for fill_mode in filling_candidates:
@@ -936,8 +992,9 @@ class LiveTradingService:
                     "request": request,
                 }
                 if ok:
+                    self._remember_filling_success(symbol=symbol_resolved, fill_mode=int(fill_mode))
                     logger.info(
-                        "mt5_market_order_sent symbol=%s direction=%s lot=%.4f magic=%s order=%s deal=%s position=%s comment=%s retcode=%s",
+                        "mt5_market_order_sent symbol=%s direction=%s lot=%.4f magic=%s order=%s deal=%s position=%s comment=%s retcode=%s filling=%s",
                         str(symbol_resolved),
                         str(direction_u),
                         float(vol),
@@ -947,11 +1004,14 @@ class LiveTradingService:
                         int(payload.get("position") or 0),
                         str(request.get("comment") or ""),
                         str(retcode_name),
+                        int(fill_mode),
                     )
                     return payload
                 last_err = f"{retcode}:{retcode_name}:{payload.get('comment')}"
-                logger.warning(
-                    "mt5_market_order_failed symbol=%s direction=%s lot=%.4f magic=%s retcode=%s comment=%s request_comment=%s",
+                self._remember_filling_failure(symbol=symbol_resolved, fill_mode=int(fill_mode), retcode_name=str(retcode_name))
+                log_fn = logger.info if str(retcode_name) == "TRADE_RETCODE_INVALID_FILL" else logger.warning
+                log_fn(
+                    "mt5_market_order_failed symbol=%s direction=%s lot=%.4f magic=%s retcode=%s comment=%s request_comment=%s filling=%s",
                     str(symbol_resolved),
                     str(direction_u),
                     float(vol),
@@ -959,6 +1019,7 @@ class LiveTradingService:
                     str(retcode_name),
                     str(payload.get("comment") or ""),
                     str(request.get("comment") or ""),
+                    int(fill_mode),
                 )
             return {"ok": False, "error": f"order_send_failed:{last_err or mt5.last_error()}"}
         except Exception as exc:
@@ -1005,28 +1066,16 @@ class LiveTradingService:
             volume = float(lot_size if lot_size is not None else getattr(pos, "volume", 0.0) or 0.0)
             if volume <= 0.0:
                 return {"ok": False, "error": "invalid_close_volume"}
-            filling_candidates: List[int] = []
             info = mt5.symbol_info(symbol_resolved)
-            if info is not None:
-                try:
-                    fm = int(getattr(info, "filling_mode", 0) or 0)
-                    if fm > 0:
-                        filling_candidates.append(int(fm))
-                except Exception:
-                    pass
-            for c in [
-                getattr(mt5, "ORDER_FILLING_IOC", 0),
-                getattr(mt5, "ORDER_FILLING_FOK", 0),
-                getattr(mt5, "ORDER_FILLING_RETURN", 0),
-            ]:
-                try:
-                    cv = int(c)
-                except Exception:
-                    continue
-                if cv >= 0 and cv not in filling_candidates:
-                    filling_candidates.append(cv)
-            if not filling_candidates:
-                filling_candidates = [int(getattr(mt5, "ORDER_FILLING_RETURN", 0) or 0)]
+            filling_candidates: List[int] = self._ordered_filling_candidates(
+                symbol=symbol_resolved,
+                info=info,
+                fallback_modes=[
+                    getattr(mt5, "ORDER_FILLING_IOC", 0),
+                    getattr(mt5, "ORDER_FILLING_FOK", 0),
+                    getattr(mt5, "ORDER_FILLING_RETURN", 0),
+                ],
+            )
 
             last_err = ""
             for fill_mode in filling_candidates:
@@ -1069,7 +1118,9 @@ class LiveTradingService:
                     "error": None if ok else f"{retcode}:{retcode_name}:{getattr(result, 'comment', '')}",
                 }
                 if ok:
+                    self._remember_filling_success(symbol=symbol_resolved, fill_mode=int(fill_mode))
                     return payload
+                self._remember_filling_failure(symbol=symbol_resolved, fill_mode=int(fill_mode), retcode_name=str(retcode_name))
                 last_err = str(payload.get("error") or "")
             return {"ok": False, "error": last_err or "close_order_send_failed"}
         except Exception as exc:

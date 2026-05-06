@@ -1,0 +1,11 @@
+InpIndicatorName=FxNuke\FXNUKESC
+InpICustomParamsCsv=true,true,true
+InpSignalShift=0
+InpScanBufferMax=32
+InpScanShiftMax=12
+InpSignalAbsMin=0.0000001
+InpIgnoreNamePatterns=autotrade,->
+InpButtonName=BTN_SCAN_FXNUKE
+InpButtonX=20
+InpButtonY=90
+InpLogAllObjects=true

@@ -361,10 +361,55 @@
             : 'on_candle_close';
     }
 
+    function entryExitExitModes(row) {
+        const raw = (row || {}).entry_exit_exit_modes || ((row || {}).entry_exit || {}).exit_modes;
+        let values = [];
+        if (Array.isArray(raw)) {
+            values = raw;
+        } else {
+            const csv = String((row || {}).entry_exit_exit_modes_csv || ((row || {}).entry_exit || {}).exit_modes_csv || '').trim();
+            values = csv ? csv.split(/[,;|]+/) : [entryExitExitMode(row)];
+        }
+        const out = [];
+        values.forEach(v => {
+            const m = String(v || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+            const mode = ['instant', 'immediate', 'current_bar', 'active_bar', 'on_signal'].includes(m)
+                ? 'instant'
+                : (['on_candle_close', 'candle_close', 'closed_bar', 'on_close'].includes(m) ? 'on_candle_close' : (['after_blank', 'blank', 'blank_candle', 'wait_blank', 'wait_for_blank'].includes(m) ? 'after_blank' : ''));
+            if (mode && !out.includes(mode)) out.push(mode);
+        });
+        return out.length ? out : ['after_blank'];
+    }
+
     function entryExitExitModeLabel(mode) {
         if (mode === 'instant') return 'instant stop';
         if (mode === 'on_candle_close') return 'stop candle close';
         return 'stop + blank close';
+    }
+
+    function entryExitLifecycleModes(row) {
+        const raw = (row || {}).entry_exit_lifecycle_modes || ((row || {}).entry_exit || {}).lifecycle_modes;
+        let values = [];
+        if (Array.isArray(raw)) {
+            values = raw;
+        } else {
+            const csv = String((row || {}).entry_exit_lifecycle_modes_csv || ((row || {}).entry_exit || {}).lifecycle_modes_csv || '').trim();
+            values = csv ? csv.split(/[,;|]+/) : [((row || {}).entry_exit_lifecycle_mode || ((row || {}).entry_exit || {}).lifecycle_mode || 'coexist')];
+        }
+        const out = [];
+        values.forEach(v => {
+            const m = String(v || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+            const mode = ['exclusive', 'exclusive_until_stop', 'single', 'single_active', 'one_trade', 'lock_until_stop', 'production'].includes(m)
+                ? 'exclusive_until_stop'
+                : (['coexist', 'parallel', 'hedge', 'normal', 'current'].includes(m) ? 'coexist' : '');
+            if (mode && !out.includes(mode)) out.push(mode);
+        });
+        return out.length ? out : ['coexist'];
+    }
+
+    function entryExitLifecycleModeLabel(mode) {
+        if (mode === 'exclusive_until_stop') return 'exclusive until stop';
+        return 'coexist';
     }
 
     function fmtExitBufferIndex(v) {
@@ -452,8 +497,63 @@
             || text.includes('break even');
     }
 
+    function isReadableTradeAuditRow(row) {
+        const status = String((row || {}).status || '').trim().toLowerCase();
+        const msg = String((row || {}).message || (row || {}).close_reason || '').trim().toLowerCase();
+        const ticket = Number((row || {}).ticket || 0);
+        const lot = Number((row || {}).lot || 0);
+        const mode = String((row || {}).execution_mode || '').trim().toLowerCase();
+        const hasTradeIdentity = Number.isFinite(ticket) && ticket > 0 && Number.isFinite(lot) && lot > 0;
+        if (msg.includes('_orphan') || msg.includes('orphan')) return false;
+        if (status === 'opened') {
+            return hasTradeIdentity && (msg.includes('order_opened') || msg.includes('opened'));
+        }
+        if (status === 'closed') {
+            return hasTradeIdentity && !!mode && mode !== '-' && !msg.includes('skipped');
+        }
+        return false;
+    }
+
     function rowMode(row) {
         return String((row || {}).execution_mode || '-').trim() || '-';
+    }
+
+    function exitModeFromSourceTag(row) {
+        const tag = String((row || {}).source_tag || '').trim().toLowerCase();
+        if (tag.includes('|exit_instant')) return 'instant';
+        if (tag.includes('|exit_on_candle_close')) return 'close';
+        if (tag.includes('|exit_after_blank')) return 'blank';
+        return '';
+    }
+
+    function lifecycleModeFromSourceTag(row) {
+        const tag = String((row || {}).source_tag || '').trim().toLowerCase();
+        if (tag.includes('|life_exclusive')) return 'exclusive';
+        return '';
+    }
+
+    function entryExitAuditDetail(row) {
+        const payload = ((row || {}).stage_payload || {});
+        const detail = payload && typeof payload === 'object' ? (payload.entry_exit_payload || {}) : {};
+        if (!detail || typeof detail !== 'object') return '';
+        const bits = [];
+        const mode = String(detail.exit_mode || detail.entry_exit_exit_mode || '').trim();
+        const lifecycle = String(detail.lifecycle_mode || detail.entry_exit_lifecycle_mode || lifecycleModeFromSourceTag(row)).trim();
+        const kind = String(detail.exit_resolved_kind || '').trim();
+        const dir = String(detail.exit_direction || detail.raw_exit_direction || '').trim();
+        const bar = String(detail.exit_resolved_bar_time || detail.bar_time || '').trim();
+        const value = Number(detail.exit_signal_value);
+        const buyBuf = Number(detail.buy_exit_buffer);
+        const sellBuf = Number(detail.sell_exit_buffer);
+        if (mode) bits.push(`mode=${mode}`);
+        if (lifecycle) bits.push(`life=${lifecycle}`);
+        if (kind) bits.push(`kind=${kind}`);
+        if (dir) bits.push(`dir=${dir}`);
+        if (bar) bits.push(`bar=${bar}`);
+        if (Number.isFinite(value)) bits.push(`value=${fmtNum(value, 5)}`);
+        if (Number.isFinite(buyBuf) && buyBuf >= 0) bits.push(`buy_exit=${buyBuf}`);
+        if (Number.isFinite(sellBuf) && sellBuf >= 0) bits.push(`sell_exit=${sellBuf}`);
+        return bits.length ? `<div class="small text-info">exit audit: ${esc(bits.join(' | '))}</div>` : '';
     }
 
     async function closeOpenTrade(row) {
@@ -712,6 +812,8 @@
         els.entryExitBody.innerHTML = rows.map(row => {
             const entryResolved = normDirection(row.entry_resolved_signal || row.resolved_signal || row.confirmed_direction);
             const entryRaw = normDirection(row.resolved_signal || row.confirmed_direction || row.pending_direction);
+            const lastEntryResolved = normDirection(row.last_entry_resolved_signal);
+            const lastEntrySignal = normDirection(row.last_entry_signal_direction);
             const exitResolved = normDirection(row.exit_resolved_signal || row.exit_direction);
             const exitKindRaw = String(row.exit_resolved_kind || '').trim().toUpperCase();
             const exitKind = exitKindRaw || (exitResolved === 'BUY' ? 'BUY_STOP' : (exitResolved === 'SELL' ? 'SELL_STOP' : ''));
@@ -723,11 +825,13 @@
             const total = row.confirm_seconds != null ? Number(row.confirm_seconds) : null;
             const entryMeta = pending
                 ? `pending ${pending}${liveAge != null ? ` ${fmtNum(liveAge, 0)}s` : ''}${Number.isFinite(total) ? `/${fmtNum(total, 0)}s` : ''}`
-                : `entry shift=${row.resolved_signal_shift != null ? row.resolved_signal_shift : '-'} bar=${row.resolved_signal_bar_time || '-'}`;
+                : `state event=${row.bridge_event_type || '-'} shift=${row.resolved_signal_shift != null ? row.resolved_signal_shift : '-'} bar=${row.resolved_signal_bar_time || '-'}`;
             const exitMeta = `${exitKind ? `last ${exitKind} ` : ''}exit bar=${row.exit_resolved_bar_time || '-'} buffers buy_exit=${fmtExitBufferIndex(row.buy_exit_buffer)} sell_exit=${fmtExitBufferIndex(row.sell_exit_buffer)}`;
             const key = esc(row.instance_key || '');
             const isOn = boolish(row.effective_automation_enabled);
-            const exitMode = entryExitExitMode(row);
+            const exitModes = entryExitExitModes(row);
+            const exitMode = exitModes[0] || entryExitExitMode(row);
+            const lifecycleModes = entryExitLifecycleModes(row);
             const auto = isOn ? '<span class="badge text-bg-success">ON</span>' : '<span class="badge text-bg-secondary">OFF</span>';
             const actionClass = isOn ? 'btn-outline-danger' : 'btn-outline-success';
             const actionText = isOn ? 'Stop' : 'Start';
@@ -741,27 +845,45 @@
             const exitLastMeta = isDirectional(lastExitResolved)
                 ? `<div class="small mt-2"><span class="text-muted">last resolved:</span> <span class="fw-bold ${lastExitResolved === 'BUY' ? 'text-success' : 'text-danger'}">${esc(lastExitResolved)}</span>${lastExitKind ? ` <span class="text-muted">(${esc(lastExitKind)})</span>` : ''}${row.last_exit_resolved_bar_time ? ` <span class="text-muted">${esc(row.last_exit_resolved_bar_time)}</span>` : ''}</div>`
                 : '';
+            const entryLastMeta = isDirectional(lastEntryResolved)
+                ? `<div class="small mt-2"><span class="text-muted">last resolved state:</span> <span class="fw-bold ${lastEntryResolved === 'BUY' ? 'text-success' : 'text-danger'}">${esc(lastEntryResolved)}</span>${row.last_entry_resolved_bar_time ? ` <span class="text-muted">${esc(row.last_entry_resolved_bar_time)}</span>` : ''}</div>`
+                : '';
+            const entrySignalMeta = isDirectional(lastEntrySignal)
+                ? `<div class="small mt-1"><span class="text-muted">last entry signal:</span> <span class="fw-bold ${lastEntrySignal === 'BUY' ? 'text-success' : 'text-danger'}">${esc(lastEntrySignal)}</span>${row.last_entry_signal_bar_time ? ` <span class="text-muted">${esc(row.last_entry_signal_bar_time)}</span>` : ''}</div>`
+                : '<div class="small mt-1 text-muted">no executable entry signal yet</div>';
             return `<div class="v2-dual-instance">
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                     <div>
                         <span class="badge text-bg-info">ENTRY / EXIT</span>
                         <span class="ms-2 fw-semibold">${esc(String(row.terminal_family || '').toUpperCase())} ${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</span>
                         <span class="ms-2">${auto}</span>
+                        <span class="ms-2 small text-muted">${esc(modeText(row))}</span>
                     </div>
                     <div class="d-flex flex-wrap align-items-center gap-2">
                         <div class="small text-muted">last seen ${esc(fmtTs(row.last_seen))}</div>
-                        <select class="form-select form-select-sm v2-entry-exit-mode-select" data-instance="${key}" title="Exit / Stop mode">
-                            <option value="after_blank" ${exitMode === 'after_blank' ? 'selected' : ''}>stop + blank close</option>
-                            <option value="on_candle_close" ${exitMode === 'on_candle_close' ? 'selected' : ''}>stop candle close</option>
-                            <option value="instant" ${exitMode === 'instant' ? 'selected' : ''}>instant stop</option>
-                        </select>
-                        <span class="badge text-bg-light">${esc(entryExitExitModeLabel(exitMode))}</span>
+                        ${renderModeControls(row)}
+                        <div class="btn-group btn-group-sm v2-entry-exit-mode-group" role="group" data-instance="${key}">
+                            <input type="checkbox" class="btn-check v2-entry-exit-mode-check" id="eem-after-${key}" data-instance="${key}" value="after_blank" ${exitModes.includes('after_blank') ? 'checked' : ''}>
+                            <label class="btn btn-outline-secondary" for="eem-after-${key}">blank</label>
+                            <input type="checkbox" class="btn-check v2-entry-exit-mode-check" id="eem-close-${key}" data-instance="${key}" value="on_candle_close" ${exitModes.includes('on_candle_close') ? 'checked' : ''}>
+                            <label class="btn btn-outline-secondary" for="eem-close-${key}">close</label>
+                            <input type="checkbox" class="btn-check v2-entry-exit-mode-check" id="eem-instant-${key}" data-instance="${key}" value="instant" ${exitModes.includes('instant') ? 'checked' : ''}>
+                            <label class="btn btn-outline-secondary" for="eem-instant-${key}">instant</label>
+                        </div>
+                        <div class="btn-group btn-group-sm v2-entry-exit-life-group" role="group" data-instance="${key}">
+                            <input type="checkbox" class="btn-check v2-entry-exit-life-check" id="eel-coexist-${key}" data-instance="${key}" value="coexist" ${lifecycleModes.includes('coexist') ? 'checked' : ''}>
+                            <label class="btn btn-outline-secondary" for="eel-coexist-${key}">coexist</label>
+                            <input type="checkbox" class="btn-check v2-entry-exit-life-check" id="eel-exclusive-${key}" data-instance="${key}" value="exclusive_until_stop" ${lifecycleModes.includes('exclusive_until_stop') ? 'checked' : ''}>
+                            <label class="btn btn-outline-secondary" for="eel-exclusive-${key}">exclusive</label>
+                        </div>
+                        <span class="badge text-bg-light">${esc(exitModes.map(entryExitExitModeLabel).join(' + '))}</span>
+                        <span class="badge text-bg-light">${esc(lifecycleModes.map(entryExitLifecycleModeLabel).join(' + '))}</span>
                         <input type="number" class="form-control form-control-sm v2-lot-input" min="0.01" step="0.01" data-instance="${key}" value="${esc(fmtNum(row.lot_size || 0.1, 2))}" title="Lot size">
                         <button type="button" class="btn btn-sm ${actionClass} v2-entry-exit-toggle" data-instance="${key}" data-enabled="${isOn ? '0' : '1'}">${actionText}</button>
                     </div>
                 </div>
                 <div class="v2-dual-grid">
-                    ${renderDualSignalTile('Entry', row.indicator || row.source_name || '-', entryRaw, entryMeta, entryResolved, '')}
+                    ${renderDualSignalTile('Entry', row.indicator || row.source_name || '-', entryRaw, entryMeta, entryResolved, '', `${entryLastMeta}${entrySignalMeta}`)}
                     <div class="v2-dual-decision">
                         <span class="v2-signal-chip ${signalChipClass(decisionLabel)}">${esc(decisionLabel)}</span>
                         <div class="small mt-2">${esc(decisionDetail)}</div>
@@ -864,6 +986,11 @@
             const pendingText = pending
                 ? `${esc(pending)} ${liveAge != null ? `<span class="small text-muted">${fmtNum(liveAge, 0)}s${Number.isFinite(total) ? `/${fmtNum(total, 0)}s` : ''}</span>` : ''}`
                 : '-';
+            const lastSignal = normDirection(row.last_signal_direction);
+            const lastSignalHtml = isDirectional(lastSignal)
+                ? `<div class="small text-muted">last signal: <span class="${lastSignal === 'BUY' ? 'text-success' : 'text-danger'} fw-semibold">${esc(lastSignal)}</span>${row.last_signal_bar_time ? ` ${esc(row.last_signal_bar_time)}` : ''}</div>`
+                : '';
+            const resolvedHtml = `${esc(row.resolved_signal || '-')}${lastSignalHtml}`;
             return `<tr>
                 <td>${esc(fmtTs(row.last_seen))}</td>
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
@@ -872,7 +999,7 @@
                 <td class="${stateClass(row)}">${esc(row.state || '-')}</td>
                 <td>${auto}</td>
                 <td>${renderModeControls(row)}<div class="small text-muted">${esc(modeText(row))}</div></td>
-                <td>${esc(row.resolved_signal || '-')}</td>
+                <td>${resolvedHtml}</td>
                 <td>${esc(row.confirmed_direction || '-')}</td>
                 <td>${pendingText}</td>
                 <td><input type="number" class="form-control form-control-sm v2-lot-input" min="0.01" step="0.01" data-instance="${esc(row.instance_key || '')}" value="${esc(fmtNum(row.lot_size || 0.1, 2))}" title="Lot size"></td>
@@ -883,23 +1010,10 @@
 
     function renderAudit() {
         const q = els.auditFilter ? els.auditFilter.value : '';
-        const visibleRows = auditRows().filter(row => !isZeroPnlBreakEvenOperation(row));
-        const meaningfulRaw = visibleRows.filter(row => {
-            const status = String(row.status || '').toLowerCase();
-            const msg = String(row.message || '').toLowerCase();
-            return ['opened', 'closed', 'failed', 'partial'].some(x => status.includes(x) || msg.includes(x))
-                || msg.includes('reconcile')
-                || msg.includes('chop_guard')
-                || msg.includes('sl -> be')
-                || msg.includes('tp');
-        }).filter(r => {
-            if (textMatch(r, q)) return true;
-            if (!q || !isChopGuardRow(r)) return false;
-            return textMatch({
-                grouped_modes: rowMode(r),
-                reason: chopGuardReason(r)
-            }, q);
-        });
+        const meaningfulRaw = auditRows()
+            .filter(row => !isZeroPnlBreakEvenOperation(row))
+            .filter(isReadableTradeAuditRow)
+            .filter(r => textMatch(r, q));
         const meaningful = groupAuditRows(meaningfulRaw).slice(0, 1000);
         if (!els.auditBody) return;
         if (!meaningful.length) {
@@ -913,9 +1027,14 @@
             const groupedModes = row._audit_grouped && row.grouped_modes
                 ? `<div class="small text-info">${esc(row.grouped_modes)}</div>`
                 : '';
-            const modeLabel = `${esc(row.execution_mode || '-')}${modeDisabled ? '<div class="small text-warning">disabled now</div>' : ''}${groupedModes}`;
+            const exitMode = exitModeFromSourceTag(row);
+            const exitModeHtml = exitMode ? `<div class="small text-info">exit: ${esc(exitMode)}</div>` : '';
+            const lifecycleMode = lifecycleModeFromSourceTag(row);
+            const lifecycleHtml = lifecycleMode ? `<div class="small text-info">life: ${esc(lifecycleMode)}</div>` : '';
+            const modeLabel = `${esc(row.execution_mode || '-')}${exitModeHtml}${lifecycleHtml}${modeDisabled ? '<div class="small text-warning">disabled now</div>' : ''}${groupedModes}`;
             const shadow = row.shadow_outcome ? `<div class="small text-info">shadow: ${esc(row.shadow_outcome)}${row.shadow_reason ? ` / ${esc(row.shadow_reason)}` : ''}</div>` : '';
             const grouped = row._audit_grouped ? `<div class="small text-muted">grouped ${esc(row._audit_group_count || '')} guard rows</div>` : '';
+            const entryExitDetail = entryExitAuditDetail(row);
             return `<tr>
                 <td>${esc(row.status || row.trigger || '-')}<div class="small text-muted">${esc(fmtTs(row.event_ts || row.opened_at))}</div></td>
                 <td>${esc(row.terminal_family || '-')}</td>
@@ -926,7 +1045,7 @@
                 <td>${fmtNum(row.lot, 2)}</td>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td class="${pnlCls}">${fmtNum(row.realized_pnl, 2)}</td>
-                <td>${esc(row.message || row.close_reason || '-')}${grouped}${shadow}</td>
+                <td>${esc(row.message || row.close_reason || '-')}${entryExitDetail}${grouped}${shadow}</td>
             </tr>`;
         }).join('');
     }
@@ -940,7 +1059,7 @@
         if (els.mt4Count) els.mt4Count.textContent = String(mt4Rows.length);
         if (els.mt5Count) els.mt5Count.textContent = String(mt5Rows.length);
         if (els.openCount) els.openCount.textContent = String(openTrades().length);
-        if (els.auditCount) els.auditCount.textContent = String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).length);
+        if (els.auditCount) els.auditCount.textContent = String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).filter(isReadableTradeAuditRow).length);
         renderRiskSettings();
         renderDualGateSettings();
         renderDualGatePanel();
@@ -957,7 +1076,9 @@
         uiTimer = setInterval(() => {
             if (!state) return;
             renderDualGatePanel();
-            renderEntryExitPanel();
+            if (!els.entryExitBody || !els.entryExitBody.contains(document.activeElement)) {
+                renderEntryExitPanel();
+            }
             renderInstances();
         }, 1000);
     }
@@ -1109,21 +1230,86 @@
             });
         });
         els.entryExitBody.addEventListener('change', ev => {
-            const modeSelect = ev.target.closest('.v2-entry-exit-mode-select');
+            const modeCheck = ev.target.closest('.v2-entry-exit-mode-check');
+            const lifeCheck = ev.target.closest('.v2-entry-exit-life-check');
+            const modeToggle = ev.target.closest('.v2-mode-toggle');
+            const policyToggle = ev.target.closest('.v2-policy-toggle');
             const input = ev.target.closest('.v2-lot-input');
-            if (!input && !modeSelect) return;
-            if (modeSelect) {
-                const key = modeSelect.getAttribute('data-instance') || '';
+            if (!input && !modeCheck && !lifeCheck && !modeToggle && !policyToggle) return;
+            if (modeToggle || policyToggle) {
+                const el = modeToggle || policyToggle;
+                const key = el.getAttribute('data-instance') || '';
                 const row = allInstances().find(r => String(r.instance_key || '') === key);
                 if (!row) return;
-                const mode = String(modeSelect.value || '').trim();
-                modeSelect.disabled = true;
+                const policies = row.mode_advanced_v2_enabled
+                    ? Object.assign({ conservative: false, balanced: true, advanced: false }, row.advanced_v2_policies || {})
+                    : { conservative: false, balanced: false, advanced: false };
+                if (policyToggle) {
+                    policies[policyToggle.getAttribute('data-policy') || 'balanced'] = !!policyToggle.checked;
+                }
+                const anyPolicy = !!(policies.conservative || policies.balanced || policies.advanced);
+                const opts = {
+                    mode_advanced_enabled: !!row.mode_advanced_enabled,
+                    mode_normal_enabled: !!row.mode_normal_enabled,
+                    mode_sync_enabled: !!row.mode_sync_enabled,
+                    mode_advanced_v2_enabled: anyPolicy,
+                    advanced_v2_policies: policies
+                };
+                if (modeToggle) {
+                    const mode = modeToggle.getAttribute('data-mode') || '';
+                    if (mode === 'advanced') opts.mode_advanced_enabled = !!modeToggle.checked;
+                    if (mode === 'normal') opts.mode_normal_enabled = !!modeToggle.checked;
+                    if (mode === 'sync') opts.mode_sync_enabled = !!modeToggle.checked;
+                }
+                el.disabled = true;
+                updateInstanceSettings(row, opts).catch(err => {
+                    showError(err);
+                    el.disabled = false;
+                    renderEntryExitPanel();
+                });
+                return;
+            }
+            if (modeCheck) {
+                const key = modeCheck.getAttribute('data-instance') || '';
+                const row = allInstances().find(r => String(r.instance_key || '') === key);
+                if (!row) return;
+                const checks = Array.from(els.entryExitBody.querySelectorAll('.v2-entry-exit-mode-check'))
+                    .filter(x => String(x.getAttribute('data-instance') || '') === key);
+                let modes = checks.filter(x => x.checked).map(x => String(x.value || '').trim()).filter(Boolean);
+                if (!modes.length) {
+                    modeCheck.checked = true;
+                    modes = [String(modeCheck.value || 'after_blank').trim()];
+                }
+                checks.forEach(x => { x.disabled = true; });
                 updateInstanceSettings(row, {
-                    entry_exit_exit_mode: mode,
-                    entry_exit_exit_wait_for_blank: mode === 'after_blank'
+                    entry_exit_exit_modes: modes,
+                    entry_exit_exit_mode: modes[0],
+                    entry_exit_exit_wait_for_blank: modes.includes('after_blank')
                 }).catch(err => {
                     showError(err);
-                    modeSelect.disabled = false;
+                    checks.forEach(x => { x.disabled = false; });
+                    renderEntryExitPanel();
+                });
+                return;
+            }
+            if (lifeCheck) {
+                const key = lifeCheck.getAttribute('data-instance') || '';
+                const row = allInstances().find(r => String(r.instance_key || '') === key);
+                if (!row) return;
+                const checks = Array.from(els.entryExitBody.querySelectorAll('.v2-entry-exit-life-check'))
+                    .filter(x => String(x.getAttribute('data-instance') || '') === key);
+                let modes = checks.filter(x => x.checked).map(x => String(x.value || '').trim()).filter(Boolean);
+                if (!modes.length) {
+                    lifeCheck.checked = true;
+                    modes = [String(lifeCheck.value || 'coexist').trim()];
+                }
+                checks.forEach(x => { x.disabled = true; });
+                updateInstanceSettings(row, {
+                    entry_exit_lifecycle_modes: modes,
+                    entry_exit_lifecycle_mode: modes[0]
+                }).catch(err => {
+                    showError(err);
+                    checks.forEach(x => { x.disabled = false; });
                     renderEntryExitPanel();
                 });
                 return;

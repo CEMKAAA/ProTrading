@@ -32,6 +32,8 @@ input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for 
 input int    InpStartupProbeMaxBuffer = 8; // probe [0..N-1] on init when debug is enabled
 input bool   InpStartupRecentSignalDebug = true; // scan recent bars on init and print latest resolved signal
 input int    InpStartupRecentSignalLookbackBars = 30; // recent bars to scan for latest BUY/SELL debug snapshot
+input bool   InpPublishLastSignalState = false; // telemetry only: publish latest historical BUY/SELL without making it executable
+input bool   InpEmitOnlyOnDirectionChange = false; // State/line indicators: only emit when BUY/SELL direction changes
 input int    InpHeartbeatSeconds = 300; // registration keepalive only
 input double InpSignalAbsMin = 0.0000001;
 input bool   InpAllowBuy = true;
@@ -589,7 +591,9 @@ void _debug_recent_signal_snapshot()
    if(lookback > Bars)
       lookback = Bars;
 
-   for(int shift = 0; shift < lookback; shift++)
+   int fromShift = MathMax(0, InpSignalShift);
+   int toShift = MathMin(Bars - 1, fromShift + lookback - 1);
+   for(int shift = fromShift; shift <= toShift; shift++)
    {
       datetime barTime = iTime(NULL, 0, shift);
       if(barTime <= 0)
@@ -645,6 +649,72 @@ void _debug_recent_signal_snapshot()
 
    Print("MT4Bridge startup recent last signal: NONE within lookback=",
          IntegerToString(lookback));
+}
+
+bool _find_recent_raw_signal(int startShift, int lookback, int &direction, string &dirText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
+{
+   direction = 0;
+   dirText = "NONE";
+   signalValue = 0.0;
+   barTime = 0;
+   rawBuy = EMPTY_VALUE;
+   rawSell = EMPTY_VALUE;
+
+   if(lookback < 1)
+      return false;
+   if(lookback > Bars)
+      lookback = Bars;
+
+   int fromShift = MathMax(0, startShift);
+   int toShift = MathMin(Bars - 1, fromShift + lookback - 1);
+   for(int shift = fromShift; shift <= toShift; shift++)
+   {
+      datetime bt = iTime(NULL, 0, shift);
+      if(bt <= 0)
+         continue;
+
+      double buyVal = _icustom_value(InpBuyBufferIndex, shift);
+      double sellVal = _icustom_value(InpSellBufferIndex, shift);
+      int d = 0;
+      string txt = "NONE";
+      double val = 0.0;
+
+      if(InpSignalCompareMode == 1 || InpSignalCompareMode == 2)
+      {
+         d = _compare_signal_direction(buyVal, sellVal);
+         if(d == 0)
+            continue;
+         txt = _direction_to_text(d);
+         val = (d == 1) ? buyVal : sellVal;
+      }
+      else
+      {
+         bool buySignal = _is_signal_value(buyVal);
+         bool sellSignal = _is_signal_value(sellVal);
+         if(buySignal && sellSignal)
+            continue;
+         if(!buySignal && !sellSignal)
+            continue;
+         d = buySignal ? 1 : -1;
+         txt = _direction_to_text(d);
+         val = buySignal ? buyVal : sellVal;
+      }
+
+      if(InpInvertDirection)
+      {
+         d = -d;
+         txt = _direction_to_text(d);
+      }
+
+      direction = d;
+      dirText = txt;
+      signalValue = val;
+      barTime = bt;
+      rawBuy = buyVal;
+      rawSell = sellVal;
+      return true;
+   }
+   return false;
 }
 
 int _direction_from_text(string direction)
@@ -825,6 +895,9 @@ bool _read_resolved_signal(int barShift, int &direction, string &dirText, double
    signalValue = g_arrowResolvedValue;
    if(direction == 0)
       return false;
+   if(g_arrowResolvedBarTime <= 0)
+      return false;
+   barTime = g_arrowResolvedBarTime;
    return true;
 }
 
@@ -854,11 +927,23 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
    if(g_pendingDir != 0 && g_pendingStartedAt > 0 && nowTs > 0)
       pendingAge = (int)(nowTs - g_pendingStartedAt);
    int confirmSec = _effective_confirm_seconds();
+   int lastSignalDir = 0;
+   string lastSignalText = "";
+   double lastSignalValue = 0.0;
+   datetime lastSignalBar = 0;
+   double lastSignalRawBuy = EMPTY_VALUE;
+   double lastSignalRawSell = EMPTY_VALUE;
+   if(InpPublishLastSignalState)
+   {
+      int startShift = MathMax(0, InpSignalShift);
+      int lookback = MathMax(1, InpStartupRecentSignalLookbackBars);
+      _find_recent_raw_signal(startShift, lookback, lastSignalDir, lastSignalText, lastSignalValue, lastSignalBar, lastSignalRawBuy, lastSignalRawSell);
+   }
 
    string body =
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
-      "\"signal_hint\":\"" + _json_escape(dir) + "\","
+      "\"signal_hint\":\"" + _json_escape(dir) + "\"," 
       "\"resolved_signal\":\"" + _json_escape((dirInt != 0) ? _direction_to_text(dirInt) : confirmedText) + "\","
       "\"confirmed_direction\":\"" + _json_escape(confirmedText) + "\","
       "\"pending_direction\":\"" + _json_escape((g_pendingDir != 0) ? pendingText : "") + "\","
@@ -872,6 +957,12 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
       "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\","
       "\"event_attempt\":" + IntegerToString((eventAttempt < 1) ? 1 : eventAttempt) + ","
+      "\"last_signal_direction\":\"" + _json_escape(lastSignalText) + "\","
+      "\"last_signal_bar_time\":\"" + _json_escape(lastSignalBar > 0 ? TimeToString(lastSignalBar, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"last_signal_bar_unix\":" + IntegerToString((int)lastSignalBar) + ","
+      "\"last_signal_value\":" + DoubleToString(lastSignalValue, 8) + ","
+      "\"last_signal_raw_buy\":" + DoubleToString(lastSignalRawBuy, 8) + ","
+      "\"last_signal_raw_sell\":" + DoubleToString(lastSignalRawSell, 8) + ","
       "\"message\":\"" + _json_escape(msg) + "\","
       "\"bridge_token\":\"" + _json_escape(InpBridgeToken) + "\""
       "}";
@@ -947,6 +1038,10 @@ void _check_and_send()
       }
       if(g_pendingDir != 0)
          _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
+      // Starting in a blank state is still an initialized baseline. Otherwise
+      // the first later signal is incorrectly consumed as startup state.
+      if(!g_initializedState)
+         g_initializedState = true;
       return;
    }
 
@@ -975,10 +1070,13 @@ void _check_and_send()
       }
    }
 
-   if(direction == g_confirmedDir && g_pendingDir == 0)
+   if(InpEmitOnlyOnDirectionChange && direction == g_confirmedDir && g_pendingDir == 0)
       return;
 
-   if(g_pendingDir != direction)
+   if(direction == g_confirmedDir && barTime == g_lastConfirmedBar && g_pendingDir == 0)
+      return;
+
+   if(g_pendingDir != direction || g_pendingBar != barTime)
    {
       g_pendingDir = direction;
       g_pendingStartedAt = nowTs;
@@ -993,10 +1091,21 @@ void _check_and_send()
    if(confirmSec > 0 && nowTs > 0 && g_pendingStartedAt > 0 && (nowTs - g_pendingStartedAt) < confirmSec)
       return;
 
-   if(direction == g_confirmedDir)
+   if(InpEmitOnlyOnDirectionChange && direction == g_confirmedDir)
    {
       g_pendingDir = 0;
       g_pendingStartedAt = 0;
+      g_pendingBar = 0;
+      g_pendingSignalValue = 0.0;
+      return;
+   }
+
+   if(direction == g_confirmedDir && barTime == g_lastConfirmedBar)
+   {
+      g_pendingDir = 0;
+      g_pendingStartedAt = 0;
+      g_pendingBar = 0;
+      g_pendingSignalValue = 0.0;
       return;
    }
 
@@ -1056,6 +1165,12 @@ int OnInit()
    }
    // Try one immediate read/send at startup so current direction is visible without waiting for timer.
    _check_and_send();
+   if(!g_initializedState)
+   {
+      g_initializedState = true;
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 startup baseline confirmed=NONE no execution emitted.");
+   }
    return(INIT_SUCCEEDED);
 }
 
@@ -1078,7 +1193,7 @@ void OnTimer()
          nowResolvedTs = TimeLocal();
       if(nowResolvedTs > 0 && (g_lastResolvedStateAt <= 0 || (nowResolvedTs - g_lastResolvedStateAt) >= InpResolvedStateSeconds))
       {
-         string resolvedText = _direction_to_text(g_confirmedDir);
+         string resolvedText = "NONE";
          double stateValue = 0.0;
          datetime stateBar = iTime(NULL, 0, InpSignalShift);
          int rawDir = 0;

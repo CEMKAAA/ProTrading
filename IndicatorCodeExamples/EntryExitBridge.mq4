@@ -19,12 +19,13 @@ input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g.
 input int    InpSignalShift = 1;     // 0=current bar, 1=closed bar
 input int    InpSignalCompareMode = 0; // 0=buffer active, 1=BUY when buyBuffer < sellBuffer, 2=BUY when buyBuffer > sellBuffer
 input double InpSignalCompareMinDiff = 0.0;
+input bool   InpEntryRequireFreshSignal = true; // true=edge trigger: same direction on previous bar is state, not a new entry
 input bool   InpArrowStreakConfirmAfterBlank = true; // Arrow indicators: latest arrow becomes tradable only after next closed blank candle
 input int    InpArrowResolvedLookbackBars = 300;
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
 input int    InpConfirmSeconds = 0; // resolved direction must stay stable this long
 input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
-input bool   InpSendInitialConfirmedOnStart = true; // entry/exit bridge should act on the current resolved entry state
+input bool   InpSendInitialConfirmedOnStart = false; // startup should baseline the current entry state; new entries require a fresh signal
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
 input int    InpMaxPendingEvents = 200;
@@ -34,6 +35,7 @@ input bool   InpStartupProbeOnInit = true; // print initial buffer snapshot for 
 input int    InpStartupProbeMaxBuffer = 64; // probe [0..N-1] on init when debug is enabled
 input bool   InpStartupRecentSignalDebug = false; // scan recent bars on init and print latest resolved signal
 input int    InpStartupRecentSignalLookbackBars = 500; // recent bars to scan for latest BUY/SELL debug snapshot
+input bool   InpPublishLastSignalState = false; // telemetry only: publish latest historical entry BUY/SELL without executing it
 input int    InpStartupRecentSamplesPerBuffer = 8; // entry-exit scanner prints this many active samples per buffer
 input bool   InpStartupObjectScanOnInit = false;
 input int    InpStartupObjectLookbackBars = 500;
@@ -76,13 +78,14 @@ double   g_arrowBaseValue = 0.0;
 int      g_arrowResolvedDir = 0;
 datetime g_arrowResolvedBarTime = 0;
 double   g_arrowResolvedValue = 0.0;
-datetime g_lastBuyExitSentBar = 0;
-datetime g_lastSellExitSentBar = 0;
+datetime g_lastBuyExitSentBar[3];
+datetime g_lastSellExitSentBar[3];
 string   g_exitBaseDirection = "";
 datetime g_exitBaseBarTime = 0;
 double   g_exitBaseValue = 0.0;
 bool     g_exitWaitForBlankRuntime = true;
 int      g_exitModeRuntime = 2;
+int      g_exitModesMaskRuntime = 4;
 
 struct PendingBridgeEvent
 {
@@ -91,6 +94,8 @@ struct PendingBridgeEvent
    double signalValue;
    datetime signalBarTime;
    string eventId;
+   int exitModeCode;
+   int exitModesMask;
    int attempts;
    datetime lastAttemptAt;
 };
@@ -224,13 +229,18 @@ void _apply_runtime_response_config(string responseText)
 {
    bool nextExitWait = _json_bool_field(responseText, "entry_exit_exit_wait_for_blank", g_exitWaitForBlankRuntime);
    int nextExitMode = _normalize_exit_mode_code(_json_int_field(responseText, "entry_exit_exit_mode_code", g_exitModeRuntime), nextExitWait);
+   int nextExitModesMask = _json_int_field(responseText, "entry_exit_exit_modes_mask", g_exitModesMaskRuntime);
+   if(nextExitModesMask <= 0)
+      nextExitModesMask = (1 << nextExitMode);
    nextExitWait = (nextExitMode == 2);
-   if(nextExitMode != g_exitModeRuntime || nextExitWait != g_exitWaitForBlankRuntime)
+   if(nextExitMode != g_exitModeRuntime || nextExitWait != g_exitWaitForBlankRuntime || nextExitModesMask != g_exitModesMaskRuntime)
    {
       g_exitModeRuntime = nextExitMode;
+      g_exitModesMaskRuntime = nextExitModesMask;
       g_exitWaitForBlankRuntime = nextExitWait;
       if(InpDebugPrint)
          Print("MT4Bridge entry-exit runtime config updated exit_mode=", _exit_mode_text(g_exitModeRuntime),
+               " exit_modes_mask=", IntegerToString(g_exitModesMaskRuntime),
                " exit_wait_for_blank=", (g_exitWaitForBlankRuntime ? "true" : "false"));
    }
 }
@@ -271,14 +281,19 @@ string _build_endpoint(string baseUrl, string apiPath)
 
 string _build_event_id(string eventType, string direction, datetime signalBarTime)
 {
+   string exitModePart = "";
+   if(_trim(eventType) == "entry_exit_signal")
+      exitModePart = "|" + _exit_mode_text(g_exitModeRuntime);
+
    string seed = StringFormat(
-      "%s|%s|%s|%s|%s|%I64d",
+      "%s|%s|%s|%s|%s|%I64d%s",
       _trim(eventType),
       _trim(direction),
       Symbol(),
       _tf_to_string(Period()),
       InpIndicatorName,
-      (long)signalBarTime
+      (long)signalBarTime,
+      exitModePart
    );
    return seed;
 }
@@ -344,7 +359,7 @@ void _mark_send_success(string eventType, string direction, datetime signalBarTi
    }
 }
 
-void _queue_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId)
+void _queue_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId, int exitModeCode, int exitModesMask)
 {
    string eid = _trim(eventId);
    if(StringLen(eid) <= 0)
@@ -357,6 +372,8 @@ void _queue_bridge_event(string eventType, string direction, double signalValue,
       g_pendingEvents[existing].direction = _trim(direction);
       g_pendingEvents[existing].signalValue = signalValue;
       g_pendingEvents[existing].signalBarTime = signalBarTime;
+      g_pendingEvents[existing].exitModeCode = exitModeCode;
+      g_pendingEvents[existing].exitModesMask = exitModesMask;
       return;
    }
 
@@ -378,6 +395,8 @@ void _queue_bridge_event(string eventType, string direction, double signalValue,
    g_pendingEvents[n].signalValue = signalValue;
    g_pendingEvents[n].signalBarTime = signalBarTime;
    g_pendingEvents[n].eventId = eid;
+   g_pendingEvents[n].exitModeCode = exitModeCode;
+   g_pendingEvents[n].exitModesMask = exitModesMask;
    g_pendingEvents[n].attempts = 0;
    g_pendingEvents[n].lastAttemptAt = 0;
 }
@@ -401,7 +420,7 @@ bool _flush_pending_events()
       if(ev.attempts > 0 && ev.lastAttemptAt > 0 && nowTs > 0 && (nowTs - ev.lastAttemptAt) < retrySec)
          continue;
       int nextAttempt = ev.attempts + 1;
-      bool ok = _post_bridge_event(ev.eventType, ev.direction, ev.signalValue, ev.signalBarTime, ev.eventId, nextAttempt);
+      bool ok = _post_bridge_event(ev.eventType, ev.direction, ev.signalValue, ev.signalBarTime, ev.eventId, nextAttempt, ev.exitModeCode, ev.exitModesMask);
       if(ok)
       {
          _mark_send_success(ev.eventType, ev.direction, ev.signalBarTime);
@@ -418,15 +437,17 @@ bool _flush_pending_events()
 
 bool _send_or_queue_event(string eventType, string direction, double signalValue, datetime signalBarTime)
 {
+   int eventExitModeCode = g_exitModeRuntime;
+   int eventExitModesMask = g_exitModesMaskRuntime;
    string eid = _build_event_id(eventType, direction, signalBarTime);
-   bool ok = _post_bridge_event(eventType, direction, signalValue, signalBarTime, eid, 1);
+   bool ok = _post_bridge_event(eventType, direction, signalValue, signalBarTime, eid, 1, eventExitModeCode, eventExitModesMask);
    if(ok)
    {
       _mark_send_success(eventType, direction, signalBarTime);
       _flush_pending_events();
       return true;
    }
-   _queue_bridge_event(eventType, direction, signalValue, signalBarTime, eid);
+   _queue_bridge_event(eventType, direction, signalValue, signalBarTime, eid, eventExitModeCode, eventExitModesMask);
    _flush_pending_events();
    return false;
 }
@@ -756,6 +777,72 @@ void _debug_recent_signal_snapshot()
 
    Print("MT4Bridge startup recent last signal: NONE within lookback=",
          IntegerToString(lookback));
+}
+
+bool _find_recent_raw_entry_signal(int startShift, int lookback, int &direction, string &dirText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
+{
+   direction = 0;
+   dirText = "NONE";
+   signalValue = 0.0;
+   barTime = 0;
+   rawBuy = EMPTY_VALUE;
+   rawSell = EMPTY_VALUE;
+
+   if(lookback < 1)
+      return false;
+   if(lookback > Bars)
+      lookback = Bars;
+
+   int fromShift = MathMax(0, startShift);
+   int toShift = MathMin(Bars - 1, fromShift + lookback - 1);
+   for(int shift = fromShift; shift <= toShift; shift++)
+   {
+      datetime bt = iTime(NULL, 0, shift);
+      if(bt <= 0)
+         continue;
+
+      double buyVal = _icustom_value(InpBuyBufferIndex, shift);
+      double sellVal = _icustom_value(InpSellBufferIndex, shift);
+      int d = 0;
+      string txt = "NONE";
+      double val = 0.0;
+
+      if(InpSignalCompareMode == 1 || InpSignalCompareMode == 2)
+      {
+         d = _compare_signal_direction(buyVal, sellVal);
+         if(d == 0)
+            continue;
+         txt = _direction_to_text(d);
+         val = (d == 1) ? buyVal : sellVal;
+      }
+      else
+      {
+         bool buySignal = _is_signal_value(buyVal);
+         bool sellSignal = _is_signal_value(sellVal);
+         if(buySignal && sellSignal)
+            continue;
+         if(!buySignal && !sellSignal)
+            continue;
+         d = buySignal ? 1 : -1;
+         txt = _direction_to_text(d);
+         val = buySignal ? buyVal : sellVal;
+      }
+
+      if(InpInvertDirection)
+      {
+         d = -d;
+         txt = _direction_to_text(d);
+      }
+
+      direction = d;
+      dirText = txt;
+      signalValue = val;
+      barTime = bt;
+      rawBuy = buyVal;
+      rawSell = sellVal;
+      return true;
+   }
+   return false;
 }
 
 void _debug_recent_buffer_matrix()
@@ -1097,10 +1184,58 @@ bool _read_resolved_signal(int barShift, int &direction, string &dirText, double
    signalValue = g_arrowResolvedValue;
    if(direction == 0)
       return false;
+   if(g_arrowResolvedBarTime <= 0)
+      return false;
+   barTime = g_arrowResolvedBarTime;
    return true;
 }
 
-bool _post_bridge_event(string eventType, string direction, double signalValue, datetime signalBarTime, string eventId = "", int eventAttempt = 1)
+bool _is_fresh_entry_signal(int barShift, int direction)
+{
+   if(!InpEntryRequireFreshSignal)
+      return true;
+   if(direction == 0)
+      return false;
+   if(InpArrowStreakConfirmAfterBlank)
+      return true;
+
+   int prevShift = barShift + 1;
+   if(prevShift < 1)
+      prevShift = 1;
+   if(prevShift >= Bars)
+      return true;
+
+   int prevDir = 0;
+   string prevText = "NONE";
+   double prevValue = 0.0;
+   datetime prevBar = 0;
+   double prevBuy = EMPTY_VALUE;
+   double prevSell = EMPTY_VALUE;
+   bool prevHas = _read_raw_signal_at(prevShift, prevDir, prevText, prevValue, prevBar, prevBuy, prevSell);
+   if(prevText == "AMBIGUOUS")
+      return false;
+   if(prevHas && prevDir == direction)
+   {
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 entry state ignored as non-fresh direction=", _direction_to_text(direction),
+               " bar_shift=", IntegerToString(barShift),
+               " prev_shift=", IntegerToString(prevShift),
+               " prev_bar=", TimeToString(prevBar, TIME_DATE|TIME_SECONDS));
+      return false;
+   }
+   return true;
+}
+
+bool _post_bridge_event(
+   string eventType,
+   string direction,
+   double signalValue,
+   datetime signalBarTime,
+   string eventId = "",
+   int eventAttempt = 1,
+   int exitModeCodeOverride = -1,
+   int exitModesMaskOverride = 0
+)
 {
    string symbol = Symbol();
    string timeframe = _tf_to_string(Period());
@@ -1126,11 +1261,34 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
    if(g_pendingDir != 0 && g_pendingStartedAt > 0 && nowTs > 0)
       pendingAge = (int)(nowTs - g_pendingStartedAt);
    int confirmSec = _effective_confirm_seconds();
+   int lastSignalDir = 0;
+   string lastSignalText = "";
+   double lastSignalValue = 0.0;
+   datetime lastSignalBar = 0;
+   double lastSignalRawBuy = EMPTY_VALUE;
+   double lastSignalRawSell = EMPTY_VALUE;
+   if(InpPublishLastSignalState)
+   {
+      int startShift = MathMax(0, InpSignalShift);
+      int lookback = MathMax(1, InpStartupRecentSignalLookbackBars);
+      _find_recent_raw_entry_signal(startShift, lookback, lastSignalDir, lastSignalText, lastSignalValue, lastSignalBar, lastSignalRawBuy, lastSignalRawSell);
+   }
    string exitDirectionPayload = "";
    if(dir == "BUY_EXIT")
       exitDirectionPayload = "BUY";
    else if(dir == "SELL_EXIT")
       exitDirectionPayload = "SELL";
+
+   int payloadExitModeCode = g_exitModeRuntime;
+   int payloadExitModesMask = g_exitModesMaskRuntime;
+   if(eventKind == "entry_exit_signal")
+   {
+      payloadExitModeCode = _normalize_exit_mode_code(exitModeCodeOverride, g_exitWaitForBlankRuntime);
+      payloadExitModesMask = exitModesMaskOverride;
+      if(payloadExitModesMask <= 0)
+         payloadExitModesMask = (1 << payloadExitModeCode);
+   }
+   bool payloadExitWaitForBlank = (payloadExitModeCode == 2);
 
    string entryResolvedText = (dirInt != 0) ? _direction_to_text(dirInt) : confirmedText;
    string exitResolvedText = exitDirectionPayload;
@@ -1166,9 +1324,10 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
       "\"signal_hint\":\"" + _json_escape(dir) + "\"," 
       "\"entry_exit_enabled\":" + (InpEnableExitSignals ? "true" : "false") + ","
-      "\"entry_exit_exit_wait_for_blank\":" + (g_exitWaitForBlankRuntime ? "true" : "false") + ","
-      "\"entry_exit_exit_mode\":\"" + _json_escape(_exit_mode_text(g_exitModeRuntime)) + "\","
-      "\"entry_exit_exit_mode_code\":" + IntegerToString(g_exitModeRuntime) + ","
+      "\"entry_exit_exit_wait_for_blank\":" + (payloadExitWaitForBlank ? "true" : "false") + ","
+      "\"entry_exit_exit_mode\":\"" + _json_escape(_exit_mode_text(payloadExitModeCode)) + "\","
+      "\"entry_exit_exit_mode_code\":" + IntegerToString(payloadExitModeCode) + ","
+      "\"entry_exit_exit_modes_mask\":" + IntegerToString(payloadExitModesMask) + ","
       "\"entry_resolved_signal\":\"" + _json_escape(entryResolvedText) + "\","
       "\"exit_direction\":\"" + _json_escape(exitDirectionPayload) + "\","
       "\"exit_resolved_signal\":\"" + _json_escape(exitResolvedText) + "\","
@@ -1190,6 +1349,12 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
       "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\","
       "\"event_attempt\":" + IntegerToString((eventAttempt < 1) ? 1 : eventAttempt) + ","
+      "\"last_signal_direction\":\"" + _json_escape(lastSignalText) + "\","
+      "\"last_signal_bar_time\":\"" + _json_escape(lastSignalBar > 0 ? TimeToString(lastSignalBar, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"last_signal_bar_unix\":" + IntegerToString((int)lastSignalBar) + ","
+      "\"last_signal_value\":" + DoubleToString(lastSignalValue, 8) + ","
+      "\"last_signal_raw_buy\":" + DoubleToString(lastSignalRawBuy, 8) + ","
+      "\"last_signal_raw_sell\":" + DoubleToString(lastSignalRawSell, 8) + ","
       "\"message\":\"" + _json_escape(msg) + "\","
       "\"bridge_token\":\"" + _json_escape(InpBridgeToken) + "\""
       "}";
@@ -1320,6 +1485,12 @@ void _debug_last_two_exit_signals(int lookback)
 
 bool _find_latest_exit_signal(string &exitDirection, double &signalValue, datetime &barTime)
 {
+   return _find_latest_exit_signal_for_mode(g_exitModeRuntime, exitDirection, signalValue, barTime);
+}
+
+bool _find_latest_exit_signal_for_mode(int modeCode, string &exitDirection, double &signalValue, datetime &barTime)
+{
+   int activeMode = _normalize_exit_mode_code(modeCode, InpExitStreakConfirmAfterBlank);
    int lookback = InpExitResolvedLookbackBars;
    if(lookback < 1)
       lookback = 300;
@@ -1327,7 +1498,7 @@ bool _find_latest_exit_signal(string &exitDirection, double &signalValue, dateti
       lookback = Bars;
    _debug_last_two_exit_signals(lookback);
 
-   if(g_exitModeRuntime == 2)
+   if(activeMode == 2)
    {
       string activeDir = "";
       double activeValue = 0.0;
@@ -1380,7 +1551,7 @@ bool _find_latest_exit_signal(string &exitDirection, double &signalValue, dateti
       return false;
    }
 
-   int fromShift = (g_exitModeRuntime == 0) ? 0 : MathMax(1, InpExitSignalShift);
+   int fromShift = (activeMode == 0) ? 0 : MathMax(1, InpExitSignalShift);
    for(int shift = fromShift; shift < lookback; shift++)
    {
       double rawBuyExit = EMPTY_VALUE;
@@ -1396,29 +1567,38 @@ void _check_exit_and_send()
    if(!InpEnableExitSignals)
       return;
 
-   string exitDirection = "";
-   double signalValue = 0.0;
-   datetime barTime = 0;
-   if(!_find_latest_exit_signal(exitDirection, signalValue, barTime))
-      return;
-
-   if(exitDirection == "BUY")
+   for(int modeCode = 0; modeCode <= 2; modeCode++)
    {
-      if(g_lastBuyExitSentBar == barTime)
-         return;
-      if(_send_or_queue_event("entry_exit_signal", "BUY_EXIT", signalValue, barTime))
-         g_lastBuyExitSentBar = barTime;
-      return;
-   }
+      if((g_exitModesMaskRuntime & (1 << modeCode)) == 0)
+         continue;
 
-   if(exitDirection == "SELL")
-   {
-      if(g_lastSellExitSentBar == barTime)
-         return;
-      if(_send_or_queue_event("entry_exit_signal", "SELL_EXIT", signalValue, barTime))
-         g_lastSellExitSentBar = barTime;
-      return;
+      string exitDirection = "";
+      double signalValue = 0.0;
+      datetime barTime = 0;
+      if(!_find_latest_exit_signal_for_mode(modeCode, exitDirection, signalValue, barTime))
+         continue;
+
+      g_exitModeRuntime = modeCode;
+      g_exitWaitForBlankRuntime = (modeCode == 2);
+      if(exitDirection == "BUY")
+      {
+         if(g_lastBuyExitSentBar[modeCode] == barTime)
+            continue;
+         if(_send_or_queue_event("entry_exit_signal", "BUY_EXIT", signalValue, barTime))
+            g_lastBuyExitSentBar[modeCode] = barTime;
+         continue;
+      }
+
+      if(exitDirection == "SELL")
+      {
+         if(g_lastSellExitSentBar[modeCode] == barTime)
+            continue;
+         if(_send_or_queue_event("entry_exit_signal", "SELL_EXIT", signalValue, barTime))
+            g_lastSellExitSentBar[modeCode] = barTime;
+         continue;
+      }
    }
+   g_exitWaitForBlankRuntime = (g_exitModeRuntime == 2);
 }
 
 void _check_and_send()
@@ -1439,8 +1619,16 @@ void _check_and_send()
       }
       if(g_pendingDir != 0)
          _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
+      // If the bridge starts during a blank/no-entry state, the next real
+      // signal must be tradable. Without this, the first later signal is
+      // incorrectly consumed as a startup baseline.
+      if(!g_initializedState)
+         g_initializedState = true;
       return;
    }
+
+   if(!_is_fresh_entry_signal(InpSignalShift, direction))
+      return;
 
    datetime nowTs = TimeCurrent();
    if(nowTs <= 0)
@@ -1467,10 +1655,10 @@ void _check_and_send()
       }
    }
 
-   if(direction == g_confirmedDir && g_pendingDir == 0)
+   if(direction == g_confirmedDir && barTime == g_lastConfirmedBar && g_pendingDir == 0)
       return;
 
-   if(g_pendingDir != direction)
+   if(g_pendingDir != direction || g_pendingBar != barTime)
    {
       g_pendingDir = direction;
       g_pendingStartedAt = nowTs;
@@ -1479,13 +1667,14 @@ void _check_and_send()
       g_lastFailedSendAt = 0;
       if(InpDebugPrint)
          Print("MT4BridgeV2 pending started direction=", dirText, " confirm_sec=", IntegerToString(confirmSec));
-      return;
+      if(confirmSec > 0)
+         return;
    }
 
    if(confirmSec > 0 && nowTs > 0 && g_pendingStartedAt > 0 && (nowTs - g_pendingStartedAt) < confirmSec)
       return;
 
-   if(direction == g_confirmedDir)
+   if(direction == g_confirmedDir && barTime == g_lastConfirmedBar)
    {
       g_pendingDir = 0;
       g_pendingStartedAt = 0;
@@ -1515,6 +1704,7 @@ int OnInit()
    if(!_parse_iCustom_params())
       return(INIT_PARAMETERS_INCORRECT);
    g_exitModeRuntime = _normalize_exit_mode_code(InpExitSignalMode, InpExitStreakConfirmAfterBlank);
+   g_exitModesMaskRuntime = (1 << g_exitModeRuntime);
    g_exitWaitForBlankRuntime = (g_exitModeRuntime == 2);
 
    string endpointPrimary = _build_endpoint(InpApiBaseUrl, InpApiPath);
@@ -1545,19 +1735,25 @@ int OnInit()
    _debug_recent_objects();
    if(!InpSendInitialExitOnStart)
    {
-      string exitDirection = "";
-      double exitValue = 0.0;
-      datetime exitBar = 0;
-      if(_find_latest_exit_signal(exitDirection, exitValue, exitBar))
+      for(int modeCode = 0; modeCode <= 2; modeCode++)
       {
-         if(exitDirection == "BUY")
-            g_lastBuyExitSentBar = exitBar;
-         else if(exitDirection == "SELL")
-            g_lastSellExitSentBar = exitBar;
-         if(InpDebugPrint)
-            Print("MT4Bridge entry-exit startup baseline exit=", exitDirection,
-                  " bar=", TimeToString(exitBar, TIME_DATE|TIME_SECONDS),
-                  " no close emitted.");
+         if((g_exitModesMaskRuntime & (1 << modeCode)) == 0)
+            continue;
+         string exitDirection = "";
+         double exitValue = 0.0;
+         datetime exitBar = 0;
+         if(_find_latest_exit_signal_for_mode(modeCode, exitDirection, exitValue, exitBar))
+         {
+            if(exitDirection == "BUY")
+               g_lastBuyExitSentBar[modeCode] = exitBar;
+            else if(exitDirection == "SELL")
+               g_lastSellExitSentBar[modeCode] = exitBar;
+            if(InpDebugPrint)
+               Print("MT4Bridge entry-exit startup baseline exit=", exitDirection,
+                     " mode=", _exit_mode_text(modeCode),
+                     " bar=", TimeToString(exitBar, TIME_DATE|TIME_SECONDS),
+                     " no close emitted.");
+         }
       }
    }
    if(InpSendRegistrationOnInit)

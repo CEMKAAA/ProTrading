@@ -678,6 +678,12 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "resolved_signal_bar_unix",
             "resolved_raw_buy",
             "resolved_raw_sell",
+            "last_signal_direction",
+            "last_signal_bar_time",
+            "last_signal_bar_unix",
+            "last_signal_value",
+            "last_signal_raw_buy",
+            "last_signal_raw_sell",
             "secondary_enabled",
             "secondary_indicator",
             "secondary_signal",
@@ -805,6 +811,12 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "resolved_signal_bar_unix",
             "resolved_raw_buy",
             "resolved_raw_sell",
+            "last_signal_direction",
+            "last_signal_bar_time",
+            "last_signal_bar_unix",
+            "last_signal_value",
+            "last_signal_raw_buy",
+            "last_signal_raw_sell",
             "secondary_enabled",
             "secondary_indicator",
             "secondary_signal",
@@ -1025,6 +1037,21 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             if "entry_exit_exit_mode" in p
             else (p.get("exit_mode") if "exit_mode" in p else None)
         )
+        entry_exit_exit_modes = (
+            p.get("entry_exit_exit_modes")
+            if "entry_exit_exit_modes" in p
+            else (p.get("exit_modes") if "exit_modes" in p else None)
+        )
+        entry_exit_lifecycle_mode = (
+            p.get("entry_exit_lifecycle_mode")
+            if "entry_exit_lifecycle_mode" in p
+            else (p.get("lifecycle_mode") if "lifecycle_mode" in p else None)
+        )
+        entry_exit_lifecycle_modes = (
+            p.get("entry_exit_lifecycle_modes")
+            if "entry_exit_lifecycle_modes" in p
+            else (p.get("lifecycle_modes") if "lifecycle_modes" in p else None)
+        )
         sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
         sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
@@ -1084,6 +1111,9 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             signal_confirm_sec=signal_confirm_sec_val,
             entry_exit_exit_wait_for_blank=(bool(entry_exit_exit_wait_for_blank) if entry_exit_exit_wait_for_blank is not None else None),
             entry_exit_exit_mode=(str(entry_exit_exit_mode) if entry_exit_exit_mode is not None else None),
+            entry_exit_exit_modes=([str(x) for x in entry_exit_exit_modes] if isinstance(entry_exit_exit_modes, list) else None),
+            entry_exit_lifecycle_mode=(str(entry_exit_lifecycle_mode) if entry_exit_lifecycle_mode is not None else None),
+            entry_exit_lifecycle_modes=([str(x) for x in entry_exit_lifecycle_modes] if isinstance(entry_exit_lifecycle_modes, list) else None),
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),

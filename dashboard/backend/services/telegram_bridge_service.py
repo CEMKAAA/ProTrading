@@ -163,6 +163,7 @@ class TelegramBridgeService:
             "forexcyper",
             "supplydemand",
             "entryexit",
+            "verypromising",
         }
     )
     _MT4_EXEC_DEFAULT_ENABLED_PROFILES: frozenset[str] = frozenset(
@@ -186,6 +187,7 @@ class TelegramBridgeService:
             "forexcyper",
             "supplydemand",
             "entryexit",
+            "verypromising",
         }
     )
     _MT4_EXEC_INDICATOR_PROFILE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
@@ -208,6 +210,7 @@ class TelegramBridgeService:
         ("fxnuke", ("fxnuke",)),
         ("forexcyper", ("forexcyper", "forex cyper", "cyper")),
         ("entryexit", ("the royal entry", "royal entry", "vw first only")),
+        ("verypromising", ("verypromising", "very promising", "q-trend", "q trend")),
     )
 
     @staticmethod
@@ -2566,6 +2569,8 @@ class TelegramBridgeService:
             "execution_mode": str(extra.get("execution_mode") or "").strip().lower() or "advanced",
             "max_profit": _to_float_or_none(extra.get("max_profit")),
             "max_loss": _to_float_or_none(extra.get("max_loss")),
+            "initial_stop_loss": _to_float_or_none(row.stop_loss),
+            "stop_loss": _to_float_or_none(row.stop_loss),
             "trace_id": str(extra.get("trace_id") or "").strip(),
         }
 
@@ -2657,17 +2662,25 @@ class TelegramBridgeService:
                 open_tickets.add(int(t))
 
         closed_logged = 0
+        skipped_missing_history = 0
         open_snapshot_empty = len(open_tickets) <= 0
         for ticket, row in unresolved.items():
             if int(ticket) in open_tickets:
                 continue
-            if bool(open_snapshot_empty):
+            profile = str((row or {}).get("profile") or "").strip().lower()
+            source_tag = str((row or {}).get("source_tag") or "").strip().lower()
+            requires_close_history = (
+                profile == "entryexit"
+                and ("life_exclusive" in source_tag or "exclusive" in source_tag)
+            )
+            if bool(open_snapshot_empty) or bool(requires_close_history):
                 stats = self._resolve_position_realized_stats(
                     svc=svc,
                     ticket=int(ticket),
                     symbol=str((row or {}).get("symbol") or "").strip().upper(),
                 )
                 if int(_to_float_or_none((stats or {}).get("close_count")) or 0) <= 0:
+                    skipped_missing_history += 1
                     continue
             self._append_closed_execution_log_from_row(
                 row=dict(row),
@@ -2677,6 +2690,13 @@ class TelegramBridgeService:
             closed_logged += 1
         if closed_logged > 0:
             logger.info("telegram_execution_reconcile_closed_logged=%d unresolved=%d", int(closed_logged), int(len(unresolved)))
+        if skipped_missing_history > 0:
+            logger.info(
+                "telegram_execution_reconcile_skipped_missing_close_history=%d unresolved=%d open_tickets=%d",
+                int(skipped_missing_history),
+                int(len(unresolved)),
+                int(len(open_tickets)),
+            )
 
     def get_mt4_indicator_bot_monitor(
         self,
@@ -4261,6 +4281,10 @@ class TelegramBridgeService:
             "entry-exit": "entryexit",
             "royal_entry": "entryexit",
             "royal-entry": "entryexit",
+            "very_promising": "verypromising",
+            "very-promising": "verypromising",
+            "q_trend": "verypromising",
+            "q-trend": "verypromising",
         }
         p = str(aliases.get(p, p))
         if p not in TelegramBridgeService._MT4_EXEC_KNOWN_PROFILES:
@@ -4871,7 +4895,6 @@ class TelegramBridgeService:
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    @classmethod
     def _normalize_entry_exit_exit_mode(cls, value: Any, fallback: str = "after_blank") -> str:
         raw = str(value if value is not None else "").strip().lower().replace("-", "_").replace(" ", "_")
         aliases = {
@@ -4898,6 +4921,8 @@ class TelegramBridgeService:
             return "on_candle_close"
         if raw in {"1", "true", "yes", "on"}:
             return "after_blank"
+        if fallback == "":
+            return str(aliases.get(raw, ""))
         return str(aliases.get(raw, fallback if fallback in {"instant", "on_candle_close", "after_blank"} else "after_blank"))
 
     @classmethod
@@ -4908,6 +4933,80 @@ class TelegramBridgeService:
         if m == "on_candle_close":
             return 1
         return 2
+
+    @classmethod
+    def _entry_exit_exit_modes_mask(cls, modes: Any) -> int:
+        mask = 0
+        for mode in cls._normalize_entry_exit_exit_modes(modes):
+            mask |= 1 << int(cls._entry_exit_exit_mode_code(mode))
+        return int(mask or (1 << 2))
+
+    @classmethod
+    def _normalize_entry_exit_exit_modes(cls, value: Any, fallback: Optional[List[str]] = None) -> List[str]:
+        raw_items: List[Any] = []
+        if isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        elif value is not None and str(value).strip():
+            raw_items = re.split(r"[,;|]+", str(value))
+        elif fallback:
+            raw_items = list(fallback)
+        out: List[str] = []
+        for item in raw_items:
+            mode = cls._normalize_entry_exit_exit_mode(item, "")
+            if mode in {"instant", "on_candle_close", "after_blank"} and mode not in out:
+                out.append(str(mode))
+        if not out:
+            out = ["after_blank"]
+        return out
+
+    @classmethod
+    def _entry_exit_exit_mode_suffix(cls, mode: Any) -> str:
+        return "exit_" + cls._normalize_entry_exit_exit_mode(mode)
+
+    @classmethod
+    def _normalize_entry_exit_lifecycle_mode(cls, value: Any, fallback: str = "coexist") -> str:
+        raw = str(value if value is not None else "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "coexist": "coexist",
+            "parallel": "coexist",
+            "hedge": "coexist",
+            "normal": "coexist",
+            "current": "coexist",
+            "exclusive": "exclusive_until_stop",
+            "exclusive_until_stop": "exclusive_until_stop",
+            "single": "exclusive_until_stop",
+            "single_active": "exclusive_until_stop",
+            "one_trade": "exclusive_until_stop",
+            "one_trade_until_stop": "exclusive_until_stop",
+            "lock_until_stop": "exclusive_until_stop",
+            "production": "exclusive_until_stop",
+        }
+        if fallback == "":
+            return str(aliases.get(raw, ""))
+        return str(aliases.get(raw, fallback if fallback in {"coexist", "exclusive_until_stop"} else "coexist"))
+
+    @classmethod
+    def _normalize_entry_exit_lifecycle_modes(cls, value: Any, fallback: Optional[List[str]] = None) -> List[str]:
+        raw_items: List[Any] = []
+        if isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        elif value is not None and str(value).strip():
+            raw_items = re.split(r"[,;|]+", str(value))
+        elif fallback:
+            raw_items = list(fallback)
+        out: List[str] = []
+        for item in raw_items:
+            mode = cls._normalize_entry_exit_lifecycle_mode(item, "")
+            if mode in {"coexist", "exclusive_until_stop"} and mode not in out:
+                out.append(str(mode))
+        if not out:
+            out = ["coexist"]
+        return out
+
+    @classmethod
+    def _entry_exit_lifecycle_mode_suffix(cls, mode: Any) -> str:
+        m = cls._normalize_entry_exit_lifecycle_mode(mode)
+        return "life_exclusive" if m == "exclusive_until_stop" else ""
 
     @classmethod
     def _indicator_bridge_instance_entry_exit_overrides(cls, family: Any) -> Dict[str, Dict[str, Any]]:
@@ -4931,9 +5030,15 @@ class TelegramBridgeService:
                 cfg.get("exit_mode"),
                 "after_blank" if bool(cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
             )
+            modes = cls._normalize_entry_exit_exit_modes(cfg.get("exit_modes"), [mode])
+            lifecycle_mode = cls._normalize_entry_exit_lifecycle_mode(cfg.get("lifecycle_mode"), "coexist")
+            lifecycle_modes = cls._normalize_entry_exit_lifecycle_modes(cfg.get("lifecycle_modes"), [lifecycle_mode])
             out[item] = {
-                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_wait_for_blank": bool("after_blank" in modes),
                 "exit_mode": str(mode),
+                "exit_modes": list(modes),
+                "lifecycle_mode": str(lifecycle_mode),
+                "lifecycle_modes": list(lifecycle_modes),
             }
         return out
 
@@ -4949,9 +5054,15 @@ class TelegramBridgeService:
                 cfg.get("exit_mode"),
                 "after_blank" if bool(cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
             )
+            modes = cls._normalize_entry_exit_exit_modes(cfg.get("exit_modes"), [mode])
+            lifecycle_mode = cls._normalize_entry_exit_lifecycle_mode(cfg.get("lifecycle_mode"), "coexist")
+            lifecycle_modes = cls._normalize_entry_exit_lifecycle_modes(cfg.get("lifecycle_modes"), [lifecycle_mode])
             cleaned[item] = {
-                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_wait_for_blank": bool("after_blank" in modes),
                 "exit_mode": str(mode),
+                "exit_modes": list(modes),
+                "lifecycle_mode": str(lifecycle_mode),
+                "lifecycle_modes": list(lifecycle_modes),
             }
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
@@ -5082,7 +5193,13 @@ class TelegramBridgeService:
             entry_exit_cfg.get("exit_mode"),
             "after_blank" if bool(entry_exit_cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
         )
-        entry_exit_exit_wait_for_blank = bool(entry_exit_exit_mode == "after_blank")
+        entry_exit_exit_modes = self._normalize_entry_exit_exit_modes(entry_exit_cfg.get("exit_modes"), [entry_exit_exit_mode])
+        entry_exit_exit_wait_for_blank = bool("after_blank" in entry_exit_exit_modes)
+        entry_exit_lifecycle_mode = self._normalize_entry_exit_lifecycle_mode(entry_exit_cfg.get("lifecycle_mode"), "coexist")
+        entry_exit_lifecycle_modes = self._normalize_entry_exit_lifecycle_modes(
+            entry_exit_cfg.get("lifecycle_modes"),
+            [entry_exit_lifecycle_mode],
+        )
         sync_overrides = self._indicator_bridge_instance_sync_overrides(terminal_family)
         sync_cfg = dict(sync_overrides.get(instance_key_l) or {})
         sync_direction_tf = self._normalize_tf_token(sync_cfg.get("direction_tf"), "M5")
@@ -5124,10 +5241,22 @@ class TelegramBridgeService:
             "entry_exit_exit_wait_for_blank": bool(entry_exit_exit_wait_for_blank),
             "entry_exit_exit_mode": str(entry_exit_exit_mode),
             "entry_exit_exit_mode_code": int(self._entry_exit_exit_mode_code(entry_exit_exit_mode)),
+            "entry_exit_exit_modes": list(entry_exit_exit_modes),
+            "entry_exit_exit_modes_csv": ",".join(str(x) for x in entry_exit_exit_modes),
+            "entry_exit_exit_modes_mask": int(self._entry_exit_exit_modes_mask(entry_exit_exit_modes)),
+            "entry_exit_lifecycle_mode": str(entry_exit_lifecycle_mode),
+            "entry_exit_lifecycle_modes": list(entry_exit_lifecycle_modes),
+            "entry_exit_lifecycle_modes_csv": ",".join(str(x) for x in entry_exit_lifecycle_modes),
             "entry_exit": {
                 "exit_wait_for_blank": bool(entry_exit_exit_wait_for_blank),
                 "exit_mode": str(entry_exit_exit_mode),
                 "exit_mode_code": int(self._entry_exit_exit_mode_code(entry_exit_exit_mode)),
+                "exit_modes": list(entry_exit_exit_modes),
+                "exit_modes_csv": ",".join(str(x) for x in entry_exit_exit_modes),
+                "exit_modes_mask": int(self._entry_exit_exit_modes_mask(entry_exit_exit_modes)),
+                "lifecycle_mode": str(entry_exit_lifecycle_mode),
+                "lifecycle_modes": list(entry_exit_lifecycle_modes),
+                "lifecycle_modes_csv": ",".join(str(x) for x in entry_exit_lifecycle_modes),
             },
             "sync": {
                 "direction_tf": str(sync_direction_tf),
@@ -5274,6 +5403,8 @@ class TelegramBridgeService:
             "bridge_version": str(p.get("bridge_version") or "").strip().lower(),
             "resolved_signal": str(p.get("resolved_signal") or "").strip().upper(),
             "confirmed_direction": str(p.get("confirmed_direction") or "").strip().upper(),
+            "entry_state_signal": str(p.get("entry_resolved_signal") or p.get("resolved_signal") or p.get("confirmed_direction") or "").strip().upper(),
+            "entry_state_event_type": str(bridge_event_type),
             "pending_direction": str(p.get("pending_direction") or "").strip().upper(),
             "pending_age_sec": _to_float_or_none(p.get("pending_age_sec")),
             "confirm_seconds": _to_float_or_none(p.get("confirm_seconds")),
@@ -5282,6 +5413,12 @@ class TelegramBridgeService:
             "resolved_signal_bar_unix": int(_to_float_or_none(p.get("resolved_signal_bar_unix")) or 0),
             "resolved_raw_buy": _to_float_or_none(p.get("resolved_raw_buy")),
             "resolved_raw_sell": _to_float_or_none(p.get("resolved_raw_sell")),
+            "last_signal_direction": str(p.get("last_signal_direction") or "").strip().upper(),
+            "last_signal_bar_time": str(p.get("last_signal_bar_time") or "").strip(),
+            "last_signal_bar_unix": int(_to_float_or_none(p.get("last_signal_bar_unix")) or 0),
+            "last_signal_value": _to_float_or_none(p.get("last_signal_value")),
+            "last_signal_raw_buy": _to_float_or_none(p.get("last_signal_raw_buy")),
+            "last_signal_raw_sell": _to_float_or_none(p.get("last_signal_raw_sell")),
             "entry_exit_enabled": bool(
                 self._truthy_bridge_value(p.get("entry_exit_enabled"), False)
                 or has_buy_exit_buffer
@@ -5289,6 +5426,7 @@ class TelegramBridgeService:
                 or str(profile).strip().lower() == "entryexit"
             ),
             "entry_resolved_signal": str(p.get("entry_resolved_signal") or p.get("resolved_signal") or "").strip().upper(),
+            "entry_signal_value": _to_float_or_none(p.get("exit_signal_value")) if bridge_event_type == "entry_exit_signal" else _to_float_or_none(p.get("signal_value")),
             "exit_direction": str(p.get("exit_direction") or "").strip().upper(),
             "exit_resolved_signal": str(exit_resolved_signal),
             "exit_resolved_kind": str(exit_resolved_kind),
@@ -5299,6 +5437,12 @@ class TelegramBridgeService:
             "entry_exit_exit_wait_for_blank": bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True)),
             "entry_exit_exit_mode": str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank"),
             "entry_exit_exit_mode_code": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2),
+            "entry_exit_exit_modes": list(runtime_cfg.get("entry_exit_exit_modes") or []),
+            "entry_exit_exit_modes_csv": str(runtime_cfg.get("entry_exit_exit_modes_csv") or ""),
+            "entry_exit_exit_modes_mask": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_modes_mask")) or 4),
+            "entry_exit_lifecycle_mode": str(runtime_cfg.get("entry_exit_lifecycle_mode") or "coexist"),
+            "entry_exit_lifecycle_modes": list(runtime_cfg.get("entry_exit_lifecycle_modes") or []),
+            "entry_exit_lifecycle_modes_csv": str(runtime_cfg.get("entry_exit_lifecycle_modes_csv") or ""),
             "entry_exit": dict(runtime_cfg.get("entry_exit") or {}),
             "secondary_enabled": str(p.get("secondary_enabled") or "").strip().lower() in {"1", "true", "yes", "on"},
             "secondary_indicator": str(p.get("secondary_indicator") or "").strip(),
@@ -5337,6 +5481,46 @@ class TelegramBridgeService:
         with self._lock:
             prev = self._indicator_bridge_instances.get(str(instance_key))
             prev_row = dict(prev) if isinstance(prev, dict) else {}
+            last_signal_side = self._bridge_direction(row.get("last_signal_direction"))
+            if last_signal_side in {"BUY", "SELL"}:
+                row["last_signal_direction"] = str(last_signal_side)
+            elif prev_row:
+                row["last_signal_direction"] = str(prev_row.get("last_signal_direction") or "").strip().upper()
+                row["last_signal_bar_time"] = str(prev_row.get("last_signal_bar_time") or "").strip()
+                row["last_signal_bar_unix"] = int(_to_float_or_none(prev_row.get("last_signal_bar_unix")) or 0)
+                row["last_signal_value"] = _to_float_or_none(prev_row.get("last_signal_value"))
+                row["last_signal_raw_buy"] = _to_float_or_none(prev_row.get("last_signal_raw_buy"))
+                row["last_signal_raw_sell"] = _to_float_or_none(prev_row.get("last_signal_raw_sell"))
+            entry_side = self._bridge_direction(row.get("entry_resolved_signal") or row.get("resolved_signal") or row.get("confirmed_direction"))
+            entry_telemetry_side = self._bridge_direction(row.get("last_signal_direction"))
+            if entry_side in {"BUY", "SELL"}:
+                row["last_entry_resolved_signal"] = str(entry_side)
+                row["last_entry_resolved_bar_time"] = str(row.get("resolved_signal_bar_time") or "").strip()
+                row["last_entry_signal_value"] = _to_float_or_none(row.get("entry_signal_value") or row.get("resolved_raw_buy") or row.get("resolved_raw_sell"))
+            elif str(profile).strip().lower() == "entryexit" and entry_telemetry_side in {"BUY", "SELL"}:
+                row["last_entry_resolved_signal"] = str(entry_telemetry_side)
+                row["last_entry_resolved_bar_time"] = str(row.get("last_signal_bar_time") or "").strip()
+                row["last_entry_signal_value"] = _to_float_or_none(row.get("last_signal_value"))
+            else:
+                row["last_entry_resolved_signal"] = str(prev_row.get("last_entry_resolved_signal") or "").strip().upper()
+                row["last_entry_resolved_bar_time"] = str(prev_row.get("last_entry_resolved_bar_time") or "").strip()
+                row["last_entry_signal_value"] = _to_float_or_none(prev_row.get("last_entry_signal_value"))
+            actionable_entry_event = str(bridge_event_type).strip().lower() in {"confirmed_signal", "signal"} and self._bridge_direction(
+                p.get("signal_hint") or p.get("direction") or p.get("confirmed_direction") or p.get("resolved_signal")
+            ) in {"BUY", "SELL"}
+            if actionable_entry_event:
+                action_side = self._bridge_direction(
+                    p.get("signal_hint") or p.get("direction") or p.get("confirmed_direction") or p.get("resolved_signal")
+                )
+                row["last_entry_signal_direction"] = str(action_side)
+                row["last_entry_signal_bar_time"] = str(row.get("resolved_signal_bar_time") or event_ts or "").strip()
+                row["last_entry_signal_event_id"] = str(p.get("event_id") or "").strip()
+                row["last_entry_signal_event_type"] = str(bridge_event_type)
+            else:
+                row["last_entry_signal_direction"] = str(prev_row.get("last_entry_signal_direction") or "").strip().upper()
+                row["last_entry_signal_bar_time"] = str(prev_row.get("last_entry_signal_bar_time") or "").strip()
+                row["last_entry_signal_event_id"] = str(prev_row.get("last_entry_signal_event_id") or "").strip()
+                row["last_entry_signal_event_type"] = str(prev_row.get("last_entry_signal_event_type") or "").strip()
             exit_side = self._bridge_direction(row.get("exit_resolved_signal"))
             if exit_side in {"BUY", "SELL"}:
                 row["last_exit_resolved_signal"] = str(exit_side)
@@ -5492,6 +5676,9 @@ class TelegramBridgeService:
         signal_confirm_sec: Optional[float] = None,
         entry_exit_exit_wait_for_blank: Optional[bool] = None,
         entry_exit_exit_mode: Optional[str] = None,
+        entry_exit_exit_modes: Optional[List[str]] = None,
+        entry_exit_lifecycle_mode: Optional[str] = None,
+        entry_exit_lifecycle_modes: Optional[List[str]] = None,
         sync_direction_tf: Optional[str] = None,
         sync_entry_tf: Optional[str] = None,
         sync_exit_tf: Optional[str] = None,
@@ -5574,17 +5761,42 @@ class TelegramBridgeService:
             if v is None or (not math.isfinite(float(v))):
                 return {"ok": False, "error": "invalid_signal_confirm_sec"}
             signal_confirm_map[mk] = float(max(0.0, min(86400.0, float(v))))
-        if entry_exit_exit_wait_for_blank is not None or entry_exit_exit_mode is not None:
+        if (
+            entry_exit_exit_wait_for_blank is not None
+            or entry_exit_exit_mode is not None
+            or entry_exit_exit_modes is not None
+            or entry_exit_lifecycle_mode is not None
+            or entry_exit_lifecycle_modes is not None
+        ):
             mk = str(instance_key).lower()
             prev_entry_exit = dict(entry_exit_map.get(mk) or {})
-            if entry_exit_exit_mode is not None:
+            if entry_exit_exit_modes is not None:
+                modes = self._normalize_entry_exit_exit_modes(entry_exit_exit_modes)
+                prev_entry_exit["exit_modes"] = list(modes)
+                prev_entry_exit["exit_mode"] = str(modes[0])
+            elif entry_exit_exit_mode is not None:
                 prev_entry_exit["exit_mode"] = self._normalize_entry_exit_exit_mode(entry_exit_exit_mode)
+                prev_entry_exit["exit_modes"] = [str(prev_entry_exit["exit_mode"])]
             elif entry_exit_exit_wait_for_blank is not None:
                 prev_entry_exit["exit_mode"] = "after_blank" if bool(entry_exit_exit_wait_for_blank) else "on_candle_close"
+                prev_entry_exit["exit_modes"] = [str(prev_entry_exit["exit_mode"])]
+            if entry_exit_lifecycle_modes is not None:
+                lifecycle_modes = self._normalize_entry_exit_lifecycle_modes(entry_exit_lifecycle_modes)
+                prev_entry_exit["lifecycle_modes"] = list(lifecycle_modes)
+                prev_entry_exit["lifecycle_mode"] = str(lifecycle_modes[0])
+            elif entry_exit_lifecycle_mode is not None:
+                prev_entry_exit["lifecycle_mode"] = self._normalize_entry_exit_lifecycle_mode(entry_exit_lifecycle_mode)
+                prev_entry_exit["lifecycle_modes"] = [str(prev_entry_exit["lifecycle_mode"])]
             mode = self._normalize_entry_exit_exit_mode(prev_entry_exit.get("exit_mode"))
+            modes = self._normalize_entry_exit_exit_modes(prev_entry_exit.get("exit_modes"), [mode])
+            lifecycle_mode = self._normalize_entry_exit_lifecycle_mode(prev_entry_exit.get("lifecycle_mode"), "coexist")
+            lifecycle_modes = self._normalize_entry_exit_lifecycle_modes(prev_entry_exit.get("lifecycle_modes"), [lifecycle_mode])
             entry_exit_map[mk] = {
-                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_wait_for_blank": bool("after_blank" in modes),
                 "exit_mode": str(mode),
+                "exit_modes": list(modes),
+                "lifecycle_mode": str(lifecycle_mode),
+                "lifecycle_modes": list(lifecycle_modes),
             }
         if (
             sync_direction_tf is not None
@@ -5644,6 +5856,12 @@ class TelegramBridgeService:
                 prev["entry_exit_exit_wait_for_blank"] = bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True))
                 prev["entry_exit_exit_mode"] = str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank")
                 prev["entry_exit_exit_mode_code"] = int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2)
+                prev["entry_exit_exit_modes"] = list(runtime_cfg.get("entry_exit_exit_modes") or [])
+                prev["entry_exit_exit_modes_csv"] = str(runtime_cfg.get("entry_exit_exit_modes_csv") or "")
+                prev["entry_exit_exit_modes_mask"] = int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_modes_mask")) or 4)
+                prev["entry_exit_lifecycle_mode"] = str(runtime_cfg.get("entry_exit_lifecycle_mode") or "coexist")
+                prev["entry_exit_lifecycle_modes"] = list(runtime_cfg.get("entry_exit_lifecycle_modes") or [])
+                prev["entry_exit_lifecycle_modes_csv"] = str(runtime_cfg.get("entry_exit_lifecycle_modes_csv") or "")
                 prev["entry_exit"] = dict(runtime_cfg.get("entry_exit") or {})
                 prev["sync"] = dict(runtime_cfg.get("sync") or {})
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
@@ -5854,6 +6072,12 @@ class TelegramBridgeService:
                     "entry_exit_exit_wait_for_blank": bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True)),
                     "entry_exit_exit_mode": str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank"),
                     "entry_exit_exit_mode_code": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2),
+                    "entry_exit_exit_modes": list(runtime_cfg.get("entry_exit_exit_modes") or []),
+                    "entry_exit_exit_modes_csv": str(runtime_cfg.get("entry_exit_exit_modes_csv") or ""),
+                    "entry_exit_exit_modes_mask": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_modes_mask")) or 4),
+                    "entry_exit_lifecycle_mode": str(runtime_cfg.get("entry_exit_lifecycle_mode") or "coexist"),
+                    "entry_exit_lifecycle_modes": list(runtime_cfg.get("entry_exit_lifecycle_modes") or []),
+                    "entry_exit_lifecycle_modes_csv": str(runtime_cfg.get("entry_exit_lifecycle_modes_csv") or ""),
                     "entry_exit": dict(runtime_cfg.get("entry_exit") or {}),
                     "sync": dict(runtime_cfg.get("sync") or {}),
                     "state": ("OPEN" if linked else inferred_state),
@@ -6055,11 +6279,12 @@ class TelegramBridgeService:
         parts = [p for p in str(source_tag or "").strip().lower().split("|") if p]
         if not parts:
             return ""
-        last = str(parts[-1])
-        if last in {"advanced", "advanced_v2", "normal", "sync"}:
-            return last
-        if last.startswith("advanced_v2_"):
-            return "advanced_v2"
+        for part in reversed(parts[5:] if len(parts) > 5 else parts):
+            item = str(part)
+            if item in {"advanced", "advanced_v2", "normal", "sync"}:
+                return item
+            if item.startswith("advanced_v2_"):
+                return "advanced_v2"
         return ""
 
     @classmethod
@@ -6389,26 +6614,45 @@ class TelegramBridgeService:
         rows = (execution_logs or {}).get("rows") if isinstance(execution_logs, dict) else []
         if not isinstance(rows, list):
             return
+        latest_entry_by_instance: Dict[str, Dict[str, Any]] = {}
         latest_by_instance: Dict[str, Dict[str, Any]] = {}
         for raw in rows:
             row = dict(raw) if isinstance(raw, dict) else {}
             msg = str(row.get("message") or "").strip().lower()
-            if "buy_exit_signal" not in msg and "sell_exit_signal" not in msg:
-                continue
             parsed = self._parse_bridge_source_tag_for_audit(row.get("source_tag"))
             if not parsed:
                 continue
             inst = str((parsed or {}).get("instance_key") or "").strip().lower()
-            if not inst or inst in latest_by_instance:
+            if not inst:
                 continue
-            direction = "BUY" if "buy_exit_signal" in msg else "SELL"
-            latest_by_instance[str(inst)] = {
-                "direction": str(direction),
-                "kind": "BUY_STOP" if direction == "BUY" else "SELL_STOP",
-                "bar_time": str(row.get("created_at") or row.get("event_ts") or row.get("closed_at") or "").strip(),
-                "message": str(row.get("message") or "").strip(),
-            }
-        if not latest_by_instance:
+            direction_raw = self._bridge_direction(row.get("direction"))
+            status = str(row.get("status") or "").strip().lower()
+            if (
+                inst not in latest_entry_by_instance
+                and direction_raw in {"BUY", "SELL"}
+                and (
+                    status == "opened"
+                    or "order_opened" in msg
+                    or "confirmed_signal" in msg
+                    or "entry_signal" in msg
+                )
+            ):
+                latest_entry_by_instance[str(inst)] = {
+                    "direction": str(direction_raw),
+                    "bar_time": str(row.get("created_at") or row.get("event_ts") or row.get("opened_at") or "").strip(),
+                    "message": str(row.get("message") or "").strip(),
+                }
+            if "buy_exit_signal" in msg or "sell_exit_signal" in msg:
+                if inst in latest_by_instance:
+                    continue
+                direction = "BUY" if "buy_exit_signal" in msg else "SELL"
+                latest_by_instance[str(inst)] = {
+                    "direction": str(direction),
+                    "kind": "BUY_STOP" if direction == "BUY" else "SELL_STOP",
+                    "bar_time": str(row.get("created_at") or row.get("event_ts") or row.get("closed_at") or "").strip(),
+                    "message": str(row.get("message") or "").strip(),
+                }
+        if not latest_by_instance and not latest_entry_by_instance:
             return
 
         for monitor in (mt4_monitor, mt5_monitor):
@@ -6432,21 +6676,29 @@ class TelegramBridgeService:
                             timeframe=row.get("timeframe"),
                         )
                     ).strip().lower()
+                latest_entry = latest_entry_by_instance.get(str(inst))
+                if latest_entry:
+                    entry_direction = str(latest_entry.get("direction") or "").strip().upper()
+                    if entry_direction in {"BUY", "SELL"}:
+                        row["last_entry_signal_direction"] = str(entry_direction)
+                        row["last_entry_signal_bar_time"] = str(latest_entry.get("bar_time") or "").strip()
+                        if self._bridge_direction(row.get("last_entry_resolved_signal")) not in {"BUY", "SELL"}:
+                            row["last_entry_resolved_signal"] = str(entry_direction)
+                            row["last_entry_resolved_bar_time"] = str(latest_entry.get("bar_time") or "").strip()
                 latest = latest_by_instance.get(str(inst))
-                if not latest:
-                    continue
-                direction = str(latest.get("direction") or "").strip().upper()
-                kind = str(latest.get("kind") or "").strip().upper()
-                if direction not in {"BUY", "SELL"}:
-                    continue
-                row["last_exit_resolved_signal"] = str(direction)
-                row["last_exit_resolved_kind"] = str(kind or ("BUY_STOP" if direction == "BUY" else "SELL_STOP"))
-                row["last_exit_resolved_bar_time"] = str(latest.get("bar_time") or "").strip()
-                if self._bridge_direction(row.get("exit_resolved_signal")) not in {"BUY", "SELL"}:
-                    row["exit_resolved_signal"] = str(direction)
-                    row["exit_resolved_kind"] = str(row["last_exit_resolved_kind"])
-                    if not str(row.get("exit_resolved_bar_time") or "").strip():
-                        row["exit_resolved_bar_time"] = str(row["last_exit_resolved_bar_time"])
+                if latest:
+                    direction = str(latest.get("direction") or "").strip().upper()
+                    kind = str(latest.get("kind") or "").strip().upper()
+                    if direction not in {"BUY", "SELL"}:
+                        continue
+                    row["last_exit_resolved_signal"] = str(direction)
+                    row["last_exit_resolved_kind"] = str(kind or ("BUY_STOP" if direction == "BUY" else "SELL_STOP"))
+                    row["last_exit_resolved_bar_time"] = str(latest.get("bar_time") or "").strip()
+                    if self._bridge_direction(row.get("exit_resolved_signal")) not in {"BUY", "SELL"}:
+                        row["exit_resolved_signal"] = str(direction)
+                        row["exit_resolved_kind"] = str(row["last_exit_resolved_kind"])
+                        if not str(row.get("exit_resolved_bar_time") or "").strip():
+                            row["exit_resolved_bar_time"] = str(row["last_exit_resolved_bar_time"])
 
     def get_indicator_bridge_state(self, *, limit: int = 300, active_only: bool = False) -> Dict[str, Any]:
         try:
@@ -7954,6 +8206,31 @@ class TelegramBridgeService:
                 return True
         return False
 
+    def _has_live_open_for_source_tag_any_direction(
+        self,
+        *,
+        source_tag: str,
+        symbol: str,
+        timeframe: str,
+        svc: LiveTradingService,
+    ) -> bool:
+        return bool(
+            self._has_live_open_for_source_tag_direction(
+                source_tag=str(source_tag),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                direction="BUY",
+                svc=svc,
+            )
+            or self._has_live_open_for_source_tag_direction(
+                source_tag=str(source_tag),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                direction="SELL",
+                svc=svc,
+            )
+        )
+
     @staticmethod
     def _indicator_sync_base_key(*, family: Any, profile: Any, indicator_key: Any, symbol: Any) -> str:
         return (
@@ -8854,15 +9131,14 @@ class TelegramBridgeService:
         # Closing stale reverse positions is a safety action, not a new-entry action.
         # Include known standard mode tags even if the operator disabled that mode
         # after the position was opened.
-        mode_rows.extend(
-            [
-                {"mode": "advanced", "policy": "", "source_tag": f"{combo_source_tag}|advanced"},
-                {"mode": "normal", "policy": "", "source_tag": f"{combo_source_tag}|normal"},
-                {"mode": "advanced_v2", "policy": "conservative", "source_tag": f"{combo_source_tag}|advanced_v2_conservative"},
-                {"mode": "advanced_v2", "policy": "balanced", "source_tag": f"{combo_source_tag}|advanced_v2_balanced"},
-                {"mode": "advanced_v2", "policy": "advanced", "source_tag": f"{combo_source_tag}|advanced_v2_advanced"},
-            ]
-        )
+        legacy_rows = [
+            {"mode": "advanced", "policy": "", "source_tag": f"{combo_source_tag}|advanced"},
+            {"mode": "normal", "policy": "", "source_tag": f"{combo_source_tag}|normal"},
+            {"mode": "advanced_v2", "policy": "conservative", "source_tag": f"{combo_source_tag}|advanced_v2_conservative"},
+            {"mode": "advanced_v2", "policy": "balanced", "source_tag": f"{combo_source_tag}|advanced_v2_balanced"},
+            {"mode": "advanced_v2", "policy": "advanced", "source_tag": f"{combo_source_tag}|advanced_v2_advanced"},
+        ]
+        mode_rows.extend(legacy_rows)
 
         mode_results: List[Dict[str, Any]] = []
         total_closed = 0
@@ -8888,6 +9164,7 @@ class TelegramBridgeService:
                     "mode": str((mode_row or {}).get("mode") or ""),
                     "policy": str((mode_row or {}).get("policy") or ""),
                     "source_tag": str(tag),
+                    "exit_mode": str((mode_row or {}).get("exit_mode") or ""),
                     "close": dict(close_out or {}),
                 }
             )
@@ -8983,6 +9260,7 @@ class TelegramBridgeService:
         symbol: str,
         timeframe: str,
         exit_direction: str,
+        exit_mode: str = "",
         runtime_cfg: Dict[str, Any],
     ) -> Dict[str, Any]:
         exit_dir = self._bridge_direction(exit_direction)
@@ -9006,15 +9284,23 @@ class TelegramBridgeService:
                 runtime_cfg=dict(runtime_cfg or {}),
             )
         )
-        mode_rows.extend(
-            [
-                {"mode": "advanced", "policy": "", "source_tag": f"{combo_source_tag}|advanced"},
-                {"mode": "normal", "policy": "", "source_tag": f"{combo_source_tag}|normal"},
-                {"mode": "advanced_v2", "policy": "conservative", "source_tag": f"{combo_source_tag}|advanced_v2_conservative"},
-                {"mode": "advanced_v2", "policy": "balanced", "source_tag": f"{combo_source_tag}|advanced_v2_balanced"},
-                {"mode": "advanced_v2", "policy": "advanced", "source_tag": f"{combo_source_tag}|advanced_v2_advanced"},
+        exit_mode_filter = self._normalize_entry_exit_exit_mode(exit_mode, "") if str(exit_mode or "").strip() else ""
+        if exit_mode_filter:
+            mode_rows = [
+                dict(r)
+                for r in mode_rows
+                if self._normalize_entry_exit_exit_mode((r or {}).get("exit_mode"), "") == str(exit_mode_filter)
             ]
-        )
+        else:
+            mode_rows.extend(
+                [
+                    {"mode": "advanced", "policy": "", "source_tag": f"{combo_source_tag}|advanced"},
+                    {"mode": "normal", "policy": "", "source_tag": f"{combo_source_tag}|normal"},
+                    {"mode": "advanced_v2", "policy": "conservative", "source_tag": f"{combo_source_tag}|advanced_v2_conservative"},
+                    {"mode": "advanced_v2", "policy": "balanced", "source_tag": f"{combo_source_tag}|advanced_v2_balanced"},
+                    {"mode": "advanced_v2", "policy": "advanced", "source_tag": f"{combo_source_tag}|advanced_v2_advanced"},
+                ]
+            )
 
         mode_results: List[Dict[str, Any]] = []
         total_closed = 0
@@ -9039,6 +9325,7 @@ class TelegramBridgeService:
                 {
                     "mode": str((mode_row or {}).get("mode") or ""),
                     "policy": str((mode_row or {}).get("policy") or ""),
+                    "exit_mode": str((mode_row or {}).get("exit_mode") or exit_mode_filter),
                     "source_tag": str(tag),
                     "exit_direction": str(exit_dir),
                     "incoming_direction": str(incoming),
@@ -9052,6 +9339,7 @@ class TelegramBridgeService:
             "errors": list(errors),
             "reason": str(reason),
             "exit_direction": str(exit_dir),
+            "exit_mode": str(exit_mode_filter),
         }
 
     def _handle_dual_resolved_none_timeout_close(
@@ -9139,7 +9427,33 @@ class TelegramBridgeService:
         )
         mode_cfg = dict((runtime_cfg or {}).get("execution_modes") or {})
         sync_cfg = dict((runtime_cfg or {}).get("sync") or {})
+        exit_modes = (
+            self._normalize_entry_exit_exit_modes((runtime_cfg or {}).get("entry_exit_exit_modes"))
+            if str(profile).strip().lower() == "entryexit"
+            else []
+        )
+        lifecycle_modes = (
+            self._normalize_entry_exit_lifecycle_modes((runtime_cfg or {}).get("entry_exit_lifecycle_modes"))
+            if str(profile).strip().lower() == "entryexit"
+            else []
+        )
         out: List[Dict[str, str]] = []
+        def _append_mode_row(row: Dict[str, str]) -> None:
+            if not exit_modes:
+                out.append(dict(row))
+                return
+            base_tag = str((row or {}).get("source_tag") or "").strip()
+            for exit_mode in exit_modes:
+                for lifecycle_mode in (lifecycle_modes or ["coexist"]):
+                    item = dict(row)
+                    item["exit_mode"] = str(exit_mode)
+                    item["lifecycle_mode"] = str(lifecycle_mode)
+                    item["source_tag"] = f"{base_tag}|{self._entry_exit_exit_mode_suffix(exit_mode)}"
+                    lifecycle_suffix = self._entry_exit_lifecycle_mode_suffix(lifecycle_mode)
+                    if lifecycle_suffix:
+                        item["source_tag"] = f"{item['source_tag']}|{lifecycle_suffix}"
+                    out.append(item)
+
         for mode in ("advanced", "advanced_v2", "normal"):
             default_enabled = True if mode == "advanced" else False
             if bool(mode_cfg.get(mode, default_enabled)):
@@ -9149,7 +9463,7 @@ class TelegramBridgeService:
                     )
                     for policy_name, enabled in policies.items():
                         if bool(enabled):
-                            out.append(
+                            _append_mode_row(
                                 {
                                     "mode": "advanced_v2",
                                     "policy": str(policy_name),
@@ -9157,9 +9471,9 @@ class TelegramBridgeService:
                                 }
                             )
                     continue
-                out.append({"mode": str(mode), "source_tag": f"{combo_source_tag}|{mode}"})
+                _append_mode_row({"mode": str(mode), "source_tag": f"{combo_source_tag}|{mode}"})
         if bool(mode_cfg.get("sync", False)):
-            out.append(
+            _append_mode_row(
                 {
                     "mode": "sync",
                     "source_tag": self._build_sync_mode_source_tag(
@@ -9478,6 +9792,9 @@ class TelegramBridgeService:
             }
             base["executed"] = bool((out or {}).get("executed"))
             return base
+        if str(profile).strip().lower() == "entryexit":
+            base["reconcile"] = {"ok": True, "corrected": False, "reason": "entryexit_resolved_state_no_entry_execution"}
+            return base
         if not self._indicator_bridge_v2_reconcile_enabled():
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "v2_reconcile_disabled"}
             return base
@@ -9784,6 +10101,53 @@ class TelegramBridgeService:
                 symbol=symbol,
                 timeframe=timeframe,
             )
+            exit_mode_raw = p.get("entry_exit_exit_mode") or p.get("exit_mode")
+            exit_mode = (
+                self._normalize_entry_exit_exit_mode(exit_mode_raw, "")
+                if str(exit_mode_raw or "").strip()
+                else ""
+            )
+            if not exit_mode:
+                mode_code = _to_float_or_none(p.get("entry_exit_exit_mode_code") or p.get("exit_mode_code"))
+                if mode_code is not None:
+                    code_i = int(float(mode_code))
+                    if code_i == 0:
+                        exit_mode = "instant"
+                    elif code_i == 1:
+                        exit_mode = "on_candle_close"
+                    elif code_i == 2:
+                        exit_mode = "after_blank"
+            if not exit_mode and str(profile).strip().lower() == "entryexit":
+                # Safety fallback for stale/old EA payloads: never fan one exit
+                # signal across all configured exit-mode variants.
+                exit_mode = self._normalize_entry_exit_exit_mode(
+                    (runtime_cfg or {}).get("entry_exit_exit_mode"),
+                    "after_blank",
+                )
+            entry_exit_audit_payload = {
+                "bridge_event_type": str(bridge_event_type),
+                "raw_signal_hint": str(p.get("signal_hint") or ""),
+                "raw_exit_direction": str(p.get("exit_direction") or ""),
+                "exit_direction": str(exit_direction),
+                "exit_mode": str(exit_mode),
+                "entry_exit_lifecycle_mode": str((runtime_cfg or {}).get("entry_exit_lifecycle_mode") or "coexist"),
+                "entry_exit_lifecycle_modes": list((runtime_cfg or {}).get("entry_exit_lifecycle_modes") or []),
+                "entry_exit_exit_mode": str(p.get("entry_exit_exit_mode") or ""),
+                "entry_exit_exit_mode_code": int(_to_float_or_none(p.get("entry_exit_exit_mode_code")) or -1),
+                "entry_exit_exit_modes_mask": int(_to_float_or_none(p.get("entry_exit_exit_modes_mask")) or 0),
+                "entry_exit_exit_wait_for_blank": bool(p.get("entry_exit_exit_wait_for_blank", False)),
+                "entry_resolved_signal": str(p.get("entry_resolved_signal") or ""),
+                "exit_resolved_signal": str(p.get("exit_resolved_signal") or ""),
+                "exit_resolved_kind": str(p.get("exit_resolved_kind") or ""),
+                "exit_resolved_bar_time": str(p.get("exit_resolved_bar_time") or ""),
+                "exit_signal_value": _to_float_or_none(p.get("exit_signal_value")),
+                "buy_exit_buffer": int(_to_float_or_none(p.get("buy_exit_buffer")) or -1),
+                "sell_exit_buffer": int(_to_float_or_none(p.get("sell_exit_buffer")) or -1),
+                "resolved_signal": str(p.get("resolved_signal") or ""),
+                "confirmed_direction": str(p.get("confirmed_direction") or ""),
+                "event_id": str(p.get("event_id") or ""),
+                "bar_time": str(p.get("bar_time") or p.get("signal_bar_time") or ""),
+            }
             close_out = self._close_entry_exit_signal_positions(
                 family=str(family),
                 profile=str(profile),
@@ -9791,6 +10155,7 @@ class TelegramBridgeService:
                 symbol=str(symbol),
                 timeframe=str(timeframe),
                 exit_direction=str(exit_direction),
+                exit_mode=str(exit_mode),
                 runtime_cfg=dict(runtime_cfg or {}),
             )
             self._append_automation_execution_log(
@@ -9804,10 +10169,17 @@ class TelegramBridgeService:
                 profile=str(profile),
                 indicator=str(indicator),
                 source_tag=str(combo_prefix),
-                message=str((close_out or {}).get("reason") or "entry_exit_signal"),
+                message=(
+                    f"{str((close_out or {}).get('reason') or 'entry_exit_signal')}:{str(exit_mode)}"
+                    if str(exit_mode).strip()
+                    else str((close_out or {}).get("reason") or "entry_exit_signal")
+                ),
                 stage="entry_exit",
                 stage_status=("closed" if int((close_out or {}).get("closed_count") or 0) > 0 else "skipped"),
-                stage_payload=dict(close_out or {}),
+                stage_payload={
+                    **dict(close_out or {}),
+                    "entry_exit_payload": dict(entry_exit_audit_payload),
+                },
                 error_code=(None if bool((close_out or {}).get("ok", True)) else str((close_out or {}).get("error") or "entry_exit_close_failed")),
             )
             return {
@@ -9815,6 +10187,8 @@ class TelegramBridgeService:
                 "executed": int((close_out or {}).get("closed_count") or 0) > 0,
                 "reason": str((close_out or {}).get("reason") or "entry_exit_signal"),
                 "exit_direction": str(exit_direction),
+                "exit_mode": str(exit_mode),
+                "entry_exit_lifecycle_modes": list((runtime_cfg or {}).get("entry_exit_lifecycle_modes") or []),
                 "close_result": dict(close_out or {}),
                 "runtime": runtime_cfg,
                 "bridge": registered,
@@ -10203,6 +10577,16 @@ class TelegramBridgeService:
         chat_id = int(self._allowed_chat_id() or 0)
         mode_cfg = dict(runtime_cfg.get("execution_modes") or {})
         sync_cfg = dict(runtime_cfg.get("sync") or {})
+        entry_exit_exit_modes = (
+            self._normalize_entry_exit_exit_modes(runtime_cfg.get("entry_exit_exit_modes"))
+            if str(profile).strip().lower() == "entryexit"
+            else [""]
+        )
+        entry_exit_lifecycle_modes = (
+            self._normalize_entry_exit_lifecycle_modes(runtime_cfg.get("entry_exit_lifecycle_modes"))
+            if str(profile).strip().lower() == "entryexit"
+            else [""]
+        )
         mode_plan = [
             ("advanced", bool(mode_cfg.get("advanced", True))),
             ("advanced_v2", bool(mode_cfg.get("advanced_v2", False))),
@@ -10218,9 +10602,27 @@ class TelegramBridgeService:
                 policies = self._normalize_indicator_bridge_advanced_v2_policies(runtime_cfg.get("advanced_v2_policies") or {})
                 for policy_name, policy_enabled in policies.items():
                     if bool(policy_enabled):
-                        mode_exec_plan.append({"mode": "advanced_v2", "policy": str(policy_name)})
+                        for exit_mode in entry_exit_exit_modes:
+                            for lifecycle_mode in entry_exit_lifecycle_modes:
+                                mode_exec_plan.append(
+                                    {
+                                        "mode": "advanced_v2",
+                                        "policy": str(policy_name),
+                                        "exit_mode": str(exit_mode),
+                                        "lifecycle_mode": str(lifecycle_mode),
+                                    }
+                                )
                 continue
-            mode_exec_plan.append({"mode": str(m), "policy": ""})
+            for exit_mode in entry_exit_exit_modes:
+                for lifecycle_mode in entry_exit_lifecycle_modes:
+                    mode_exec_plan.append(
+                        {
+                            "mode": str(m),
+                            "policy": "",
+                            "exit_mode": str(exit_mode),
+                            "lifecycle_mode": str(lifecycle_mode),
+                        }
+                    )
         if not mode_exec_plan:
             return {
                 "ok": True,
@@ -10239,9 +10641,11 @@ class TelegramBridgeService:
         for mode_row in mode_exec_plan:
             mode = str((mode_row or {}).get("mode") or "").strip().lower()
             policy_name = str((mode_row or {}).get("policy") or "").strip().lower()
+            exit_mode_name = self._normalize_entry_exit_exit_mode((mode_row or {}).get("exit_mode"), "")
+            lifecycle_mode_name = self._normalize_entry_exit_lifecycle_mode((mode_row or {}).get("lifecycle_mode"), "")
             mode_lot = float(_to_float_or_none(mode_lots_cfg.get(str(mode))) or lot)
             if str(mode) == "sync":
-                mode_source_tag = self._build_sync_mode_source_tag(
+                base_mode_source_tag = self._build_sync_mode_source_tag(
                     family=str(family),
                     profile=str(profile),
                     indicator_key=str(indicator_key),
@@ -10250,6 +10654,14 @@ class TelegramBridgeService:
                     entry_tf=(sync_cfg or {}).get("entry_tf"),
                     exit_tf=(sync_cfg or {}).get("exit_tf"),
                 )
+                mode_source_tag = (
+                    f"{base_mode_source_tag}|{self._entry_exit_exit_mode_suffix(exit_mode_name)}"
+                    if exit_mode_name
+                    else str(base_mode_source_tag)
+                )
+                lifecycle_suffix = self._entry_exit_lifecycle_mode_suffix(lifecycle_mode_name)
+                if lifecycle_suffix:
+                    mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
                 mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
                 with mode_exec_lock:
                     sync_out = self._execute_indicator_sync_mode(
@@ -10272,6 +10684,8 @@ class TelegramBridgeService:
                 mode_results.append(
                     {
                         "mode": "sync",
+                        "exit_mode": str(exit_mode_name),
+                        "lifecycle_mode": str(lifecycle_mode_name),
                         "ok": bool((sync_out or {}).get("ok", True)),
                         "executed": bool(executed),
                         "reason": str((sync_out or {}).get("reason") or ""),
@@ -10316,14 +10730,22 @@ class TelegramBridgeService:
                 if str(mode) == "advanced_v2" and policy_name
                 else f"{str(combo_source_tag)}|{str(mode)}"
             )
+            if exit_mode_name:
+                mode_source_tag = f"{str(mode_source_tag)}|{self._entry_exit_exit_mode_suffix(exit_mode_name)}"
+            lifecycle_suffix = self._entry_exit_lifecycle_mode_suffix(lifecycle_mode_name)
+            if lifecycle_suffix:
+                mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
             mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
             with mode_exec_lock:
-                reverse_out = self._close_mt4_reverse_positions(
-                    symbol=str(symbol_exec_raw),
-                    incoming_direction=str(hint),
-                    timeframe=str(timeframe),
-                    source_tag=str(mode_source_tag),
-                )
+                if str(profile).strip().lower() == "entryexit":
+                    reverse_out = {"ok": True, "closed_count": 0, "reason": "entryexit_reverse_close_disabled"}
+                else:
+                    reverse_out = self._close_mt4_reverse_positions(
+                        symbol=str(symbol_exec_raw),
+                        incoming_direction=str(hint),
+                        timeframe=str(timeframe),
+                        source_tag=str(mode_source_tag),
+                    )
                 if not bool((reverse_out or {}).get("ok")):
                     reverse_msg = "reverse_close_failed: " + " | ".join(str(x) for x in ((reverse_out or {}).get("errors") or [])[:3])
                     mode_results.append(
@@ -10368,6 +10790,7 @@ class TelegramBridgeService:
                     mode_results.append(
                         {
                             "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
                             "policy": str(policy_name),
                             "ok": True,
                             "executed": False,
@@ -10428,6 +10851,7 @@ class TelegramBridgeService:
                             "lot": float(mode_lot),
                             "mode": str(mode),
                             "policy": str(policy_name),
+                            "exit_mode": str(exit_mode_name),
                             "atr": _to_float_or_none(atr),
                             "sl_distance": _to_float_or_none(sl_distance),
                             "tp_base_distance": _to_float_or_none(tp_base_distance),
@@ -10443,6 +10867,7 @@ class TelegramBridgeService:
                         {
                             "mode": str(mode),
                             "policy": str(policy_name),
+                            "exit_mode": str(exit_mode_name),
                             "ok": True,
                             "executed": False,
                             "reason": "chop_guard_blocked",
@@ -10463,10 +10888,34 @@ class TelegramBridgeService:
                     mode_results.append(
                         {
                             "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
                             "ok": True,
                             "executed": False,
                             "reason": "same_direction_already_open",
                             "message": "skip_open_same_direction_live_exists",
+                        }
+                    )
+                    market_closed_only = False
+                    continue
+                if (
+                    str(profile).strip().lower() == "entryexit"
+                    and self._normalize_entry_exit_lifecycle_mode(lifecycle_mode_name, "") == "exclusive_until_stop"
+                    and self._has_live_open_for_source_tag_any_direction(
+                        source_tag=str(mode_source_tag),
+                        symbol=str(symbol_exec_raw),
+                        timeframe=str(timeframe),
+                        svc=svc,
+                    )
+                ):
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
+                            "lifecycle_mode": str(lifecycle_mode_name),
+                            "ok": True,
+                            "executed": False,
+                            "reason": "exclusive_lifecycle_trade_open",
+                            "message": "skip_open_exclusive_lifecycle_trade_open_until_stop",
                         }
                     )
                     market_closed_only = False
@@ -10479,6 +10928,7 @@ class TelegramBridgeService:
                     mode_results.append(
                         {
                             "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
                             "ok": True,
                             "executed": False,
                             "reason": "recent_open_debounce",
@@ -10501,6 +10951,7 @@ class TelegramBridgeService:
                         mode_results.append(
                             {
                                 "mode": str(mode),
+                                "exit_mode": str(exit_mode_name),
                                 "ok": True,
                                 "executed": False,
                                 "reason": "reversal_guard_cancelled",
@@ -10615,6 +11066,7 @@ class TelegramBridgeService:
                 {
                     "mode": str(mode),
                     "policy": str(policy_name),
+                    "exit_mode": str(exit_mode_name),
                     "ok": True,
                     "executed": bool(executed),
                     "reason": ("market_closed" if deferred_market_closed else ""),
@@ -13356,8 +13808,21 @@ class TelegramBridgeService:
                 if str((r or {}).get("direction") or "").strip().upper() == str(side)
                 and str((r or {}).get("comment") or "").strip() == str(marker)
             ]
+            by_ticket = [
+                dict(r)
+                for r in (rows or [])
+                if int(_to_float_or_none((r or {}).get("ticket")) or 0) == int(broker_ticket)
+            ] if int(broker_ticket) > 0 else []
+            post_open_position = dict(by_ticket[0]) if by_ticket else (dict(by_marker[0]) if by_marker else {})
             if by_marker:
                 broker_ticket = int(max(int((r or {}).get("ticket") or 0) for r in by_marker))
+                for r in by_marker:
+                    if int((r or {}).get("ticket") or 0) == int(broker_ticket):
+                        post_open_position = dict(r)
+                        break
+            actual_lot = _to_float_or_none((post_open_position or {}).get("lot_size"))
+            if actual_lot is None or float(actual_lot) <= 0.0:
+                actual_lot = _to_float_or_none((data or {}).get("lot_size")) or float(qty)
 
             if broker_ticket > 0:
                 self._register_confirmation_ladder(
@@ -13368,7 +13833,7 @@ class TelegramBridgeService:
                     direction=str(side),
                     trade_id=0,
                     broker_ticket=int(broker_ticket),
-                    stage_lots=[float(qty)],
+                    stage_lots=[float(actual_lot)],
                     tps=[{"index": 1, "price": 0.0}],
                     source_tag=source_tag,
                     order_comment=str(marker),
@@ -13396,7 +13861,7 @@ class TelegramBridgeService:
                 symbol=sym,
                 timeframe=tf,
                 direction=side,
-                lot=float((data or {}).get("lot_size") or qty),
+                lot=float(actual_lot),
                 stop_loss=order_stop_loss,
                 ticket=int(broker_ticket) if broker_ticket > 0 else None,
                 message="order_opened",
@@ -13417,7 +13882,19 @@ class TelegramBridgeService:
                 deal_number=(int(_to_float_or_none((data or {}).get("deal")) or 0) or None),
                 broker_comment=str(marker),
                 trace_id=str(trace_id),
-                stage_payload={"catastrophe_sl": dict(cat_plan)} if bool(cat_plan) else None,
+                stage_payload={
+                    "catastrophe_sl": dict(cat_plan or {}),
+                    "requested_stop_loss": (float(order_stop_loss) if order_stop_loss is not None else None),
+                    "broker_returned_stop_loss": _to_float_or_none((data or {}).get("sl")),
+                    "post_open_stop_loss": _to_float_or_none((post_open_position or {}).get("stop_loss")),
+                    "post_open_entry_price": _to_float_or_none((post_open_position or {}).get("entry_price")),
+                    "post_open_current_price": _to_float_or_none((post_open_position or {}).get("current_price")),
+                    "post_open_lot_size": _to_float_or_none((post_open_position or {}).get("lot_size")),
+                    "requested_lot_size": float(qty),
+                    "broker_returned_lot_size": _to_float_or_none((data or {}).get("lot_size")),
+                    "post_open_ticket": int(_to_float_or_none((post_open_position or {}).get("ticket")) or 0) or None,
+                    "order_request": dict((data or {}).get("request") or {}),
+                },
             )
             sl_text = "none" if order_stop_loss is None else f"{float(order_stop_loss):.5f}"
             return (
@@ -13427,7 +13904,7 @@ class TelegramBridgeService:
                 f"Direction: {str(side)}\n"
                 f"SL: {sl_text}\n"
                 "TP: none\n"
-                f"Lot: {float((data or {}).get('lot_size') or qty):.4f}\n"
+                f"Lot: {float(actual_lot):.4f}\n"
                 f"Ticket: {int(broker_ticket)}"
             )
         except Exception as exc:
@@ -14377,6 +14854,72 @@ class TelegramBridgeService:
                 row["max_profit"] = float(cur_profit) if (prev_max is None or float(cur_profit) > float(prev_max)) else float(prev_max)
                 row["max_loss"] = float(cur_profit) if (prev_min is None or float(cur_profit) < float(prev_min)) else float(prev_min)
             if execution_mode in {"normal", "sync"}:
+                if str(row.get("profile") or "").strip().lower() == "entryexit" and str(execution_mode) == "normal":
+                    initial_sl = _to_float_or_none(row.get("initial_stop_loss"))
+                    current_sl = _to_float_or_none(pos.get("stop_loss"))
+                    entry_px = _to_float_or_none(pos.get("entry_price")) or _to_float_or_none(row.get("entry_price"))
+                    point_hint = _to_float_or_none(row.get("point"))
+                    if point_hint is None or float(point_hint) <= 0.0:
+                        point_hint = 0.01 if str(sym).startswith(("XAU", "BTC", "ETH")) else 0.0001
+                    tol = float(max(1e-8, float(point_hint) * 2.0))
+                    initial_sl_valid = (
+                        initial_sl is not None
+                        and entry_px is not None
+                        and float(initial_sl) > 0.0
+                        and (
+                            (direction == "BUY" and float(initial_sl) < float(entry_px) - tol)
+                            or (direction == "SELL" and float(initial_sl) > float(entry_px) + tol)
+                        )
+                    )
+                    current_sl_at_entry = (
+                        current_sl is not None
+                        and entry_px is not None
+                        and float(current_sl) > 0.0
+                        and abs(float(current_sl) - float(entry_px)) <= tol
+                    )
+                    if bool(initial_sl_valid) and bool(current_sl_at_entry) and abs(float(current_sl) - float(initial_sl)) > tol:
+                        restore_out = svc.modify_position_sl_tp(
+                            symbol=str(sym),
+                            position_ticket=int(ticket),
+                            stop_loss=float(initial_sl),
+                            take_profit=_to_float_or_none(pos.get("take_profit")),
+                            comment="entryexit_sl_restore",
+                        )
+                        restored = bool((restore_out or {}).get("ok"))
+                        self._append_automation_execution_log(
+                            source_type=self._source_type_from_source_tag(row.get("source_tag")),
+                            source_name=str(row.get("source_name") or "unknown"),
+                            trigger="sl_guard_update",
+                            status=("success" if restored else "failed"),
+                            symbol=str(sym),
+                            timeframe=str(row.get("timeframe") or ""),
+                            direction=str(direction),
+                            ticket=int(ticket),
+                            message=(
+                                f"entryexit_normal_sl_restored:{float(initial_sl):.5f}"
+                                if restored
+                                else f"entryexit_normal_sl_restore_failed:{str((restore_out or {}).get('error') or 'modify_failed')[:120]}"
+                            ),
+                            profile=str(row.get("profile") or "").strip().lower(),
+                            indicator=str(row.get("indicator") or "").strip(),
+                            source_tag=str(row.get("source_tag") or "").strip().lower(),
+                            max_profit=_to_float_or_none(row.get("max_profit")),
+                            max_loss=_to_float_or_none(row.get("max_loss")),
+                            execution_mode=str(execution_mode),
+                            trace_id=str(row.get("trace_id") or "").strip() or None,
+                            stage="sl_update",
+                            stage_status=("success" if restored else "failed"),
+                            stage_payload={
+                                "reason": "entryexit_normal_sl_at_entry",
+                                "entry_price": float(entry_px),
+                                "current_stop_loss": float(current_sl),
+                                "initial_stop_loss": float(initial_sl),
+                                "restore_result": dict(restore_out or {}),
+                            },
+                            error_code=(None if restored else "entryexit_sl_restore_failed"),
+                        )
+                        if restored:
+                            row["last_applied_sl"] = float(initial_sl)
                 with self._lock:
                     self._active_confirmation_signal_ladders[str(key)] = dict(row)
                 continue
