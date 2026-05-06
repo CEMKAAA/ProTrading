@@ -46,6 +46,7 @@ input bool   InpEnableExitSignals = true;
 input int    InpExitSignalShift = 1; // usually closed bar
 input int    InpExitResolvedLookbackBars = 300;
 input bool   InpExitStreakConfirmAfterBlank = true;
+input int    InpExitSignalMode = 2; // 0=instant/current candle, 1=stop candle close, 2=stop candle close + next blank candle close
 input bool   InpExitDebugLastTwo = false;
 input bool   InpSendInitialExitOnStart = false; // false prevents startup closes from historical exit buffers
 
@@ -81,6 +82,7 @@ string   g_exitBaseDirection = "";
 datetime g_exitBaseBarTime = 0;
 double   g_exitBaseValue = 0.0;
 bool     g_exitWaitForBlankRuntime = true;
+int      g_exitModeRuntime = 2;
 
 struct PendingBridgeEvent
 {
@@ -170,14 +172,66 @@ bool _json_bool_field(string text, string key, bool fallback)
    return fallback;
 }
 
+int _json_int_field(string text, string key, int fallback)
+{
+   string needle = "\"" + key + "\":";
+   int pos = StringFind(text, needle);
+   if(pos < 0)
+      return fallback;
+   int start = pos + StringLen(needle);
+   int len = StringLen(text);
+   while(start < len)
+   {
+      int ch = StringGetChar(text, start);
+      if(ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' && ch != '"')
+         break;
+      start++;
+   }
+   string raw = "";
+   while(start < len)
+   {
+      int ch2 = StringGetChar(text, start);
+      if((ch2 >= '0' && ch2 <= '9') || ch2 == '-')
+      {
+         raw = raw + StringSubstr(text, start, 1);
+         start++;
+         continue;
+      }
+      break;
+   }
+   if(StringLen(raw) <= 0)
+      return fallback;
+   return (int)StringToInteger(raw);
+}
+
+int _normalize_exit_mode_code(int modeCode, bool waitForBlank)
+{
+   if(modeCode == 0 || modeCode == 1 || modeCode == 2)
+      return modeCode;
+   return waitForBlank ? 2 : 1;
+}
+
+string _exit_mode_text(int modeCode)
+{
+   if(modeCode == 0)
+      return "instant";
+   if(modeCode == 1)
+      return "on_candle_close";
+   return "after_blank";
+}
+
 void _apply_runtime_response_config(string responseText)
 {
    bool nextExitWait = _json_bool_field(responseText, "entry_exit_exit_wait_for_blank", g_exitWaitForBlankRuntime);
-   if(nextExitWait != g_exitWaitForBlankRuntime)
+   int nextExitMode = _normalize_exit_mode_code(_json_int_field(responseText, "entry_exit_exit_mode_code", g_exitModeRuntime), nextExitWait);
+   nextExitWait = (nextExitMode == 2);
+   if(nextExitMode != g_exitModeRuntime || nextExitWait != g_exitWaitForBlankRuntime)
    {
+      g_exitModeRuntime = nextExitMode;
       g_exitWaitForBlankRuntime = nextExitWait;
       if(InpDebugPrint)
-         Print("MT4Bridge entry-exit runtime config updated exit_wait_for_blank=", (g_exitWaitForBlankRuntime ? "true" : "false"));
+         Print("MT4Bridge entry-exit runtime config updated exit_mode=", _exit_mode_text(g_exitModeRuntime),
+               " exit_wait_for_blank=", (g_exitWaitForBlankRuntime ? "true" : "false"));
    }
 }
 
@@ -1110,9 +1164,11 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
    string body =
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
-      "\"signal_hint\":\"" + _json_escape(dir) + "\","
+      "\"signal_hint\":\"" + _json_escape(dir) + "\"," 
       "\"entry_exit_enabled\":" + (InpEnableExitSignals ? "true" : "false") + ","
       "\"entry_exit_exit_wait_for_blank\":" + (g_exitWaitForBlankRuntime ? "true" : "false") + ","
+      "\"entry_exit_exit_mode\":\"" + _json_escape(_exit_mode_text(g_exitModeRuntime)) + "\","
+      "\"entry_exit_exit_mode_code\":" + IntegerToString(g_exitModeRuntime) + ","
       "\"entry_resolved_signal\":\"" + _json_escape(entryResolvedText) + "\","
       "\"exit_direction\":\"" + _json_escape(exitDirectionPayload) + "\","
       "\"exit_resolved_signal\":\"" + _json_escape(exitResolvedText) + "\","
@@ -1271,7 +1327,7 @@ bool _find_latest_exit_signal(string &exitDirection, double &signalValue, dateti
       lookback = Bars;
    _debug_last_two_exit_signals(lookback);
 
-   if(g_exitWaitForBlankRuntime)
+   if(g_exitModeRuntime == 2)
    {
       string activeDir = "";
       double activeValue = 0.0;
@@ -1324,7 +1380,7 @@ bool _find_latest_exit_signal(string &exitDirection, double &signalValue, dateti
       return false;
    }
 
-   int fromShift = MathMax(1, InpExitSignalShift);
+   int fromShift = (g_exitModeRuntime == 0) ? 0 : MathMax(1, InpExitSignalShift);
    for(int shift = fromShift; shift < lookback; shift++)
    {
       double rawBuyExit = EMPTY_VALUE;
@@ -1458,7 +1514,8 @@ int OnInit()
 {
    if(!_parse_iCustom_params())
       return(INIT_PARAMETERS_INCORRECT);
-   g_exitWaitForBlankRuntime = InpExitStreakConfirmAfterBlank;
+   g_exitModeRuntime = _normalize_exit_mode_code(InpExitSignalMode, InpExitStreakConfirmAfterBlank);
+   g_exitWaitForBlankRuntime = (g_exitModeRuntime == 2);
 
    string endpointPrimary = _build_endpoint(InpApiBaseUrl, InpApiPath);
    string reason = "";

@@ -1020,6 +1020,11 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             if "entry_exit_exit_wait_for_blank" in p
             else (p.get("exit_wait_for_blank") if "exit_wait_for_blank" in p else None)
         )
+        entry_exit_exit_mode = (
+            p.get("entry_exit_exit_mode")
+            if "entry_exit_exit_mode" in p
+            else (p.get("exit_mode") if "exit_mode" in p else None)
+        )
         sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
         sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
@@ -1078,6 +1083,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             advanced_v2_policies=(dict(advanced_v2_policies) if isinstance(advanced_v2_policies, dict) else None),
             signal_confirm_sec=signal_confirm_sec_val,
             entry_exit_exit_wait_for_blank=(bool(entry_exit_exit_wait_for_blank) if entry_exit_exit_wait_for_blank is not None else None),
+            entry_exit_exit_mode=(str(entry_exit_exit_mode) if entry_exit_exit_mode is not None else None),
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),

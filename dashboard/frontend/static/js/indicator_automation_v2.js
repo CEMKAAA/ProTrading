@@ -351,6 +351,22 @@
             || indicator.includes('royal entry');
     }
 
+    function entryExitExitMode(row) {
+        const raw = String((row || {}).entry_exit_exit_mode || ((row || {}).entry_exit || {}).exit_mode || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+        if (['instant', 'immediate', 'current_bar', 'active_bar', 'on_signal'].includes(raw)) return 'instant';
+        if (['on_candle_close', 'candle_close', 'closed_bar', 'on_close'].includes(raw)) return 'on_candle_close';
+        if (['after_blank', 'blank', 'blank_candle', 'wait_blank', 'wait_for_blank'].includes(raw)) return 'after_blank';
+        return boolish((row || {}).entry_exit_exit_wait_for_blank == null ? true : (row || {}).entry_exit_exit_wait_for_blank)
+            ? 'after_blank'
+            : 'on_candle_close';
+    }
+
+    function entryExitExitModeLabel(mode) {
+        if (mode === 'instant') return 'instant stop';
+        if (mode === 'on_candle_close') return 'stop candle close';
+        return 'stop + blank close';
+    }
+
     function fmtExitBufferIndex(v) {
         const n = Number(v);
         return Number.isFinite(n) && n >= 0 ? String(Math.trunc(n)) : '-';
@@ -711,7 +727,7 @@
             const exitMeta = `${exitKind ? `last ${exitKind} ` : ''}exit bar=${row.exit_resolved_bar_time || '-'} buffers buy_exit=${fmtExitBufferIndex(row.buy_exit_buffer)} sell_exit=${fmtExitBufferIndex(row.sell_exit_buffer)}`;
             const key = esc(row.instance_key || '');
             const isOn = boolish(row.effective_automation_enabled);
-            const exitWaitForBlank = boolish(row.entry_exit_exit_wait_for_blank == null ? true : row.entry_exit_exit_wait_for_blank);
+            const exitMode = entryExitExitMode(row);
             const auto = isOn ? '<span class="badge text-bg-success">ON</span>' : '<span class="badge text-bg-secondary">OFF</span>';
             const actionClass = isOn ? 'btn-outline-danger' : 'btn-outline-success';
             const actionText = isOn ? 'Stop' : 'Start';
@@ -734,10 +750,12 @@
                     </div>
                     <div class="d-flex flex-wrap align-items-center gap-2">
                         <div class="small text-muted">last seen ${esc(fmtTs(row.last_seen))}</div>
-                        <label class="form-check form-switch m-0 small">
-                            <input class="form-check-input v2-entry-exit-wait-toggle" type="checkbox" data-instance="${key}" ${exitWaitForBlank ? 'checked' : ''}>
-                            <span class="form-check-label">wait blank candle on stop</span>
-                        </label>
+                        <select class="form-select form-select-sm v2-entry-exit-mode-select" data-instance="${key}" title="Exit / Stop mode">
+                            <option value="after_blank" ${exitMode === 'after_blank' ? 'selected' : ''}>stop + blank close</option>
+                            <option value="on_candle_close" ${exitMode === 'on_candle_close' ? 'selected' : ''}>stop candle close</option>
+                            <option value="instant" ${exitMode === 'instant' ? 'selected' : ''}>instant stop</option>
+                        </select>
+                        <span class="badge text-bg-light">${esc(entryExitExitModeLabel(exitMode))}</span>
                         <input type="number" class="form-control form-control-sm v2-lot-input" min="0.01" step="0.01" data-instance="${key}" value="${esc(fmtNum(row.lot_size || 0.1, 2))}" title="Lot size">
                         <button type="button" class="btn btn-sm ${actionClass} v2-entry-exit-toggle" data-instance="${key}" data-enabled="${isOn ? '0' : '1'}">${actionText}</button>
                     </div>
@@ -1091,17 +1109,21 @@
             });
         });
         els.entryExitBody.addEventListener('change', ev => {
-            const waitToggle = ev.target.closest('.v2-entry-exit-wait-toggle');
+            const modeSelect = ev.target.closest('.v2-entry-exit-mode-select');
             const input = ev.target.closest('.v2-lot-input');
-            if (!input && !waitToggle) return;
-            if (waitToggle) {
-                const key = waitToggle.getAttribute('data-instance') || '';
+            if (!input && !modeSelect) return;
+            if (modeSelect) {
+                const key = modeSelect.getAttribute('data-instance') || '';
                 const row = allInstances().find(r => String(r.instance_key || '') === key);
                 if (!row) return;
-                waitToggle.disabled = true;
-                updateInstanceSettings(row, { entry_exit_exit_wait_for_blank: !!waitToggle.checked }).catch(err => {
+                const mode = String(modeSelect.value || '').trim();
+                modeSelect.disabled = true;
+                updateInstanceSettings(row, {
+                    entry_exit_exit_mode: mode,
+                    entry_exit_exit_wait_for_blank: mode === 'after_blank'
+                }).catch(err => {
                     showError(err);
-                    waitToggle.disabled = false;
+                    modeSelect.disabled = false;
                     renderEntryExitPanel();
                 });
                 return;

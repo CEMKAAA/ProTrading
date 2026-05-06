@@ -4871,10 +4871,49 @@ class TelegramBridgeService:
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def _indicator_bridge_instance_entry_exit_overrides(cls, family: Any) -> Dict[str, Dict[str, bool]]:
+    @classmethod
+    def _normalize_entry_exit_exit_mode(cls, value: Any, fallback: str = "after_blank") -> str:
+        raw = str(value if value is not None else "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "instant": "instant",
+            "immediate": "instant",
+            "current": "instant",
+            "current_bar": "instant",
+            "active_bar": "instant",
+            "on_signal": "instant",
+            "candle_close": "on_candle_close",
+            "on_candle_close": "on_candle_close",
+            "closed_bar": "on_candle_close",
+            "on_close": "on_candle_close",
+            "close_bar": "on_candle_close",
+            "after_blank": "after_blank",
+            "blank": "after_blank",
+            "blank_candle": "after_blank",
+            "wait_blank": "after_blank",
+            "wait_for_blank": "after_blank",
+        }
+        if isinstance(value, bool):
+            return "after_blank" if bool(value) else "on_candle_close"
+        if raw in {"0", "false", "no", "off"}:
+            return "on_candle_close"
+        if raw in {"1", "true", "yes", "on"}:
+            return "after_blank"
+        return str(aliases.get(raw, fallback if fallback in {"instant", "on_candle_close", "after_blank"} else "after_blank"))
+
+    @classmethod
+    def _entry_exit_exit_mode_code(cls, mode: Any) -> int:
+        m = cls._normalize_entry_exit_exit_mode(mode)
+        if m == "instant":
+            return 0
+        if m == "on_candle_close":
+            return 1
+        return 2
+
+    @classmethod
+    def _indicator_bridge_instance_entry_exit_overrides(cls, family: Any) -> Dict[str, Dict[str, Any]]:
         key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_ENTRY_EXIT")
         raw = str(cls._get_env_value(key, "{}")).strip()
-        out: Dict[str, Dict[str, bool]] = {}
+        out: Dict[str, Dict[str, Any]] = {}
         if not raw:
             return out
         try:
@@ -4888,21 +4927,31 @@ class TelegramBridgeService:
             if not item:
                 continue
             cfg = v if isinstance(v, dict) else {}
+            mode = cls._normalize_entry_exit_exit_mode(
+                cfg.get("exit_mode"),
+                "after_blank" if bool(cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
+            )
             out[item] = {
-                "exit_wait_for_blank": bool(cfg.get("exit_wait_for_blank", True)),
+                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_mode": str(mode),
             }
         return out
 
     @classmethod
     def _serialize_indicator_bridge_instance_entry_exit_overrides(cls, cfg_map: Dict[str, Any]) -> str:
-        cleaned: Dict[str, Dict[str, bool]] = {}
+        cleaned: Dict[str, Dict[str, Any]] = {}
         for k, v in (cfg_map or {}).items():
             item = str(k or "").strip().lower()
             if not item:
                 continue
             cfg = v if isinstance(v, dict) else {}
+            mode = cls._normalize_entry_exit_exit_mode(
+                cfg.get("exit_mode"),
+                "after_blank" if bool(cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
+            )
             cleaned[item] = {
-                "exit_wait_for_blank": bool(cfg.get("exit_wait_for_blank", True)),
+                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_mode": str(mode),
             }
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
@@ -5029,7 +5078,11 @@ class TelegramBridgeService:
             signal_confirm_sec = float(self._indicator_bridge_default_signal_confirm_sec(timeframe_name))
         entry_exit_overrides = self._indicator_bridge_instance_entry_exit_overrides(terminal_family)
         entry_exit_cfg = dict(entry_exit_overrides.get(instance_key_l) or {})
-        entry_exit_exit_wait_for_blank = bool(entry_exit_cfg.get("exit_wait_for_blank", True))
+        entry_exit_exit_mode = self._normalize_entry_exit_exit_mode(
+            entry_exit_cfg.get("exit_mode"),
+            "after_blank" if bool(entry_exit_cfg.get("exit_wait_for_blank", True)) else "on_candle_close",
+        )
+        entry_exit_exit_wait_for_blank = bool(entry_exit_exit_mode == "after_blank")
         sync_overrides = self._indicator_bridge_instance_sync_overrides(terminal_family)
         sync_cfg = dict(sync_overrides.get(instance_key_l) or {})
         sync_direction_tf = self._normalize_tf_token(sync_cfg.get("direction_tf"), "M5")
@@ -5069,8 +5122,12 @@ class TelegramBridgeService:
             "mode_sync_lot": float(mode_sync_lot),
             "signal_confirm_sec": float(max(0.0, min(86400.0, float(signal_confirm_sec)))),
             "entry_exit_exit_wait_for_blank": bool(entry_exit_exit_wait_for_blank),
+            "entry_exit_exit_mode": str(entry_exit_exit_mode),
+            "entry_exit_exit_mode_code": int(self._entry_exit_exit_mode_code(entry_exit_exit_mode)),
             "entry_exit": {
                 "exit_wait_for_blank": bool(entry_exit_exit_wait_for_blank),
+                "exit_mode": str(entry_exit_exit_mode),
+                "exit_mode_code": int(self._entry_exit_exit_mode_code(entry_exit_exit_mode)),
             },
             "sync": {
                 "direction_tf": str(sync_direction_tf),
@@ -5240,6 +5297,8 @@ class TelegramBridgeService:
             "buy_exit_buffer": (int(buy_exit_buffer_val) if buy_exit_buffer_val is not None else None),
             "sell_exit_buffer": (int(sell_exit_buffer_val) if sell_exit_buffer_val is not None else None),
             "entry_exit_exit_wait_for_blank": bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True)),
+            "entry_exit_exit_mode": str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank"),
+            "entry_exit_exit_mode_code": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2),
             "entry_exit": dict(runtime_cfg.get("entry_exit") or {}),
             "secondary_enabled": str(p.get("secondary_enabled") or "").strip().lower() in {"1", "true", "yes", "on"},
             "secondary_indicator": str(p.get("secondary_indicator") or "").strip(),
@@ -5432,6 +5491,7 @@ class TelegramBridgeService:
         advanced_v2_policies: Optional[Dict[str, Any]] = None,
         signal_confirm_sec: Optional[float] = None,
         entry_exit_exit_wait_for_blank: Optional[bool] = None,
+        entry_exit_exit_mode: Optional[str] = None,
         sync_direction_tf: Optional[str] = None,
         sync_entry_tf: Optional[str] = None,
         sync_exit_tf: Optional[str] = None,
@@ -5514,12 +5574,17 @@ class TelegramBridgeService:
             if v is None or (not math.isfinite(float(v))):
                 return {"ok": False, "error": "invalid_signal_confirm_sec"}
             signal_confirm_map[mk] = float(max(0.0, min(86400.0, float(v))))
-        if entry_exit_exit_wait_for_blank is not None:
+        if entry_exit_exit_wait_for_blank is not None or entry_exit_exit_mode is not None:
             mk = str(instance_key).lower()
             prev_entry_exit = dict(entry_exit_map.get(mk) or {})
-            prev_entry_exit["exit_wait_for_blank"] = bool(entry_exit_exit_wait_for_blank)
+            if entry_exit_exit_mode is not None:
+                prev_entry_exit["exit_mode"] = self._normalize_entry_exit_exit_mode(entry_exit_exit_mode)
+            elif entry_exit_exit_wait_for_blank is not None:
+                prev_entry_exit["exit_mode"] = "after_blank" if bool(entry_exit_exit_wait_for_blank) else "on_candle_close"
+            mode = self._normalize_entry_exit_exit_mode(prev_entry_exit.get("exit_mode"))
             entry_exit_map[mk] = {
-                "exit_wait_for_blank": bool(prev_entry_exit.get("exit_wait_for_blank", True)),
+                "exit_wait_for_blank": bool(mode == "after_blank"),
+                "exit_mode": str(mode),
             }
         if (
             sync_direction_tf is not None
@@ -5577,6 +5642,8 @@ class TelegramBridgeService:
                 prev["mode_lots"] = dict(runtime_cfg.get("mode_lots") or {})
                 prev["signal_confirm_sec"] = _to_float_or_none(runtime_cfg.get("signal_confirm_sec"))
                 prev["entry_exit_exit_wait_for_blank"] = bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True))
+                prev["entry_exit_exit_mode"] = str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank")
+                prev["entry_exit_exit_mode_code"] = int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2)
                 prev["entry_exit"] = dict(runtime_cfg.get("entry_exit") or {})
                 prev["sync"] = dict(runtime_cfg.get("sync") or {})
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
@@ -5784,6 +5851,10 @@ class TelegramBridgeService:
                     "advanced_v2_policies": dict(runtime_cfg.get("advanced_v2_policies") or {}),
                     "mode_lots": dict(runtime_cfg.get("mode_lots") or {}),
                     "signal_confirm_sec": _to_float_or_none(runtime_cfg.get("signal_confirm_sec")),
+                    "entry_exit_exit_wait_for_blank": bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True)),
+                    "entry_exit_exit_mode": str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank"),
+                    "entry_exit_exit_mode_code": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2),
+                    "entry_exit": dict(runtime_cfg.get("entry_exit") or {}),
                     "sync": dict(runtime_cfg.get("sync") or {}),
                     "state": ("OPEN" if linked else inferred_state),
                     "has_open_ladder": bool(linked),
