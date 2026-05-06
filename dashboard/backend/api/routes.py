@@ -861,6 +861,66 @@ def indicator_bridge_state(
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.post("/indicator-bridge/risk-settings")
+def indicator_bridge_risk_settings(payload: Dict[str, Any]):
+    """Persist global Indicator Automation V2 risk settings."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        daily_target = p.get("daily_target_usd") if "daily_target_usd" in p else p.get("daily_target")
+        daily_max_loss = p.get("daily_max_loss_usd") if "daily_max_loss_usd" in p else p.get("daily_max_loss")
+        target_val = None
+        max_loss_val = None
+        if daily_target is not None:
+            try:
+                target_val = float(daily_target)
+            except Exception:
+                return {"ok": False, "error": "invalid_daily_target_usd"}
+        if daily_max_loss is not None:
+            try:
+                max_loss_val = float(daily_max_loss)
+            except Exception:
+                return {"ok": False, "error": "invalid_daily_max_loss_usd"}
+        result = svc.update_indicator_bridge_risk_settings(
+            daily_target_usd=target_val,
+            daily_max_loss_usd=max_loss_val,
+        )
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_risk_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/dual-gate-settings")
+def indicator_bridge_dual_gate_settings(payload: Dict[str, Any]):
+    """Persist global Dual Indicator Gate settings."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        enabled_raw = p.get("none_close_enabled")
+        enabled = None
+        if enabled_raw is not None:
+            if isinstance(enabled_raw, bool):
+                enabled = bool(enabled_raw)
+            else:
+                enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+        result = svc.update_indicator_bridge_dual_gate_settings(none_close_enabled=enabled)
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_dual_gate_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.get("/indicator-bridge/rsi-telemetry")
 def indicator_bridge_rsi_telemetry(
     limit: int = Query(500, ge=20, le=5000),
@@ -955,6 +1015,11 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         mode_sync_lot = p.get("mode_sync_lot") if "mode_sync_lot" in p else None
         advanced_v2_policies = p.get("advanced_v2_policies") if "advanced_v2_policies" in p else None
         signal_confirm_sec = p.get("signal_confirm_sec") if "signal_confirm_sec" in p else None
+        entry_exit_exit_wait_for_blank = (
+            p.get("entry_exit_exit_wait_for_blank")
+            if "entry_exit_exit_wait_for_blank" in p
+            else (p.get("exit_wait_for_blank") if "exit_wait_for_blank" in p else None)
+        )
         sync_direction_tf = p.get("sync_direction_tf") if "sync_direction_tf" in p else p.get("sync_anchor_tf")
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
         sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
@@ -1012,6 +1077,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             mode_sync_lot=mode_sync_lot_val,
             advanced_v2_policies=(dict(advanced_v2_policies) if isinstance(advanced_v2_policies, dict) else None),
             signal_confirm_sec=signal_confirm_sec_val,
+            entry_exit_exit_wait_for_blank=(bool(entry_exit_exit_wait_for_blank) if entry_exit_exit_wait_for_blank is not None else None),
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),

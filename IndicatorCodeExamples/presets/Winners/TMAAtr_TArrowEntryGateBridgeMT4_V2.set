@@ -11,6 +11,7 @@ InpSecondaryRequireClosedBar=true
 InpSecondaryBuyBufferIndex=0
 InpSecondarySellBufferIndex=1
 InpSecondaryUseLastSignalAsResolved=true
+InpSecondaryArrowStreakConfirmAfterBlank=true
 InpSecondaryResolvedLookbackBars=300
 InpRequireSecondaryAgreement=false
 InpSecondaryGovernorMode=false

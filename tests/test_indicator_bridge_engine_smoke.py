@@ -316,6 +316,31 @@ def test_smoke_bridge_v2_confirmed_signal_bypasses_backend_wait(monkeypatch):
         svc.stop()
 
 
+def test_smoke_bridge_v2_confirmed_signal_requires_resolved_direction_when_supplied(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=20.0)
+    try:
+        payload = _payload(hint="BUY", message="V2 CONFIRMED BUY WITH NONE RESOLVED")
+        payload["bridge_event_type"] = "confirmed_signal"
+        payload["bridge_version"] = "v2"
+        payload["confirmed_direction"] = "BUY"
+        payload["resolved_signal"] = "NONE"
+        out = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+        assert out.get("ok") is True
+        assert out.get("executed") is False
+        assert out.get("reason") == "confirmed_signal_without_resolved_direction"
+        assert broker.get_open_positions(symbol="BTCUSDm") == []
+
+        mismatch = dict(payload)
+        mismatch["resolved_signal"] = "SELL"
+        out_mismatch = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=mismatch)
+        assert out_mismatch.get("ok") is True
+        assert out_mismatch.get("executed") is False
+        assert out_mismatch.get("reason") == "confirmed_signal_resolved_mismatch"
+        assert broker.get_open_positions(symbol="BTCUSDm") == []
+    finally:
+        svc.stop()
+
+
 def test_smoke_bridge_v2_resolved_state_corrects_stuck_reverse(monkeypatch):
     svc, broker = _build_service(monkeypatch, signal_confirm_sec=20.0)
     try:
@@ -523,6 +548,20 @@ def test_smoke_bridge_v2_secondary_entry_gate_waits_without_secondary_exit(monke
         # Entry-gate mode must not close the existing SELL just because secondary flipped.
         assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
         assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+
+        main_reverse = dict(state_payload)
+        main_reverse["signal_hint"] = "BUY"
+        main_reverse["resolved_signal"] = "BUY"
+        main_reverse["confirmed_direction"] = "BUY"
+        main_reverse["secondary_signal"] = "SELL"
+        closed = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=main_reverse)
+        assert closed.get("ok") is True
+        rec = dict(closed.get("reconcile") or {})
+        assert rec.get("reason") == "secondary_entry_gate_waiting_direction_mismatch"
+        assert rec.get("corrected") is True
+        assert int((rec.get("close_result") or {}).get("closed_count") or 0) == 2
+        # Main reverse must close stale positions even when secondary blocks the new entry.
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 0
     finally:
         svc.stop()
 
@@ -553,6 +592,49 @@ def test_smoke_bridge_v2_secondary_entry_gate_uses_arrow_resolved_signal(monkeyp
         assert dict(opened.get("reconcile") or {}).get("reason") == "secondary_entry_gate_agreement_forwarded_as_confirmed_signal"
         assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
         assert {str(r.get("direction")) for r in broker.get_open_positions(symbol="BTCUSDm")} == {"SELL"}
+    finally:
+        svc.stop()
+
+
+def test_smoke_bridge_v2_secondary_entry_gate_optional_none_timeout_closes(monkeypatch):
+    svc, broker = _build_service(monkeypatch, signal_confirm_sec=0.0)
+    try:
+        monkeypatch.setattr(svc, "get_indicator_bridge_dual_gate_settings", lambda: {"none_close_enabled": True})
+        state_payload = {
+            "indicator": r"IntrepidIndicator\Intrepid Trend Direction",
+            "signal_profile": "intrepid",
+            "signal_hint": "SELL",
+            "symbol": "BTCUSDm",
+            "timeframe": "M1",
+            "bridge_event_type": "resolved_state",
+            "bridge_version": "v2",
+            "resolved_signal": "SELL",
+            "confirmed_direction": "SELL",
+            "pending_direction": "",
+            "confirm_seconds": 0,
+            "secondary_enabled": True,
+            "secondary_entry_gate_enabled": True,
+            "secondary_signal": "SELL",
+            "secondary_resolved_signal": "SELL",
+            "ingest_source": "bridge",
+        }
+        opened = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=state_payload)
+        assert opened.get("ok") is True
+        assert dict(opened.get("reconcile") or {}).get("reason") == "secondary_entry_gate_agreement_forwarded_as_confirmed_signal"
+        assert len(broker.get_open_positions(symbol="BTCUSDm")) == 2
+
+        none_state = dict(state_payload)
+        none_state["signal_hint"] = ""
+        none_state["resolved_signal"] = "NONE"
+        none_state["confirmed_direction"] = ""
+        none_state["secondary_signal"] = "NONE"
+        none_state["secondary_resolved_signal"] = "SELL"
+        closed = svc.ingest_indicator_bridge_signal(terminal_family="mt4", payload=none_state)
+        assert closed.get("ok") is True
+        rec = dict(closed.get("reconcile") or {})
+        assert rec.get("reason") == "resolved_none_timeout_close"
+        assert int((rec.get("close_result") or {}).get("closed_count") or 0) == 2
+        assert broker.get_open_positions(symbol="BTCUSDm") == []
     finally:
         svc.stop()
 
@@ -681,7 +763,10 @@ def test_smoke_transient_missing_position_not_marked_closed_immediately(monkeypa
         assert len(keys) == 1
         k0 = str(keys[0])
 
-        broker.hide_positions_once(count=1)
+        # _push_confirmation_signal_ladders() performs an execution reconcile
+        # pass before the ladder pass, so the fake transient miss must cover
+        # both reads to exercise the ladder missing-position branch.
+        broker.hide_positions_once(count=2)
         svc._push_confirmation_signal_ladders()
         with svc._lock:
             assert k0 in svc._active_confirmation_signal_ladders
@@ -846,7 +931,10 @@ def test_smoke_mt5_transient_missing_position_not_marked_closed_immediately(monk
         assert len(keys) == 1
         k0 = str(keys[0])
 
-        broker.hide_positions_once(count=1)
+        # _push_confirmation_signal_ladders() performs an execution reconcile
+        # pass before the ladder pass, so the fake transient miss must cover
+        # both reads to exercise the ladder missing-position branch.
+        broker.hide_positions_once(count=2)
         svc._push_confirmation_signal_ladders()
         with svc._lock:
             assert k0 in svc._active_confirmation_signal_ladders

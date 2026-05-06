@@ -15,6 +15,8 @@ input int    InpBuyBufferIndex = 0;
 input int    InpSellBufferIndex = 1;
 input string InpICustomParamsCsv = ""; // Optional indicator Inputs as CSV: e.g. "14,0,1"
 input int    InpSignalShift = 0;     // 0=current bar, 1=closed bar
+input bool   InpArrowStreakConfirmAfterBlank = false; // Main arrow indicators: latest arrow is tradable after next closed blank candle
+input int    InpArrowResolvedLookbackBars = 300;
 input bool   InpSecondaryEnabled = false; // Optional helper indicator for confirmation/entry/TP context
 input string InpSecondaryIndicatorName = "";
 input string InpSecondaryICustomParamsCsv = "";
@@ -23,6 +25,7 @@ input bool   InpSecondaryRequireClosedBar = false; // true for arrow indicators:
 input int    InpSecondaryBuyBufferIndex = -1;
 input int    InpSecondarySellBufferIndex = -1;
 input bool   InpSecondaryUseLastSignalAsResolved = false; // true for arrow indicators: keep last BUY/SELL until opposite arrow
+input bool   InpSecondaryArrowStreakConfirmAfterBlank = false; // T ARROW style: update resolved only after first blank candle after latest arrow
 input int    InpSecondaryResolvedLookbackBars = 300;
 input bool   InpRequireSecondaryAgreement = false;
 input bool   InpSecondaryGovernorMode = false; // backend waits for agreement and exits on secondary reverse
@@ -77,9 +80,18 @@ double   g_iCustomParams[];
 int      g_iCustomParamCount = 0;
 double   g_secondaryICustomParams[];
 int      g_secondaryICustomParamCount = 0;
+int      g_arrowBaseDir = 0;
+datetime g_arrowBaseBarTime = 0;
+double   g_arrowBaseValue = 0.0;
+int      g_arrowResolvedDir = 0;
+datetime g_arrowResolvedBarTime = 0;
+double   g_arrowResolvedValue = 0.0;
 int      g_secondaryResolvedDir = 0;
 datetime g_secondaryResolvedBarTime = 0;
 double   g_secondaryResolvedValue = 0.0;
+int      g_secondaryArrowBaseDir = 0;
+datetime g_secondaryArrowBaseBarTime = 0;
+double   g_secondaryArrowBaseValue = 0.0;
 
 struct PendingBridgeEvent
 {
@@ -412,11 +424,23 @@ bool _is_supported_webrequest_endpoint(string endpoint, string &reason)
    return true;
 }
 
-bool _is_signal_value(double v)
+bool _is_empty_buffer_value(double v)
 {
    if(!MathIsValidNumber(v))
-      return false;
+      return true;
    if(v == EMPTY_VALUE)
+      return true;
+   // Some custom indicators return the MT4 empty sentinel as a calculated
+   // double. Treat near-sentinel values as empty too so NONE never becomes a
+   // synthetic BUY/SELL.
+   if(MathAbs(v - EMPTY_VALUE) < 0.5)
+      return true;
+   return false;
+}
+
+bool _is_signal_value(double v)
+{
+   if(_is_empty_buffer_value(v))
       return false;
    if(MathAbs(v) < InpSignalAbsMin)
       return false;
@@ -425,9 +449,7 @@ bool _is_signal_value(double v)
 
 bool _is_price_value(double v)
 {
-   if(!MathIsValidNumber(v))
-      return false;
-   if(v == EMPTY_VALUE)
+   if(_is_empty_buffer_value(v))
       return false;
    if(v <= 0.0)
       return false;
@@ -450,9 +472,7 @@ string _json_number_or_null(double v, int digits = 8)
 
 string _json_raw_number_or_null(double v, int digits = 8)
 {
-   if(!MathIsValidNumber(v))
-      return "null";
-   if(v == EMPTY_VALUE)
+   if(_is_empty_buffer_value(v))
       return "null";
    return DoubleToString(v, digits);
 }
@@ -705,7 +725,7 @@ string _direction_to_text(int direction)
    return "NONE";
 }
 
-bool _read_resolved_signal(int barShift, int &direction, string &dirText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
+bool _read_raw_signal_at(int barShift, int &direction, string &dirText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
 {
    direction = 0;
    dirText = "NONE";
@@ -735,6 +755,116 @@ bool _read_resolved_signal(int barShift, int &direction, string &dirText, double
       direction = -direction;
    dirText = _direction_to_text(direction);
    signalValue = (buySignal ? rawBuy : rawSell);
+   return true;
+}
+
+bool _resolve_arrow_streak_latest(int startShift)
+{
+   int lookback = InpArrowResolvedLookbackBars;
+   if(lookback < 1)
+      lookback = 300;
+   if(lookback > Bars)
+      lookback = Bars;
+
+   int activeDir = 0;
+   string activeTxt = "NONE";
+   double activeVal = 0.0;
+   datetime activeBt = 0;
+   double activeRb = EMPTY_VALUE;
+   double activeRs = EMPTY_VALUE;
+   bool activeHas = _read_raw_signal_at(0, activeDir, activeTxt, activeVal, activeBt, activeRb, activeRs);
+   if(activeTxt == "AMBIGUOUS")
+      return false;
+   if(activeHas && activeDir != 0)
+   {
+      g_arrowBaseDir = activeDir;
+      g_arrowBaseBarTime = activeBt;
+      g_arrowBaseValue = activeVal;
+      g_arrowResolvedDir = 0;
+      g_arrowResolvedBarTime = 0;
+      g_arrowResolvedValue = 0.0;
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 arrow streak active arrow waiting close direction=", _direction_to_text(activeDir),
+               " bar=", TimeToString(activeBt, TIME_DATE|TIME_SECONDS));
+      return false;
+   }
+
+   int lastClosedDir = 0;
+   string lastClosedTxt = "NONE";
+   double lastClosedVal = 0.0;
+   datetime lastClosedBt = 0;
+   double lastClosedRb = EMPTY_VALUE;
+   double lastClosedRs = EMPTY_VALUE;
+   bool lastClosedHas = _read_raw_signal_at(1, lastClosedDir, lastClosedTxt, lastClosedVal, lastClosedBt, lastClosedRb, lastClosedRs);
+   if(lastClosedTxt == "AMBIGUOUS")
+      return false;
+   if(lastClosedHas && lastClosedDir != 0)
+   {
+      g_arrowBaseDir = lastClosedDir;
+      g_arrowBaseBarTime = lastClosedBt;
+      g_arrowBaseValue = lastClosedVal;
+      g_arrowResolvedDir = 0;
+      g_arrowResolvedBarTime = 0;
+      g_arrowResolvedValue = 0.0;
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 arrow streak latest closed arrow pending direction=", _direction_to_text(lastClosedDir),
+               " base_bar=", TimeToString(lastClosedBt, TIME_DATE|TIME_SECONDS));
+      return false;
+   }
+
+   for(int shift = 2; shift < lookback; shift++)
+   {
+      int d = 0;
+      string txt = "NONE";
+      double val = 0.0;
+      datetime bt = 0;
+      double rb = EMPTY_VALUE;
+      double rs = EMPTY_VALUE;
+      bool has = _read_raw_signal_at(shift, d, txt, val, bt, rb, rs);
+      if(txt == "AMBIGUOUS")
+         continue;
+      if(has && d != 0)
+      {
+         g_arrowResolvedDir = d;
+         g_arrowResolvedBarTime = bt;
+         g_arrowResolvedValue = val;
+         g_arrowBaseDir = 0;
+         g_arrowBaseBarTime = 0;
+         g_arrowBaseValue = 0.0;
+         if(InpDebugPrint)
+            Print("MT4BridgeV2 arrow streak resolved from history direction=", _direction_to_text(d),
+                  " base_bar=", TimeToString(bt, TIME_DATE|TIME_SECONDS),
+                  " lookback_shift=", IntegerToString(shift));
+         return true;
+      }
+   }
+   return false;
+}
+
+bool _read_resolved_signal(int barShift, int &direction, string &dirText, double &signalValue, datetime &barTime, double &rawBuy, double &rawSell)
+{
+   if(!InpArrowStreakConfirmAfterBlank)
+      return _read_raw_signal_at(barShift, direction, dirText, signalValue, barTime, rawBuy, rawSell);
+
+   int rawDir = 0;
+   string rawText = "NONE";
+   double rawValue = 0.0;
+   bool hasRaw = _read_raw_signal_at(barShift, rawDir, rawText, rawValue, barTime, rawBuy, rawSell);
+   if(rawText == "AMBIGUOUS")
+   {
+      direction = 0;
+      dirText = "AMBIGUOUS";
+      signalValue = 0.0;
+      return false;
+   }
+
+   _resolve_arrow_streak_latest(MathMax(1, barShift));
+
+   direction = g_arrowResolvedDir;
+   dirText = _direction_to_text(direction);
+   signalValue = g_arrowResolvedValue;
+   if(direction == 0)
+      return false;
    return true;
 }
 
@@ -798,6 +928,42 @@ bool _scan_secondary_resolved_direction(int startShift)
    return false;
 }
 
+bool _scan_secondary_arrow_streak_resolved(int startShift)
+{
+   if(InpSecondaryBuyBufferIndex < 0 && InpSecondarySellBufferIndex < 0)
+      return false;
+
+   int lookback = MathMax(1, InpSecondaryResolvedLookbackBars);
+   int fromShift = MathMax(1, startShift);
+   bool hasBlankAfter = false;
+   for(int shift = fromShift; shift <= fromShift + lookback; shift++)
+   {
+      int direction = 0;
+      string stateText = "NONE";
+      double signalValue = 0.0;
+      datetime barTime = 0;
+      double rawBuy = EMPTY_VALUE;
+      double rawSell = EMPTY_VALUE;
+      bool has = _read_secondary_direction_at(shift, direction, stateText, signalValue, barTime, rawBuy, rawSell);
+      if(!has)
+         continue;
+      if(direction == 0)
+      {
+         if(stateText == "NONE")
+            hasBlankAfter = true;
+         continue;
+      }
+      if(hasBlankAfter)
+      {
+         g_secondaryResolvedDir = direction;
+         g_secondaryResolvedBarTime = barTime;
+         g_secondaryResolvedValue = signalValue;
+         return true;
+      }
+   }
+   return false;
+}
+
 bool _read_secondary_context(int primaryDirection, string &stateText, double &rawBuy, double &rawSell,
                              double &entryPrice, double &stopLoss, double &tp1, double &tp2,
                              double &tp3, double &tp4, double &tp5, datetime &barTime,
@@ -841,29 +1007,74 @@ bool _read_secondary_context(int primaryDirection, string &stateText, double &ra
          resolvedBarTime = rawBarTime;
          return !InpRequireSecondaryAgreement;
       }
-      if(secondaryDirection != 0)
-      {
-         g_secondaryResolvedDir = secondaryDirection;
-         g_secondaryResolvedBarTime = rawBarTime;
-         g_secondaryResolvedValue = secondaryValue;
-      }
-      else if(InpSecondaryUseLastSignalAsResolved && g_secondaryResolvedDir == 0)
-      {
-         _scan_secondary_resolved_direction(shift);
-      }
 
-      int rawSecondaryDirection = secondaryDirection;
-      int effectiveSecondaryDirection = secondaryDirection;
-      if(InpSecondaryUseLastSignalAsResolved && effectiveSecondaryDirection == 0 && g_secondaryResolvedDir != 0)
-         effectiveSecondaryDirection = g_secondaryResolvedDir;
+      if(InpSecondaryArrowStreakConfirmAfterBlank)
+      {
+         int rawSecondaryDirection = secondaryDirection;
+         if(rawSecondaryDirection != 0)
+         {
+            if(g_secondaryArrowBaseBarTime != rawBarTime || g_secondaryArrowBaseDir != rawSecondaryDirection)
+            {
+               g_secondaryArrowBaseDir = rawSecondaryDirection;
+               g_secondaryArrowBaseBarTime = rawBarTime;
+               g_secondaryArrowBaseValue = secondaryValue;
+               if(InpDebugPrint)
+                  Print("MT4BridgeV2 secondary arrow base updated direction=", _direction_to_text(rawSecondaryDirection),
+                        " bar=", TimeToString(rawBarTime, TIME_DATE|TIME_SECONDS),
+                        " indicator=", InpSecondaryIndicatorName);
+            }
+         }
+         else if(g_secondaryArrowBaseDir != 0 && rawBarTime > g_secondaryArrowBaseBarTime)
+         {
+            g_secondaryResolvedDir = g_secondaryArrowBaseDir;
+            g_secondaryResolvedBarTime = g_secondaryArrowBaseBarTime;
+            g_secondaryResolvedValue = g_secondaryArrowBaseValue;
+            if(InpDebugPrint)
+               Print("MT4BridgeV2 secondary arrow confirmed direction=", _direction_to_text(g_secondaryResolvedDir),
+                     " base_bar=", TimeToString(g_secondaryArrowBaseBarTime, TIME_DATE|TIME_SECONDS),
+                     " blank_bar=", TimeToString(rawBarTime, TIME_DATE|TIME_SECONDS),
+                     " indicator=", InpSecondaryIndicatorName);
+            g_secondaryArrowBaseDir = 0;
+            g_secondaryArrowBaseBarTime = 0;
+            g_secondaryArrowBaseValue = 0.0;
+         }
+         else if(g_secondaryResolvedDir == 0)
+         {
+            _scan_secondary_arrow_streak_resolved(shift);
+         }
 
-      secondaryDirection = effectiveSecondaryDirection;
-      resolvedStateText = _direction_to_text(secondaryDirection);
-      resolvedBarTime = (InpSecondaryUseLastSignalAsResolved && rawSecondaryDirection == 0 && secondaryDirection != 0 && g_secondaryResolvedBarTime > 0)
-                        ? g_secondaryResolvedBarTime
-                        : rawBarTime;
-      if(InpRequireSecondaryAgreement && (secondaryDirection == 0 || secondaryDirection != primaryDirection))
-         return false;
+         secondaryDirection = g_secondaryResolvedDir;
+         resolvedStateText = _direction_to_text(secondaryDirection);
+         resolvedBarTime = (g_secondaryResolvedBarTime > 0) ? g_secondaryResolvedBarTime : rawBarTime;
+         if(InpRequireSecondaryAgreement && (secondaryDirection == 0 || secondaryDirection != primaryDirection))
+            return false;
+      }
+      else
+      {
+         if(secondaryDirection != 0)
+         {
+            g_secondaryResolvedDir = secondaryDirection;
+            g_secondaryResolvedBarTime = rawBarTime;
+            g_secondaryResolvedValue = secondaryValue;
+         }
+         else if(InpSecondaryUseLastSignalAsResolved && g_secondaryResolvedDir == 0)
+         {
+            _scan_secondary_resolved_direction(shift);
+         }
+
+         int rawSecondaryDirection = secondaryDirection;
+         int effectiveSecondaryDirection = secondaryDirection;
+         if(InpSecondaryUseLastSignalAsResolved && effectiveSecondaryDirection == 0 && g_secondaryResolvedDir != 0)
+            effectiveSecondaryDirection = g_secondaryResolvedDir;
+
+         secondaryDirection = effectiveSecondaryDirection;
+         resolvedStateText = _direction_to_text(secondaryDirection);
+         resolvedBarTime = (InpSecondaryUseLastSignalAsResolved && rawSecondaryDirection == 0 && secondaryDirection != 0 && g_secondaryResolvedBarTime > 0)
+                           ? g_secondaryResolvedBarTime
+                           : rawBarTime;
+         if(InpRequireSecondaryAgreement && (secondaryDirection == 0 || secondaryDirection != primaryDirection))
+            return false;
+      }
    }
    else
    {
