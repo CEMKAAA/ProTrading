@@ -33,6 +33,8 @@
         liqScanSymbols: document.getElementById('v2-liq-scan-symbols'),
         liqScanTf: document.getElementById('v2-liq-scan-tf'),
         liqScanRun: document.getElementById('v2-liq-scan-run'),
+        liqWatchAdd: document.getElementById('v2-liq-watch-add'),
+        liqWatchClear: document.getElementById('v2-liq-watch-clear'),
         liqScanStatus: document.getElementById('v2-liq-scan-status'),
         liqScanResults: document.getElementById('v2-liq-scan-results'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
@@ -51,6 +53,9 @@
     let state = null;
     let timer = null;
     let uiTimer = null;
+    let stateLoadInFlight = false;
+    let stateLoadController = null;
+    let stateRefreshPausedUntil = 0;
     let liquidityScanRows = [];
 
     function esc(v) {
@@ -106,18 +111,67 @@
     }
 
     async function loadState() {
-        const res = await fetch('/api/indicator-bridge/state?limit=700', { credentials: 'same-origin' });
-        const data = await res.json();
-        if (!res.ok || !data || data.ok === false) {
-            throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+        if (stateLoadInFlight || Date.now() < stateRefreshPausedUntil) return;
+        stateLoadInFlight = true;
+        stateLoadController = new AbortController();
+        try {
+            const res = await fetch('/api/indicator-bridge/state?limit=700', {
+                credentials: 'same-origin',
+                signal: stateLoadController.signal
+            });
+            const data = await res.json();
+            if (!res.ok || !data || data.ok === false) {
+                throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+            }
+            state = data;
+            state._client_loaded_at_ms = Date.now();
+            if (els.alert) els.alert.innerHTML = '';
+            render();
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+            throw err;
+        } finally {
+            stateLoadInFlight = false;
+            stateLoadController = null;
         }
-        state = data;
+    }
+
+    function pauseStateRefresh(ms) {
+        stateRefreshPausedUntil = Math.max(stateRefreshPausedUntil, Date.now() + Math.max(0, Number(ms || 0)));
+        if (stateLoadController) {
+            try { stateLoadController.abort(); } catch (_) {}
+        }
+    }
+
+    function mergeStatePatch(data) {
+        if (!data || typeof data !== 'object') return;
+        state = Object.assign({}, state || {}, data);
         state._client_loaded_at_ms = Date.now();
-        if (els.alert) els.alert.innerHTML = '';
-        render();
+    }
+
+    function refreshStateSoon(delayMs) {
+        window.setTimeout(() => {
+            loadState().catch(showError);
+        }, Math.max(0, Number(delayMs || 0)));
+    }
+
+    function applyInstancePatch(row, options) {
+        if (!row || !options || typeof options !== 'object') return;
+        if (Object.prototype.hasOwnProperty.call(options, 'enabled')) {
+            row.automation_enabled = !!options.enabled;
+            row.effective_automation_enabled = !!options.enabled;
+        }
+        if (Object.prototype.hasOwnProperty.call(options, 'lot_size')) row.lot_size = Number(options.lot_size);
+        ['mode_advanced_enabled', 'mode_advanced_v2_enabled', 'mode_normal_enabled', 'mode_sync_enabled'].forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(options, key)) row[key] = !!options[key];
+        });
+        if (options.advanced_v2_policies && typeof options.advanced_v2_policies === 'object') {
+            row.advanced_v2_policies = Object.assign({}, options.advanced_v2_policies);
+        }
     }
 
     async function updateInstanceSettings(row, options) {
+        pauseStateRefresh(2000);
         const payload = Object.assign({
             terminal_family: String(row.terminal_family || '').toLowerCase(),
             indicator: row.indicator || '',
@@ -134,10 +188,15 @@
         if (!res.ok || data.ok === false) {
             throw new Error(data.error || data.detail || `HTTP ${res.status}`);
         }
-        await loadState();
+        mergeStatePatch(data);
+        applyInstancePatch(row, options || {});
+        renderInstances();
+        renderEntryExitPanel();
+        refreshStateSoon(150);
     }
 
     async function saveRiskSettings() {
+        pauseStateRefresh(2000);
         const dailyTarget = parseMoney(els.riskDailyTarget ? els.riskDailyTarget.value : '');
         const dailyMaxLoss = parseMoney(els.riskDailyMaxLoss ? els.riskDailyMaxLoss.value : '');
         if (dailyTarget == null || dailyMaxLoss == null) {
@@ -161,9 +220,10 @@
             if (!res.ok || data.ok === false) {
                 throw new Error(data.error || data.detail || `HTTP ${res.status}`);
             }
-            state = data;
+            mergeStatePatch(data);
             showNotice('Risk settings saved. New trades will use the updated daily guard and catastrophe SL.', 'success');
             render();
+            refreshStateSoon(1000);
         } finally {
             if (els.riskSave) {
                 els.riskSave.disabled = false;
@@ -173,6 +233,7 @@
     }
 
     async function setDailyTargetOverride(enabled) {
+        pauseStateRefresh(2000);
         if (els.riskTargetOverride) {
             els.riskTargetOverride.disabled = true;
             els.riskTargetOverride.textContent = enabled ? 'Enabling...' : 'Disabling...';
@@ -188,12 +249,13 @@
             if (!res.ok || data.ok === false) {
                 throw new Error(data.error || data.detail || `HTTP ${res.status}`);
             }
-            state = data;
+            mergeStatePatch(data);
             showNotice(enabled
                 ? 'Daily target guard bypassed for today. Max daily loss guard is still active.'
                 : 'Daily target guard restored for today.',
                 enabled ? 'warning' : 'success');
             render();
+            refreshStateSoon(1000);
         } finally {
             if (els.riskTargetOverride) {
                 els.riskTargetOverride.disabled = false;
@@ -206,6 +268,7 @@
     }
 
     async function saveDualGateSettings(enabled) {
+        pauseStateRefresh(2000);
         const res = await fetch('/api/indicator-bridge/dual-gate-settings', {
             method: 'POST',
             credentials: 'same-origin',
@@ -216,13 +279,14 @@
         if (!res.ok || data.ok === false) {
             throw new Error(data.error || data.detail || `HTTP ${res.status}`);
         }
-        state = data;
-        state._client_loaded_at_ms = Date.now();
+        mergeStatePatch(data);
         showNotice(`Dual NONE timeout close ${enabled ? 'enabled' : 'disabled'}.`, 'success');
         render();
+        refreshStateSoon(250);
     }
 
     async function saveLiquidityGovernorSettings() {
+        pauseStateRefresh(2000);
         const payload = {
             enabled: !!(els.liqGovToggle && els.liqGovToggle.checked),
             context_timeframe: els.liqGovTf ? els.liqGovTf.value : 'M15',
@@ -247,10 +311,10 @@
             if (!res.ok || data.ok === false) {
                 throw new Error(data.error || data.detail || `HTTP ${res.status}`);
             }
-            state = data;
-            state._client_loaded_at_ms = Date.now();
+            mergeStatePatch(data);
             showNotice(`Liquidity context governor ${payload.enabled ? 'enabled' : 'disabled'}.`, 'success');
             render();
+            refreshStateSoon(250);
         } finally {
             if (els.liqGovSave) {
                 els.liqGovSave.disabled = false;
@@ -260,6 +324,7 @@
     }
 
     async function runLiquidityOpportunityScan() {
+        pauseStateRefresh(5000);
         const raw = els.liqScanSymbols ? els.liqScanSymbols.value : '';
         const symbols = String(raw || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean).slice(0, 12);
         if (!symbols.length) {
@@ -292,6 +357,50 @@
             if (els.liqScanRun) {
                 els.liqScanRun.disabled = false;
                 els.liqScanRun.textContent = 'Scan Opportunities';
+            }
+        }
+    }
+
+    async function updateLiquidityWatchlist(action) {
+        pauseStateRefresh(3000);
+        const act = String(action || 'add').toLowerCase();
+        const rows = Array.isArray(liquidityScanRows) ? liquidityScanRows : [];
+        const symbols = rows.map(row => String((row || {}).symbol || '').trim()).filter(Boolean);
+        if (act !== 'clear' && !symbols.length) {
+            throw new Error('Run a liquidity scan first, then track the results');
+        }
+        const contextTf = act === 'clear'
+            ? ''
+            : String((rows[0] || {}).context_timeframe || (els.liqScanTf ? els.liqScanTf.value : '') || (els.liqGovTf ? els.liqGovTf.value : 'M15') || 'M15').toUpperCase();
+        const btn = act === 'clear' ? els.liqWatchClear : els.liqWatchAdd;
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = act === 'clear' ? 'Clearing...' : 'Tracking...';
+        }
+        try {
+            const res = await fetch('/api/indicator-bridge/liquidity-watchlist', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: act,
+                    symbols,
+                    context_timeframe: contextTf
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            mergeStatePatch(data);
+            const count = Array.isArray((data || {}).liquidity_context_watchlist) ? data.liquidity_context_watchlist.length : 0;
+            showNotice(act === 'clear' ? 'Liquidity watchlist cleared.' : `Liquidity watchlist updated (${count} tracked).`, 'success');
+            render();
+            refreshStateSoon(250);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = act === 'clear' ? 'Clear Tracked' : 'Track Results';
             }
         }
     }
@@ -1210,13 +1319,14 @@
                     const indicators = Array.isArray(ch.indicators) && ch.indicators.length
                         ? ch.indicators.slice(0, 3).join(', ')
                         : '-';
+                    const watchBadge = boolish(ch.watchlist) ? ' <span class="badge text-bg-info">TRACKED</span>' : '';
                     const livePx = probe.price != null ? fmtNum(probe.price, 2) : (row.current_price != null ? fmtNum(row.current_price, 2) : '-');
                     const liveRange = probe.m1_low != null && probe.m1_high != null
                         ? `${fmtNum(probe.m1_low, 2)} - ${fmtNum(probe.m1_high, 2)}`
                         : '-';
                     return `<div class="mb-2 pb-2 border-bottom">
                         <div class="d-flex flex-wrap justify-content-between gap-2">
-                            <span><strong>${esc(ch.symbol || '-')} ${esc(ch.timeframe || '')}</strong> <span class="text-muted">context ${esc(row.context_timeframe || cfg.context_timeframe || '-')}</span></span>
+                            <span><strong>${esc(ch.symbol || '-')} ${esc(ch.timeframe || '')}</strong>${watchBadge} <span class="text-muted">context ${esc(row.context_timeframe || cfg.context_timeframe || '-')}</span></span>
                             <span>${active ? '<span class="badge text-bg-success">SETUP ACTIVE</span>' : (String(setup.status || '').toLowerCase() === 'waiting' ? '<span class="badge text-bg-warning">WAITING</span>' : '<span class="badge text-bg-secondary">NO SETUP</span>')}</span>
                         </div>
                         <div class="row g-2 mt-1">
@@ -1499,6 +1609,12 @@
     }
     if (els.liqScanRun) {
         els.liqScanRun.addEventListener('click', () => runLiquidityOpportunityScan().catch(showError));
+    }
+    if (els.liqWatchAdd) {
+        els.liqWatchAdd.addEventListener('click', () => updateLiquidityWatchlist('add').catch(showError));
+    }
+    if (els.liqWatchClear) {
+        els.liqWatchClear.addEventListener('click', () => updateLiquidityWatchlist('clear').catch(showError));
     }
     if (els.liqScanSymbols) {
         els.liqScanSymbols.addEventListener('keydown', ev => {

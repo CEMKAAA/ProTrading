@@ -197,12 +197,14 @@
                 <div class="col-md-2">
                     <label class="form-label small text-muted mb-1" for="v2-liq-gov-tf">Context TF</label>
                     <select id="v2-liq-gov-tf" class="form-select form-select-sm">
+                        <option value="AUTO">AUTO (+2 TF)</option>
                         <option value="M1">M1</option>
                         <option value="M5">M5</option>
                         <option value="M15">M15</option>
                         <option value="M30">M30</option>
                         <option value="H1">H1</option>
                         <option value="H4">H4</option>
+                        <option value="D1">D1</option>
                     </select>
                 </div>
                 <div class="col-md-2">
@@ -240,7 +242,11 @@
                                 <strong>Liquidity Opportunity Scanner</strong>
                                 <div class="small text-muted">Enter symbols and scan the same Workbench liquidity setup engine without enabling the governor.</div>
                             </div>
-                            <button id="v2-liq-scan-run" type="button" class="btn btn-sm btn-warning">Scan Opportunities</button>
+                            <div class="d-flex flex-wrap gap-2">
+                                <button id="v2-liq-watch-clear" type="button" class="btn btn-sm btn-outline-secondary">Clear Tracked</button>
+                                <button id="v2-liq-watch-add" type="button" class="btn btn-sm btn-outline-dark">Track Results</button>
+                                <button id="v2-liq-scan-run" type="button" class="btn btn-sm btn-warning">Scan Opportunities</button>
+                            </div>
                         </div>
                         <div class="row g-2 align-items-end">
                             <div class="col-md-8">
@@ -251,12 +257,14 @@
                                 <label class="form-label small text-muted mb-1" for="v2-liq-scan-tf">Context TF</label>
                                 <select id="v2-liq-scan-tf" class="form-select form-select-sm">
                                     <option value="">Use governor TF</option>
+                                    <option value="AUTO">AUTO (+2 TF)</option>
                                     <option value="M1">M1</option>
                                     <option value="M5">M5</option>
                                     <option value="M15">M15</option>
                                     <option value="M30">M30</option>
                                     <option value="H1">H1</option>
                                     <option value="H4">H4</option>
+                                    <option value="D1">D1</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
