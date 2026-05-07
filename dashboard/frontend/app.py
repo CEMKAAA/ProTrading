@@ -1552,6 +1552,36 @@ def indicator_bridge_risk_settings_proxy():
     return jsonify(res)
 
 
+@app.route('/api/indicator-bridge/liquidity-governor-settings', methods=['POST'])
+def indicator_bridge_liquidity_governor_settings_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/liquidity-governor-settings',
+        data=payload,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update liquidity governor settings'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/liquidity-opportunity-scan', methods=['POST'])
+def indicator_bridge_liquidity_opportunity_scan_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/liquidity-opportunity-scan',
+        data=payload,
+        return_error=True,
+        timeout_sec=75,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to scan liquidity opportunities'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/indicator-bridge/open-trade/close', methods=['POST'])
 def indicator_bridge_open_trade_close_proxy():
     payload = request.get_json(silent=True) or {}

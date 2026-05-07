@@ -20,19 +20,38 @@
         dualNoneCloseStatus: document.getElementById('v2-dual-none-close-status'),
         dualGatePanel: document.getElementById('v2-dual-gate-panel'),
         dualGateBody: document.getElementById('v2-dual-gate-body'),
+        liqGovToggle: document.getElementById('v2-liq-gov-toggle'),
+        liqGovStatus: document.getElementById('v2-liq-gov-status'),
+        liqGovTf: document.getElementById('v2-liq-gov-tf'),
+        liqGovLookback: document.getElementById('v2-liq-gov-lookback'),
+        liqGovFreshness: document.getElementById('v2-liq-gov-freshness'),
+        liqGovRejection: document.getElementById('v2-liq-gov-rejection'),
+        liqGovContinuation: document.getElementById('v2-liq-gov-continuation'),
+        liqGovBlockNoSetup: document.getElementById('v2-liq-gov-block-no-setup'),
+        liqGovSave: document.getElementById('v2-liq-gov-save'),
+        liqGovContext: document.getElementById('v2-liq-gov-context'),
+        liqScanSymbols: document.getElementById('v2-liq-scan-symbols'),
+        liqScanTf: document.getElementById('v2-liq-scan-tf'),
+        liqScanRun: document.getElementById('v2-liq-scan-run'),
+        liqScanStatus: document.getElementById('v2-liq-scan-status'),
+        liqScanResults: document.getElementById('v2-liq-scan-results'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
         openBody: document.getElementById('v2-open-body'),
         instanceBody: document.getElementById('v2-instance-body'),
         auditBody: document.getElementById('v2-audit-body'),
+        liqAuditBody: document.getElementById('v2-liq-audit-body'),
+        liqAuditCount: document.getElementById('v2-liq-audit-count'),
         openFilter: document.getElementById('v2-open-filter'),
         instanceFilter: document.getElementById('v2-instance-filter'),
-        auditFilter: document.getElementById('v2-audit-filter')
+        auditFilter: document.getElementById('v2-audit-filter'),
+        liqAuditFilter: document.getElementById('v2-liq-audit-filter')
     };
 
     let state = null;
     let timer = null;
     let uiTimer = null;
+    let liquidityScanRows = [];
 
     function esc(v) {
         return String(v == null ? '' : v)
@@ -72,6 +91,18 @@
     function parseMoney(raw) {
         const n = Number(String(raw == null ? '' : raw).trim().replace(',', '.'));
         return Number.isFinite(n) && n >= 0 ? Number(n.toFixed(2)) : null;
+    }
+
+    function parsePositiveInt(raw, fallback) {
+        const n = Number(String(raw == null ? '' : raw).trim().replace(',', '.'));
+        if (!Number.isFinite(n)) return fallback == null ? null : fallback;
+        return Math.max(0, Math.round(n));
+    }
+
+    function parseUnitFloat(raw, fallback) {
+        const n = Number(String(raw == null ? '' : raw).trim().replace(',', '.'));
+        if (!Number.isFinite(n)) return fallback == null ? null : fallback;
+        return Math.max(0, Math.min(1, n));
     }
 
     async function loadState() {
@@ -189,6 +220,80 @@
         state._client_loaded_at_ms = Date.now();
         showNotice(`Dual NONE timeout close ${enabled ? 'enabled' : 'disabled'}.`, 'success');
         render();
+    }
+
+    async function saveLiquidityGovernorSettings() {
+        const payload = {
+            enabled: !!(els.liqGovToggle && els.liqGovToggle.checked),
+            context_timeframe: els.liqGovTf ? els.liqGovTf.value : 'M15',
+            lookback_bars: parsePositiveInt(els.liqGovLookback ? els.liqGovLookback.value : '', 500),
+            freshness_bars: parsePositiveInt(els.liqGovFreshness ? els.liqGovFreshness.value : '', 96),
+            min_rejection_ratio: parseUnitFloat(els.liqGovRejection ? els.liqGovRejection.value : '', 0.30),
+            allow_continuation: !!(els.liqGovContinuation && els.liqGovContinuation.checked),
+            block_on_no_setup: !!(els.liqGovBlockNoSetup && els.liqGovBlockNoSetup.checked)
+        };
+        if (els.liqGovSave) {
+            els.liqGovSave.disabled = true;
+            els.liqGovSave.textContent = 'Saving...';
+        }
+        try {
+            const res = await fetch('/api/indicator-bridge/liquidity-governor-settings', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            state = data;
+            state._client_loaded_at_ms = Date.now();
+            showNotice(`Liquidity context governor ${payload.enabled ? 'enabled' : 'disabled'}.`, 'success');
+            render();
+        } finally {
+            if (els.liqGovSave) {
+                els.liqGovSave.disabled = false;
+                els.liqGovSave.textContent = 'Save Governor';
+            }
+        }
+    }
+
+    async function runLiquidityOpportunityScan() {
+        const raw = els.liqScanSymbols ? els.liqScanSymbols.value : '';
+        const symbols = String(raw || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean).slice(0, 12);
+        if (!symbols.length) {
+            throw new Error('Enter at least one symbol for liquidity scan');
+        }
+        if (els.liqScanRun) {
+            els.liqScanRun.disabled = true;
+            els.liqScanRun.textContent = 'Scanning...';
+        }
+        if (els.liqScanStatus) els.liqScanStatus.textContent = `Scanning ${symbols.length} symbol(s)...`;
+        try {
+            const res = await fetch('/api/indicator-bridge/liquidity-opportunity-scan', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    symbols,
+                    context_timeframe: els.liqScanTf ? els.liqScanTf.value : '',
+                    max_symbols: 12
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            liquidityScanRows = Array.isArray(data.rows) ? data.rows : [];
+            if (els.liqScanStatus) els.liqScanStatus.textContent = `${liquidityScanRows.length} report(s) @ ${fmtTs(data.generated_at)}`;
+            renderLiquidityScanResults();
+        } finally {
+            if (els.liqScanRun) {
+                els.liqScanRun.disabled = false;
+                els.liqScanRun.textContent = 'Scan Opportunities';
+            }
+        }
     }
 
     function showError(err) {
@@ -505,7 +610,24 @@
         const rows = (((state || {}).execution_logs || {}).rows || []);
         if (!Array.isArray(rows)) return [];
         const keys = v2InstanceKeys();
-        return rows.filter(row => keys.has(auditMatchKey(row)));
+        return rows.filter(row => !isLiquidityAuditRow(row) && keys.has(auditMatchKey(row)));
+    }
+
+    function liquidityAuditRows() {
+        const preferred = (((state || {}).liquidity_audit_logs || {}).rows || []);
+        if (Array.isArray(preferred) && preferred.length) return preferred;
+        const rows = (((state || {}).execution_logs || {}).rows || []);
+        if (!Array.isArray(rows)) return [];
+        return rows.filter(isLiquidityAuditRow);
+    }
+
+    function isLiquidityAuditRow(row) {
+        const stage = String((row || {}).stage || '').trim().toLowerCase();
+        const sourceTag = String((row || {}).source_tag || '').trim().toLowerCase();
+        const indicator = String((row || {}).indicator || (row || {}).source_name || '').trim().toLowerCase();
+        return stage.startsWith('liquidity_context')
+            || sourceTag.includes('|liquidity_governor|')
+            || indicator === 'liquiditygovernor';
     }
 
     function isZeroPnlBreakEvenOperation(row) {
@@ -584,6 +706,30 @@
         if (Number.isFinite(buyBuf) && buyBuf >= 0) bits.push(`buy_exit=${buyBuf}`);
         if (Number.isFinite(sellBuf) && sellBuf >= 0) bits.push(`sell_exit=${sellBuf}`);
         return bits.length ? `<div class="small text-info">exit audit: ${esc(bits.join(' | '))}</div>` : '';
+    }
+
+    function liquidityAuditDetail(row) {
+        if (!isLiquidityAuditRow(row)) return '';
+        const payload = ((row || {}).stage_payload || {});
+        const setup = payload && typeof payload === 'object' ? (payload.setup || {}) : {};
+        const bits = [];
+        const status = String(setup.status || payload.status || '').trim();
+        const reason = String(setup.reason || payload.reason || '').trim();
+        const dir = String(setup.direction || payload.signal_direction || row.direction || '').trim();
+        const price = Number(setup.current_price || payload.current_price);
+        const zone = setup.entry_zone || {};
+        const invalidation = Number(setup.invalidation);
+        const target = Number(setup.target_price);
+        const rr = Number(setup.rr_to_target);
+        if (status) bits.push(`status=${status}`);
+        if (reason) bits.push(`reason=${reason}`);
+        if (dir) bits.push(`dir=${dir}`);
+        if (Number.isFinite(price)) bits.push(`px=${fmtNum(price, 2)}`);
+        if (zone && zone.low != null && zone.high != null) bits.push(`zone=${fmtNum(zone.low, 2)}-${fmtNum(zone.high, 2)}`);
+        if (Number.isFinite(invalidation)) bits.push(`inv=${fmtNum(invalidation, 2)}`);
+        if (Number.isFinite(target)) bits.push(`target=${fmtNum(target, 2)}`);
+        if (Number.isFinite(rr)) bits.push(`rr=${fmtNum(rr, 2)}`);
+        return bits.length ? `<div class="small text-warning">liq audit: ${esc(bits.join(' | '))}</div>` : '';
     }
 
     async function closeOpenTrade(row) {
@@ -1001,6 +1147,152 @@
         }
     }
 
+    function renderLiquidityGovernorSettings() {
+        const cfg = (state || {}).liquidity_context_governor || {};
+        const enabled = boolish(cfg.enabled);
+        if (els.liqGovToggle) els.liqGovToggle.checked = enabled;
+        if (els.liqGovStatus) {
+            els.liqGovStatus.className = enabled ? 'badge text-bg-success' : 'badge text-bg-secondary';
+            els.liqGovStatus.textContent = enabled ? 'LIQ GATE ON' : 'OFF';
+        }
+        if (els.liqGovTf && document.activeElement !== els.liqGovTf) {
+            els.liqGovTf.value = String(cfg.context_timeframe || 'M15').toUpperCase();
+        }
+        if (els.liqGovLookback && document.activeElement !== els.liqGovLookback) {
+            els.liqGovLookback.value = String(cfg.lookback_bars || 500);
+        }
+        if (els.liqGovFreshness && document.activeElement !== els.liqGovFreshness) {
+            els.liqGovFreshness.value = String(cfg.freshness_bars || 96);
+        }
+        if (els.liqGovRejection && document.activeElement !== els.liqGovRejection) {
+            els.liqGovRejection.value = Number(cfg.min_rejection_ratio == null ? 0.30 : cfg.min_rejection_ratio).toFixed(2);
+        }
+        if (els.liqGovContinuation) els.liqGovContinuation.checked = boolish(cfg.allow_continuation);
+        if (els.liqGovBlockNoSetup) els.liqGovBlockNoSetup.checked = boolish(cfg.block_on_no_setup);
+        if (els.liqGovContext) {
+            const rows = Array.isArray((state || {}).liquidity_context_cache) ? state.liquidity_context_cache : [];
+            const channels = Array.isArray((state || {}).liquidity_context_channels) ? state.liquidity_context_channels : [];
+            const contextBySymbol = {};
+            rows.forEach(row => {
+                const sym = String((row || {}).symbol || '').toUpperCase();
+                if (sym && !contextBySymbol[sym]) contextBySymbol[sym] = row;
+            });
+            if (!channels.length) {
+                els.liqGovContext.innerHTML = '<div class="text-muted">No active indicator channels detected yet.</div>';
+            } else {
+                els.liqGovContext.innerHTML = channels.slice(0, 8).map(ch => {
+                    const row = (ch && typeof ch.liquidity_context === 'object' ? ch.liquidity_context : null)
+                        || contextBySymbol[String(ch.symbol || '').toUpperCase()]
+                        || {};
+                    const setup = (ch && typeof ch.liquidity_setup === 'object' ? ch.liquidity_setup : null)
+                        || row.setup
+                        || {};
+                    const dir = normDirection(setup.direction);
+                    const active = boolish(setup.active);
+                    const reason = setup.reason || row.error || '';
+                    const probe = (ch && typeof ch.liquidity_live_probe === 'object' ? ch.liquidity_live_probe : null)
+                        || row.live_probe
+                        || {};
+                    const dirCls = dir === 'BUY' ? 'text-success' : (dir === 'SELL' ? 'text-danger' : 'text-muted');
+                    const zone = setup.entry_zone
+                        ? `${fmtNum(setup.entry_zone.low, 2)} - ${fmtNum(setup.entry_zone.high, 2)}`
+                        : (setup.entry_zone_low != null && setup.entry_zone_high != null ? `${fmtNum(setup.entry_zone_low, 2)} - ${fmtNum(setup.entry_zone_high, 2)}` : '-');
+                    const condition = setup.invalidated
+                        ? 'invalidated'
+                        : (setup.target_reached
+                            ? 'target reached'
+                            : (setup.in_entry_zone
+                            ? 'inside entry zone'
+                            : (setup.continuation_ok ? `continuation ok (${fmtNum(setup.extension_atr, 2)} ATR)` : 'waiting / blocked')));
+                    const invalidation = setup.invalidation == null ? '-' : fmtNum(setup.invalidation, 2);
+                    const target = setup.target_price == null ? '-' : fmtNum(setup.target_price, 2);
+                    const rr = setup.rr_to_target == null ? '-' : fmtNum(setup.rr_to_target, 2);
+                    const indicators = Array.isArray(ch.indicators) && ch.indicators.length
+                        ? ch.indicators.slice(0, 3).join(', ')
+                        : '-';
+                    const livePx = probe.price != null ? fmtNum(probe.price, 2) : (row.current_price != null ? fmtNum(row.current_price, 2) : '-');
+                    const liveRange = probe.m1_low != null && probe.m1_high != null
+                        ? `${fmtNum(probe.m1_low, 2)} - ${fmtNum(probe.m1_high, 2)}`
+                        : '-';
+                    return `<div class="mb-2 pb-2 border-bottom">
+                        <div class="d-flex flex-wrap justify-content-between gap-2">
+                            <span><strong>${esc(ch.symbol || '-')} ${esc(ch.timeframe || '')}</strong> <span class="text-muted">context ${esc(row.context_timeframe || cfg.context_timeframe || '-')}</span></span>
+                            <span>${active ? '<span class="badge text-bg-success">SETUP ACTIVE</span>' : (String(setup.status || '').toLowerCase() === 'waiting' ? '<span class="badge text-bg-warning">WAITING</span>' : '<span class="badge text-bg-secondary">NO SETUP</span>')}</span>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-md-2"><span class="text-muted">Bias</span><br><span class="${dirCls} fw-bold">${esc(dir || 'NONE')}</span></div>
+                            <div class="col-md-3"><span class="text-muted">Entry zone</span><br><span class="v2-mono">${esc(zone)}</span></div>
+                            <div class="col-md-2"><span class="text-muted">Condition</span><br>${esc(condition)}</div>
+                            <div class="col-md-2"><span class="text-muted">Invalidation</span><br><span class="v2-mono">${esc(invalidation)}</span></div>
+                            <div class="col-md-2"><span class="text-muted">Target / RR</span><br><span class="v2-mono">${esc(target)} / ${esc(rr)}</span></div>
+                            <div class="col-md-1"><span class="text-muted">Inst</span><br>${esc(ch.instances || 0)}</div>
+                        </div>
+                        <div class="small text-muted mt-1">Live px: <span class="v2-mono">${esc(livePx)}</span> / M1 range: <span class="v2-mono">${esc(liveRange)}</span> / Indicators: ${esc(indicators)}${reason ? ` / ${esc(reason)}` : ''}</div>
+                    </div>`;
+                }).join('');
+            }
+        }
+    }
+
+    function liquidityStatusBadge(status) {
+        const s = String(status || '').toLowerCase();
+        if (s === 'active') return '<span class="badge text-bg-success">ACTIVE</span>';
+        if (s === 'waiting') return '<span class="badge text-bg-warning">WAITING</span>';
+        if (s === 'watching') return '<span class="badge text-bg-warning">WATCHING</span>';
+        if (s === 'invalidated') return '<span class="badge text-bg-secondary">INVALIDATED</span>';
+        if (s === 'error') return '<span class="badge text-bg-danger">ERROR</span>';
+        return '<span class="badge text-bg-light text-dark">NO SETUP</span>';
+    }
+
+    function liquidityConditionText(row) {
+        if (!row || row.ok === false) return row && row.reason ? row.reason : 'scan_error';
+        if (boolish(row.invalidated)) return 'invalidated';
+        if (boolish(row.target_reached)) return 'target reached';
+        if (boolish(row.in_entry_zone)) return 'inside entry zone';
+        if (boolish(row.continuation_ok)) return `continuation ok (${fmtNum(row.extension_atr, 2)} ATR)`;
+        return row.reason || 'waiting / blocked';
+    }
+
+    function renderLiquidityScanResults() {
+        if (!els.liqScanResults) return;
+        if (!liquidityScanRows.length) {
+            els.liqScanResults.innerHTML = 'No scan yet.';
+            return;
+        }
+        els.liqScanResults.innerHTML = `<div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Symbol</th><th>Status</th><th>Bias</th><th>Price</th><th>Entry Zone</th><th>Condition</th><th>Invalidation</th><th>Target / RR</th><th>Sweep</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${liquidityScanRows.map(row => {
+                        const dir = normDirection(row.bias);
+                        const dirCls = dir === 'BUY' ? 'text-success' : (dir === 'SELL' ? 'text-danger' : 'text-muted');
+                        const zoneLow = row.entry_zone && row.entry_zone.low != null ? row.entry_zone.low : row.entry_zone_low;
+                        const zoneHigh = row.entry_zone && row.entry_zone.high != null ? row.entry_zone.high : row.entry_zone_high;
+                        const zone = zoneLow != null && zoneHigh != null ? `${fmtNum(zoneLow, 2)} - ${fmtNum(zoneHigh, 2)}` : '-';
+                        const sweep = row.sweep_quality
+                            ? `${esc(row.sweep_quality)} / rej ${fmtNum(row.rejection_ratio, 2)} / age ${esc(row.age_bars)}`
+                            : '-';
+                        return `<tr>
+                            <td><strong>${esc(row.symbol || '-')}</strong><div class="small text-muted">${esc(row.context_timeframe || '')}</div></td>
+                            <td>${liquidityStatusBadge(row.status)}</td>
+                            <td class="${dirCls} fw-bold">${esc(dir || 'NONE')}</td>
+                            <td class="v2-mono">${fmtNum(row.current_price, 2)}</td>
+                            <td class="v2-mono">${esc(zone)}</td>
+                            <td>${esc(liquidityConditionText(row))}</td>
+                            <td class="v2-mono">${row.invalidation == null ? '-' : fmtNum(row.invalidation, 2)}</td>
+                            <td class="v2-mono">${row.target_price == null ? '-' : fmtNum(row.target_price, 2)} / ${row.rr_to_target == null ? '-' : fmtNum(row.rr_to_target, 2)}</td>
+                            <td>${sweep}<div class="small text-muted">zones ${esc(row.zones_count || 0)} pools ${esc(row.pools_count || 0)} sweeps ${esc(row.sweeps_count || 0)}</div></td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>`;
+    }
+
     function renderInstances() {
         const q = els.instanceFilter ? els.instanceFilter.value : '';
         const rows = displayInstances()
@@ -1041,6 +1333,51 @@
                 <td>${pendingText}</td>
                 <td><input type="number" class="form-control form-control-sm v2-lot-input" min="0.01" step="0.01" data-instance="${esc(row.instance_key || '')}" value="${esc(fmtNum(row.lot_size || 0.1, 2))}" title="Lot size"></td>
                 <td><button type="button" class="btn btn-sm ${actionClass} v2-instance-toggle" data-instance="${esc(row.instance_key || '')}" data-enabled="${isOn ? '0' : '1'}">${actionText}</button></td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderLiquidityAudit() {
+        const q = els.liqAuditFilter ? els.liqAuditFilter.value : '';
+        const rows = liquidityAuditRows().filter(r => textMatch(r, q)).slice(0, 1000);
+        if (els.liqAuditCount) els.liqAuditCount.textContent = String(rows.length);
+        if (!els.liqAuditBody) return;
+        if (!rows.length) {
+            els.liqAuditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No liquidity governor audit rows yet.</td></tr>';
+            return;
+        }
+        els.liqAuditBody.innerHTML = rows.map(row => {
+            const payload = ((row || {}).stage_payload || {});
+            const setup = payload && typeof payload === 'object' ? (payload.setup || {}) : {};
+            const event = String(row.status || row.trigger || row.message || row.stage || '-').trim();
+            const stage = String(row.stage || '').trim();
+            const status = String(setup.status || payload.status || row.stage_status || '-').trim();
+            const reason = String(setup.reason || payload.reason || row.message || row.close_reason || '-').trim();
+            const direction = String(setup.direction || payload.signal_direction || row.direction || '-').trim();
+            const price = Number(setup.current_price || payload.current_price);
+            const zone = setup.entry_zone || {};
+            const low = Number(zone.low);
+            const high = Number(zone.high);
+            const invalidation = Number(setup.invalidation);
+            const target = Number(setup.target_price);
+            const rr = Number(setup.rr_to_target);
+            const setupId = String(payload.setup_id || setup.setup_id || '').trim();
+            const decision = String(payload.decision || payload.guard_decision || '').trim();
+            const detail = liquidityAuditDetail(row);
+            const statusCls = status.toUpperCase() === 'ACTIVE'
+                ? 'text-success'
+                : (status.toUpperCase() === 'WAITING' ? 'text-warning' : 'text-muted');
+            return `<tr>
+                <td>${esc(event || '-')}<div class="small text-muted">${esc(fmtTs(row.event_ts || row.opened_at))}</div></td>
+                <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}<div class="small text-muted">${esc(stage || '-')}</div></td>
+                <td class="${statusCls} fw-semibold">${esc(status || '-')}</td>
+                <td>${esc(direction || '-')}</td>
+                <td>${Number.isFinite(price) ? fmtNum(price, 2) : '-'}</td>
+                <td>${Number.isFinite(low) && Number.isFinite(high) ? `${fmtNum(low, 2)} - ${fmtNum(high, 2)}` : '-'}</td>
+                <td>${Number.isFinite(invalidation) ? fmtNum(invalidation, 2) : '-'}</td>
+                <td>${Number.isFinite(target) ? fmtNum(target, 2) : '-'}${Number.isFinite(rr) ? `<div class="small text-muted">RR ${fmtNum(rr, 2)}</div>` : ''}</td>
+                <td>${esc(decision || reason || '-')}${detail}</td>
+                <td class="v2-mono small">${esc(setupId || row.source_tag || '-')}</td>
             </tr>`;
         }).join('');
     }
@@ -1099,16 +1436,19 @@
         if (els.auditCount) els.auditCount.textContent = String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).filter(isReadableTradeAuditRow).length);
         renderRiskSettings();
         renderDualGateSettings();
+        renderLiquidityGovernorSettings();
+        renderLiquidityScanResults();
         renderDualGatePanel();
         renderEntryExitPanel();
         renderOpenTrades();
         renderInstances();
+        renderLiquidityAudit();
         renderAudit();
     }
 
     function schedule() {
         if (timer) clearInterval(timer);
-        timer = setInterval(() => loadState().catch(showError), 5000);
+        timer = setInterval(() => loadState().catch(showError), 1000);
         if (uiTimer) clearInterval(uiTimer);
         uiTimer = setInterval(() => {
             if (!state) return;
@@ -1120,7 +1460,7 @@
         }, 1000);
     }
 
-    [els.openFilter, els.instanceFilter, els.auditFilter].forEach(el => {
+    [els.openFilter, els.instanceFilter, els.auditFilter, els.liqAuditFilter].forEach(el => {
         if (el) el.addEventListener('input', render);
     });
     [els.riskDailyTarget, els.riskDailyMaxLoss].forEach(el => {
@@ -1149,6 +1489,20 @@
             }).finally(() => {
                 input.disabled = false;
             });
+        });
+    }
+    if (els.liqGovSave) {
+        els.liqGovSave.addEventListener('click', () => saveLiquidityGovernorSettings().catch(showError));
+    }
+    if (els.liqGovToggle) {
+        els.liqGovToggle.addEventListener('change', () => saveLiquidityGovernorSettings().catch(showError));
+    }
+    if (els.liqScanRun) {
+        els.liqScanRun.addEventListener('click', () => runLiquidityOpportunityScan().catch(showError));
+    }
+    if (els.liqScanSymbols) {
+        els.liqScanSymbols.addEventListener('keydown', ev => {
+            if (ev.key === 'Enter') runLiquidityOpportunityScan().catch(showError);
         });
     }
     if (els.instanceBody) {

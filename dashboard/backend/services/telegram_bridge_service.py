@@ -411,6 +411,10 @@ class TelegramBridgeService:
         self._indicator_open_recovery_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_chop_guard_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_chop_guard_last_log: Dict[str, float] = {}
+        self._indicator_liquidity_context_cache: Dict[str, Dict[str, Any]] = {}
+        self._indicator_liquidity_context_prewarm_ts: Dict[str, float] = {}
+        self._indicator_liquidity_context_lifecycle_state: Dict[str, Dict[str, Any]] = {}
+        self._indicator_liquidity_context_gate_last_log: Dict[str, float] = {}
         self._indicator_shadow_eval_cache: Dict[str, Dict[str, Any]] = {}
         self._restore_pending_entry_signals()
 
@@ -4452,6 +4456,255 @@ class TelegramBridgeService:
             "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
         }
 
+    @classmethod
+    def get_indicator_bridge_liquidity_context_governor_settings(cls) -> Dict[str, Any]:
+        def _env_bool(name: str, default: str = "0") -> bool:
+            return str(cls._get_env_value(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+            val = _to_float_or_none(cls._get_env_value(name, str(default)))
+            if val is None or not math.isfinite(float(val)):
+                val = float(default)
+            return float(max(float(lo), min(float(hi), float(val))))
+
+        def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+            val = _to_float_or_none(cls._get_env_value(name, str(default)))
+            if val is None or not math.isfinite(float(val)):
+                val = float(default)
+            return int(max(int(lo), min(int(hi), int(round(float(val))))))
+
+        context_tf = str(cls._get_env_value("INDICATOR_BRIDGE_LIQ_CONTEXT_TIMEFRAME", "M15") or "M15").strip().upper()
+        if context_tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
+            context_tf = "M15"
+        return {
+            "enabled": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_GOVERNOR_ENABLED", "0"),
+            "context_timeframe": str(context_tf),
+            "lookback_bars": _env_int("INDICATOR_BRIDGE_LIQ_CONTEXT_LOOKBACK_BARS", 500, 80, 5000),
+            "freshness_bars": _env_int("INDICATOR_BRIDGE_LIQ_CONTEXT_FRESHNESS_BARS", 96, 1, 1000),
+            "strictness": _env_int("INDICATOR_BRIDGE_LIQ_CONTEXT_STRICTNESS", 3, 1, 5),
+            "min_rejection_ratio": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_MIN_REJECTION_RATIO", 0.30, 0.0, 1.0),
+            "entry_zone_pad_atr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_ENTRY_ZONE_PAD_ATR", 0.15, 0.0, 3.0),
+            "max_extension_atr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_MAX_EXTENSION_ATR", 1.50, 0.0, 10.0),
+            "min_target_rr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_MIN_TARGET_RR", 0.80, 0.0, 10.0),
+            "invalidation_atr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_INVALIDATION_ATR", 0.25, 0.0, 5.0),
+            "cache_ttl_sec": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_CACHE_TTL_SEC", 1.0, 0.0, 300.0),
+            "allow_continuation": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_ALLOW_CONTINUATION", "1"),
+            "block_on_no_setup": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_NO_SETUP", "1"),
+            "block_on_scan_error": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_SCAN_ERROR", "1"),
+            "state_prewarm_enabled": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_STATE_PREWARM_ENABLED", "1"),
+        }
+
+    def update_indicator_bridge_liquidity_context_governor_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        context_timeframe: Optional[str] = None,
+        lookback_bars: Optional[int] = None,
+        freshness_bars: Optional[int] = None,
+        min_rejection_ratio: Optional[float] = None,
+        allow_continuation: Optional[bool] = None,
+        block_on_no_setup: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {}
+        if enabled is not None:
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_GOVERNOR_ENABLED"] = "1" if bool(enabled) else "0"
+        if context_timeframe is not None:
+            tf = str(context_timeframe or "").strip().upper()
+            if tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
+                return {"ok": False, "error": "invalid_context_timeframe"}
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_TIMEFRAME"] = str(tf)
+        if lookback_bars is not None:
+            try:
+                v = int(float(lookback_bars))
+            except Exception:
+                return {"ok": False, "error": "invalid_lookback_bars"}
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_LOOKBACK_BARS"] = str(max(80, min(5000, int(v))))
+        if freshness_bars is not None:
+            try:
+                v = int(float(freshness_bars))
+            except Exception:
+                return {"ok": False, "error": "invalid_freshness_bars"}
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_FRESHNESS_BARS"] = str(max(1, min(1000, int(v))))
+        if min_rejection_ratio is not None:
+            v = _to_float_or_none(min_rejection_ratio)
+            if v is None or not math.isfinite(float(v)):
+                return {"ok": False, "error": "invalid_min_rejection_ratio"}
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_MIN_REJECTION_RATIO"] = f"{max(0.0, min(1.0, float(v))):.4f}"
+        if allow_continuation is not None:
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_ALLOW_CONTINUATION"] = "1" if bool(allow_continuation) else "0"
+        if block_on_no_setup is not None:
+            updates["INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_NO_SETUP"] = "1" if bool(block_on_no_setup) else "0"
+        if not updates:
+            return {"ok": False, "error": "no_updates"}
+        ok, msg = self._upsert_indicator_bridge_env_values(updates)
+        with self._lock:
+            self._indicator_liquidity_context_cache.clear()
+        return {
+            "ok": bool(ok),
+            "message": str(msg),
+            "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
+        }
+
+    def get_indicator_bridge_liquidity_context_cache_rows(self) -> List[Dict[str, Any]]:
+        now_ts = float(time.time())
+        rows: List[Dict[str, Any]] = []
+        with self._lock:
+            items = list((self._indicator_liquidity_context_cache or {}).items())
+        for key, cached in items:
+            if not isinstance(cached, dict):
+                continue
+            data = dict(cached.get("data") or {})
+            revalidated = self._revalidate_indicator_liquidity_context_live(dict(data))
+            data = dict(revalidated.get("context") or data)
+            if bool(revalidated.get("changed")):
+                with self._lock:
+                    self._indicator_liquidity_context_cache[str(key)] = {"ts": now_ts, "data": dict(data)}
+                self._audit_liquidity_context_lifecycle(dict(data))
+            rows.append(
+                {
+                    "cache_key": str(key),
+                    "age_sec": max(0.0, float(now_ts) - float(cached.get("ts") or 0.0)),
+                    "symbol": str(data.get("symbol") or ""),
+                    "context_timeframe": str(data.get("context_timeframe") or ""),
+                    "ok": bool(data.get("ok", False)),
+                    "error": str(data.get("error") or ""),
+                    "setup": dict(data.get("setup") or {}),
+                    "selected_sweep": dict(data.get("selected_sweep") or {}),
+                    "current_price": _to_float_or_none(data.get("current_price")),
+                    "generated_at": str(data.get("generated_at") or ""),
+                }
+            )
+        rows.sort(key=lambda r: str(r.get("generated_at") or ""), reverse=True)
+        return rows[:20]
+
+    def _indicator_liquidity_context_active_channels(self, *monitors: Dict[str, Any]) -> List[Dict[str, Any]]:
+        channels: Dict[str, Dict[str, Any]] = {}
+        for monitor in monitors:
+            monitor_rows = list((monitor or {}).get("bot_rows") or []) + list((monitor or {}).get("rows") or [])
+            for row in monitor_rows:
+                if not isinstance(row, dict):
+                    continue
+                is_active = bool(
+                    row.get("effective_automation_enabled")
+                    or row.get("automation_enabled")
+                    or row.get("has_open_ladder")
+                    or str(row.get("state") or "").strip().upper() == "OPEN"
+                )
+                if not is_active:
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol:
+                    continue
+                timeframe = str(row.get("timeframe") or "").strip().upper()
+                family = str(row.get("terminal_family") or "").strip().lower()
+                key = f"{symbol}|{timeframe or '-'}"
+                item = channels.get(key)
+                if item is None:
+                    item = {
+                        "symbol": str(symbol),
+                        "timeframe": str(timeframe),
+                        "terminal_families": [],
+                        "indicators": [],
+                        "instances": 0,
+                    }
+                    channels[key] = item
+                item["instances"] = int(item.get("instances") or 0) + 1
+                if family and family not in item["terminal_families"]:
+                    item["terminal_families"].append(str(family))
+                indicator = str(row.get("indicator") or row.get("source_name") or "").strip()
+                if indicator and indicator not in item["indicators"]:
+                    item["indicators"].append(str(indicator))
+                keys = item.setdefault("_instance_keys", [])
+                inst_key = str(row.get("instance_key") or "").strip().lower()
+                if inst_key and inst_key not in keys:
+                    keys.append(str(inst_key))
+                item["instances"] = int(len(keys) if keys else item.get("instances") or 1)
+        rows = list(channels.values())
+        for row in rows:
+            row.pop("_instance_keys", None)
+        rows.sort(key=lambda r: (str(r.get("symbol") or ""), str(r.get("timeframe") or "")))
+        return rows[:24]
+
+    def _prewarm_indicator_liquidity_context_for_channels(self, channels: List[Dict[str, Any]]) -> None:
+        settings = self.get_indicator_bridge_liquidity_context_governor_settings()
+        if not bool(settings.get("state_prewarm_enabled", True)):
+            return
+        seen: set[str] = set()
+        now_ts = float(time.time())
+        ttl_val = _to_float_or_none(settings.get("cache_ttl_sec"))
+        ttl = float(ttl_val if ttl_val is not None else 1.0)
+        context_tf = str(settings.get("context_timeframe") or "M15").strip().upper()
+        for row in channels[:12]:
+            symbol = str((row or {}).get("symbol") or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            cache_key = f"{symbol}|{context_tf}"
+            with self._lock:
+                cached = dict(self._indicator_liquidity_context_cache.get(cache_key) or {})
+                cached_ts = float(cached.get("ts") or 0.0)
+                last_start = float(self._indicator_liquidity_context_prewarm_ts.get(cache_key) or 0.0)
+                if cached and (now_ts - cached_ts) <= max(0.75, ttl):
+                    continue
+                if last_start > 0.0 and (now_ts - last_start) <= max(0.75, ttl):
+                    continue
+                self._indicator_liquidity_context_prewarm_ts[cache_key] = float(now_ts)
+
+            def _worker(sym: str = str(symbol), key: str = str(cache_key)) -> None:
+                try:
+                    self._scan_indicator_liquidity_context(symbol=str(sym), current_price=None)
+                except Exception:
+                    logger.exception("indicator_liquidity_context_prewarm_failed symbol=%s", sym)
+                finally:
+                    with self._lock:
+                        if len(self._indicator_liquidity_context_prewarm_ts) > 256:
+                            cutoff = float(time.time()) - 300.0
+                            self._indicator_liquidity_context_prewarm_ts = {
+                                str(k): float(v)
+                                for k, v in self._indicator_liquidity_context_prewarm_ts.items()
+                                if float(v) >= cutoff
+                            }
+
+            try:
+                thread = threading.Thread(target=_worker, name=f"liq-context-prewarm-{symbol}", daemon=True)
+                thread.start()
+            except Exception:
+                logger.exception("indicator_liquidity_context_prewarm_thread_failed symbol=%s", symbol)
+
+    def _hydrate_indicator_liquidity_context_channels(self, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        settings = self.get_indicator_bridge_liquidity_context_governor_settings()
+        context_tf = str(settings.get("context_timeframe") or "M15").strip().upper()
+        out: List[Dict[str, Any]] = []
+        for raw in (channels or [])[:24]:
+            row = dict(raw or {})
+            symbol = str(row.get("symbol") or "").strip().upper()
+            timeframe = str(row.get("timeframe") or "").strip().upper()
+            row["channel_key"] = f"{symbol}|{timeframe or '-'}"
+            if not symbol:
+                row["liquidity_context"] = {"ok": False, "active": False, "error": "missing_symbol"}
+                out.append(row)
+                continue
+            try:
+                ctx = self._scan_indicator_liquidity_context(
+                    symbol=str(symbol),
+                    current_price=None,
+                    context_timeframe=str(context_tf),
+                )
+            except Exception as exc:
+                logger.exception("indicator_liquidity_context_channel_hydrate_failed symbol=%s timeframe=%s", symbol, timeframe)
+                ctx = {
+                    "ok": False,
+                    "active": False,
+                    "error": f"hydrate_failed:{type(exc).__name__}",
+                    "symbol": str(symbol),
+                    "context_timeframe": str(context_tf),
+                }
+            row["liquidity_context"] = dict(ctx or {})
+            row["liquidity_setup"] = dict((ctx or {}).get("setup") or {})
+            row["liquidity_live_probe"] = dict((ctx or {}).get("live_probe") or {})
+            out.append(row)
+        return out
+
     def get_indicator_bridge_daily_risk_status(self) -> Dict[str, Any]:
         settings = self.get_indicator_bridge_risk_settings()
         now_utc = datetime.now(timezone.utc)
@@ -6727,6 +6980,35 @@ class TelegramBridgeService:
                         if not str(row.get("exit_resolved_bar_time") or "").strip():
                             row["exit_resolved_bar_time"] = str(row["last_exit_resolved_bar_time"])
 
+    @staticmethod
+    def _is_indicator_liquidity_audit_log_row(row: Any) -> bool:
+        if not isinstance(row, dict):
+            return False
+        stage = str(row.get("stage") or "").strip().lower()
+        source_tag = str(row.get("source_tag") or "").strip().lower()
+        indicator = str(row.get("indicator") or row.get("source_name") or "").strip().lower()
+        return (
+            stage.startswith("liquidity_context")
+            or "|liquidity_governor|" in source_tag
+            or indicator == "liquiditygovernor"
+        )
+
+    def _split_indicator_liquidity_audit_logs(self, execution_logs: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        base = dict(execution_logs or {}) if isinstance(execution_logs, dict) else {}
+        rows = base.get("rows") if isinstance(base.get("rows"), list) else []
+        liquidity_rows = [dict(r) for r in rows if self._is_indicator_liquidity_audit_log_row(r)]
+        trade_rows = [dict(r) for r in rows if not self._is_indicator_liquidity_audit_log_row(r)]
+        trade_logs = dict(base)
+        trade_logs["rows"] = trade_rows
+        trade_logs["count"] = int(len(trade_rows))
+        liquidity_logs = {
+            "ok": bool(base.get("ok", True)),
+            "rows": liquidity_rows,
+            "count": int(len(liquidity_rows)),
+            "generated_at": str(base.get("generated_at") or self._now_iso()),
+        }
+        return trade_logs, liquidity_logs
+
     def get_indicator_bridge_state(self, *, limit: int = 300, active_only: bool = False) -> Dict[str, Any]:
         try:
             # The dashboard is often the operator's first view after MT5 has
@@ -6753,10 +7035,14 @@ class TelegramBridgeService:
             mt5_monitor=mt5_monitor,
             execution_logs=execution_logs,
         )
+        execution_logs, liquidity_audit_logs = self._split_indicator_liquidity_audit_logs(execution_logs)
         execution_report = self.get_automation_execution_report(limit=200, resolve_history_pnl=False)
         rsi_telemetry = self.get_indicator_rsi_telemetry(limit=max(200, lim))
         open_trades = list((mt4_monitor or {}).get("rows") or []) + list((mt5_monitor or {}).get("rows") or [])
         open_trades.sort(key=lambda r: str((r or {}).get("opened_at") or ""), reverse=True)
+        liquidity_context_channels = self._indicator_liquidity_context_active_channels(mt4_monitor, mt5_monitor)
+        self._prewarm_indicator_liquidity_context_for_channels(liquidity_context_channels)
+        liquidity_context_channels = self._hydrate_indicator_liquidity_context_channels(liquidity_context_channels)
         return {
             "ok": True,
             "updated_at": self._now_iso(),
@@ -6769,11 +7055,15 @@ class TelegramBridgeService:
                 "count": int(len(open_trades)),
             },
             "execution_logs": execution_logs,
+            "liquidity_audit_logs": liquidity_audit_logs,
             "execution_report": execution_report,
             "rsi_telemetry": rsi_telemetry,
             "risk_settings": self.get_indicator_bridge_risk_settings(),
             "daily_risk": self.get_indicator_bridge_daily_risk_status(),
             "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
+            "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
+            "liquidity_context_channels": liquidity_context_channels,
+            "liquidity_context_cache": self.get_indicator_bridge_liquidity_context_cache_rows(),
         }
 
     @staticmethod
@@ -7095,6 +7385,965 @@ class TelegramBridgeService:
         if not math.isfinite(float(robust)) or float(robust) <= 0.0:
             return None
         return float(robust)
+
+    @staticmethod
+    def _bars_to_workbench_df(bars: Any) -> Any:
+        if not isinstance(bars, list) or len(bars) < 3:
+            return None
+        try:
+            import pandas as pd  # local import keeps the bridge service lightweight at import time
+        except Exception:
+            return None
+        rows: List[Dict[str, Any]] = []
+        for b in bars:
+            if not isinstance(b, dict):
+                continue
+            ts = _to_float_or_none(b.get("time_unix") or b.get("timestamp"))
+            if ts is None:
+                ts = _to_unix_or_none(b.get("time"))
+            o = _to_float_or_none(b.get("open"))
+            h = _to_float_or_none(b.get("high"))
+            l = _to_float_or_none(b.get("low"))
+            c = _to_float_or_none(b.get("close"))
+            if ts is None or o is None or h is None or l is None or c is None:
+                continue
+            rows.append(
+                {
+                    "time": int(float(ts)),
+                    "open": float(o),
+                    "high": float(h),
+                    "low": float(l),
+                    "close": float(c),
+                    "volume": float(_to_float_or_none(b.get("volume")) or 0.0),
+                }
+            )
+        if len(rows) < 20:
+            return None
+        df = pd.DataFrame(rows)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df = df.set_index("time").sort_index()
+        return df[["open", "high", "low", "close", "volume"]].dropna(subset=["open", "high", "low", "close"])
+
+    @staticmethod
+    def _liquidity_zone_time_unix(row: Dict[str, Any]) -> int:
+        raw = _to_float_or_none((row or {}).get("end_time_unix") or (row or {}).get("start_time_unix"))
+        if raw is not None:
+            return int(raw)
+        raw_ts = _to_unix_or_none((row or {}).get("end_time") or (row or {}).get("start_time"))
+        return int(raw_ts or 0)
+
+    def _liquidity_context_source_tag(self, *, symbol: Any, context_timeframe: Any) -> str:
+        sym = str(symbol or "").strip().upper() or "UNKNOWN"
+        tf = str(context_timeframe or "").strip().upper() or "M15"
+        return f"mt4|liquidity_governor|liquidity_context|{sym}|{tf}"
+
+    def _liquidity_context_setup_id(self, ctx: Dict[str, Any]) -> str:
+        setup = dict((ctx or {}).get("setup") or {})
+        selected = dict((ctx or {}).get("selected_sweep") or {})
+        if str(setup.get("status") or "").strip().lower() == "none" and not selected:
+            return "none"
+        parts = [
+            str((ctx or {}).get("symbol") or "").strip().upper(),
+            str((ctx or {}).get("context_timeframe") or "").strip().upper(),
+            str(setup.get("direction") or "").strip().upper(),
+            str(selected.get("type") or ""),
+            str(selected.get("bar_index") or ""),
+            str(selected.get("end_time_unix") or selected.get("end_time") or ""),
+            f"{float(_to_float_or_none(selected.get('swept_price')) or 0.0):.8f}",
+        ]
+        return "|".join(parts)
+
+    def _audit_liquidity_context_lifecycle(self, ctx: Dict[str, Any]) -> None:
+        if not isinstance(ctx, dict) or not bool(ctx.get("ok", False)):
+            return
+        symbol = str(ctx.get("symbol") or "").strip().upper()
+        context_tf = str(ctx.get("context_timeframe") or "").strip().upper() or "M15"
+        if not symbol:
+            return
+        setup = dict(ctx.get("setup") or {})
+        selected = dict(ctx.get("selected_sweep") or {})
+        setup_status = str(setup.get("status") or ("active" if bool(setup.get("active")) else "none")).strip().lower()
+        reason = str(setup.get("reason") or "").strip().lower()
+        setup_id = self._liquidity_context_setup_id(ctx)
+        key = f"{symbol}|{context_tf}"
+        now_ts = float(time.time())
+        with self._lock:
+            prev = dict(self._indicator_liquidity_context_lifecycle_state.get(key) or {})
+
+        lifecycle_event = ""
+        if setup_status in {"active", "waiting"}:
+            if str(prev.get("setup_id") or "") != str(setup_id):
+                lifecycle_event = "setup_created"
+            elif str(prev.get("status") or "") != str(setup_status):
+                lifecycle_event = "setup_active" if setup_status == "active" else "setup_waiting"
+            elif str(prev.get("reason") or "") != str(reason):
+                lifecycle_event = "setup_active" if setup_status == "active" else "setup_waiting"
+        else:
+            prev_status = str(prev.get("status") or "")
+            prev_setup_id = str(prev.get("setup_id") or "")
+            if prev_setup_id and prev_setup_id != "none" and prev_status in {"active", "waiting"}:
+                if reason == "invalidated":
+                    lifecycle_event = "setup_invalidated"
+                elif reason == "target_reached":
+                    lifecycle_event = "setup_target_reached"
+                else:
+                    lifecycle_event = "setup_expired"
+
+        current_state = {
+            "setup_id": str(setup_id),
+            "status": str(setup_status),
+            "reason": str(reason),
+            "ts": float(now_ts),
+        }
+        with self._lock:
+            self._indicator_liquidity_context_lifecycle_state[key] = dict(current_state)
+            if len(self._indicator_liquidity_context_lifecycle_state) > 256:
+                self._indicator_liquidity_context_lifecycle_state = dict(list(self._indicator_liquidity_context_lifecycle_state.items())[-256:])
+
+        if not lifecycle_event:
+            return
+        self._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name="LiquidityGovernor",
+            trigger="liquidity_context",
+            status=str(lifecycle_event),
+            symbol=str(symbol),
+            timeframe=str(context_tf),
+            direction=str(setup.get("direction") or ""),
+            message=f"liquidity_context:{lifecycle_event}:{reason or setup_status}",
+            profile="liquidity",
+            indicator="LiquidityGovernor",
+            source_tag=self._liquidity_context_source_tag(symbol=symbol, context_timeframe=context_tf),
+            event_ts=self._now_iso(),
+            execution_mode="liquidity_governor",
+            stage="liquidity_context_lifecycle",
+            stage_status=str(lifecycle_event),
+            stage_payload={
+                "setup_id": str(setup_id),
+                "previous": dict(prev or {}),
+                "setup": dict(setup or {}),
+                "selected_sweep": dict(selected or {}),
+                "active": bool(ctx.get("active", False)),
+                "status": str(setup_status),
+                "reason": str(reason),
+                "current_price": _to_float_or_none(ctx.get("current_price")),
+                "context_timeframe": str(context_tf),
+                "zones_count": int(ctx.get("zones_count") or 0),
+                "pools_count": int(ctx.get("pools_count") or 0),
+                "sweeps_count": int(ctx.get("sweeps_count") or 0),
+            },
+            error_code=str(reason or lifecycle_event),
+        )
+
+    def _audit_liquidity_context_gate_decision(
+        self,
+        *,
+        symbol: Any,
+        timeframe: Any,
+        direction: Any,
+        guard: Dict[str, Any],
+    ) -> None:
+        if not isinstance(guard, dict) or not bool(guard.get("enabled", False)):
+            return
+        ctx = dict(guard.get("context") or {})
+        context_tf = str(ctx.get("context_timeframe") or self.get_indicator_bridge_liquidity_context_governor_settings().get("context_timeframe") or "M15").strip().upper()
+        sym = str(symbol or ctx.get("symbol") or "").strip().upper()
+        side = str(direction or guard.get("signal_direction") or "").strip().upper()
+        if not sym or side not in {"BUY", "SELL"}:
+            return
+        allow = bool(guard.get("allow", False))
+        reason = str(guard.get("reason") or "").strip().lower()
+        setup = dict(ctx.get("setup") or {})
+        setup_id = self._liquidity_context_setup_id(ctx) if ctx else "none"
+        log_key = f"{sym}|{context_tf}|{side}|{allow}|{reason}|{setup_id}"
+        now_ts = float(time.time())
+        with self._lock:
+            prev_ts = float(self._indicator_liquidity_context_gate_last_log.get(log_key) or 0.0)
+            if prev_ts > 0.0 and (now_ts - prev_ts) <= 10.0:
+                return
+            self._indicator_liquidity_context_gate_last_log[log_key] = float(now_ts)
+            if len(self._indicator_liquidity_context_gate_last_log) > 5000:
+                cutoff = now_ts - 900.0
+                self._indicator_liquidity_context_gate_last_log = {
+                    str(k): float(v)
+                    for k, v in self._indicator_liquidity_context_gate_last_log.items()
+                    if float(v) >= cutoff
+                }
+        self._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name="LiquidityGovernor",
+            trigger="liquidity_gate",
+            status=("setup_allowed_signal" if allow else "setup_blocked_signal"),
+            symbol=str(sym),
+            timeframe=str(timeframe or ""),
+            direction=str(side),
+            message=f"liquidity_gate:{'allow' if allow else 'block'}:{reason}",
+            profile="liquidity",
+            indicator="LiquidityGovernor",
+            source_tag=self._liquidity_context_source_tag(symbol=sym, context_timeframe=context_tf),
+            event_ts=self._now_iso(),
+            execution_mode="liquidity_governor",
+            stage="liquidity_context_gate",
+            stage_status=("allowed" if allow else "blocked"),
+            stage_payload={
+                "setup_id": str(setup_id),
+                "allow": bool(allow),
+                "reason": str(reason),
+                "signal_direction": str(side),
+                "setup": dict(setup or {}),
+                "context": dict(ctx or {}),
+            },
+            error_code=str(reason or ("allowed" if allow else "blocked")),
+        )
+
+    def _liquidity_context_live_probe(self, symbol: Any) -> Dict[str, Any]:
+        sym = str(symbol or "").strip().upper()
+        if not sym:
+            return {"ok": False, "error": "missing_symbol"}
+        svc = self._get_live_service()
+        tick: Dict[str, Any] = {}
+        try:
+            tick = dict(svc.get_symbol_tick(symbol=str(sym), resolve_symbol=True) or {})
+        except Exception as exc:
+            tick = {"error": f"tick:{type(exc).__name__}"}
+        bid = _to_float_or_none(tick.get("bid"))
+        ask = _to_float_or_none(tick.get("ask"))
+        last = _to_float_or_none(tick.get("last"))
+        if bid is not None and float(bid) <= 0.0:
+            bid = None
+        if ask is not None and float(ask) <= 0.0:
+            ask = None
+        if last is not None and float(last) <= 0.0:
+            last = None
+        # On many MT5 CFD/FX symbols tick.last is 0. Prefer executable quote
+        # prices and use last only as a positive fallback.
+        price = None
+        if bid is not None and ask is not None:
+            price = (float(bid) + float(ask)) / 2.0
+        elif bid is not None:
+            price = float(bid)
+        elif ask is not None:
+            price = float(ask)
+        elif last is not None:
+            price = float(last)
+        bar: Dict[str, Any] = {}
+        try:
+            bars = svc.get_recent_candles(symbol=str(sym), timeframe="M1", count=1, resolve_symbol=True)
+            if isinstance(bars, list) and bars and isinstance(bars[-1], dict):
+                bar = dict(bars[-1])
+        except Exception as exc:
+            bar = {"error": f"bar:{type(exc).__name__}"}
+        high = _to_float_or_none(bar.get("high"))
+        low = _to_float_or_none(bar.get("low"))
+        close = _to_float_or_none(bar.get("close"))
+        if close is not None and float(close) <= 0.0:
+            close = None
+        if price is None:
+            price = close
+        return {
+            "ok": bool(price is not None or high is not None or low is not None),
+            "symbol": str(sym),
+            "price": _to_float_or_none(price),
+            "bid": _to_float_or_none(bid),
+            "ask": _to_float_or_none(ask),
+            "last": _to_float_or_none(last),
+            "m1_high": _to_float_or_none(high),
+            "m1_low": _to_float_or_none(low),
+            "m1_close": _to_float_or_none(close),
+            "m1_time": int(_to_float_or_none(bar.get("time_unix") or bar.get("time")) or 0) or None,
+            "tick": dict(tick or {}),
+            "bar": dict(bar or {}),
+        }
+
+    def _revalidate_indicator_liquidity_context_live(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(ctx, dict) or not bool(ctx.get("ok", False)):
+            return {"changed": False, "context": dict(ctx or {})}
+        setup = dict(ctx.get("setup") or {})
+        direction = str(setup.get("direction") or "").strip().upper()
+        if direction not in {"BUY", "SELL"}:
+            return {"changed": False, "context": dict(ctx or {})}
+        probe = self._liquidity_context_live_probe(ctx.get("symbol"))
+        if not bool(probe.get("ok", False)):
+            return {"changed": False, "context": dict(ctx or {})}
+        px = _to_float_or_none(probe.get("price"))
+        if px is not None and (not math.isfinite(float(px)) or float(px) <= 0.0):
+            px = None
+        hi = _to_float_or_none(probe.get("m1_high"))
+        lo = _to_float_or_none(probe.get("m1_low"))
+        atr = _to_float_or_none(ctx.get("atr"))
+        if hi is not None and (not math.isfinite(float(hi)) or float(hi) <= 0.0):
+            hi = None
+        if lo is not None and (not math.isfinite(float(lo)) or float(lo) <= 0.0):
+            lo = None
+        if hi is not None and lo is not None and float(hi) < float(lo):
+            hi = None
+            lo = None
+        if px is not None and float(px) > 0.0:
+            # MT5 can occasionally return an unfinished/empty candle with 0 or
+            # stale extremes. Do not let a bad M1 high/low kill a liquidity
+            # setup or mark a distant target as reached.
+            max_deviation = max(float(px) * 0.003, float(atr or 0.0) * 5.0, 1e-9)
+            if hi is not None and abs(float(hi) - float(px)) > max_deviation:
+                hi = None
+            if lo is not None and abs(float(lo) - float(px)) > max_deviation:
+                lo = None
+        invalidation = _to_float_or_none(setup.get("invalidation"))
+        target = _to_float_or_none(setup.get("target_price"))
+        if px is not None:
+            ctx["current_price"] = float(px)
+            setup["current_price"] = float(px)
+        elif _to_float_or_none(probe.get("m1_close")) is not None:
+            px = _to_float_or_none(probe.get("m1_close"))
+            if px is not None and float(px) > 0.0:
+                ctx["current_price"] = float(px)
+                setup["current_price"] = float(px)
+        ctx["live_probe"] = {
+            "price": _to_float_or_none(px),
+            "m1_high": _to_float_or_none(hi),
+            "m1_low": _to_float_or_none(lo),
+            "m1_time": probe.get("m1_time"),
+            "checked_at": self._now_iso(),
+        }
+
+        invalidated = False
+        target_reached = False
+        invalidation_touch: Optional[float] = None
+        target_touch: Optional[float] = None
+        if invalidation is not None:
+            if direction == "SELL":
+                touch = max([float(x) for x in [px, hi] if x is not None], default=float("-inf"))
+                invalidated = bool(math.isfinite(touch) and touch >= float(invalidation))
+                invalidation_touch = touch if math.isfinite(touch) else None
+            else:
+                touch = min([float(x) for x in [px, lo] if x is not None], default=float("inf"))
+                invalidated = bool(math.isfinite(touch) and touch <= float(invalidation))
+                invalidation_touch = touch if math.isfinite(touch) else None
+        if target is not None:
+            if direction == "SELL":
+                touch = min([float(x) for x in [px, lo] if x is not None], default=float("inf"))
+                target_reached = bool(math.isfinite(touch) and touch <= float(target))
+                target_touch = touch if math.isfinite(touch) else None
+            else:
+                touch = max([float(x) for x in [px, hi] if x is not None], default=float("-inf"))
+                target_reached = bool(math.isfinite(touch) and touch >= float(target))
+                target_touch = touch if math.isfinite(touch) else None
+
+        prev_reason = str(setup.get("reason") or "").strip().lower()
+        prev_status = str(setup.get("status") or "").strip().lower()
+        changed = False
+        if invalidated:
+            setup["active"] = False
+            setup["status"] = "none"
+            setup["reason"] = "invalidated"
+            setup["invalidated"] = True
+            setup["target_reached"] = False
+            setup["invalidation_touch_price"] = _to_float_or_none(invalidation_touch)
+            ctx["active"] = False
+            ctx["status"] = "none"
+            changed = bool(prev_reason != "invalidated" or prev_status != "none")
+        elif target_reached:
+            setup["active"] = False
+            setup["status"] = "none"
+            setup["reason"] = "target_reached"
+            setup["invalidated"] = False
+            setup["target_reached"] = True
+            setup["target_touch_price"] = _to_float_or_none(target_touch)
+            ctx["active"] = False
+            ctx["status"] = "none"
+            changed = bool(prev_reason != "target_reached" or prev_status != "none")
+        else:
+            settings = dict(ctx.get("settings") or self.get_indicator_bridge_liquidity_context_governor_settings())
+            atr = _to_float_or_none(ctx.get("atr"))
+            zone = setup.get("entry_zone") if isinstance(setup.get("entry_zone"), dict) else {}
+            entry_low = _to_float_or_none(zone.get("low") if isinstance(zone, dict) else None)
+            entry_high = _to_float_or_none(zone.get("high") if isinstance(zone, dict) else None)
+            if entry_low is None:
+                entry_low = _to_float_or_none(setup.get("entry_zone_low"))
+            if entry_high is None:
+                entry_high = _to_float_or_none(setup.get("entry_zone_high"))
+            if px is not None and entry_low is not None and entry_high is not None:
+                low_z = float(min(float(entry_low), float(entry_high)))
+                high_z = float(max(float(entry_low), float(entry_high)))
+                in_zone = bool(low_z <= float(px) <= high_z)
+                atr_ref = max(float(atr or 0.0), 1e-9)
+                if direction == "BUY":
+                    extension_atr = max(0.0, (float(px) - high_z) / atr_ref)
+                else:
+                    extension_atr = max(0.0, (low_z - float(px)) / atr_ref)
+                target_room = abs(float(target) - float(px)) if target is not None else None
+                risk_ref = abs(float(px) - float(invalidation)) if invalidation is not None else atr_ref
+                rr_to_target = (float(target_room) / max(float(risk_ref), 1e-9)) if target_room is not None else None
+                continuation_ok = bool(
+                    settings.get("allow_continuation")
+                    and (not in_zone)
+                    and float(extension_atr) <= float(settings.get("max_extension_atr") or 0.0)
+                    and (rr_to_target is None or float(rr_to_target) >= float(settings.get("min_target_rr") or 0.0))
+                )
+                if in_zone:
+                    new_status = "active"
+                    new_reason = "inside_entry_zone"
+                    new_active = True
+                elif continuation_ok:
+                    new_status = "active"
+                    new_reason = "continuation_ok"
+                    new_active = True
+                else:
+                    if direction == "BUY" and float(px) < low_z:
+                        new_reason = "entry_zone_not_reached"
+                    elif direction == "SELL" and float(px) > high_z:
+                        new_reason = "entry_zone_not_reached"
+                    elif float(extension_atr) > float(settings.get("max_extension_atr") or 0.0):
+                        new_reason = "too_extended_from_entry_zone"
+                    elif rr_to_target is not None and float(rr_to_target) < float(settings.get("min_target_rr") or 0.0):
+                        new_reason = "rr_not_enough"
+                    else:
+                        new_reason = "not_currently_in_entry_zone"
+                    new_status = "waiting"
+                    new_active = False
+                setup["active"] = bool(new_active)
+                setup["status"] = str(new_status)
+                setup["reason"] = str(new_reason)
+                setup["in_entry_zone"] = bool(in_zone)
+                setup["continuation_ok"] = bool(continuation_ok)
+                setup["extension_atr"] = float(extension_atr)
+                setup["target_room"] = _to_float_or_none(target_room)
+                setup["rr_to_target"] = _to_float_or_none(rr_to_target)
+                setup["invalidated"] = False
+                setup["target_reached"] = False
+                ctx["active"] = bool(new_active)
+                ctx["status"] = str(new_status)
+                changed = bool(prev_reason != str(new_reason) or prev_status != str(new_status))
+            else:
+                old_price = _to_float_or_none((ctx.get("setup") or {}).get("current_price"))
+                changed = bool(px is not None and old_price is not None and abs(float(px) - float(old_price)) > 1e-9)
+        ctx["setup"] = dict(setup)
+        return {"changed": bool(changed), "context": dict(ctx)}
+
+    def _scan_indicator_liquidity_context(
+        self,
+        *,
+        symbol: str,
+        current_price: Optional[float] = None,
+        context_timeframe: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        settings = self.get_indicator_bridge_liquidity_context_governor_settings()
+        sym = str(symbol or "").strip().upper()
+        if not sym:
+            return {"ok": False, "active": False, "error": "missing_symbol", "settings": dict(settings)}
+        override_tf = str(context_timeframe or "").strip().upper()
+        if override_tf in {"M1", "M5", "M15", "M30", "H1", "H4"}:
+            settings = {**dict(settings), "context_timeframe": str(override_tf)}
+        tf = str(settings.get("context_timeframe") or "M15").strip().upper()
+        cache_key = f"{sym}|{tf}"
+        now_ts = float(time.time())
+        ttl = float(_to_float_or_none(settings.get("cache_ttl_sec")) or 0.0)
+        with self._lock:
+            cached = dict(self._indicator_liquidity_context_cache.get(cache_key) or {})
+        if cached and ttl > 0.0 and (now_ts - float(cached.get("ts") or 0.0)) <= ttl:
+            data = dict(cached.get("data") or {})
+            if data:
+                revalidated = self._revalidate_indicator_liquidity_context_live(dict(data))
+                if bool(revalidated.get("changed")):
+                    data = dict(revalidated.get("context") or data)
+                    with self._lock:
+                        self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(data)}
+                    self._audit_liquidity_context_lifecycle(dict(data))
+                return data
+
+        lookback = int(settings.get("lookback_bars") or 500)
+        svc = self._get_live_service()
+        try:
+            bars = svc.get_recent_candles(symbol=str(sym), timeframe=str(tf), count=max(80, min(5000, int(lookback))))
+        except Exception as exc:
+            out = {
+                "ok": False,
+                "active": False,
+                "error": f"live_history_unavailable:{type(exc).__name__}",
+                "settings": dict(settings),
+                "symbol": str(sym),
+                "context_timeframe": str(tf),
+            }
+            with self._lock:
+                self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(out)}
+            return out
+        df = self._bars_to_workbench_df(bars)
+        if df is None or len(df) < 20:
+            out = {
+                "ok": False,
+                "active": False,
+                "error": "insufficient_live_history",
+                "settings": dict(settings),
+                "symbol": str(sym),
+                "context_timeframe": str(tf),
+            }
+            with self._lock:
+                self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(out)}
+            return out
+
+        try:
+            from ..core.workbench.liquidity_tool import LiquidityTool
+            from ..core.workbench.fvg_tool import FVGTool
+        except Exception as exc:
+            out = {
+                "ok": False,
+                "active": False,
+                "error": f"workbench_unavailable:{type(exc).__name__}",
+                "settings": dict(settings),
+                "symbol": str(sym),
+                "context_timeframe": str(tf),
+            }
+            with self._lock:
+                self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(out)}
+            return out
+
+        live_probe = self._liquidity_context_live_probe(str(sym))
+        price = _to_float_or_none(current_price)
+        if price is None or not math.isfinite(float(price)) or float(price) <= 0.0:
+            price = _to_float_or_none((live_probe or {}).get("price"))
+        if price is None or not math.isfinite(float(price)) or float(price) <= 0.0:
+            price = _to_float_or_none(df["close"].iloc[-1])
+        atr = self._calc_robust_atr_from_bars(bars, period=14) or max(abs(float(price or 0.0)) * 0.001, 1e-9)
+        liq_tool = LiquidityTool()
+        cfg = {
+            **liq_tool.get_default_config(),
+            "symbol": str(sym),
+            "timeframe": str(tf),
+            "lookback_bars": int(lookback),
+            "strictness": int(settings.get("strictness") or 3),
+            "pivot_span": 3,
+            "min_touches": 2,
+            "tolerance_atr_mult": 0.12,
+        }
+        try:
+            zones = liq_tool.scan(df, cfg)
+        except Exception as exc:
+            out = {
+                "ok": False,
+                "active": False,
+                "error": f"liquidity_scan_failed:{type(exc).__name__}",
+                "settings": dict(settings),
+                "symbol": str(sym),
+                "context_timeframe": str(tf),
+            }
+            with self._lock:
+                self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(out)}
+            return out
+        zones = [dict(z) for z in zones if isinstance(z, dict)]
+        pools = [z for z in zones if str(z.get("type") or "").startswith("liquidity_pool_")]
+        sweeps = [z for z in zones if str(z.get("type") or "").startswith("liquidity_sweep_")]
+        latest_high = _to_float_or_none(df["high"].iloc[-1])
+        latest_low = _to_float_or_none(df["low"].iloc[-1])
+        if latest_high is not None and (not math.isfinite(float(latest_high)) or float(latest_high) <= 0.0):
+            latest_high = None
+        if latest_low is not None and (not math.isfinite(float(latest_low)) or float(latest_low) <= 0.0):
+            latest_low = None
+        if latest_high is not None and latest_low is not None and float(latest_high) < float(latest_low):
+            latest_high = None
+            latest_low = None
+        if price is not None and float(price) > 0.0:
+            max_df_deviation = max(float(price) * 0.003, float(atr or 0.0) * 5.0, 1e-9)
+            if latest_high is not None and abs(float(latest_high) - float(price)) > max_df_deviation:
+                latest_high = None
+            if latest_low is not None and abs(float(latest_low) - float(price)) > max_df_deviation:
+                latest_low = None
+        min_rej = float(settings.get("min_rejection_ratio") or 0.0)
+        freshness = int(settings.get("freshness_bars") or 96)
+        latest_index = len(df) - 1
+        sweep_candidates: List[Dict[str, Any]] = []
+        for sw in sweeps:
+            ztype = str(sw.get("type") or "").strip().lower()
+            direction = "BUY" if ztype == "liquidity_sweep_low" else ("SELL" if ztype == "liquidity_sweep_high" else "")
+            if direction not in {"BUY", "SELL"}:
+                continue
+            rr = _to_float_or_none(sw.get("rejection_ratio")) or 0.0
+            if float(rr) < float(min_rej):
+                continue
+            bar_index = int(_to_float_or_none(sw.get("bar_index")) or 0)
+            age_bars = max(0, int(latest_index) - int(bar_index))
+            if age_bars > int(freshness):
+                continue
+            item = dict(sw)
+            item["direction"] = str(direction)
+            item["age_bars"] = int(age_bars)
+            sweep_candidates.append(item)
+        sweep_candidates.sort(
+            key=lambda x: (
+                int(x.get("age_bars") or 10**9),
+                -float(_to_float_or_none(x.get("rejection_ratio")) or 0.0),
+                -int(self._liquidity_zone_time_unix(x)),
+            )
+        )
+
+        trend: Dict[str, Any] = {}
+        active_fvgs: List[Dict[str, Any]] = []
+        try:
+            fvg_tool = FVGTool()
+            fvg_cfg = {
+                **fvg_tool.get_default_config(),
+                "symbol": str(sym),
+                "timeframe": str(tf),
+                "show_filled": False,
+                "trend_filter_enabled": True,
+            }
+            trend = fvg_tool.compute_trend_context(df, fvg_cfg) or {}
+            active_fvgs = [dict(z) for z in (fvg_tool.scan(df, {**fvg_cfg, "trend_filter_enabled": False}) or []) if isinstance(z, dict)]
+        except Exception:
+            trend = {}
+            active_fvgs = []
+
+        selected: Optional[Dict[str, Any]] = None
+        selected_eval: Dict[str, Any] = {}
+        waiting_candidate: Optional[Dict[str, Any]] = None
+        waiting_eval: Dict[str, Any] = {}
+        inactive_candidate: Optional[Dict[str, Any]] = None
+        inactive_eval: Dict[str, Any] = {}
+        for sw in sweep_candidates:
+            direction = str(sw.get("direction") or "")
+            swept = _to_float_or_none(sw.get("swept_price"))
+            boundary = _to_float_or_none(sw.get("pool_boundary"))
+            level = _to_float_or_none(sw.get("liquidity_level"))
+            if swept is None or boundary is None or level is None or price is None:
+                continue
+            pad = float(atr) * float(settings.get("entry_zone_pad_atr") or 0.0)
+            if direction == "BUY":
+                entry_low = min(float(swept), float(boundary), float(level)) - pad
+                entry_high = max(float(boundary), float(level)) + pad
+                invalidation = float(swept) - (float(atr) * float(settings.get("invalidation_atr") or 0.0))
+                touch_low = min([float(x) for x in [price, latest_low] if x is not None], default=float(price))
+                invalidated = bool(math.isfinite(touch_low) and float(touch_low) <= float(invalidation))
+                in_zone = entry_low <= float(price) <= entry_high
+                extension_atr = max(0.0, (float(price) - float(entry_high)) / max(float(atr), 1e-9))
+                target_pools = sorted(
+                    [p for p in pools if str(p.get("type") or "") == "liquidity_pool_high" and (_to_float_or_none(p.get("liquidity_level")) or -1e99) > float(price)],
+                    key=lambda p: float(_to_float_or_none(p.get("liquidity_level")) or 1e99),
+                )
+            else:
+                entry_low = min(float(boundary), float(level)) - pad
+                entry_high = max(float(swept), float(boundary), float(level)) + pad
+                invalidation = float(swept) + (float(atr) * float(settings.get("invalidation_atr") or 0.0))
+                touch_high = max([float(x) for x in [price, latest_high] if x is not None], default=float(price))
+                invalidated = bool(math.isfinite(touch_high) and float(touch_high) >= float(invalidation))
+                in_zone = entry_low <= float(price) <= entry_high
+                extension_atr = max(0.0, (float(entry_low) - float(price)) / max(float(atr), 1e-9))
+                target_pools = sorted(
+                    [p for p in pools if str(p.get("type") or "") == "liquidity_pool_low" and (_to_float_or_none(p.get("liquidity_level")) or 1e99) < float(price)],
+                    key=lambda p: -float(_to_float_or_none(p.get("liquidity_level")) or -1e99),
+                )
+            target_price = _to_float_or_none((target_pools[0] if target_pools else {}).get("liquidity_level"))
+            target_room = abs(float(target_price) - float(price)) if target_price is not None else None
+            risk_ref = abs(float(price) - float(invalidation)) if invalidation is not None else float(atr)
+            rr_to_target = (float(target_room) / max(float(risk_ref), 1e-9)) if target_room is not None else None
+            target_reached = bool(
+                (
+                    direction == "BUY"
+                    and target_price is not None
+                    and max([float(x) for x in [price, latest_high] if x is not None], default=float("-inf")) >= float(target_price)
+                )
+                or (
+                    direction == "SELL"
+                    and target_price is not None
+                    and min([float(x) for x in [price, latest_low] if x is not None], default=float("inf")) <= float(target_price)
+                )
+            )
+            continuation_ok = bool(
+                settings.get("allow_continuation")
+                and (not invalidated)
+                and (not target_reached)
+                and (not in_zone)
+                and float(extension_atr) <= float(settings.get("max_extension_atr") or 0.0)
+                and (rr_to_target is None or float(rr_to_target) >= float(settings.get("min_target_rr") or 0.0))
+            )
+            active = bool((not invalidated) and (not target_reached) and (in_zone or continuation_ok))
+            if bool(invalidated):
+                setup_reason = "invalidated"
+                setup_status = "none"
+            elif bool(target_reached):
+                setup_reason = "target_reached"
+                setup_status = "none"
+            elif bool(in_zone):
+                setup_reason = "inside_entry_zone"
+                setup_status = "active"
+            elif bool(continuation_ok):
+                setup_reason = "continuation_ok"
+                setup_status = "active"
+            else:
+                if direction == "BUY" and float(price) < float(entry_low):
+                    setup_reason = "entry_zone_not_reached"
+                elif direction == "SELL" and float(price) > float(entry_high):
+                    setup_reason = "entry_zone_not_reached"
+                elif float(extension_atr) > float(settings.get("max_extension_atr") or 0.0):
+                    setup_reason = "too_extended_from_entry_zone"
+                elif rr_to_target is not None and float(rr_to_target) < float(settings.get("min_target_rr") or 0.0):
+                    setup_reason = "rr_not_enough"
+                else:
+                    setup_reason = "not_currently_in_entry_zone"
+                setup_status = "waiting"
+            candidate_eval = {
+                "active": bool(active),
+                "status": str(setup_status),
+                "direction": str(direction),
+                "current_price": float(price),
+                "reason": str(setup_reason),
+                "entry_zone": {"low": float(entry_low), "high": float(entry_high)},
+                "entry_zone_low": float(entry_low),
+                "entry_zone_high": float(entry_high),
+                "invalidation": float(invalidation),
+                "invalidated": bool(invalidated),
+                "target_reached": bool(target_reached),
+                "in_entry_zone": bool(in_zone),
+                "continuation_ok": bool(continuation_ok),
+                "extension_atr": float(extension_atr),
+                "target_price": (_to_float_or_none(target_price) if target_price is not None else None),
+                "target_room": (_to_float_or_none(target_room) if target_room is not None else None),
+                "rr_to_target": (_to_float_or_none(rr_to_target) if rr_to_target is not None else None),
+            }
+            if active:
+                selected = dict(sw)
+                selected_eval = dict(candidate_eval)
+                break
+            if str(setup_status) == "waiting" and waiting_candidate is None:
+                waiting_candidate = dict(sw)
+                waiting_eval = dict(candidate_eval)
+                continue
+            if str(setup_status) == "none" and inactive_candidate is None:
+                inactive_candidate = dict(sw)
+                inactive_eval = dict(candidate_eval)
+
+        if not selected_eval:
+            if waiting_eval:
+                selected = dict(waiting_candidate or {})
+                selected_eval = dict(waiting_eval)
+            else:
+                selected = None
+                selected_eval = {
+                    "active": False,
+                    "status": "none",
+                    "direction": "",
+                    "current_price": _to_float_or_none(price),
+                    "reason": "no_fresh_setup",
+                    "entry_zone": None,
+                    "entry_zone_low": None,
+                    "entry_zone_high": None,
+                    "invalidation": None,
+                    "invalidated": False,
+                    "target_reached": False,
+                    "in_entry_zone": False,
+                    "continuation_ok": False,
+                    "extension_atr": None,
+                    "target_price": None,
+                    "target_room": None,
+                    "rr_to_target": None,
+                }
+
+        out = {
+            "ok": True,
+            "active": bool((selected_eval or {}).get("active", False)),
+            "status": str((selected_eval or {}).get("status") or ("active" if bool((selected_eval or {}).get("active", False)) else "none")),
+            "symbol": str(sym),
+            "context_timeframe": str(tf),
+            "settings": dict(settings),
+            "current_price": _to_float_or_none(price),
+            "atr": _to_float_or_none(atr),
+            "zones_count": int(len(zones)),
+            "pools_count": int(len(pools)),
+            "sweeps_count": int(len(sweeps)),
+            "candidate_sweeps_count": int(len(sweep_candidates)),
+            "selected_sweep": dict(selected or {}),
+            "setup": dict(selected_eval or {}),
+            "last_inactive_sweep": dict(inactive_candidate or {}),
+            "last_inactive_setup": dict(inactive_eval or {}),
+            "trend": dict(trend or {}),
+            "active_fvgs_count": int(len(active_fvgs)),
+            "live_probe": dict(live_probe or {}),
+            "generated_at": self._now_iso(),
+        }
+        revalidated = self._revalidate_indicator_liquidity_context_live(dict(out))
+        if isinstance(revalidated, dict) and revalidated.get("context"):
+            out = dict(revalidated.get("context") or out)
+        with self._lock:
+            self._indicator_liquidity_context_cache[cache_key] = {"ts": now_ts, "data": dict(out)}
+            if len(self._indicator_liquidity_context_cache) > 128:
+                cutoff = now_ts - max(300.0, ttl)
+                self._indicator_liquidity_context_cache = {
+                    str(k): dict(v)
+                    for k, v in self._indicator_liquidity_context_cache.items()
+                    if float((v or {}).get("ts") or 0.0) >= cutoff
+                }
+        self._audit_liquidity_context_lifecycle(dict(out))
+        return out
+
+    def scan_indicator_liquidity_opportunities(
+        self,
+        *,
+        symbols: Any,
+        context_timeframe: Optional[str] = None,
+        max_symbols: int = 12,
+    ) -> Dict[str, Any]:
+        raw_items: List[str] = []
+        if isinstance(symbols, str):
+            raw_items = re.split(r"[\s,;]+", str(symbols))
+        elif isinstance(symbols, list):
+            raw_items = [str(x or "") for x in symbols]
+        seen: set[str] = set()
+        clean: List[str] = []
+        for item in raw_items:
+            sym = str(item or "").strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            clean.append(sym)
+            if len(clean) >= int(max(1, min(30, int(max_symbols or 12)))):
+                break
+        if not clean:
+            return {"ok": False, "error": "no_symbols", "rows": [], "count": 0}
+        tf = str(context_timeframe or "").strip().upper()
+        if tf and tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
+            return {"ok": False, "error": "invalid_context_timeframe", "rows": [], "count": 0}
+        rows: List[Dict[str, Any]] = []
+        for sym in clean:
+            ctx = self._scan_indicator_liquidity_context(
+                symbol=str(sym),
+                current_price=None,
+                context_timeframe=(tf or None),
+            )
+            setup = dict((ctx or {}).get("setup") or {})
+            selected = dict((ctx or {}).get("selected_sweep") or {})
+            direction = str(setup.get("direction") or "").strip().upper()
+            active = bool(setup.get("active", False))
+            reason = str(setup.get("reason") or (ctx or {}).get("error") or "").strip()
+            if not bool((ctx or {}).get("ok", False)):
+                status = "error"
+            elif bool(setup.get("invalidated")):
+                status = "invalidated"
+            elif str(setup.get("status") or "").strip().lower() == "waiting":
+                status = "waiting"
+            elif active:
+                status = "active"
+            elif direction in {"BUY", "SELL"}:
+                status = "watching"
+            else:
+                status = "no_setup"
+            rows.append(
+                {
+                    "symbol": str(sym),
+                    "context_timeframe": str((ctx or {}).get("context_timeframe") or tf or ""),
+                    "ok": bool((ctx or {}).get("ok", False)),
+                    "status": str(status),
+                    "bias": str(direction or "NONE"),
+                    "active": bool(active),
+                    "reason": str(reason),
+                    "current_price": _to_float_or_none((ctx or {}).get("current_price")),
+                    "entry_zone": dict(setup.get("entry_zone") or {}),
+                    "entry_zone_low": _to_float_or_none(setup.get("entry_zone_low")),
+                    "entry_zone_high": _to_float_or_none(setup.get("entry_zone_high")),
+                    "invalidation": _to_float_or_none(setup.get("invalidation")),
+                    "target_price": _to_float_or_none(setup.get("target_price")),
+                    "rr_to_target": _to_float_or_none(setup.get("rr_to_target")),
+                    "in_entry_zone": bool(setup.get("in_entry_zone", False)),
+                    "continuation_ok": bool(setup.get("continuation_ok", False)),
+                    "invalidated": bool(setup.get("invalidated", False)),
+                    "extension_atr": _to_float_or_none(setup.get("extension_atr")),
+                    "sweep_quality": str(selected.get("rejection_quality") or ""),
+                    "rejection_ratio": _to_float_or_none(selected.get("rejection_ratio")),
+                    "age_bars": int(_to_float_or_none(selected.get("age_bars")) or 0),
+                    "sweep_type": str(selected.get("type") or ""),
+                    "zones_count": int((ctx or {}).get("zones_count") or 0),
+                    "pools_count": int((ctx or {}).get("pools_count") or 0),
+                    "sweeps_count": int((ctx or {}).get("sweeps_count") or 0),
+                    "generated_at": str((ctx or {}).get("generated_at") or self._now_iso()),
+                }
+            )
+        rank = {"active": 0, "watching": 1, "invalidated": 2, "no_setup": 3, "error": 4}
+        rows.sort(key=lambda r: (rank.get(str(r.get("status") or ""), 9), str(r.get("symbol") or "")))
+        return {
+            "ok": True,
+            "symbols": list(clean),
+            "context_timeframe": str(tf or self.get_indicator_bridge_liquidity_context_governor_settings().get("context_timeframe") or "M15"),
+            "rows": rows,
+            "count": int(len(rows)),
+            "generated_at": self._now_iso(),
+        }
+
+    def _check_indicator_liquidity_context_governor(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        current_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        settings = self.get_indicator_bridge_liquidity_context_governor_settings()
+        if not bool(settings.get("enabled")):
+            return {"enabled": False, "allow": True, "reason": "liquidity_context_governor_disabled", "settings": dict(settings)}
+        side = str(direction or "").strip().upper()
+        if side not in {"BUY", "SELL"}:
+            return {"enabled": True, "allow": False, "reason": "invalid_direction", "settings": dict(settings)}
+        ctx = self._scan_indicator_liquidity_context(symbol=str(symbol), current_price=current_price)
+        if not bool((ctx or {}).get("ok", False)):
+            allow = not bool(settings.get("block_on_scan_error", True))
+            out = {
+                "enabled": True,
+                "allow": bool(allow),
+                "reason": "scan_error_allowed" if allow else "liquidity_context_scan_error",
+                "context": dict(ctx or {}),
+                "settings": dict(settings),
+                "signal_direction": str(side),
+                "timeframe": str(timeframe),
+            }
+            self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+            return out
+        if not bool((ctx or {}).get("active", False)):
+            allow = not bool(settings.get("block_on_no_setup", True))
+            out = {
+                "enabled": True,
+                "allow": bool(allow),
+                "reason": "no_active_liquidity_setup_allowed" if allow else "no_active_liquidity_setup",
+                "context": dict(ctx or {}),
+                "settings": dict(settings),
+                "signal_direction": str(side),
+                "timeframe": str(timeframe),
+            }
+            self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+            return out
+        setup = dict((ctx or {}).get("setup") or {})
+        setup_dir = str(setup.get("direction") or "").strip().upper()
+        if setup_dir not in {"BUY", "SELL"}:
+            out = {
+                "enabled": True,
+                "allow": False,
+                "reason": "liquidity_setup_missing_direction",
+                "context": dict(ctx or {}),
+                "settings": dict(settings),
+                "signal_direction": str(side),
+                "timeframe": str(timeframe),
+            }
+            self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+            return out
+        if setup_dir != side:
+            out = {
+                "enabled": True,
+                "allow": False,
+                "reason": "liquidity_context_direction_mismatch",
+                "context": dict(ctx or {}),
+                "settings": dict(settings),
+                "signal_direction": str(side),
+                "setup_direction": str(setup_dir),
+                "timeframe": str(timeframe),
+            }
+            self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+            return out
+        out = {
+            "enabled": True,
+            "allow": True,
+            "reason": "liquidity_context_allows_signal",
+            "context": dict(ctx or {}),
+            "settings": dict(settings),
+            "signal_direction": str(side),
+            "setup_direction": str(setup_dir),
+            "timeframe": str(timeframe),
+        }
+        self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+        return out
 
     @staticmethod
     def _calc_adx_from_bars(bars: Any, period: int = 14) -> Optional[float]:
@@ -10659,6 +11908,13 @@ class TelegramBridgeService:
                 "bridge": registered,
             }
 
+        liquidity_context_guard = self._check_indicator_liquidity_context_governor(
+            symbol=str(symbol_exec_raw),
+            timeframe=str(timeframe),
+            direction=str(hint),
+            current_price=_to_float_or_none(entry_price),
+        )
+
         mode_results: List[Dict[str, Any]] = []
         executed_any = False
         market_closed_only = True
@@ -10691,6 +11947,44 @@ class TelegramBridgeService:
                     mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
                 mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
                 with mode_exec_lock:
+                    if not bool((liquidity_context_guard or {}).get("allow", True)):
+                        reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+                        self._append_automation_execution_log(
+                            source_type="mt_indicator",
+                            source_name=str(indicator),
+                            trigger="indicator_signal",
+                            status="skipped",
+                            symbol=str(symbol_exec).strip().upper(),
+                            timeframe=str(timeframe),
+                            direction=str(hint),
+                            lot=float(mode_lot),
+                            stop_loss=_to_float_or_none(stop_loss),
+                            message=f"liquidity_context_guard_blocked:{reason}",
+                            profile=str(profile),
+                            indicator=str(indicator),
+                            source_tag=str(mode_source_tag),
+                            event_ts=event_ts,
+                            execution_mode=str(mode),
+                            trace_id=str(signal.get("trace_id") or ""),
+                            stage="liquidity_context_governor",
+                            stage_status="blocked",
+                            stage_payload=dict(liquidity_context_guard or {}),
+                            error_code=str(reason),
+                        )
+                        mode_results.append(
+                            {
+                                "mode": "sync",
+                                "exit_mode": str(exit_mode_name),
+                                "lifecycle_mode": str(lifecycle_mode_name),
+                                "ok": True,
+                                "executed": False,
+                                "reason": str(reason),
+                                "message": f"liquidity_context_guard_blocked:{reason}",
+                                "liquidity_context_guard": dict(liquidity_context_guard or {}),
+                            }
+                        )
+                        market_closed_only = False
+                        continue
                     sync_out = self._execute_indicator_sync_mode(
                         family=str(family),
                         profile=str(profile),
@@ -10764,6 +12058,44 @@ class TelegramBridgeService:
                 mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
             mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
             with mode_exec_lock:
+                if not bool((liquidity_context_guard or {}).get("allow", True)):
+                    reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+                    self._append_automation_execution_log(
+                        source_type="mt_indicator",
+                        source_name=str(indicator),
+                        trigger="indicator_signal",
+                        status="skipped",
+                        symbol=str(symbol_exec).strip().upper(),
+                        timeframe=str(timeframe),
+                        direction=str(hint),
+                        lot=float(mode_lot),
+                        stop_loss=_to_float_or_none(stop_loss),
+                        message=f"liquidity_context_guard_blocked:{reason}",
+                        profile=str(profile),
+                        indicator=str(indicator),
+                        source_tag=str(mode_source_tag),
+                        event_ts=event_ts,
+                        execution_mode=str(mode),
+                        trace_id=str(signal.get("trace_id") or ""),
+                        stage="liquidity_context_governor",
+                        stage_status="blocked",
+                        stage_payload=dict(liquidity_context_guard or {}),
+                        error_code=str(reason),
+                    )
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
+                            "policy": str(policy_name),
+                            "ok": True,
+                            "executed": False,
+                            "reason": str(reason),
+                            "message": f"liquidity_context_guard_blocked:{reason}",
+                            "liquidity_context_guard": dict(liquidity_context_guard or {}),
+                        }
+                    )
+                    market_closed_only = False
+                    continue
                 if str(profile).strip().lower() == "entryexit":
                     reverse_out = {"ok": True, "closed_count": 0, "reason": "entryexit_reverse_close_disabled"}
                 else:
@@ -11391,6 +12723,57 @@ class TelegramBridgeService:
         combo_source_tag = (
             f"mt4|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
         )
+        liquidity_context_guard = self._check_indicator_liquidity_context_governor(
+            symbol=str(symbol_exec_raw),
+            timeframe=str(timeframe),
+            direction=str(hint),
+            current_price=_to_float_or_none(entry_price),
+        )
+        if not bool((liquidity_context_guard or {}).get("allow", True)):
+            reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name=str(indicator),
+                trigger="indicator_signal",
+                status="skipped",
+                symbol=str(symbol_exec).strip().upper(),
+                timeframe=str(timeframe),
+                direction=str(hint),
+                lot=float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile)),
+                stop_loss=_to_float_or_none(stop_loss),
+                message=f"liquidity_context_guard_blocked:{reason}",
+                profile=str(profile),
+                indicator=str(indicator),
+                source_tag=str(combo_source_tag),
+                event_ts=event_ts,
+                execution_mode=str(profile),
+                stage="liquidity_context_governor",
+                stage_status="blocked",
+                stage_payload=dict(liquidity_context_guard or {}),
+                error_code=str(reason),
+            )
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_liquidity_context_guard_blocked",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "timeframe": str(timeframe),
+                    "liquidity_context_guard": dict(liquidity_context_guard or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": str(reason),
+                "runtime": runtime_cfg,
+                "liquidity_context_guard": dict(liquidity_context_guard or {}),
+            }
         reverse_out = self._close_mt4_reverse_positions(
             symbol=str(symbol_exec_raw),
             incoming_direction=str(hint),

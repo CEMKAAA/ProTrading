@@ -939,6 +939,86 @@ def indicator_bridge_dual_gate_settings(payload: Dict[str, Any]):
         raise HTTPException(500, f"indicator_bridge_dual_gate_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.post("/indicator-bridge/liquidity-governor-settings")
+def indicator_bridge_liquidity_governor_settings(payload: Dict[str, Any]):
+    """Persist global liquidity-context governor settings for Indicator Automation V2."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+
+        def _bool_or_none(value: Any) -> Optional[bool]:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return bool(value)
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+        def _int_or_none(value: Any, name: str) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                return int(float(value))
+            except Exception:
+                raise ValueError(str(name))
+
+        def _float_or_none(value: Any, name: str) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except Exception:
+                raise ValueError(str(name))
+
+        try:
+            result = svc.update_indicator_bridge_liquidity_context_governor_settings(
+                enabled=_bool_or_none(p.get("enabled")),
+                context_timeframe=(p.get("context_timeframe") if "context_timeframe" in p else None),
+                lookback_bars=_int_or_none(p.get("lookback_bars"), "lookback_bars"),
+                freshness_bars=_int_or_none(p.get("freshness_bars"), "freshness_bars"),
+                min_rejection_ratio=_float_or_none(p.get("min_rejection_ratio"), "min_rejection_ratio"),
+                allow_continuation=_bool_or_none(p.get("allow_continuation")),
+                block_on_no_setup=_bool_or_none(p.get("block_on_no_setup")),
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": f"invalid_{str(exc)}"}
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_liquidity_governor_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/liquidity-opportunity-scan")
+def indicator_bridge_liquidity_opportunity_scan(payload: Dict[str, Any]):
+    """Scan arbitrary symbols with the same Workbench liquidity context engine used by the governor."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+        p = payload if isinstance(payload, dict) else {}
+        symbols = p.get("symbols")
+        if symbols is None:
+            symbols = p.get("symbols_csv") or p.get("text") or ""
+        max_symbols = p.get("max_symbols", 12)
+        try:
+            max_symbols_int = int(float(max_symbols))
+        except Exception:
+            max_symbols_int = 12
+        return svc.scan_indicator_liquidity_opportunities(
+            symbols=symbols,
+            context_timeframe=(p.get("context_timeframe") if "context_timeframe" in p else None),
+            max_symbols=int(max_symbols_int),
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_liquidity_opportunity_scan_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.get("/indicator-bridge/rsi-telemetry")
 def indicator_bridge_rsi_telemetry(
     limit: int = Query(500, ge=20, le=5000),

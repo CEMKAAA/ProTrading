@@ -45,6 +45,21 @@
     .v2-dual-card {
         background: linear-gradient(135deg, #f8fafc 0%, #ecfeff 48%, #f7fee7 100%);
     }
+    .v2-liq-card {
+        background: linear-gradient(135deg, #fff7ed 0%, #fefce8 52%, #ecfccb 100%);
+    }
+    .v2-liq-context {
+        border: 1px solid #fed7aa;
+        background: rgba(255, 255, 255, 0.76);
+        border-radius: 12px;
+        padding: 10px 12px;
+    }
+    .v2-liq-scanner {
+        border: 1px solid #fde68a;
+        background: rgba(255, 251, 235, 0.78);
+        border-radius: 14px;
+        padding: 12px;
+    }
     .v2-dual-grid {
         display: grid;
         grid-template-columns: minmax(180px, 1fr) 150px minmax(180px, 1fr);
@@ -163,6 +178,98 @@
         </div>
     </div>
 
+    <div class="card v2-card v2-liq-card mb-3">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <strong>Liquidity Context Governor</strong>
+                <div class="small text-muted">Workbench liquidity-sweep context gates Indicator V2 entries before reverse-close or order execution.</div>
+            </div>
+            <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+                <span id="v2-liq-gov-status" class="badge text-bg-secondary">OFF</span>
+                <label class="form-check form-switch m-0 small">
+                    <input id="v2-liq-gov-toggle" class="form-check-input" type="checkbox">
+                    <span class="form-check-label">Enable liquidity gate</span>
+                </label>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="v2-liq-gov-tf">Context TF</label>
+                    <select id="v2-liq-gov-tf" class="form-select form-select-sm">
+                        <option value="M1">M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15">M15</option>
+                        <option value="M30">M30</option>
+                        <option value="H1">H1</option>
+                        <option value="H4">H4</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="v2-liq-gov-lookback">Lookback bars</label>
+                    <input id="v2-liq-gov-lookback" type="number" min="80" max="5000" step="10" class="form-control form-control-sm" placeholder="500">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="v2-liq-gov-freshness">Freshness bars</label>
+                    <input id="v2-liq-gov-freshness" type="number" min="1" max="1000" step="1" class="form-control form-control-sm" placeholder="96">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="v2-liq-gov-rejection">Min rejection</label>
+                    <input id="v2-liq-gov-rejection" type="number" min="0" max="1" step="0.05" class="form-control form-control-sm" placeholder="0.30">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-check small mb-2">
+                        <input id="v2-liq-gov-continuation" class="form-check-input" type="checkbox">
+                        <span class="form-check-label">Allow continuation</span>
+                    </label>
+                    <label class="form-check small">
+                        <input id="v2-liq-gov-block-no-setup" class="form-check-input" type="checkbox">
+                        <span class="form-check-label">Block if no setup</span>
+                    </label>
+                </div>
+                <div class="col-md-2 text-md-end">
+                    <button id="v2-liq-gov-save" type="button" class="btn btn-sm btn-dark">Save Governor</button>
+                </div>
+                <div class="col-12">
+                    <div id="v2-liq-gov-context" class="v2-liq-context small text-muted">No liquidity context scanned yet.</div>
+                </div>
+                <div class="col-12">
+                    <div class="v2-liq-scanner">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <div>
+                                <strong>Liquidity Opportunity Scanner</strong>
+                                <div class="small text-muted">Enter symbols and scan the same Workbench liquidity setup engine without enabling the governor.</div>
+                            </div>
+                            <button id="v2-liq-scan-run" type="button" class="btn btn-sm btn-warning">Scan Opportunities</button>
+                        </div>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-8">
+                                <label class="form-label small text-muted mb-1" for="v2-liq-scan-symbols">Symbols</label>
+                                <input id="v2-liq-scan-symbols" type="text" class="form-control form-control-sm" placeholder="XAUUSDm, BTCUSDm, EURUSDm, GBPUSDm, US30m">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small text-muted mb-1" for="v2-liq-scan-tf">Context TF</label>
+                                <select id="v2-liq-scan-tf" class="form-select form-select-sm">
+                                    <option value="">Use governor TF</option>
+                                    <option value="M1">M1</option>
+                                    <option value="M5">M5</option>
+                                    <option value="M15">M15</option>
+                                    <option value="M30">M30</option>
+                                    <option value="H1">H1</option>
+                                    <option value="H4">H4</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <div id="v2-liq-scan-status" class="small text-muted">Ready.</div>
+                            </div>
+                        </div>
+                        <div id="v2-liq-scan-results" class="mt-3 small text-muted">No scan yet.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="v2-dual-gate-panel" class="card v2-card v2-dual-card mb-3 d-none">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
@@ -193,10 +300,11 @@
     </div>
 
     <div class="row g-3 mb-3">
-        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT4 Instances</div><div id="v2-mt4-count" class="fs-3 fw-bold">0</div></div></div></div>
-        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT5 Instances</div><div id="v2-mt5-count" class="fs-3 fw-bold">0</div></div></div></div>
-        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Open Indicator Trades</div><div id="v2-open-count" class="fs-3 fw-bold">0</div></div></div></div>
-        <div class="col-md-3"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Audit Rows</div><div id="v2-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT4 Instances</div><div id="v2-mt4-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT5 Instances</div><div id="v2-mt5-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Open Indicator Trades</div><div id="v2-open-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Trade Audit Rows</div><div id="v2-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Liquidity Audit Rows</div><div id="v2-liq-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
     </div>
 
     <div class="card v2-card mb-3">
@@ -243,6 +351,28 @@
         </div>
     </div>
 
+    <div class="card v2-card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong>Liquidity Governor Audit</strong>
+                <div class="small text-muted">Separate setup lifecycle and gate-decision events. Trade execution audit remains isolated below.</div>
+            </div>
+            <input id="v2-liq-audit-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="symbol / setup / reason">
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive v2-table-wrap">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Event</th><th>Symbol/TF</th><th>Status</th><th>Dir</th><th>Price</th><th>Entry Zone</th><th>Invalidation</th><th>Target/RR</th><th>Decision</th><th>Setup/Source</th>
+                        </tr>
+                    </thead>
+                    <tbody id="v2-liq-audit-body"><tr><td colspan="10" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div class="card v2-card">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
@@ -268,5 +398,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}"></script>
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=liq-audit-split-1"></script>
 {% endblock %}
