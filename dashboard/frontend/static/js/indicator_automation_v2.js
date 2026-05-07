@@ -14,6 +14,7 @@
         riskCatastrophe: document.getElementById('v2-risk-catastrophe'),
         riskDailyStatus: document.getElementById('v2-risk-daily-status'),
         riskSave: document.getElementById('v2-risk-save'),
+        riskTargetOverride: document.getElementById('v2-risk-target-override'),
         riskStatus: document.getElementById('v2-risk-status'),
         dualNoneCloseToggle: document.getElementById('v2-dual-none-close-toggle'),
         dualNoneCloseStatus: document.getElementById('v2-dual-none-close-status'),
@@ -136,6 +137,35 @@
             if (els.riskSave) {
                 els.riskSave.disabled = false;
                 els.riskSave.textContent = 'Save Risk Settings';
+            }
+        }
+    }
+
+    async function setDailyTargetOverride(enabled) {
+        if (els.riskTargetOverride) {
+            els.riskTargetOverride.disabled = true;
+            els.riskTargetOverride.textContent = enabled ? 'Enabling...' : 'Disabling...';
+        }
+        try {
+            const res = await fetch('/api/indicator-bridge/risk-settings', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ daily_target_guard_bypass_today: !!enabled })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            state = data;
+            showNotice(enabled
+                ? 'Daily target guard bypassed for today. Max daily loss guard is still active.'
+                : 'Daily target guard restored for today.',
+                enabled ? 'warning' : 'success');
+            render();
+        } finally {
+            if (els.riskTargetOverride) {
+                els.riskTargetOverride.disabled = false;
             }
         }
     }
@@ -944,8 +974,15 @@
             const pnl = Number(daily.realized_pnl || 0);
             const blocked = !!daily.blocked;
             const reason = daily.block_reason ? ` / ${daily.block_reason}` : '';
-            els.riskDailyStatus.className = `fw-bold ${blocked ? 'text-danger' : (pnl >= 0 ? 'text-success' : 'text-danger')}`;
-            els.riskDailyStatus.textContent = `$${fmtNum(pnl, 2)}${blocked ? ` BLOCKED${reason}` : ''}`;
+            const targetBypassed = !!(daily.daily_target_guard_bypassed_today || risk.daily_target_guard_bypassed_today);
+            els.riskDailyStatus.className = `fw-bold ${blocked ? 'text-danger' : (targetBypassed ? 'text-warning' : (pnl >= 0 ? 'text-success' : 'text-danger'))}`;
+            els.riskDailyStatus.textContent = `$${fmtNum(pnl, 2)}${blocked ? ` BLOCKED${reason}` : (targetBypassed ? ' TARGET BYPASSED' : '')}`;
+        }
+        if (els.riskTargetOverride) {
+            const targetBypassed = !!(daily.daily_target_guard_bypassed_today || risk.daily_target_guard_bypassed_today);
+            els.riskTargetOverride.className = targetBypassed ? 'btn btn-sm btn-warning mt-2' : 'btn btn-sm btn-outline-warning mt-2';
+            els.riskTargetOverride.textContent = targetBypassed ? 'Stop Extra Trades Today' : 'Allow More Today';
+            els.riskTargetOverride.setAttribute('data-enabled', targetBypassed ? '1' : '0');
         }
         if (els.riskStatus) {
             const enabled = !!risk.catastrophe_enabled || (Number.isFinite(liveCat) && liveCat > 0);
@@ -1094,6 +1131,12 @@
     });
     if (els.riskSave) {
         els.riskSave.addEventListener('click', () => saveRiskSettings().catch(showError));
+    }
+    if (els.riskTargetOverride) {
+        els.riskTargetOverride.addEventListener('click', () => {
+            const enabled = els.riskTargetOverride.getAttribute('data-enabled') === '1';
+            setDailyTargetOverride(!enabled).catch(showError);
+        });
     }
     if (els.dualNoneCloseToggle) {
         els.dualNoneCloseToggle.addEventListener('change', ev => {

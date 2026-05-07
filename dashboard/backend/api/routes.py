@@ -885,8 +885,10 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
         p = payload if isinstance(payload, dict) else {}
         daily_target = p.get("daily_target_usd") if "daily_target_usd" in p else p.get("daily_target")
         daily_max_loss = p.get("daily_max_loss_usd") if "daily_max_loss_usd" in p else p.get("daily_max_loss")
+        bypass_target_guard = p.get("daily_target_guard_bypass_today")
         target_val = None
         max_loss_val = None
+        bypass_val = None
         if daily_target is not None:
             try:
                 target_val = float(daily_target)
@@ -897,9 +899,13 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
                 max_loss_val = float(daily_max_loss)
             except Exception:
                 return {"ok": False, "error": "invalid_daily_max_loss_usd"}
+        if bypass_target_guard is not None:
+            raw = str(bypass_target_guard).strip().lower()
+            bypass_val = bool(bypass_target_guard is True or raw in {"1", "true", "yes", "on"})
         result = svc.update_indicator_bridge_risk_settings(
             daily_target_usd=target_val,
             daily_max_loss_usd=max_loss_val,
+            daily_target_guard_bypass_today=bypass_val,
         )
         state = svc.get_indicator_bridge_state(limit=300)
         state["update_result"] = result

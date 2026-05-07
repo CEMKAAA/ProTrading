@@ -1,0 +1,11 @@
+InpIndicatorName=VeryPromisingIndicator
+InpICustomParamsCsv=
+InpSignalShift=1
+InpScanBufferMax=6
+InpScanShiftMax=40
+InpSignalAbsMin=0.0000001
+InpIgnoreNamePatterns=autotrade,->
+InpButtonName=BTN_SCAN_VERYPROMISING
+InpButtonX=20
+InpButtonY=125
+InpLogAllObjects=true

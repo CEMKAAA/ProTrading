@@ -4373,6 +4373,9 @@ class TelegramBridgeService:
     def get_indicator_bridge_risk_settings(cls) -> Dict[str, Any]:
         daily_target = _to_float_or_none(cls._get_env_value("INDICATOR_BRIDGE_DAILY_TARGET_USD", "0"))
         daily_max_loss = _to_float_or_none(cls._get_env_value("INDICATOR_BRIDGE_DAILY_MAX_LOSS_USD", "0"))
+        target_override_date = str(cls._get_env_value("INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC", "") or "").strip()
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+        target_override_today = bool(target_override_date == today_utc)
         if daily_target is None or (not math.isfinite(float(daily_target))):
             daily_target = 0.0
         if daily_max_loss is None or (not math.isfinite(float(daily_max_loss))):
@@ -4385,6 +4388,8 @@ class TelegramBridgeService:
             "daily_max_loss_usd": float(daily_max_loss),
             "catastrophe_loss_usd": float(catastrophe_loss),
             "catastrophe_enabled": bool(catastrophe_loss > 0.0),
+            "daily_target_override_date_utc": str(target_override_date),
+            "daily_target_guard_bypassed_today": bool(target_override_today),
         }
 
     def update_indicator_bridge_risk_settings(
@@ -4392,6 +4397,7 @@ class TelegramBridgeService:
         *,
         daily_target_usd: Optional[float] = None,
         daily_max_loss_usd: Optional[float] = None,
+        daily_target_guard_bypass_today: Optional[bool] = None,
     ) -> Dict[str, Any]:
         updates: Dict[str, Any] = {}
         if daily_target_usd is not None:
@@ -4404,6 +4410,10 @@ class TelegramBridgeService:
             if v is None or (not math.isfinite(float(v))) or float(v) < 0.0:
                 return {"ok": False, "error": "invalid_daily_max_loss_usd"}
             updates["INDICATOR_BRIDGE_DAILY_MAX_LOSS_USD"] = f"{float(v):.2f}"
+        if daily_target_guard_bypass_today is not None:
+            updates["INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC"] = (
+                datetime.now(timezone.utc).date().isoformat() if bool(daily_target_guard_bypass_today) else ""
+            )
         if not updates:
             return {"ok": False, "error": "no_updates"}
         ok, msg = self._upsert_indicator_bridge_env_values(updates)
@@ -4446,6 +4456,19 @@ class TelegramBridgeService:
         settings = self.get_indicator_bridge_risk_settings()
         now_utc = datetime.now(timezone.utc)
         start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        reset_raw = str(self._get_env_value("INDICATOR_BRIDGE_DAILY_RISK_RESET_AT_UTC", "") or "").strip()
+        reset_utc: Optional[datetime] = None
+        if reset_raw:
+            try:
+                parsed = datetime.fromisoformat(reset_raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                reset_utc = parsed.astimezone(timezone.utc)
+            except Exception:
+                reset_utc = None
+        effective_start_utc = start_utc
+        if reset_utc is not None and reset_utc > start_utc and reset_utc <= now_utc:
+            effective_start_utc = reset_utc
         pnl = 0.0
         known = 0
         missing = 0
@@ -4456,7 +4479,7 @@ class TelegramBridgeService:
             rows = (
                 db.query(TelegramAutomationExecutionLogModel)
                 .filter(TelegramAutomationExecutionLogModel.source_type == "mt_indicator")
-                .filter(TelegramAutomationExecutionLogModel.created_at >= start_utc.replace(tzinfo=None))
+                .filter(TelegramAutomationExecutionLogModel.created_at >= effective_start_utc.replace(tzinfo=None))
                 .filter(TelegramAutomationExecutionLogModel.status.in_(["closed", "tp_partial"]))
                 .order_by(TelegramAutomationExecutionLogModel.id.desc())
                 .limit(5000)
@@ -4481,9 +4504,10 @@ class TelegramBridgeService:
             known += 1
         target = _to_float_or_none((settings or {}).get("daily_target_usd")) or 0.0
         max_loss = _to_float_or_none((settings or {}).get("daily_max_loss_usd")) or 0.0
+        target_override = bool((settings or {}).get("daily_target_guard_bypassed_today"))
         reason = ""
         blocked = False
-        if float(target) > 0.0 and float(pnl) >= float(target):
+        if float(target) > 0.0 and float(pnl) >= float(target) and not target_override:
             reason = "daily_target_reached"
             blocked = True
         elif float(max_loss) > 0.0 and float(pnl) <= -float(max_loss):
@@ -4493,12 +4517,15 @@ class TelegramBridgeService:
             "ok": True,
             "date_utc": start_utc.date().isoformat(),
             "start_utc": start_utc.isoformat(),
+            "effective_start_utc": effective_start_utc.isoformat(),
+            "reset_at_utc": reset_utc.isoformat() if reset_utc is not None else "",
             "realized_pnl": float(pnl),
             "known_pnl_rows": int(known),
             "missing_pnl_rows": int(missing),
             "rows_checked": int(rows_checked),
             "blocked": bool(blocked),
             "block_reason": str(reason),
+            "daily_target_guard_bypassed_today": bool(target_override),
             "settings": dict(settings),
         }
 

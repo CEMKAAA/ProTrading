@@ -22,6 +22,7 @@ input int    InpArrowResolvedLookbackBars = 300;
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
 input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
+input bool   InpLatchSignalUntilConfirm = false; // Pulse indicators: keep first detected signal pending until confirm timeout
 input bool   InpSendInitialConfirmedOnStart = false; // false prevents startup duplicate entries
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
@@ -940,11 +941,17 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       _find_recent_raw_signal(startShift, lookback, lastSignalDir, lastSignalText, lastSignalValue, lastSignalBar, lastSignalRawBuy, lastSignalRawSell);
    }
 
+   string resolvedPayloadText = confirmedText;
+   if(eventKind == "resolved_state" || eventKind == "signal_clear")
+      resolvedPayloadText = (StringLen(dir) > 0 ? dir : "NONE");
+   else if(dirInt != 0)
+      resolvedPayloadText = _direction_to_text(dirInt);
+
    string body =
       "{"
       "\"indicator\":\"" + _json_escape(InpIndicatorName) + "\","
       "\"signal_hint\":\"" + _json_escape(dir) + "\"," 
-      "\"resolved_signal\":\"" + _json_escape((dirInt != 0) ? _direction_to_text(dirInt) : confirmedText) + "\","
+      "\"resolved_signal\":\"" + _json_escape(resolvedPayloadText) + "\","
       "\"confirmed_direction\":\"" + _json_escape(confirmedText) + "\","
       "\"pending_direction\":\"" + _json_escape((g_pendingDir != 0) ? pendingText : "") + "\","
       "\"pending_age_sec\":" + IntegerToString(pendingAge) + ","
@@ -1037,7 +1044,40 @@ void _check_and_send()
          Print("MT4BridgeV2 ambiguous signal (both BUY/SELL active): ", InpIndicatorName, " ", Symbol(), " ", _tf_to_string(Period()));
       }
       if(g_pendingDir != 0)
-         _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
+      {
+         if(InpLatchSignalUntilConfirm && dirText != "AMBIGUOUS")
+         {
+            datetime latchNowTs = TimeCurrent();
+            if(latchNowTs <= 0)
+               latchNowTs = TimeLocal();
+            int latchConfirmSec = _effective_confirm_seconds();
+
+            if(latchConfirmSec > 0 && latchNowTs > 0 && g_pendingStartedAt > 0 && (latchNowTs - g_pendingStartedAt) < latchConfirmSec)
+               return;
+
+            if(InpRetryFailedSendEverySeconds > 0 && g_lastFailedSendAt > 0 && latchNowTs > 0 && (latchNowTs - g_lastFailedSendAt) < InpRetryFailedSendEverySeconds)
+               return;
+
+            string pendingDirText = _direction_to_text(g_pendingDir);
+            if(_send_or_queue_event("confirmed_signal", pendingDirText, g_pendingSignalValue, g_pendingBar))
+            {
+               g_pendingDir = 0;
+               g_pendingStartedAt = 0;
+               g_pendingBar = 0;
+               g_pendingSignalValue = 0.0;
+               if(InpDebugPrint)
+                  Print("MT4BridgeV2 confirmed latched signal sent direction=", pendingDirText);
+            }
+            else
+            {
+               g_lastFailedSendAt = latchNowTs;
+            }
+         }
+         else
+         {
+            _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
+         }
+      }
       // Starting in a blank state is still an initialized baseline. Otherwise
       // the first later signal is incorrectly consumed as startup state.
       if(!g_initializedState)
