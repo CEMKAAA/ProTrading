@@ -16,6 +16,7 @@
         riskSave: document.getElementById('v2-risk-save'),
         riskTargetOverride: document.getElementById('v2-risk-target-override'),
         riskStatus: document.getElementById('v2-risk-status'),
+        channelRiskGrid: document.getElementById('v2-channel-risk-grid'),
         dualNoneCloseToggle: document.getElementById('v2-dual-none-close-toggle'),
         dualNoneCloseStatus: document.getElementById('v2-dual-none-close-status'),
         dualGatePanel: document.getElementById('v2-dual-gate-panel'),
@@ -28,6 +29,8 @@
         liqGovRejection: document.getElementById('v2-liq-gov-rejection'),
         liqGovContinuation: document.getElementById('v2-liq-gov-continuation'),
         liqGovBlockNoSetup: document.getElementById('v2-liq-gov-block-no-setup'),
+        manualDirBuy: document.getElementById('v2-manual-dir-buy'),
+        manualDirSell: document.getElementById('v2-manual-dir-sell'),
         liqGovSave: document.getElementById('v2-liq-gov-save'),
         liqGovContext: document.getElementById('v2-liq-gov-context'),
         liqScanSymbols: document.getElementById('v2-liq-scan-symbols'),
@@ -96,6 +99,64 @@
     function parseMoney(raw) {
         const n = Number(String(raw == null ? '' : raw).trim().replace(',', '.'));
         return Number.isFinite(n) && n >= 0 ? Number(n.toFixed(2)) : null;
+    }
+
+    function channelRiskKey(symbol, timeframe) {
+        const sym = String(symbol || '').trim().toUpperCase();
+        const tf = String(timeframe || '').trim().toUpperCase();
+        return sym && tf ? `${sym}|${tf}` : '';
+    }
+
+    function channelRiskOverrideMap() {
+        const rows = ((((state || {}).risk_settings || {}).channel_risk_overrides) || []);
+        const map = new Map();
+        if (!Array.isArray(rows)) return map;
+        rows.forEach(row => {
+            const key = channelRiskKey((row || {}).symbol, (row || {}).timeframe);
+            const value = Number((row || {}).catastrophe_loss_usd);
+            if (key && Number.isFinite(value) && value >= 0) map.set(key, value);
+        });
+        return map;
+    }
+
+    function activeRiskChannels() {
+        const map = new Map();
+        const add = (row) => {
+            const sym = String((row || {}).symbol || '').trim().toUpperCase();
+            const tf = String((row || {}).timeframe || '').trim().toUpperCase();
+            const key = channelRiskKey(sym, tf);
+            if (!key || map.has(key)) return;
+            map.set(key, { symbol: sym, timeframe: tf });
+        };
+        allInstances().forEach(row => {
+            const stateText = String((row || {}).state || '').trim().toUpperCase();
+            const active = boolish((row || {}).effective_automation_enabled)
+                || boolish((row || {}).automation_enabled)
+                || boolish((row || {}).has_open_ladder)
+                || stateText === 'OPEN';
+            if (active) add(row);
+        });
+        openTrades().forEach(add);
+        return Array.from(map.values()).sort((a, b) => channelRiskKey(a.symbol, a.timeframe).localeCompare(channelRiskKey(b.symbol, b.timeframe)));
+    }
+
+    function collectChannelRiskOverrides() {
+        const inputs = Array.from(document.querySelectorAll('.v2-channel-risk-input'));
+        if (!inputs.length) {
+            const existing = ((((state || {}).risk_settings || {}).channel_risk_overrides) || []);
+            return Array.isArray(existing) ? existing : [];
+        }
+        return inputs.map(input => {
+            const value = parseMoney(input.value);
+            if (value == null) {
+                throw new Error(`Invalid channel SL risk for ${input.dataset.symbol || ''} ${input.dataset.timeframe || ''}`.trim());
+            }
+            return {
+                symbol: String(input.dataset.symbol || '').trim().toUpperCase(),
+                timeframe: String(input.dataset.timeframe || '').trim().toUpperCase(),
+                catastrophe_loss_usd: value
+            };
+        }).filter(row => row.symbol && row.timeframe);
     }
 
     function parsePositiveInt(raw, fallback) {
@@ -202,6 +263,7 @@
         if (dailyTarget == null || dailyMaxLoss == null) {
             throw new Error('Invalid daily target or max loss');
         }
+        const channelRiskOverrides = collectChannelRiskOverrides();
         if (els.riskSave) {
             els.riskSave.disabled = true;
             els.riskSave.textContent = 'Saving...';
@@ -213,7 +275,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     daily_target_usd: dailyTarget,
-                    daily_max_loss_usd: dailyMaxLoss
+                    daily_max_loss_usd: dailyMaxLoss,
+                    channel_risk_overrides: channelRiskOverrides
                 })
             });
             const data = await res.json().catch(() => ({}));
@@ -221,7 +284,7 @@
                 throw new Error(data.error || data.detail || `HTTP ${res.status}`);
             }
             mergeStatePatch(data);
-            showNotice('Risk settings saved. New trades will use the updated daily guard and catastrophe SL.', 'success');
+            showNotice('Risk settings saved. New trades will use the updated daily guard and pair+TF catastrophe SL.', 'success');
             render();
             refreshStateSoon(1000);
         } finally {
@@ -294,7 +357,9 @@
             freshness_bars: parsePositiveInt(els.liqGovFreshness ? els.liqGovFreshness.value : '', 96),
             min_rejection_ratio: parseUnitFloat(els.liqGovRejection ? els.liqGovRejection.value : '', 0.30),
             allow_continuation: !!(els.liqGovContinuation && els.liqGovContinuation.checked),
-            block_on_no_setup: !!(els.liqGovBlockNoSetup && els.liqGovBlockNoSetup.checked)
+            block_on_no_setup: !!(els.liqGovBlockNoSetup && els.liqGovBlockNoSetup.checked),
+            manual_buy_enabled: !!(els.manualDirBuy && els.manualDirBuy.checked),
+            manual_sell_enabled: !!(els.manualDirSell && els.manualDirSell.checked)
         };
         if (els.liqGovSave) {
             els.liqGovSave.disabled = true;
@@ -1217,7 +1282,7 @@
         const daily = (state || {}).daily_risk || {};
         const dailyTarget = Number(risk.daily_target_usd || 0);
         const dailyMaxLoss = Number(risk.daily_max_loss_usd || 0);
-        const catastrophe = Number(risk.catastrophe_loss_usd || (dailyMaxLoss / 4));
+        const catastrophe = Number(risk.default_catastrophe_loss_usd || risk.catastrophe_loss_usd || (dailyMaxLoss / 4));
         const targetFocused = els.riskDailyTarget && document.activeElement === els.riskDailyTarget;
         const maxFocused = els.riskDailyMaxLoss && document.activeElement === els.riskDailyMaxLoss;
         if (els.riskDailyTarget && !targetFocused) els.riskDailyTarget.value = Number.isFinite(dailyTarget) ? dailyTarget.toFixed(2) : '0.00';
@@ -1225,6 +1290,27 @@
         const liveMax = parseMoney(els.riskDailyMaxLoss ? els.riskDailyMaxLoss.value : dailyMaxLoss);
         const liveCat = liveMax == null ? catastrophe : liveMax / 4;
         if (els.riskCatastrophe) els.riskCatastrophe.textContent = `$${fmtNum(liveCat, 2)}`;
+        if (els.channelRiskGrid && !els.channelRiskGrid.contains(document.activeElement)) {
+            const channels = activeRiskChannels();
+            const overrides = channelRiskOverrideMap();
+            if (!channels.length) {
+                els.channelRiskGrid.innerHTML = '<div class="col-12 small text-muted">No active pair+TF channels yet.</div>';
+            } else {
+                els.channelRiskGrid.innerHTML = channels.map(ch => {
+                    const key = channelRiskKey(ch.symbol, ch.timeframe);
+                    const value = overrides.has(key) ? overrides.get(key) : liveCat;
+                    const source = overrides.has(key) ? 'override' : 'default fallback';
+                    return `<div class="col-sm-6 col-lg-3">
+                        <label class="form-label small text-muted mb-1">${esc(ch.symbol)} ${esc(ch.timeframe)} SL risk ($)</label>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text">$</span>
+                            <input type="number" min="0" step="0.01" class="form-control v2-channel-risk-input" data-symbol="${esc(ch.symbol)}" data-timeframe="${esc(ch.timeframe)}" value="${fmtNum(value, 2)}">
+                        </div>
+                        <div class="small text-muted">${esc(source)}</div>
+                    </div>`;
+                }).join('');
+            }
+        }
         if (els.riskDailyStatus) {
             const pnl = Number(daily.realized_pnl || 0);
             const blocked = !!daily.blocked;
@@ -1240,7 +1326,8 @@
             els.riskTargetOverride.setAttribute('data-enabled', targetBypassed ? '1' : '0');
         }
         if (els.riskStatus) {
-            const enabled = !!risk.catastrophe_enabled || (Number.isFinite(liveCat) && liveCat > 0);
+            const channelEnabled = Array.from(channelRiskOverrideMap().values()).some(v => Number(v) > 0);
+            const enabled = !!risk.catastrophe_enabled || (Number.isFinite(liveCat) && liveCat > 0) || channelEnabled;
             els.riskStatus.className = enabled ? 'badge text-bg-success' : 'badge text-bg-secondary';
             els.riskStatus.textContent = enabled ? 'catastrophe SL ON' : 'catastrophe SL OFF';
         }
@@ -1278,6 +1365,8 @@
         }
         if (els.liqGovContinuation) els.liqGovContinuation.checked = boolish(cfg.allow_continuation);
         if (els.liqGovBlockNoSetup) els.liqGovBlockNoSetup.checked = boolish(cfg.block_on_no_setup);
+        if (els.manualDirBuy) els.manualDirBuy.checked = cfg.manual_buy_enabled == null ? true : boolish(cfg.manual_buy_enabled);
+        if (els.manualDirSell) els.manualDirSell.checked = cfg.manual_sell_enabled == null ? true : boolish(cfg.manual_sell_enabled);
         if (els.liqGovContext) {
             const rows = Array.isArray((state || {}).liquidity_context_cache) ? state.liquidity_context_cache : [];
             const channels = Array.isArray((state || {}).liquidity_context_channels) ? state.liquidity_context_channels : [];

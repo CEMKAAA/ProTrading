@@ -143,7 +143,7 @@
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <strong>Daily Risk Controls</strong>
-                <div class="small text-muted">Daily TP / max daily loss are dashboard-level settings. New Indicator V2 trades get catastrophe SL = max daily loss / 4.</div>
+                <div class="small text-muted">Daily TP / max daily loss are dashboard-level settings. Catastrophe SL risk can be overridden per active pair + timeframe.</div>
             </div>
             <span id="v2-risk-status" class="badge text-bg-secondary">loading</span>
         </div>
@@ -159,7 +159,7 @@
                 </div>
                 <div class="col-md-3">
                     <div class="v2-risk-derived">
-                        <div class="small text-muted">Per-trade catastrophe SL risk</div>
+                        <div class="small text-muted">Default per-trade SL risk</div>
                         <div id="v2-risk-catastrophe" class="fw-bold">$0.00</div>
                     </div>
                 </div>
@@ -172,9 +172,18 @@
                 <div class="col-md-2 text-md-end">
                     <button id="v2-risk-save" type="button" class="btn btn-sm btn-dark">Save Risk Settings</button>
                     <button id="v2-risk-target-override" type="button" class="btn btn-sm btn-outline-warning mt-2">Allow More Today</button>
-                    <div class="small text-muted mt-2">0 max loss disables catastrophe SL. Override bypasses daily target only.</div>
+                    <div class="small text-muted mt-2">0 max loss disables default SL. Pair+TF overrides can still enable/disable per channel.</div>
                 </div>
             </div>
+            <hr>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                <div>
+                    <div class="fw-semibold">Active Pair + TF Catastrophe SL</div>
+                    <div class="small text-muted">These values override the default SL risk for new trades on each active channel.</div>
+                </div>
+                <span class="small text-muted">0 disables catastrophe SL for that channel.</span>
+            </div>
+            <div id="v2-channel-risk-grid" class="row g-2"></div>
         </div>
     </div>
 
@@ -228,6 +237,15 @@
                         <input id="v2-liq-gov-block-no-setup" class="form-check-input" type="checkbox">
                         <span class="form-check-label">Block if no setup</span>
                     </label>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1">Manual gate if liquidity OFF</label>
+                    <div class="btn-group btn-group-sm w-100" role="group" aria-label="Manual direction gate">
+                        <input type="checkbox" class="btn-check" id="v2-manual-dir-buy" autocomplete="off">
+                        <label class="btn btn-outline-success" for="v2-manual-dir-buy">BUY</label>
+                        <input type="checkbox" class="btn-check" id="v2-manual-dir-sell" autocomplete="off">
+                        <label class="btn btn-outline-danger" for="v2-manual-dir-sell">SELL</label>
+                    </div>
                 </div>
                 <div class="col-md-2 text-md-end">
                     <button id="v2-liq-gov-save" type="button" class="btn btn-sm btn-dark">Save Governor</button>

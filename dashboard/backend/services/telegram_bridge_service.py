@@ -4387,14 +4387,82 @@ class TelegramBridgeService:
         daily_target = float(max(0.0, float(daily_target)))
         daily_max_loss = float(max(0.0, abs(float(daily_max_loss))))
         catastrophe_loss = float(daily_max_loss / 4.0) if daily_max_loss > 0.0 else 0.0
+        channel_overrides = cls.get_indicator_bridge_channel_risk_overrides()
+        channel_enabled = any(float((row or {}).get("catastrophe_loss_usd") or 0.0) > 0.0 for row in channel_overrides)
         return {
             "daily_target_usd": float(daily_target),
             "daily_max_loss_usd": float(daily_max_loss),
             "catastrophe_loss_usd": float(catastrophe_loss),
-            "catastrophe_enabled": bool(catastrophe_loss > 0.0),
+            "default_catastrophe_loss_usd": float(catastrophe_loss),
+            "catastrophe_enabled": bool(catastrophe_loss > 0.0 or channel_enabled),
+            "channel_risk_overrides": list(channel_overrides),
             "daily_target_override_date_utc": str(target_override_date),
             "daily_target_guard_bypassed_today": bool(target_override_today),
         }
+
+    @classmethod
+    def _indicator_bridge_channel_risk_key(cls, symbol: Any, timeframe: Any) -> str:
+        sym = str(symbol or "").strip().upper()
+        tf = cls._normalize_tf_token(timeframe, "")
+        return f"{sym}|{tf}" if sym and tf else ""
+
+    @classmethod
+    def _normalize_indicator_bridge_channel_risk_overrides(cls, raw: Any) -> Optional[List[Dict[str, Any]]]:
+        items: List[Any]
+        if raw is None:
+            return []
+        if isinstance(raw, dict):
+            items = []
+            for key, val in raw.items():
+                if isinstance(val, dict):
+                    item = dict(val)
+                    if "symbol" not in item or "timeframe" not in item:
+                        parts = str(key or "").split("|", 1)
+                        if len(parts) == 2:
+                            item.setdefault("symbol", parts[0])
+                            item.setdefault("timeframe", parts[1])
+                    items.append(item)
+                else:
+                    parts = str(key or "").split("|", 1)
+                    if len(parts) == 2:
+                        items.append({"symbol": parts[0], "timeframe": parts[1], "catastrophe_loss_usd": val})
+        elif isinstance(raw, list):
+            items = list(raw)
+        else:
+            return None
+
+        cleaned_by_key: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                return None
+            symbol = str(item.get("symbol") or "").strip().upper()
+            timeframe = cls._normalize_tf_token(item.get("timeframe"), "")
+            amount = _to_float_or_none(item.get("catastrophe_loss_usd"))
+            if amount is None and "risk_usd" in item:
+                amount = _to_float_or_none(item.get("risk_usd"))
+            if not symbol or not timeframe or amount is None or (not math.isfinite(float(amount))) or float(amount) < 0.0:
+                return None
+            key = cls._indicator_bridge_channel_risk_key(symbol, timeframe)
+            if not key:
+                return None
+            cleaned_by_key[key] = {
+                "symbol": str(symbol),
+                "timeframe": str(timeframe),
+                "catastrophe_loss_usd": float(min(1000000.0, float(amount))),
+            }
+            if len(cleaned_by_key) >= 100:
+                break
+        return [cleaned_by_key[k] for k in sorted(cleaned_by_key.keys())]
+
+    @classmethod
+    def get_indicator_bridge_channel_risk_overrides(cls) -> List[Dict[str, Any]]:
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_CHANNEL_RISK_JSON", "[]") or "[]").strip()
+        try:
+            parsed = json.loads(raw) if raw else []
+        except Exception:
+            parsed = []
+        cleaned = cls._normalize_indicator_bridge_channel_risk_overrides(parsed)
+        return list(cleaned or [])
 
     def update_indicator_bridge_risk_settings(
         self,
@@ -4402,6 +4470,7 @@ class TelegramBridgeService:
         daily_target_usd: Optional[float] = None,
         daily_max_loss_usd: Optional[float] = None,
         daily_target_guard_bypass_today: Optional[bool] = None,
+        channel_risk_overrides: Any = None,
     ) -> Dict[str, Any]:
         updates: Dict[str, Any] = {}
         if daily_target_usd is not None:
@@ -4417,6 +4486,16 @@ class TelegramBridgeService:
         if daily_target_guard_bypass_today is not None:
             updates["INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC"] = (
                 datetime.now(timezone.utc).date().isoformat() if bool(daily_target_guard_bypass_today) else ""
+            )
+        if channel_risk_overrides is not None:
+            cleaned = self._normalize_indicator_bridge_channel_risk_overrides(channel_risk_overrides)
+            if cleaned is None:
+                return {"ok": False, "error": "invalid_channel_risk_overrides"}
+            updates["INDICATOR_BRIDGE_CHANNEL_RISK_JSON"] = json.dumps(
+                cleaned,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
             )
         if not updates:
             return {"ok": False, "error": "no_updates"}
@@ -4611,6 +4690,8 @@ class TelegramBridgeService:
             "block_on_no_setup": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_NO_SETUP", "1"),
             "block_on_scan_error": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_SCAN_ERROR", "1"),
             "state_prewarm_enabled": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_STATE_PREWARM_ENABLED", "1"),
+            "manual_buy_enabled": _env_bool("INDICATOR_BRIDGE_MANUAL_DIRECTION_GATE_BUY_ENABLED", "1"),
+            "manual_sell_enabled": _env_bool("INDICATOR_BRIDGE_MANUAL_DIRECTION_GATE_SELL_ENABLED", "1"),
         }
 
     def update_indicator_bridge_liquidity_context_governor_settings(
@@ -4623,6 +4704,8 @@ class TelegramBridgeService:
         min_rejection_ratio: Optional[float] = None,
         allow_continuation: Optional[bool] = None,
         block_on_no_setup: Optional[bool] = None,
+        manual_buy_enabled: Optional[bool] = None,
+        manual_sell_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
         updates: Dict[str, Any] = {}
         if enabled is not None:
@@ -4665,6 +4748,10 @@ class TelegramBridgeService:
             updates["INDICATOR_BRIDGE_LIQ_CONTEXT_ALLOW_CONTINUATION"] = "1" if bool(allow_continuation) else "0"
         if block_on_no_setup is not None:
             updates["INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_NO_SETUP"] = "1" if bool(block_on_no_setup) else "0"
+        if manual_buy_enabled is not None:
+            updates["INDICATOR_BRIDGE_MANUAL_DIRECTION_GATE_BUY_ENABLED"] = "1" if bool(manual_buy_enabled) else "0"
+        if manual_sell_enabled is not None:
+            updates["INDICATOR_BRIDGE_MANUAL_DIRECTION_GATE_SELL_ENABLED"] = "1" if bool(manual_sell_enabled) else "0"
         if not updates:
             return {"ok": False, "error": "no_updates"}
         ok, msg = self._upsert_indicator_bridge_env_values(updates)
@@ -4968,6 +5055,7 @@ class TelegramBridgeService:
         *,
         svc: LiveTradingService,
         symbol: str,
+        timeframe: Optional[str] = None,
         direction: str,
         lot: float,
         entry_price: float,
@@ -4977,12 +5065,33 @@ class TelegramBridgeService:
         existing_stop_loss: Optional[float] = None,
     ) -> Dict[str, Any]:
         settings = self.get_indicator_bridge_risk_settings()
-        loss_usd = _to_float_or_none((settings or {}).get("catastrophe_loss_usd")) or 0.0
+        default_loss_usd = _to_float_or_none(
+            (settings or {}).get("default_catastrophe_loss_usd", (settings or {}).get("catastrophe_loss_usd"))
+        ) or 0.0
+        channel_key = self._indicator_bridge_channel_risk_key(symbol, timeframe)
+        loss_usd = float(default_loss_usd)
+        risk_source = "daily_max_loss_quarter"
+        for row in (settings or {}).get("channel_risk_overrides") or []:
+            if not isinstance(row, dict):
+                continue
+            if self._indicator_bridge_channel_risk_key(row.get("symbol"), row.get("timeframe")) != channel_key:
+                continue
+            row_loss = _to_float_or_none(row.get("catastrophe_loss_usd"))
+            if row_loss is not None and math.isfinite(float(row_loss)) and float(row_loss) >= 0.0:
+                loss_usd = float(row_loss)
+                risk_source = "channel_override"
+            break
         qty = _to_float_or_none(lot) or 0.0
         entry = _to_float_or_none(entry_price)
         side = str(direction or "").strip().upper()
         if float(loss_usd) <= 0.0:
-            return {"enabled": False, "reason": "catastrophe_disabled", "risk_settings": dict(settings)}
+            return {
+                "enabled": False,
+                "reason": "catastrophe_disabled",
+                "risk_source": str(risk_source),
+                "risk_channel_key": str(channel_key),
+                "risk_settings": dict(settings),
+            }
         if side not in {"BUY", "SELL"} or entry is None or float(entry) <= 0.0 or float(qty) <= 0.0:
             return {"enabled": False, "reason": "invalid_input", "risk_settings": dict(settings)}
         try:
@@ -5030,7 +5139,12 @@ class TelegramBridgeService:
             "enabled": True,
             "stop_loss": float(candidate),
             "catastrophe_loss_usd": float(loss_usd),
+            "default_catastrophe_loss_usd": float(default_loss_usd),
             "daily_max_loss_usd": _to_float_or_none((settings or {}).get("daily_max_loss_usd")) or 0.0,
+            "risk_source": str(risk_source),
+            "risk_channel_key": str(channel_key),
+            "risk_symbol": str(symbol or "").strip().upper(),
+            "risk_timeframe": self._normalize_tf_token(timeframe, ""),
             "price_distance": float(abs(float(entry) - float(candidate))),
             "entry_price": float(entry),
             "lot": float(qty),
@@ -8467,7 +8581,41 @@ class TelegramBridgeService:
     ) -> Dict[str, Any]:
         settings = self.get_indicator_bridge_liquidity_context_governor_settings()
         if not bool(settings.get("enabled")):
-            return {"enabled": False, "allow": True, "reason": "liquidity_context_governor_disabled", "settings": dict(settings)}
+            side = str(direction or "").strip().upper()
+            if side not in {"BUY", "SELL"}:
+                return {"enabled": False, "allow": True, "reason": "liquidity_context_governor_disabled", "settings": dict(settings)}
+            buy_enabled = bool(settings.get("manual_buy_enabled", True))
+            sell_enabled = bool(settings.get("manual_sell_enabled", True))
+            allowed = {"BUY": buy_enabled, "SELL": sell_enabled}
+            if not bool(allowed.get(side, True)):
+                out = {
+                    "enabled": True,
+                    "allow": False,
+                    "reason": "manual_direction_gate_blocked",
+                    "settings": dict(settings),
+                    "signal_direction": str(side),
+                    "timeframe": str(timeframe),
+                    "manual_direction_gate": {
+                        "active_when_liquidity_governor_off": True,
+                        "buy_enabled": bool(buy_enabled),
+                        "sell_enabled": bool(sell_enabled),
+                    },
+                }
+                self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
+                return out
+            return {
+                "enabled": False,
+                "allow": True,
+                "reason": "manual_direction_gate_allows_signal",
+                "settings": dict(settings),
+                "signal_direction": str(side),
+                "timeframe": str(timeframe),
+                "manual_direction_gate": {
+                    "active_when_liquidity_governor_off": True,
+                    "buy_enabled": bool(buy_enabled),
+                    "sell_enabled": bool(sell_enabled),
+                },
+            }
         side = str(direction or "").strip().upper()
         if side not in {"BUY", "SELL"}:
             return {"enabled": True, "allow": False, "reason": "invalid_direction", "settings": dict(settings)}
@@ -8541,6 +8689,17 @@ class TelegramBridgeService:
         }
         self._audit_liquidity_context_gate_decision(symbol=symbol, timeframe=timeframe, direction=side, guard=out)
         return out
+
+    @staticmethod
+    def _indicator_direction_guard_stage(guard: Any) -> str:
+        reason = str((guard or {}).get("reason") or "").strip().lower() if isinstance(guard, dict) else ""
+        return "manual_direction_gate" if reason.startswith("manual_direction_gate") else "liquidity_context_governor"
+
+    @staticmethod
+    def _indicator_direction_guard_message(guard: Any, fallback_reason: str = "direction_guard_blocked") -> str:
+        reason = str((guard or {}).get("reason") or fallback_reason).strip() if isinstance(guard, dict) else str(fallback_reason)
+        prefix = "manual_direction_gate_blocked" if reason == "manual_direction_gate_blocked" else "liquidity_context_guard_blocked"
+        return f"{prefix}:{reason}"
 
     @staticmethod
     def _calc_adx_from_bars(bars: Any, period: int = 14) -> Optional[float]:
@@ -12146,6 +12305,8 @@ class TelegramBridgeService:
                 with mode_exec_lock:
                     if not bool((liquidity_context_guard or {}).get("allow", True)):
                         reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+                        guard_message = self._indicator_direction_guard_message(liquidity_context_guard, reason)
+                        guard_stage = self._indicator_direction_guard_stage(liquidity_context_guard)
                         self._append_automation_execution_log(
                             source_type="mt_indicator",
                             source_name=str(indicator),
@@ -12156,14 +12317,14 @@ class TelegramBridgeService:
                             direction=str(hint),
                             lot=float(mode_lot),
                             stop_loss=_to_float_or_none(stop_loss),
-                            message=f"liquidity_context_guard_blocked:{reason}",
+                            message=str(guard_message),
                             profile=str(profile),
                             indicator=str(indicator),
                             source_tag=str(mode_source_tag),
                             event_ts=event_ts,
                             execution_mode=str(mode),
                             trace_id=str(signal.get("trace_id") or ""),
-                            stage="liquidity_context_governor",
+                            stage=str(guard_stage),
                             stage_status="blocked",
                             stage_payload=dict(liquidity_context_guard or {}),
                             error_code=str(reason),
@@ -12176,7 +12337,7 @@ class TelegramBridgeService:
                                 "ok": True,
                                 "executed": False,
                                 "reason": str(reason),
-                                "message": f"liquidity_context_guard_blocked:{reason}",
+                                "message": str(guard_message),
                                 "liquidity_context_guard": dict(liquidity_context_guard or {}),
                             }
                         )
@@ -12257,6 +12418,8 @@ class TelegramBridgeService:
             with mode_exec_lock:
                 if not bool((liquidity_context_guard or {}).get("allow", True)):
                     reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+                    guard_message = self._indicator_direction_guard_message(liquidity_context_guard, reason)
+                    guard_stage = self._indicator_direction_guard_stage(liquidity_context_guard)
                     self._append_automation_execution_log(
                         source_type="mt_indicator",
                         source_name=str(indicator),
@@ -12267,14 +12430,14 @@ class TelegramBridgeService:
                         direction=str(hint),
                         lot=float(mode_lot),
                         stop_loss=_to_float_or_none(stop_loss),
-                        message=f"liquidity_context_guard_blocked:{reason}",
+                        message=str(guard_message),
                         profile=str(profile),
                         indicator=str(indicator),
                         source_tag=str(mode_source_tag),
                         event_ts=event_ts,
                         execution_mode=str(mode),
                         trace_id=str(signal.get("trace_id") or ""),
-                        stage="liquidity_context_governor",
+                        stage=str(guard_stage),
                         stage_status="blocked",
                         stage_payload=dict(liquidity_context_guard or {}),
                         error_code=str(reason),
@@ -12287,7 +12450,7 @@ class TelegramBridgeService:
                             "ok": True,
                             "executed": False,
                             "reason": str(reason),
-                            "message": f"liquidity_context_guard_blocked:{reason}",
+                            "message": str(guard_message),
                             "liquidity_context_guard": dict(liquidity_context_guard or {}),
                         }
                     )
@@ -12551,6 +12714,7 @@ class TelegramBridgeService:
                 catastrophe_plan = self._indicator_bridge_catastrophe_stop_loss(
                     svc=svc,
                     symbol=str(symbol_exec_raw),
+                    timeframe=str(timeframe),
                     direction=str(hint),
                     lot=float(mode_lot),
                     entry_price=float(entry_price),
@@ -12928,6 +13092,8 @@ class TelegramBridgeService:
         )
         if not bool((liquidity_context_guard or {}).get("allow", True)):
             reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
+            guard_message = self._indicator_direction_guard_message(liquidity_context_guard, reason)
+            guard_stage = self._indicator_direction_guard_stage(liquidity_context_guard)
             self._append_automation_execution_log(
                 source_type="mt_indicator",
                 source_name=str(indicator),
@@ -12938,13 +13104,13 @@ class TelegramBridgeService:
                 direction=str(hint),
                 lot=float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile)),
                 stop_loss=_to_float_or_none(stop_loss),
-                message=f"liquidity_context_guard_blocked:{reason}",
+                message=str(guard_message),
                 profile=str(profile),
                 indicator=str(indicator),
                 source_tag=str(combo_source_tag),
                 event_ts=event_ts,
                 execution_mode=str(profile),
-                stage="liquidity_context_governor",
+                stage=str(guard_stage),
                 stage_status="blocked",
                 stage_payload=dict(liquidity_context_guard or {}),
                 error_code=str(reason),
@@ -12953,7 +13119,7 @@ class TelegramBridgeService:
                 source=str(source),
                 chat={"title": str(source), "type": "channel"},
                 text=str(message),
-                kind="mt4_liquidity_context_guard_blocked",
+                kind=("mt4_manual_direction_gate_blocked" if str(guard_stage) == "manual_direction_gate" else "mt4_liquidity_context_guard_blocked"),
                 parsed={
                     "symbol": str(symbol_exec_raw),
                     "direction": str(hint),

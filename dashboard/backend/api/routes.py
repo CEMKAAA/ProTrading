@@ -875,7 +875,7 @@ def indicator_bridge_state(
 
 @router.post("/indicator-bridge/risk-settings")
 def indicator_bridge_risk_settings(payload: Dict[str, Any]):
-    """Persist global Indicator Automation V2 risk settings."""
+    """Persist global and pair+TF Indicator Automation V2 risk settings."""
     try:
         from ..main import telegram_bridge_service
 
@@ -886,6 +886,7 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
         daily_target = p.get("daily_target_usd") if "daily_target_usd" in p else p.get("daily_target")
         daily_max_loss = p.get("daily_max_loss_usd") if "daily_max_loss_usd" in p else p.get("daily_max_loss")
         bypass_target_guard = p.get("daily_target_guard_bypass_today")
+        channel_risk_overrides = p.get("channel_risk_overrides") if "channel_risk_overrides" in p else None
         target_val = None
         max_loss_val = None
         bypass_val = None
@@ -906,6 +907,7 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
             daily_target_usd=target_val,
             daily_max_loss_usd=max_loss_val,
             daily_target_guard_bypass_today=bypass_val,
+            channel_risk_overrides=channel_risk_overrides,
         )
         return {
             "ok": bool((result or {}).get("ok", True)),
@@ -986,6 +988,8 @@ def indicator_bridge_liquidity_governor_settings(payload: Dict[str, Any]):
                 min_rejection_ratio=_float_or_none(p.get("min_rejection_ratio"), "min_rejection_ratio"),
                 allow_continuation=_bool_or_none(p.get("allow_continuation")),
                 block_on_no_setup=_bool_or_none(p.get("block_on_no_setup")),
+                manual_buy_enabled=_bool_or_none(p.get("manual_buy_enabled")),
+                manual_sell_enabled=_bool_or_none(p.get("manual_sell_enabled")),
             )
         except ValueError as exc:
             return {"ok": False, "error": f"invalid_{str(exc)}"}
