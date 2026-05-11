@@ -4685,7 +4685,7 @@ class TelegramBridgeService:
             "max_extension_atr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_MAX_EXTENSION_ATR", 1.50, 0.0, 10.0),
             "min_target_rr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_MIN_TARGET_RR", 0.80, 0.0, 10.0),
             "invalidation_atr": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_INVALIDATION_ATR", 0.25, 0.0, 5.0),
-            "cache_ttl_sec": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_CACHE_TTL_SEC", 1.0, 0.0, 300.0),
+            "cache_ttl_sec": _env_float("INDICATOR_BRIDGE_LIQ_CONTEXT_CACHE_TTL_SEC", 5.0, 0.0, 300.0),
             "allow_continuation": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_ALLOW_CONTINUATION", "1"),
             "block_on_no_setup": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_NO_SETUP", "1"),
             "block_on_scan_error": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_BLOCK_ON_SCAN_ERROR", "1"),
@@ -4764,7 +4764,7 @@ class TelegramBridgeService:
             "liquidity_context_watchlist": self.get_indicator_bridge_liquidity_context_watchlist(),
         }
 
-    def get_indicator_bridge_liquidity_context_cache_rows(self) -> List[Dict[str, Any]]:
+    def get_indicator_bridge_liquidity_context_cache_rows(self, *, revalidate_live: bool = True) -> List[Dict[str, Any]]:
         now_ts = float(time.time())
         rows: List[Dict[str, Any]] = []
         with self._lock:
@@ -4773,12 +4773,19 @@ class TelegramBridgeService:
             if not isinstance(cached, dict):
                 continue
             data = dict(cached.get("data") or {})
-            revalidated = self._revalidate_indicator_liquidity_context_live(dict(data))
-            data = dict(revalidated.get("context") or data)
-            if bool(revalidated.get("changed")):
-                with self._lock:
-                    self._indicator_liquidity_context_cache[str(key)] = {"ts": now_ts, "data": dict(data)}
-                self._audit_liquidity_context_lifecycle(dict(data))
+            if bool(revalidate_live):
+                live_ts = float(cached.get("live_ts") or 0.0)
+                if (now_ts - live_ts) >= 3.0:
+                    revalidated = self._revalidate_indicator_liquidity_context_live(dict(data))
+                    data = dict(revalidated.get("context") or data)
+                    if bool(revalidated.get("changed")):
+                        with self._lock:
+                            self._indicator_liquidity_context_cache[str(key)] = {"ts": now_ts, "live_ts": now_ts, "data": dict(data)}
+                        self._audit_liquidity_context_lifecycle(dict(data))
+                    else:
+                        with self._lock:
+                            if str(key) in self._indicator_liquidity_context_cache:
+                                self._indicator_liquidity_context_cache[str(key)]["live_ts"] = now_ts
             rows.append(
                 {
                     "cache_key": str(key),
@@ -4871,7 +4878,10 @@ class TelegramBridgeService:
         seen: set[str] = set()
         now_ts = float(time.time())
         ttl_val = _to_float_or_none(settings.get("cache_ttl_sec"))
-        ttl = float(ttl_val if ttl_val is not None else 1.0)
+        # Dashboard state can poll every few seconds. Liquidity scans are heavy
+        # history reads, so prewarm must be throttled more aggressively than the
+        # governor's per-signal cache TTL.
+        ttl = max(10.0, float(ttl_val if ttl_val is not None else 5.0))
         for row in channels[:12]:
             symbol = str((row or {}).get("symbol") or "").strip().upper()
             timeframe = str((row or {}).get("timeframe") or "").strip().upper()
@@ -4951,11 +4961,23 @@ class TelegramBridgeService:
             if data:
                 ctx = dict(data)
                 ctx["cache_age_sec"] = max(0.0, float(now_ts) - float(cached.get("ts") or 0.0))
-                try:
-                    revalidated = self._revalidate_indicator_liquidity_context_live(dict(ctx))
-                    ctx = dict((revalidated or {}).get("context") or ctx)
-                except Exception:
-                    logger.exception("indicator_liquidity_context_channel_revalidate_failed symbol=%s timeframe=%s", symbol, timeframe)
+                live_ts = float(cached.get("live_ts") or 0.0)
+                if (now_ts - live_ts) >= 3.0:
+                    try:
+                        revalidated = self._revalidate_indicator_liquidity_context_live(dict(ctx))
+                        ctx = dict((revalidated or {}).get("context") or ctx)
+                        with self._lock:
+                            if cache_key in self._indicator_liquidity_context_cache:
+                                current = dict(self._indicator_liquidity_context_cache.get(cache_key) or {})
+                                current["live_ts"] = now_ts
+                                if bool((revalidated or {}).get("changed")):
+                                    current["ts"] = now_ts
+                                    current["data"] = dict(ctx)
+                                self._indicator_liquidity_context_cache[cache_key] = dict(current)
+                        if bool((revalidated or {}).get("changed")):
+                            self._audit_liquidity_context_lifecycle(dict(ctx))
+                    except Exception:
+                        logger.exception("indicator_liquidity_context_channel_revalidate_failed symbol=%s timeframe=%s", symbol, timeframe)
             else:
                 ctx = {
                     "ok": False,
@@ -6259,6 +6281,7 @@ class TelegramBridgeService:
         sync_exit_tf: Optional[str] = None,
         sync_reentry_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        update_t0 = float(time.perf_counter())
         family = self._indicator_bridge_family(terminal_family)
         instance_key = self._indicator_bridge_instance_key(
             family=family,
@@ -6440,6 +6463,14 @@ class TelegramBridgeService:
                 prev["entry_exit"] = dict(runtime_cfg.get("entry_exit") or {})
                 prev["sync"] = dict(runtime_cfg.get("sync") or {})
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
+        elapsed = float(time.perf_counter()) - float(update_t0)
+        if elapsed >= 3.0:
+            logger.warning(
+                "indicator_bridge_instance_settings_slow total=%.3fs instance=%s persist_status=%s",
+                float(elapsed),
+                str(instance_key),
+                str(status),
+            )
         return {
             "ok": bool(ok),
             "persist_status": str(status),
@@ -7305,6 +7336,12 @@ class TelegramBridgeService:
         return trade_logs, liquidity_logs
 
     def get_indicator_bridge_state(self, *, limit: int = 300, active_only: bool = False) -> Dict[str, Any]:
+        state_t0 = float(time.perf_counter())
+        state_marks: Dict[str, float] = {}
+
+        def _mark(label: str) -> None:
+            state_marks[str(label)] = float(time.perf_counter())
+
         try:
             # The dashboard is often the operator's first view after MT5 has
             # already closed positions by TP/SL. Run the lightweight interval-
@@ -7313,9 +7350,11 @@ class TelegramBridgeService:
             self._reconcile_execution_ticket_state()
         except Exception:
             logger.exception("indicator_bridge_state_reconcile_failed")
+        _mark("reconcile")
         lim = int(max(20, min(1000, int(limit or 300))))
         mt4_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt4", limit=lim, active_only=active_only)
         mt5_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=lim, active_only=active_only)
+        _mark("monitors")
         # Keep the live state endpoint responsive. History-based PnL recovery is
         # available in the audit helpers, but the dashboard poll path must not
         # fan out into many MT5 history calls when the terminal is unavailable.
@@ -7325,6 +7364,7 @@ class TelegramBridgeService:
             resolve_history_pnl=False,
             since_utc=audit_since_utc,
         )
+        _mark("audit_logs")
         self._enrich_entry_exit_monitors_from_audit(
             mt4_monitor=mt4_monitor,
             mt5_monitor=mt5_monitor,
@@ -7333,12 +7373,36 @@ class TelegramBridgeService:
         execution_logs, liquidity_audit_logs = self._split_indicator_liquidity_audit_logs(execution_logs)
         execution_report = self.get_automation_execution_report(limit=200, resolve_history_pnl=False)
         rsi_telemetry = self.get_indicator_rsi_telemetry(limit=max(200, lim))
+        _mark("reports")
         open_trades = list((mt4_monitor or {}).get("rows") or []) + list((mt5_monitor or {}).get("rows") or [])
         open_trades.sort(key=lambda r: str((r or {}).get("opened_at") or ""), reverse=True)
         liquidity_context_channels = self._indicator_liquidity_context_active_channels(mt4_monitor, mt5_monitor)
         liquidity_context_channels.extend(self._indicator_liquidity_context_watchlist_channels())
         self._prewarm_indicator_liquidity_context_for_channels(liquidity_context_channels)
         liquidity_context_channels = self._hydrate_indicator_liquidity_context_channels(liquidity_context_channels)
+        _mark("liquidity")
+        risk_settings = self.get_indicator_bridge_risk_settings()
+        daily_risk = self.get_indicator_bridge_daily_risk_status()
+        dual_gate_settings = self.get_indicator_bridge_dual_gate_settings()
+        liquidity_context_governor = self.get_indicator_bridge_liquidity_context_governor_settings()
+        liquidity_context_watchlist = self.get_indicator_bridge_liquidity_context_watchlist()
+        liquidity_context_cache = self.get_indicator_bridge_liquidity_context_cache_rows(revalidate_live=False)
+        _mark("settings")
+        total_sec = float(time.perf_counter()) - float(state_t0)
+        if total_sec >= 5.0:
+            ordered = []
+            prev = float(state_t0)
+            for name in ["reconcile", "monitors", "audit_logs", "reports", "liquidity", "settings"]:
+                cur = float(state_marks.get(name) or prev)
+                ordered.append(f"{name}={max(0.0, cur - prev):.3f}s")
+                prev = cur
+            logger.warning(
+                "indicator_bridge_state_slow total=%.3fs limit=%s active_only=%s %s",
+                float(total_sec),
+                int(lim),
+                bool(active_only),
+                " ".join(ordered),
+            )
         return {
             "ok": True,
             "updated_at": self._now_iso(),
@@ -7354,13 +7418,13 @@ class TelegramBridgeService:
             "liquidity_audit_logs": liquidity_audit_logs,
             "execution_report": execution_report,
             "rsi_telemetry": rsi_telemetry,
-            "risk_settings": self.get_indicator_bridge_risk_settings(),
-            "daily_risk": self.get_indicator_bridge_daily_risk_status(),
-            "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
-            "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
-            "liquidity_context_watchlist": self.get_indicator_bridge_liquidity_context_watchlist(),
+            "risk_settings": risk_settings,
+            "daily_risk": daily_risk,
+            "dual_gate_settings": dual_gate_settings,
+            "liquidity_context_governor": liquidity_context_governor,
+            "liquidity_context_watchlist": liquidity_context_watchlist,
             "liquidity_context_channels": liquidity_context_channels,
-            "liquidity_context_cache": self.get_indicator_bridge_liquidity_context_cache_rows(),
+            "liquidity_context_cache": liquidity_context_cache,
         }
 
     @staticmethod

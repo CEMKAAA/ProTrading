@@ -28,6 +28,7 @@ input int    InpValueBoxWidth = 170;
 input int    InpValueBoxHeight = 22;
 input bool   InpShowContractDebug = true;
 input bool   InpKeepObjectsOnRemove = false;
+input bool   InpResetBoxToVisibleWindow = true;
 
 string RECT_NAME = "PT_RISK_RECTANGLE_BOX";
 string LABEL_NAME = "PT_RISK_RECTANGLE_LABEL";
@@ -165,12 +166,36 @@ void _create_or_reset_rectangle()
    int barsWide = MathMax(5, InpInitialBarsWide);
    int rightShift = MathMin(5, MathMax(1, Bars - 2));
    int leftShift = MathMin(Bars - 1, rightShift + barsWide);
+
+   if(InpResetBoxToVisibleWindow)
+   {
+      long firstVisible = ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR, 0);
+      long visibleCount = ChartGetInteger(0, CHART_VISIBLE_BARS, 0);
+      if(firstVisible > 0 && visibleCount > 0)
+      {
+         int visibleLeft = MathMin(Bars - 1, (int)firstVisible);
+         int visibleRight = MathMax(0, visibleLeft - (int)visibleCount + 1);
+         int available = MathMax(1, visibleLeft - visibleRight + 1);
+         int width = MathMin(barsWide, MathMax(5, available / 2));
+         int center = visibleRight + available / 2;
+         rightShift = MathMax(0, center - width / 2);
+         leftShift = MathMin(Bars - 1, rightShift + width);
+      }
+   }
+
    datetime t1 = Time[leftShift];
    datetime t2 = Time[rightShift];
    double atr = iATR(Symbol(), Period(), MathMax(1, InpAtrPeriod), 1);
    if(atr <= 0.0)
       atr = MathMax(Point * 100.0, (High[1] - Low[1]));
    double mid = Bid;
+   if(InpResetBoxToVisibleWindow)
+   {
+      double chartMin = ChartGetDouble(0, CHART_PRICE_MIN, 0);
+      double chartMax = ChartGetDouble(0, CHART_PRICE_MAX, 0);
+      if(chartMax > chartMin)
+         mid = (chartMax + chartMin) / 2.0;
+   }
    if(mid <= 0.0)
       mid = Close[1];
    double halfHeight = MathMax(Point * 10.0, atr * MathMax(0.1, InpInitialHeightATRMult) * 0.5);

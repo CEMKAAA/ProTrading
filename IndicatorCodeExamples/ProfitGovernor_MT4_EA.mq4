@@ -24,6 +24,12 @@ input double InpInitialLot = 0.10;
 input double InpLotStep = 0.01;
 input int InpOpenMagicNumber = 0;
 input string InpOpenComment = "manual_button";
+input double InpManualTakeProfitUsd = 30.0;          // Manual Buy/Sell TP in account currency. 0 disables TP.
+input double InpManualStopLossUsd = 15.0;            // Manual Buy/Sell SL in account currency. 0 disables SL.
+input double InpManualRiskFreeUsd = 10.0;            // Move SL to BE when this open profit is reached. 0 disables RF line.
+input int InpManualRiskBoxBars = 80;                 // Visual TP/SL zone width in chart bars.
+input bool InpDrawManualRiskZones = true;
+input bool InpKeepManualRiskZonesOnRemove = false;
 
 input bool InpAutoCloseProfitEnabled = false;         // Legacy chart-scope target. Keep false when using TF group governor.
 input double InpAutoCloseProfitTargetUsd = 50.0;      // Account currency target, e.g. 50 USD
@@ -72,11 +78,19 @@ input int InpAutoCloseCooldownSeconds = 10;
 string BTN_CLOSE_BUY = "PT4_MANUAL_CLOSE_BUY";
 string BTN_CLOSE_SELL = "PT4_MANUAL_CLOSE_SELL";
 string BTN_CLOSE_ALL = "PT4_MANUAL_CLOSE_ALL";
+string BTN_HALF_BE_ALL = "PT4_MANUAL_HALF_BE_ALL";
 string BTN_LOT_DOWN = "PT4_MANUAL_LOT_DOWN";
 string BTN_LOT_EDIT = "PT4_MANUAL_LOT_EDIT";
 string BTN_LOT_UP = "PT4_MANUAL_LOT_UP";
 string BTN_OPEN_BUY = "PT4_MANUAL_OPEN_BUY";
 string BTN_OPEN_SELL = "PT4_MANUAL_OPEN_SELL";
+string EDIT_MANUAL_TP = "PT4_MANUAL_TP_USD_EDIT";
+string EDIT_MANUAL_SL = "PT4_MANUAL_SL_USD_EDIT";
+string EDIT_MANUAL_RF = "PT4_MANUAL_RF_USD_EDIT";
+string LBL_MANUAL_TP = "PT4_MANUAL_TP_USD_LABEL";
+string LBL_MANUAL_SL = "PT4_MANUAL_SL_USD_LABEL";
+string LBL_MANUAL_RF = "PT4_MANUAL_RF_USD_LABEL";
+string MANUAL_RISK_PREFIX = "PT4_MANUAL_RISK_ZONE_";
 string BTN_TF_SAVE = "PT4_TF_SAVE";
 string BTN_TF_CLOSE_M1 = "PT4_TF_CLOSE_M1";
 string BTN_TF_CLOSE_M5 = "PT4_TF_CLOSE_M5";
@@ -98,6 +112,9 @@ string LBL_TF_H1 = "PT4_TF_LBL_H1";
 string LBL_TF_STATUS = "PT4_TF_STATUS";
 
 double g_lot = 0.10;
+double g_manual_tp_usd = 0.0;
+double g_manual_sl_usd = 0.0;
+double g_manual_rf_usd = 0.0;
 bool g_auto_close_in_progress = false;
 datetime g_last_auto_close_at = 0;
 double g_tf_target_m1 = 0.0;
@@ -194,6 +211,26 @@ void SaveTfTargets()
    GlobalVariableSet(SettingsKey("M15"), g_tf_target_m15);
    GlobalVariableSet(SettingsKey("M30"), g_tf_target_m30);
    GlobalVariableSet(SettingsKey("H1"), g_tf_target_h1);
+}
+
+void LoadManualTradeTargets()
+{
+   g_manual_tp_usd = InpManualTakeProfitUsd;
+   g_manual_sl_usd = InpManualStopLossUsd;
+   g_manual_rf_usd = InpManualRiskFreeUsd;
+   if(GlobalVariableCheck(SettingsKey("MANUAL_TP_USD"))) g_manual_tp_usd = GlobalVariableGet(SettingsKey("MANUAL_TP_USD"));
+   if(GlobalVariableCheck(SettingsKey("MANUAL_SL_USD"))) g_manual_sl_usd = GlobalVariableGet(SettingsKey("MANUAL_SL_USD"));
+   if(GlobalVariableCheck(SettingsKey("MANUAL_RF_USD"))) g_manual_rf_usd = GlobalVariableGet(SettingsKey("MANUAL_RF_USD"));
+   if(g_manual_tp_usd < 0.0) g_manual_tp_usd = 0.0;
+   if(g_manual_sl_usd < 0.0) g_manual_sl_usd = 0.0;
+   if(g_manual_rf_usd < 0.0) g_manual_rf_usd = 0.0;
+}
+
+void SaveManualTradeTargets()
+{
+   GlobalVariableSet(SettingsKey("MANUAL_TP_USD"), g_manual_tp_usd);
+   GlobalVariableSet(SettingsKey("MANUAL_SL_USD"), g_manual_sl_usd);
+   GlobalVariableSet(SettingsKey("MANUAL_RF_USD"), g_manual_rf_usd);
 }
 
 string TfArmedKey(const string tf)
@@ -568,6 +605,339 @@ void ReadLotFromEdit()
    SetLot(v);
 }
 
+void UpdateManualTargetEdits()
+{
+   SetObjectText(EDIT_MANUAL_TP, DoubleToString(g_manual_tp_usd, 2));
+   SetObjectText(EDIT_MANUAL_SL, DoubleToString(g_manual_sl_usd, 2));
+   SetObjectText(EDIT_MANUAL_RF, DoubleToString(g_manual_rf_usd, 2));
+}
+
+void ReadManualTradeTargets()
+{
+   g_manual_tp_usd = ParseEditDouble(EDIT_MANUAL_TP, g_manual_tp_usd);
+   g_manual_sl_usd = ParseEditDouble(EDIT_MANUAL_SL, g_manual_sl_usd);
+   g_manual_rf_usd = ParseEditDouble(EDIT_MANUAL_RF, g_manual_rf_usd);
+   SaveManualTradeTargets();
+   UpdateManualTargetEdits();
+}
+
+double ManualPriceDistanceToMoney(const string symbol, const double lot, const double distance)
+{
+   if(distance <= 0.0 || lot <= 0.0) return 0.0;
+
+   double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
+   double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
+   if(tickSize <= 0.0) tickSize = MarketInfo(symbol, MODE_POINT);
+   if(tickSize > 0.0 && tickValue > 0.0)
+      return MathAbs(distance) / tickSize * tickValue * lot;
+
+   double lotSize = MarketInfo(symbol, MODE_LOTSIZE);
+   if(lotSize > 0.0)
+      return MathAbs(distance) * lotSize * lot;
+
+   return 0.0;
+}
+
+double ManualMoneyToPriceDistance(const string symbol, const double lot, const double money)
+{
+   if(money <= 0.0 || lot <= 0.0) return 0.0;
+
+   double tickSize = MarketInfo(symbol, MODE_TICKSIZE);
+   double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
+   if(tickSize <= 0.0) tickSize = MarketInfo(symbol, MODE_POINT);
+   if(tickSize > 0.0 && tickValue > 0.0)
+      return MathAbs(money) / (tickValue * lot) * tickSize;
+
+   double lotSize = MarketInfo(symbol, MODE_LOTSIZE);
+   if(lotSize > 0.0)
+      return MathAbs(money) / (lotSize * lot);
+
+   return 0.0;
+}
+
+double EnforceManualMinimumStopDistance(const string symbol, const double distance)
+{
+   if(distance <= 0.0) return 0.0;
+   double point = MarketInfo(symbol, MODE_POINT);
+   if(point <= 0.0) point = Point;
+   double minDistance = MarketInfo(symbol, MODE_STOPLEVEL) * point;
+   if(minDistance > 0.0 && distance < minDistance + point)
+      return minDistance + point;
+   return distance;
+}
+
+void BuildManualStops(const string side, const double entryPrice, const double lot, double &sl, double &tp)
+{
+   string symbol = Symbol();
+   int digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   double tpDistance = EnforceManualMinimumStopDistance(symbol, ManualMoneyToPriceDistance(symbol, lot, g_manual_tp_usd));
+   double slDistance = EnforceManualMinimumStopDistance(symbol, ManualMoneyToPriceDistance(symbol, lot, g_manual_sl_usd));
+
+   sl = 0.0;
+   tp = 0.0;
+   if(side == "BUY")
+   {
+      if(slDistance > 0.0) sl = NormalizeDouble(entryPrice - slDistance, digits);
+      if(tpDistance > 0.0) tp = NormalizeDouble(entryPrice + tpDistance, digits);
+   }
+   else if(side == "SELL")
+   {
+      if(slDistance > 0.0) sl = NormalizeDouble(entryPrice + slDistance, digits);
+      if(tpDistance > 0.0) tp = NormalizeDouble(entryPrice - tpDistance, digits);
+   }
+}
+
+double BuildManualRiskFreePrice(const string side, const double entryPrice, const double lot)
+{
+   string symbol = Symbol();
+   int digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   double rfDistance = ManualMoneyToPriceDistance(symbol, lot, g_manual_rf_usd);
+   if(rfDistance <= 0.0) return 0.0;
+   if(side == "BUY")
+      return NormalizeDouble(entryPrice + rfDistance, digits);
+   if(side == "SELL")
+      return NormalizeDouble(entryPrice - rfDistance, digits);
+   return 0.0;
+}
+
+int ChartTfSeconds()
+{
+   int tf = Period();
+   if(tf == PERIOD_M1) return 60;
+   if(tf == PERIOD_M5) return 300;
+   if(tf == PERIOD_M15) return 900;
+   if(tf == PERIOD_M30) return 1800;
+   if(tf == PERIOD_H1) return 3600;
+   if(tf == PERIOD_H4) return 14400;
+   if(tf == PERIOD_D1) return 86400;
+   if(tf == PERIOD_W1) return 604800;
+   if(tf == PERIOD_MN1) return 2592000;
+   return MathMax(60, tf * 60);
+}
+
+void CreateManualRiskRectangle(const string name, const datetime t1, const datetime t2, const double priceA, const double priceB, const color clr)
+{
+   if(priceA <= 0.0 || priceB <= 0.0 || MathAbs(priceA - priceB) <= Point * 0.1) return;
+   if(ObjectFind(0, name) >= 0) ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, priceA, t2, priceB);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+}
+
+void CreateManualRiskFreeLine(const string name, const double price)
+{
+   if(price <= 0.0) return;
+   if(ObjectFind(0, name) >= 0) ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clrDodgerBlue);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetString(0, name, OBJPROP_TEXT, "Risk Free");
+}
+
+void DrawManualRiskZones(const int ticket, const string side, const double entryPrice, const double sl, const double tp, const double rf)
+{
+   if(!InpDrawManualRiskZones || ticket <= 0 || entryPrice <= 0.0) return;
+   datetime t1 = TimeCurrent();
+   if(t1 <= 0) t1 = Time[0];
+   datetime t2 = t1 + ChartTfSeconds() * MathMax(5, InpManualRiskBoxBars);
+   string base = MANUAL_RISK_PREFIX + IntegerToString(ticket) + "_";
+
+   if(tp > 0.0)
+      CreateManualRiskRectangle(base + "TP", t1, t2, entryPrice, tp, C'210,255,210');
+   if(sl > 0.0)
+      CreateManualRiskRectangle(base + "SL", t1, t2, entryPrice, sl, C'255,210,210');
+   if(rf > 0.0)
+      CreateManualRiskFreeLine(base + "RF", rf);
+}
+
+void DeleteManualRiskZones()
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      if(StringFind(name, MANUAL_RISK_PREFIX, 0) == 0)
+         ObjectDelete(0, name);
+   }
+}
+
+int ManualRiskZoneTicketFromName(const string name)
+{
+   if(StringFind(name, MANUAL_RISK_PREFIX, 0) != 0) return -1;
+   string rest = StringSubstr(name, StringLen(MANUAL_RISK_PREFIX));
+   int sep = StringFind(rest, "_", 0);
+   if(sep <= 0) return -1;
+   return (int)StringToInteger(StringSubstr(rest, 0, sep));
+}
+
+string ManualRiskZoneKindFromName(const string name)
+{
+   if(StringFind(name, MANUAL_RISK_PREFIX, 0) != 0) return "";
+   string rest = StringSubstr(name, StringLen(MANUAL_RISK_PREFIX));
+   int sep = StringFind(rest, "_", 0);
+   if(sep <= 0) return "";
+   return StringSubstr(rest, sep + 1);
+}
+
+bool OpenTradeTicketExists(const int ticket)
+{
+   if(ticket <= 0) return false;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderTicket() == ticket) return true;
+   }
+   return false;
+}
+
+string OrderSideText()
+{
+   if(OrderType() == OP_BUY) return "BUY";
+   if(OrderType() == OP_SELL) return "SELL";
+   return "";
+}
+
+double ManualRiskFreeLinePrice(const int ticket)
+{
+   string name = MANUAL_RISK_PREFIX + IntegerToString(ticket) + "_RF";
+   if(ObjectFind(0, name) < 0) return 0.0;
+   return ObjectGetDouble(0, name, OBJPROP_PRICE1);
+}
+
+bool ModifyTicketStops(const int ticket, const double newSl, const double newTp, const string reason)
+{
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) return false;
+   if(OrderType() != OP_BUY && OrderType() != OP_SELL) return false;
+
+   string symbol = OrderSymbol();
+   int digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   double openPrice = OrderOpenPrice();
+   double sl = (newSl >= 0.0) ? NormalizeDouble(newSl, digits) : OrderStopLoss();
+   double tp = (newTp >= 0.0) ? NormalizeDouble(newTp, digits) : OrderTakeProfit();
+
+   RefreshRates();
+   ResetLastError();
+   bool ok = OrderModify(ticket, openPrice, sl, tp, 0, clrDodgerBlue);
+   if(!ok)
+   {
+      int err = GetLastError();
+      Print("ProfitGovernorMT4: manual risk object modify failed ticket=", ticket,
+            " reason=", reason,
+            " sl=", DoubleToString(sl, digits),
+            " tp=", DoubleToString(tp, digits),
+            " err=", err);
+      AuditWrite("manual_risk_object_modify_failed", ChartTimeframeText(), ticket, symbol, OrderMagicNumber(), OrderLots(), 0.0, 0.0, "failed", reason, "sl=" + DoubleToString(sl, digits) + " tp=" + DoubleToString(tp, digits) + " err=" + IntegerToString(err));
+      return false;
+   }
+   AuditWrite("manual_risk_object_modify_success", ChartTimeframeText(), ticket, symbol, OrderMagicNumber(), OrderLots(), 0.0, 0.0, "ok", reason, "sl=" + DoubleToString(sl, digits) + " tp=" + DoubleToString(tp, digits));
+   return true;
+}
+
+void RedrawManualTradeRiskObjects(const int ticket)
+{
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) return;
+   string side = OrderSideText();
+   if(side == "") return;
+   double rf = ManualRiskFreeLinePrice(ticket);
+   DrawManualRiskZones(ticket, side, OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(), rf);
+}
+
+void UpdateManualUsdFromDraggedLevel(const int ticket, const string kind, const double level)
+{
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) return;
+   double money = ManualPriceDistanceToMoney(OrderSymbol(), OrderLots(), MathAbs(level - OrderOpenPrice()));
+   if(kind == "TP")
+      g_manual_tp_usd = money;
+   else if(kind == "SL")
+      g_manual_sl_usd = money;
+   else if(kind == "RF")
+      g_manual_rf_usd = money;
+   SaveManualTradeTargets();
+   UpdateManualTargetEdits();
+}
+
+void HandleManualRiskObjectDrag(const string name)
+{
+   int ticket = ManualRiskZoneTicketFromName(name);
+   string kind = ManualRiskZoneKindFromName(name);
+   if(ticket <= 0 || kind == "") return;
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) return;
+   if(OrderType() != OP_BUY && OrderType() != OP_SELL) return;
+
+   string side = OrderSideText();
+   double p1 = ObjectGetDouble(0, name, OBJPROP_PRICE1);
+   double level = 0.0;
+
+   if(kind == "RF")
+   {
+      level = p1;
+      bool rfSideOk = true;
+      if(OrderType() == OP_BUY && level <= OrderOpenPrice()) rfSideOk = false;
+      if(OrderType() == OP_SELL && level >= OrderOpenPrice()) rfSideOk = false;
+      if(!rfSideOk)
+      {
+         double resetRf = BuildManualRiskFreePrice(side, OrderOpenPrice(), OrderLots());
+         if(resetRf > 0.0)
+            ObjectSetDouble(0, name, OBJPROP_PRICE1, resetRf);
+         g_tf_status = "Invalid RF drag for " + side;
+         return;
+      }
+      UpdateManualUsdFromDraggedLevel(ticket, kind, level);
+      AuditWrite("manual_risk_free_line_moved", ChartTimeframeText(), ticket, OrderSymbol(), OrderMagicNumber(), OrderLots(), 0.0, g_manual_rf_usd, "ok", "object_drag", "rf=" + DoubleToString(level, (int)MarketInfo(OrderSymbol(), MODE_DIGITS)));
+      return;
+   }
+
+   double p2 = ObjectGetDouble(0, name, OBJPROP_PRICE2);
+   if(kind == "TP")
+      level = (OrderType() == OP_BUY) ? MathMax(p1, p2) : MathMin(p1, p2);
+   else if(kind == "SL")
+      level = (OrderType() == OP_BUY) ? MathMin(p1, p2) : MathMax(p1, p2);
+   else
+      return;
+
+   bool sideOk = true;
+   if(kind == "TP" && OrderType() == OP_BUY && level <= OrderOpenPrice()) sideOk = false;
+   if(kind == "TP" && OrderType() == OP_SELL && level >= OrderOpenPrice()) sideOk = false;
+   if(kind == "SL" && OrderType() == OP_BUY && level >= OrderOpenPrice()) sideOk = false;
+   if(kind == "SL" && OrderType() == OP_SELL && level <= OrderOpenPrice()) sideOk = false;
+   if(!sideOk)
+   {
+      g_tf_status = "Invalid " + kind + " drag for " + side;
+      RedrawManualTradeRiskObjects(ticket);
+      return;
+   }
+
+   bool ok = false;
+   if(kind == "TP")
+      ok = ModifyTicketStops(ticket, -1.0, level, "manual_tp_zone_drag");
+   else if(kind == "SL")
+      ok = ModifyTicketStops(ticket, level, -1.0, "manual_sl_zone_drag");
+
+   if(ok)
+      UpdateManualUsdFromDraggedLevel(ticket, kind, level);
+   RedrawManualTradeRiskObjects(ticket);
+}
+
+void CleanupManualRiskZonesForClosedOrders()
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      int ticket = ManualRiskZoneTicketFromName(name);
+      if(ticket > 0 && !OpenTradeTicketExists(ticket))
+         ObjectDelete(0, name);
+   }
+}
+
 bool PendingTypeMatches(const int type, string side)
 {
    StringToUpper(side);
@@ -647,20 +1017,67 @@ bool OpenMarketPosition(string side)
    StringToUpper(side);
    if(side != "BUY" && side != "SELL") return false;
    ReadLotFromEdit();
+   ReadManualTradeTargets();
    double lot = NormalizeLot(Symbol(), g_lot);
    if(lot <= 0.0) return false;
 
    RefreshRates();
    int type = (side == "BUY") ? OP_BUY : OP_SELL;
    double price = (type == OP_BUY) ? Ask : Bid;
+   double sl = 0.0;
+   double tp = 0.0;
+   BuildManualStops(side, price, lot, sl, tp);
+
    ResetLastError();
-   int ticket = OrderSend(Symbol(), type, lot, price, InpSlippagePoints, 0.0, 0.0, InpOpenComment, InpOpenMagicNumber, 0, (type == OP_BUY ? clrGreen : clrRed));
+   int ticket = OrderSend(Symbol(), type, lot, price, InpSlippagePoints, sl, tp, InpOpenComment, InpOpenMagicNumber, 0, (type == OP_BUY ? clrGreen : clrRed));
+   int firstErr = GetLastError();
+   bool sentWithoutStops = false;
+
+   if(ticket <= 0 && (sl > 0.0 || tp > 0.0))
+   {
+      RefreshRates();
+      price = (type == OP_BUY) ? Ask : Bid;
+      ResetLastError();
+      ticket = OrderSend(Symbol(), type, lot, price, InpSlippagePoints, 0.0, 0.0, InpOpenComment, InpOpenMagicNumber, 0, (type == OP_BUY ? clrGreen : clrRed));
+      sentWithoutStops = (ticket > 0);
+   }
+
    if(ticket <= 0)
    {
-      Print("ProfitGovernorMT4: open ", side, " failed symbol=", Symbol(), " lot=", DoubleToString(lot, 2), " err=", GetLastError());
+      int err = GetLastError();
+      Print("ProfitGovernorMT4: open ", side, " failed symbol=", Symbol(), " lot=", DoubleToString(lot, 2), " err=", err, " firstErr=", firstErr);
+      AuditWrite("manual_open_failed", ChartTimeframeText(), 0, Symbol(), InpOpenMagicNumber, lot, 0.0, g_manual_tp_usd, "failed", "manual_button", "side=" + side + " sl_usd=" + DoubleToString(g_manual_sl_usd, 2) + " err=" + IntegerToString(err) + " firstErr=" + IntegerToString(firstErr));
       return false;
    }
-   Print("ProfitGovernorMT4: opened ", side, " ticket=", ticket, " lot=", DoubleToString(lot, 2));
+
+   double finalSl = sl;
+   double finalTp = tp;
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+   {
+      double openPrice = OrderOpenPrice();
+      BuildManualStops(side, openPrice, lot, sl, tp);
+      if(sentWithoutStops && (sl > 0.0 || tp > 0.0))
+      {
+         ResetLastError();
+         bool modified = OrderModify(ticket, openPrice, sl, tp, 0, clrDodgerBlue);
+         if(!modified)
+         {
+            int modErr = GetLastError();
+            Print("ProfitGovernorMT4: manual SL/TP modify failed ticket=", ticket, " err=", modErr, " sl=", DoubleToString(sl, Digits), " tp=", DoubleToString(tp, Digits));
+            AuditWrite("manual_open_stop_modify_failed", ChartTimeframeText(), ticket, Symbol(), InpOpenMagicNumber, lot, 0.0, g_manual_tp_usd, "failed", "manual_button", "side=" + side + " sl_usd=" + DoubleToString(g_manual_sl_usd, 2) + " sl=" + DoubleToString(sl, Digits) + " tp=" + DoubleToString(tp, Digits) + " err=" + IntegerToString(modErr));
+         }
+      }
+      if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         finalSl = OrderStopLoss();
+         finalTp = OrderTakeProfit();
+         double rf = BuildManualRiskFreePrice(side, OrderOpenPrice(), lot);
+         DrawManualRiskZones(ticket, side, OrderOpenPrice(), finalSl, finalTp, rf);
+      }
+   }
+
+   Print("ProfitGovernorMT4: opened ", side, " ticket=", ticket, " lot=", DoubleToString(lot, 2), " sl=", DoubleToString(finalSl, Digits), " tp=", DoubleToString(finalTp, Digits));
+   AuditWrite("manual_open_success", ChartTimeframeText(), ticket, Symbol(), InpOpenMagicNumber, lot, 0.0, g_manual_tp_usd, "ok", "manual_button", "side=" + side + " sl_usd=" + DoubleToString(g_manual_sl_usd, 2) + " sl=" + DoubleToString(finalSl, Digits) + " tp=" + DoubleToString(finalTp, Digits));
    return true;
 }
 
@@ -700,6 +1117,87 @@ int CloseChartScopeOrders(const string reason)
       RefreshRates();
    }
    Print("ProfitGovernorMT4: chart-scope profit close completed reason=", reason, " affected=", affected);
+   return affected;
+}
+
+bool ManualHalfBreakEvenOrderAllowed()
+{
+   int type = OrderType();
+   if(type != OP_BUY && type != OP_SELL) return false;
+   if(!SymbolAllowed(OrderSymbol())) return false;
+   if(!MagicAllowed(OrderMagicNumber())) return false;
+   return true;
+}
+
+int HalfCloseBreakEvenOpenOrders(const string reason)
+{
+   int affected = 0;
+   int skipped = 0;
+   int maxPasses = 1; // A manual secure-half click should affect each currently open order once.
+   for(int pass = 0; pass < maxPasses; pass++)
+   {
+      int changedThisPass = 0;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!ManualHalfBreakEvenOrderAllowed()) continue;
+
+         string symbol = OrderSymbol();
+         int type = OrderType();
+         int ticket = OrderTicket();
+         int magic = OrderMagicNumber();
+         double volume = OrderLots();
+         double orderPnl = OrderProfit() + OrderSwap() + OrderCommission();
+         double minLot = SymbolMinLot(symbol);
+         double closeLots = NormalizeLot(symbol, volume * 0.50);
+         double remaining = NormalizeDouble(volume - closeLots, 8);
+
+         if(closeLots + 1e-8 < minLot || remaining + 1e-8 < minLot)
+         {
+            skipped++;
+            Print("ProfitGovernorMT4: manual half+BE skipped unsplittable ticket=", ticket,
+                  " symbol=", symbol,
+                  " volume=", DoubleToString(volume, 2),
+                  " closeLots=", DoubleToString(closeLots, 2),
+                  " remaining=", DoubleToString(remaining, 2),
+                  " minLot=", DoubleToString(minLot, 2));
+            AuditWrite("manual_half_be_skipped_unsplittable", "", ticket, symbol, magic, volume, orderPnl, 0.0, "skipped", reason, "closeLots=" + DoubleToString(closeLots, 2) + " remaining=" + DoubleToString(remaining, 2) + " minLot=" + DoubleToString(minLot, 2));
+            continue;
+         }
+
+         RefreshRates();
+         double price = (type == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK);
+         ResetLastError();
+         bool ok = OrderClose(ticket, closeLots, price, InpSlippagePoints, clrDodgerBlue);
+         if(!ok)
+         {
+            int err = GetLastError();
+            Print("ProfitGovernorMT4: manual half close failed ticket=", ticket,
+                  " symbol=", symbol,
+                  " closeLots=", DoubleToString(closeLots, 2),
+                  " err=", err);
+            AuditWrite("manual_half_close_failed", "", ticket, symbol, magic, closeLots, orderPnl, 0.0, "failed", reason, "err=" + IntegerToString(err));
+            skipped++;
+            continue;
+         }
+
+         AuditWrite("manual_half_close_success", "", ticket, symbol, magic, closeLots, orderPnl, 0.0, "ok", reason, "beforeVolume=" + DoubleToString(volume, 2) + " remaining=" + DoubleToString(remaining, 2));
+         Sleep(100);
+         bool beOk = MoveRemainingOrderStopToBreakEven(ticket, symbol, type, magic, remaining, reason);
+         if(!beOk)
+         {
+            skipped++;
+            AuditWrite("manual_half_be_failed", "", ticket, symbol, magic, remaining, orderPnl, 0.0, "failed", reason, "remaining=" + DoubleToString(remaining, 2));
+         }
+         affected++;
+         changedThisPass++;
+      }
+      if(changedThisPass <= 0) break;
+      Sleep(250);
+      RefreshRates();
+   }
+   Print("ProfitGovernorMT4: manual half+BE completed affected=", affected, " skipped=", skipped);
+   AuditWrite("manual_half_be_complete", "", 0, "", 0, 0.0, 0.0, 0.0, "complete", reason, "affected=" + IntegerToString(affected) + " skipped=" + IntegerToString(skipped));
    return affected;
 }
 
@@ -822,6 +1320,46 @@ bool MoveRemainingOrderStopToBreakEven(const int originalTicket,
          " symbol=", symbol,
          " reason=", reason);
    return false;
+}
+
+void CheckManualRiskFreeTriggers()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+
+      int ticket = OrderTicket();
+      string lineName = MANUAL_RISK_PREFIX + IntegerToString(ticket) + "_RF";
+      if(ObjectFind(0, lineName) < 0) continue;
+
+      string symbol = OrderSymbol();
+      double rf = ObjectGetDouble(0, lineName, OBJPROP_PRICE1);
+      if(rf <= 0.0) continue;
+
+      RefreshRates();
+      double bid = MarketInfo(symbol, MODE_BID);
+      double ask = MarketInfo(symbol, MODE_ASK);
+      bool reached = false;
+      if(type == OP_BUY && bid >= rf) reached = true;
+      if(type == OP_SELL && ask <= rf) reached = true;
+      if(!reached) continue;
+
+      int magic = OrderMagicNumber();
+      double lots = OrderLots();
+      bool ok = MoveSelectedOrderStopToBreakEven("manual_risk_free_line");
+      if(ok)
+      {
+         ObjectDelete(0, lineName);
+         AuditWrite("manual_risk_free_triggered", ChartTimeframeText(), ticket, symbol, magic, lots, OrderProfit() + OrderSwap() + OrderCommission(), g_manual_rf_usd, "ok", "manual_risk_free_line", "rf=" + DoubleToString(rf, (int)MarketInfo(symbol, MODE_DIGITS)));
+         RedrawManualTradeRiskObjects(ticket);
+      }
+      else
+      {
+         AuditWrite("manual_risk_free_trigger_failed", ChartTimeframeText(), ticket, symbol, magic, lots, OrderProfit() + OrderSwap() + OrderCommission(), g_manual_rf_usd, "failed", "manual_risk_free_line", "rf=" + DoubleToString(rf, (int)MarketInfo(symbol, MODE_DIGITS)));
+      }
+   }
 }
 
 bool CloseRemainingOrderAfterBreakEvenFailure(const int originalTicket,
@@ -1275,18 +1813,27 @@ void ManualCloseTfGroup(const string tf)
    UpdateTfGovernorDashboard();
 }
 
+void ManualHalfBreakEvenAll()
+{
+   int affected = HalfCloseBreakEvenOpenOrders("manual_half_be_button");
+   g_tf_status = "Manual Half+BE affected=" + IntegerToString(affected);
+   RefreshTfGroupPnl();
+   UpdateTfGovernorDashboard();
+}
+
 void DeleteButtons()
 {
    ObjectDelete(0, PANEL_BG);
-   string names[30];
+   string names[37];
    names[0] = BTN_CLOSE_BUY; names[1] = BTN_CLOSE_SELL; names[2] = BTN_CLOSE_ALL;
-   names[3] = BTN_LOT_DOWN; names[4] = BTN_LOT_EDIT; names[5] = BTN_LOT_UP;
-   names[6] = BTN_OPEN_BUY; names[7] = BTN_OPEN_SELL; names[8] = BTN_TF_SAVE;
-   names[9] = BTN_TF_EDIT_M1; names[10] = BTN_TF_EDIT_M5; names[11] = BTN_TF_EDIT_M15; names[12] = BTN_TF_EDIT_M30; names[13] = BTN_TF_EDIT_H1;
-   names[14] = LBL_TF_TITLE; names[15] = LBL_TF_M1; names[16] = LBL_TF_M5; names[17] = LBL_TF_M15; names[18] = LBL_TF_M30; names[19] = LBL_TF_H1;
-   names[20] = LBL_TF_M1 + "_PNL"; names[21] = LBL_TF_M5 + "_PNL"; names[22] = LBL_TF_M15 + "_PNL"; names[23] = LBL_TF_M30 + "_PNL"; names[24] = LBL_TF_H1 + "_PNL";
-   names[25] = BTN_TF_CLOSE_M1; names[26] = BTN_TF_CLOSE_M5; names[27] = BTN_TF_CLOSE_M15; names[28] = BTN_TF_CLOSE_M30; names[29] = BTN_TF_CLOSE_H1;
-   for(int i = 0; i < 30; i++) ObjectDelete(0, names[i]);
+   names[3] = BTN_HALF_BE_ALL; names[4] = BTN_LOT_DOWN; names[5] = BTN_LOT_EDIT; names[6] = BTN_LOT_UP;
+   names[7] = BTN_OPEN_BUY; names[8] = BTN_OPEN_SELL; names[9] = LBL_MANUAL_TP; names[10] = EDIT_MANUAL_TP; names[11] = LBL_MANUAL_SL; names[12] = EDIT_MANUAL_SL; names[13] = LBL_MANUAL_RF; names[14] = EDIT_MANUAL_RF;
+   names[15] = BTN_TF_SAVE;
+   names[16] = BTN_TF_EDIT_M1; names[17] = BTN_TF_EDIT_M5; names[18] = BTN_TF_EDIT_M15; names[19] = BTN_TF_EDIT_M30; names[20] = BTN_TF_EDIT_H1;
+   names[21] = LBL_TF_TITLE; names[22] = LBL_TF_M1; names[23] = LBL_TF_M5; names[24] = LBL_TF_M15; names[25] = LBL_TF_M30; names[26] = LBL_TF_H1;
+   names[27] = LBL_TF_M1 + "_PNL"; names[28] = LBL_TF_M5 + "_PNL"; names[29] = LBL_TF_M15 + "_PNL"; names[30] = LBL_TF_M30 + "_PNL"; names[31] = LBL_TF_H1 + "_PNL";
+   names[32] = BTN_TF_CLOSE_M1; names[33] = BTN_TF_CLOSE_M5; names[34] = BTN_TF_CLOSE_M15; names[35] = BTN_TF_CLOSE_M30; names[36] = BTN_TF_CLOSE_H1;
+   for(int i = 0; i < 37; i++) ObjectDelete(0, names[i]);
    ObjectDelete(0, LBL_TF_STATUS);
 }
 
@@ -1295,12 +1842,14 @@ int OnInit()
    int x = InpButtonX;
    int y = InpButtonY;
    LoadTfTargets();
+   LoadManualTradeTargets();
    LoadTfArmedState();
    SetLot(InpInitialLot);
-   CreatePanelBackground(x - 8, y - 8, 430, 292);
+   CreatePanelBackground(x - 8, y - 8, 700, 292);
    CreateButton(BTN_CLOSE_BUY, "Close Buy", x, y, clrSeaGreen);
    CreateButton(BTN_CLOSE_SELL, "Close Sell", x + InpButtonWidth + InpButtonGap, y, clrFireBrick);
    CreateButton(BTN_CLOSE_ALL, "Close All", x + (InpButtonWidth + InpButtonGap) * 2, y, clrDimGray);
+   CreateButtonSized(BTN_HALF_BE_ALL, "Half + BE", x + (InpButtonWidth + InpButtonGap) * 3, y, 104, clrDodgerBlue);
 
    int y2 = y + InpButtonHeight + InpButtonGap;
    int smallW = 32;
@@ -1316,6 +1865,18 @@ int OnInit()
    CreateButtonSized(BTN_OPEN_BUY, "Buy", cx, y2, tradeW, clrGreen);
    cx += tradeW + InpButtonGap;
    CreateButtonSized(BTN_OPEN_SELL, "Sell", cx, y2, tradeW, clrRed);
+   cx += tradeW + InpButtonGap + 4;
+   CreateLabel(LBL_MANUAL_TP, "TP$", cx, y2 + 6, 28, 18, clrDarkGreen);
+   cx += 30;
+   CreateEditBox(EDIT_MANUAL_TP, DoubleToString(g_manual_tp_usd, 2), cx, y2, 64, InpButtonHeight);
+   cx += 64 + InpButtonGap;
+   CreateLabel(LBL_MANUAL_SL, "SL$", cx, y2 + 6, 28, 18, clrFireBrick);
+   cx += 30;
+   CreateEditBox(EDIT_MANUAL_SL, DoubleToString(g_manual_sl_usd, 2), cx, y2, 64, InpButtonHeight);
+   cx += 64 + InpButtonGap;
+   CreateLabel(LBL_MANUAL_RF, "RF$", cx, y2 + 6, 28, 18, clrDodgerBlue);
+   cx += 30;
+   CreateEditBox(EDIT_MANUAL_RF, DoubleToString(g_manual_rf_usd, 2), cx, y2, 64, InpButtonHeight);
    CreateTfGovernorDashboard(x, y2 + InpButtonHeight + InpButtonGap + 8);
    UpdateTfGovernorDashboard();
 
@@ -1335,6 +1896,8 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    DeleteButtons();
+   if(!InpKeepManualRiskZonesOnRemove)
+      DeleteManualRiskZones();
    ChartRedraw();
 }
 
@@ -1342,6 +1905,8 @@ void OnTick()
 {
    CheckTfGroupProfitTargets();
    CheckAutoCloseProfitTarget();
+   CheckManualRiskFreeTriggers();
+   CleanupManualRiskZonesForClosedOrders();
    UpdateTfGovernorDashboard();
 }
 
@@ -1349,6 +1914,8 @@ void OnTimer()
 {
    CheckTfGroupProfitTargets();
    CheckAutoCloseProfitTarget();
+   CheckManualRiskFreeTriggers();
+   CleanupManualRiskZonesForClosedOrders();
    UpdateTfGovernorDashboard();
 }
 
@@ -1357,6 +1924,21 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == BTN_LOT_EDIT)
    {
       ReadLotFromEdit();
+      ChartRedraw();
+      return;
+   }
+   if(id == CHARTEVENT_OBJECT_ENDEDIT && (sparam == EDIT_MANUAL_TP || sparam == EDIT_MANUAL_SL || sparam == EDIT_MANUAL_RF))
+   {
+      ReadManualTradeTargets();
+      g_tf_status = "Manual TP/SL/RF saved";
+      UpdateTfGovernorDashboard();
+      ChartRedraw();
+      return;
+   }
+   if(id == CHARTEVENT_OBJECT_DRAG)
+   {
+      HandleManualRiskObjectDrag(sparam);
+      UpdateTfGovernorDashboard();
       ChartRedraw();
       return;
    }
@@ -1387,6 +1969,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       ObjectSetInteger(0, BTN_CLOSE_ALL, OBJPROP_STATE, false);
       CloseSide("ALL");
+   }
+   else if(sparam == BTN_HALF_BE_ALL)
+   {
+      ObjectSetInteger(0, BTN_HALF_BE_ALL, OBJPROP_STATE, false);
+      ManualHalfBreakEvenAll();
    }
    else if(sparam == BTN_LOT_DOWN)
    {
