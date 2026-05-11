@@ -53,6 +53,9 @@ input int    InpStochSlowing = 3;
 input int    InpCciPeriod = 14;
 input int    InpMomentumPeriod = 14;
 input double InpDatasetLotSize = 1.0;    // hypothetical PnL lot for ML labels
+input int    InpFeatureLookbackFast = 5;
+input int    InpFeatureLookbackMedium = 10;
+input int    InpFeatureLookbackSlow = 20;
 
 int      g_file = INVALID_HANDLE;
 string   g_file_name = "";
@@ -60,6 +63,8 @@ int      g_rows_since_flush = 0;
 uint     g_last_write_tick = 0;
 double   g_last_snake = 0.0;
 double   g_last_t3 = 0.0;
+double   g_prev_diff = 0.0;
+bool     g_has_prev_diff = false;
 bool     g_has_last = false;
 string   g_instance_id = "";
 string   g_last_state = "";
@@ -187,6 +192,124 @@ string _num(double v, int precision)
 string _int_text(int v)
 {
    return IntegerToString(v);
+}
+
+double _safe_div(double numerator, double denominator)
+{
+   if(!_valid_value(numerator) || !_valid_value(denominator) || MathAbs(denominator) <= 0.0000000001)
+      return 0.0;
+   return numerator / denominator;
+}
+
+int _state_code(string state)
+{
+   if(state == "BUY")
+      return 1;
+   if(state == "SELL")
+      return -1;
+   return 0;
+}
+
+int _session_bucket(int hour_value)
+{
+   int h = hour_value;
+   if(h < 0)
+      h = 0;
+   if(h < 7)
+      return 0; // Asia / late US
+   if(h < 13)
+      return 1; // London
+   if(h < 20)
+      return 2; // NY overlap / US
+   return 3;    // late session
+}
+
+double _avg_volume(int shift, int lookback)
+{
+   int n = MathMax(1, lookback);
+   double sum = 0.0;
+   int count = 0;
+   for(int i = 0; i < n; i++)
+   {
+      double v = (double)iVolume(NULL, 0, shift + i);
+      if(v >= 0.0)
+      {
+         sum += v;
+         count++;
+      }
+   }
+   return count > 0 ? sum / count : 0.0;
+}
+
+double _rolling_net_path_ratio(int shift, int lookback)
+{
+   int n = MathMax(2, lookback);
+   double start_close = iClose(NULL, 0, shift + n);
+   double end_close = iClose(NULL, 0, shift);
+   double path = 0.0;
+   for(int i = 0; i < n; i++)
+   {
+      double c0 = iClose(NULL, 0, shift + i);
+      double c1 = iClose(NULL, 0, shift + i + 1);
+      path += MathAbs(c0 - c1);
+   }
+   return _safe_div(MathAbs(end_close - start_close), path);
+}
+
+double _rolling_return_std(int shift, int lookback)
+{
+   int n = MathMax(2, lookback);
+   int count = 0;
+   double sum = 0.0;
+   for(int i = 0; i < n && i < 64; i++)
+   {
+      double c0 = iClose(NULL, 0, shift + i);
+      double c1 = iClose(NULL, 0, shift + i + 1);
+      double r = _safe_div(c0 - c1, c1);
+      sum += r;
+      count++;
+   }
+   if(count <= 1)
+      return 0.0;
+   double mean = sum / count;
+   double var = 0.0;
+   for(int j = 0; j < count; j++)
+   {
+      double jc0 = iClose(NULL, 0, shift + j);
+      double jc1 = iClose(NULL, 0, shift + j + 1);
+      double jr = _safe_div(jc0 - jc1, jc1);
+      var += MathPow(jr - mean, 2.0);
+   }
+   return MathSqrt(var / (count - 1));
+}
+
+double _rolling_range(int shift, int lookback)
+{
+   int n = MathMax(1, lookback);
+   int hi_shift = iHighest(NULL, 0, MODE_HIGH, n, shift);
+   int lo_shift = iLowest(NULL, 0, MODE_LOW, n, shift);
+   if(hi_shift < 0 || lo_shift < 0)
+      return 0.0;
+   return iHigh(NULL, 0, hi_shift) - iLow(NULL, 0, lo_shift);
+}
+
+int _rolling_state_changes(int shift, int lookback)
+{
+   int n = MathMax(2, lookback);
+   int changes = 0;
+   string prev = "";
+   for(int i = n - 1; i >= 0; i--)
+   {
+      double sv = _snake_value(shift + i);
+      double tv = _t3_value(shift + i);
+      string st = _snake_t3_state(sv, _valid_value(sv), tv, _valid_value(tv));
+      if(st != "BUY" && st != "SELL")
+         continue;
+      if(prev != "" && st != prev)
+         changes++;
+      prev = st;
+   }
+   return changes;
 }
 
 string _csv_escape(string s)
@@ -377,7 +500,13 @@ bool _open_csv()
          "bar_open,bar_high,bar_low,bar_close,tick_volume,prev_close,close_delta,close_return_pct,bar_range,bar_body,upper_wick,lower_wick,"
          "atr,atr_points,rsi,ema_fast,ema_slow,ema_diff,adx,plus_di,minus_di,macd_main,macd_signal,macd_hist,stoch_k,stoch_d,cci,momentum,"
          "snake_t3_state,prev_snake_t3_state,state_changed,state_transition,state_entry_time,state_entry_price,cross_price,closed_state_pnl_price,closed_state_pnl_points,closed_state_pnl_money,dataset_lot_size,"
-         "snake_indicator,snake_period,snake_buffer,snake_value,snake_valid,t3_indicator,t3_period,t3_price,t3_hot,t3_timeframe_input,t3_buffer,t3_value,t3_valid"
+         "snake_indicator,snake_period,snake_buffer,snake_value,snake_valid,t3_indicator,t3_period,t3_price,t3_hot,t3_timeframe_input,t3_buffer,t3_value,t3_valid,"
+         "feature_state_code,feature_session_bucket,feature_atr_pct,feature_spread_atr_ratio,feature_range_atr_ratio,feature_body_range_ratio,feature_upper_wick_ratio,feature_lower_wick_ratio,feature_wick_imbalance_ratio,feature_close_pos_in_bar,"
+         "feature_rsi_slope,feature_rsi_distance_50,feature_ema_fast_slope,feature_ema_slow_slope,feature_ema_spread_atr,feature_adx_slope,feature_di_spread,feature_macd_hist_slope,feature_stoch_spread,"
+         "feature_snake_t3_diff,feature_snake_t3_abs_diff,feature_snake_t3_diff_atr,feature_snake_t3_diff_slope,feature_snake_t3_diff_slope_atr,feature_seconds_since_state_change,feature_bars_since_state_change,"
+         "feature_volume_slope,feature_volume_ratio_fast,feature_volume_ratio_medium,feature_direction_changes_fast,feature_direction_changes_medium,feature_direction_changes_slow,"
+         "feature_net_path_ratio_fast,feature_net_path_ratio_medium,feature_net_path_ratio_slow,feature_return_std_fast,feature_return_std_medium,feature_return_std_slow,"
+         "feature_rolling_range_atr_fast,feature_rolling_range_atr_medium,feature_rolling_range_atr_slow"
       );
       FileFlush(g_file);
    }
@@ -482,6 +611,58 @@ void _capture(string source)
    double stoch_d = iStochastic(NULL, 0, InpStochK, InpStochD, InpStochSlowing, MODE_SMA, 0, MODE_SIGNAL, shift);
    double cci = iCCI(NULL, 0, InpCciPeriod, PRICE_TYPICAL, shift);
    double momentum = iMomentum(NULL, 0, InpMomentumPeriod, PRICE_CLOSE, shift);
+
+   int fast_lb = MathMax(2, MathMin(64, InpFeatureLookbackFast));
+   int medium_lb = MathMax(3, MathMin(96, InpFeatureLookbackMedium));
+   int slow_lb = MathMax(5, MathMin(200, InpFeatureLookbackSlow));
+   double atr_pct = _safe_div(atr, mid) * 100.0;
+   double spread_atr_ratio = _safe_div(spread, atr);
+   double range_atr_ratio = _safe_div(bar_range, atr);
+   double body_range_ratio = _safe_div(bar_body, bar_range);
+   double upper_wick_ratio = _safe_div(upper_wick, bar_range);
+   double lower_wick_ratio = _safe_div(lower_wick, bar_range);
+   double wick_imbalance_ratio = _safe_div(upper_wick - lower_wick, bar_range);
+   double close_pos_in_bar = _safe_div(bar_close - bar_low, bar_range);
+   double rsi_prev = iRSI(NULL, 0, InpRsiPeriod, PRICE_CLOSE, shift + 1);
+   double rsi_slope = rsi - rsi_prev;
+   double rsi_distance_50 = MathAbs(rsi - 50.0);
+   double ema_fast_prev = iMA(NULL, 0, InpFastMaPeriod, 0, MODE_EMA, PRICE_CLOSE, shift + 1);
+   double ema_slow_prev = iMA(NULL, 0, InpSlowMaPeriod, 0, MODE_EMA, PRICE_CLOSE, shift + 1);
+   double ema_fast_slope = ema_fast - ema_fast_prev;
+   double ema_slow_slope = ema_slow - ema_slow_prev;
+   double ema_spread_atr = _safe_div(ema_diff, atr);
+   double adx_prev = iADX(NULL, 0, InpAdxPeriod, PRICE_CLOSE, MODE_MAIN, shift + 1);
+   double adx_slope = adx - adx_prev;
+   double di_spread = plus_di - minus_di;
+   double macd_hist_prev = iMACD(NULL, 0, InpMacdFast, InpMacdSlow, InpMacdSignal, PRICE_CLOSE, MODE_MAIN, shift + 1)
+      - iMACD(NULL, 0, InpMacdFast, InpMacdSlow, InpMacdSignal, PRICE_CLOSE, MODE_SIGNAL, shift + 1);
+   double macd_hist_slope = macd_hist - macd_hist_prev;
+   double stoch_spread = stoch_k - stoch_d;
+   double snake_t3_diff = snake_val - t3_val;
+   double snake_t3_abs_diff = MathAbs(snake_t3_diff);
+   double snake_t3_diff_atr = _safe_div(snake_t3_diff, atr);
+   double snake_t3_diff_slope = g_has_prev_diff ? (snake_t3_diff - g_prev_diff) : 0.0;
+   double snake_t3_diff_slope_atr = _safe_div(snake_t3_diff_slope, atr);
+   double seconds_since_state_change = (g_state_entry_time > 0 ? (double)(server_now - g_state_entry_time) : 0.0);
+   int bars_since_state_change = (g_state_entry_time > 0 ? iBarShift(NULL, 0, g_state_entry_time, false) : -1);
+   double volume_prev = (double)iVolume(NULL, 0, shift + 1);
+   double volume_slope = tick_volume - volume_prev;
+   double avg_vol_fast = _avg_volume(shift, fast_lb);
+   double avg_vol_medium = _avg_volume(shift, medium_lb);
+   double volume_ratio_fast = _safe_div(tick_volume, avg_vol_fast);
+   double volume_ratio_medium = _safe_div(tick_volume, avg_vol_medium);
+   int direction_changes_fast = _rolling_state_changes(shift, fast_lb);
+   int direction_changes_medium = _rolling_state_changes(shift, medium_lb);
+   int direction_changes_slow = _rolling_state_changes(shift, slow_lb);
+   double net_path_ratio_fast = _rolling_net_path_ratio(shift, fast_lb);
+   double net_path_ratio_medium = _rolling_net_path_ratio(shift, medium_lb);
+   double net_path_ratio_slow = _rolling_net_path_ratio(shift, slow_lb);
+   double return_std_fast = _rolling_return_std(shift, fast_lb);
+   double return_std_medium = _rolling_return_std(shift, medium_lb);
+   double return_std_slow = _rolling_return_std(shift, slow_lb);
+   double rolling_range_atr_fast = _safe_div(_rolling_range(shift, fast_lb), atr);
+   double rolling_range_atr_medium = _safe_div(_rolling_range(shift, medium_lb), atr);
+   double rolling_range_atr_slow = _safe_div(_rolling_range(shift, slow_lb), atr);
 
    string prev_state = g_last_state;
    bool state_changed = false;
@@ -600,10 +781,53 @@ void _capture(string source)
    _csv_add(line, _int_text(InpT3BufferIndex));
    _csv_add(line, _num(t3_val, 10));
    _csv_add(line, (t3_valid ? "1" : "0"));
+   _csv_add(line, _int_text(_state_code(state)));
+   _csv_add(line, _int_text(_session_bucket(dt.hour)));
+   _csv_add(line, _num(atr_pct, 8));
+   _csv_add(line, _num(spread_atr_ratio, 8));
+   _csv_add(line, _num(range_atr_ratio, 8));
+   _csv_add(line, _num(body_range_ratio, 8));
+   _csv_add(line, _num(upper_wick_ratio, 8));
+   _csv_add(line, _num(lower_wick_ratio, 8));
+   _csv_add(line, _num(wick_imbalance_ratio, 8));
+   _csv_add(line, _num(close_pos_in_bar, 8));
+   _csv_add(line, _num(rsi_slope, 8));
+   _csv_add(line, _num(rsi_distance_50, 8));
+   _csv_add(line, _num(ema_fast_slope, Digits));
+   _csv_add(line, _num(ema_slow_slope, Digits));
+   _csv_add(line, _num(ema_spread_atr, 8));
+   _csv_add(line, _num(adx_slope, 8));
+   _csv_add(line, _num(di_spread, 8));
+   _csv_add(line, _num(macd_hist_slope, Digits));
+   _csv_add(line, _num(stoch_spread, 8));
+   _csv_add(line, _num(snake_t3_diff, 10));
+   _csv_add(line, _num(snake_t3_abs_diff, 10));
+   _csv_add(line, _num(snake_t3_diff_atr, 8));
+   _csv_add(line, _num(snake_t3_diff_slope, 10));
+   _csv_add(line, _num(snake_t3_diff_slope_atr, 8));
+   _csv_add(line, _num(seconds_since_state_change, 0));
+   _csv_add(line, _int_text(bars_since_state_change));
+   _csv_add(line, _num(volume_slope, 0));
+   _csv_add(line, _num(volume_ratio_fast, 8));
+   _csv_add(line, _num(volume_ratio_medium, 8));
+   _csv_add(line, _int_text(direction_changes_fast));
+   _csv_add(line, _int_text(direction_changes_medium));
+   _csv_add(line, _int_text(direction_changes_slow));
+   _csv_add(line, _num(net_path_ratio_fast, 8));
+   _csv_add(line, _num(net_path_ratio_medium, 8));
+   _csv_add(line, _num(net_path_ratio_slow, 8));
+   _csv_add(line, _num(return_std_fast, 10));
+   _csv_add(line, _num(return_std_medium, 10));
+   _csv_add(line, _num(return_std_slow, 10));
+   _csv_add(line, _num(rolling_range_atr_fast, 8));
+   _csv_add(line, _num(rolling_range_atr_medium, 8));
+   _csv_add(line, _num(rolling_range_atr_slow, 8));
    _write_csv_line(line);
 
    g_last_snake = snake_val;
    g_last_t3 = t3_val;
+   g_prev_diff = snake_t3_diff;
+   g_has_prev_diff = true;
    g_has_last = true;
    g_last_write_tick = now_tick;
    g_rows_since_flush++;

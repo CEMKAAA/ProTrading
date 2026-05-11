@@ -42,3 +42,6 @@ InpStochSlowing=3
 InpCciPeriod=14
 InpMomentumPeriod=14
 InpDatasetLotSize=1.0
+InpFeatureLookbackFast=5
+InpFeatureLookbackMedium=10
+InpFeatureLookbackSlow=20

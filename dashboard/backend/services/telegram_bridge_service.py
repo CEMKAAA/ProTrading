@@ -36,8 +36,6 @@ from ..models.database import (
     WorkbenchCopilotSessionModel,
     engine,
 )
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -88,7 +86,14 @@ def _to_unix_or_none(value: Any) -> Optional[float]:
             dt = dt.replace(tzinfo=timezone.utc)
         return float(dt.timestamp())
     except Exception:
-        return None
+        pass
+    for fmt in ("%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            # MT4 TimeLocal strings are timezone-naive local machine time.
+            return float(datetime.strptime(raw, fmt).timestamp())
+        except Exception:
+            continue
+    return None
 
 
 class TelegramBridgeService:
@@ -354,6 +359,7 @@ class TelegramBridgeService:
     def __init__(self) -> None:
         self._thread: Optional[threading.Thread] = None
         self._entry_watch_thread: Optional[threading.Thread] = None
+        self._snake_t3_csv_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.RLock()
         self._offset = 0
@@ -7783,7 +7789,8 @@ class TelegramBridgeService:
 
                 attempted += 1
                 bar_time = str(row.get("bar_time") or server_time or local_time or "").strip()
-                event_ts = server_time or local_time or datetime.now(timezone.utc).isoformat()
+                event_ts = local_time or server_time or datetime.now(timezone.utc).isoformat()
+                event_unix = _to_unix_or_none(event_ts)
                 mid = _to_float_or_none(row.get("mid"))
                 if mid is None:
                     bid = _to_float_or_none(row.get("bid"))
@@ -7802,6 +7809,7 @@ class TelegramBridgeService:
                     "ingest_source": "csv_tail",
                     "bridge_event_type": "resolved_state",
                     "event_ts": event_ts,
+                    "event_unix": event_unix,
                     "event_id": f"csv_tail|{sig}",
                     "message": f"snake_t3_csv_tail {state}",
                     "signal_hint": state,
@@ -11713,6 +11721,12 @@ class TelegramBridgeService:
             confirm_sec = _to_float_or_none((payload or {}).get("confirm_seconds"))
         confirm_sec = float(max(0.0, min(86400.0, float(confirm_sec or 0.0))))
         now_ts = float(time.time())
+        event_started_ts = _to_float_or_none((payload or {}).get("event_unix"))
+        if event_started_ts is None:
+            event_started_ts = _to_unix_or_none((payload or {}).get("event_ts"))
+        if event_started_ts is None or (not math.isfinite(float(event_started_ts))) or abs(now_ts - float(event_started_ts)) > 30.0:
+            event_started_ts = now_ts
+        event_started_ts = min(float(event_started_ts), now_ts)
 
         def _patch_instance(row_patch: Dict[str, Any]) -> None:
             with self._lock:
@@ -11731,7 +11745,7 @@ class TelegramBridgeService:
                     "direction": str(resolved),
                     "baseline_direction": str(resolved),
                     "baseline_only": True,
-                    "started_ts": now_ts,
+                    "started_ts": event_started_ts,
                     "last_seen_ts": now_ts,
                     "fired": True,
                     "fired_key": f"baseline|{str(resolved)}",
@@ -11767,7 +11781,7 @@ class TelegramBridgeService:
                     "direction": str(resolved),
                     "baseline_direction": str(recovered_baseline),
                     "baseline_only": False,
-                    "started_ts": now_ts,
+                    "started_ts": event_started_ts,
                     "last_seen_ts": now_ts,
                     "fired": False,
                     "fired_key": "",
@@ -11781,7 +11795,7 @@ class TelegramBridgeService:
                     "direction": str(resolved),
                     "baseline_direction": str(resolved),
                     "baseline_only": True,
-                    "started_ts": now_ts,
+                    "started_ts": event_started_ts,
                     "last_seen_ts": now_ts,
                     "fired": True,
                     "fired_key": f"baseline|{str(resolved)}",
@@ -11790,10 +11804,34 @@ class TelegramBridgeService:
                 return {"ok": True, "executed": False, "reason": "baseline_registered_waiting_for_state_change", "direction": str(resolved), "confirm_seconds": confirm_sec}
 
         if bool(current.get("baseline_only")) and str(current.get("direction") or "") == str(resolved):
-            current["last_seen_ts"] = now_ts
-            self._indicator_snake_t3_stable_pending[str(instance_key)] = current
-            _patch_instance({"pending_direction": "", "pending_age_sec": None, "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
-            return {"ok": True, "executed": False, "reason": "baseline_unchanged_waiting_for_state_change", "direction": str(resolved), "confirm_seconds": confirm_sec}
+            with self._lock:
+                row_snapshot = dict(self._indicator_bridge_instances.get(str(instance_key)) or {})
+            confirmed_baseline = self._bridge_direction(
+                row_snapshot.get("confirmed_direction")
+                or row_snapshot.get("last_entry_signal_direction")
+                or row_snapshot.get("direction")
+            )
+            if confirmed_baseline in {"BUY", "SELL"} and str(confirmed_baseline) != str(resolved):
+                # A stale in-memory baseline must not mask a real CSV state that
+                # disagrees with the last confirmed executable direction.
+                current = {
+                    "direction": str(resolved),
+                    "baseline_direction": str(confirmed_baseline),
+                    "baseline_only": False,
+                    "started_ts": event_started_ts,
+                    "last_seen_ts": now_ts,
+                    "fired": False,
+                    "fired_key": "",
+                    "started_event_id": str((payload or {}).get("event_id") or ""),
+                    "started_bar_time": str((payload or {}).get("resolved_signal_bar_time") or (payload or {}).get("event_ts") or ""),
+                    "recovered_from_confirmed_mismatch": True,
+                }
+                self._indicator_snake_t3_stable_pending[str(instance_key)] = current
+            else:
+                current["last_seen_ts"] = now_ts
+                self._indicator_snake_t3_stable_pending[str(instance_key)] = current
+                _patch_instance({"pending_direction": "", "pending_age_sec": None, "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
+                return {"ok": True, "executed": False, "reason": "baseline_unchanged_waiting_for_state_change", "direction": str(resolved), "confirm_seconds": confirm_sec}
 
         if (
             not bool(current.get("baseline_only"))
@@ -11804,7 +11842,7 @@ class TelegramBridgeService:
                 "direction": str(resolved),
                 "baseline_direction": str(resolved),
                 "baseline_only": True,
-                "started_ts": now_ts,
+                "started_ts": event_started_ts,
                 "last_seen_ts": now_ts,
                 "fired": True,
                 "fired_key": f"baseline|{str(resolved)}",
@@ -11818,7 +11856,7 @@ class TelegramBridgeService:
                 "direction": str(resolved),
                 "baseline_direction": str(current.get("baseline_direction") or current.get("direction") or ""),
                 "baseline_only": False,
-                "started_ts": now_ts,
+                "started_ts": event_started_ts,
                 "fired": False,
                 "fired_key": "",
                 "started_event_id": str((payload or {}).get("event_id") or ""),
@@ -22441,6 +22479,27 @@ class TelegramBridgeService:
             self._stop.wait(max(0.05, sleep_sec))
         logger.info("Telegram bridge entry-watch loop stopped")
 
+    @staticmethod
+    def _snake_t3_csv_watch_interval_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_SNAKE_T3_CSV_WATCH_INTERVAL_SEC", "0.20"))
+        except Exception:
+            raw = 0.20
+        if not math.isfinite(float(raw)):
+            raw = 0.20
+        return float(max(0.05, min(2.0, float(raw))))
+
+    def _snake_t3_csv_watch_loop(self) -> None:
+        """Dedicated low-latency Snake/T3 CSV watcher for automation."""
+        logger.info("Snake/T3 CSV watch loop started")
+        while not self._stop.is_set():
+            try:
+                self._ingest_snake_t3_csv_tail_for_automation(max_files=12, tail_rows=12)
+            except Exception as exc:
+                logger.warning("Snake/T3 CSV watch ingest failed: %s", str(exc)[:220])
+            self._stop.wait(self._snake_t3_csv_watch_interval_sec())
+        logger.info("Snake/T3 CSV watch loop stopped")
+
     def start(self) -> None:
         if (self._thread and self._thread.is_alive()) or (self._entry_watch_thread and self._entry_watch_thread.is_alive()):
             return
@@ -22475,6 +22534,8 @@ class TelegramBridgeService:
         if run_signal_engines:
             self._entry_watch_thread = threading.Thread(target=self._entry_watch_loop, daemon=True, name="telegram-bridge-entry-watch")
             self._entry_watch_thread.start()
+            self._snake_t3_csv_thread = threading.Thread(target=self._snake_t3_csv_watch_loop, daemon=True, name="snake-t3-csv-watch")
+            self._snake_t3_csv_thread.start()
         if run_polling:
             self._prepare_polling()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="telegram-bridge")
@@ -22494,14 +22555,19 @@ class TelegramBridgeService:
         self._stop.set()
         th = self._thread
         ew = self._entry_watch_thread
+        st = self._snake_t3_csv_thread
         if th and th.is_alive():
             th.join(timeout=5.0)
         if ew and ew.is_alive():
             ew.join(timeout=5.0)
+        if st and st.is_alive():
+            st.join(timeout=5.0)
         self._thread = None
         self._entry_watch_thread = None
+        self._snake_t3_csv_thread = None
         with self._lock:
             self._indicator_reversal_replay_inflight.clear()
         logger.info("Telegram bridge service stopped")
+
 
 
