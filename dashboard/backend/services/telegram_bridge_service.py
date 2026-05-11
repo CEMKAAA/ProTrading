@@ -172,6 +172,7 @@ class TelegramBridgeService:
             "entryexit",
             "verypromising",
             "snake_t3_state",
+            "unicross",
         }
     )
     _MT4_EXEC_DEFAULT_ENABLED_PROFILES: frozenset[str] = frozenset(
@@ -197,6 +198,7 @@ class TelegramBridgeService:
             "entryexit",
             "verypromising",
             "snake_t3_state",
+            "unicross",
         }
     )
     _MT4_EXEC_INDICATOR_PROFILE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
@@ -221,6 +223,7 @@ class TelegramBridgeService:
         ("entryexit", ("the royal entry", "royal entry", "vw first only")),
         ("verypromising", ("verypromising", "very promising", "q-trend", "q trend")),
         ("snake_t3_state", ("snaket3state", "snake t3 state", "snake_t3_state", "snake+t3", "snake t3")),
+        ("unicross", ("unicross", "uni cross")),
     )
 
     @staticmethod
@@ -429,6 +432,8 @@ class TelegramBridgeService:
         self._indicator_shadow_eval_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_snake_t3_stable_pending: Dict[str, Dict[str, Any]] = {}
         self._indicator_snake_t3_csv_seen: Dict[str, float] = {}
+        self._indicator_snake_t3_csv_cursor: Dict[str, str] = {}
+        self._indicator_snake_t3_csv_tape: List[Dict[str, Any]] = []
         self._restore_pending_entry_signals()
 
     @staticmethod
@@ -4302,6 +4307,8 @@ class TelegramBridgeService:
             "very-promising": "verypromising",
             "q_trend": "verypromising",
             "q-trend": "verypromising",
+            "uni_cross": "unicross",
+            "uni-cross": "unicross",
         }
         p = str(aliases.get(p, p))
         if p not in TelegramBridgeService._MT4_EXEC_KNOWN_PROFILES:
@@ -7594,8 +7601,54 @@ class TelegramBridgeService:
         timeframe: Any = "",
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """Return the latest Snake/T3 ML CSV tail without loading the full file."""
+        """Return the same Snake/T3 rows consumed by the automation engine."""
         lim = int(max(1, min(100, int(limit or 10))))
+        try:
+            self._ingest_snake_t3_csv_tail_for_automation(max_files=12, tail_rows=12)
+        except Exception:
+            logger.exception("snake_t3_csv_tail_ingest_failed")
+        sym_filter = str(symbol or "").strip().upper()
+        tf_filter = str(timeframe or "").strip().upper()
+        with self._lock:
+            rows_all = [dict(r) for r in (self._indicator_snake_t3_csv_tape or []) if isinstance(r, dict)]
+        rows = []
+        for row in rows_all:
+            if sym_filter and str((row or {}).get("symbol") or "").strip().upper() != sym_filter:
+                continue
+            if tf_filter and str((row or {}).get("timeframe") or "").strip().upper() != tf_filter:
+                continue
+            rows.append(dict(row))
+        rows = rows[-lim:]
+        latest = dict(rows[-1]) if rows else {}
+        file_path = str(latest.get("csv_file") or "")
+        file_age = None
+        file_size = None
+        file_mtime = ""
+        if file_path:
+            try:
+                p = Path(file_path)
+                if p.exists():
+                    st = p.stat()
+                    file_age = max(0.0, float(time.time()) - float(st.st_mtime))
+                    file_size = int(st.st_size)
+                    file_mtime = datetime.fromtimestamp(float(st.st_mtime), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+        if rows:
+            return {
+                "ok": True,
+                "updated_at": self._now_iso(),
+                "source": "backend_automation_tape",
+                "file": file_path,
+                "file_name": str(latest.get("csv_file_name") or ""),
+                "file_size": file_size,
+                "file_mtime": file_mtime,
+                "file_age_sec": file_age,
+                "rows": rows,
+                "count": int(len(rows)),
+            }
+
+        # Fallback only for bootstrapping before the first automation ingest.
         base_dir = self._snake_t3_common_files_dir()
         if base_dir is None:
             return {"ok": False, "error": "mt4_common_files_dir_not_found", "rows": [], "count": 0}
@@ -7687,7 +7740,13 @@ class TelegramBridgeService:
                 "count": 0,
             }
 
-    def _ingest_snake_t3_csv_tail_for_automation(self, *, max_files: int = 8, tail_rows: int = 8) -> Dict[str, Any]:
+    def _ingest_snake_t3_csv_tail_for_automation(
+        self,
+        *,
+        max_files: int = 8,
+        tail_rows: int = 8,
+        latest_only: bool = True,
+    ) -> Dict[str, Any]:
         """Feed SnakeT3State automation from the same CSV source used by the UI.
 
         This intentionally removes MT4 WebRequest from the hot path for Snake/T3:
@@ -7748,9 +7807,44 @@ class TelegramBridgeService:
                 header, tail_lines = self._read_csv_tail_lines(path, max_bytes=131072)
                 if not header or not tail_lines:
                     continue
-                candidate_lines = tail_lines[-max(1, min(50, int(tail_rows or 8))):]
+                if bool(latest_only):
+                    cursor_tail = max(20, min(400, int(tail_rows or 8) * 20))
+                    candidate_lines = tail_lines[-cursor_tail:]
+                else:
+                    candidate_lines = tail_lines[-max(1, min(50, int(tail_rows or 8))):]
                 reader = csv.DictReader(io.StringIO("\n".join([header] + candidate_lines)))
                 rows = [r for r in reader if isinstance(r, dict)]
+                if bool(latest_only) and rows:
+                    path_key = str(path)
+                    sigs: List[str] = []
+                    for cursor_row in rows:
+                        cursor_state = str(cursor_row.get("snake_t3_state") or "").strip().upper()
+                        cursor_sym = str(cursor_row.get("symbol") or sym).strip().upper()
+                        cursor_tf = str(cursor_row.get("timeframe") or tf).strip().upper()
+                        cursor_sig = "|".join([
+                            str(path.name),
+                            cursor_sym,
+                            cursor_tf,
+                            str(cursor_row.get("server_time") or "").strip(),
+                            str(cursor_row.get("local_time") or "").strip(),
+                            str(cursor_row.get("sample_tick_count") or "").strip(),
+                            cursor_state,
+                            str(cursor_row.get("snake_value") or ""),
+                            str(cursor_row.get("t3_value") or ""),
+                        ])
+                        sigs.append(cursor_sig)
+                    with self._lock:
+                        last_cursor = str(self._indicator_snake_t3_csv_cursor.get(path_key) or "")
+                    if last_cursor:
+                        last_idx = -1
+                        for idx, cursor_sig in enumerate(sigs):
+                            if cursor_sig == last_cursor:
+                                last_idx = idx
+                        rows = rows[last_idx + 1:] if last_idx >= 0 else rows[-1:]
+                    else:
+                        # First observation after backend start/restart is a
+                        # baseline snapshot; do not replay old tail history.
+                        rows = rows[-1:]
             except Exception:
                 logger.exception("snake_t3_csv_automation_read_failed path=%s", path)
                 continue
@@ -7789,8 +7883,10 @@ class TelegramBridgeService:
 
                 attempted += 1
                 bar_time = str(row.get("bar_time") or server_time or local_time or "").strip()
+                state_entry_time = str(row.get("state_entry_time") or "").strip()
                 event_ts = local_time or server_time or datetime.now(timezone.utc).isoformat()
                 event_unix = _to_unix_or_none(event_ts)
+                state_entry_unix = _to_unix_or_none(state_entry_time)
                 mid = _to_float_or_none(row.get("mid"))
                 if mid is None:
                     bid = _to_float_or_none(row.get("bid"))
@@ -7810,12 +7906,14 @@ class TelegramBridgeService:
                     "bridge_event_type": "resolved_state",
                     "event_ts": event_ts,
                     "event_unix": event_unix,
+                    "state_entry_time": state_entry_time,
+                    "state_entry_unix": state_entry_unix,
                     "event_id": f"csv_tail|{sig}",
                     "message": f"snake_t3_csv_tail {state}",
                     "signal_hint": state,
                     "resolved_signal": state,
                     "last_signal_direction": state,
-                    "resolved_signal_bar_time": bar_time,
+                    "resolved_signal_bar_time": state_entry_time or bar_time,
                     "resolved_signal_shift": _to_float_or_none(row.get("shift")),
                     "resolved_raw_buy": 1 if state == "BUY" else 0,
                     "resolved_raw_sell": 1 if state == "SELL" else 0,
@@ -7830,8 +7928,46 @@ class TelegramBridgeService:
                 }
                 try:
                     self.ingest_indicator_bridge_signal(terminal_family="mt4", payload=payload)
+                    with self._lock:
+                        self._indicator_snake_t3_csv_cursor[str(path)] = str(sig)
+                        snake_val = _to_float_or_none(row.get("snake_value"))
+                        t3_val = _to_float_or_none(row.get("t3_value"))
+                        tape_row = {
+                            "server_time": server_time,
+                            "local_time": local_time,
+                            "symbol": row_sym,
+                            "timeframe": row_tf,
+                            "bar_time": bar_time,
+                            "bar_age_sec": _to_float_or_none(row.get("bar_age_sec")),
+                            "sample_tick_count": int(_to_float_or_none(row.get("sample_tick_count")) or 0),
+                            "bid": _to_float_or_none(row.get("bid")),
+                            "ask": _to_float_or_none(row.get("ask")),
+                            "mid": mid,
+                            "tick_volume": _to_float_or_none(row.get("tick_volume")),
+                            "state": state,
+                            "prev_state": str(row.get("prev_snake_t3_state") or "").strip().upper(),
+                            "state_changed": str(row.get("state_changed") or "").strip().lower() in {"1", "true", "yes", "on"},
+                            "transition": str(row.get("state_transition") or "").strip(),
+                            "state_entry_time": state_entry_time,
+                            "state_entry_price": _to_float_or_none(row.get("state_entry_price")),
+                            "closed_state_pnl_money": _to_float_or_none(row.get("closed_state_pnl_money")),
+                            "snake_value": snake_val,
+                            "t3_value": t3_val,
+                            "snake_t3_diff": (float(snake_val) - float(t3_val) if snake_val is not None and t3_val is not None else None),
+                            "atr": _to_float_or_none(row.get("atr")),
+                            "rsi": _to_float_or_none(row.get("rsi")),
+                            "csv_file": str(path),
+                            "csv_file_name": str(path.name),
+                            "row_sig": str(sig),
+                            "processed_at": self._now_iso(),
+                        }
+                        self._indicator_snake_t3_csv_tape.append(dict(tape_row))
+                        if len(self._indicator_snake_t3_csv_tape) > 1000:
+                            self._indicator_snake_t3_csv_tape = self._indicator_snake_t3_csv_tape[-1000:]
                     processed += 1
                 except Exception:
+                    with self._lock:
+                        self._indicator_snake_t3_csv_seen.pop(str(sig), None)
                     logger.exception("snake_t3_csv_automation_ingest_failed file=%s state=%s", path, state)
         return {"ok": True, "processed": int(processed), "attempted": int(attempted), "files": int(len(selected))}
 
@@ -11721,7 +11857,11 @@ class TelegramBridgeService:
             confirm_sec = _to_float_or_none((payload or {}).get("confirm_seconds"))
         confirm_sec = float(max(0.0, min(86400.0, float(confirm_sec or 0.0))))
         now_ts = float(time.time())
-        event_started_ts = _to_float_or_none((payload or {}).get("event_unix"))
+        event_started_ts = _to_float_or_none((payload or {}).get("state_entry_unix"))
+        if event_started_ts is None:
+            event_started_ts = _to_unix_or_none((payload or {}).get("state_entry_time"))
+        if event_started_ts is None:
+            event_started_ts = _to_float_or_none((payload or {}).get("event_unix"))
         if event_started_ts is None:
             event_started_ts = _to_unix_or_none((payload or {}).get("event_ts"))
         if event_started_ts is None or (not math.isfinite(float(event_started_ts))) or abs(now_ts - float(event_started_ts)) > 30.0:
@@ -11735,6 +11875,15 @@ class TelegramBridgeService:
                     return
                 row.update(row_patch)
                 self._indicator_bridge_instances[str(instance_key)] = row
+
+        def _confirmed_direction_snapshot() -> str:
+            with self._lock:
+                row_snapshot = dict(self._indicator_bridge_instances.get(str(instance_key)) or {})
+            return self._bridge_direction(
+                row_snapshot.get("confirmed_direction")
+                or row_snapshot.get("last_entry_signal_direction")
+                or row_snapshot.get("direction")
+            )
 
         current = dict(self._indicator_snake_t3_stable_pending.get(str(instance_key)) or {})
         is_directional = resolved in {"BUY", "SELL"}
@@ -11763,6 +11912,52 @@ class TelegramBridgeService:
         if pending in {"BUY", "SELL"}:
             _patch_instance({"pending_direction": pending, "pending_age_sec": _to_float_or_none((payload or {}).get("pending_age_sec")), "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
             return {"ok": True, "executed": False, "reason": "ea_pending_in_progress", "confirm_seconds": confirm_sec}
+
+        if (
+            current
+            and not bool(current.get("baseline_only"))
+            and not bool(current.get("fired"))
+            and str(current.get("direction") or "") in {"BUY", "SELL"}
+            and str(current.get("direction") or "") != str(resolved)
+        ):
+            previous_pending = str(current.get("direction") or "")
+            confirmed_baseline = _confirmed_direction_snapshot()
+            if confirmed_baseline in {"BUY", "SELL"} and str(confirmed_baseline) == str(resolved):
+                current = {
+                    "direction": str(resolved),
+                    "baseline_direction": str(resolved),
+                    "baseline_only": True,
+                    "started_ts": event_started_ts,
+                    "last_seen_ts": now_ts,
+                    "fired": True,
+                    "fired_key": f"baseline|{str(resolved)}",
+                    "cancelled_pending_direction": str(previous_pending),
+                    "cancel_reason": "return_to_confirmed_direction",
+                }
+                self._indicator_snake_t3_stable_pending[str(instance_key)] = current
+                _patch_instance({"pending_direction": "", "pending_age_sec": None, "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
+                return {
+                    "ok": True,
+                    "executed": False,
+                    "reason": "pending_cancelled_by_confirmed_direction_return",
+                    "direction": str(resolved),
+                    "cancelled_pending_direction": str(previous_pending),
+                    "confirm_seconds": confirm_sec,
+                }
+            current = {
+                "direction": str(resolved),
+                "baseline_direction": str(confirmed_baseline if confirmed_baseline in {"BUY", "SELL"} else (current.get("baseline_direction") or previous_pending)),
+                "baseline_only": False,
+                "started_ts": event_started_ts,
+                "last_seen_ts": now_ts,
+                "fired": False,
+                "fired_key": "",
+                "started_event_id": str((payload or {}).get("event_id") or ""),
+                "started_bar_time": str((payload or {}).get("resolved_signal_bar_time") or (payload or {}).get("event_ts") or ""),
+                "restarted_from_pending_direction": str(previous_pending),
+                "restart_reason": "opposite_csv_state",
+            }
+            self._indicator_snake_t3_stable_pending[str(instance_key)] = current
 
         # First directional state after startup/start is only a baseline. It must
         # not open a trade until a real BUY<->SELL transition arrives later.
@@ -11804,13 +11999,7 @@ class TelegramBridgeService:
                 return {"ok": True, "executed": False, "reason": "baseline_registered_waiting_for_state_change", "direction": str(resolved), "confirm_seconds": confirm_sec}
 
         if bool(current.get("baseline_only")) and str(current.get("direction") or "") == str(resolved):
-            with self._lock:
-                row_snapshot = dict(self._indicator_bridge_instances.get(str(instance_key)) or {})
-            confirmed_baseline = self._bridge_direction(
-                row_snapshot.get("confirmed_direction")
-                or row_snapshot.get("last_entry_signal_direction")
-                or row_snapshot.get("direction")
-            )
+            confirmed_baseline = _confirmed_direction_snapshot()
             if confirmed_baseline in {"BUY", "SELL"} and str(confirmed_baseline) != str(resolved):
                 # A stale in-memory baseline must not mask a real CSV state that
                 # disagrees with the last confirmed executable direction.
@@ -16343,6 +16532,75 @@ class TelegramBridgeService:
             actual_lot = _to_float_or_none((post_open_position or {}).get("lot_size"))
             if actual_lot is None or float(actual_lot) <= 0.0:
                 actual_lot = _to_float_or_none((data or {}).get("lot_size")) or float(qty)
+            post_open_sl_adjustment: Dict[str, Any] = {}
+            actual_entry = _to_float_or_none((post_open_position or {}).get("entry_price"))
+            if (
+                broker_ticket > 0
+                and isinstance(cat_plan, dict)
+                and bool(cat_plan.get("enabled"))
+                and actual_entry is not None
+                and float(actual_entry) > 0.0
+                and actual_lot is not None
+                and float(actual_lot) > 0.0
+            ):
+                try:
+                    info = svc.get_symbol_info(symbol=str(sym))
+                except Exception:
+                    info = {}
+                digits = int((info or {}).get("digits") or 5)
+                point = _to_float_or_none((info or {}).get("point")) or (0.01 if digits <= 2 else 0.0001)
+                stops_pts = _to_float_or_none((info or {}).get("trade_stops_level")) or 0.0
+                freeze_pts = _to_float_or_none((info or {}).get("trade_freeze_level")) or 0.0
+                min_dist = float(max(stops_pts, freeze_pts, 10.0)) * float(point)
+                adjusted_plan = self._indicator_bridge_catastrophe_stop_loss(
+                    svc=svc,
+                    symbol=str(sym),
+                    timeframe=str(tf),
+                    direction=str(side),
+                    lot=float(actual_lot),
+                    entry_price=float(actual_entry),
+                    digits=int(digits),
+                    point=float(point),
+                    min_stop_dist=float(min_dist),
+                    existing_stop_loss=None,
+                )
+                adjusted_sl = _to_float_or_none((adjusted_plan or {}).get("stop_loss"))
+                current_sl = _to_float_or_none((post_open_position or {}).get("stop_loss")) or order_stop_loss
+                if (
+                    bool((adjusted_plan or {}).get("enabled"))
+                    and adjusted_sl is not None
+                    and (current_sl is None or abs(float(adjusted_sl) - float(current_sl)) > float(max(point, 1e-8)))
+                ):
+                    adjust_out = svc.modify_position_sl_tp(
+                        symbol=str(sym),
+                        position_ticket=int(broker_ticket),
+                        stop_loss=float(adjusted_sl),
+                        take_profit=None,
+                        comment="cat_sl_fill_adjust",
+                    )
+                    post_open_sl_adjustment = {
+                        "requested": True,
+                        "ok": bool((adjust_out or {}).get("ok")),
+                        "reason": "actual_fill_catastrophe_sl_reprice",
+                        "pre_fill_reference_sl": _to_float_or_none(order_stop_loss),
+                        "actual_entry_price": float(actual_entry),
+                        "actual_lot_size": float(actual_lot),
+                        "adjusted_stop_loss": float(adjusted_sl),
+                        "modify_error": str((adjust_out or {}).get("error") or "")[:180],
+                        "modify_retcode": (adjust_out or {}).get("retcode"),
+                        "modify_comment": str((adjust_out or {}).get("comment") or "")[:180],
+                    }
+                    if bool((adjust_out or {}).get("ok")):
+                        order_stop_loss = float(adjusted_sl)
+                        cat_plan = dict(adjusted_plan or {})
+                        post_open_position["stop_loss"] = float(adjusted_sl)
+                else:
+                    post_open_sl_adjustment = {
+                        "requested": False,
+                        "reason": "actual_fill_catastrophe_sl_already_aligned",
+                        "current_stop_loss": _to_float_or_none(current_sl),
+                        "actual_entry_price": float(actual_entry),
+                    }
 
             if broker_ticket > 0:
                 self._register_confirmation_ladder(
@@ -16414,6 +16672,7 @@ class TelegramBridgeService:
                     "broker_returned_lot_size": _to_float_or_none((data or {}).get("lot_size")),
                     "post_open_ticket": int(_to_float_or_none((post_open_position or {}).get("ticket")) or 0) or None,
                     "order_request": dict((data or {}).get("request") or {}),
+                    "post_open_sl_adjustment": dict(post_open_sl_adjustment or {}),
                 },
             )
             sl_text = "none" if order_stop_loss is None else f"{float(order_stop_loss):.5f}"

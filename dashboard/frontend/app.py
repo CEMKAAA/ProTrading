@@ -1693,11 +1693,22 @@ def indicator_bridge_snake_t3_live_proxy():
 
 @app.route('/api/indicator-bridge/snake-t3-csv-tail')
 def indicator_bridge_snake_t3_csv_tail_proxy():
-    payload = _snake_t3_csv_tail_payload(
-        symbol=request.args.get('symbol') or '',
-        timeframe=request.args.get('timeframe') or '',
-        limit=request.args.get('limit') or 10,
+    params = {}
+    if request.args.get('symbol') is not None:
+        params['symbol'] = request.args.get('symbol') or ''
+    if request.args.get('timeframe') is not None:
+        params['timeframe'] = request.args.get('timeframe') or ''
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit') or 10
+    payload, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/snake-t3-csv-tail',
+        params=params,
+        return_error=True,
+        timeout_sec=3,
     )
+    if not payload:
+        payload = {'ok': False, 'error': err or 'Failed to load Snake/T3 backend tape', 'rows': [], 'count': 0}
     status = 200 if payload.get('ok', True) else 500
     resp = jsonify(payload)
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -1716,12 +1727,21 @@ def indicator_bridge_snake_t3_csv_tail_stream_proxy():
         yield 'retry: 1000\n\n'
         while True:
             try:
-                payload = _snake_t3_csv_tail_payload(symbol=symbol, timeframe=timeframe, limit=limit)
+                params = {'symbol': symbol, 'timeframe': timeframe, 'limit': limit}
+                payload, err = api_request(
+                    'GET',
+                    '/api/v1/indicator-bridge/snake-t3-csv-tail',
+                    params=params,
+                    return_error=True,
+                    timeout_sec=3,
+                )
+                if not payload:
+                    payload = {'ok': False, 'error': err or 'Failed to load Snake/T3 backend tape', 'rows': [], 'count': 0}
                 rows = payload.get('rows') if isinstance(payload, dict) else []
                 last_row = rows[-1] if rows else {}
                 sig = '|'.join([
-                    str(payload.get('file_name') or ''),
-                    str(payload.get('file_size') or ''),
+                    str(payload.get('source') or ''),
+                    str(last_row.get('row_sig') or ''),
                     str(last_row.get('server_time') or ''),
                     str(last_row.get('local_time') or ''),
                     str(last_row.get('state') or ''),

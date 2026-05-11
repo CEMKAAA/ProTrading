@@ -20,9 +20,11 @@ input double InpSignalCompareMinDiff = 0.0;
 input bool   InpArrowStreakConfirmAfterBlank = false; // Arrow indicators: latest arrow becomes tradable only after next closed blank candle
 input int    InpArrowResolvedLookbackBars = 300;
 input int    InpPollSeconds = 1;     // V2 state machine poll cadence
+input bool   InpPollOnTick = false;  // Lower-latency mode: also evaluate buffers on every chart tick
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
 input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
 input bool   InpLatchSignalUntilConfirm = false; // Pulse indicators: keep first detected signal pending until confirm timeout
+input bool   InpEmitResolvedStateOnChange = false; // Publish resolved_state immediately when pending direction changes
 input bool   InpSendInitialConfirmedOnStart = false; // false prevents startup duplicate entries
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
 input int    InpRetryFailedSendEverySeconds = 2; // throttle retries after failed POST
@@ -59,6 +61,8 @@ datetime g_lastHeartbeatAt = 0;
 datetime g_lastResolvedStateAt = 0;
 bool     g_initializedState = false;
 double   g_iCustomParams[];
+string   g_iCustomParamStrings[];
+int      g_iCustomParamTypes[]; // 0=numeric/bool, 1=string
 int      g_iCustomParamCount = 0;
 int      g_arrowBaseDir = 0;
 datetime g_arrowBaseBarTime = 0;
@@ -451,6 +455,8 @@ int _compare_signal_direction(double buyVal, double sellVal)
 bool _parse_iCustom_params()
 {
    ArrayResize(g_iCustomParams, 0);
+   ArrayResize(g_iCustomParamStrings, 0);
+   ArrayResize(g_iCustomParamTypes, 0);
    g_iCustomParamCount = 0;
 
    string raw = _trim(InpICustomParamsCsv);
@@ -474,34 +480,83 @@ bool _parse_iCustom_params()
       string lower = token;
       StringToLower(lower);
       double val = 0.0;
+      int paramType = 0;
+      string strVal = "";
 
       if(lower == "true")
          val = 1.0;
       else if(lower == "false")
          val = 0.0;
       else
-         val = StrToDouble(token);
-
-      if(val == 0.0 && token != "0" && token != "0.0" && lower != "false")
       {
-         Print("MT4Bridge invalid InpICustomParamsCsv token: ", token,
-               " | Only numeric/bool tokens are supported.");
-         return false;
+         val = StrToDouble(token);
+         if(val == 0.0 && token != "0" && token != "0.0")
+         {
+            paramType = 1;
+            strVal = token;
+            int len = StringLen(strVal);
+            if(len >= 2)
+            {
+               string first = StringSubstr(strVal, 0, 1);
+               string last = StringSubstr(strVal, len - 1, 1);
+               if((first == "\"" && last == "\"") || (first == "'" && last == "'"))
+                  strVal = StringSubstr(strVal, 1, len - 2);
+            }
+         }
       }
 
       int newCount = g_iCustomParamCount + 1;
       ArrayResize(g_iCustomParams, newCount);
+      ArrayResize(g_iCustomParamStrings, newCount);
+      ArrayResize(g_iCustomParamTypes, newCount);
       g_iCustomParams[g_iCustomParamCount] = val;
+      g_iCustomParamStrings[g_iCustomParamCount] = strVal;
+      g_iCustomParamTypes[g_iCustomParamCount] = paramType;
       g_iCustomParamCount = newCount;
    }
 
    return true;
 }
 
+bool _param_is_string(int idx)
+{
+   if(idx < 0 || idx >= g_iCustomParamCount)
+      return false;
+   return (g_iCustomParamTypes[idx] == 1);
+}
+
 double _icustom_value(int bufferIndex, int barShift)
 {
    int c = g_iCustomParamCount;
    if(c <= 0)  return iCustom(NULL, 0, InpIndicatorName, bufferIndex, barShift);
+   // Mixed string/numeric adapter used by indicators such as UniCross:
+   // false,false,true,alert.wav,14,0,0.618,5,0,0,0
+   if(c == 11 && _param_is_string(3))
+      return iCustom(
+         NULL, 0, InpIndicatorName,
+         (g_iCustomParams[0] != 0.0),
+         (g_iCustomParams[1] != 0.0),
+         (g_iCustomParams[2] != 0.0),
+         g_iCustomParamStrings[3],
+         (int)g_iCustomParams[4],
+         (int)g_iCustomParams[5],
+         g_iCustomParams[6],
+         (int)g_iCustomParams[7],
+         (int)g_iCustomParams[8],
+         (int)g_iCustomParams[9],
+         (int)g_iCustomParams[10],
+         bufferIndex,
+         barShift
+      );
+   for(int si = 0; si < c; si++)
+   {
+      if(_param_is_string(si))
+      {
+         Print("MT4Bridge unsupported string InpICustomParamsCsv layout at index ", si,
+               ". Add an adapter branch for this indicator input signature.");
+         return EMPTY_VALUE;
+      }
+   }
    if(c == 1)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], bufferIndex, barShift);
    if(c == 2)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], bufferIndex, barShift);
    if(c == 3)  return iCustom(NULL, 0, InpIndicatorName, g_iCustomParams[0], g_iCustomParams[1], g_iCustomParams[2], bufferIndex, barShift);
@@ -1123,9 +1178,12 @@ void _check_and_send()
       g_pendingBar = barTime;
       g_pendingSignalValue = signalPrice;
       g_lastFailedSendAt = 0;
+      if(InpEmitResolvedStateOnChange)
+         _send_or_queue_event("resolved_state", dirText, signalPrice, barTime);
       if(InpDebugPrint)
          Print("MT4BridgeV2 pending started direction=", dirText, " confirm_sec=", IntegerToString(confirmSec));
-      return;
+      if(confirmSec > 0 || InpConfirmBars > 0)
+         return;
    }
 
    if(confirmSec > 0 && nowTs > 0 && g_pendingStartedAt > 0 && (nowTs - g_pendingStartedAt) < confirmSec)
@@ -1221,7 +1279,11 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
-   // Keep empty; timer drives polling with deterministic cadence.
+   if(!InpPollOnTick)
+      return;
+   _flush_pending_events();
+   _check_and_send();
+   _flush_pending_events();
 }
 
 void OnTimer()
