@@ -42,6 +42,11 @@
         liqScanResults: document.getElementById('v2-liq-scan-results'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
+        snakeLiveBody: document.getElementById('v2-snake-live-body'),
+        snakeLiveUpdated: document.getElementById('v2-snake-live-updated'),
+        snakeCsvBody: document.getElementById('v2-snake-csv-body'),
+        snakeCsvUpdated: document.getElementById('v2-snake-csv-updated'),
+        snakeCsvFile: document.getElementById('v2-snake-csv-file'),
         openBody: document.getElementById('v2-open-body'),
         instanceBody: document.getElementById('v2-instance-body'),
         auditBody: document.getElementById('v2-audit-body'),
@@ -54,7 +59,16 @@
     };
 
     let state = null;
+    let snakeLive = null;
+    let snakeCsvTail = null;
     let timer = null;
+    let snakeLiveTimer = null;
+    let snakeCsvTimer = null;
+    let snakeLiveInFlight = false;
+    let snakeCsvInFlight = false;
+    let snakeCsvEventSource = null;
+    let snakeCsvStreamLastAt = 0;
+    let snakeCsvStreamConnectedAt = 0;
     let uiTimer = null;
     let stateLoadInFlight = false;
     let stateLoadController = null;
@@ -216,6 +230,10 @@
         }, Math.max(0, Number(delayMs || 0)));
     }
 
+    function shouldDeferInstanceRender() {
+        return !!(els.instanceBody && els.instanceBody.contains(document.activeElement));
+    }
+
     function applyInstancePatch(row, options) {
         if (!row || !options || typeof options !== 'object') return;
         if (Object.prototype.hasOwnProperty.call(options, 'enabled')) {
@@ -223,6 +241,10 @@
             row.effective_automation_enabled = !!options.enabled;
         }
         if (Object.prototype.hasOwnProperty.call(options, 'lot_size')) row.lot_size = Number(options.lot_size);
+        if (Object.prototype.hasOwnProperty.call(options, 'signal_confirm_sec')) {
+            row.signal_confirm_sec = Number(options.signal_confirm_sec);
+            row.confirm_seconds = Number(options.signal_confirm_sec);
+        }
         ['mode_advanced_enabled', 'mode_advanced_v2_enabled', 'mode_normal_enabled', 'mode_sync_enabled'].forEach(key => {
             if (Object.prototype.hasOwnProperty.call(options, key)) row[key] = !!options[key];
         });
@@ -254,6 +276,77 @@
         renderInstances();
         renderEntryExitPanel();
         refreshStateSoon(150);
+    }
+
+    async function loadSnakeT3Live() {
+        if (snakeLiveInFlight || !els.snakeLiveBody) return;
+        snakeLiveInFlight = true;
+        try {
+            const res = await fetch('/api/indicator-bridge/snake-t3-live?limit=20', {
+                credentials: 'same-origin',
+                cache: 'no-store'
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false) {
+                throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+            }
+            snakeLive = data;
+            renderSnakeT3Live();
+        } catch (err) {
+            if (els.snakeLiveUpdated) els.snakeLiveUpdated.textContent = `live error: ${err.message || err}`;
+        } finally {
+            snakeLiveInFlight = false;
+        }
+    }
+
+    async function loadSnakeT3CsvTail() {
+        if (snakeCsvInFlight || (!els.snakeLiveBody && !els.snakeCsvBody)) return;
+        snakeCsvInFlight = true;
+        try {
+            const res = await fetch('/api/indicator-bridge/snake-t3-csv-tail?limit=10', {
+                credentials: 'same-origin',
+                cache: 'no-store'
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false) {
+                throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+            }
+            snakeCsvTail = data;
+            renderSnakeT3CsvTail();
+        } catch (err) {
+            if (els.snakeCsvUpdated) els.snakeCsvUpdated.textContent = `csv error: ${err.message || err}`;
+        } finally {
+            snakeCsvInFlight = false;
+        }
+    }
+
+    function connectSnakeT3CsvStream() {
+        if (!els.snakeLiveBody || !window.EventSource) return false;
+        if (snakeCsvEventSource) return true;
+        snakeCsvStreamConnectedAt = Date.now();
+        const src = new EventSource('/api/indicator-bridge/snake-t3-csv-tail/stream?limit=10');
+        snakeCsvEventSource = src;
+        src.onmessage = (ev) => {
+            snakeCsvStreamLastAt = Date.now();
+            try {
+                const data = JSON.parse(ev.data || '{}');
+                if (!data || data.ok === false) {
+                    throw new Error((data && (data.error || data.detail)) || 'stream payload failed');
+                }
+                snakeCsvTail = data;
+                renderSnakeT3CsvTail();
+            } catch (err) {
+                if (els.snakeLiveUpdated) els.snakeLiveUpdated.textContent = `stream parse error: ${err.message || err}`;
+            }
+        };
+        src.onerror = () => {
+            if (els.snakeLiveUpdated && Date.now() - snakeCsvStreamLastAt > 3000) {
+                els.snakeLiveUpdated.className = 'badge text-bg-warning';
+                els.snakeLiveUpdated.textContent = 'stream reconnecting...';
+            }
+            // EventSource reconnects automatically. Keep it open; fallback polling covers stale periods.
+        };
+        return true;
     }
 
     async function saveRiskSettings() {
@@ -306,7 +399,7 @@
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ daily_target_guard_bypass_today: !!enabled })
+                body: JSON.stringify({ daily_guard_bypass_today: !!enabled })
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || data.ok === false) {
@@ -314,8 +407,8 @@
             }
             mergeStatePatch(data);
             showNotice(enabled
-                ? 'Daily target guard bypassed for today. Max daily loss guard is still active.'
-                : 'Daily target guard restored for today.',
+                ? 'Daily target and max-loss guards bypassed for today.'
+                : 'Daily target and max-loss guards restored for today.',
                 enabled ? 'warning' : 'success');
             render();
             refreshStateSoon(1000);
@@ -525,8 +618,12 @@
 
     function hasDisplayableBridgeConnection(row) {
         const stateText = String((row || {}).state || '').trim().toUpperCase();
+        const bridgeVersion = String((row || {}).bridge_version || '').trim().toLowerCase();
+        const bridgeEventType = String((row || {}).bridge_event_type || '').trim().toLowerCase();
         return boolish((row || {}).has_live_heartbeat)
             || boolish((row || {}).has_open_ladder)
+            || bridgeVersion === 'v2'
+            || !!bridgeEventType
             || stateText === 'OPEN'
             || stateText === 'IDLE';
     }
@@ -558,6 +655,12 @@
     function displaySignal(dir) {
         const s = normDirection(dir);
         return s || 'NONE';
+    }
+
+    function isBackendStableConfirmInstance(row) {
+        const profile = String((row || {}).profile || '').trim().toLowerCase();
+        const indicator = String((row || {}).indicator || '').trim().toLowerCase();
+        return profile === 'snake_t3_state' || indicator === 'snaket3state';
     }
 
     function tfRank(tf) {
@@ -1277,6 +1380,93 @@
         }).join('');
     }
 
+    function renderSnakeT3Live() {
+        if (!els.snakeLiveBody) return;
+        const rows = Array.isArray((snakeLive || {}).rows) ? snakeLive.rows : [];
+        if (els.snakeLiveUpdated) {
+            els.snakeLiveUpdated.textContent = `${rows.length} row${rows.length === 1 ? '' : 's'} / ${fmtTs((snakeLive || {}).updated_at)}`;
+        }
+        if (!rows.length) {
+            els.snakeLiveBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No Snake/T3 live rows yet.</td></tr>';
+            return;
+        }
+        els.snakeLiveBody.innerHTML = rows.map(row => {
+            const resolved = normDirection(row.resolved_signal);
+            const confirmed = normDirection(row.confirmed_direction);
+            const pending = normDirection(row.pending_direction);
+            const age = Number(row.age_sec);
+            const stale = Number.isFinite(age) && age > 3;
+            const pendingAge = Number(row.pending_age_sec);
+            const confirm = Number(row.confirm_seconds);
+            const shownPendingAge = Number.isFinite(pendingAge)
+                ? Math.min(pendingAge, Number.isFinite(confirm) ? confirm : pendingAge)
+                : null;
+            const pendingText = pending
+                ? `${esc(pending)}${shownPendingAge != null ? ` <span class="text-muted">${fmtNum(shownPendingAge, 0)}${Number.isFinite(confirm) ? `/${fmtNum(confirm, 0)}` : ''}s</span>` : ''}`
+                : '-';
+            const resolvedCls = resolved === 'BUY' ? 'text-success' : (resolved === 'SELL' ? 'text-danger' : 'text-secondary');
+            const confirmedCls = confirmed === 'BUY' ? 'text-success' : (confirmed === 'SELL' ? 'text-danger' : 'text-secondary');
+            const pendingCls = pending === 'BUY' ? 'text-success' : (pending === 'SELL' ? 'text-danger' : 'text-secondary');
+            const auto = boolish(row.effective_automation_enabled) ? '<span class="badge text-bg-success">ON</span>' : '<span class="badge text-bg-secondary">OFF</span>';
+            const mem = [
+                row.stable_memory_direction ? `dir=${row.stable_memory_direction}` : '',
+                row.stable_memory_baseline ? `base=${row.stable_memory_baseline}` : '',
+                row.stable_memory_baseline_only ? 'baseline' : '',
+                row.stable_memory_fired ? 'fired' : ''
+            ].filter(Boolean).join(' ');
+            return `<tr class="${stale ? 'table-warning' : ''}">
+                <td>${esc(row.last_seen || '-')}<div class="small ${stale ? 'text-danger fw-semibold' : 'text-muted'}">age ${Number.isFinite(age) ? fmtNum(age, 1) : '-'}s</div></td>
+                <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}<div class="small text-muted">${esc(row.terminal_family || '-')}</div></td>
+                <td class="fw-bold ${resolvedCls}">${esc(resolved || '-')}<div class="small text-muted">${esc(row.resolved_signal_bar_time || '-')}</div></td>
+                <td class="fw-bold ${confirmedCls}">${esc(confirmed || '-')}</td>
+                <td class="fw-bold ${pendingCls}">${pendingText}</td>
+                <td class="v2-mono">${Number.isFinite(age) ? fmtNum(age, 1) : '-'}</td>
+                <td class="v2-mono small">buy=${fmtNum(row.resolved_raw_buy, 5)}<br>sell=${fmtNum(row.resolved_raw_sell, 5)}</td>
+                <td class="small text-muted">${esc(mem || '-')}</td>
+                <td>${auto}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderSnakeT3CsvTail() {
+        const body = els.snakeLiveBody || els.snakeCsvBody;
+        if (!body) return;
+        const rows = Array.isArray((snakeCsvTail || {}).rows) ? snakeCsvTail.rows.slice(-10) : [];
+        const fileAge = Number((snakeCsvTail || {}).file_age_sec);
+        const stale = Number.isFinite(fileAge) && fileAge > 3;
+        const streamLive = snakeCsvStreamLastAt > 0 && Date.now() - snakeCsvStreamLastAt < 2500;
+        const streamPending = snakeCsvEventSource && !snakeCsvStreamLastAt && Date.now() - snakeCsvStreamConnectedAt < 3000;
+        const streamLabel = streamLive ? 'stream live' : (streamPending ? 'stream connecting' : (snakeCsvEventSource ? 'stream stale' : 'poll fallback'));
+        [els.snakeLiveUpdated, els.snakeCsvUpdated].filter(Boolean).forEach(el => {
+            el.className = `badge ${stale || (!streamLive && !streamPending) ? 'text-bg-warning' : 'text-bg-light'}`;
+            el.textContent = `${rows.length}/10 rows / file age ${Number.isFinite(fileAge) ? fmtNum(fileAge, 1) : '-'}s / ${streamLabel}`;
+        });
+        if (els.snakeCsvFile) {
+            els.snakeCsvFile.innerHTML = `file: <span class="v2-mono">${esc((snakeCsvTail || {}).file_name || (snakeCsvTail || {}).file || '-')}</span>`;
+        }
+        if (!rows.length) {
+            body.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No CSV rows yet.</td></tr>';
+            return;
+        }
+        body.innerHTML = rows.map((row, idx) => {
+            const dir = normDirection(row.state);
+            const dirCls = dir === 'BUY' ? 'text-success' : (dir === 'SELL' ? 'text-danger' : 'text-secondary');
+            const changed = boolish(row.state_changed);
+            const isNewest = idx === rows.length - 1;
+            return `<tr class="${changed ? 'table-info' : (isNewest ? 'table-light' : '')}">
+                <td>${esc(row.server_time || '-')}<div class="small text-muted">${esc(row.local_time || '')}</div></td>
+                <td>${esc(row.bar_time || '-')}<div class="small text-muted">age ${fmtNum(row.bar_age_sec, 0)}s / vol ${fmtNum(row.tick_volume, 0)}</div></td>
+                <td class="fw-bold ${dirCls}">${esc(dir || '-')}</td>
+                <td>${changed ? `<span class="badge text-bg-info">${esc(row.transition || 'changed')}</span>` : '<span class="text-muted">-</span>'}</td>
+                <td class="v2-mono">bid ${fmtNum(row.bid, 2)}<br>mid ${fmtNum(row.mid, 2)}</td>
+                <td class="v2-mono">${fmtNum(row.snake_value, 6)}</td>
+                <td class="v2-mono">${fmtNum(row.t3_value, 6)}</td>
+                <td class="v2-mono ${Number(row.snake_t3_diff) >= 0 ? 'text-success' : 'text-danger'}">${fmtNum(row.snake_t3_diff, 6)}</td>
+                <td class="v2-mono">ATR ${fmtNum(row.atr, 2)}<br>RSI ${fmtNum(row.rsi, 2)}</td>
+            </tr>`;
+        }).join('');
+    }
+
     function renderRiskSettings() {
         const risk = (state || {}).risk_settings || {};
         const daily = (state || {}).daily_risk || {};
@@ -1316,14 +1506,18 @@
             const blocked = !!daily.blocked;
             const reason = daily.block_reason ? ` / ${daily.block_reason}` : '';
             const targetBypassed = !!(daily.daily_target_guard_bypassed_today || risk.daily_target_guard_bypassed_today);
-            els.riskDailyStatus.className = `fw-bold ${blocked ? 'text-danger' : (targetBypassed ? 'text-warning' : (pnl >= 0 ? 'text-success' : 'text-danger'))}`;
-            els.riskDailyStatus.textContent = `$${fmtNum(pnl, 2)}${blocked ? ` BLOCKED${reason}` : (targetBypassed ? ' TARGET BYPASSED' : '')}`;
+            const maxLossBypassed = !!(daily.daily_max_loss_guard_bypassed_today || risk.daily_max_loss_guard_bypassed_today);
+            const guardBypassed = !!(daily.daily_guard_bypassed_today || risk.daily_guard_bypassed_today || (targetBypassed && maxLossBypassed));
+            els.riskDailyStatus.className = `fw-bold ${blocked ? 'text-danger' : (guardBypassed ? 'text-warning' : (pnl >= 0 ? 'text-success' : 'text-danger'))}`;
+            els.riskDailyStatus.textContent = `$${fmtNum(pnl, 2)}${blocked ? ` BLOCKED${reason}` : (guardBypassed ? ' DAILY GUARD BYPASSED' : '')}`;
         }
         if (els.riskTargetOverride) {
             const targetBypassed = !!(daily.daily_target_guard_bypassed_today || risk.daily_target_guard_bypassed_today);
-            els.riskTargetOverride.className = targetBypassed ? 'btn btn-sm btn-warning mt-2' : 'btn btn-sm btn-outline-warning mt-2';
-            els.riskTargetOverride.textContent = targetBypassed ? 'Stop Extra Trades Today' : 'Allow More Today';
-            els.riskTargetOverride.setAttribute('data-enabled', targetBypassed ? '1' : '0');
+            const maxLossBypassed = !!(daily.daily_max_loss_guard_bypassed_today || risk.daily_max_loss_guard_bypassed_today);
+            const guardBypassed = !!(daily.daily_guard_bypassed_today || risk.daily_guard_bypassed_today || (targetBypassed && maxLossBypassed));
+            els.riskTargetOverride.className = guardBypassed ? 'btn btn-sm btn-warning mt-2' : 'btn btn-sm btn-outline-warning mt-2';
+            els.riskTargetOverride.textContent = guardBypassed ? 'Stop Extra Trades Today' : 'Allow More Today';
+            els.riskTargetOverride.setAttribute('data-enabled', guardBypassed ? '1' : '0');
         }
         if (els.riskStatus) {
             const channelEnabled = Array.from(channelRiskOverrideMap().values()).some(v => Number(v) > 0);
@@ -1500,7 +1694,7 @@
             .sort((a, b) => instanceSortKey(a).localeCompare(instanceSortKey(b)));
         if (!els.instanceBody) return;
         if (!rows.length) {
-            els.instanceBody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
+            els.instanceBody.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
             return;
         }
         els.instanceBody.innerHTML = rows.map(row => {
@@ -1510,10 +1704,18 @@
             const actionText = isOn ? 'Stop' : 'Start';
             const pending = normDirection(row.pending_direction);
             const liveAge = livePendingAgeSec(row);
-            const total = row.confirm_seconds != null ? Number(row.confirm_seconds) : null;
+            const stableConfirm = isBackendStableConfirmInstance(row);
+            const total = stableConfirm
+                ? (row.signal_confirm_sec != null ? Number(row.signal_confirm_sec) : (row.confirm_seconds != null ? Number(row.confirm_seconds) : null))
+                : (row.confirm_seconds != null ? Number(row.confirm_seconds) : null);
+            const shownAge = liveAge != null && Number.isFinite(total) && total >= 0 ? Math.min(liveAge, total) : liveAge;
             const pendingText = pending
-                ? `${esc(pending)} ${liveAge != null ? `<span class="small text-muted">${fmtNum(liveAge, 0)}s${Number.isFinite(total) ? `/${fmtNum(total, 0)}s` : ''}</span>` : ''}`
+                ? `${esc(pending)} ${shownAge != null ? `<span class="small text-muted">${fmtNum(shownAge, 0)}s${Number.isFinite(total) ? `/${fmtNum(total, 0)}s` : ''}</span>` : ''}`
                 : '-';
+            const confirmSec = Number.isFinite(total) ? total : 0;
+            const confirmHtml = stableConfirm
+                ? `<input type="number" class="form-control form-control-sm v2-confirm-input" min="0" step="1" data-instance="${esc(row.instance_key || '')}" value="${esc(fmtNum(confirmSec, 0))}" title="Backend stable pending seconds">`
+                : `<span class="v2-mono">${esc(fmtNum(confirmSec, 0))}</span><div class="small text-muted">EA preset</div>`;
             const lastSignal = normDirection(row.last_signal_direction);
             const lastSignalHtml = isDirectional(lastSignal)
                 ? `<div class="small text-muted">last signal: <span class="${lastSignal === 'BUY' ? 'text-success' : 'text-danger'} fw-semibold">${esc(lastSignal)}</span>${row.last_signal_bar_time ? ` ${esc(row.last_signal_bar_time)}` : ''}</div>`
@@ -1530,6 +1732,7 @@
                 <td>${resolvedHtml}</td>
                 <td>${esc(row.confirmed_direction || '-')}</td>
                 <td>${pendingText}</td>
+                <td>${confirmHtml}</td>
                 <td><input type="number" class="form-control form-control-sm v2-lot-input" min="0.01" step="0.01" data-instance="${esc(row.instance_key || '')}" value="${esc(fmtNum(row.lot_size || 0.1, 2))}" title="Lot size"></td>
                 <td><button type="button" class="btn btn-sm ${actionClass} v2-instance-toggle" data-instance="${esc(row.instance_key || '')}" data-enabled="${isOn ? '0' : '1'}">${actionText}</button></td>
             </tr>`;
@@ -1640,7 +1843,8 @@
         renderDualGatePanel();
         renderEntryExitPanel();
         renderOpenTrades();
-        renderInstances();
+        renderSnakeT3CsvTail();
+        if (!shouldDeferInstanceRender()) renderInstances();
         renderLiquidityAudit();
         renderAudit();
     }
@@ -1648,6 +1852,12 @@
     function schedule() {
         if (timer) clearInterval(timer);
         timer = setInterval(() => loadState().catch(showError), 1000);
+        connectSnakeT3CsvStream();
+        if (snakeCsvTimer) clearInterval(snakeCsvTimer);
+        snakeCsvTimer = setInterval(() => {
+            const streamStale = !snakeCsvEventSource || !snakeCsvStreamLastAt || Date.now() - snakeCsvStreamLastAt > 3000;
+            if (streamStale) loadSnakeT3CsvTail().catch(showError);
+        }, 1000);
         if (uiTimer) clearInterval(uiTimer);
         uiTimer = setInterval(() => {
             if (!state) return;
@@ -1655,7 +1865,7 @@
             if (!els.entryExitBody || !els.entryExitBody.contains(document.activeElement)) {
                 renderEntryExitPanel();
             }
-            renderInstances();
+            if (!shouldDeferInstanceRender()) renderInstances();
         }, 1000);
     }
 
@@ -1727,9 +1937,10 @@
         });
         els.instanceBody.addEventListener('change', ev => {
             const input = ev.target.closest('.v2-lot-input');
+            const confirmInput = ev.target.closest('.v2-confirm-input');
             const modeToggle = ev.target.closest('.v2-mode-toggle');
             const policyToggle = ev.target.closest('.v2-policy-toggle');
-            if (!input && !modeToggle && !policyToggle) return;
+            if (!input && !confirmInput && !modeToggle && !policyToggle) return;
             if (modeToggle || policyToggle) {
                 const el = modeToggle || policyToggle;
                 const key = el.getAttribute('data-instance') || '';
@@ -1763,6 +1974,23 @@
                 });
                 return;
             }
+            if (confirmInput) {
+                const key = confirmInput.getAttribute('data-instance') || '';
+                const row = allInstances().find(r => String(r.instance_key || '') === key);
+                const confirmSec = parsePositiveInt(confirmInput.value, null);
+                if (!row || confirmSec == null) {
+                    showError(new Error('Invalid pending seconds'));
+                    renderInstances();
+                    return;
+                }
+                confirmInput.disabled = true;
+                updateInstanceSettings(row, { signal_confirm_sec: confirmSec }).catch(err => {
+                    showError(err);
+                    confirmInput.disabled = false;
+                    renderInstances();
+                });
+                return;
+            }
             const key = input.getAttribute('data-instance') || '';
             const row = allInstances().find(r => String(r.instance_key || '') === key);
             const lot = parseLot(input.value);
@@ -1779,7 +2007,7 @@
             });
         });
         els.instanceBody.addEventListener('keydown', ev => {
-            const input = ev.target.closest('.v2-lot-input');
+            const input = ev.target.closest('.v2-lot-input, .v2-confirm-input');
             if (input && ev.key === 'Enter') input.blur();
         });
     }
@@ -1972,5 +2200,7 @@
     }
     if (els.refresh) els.refresh.addEventListener('click', () => loadState().catch(showError));
     loadState().catch(showError);
+    connectSnakeT3CsvStream();
+    loadSnakeT3CsvTail().catch(showError);
     schedule();
 })();

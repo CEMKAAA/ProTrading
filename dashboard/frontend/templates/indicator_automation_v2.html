@@ -35,6 +35,7 @@
     .v2-state-conflict { color: #dc2626; font-weight: 800; }
     .v2-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .v2-lot-input { width: 86px; }
+    .v2-confirm-input { width: 76px; }
     .v2-risk-input { max-width: 150px; }
     .v2-risk-derived {
         border: 1px dashed #cbd5e1;
@@ -172,7 +173,7 @@
                 <div class="col-md-2 text-md-end">
                     <button id="v2-risk-save" type="button" class="btn btn-sm btn-dark">Save Risk Settings</button>
                     <button id="v2-risk-target-override" type="button" class="btn btn-sm btn-outline-warning mt-2">Allow More Today</button>
-                    <div class="small text-muted mt-2">0 max loss disables default SL. Pair+TF overrides can still enable/disable per channel.</div>
+                    <div class="small text-muted mt-2">Allow More bypasses daily target and daily max-loss for today. 0 max loss disables default SL.</div>
                 </div>
             </div>
             <hr>
@@ -358,6 +359,29 @@
     <div class="card v2-card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
+                <strong>Snake/T3 Live Tape</strong>
+                <div class="small text-muted">Latest 10 raw CSV rows from MT4 Common Files. New seconds push older rows upward.</div>
+            </div>
+            <span class="badge text-bg-light" id="v2-snake-live-updated">waiting</span>
+        </div>
+        <div class="card-body p-0">
+            <div id="v2-snake-csv-file" class="small text-muted px-3 py-2 border-bottom">file: -</div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Server Time</th><th>Bar</th><th>State</th><th>Transition</th><th>Price</th><th>Snake</th><th>T3</th><th>Diff</th><th>ATR / RSI</th>
+                        </tr>
+                    </thead>
+                    <tbody id="v2-snake-live-body"><tr><td colspan="9" class="text-center text-muted py-3">No CSV rows yet.</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card v2-card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
                 <strong>Bridge Instances</strong>
                 <div class="small text-muted">Look for bridge_version=v2, confirmed direction and pending state.</div>
             </div>
@@ -368,10 +392,10 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Last Seen</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>State</th><th>Automation</th><th>Modes</th><th>Resolved</th><th>Confirmed</th><th>Pending</th><th>Lot</th><th>Action</th>
+                            <th>Last Seen</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>State</th><th>Automation</th><th>Modes</th><th>Resolved</th><th>Confirmed</th><th>Pending</th><th>Confirm</th><th>Lot</th><th>Action</th>
                         </tr>
                     </thead>
-                    <tbody id="v2-instance-body"><tr><td colspan="12" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                    <tbody id="v2-instance-body"><tr><td colspan="13" class="text-center text-muted py-3">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>

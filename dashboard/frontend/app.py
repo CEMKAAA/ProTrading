@@ -9,6 +9,9 @@ from datetime import datetime
 import os
 import re
 import json
+import csv
+import io
+import time
 import subprocess
 import sys
 import threading
@@ -306,6 +309,155 @@ def _to_float(v, default):
         return float(v)
     except Exception:
         return default
+
+
+def _to_float_or_none(v):
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if not math_is_finite(f):
+            return None
+        return f
+    except Exception:
+        return None
+
+
+def math_is_finite(v):
+    try:
+        return v == v and v not in (float('inf'), float('-inf'))
+    except Exception:
+        return False
+
+
+def _snake_t3_common_files_dir():
+    appdata = str(os.environ.get('APPDATA') or '').strip()
+    if not appdata:
+        return None
+    path = Path(appdata) / 'MetaQuotes' / 'Terminal' / 'Common' / 'Files'
+    return path if path.exists() and path.is_dir() else None
+
+
+def _snake_t3_csv_pattern(symbol='', timeframe=''):
+    sym = re.sub(r'[^A-Za-z0-9_]+', '*', str(symbol or '').strip())
+    tf = re.sub(r'[^A-Za-z0-9_]+', '*', str(timeframe or '').strip().upper())
+    if sym and tf:
+        return f'snake_t3_ml_stream_{sym}_{tf}*.csv'
+    if sym:
+        return f'snake_t3_ml_stream_{sym}_*.csv'
+    return 'snake_t3_ml_stream_*.csv'
+
+
+def _read_csv_tail_lines(path, max_bytes=131072):
+    size = int(path.stat().st_size)
+    if size <= 0:
+        return '', []
+    with path.open('rb') as fh:
+        header = fh.readline().decode('utf-8-sig', errors='replace').strip('\r\n')
+        if not header:
+            return '', []
+        start = max(0, size - int(max_bytes))
+        fh.seek(start)
+        chunk = fh.read().decode('utf-8-sig', errors='replace')
+    lines = [line for line in chunk.splitlines() if str(line or '').strip()]
+    if start > 0 and lines:
+        lines = lines[1:]
+    if lines and lines[0].strip('\ufeff') == header:
+        lines = lines[1:]
+    return header, lines
+
+
+def _latest_snake_t3_csv(symbol='', timeframe=''):
+    base_dir = _snake_t3_common_files_dir()
+    if base_dir is None:
+        return None, None
+    files = list(base_dir.glob(_snake_t3_csv_pattern(symbol=symbol, timeframe=timeframe)))
+    if not files and (symbol or timeframe):
+        files = list(base_dir.glob('snake_t3_ml_stream_*.csv'))
+    files = [p for p in files if p.is_file()]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return base_dir, (files[0] if files else None)
+
+
+def _snake_t3_csv_tail_payload(symbol='', timeframe='', limit=10):
+    lim = max(1, min(100, _to_int(limit, 10)))
+    base_dir, path = _latest_snake_t3_csv(symbol=symbol, timeframe=timeframe)
+    if base_dir is None:
+        return {'ok': False, 'error': 'mt4_common_files_dir_not_found', 'rows': [], 'count': 0}
+    if path is None:
+        return {
+            'ok': True,
+            'updated_at': datetime.utcnow().isoformat() + 'Z',
+            'directory': str(base_dir),
+            'file': '',
+            'rows': [],
+            'count': 0,
+            'error': 'no_snake_t3_csv_files',
+        }
+    header, tail_lines = _read_csv_tail_lines(path)
+    if not header:
+        return {
+            'ok': True,
+            'updated_at': datetime.utcnow().isoformat() + 'Z',
+            'directory': str(base_dir),
+            'file': str(path),
+            'file_name': path.name,
+            'file_size': int(path.stat().st_size),
+            'file_age_sec': max(0.0, time.time() - float(path.stat().st_mtime)),
+            'rows': [],
+            'count': 0,
+        }
+    candidate_lines = tail_lines[-max(lim * 4, lim):]
+    reader = csv.DictReader(io.StringIO('\n'.join([header] + candidate_lines)))
+    rows = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        server_time = str(row.get('server_time') or '').strip()
+        state = str(row.get('snake_t3_state') or '').strip().upper()
+        if not server_time and not state:
+            continue
+        snake_val = _to_float_or_none(row.get('snake_value'))
+        t3_val = _to_float_or_none(row.get('t3_value'))
+        rows.append({
+            'server_time': server_time,
+            'local_time': str(row.get('local_time') or '').strip(),
+            'symbol': str(row.get('symbol') or '').strip(),
+            'timeframe': str(row.get('timeframe') or '').strip().upper(),
+            'bar_time': str(row.get('bar_time') or '').strip(),
+            'bar_age_sec': _to_float_or_none(row.get('bar_age_sec')),
+            'sample_tick_count': _to_int(row.get('sample_tick_count'), 0),
+            'bid': _to_float_or_none(row.get('bid')),
+            'ask': _to_float_or_none(row.get('ask')),
+            'mid': _to_float_or_none(row.get('mid')),
+            'tick_volume': _to_float_or_none(row.get('tick_volume')),
+            'state': state,
+            'prev_state': str(row.get('prev_snake_t3_state') or '').strip().upper(),
+            'state_changed': str(row.get('state_changed') or '').strip().lower() in {'1', 'true', 'yes', 'on'},
+            'transition': str(row.get('state_transition') or '').strip(),
+            'state_entry_time': str(row.get('state_entry_time') or '').strip(),
+            'state_entry_price': _to_float_or_none(row.get('state_entry_price')),
+            'closed_state_pnl_money': _to_float_or_none(row.get('closed_state_pnl_money')),
+            'snake_value': snake_val,
+            't3_value': t3_val,
+            'snake_t3_diff': (snake_val - t3_val if snake_val is not None and t3_val is not None else None),
+            'atr': _to_float_or_none(row.get('atr')),
+            'rsi': _to_float_or_none(row.get('rsi')),
+        })
+    rows = rows[-lim:]
+    stat = path.stat()
+    return {
+        'ok': True,
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+        'directory': str(base_dir),
+        'file': str(path),
+        'file_name': path.name,
+        'file_size': int(stat.st_size),
+        'file_mtime': datetime.utcfromtimestamp(float(stat.st_mtime)).isoformat() + 'Z',
+        'file_age_sec': max(0.0, time.time() - float(stat.st_mtime)),
+        'rows': rows,
+        'count': len(rows),
+    }
 
 
 @app.route('/')
@@ -1520,6 +1672,83 @@ def indicator_bridge_state_proxy():
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge state'}), 500
     return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/snake-t3-live')
+def indicator_bridge_snake_t3_live_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/snake-t3-live',
+        params=params,
+        return_error=True,
+        timeout_sec=3,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load Snake/T3 live state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/snake-t3-csv-tail')
+def indicator_bridge_snake_t3_csv_tail_proxy():
+    payload = _snake_t3_csv_tail_payload(
+        symbol=request.args.get('symbol') or '',
+        timeframe=request.args.get('timeframe') or '',
+        limit=request.args.get('limit') or 10,
+    )
+    status = 200 if payload.get('ok', True) else 500
+    resp = jsonify(payload)
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return resp, status
+
+
+@app.route('/api/indicator-bridge/snake-t3-csv-tail/stream')
+def indicator_bridge_snake_t3_csv_tail_stream_proxy():
+    symbol = request.args.get('symbol') or ''
+    timeframe = request.args.get('timeframe') or ''
+    limit = request.args.get('limit') or 10
+
+    @stream_with_context
+    def event_stream():
+        last_sig = ''
+        yield 'retry: 1000\n\n'
+        while True:
+            try:
+                payload = _snake_t3_csv_tail_payload(symbol=symbol, timeframe=timeframe, limit=limit)
+                rows = payload.get('rows') if isinstance(payload, dict) else []
+                last_row = rows[-1] if rows else {}
+                sig = '|'.join([
+                    str(payload.get('file_name') or ''),
+                    str(payload.get('file_size') or ''),
+                    str(last_row.get('server_time') or ''),
+                    str(last_row.get('local_time') or ''),
+                    str(last_row.get('state') or ''),
+                    str(last_row.get('bid') or ''),
+                    str(last_row.get('snake_value') or ''),
+                    str(last_row.get('t3_value') or ''),
+                ])
+                if sig != last_sig:
+                    last_sig = sig
+                    yield f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
+            except GeneratorExit:
+                return
+            except Exception as exc:
+                payload = {
+                    'ok': False,
+                    'error': f'snake_t3_stream_failed:{type(exc).__name__}:{str(exc)[:180]}',
+                    'updated_at': datetime.utcnow().isoformat() + 'Z',
+                    'rows': [],
+                    'count': 0,
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
+            time.sleep(0.15)
+
+    resp = Response(event_stream(), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 
 
 @app.route('/api/indicator-bridge/instance-automation', methods=['POST'])
@@ -3447,4 +3676,4 @@ if __name__ == '__main__':
     os.makedirs('static/js', exist_ok=True)
 
     # Run the app
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)

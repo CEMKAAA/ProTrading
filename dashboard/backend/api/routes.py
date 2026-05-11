@@ -873,6 +873,38 @@ def indicator_bridge_state(
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.get("/indicator-bridge/snake-t3-live")
+def indicator_bridge_snake_t3_live(limit: int = Query(20, ge=1, le=100)):
+    """Low-latency Snake/T3 bridge state for dashboard polling."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        return svc.get_indicator_bridge_snake_t3_live_state(limit=int(limit))
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_snake_t3_live_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/snake-t3-csv-tail")
+def indicator_bridge_snake_t3_csv_tail(
+    limit: int = Query(10, ge=1, le=100),
+    symbol: str = Query("", max_length=64),
+    timeframe: str = Query("", max_length=16),
+):
+    """Latest rows from the active Snake/T3 ML CSV without reading the whole file."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        return svc.get_indicator_bridge_snake_t3_csv_tail(symbol=str(symbol or ""), timeframe=str(timeframe or ""), limit=int(limit))
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_snake_t3_csv_tail_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.post("/indicator-bridge/risk-settings")
 def indicator_bridge_risk_settings(payload: Dict[str, Any]):
     """Persist global and pair+TF Indicator Automation V2 risk settings."""
@@ -886,10 +918,14 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
         daily_target = p.get("daily_target_usd") if "daily_target_usd" in p else p.get("daily_target")
         daily_max_loss = p.get("daily_max_loss_usd") if "daily_max_loss_usd" in p else p.get("daily_max_loss")
         bypass_target_guard = p.get("daily_target_guard_bypass_today")
+        bypass_max_loss_guard = p.get("daily_max_loss_guard_bypass_today")
+        bypass_daily_guard = p.get("daily_guard_bypass_today")
         channel_risk_overrides = p.get("channel_risk_overrides") if "channel_risk_overrides" in p else None
         target_val = None
         max_loss_val = None
         bypass_val = None
+        bypass_max_loss_val = None
+        bypass_daily_val = None
         if daily_target is not None:
             try:
                 target_val = float(daily_target)
@@ -903,10 +939,18 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
         if bypass_target_guard is not None:
             raw = str(bypass_target_guard).strip().lower()
             bypass_val = bool(bypass_target_guard is True or raw in {"1", "true", "yes", "on"})
+        if bypass_max_loss_guard is not None:
+            raw = str(bypass_max_loss_guard).strip().lower()
+            bypass_max_loss_val = bool(bypass_max_loss_guard is True or raw in {"1", "true", "yes", "on"})
+        if bypass_daily_guard is not None:
+            raw = str(bypass_daily_guard).strip().lower()
+            bypass_daily_val = bool(bypass_daily_guard is True or raw in {"1", "true", "yes", "on"})
         result = svc.update_indicator_bridge_risk_settings(
             daily_target_usd=target_val,
             daily_max_loss_usd=max_loss_val,
             daily_target_guard_bypass_today=bypass_val,
+            daily_max_loss_guard_bypass_today=bypass_max_loss_val,
+            daily_guard_bypass_today=bypass_daily_val,
             channel_risk_overrides=channel_risk_overrides,
         )
         return {

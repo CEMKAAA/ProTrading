@@ -29,6 +29,16 @@ input bool   InpUseCommonFiles = true;   // true = Terminal/Common/Files
 input int    InpFlushEveryRows = 25;
 input bool   InpDebugPrint = true;
 
+input bool   InpSendBridgeEvents = false;
+input string InpBridgeIndicatorName = "SnakeT3State";
+input string InpBridgeEndpoint = "http://127.0.0.1/api/v1/mt4/bridge/signal";
+input string InpBridgeToken = "";
+input string InpSignalProfile = "snake_t3_state";
+input int    InpBridgeResolvedEverySeconds = 1;
+input int    InpBridgeHttpTimeoutMs = 700;
+input bool   InpBridgePrintSuccess = false;
+input bool   InpSendRegistrationOnInit = true;
+
 input int    InpAtrPeriod = 14;
 input int    InpRsiPeriod = 14;
 input int    InpFastMaPeriod = 20;
@@ -55,6 +65,8 @@ string   g_instance_id = "";
 string   g_last_state = "";
 double   g_state_entry_price = 0.0;
 datetime g_state_entry_time = 0;
+datetime g_last_bridge_sent_at = 0;
+string   g_last_bridge_state = "";
 
 string _tf_to_string(int tf)
 {
@@ -187,6 +199,39 @@ string _csv_escape(string s)
    return out;
 }
 
+string _json_escape(string s)
+{
+   string out = s;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   StringReplace(out, "\r", "\\r");
+   StringReplace(out, "\n", "\\n");
+   StringReplace(out, "\t", "\\t");
+   return out;
+}
+
+void _json_add_str(string &json, string key, string value)
+{
+   if(StringLen(json) > 1)
+      json = json + ",";
+   json = json + "\"" + _json_escape(key) + "\":\"" + _json_escape(value) + "\"";
+}
+
+void _json_add_num(string &json, string key, string value)
+{
+   if(StringLen(json) > 1)
+      json = json + ",";
+   if(StringLen(_trim(value)) <= 0)
+      json = json + "\"" + _json_escape(key) + "\":null";
+   else
+      json = json + "\"" + _json_escape(key) + "\":" + value;
+}
+
+string _iso_utc(datetime ts)
+{
+   return TimeToString(ts, TIME_DATE | TIME_SECONDS);
+}
+
 void _csv_add(string &line, string value, bool text_value=false)
 {
    if(StringLen(line) > 0)
@@ -210,6 +255,99 @@ double _snake_value(int shift)
 double _t3_value(int shift)
 {
    return iCustom(NULL, 0, InpT3IndicatorName, InpT3Period, InpT3Price, InpT3Hot, InpT3TimeFrame, InpT3BufferIndex, shift);
+}
+
+bool _bridge_due(string state, datetime now_time)
+{
+   if(!InpSendBridgeEvents)
+      return false;
+   if(g_last_bridge_state != state)
+      return true;
+   int every = InpBridgeResolvedEverySeconds;
+   if(every < 1)
+      every = 1;
+   if(g_last_bridge_sent_at <= 0)
+      return true;
+   return (now_time - g_last_bridge_sent_at) >= every;
+}
+
+bool _bridge_post(string event_type, string state, int shift, datetime bar_time, double snake_val, bool snake_valid, double t3_val, bool t3_valid, double mid)
+{
+   if(!InpSendBridgeEvents)
+      return false;
+
+   datetime now_time = TimeCurrent();
+   if(now_time <= 0)
+      now_time = TimeLocal();
+
+   string indicator_name = _trim(InpBridgeIndicatorName);
+   if(StringLen(indicator_name) <= 0)
+      indicator_name = "SnakeT3State";
+
+   string json = "{";
+   _json_add_str(json, "terminal_family", "mt4");
+   _json_add_str(json, "indicator", indicator_name);
+   _json_add_str(json, "signal_profile", _trim(InpSignalProfile));
+   _json_add_str(json, "symbol", Symbol());
+   _json_add_str(json, "timeframe", _tf_to_string(Period()));
+   _json_add_str(json, "bridge_version", "v2");
+   _json_add_str(json, "ingest_source", "bridge");
+   _json_add_str(json, "bridge_event_type", event_type);
+   _json_add_str(json, "event_ts", _iso_utc(now_time));
+   _json_add_str(json, "event_id", event_type + "|" + state + "|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + indicator_name + "|" + IntegerToString((int)now_time));
+   string signal_hint = (event_type == "register") ? "NONE" : state;
+   _json_add_str(json, "message", "snake_t3_state " + state);
+   _json_add_str(json, "signal_hint", signal_hint);
+   _json_add_str(json, "resolved_signal", state);
+   _json_add_str(json, "last_signal_direction", state);
+   _json_add_str(json, "resolved_signal_bar_time", TimeToString(bar_time, TIME_DATE | TIME_SECONDS));
+   _json_add_num(json, "resolved_signal_bar_unix", IntegerToString((int)bar_time));
+   _json_add_num(json, "resolved_signal_shift", IntegerToString(shift));
+   _json_add_num(json, "resolved_raw_buy", state == "BUY" ? "1" : "0");
+   _json_add_num(json, "resolved_raw_sell", state == "SELL" ? "1" : "0");
+   _json_add_num(json, "signal_value", _num(mid, Digits));
+   _json_add_num(json, "snake_value", _num(snake_val, 10));
+   _json_add_num(json, "t3_value", _num(t3_val, 10));
+   _json_add_num(json, "snake_valid", snake_valid ? "1" : "0");
+   _json_add_num(json, "t3_valid", t3_valid ? "1" : "0");
+   _json_add_str(json, "instance_id", g_instance_id);
+   json = json + "}";
+
+   string headers = "Content-Type: application/json\r\n";
+   if(StringLen(_trim(InpBridgeToken)) > 0)
+      headers = headers + "Authorization: Bearer " + _trim(InpBridgeToken) + "\r\n";
+
+   char data[];
+   char result[];
+   string response_headers = "";
+   StringToCharArray(json, data, 0, StringLen(json), CP_UTF8);
+
+   ResetLastError();
+   int code = WebRequest("POST", _trim(InpBridgeEndpoint), headers, InpBridgeHttpTimeoutMs, data, result, response_headers);
+   string response = CharArrayToString(result, 0, -1, CP_UTF8);
+   if(code < 200 || code >= 300)
+   {
+      if(InpDebugPrint)
+         Print("SnakeT3CsvBridge bridge POST failed code=", code, " err=", GetLastError(), " event=", event_type, " state=", state, " response=", response);
+      return false;
+   }
+   if(InpDebugPrint && InpBridgePrintSuccess)
+      Print("SnakeT3CsvBridge bridge sent ", event_type, " ", state, " response=", response);
+   return true;
+}
+
+void _bridge_maybe_send_state(string state, int shift, datetime bar_time, double snake_val, bool snake_valid, double t3_val, bool t3_valid, double mid)
+{
+   datetime now_time = TimeCurrent();
+   if(now_time <= 0)
+      now_time = TimeLocal();
+   if(!_bridge_due(state, now_time))
+      return;
+   if(_bridge_post("resolved_state", state, shift, bar_time, snake_val, snake_valid, t3_val, t3_valid, mid))
+   {
+      g_last_bridge_sent_at = now_time;
+      g_last_bridge_state = state;
+   }
 }
 
 bool _open_csv()
@@ -475,6 +613,8 @@ void _capture(string source)
       FileFlush(g_file);
       g_rows_since_flush = 0;
    }
+
+   _bridge_maybe_send_state(state, shift, bar_time, snake_val, snake_valid, t3_val, t3_valid, mid);
 }
 
 void _print_startup_probe(string probe_source)
@@ -517,6 +657,23 @@ int OnInit()
    Print("SnakeT3CsvBridge snake=", InpSnakeIndicatorName, "(", InpSnakePeriod, ") buffer=", InpSnakeBufferIndex);
    Print("SnakeT3CsvBridge t3=", InpT3IndicatorName, "(", InpT3Period, ",", InpT3Price, ",", DoubleToString(InpT3Hot, 6), ",", InpT3TimeFrame, ") buffer=", InpT3BufferIndex);
    _print_startup_probe("init");
+
+   if(InpSendBridgeEvents && InpSendRegistrationOnInit)
+   {
+      int shift = InpValueShift;
+      if(shift < 0)
+         shift = 0;
+      datetime bar_time = iTime(NULL, 0, shift);
+      double snake_val = _snake_value(shift);
+      double t3_val = _t3_value(shift);
+      bool snake_valid = _valid_value(snake_val);
+      bool t3_valid = _valid_value(t3_val);
+      string state = _snake_t3_state(snake_val, snake_valid, t3_val, t3_valid);
+      double bid = Bid;
+      double ask = Ask;
+      double mid = (bid + ask) / 2.0;
+      _bridge_post("register", state, shift, bar_time, snake_val, snake_valid, t3_val, t3_valid, mid);
+   }
 
    _capture("init");
    return INIT_SUCCEEDED;
