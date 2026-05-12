@@ -48,6 +48,15 @@ input string InpBridgeToken = "";
 input string InpSignalProfile = "intrepid";
 input int    InpHttpTimeoutMs = 5000;
 input bool   InpDebugPrint = true;
+input bool   InpRequireChartIndicator = false; // Verify the visual indicator is also attached to this chart.
+input string InpChartIndicatorMatch = "";      // Empty = match by InpIndicatorName basename.
+input bool   InpDeleteChartIndicatorOnDeinit = false; // Remove matched visual indicator when this EA is removed.
+input bool   InpApplyTemplateIfChartIndicatorMissing = false; // MT4-safe fallback; template must already exist.
+input string InpChartTemplateIfChartIndicatorMissing = "";
+input int    InpChartIndicatorAuditSeconds = 30; // Periodically verify visual indicator is still attached.
+input int    InpChartTemplateRefreshSeconds = 0; // 0=off; >0 periodic template guard.
+input int    InpChartTemplateRefreshMode = 0; // 0=apply only when missing, 1=force re-apply template on cadence.
+input int    InpChartTemplateApplyMinGapSeconds = 10; // Guard against template reinit loops.
 
 datetime g_lastConfirmedBar = 0;
 int      g_confirmedDir = 0; // 1=BUY, -1=SELL, 0=none
@@ -60,6 +69,8 @@ datetime g_lastFailedSendAt = 0;
 datetime g_lastHeartbeatAt = 0;
 datetime g_lastResolvedStateAt = 0;
 bool     g_initializedState = false;
+datetime g_lastChartIndicatorAuditAt = 0;
+datetime g_lastChartTemplateRefreshAt = 0;
 double   g_iCustomParams[];
 string   g_iCustomParamStrings[];
 int      g_iCustomParamTypes[]; // 0=numeric/bool, 1=string
@@ -70,6 +81,7 @@ double   g_arrowBaseValue = 0.0;
 int      g_arrowResolvedDir = 0;
 datetime g_arrowResolvedBarTime = 0;
 double   g_arrowResolvedValue = 0.0;
+bool     g_chartIndicatorWasPresent = false;
 
 struct PendingBridgeEvent
 {
@@ -136,6 +148,218 @@ string _trim(string s)
    StringTrimLeft(s);
    StringTrimRight(s);
    return s;
+}
+
+string _lower_copy(string s)
+{
+   StringToLower(s);
+   return s;
+}
+
+string _indicator_basename(string name)
+{
+   string s = _trim(name);
+   StringReplace(s, "/", "\\");
+   int last = -1;
+   int len = StringLen(s);
+   for(int i = 0; i < len; i++)
+   {
+      if(StringSubstr(s, i, 1) == "\\")
+         last = i;
+   }
+   if(last >= 0 && last < len - 1)
+      return StringSubstr(s, last + 1);
+   return s;
+}
+
+string _chart_indicator_match_text()
+{
+   string m = _trim(InpChartIndicatorMatch);
+   if(StringLen(m) > 0)
+      return m;
+   return _indicator_basename(InpIndicatorName);
+}
+
+bool _chart_indicator_name_matches(string chartIndicatorName)
+{
+   string hay = _lower_copy(_trim(chartIndicatorName));
+   string needle = _lower_copy(_chart_indicator_match_text());
+   string baseNeedle = _lower_copy(_indicator_basename(InpIndicatorName));
+   if(StringLen(needle) > 0 && StringFind(hay, needle) >= 0)
+      return true;
+   if(StringLen(baseNeedle) > 0 && StringFind(hay, baseNeedle) >= 0)
+      return true;
+   return false;
+}
+
+bool _find_chart_indicator(string &foundName, int &foundWindow)
+{
+   foundName = "";
+   foundWindow = -1;
+
+   int windows = WindowsTotal();
+   if(windows <= 0)
+      windows = 1;
+
+   for(int w = 0; w < windows; w++)
+   {
+      int total = ChartIndicatorsTotal(0, w);
+      for(int i = 0; i < total; i++)
+      {
+         string name = ChartIndicatorName(0, w, i);
+         if(_chart_indicator_name_matches(name))
+         {
+            foundName = name;
+            foundWindow = w;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+string _chart_template_guard_key()
+{
+   string key = StringFormat("PT_SoloBridge_tpl_%I64d_%s", (long)ChartID(), _chart_indicator_match_text());
+   StringReplace(key, " ", "_");
+   StringReplace(key, "\\", "_");
+   StringReplace(key, "/", "_");
+   StringReplace(key, ".", "_");
+   return key;
+}
+
+bool _apply_chart_template_guarded(string reason)
+{
+   string tpl = _trim(InpChartTemplateIfChartIndicatorMissing);
+   if(StringLen(tpl) <= 0)
+      return false;
+
+   int minGap = InpChartTemplateApplyMinGapSeconds;
+   if(minGap < 1)
+      minGap = 1;
+
+   datetime nowTs = TimeLocal();
+   string key = _chart_template_guard_key();
+   if(GlobalVariableCheck(key))
+   {
+      datetime lastApply = (datetime)GlobalVariableGet(key);
+      if(lastApply > 0 && nowTs > 0 && (nowTs - lastApply) < minGap)
+      {
+         if(InpDebugPrint)
+            Print("MT4Bridge chart template apply skipped by guard: template=", tpl,
+                  " reason=", reason,
+                  " remaining_sec=", IntegerToString(minGap - (int)(nowTs - lastApply)));
+         return false;
+      }
+   }
+
+   GlobalVariableSet(key, nowTs);
+   bool ok = ChartApplyTemplate(0, tpl);
+   Print("MT4Bridge chart template apply requested: template=", tpl,
+         " reason=", reason,
+         " result=", (ok ? "true" : "false"),
+         " | warning: MT4 template application can reinitialize/remove chart objects/EAs.");
+   return ok;
+}
+
+void _ensure_chart_indicator_on_chart()
+{
+   if(!InpRequireChartIndicator && !InpDeleteChartIndicatorOnDeinit)
+      return;
+
+   string found = "";
+   int foundWindow = -1;
+   g_chartIndicatorWasPresent = _find_chart_indicator(found, foundWindow);
+   if(g_chartIndicatorWasPresent)
+   {
+      if(InpDebugPrint)
+         Print("MT4Bridge chart indicator found: match=", _chart_indicator_match_text(),
+               " name=", found, " window=", IntegerToString(foundWindow));
+      return;
+   }
+
+   if(InpRequireChartIndicator)
+   {
+      Print("MT4Bridge chart indicator missing: match=", _chart_indicator_match_text(),
+            " chart=", Symbol(), " ", _tf_to_string(Period()),
+            " | iCustom will still be probed, but attach the visual indicator too if this indicator requires chart state.");
+   }
+
+   if(InpApplyTemplateIfChartIndicatorMissing)
+      _apply_chart_template_guarded("missing_on_init");
+}
+
+void _chart_indicator_periodic_guard()
+{
+   if(!InpRequireChartIndicator && !InpApplyTemplateIfChartIndicatorMissing)
+      return;
+
+   datetime nowTs = TimeLocal();
+   if(nowTs <= 0)
+      return;
+
+   int auditSec = InpChartIndicatorAuditSeconds;
+   if(auditSec < 1)
+      auditSec = 1;
+
+   bool auditDue = (g_lastChartIndicatorAuditAt <= 0 || (nowTs - g_lastChartIndicatorAuditAt) >= auditSec);
+   bool refreshDue = false;
+   int refreshSec = InpChartTemplateRefreshSeconds;
+   if(refreshSec > 0)
+      refreshDue = (g_lastChartTemplateRefreshAt <= 0 || (nowTs - g_lastChartTemplateRefreshAt) >= refreshSec);
+
+   if(!auditDue && !refreshDue)
+      return;
+
+   string found = "";
+   int foundWindow = -1;
+   bool present = _find_chart_indicator(found, foundWindow);
+   if(auditDue)
+   {
+      g_lastChartIndicatorAuditAt = nowTs;
+      if(InpDebugPrint)
+      {
+         if(present)
+            Print("MT4Bridge chart indicator audit ok: match=", _chart_indicator_match_text(),
+                  " name=", found,
+                  " window=", IntegerToString(foundWindow));
+         else
+            Print("MT4Bridge chart indicator audit missing: match=", _chart_indicator_match_text(),
+                  " chart=", Symbol(), " ", _tf_to_string(Period()));
+      }
+   }
+
+   if(refreshDue)
+   {
+      g_lastChartTemplateRefreshAt = nowTs;
+      if(InpChartTemplateRefreshMode == 1)
+      {
+         _apply_chart_template_guarded("periodic_force_refresh");
+         return;
+      }
+      if(!present && InpApplyTemplateIfChartIndicatorMissing)
+         _apply_chart_template_guarded("periodic_missing_refresh");
+   }
+}
+
+void _delete_chart_indicator_on_deinit()
+{
+   if(!InpDeleteChartIndicatorOnDeinit)
+      return;
+
+   string found = "";
+   int foundWindow = -1;
+   if(!_find_chart_indicator(found, foundWindow))
+   {
+      if(InpDebugPrint)
+         Print("MT4Bridge chart indicator cleanup skipped: not found match=", _chart_indicator_match_text());
+      return;
+   }
+
+   bool ok = ChartIndicatorDelete(0, foundWindow, found);
+   Print("MT4Bridge chart indicator cleanup: name=", found,
+         " window=", IntegerToString(foundWindow),
+         " result=", (ok ? "true" : "false"));
 }
 
 string _normalize_base_url(string baseUrl)
@@ -1230,6 +1454,8 @@ int OnInit()
    if(!_parse_iCustom_params())
       return(INIT_PARAMETERS_INCORRECT);
 
+   _ensure_chart_indicator_on_chart();
+
    string endpointPrimary = _build_endpoint(InpApiBaseUrl, InpApiPath);
    string reason = "";
    if(!_is_supported_webrequest_endpoint(endpointPrimary, reason))
@@ -1275,6 +1501,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   _delete_chart_indicator_on_deinit();
 }
 
 void OnTick()
@@ -1288,6 +1515,8 @@ void OnTick()
 
 void OnTimer()
 {
+   _chart_indicator_periodic_guard();
+
    if(InpResolvedStateSeconds > 0)
    {
       datetime nowResolvedTs = TimeCurrent();

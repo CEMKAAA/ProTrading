@@ -1700,6 +1700,8 @@ def indicator_bridge_snake_t3_csv_tail_proxy():
         params['timeframe'] = request.args.get('timeframe') or ''
     if request.args.get('limit') is not None:
         params['limit'] = request.args.get('limit') or 10
+    if request.args.get('ingest') is not None:
+        params['ingest'] = request.args.get('ingest')
     payload, err = api_request(
         'GET',
         '/api/v1/indicator-bridge/snake-t3-csv-tail',
@@ -1727,7 +1729,7 @@ def indicator_bridge_snake_t3_csv_tail_stream_proxy():
         yield 'retry: 1000\n\n'
         while True:
             try:
-                params = {'symbol': symbol, 'timeframe': timeframe, 'limit': limit}
+                params = {'symbol': symbol, 'timeframe': timeframe, 'limit': limit, 'ingest': '0'}
                 payload, err = api_request(
                     'GET',
                     '/api/v1/indicator-bridge/snake-t3-csv-tail',
@@ -1737,18 +1739,37 @@ def indicator_bridge_snake_t3_csv_tail_stream_proxy():
                 )
                 if not payload:
                     payload = {'ok': False, 'error': err or 'Failed to load Snake/T3 backend tape', 'rows': [], 'count': 0}
-                rows = payload.get('rows') if isinstance(payload, dict) else []
-                last_row = rows[-1] if rows else {}
-                sig = '|'.join([
-                    str(payload.get('source') or ''),
-                    str(last_row.get('row_sig') or ''),
-                    str(last_row.get('server_time') or ''),
-                    str(last_row.get('local_time') or ''),
-                    str(last_row.get('state') or ''),
-                    str(last_row.get('bid') or ''),
-                    str(last_row.get('snake_value') or ''),
-                    str(last_row.get('t3_value') or ''),
-                ])
+                streams = payload.get('streams') if isinstance(payload, dict) else []
+                sig_parts = [str(payload.get('source') or '')]
+                if isinstance(streams, list) and streams:
+                    for stream in streams:
+                        if not isinstance(stream, dict):
+                            continue
+                        srows = stream.get('rows') if isinstance(stream.get('rows'), list) else []
+                        last_row = srows[-1] if srows else {}
+                        sig_parts.append('|'.join([
+                            str(stream.get('key') or ''),
+                            str(last_row.get('row_sig') or ''),
+                            str(last_row.get('server_time') or ''),
+                            str(last_row.get('local_time') or ''),
+                            str(last_row.get('state') or ''),
+                            str(last_row.get('bid') or ''),
+                            str(last_row.get('snake_value') or ''),
+                            str(last_row.get('t3_value') or ''),
+                        ]))
+                else:
+                    rows = payload.get('rows') if isinstance(payload, dict) else []
+                    last_row = rows[-1] if rows else {}
+                    sig_parts.append('|'.join([
+                        str(last_row.get('row_sig') or ''),
+                        str(last_row.get('server_time') or ''),
+                        str(last_row.get('local_time') or ''),
+                        str(last_row.get('state') or ''),
+                        str(last_row.get('bid') or ''),
+                        str(last_row.get('snake_value') or ''),
+                        str(last_row.get('t3_value') or ''),
+                    ]))
+                sig = '||'.join(sig_parts)
                 if sig != last_sig:
                     last_sig = sig
                     yield f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
@@ -1763,7 +1784,7 @@ def indicator_bridge_snake_t3_csv_tail_stream_proxy():
                     'count': 0,
                 }
                 yield f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
-            time.sleep(0.15)
+            time.sleep(1.0)
 
     resp = Response(event_stream(), mimetype='text/event-stream')
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -1873,6 +1894,21 @@ def indicator_bridge_open_trade_sl_be_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to move indicator bridge trade SL to BE'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/open-trade/live-pnl', methods=['POST'])
+def indicator_bridge_open_trade_live_pnl_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/open-trade/live-pnl',
+        data=payload,
+        return_error=True,
+        timeout_sec=5,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load live open trade PnL', 'rows': [], 'count': 0}), 500
     return jsonify(res)
 
 

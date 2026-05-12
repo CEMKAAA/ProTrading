@@ -434,6 +434,7 @@ class TelegramBridgeService:
         self._indicator_snake_t3_csv_seen: Dict[str, float] = {}
         self._indicator_snake_t3_csv_cursor: Dict[str, str] = {}
         self._indicator_snake_t3_csv_tape: List[Dict[str, Any]] = []
+        self._indicator_snake_t3_csv_tapes: Dict[str, List[Dict[str, Any]]] = {}
         self._restore_pending_entry_signals()
 
     @staticmethod
@@ -2279,6 +2280,78 @@ class TelegramBridgeService:
                 }
         return dict(stats or {})
 
+    def _resolve_position_realized_stats_after_close(
+        self,
+        *,
+        svc: LiveTradingService,
+        ticket: int,
+        symbol: Optional[str] = None,
+        close_result: Optional[Dict[str, Any]] = None,
+        attempts: int = 8,
+        delay_sec: float = 0.20,
+    ) -> Dict[str, Any]:
+        """Resolve broker-history PnL after a close, tolerating MT5 history lag.
+
+        MT5 often exposes the close deal a few hundred milliseconds after
+        order_send succeeds. Without this retry, close audit rows can be stored
+        with missing PnL and the frontend may look like it closed at 0.00.
+        """
+        t = int(_to_float_or_none(ticket) or 0)
+        max_attempts = int(max(1, min(20, int(attempts or 1))))
+        last_stats: Dict[str, Any] = {}
+        for attempt in range(max_attempts):
+            stats = self._resolve_position_realized_stats(
+                svc=svc,
+                ticket=int(t),
+                symbol=(str(symbol or "").strip() or None),
+            )
+            last_stats = dict(stats or {})
+            if int(_to_float_or_none((stats or {}).get("close_count")) or 0) > 0:
+                last_stats["pnl_resolution"] = "history" if attempt <= 0 else f"history_retry_{int(attempt)}"
+                return dict(last_stats)
+            if attempt < max_attempts - 1:
+                try:
+                    time.sleep(float(max(0.0, min(1.0, float(delay_sec or 0.0)))))
+                except Exception:
+                    pass
+
+        out = dict(close_result or {}) if isinstance(close_result, dict) else {}
+        fallback = _to_float_or_none(out.get("pre_close_profit"))
+        if fallback is not None:
+            last_stats = dict(last_stats or {})
+            last_stats["realized_pnl"] = float(fallback)
+            last_stats["close_count"] = int(_to_float_or_none(last_stats.get("close_count")) or 0)
+            last_stats["last_close_order"] = int(_to_float_or_none(out.get("order")) or 0) or last_stats.get("last_close_order")
+            last_stats["last_close_deal"] = int(_to_float_or_none(out.get("deal")) or 0) or last_stats.get("last_close_deal")
+            last_stats["last_close_comment"] = str(out.get("comment") or "").strip() or last_stats.get("last_close_comment")
+            last_stats["last_close_price"] = _to_float_or_none(out.get("price")) or _to_float_or_none(last_stats.get("last_close_price"))
+            last_stats["pnl_resolution"] = "pre_close_snapshot"
+            return dict(last_stats)
+
+        last_stats = dict(last_stats or {})
+        last_stats.setdefault("realized_pnl", None)
+        last_stats.setdefault("close_count", 0)
+        last_stats["pnl_resolution"] = "missing_history"
+        return dict(last_stats)
+
+    def _closed_audit_fields_from_pnl_stats(self, stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        s = dict(stats or {})
+        return {
+            "realized_pnl": _to_float_or_none(s.get("realized_pnl")),
+            "order_number": int(_to_float_or_none(s.get("last_close_order")) or 0) or None,
+            "deal_number": int(_to_float_or_none(s.get("last_close_deal")) or 0) or None,
+            "broker_comment": str(s.get("last_close_comment") or "").strip() or None,
+            "close_price": _to_float_or_none(s.get("last_close_price")),
+        }
+
+    def _closed_audit_stage_payload_from_pnl_stats(self, stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        s = dict(stats or {})
+        close_count = int(_to_float_or_none(s.get("close_count")) or 0)
+        return {
+            "pnl_resolution": str(s.get("pnl_resolution") or ("history" if close_count > 0 else "missing_history")),
+            "history_close_count": int(close_count),
+        }
+
     def _resolve_position_partial_realized_stats(
         self,
         *,
@@ -2428,6 +2501,7 @@ class TelegramBridgeService:
         reason: str,
         svc: Optional[LiveTradingService] = None,
         event_ts: Optional[Any] = None,
+        close_result: Optional[Dict[str, Any]] = None,
     ) -> None:
         meta = dict(row or {})
         ticket = int(_to_float_or_none(meta.get("broker_ticket")) or 0)
@@ -2464,11 +2538,14 @@ class TelegramBridgeService:
                     meta["tps"] = list(open_reconcile.get("tps") or [])
             if not str(meta.get("created_at") or "").strip() and str(open_reconcile.get("created_at") or "").strip():
                 meta["created_at"] = str(open_reconcile.get("created_at") or "")
-        pnl_stats = self._resolve_position_realized_stats(
+        pnl_stats = self._resolve_position_realized_stats_after_close(
             svc=service,
             ticket=int(ticket),
             symbol=symbol,
+            close_result=(dict(close_result) if isinstance(close_result, dict) else None),
         )
+        pnl_fields = self._closed_audit_fields_from_pnl_stats(pnl_stats)
+        pnl_stage_payload = self._closed_audit_stage_payload_from_pnl_stats(pnl_stats)
         max_profit = _to_float_or_none(meta.get("max_profit"))
         max_loss = _to_float_or_none(meta.get("max_loss"))
         stage_lots = meta.get("stage_lots") if isinstance(meta.get("stage_lots"), list) else []
@@ -2500,17 +2577,17 @@ class TelegramBridgeService:
             indicator=str(meta.get("indicator") or "").strip(),
             source_tag=str(meta.get("source_tag") or "").strip().lower(),
             event_ts=(event_ts if event_ts is not None else pnl_stats.get("last_close_ts")),
-            realized_pnl=_to_float_or_none(pnl_stats.get("realized_pnl")),
+            realized_pnl=_to_float_or_none(pnl_fields.get("realized_pnl")),
             max_profit=max_profit,
             max_loss=max_loss,
             close_reason=str(reason or "").strip() or "closed",
             opened_at=str(meta.get("created_at") or "").strip() or None,
             combo_key=str(combo_key),
             execution_mode=str(meta.get("execution_mode") or "").strip().lower() or None,
-            order_number=(int(_to_float_or_none(pnl_stats.get("last_close_order")) or 0) or None),
-            deal_number=(int(_to_float_or_none(pnl_stats.get("last_close_deal")) or 0) or None),
-            broker_comment=str(pnl_stats.get("last_close_comment") or "").strip() or None,
-            close_price=_to_float_or_none(pnl_stats.get("last_close_price")),
+            order_number=pnl_fields.get("order_number"),
+            deal_number=pnl_fields.get("deal_number"),
+            broker_comment=pnl_fields.get("broker_comment"),
+            close_price=_to_float_or_none(pnl_fields.get("close_price")),
             trace_id=str(meta.get("trace_id") or "").strip() or None,
             stage="position_close",
             stage_status="closed",
@@ -2519,8 +2596,7 @@ class TelegramBridgeService:
                 "open_log_id": int(open_meta.get("row_id") or 0) or None,
                 "open_source_name": str(open_meta.get("source_name") or "").strip() or None,
                 "open_execution_mode": str(open_meta.get("execution_mode") or "").strip() or None,
-                "pnl_resolution": ("history" if int(_to_float_or_none((pnl_stats or {}).get("close_count")) or 0) > 0 else "missing_history"),
-                "history_close_count": int(_to_float_or_none((pnl_stats or {}).get("close_count")) or 0),
+                **pnl_stage_payload,
             },
             error_code=str(reason or "").strip().lower() or None,
         )
@@ -6989,6 +7065,7 @@ class TelegramBridgeService:
         *,
         limit: int = 500,
         resolve_history_pnl: bool = True,
+        history_resolve_limit: int = 120,
         evaluate_shadow: bool = True,
         since_utc: Optional[datetime] = None,
     ) -> Dict[str, Any]:
@@ -7195,7 +7272,7 @@ class TelegramBridgeService:
         # Resolve enough visible rows for morning audits without turning the
         # table into an unbounded MT5 history scanner. Results, including
         # misses, are cached per ticket for a short period.
-        lazy_pnl_resolve_max = int(min(500, max(120, len(out_rows))))
+        lazy_pnl_resolve_max = int(min(max(0, int(history_resolve_limit or 0)), max(0, len(out_rows))))
         lazy_svc = None
         if not bool(resolve_history_pnl):
             return {
@@ -7407,7 +7484,8 @@ class TelegramBridgeService:
         audit_since_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         execution_logs = self.get_indicator_execution_audit_rows(
             limit=max(1000, min(5000, lim * 5)),
-            resolve_history_pnl=False,
+            resolve_history_pnl=True,
+            history_resolve_limit=40,
             since_utc=audit_since_utc,
         )
         _mark("audit_logs")
@@ -7600,17 +7678,23 @@ class TelegramBridgeService:
         symbol: Any = "",
         timeframe: Any = "",
         limit: int = 10,
+        ingest: bool = True,
     ) -> Dict[str, Any]:
         """Return the same Snake/T3 rows consumed by the automation engine."""
         lim = int(max(1, min(100, int(limit or 10))))
-        try:
-            self._ingest_snake_t3_csv_tail_for_automation(max_files=12, tail_rows=12)
-        except Exception:
-            logger.exception("snake_t3_csv_tail_ingest_failed")
+        if bool(ingest):
+            try:
+                self._ingest_snake_t3_csv_tail_for_automation(max_files=12, tail_rows=12)
+            except Exception:
+                logger.exception("snake_t3_csv_tail_ingest_failed")
         sym_filter = str(symbol or "").strip().upper()
         tf_filter = str(timeframe or "").strip().upper()
         with self._lock:
             rows_all = [dict(r) for r in (self._indicator_snake_t3_csv_tape or []) if isinstance(r, dict)]
+            grouped_all = {
+                str(k): [dict(r) for r in (v or []) if isinstance(r, dict)]
+                for k, v in (getattr(self, "_indicator_snake_t3_csv_tapes", {}) or {}).items()
+            }
         rows = []
         for row in rows_all:
             if sym_filter and str((row or {}).get("symbol") or "").strip().upper() != sym_filter:
@@ -7619,6 +7703,41 @@ class TelegramBridgeService:
                 continue
             rows.append(dict(row))
         rows = rows[-lim:]
+        streams: List[Dict[str, Any]] = []
+        for tape_key, tape_rows in grouped_all.items():
+            filtered_rows = []
+            for row in tape_rows:
+                if sym_filter and str((row or {}).get("symbol") or "").strip().upper() != sym_filter:
+                    continue
+                if tf_filter and str((row or {}).get("timeframe") or "").strip().upper() != tf_filter:
+                    continue
+                filtered_rows.append(dict(row))
+            filtered_rows = filtered_rows[-lim:]
+            if not filtered_rows:
+                continue
+            latest_stream_row = dict(filtered_rows[-1])
+            streams.append(
+                {
+                    "key": tape_key,
+                    "symbol": str(latest_stream_row.get("symbol") or ""),
+                    "timeframe": str(latest_stream_row.get("timeframe") or ""),
+                    "terminal_family": str(latest_stream_row.get("terminal_family") or "MT4"),
+                    "csv_file": str(latest_stream_row.get("csv_file") or ""),
+                    "csv_file_name": str(latest_stream_row.get("csv_file_name") or ""),
+                    "last_server_time": str(latest_stream_row.get("server_time") or ""),
+                    "last_local_time": str(latest_stream_row.get("local_time") or ""),
+                    "last_state": str(latest_stream_row.get("state") or ""),
+                    "rows": filtered_rows,
+                    "count": int(len(filtered_rows)),
+                }
+            )
+        def _stream_sort_key(stream: Dict[str, Any]) -> Tuple[str, str, str]:
+            return (
+                str(stream.get("symbol") or "").upper(),
+                str(stream.get("timeframe") or "").upper(),
+                str(stream.get("key") or "").upper(),
+            )
+        streams.sort(key=_stream_sort_key)
         latest = dict(rows[-1]) if rows else {}
         file_path = str(latest.get("csv_file") or "")
         file_age = None
@@ -7646,6 +7765,8 @@ class TelegramBridgeService:
                 "file_age_sec": file_age,
                 "rows": rows,
                 "count": int(len(rows)),
+                "streams": streams,
+                "stream_count": int(len(streams)),
             }
 
         # Fallback only for bootstrapping before the first automation ingest.
@@ -7727,6 +7848,19 @@ class TelegramBridgeService:
                 "file_age_sec": max(0.0, float(time.time()) - last_write_ts),
                 "rows": rows,
                 "count": int(len(rows)),
+                "streams": [
+                    {
+                        "key": str(path.name),
+                        "symbol": str(rows[-1].get("symbol") or "") if rows else "",
+                        "timeframe": str(rows[-1].get("timeframe") or "") if rows else "",
+                        "terminal_family": "MT4",
+                        "csv_file": str(path),
+                        "csv_file_name": str(path.name),
+                        "rows": rows,
+                        "count": int(len(rows)),
+                    }
+                ] if rows else [],
+                "stream_count": 1 if rows else 0,
             }
         except Exception as exc:
             logger.exception("snake_t3_csv_tail_failed path=%s", path)
@@ -7771,7 +7905,6 @@ class TelegramBridgeService:
             max_file_age_sec = 5.0
         max_file_age_sec = float(max(1.0, min(300.0, float(max_file_age_sec))))
         selected: List[Tuple[str, str, Path]] = []
-        seen_pairs: set[Tuple[str, str]] = set()
         for path in files[: max(1, min(50, int(max_files or 8))) * 4]:
             try:
                 if (now_ts - float(path.stat().st_mtime)) > max_file_age_sec:
@@ -7788,10 +7921,6 @@ class TelegramBridgeService:
                 tf = str(last.get("timeframe") or "").strip().upper()
                 if not sym or not tf:
                     continue
-                pair = (sym, tf)
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
                 selected.append((sym, tf, path))
                 if len(selected) >= max(1, min(20, int(max_files or 8))):
                     break
@@ -7844,6 +7973,12 @@ class TelegramBridgeService:
                     else:
                         # First observation after backend start/restart is a
                         # baseline snapshot; do not replay old tail history.
+                        rows = rows[-1:]
+                    # Execution must be driven only by the freshest CSV sample.
+                    # Backlog rows are useful for tape/audit, but letting an old
+                    # BUY/SELL sample pass the stability gate can open the wrong
+                    # side after a fast transition.
+                    if rows:
                         rows = rows[-1:]
             except Exception:
                 logger.exception("snake_t3_csv_automation_read_failed path=%s", path)
@@ -7913,6 +8048,9 @@ class TelegramBridgeService:
                     "signal_hint": state,
                     "resolved_signal": state,
                     "last_signal_direction": state,
+                    "csv_tail_latest_only": True,
+                    "csv_tail_latest_state": state,
+                    "csv_tail_latest_sig": str(sig),
                     "resolved_signal_bar_time": state_entry_time or bar_time,
                     "resolved_signal_shift": _to_float_or_none(row.get("shift")),
                     "resolved_raw_buy": 1 if state == "BUY" else 0,
@@ -7933,6 +8071,8 @@ class TelegramBridgeService:
                         snake_val = _to_float_or_none(row.get("snake_value"))
                         t3_val = _to_float_or_none(row.get("t3_value"))
                         tape_row = {
+                            "tape_key": str(path.name),
+                            "terminal_family": "MT4",
                             "server_time": server_time,
                             "local_time": local_time,
                             "symbol": row_sym,
@@ -7956,6 +8096,26 @@ class TelegramBridgeService:
                             "snake_t3_diff": (float(snake_val) - float(t3_val) if snake_val is not None and t3_val is not None else None),
                             "atr": _to_float_or_none(row.get("atr")),
                             "rsi": _to_float_or_none(row.get("rsi")),
+                            "spread_atr_ratio": _to_float_or_none(row.get("feature_spread_atr_ratio")),
+                            "range_atr_ratio": _to_float_or_none(row.get("feature_range_atr_ratio")),
+                            "body_range_ratio": _to_float_or_none(row.get("feature_body_range_ratio")),
+                            "wick_imbalance_ratio": _to_float_or_none(row.get("feature_wick_imbalance_ratio")),
+                            "close_pos_in_bar": _to_float_or_none(row.get("feature_close_pos_in_bar")),
+                            "adx": _to_float_or_none(row.get("adx")),
+                            "di_spread": _to_float_or_none(row.get("feature_di_spread")),
+                            "macd_hist": _to_float_or_none(row.get("macd_hist")),
+                            "macd_hist_slope": _to_float_or_none(row.get("feature_macd_hist_slope")),
+                            "stoch_spread": _to_float_or_none(row.get("feature_stoch_spread")),
+                            "ema_spread_atr": _to_float_or_none(row.get("feature_ema_spread_atr")),
+                            "rsi_slope": _to_float_or_none(row.get("feature_rsi_slope")),
+                            "rsi_distance_50": _to_float_or_none(row.get("feature_rsi_distance_50")),
+                            "snake_t3_diff_atr": _to_float_or_none(row.get("feature_snake_t3_diff_atr")),
+                            "snake_t3_diff_slope_atr": _to_float_or_none(row.get("feature_snake_t3_diff_slope_atr")),
+                            "seconds_since_state_change": _to_float_or_none(row.get("feature_seconds_since_state_change")),
+                            "volume_ratio_fast": _to_float_or_none(row.get("feature_volume_ratio_fast")),
+                            "direction_changes_fast": _to_float_or_none(row.get("feature_direction_changes_fast")),
+                            "return_std_fast": _to_float_or_none(row.get("feature_return_std_fast")),
+                            "rolling_range_atr_fast": _to_float_or_none(row.get("feature_rolling_range_atr_fast")),
                             "csv_file": str(path),
                             "csv_file_name": str(path.name),
                             "row_sig": str(sig),
@@ -7964,12 +8124,73 @@ class TelegramBridgeService:
                         self._indicator_snake_t3_csv_tape.append(dict(tape_row))
                         if len(self._indicator_snake_t3_csv_tape) > 1000:
                             self._indicator_snake_t3_csv_tape = self._indicator_snake_t3_csv_tape[-1000:]
+                        tape_key = str(path.name)
+                        tape_rows = list(self._indicator_snake_t3_csv_tapes.get(tape_key) or [])
+                        tape_rows.append(dict(tape_row))
+                        self._indicator_snake_t3_csv_tapes[tape_key] = tape_rows[-200:]
                     processed += 1
                 except Exception:
                     with self._lock:
                         self._indicator_snake_t3_csv_seen.pop(str(sig), None)
                     logger.exception("snake_t3_csv_automation_ingest_failed file=%s state=%s", path, state)
         return {"ok": True, "processed": int(processed), "attempted": int(attempted), "files": int(len(selected))}
+
+    def get_indicator_bridge_open_trade_live_pnl(self, *, tickets: Optional[List[Any]] = None) -> Dict[str, Any]:
+        """Fast ticket -> live PnL snapshot for the dashboard open-trades table.
+
+        This intentionally avoids the full indicator state pipeline. The normal
+        state endpoint still owns reconciliation/audit; this only patches live
+        unrealized PnL so the UI does not lag behind broker prices.
+        """
+        started = time.perf_counter()
+        snapshot_ts = time.time()
+        wanted: set[int] = set()
+        for raw in list(tickets or []):
+            ticket = int(_to_float_or_none(raw) or 0)
+            if ticket > 0:
+                wanted.add(int(ticket))
+        svc = self._get_live_service()
+        try:
+            positions = svc.get_open_positions(symbol=None)
+        except Exception as exc:
+            logger.exception("indicator_bridge_open_trade_live_pnl_failed")
+            return {"ok": False, "error": f"{type(exc).__name__}:{str(exc)[:180]}", "rows": [], "count": 0}
+        rows: List[Dict[str, Any]] = []
+        for pos in positions or []:
+            if not isinstance(pos, dict):
+                continue
+            ticket = int(_to_float_or_none(pos.get("ticket")) or 0)
+            if ticket <= 0:
+                continue
+            if wanted and ticket not in wanted:
+                continue
+            rows.append(
+                {
+                    "ticket": int(ticket),
+                    "symbol": str(pos.get("symbol") or "").strip().upper(),
+                    "direction": str(pos.get("direction") or "").strip().upper(),
+                    "current_profit": _to_float_or_none(pos.get("profit_loss")),
+                    "current_price": _to_float_or_none(pos.get("current_price")),
+                    "entry_price": _to_float_or_none(pos.get("entry_price")),
+                    "lot_size": _to_float_or_none(pos.get("lot_size")),
+                    "stop_loss": _to_float_or_none(pos.get("stop_loss")),
+                    "take_profit": _to_float_or_none(pos.get("take_profit")),
+                    "comment": str(pos.get("comment") or ""),
+                    "snapshot_ts": float(snapshot_ts),
+                }
+            )
+        found = {int(_to_float_or_none((row or {}).get("ticket")) or 0) for row in rows}
+        missing = sorted(int(t) for t in wanted if int(t) > 0 and int(t) not in found)
+        return {
+            "ok": True,
+            "updated_at": self._now_iso(),
+            "snapshot_ts": float(snapshot_ts),
+            "latency_ms": round(float(max(0.0, time.perf_counter() - started) * 1000.0), 2),
+            "rows": rows,
+            "count": int(len(rows)),
+            "missing_tickets": missing,
+            "missing_count": int(len(missing)),
+        }
 
     @staticmethod
     def _mt4_exec_profile_atr_period(profile: str) -> int:
@@ -9997,6 +10218,53 @@ class TelegramBridgeService:
             )
             return any(n in txt for n in needles)
 
+        def _append_reverse_closed_audit(
+            *,
+            ticket: int,
+            source_name: str,
+            message: str,
+            tag: str,
+            close_out: Optional[Dict[str, Any]] = None,
+            attempts: int = 8,
+        ) -> None:
+            pnl_stats = self._resolve_position_realized_stats_after_close(
+                svc=svc,
+                ticket=int(ticket),
+                symbol=str(sym),
+                close_result=(dict(close_out) if isinstance(close_out, dict) else None),
+                attempts=int(attempts),
+            )
+            pnl_fields = self._closed_audit_fields_from_pnl_stats(pnl_stats)
+            stage_payload = self._closed_audit_stage_payload_from_pnl_stats(pnl_stats)
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name=str(source_name or "mt4_reverse_close_orphan"),
+                trigger="reverse_signal",
+                status="closed",
+                symbol=str(sym),
+                timeframe=str(tf or ""),
+                direction=str(opposite),
+                ticket=int(ticket),
+                message=str(message),
+                source_tag=str(tag),
+                combo_key=self._build_execution_combo_key(
+                    source_type="mt_indicator",
+                    source_name=str(source_name or "mt4_reverse_close_orphan"),
+                    indicator="",
+                    symbol=str(sym),
+                    timeframe=str(tf or ""),
+                ),
+                close_reason=str(message),
+                stage="position_close",
+                stage_status="closed",
+                stage_payload={
+                    **stage_payload,
+                    "reverse_close_direct_audit": True,
+                    "close_result_retcode": (int(_to_float_or_none((close_out or {}).get("retcode")) or 0) or None) if isinstance(close_out, dict) else None,
+                },
+                **pnl_fields,
+            )
+
         for key, row in ladders.items():
             row_sym = str((row or {}).get("symbol") or "").strip().upper()
             row_dir = str((row or {}).get("direction") or "").strip().upper()
@@ -10023,6 +10291,7 @@ class TelegramBridgeService:
                     row=dict(row),
                     reason=str(reason_txt),
                     svc=svc,
+                    close_result=out,
                 )
                 remove_keys.append(str(key))
             else:
@@ -10062,24 +10331,12 @@ class TelegramBridgeService:
                     if bool((out or {}).get("ok")):
                         closed_count += 1
                         closed_tickets.add(int(ticket))
-                        self._append_automation_execution_log(
-                            source_type="mt_indicator",
-                            source_name="mt4_reverse_close_orphan",
-                            trigger="reverse_signal",
-                            status="closed",
-                            symbol=str(sym),
-                            timeframe=str(tf or ""),
-                            direction=str(opposite),
+                        _append_reverse_closed_audit(
                             ticket=int(ticket),
+                            source_name="mt4_reverse_close_orphan",
                             message=f"{str(reason_txt)}_orphan",
-                            source_tag=str(wanted_tag),
-                            combo_key=self._build_execution_combo_key(
-                                source_type="mt_indicator",
-                                source_name="mt4_reverse_close_orphan",
-                                indicator="",
-                                symbol=str(sym),
-                                timeframe=str(tf or ""),
-                            ),
+                            tag=str(wanted_tag),
+                            close_out=out,
                         )
                     else:
                         err_txt = str((out or {}).get("error") or "close_failed")[:120]
@@ -10145,24 +10402,12 @@ class TelegramBridgeService:
                     if bool((out or {}).get("ok")):
                         closed_count += 1
                         closed_tickets.add(int(ticket))
-                        self._append_automation_execution_log(
-                            source_type="mt_indicator",
-                            source_name="mt4_reverse_close_orphan",
-                            trigger="reverse_signal",
-                            status="closed",
-                            symbol=str(sym),
-                            timeframe=str(tf or ""),
-                            direction=str(opposite),
+                        _append_reverse_closed_audit(
                             ticket=int(ticket),
+                            source_name="mt4_reverse_close_orphan",
                             message=f"{str(reason_txt)}_orphan_recovered",
-                            source_tag=str(wanted_tag),
-                            combo_key=self._build_execution_combo_key(
-                                source_type="mt_indicator",
-                                source_name="mt4_reverse_close_orphan",
-                                indicator="",
-                                symbol=str(sym),
-                                timeframe=str(tf or ""),
-                            ),
+                            tag=str(wanted_tag),
+                            close_out=out,
                         )
                     else:
                         err_txt = str((out or {}).get("error") or "close_failed")[:120]
@@ -10213,24 +10458,12 @@ class TelegramBridgeService:
                 if bool((out or {}).get("ok")):
                     closed_count += 1
                     closed_tickets.add(int(ticket))
-                    self._append_automation_execution_log(
-                        source_type="mt_indicator",
-                        source_name="mt4_reverse_close",
-                        trigger="reverse_signal",
-                        status="closed",
-                        symbol=str(sym),
-                        timeframe=str(tf or ""),
-                        direction=str(opposite),
+                    _append_reverse_closed_audit(
                         ticket=int(ticket),
+                        source_name="mt4_reverse_close",
                         message=f"{str(reason_txt)}_fallback",
-                        source_tag="mt4|reverse",
-                        combo_key=self._build_execution_combo_key(
-                            source_type="mt_indicator",
-                            source_name="mt4_reverse_close",
-                            indicator="",
-                            symbol=str(sym),
-                            timeframe=str(tf or ""),
-                        ),
+                        tag="mt4|reverse",
+                        close_out=out,
                     )
                     # if this ticket exists in ladder map, remove it too
                     for key, row in ladders.items():
@@ -12058,6 +12291,20 @@ class TelegramBridgeService:
         elapsed = max(0.0, now_ts - float(current.get("started_ts") or now_ts))
         _patch_instance({"pending_direction": str(resolved), "pending_age_sec": elapsed, "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
 
+        latest_csv_state = self._bridge_direction((payload or {}).get("csv_tail_latest_state"))
+        if latest_csv_state in {"BUY", "SELL"} and str(latest_csv_state) != str(resolved):
+            self._indicator_snake_t3_stable_pending.pop(str(instance_key), None)
+            _patch_instance({"pending_direction": "", "pending_age_sec": None, "confirm_seconds": confirm_sec, "signal_confirm_sec": confirm_sec})
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "snake_t3_latest_csv_state_mismatch_blocked",
+                "direction": str(resolved),
+                "latest_csv_state": str(latest_csv_state),
+                "pending_age_sec": elapsed,
+                "confirm_seconds": confirm_sec,
+            }
+
         if elapsed + 1e-6 < confirm_sec:
             return {
                 "ok": True,
@@ -12523,6 +12770,25 @@ class TelegramBridgeService:
                         "reason": "confirmed_signal_resolved_mismatch",
                         "signal_hint": str(hint),
                         "resolved_signal": str(resolved_hint),
+                        "bridge": registered,
+                    }
+            if str(profile).strip().lower() == "snake_t3_state":
+                if not bool(p.get("__snake_t3_stable_confirm")):
+                    return {
+                        "ok": True,
+                        "executed": False,
+                        "reason": "snake_t3_confirmed_requires_stable_gate",
+                        "signal_hint": str(hint),
+                        "bridge": registered,
+                    }
+                latest_csv_state = self._bridge_direction(p.get("csv_tail_latest_state") or p.get("last_signal_direction"))
+                if latest_csv_state in {"BUY", "SELL"} and hint in {"BUY", "SELL"} and str(latest_csv_state) != str(hint):
+                    return {
+                        "ok": True,
+                        "executed": False,
+                        "reason": "snake_t3_confirmed_latest_state_mismatch",
+                        "signal_hint": str(hint),
+                        "latest_csv_state": str(latest_csv_state),
                         "bridge": registered,
                     }
 
@@ -22685,7 +22951,11 @@ class TelegramBridgeService:
             try:
                 self._ingest_snake_t3_csv_tail_for_automation()
             except Exception as exc:
-                logger.warning("Snake/T3 CSV automation ingest failed: %s", str(exc)[:220])
+                self._warn_throttled(
+                    "snake_t3_csv_automation_ingest_failed_loop",
+                    f"Snake/T3 CSV automation ingest failed: {str(exc)[:220]}",
+                    min_interval_sec=10.0,
+                )
             try:
                 self._push_deadzone_colorflip_alerts()
             except Exception as exc:
@@ -22714,7 +22984,11 @@ class TelegramBridgeService:
             try:
                 self._ingest_snake_t3_csv_tail_for_automation()
             except Exception as exc:
-                logger.warning("Snake/T3 CSV automation ingest failed (maintenance): %s", str(exc)[:220])
+                self._warn_throttled(
+                    "snake_t3_csv_automation_ingest_failed_maintenance",
+                    f"Snake/T3 CSV automation ingest failed (maintenance): {str(exc)[:220]}",
+                    min_interval_sec=10.0,
+                )
             # Keep cadence tight so TP stages react quickly.
             self._stop.wait(1.0)
         logger.info("Telegram bridge maintenance loop stopped")
@@ -22755,7 +23029,11 @@ class TelegramBridgeService:
             try:
                 self._ingest_snake_t3_csv_tail_for_automation(max_files=12, tail_rows=12)
             except Exception as exc:
-                logger.warning("Snake/T3 CSV watch ingest failed: %s", str(exc)[:220])
+                self._warn_throttled(
+                    "snake_t3_csv_watch_ingest_failed",
+                    f"Snake/T3 CSV watch ingest failed: {str(exc)[:220]}",
+                    min_interval_sec=10.0,
+                )
             self._stop.wait(self._snake_t3_csv_watch_interval_sec())
         logger.info("Snake/T3 CSV watch loop stopped")
 

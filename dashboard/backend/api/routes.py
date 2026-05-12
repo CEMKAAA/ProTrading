@@ -892,6 +892,7 @@ def indicator_bridge_snake_t3_csv_tail(
     limit: int = Query(10, ge=1, le=100),
     symbol: str = Query("", max_length=64),
     timeframe: str = Query("", max_length=16),
+    ingest: bool = Query(True),
 ):
     """Latest rows from the active Snake/T3 ML CSV without reading the whole file."""
     try:
@@ -900,7 +901,12 @@ def indicator_bridge_snake_t3_csv_tail(
         svc = telegram_bridge_service
         if svc is None:
             return {"ok": False, "error": "telegram_bridge_unavailable"}
-        return svc.get_indicator_bridge_snake_t3_csv_tail(symbol=str(symbol or ""), timeframe=str(timeframe or ""), limit=int(limit))
+        return svc.get_indicator_bridge_snake_t3_csv_tail(
+            symbol=str(symbol or ""),
+            timeframe=str(timeframe or ""),
+            limit=int(limit),
+            ingest=bool(ingest),
+        )
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_snake_t3_csv_tail_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
@@ -1330,6 +1336,7 @@ def indicator_bridge_open_trade_close(payload: Dict[str, Any]):
                     reason="manual_close",
                     svc=live,
                     event_ts=datetime.now(timezone.utc),
+                    close_result=close_result,
                 )
                 audit_logged = True
             except Exception:
@@ -1435,6 +1442,23 @@ def indicator_bridge_open_trade_sl_be(payload: Dict[str, Any]):
         }
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_open_trade_sl_be_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/open-trade/live-pnl")
+def indicator_bridge_open_trade_live_pnl(payload: Dict[str, Any]):
+    """Fast unrealized PnL snapshot for currently displayed indicator tickets."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+        tickets = payload.get("tickets") if isinstance(payload, dict) else []
+        if not isinstance(tickets, list):
+            tickets = []
+        return svc.get_indicator_bridge_open_trade_live_pnl(tickets=tickets)
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_open_trade_live_pnl_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.get("/indicator-bridge/execution-log/export")

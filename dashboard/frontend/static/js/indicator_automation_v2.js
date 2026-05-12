@@ -42,6 +42,7 @@
         liqScanResults: document.getElementById('v2-liq-scan-results'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
+        snakeTapePanels: document.getElementById('v2-snake-tape-panels'),
         snakeLiveBody: document.getElementById('v2-snake-live-body'),
         snakeLiveUpdated: document.getElementById('v2-snake-live-updated'),
         snakeCsvBody: document.getElementById('v2-snake-csv-body'),
@@ -64,16 +65,31 @@
     let timer = null;
     let snakeLiveTimer = null;
     let snakeCsvTimer = null;
+    let openPnlTimer = null;
     let snakeLiveInFlight = false;
     let snakeCsvInFlight = false;
+    let openPnlInFlight = false;
     let snakeCsvEventSource = null;
     let snakeCsvStreamLastAt = 0;
     let snakeCsvStreamConnectedAt = 0;
+    let snakeTapeDrainTimer = null;
+    const snakeTapeUi = {
+        initialized: false,
+        streams: new Map(),
+        order: [],
+        lastPayloadMeta: {}
+    };
     let uiTimer = null;
     let stateLoadInFlight = false;
     let stateLoadController = null;
     let stateRefreshPausedUntil = 0;
     let liquidityScanRows = [];
+    const openPnlSnapshot = {
+        byTicket: new Map(),
+        updatedAtMs: 0,
+        latencyMs: null,
+        staleAfterMs: 1800
+    };
 
     function esc(v) {
         return String(v == null ? '' : v)
@@ -95,6 +111,7 @@
     }
 
     function fmtNum(v, digits) {
+        if (v === null || v === undefined || v === '') return '-';
         const n = Number(v);
         return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '-';
     }
@@ -200,6 +217,7 @@
             }
             state = data;
             state._client_loaded_at_ms = Date.now();
+            applyOpenPnlSnapshotToState();
             if (els.alert) els.alert.innerHTML = '';
             render();
         } catch (err) {
@@ -300,10 +318,10 @@
     }
 
     async function loadSnakeT3CsvTail() {
-        if (snakeCsvInFlight || (!els.snakeLiveBody && !els.snakeCsvBody)) return;
+        if (snakeCsvInFlight || (!els.snakeTapePanels && !els.snakeLiveBody && !els.snakeCsvBody)) return;
         snakeCsvInFlight = true;
         try {
-            const res = await fetch('/api/indicator-bridge/snake-t3-csv-tail?limit=10', {
+            const res = await fetch('/api/indicator-bridge/snake-t3-csv-tail?limit=10&ingest=0', {
                 credentials: 'same-origin',
                 cache: 'no-store'
             });
@@ -311,8 +329,7 @@
             if (!res.ok || !data || data.ok === false) {
                 throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
             }
-            snakeCsvTail = data;
-            renderSnakeT3CsvTail();
+            ingestSnakeT3TapePayload(data);
         } catch (err) {
             if (els.snakeCsvUpdated) els.snakeCsvUpdated.textContent = `csv error: ${err.message || err}`;
         } finally {
@@ -321,7 +338,7 @@
     }
 
     function connectSnakeT3CsvStream() {
-        if (!els.snakeLiveBody || !window.EventSource) return false;
+        if ((!els.snakeTapePanels && !els.snakeLiveBody) || !window.EventSource) return false;
         if (snakeCsvEventSource) return true;
         snakeCsvStreamConnectedAt = Date.now();
         const src = new EventSource('/api/indicator-bridge/snake-t3-csv-tail/stream?limit=10');
@@ -333,8 +350,7 @@
                 if (!data || data.ok === false) {
                     throw new Error((data && (data.error || data.detail)) || 'stream payload failed');
                 }
-                snakeCsvTail = data;
-                renderSnakeT3CsvTail();
+                ingestSnakeT3TapePayload(data);
             } catch (err) {
                 if (els.snakeLiveUpdated) els.snakeLiveUpdated.textContent = `stream parse error: ${err.message || err}`;
             }
@@ -347,6 +363,172 @@
             // EventSource reconnects automatically. Keep it open; fallback polling covers stale periods.
         };
         return true;
+    }
+
+    function snakeTapeStreamKey(stream, latest) {
+        return String(
+            (stream && (stream.key || stream.csv_file_name || stream.csv_file)) ||
+            (latest && (latest.tape_key || latest.csv_file_name || latest.csv_file)) ||
+            `${(stream && stream.symbol) || (latest && latest.symbol) || 'snake'}_${(stream && stream.timeframe) || (latest && latest.timeframe) || ''}`
+        ).trim();
+    }
+
+    function snakeTapeRowSecondKey(row) {
+        return String((row && (row.server_time || row.local_time || row.processed_at || row.row_sig)) || '').trim();
+    }
+
+    function snakeTapeCompactRows(rowsRaw) {
+        const bySecond = new Map();
+        (Array.isArray(rowsRaw) ? rowsRaw : []).forEach(row => {
+            const key = snakeTapeRowSecondKey(row);
+            if (!key) return;
+            bySecond.set(key, row);
+        });
+        return Array.from(bySecond.values());
+    }
+
+    function normalizeSnakeTapeStreams(payload) {
+        const streamsRaw = Array.isArray((payload || {}).streams) ? payload.streams.slice() : [];
+        const fallbackRows = Array.isArray((payload || {}).rows) ? payload.rows.slice(-10) : [];
+        if (streamsRaw.length) return streamsRaw;
+        if (!fallbackRows.length) return [];
+        const latest = fallbackRows[fallbackRows.length - 1] || {};
+        return [{
+            key: (payload || {}).file_name || (payload || {}).file || latest.tape_key || 'snake_t3',
+            symbol: latest.symbol || '',
+            timeframe: latest.timeframe || '',
+            terminal_family: latest.terminal_family || 'MT4',
+            csv_file_name: (payload || {}).file_name || latest.csv_file_name || '',
+            csv_file: (payload || {}).file || latest.csv_file || '',
+            rows: fallbackRows,
+            count: fallbackRows.length
+        }];
+    }
+
+    function buildSnakeTapeDisplayPayload() {
+        const meta = snakeTapeUi.lastPayloadMeta || {};
+        const streams = snakeTapeUi.order.map(key => {
+            const entry = snakeTapeUi.streams.get(key);
+            if (!entry) return null;
+            const latest = entry.displayRows[entry.displayRows.length - 1] || {};
+            return {
+                key,
+                symbol: entry.symbol || latest.symbol || '',
+                timeframe: entry.timeframe || latest.timeframe || '',
+                terminal_family: entry.terminal_family || latest.terminal_family || 'MT4',
+                csv_file: entry.csv_file || latest.csv_file || '',
+                csv_file_name: entry.csv_file_name || latest.csv_file_name || key,
+                last_server_time: latest.server_time || '',
+                last_local_time: latest.local_time || '',
+                last_state: latest.state || '',
+                rows: entry.displayRows.slice(-10),
+                count: entry.displayRows.slice(-10).length,
+                queued_count: entry.queue.length
+            };
+        }).filter(Boolean);
+        const rows = streams.reduce((acc, s) => acc.concat(s.rows || []), []);
+        const queued = streams.reduce((acc, s) => acc + Number(s.queued_count || 0), 0);
+        return Object.assign({}, meta, {
+            ok: true,
+            rows: rows.slice(-10),
+            count: rows.slice(-10).length,
+            streams,
+            stream_count: streams.length,
+            ui_queued_count: queued,
+            ui_smoothed: true
+        });
+    }
+
+    function startSnakeTapeDrain() {
+        if (snakeTapeDrainTimer) return;
+        snakeTapeDrainTimer = window.setInterval(() => {
+            let changed = false;
+            snakeTapeUi.order.forEach(key => {
+                const entry = snakeTapeUi.streams.get(key);
+                if (!entry || !entry.queue.length) return;
+                const row = entry.queue.shift();
+                const sig = snakeTapeRowSecondKey(row);
+                if (sig) entry.queued.delete(sig);
+                if (sig && entry.seen.has(sig)) return;
+                if (sig) entry.seen.add(sig);
+                entry.displayRows.push(row);
+                entry.displayRows = entry.displayRows.slice(-10);
+                changed = true;
+            });
+            if (changed) {
+                snakeCsvTail = buildSnakeTapeDisplayPayload();
+                renderSnakeT3CsvTail();
+            }
+        }, 1000);
+    }
+
+    function ingestSnakeT3TapePayload(payload) {
+        const streams = normalizeSnakeTapeStreams(payload);
+        snakeTapeUi.lastPayloadMeta = {
+            ok: (payload || {}).ok !== false,
+            updated_at: (payload || {}).updated_at,
+            source: (payload || {}).source,
+            file_age_sec: (payload || {}).file_age_sec,
+            file: (payload || {}).file,
+            file_name: (payload || {}).file_name,
+            file_size: (payload || {}).file_size,
+            file_mtime: (payload || {}).file_mtime
+        };
+        if (!streams.length) {
+            if (!snakeTapeUi.initialized) {
+                snakeCsvTail = payload || { ok: true, rows: [], count: 0, streams: [], stream_count: 0 };
+                renderSnakeT3CsvTail();
+            }
+            return;
+        }
+
+        streams.forEach(stream => {
+            const compactRows = snakeTapeCompactRows(stream.rows || []);
+            const latest = compactRows[compactRows.length - 1] || {};
+            const key = snakeTapeStreamKey(stream, latest);
+            if (!key) return;
+            if (!snakeTapeUi.streams.has(key)) {
+                const initialRows = compactRows.slice(-10);
+                snakeTapeUi.streams.set(key, {
+                    symbol: stream.symbol || latest.symbol || '',
+                    timeframe: stream.timeframe || latest.timeframe || '',
+                    terminal_family: stream.terminal_family || latest.terminal_family || 'MT4',
+                    csv_file: stream.csv_file || latest.csv_file || '',
+                    csv_file_name: stream.csv_file_name || latest.csv_file_name || key,
+                    displayRows: initialRows,
+                    queue: [],
+                    queued: new Set(),
+                    seen: new Set(initialRows.map(snakeTapeRowSecondKey).filter(Boolean))
+                });
+                snakeTapeUi.order.push(key);
+                snakeTapeUi.order.sort((a, b) => {
+                    const ea = snakeTapeUi.streams.get(a) || {};
+                    const eb = snakeTapeUi.streams.get(b) || {};
+                    return `${ea.symbol || ''}|${ea.timeframe || ''}|${a}`.localeCompare(`${eb.symbol || ''}|${eb.timeframe || ''}|${b}`);
+                });
+                return;
+            }
+            const entry = snakeTapeUi.streams.get(key);
+            entry.symbol = stream.symbol || latest.symbol || entry.symbol || '';
+            entry.timeframe = stream.timeframe || latest.timeframe || entry.timeframe || '';
+            entry.terminal_family = stream.terminal_family || latest.terminal_family || entry.terminal_family || 'MT4';
+            entry.csv_file = stream.csv_file || latest.csv_file || entry.csv_file || '';
+            entry.csv_file_name = stream.csv_file_name || latest.csv_file_name || entry.csv_file_name || key;
+            compactRows.forEach(row => {
+                const sig = snakeTapeRowSecondKey(row);
+                if (!sig || entry.seen.has(sig) || entry.queued.has(sig)) return;
+                entry.queue.push(row);
+                entry.queued.add(sig);
+            });
+            if (entry.queue.length > 30) {
+                entry.queue = entry.queue.slice(-30);
+                entry.queued = new Set(entry.queue.map(snakeTapeRowSecondKey).filter(Boolean));
+            }
+        });
+        snakeTapeUi.initialized = true;
+        snakeCsvTail = buildSnakeTapeDisplayPayload();
+        renderSnakeT3CsvTail();
+        startSnakeTapeDrain();
     }
 
     async function saveRiskSettings() {
@@ -883,6 +1065,137 @@
         return rows.filter(row => keys.has(auditMatchKey(row)));
     }
 
+    function touchOpenPnlSnapshot(rows, meta) {
+        if (!Array.isArray(rows)) return;
+        const nowMs = Date.now();
+        rows.forEach(row => {
+            const ticket = String((row || {}).ticket || '').trim();
+            if (!ticket) return;
+            openPnlSnapshot.byTicket.set(ticket, Object.assign({}, row, {
+                updated_at: (meta || {}).updated_at || (row || {}).updated_at || new Date().toISOString(),
+                snapshot_ts: Number((meta || {}).snapshot_ts || (row || {}).snapshot_ts || 0),
+                latency_ms: Number((meta || {}).latency_ms ?? (row || {}).latency_ms),
+                client_seen_at_ms: nowMs,
+                missing: Boolean((row || {}).missing)
+            }));
+        });
+        if ((meta || {}).updated_at || rows.length) openPnlSnapshot.updatedAtMs = nowMs;
+        if (Number.isFinite(Number((meta || {}).latency_ms))) openPnlSnapshot.latencyMs = Number((meta || {}).latency_ms);
+    }
+
+    function applyOpenPnlSnapshotToState() {
+        if (!state || !openPnlSnapshot.byTicket.size) return false;
+        const rows = Array.from(openPnlSnapshot.byTicket.values());
+        return applyOpenPnlPatch(rows, { fromCache: true });
+    }
+
+    function applyOpenPnlPatch(rows, opts) {
+        if (!state || !Array.isArray(rows)) return false;
+        const patchByTicket = new Map();
+        rows.forEach(row => {
+            const ticket = String((row || {}).ticket || '').trim();
+            if (ticket) patchByTicket.set(ticket, row);
+        });
+        if (!patchByTicket.size) return false;
+        let changed = false;
+        const nowMs = Date.now();
+        const patchCollection = (items) => {
+            if (!Array.isArray(items)) return;
+            items.forEach(item => {
+                const ticket = String((item || {}).ticket || '').trim();
+                const patch = patchByTicket.get(ticket);
+                if (!patch) return;
+                const seenAt = Number((patch || {}).client_seen_at_ms || nowMs);
+                const ageMs = Math.max(0, nowMs - seenAt);
+                item.live_pnl_age_sec = ageMs / 1000.0;
+                item.live_pnl_latency_ms = Number((patch || {}).latency_ms);
+                if (Boolean((patch || {}).missing)) {
+                    item.live_position_missing = true;
+                    item.current_profit_source = 'terminal_position_missing';
+                    item.live_pnl_updated_at = String((patch || {}).updated_at || '');
+                    changed = true;
+                    return;
+                }
+                const pnl = Number(patch.current_profit);
+                const price = Number(patch.current_price);
+                if (Number.isFinite(pnl)) {
+                    item.current_profit = pnl;
+                    item.live_pnl_updated_at = String((patch || {}).updated_at || new Date().toISOString());
+                    item.current_profit_source = 'live_position_snapshot';
+                    item.live_position_missing = false;
+                    changed = true;
+                }
+                if (Number.isFinite(price)) item.current_price = price;
+                ['entry_price', 'lot_size', 'stop_loss', 'take_profit'].forEach(k => {
+                    const v = Number(patch[k]);
+                    if (Number.isFinite(v)) item[k] = v;
+                });
+            });
+        };
+        patchCollection(((state || {}).open_trades || {}).rows);
+        patchCollection((((state || {}).mt4_monitor || {}).rows || []));
+        patchCollection((((state || {}).mt5_monitor || {}).rows || []));
+        patchCollection((((state || {}).mt4_monitor || {}).bot_rows || []));
+        patchCollection((((state || {}).mt5_monitor || {}).bot_rows || []));
+        return changed;
+    }
+
+    async function loadOpenTradeLivePnl() {
+        if (openPnlInFlight || !state) return;
+        const tickets = openTrades()
+            .map(row => Number((row || {}).ticket || 0))
+            .filter(ticket => Number.isFinite(ticket) && ticket > 0);
+        if (!tickets.length) return;
+        openPnlInFlight = true;
+        try {
+            const res = await fetch('/api/indicator-bridge/open-trade/live-pnl', {
+                method: 'POST',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tickets })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false) {
+                throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+            }
+            const rows = Array.isArray(data.rows) ? data.rows.map(r => Object.assign({}, r, {
+                updated_at: data.updated_at,
+                snapshot_ts: data.snapshot_ts,
+                latency_ms: data.latency_ms
+            })) : [];
+            const missingRows = Array.isArray(data.missing_tickets)
+                ? data.missing_tickets.map(ticket => ({
+                    ticket,
+                    missing: true,
+                    updated_at: data.updated_at,
+                    snapshot_ts: data.snapshot_ts,
+                    latency_ms: data.latency_ms
+                }))
+                : [];
+            touchOpenPnlSnapshot(rows.concat(missingRows), {
+                updated_at: data.updated_at,
+                snapshot_ts: data.snapshot_ts,
+                latency_ms: data.latency_ms
+            });
+            const combinedRows = rows.concat(missingRows);
+            if (applyOpenPnlPatch(combinedRows)) {
+                renderOpenTrades();
+                if (!shouldDeferInstanceRender()) renderInstances();
+            }
+            if (els.openCount) {
+                const latency = Number(data.latency_ms);
+                els.openCount.title = Number.isFinite(latency)
+                    ? `terminal live pnl latency: ${latency.toFixed(0)}ms`
+                    : 'terminal live pnl active';
+            }
+        } catch (err) {
+            if (els.openCount) els.openCount.title = `live pnl error: ${err.message || err}`;
+        } finally {
+            openPnlInFlight = false;
+        }
+    }
+
     function auditRows() {
         const rows = (((state || {}).execution_logs || {}).rows || []);
         if (!Array.isArray(rows)) return [];
@@ -1360,6 +1673,18 @@
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const ticket = Number(row.ticket || 0);
             const canClose = Number.isFinite(ticket) && ticket > 0 && String(row.symbol || '').trim();
+            const liveAge = Number(row.live_pnl_age_sec);
+            const liveLatency = Number(row.live_pnl_latency_ms);
+            const terminalMissing = row.current_profit_source === 'terminal_position_missing' || row.live_position_missing === true;
+            let livePnl = '';
+            if (terminalMissing) {
+                livePnl = '<div class="small text-warning">terminal missing</div>';
+            } else if (row.current_profit_source === 'live_position_snapshot') {
+                const stale = Number.isFinite(liveAge) && liveAge * 1000 > openPnlSnapshot.staleAfterMs;
+                const ageText = Number.isFinite(liveAge) ? `${liveAge.toFixed(1)}s` : 'live';
+                const latencyText = Number.isFinite(liveLatency) ? ` / ${liveLatency.toFixed(0)}ms` : '';
+                livePnl = `<div class="small ${stale ? 'text-warning' : 'text-muted'}">${stale ? 'stale' : 'terminal'} ${esc(ageText)}${esc(latencyText)}</div>`;
+            }
             return `<tr>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
@@ -1367,7 +1692,7 @@
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</td>
                 <td>${esc(row.execution_mode || '-')}</td>
                 <td class="${String(row.direction).toUpperCase() === 'BUY' ? 'trade-buy' : 'trade-sell'}">${esc(row.direction || '-')}</td>
-                <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}</td>
+                <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}${livePnl}</td>
                 <td>${esc(fmtTs(row.opened_at))}</td>
                 <td class="v2-mono small">${esc(row.source_tag || '-')}</td>
                 <td>
@@ -1429,9 +1754,21 @@
     }
 
     function renderSnakeT3CsvTail() {
+        const panel = els.snakeTapePanels;
         const body = els.snakeLiveBody || els.snakeCsvBody;
-        if (!body) return;
-        const rows = Array.isArray((snakeCsvTail || {}).rows) ? snakeCsvTail.rows.slice(-10) : [];
+        if (!panel && !body) return;
+        const streamsRaw = Array.isArray((snakeCsvTail || {}).streams) ? snakeCsvTail.streams.slice() : [];
+        const fallbackRows = Array.isArray((snakeCsvTail || {}).rows) ? snakeCsvTail.rows.slice(-10) : [];
+        const streams = streamsRaw.length ? streamsRaw : (fallbackRows.length ? [{
+            key: (snakeCsvTail || {}).file_name || (snakeCsvTail || {}).file || 'snake_t3',
+            symbol: fallbackRows[fallbackRows.length - 1].symbol || '',
+            timeframe: fallbackRows[fallbackRows.length - 1].timeframe || '',
+            terminal_family: fallbackRows[fallbackRows.length - 1].terminal_family || 'MT4',
+            csv_file_name: (snakeCsvTail || {}).file_name || '',
+            csv_file: (snakeCsvTail || {}).file || '',
+            rows: fallbackRows,
+            count: fallbackRows.length
+        }] : []);
         const fileAge = Number((snakeCsvTail || {}).file_age_sec);
         const stale = Number.isFinite(fileAge) && fileAge > 3;
         const streamLive = snakeCsvStreamLastAt > 0 && Date.now() - snakeCsvStreamLastAt < 2500;
@@ -1439,32 +1776,90 @@
         const streamLabel = streamLive ? 'stream live' : (streamPending ? 'stream connecting' : (snakeCsvEventSource ? 'stream stale' : 'poll fallback'));
         [els.snakeLiveUpdated, els.snakeCsvUpdated].filter(Boolean).forEach(el => {
             el.className = `badge ${stale || (!streamLive && !streamPending) ? 'text-bg-warning' : 'text-bg-light'}`;
-            el.textContent = `${rows.length}/10 rows / file age ${Number.isFinite(fileAge) ? fmtNum(fileAge, 1) : '-'}s / ${streamLabel}`;
+            const rowCount = streams.reduce((acc, s) => acc + (Array.isArray(s.rows) ? s.rows.length : 0), 0);
+            const queued = Number((snakeCsvTail || {}).ui_queued_count || 0);
+            el.textContent = `${streams.length} tape / ${rowCount} rows${queued ? ` / queue ${queued}` : ''} / file age ${Number.isFinite(fileAge) ? fmtNum(fileAge, 1) : '-'}s / ${streamLabel}`;
         });
         if (els.snakeCsvFile) {
-            els.snakeCsvFile.innerHTML = `file: <span class="v2-mono">${esc((snakeCsvTail || {}).file_name || (snakeCsvTail || {}).file || '-')}</span>`;
+            els.snakeCsvFile.innerHTML = streams.length
+                ? `backend tape streams: <span class="v2-mono">${esc(streams.map(s => s.csv_file_name || s.key || '-').join(' | '))}</span>`
+                : 'file: <span class="v2-mono">-</span>';
         }
-        if (!rows.length) {
-            body.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No CSV rows yet.</td></tr>';
+        if (!streams.length) {
+            const empty = '<div class="text-center text-muted py-3">No CSV rows yet.</div>';
+            if (panel) panel.innerHTML = empty;
+            if (body) body.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No CSV rows yet.</td></tr>';
             return;
         }
-        body.innerHTML = rows.map((row, idx) => {
-            const dir = normDirection(row.state);
+        const renderRows = (rowsRaw) => {
+            const bySecond = new Map();
+            (Array.isArray(rowsRaw) ? rowsRaw : []).forEach(row => {
+                const secondKey = String(row.server_time || row.local_time || row.processed_at || row.row_sig || '').trim();
+                if (!secondKey) return;
+                bySecond.set(secondKey, row);
+            });
+            const rows = Array.from(bySecond.values()).slice(-10);
+            return rows.map((row, idx) => {
+                const dir = normDirection(row.state);
+                const dirCls = dir === 'BUY' ? 'text-success' : (dir === 'SELL' ? 'text-danger' : 'text-secondary');
+                const changed = boolish(row.state_changed);
+                const isNewest = idx === rows.length - 1;
+                return `<tr class="${changed ? 'table-info' : (isNewest ? 'table-light' : '')}">
+                    <td>${esc(row.server_time || '-')}<div class="small text-muted">${esc(row.local_time || '')}</div></td>
+                    <td>${esc(row.bar_time || '-')}<div class="small text-muted">age ${fmtNum(row.bar_age_sec, 0)}s / vol ${fmtNum(row.tick_volume, 0)}</div></td>
+                    <td class="fw-bold ${dirCls}">${esc(dir || '-')}</td>
+                    <td>${changed ? `<span class="badge text-bg-info">${esc(row.transition || 'changed')}</span>` : '<span class="text-muted">-</span>'}</td>
+                    <td class="v2-mono">bid ${fmtNum(row.bid, 2)}<br>mid ${fmtNum(row.mid, 2)}</td>
+                    <td class="v2-mono">${fmtNum(row.snake_value, 6)}</td>
+                    <td class="v2-mono">${fmtNum(row.t3_value, 6)}</td>
+                    <td class="v2-mono ${Number(row.snake_t3_diff) >= 0 ? 'text-success' : 'text-danger'}">${fmtNum(row.snake_t3_diff, 6)}</td>
+                    <td class="v2-mono">ATR ${fmtNum(row.atr, 2)}<br>RSI ${fmtNum(row.rsi, 2)}</td>
+                    <td class="v2-mono">spr ${fmtNum(row.spread_atr_ratio, 3)}<br>rng ${fmtNum(row.range_atr_ratio, 2)}</td>
+                    <td class="v2-mono">body ${fmtNum(row.body_range_ratio, 2)}<br>wick ${fmtNum(row.wick_imbalance_ratio, 2)}</td>
+                    <td class="v2-mono">ADX ${fmtNum(row.adx, 1)}<br>DI ${fmtNum(row.di_spread, 1)}</td>
+                    <td class="v2-mono">MACD ${fmtNum(row.macd_hist_slope, 4)}<br>Stoch ${fmtNum(row.stoch_spread, 2)}</td>
+                    <td class="v2-mono">EMA ${fmtNum(row.ema_spread_atr, 3)}<br>RSI slp ${fmtNum(row.rsi_slope, 2)}</td>
+                    <td class="v2-mono">d/ATR ${fmtNum(row.snake_t3_diff_atr, 3)}<br>dSlp ${fmtNum(row.snake_t3_diff_slope_atr, 3)}</td>
+                    <td class="v2-mono">age ${fmtNum(row.seconds_since_state_change, 0)}s<br>vol ${fmtNum(row.volume_ratio_fast, 2)}</td>
+                    <td class="v2-mono">chg ${fmtNum(row.direction_changes_fast, 0)}<br>std ${fmtNum(row.return_std_fast, 4)}</td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="9" class="text-center text-muted py-3">No rows for this tape yet.</td></tr>';
+        };
+        const panelsHtml = streams.map((stream) => {
+            const rowsRaw = Array.isArray(stream.rows) ? stream.rows : [];
+            const latest = rowsRaw[rowsRaw.length - 1] || {};
+            const dir = normDirection(latest.state || stream.last_state);
             const dirCls = dir === 'BUY' ? 'text-success' : (dir === 'SELL' ? 'text-danger' : 'text-secondary');
-            const changed = boolish(row.state_changed);
-            const isNewest = idx === rows.length - 1;
-            return `<tr class="${changed ? 'table-info' : (isNewest ? 'table-light' : '')}">
-                <td>${esc(row.server_time || '-')}<div class="small text-muted">${esc(row.local_time || '')}</div></td>
-                <td>${esc(row.bar_time || '-')}<div class="small text-muted">age ${fmtNum(row.bar_age_sec, 0)}s / vol ${fmtNum(row.tick_volume, 0)}</div></td>
-                <td class="fw-bold ${dirCls}">${esc(dir || '-')}</td>
-                <td>${changed ? `<span class="badge text-bg-info">${esc(row.transition || 'changed')}</span>` : '<span class="text-muted">-</span>'}</td>
-                <td class="v2-mono">bid ${fmtNum(row.bid, 2)}<br>mid ${fmtNum(row.mid, 2)}</td>
-                <td class="v2-mono">${fmtNum(row.snake_value, 6)}</td>
-                <td class="v2-mono">${fmtNum(row.t3_value, 6)}</td>
-                <td class="v2-mono ${Number(row.snake_t3_diff) >= 0 ? 'text-success' : 'text-danger'}">${fmtNum(row.snake_t3_diff, 6)}</td>
-                <td class="v2-mono">ATR ${fmtNum(row.atr, 2)}<br>RSI ${fmtNum(row.rsi, 2)}</td>
-            </tr>`;
+            const title = `${stream.symbol || latest.symbol || '-'} ${stream.timeframe || latest.timeframe || ''}`;
+            return `<div class="border rounded mb-2 overflow-hidden">
+                <div class="d-flex justify-content-between align-items-center px-2 py-1 bg-light border-bottom">
+                    <div>
+                        <strong>${esc(title)}</strong>
+                        <span class="badge text-bg-secondary ms-2">${esc(stream.terminal_family || latest.terminal_family || 'MT4')}</span>
+                        <span class="badge text-bg-light ms-1 v2-mono">${esc(stream.csv_file_name || stream.key || '-')}</span>
+                    </div>
+                    <div class="small">
+                        <span class="fw-bold ${dirCls}">${esc(dir || '-')}</span>
+                        <span class="text-muted ms-2">${esc(latest.server_time || stream.last_server_time || '-')}</span>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0 align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Server Time</th><th>Bar</th><th>State</th><th>Transition</th><th>Price</th><th>Snake</th><th>T3</th><th>Diff</th><th>ATR / RSI</th><th>Spread / Range</th><th>Body / Wick</th><th>ADX / DI</th><th>MACD / Stoch</th><th>EMA / RSI</th><th>Diff Norm</th><th>State / Vol</th><th>Chop</th>
+                            </tr>
+                        </thead>
+                        <tbody>${renderRows(rowsRaw)}</tbody>
+                    </table>
+                </div>
+            </div>`;
         }).join('');
+        if (panel) panel.innerHTML = panelsHtml;
+        if (body) {
+            const newestStream = streams[0] || {};
+            body.innerHTML = renderRows(newestStream.rows || []);
+        }
     }
 
     function renderRiskSettings() {
@@ -1852,6 +2247,8 @@
     function schedule() {
         if (timer) clearInterval(timer);
         timer = setInterval(() => loadState().catch(showError), 1000);
+        if (openPnlTimer) clearInterval(openPnlTimer);
+        openPnlTimer = setInterval(() => loadOpenTradeLivePnl().catch(showError), 350);
         connectSnakeT3CsvStream();
         if (snakeCsvTimer) clearInterval(snakeCsvTimer);
         snakeCsvTimer = setInterval(() => {

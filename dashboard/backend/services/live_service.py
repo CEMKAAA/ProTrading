@@ -1057,6 +1057,11 @@ class LiveTradingService:
             if not positions:
                 return {"ok": False, "error": "position_not_found"}
             pos = positions[0]
+            pre_close_profit = _to_float_or_none(getattr(pos, "profit", None))
+            pre_close_price_open = _to_float_or_none(getattr(pos, "price_open", None))
+            pre_close_sl = _to_float_or_none(getattr(pos, "sl", None))
+            pre_close_tp = _to_float_or_none(getattr(pos, "tp", None))
+            pre_close_volume = _to_float_or_none(getattr(pos, "volume", None))
             pos_type = int(getattr(pos, "type", 0) or 0)
             close_type = mt5.ORDER_TYPE_SELL if pos_type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
             tick = mt5.symbol_info_tick(symbol_resolved)
@@ -1108,6 +1113,11 @@ class LiveTradingService:
                     "requested_symbol": symbol_req,
                     "symbol": symbol_resolved,
                     "position_ticket": int(getattr(pos, "ticket", 0) or 0),
+                    "pre_close_profit": pre_close_profit,
+                    "pre_close_price_open": pre_close_price_open,
+                    "pre_close_sl": pre_close_sl,
+                    "pre_close_tp": pre_close_tp,
+                    "pre_close_volume": pre_close_volume,
                     "price": float(getattr(result, "price", close_price) or close_price),
                     "retcode": int(retcode),
                     "retcode_name": str(retcode_name),
