@@ -229,6 +229,16 @@ class TelegramBridgeService:
     @staticmethod
     def _read_env_file_value(var_name: str) -> Optional[str]:
         """Lightweight .env lookup without requiring python-dotenv at runtime."""
+        found, value = TelegramBridgeService._read_env_file_entry(var_name)
+        return value if found and str(value or "").strip() else None
+
+    @staticmethod
+    def _read_env_file_entry(var_name: str) -> Tuple[bool, str]:
+        """Read a .env key and preserve explicit empty values.
+
+        Empty Telegram config values are meaningful: an operator clearing
+        tracked channels must override any older fallback/root/profile value.
+        """
         repo_root = Path(__file__).resolve().parents[3]
         candidates = [
             repo_root / "dashboard" / ".env",
@@ -246,11 +256,10 @@ class TelegramBridgeService:
                     if str(k).strip() != str(var_name):
                         continue
                     val = str(v).strip().strip('"').strip("'")
-                    if val:
-                        return val
+                    return True, val
             except Exception:
                 continue
-        return None
+        return False, ""
 
     @classmethod
     def _normalize_profile_name(cls, value: Any) -> str:
@@ -327,12 +336,12 @@ class TelegramBridgeService:
             # Telegram bridge must be configured only from dashboard/.env to avoid
             # host-level env var collisions across different machines/services.
             if scoped:
-                sf = str(cls._read_env_file_value(scoped) or "").strip()
-                if sf:
-                    return sf
-            fv = str(cls._read_env_file_value(key) or "").strip()
-            if fv:
-                return fv
+                scoped_found, scoped_value = cls._read_env_file_entry(scoped)
+                if scoped_found:
+                    return str(scoped_value or "").strip()
+            file_found, file_value = cls._read_env_file_entry(key)
+            if file_found:
+                return str(file_value or "").strip()
             return str(default or "")
         if is_indicator_bridge_key:
             # Indicator bridge runtime controls are edited from dashboard/.env during live tuning.
@@ -1649,6 +1658,9 @@ class TelegramBridgeService:
             if v is None:
                 continue
             normalized[key] = str(v).strip()
+            scoped_key = TelegramBridgeService._profile_scoped_key(key)
+            if scoped_key:
+                normalized[str(scoped_key).strip().upper()] = str(v).strip()
         if not normalized:
             return False, "no_valid_updates"
         out_lines: List[str] = []
@@ -3275,7 +3287,7 @@ class TelegramBridgeService:
         updates: Dict[str, Any] = {}
         if "enabled" in p:
             updates["TELEGRAM_CONFIRM_SIGNALS_ENABLED"] = "1" if bool(p.get("enabled")) else "0"
-        if channels:
+        if "channels" in p:
             updates["TELEGRAM_CONFIRM_SIGNAL_CHANNEL_TITLES"] = "|".join(channels)
         if "default_timeframe" in p:
             tf = str(p.get("default_timeframe") or "M5").strip().upper()
