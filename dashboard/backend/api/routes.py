@@ -1184,6 +1184,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         p = payload if isinstance(payload, dict) else {}
         terminal_family = str(p.get("terminal_family") or p.get("family") or "mt4").strip().lower() or "mt4"
         indicator = str(p.get("indicator") or "").strip()
+        profile = str(p.get("profile") or p.get("signal_profile") or "").strip().lower()
         symbol = str(p.get("symbol") or "").strip().upper()
         timeframe = str(p.get("timeframe") or "").strip().upper()
         enabled = p.get("enabled") if "enabled" in p else None
@@ -1268,6 +1269,7 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             indicator=str(indicator),
             symbol=str(symbol),
             timeframe=str(timeframe),
+            profile=str(profile),
             enabled=(bool(enabled) if enabled is not None else None),
             lot_size=lot_val,
             mode_advanced_enabled=(bool(mode_advanced_enabled) if mode_advanced_enabled is not None else None),

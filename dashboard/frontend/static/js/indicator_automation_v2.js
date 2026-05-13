@@ -275,6 +275,8 @@
         pauseStateRefresh(2000);
         const payload = Object.assign({
             terminal_family: String(row.terminal_family || '').toLowerCase(),
+            profile: String(row.profile || ''),
+            signal_profile: String(row.profile || ''),
             indicator: row.indicator || '',
             symbol: row.symbol || '',
             timeframe: row.timeframe || ''
@@ -763,6 +765,7 @@
     function instanceMatchKey(row) {
         return [
             String((row || {}).terminal_family || '').trim().toUpperCase(),
+            String((row || {}).profile || '').trim().toLowerCase(),
             String((row || {}).indicator || (row || {}).source_name || '').trim().toLowerCase(),
             String((row || {}).symbol || '').trim().toUpperCase(),
             String((row || {}).timeframe || '').trim().toUpperCase()
@@ -776,6 +779,7 @@
         if (parts.length < 5 || !['mt4', 'mt5'].includes(parts[0])) return '';
         return [
             parts[0].toUpperCase(),
+            parts[1],
             parts[2],
             parts[3].toUpperCase(),
             parts[4].toUpperCase()
@@ -800,14 +804,10 @@
 
     function hasDisplayableBridgeConnection(row) {
         const stateText = String((row || {}).state || '').trim().toUpperCase();
-        const bridgeVersion = String((row || {}).bridge_version || '').trim().toLowerCase();
-        const bridgeEventType = String((row || {}).bridge_event_type || '').trim().toLowerCase();
         return boolish((row || {}).has_live_heartbeat)
             || boolish((row || {}).has_open_ladder)
-            || bridgeVersion === 'v2'
-            || !!bridgeEventType
             || stateText === 'OPEN'
-            || stateText === 'IDLE';
+            || stateText === 'PROCESSING';
     }
 
     function displayInstances() {
@@ -857,6 +857,7 @@
             String((row || {}).symbol || '').trim().toUpperCase(),
             String(tfRank((row || {}).timeframe)).padStart(6, '0'),
             String((row || {}).indicator || (row || {}).source_name || '').trim().toLowerCase(),
+            String((row || {}).profile || '').trim().toLowerCase(),
             String((row || {}).secondary_indicator || '').trim().toLowerCase(),
             String((row || {}).instance_key || '').trim().toLowerCase()
         ].join('|');
@@ -887,6 +888,12 @@
             && String((r || {}).symbol || '').trim().toUpperCase() === sym
             && String((r || {}).timeframe || '').trim().toUpperCase() === tf
         ) || null;
+    }
+
+    function profileLabel(row) {
+        const profile = String((row || {}).profile || '').trim();
+        if (!profile) return '';
+        return profile;
     }
 
     function dualSoloRow(parent, role) {
@@ -2116,10 +2123,11 @@
                 ? `<div class="small text-muted">last signal: <span class="${lastSignal === 'BUY' ? 'text-success' : 'text-danger'} fw-semibold">${esc(lastSignal)}</span>${row.last_signal_bar_time ? ` ${esc(row.last_signal_bar_time)}` : ''}</div>`
                 : '';
             const resolvedHtml = `${esc(row.resolved_signal || '-')}${lastSignalHtml}`;
+            const profile = profileLabel(row);
             return `<tr>
                 <td>${esc(fmtTs(row.last_seen))}</td>
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
-                <td>${esc(row.indicator || '-')}<div class="small text-muted">${esc(row.bridge_version || '')}</div></td>
+                <td>${esc(row.indicator || '-')}<div class="small text-muted">${esc(row.bridge_version || '')}${profile ? ` / ${esc(profile)}` : ''}</div></td>
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</td>
                 <td class="${stateClass(row)}">${esc(row.state || '-')}</td>
                 <td>${auto}</td>

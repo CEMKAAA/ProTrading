@@ -171,6 +171,8 @@ class TelegramBridgeService:
             "supplydemand",
             "entryexit",
             "verypromising",
+            "verypromising_closedbar",
+            "verypromising_livebar_stable5",
             "snake_t3_state",
             "unicross",
         }
@@ -197,6 +199,8 @@ class TelegramBridgeService:
             "supplydemand",
             "entryexit",
             "verypromising",
+            "verypromising_closedbar",
+            "verypromising_livebar_stable5",
             "snake_t3_state",
             "unicross",
         }
@@ -4393,6 +4397,16 @@ class TelegramBridgeService:
             "royal-entry": "entryexit",
             "very_promising": "verypromising",
             "very-promising": "verypromising",
+            "very_promising_closedbar": "verypromising_closedbar",
+            "very-promising-closedbar": "verypromising_closedbar",
+            "verypromising_closed_bar": "verypromising_closedbar",
+            "verypromising-closedbar": "verypromising_closedbar",
+            "verypromising_closedbar_separate": "verypromising_closedbar",
+            "very_promising_livebar_stable5": "verypromising_livebar_stable5",
+            "very-promising-livebar-stable5": "verypromising_livebar_stable5",
+            "verypromising_livebar_stable_5": "verypromising_livebar_stable5",
+            "verypromising-livebar-stable5": "verypromising_livebar_stable5",
+            "verypromising_livebar_stable5_separate": "verypromising_livebar_stable5",
             "q_trend": "verypromising",
             "q-trend": "verypromising",
             "uni_cross": "unicross",
@@ -5310,13 +5324,17 @@ class TelegramBridgeService:
         indicator: Any,
         symbol: Any,
         timeframe: Any,
+        profile: Any = "",
     ) -> str:
         fam = cls._indicator_bridge_family(family)
         indicator_key = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
+        profile_key = str(profile or "").strip().lower()
         symbol_key = str(symbol or "").strip().upper()
         timeframe_key = str(timeframe or "").strip().upper()
         if not indicator_key or not symbol_key or not timeframe_key:
             return ""
+        if profile_key:
+            return f"{fam}|{profile_key}|{indicator_key}|{symbol_key}|{timeframe_key}"
         return f"{fam}|{indicator_key}|{symbol_key}|{timeframe_key}"
 
     @classmethod
@@ -5325,23 +5343,36 @@ class TelegramBridgeService:
         if not raw:
             return {}
         parts = [str(x or "").strip() for x in raw.split("|")]
-        if len(parts) != 4:
+        if len(parts) == 5:
+            family = cls._indicator_bridge_family(parts[0])
+            profile = str(parts[1] or "").strip().lower()
+            indicator_key = str(parts[2] or "").strip()
+            symbol = str(parts[3] or "").strip().upper()
+            timeframe = str(parts[4] or "").strip().upper()
+        elif len(parts) == 4:
+            family = cls._indicator_bridge_family(parts[0])
+            profile = ""
+            indicator_key = str(parts[1] or "").strip()
+            symbol = str(parts[2] or "").strip().upper()
+            timeframe = str(parts[3] or "").strip().upper()
+        else:
             return {}
-        family = cls._indicator_bridge_family(parts[0])
-        indicator_key = str(parts[1] or "").strip()
-        symbol = str(parts[2] or "").strip().upper()
-        timeframe = str(parts[3] or "").strip().upper()
         if not indicator_key or not symbol or not timeframe:
             return {}
         # Best-effort human-readable label for rows that exist only in persisted config.
         indicator_display = " ".join(str(x).capitalize() for x in indicator_key.split())
         return {
             "terminal_family": str(family),
+            "profile": str(profile),
             "indicator_key": str(indicator_key),
             "indicator": str(indicator_display or indicator_key),
             "symbol": str(symbol),
             "timeframe": str(timeframe),
-            "instance_key": f"{family}|{indicator_key}|{symbol}|{timeframe}",
+            "instance_key": (
+                f"{family}|{profile}|{indicator_key}|{symbol}|{timeframe}"
+                if profile
+                else f"{family}|{indicator_key}|{symbol}|{timeframe}"
+            ),
         }
 
     @staticmethod
@@ -5863,6 +5894,7 @@ class TelegramBridgeService:
         indicator: Any,
         symbol: Any,
         timeframe: Any,
+        profile: Any = "",
     ) -> Dict[str, Any]:
         terminal_family = self._indicator_bridge_family(family)
         indicator_name = self._normalize_mt4_indicator_name(indicator) or str(indicator or "").strip()
@@ -5873,6 +5905,7 @@ class TelegramBridgeService:
             indicator=indicator_name,
             symbol=symbol_name,
             timeframe=timeframe_name,
+            profile=profile,
         )
         overrides = self._indicator_bridge_instance_automation_overrides(terminal_family)
         instance_key_l = str(instance_key or "").strip().lower()
@@ -6102,12 +6135,14 @@ class TelegramBridgeService:
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
             family=family,
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         row = {
             "terminal_family": str(family),
@@ -6322,6 +6357,7 @@ class TelegramBridgeService:
                     indicator=indicator,
                     symbol=symbol,
                     timeframe=timeframe,
+                    profile=spec.get("profile"),
                 )
                 if not instance_key:
                     continue
@@ -6330,6 +6366,7 @@ class TelegramBridgeService:
                     indicator=indicator,
                     symbol=symbol,
                     timeframe=timeframe,
+                    profile=spec.get("profile"),
                 )
                 existing = dict(self._indicator_bridge_instances.get(str(instance_key)) or {})
                 virtual_row = {
@@ -6387,6 +6424,7 @@ class TelegramBridgeService:
         indicator: Any,
         symbol: Any,
         timeframe: Any,
+        profile: Any = "",
         enabled: Optional[bool] = None,
         lot_size: Optional[float] = None,
         mode_advanced_enabled: Optional[bool] = None,
@@ -6416,6 +6454,7 @@ class TelegramBridgeService:
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         if not instance_key:
             return {"ok": False, "error": "invalid_instance_key"}
@@ -6563,6 +6602,7 @@ class TelegramBridgeService:
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         with self._lock:
             prev = self._indicator_bridge_instances.get(str(instance_key))
@@ -6667,6 +6707,7 @@ class TelegramBridgeService:
                 indicator=indicator,
                 symbol=symbol,
                 timeframe=timeframe,
+                profile=row.get("profile"),
             )
             pos_rows = list(open_by_symbol.get(symbol) or [])
             live_pos = next((p for p in pos_rows if int(_to_float_or_none(p.get("ticket")) or 0) == ticket), None)
@@ -6771,6 +6812,7 @@ class TelegramBridgeService:
                 indicator=indicator,
                 symbol=symbol,
                 timeframe=timeframe,
+                profile=row.get("profile"),
             )
             linked = dict(ladder_by_instance.get(str(instance_key).lower()) or {})
             merged = dict(row)
@@ -6968,6 +7010,7 @@ class TelegramBridgeService:
                 indicator=indicator,
                 symbol=symbol,
                 timeframe=timeframe,
+                profile=meta.get("profile"),
             )
             out.append(
                 {
@@ -7409,6 +7452,7 @@ class TelegramBridgeService:
                             indicator=row.get("indicator"),
                             symbol=row.get("symbol"),
                             timeframe=row.get("timeframe"),
+                            profile=row.get("profile"),
                         )
                     ).strip().lower()
                 latest_entry = latest_entry_by_instance.get(str(inst))
@@ -11079,6 +11123,7 @@ class TelegramBridgeService:
         self,
         *,
         family: str,
+        profile: str = "",
         indicator_key: str,
         symbol: str,
         timeframe: str,
@@ -11088,8 +11133,9 @@ class TelegramBridgeService:
         eid = str(event_id or "").strip()
         if not eid:
             return True
+        profile_key = str(profile or "").strip().lower()
         key = (
-            f"{str(family or '').strip().lower()}|{str(indicator_key or '').strip().lower()}|"
+            f"{str(family or '').strip().lower()}|{profile_key}|{str(indicator_key or '').strip().lower()}|"
             f"{str(symbol or '').strip().upper()}|{str(timeframe or '').strip().upper()}|{eid}"
         )
         win = float(self._indicator_event_id_window_sec())
@@ -12008,6 +12054,7 @@ class TelegramBridgeService:
                 indicator=virtual_indicator,
                 symbol=symbol_norm,
                 timeframe=timeframe_norm,
+                profile=profile_hint,
             )
             # Dual solo automation must be opt-in per tile. Do not inherit any
             # broad/default instance enablement, otherwise a pair gate could
@@ -12096,6 +12143,7 @@ class TelegramBridgeService:
             indicator=str(indicator),
             symbol=str(symbol),
             timeframe=str(timeframe),
+            profile=(payload or {}).get("signal_profile") or profile,
         )
         confirm_sec = _to_float_or_none((runtime_cfg or {}).get("signal_confirm_sec"))
         if confirm_sec is None:
@@ -12398,6 +12446,7 @@ class TelegramBridgeService:
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         has_resolved_signal = "resolved_signal" in (payload or {})
         resolved = self._bridge_direction((payload or {}).get("resolved_signal"))
@@ -12814,6 +12863,7 @@ class TelegramBridgeService:
                     indicator=indicator,
                     symbol=symbol,
                     timeframe=timeframe,
+                    profile=profile,
                 ),
                 "bridge": registered,
             }
@@ -12852,6 +12902,7 @@ class TelegramBridgeService:
                 indicator=indicator,
                 symbol=symbol,
                 timeframe=timeframe,
+                profile=profile,
             )
             fallback_result: Optional[Dict[str, Any]] = None
             fallback_reason = ""
@@ -12946,6 +12997,7 @@ class TelegramBridgeService:
                 indicator=indicator,
                 symbol=symbol,
                 timeframe=timeframe,
+                profile=profile,
             )
             exit_mode_raw = p.get("entry_exit_exit_mode") or p.get("exit_mode")
             exit_mode = (
@@ -13049,6 +13101,7 @@ class TelegramBridgeService:
         if event_id:
             if not self._check_and_mark_indicator_event_id(
                 family=str(family),
+                profile=str(profile),
                 indicator_key=str(indicator_key),
                 symbol=str(symbol),
                 timeframe=str(timeframe),
@@ -13104,6 +13157,7 @@ class TelegramBridgeService:
             indicator=indicator,
             symbol=symbol,
             timeframe=timeframe,
+            profile=profile,
         )
         if bool(bridge_v2_confirmed):
             runtime_cfg = dict(runtime_cfg or {})

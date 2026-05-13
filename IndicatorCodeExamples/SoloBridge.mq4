@@ -24,6 +24,7 @@ input bool   InpPollOnTick = false;  // Lower-latency mode: also evaluate buffer
 input int    InpConfirmSeconds = 20; // resolved direction must stay stable this long
 input int    InpConfirmBars = 0;     // 0 = use InpConfirmSeconds; >0 requires this many chart bars
 input bool   InpLatchSignalUntilConfirm = false; // Pulse indicators: keep first detected signal pending until confirm timeout
+input bool   InpConfirmPendingOnClosedBar = false; // Live-bar mode: if pending bar closes with same signal, confirm immediately.
 input bool   InpEmitResolvedStateOnChange = false; // Publish resolved_state immediately when pending direction changes
 input bool   InpSendInitialConfirmedOnStart = false; // false prevents startup duplicate entries
 input int    InpResolvedStateSeconds = 30; // periodic state reconciliation event
@@ -392,11 +393,12 @@ string _build_endpoint(string baseUrl, string apiPath)
 string _build_event_id(string eventType, string direction, datetime signalBarTime)
 {
    string seed = StringFormat(
-      "%s|%s|%s|%s|%s|%I64d",
+      "%s|%s|%s|%s|%s|%s|%I64d",
       _trim(eventType),
       _trim(direction),
       Symbol(),
       _tf_to_string(Period()),
+      _trim(InpSignalProfile),
       InpIndicatorName,
       (long)signalBarTime
    );
@@ -1306,6 +1308,55 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
    return false;
 }
 
+bool _confirm_pending_from_closed_bar(datetime nowTs)
+{
+   if(!InpConfirmPendingOnClosedBar)
+      return false;
+   if(InpSignalShift != 0 || g_pendingDir == 0 || g_pendingBar <= 0)
+      return false;
+
+   int closedDir = 0;
+   string closedText = "";
+   double closedValue = 0.0;
+   datetime closedBar = 0;
+   double closedRawBuy = EMPTY_VALUE;
+   double closedRawSell = EMPTY_VALUE;
+   bool closedResolved = _read_resolved_signal(1, closedDir, closedText, closedValue, closedBar, closedRawBuy, closedRawSell);
+
+   if(!closedResolved || closedDir != g_pendingDir || closedBar != g_pendingBar)
+      return false;
+
+   if(g_confirmedDir == closedDir && g_lastConfirmedBar == closedBar)
+   {
+      g_pendingDir = 0;
+      g_pendingStartedAt = 0;
+      g_pendingBar = 0;
+      g_pendingSignalValue = 0.0;
+      return true;
+   }
+
+   if(InpRetryFailedSendEverySeconds > 0 && g_lastFailedSendAt > 0 && nowTs > 0 && (nowTs - g_lastFailedSendAt) < InpRetryFailedSendEverySeconds)
+      return true;
+
+   if(_send_or_queue_event("confirmed_signal", closedText, closedValue, closedBar))
+   {
+      g_pendingDir = 0;
+      g_pendingStartedAt = 0;
+      g_pendingBar = 0;
+      g_pendingSignalValue = 0.0;
+      g_confirmedDir = closedDir;
+      g_lastConfirmedBar = closedBar;
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 confirmed pending from closed bar direction=", closedText, " bar=", TimeToString(closedBar, TIME_DATE|TIME_SECONDS));
+   }
+   else
+   {
+      g_lastFailedSendAt = nowTs;
+   }
+
+   return true;
+}
+
 void _check_and_send()
 {
    int direction = 0;
@@ -1324,11 +1375,15 @@ void _check_and_send()
       }
       if(g_pendingDir != 0)
       {
+         datetime noSignalNowTs = TimeCurrent();
+         if(noSignalNowTs <= 0)
+            noSignalNowTs = TimeLocal();
+         if(_confirm_pending_from_closed_bar(noSignalNowTs))
+            return;
+
          if(InpLatchSignalUntilConfirm && dirText != "AMBIGUOUS")
          {
-            datetime latchNowTs = TimeCurrent();
-            if(latchNowTs <= 0)
-               latchNowTs = TimeLocal();
+            datetime latchNowTs = noSignalNowTs;
             int latchConfirmSec = _effective_confirm_seconds();
 
             if(latchConfirmSec > 0 && latchNowTs > 0 && g_pendingStartedAt > 0 && (latchNowTs - g_pendingStartedAt) < latchConfirmSec)
@@ -1393,6 +1448,9 @@ void _check_and_send()
       return;
 
    if(direction == g_confirmedDir && barTime == g_lastConfirmedBar && g_pendingDir == 0)
+      return;
+
+   if(g_pendingDir != 0 && g_pendingBar != barTime && _confirm_pending_from_closed_bar(nowTs))
       return;
 
    if(g_pendingDir != direction || g_pendingBar != barTime)

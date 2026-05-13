@@ -11,6 +11,7 @@ InpPollSeconds=1
 InpConfirmSeconds=5
 InpConfirmBars=0
 InpLatchSignalUntilConfirm=false
+InpConfirmPendingOnClosedBar=true
 InpSendInitialConfirmedOnStart=false
 InpResolvedStateSeconds=30
 InpRetryFailedSendEverySeconds=2
