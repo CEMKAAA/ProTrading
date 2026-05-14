@@ -165,6 +165,7 @@ class TelegramBridgeService:
             "triangularmacentered",
             "payapa",
             "fxnuke",
+            "fxnuke_livebar_stable10",
             "uranus",
             "alchemy",
             "forexcyper",
@@ -175,6 +176,8 @@ class TelegramBridgeService:
             "verypromising_livebar_stable5",
             "snake_t3_state",
             "unicross",
+            "volumatic_vidya",
+            "adaptive_ama",
         }
     )
     _MT4_EXEC_DEFAULT_ENABLED_PROFILES: frozenset[str] = frozenset(
@@ -193,6 +196,7 @@ class TelegramBridgeService:
             "triangularmacentered",
             "payapa",
             "fxnuke",
+            "fxnuke_livebar_stable10",
             "uranus",
             "alchemy",
             "forexcyper",
@@ -203,6 +207,8 @@ class TelegramBridgeService:
             "verypromising_livebar_stable5",
             "snake_t3_state",
             "unicross",
+            "volumatic_vidya",
+            "adaptive_ama",
         }
     )
     _MT4_EXEC_INDICATOR_PROFILE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
@@ -228,6 +234,8 @@ class TelegramBridgeService:
         ("verypromising", ("verypromising", "very promising", "q-trend", "q trend")),
         ("snake_t3_state", ("snaket3state", "snake t3 state", "snake_t3_state", "snake+t3", "snake t3")),
         ("unicross", ("unicross", "uni cross")),
+        ("volumatic_vidya", ("volumaticvariableindex", "volumatic variable index", "volumatic vidya", "variable index dynamic average")),
+        ("adaptive_ama", ("adaptivemovingaverages", "adaptive moving average", "ama signals zeiierman", "ama signals")),
     )
 
     @staticmethod
@@ -448,6 +456,8 @@ class TelegramBridgeService:
         self._indicator_snake_t3_csv_cursor: Dict[str, str] = {}
         self._indicator_snake_t3_csv_tape: List[Dict[str, Any]] = []
         self._indicator_snake_t3_csv_tapes: Dict[str, List[Dict[str, Any]]] = {}
+        self._indicator_daily_guard_close_last_ts: float = 0.0
+        self._indicator_daily_guard_close_reason: str = ""
         self._restore_pending_entry_signals()
 
     @staticmethod
@@ -2315,6 +2325,10 @@ class TelegramBridgeService:
         t = int(_to_float_or_none(ticket) or 0)
         max_attempts = int(max(1, min(20, int(attempts or 1))))
         last_stats: Dict[str, Any] = {}
+        last_nonzero_sig: Tuple[int, Optional[float], Optional[int]] = (0, None, None)
+        stable_nonzero_seen = False
+        first_nonzero_ts = 0.0
+        min_settle_sec = 1.25
         for attempt in range(max_attempts):
             stats = self._resolve_position_realized_stats(
                 svc=svc,
@@ -2322,9 +2336,25 @@ class TelegramBridgeService:
                 symbol=(str(symbol or "").strip() or None),
             )
             last_stats = dict(stats or {})
-            if int(_to_float_or_none((stats or {}).get("close_count")) or 0) > 0:
-                last_stats["pnl_resolution"] = "history" if attempt <= 0 else f"history_retry_{int(attempt)}"
-                return dict(last_stats)
+            close_count = int(_to_float_or_none((stats or {}).get("close_count")) or 0)
+            if close_count > 0:
+                now_loop = float(time.time())
+                if first_nonzero_ts <= 0.0:
+                    first_nonzero_ts = float(now_loop)
+                sig = (
+                    int(close_count),
+                    _to_float_or_none((stats or {}).get("realized_pnl")),
+                    int(_to_float_or_none((stats or {}).get("last_close_deal")) or 0) or None,
+                )
+                if sig == last_nonzero_sig:
+                    stable_nonzero_seen = True
+                else:
+                    stable_nonzero_seen = False
+                    last_nonzero_sig = sig
+                settled = (float(now_loop) - float(first_nonzero_ts)) >= float(min_settle_sec)
+                if (stable_nonzero_seen and settled) or attempt >= max_attempts - 1:
+                    last_stats["pnl_resolution"] = "history" if attempt <= 0 else f"history_retry_{int(attempt)}"
+                    return dict(last_stats)
             if attempt < max_attempts - 1:
                 try:
                     time.sleep(float(max(0.0, min(1.0, float(delay_sec or 0.0)))))
@@ -4407,10 +4437,27 @@ class TelegramBridgeService:
             "verypromising_livebar_stable_5": "verypromising_livebar_stable5",
             "verypromising-livebar-stable5": "verypromising_livebar_stable5",
             "verypromising_livebar_stable5_separate": "verypromising_livebar_stable5",
+            "fx_nuke_livebar_stable10": "fxnuke_livebar_stable10",
+            "fx-nuke-livebar-stable10": "fxnuke_livebar_stable10",
+            "fxnuke_livebar_stable_10": "fxnuke_livebar_stable10",
+            "fxnuke-livebar-stable10": "fxnuke_livebar_stable10",
             "q_trend": "verypromising",
             "q-trend": "verypromising",
             "uni_cross": "unicross",
             "uni-cross": "unicross",
+            "volumatic": "volumatic_vidya",
+            "volumatic_vidya": "volumatic_vidya",
+            "volumatic-vidya": "volumatic_vidya",
+            "volumatic_variable_index": "volumatic_vidya",
+            "volumatic-variable-index": "volumatic_vidya",
+            "volumaticvariableindex": "volumatic_vidya",
+            "adaptive_ama": "adaptive_ama",
+            "adaptive-ama": "adaptive_ama",
+            "adaptive_moving_average": "adaptive_ama",
+            "adaptive-moving-average": "adaptive_ama",
+            "adaptivemovingaverages": "adaptive_ama",
+            "ama_signals": "adaptive_ama",
+            "ama-signals": "adaptive_ama",
         }
         p = str(aliases.get(p, p))
         if p not in TelegramBridgeService._MT4_EXEC_KNOWN_PROFILES:
@@ -4499,8 +4546,10 @@ class TelegramBridgeService:
     def get_indicator_bridge_risk_settings(cls) -> Dict[str, Any]:
         daily_target = _to_float_or_none(cls._get_env_value("INDICATOR_BRIDGE_DAILY_TARGET_USD", "0"))
         daily_max_loss = _to_float_or_none(cls._get_env_value("INDICATOR_BRIDGE_DAILY_MAX_LOSS_USD", "0"))
-        target_override_date = str(cls._get_env_value("INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC", "") or "").strip()
-        max_loss_override_date = str(cls._get_env_value("INDICATOR_BRIDGE_DAILY_MAX_LOSS_OVERRIDE_DATE_UTC", "") or "").strip()
+        # Daily guard bypass is intentionally disabled for Indicator Automation V2.
+        # Hitting daily target/max-loss must hard-lock trading until the next UTC day.
+        target_override_date = ""
+        max_loss_override_date = ""
         today_utc = datetime.now(timezone.utc).date().isoformat()
         target_override_today = bool(target_override_date == today_utc)
         max_loss_override_today = bool(max_loss_override_date == today_utc)
@@ -4612,18 +4661,14 @@ class TelegramBridgeService:
             if v is None or (not math.isfinite(float(v))) or float(v) < 0.0:
                 return {"ok": False, "error": "invalid_daily_max_loss_usd"}
             updates["INDICATOR_BRIDGE_DAILY_MAX_LOSS_USD"] = f"{float(v):.2f}"
-        if daily_target_guard_bypass_today is not None:
-            updates["INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC"] = (
-                datetime.now(timezone.utc).date().isoformat() if bool(daily_target_guard_bypass_today) else ""
-            )
-        if daily_guard_bypass_today is not None:
-            bypass_date = datetime.now(timezone.utc).date().isoformat() if bool(daily_guard_bypass_today) else ""
-            updates["INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC"] = bypass_date
-            updates["INDICATOR_BRIDGE_DAILY_MAX_LOSS_OVERRIDE_DATE_UTC"] = bypass_date
-        elif daily_max_loss_guard_bypass_today is not None:
-            updates["INDICATOR_BRIDGE_DAILY_MAX_LOSS_OVERRIDE_DATE_UTC"] = (
-                datetime.now(timezone.utc).date().isoformat() if bool(daily_max_loss_guard_bypass_today) else ""
-            )
+        if (
+            daily_target_guard_bypass_today is not None
+            or daily_guard_bypass_today is not None
+            or daily_max_loss_guard_bypass_today is not None
+        ):
+            # Hard safety policy: no same-day bypass for daily target/max-loss.
+            updates["INDICATOR_BRIDGE_DAILY_TARGET_OVERRIDE_DATE_UTC"] = ""
+            updates["INDICATOR_BRIDGE_DAILY_MAX_LOSS_OVERRIDE_DATE_UTC"] = ""
         if channel_risk_overrides is not None:
             cleaned = self._normalize_indicator_bridge_channel_risk_overrides(channel_risk_overrides)
             if cleaned is None:
@@ -5132,7 +5177,155 @@ class TelegramBridgeService:
             out.append(row)
         return out
 
-    def get_indicator_bridge_daily_risk_status(self) -> Dict[str, Any]:
+    def _close_indicator_bridge_positions_for_daily_guard(
+        self,
+        *,
+        reason: str,
+        daily_risk: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Hard-stop Indicator Automation positions after daily risk lock.
+
+        Scope is intentionally restricted to MT indicator positions tracked by
+        the automation layer. Manual/Telegram positions are not inferred from
+        broker inventory unless they have a matching mt_indicator open log.
+        """
+        reason_txt = str(reason or "daily_risk_guard").strip() or "daily_risk_guard"
+        now_ts = float(time.time())
+        with self._lock:
+            if (
+                str(self._indicator_daily_guard_close_reason or "") == str(reason_txt)
+                and (now_ts - float(self._indicator_daily_guard_close_last_ts or 0.0)) < 1.0
+            ):
+                return {"ok": True, "throttled": True, "reason": str(reason_txt), "closed_count": 0, "failed": []}
+            self._indicator_daily_guard_close_last_ts = float(now_ts)
+            self._indicator_daily_guard_close_reason = str(reason_txt)
+            ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
+
+        svc = self._get_live_service()
+        closed_count = 0
+        failed: List[str] = []
+        closed_tickets: set[int] = set()
+        remove_keys: List[str] = []
+
+        def _close_ticket(row: Dict[str, Any], *, audit_reason: str) -> None:
+            nonlocal closed_count
+            sym = str((row or {}).get("symbol") or "").strip().upper()
+            ticket = int(_to_float_or_none((row or {}).get("broker_ticket") or (row or {}).get("ticket")) or 0)
+            if not sym or ticket <= 0 or int(ticket) in closed_tickets:
+                return
+            out = svc.close_position(symbol=str(sym), position_ticket=int(ticket), comment="indicator_daily_guard_close")
+            if bool((out or {}).get("ok")):
+                closed_count += 1
+                closed_tickets.add(int(ticket))
+                self._append_closed_execution_log_from_row(
+                    row={
+                        **dict(row or {}),
+                        "broker_ticket": int(ticket),
+                        "symbol": str(sym),
+                    },
+                    reason=str(audit_reason),
+                    svc=svc,
+                    close_result=dict(out or {}),
+                )
+            else:
+                err = str((out or {}).get("error") or "close_failed")[:160]
+                if "position_not_found" not in err.lower() and "not found" not in err.lower():
+                    failed.append(f"{sym}#{int(ticket)}:{err}")
+
+        for key, row in ladders.items():
+            tag = str((row or {}).get("source_tag") or "").strip().lower()
+            if not self._is_bridge_source_tag(tag):
+                continue
+            ticket = int(_to_float_or_none((row or {}).get("broker_ticket")) or 0)
+            _close_ticket(dict(row), audit_reason=str(reason_txt))
+            if ticket <= 0 or int(ticket) in closed_tickets:
+                remove_keys.append(str(key))
+
+        # Recovery pass for open mt_indicator rows that are not in memory,
+        # e.g. after backend restart.
+        try:
+            broker_positions = {int((p or {}).get("ticket") or 0): dict(p) for p in svc.get_open_positions(symbol=None)}
+        except Exception:
+            broker_positions = {}
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TelegramAutomationExecutionLogModel)
+                .filter(TelegramAutomationExecutionLogModel.source_type == "mt_indicator")
+                .filter(TelegramAutomationExecutionLogModel.status == "opened")
+                .order_by(TelegramAutomationExecutionLogModel.id.desc())
+                .limit(5000)
+                .all()
+            )
+        except Exception:
+            logger.exception("indicator_daily_guard_open_log_query_failed")
+            rows = []
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        for r in rows:
+            extra = _json_obj(getattr(r, "extra_json", {}) or {})
+            ticket = int(
+                _to_float_or_none(getattr(r, "ticket", None))
+                or _to_float_or_none(getattr(r, "order_number", None))
+                or _to_float_or_none(extra.get("broker_ticket"))
+                or 0
+            )
+            if ticket <= 0 or ticket in closed_tickets or ticket not in broker_positions:
+                continue
+            pos = dict(broker_positions.get(ticket) or {})
+            row = {
+                "broker_ticket": int(ticket),
+                "symbol": str(getattr(r, "symbol", "") or pos.get("symbol") or "").strip().upper(),
+                "timeframe": str(getattr(r, "timeframe", "") or "").strip().upper(),
+                "direction": str(getattr(r, "direction", "") or pos.get("direction") or "").strip().upper(),
+                "source_name": str(getattr(r, "source_name", "") or getattr(r, "indicator", "") or "mt_indicator"),
+                "indicator": str(getattr(r, "indicator", "") or getattr(r, "source_name", "") or ""),
+                "profile": str(extra.get("profile") or ""),
+                "source_tag": str(getattr(r, "source_tag", "") or extra.get("source_tag") or "").strip().lower(),
+                "execution_mode": str(getattr(r, "execution_mode", "") or extra.get("execution_mode") or ""),
+                "created_at": str(getattr(r, "opened_at", "") or getattr(r, "created_at", "") or ""),
+                "lot": _to_float_or_none(getattr(r, "lot", None)) or _to_float_or_none(pos.get("lot_size")),
+            }
+            if not self._is_bridge_source_tag(str(row.get("source_tag") or "")):
+                continue
+            _close_ticket(row, audit_reason=str(reason_txt))
+
+        if remove_keys:
+            with self._lock:
+                for key in remove_keys:
+                    self._active_confirmation_signal_ladders.pop(str(key), None)
+
+        if closed_count > 0 or failed:
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name="DailyRiskGuard",
+                trigger="daily_risk_guard",
+                status=("closed" if closed_count > 0 and not failed else ("failed" if failed else "skipped")),
+                symbol="",
+                timeframe="",
+                direction="",
+                message=f"{reason_txt}:closed_all_active_indicator_positions",
+                profile="risk_guard",
+                indicator="DailyRiskGuard",
+                source_tag="mt4|daily_risk_guard|indicator_bridge",
+                event_ts=self._now_iso(),
+                execution_mode="risk_guard",
+                stage="daily_risk_guard_close",
+                stage_status=("closed" if closed_count > 0 and not failed else ("partial" if closed_count > 0 else "failed")),
+                stage_payload={
+                    "reason": str(reason_txt),
+                    "closed_count": int(closed_count),
+                    "failed": list(failed[:20]),
+                    "daily_risk": dict(daily_risk or {}),
+                },
+                error_code=(None if not failed else "daily_guard_close_failed"),
+            )
+        return {"ok": not bool(failed), "reason": str(reason_txt), "closed_count": int(closed_count), "failed": list(failed)}
+
+    def get_indicator_bridge_daily_risk_status(self, *, enforce_close: bool = True) -> Dict[str, Any]:
         settings = self.get_indicator_bridge_risk_settings()
         now_utc = datetime.now(timezone.utc)
         start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -5188,13 +5381,13 @@ class TelegramBridgeService:
         max_loss_override = bool((settings or {}).get("daily_max_loss_guard_bypassed_today"))
         reason = ""
         blocked = False
-        if float(target) > 0.0 and float(pnl) >= float(target) and not target_override:
+        if float(target) > 0.0 and float(pnl) >= float(target):
             reason = "daily_target_reached"
             blocked = True
-        elif float(max_loss) > 0.0 and float(pnl) <= -float(max_loss) and not max_loss_override:
+        elif float(max_loss) > 0.0 and float(pnl) <= -float(max_loss):
             reason = "daily_max_loss_reached"
             blocked = True
-        return {
+        out = {
             "ok": True,
             "date_utc": start_utc.date().isoformat(),
             "start_utc": start_utc.isoformat(),
@@ -5206,11 +5399,18 @@ class TelegramBridgeService:
             "rows_checked": int(rows_checked),
             "blocked": bool(blocked),
             "block_reason": str(reason),
-            "daily_target_guard_bypassed_today": bool(target_override),
-            "daily_max_loss_guard_bypassed_today": bool(max_loss_override),
-            "daily_guard_bypassed_today": bool(target_override and max_loss_override),
+            "daily_target_guard_bypassed_today": False,
+            "daily_max_loss_guard_bypassed_today": False,
+            "daily_guard_bypassed_today": False,
+            "bypass_disabled": True,
             "settings": dict(settings),
         }
+        if bool(enforce_close) and bool(blocked):
+            out["close_enforcement"] = self._close_indicator_bridge_positions_for_daily_guard(
+                reason=str(reason),
+                daily_risk=dict(out),
+            )
+        return out
 
     def _indicator_bridge_catastrophe_stop_loss(
         self,
@@ -6168,6 +6368,8 @@ class TelegramBridgeService:
             "pending_age_sec": _to_float_or_none(p.get("pending_age_sec")),
             "confirm_seconds": _to_float_or_none(p.get("confirm_seconds")),
             "signal_confirm_sec": _to_float_or_none(runtime_cfg.get("signal_confirm_sec")),
+            "bridge_local_time": str(p.get("bridge_local_time") or "").strip(),
+            "bridge_local_unix": int(_to_float_or_none(p.get("bridge_local_unix")) or 0),
             "resolved_signal_shift": int(_to_float_or_none(p.get("resolved_signal_shift")) or -1),
             "resolved_signal_bar_time": str(p.get("resolved_signal_bar_time") or "").strip(),
             "resolved_signal_bar_unix": int(_to_float_or_none(p.get("resolved_signal_bar_unix")) or 0),
@@ -11942,6 +12144,36 @@ class TelegramBridgeService:
             "close_result": dict(close_out or {}),
         }
 
+    def _livebar_profile_closes_on_resolved_none(self, profile: Any) -> bool:
+        p = self._mt4_exec_normalized_profile(str(profile or ""))
+        return p in {"verypromising_livebar_stable5", "fxnuke_livebar_stable10"}
+
+    def _close_livebar_invalidated_positions(
+        self,
+        *,
+        family: str,
+        profile: str,
+        indicator_key: str,
+        symbol: str,
+        timeframe: str,
+        runtime_cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not self._livebar_profile_closes_on_resolved_none(profile):
+            return {"ok": True, "closed_count": 0, "reason": "profile_not_livebar_invalidation"}
+        close_out = self._close_indicator_combo_positions_all_directions(
+            family=str(family),
+            profile=str(profile),
+            indicator_key=str(indicator_key),
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+            runtime_cfg=dict(runtime_cfg or {}),
+            close_reason="closed_by_livebar_signal_invalidated",
+        )
+        out = dict(close_out or {})
+        out["reason"] = "livebar_resolved_none_close"
+        out["profile"] = str(profile)
+        return out
+
     def _indicator_bridge_mode_source_tags(
         self,
         *,
@@ -12659,6 +12891,23 @@ class TelegramBridgeService:
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "v2_reconcile_disabled"}
             return base
         if not resolved:
+            invalid_close = self._close_livebar_invalidated_positions(
+                family=str(family),
+                profile=str(profile),
+                indicator_key=str(indicator_key),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                runtime_cfg=dict(runtime_cfg or {}),
+            )
+            base["livebar_invalidation_close"] = dict(invalid_close or {})
+            if str((invalid_close or {}).get("reason") or "") == "livebar_resolved_none_close":
+                base["reconcile"] = {
+                    "ok": bool((invalid_close or {}).get("ok", True)),
+                    "corrected": int((invalid_close or {}).get("closed_count") or 0) > 0,
+                    "reason": "livebar_resolved_none_close",
+                    "close_result": dict(invalid_close or {}),
+                }
+                return base
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "no_resolved_direction"}
             return base
         if pending:
@@ -13752,6 +14001,10 @@ class TelegramBridgeService:
                 daily_risk = self.get_indicator_bridge_daily_risk_status()
                 if bool((daily_risk or {}).get("blocked")):
                     reason = str((daily_risk or {}).get("block_reason") or "daily_risk_blocked")
+                    close_enforcement = self._close_indicator_bridge_positions_for_daily_guard(
+                        reason=str(reason),
+                        daily_risk=dict(daily_risk or {}),
+                    )
                     self._append_automation_execution_log(
                         source_type="mt_indicator",
                         source_name=str(indicator),
@@ -13771,7 +14024,7 @@ class TelegramBridgeService:
                         trace_id=str(signal.get("trace_id") or ""),
                         stage="daily_risk_guard",
                         stage_status="blocked",
-                        stage_payload=dict(daily_risk or {}),
+                        stage_payload={**dict(daily_risk or {}), "close_enforcement": dict(close_enforcement or {})},
                         error_code=str(reason),
                     )
                     mode_results.append(
@@ -14015,6 +14268,13 @@ class TelegramBridgeService:
                             "profile": str(profile),
                             "indicator": str(indicator),
                             "event_ts": event_ts,
+                            "event_id": str(p.get("event_id") or ""),
+                            "bridge_local_time": str(p.get("bridge_local_time") or ""),
+                            "bridge_local_unix": p.get("bridge_local_unix"),
+                            "resolved_signal_bar_time": str(p.get("resolved_signal_bar_time") or ""),
+                            "resolved_signal_bar_unix": p.get("resolved_signal_bar_unix"),
+                            "last_signal_bar_time": str(p.get("last_signal_bar_time") or ""),
+                            "last_signal_bar_unix": p.get("last_signal_bar_unix"),
                         },
                     )
                     executed = str(exec_msg or "").strip().lower().startswith("normal mode order executed")
@@ -14040,6 +14300,13 @@ class TelegramBridgeService:
                             "profile": str(profile),
                             "indicator": str(indicator),
                             "event_ts": event_ts,
+                            "event_id": str(p.get("event_id") or ""),
+                            "bridge_local_time": str(p.get("bridge_local_time") or ""),
+                            "bridge_local_unix": p.get("bridge_local_unix"),
+                            "resolved_signal_bar_time": str(p.get("resolved_signal_bar_time") or ""),
+                            "resolved_signal_bar_unix": p.get("resolved_signal_bar_unix"),
+                            "last_signal_bar_time": str(p.get("last_signal_bar_time") or ""),
+                            "last_signal_bar_unix": p.get("last_signal_bar_unix"),
                             "indicator_advanced_v2_policy": str(policy_name) if policy_name else None,
                         },
                         execution_mode=("advanced_v2" if str(mode) == "advanced_v2" else "advanced"),
@@ -14559,6 +14826,13 @@ class TelegramBridgeService:
                 "profile": str(profile),
                 "indicator": str(indicator),
                 "event_ts": event_ts,
+                "event_id": str(p.get("event_id") or ""),
+                "bridge_local_time": str(p.get("bridge_local_time") or ""),
+                "bridge_local_unix": p.get("bridge_local_unix"),
+                "resolved_signal_bar_time": str(p.get("resolved_signal_bar_time") or ""),
+                "resolved_signal_bar_unix": p.get("resolved_signal_bar_unix"),
+                "last_signal_bar_time": str(p.get("last_signal_bar_time") or ""),
+                "last_signal_bar_unix": p.get("last_signal_bar_unix"),
             },
         )
         executed = str(exec_msg or "").strip().lower().startswith("confirmation ladder executed")
@@ -16625,6 +16899,7 @@ class TelegramBridgeService:
                     direction=direction,
                     ticket=int(broker_ticket),
                 )
+            opened_audit_ts = self._now_iso()
             self._append_automation_execution_log(
                 source_type=audit_source_type,
                 source_name=audit_source_name,
@@ -16644,7 +16919,7 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
-                opened_at=self._now_iso(),
+                opened_at=opened_audit_ts,
                 combo_key=self._build_execution_combo_key(
                     source_type=audit_source_type,
                     source_name=audit_source_name,
@@ -16664,6 +16939,17 @@ class TelegramBridgeService:
                     "stage_lots": [float(x) for x in stage_lots],
                     "active_tps": [dict(x) for x in active_tps],
                     "catastrophe_sl": dict(signal.get("catastrophe_sl") or {}) if isinstance(signal.get("catastrophe_sl"), dict) else {},
+                    "signal_latency": {
+                        "source_signal_received_at": str(audit_event_ts or ""),
+                        "order_opened_at": str(opened_audit_ts),
+                        "event_id": str(audit.get("event_id") or ""),
+                        "bridge_local_time": str(audit.get("bridge_local_time") or ""),
+                        "bridge_local_unix": _to_float_or_none(audit.get("bridge_local_unix")),
+                        "resolved_signal_bar_time": str(audit.get("resolved_signal_bar_time") or ""),
+                        "resolved_signal_bar_unix": _to_float_or_none(audit.get("resolved_signal_bar_unix")),
+                        "last_signal_bar_time": str(audit.get("last_signal_bar_time") or ""),
+                        "last_signal_bar_unix": _to_float_or_none(audit.get("last_signal_bar_unix")),
+                    },
                 },
             )
             if self._profile_requires_tp_progress_gate(signal_profile) and str(audit_source_key).strip():
@@ -16963,6 +17249,7 @@ class TelegramBridgeService:
                     direction=side,
                     ticket=int(broker_ticket),
                 )
+            opened_audit_ts = self._now_iso()
             self._append_automation_execution_log(
                 source_type=audit_source_type,
                 source_name=audit_source_name,
@@ -16979,7 +17266,7 @@ class TelegramBridgeService:
                 indicator=audit_indicator,
                 source_tag=source_tag,
                 event_ts=audit_event_ts,
-                opened_at=self._now_iso(),
+                opened_at=opened_audit_ts,
                 combo_key=self._build_execution_combo_key(
                     source_type=audit_source_type,
                     source_name=audit_source_name,
@@ -17005,6 +17292,17 @@ class TelegramBridgeService:
                     "post_open_ticket": int(_to_float_or_none((post_open_position or {}).get("ticket")) or 0) or None,
                     "order_request": dict((data or {}).get("request") or {}),
                     "post_open_sl_adjustment": dict(post_open_sl_adjustment or {}),
+                    "signal_latency": {
+                        "source_signal_received_at": str(audit_event_ts or ""),
+                        "order_opened_at": str(opened_audit_ts),
+                        "event_id": str(audit.get("event_id") or ""),
+                        "bridge_local_time": str(audit.get("bridge_local_time") or ""),
+                        "bridge_local_unix": _to_float_or_none(audit.get("bridge_local_unix")),
+                        "resolved_signal_bar_time": str(audit.get("resolved_signal_bar_time") or ""),
+                        "resolved_signal_bar_unix": _to_float_or_none(audit.get("resolved_signal_bar_unix")),
+                        "last_signal_bar_time": str(audit.get("last_signal_bar_time") or ""),
+                        "last_signal_bar_unix": _to_float_or_none(audit.get("last_signal_bar_unix")),
+                    },
                 },
             )
             sl_text = "none" if order_stop_loss is None else f"{float(order_stop_loss):.5f}"
@@ -17904,6 +18202,15 @@ class TelegramBridgeService:
             self._reconcile_execution_ticket_state()
         except Exception:
             logger.exception("telegram_execution_reconcile_failed")
+        try:
+            daily_risk = self.get_indicator_bridge_daily_risk_status(enforce_close=False)
+            if bool((daily_risk or {}).get("blocked")):
+                self._close_indicator_bridge_positions_for_daily_guard(
+                    reason=str((daily_risk or {}).get("block_reason") or "daily_risk_blocked"),
+                    daily_risk=dict(daily_risk or {}),
+                )
+        except Exception:
+            logger.exception("indicator_daily_guard_close_poll_failed")
         with self._lock:
             ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
         if not ladders:

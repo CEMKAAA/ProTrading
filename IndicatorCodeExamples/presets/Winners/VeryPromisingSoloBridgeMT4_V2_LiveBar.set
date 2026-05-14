@@ -8,6 +8,7 @@ InpSignalCompareMinDiff=0.0
 InpArrowStreakConfirmAfterBlank=false
 InpArrowResolvedLookbackBars=300
 InpPollSeconds=1
+InpPollOnTick=true
 InpConfirmSeconds=0
 InpConfirmBars=0
 InpSendInitialConfirmedOnStart=false

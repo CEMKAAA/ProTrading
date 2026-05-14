@@ -573,6 +573,11 @@
     }
 
     async function setDailyTargetOverride(enabled) {
+        if (enabled) {
+            showNotice('Daily guard bypass is disabled. Daily target/max-loss locks trading until the next UTC day.', 'warning');
+            render();
+            return;
+        }
         pauseStateRefresh(2000);
         if (els.riskTargetOverride) {
             els.riskTargetOverride.disabled = true;
@@ -590,10 +595,7 @@
                 throw new Error(data.error || data.detail || `HTTP ${res.status}`);
             }
             mergeStatePatch(data);
-            showNotice(enabled
-                ? 'Daily target and max-loss guards bypassed for today.'
-                : 'Daily target and max-loss guards restored for today.',
-                enabled ? 'warning' : 'success');
+            showNotice('Daily guard bypass is disabled. Guard remains enforced until the next UTC day.', 'success');
             render();
             refreshStateSoon(1000);
         } finally {
@@ -1914,12 +1916,11 @@
             els.riskDailyStatus.textContent = `$${fmtNum(pnl, 2)}${blocked ? ` BLOCKED${reason}` : (guardBypassed ? ' DAILY GUARD BYPASSED' : '')}`;
         }
         if (els.riskTargetOverride) {
-            const targetBypassed = !!(daily.daily_target_guard_bypassed_today || risk.daily_target_guard_bypassed_today);
-            const maxLossBypassed = !!(daily.daily_max_loss_guard_bypassed_today || risk.daily_max_loss_guard_bypassed_today);
-            const guardBypassed = !!(daily.daily_guard_bypassed_today || risk.daily_guard_bypassed_today || (targetBypassed && maxLossBypassed));
-            els.riskTargetOverride.className = guardBypassed ? 'btn btn-sm btn-warning mt-2' : 'btn btn-sm btn-outline-warning mt-2';
-            els.riskTargetOverride.textContent = guardBypassed ? 'Stop Extra Trades Today' : 'Allow More Today';
-            els.riskTargetOverride.setAttribute('data-enabled', guardBypassed ? '1' : '0');
+            els.riskTargetOverride.className = 'btn btn-sm btn-outline-secondary mt-2';
+            els.riskTargetOverride.textContent = 'Bypass Disabled';
+            els.riskTargetOverride.setAttribute('data-enabled', '0');
+            els.riskTargetOverride.disabled = true;
+            els.riskTargetOverride.title = 'Daily target/max-loss locks are hard safety stops until the next UTC day.';
         }
         if (els.riskStatus) {
             const channelEnabled = Array.from(channelRiskOverrideMap().values()).some(v => Number(v) > 0);

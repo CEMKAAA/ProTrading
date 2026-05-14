@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//| ProTrading MT4 Buffer Bridge EA V2                              |
+//| ProTrading MT4 Buffer Bridge EA V2                               |
 //| Stabilizes indicator BUY/SELL state before backend execution.    |
 //|                                                                  |
 //| Setup notes:                                                     |
 //| 1) Attach this EA to the same chart where your indicator runs.   |
 //| 2) Set indicator name + BUY/SELL buffer indexes.                 |
 //| 3) MT4 -> Tools -> Options -> Expert Advisors ->                 |
-//|    "Allow WebRequest for listed URL": add http://127.0.0.1      |
+//|    "Allow WebRequest for listed URL": add http://127.0.0.1       |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -1242,11 +1242,17 @@ bool _post_bridge_event(string eventType, string direction, double signalValue, 
       "\"symbol\":\"" + _json_escape(symbol) + "\","
       "\"timeframe\":\"" + _json_escape(timeframe) + "\","
       "\"signal_profile\":\"" + _json_escape(InpSignalProfile) + "\","
-      "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
-      "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\","
+      "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\"," 
+      "\"event_id\":\"" + _json_escape(_trim(eventId)) + "\"," 
       "\"event_attempt\":" + IntegerToString((eventAttempt < 1) ? 1 : eventAttempt) + ","
-      "\"last_signal_direction\":\"" + _json_escape(lastSignalText) + "\","
-      "\"last_signal_bar_time\":\"" + _json_escape(lastSignalBar > 0 ? TimeToString(lastSignalBar, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"signal_value\":" + DoubleToString(signalValue, 8) + ","
+      "\"resolved_signal_shift\":" + IntegerToString(InpSignalShift) + ","
+      "\"resolved_signal_bar_time\":\"" + _json_escape(signalBarTime > 0 ? TimeToString(signalBarTime, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"resolved_signal_bar_unix\":" + IntegerToString((int)signalBarTime) + ","
+      "\"bridge_local_time\":\"" + _json_escape(nowTs > 0 ? TimeToString(nowTs, TIME_DATE|TIME_SECONDS) : "") + "\","
+      "\"bridge_local_unix\":" + IntegerToString((int)nowTs) + ","
+      "\"last_signal_direction\":\"" + _json_escape(lastSignalText) + "\"," 
+      "\"last_signal_bar_time\":\"" + _json_escape(lastSignalBar > 0 ? TimeToString(lastSignalBar, TIME_DATE|TIME_SECONDS) : "") + "\"," 
       "\"last_signal_bar_unix\":" + IntegerToString((int)lastSignalBar) + ","
       "\"last_signal_value\":" + DoubleToString(lastSignalValue, 8) + ","
       "\"last_signal_raw_buy\":" + DoubleToString(lastSignalRawBuy, 8) + ","
@@ -1357,6 +1363,48 @@ bool _confirm_pending_from_closed_bar(datetime nowTs)
    return true;
 }
 
+bool _confirm_fresh_closed_bar_signal(datetime nowTs)
+{
+   if(!InpConfirmPendingOnClosedBar)
+      return false;
+   if(InpSignalShift != 0 || g_pendingDir != 0)
+      return false;
+   if(!g_initializedState || g_confirmedDir == 0 || g_lastConfirmedBar <= 0)
+      return false;
+
+   int closedDir = 0;
+   string closedText = "";
+   double closedValue = 0.0;
+   datetime closedBar = 0;
+   double closedRawBuy = EMPTY_VALUE;
+   double closedRawSell = EMPTY_VALUE;
+   bool closedResolved = _read_resolved_signal(1, closedDir, closedText, closedValue, closedBar, closedRawBuy, closedRawSell);
+
+   if(!closedResolved || closedDir == 0 || closedBar <= 0)
+      return false;
+   if(closedBar <= g_lastConfirmedBar)
+      return false;
+   if(closedDir == g_confirmedDir && closedBar == g_lastConfirmedBar)
+      return true;
+
+   if(InpRetryFailedSendEverySeconds > 0 && g_lastFailedSendAt > 0 && nowTs > 0 && (nowTs - g_lastFailedSendAt) < InpRetryFailedSendEverySeconds)
+      return true;
+
+   if(_send_or_queue_event("confirmed_signal", closedText, closedValue, closedBar))
+   {
+      g_confirmedDir = closedDir;
+      g_lastConfirmedBar = closedBar;
+      if(InpDebugPrint)
+         Print("MT4BridgeV2 confirmed fresh closed-bar signal direction=", closedText, " bar=", TimeToString(closedBar, TIME_DATE|TIME_SECONDS));
+   }
+   else
+   {
+      g_lastFailedSendAt = nowTs;
+   }
+
+   return true;
+}
+
 void _check_and_send()
 {
    int direction = 0;
@@ -1411,6 +1459,14 @@ void _check_and_send()
          {
             _clear_pending_state((dirText == "AMBIGUOUS") ? "ambiguous_signal" : "signal_disappeared", barTime);
          }
+      }
+      else
+      {
+         datetime freshClosedNowTs = TimeCurrent();
+         if(freshClosedNowTs <= 0)
+            freshClosedNowTs = TimeLocal();
+         if(_confirm_fresh_closed_bar_signal(freshClosedNowTs))
+            return;
       }
       // Starting in a blank state is still an initialized baseline. Otherwise
       // the first later signal is incorrectly consumed as startup state.
@@ -1566,7 +1622,8 @@ void OnTick()
 {
    if(!InpPollOnTick)
       return;
-   _flush_pending_events();
+   // Latency critical path: detect/send confirmed_signal before retrying
+   // telemetry/heartbeat events that can block on WebRequest.
    _check_and_send();
    _flush_pending_events();
 }
@@ -1574,6 +1631,10 @@ void OnTick()
 void OnTimer()
 {
    _chart_indicator_periodic_guard();
+   // Timer can land exactly on a new candle. Prioritize actionable signals
+   // before periodic resolved_state/heartbeat telemetry.
+   _check_and_send();
+   _flush_pending_events();
 
    if(InpResolvedStateSeconds > 0)
    {
@@ -1606,8 +1667,6 @@ void OnTimer()
          _send_or_queue_event("heartbeat", "", 0.0, nowTs);
       }
    }
-   _flush_pending_events();
-   _check_and_send();
    _flush_pending_events();
 }
 
