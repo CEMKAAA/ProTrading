@@ -4718,125 +4718,6 @@ class TelegramBridgeService:
         }
 
     @classmethod
-    def _indicator_liquidity_context_timeframes(cls, *, include_auto: bool = False) -> set[str]:
-        values = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
-        if include_auto:
-            values.add("AUTO")
-        return values
-
-    @classmethod
-    def _resolve_indicator_liquidity_context_timeframe(
-        cls,
-        context_timeframe: Any,
-        channel_timeframe: Any = None,
-    ) -> str:
-        raw = str(context_timeframe or "").strip().upper() or "M15"
-        if raw == "AUTO":
-            ch_tf = cls._normalize_tf_token(channel_timeframe, "M15")
-            auto_map = {
-                "M1": "M15",
-                "M5": "M30",
-                "M15": "H1",
-                "M30": "H4",
-                "H1": "D1",
-                "H4": "D1",
-                "D1": "D1",
-            }
-            return str(auto_map.get(ch_tf, "M15"))
-        if raw in cls._indicator_liquidity_context_timeframes(include_auto=False):
-            return str(raw)
-        return "M15"
-
-    @classmethod
-    def get_indicator_bridge_liquidity_context_watchlist(cls) -> List[Dict[str, Any]]:
-        raw = str(cls._get_env_value("INDICATOR_BRIDGE_LIQ_CONTEXT_WATCHLIST_JSON", "[]") or "[]").strip()
-        try:
-            parsed = json.loads(raw) if raw else []
-        except Exception:
-            parsed = []
-        if not isinstance(parsed, list):
-            parsed = []
-        out: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in parsed:
-            if isinstance(item, dict):
-                symbol = str(item.get("symbol") or "").strip().upper()
-                tf_raw = str(item.get("context_timeframe") or "").strip().upper() or "M15"
-            else:
-                symbol = str(item or "").strip().upper()
-                tf_raw = "M15"
-            if not symbol:
-                continue
-            tf = cls._resolve_indicator_liquidity_context_timeframe(tf_raw, "M15")
-            key = f"{symbol}|{tf}"
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({"symbol": str(symbol), "context_timeframe": str(tf)})
-            if len(out) >= 24:
-                break
-        return out
-
-    def update_indicator_bridge_liquidity_context_watchlist(
-        self,
-        *,
-        symbols: Any,
-        context_timeframe: Optional[str] = None,
-        action: str = "add",
-    ) -> Dict[str, Any]:
-        act = str(action or "add").strip().lower()
-        current = list(self.get_indicator_bridge_liquidity_context_watchlist())
-        if act == "clear":
-            updates = {"INDICATOR_BRIDGE_LIQ_CONTEXT_WATCHLIST_JSON": "[]"}
-            ok, msg = self._upsert_indicator_bridge_env_values(updates)
-            with self._lock:
-                self._indicator_liquidity_context_cache.clear()
-            return {"ok": bool(ok), "message": str(msg), "liquidity_context_watchlist": []}
-
-        raw_items: List[str] = []
-        if isinstance(symbols, str):
-            raw_items = re.split(r"[\s,;]+", str(symbols))
-        elif isinstance(symbols, list):
-            raw_items = [str(x or "") for x in symbols]
-        else:
-            raw_items = []
-        tf_raw = str(context_timeframe or "").strip().upper() or str(
-            self.get_indicator_bridge_liquidity_context_governor_settings().get("context_timeframe") or "M15"
-        )
-        if tf_raw not in self._indicator_liquidity_context_timeframes(include_auto=True):
-            return {"ok": False, "error": "invalid_context_timeframe", "liquidity_context_watchlist": current}
-        tf = self._resolve_indicator_liquidity_context_timeframe(tf_raw, "M15")
-        existing: Dict[str, Dict[str, Any]] = {
-            f"{str(x.get('symbol') or '').upper()}|{str(x.get('context_timeframe') or '').upper()}": dict(x)
-            for x in current
-            if str(x.get("symbol") or "").strip()
-        }
-        added = 0
-        for raw in raw_items:
-            sym = str(raw or "").strip().upper()
-            if not sym:
-                continue
-            key = f"{sym}|{tf}"
-            if key not in existing:
-                existing[key] = {"symbol": str(sym), "context_timeframe": str(tf)}
-                added += 1
-            if len(existing) >= 24:
-                break
-        cleaned = sorted(existing.values(), key=lambda x: (str(x.get("symbol") or ""), str(x.get("context_timeframe") or "")))[:24]
-        updates = {
-            "INDICATOR_BRIDGE_LIQ_CONTEXT_WATCHLIST_JSON": json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        }
-        ok, msg = self._upsert_indicator_bridge_env_values(updates)
-        with self._lock:
-            self._indicator_liquidity_context_cache.clear()
-        return {
-            "ok": bool(ok),
-            "message": str(msg),
-            "added": int(added),
-            "liquidity_context_watchlist": cleaned,
-        }
-
-    @classmethod
     def get_indicator_bridge_liquidity_context_governor_settings(cls) -> Dict[str, Any]:
         def _env_bool(name: str, default: str = "0") -> bool:
             return str(cls._get_env_value(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -4854,7 +4735,7 @@ class TelegramBridgeService:
             return int(max(int(lo), min(int(hi), int(round(float(val))))))
 
         context_tf = str(cls._get_env_value("INDICATOR_BRIDGE_LIQ_CONTEXT_TIMEFRAME", "M15") or "M15").strip().upper()
-        if context_tf not in cls._indicator_liquidity_context_timeframes(include_auto=True):
+        if context_tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
             context_tf = "M15"
         return {
             "enabled": _env_bool("INDICATOR_BRIDGE_LIQ_CONTEXT_GOVERNOR_ENABLED", "0"),
@@ -4894,21 +4775,9 @@ class TelegramBridgeService:
             updates["INDICATOR_BRIDGE_LIQ_CONTEXT_GOVERNOR_ENABLED"] = "1" if bool(enabled) else "0"
         if context_timeframe is not None:
             tf = str(context_timeframe or "").strip().upper()
-            if tf not in self._indicator_liquidity_context_timeframes(include_auto=True):
+            if tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
                 return {"ok": False, "error": "invalid_context_timeframe"}
             updates["INDICATOR_BRIDGE_LIQ_CONTEXT_TIMEFRAME"] = str(tf)
-            watchlist = self.get_indicator_bridge_liquidity_context_watchlist()
-            if watchlist:
-                updates["INDICATOR_BRIDGE_LIQ_CONTEXT_WATCHLIST_JSON"] = json.dumps(
-                    [
-                        {"symbol": str(item.get("symbol") or "").strip().upper(), "context_timeframe": str(tf)}
-                        for item in watchlist
-                        if str(item.get("symbol") or "").strip()
-                    ][:24],
-                    ensure_ascii=True,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
         if lookback_bars is not None:
             try:
                 v = int(float(lookback_bars))
@@ -4943,7 +4812,6 @@ class TelegramBridgeService:
             "ok": bool(ok),
             "message": str(msg),
             "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
-            "liquidity_context_watchlist": self.get_indicator_bridge_liquidity_context_watchlist(),
         }
 
     def get_indicator_bridge_liquidity_context_cache_rows(self, *, revalidate_live: bool = True) -> List[Dict[str, Any]]:
@@ -5033,26 +4901,6 @@ class TelegramBridgeService:
         rows.sort(key=lambda r: (str(r.get("symbol") or ""), str(r.get("timeframe") or "")))
         return rows[:24]
 
-    def _indicator_liquidity_context_watchlist_channels(self) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        for item in self.get_indicator_bridge_liquidity_context_watchlist():
-            symbol = str((item or {}).get("symbol") or "").strip().upper()
-            context_tf = str((item or {}).get("context_timeframe") or "").strip().upper() or "M15"
-            if not symbol:
-                continue
-            rows.append(
-                {
-                    "symbol": str(symbol),
-                    "timeframe": "WATCH",
-                    "context_timeframe": str(context_tf),
-                    "terminal_families": [],
-                    "indicators": ["liquidity watchlist"],
-                    "instances": 0,
-                    "watchlist": True,
-                }
-            )
-        return rows[:24]
-
     def _prewarm_indicator_liquidity_context_for_channels(self, channels: List[Dict[str, Any]]) -> None:
         settings = self.get_indicator_bridge_liquidity_context_governor_settings()
         if not bool(settings.get("state_prewarm_enabled", True)):
@@ -5060,22 +4908,20 @@ class TelegramBridgeService:
         seen: set[str] = set()
         now_ts = float(time.time())
         ttl_val = _to_float_or_none(settings.get("cache_ttl_sec"))
+<<<<<<< HEAD
         # Dashboard state can poll every few seconds. Liquidity scans are heavy
         # history reads, so prewarm must be throttled more aggressively than the
         # governor's per-signal cache TTL.
         ttl = max(10.0, float(ttl_val if ttl_val is not None else 5.0))
+=======
+        ttl = float(ttl_val if ttl_val is not None else 1.0)
+        context_tf = str(settings.get("context_timeframe") or "M15").strip().upper()
+>>>>>>> parent of 74b7b86 (Likidite Analizi)
         for row in channels[:12]:
             symbol = str((row or {}).get("symbol") or "").strip().upper()
-            timeframe = str((row or {}).get("timeframe") or "").strip().upper()
-            context_pref = str((row or {}).get("context_timeframe") or settings.get("context_timeframe") or "M15").strip().upper()
-            context_tf = self._resolve_indicator_liquidity_context_timeframe(
-                context_pref,
-                timeframe,
-            )
-            seen_key = f"{symbol}|{context_tf}"
-            if not symbol or seen_key in seen:
+            if not symbol or symbol in seen:
                 continue
-            seen.add(seen_key)
+            seen.add(symbol)
             cache_key = f"{symbol}|{context_tf}"
             with self._lock:
                 cached = dict(self._indicator_liquidity_context_cache.get(cache_key) or {})
@@ -5087,19 +4933,9 @@ class TelegramBridgeService:
                     continue
                 self._indicator_liquidity_context_prewarm_ts[cache_key] = float(now_ts)
 
-            def _worker(
-                sym: str = str(symbol),
-                ch_tf: str = str(timeframe),
-                ctx_pref: str = str(context_pref),
-                key: str = str(cache_key),
-            ) -> None:
+            def _worker(sym: str = str(symbol), key: str = str(cache_key)) -> None:
                 try:
-                    self._scan_indicator_liquidity_context(
-                        symbol=str(sym),
-                        current_price=None,
-                        context_timeframe=str(ctx_pref),
-                        channel_timeframe=str(ch_tf),
-                    )
+                    self._scan_indicator_liquidity_context(symbol=str(sym), current_price=None)
                 except Exception:
                     logger.exception("indicator_liquidity_context_prewarm_failed symbol=%s", sym)
                 finally:
@@ -5120,22 +4956,18 @@ class TelegramBridgeService:
 
     def _hydrate_indicator_liquidity_context_channels(self, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         settings = self.get_indicator_bridge_liquidity_context_governor_settings()
-        now_ts = float(time.time())
+        context_tf = str(settings.get("context_timeframe") or "M15").strip().upper()
         out: List[Dict[str, Any]] = []
         for raw in (channels or [])[:24]:
             row = dict(raw or {})
             symbol = str(row.get("symbol") or "").strip().upper()
             timeframe = str(row.get("timeframe") or "").strip().upper()
-            context_pref = str(row.get("context_timeframe") or settings.get("context_timeframe") or "M15").strip().upper()
-            context_tf = self._resolve_indicator_liquidity_context_timeframe(
-                context_pref,
-                timeframe,
-            )
             row["channel_key"] = f"{symbol}|{timeframe or '-'}"
             if not symbol:
                 row["liquidity_context"] = {"ok": False, "active": False, "error": "missing_symbol"}
                 out.append(row)
                 continue
+<<<<<<< HEAD
             cache_key = f"{symbol}|{context_tf}"
             with self._lock:
                 cached = dict(self._indicator_liquidity_context_cache.get(cache_key) or {})
@@ -5161,15 +4993,22 @@ class TelegramBridgeService:
                     except Exception:
                         logger.exception("indicator_liquidity_context_channel_revalidate_failed symbol=%s timeframe=%s", symbol, timeframe)
             else:
+=======
+            try:
+                ctx = self._scan_indicator_liquidity_context(
+                    symbol=str(symbol),
+                    current_price=None,
+                    context_timeframe=str(context_tf),
+                )
+            except Exception as exc:
+                logger.exception("indicator_liquidity_context_channel_hydrate_failed symbol=%s timeframe=%s", symbol, timeframe)
+>>>>>>> parent of 74b7b86 (Likidite Analizi)
                 ctx = {
                     "ok": False,
                     "active": False,
-                    "status": "pending",
-                    "error": "scan_pending",
+                    "error": f"hydrate_failed:{type(exc).__name__}",
                     "symbol": str(symbol),
                     "context_timeframe": str(context_tf),
-                    "settings": dict(settings),
-                    "generated_at": self._now_iso(),
                 }
             row["liquidity_context"] = dict(ctx or {})
             row["liquidity_setup"] = dict((ctx or {}).get("setup") or {})
@@ -7759,7 +7598,6 @@ class TelegramBridgeService:
         open_trades = list((mt4_monitor or {}).get("rows") or []) + list((mt5_monitor or {}).get("rows") or [])
         open_trades.sort(key=lambda r: str((r or {}).get("opened_at") or ""), reverse=True)
         liquidity_context_channels = self._indicator_liquidity_context_active_channels(mt4_monitor, mt5_monitor)
-        liquidity_context_channels.extend(self._indicator_liquidity_context_watchlist_channels())
         self._prewarm_indicator_liquidity_context_for_channels(liquidity_context_channels)
         liquidity_context_channels = self._hydrate_indicator_liquidity_context_channels(liquidity_context_channels)
         _mark("liquidity")
@@ -7800,11 +7638,18 @@ class TelegramBridgeService:
             "liquidity_audit_logs": liquidity_audit_logs,
             "execution_report": execution_report,
             "rsi_telemetry": rsi_telemetry,
+<<<<<<< HEAD
             "risk_settings": risk_settings,
             "daily_risk": daily_risk,
             "dual_gate_settings": dual_gate_settings,
             "liquidity_context_governor": liquidity_context_governor,
             "liquidity_context_watchlist": liquidity_context_watchlist,
+=======
+            "risk_settings": self.get_indicator_bridge_risk_settings(),
+            "daily_risk": self.get_indicator_bridge_daily_risk_status(),
+            "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
+            "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
+>>>>>>> parent of 74b7b86 (Likidite Analizi)
             "liquidity_context_channels": liquidity_context_channels,
             "liquidity_context_cache": liquidity_context_cache,
         }
@@ -9209,19 +9054,15 @@ class TelegramBridgeService:
         symbol: str,
         current_price: Optional[float] = None,
         context_timeframe: Optional[str] = None,
-        channel_timeframe: Optional[str] = None,
     ) -> Dict[str, Any]:
         settings = self.get_indicator_bridge_liquidity_context_governor_settings()
         sym = str(symbol or "").strip().upper()
         if not sym:
             return {"ok": False, "active": False, "error": "missing_symbol", "settings": dict(settings)}
         override_tf = str(context_timeframe or "").strip().upper()
-        if override_tf in self._indicator_liquidity_context_timeframes(include_auto=True):
+        if override_tf in {"M1", "M5", "M15", "M30", "H1", "H4"}:
             settings = {**dict(settings), "context_timeframe": str(override_tf)}
-        tf = self._resolve_indicator_liquidity_context_timeframe(
-            settings.get("context_timeframe"),
-            channel_timeframe,
-        )
+        tf = str(settings.get("context_timeframe") or "M15").strip().upper()
         cache_key = f"{sym}|{tf}"
         now_ts = float(time.time())
         ttl = float(_to_float_or_none(settings.get("cache_ttl_sec")) or 0.0)
@@ -9585,7 +9426,7 @@ class TelegramBridgeService:
         if not clean:
             return {"ok": False, "error": "no_symbols", "rows": [], "count": 0}
         tf = str(context_timeframe or "").strip().upper()
-        if tf and tf not in self._indicator_liquidity_context_timeframes(include_auto=True):
+        if tf and tf not in {"M1", "M5", "M15", "M30", "H1", "H4"}:
             return {"ok": False, "error": "invalid_context_timeframe", "rows": [], "count": 0}
         rows: List[Dict[str, Any]] = []
         for sym in clean:
@@ -9593,7 +9434,6 @@ class TelegramBridgeService:
                 symbol=str(sym),
                 current_price=None,
                 context_timeframe=(tf or None),
-                channel_timeframe="M15",
             )
             setup = dict((ctx or {}).get("setup") or {})
             selected = dict((ctx or {}).get("selected_sweep") or {})
@@ -9647,12 +9487,7 @@ class TelegramBridgeService:
         return {
             "ok": True,
             "symbols": list(clean),
-            "context_timeframe": str(
-                self._resolve_indicator_liquidity_context_timeframe(
-                    tf or self.get_indicator_bridge_liquidity_context_governor_settings().get("context_timeframe") or "M15",
-                    "M15",
-                )
-            ),
+            "context_timeframe": str(tf or self.get_indicator_bridge_liquidity_context_governor_settings().get("context_timeframe") or "M15"),
             "rows": rows,
             "count": int(len(rows)),
             "generated_at": self._now_iso(),
@@ -9706,11 +9541,7 @@ class TelegramBridgeService:
         side = str(direction or "").strip().upper()
         if side not in {"BUY", "SELL"}:
             return {"enabled": True, "allow": False, "reason": "invalid_direction", "settings": dict(settings)}
-        ctx = self._scan_indicator_liquidity_context(
-            symbol=str(symbol),
-            current_price=current_price,
-            channel_timeframe=str(timeframe),
-        )
+        ctx = self._scan_indicator_liquidity_context(symbol=str(symbol), current_price=current_price)
         if not bool((ctx or {}).get("ok", False)):
             allow = not bool(settings.get("block_on_scan_error", True))
             out = {

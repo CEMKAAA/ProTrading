@@ -1852,21 +1852,6 @@ def indicator_bridge_liquidity_opportunity_scan_proxy():
     return jsonify(res)
 
 
-@app.route('/api/indicator-bridge/liquidity-watchlist', methods=['POST'])
-def indicator_bridge_liquidity_watchlist_proxy():
-    payload = request.get_json(silent=True) or {}
-    res, err = api_request(
-        'POST',
-        '/api/v1/indicator-bridge/liquidity-watchlist',
-        data=payload,
-        return_error=True,
-        timeout_sec=45,
-    )
-    if not res:
-        return jsonify({'ok': False, 'error': err or 'Failed to update liquidity watchlist'}), 500
-    return jsonify(res)
-
-
 @app.route('/api/indicator-bridge/open-trade/close', methods=['POST'])
 def indicator_bridge_open_trade_close_proxy():
     payload = request.get_json(silent=True) or {}

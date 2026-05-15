@@ -965,11 +965,9 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
             daily_guard_bypass_today=bypass_daily_val,
             channel_risk_overrides=channel_risk_overrides,
         )
-        return {
-            "ok": bool((result or {}).get("ok", True)),
-            "update_result": result,
-            "risk_settings": svc.get_indicator_bridge_risk_settings(),
-        }
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_risk_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
@@ -992,11 +990,9 @@ def indicator_bridge_dual_gate_settings(payload: Dict[str, Any]):
             else:
                 enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
         result = svc.update_indicator_bridge_dual_gate_settings(none_close_enabled=enabled)
-        return {
-            "ok": bool((result or {}).get("ok", True)),
-            "update_result": result,
-            "dual_gate_settings": svc.get_indicator_bridge_dual_gate_settings(),
-        }
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_dual_gate_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
@@ -1049,12 +1045,9 @@ def indicator_bridge_liquidity_governor_settings(payload: Dict[str, Any]):
             )
         except ValueError as exc:
             return {"ok": False, "error": f"invalid_{str(exc)}"}
-        return {
-            "ok": bool((result or {}).get("ok", True)),
-            "update_result": result,
-            "liquidity_context_governor": svc.get_indicator_bridge_liquidity_context_governor_settings(),
-            "liquidity_context_watchlist": svc.get_indicator_bridge_liquidity_context_watchlist(),
-        }
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_liquidity_governor_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
@@ -1084,30 +1077,6 @@ def indicator_bridge_liquidity_opportunity_scan(payload: Dict[str, Any]):
         )
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_liquidity_opportunity_scan_failed:{type(exc).__name__}:{str(exc)[:220]}")
-
-
-@router.post("/indicator-bridge/liquidity-watchlist")
-def indicator_bridge_liquidity_watchlist(payload: Dict[str, Any]):
-    """Persist symbols that should always be shown in the live liquidity context panel."""
-    try:
-        from ..main import telegram_bridge_service
-
-        svc = telegram_bridge_service
-        if svc is None:
-            return {"ok": False, "error": "telegram_bridge_unavailable"}
-        p = payload if isinstance(payload, dict) else {}
-        result = svc.update_indicator_bridge_liquidity_context_watchlist(
-            symbols=p.get("symbols") or p.get("symbols_csv") or "",
-            context_timeframe=(p.get("context_timeframe") if "context_timeframe" in p else None),
-            action=str(p.get("action") or "add"),
-        )
-        return {
-            "ok": bool((result or {}).get("ok", True)),
-            "update_result": result,
-            "liquidity_context_watchlist": svc.get_indicator_bridge_liquidity_context_watchlist(),
-        }
-    except Exception as exc:
-        raise HTTPException(500, f"indicator_bridge_liquidity_watchlist_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.get("/indicator-bridge/rsi-telemetry")
@@ -1298,10 +1267,9 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),
             sync_reentry_enabled=(bool(sync_reentry_enabled) if sync_reentry_enabled is not None else None),
         )
-        return {
-            "ok": bool((result or {}).get("ok", True)),
-            "update_result": result,
-        }
+        state = svc.get_indicator_bridge_state(limit=300)
+        state["update_result"] = result
+        return state
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_instance_automation_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
