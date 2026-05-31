@@ -1,0 +1,137 @@
+﻿//@version=5
+indicator("NAS PPO Trend Pullback", overlay=true, max_labels_count=500)
+
+showSignals = input.bool(true, "Show Entry Signals")
+showExits = input.bool(true, "Show Exit Signals")
+showRawPpo = input.bool(false, "Show Raw PPO Pullbacks")
+
+// NAS / Supertrend governor
+sensitivity = input.int(4, "NAS Sensitivity", minval=1, maxval=20)
+stAtrLen = input.int(11, "NAS ATR Length", minval=1)
+smaFilterLen = input.int(13, "SMA Filter Length", minval=1)
+
+// PPO pullback timing
+fastLength = input.int(12, "PPO Fast", minval=1)
+slowLength = input.int(26, "PPO Slow", minval=1)
+smoother = input.int(2, "PPO Smooth", minval=1)
+allowSlopeTurn = input.bool(true, "Allow PPO Slope Turn")
+
+// Regime filters
+useRibbonFilter = input.bool(true, "Use Trend Ribbon")
+ribbonFastLen = input.int(21, "Ribbon Fast SMA", minval=1)
+ribbonSlowLen = input.int(34, "Ribbon Slow SMA", minval=1)
+useAdxFilter = input.bool(true, "Use ADX Chop Filter")
+adxLen = input.int(14, "ADX Length", minval=1)
+minAdx = input.float(15.0, "Min ADX", step=0.5)
+useAtrPercentFilter = input.bool(false, "Use ATR % Filter")
+atrPctLen = input.int(14, "ATR % Length", minval=1)
+minAtrPct = input.float(0.05, "Min ATR %", step=0.01)
+
+// Signal controls
+closedBarOnly = input.bool(true, "Closed Bar Only")
+blockSameDirectionUntilExit = input.bool(true, "Block Same Direction Until Exit")
+cooldownBars = input.int(2, "Same Direction Cooldown Bars", minval=0)
+
+f_supertrend(_src, factor, atrLenInput) =>
+    atr = ta.atr(atrLenInput)
+    upperBand = _src + factor * atr
+    lowerBand = _src - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+    if na(atr[1])
+        direction := 1
+    else if prevSuperTrend == prevUpperBand
+        direction := close > upperBand ? -1 : 1
+    else
+        direction := close < lowerBand ? 1 : -1
+    superTrend := direction == -1 ? lowerBand : upperBand
+    [superTrend, direction]
+
+[supertrendLine, nasDirection] = f_supertrend(close, sensitivity, stAtrLen)
+smaFilter = ta.sma(close, smaFilterLen)
+ribbonFast = ta.sma(close, ribbonFastLen)
+ribbonSlow = ta.sma(close, ribbonSlowLen)
+ribbonBull = ribbonFast > ribbonSlow
+ribbonBear = ribbonFast < ribbonSlow
+
+fastMA = ta.ema(close, fastLength)
+slowMA = ta.ema(close, slowLength)
+ppo = slowMA != 0 ? ((fastMA - slowMA) / slowMA) * 100 : na
+d = ta.sma(ppo, smoother)
+
+ppoBottom = d > d[1] and d[1] < d[2]
+ppoTop = d < d[1] and d[1] > d[2]
+ppoSlopeUp = d > d[1] and d[1] <= d[2]
+ppoSlopeDown = d < d[1] and d[1] >= d[2]
+pullbackLong = ppoBottom or (allowSlopeTurn and ppoSlopeUp)
+pullbackShort = ppoTop or (allowSlopeTurn and ppoSlopeDown)
+
+upMove = high - high[1]
+downMove = low[1] - low
+plusDM = upMove > downMove and upMove > 0 ? upMove : 0
+minusDM = downMove > upMove and downMove > 0 ? downMove : 0
+trueRange = ta.tr(true)
+plusDI = 100 * ta.rma(plusDM, adxLen) / ta.rma(trueRange, adxLen)
+minusDI = 100 * ta.rma(minusDM, adxLen) / ta.rma(trueRange, adxLen)
+dx = (plusDI + minusDI) != 0 ? 100 * math.abs(plusDI - minusDI) / (plusDI + minusDI) : 0
+adxValue = ta.rma(dx, adxLen)
+atrPct = close != 0 ? ta.atr(atrPctLen) / close * 100 : na
+chopOk = (not useAdxFilter or adxValue >= minAdx) and (not useAtrPercentFilter or atrPct >= minAtrPct)
+confirmed = not closedBarOnly or barstate.isconfirmed
+
+nasBull = nasDirection == -1 and close > supertrendLine and close >= smaFilter
+nasBear = nasDirection == 1 and close < supertrendLine and close <= smaFilter
+ribbonLongOk = not useRibbonFilter or ribbonBull
+ribbonShortOk = not useRibbonFilter or ribbonBear
+
+candidateLong = confirmed and chopOk and nasBull and ribbonLongOk and pullbackLong
+candidateShort = confirmed and chopOk and nasBear and ribbonShortOk and pullbackShort
+
+var int positionState = 0
+var int lastLongBar = na
+var int lastShortBar = na
+
+sameLongOk = not blockSameDirectionUntilExit or positionState != 1
+sameShortOk = not blockSameDirectionUntilExit or positionState != -1
+coolLongOk = na(lastLongBar) or bar_index - lastLongBar > cooldownBars
+coolShortOk = na(lastShortBar) or bar_index - lastShortBar > cooldownBars
+
+entryLong = candidateLong and sameLongOk and coolLongOk
+entryShort = candidateShort and sameShortOk and coolShortOk
+
+exitLong = confirmed and positionState == 1 and (nasBear or close < supertrendLine)
+exitShort = confirmed and positionState == -1 and (nasBull or close > supertrendLine)
+
+if exitLong
+    positionState := 0
+if exitShort
+    positionState := 0
+if entryLong
+    positionState := 1
+    lastLongBar := bar_index
+if entryShort
+    positionState := -1
+    lastShortBar := bar_index
+
+plot(supertrendLine, title="NAS Supertrend", color=close > supertrendLine ? color.lime : color.red, linewidth=2)
+plot(smaFilter, title="SMA Filter", color=color.orange)
+ribbonFastPlot = plot(ribbonFast, title="Ribbon Fast", color=color.new(color.white, 100))
+ribbonSlowPlot = plot(ribbonSlow, title="Ribbon Slow", color=color.new(color.white, 100))
+fill(ribbonFastPlot, ribbonSlowPlot, color=ribbonFast > ribbonSlow ? color.new(color.lime, 82) : color.new(color.red, 82), title="Trend Ribbon")
+
+plotshape(showRawPpo and pullbackLong and confirmed, title="Raw PPO Pullback Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 45), size=size.tiny)
+plotshape(showRawPpo and pullbackShort and confirmed, title="Raw PPO Pullback Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 45), size=size.tiny)
+plotshape(showSignals and entryLong, title="NAS PPO BUY", text="BUY", style=shape.labelup, location=location.belowbar, color=color.lime, textcolor=color.black, size=size.normal)
+plotshape(showSignals and entryShort, title="NAS PPO SELL", text="SELL", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.normal)
+plotshape(showExits and exitLong, title="Exit Long", text="XL", style=shape.xcross, location=location.abovebar, color=color.new(color.lime, 0), textcolor=color.white, size=size.tiny)
+plotshape(showExits and exitShort, title="Exit Short", text="XS", style=shape.xcross, location=location.belowbar, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+
+alertcondition(entryLong, title="NAS PPO BUY", message="NAS PPO Trend Pullback BUY")
+alertcondition(entryShort, title="NAS PPO SELL", message="NAS PPO Trend Pullback SELL")
+alertcondition(exitLong, title="NAS PPO EXIT LONG", message="NAS PPO Trend Pullback EXIT LONG")
+alertcondition(exitShort, title="NAS PPO EXIT SHORT", message="NAS PPO Trend Pullback EXIT SHORT")

@@ -37,6 +37,8 @@
         liqWatchClear: document.getElementById('v2-liq-watch-clear'),
         liqScanStatus: document.getElementById('v2-liq-scan-status'),
         liqScanResults: document.getElementById('v2-liq-scan-results'),
+        telemetryBody: document.getElementById('v2-telemetry-body'),
+        telemetryFilter: document.getElementById('v2-telemetry-filter'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
         openBody: document.getElementById('v2-open-body'),
@@ -1184,7 +1186,7 @@
         const rows = openTrades().filter(r => textMatch(r, q));
         if (!els.openBody) return;
         if (!rows.length) {
-            els.openBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No open indicator trades.</td></tr>';
+            els.openBody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No open indicator trades.</td></tr>';
             return;
         }
         els.openBody.innerHTML = rows.map(row => {
@@ -1192,6 +1194,12 @@
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const ticket = Number(row.ticket || 0);
             const canClose = Number.isFinite(ticket) && ticket > 0 && String(row.symbol || '').trim();
+            const sl = row.stop_loss != null ? row.stop_loss : ((row.stage_payload || {}).post_open_stop_loss || (row.stage_payload || {}).requested_stop_loss);
+            const tp = row.take_profit != null ? row.take_profit : (row.final_tp != null ? row.final_tp : ((row.stage_payload || {}).post_open_take_profit || (row.stage_payload || {}).requested_take_profit));
+            const maxP = Number(row.max_profit);
+            const maxL = Number(row.max_loss);
+            const maxCls = Number.isFinite(maxP) ? (maxP >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const minCls = Number.isFinite(maxL) ? (maxL >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             return `<tr>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
@@ -1200,6 +1208,14 @@
                 <td>${esc(row.execution_mode || '-')}</td>
                 <td class="${String(row.direction).toUpperCase() === 'BUY' ? 'trade-buy' : 'trade-sell'}">${esc(row.direction || '-')}</td>
                 <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}</td>
+                <td class="v2-mono small">
+                    <div>SL ${esc(fmtNum(sl, 5))}</div>
+                    <div>TP ${esc(fmtNum(tp, 5))}</div>
+                </td>
+                <td class="v2-mono small">
+                    <div class="${maxCls}">max ${esc(fmtNum(row.max_profit, 2))}</div>
+                    <div class="${minCls}">min ${esc(fmtNum(row.max_loss, 2))}</div>
+                </td>
                 <td>${esc(fmtTs(row.opened_at))}</td>
                 <td class="v2-mono small">${esc(row.source_tag || '-')}</td>
                 <td>
@@ -1208,6 +1224,65 @@
                         <button type="button" class="btn btn-outline-danger v2-close-trade" data-ticket="${esc(row.ticket || '')}" ${canClose ? '' : 'disabled'}>Close</button>
                     </div>
                 </td>
+            </tr>`;
+        }).join('');
+    }
+
+    function tpLegText(row) {
+        const total = Number((row || {}).total_tps || 0);
+        const hit = Math.max(0, Number((row || {}).highest_tp_reached || 0));
+        if (Number.isFinite(total) && total > 0) return `TP${Math.min(hit, total)} / TP${total}`;
+        return hit > 0 ? `TP${hit}` : 'TP0';
+    }
+
+    function tpProgressPct(row) {
+        const total = Number((row || {}).total_tps || 0);
+        const hit = Math.max(0, Number((row || {}).highest_tp_reached || 0));
+        if (!Number.isFinite(total) || total <= 0) return 0;
+        return Math.max(0, Math.min(100, (hit / total) * 100));
+    }
+
+    function renderTradeTelemetry() {
+        const q = els.telemetryFilter ? els.telemetryFilter.value : '';
+        const rows = openTrades()
+            .filter(r => textMatch(r, q))
+            .sort((a, b) => Number(b.max_profit || 0) - Number(a.max_profit || 0));
+        if (!els.telemetryBody) return;
+        if (!rows.length) {
+            els.telemetryBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No open trade telemetry yet.</td></tr>';
+            return;
+        }
+        els.telemetryBody.innerHTML = rows.map(row => {
+            const pnl = Number(row.current_profit);
+            const maxP = Number(row.max_profit);
+            const maxL = Number(row.max_loss);
+            const hit = Number(row.highest_tp_reached || 0);
+            const total = Number(row.total_tps || 0);
+            const pct = tpProgressPct(row);
+            const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const maxCls = Number.isFinite(maxP) ? (maxP >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const minCls = Number.isFinite(maxL) ? (maxL >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+            const tpPrice = row.highest_tp_price != null ? fmtNum(row.highest_tp_price, 5) : '-';
+            const tpTone = hit > 0 ? 'bg-success' : 'bg-secondary';
+            return `<tr>
+                <td class="v2-mono">${esc(row.ticket || '-')}</td>
+                <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}<div class="small text-muted">${esc(String(row.terminal_family || '').toUpperCase())}</div></td>
+                <td>${esc(row.indicator || row.source_name || '-')}<div class="small text-muted">${esc(row.execution_mode || '-')}</div></td>
+                <td class="${String(row.direction).toUpperCase() === 'BUY' ? 'trade-buy' : 'trade-sell'}">${esc(row.direction || '-')}</td>
+                <td class="${pnlCls} fw-semibold">${fmtNum(row.current_profit, 2)}</td>
+                <td class="${maxCls} fw-semibold">${fmtNum(row.max_profit, 2)}</td>
+                <td class="${minCls} fw-semibold">${fmtNum(row.max_loss, 2)}</td>
+                <td>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge ${tpTone}">${esc(tpLegText(row))}</span>
+                        <span class="small text-muted">${Number.isFinite(total) && total > 0 ? `${Math.max(0, Math.min(hit, total))}/${total}` : 'n/a'}</span>
+                    </div>
+                    <div class="progress mt-1" style="height: 5px;">
+                        <div class="progress-bar ${tpTone}" style="width: ${fmtNum(pct, 0)}%"></div>
+                    </div>
+                </td>
+                <td class="v2-mono">${esc(tpPrice)}</td>
+                <td>${esc(fmtTs(row.opened_at))}<div class="small text-muted">${row.highest_tp_updated_at ? `TP @ ${esc(fmtTs(row.highest_tp_updated_at))}` : ''}</div></td>
             </tr>`;
         }).join('');
     }
@@ -1551,6 +1626,7 @@
         renderDualGatePanel();
         renderEntryExitPanel();
         renderOpenTrades();
+        renderTradeTelemetry();
         renderInstances();
         renderLiquidityAudit();
         renderAudit();
@@ -1570,7 +1646,7 @@
         }, 1000);
     }
 
-    [els.openFilter, els.instanceFilter, els.auditFilter, els.liqAuditFilter].forEach(el => {
+    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.auditFilter, els.liqAuditFilter].forEach(el => {
         if (el) el.addEventListener('input', render);
     });
     [els.riskDailyTarget, els.riskDailyMaxLoss].forEach(el => {

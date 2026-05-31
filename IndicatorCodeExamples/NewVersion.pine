@@ -1,0 +1,180 @@
+//@version=5
+indicator("Filtered PPO Triangle + Supertrend System", overlay=true, max_labels_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Inputs
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+showRawPpoTriangles = input.bool(true, "Show Raw PPO Triangles")
+showFilteredSignals = input.bool(true, "Show Filtered Buy/Sell Signals")
+
+// PPO settings
+fastLength   = input.int(12, "PPO Fast", minval=1)
+slowLength   = input.int(26, "PPO Slow", minval=1)
+smoother     = input.int(2, "PPO Smooth", minval=1)
+
+// Trend filter settings
+sensitivity  = input.int(4, "Supertrend Sensitivity", minval=1, maxval=20)
+stAtrLen     = input.int(11, "Supertrend ATR Length", minval=1)
+smaFilterLen = input.int(13, "SMA Filter Length", minval=1)
+
+// Ribbon filter
+useRibbonFilter = input.bool(true, "Use Trend Ribbon Filter")
+ribbonFastLen   = input.int(21, "Ribbon Fast SMA", minval=1)
+ribbonSlowLen   = input.int(34, "Ribbon Slow SMA", minval=1)
+
+// Extra filters
+useCooldown     = input.bool(true, "Use Cooldown")
+cooldownBars    = input.int(3, "Cooldown Bars", minval=1)
+
+useAtrFilter    = input.bool(false, "Use ATR Volatility Filter")
+atrLen          = input.int(14, "ATR Length", minval=1)
+atrFilterMode   = input.string("Percent", "ATR Filter Mode", options=["Raw", "Percent"])
+minAtr          = input.float(0.0, "Minimum ATR / ATR %", step=0.01)
+
+filterTiming    = input.string("Decision Bar", "Filter Timing", options=["Decision Bar", "Pivot Bar"])
+blockSameDirection = input.bool(false, "Block Same Direction Until Reverse")
+
+// Non-repaint mode
+closedBarOnly   = input.bool(true, "Closed Bar Only")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PPO swing logic from first indicator
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+source = close
+
+fastMA = ta.ema(source, fastLength)
+slowMA = ta.ema(source, slowLength)
+
+macd  = fastMA - slowMA
+ppo   = slowMA != 0 ? (macd / slowMA) * 100 : na
+d     = ta.sma(ppo, smoother)
+
+// PPO local bottom/top detection
+ppoBottom = d > d[1] and d[1] < d[2]
+ppoTop    = d < d[1] and d[1] > d[2]
+
+// In original code:
+// reddot = PPO bottom => bullish raw triangle
+// greendot = PPO top => bearish raw triangle
+rawLong  = ppoBottom
+rawShort = ppoTop
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Supertrend logic from second indicator
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_supertrend(_src, factor, atrLenInput) =>
+    atr = ta.atr(atrLenInput)
+
+    upperBand = _src + factor * atr
+    lowerBand = _src - factor * atr
+
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+
+    int direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+
+    if na(atr[1])
+        direction := 1
+    else if prevSuperTrend == prevUpperBand
+        direction := close > upperBand ? -1 : 1
+    else
+        direction := close < lowerBand ? 1 : -1
+
+    superTrend := direction == -1 ? lowerBand : upperBand
+
+    [superTrend, direction]
+
+[supertrendLine, direction] = f_supertrend(close, sensitivity, stAtrLen)
+
+// SMA filter
+smaFilter = ta.sma(close, smaFilterLen)
+
+// Ribbon filter
+ribbonFast = ta.sma(close, ribbonFastLen)
+ribbonSlow = ta.sma(close, ribbonSlowLen)
+
+ribbonBull = ribbonFast > ribbonSlow
+ribbonBear = ribbonFast < ribbonSlow
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Filters
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+trendLongFilter  = close > supertrendLine and close >= smaFilter
+trendShortFilter = close < supertrendLine and close <= smaFilter
+
+ribbonLongFilter  = not useRibbonFilter or ribbonBull
+ribbonShortFilter = not useRibbonFilter or ribbonBear
+
+atrValue = ta.atr(atrLen)
+atrMetric = atrFilterMode == "Percent" ? (close != 0 ? atrValue / close * 100 : na) : atrValue
+
+confirmed = not closedBarOnly or barstate.isconfirmed
+rawConfirmed = rawLong or rawShort ? confirmed : false
+
+filterShift = filterTiming == "Pivot Bar" ? 1 : 0
+trendLongFilterAtSignal  = trendLongFilter[filterShift]
+trendShortFilterAtSignal = trendShortFilter[filterShift]
+ribbonLongFilterAtSignal = ribbonLongFilter[filterShift]
+ribbonShortFilterAtSignal = ribbonShortFilter[filterShift]
+atrFilterAtSignal = not useAtrFilter or atrMetric[filterShift] >= minAtr
+
+// First-stage filtered signals
+candidateLong  = rawLong and trendLongFilterAtSignal and ribbonLongFilterAtSignal and atrFilterAtSignal and confirmed
+candidateShort = rawShort and trendShortFilterAtSignal and ribbonShortFilterAtSignal and atrFilterAtSignal and confirmed
+
+// Cooldown and direction memory are based on emitted final signals. Reversals are never blocked by cooldown.
+var int lastFinalLongBar = na
+var int lastFinalShortBar = na
+var int lastDirection = 0
+
+cooldownLongOk  = not useCooldown or lastDirection == -1 or na(lastFinalLongBar) or bar_index - lastFinalLongBar > cooldownBars
+cooldownShortOk = not useCooldown or lastDirection == 1 or na(lastFinalShortBar) or bar_index - lastFinalShortBar > cooldownBars
+directionLongOk = not blockSameDirection or lastDirection != 1
+directionShortOk = not blockSameDirection or lastDirection != -1
+
+finalLong  = candidateLong and cooldownLongOk and directionLongOk
+finalShort = candidateShort and cooldownShortOk and directionShortOk
+
+if finalLong
+    lastFinalLongBar := bar_index
+    lastDirection := 1
+else if finalShort
+    lastFinalShortBar := bar_index
+    lastDirection := -1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Plots
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Raw PPO triangles: original behavior, confirmed one bar later but drawn on pivot bar
+plotshape( showRawPpoTriangles and rawLong and rawConfirmed, title="Raw PPO Bottom", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.tiny, offset=-1)
+
+plotshape( showRawPpoTriangles and rawShort and rawConfirmed, title="Raw PPO Top", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, offset=-1)
+
+// Filtered signals: plotted on actual decision bar, no lookahead
+plotshape(showFilteredSignals and finalLong, title="Filtered Buy", text="BUY", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.normal)
+
+plotshape(showFilteredSignals and finalShort, title="Filtered Sell", text="SELL", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
+
+// Supertrend line
+plot(supertrendLine, title="Supertrend", color=close > supertrendLine ? color.lime : color.red, linewidth=2)
+
+// SMA filter
+plot(smaFilter, title="SMA Filter", color=color.orange)
+
+// Trend ribbon
+ribbonFastPlot = plot(ribbonFast, title="Ribbon Fast", color=color.new(color.white, 100))
+ribbonSlowPlot = plot(ribbonSlow, title="Ribbon Slow", color=color.new(color.white, 100))
+
+fill(ribbonFastPlot, ribbonSlowPlot, color=ribbonFast > ribbonSlow ? color.new(color.lime, 80) : color.new(color.red, 80), title="Trend Ribbon")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Alerts
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(finalLong, title="Filtered BUY", message="Filtered PPO + Supertrend BUY")
+alertcondition(finalShort, title="Filtered SELL", message="Filtered PPO + Supertrend SELL")
