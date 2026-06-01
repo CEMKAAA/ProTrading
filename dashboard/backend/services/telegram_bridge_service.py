@@ -16,7 +16,7 @@ import time
 import json
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -199,9 +199,11 @@ class TelegramBridgeService:
             "verypromising",
             "atomic",
             "atomic_regime",
+            "signatics",
         }
     )
     _MT4_EXEC_INDICATOR_PROFILE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+        ("signatics", ("signatics", "signatics algo")),
         ("supplydemand", ("supply demand", "zulu wave arrows")),
         ("buysell", ("buy sell signal", "buysell")),
         ("kforex", ("kforex",)),
@@ -4519,6 +4521,251 @@ class TelegramBridgeService:
             "risk_settings": self.get_indicator_bridge_risk_settings(),
         }
 
+    @staticmethod
+    def _normalize_indicator_bridge_symbol_session(value: Any) -> Dict[str, Any]:
+        cfg = value if isinstance(value, dict) else {}
+
+        def _ranges(raw: Any) -> List[str]:
+            if isinstance(raw, str):
+                parts = re.split(r"[\n,;|]+", str(raw))
+            elif isinstance(raw, list):
+                parts = [str(x or "") for x in raw]
+            else:
+                parts = []
+            out: List[str] = []
+            for item in parts:
+                s = str(item or "").strip()
+                if not s:
+                    continue
+                s = re.sub(r"\s+", "", s)
+                if re.match(r"^\d{1,2}:\d{2}-\d{1,2}:\d{2}$", s):
+                    out.append(str(s))
+            return out[:24]
+
+        tz = _to_float_or_none(cfg.get("timezone_offset_minutes"))
+        if tz is None:
+            tz = _to_float_or_none(cfg.get("tz_offset_minutes"))
+        return {
+            "timezone_offset_minutes": int(max(-720, min(840, int(tz or 0)))),
+            "allow": _ranges(cfg.get("allow") if "allow" in cfg else cfg.get("allow_ranges")),
+            "block": _ranges(cfg.get("block") if "block" in cfg else cfg.get("block_ranges")),
+        }
+
+    @classmethod
+    def get_indicator_bridge_symbol_sessions(cls) -> Dict[str, Dict[str, Any]]:
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_SYMBOL_SESSIONS", "") or "").strip()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except Exception:
+            parsed = {}
+        out: Dict[str, Dict[str, Any]] = {}
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                sym = str(k or "").strip().upper()
+                if not sym:
+                    continue
+                out[sym] = cls._normalize_indicator_bridge_symbol_session(v)
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_symbol_sessions(cls, cfg_map: Dict[str, Any]) -> str:
+        out: Dict[str, Dict[str, Any]] = {}
+        for k, v in (cfg_map or {}).items():
+            sym = str(k or "").strip().upper()
+            if not sym:
+                continue
+            cfg = cls._normalize_indicator_bridge_symbol_session(v)
+            if cfg.get("allow") or cfg.get("block") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
+                out[sym] = cfg
+        return json.dumps(out, separators=(",", ":"), sort_keys=True)
+
+    def update_indicator_bridge_symbol_sessions(self, *, sessions: Dict[str, Any]) -> Dict[str, Any]:
+        cfg_map: Dict[str, Any] = {}
+        if isinstance(sessions, dict):
+            for k, v in sessions.items():
+                sym = str(k or "").strip().upper()
+                if not sym:
+                    continue
+                cfg_map[sym] = self._normalize_indicator_bridge_symbol_session(v)
+        ok, msg = self._upsert_indicator_bridge_env_values(
+            {"INDICATOR_BRIDGE_SYMBOL_SESSIONS": self._serialize_indicator_bridge_symbol_sessions(cfg_map)}
+        )
+        return {
+            "ok": bool(ok),
+            "message": str(msg),
+            "symbol_sessions": self.get_indicator_bridge_symbol_sessions(),
+            "trade_block_windows": self.get_indicator_bridge_trade_block_windows(),
+        }
+
+    @classmethod
+    def _indicator_bridge_trade_block_scope_key(
+        cls,
+        *,
+        family: Any,
+        profile: Any,
+        indicator: Any,
+        symbol: Any,
+    ) -> str:
+        fam = cls._indicator_bridge_family(family)
+        prof = str(profile or "").strip().lower() or "generic"
+        indicator_key = cls._normalize_mt_indicator_key(cls._normalize_mt4_indicator_name(indicator) or indicator)
+        sym = str(symbol or "").strip().upper()
+        if not fam or not prof or not indicator_key or not sym:
+            return ""
+        return f"{fam}|{prof}|{indicator_key}|{sym}"
+
+    @staticmethod
+    def _normalize_indicator_bridge_trade_block_window(value: Any) -> Dict[str, Any]:
+        cfg = value if isinstance(value, dict) else {}
+        base = TelegramBridgeService._normalize_indicator_bridge_symbol_session(
+            {
+                "timezone_offset_minutes": cfg.get("timezone_offset_minutes", cfg.get("tz_offset_minutes")),
+                "block": cfg.get("block", cfg.get("block_ranges")),
+            }
+        )
+        return {
+            "timezone_offset_minutes": int(base.get("timezone_offset_minutes") or 0),
+            "block": list(base.get("block") or []),
+        }
+
+    @classmethod
+    def get_indicator_bridge_trade_block_windows(cls) -> Dict[str, Dict[str, Any]]:
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_TRADE_BLOCK_WINDOWS", "") or "").strip()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except Exception:
+            parsed = {}
+        out: Dict[str, Dict[str, Any]] = {}
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                key = str(k or "").strip().lower()
+                if key:
+                    out[key] = cls._normalize_indicator_bridge_trade_block_window(v)
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_trade_block_windows(cls, cfg_map: Dict[str, Any]) -> str:
+        out: Dict[str, Dict[str, Any]] = {}
+        for k, v in (cfg_map or {}).items():
+            key = str(k or "").strip().lower()
+            if not key:
+                continue
+            cfg = cls._normalize_indicator_bridge_trade_block_window(v)
+            if cfg.get("block") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
+                out[key] = cfg
+        return json.dumps(out, separators=(",", ":"), sort_keys=True)
+
+    def update_indicator_bridge_trade_block_windows(self, *, sessions: Dict[str, Any]) -> Dict[str, Any]:
+        cfg_map: Dict[str, Any] = {}
+        if isinstance(sessions, dict):
+            for k, v in sessions.items():
+                key = str(k or "").strip().lower()
+                if not key:
+                    continue
+                cfg_map[key] = self._normalize_indicator_bridge_trade_block_window(v)
+        ok, msg = self._upsert_indicator_bridge_env_values(
+            {"INDICATOR_BRIDGE_TRADE_BLOCK_WINDOWS": self._serialize_indicator_bridge_trade_block_windows(cfg_map)}
+        )
+        return {
+            "ok": bool(ok),
+            "message": str(msg),
+            "trade_block_windows": self.get_indicator_bridge_trade_block_windows(),
+        }
+
+    @staticmethod
+    def _minutes_from_hhmm(value: Any) -> Optional[int]:
+        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(value or ""))
+        if not m:
+            return None
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+            return None
+        return int(hh * 60 + mm)
+
+    @classmethod
+    def _time_in_session_range(cls, minute_of_day: int, range_text: Any) -> bool:
+        parts = str(range_text or "").strip().split("-", 1)
+        if len(parts) != 2:
+            return False
+        start = cls._minutes_from_hhmm(parts[0])
+        end = cls._minutes_from_hhmm(parts[1])
+        if start is None or end is None:
+            return False
+        cur = int(max(0, min(1439, int(minute_of_day))))
+        if int(start) == int(end):
+            return True
+        if int(start) < int(end):
+            return bool(int(start) <= cur < int(end))
+        return bool(cur >= int(start) or cur < int(end))
+
+    def _indicator_bridge_symbol_session_guard(
+        self,
+        *,
+        symbol: Any,
+        family: Any = "",
+        profile: Any = "",
+        indicator: Any = "",
+        now_dt: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        sym = str(symbol or "").strip().upper()
+        scope_key = self._indicator_bridge_trade_block_scope_key(
+            family=family,
+            profile=profile,
+            indicator=indicator,
+            symbol=sym,
+        )
+        scoped_cfg = self.get_indicator_bridge_trade_block_windows().get(str(scope_key).lower()) if scope_key else None
+        legacy_cfg = self.get_indicator_bridge_symbol_sessions().get(sym)
+        cfg = scoped_cfg or (
+            {
+                "timezone_offset_minutes": int((legacy_cfg or {}).get("timezone_offset_minutes") or 0),
+                "block": list((legacy_cfg or {}).get("block") or []),
+            }
+            if legacy_cfg
+            else None
+        )
+        if not cfg:
+            return {
+                "ok": True,
+                "allowed": True,
+                "reason": "no_trade_block_window",
+                "symbol": sym,
+                "scope_key": str(scope_key),
+            }
+        base_dt = now_dt or datetime.now(timezone.utc)
+        if base_dt.tzinfo is None:
+            base_dt = base_dt.replace(tzinfo=timezone.utc)
+        offset = int(_to_float_or_none((cfg or {}).get("timezone_offset_minutes")) or 0)
+        local_dt = base_dt.astimezone(timezone.utc) + timedelta(minutes=int(offset))
+        minute = int(local_dt.hour * 60 + local_dt.minute)
+        block_ranges = [str(x) for x in ((cfg or {}).get("block") or [])]
+        matched_block = next((r for r in block_ranges if self._time_in_session_range(minute, r)), "")
+        if matched_block:
+            return {
+                "ok": True,
+                "allowed": False,
+                "reason": "trade_block_window",
+                "symbol": sym,
+                "scope_key": str(scope_key),
+                "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
+                "matched_range": str(matched_block),
+                "local_time": local_dt.strftime("%H:%M"),
+                "timezone_offset_minutes": int(offset),
+                "config": dict(cfg),
+            }
+        return {
+            "ok": True,
+            "allowed": True,
+            "reason": "outside_trade_block_windows",
+            "symbol": sym,
+            "scope_key": str(scope_key),
+            "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
+            "local_time": local_dt.strftime("%H:%M"),
+            "timezone_offset_minutes": int(offset),
+            "config": dict(cfg),
+        }
+
     @classmethod
     def get_indicator_bridge_dual_gate_settings(cls) -> Dict[str, Any]:
         enabled = str(cls._get_env_value("INDICATOR_BRIDGE_DUAL_NONE_CLOSE_ENABLED", "0")).strip().lower() in {
@@ -5138,49 +5385,24 @@ class TelegramBridgeService:
         return raw not in {"0", "false", "no", "off", "disabled"}
 
     @staticmethod
-    def _indicator_atomic_sl_widen_pct(sl_to_tp5_ratio: float) -> float:
+    def _indicator_atomic_sl_widen_pct(sl_to_tp5_ratio: float, cfg: Optional[Dict[str, Any]] = None) -> float:
         """
         Widen native Atomic SL by a small percentage of its own distance.
         Wider native SLs receive a slightly larger percentage, but the caller
         caps final risk at the entry->TP5 distance.
         """
         ratio = float(sl_to_tp5_ratio)
-        tight = float(
-            max(
-                0.0,
-                min(
-                    1.0,
-                    _to_float_or_none(
-                        TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_TIGHT_PCT", "0.30")
-                    )
-                    or 0.30,
-                ),
-            )
-        )
-        normal = float(
-            max(
-                0.0,
-                min(
-                    1.0,
-                    _to_float_or_none(
-                        TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_NORMAL_PCT", "0.25")
-                    )
-                    or 0.25,
-                ),
-            )
-        )
-        wide = float(
-            max(
-                0.0,
-                min(
-                    1.0,
-                    _to_float_or_none(
-                        TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_WIDE_PCT", "0.20")
-                    )
-                    or 0.20,
-                ),
-            )
-        )
+        cfg_norm = TelegramBridgeService._normalize_indicator_bridge_atomic_sl_widen(cfg or {})
+        tight = _to_float_or_none(cfg_norm.get("tight_pct"))
+        normal = _to_float_or_none(cfg_norm.get("normal_pct"))
+        wide = _to_float_or_none(cfg_norm.get("wide_pct"))
+        if cfg is None:
+            tight = _to_float_or_none(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_TIGHT_PCT", "0.30")) or 0.30
+            normal = _to_float_or_none(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_NORMAL_PCT", "0.25")) or 0.25
+            wide = _to_float_or_none(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_WIDE_PCT", "0.20")) or 0.20
+        tight = float(max(0.0, min(1.0, float(tight or 0.30))))
+        normal = float(max(0.0, min(1.0, float(normal or 0.25))))
+        wide = float(max(0.0, min(1.0, float(wide or 0.20))))
         if ratio <= 0.20:
             return float(tight)
         if ratio <= 0.50:
@@ -5196,6 +5418,7 @@ class TelegramBridgeService:
         stop_loss: Any,
         tps: Any,
         digits: int,
+        widen_cfg: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[float], Dict[str, Any]]:
         side = str(direction or "").strip().upper()
         prof = str(profile or "").strip().lower()
@@ -5205,6 +5428,11 @@ class TelegramBridgeService:
             "enabled": bool(self._indicator_atomic_sl_widen_enabled()),
             "profile": str(prof),
         }
+        instance_widen_cfg = self._normalize_indicator_bridge_atomic_sl_widen(widen_cfg or {})
+        if widen_cfg is not None:
+            payload["enabled"] = bool(instance_widen_cfg.get("enabled"))
+            payload["instance_override"] = True
+            payload["instance_widen_cfg"] = dict(instance_widen_cfg)
         if not bool(payload.get("enabled")):
             payload["reason"] = "disabled"
             return sl, payload
@@ -5245,7 +5473,7 @@ class TelegramBridgeService:
             payload["widened_stop_loss"] = float(sl)
             return sl, payload
         ratio = float(raw_dist / tp5_dist)
-        pct = float(self._indicator_atomic_sl_widen_pct(ratio))
+        pct = float(self._indicator_atomic_sl_widen_pct(ratio, instance_widen_cfg if widen_cfg is not None else None))
         widened_dist = min(float(tp5_dist), float(raw_dist) * (1.0 + float(pct)))
         if widened_dist <= raw_dist:
             payload["reason"] = "no_widen_needed"
@@ -5571,6 +5799,62 @@ class TelegramBridgeService:
             cfg = cls._normalize_indicator_bridge_half_be(v)
             if bool(cfg.get("enabled")) and int(cfg.get("tp_index") or 0) > 0:
                 cleaned[item] = {"enabled": True, "tp_index": int(cfg.get("tp_index") or 0)}
+        return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _normalize_indicator_bridge_atomic_sl_widen(cls, value: Any) -> Dict[str, Any]:
+        cfg = value if isinstance(value, dict) else {}
+
+        def _pct(key: str, default: float) -> float:
+            raw = _to_float_or_none(cfg.get(key))
+            if raw is None:
+                raw = float(default)
+            if float(raw) > 1.0:
+                raw = float(raw) / 100.0
+            return float(max(0.0, min(1.0, float(raw))))
+
+        enabled_raw = cfg.get("enabled")
+        enabled = True if enabled_raw is None else str(enabled_raw).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+        return {
+            "enabled": bool(enabled),
+            "tight_pct": _pct("tight_pct", 0.30),
+            "normal_pct": _pct("normal_pct", 0.25),
+            "wide_pct": _pct("wide_pct", 0.20),
+        }
+
+    @classmethod
+    def _indicator_bridge_instance_atomic_sl_widen_overrides(cls, family: Any) -> Dict[str, Dict[str, Any]]:
+        key = cls._indicator_bridge_env_key(cls._indicator_bridge_family(family), "INSTANCE_ATOMIC_SL_WIDEN")
+        raw = str(cls._get_env_value(key, "{}")).strip()
+        out: Dict[str, Dict[str, Any]] = {}
+        if not raw:
+            return out
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return out
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            item = str(k or "").strip().lower()
+            if item:
+                out[item] = cls._normalize_indicator_bridge_atomic_sl_widen(v)
+        return out
+
+    @classmethod
+    def _serialize_indicator_bridge_instance_atomic_sl_widen_overrides(cls, cfg_map: Dict[str, Any]) -> str:
+        cleaned: Dict[str, Dict[str, Any]] = {}
+        for k, v in (cfg_map or {}).items():
+            item = str(k or "").strip().lower()
+            if not item:
+                continue
+            cfg = cls._normalize_indicator_bridge_atomic_sl_widen(v)
+            cleaned[item] = {
+                "enabled": bool(cfg.get("enabled")),
+                "tight_pct": float(cfg.get("tight_pct") or 0.0),
+                "normal_pct": float(cfg.get("normal_pct") or 0.0),
+                "wide_pct": float(cfg.get("wide_pct") or 0.0),
+            }
         return json.dumps(cleaned, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
@@ -5953,6 +6237,19 @@ class TelegramBridgeService:
         half_be_cfg = self._normalize_indicator_bridge_half_be(half_be_overrides.get(instance_key_l) if instance_key_l else {})
         if str(inferred_profile).strip().lower() == "atomic_regime":
             half_be_cfg = self._normalize_indicator_bridge_half_be({})
+        atomic_sl_widen_overrides = self._indicator_bridge_instance_atomic_sl_widen_overrides(terminal_family)
+        atomic_sl_widen_override_present = bool(instance_key_l and instance_key_l in atomic_sl_widen_overrides)
+        if atomic_sl_widen_override_present:
+            atomic_sl_widen_cfg = self._normalize_indicator_bridge_atomic_sl_widen(atomic_sl_widen_overrides.get(instance_key_l))
+        else:
+            atomic_sl_widen_cfg = self._normalize_indicator_bridge_atomic_sl_widen(
+                {
+                    "enabled": bool(self._indicator_atomic_sl_widen_enabled()),
+                    "tight_pct": _to_float_or_none(self._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_TIGHT_PCT", "0.30")) or 0.30,
+                    "normal_pct": _to_float_or_none(self._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_NORMAL_PCT", "0.25")) or 0.25,
+                    "wide_pct": _to_float_or_none(self._get_env_value("INDICATOR_BRIDGE_ATOMIC_SL_WIDEN_WIDE_PCT", "0.20")) or 0.20,
+                }
+            )
         return {
             "terminal_family": str(terminal_family),
             "indicator": str(indicator_name),
@@ -6014,6 +6311,12 @@ class TelegramBridgeService:
             "half_be": dict(half_be_cfg),
             "half_be_enabled": bool(half_be_cfg.get("enabled")),
             "half_be_tp_index": int(half_be_cfg.get("tp_index") or 0),
+            "atomic_sl_widen": dict(atomic_sl_widen_cfg),
+            "atomic_sl_widen_override_present": bool(atomic_sl_widen_override_present),
+            "atomic_sl_widen_enabled": bool(atomic_sl_widen_cfg.get("enabled")),
+            "atomic_sl_widen_tight_pct": float(atomic_sl_widen_cfg.get("tight_pct") or 0.0),
+            "atomic_sl_widen_normal_pct": float(atomic_sl_widen_cfg.get("normal_pct") or 0.0),
+            "atomic_sl_widen_wide_pct": float(atomic_sl_widen_cfg.get("wide_pct") or 0.0),
         }
 
     def _resolve_mt4_instance_runtime_config(
@@ -6441,6 +6744,10 @@ class TelegramBridgeService:
         sync_reentry_enabled: Optional[bool] = None,
         half_be_enabled: Optional[bool] = None,
         half_be_tp_index: Optional[int] = None,
+        atomic_sl_widen_enabled: Optional[bool] = None,
+        atomic_sl_widen_tight_pct: Optional[float] = None,
+        atomic_sl_widen_normal_pct: Optional[float] = None,
+        atomic_sl_widen_wide_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
         family = self._indicator_bridge_family(terminal_family)
         instance_key = self._indicator_bridge_instance_key(
@@ -6460,6 +6767,7 @@ class TelegramBridgeService:
         entry_exit_map = self._indicator_bridge_instance_entry_exit_overrides(family)
         sync_map = self._indicator_bridge_instance_sync_overrides(family)
         half_be_map = self._indicator_bridge_instance_half_be_overrides(family)
+        atomic_sl_widen_map = self._indicator_bridge_instance_atomic_sl_widen_overrides(family)
         if enabled is not None:
             auto_map[str(instance_key).lower()] = bool(enabled)
         if lot_size is not None:
@@ -6592,6 +6900,23 @@ class TelegramBridgeService:
                 half_be_map[mk] = dict(normalized_half_be)
             else:
                 half_be_map.pop(mk, None)
+        if (
+            atomic_sl_widen_enabled is not None
+            or atomic_sl_widen_tight_pct is not None
+            or atomic_sl_widen_normal_pct is not None
+            or atomic_sl_widen_wide_pct is not None
+        ):
+            mk = str(instance_key).lower()
+            prev_widen = dict(atomic_sl_widen_map.get(mk) or {})
+            if atomic_sl_widen_enabled is not None:
+                prev_widen["enabled"] = bool(atomic_sl_widen_enabled)
+            if atomic_sl_widen_tight_pct is not None:
+                prev_widen["tight_pct"] = float(atomic_sl_widen_tight_pct)
+            if atomic_sl_widen_normal_pct is not None:
+                prev_widen["normal_pct"] = float(atomic_sl_widen_normal_pct)
+            if atomic_sl_widen_wide_pct is not None:
+                prev_widen["wide_pct"] = float(atomic_sl_widen_wide_pct)
+            atomic_sl_widen_map[mk] = self._normalize_indicator_bridge_atomic_sl_widen(prev_widen)
         ok, status = self._upsert_indicator_bridge_env_values(
             {
                 self._indicator_bridge_env_key(family, "INSTANCE_AUTOMATION"): self._serialize_indicator_bridge_instance_automation_overrides(auto_map),
@@ -6603,6 +6928,7 @@ class TelegramBridgeService:
                 self._indicator_bridge_env_key(family, "INSTANCE_ENTRY_EXIT"): self._serialize_indicator_bridge_instance_entry_exit_overrides(entry_exit_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_SYNC"): self._serialize_indicator_bridge_instance_sync_overrides(sync_map),
                 self._indicator_bridge_env_key(family, "INSTANCE_HALF_BE"): self._serialize_indicator_bridge_instance_half_be_overrides(half_be_map),
+                self._indicator_bridge_env_key(family, "INSTANCE_ATOMIC_SL_WIDEN"): self._serialize_indicator_bridge_instance_atomic_sl_widen_overrides(atomic_sl_widen_map),
             }
         )
         runtime_cfg = self._resolve_indicator_bridge_instance_runtime_config(
@@ -6640,6 +6966,11 @@ class TelegramBridgeService:
                 prev["half_be"] = dict(runtime_cfg.get("half_be") or {})
                 prev["half_be_enabled"] = bool(runtime_cfg.get("half_be_enabled"))
                 prev["half_be_tp_index"] = int(_to_float_or_none(runtime_cfg.get("half_be_tp_index")) or 0)
+                prev["atomic_sl_widen"] = dict(runtime_cfg.get("atomic_sl_widen") or {})
+                prev["atomic_sl_widen_enabled"] = bool(runtime_cfg.get("atomic_sl_widen_enabled"))
+                prev["atomic_sl_widen_tight_pct"] = float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_tight_pct")) or 0.0)
+                prev["atomic_sl_widen_normal_pct"] = float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_normal_pct")) or 0.0)
+                prev["atomic_sl_widen_wide_pct"] = float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_wide_pct")) or 0.0)
                 self._indicator_bridge_instances[str(instance_key)] = dict(prev)
             if half_be_enabled is not None or half_be_tp_index is not None:
                 sym_u = str(symbol or "").strip().upper()
@@ -6685,6 +7016,7 @@ class TelegramBridgeService:
         sync_map = self._indicator_bridge_instance_sync_overrides(family)
         entry_exit_map = self._indicator_bridge_instance_entry_exit_overrides(family)
         half_be_map = self._indicator_bridge_instance_half_be_overrides(family)
+        atomic_sl_widen_map = self._indicator_bridge_instance_atomic_sl_widen_overrides(family)
         configured_keys = {
             str(k or "").strip().lower()
             for k in (
@@ -6697,6 +7029,7 @@ class TelegramBridgeService:
                 + list(sync_map.keys())
                 + list(entry_exit_map.keys())
                 + list(half_be_map.keys())
+                + list(atomic_sl_widen_map.keys())
             )
             if str(k or "").strip()
         }
@@ -6918,6 +7251,11 @@ class TelegramBridgeService:
                     "half_be": dict(runtime_cfg.get("half_be") or {}),
                     "half_be_enabled": bool(runtime_cfg.get("half_be_enabled")),
                     "half_be_tp_index": int(_to_float_or_none(runtime_cfg.get("half_be_tp_index")) or 0),
+                    "atomic_sl_widen": dict(runtime_cfg.get("atomic_sl_widen") or {}),
+                    "atomic_sl_widen_enabled": bool(runtime_cfg.get("atomic_sl_widen_enabled")),
+                    "atomic_sl_widen_tight_pct": float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_tight_pct")) or 0.0),
+                    "atomic_sl_widen_normal_pct": float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_normal_pct")) or 0.0),
+                    "atomic_sl_widen_wide_pct": float(_to_float_or_none(runtime_cfg.get("atomic_sl_widen_wide_pct")) or 0.0),
                     "entry_exit_exit_wait_for_blank": bool(runtime_cfg.get("entry_exit_exit_wait_for_blank", True)),
                     "entry_exit_exit_mode": str(runtime_cfg.get("entry_exit_exit_mode") or "after_blank"),
                     "entry_exit_exit_mode_code": int(_to_float_or_none(runtime_cfg.get("entry_exit_exit_mode_code")) or 2),
@@ -7655,6 +7993,8 @@ class TelegramBridgeService:
             "execution_report": execution_report,
             "rsi_telemetry": rsi_telemetry,
             "risk_settings": self.get_indicator_bridge_risk_settings(),
+            "symbol_sessions": self.get_indicator_bridge_symbol_sessions(),
+            "trade_block_windows": self.get_indicator_bridge_trade_block_windows(),
             "daily_risk": self.get_indicator_bridge_daily_risk_status(),
             "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
             "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
@@ -12602,6 +12942,12 @@ class TelegramBridgeService:
             direction=str(hint),
             current_price=_to_float_or_none(entry_price),
         )
+        symbol_session_guard = self._indicator_bridge_symbol_session_guard(
+            symbol=str(symbol_exec_raw),
+            family=str(family),
+            profile=str(profile),
+            indicator=str(indicator),
+        )
 
         mode_results: List[Dict[str, Any]] = []
         executed_any = False
@@ -12635,6 +12981,44 @@ class TelegramBridgeService:
                     mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
                 mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
                 with mode_exec_lock:
+                    if not bool((symbol_session_guard or {}).get("allowed", True)):
+                        reason = str((symbol_session_guard or {}).get("reason") or "symbol_session_blocked")
+                        self._append_automation_execution_log(
+                            source_type="mt_indicator",
+                            source_name=str(indicator),
+                            trigger="indicator_signal",
+                            status="skipped",
+                            symbol=str(symbol_exec).strip().upper(),
+                            timeframe=str(timeframe),
+                            direction=str(hint),
+                            lot=float(mode_lot),
+                            stop_loss=_to_float_or_none(stop_loss),
+                            message=f"symbol_session_guard_blocked:{reason}",
+                            profile=str(profile),
+                            indicator=str(indicator),
+                            source_tag=str(mode_source_tag),
+                            event_ts=event_ts,
+                            execution_mode=str(mode),
+                            trace_id=str(signal.get("trace_id") or ""),
+                            stage="symbol_session_guard",
+                            stage_status="blocked",
+                            stage_payload=dict(symbol_session_guard or {}),
+                            error_code=str(reason),
+                        )
+                        mode_results.append(
+                            {
+                                "mode": "sync",
+                                "exit_mode": str(exit_mode_name),
+                                "lifecycle_mode": str(lifecycle_mode_name),
+                                "ok": True,
+                                "executed": False,
+                                "reason": str(reason),
+                                "message": f"symbol_session_guard_blocked:{reason}",
+                                "symbol_session_guard": dict(symbol_session_guard or {}),
+                            }
+                        )
+                        market_closed_only = False
+                        continue
                     if not bool((liquidity_context_guard or {}).get("allow", True)):
                         reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
                         self._append_automation_execution_log(
@@ -12747,6 +13131,44 @@ class TelegramBridgeService:
                 mode_source_tag = f"{str(mode_source_tag)}|{lifecycle_suffix}"
             mode_exec_lock = self._indicator_mode_exec_lock(str(mode_source_tag))
             with mode_exec_lock:
+                if not bool((symbol_session_guard or {}).get("allowed", True)):
+                    reason = str((symbol_session_guard or {}).get("reason") or "symbol_session_blocked")
+                    self._append_automation_execution_log(
+                        source_type="mt_indicator",
+                        source_name=str(indicator),
+                        trigger="indicator_signal",
+                        status="skipped",
+                        symbol=str(symbol_exec).strip().upper(),
+                        timeframe=str(timeframe),
+                        direction=str(hint),
+                        lot=float(mode_lot),
+                        stop_loss=_to_float_or_none(stop_loss),
+                        message=f"symbol_session_guard_blocked:{reason}",
+                        profile=str(profile),
+                        indicator=str(indicator),
+                        source_tag=str(mode_source_tag),
+                        event_ts=event_ts,
+                        execution_mode=str(mode),
+                        trace_id=str(signal.get("trace_id") or ""),
+                        stage="symbol_session_guard",
+                        stage_status="blocked",
+                        stage_payload=dict(symbol_session_guard or {}),
+                        error_code=str(reason),
+                    )
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
+                            "policy": str(policy_name),
+                            "ok": True,
+                            "executed": False,
+                            "reason": str(reason),
+                            "message": f"symbol_session_guard_blocked:{reason}",
+                            "symbol_session_guard": dict(symbol_session_guard or {}),
+                        }
+                    )
+                    market_closed_only = False
+                    continue
                 if not bool((liquidity_context_guard or {}).get("allow", True)):
                     reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
                     self._append_automation_execution_log(
@@ -13116,6 +13538,7 @@ class TelegramBridgeService:
                             stop_loss=mode_stop_loss,
                             tps=list(mode_tps),
                             digits=int(digits),
+                            widen_cfg=dict(runtime_cfg.get("atomic_sl_widen") or {}),
                         )
                         if _to_float_or_none(widened_sl) is not None:
                             mode_stop_loss = _to_float_or_none(widened_sl)
@@ -13487,6 +13910,57 @@ class TelegramBridgeService:
             direction=str(hint),
             current_price=_to_float_or_none(entry_price),
         )
+        symbol_session_guard = self._indicator_bridge_symbol_session_guard(
+            symbol=str(symbol_exec_raw),
+            family="mt4",
+            profile=str(profile),
+            indicator=str(indicator),
+        )
+        if not bool((symbol_session_guard or {}).get("allowed", True)):
+            reason = str((symbol_session_guard or {}).get("reason") or "symbol_session_blocked")
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name=str(indicator),
+                trigger="indicator_signal",
+                status="skipped",
+                symbol=str(symbol_exec).strip().upper(),
+                timeframe=str(timeframe),
+                direction=str(hint),
+                lot=float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile)),
+                stop_loss=_to_float_or_none(stop_loss),
+                message=f"symbol_session_guard_blocked:{reason}",
+                profile=str(profile),
+                indicator=str(indicator),
+                source_tag=str(combo_source_tag),
+                event_ts=event_ts,
+                execution_mode=str(profile),
+                stage="symbol_session_guard",
+                stage_status="blocked",
+                stage_payload=dict(symbol_session_guard or {}),
+                error_code=str(reason),
+            )
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_symbol_session_guard_blocked",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "timeframe": str(timeframe),
+                    "symbol_session_guard": dict(symbol_session_guard or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": str(reason),
+                "runtime": runtime_cfg,
+                "symbol_session_guard": dict(symbol_session_guard or {}),
+            }
         if not bool((liquidity_context_guard or {}).get("allow", True)):
             reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
             self._append_automation_execution_log(

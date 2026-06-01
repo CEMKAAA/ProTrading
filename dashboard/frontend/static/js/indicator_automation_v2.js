@@ -39,6 +39,9 @@
         liqScanResults: document.getElementById('v2-liq-scan-results'),
         telemetryBody: document.getElementById('v2-telemetry-body'),
         telemetryFilter: document.getElementById('v2-telemetry-filter'),
+        symbolSessionBody: document.getElementById('v2-symbol-session-body'),
+        symbolSessionSave: document.getElementById('v2-symbol-session-save'),
+        symbolSessionStatus: document.getElementById('v2-symbol-session-status'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
         openBody: document.getElementById('v2-open-body'),
@@ -50,6 +53,7 @@
         instanceFilter: document.getElementById('v2-instance-filter'),
         instanceFilterAtomic: document.getElementById('v2-instance-filter-atomic'),
         instanceFilterAtomicRegime: document.getElementById('v2-instance-filter-atomic-regime'),
+        instanceFilterSignatics: document.getElementById('v2-instance-filter-signatics'),
         auditFilter: document.getElementById('v2-audit-filter'),
         liqAuditFilter: document.getElementById('v2-liq-audit-filter')
     };
@@ -114,6 +118,27 @@
         return Math.max(0, Math.min(1, n));
     }
 
+    function parsePercentInput(raw, fallback) {
+        const n = Number(String(raw == null ? '' : raw).trim().replace(',', '.'));
+        if (!Number.isFinite(n)) return fallback == null ? null : fallback;
+        const unit = n > 1 ? n / 100 : n;
+        return Math.max(0, Math.min(2, Number(unit.toFixed(4))));
+    }
+
+    function pctDisplay(value, fallback) {
+        const n = Number(value);
+        const unit = Number.isFinite(n) ? n : Number(fallback || 0);
+        return String(Math.round(Math.max(0, unit) * 1000) / 10);
+    }
+
+    function normalizeWindowsText(raw) {
+        return String(raw || '')
+            .split(/[\n,;|]+/)
+            .map(x => x.trim())
+            .filter(Boolean)
+            .join('\n');
+    }
+
     async function loadState() {
         if (stateLoadInFlight || Date.now() < stateRefreshPausedUntil) return;
         stateLoadInFlight = true;
@@ -174,6 +199,18 @@
         }
         if (Object.prototype.hasOwnProperty.call(options, 'half_be_enabled')) row.half_be_enabled = !!options.half_be_enabled;
         if (Object.prototype.hasOwnProperty.call(options, 'half_be_tp_index')) row.half_be_tp_index = Number(options.half_be_tp_index || 0);
+        const widenKeys = ['atomic_sl_widen_enabled', 'atomic_sl_widen_tight_pct', 'atomic_sl_widen_normal_pct', 'atomic_sl_widen_wide_pct'];
+        widenKeys.forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(options, key)) row[key] = key.endsWith('_enabled') ? !!options[key] : Number(options[key]);
+        });
+        if (widenKeys.some(key => Object.prototype.hasOwnProperty.call(options, key))) {
+            row.atomic_sl_widen = Object.assign({}, row.atomic_sl_widen || {}, {
+                enabled: !!row.atomic_sl_widen_enabled,
+                tight_pct: Number(row.atomic_sl_widen_tight_pct || 0),
+                normal_pct: Number(row.atomic_sl_widen_normal_pct || 0),
+                wide_pct: Number(row.atomic_sl_widen_wide_pct || 0)
+            });
+        }
     }
 
     function patchInstanceState(row, options) {
@@ -495,6 +532,84 @@
         return allInstances().filter(hasDisplayableBridgeConnection);
     }
 
+    function normalizeIndicatorScopeKey(v) {
+        let raw = String(v == null ? '' : v).trim().replace(/\//g, '\\');
+        if (raw.includes('\\')) {
+            const parts = raw.split('\\').filter(Boolean);
+            raw = parts.length ? parts[parts.length - 1] : raw;
+        }
+        return raw.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function tradeBlockScopeFromRow(row) {
+        const tag = String((row || {}).source_tag || '').trim().toLowerCase();
+        const parts = tag.split('|').map(x => String(x || '').trim()).filter(Boolean);
+        const family = (parts.length >= 1 && ['mt4', 'mt5'].includes(parts[0]))
+            ? parts[0]
+            : String((row || {}).terminal_family || 'mt4').trim().toLowerCase();
+        const profile = (parts.length >= 2 ? parts[1] : instanceProfile(row)) || 'generic';
+        const indicatorRaw = (parts.length >= 3 ? parts[2] : ((row || {}).indicator || (row || {}).source_name || ''));
+        const indicator = normalizeIndicatorScopeKey(indicatorRaw);
+        const symbol = String((parts.length >= 4 ? parts[3] : ((row || {}).symbol || '')) || '').trim().toUpperCase();
+        if (!family || !profile || !indicator || !symbol) return null;
+        return {
+            key: `${family}|${profile}|${indicator}|${symbol}`,
+            family,
+            profile,
+            indicator,
+            indicatorLabel: String((row || {}).indicator || indicatorRaw || indicator).trim() || indicator,
+            symbol,
+            timeframe: String((row || {}).timeframe || '').trim().toUpperCase()
+        };
+    }
+
+    function tradeBlockScopeFromKey(keyRaw) {
+        const parts = String(keyRaw || '').trim().toLowerCase().split('|').map(x => x.trim()).filter(Boolean);
+        if (parts.length !== 4) return null;
+        const symbol = String(parts[3] || '').trim().toUpperCase();
+        if (!parts[0] || !parts[1] || !parts[2] || !symbol) return null;
+        return {
+            key: `${parts[0]}|${parts[1]}|${parts[2]}|${symbol}`,
+            family: parts[0],
+            profile: parts[1],
+            indicator: parts[2],
+            indicatorLabel: parts[2],
+            symbol,
+            timeframe: ''
+        };
+    }
+
+    function uniqueSessionScopes() {
+        const map = new Map();
+        displayInstances().forEach(row => {
+            const scope = tradeBlockScopeFromRow(row);
+            if (!scope) return;
+            const prev = map.get(scope.key) || {
+                key: scope.key,
+                family: scope.family,
+                profile: scope.profile,
+                indicator: scope.indicator,
+                indicatorLabel: scope.indicatorLabel,
+                symbol: scope.symbol,
+                count: 0,
+                instances: []
+            };
+            prev.count += 1;
+            prev.instances.push(`${scope.family.toUpperCase()} ${scope.profile} ${scope.indicatorLabel} ${scope.timeframe}`.trim());
+            map.set(scope.key, prev);
+        });
+        Object.keys((state || {}).trade_block_windows || {}).forEach(keyRaw => {
+            const scope = tradeBlockScopeFromKey(keyRaw);
+            if (!scope || map.has(scope.key)) return;
+            map.set(scope.key, Object.assign({}, scope, { count: 0, instances: [] }));
+        });
+        return Array.from(map.values()).sort((a, b) => {
+            const ak = `${a.symbol}|${a.indicator}|${a.profile}`;
+            const bk = `${b.symbol}|${b.indicator}|${b.profile}`;
+            return ak.localeCompare(bk);
+        });
+    }
+
     function instanceProfile(row) {
         return String((row || {}).profile || '').trim().toLowerCase();
     }
@@ -503,6 +618,7 @@
         const out = new Set();
         if (!els.instanceFilterAtomic || els.instanceFilterAtomic.checked) out.add('atomic');
         if (!els.instanceFilterAtomicRegime || els.instanceFilterAtomicRegime.checked) out.add('atomic_regime');
+        if (!els.instanceFilterSignatics || els.instanceFilterSignatics.checked) out.add('signatics');
         return out;
     }
 
@@ -1006,6 +1122,9 @@
 
     function modeText(row) {
         const p = row.mode_advanced_v2_enabled ? (row.advanced_v2_policies || {}) : {};
+        const widen = instanceProfile(row) === 'atomic' && row.atomic_sl_widen_enabled
+            ? `SL+ ${pctDisplay(row.atomic_sl_widen_tight_pct, 0.30)}/${pctDisplay(row.atomic_sl_widen_normal_pct, 0.25)}/${pctDisplay(row.atomic_sl_widen_wide_pct, 0.20)}%`
+            : '';
         const adv2 = row.mode_advanced_v2_enabled
             ? `ADV_V2(${[
                 p.conservative ? 'C' : '',
@@ -1018,8 +1137,27 @@
             adv2,
             row.mode_normal_enabled ? 'NORM' : '',
             row.mode_sync_enabled ? 'SYNC' : '',
-            row.half_be_enabled ? `HBE@TP${Number(row.half_be_tp_index || 0)}` : ''
+            row.half_be_enabled ? `HBE@TP${Number(row.half_be_tp_index || 0)}` : '',
+            widen
         ].filter(Boolean).join(' | ') || '-';
+    }
+
+    function renderAtomicSlWidenControls(row) {
+        if (instanceProfile(row) !== 'atomic') return '';
+        const key = esc(row.instance_key || '');
+        const enabled = row.atomic_sl_widen_enabled !== false;
+        const tight = pctDisplay(row.atomic_sl_widen_tight_pct, 0.30);
+        const normal = pctDisplay(row.atomic_sl_widen_normal_pct, 0.25);
+        const wide = pctDisplay(row.atomic_sl_widen_wide_pct, 0.20);
+        return `<div class="small mt-2 border-top pt-1">
+            <label class="me-2"><input type="checkbox" class="form-check-input me-1 v2-sl-widen-enabled" data-instance="${key}" ${enabled ? 'checked' : ''}>Atomic SL widen</label>
+            <div class="d-flex flex-wrap gap-1 mt-1">
+                <input type="number" class="form-control form-control-sm v2-sl-widen-input" data-bucket="tight" data-instance="${key}" min="0" max="200" step="0.1" value="${esc(tight)}" title="Tight SL widening %">
+                <input type="number" class="form-control form-control-sm v2-sl-widen-input" data-bucket="normal" data-instance="${key}" min="0" max="200" step="0.1" value="${esc(normal)}" title="Normal SL widening %">
+                <input type="number" class="form-control form-control-sm v2-sl-widen-input" data-bucket="wide" data-instance="${key}" min="0" max="200" step="0.1" value="${esc(wide)}" title="Wide SL widening %">
+            </div>
+            <div class="text-muted">tight / normal / wide %</div>
+        </div>`;
     }
 
     function renderModeControls(row) {
@@ -1042,6 +1180,7 @@
                 <label class="me-1"><input type="checkbox" class="form-check-input me-1 v2-policy-toggle" data-policy="balanced" data-instance="${key}" ${p.balanced ? 'checked' : ''}>Bal</label>
                 <label class="me-1"><input type="checkbox" class="form-check-input me-1 v2-policy-toggle" data-policy="advanced" data-instance="${key}" ${p.advanced ? 'checked' : ''}>Adv</label>
             </div>
+            ${renderAtomicSlWidenControls(row)}
         </div>`;
     }
 
@@ -1552,8 +1691,92 @@
         if (!els.instanceBody || !document.activeElement) return false;
         if (!els.instanceBody.contains(document.activeElement)) return false;
         return !!document.activeElement.closest(
-            '.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle, .v2-instance-toggle'
+            '.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle, .v2-instance-toggle, .v2-sl-widen-input, .v2-sl-widen-enabled'
         );
+    }
+
+    function symbolSessionControlActive() {
+        if (!els.symbolSessionBody || !document.activeElement) return false;
+        return els.symbolSessionBody.contains(document.activeElement);
+    }
+
+    function renderSymbolSessions() {
+        if (!els.symbolSessionBody) return;
+        const scopes = uniqueSessionScopes();
+        const cfgMap = (state || {}).trade_block_windows || {};
+        if (!scopes.length) {
+            els.symbolSessionBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
+            if (els.symbolSessionStatus) {
+                els.symbolSessionStatus.className = 'badge text-bg-secondary';
+                els.symbolSessionStatus.textContent = 'no scopes';
+            }
+            return;
+        }
+        els.symbolSessionBody.innerHTML = scopes.map(row => {
+            const cfg = cfgMap[String(row.key || '').toLowerCase()] || {};
+            const offset = Number(cfg.timezone_offset_minutes || 0);
+            const block = Array.isArray(cfg.block) ? cfg.block.join('\n') : '';
+            const instances = Array.from(new Set(row.instances || [])).slice(0, 8).join(', ');
+            return `<tr>
+                <td><strong>${esc(row.indicatorLabel || row.indicator)}</strong><div class="small text-muted">${esc(String(row.family || '').toUpperCase())} / ${esc(row.profile || 'generic')}</div></td>
+                <td><strong>${esc(row.symbol)}</strong></td>
+                <td><input type="number" class="form-control form-control-sm v2-symbol-session-offset" data-scope="${esc(row.key)}" step="1" min="-720" max="840" value="${esc(offset)}"></td>
+                <td><textarea class="form-control form-control-sm v2-symbol-session-block" data-scope="${esc(row.key)}" rows="2" placeholder="20:00-07:00&#10;11:30-12:00">${esc(block)}</textarea></td>
+                <td class="small text-muted">${esc(row.count)} instance${row.count === 1 ? '' : 's'}${instances ? `<div>${esc(instances)}</div>` : ''}</td>
+            </tr>`;
+        }).join('');
+        if (els.symbolSessionStatus) {
+            els.symbolSessionStatus.className = 'badge text-bg-info';
+            els.symbolSessionStatus.textContent = `${scopes.length} scopes`;
+        }
+    }
+
+    function collectSymbolSessions() {
+        const sessions = {};
+        if (!els.symbolSessionBody) return sessions;
+        Array.from(els.symbolSessionBody.querySelectorAll('tr')).forEach(tr => {
+            const offsetEl = tr.querySelector('.v2-symbol-session-offset');
+            if (!offsetEl) return;
+            const scope = String(offsetEl.getAttribute('data-scope') || '').trim().toLowerCase();
+            if (!scope) return;
+            const blockEl = tr.querySelector('.v2-symbol-session-block');
+            const offsetRaw = Number(String(offsetEl.value || '0').trim().replace(',', '.'));
+            const offset = Number.isFinite(offsetRaw) ? Math.max(-720, Math.min(840, Math.round(offsetRaw))) : 0;
+            const block = normalizeWindowsText(blockEl ? blockEl.value : '').split('\n').filter(Boolean);
+            if (offset !== 0 || block.length) {
+                sessions[scope] = { timezone_offset_minutes: offset, block };
+            }
+        });
+        return sessions;
+    }
+
+    async function saveSymbolSessions() {
+        pauseStateRefresh(2000);
+        const sessions = collectSymbolSessions();
+        if (els.symbolSessionSave) {
+            els.symbolSessionSave.disabled = true;
+            els.symbolSessionSave.textContent = 'Saving...';
+        }
+        try {
+            const res = await fetch('/api/indicator-bridge/symbol-sessions', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessions })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            mergeStatePatch({ trade_block_windows: data.trade_block_windows || sessions });
+            renderSymbolSessions();
+            refreshStateSoon(150);
+        } finally {
+            if (els.symbolSessionSave) {
+                els.symbolSessionSave.disabled = false;
+                els.symbolSessionSave.textContent = 'Save Sessions';
+            }
+        }
     }
 
     function renderInstances() {
@@ -1707,6 +1930,9 @@
         renderEntryExitPanel();
         renderOpenTrades();
         renderTradeTelemetry();
+        if (!symbolSessionControlActive()) {
+            renderSymbolSessions();
+        }
         renderInstances();
         renderLiquidityAudit();
         renderAudit();
@@ -1725,10 +1951,13 @@
             if (!instanceControlActive()) {
                 renderInstances();
             }
+            if (!symbolSessionControlActive()) {
+                renderSymbolSessions();
+            }
         }, 1000);
     }
 
-    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.instanceFilterAtomic, els.instanceFilterAtomicRegime, els.auditFilter, els.liqAuditFilter].forEach(el => {
+    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.instanceFilterAtomic, els.instanceFilterAtomicRegime, els.instanceFilterSignatics, els.auditFilter, els.liqAuditFilter].forEach(el => {
         if (el) el.addEventListener('input', render);
         if (el) el.addEventListener('change', render);
     });
@@ -1745,6 +1974,23 @@
         els.riskTargetOverride.addEventListener('click', () => {
             const enabled = els.riskTargetOverride.getAttribute('data-enabled') === '1';
             setDailyTargetOverride(!enabled).catch(showError);
+        });
+    }
+    if (els.symbolSessionSave) {
+        els.symbolSessionSave.addEventListener('click', () => saveSymbolSessions().catch(showError));
+    }
+    if (els.symbolSessionBody) {
+        els.symbolSessionBody.addEventListener('input', () => {
+            pauseStateRefresh(3000);
+            if (els.symbolSessionStatus) {
+                els.symbolSessionStatus.className = 'badge text-bg-warning';
+                els.symbolSessionStatus.textContent = 'unsaved';
+            }
+        });
+        els.symbolSessionBody.addEventListener('keydown', ev => {
+            const input = ev.target.closest('.v2-symbol-session-offset');
+            if (input && ev.key === 'Enter') saveSymbolSessions().catch(showError);
+            if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') saveSymbolSessions().catch(showError);
         });
     }
     if (els.dualNoneCloseToggle) {
@@ -1782,12 +2028,12 @@
     }
     if (els.instanceBody) {
         els.instanceBody.addEventListener('pointerdown', ev => {
-            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle')) {
+            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle, .v2-sl-widen-input, .v2-sl-widen-enabled')) {
                 pauseStateRefresh(5000);
             }
         });
         els.instanceBody.addEventListener('focusin', ev => {
-            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle')) {
+            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle, .v2-sl-widen-input, .v2-sl-widen-enabled')) {
                 pauseStateRefresh(5000);
             }
         });
@@ -1810,7 +2056,32 @@
             const modeToggle = ev.target.closest('.v2-mode-toggle');
             const policyToggle = ev.target.closest('.v2-policy-toggle');
             const halfBeSelect = ev.target.closest('.v2-half-be-select');
-            if (!input && !modeToggle && !policyToggle && !halfBeSelect) return;
+            const slWidenInput = ev.target.closest('.v2-sl-widen-input');
+            const slWidenEnabled = ev.target.closest('.v2-sl-widen-enabled');
+            if (!input && !modeToggle && !policyToggle && !halfBeSelect && !slWidenInput && !slWidenEnabled) return;
+            if (slWidenInput || slWidenEnabled) {
+                const el = slWidenInput || slWidenEnabled;
+                const key = el.getAttribute('data-instance') || '';
+                const row = allInstances().find(r => String(r.instance_key || '') === key);
+                if (!row) return;
+                const scope = el.closest('.v2-mode-box') || els.instanceBody;
+                const enabledEl = scope.querySelector(`.v2-sl-widen-enabled[data-instance="${CSS.escape(key)}"]`);
+                const tightEl = scope.querySelector(`.v2-sl-widen-input[data-instance="${CSS.escape(key)}"][data-bucket="tight"]`);
+                const normalEl = scope.querySelector(`.v2-sl-widen-input[data-instance="${CSS.escape(key)}"][data-bucket="normal"]`);
+                const wideEl = scope.querySelector(`.v2-sl-widen-input[data-instance="${CSS.escape(key)}"][data-bucket="wide"]`);
+                const opts = {
+                    atomic_sl_widen_enabled: enabledEl ? !!enabledEl.checked : true,
+                    atomic_sl_widen_tight_pct: parsePercentInput(tightEl ? tightEl.value : '', 0.30),
+                    atomic_sl_widen_normal_pct: parsePercentInput(normalEl ? normalEl.value : '', 0.25),
+                    atomic_sl_widen_wide_pct: parsePercentInput(wideEl ? wideEl.value : '', 0.20)
+                };
+                [enabledEl, tightEl, normalEl, wideEl].filter(Boolean).forEach(x => { x.disabled = true; });
+                updateInstanceSettings(row, opts).catch(err => {
+                    showError(err);
+                    renderInstances();
+                });
+                return;
+            }
             if (halfBeSelect) {
                 const key = halfBeSelect.getAttribute('data-instance') || '';
                 const row = allInstances().find(r => String(r.instance_key || '') === key);
@@ -1883,7 +2154,7 @@
             });
         });
         els.instanceBody.addEventListener('keydown', ev => {
-            const input = ev.target.closest('.v2-lot-input');
+            const input = ev.target.closest('.v2-lot-input, .v2-sl-widen-input');
             if (input && ev.key === 'Enter') input.blur();
         });
     }

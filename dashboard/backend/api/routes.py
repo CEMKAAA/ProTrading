@@ -916,6 +916,30 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
         raise HTTPException(500, f"indicator_bridge_risk_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.post("/indicator-bridge/symbol-sessions")
+def indicator_bridge_symbol_sessions(payload: Dict[str, Any]):
+    """Persist indicator+symbol block-only trading windows for Indicator Automation V2."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        sessions = p.get("sessions")
+        if not isinstance(sessions, dict):
+            return {"ok": False, "error": "invalid_sessions"}
+        result = svc.update_indicator_bridge_trade_block_windows(sessions=dict(sessions))
+        return {
+            "ok": bool((result or {}).get("ok", True)),
+            "update_result": result,
+            "trade_block_windows": svc.get_indicator_bridge_trade_block_windows(),
+            "symbol_sessions": svc.get_indicator_bridge_symbol_sessions(),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_symbol_sessions_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.post("/indicator-bridge/dual-gate-settings")
 def indicator_bridge_dual_gate_settings(payload: Dict[str, Any]):
     """Persist global Dual Indicator Gate settings."""
@@ -1175,6 +1199,16 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         sync_reentry_enabled = p.get("sync_reentry_enabled") if "sync_reentry_enabled" in p else None
         half_be_enabled = p.get("half_be_enabled") if "half_be_enabled" in p else None
         half_be_tp_index = p.get("half_be_tp_index") if "half_be_tp_index" in p else None
+        atomic_sl_widen_enabled = p.get("atomic_sl_widen_enabled") if "atomic_sl_widen_enabled" in p else None
+        atomic_sl_widen_tight_pct = p.get("atomic_sl_widen_tight_pct") if "atomic_sl_widen_tight_pct" in p else None
+        atomic_sl_widen_normal_pct = p.get("atomic_sl_widen_normal_pct") if "atomic_sl_widen_normal_pct" in p else None
+        atomic_sl_widen_wide_pct = p.get("atomic_sl_widen_wide_pct") if "atomic_sl_widen_wide_pct" in p else None
+        def _optional_bool(v: Any) -> Optional[bool]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return bool(v)
+            return str(v).strip().lower() in {"1", "true", "yes", "on", "y"}
         lot_val = None
         if lot_size is not None:
             try:
@@ -1217,6 +1251,24 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
                 half_be_tp_index_val = int(float(half_be_tp_index))
             except Exception:
                 return {"ok": False, "error": "invalid_half_be_tp_index"}
+        atomic_sl_widen_tight_pct_val = None
+        if atomic_sl_widen_tight_pct is not None:
+            try:
+                atomic_sl_widen_tight_pct_val = float(atomic_sl_widen_tight_pct)
+            except Exception:
+                return {"ok": False, "error": "invalid_atomic_sl_widen_tight_pct"}
+        atomic_sl_widen_normal_pct_val = None
+        if atomic_sl_widen_normal_pct is not None:
+            try:
+                atomic_sl_widen_normal_pct_val = float(atomic_sl_widen_normal_pct)
+            except Exception:
+                return {"ok": False, "error": "invalid_atomic_sl_widen_normal_pct"}
+        atomic_sl_widen_wide_pct_val = None
+        if atomic_sl_widen_wide_pct is not None:
+            try:
+                atomic_sl_widen_wide_pct_val = float(atomic_sl_widen_wide_pct)
+            except Exception:
+                return {"ok": False, "error": "invalid_atomic_sl_widen_wide_pct"}
         result = svc.update_indicator_bridge_instance_settings(
             terminal_family=str(terminal_family),
             indicator=str(indicator),
@@ -1245,6 +1297,10 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             sync_reentry_enabled=(bool(sync_reentry_enabled) if sync_reentry_enabled is not None else None),
             half_be_enabled=(bool(half_be_enabled) if half_be_enabled is not None else None),
             half_be_tp_index=half_be_tp_index_val,
+            atomic_sl_widen_enabled=_optional_bool(atomic_sl_widen_enabled),
+            atomic_sl_widen_tight_pct=atomic_sl_widen_tight_pct_val,
+            atomic_sl_widen_normal_pct=atomic_sl_widen_normal_pct_val,
+            atomic_sl_widen_wide_pct=atomic_sl_widen_wide_pct_val,
         )
         return {
             "ok": bool((result or {}).get("ok", True)),

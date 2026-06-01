@@ -1,0 +1,14 @@
+InpIndicatorName=SIGNATICS-ALGO V2 (2)
+InpPollSeconds=1
+InpLogOnInit=true
+InpLogOnlyOnChange=true
+InpDebugObjects=false
+InpIgnoreNamePatterns=autotrade,->
+InpEnableProTradePost=true
+InpSendInitialConfirmedOnStart=false
+InpResolvedHeartbeatSeconds=60
+InpApiBaseUrl=http://127.0.0.1
+InpApiPath=/api/v1/mt4/bridge/signal
+InpBridgeToken=
+InpSignalProfile=signatics
+InpHttpTimeoutMs=5000
