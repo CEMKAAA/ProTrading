@@ -48,6 +48,8 @@
         liqAuditCount: document.getElementById('v2-liq-audit-count'),
         openFilter: document.getElementById('v2-open-filter'),
         instanceFilter: document.getElementById('v2-instance-filter'),
+        instanceFilterAtomic: document.getElementById('v2-instance-filter-atomic'),
+        instanceFilterAtomicRegime: document.getElementById('v2-instance-filter-atomic-regime'),
         auditFilter: document.getElementById('v2-audit-filter'),
         liqAuditFilter: document.getElementById('v2-liq-audit-filter')
     };
@@ -170,10 +172,31 @@
         if (options.advanced_v2_policies && typeof options.advanced_v2_policies === 'object') {
             row.advanced_v2_policies = Object.assign({}, options.advanced_v2_policies);
         }
+        if (Object.prototype.hasOwnProperty.call(options, 'half_be_enabled')) row.half_be_enabled = !!options.half_be_enabled;
+        if (Object.prototype.hasOwnProperty.call(options, 'half_be_tp_index')) row.half_be_tp_index = Number(options.half_be_tp_index || 0);
+    }
+
+    function patchInstanceState(row, options) {
+        const key = String((row || {}).instance_key || '').trim();
+        if (!key || !state || !options || typeof options !== 'object') return;
+        ['mt4_monitor', 'mt5_monitor'].forEach(section => {
+            const rows = (((state || {})[section] || {}).bot_rows || []);
+            if (!Array.isArray(rows)) return;
+            rows.forEach(item => {
+                if (String((item || {}).instance_key || '').trim() === key) {
+                    applyInstancePatch(item, options);
+                    item._client_pending_patch_ms = Date.now();
+                }
+            });
+        });
     }
 
     async function updateInstanceSettings(row, options) {
         pauseStateRefresh(2000);
+        patchInstanceState(row, options || {});
+        applyInstancePatch(row, options || {});
+        renderInstances();
+        renderEntryExitPanel();
         const payload = Object.assign({
             terminal_family: String(row.terminal_family || '').toLowerCase(),
             indicator: row.indicator || '',
@@ -191,7 +214,7 @@
             throw new Error(data.error || data.detail || `HTTP ${res.status}`);
         }
         mergeStatePatch(data);
-        applyInstancePatch(row, options || {});
+        patchInstanceState(row, options || {});
         renderInstances();
         renderEntryExitPanel();
         refreshStateSoon(150);
@@ -470,6 +493,17 @@
 
     function displayInstances() {
         return allInstances().filter(hasDisplayableBridgeConnection);
+    }
+
+    function instanceProfile(row) {
+        return String((row || {}).profile || '').trim().toLowerCase();
+    }
+
+    function selectedInstanceProfiles() {
+        const out = new Set();
+        if (!els.instanceFilterAtomic || els.instanceFilterAtomic.checked) out.add('atomic');
+        if (!els.instanceFilterAtomicRegime || els.instanceFilterAtomicRegime.checked) out.add('atomic_regime');
+        return out;
     }
 
     function normDirection(v) {
@@ -983,16 +1017,25 @@
             row.mode_advanced_enabled ? 'ADV' : '',
             adv2,
             row.mode_normal_enabled ? 'NORM' : '',
-            row.mode_sync_enabled ? 'SYNC' : ''
+            row.mode_sync_enabled ? 'SYNC' : '',
+            row.half_be_enabled ? `HBE@TP${Number(row.half_be_tp_index || 0)}` : ''
         ].filter(Boolean).join(' | ') || '-';
     }
 
     function renderModeControls(row) {
         const p = row.mode_advanced_v2_enabled ? (row.advanced_v2_policies || {}) : {};
         const key = esc(row.instance_key || '');
+        const halfTp = Number(row.half_be_enabled ? row.half_be_tp_index : 0) || 0;
+        const halfOptions = [0, 1, 2, 3, 4, 5].map(n => {
+            const label = n === 0 ? 'Half BE: Off' : `Half BE: TP${n}`;
+            return `<option value="${n}" ${halfTp === n ? 'selected' : ''}>${label}</option>`;
+        }).join('');
         return `<div class="v2-mode-box">
             <label class="me-2 small"><input type="checkbox" class="form-check-input me-1 v2-mode-toggle" data-mode="advanced" data-instance="${key}" ${row.mode_advanced_enabled ? 'checked' : ''}>ADV</label>
             <label class="me-2 small"><input type="checkbox" class="form-check-input me-1 v2-mode-toggle" data-mode="normal" data-instance="${key}" ${row.mode_normal_enabled ? 'checked' : ''}>NORM</label>
+            <select class="form-select form-select-sm mt-1 v2-half-be-select" data-instance="${key}" title="Selected TP leg triggers half close + SL to BE">
+                ${halfOptions}
+            </select>
             <div class="small mt-1">
                 <span class="text-muted me-1">ADV_V2</span>
                 <label class="me-1"><input type="checkbox" class="form-check-input me-1 v2-policy-toggle" data-policy="conservative" data-instance="${key}" ${p.conservative ? 'checked' : ''}>Con</label>
@@ -1242,6 +1285,13 @@
         return Math.max(0, Math.min(100, (hit / total) * 100));
     }
 
+    function ohlcTpLegText(row) {
+        const total = Number((row || {}).total_tps || 0);
+        const hit = Math.max(0, Number((row || {}).ohlc_max_tp_reached || 0));
+        if (Number.isFinite(total) && total > 0) return `TP${Math.min(hit, total)} / TP${total}`;
+        return hit > 0 ? `TP${hit}` : 'TP0';
+    }
+
     function renderTradeTelemetry() {
         const q = els.telemetryFilter ? els.telemetryFilter.value : '';
         const rows = openTrades()
@@ -1249,7 +1299,7 @@
             .sort((a, b) => Number(b.max_profit || 0) - Number(a.max_profit || 0));
         if (!els.telemetryBody) return;
         if (!rows.length) {
-            els.telemetryBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No open trade telemetry yet.</td></tr>';
+            els.telemetryBody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No open trade telemetry yet.</td></tr>';
             return;
         }
         els.telemetryBody.innerHTML = rows.map(row => {
@@ -1258,17 +1308,32 @@
             const maxL = Number(row.max_loss);
             const hit = Number(row.highest_tp_reached || 0);
             const total = Number(row.total_tps || 0);
+            const ohlcHit = Number(row.ohlc_max_tp_reached || 0);
             const pct = tpProgressPct(row);
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const maxCls = Number.isFinite(maxP) ? (maxP >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const minCls = Number.isFinite(maxL) ? (maxL >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const tpPrice = row.highest_tp_price != null ? fmtNum(row.highest_tp_price, 5) : '-';
             const tpTone = hit > 0 ? 'bg-success' : 'bg-secondary';
+            const slText = row.stop_loss != null ? fmtNum(row.stop_loss, 5) : '-';
+            const entryText = row.entry_price != null ? fmtNum(row.entry_price, 5) : '-';
+            const rr = Number(row.rr_to_final_tp);
+            const rrText = Number.isFinite(rr) ? `${fmtNum(rr, 2)}R` : '-';
+            const ohlcTone = ohlcHit > 0 ? 'bg-info text-dark' : 'bg-secondary';
+            const ohlcPrice = row.ohlc_max_tp_price != null ? fmtNum(row.ohlc_max_tp_price, 5) : '-';
+            const ohlcMeta = [
+                row.ohlc_bars_scanned != null ? `${Number(row.ohlc_bars_scanned || 0)} bars` : '',
+                row.ohlc_replay_open_bar_skipped ? 'open bar skipped' : ''
+            ].filter(Boolean).join(' / ');
             return `<tr>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}<div class="small text-muted">${esc(String(row.terminal_family || '').toUpperCase())}</div></td>
                 <td>${esc(row.indicator || row.source_name || '-')}<div class="small text-muted">${esc(row.execution_mode || '-')}</div></td>
                 <td class="${String(row.direction).toUpperCase() === 'BUY' ? 'trade-buy' : 'trade-sell'}">${esc(row.direction || '-')}</td>
+                <td class="v2-mono">
+                    <div>SL ${esc(slText)}</div>
+                    <div class="small text-muted">Entry ${esc(entryText)} / ${esc(rrText)}</div>
+                </td>
                 <td class="${pnlCls} fw-semibold">${fmtNum(row.current_profit, 2)}</td>
                 <td class="${maxCls} fw-semibold">${fmtNum(row.max_profit, 2)}</td>
                 <td class="${minCls} fw-semibold">${fmtNum(row.max_loss, 2)}</td>
@@ -1280,6 +1345,11 @@
                     <div class="progress mt-1" style="height: 5px;">
                         <div class="progress-bar ${tpTone}" style="width: ${fmtNum(pct, 0)}%"></div>
                     </div>
+                </td>
+                <td>
+                    <span class="badge ${ohlcTone}">${esc(ohlcTpLegText(row))}</span>
+                    <div class="small text-muted">${esc(ohlcPrice)} ${ohlcMeta ? `/${esc(ohlcMeta)}` : ''}</div>
+                    <div class="small text-muted">${row.ohlc_max_tp_time ? esc(fmtTs(row.ohlc_max_tp_time)) : esc(row.ohlc_replay_status || '')}</div>
                 </td>
                 <td class="v2-mono">${esc(tpPrice)}</td>
                 <td>${esc(fmtTs(row.opened_at))}<div class="small text-muted">${row.highest_tp_updated_at ? `TP @ ${esc(fmtTs(row.highest_tp_updated_at))}` : ''}</div></td>
@@ -1478,10 +1548,20 @@
         </div>`;
     }
 
+    function instanceControlActive() {
+        if (!els.instanceBody || !document.activeElement) return false;
+        if (!els.instanceBody.contains(document.activeElement)) return false;
+        return !!document.activeElement.closest(
+            '.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle, .v2-instance-toggle'
+        );
+    }
+
     function renderInstances() {
         const q = els.instanceFilter ? els.instanceFilter.value : '';
+        const selectedProfiles = selectedInstanceProfiles();
         const rows = displayInstances()
             .filter(isBridgeInstancesTableRow)
+            .filter(r => selectedProfiles.has(instanceProfile(r)))
             .filter(r => textMatch(r, q))
             .sort((a, b) => instanceSortKey(a).localeCompare(instanceSortKey(b)));
         if (!els.instanceBody) return;
@@ -1642,12 +1722,15 @@
             if (!els.entryExitBody || !els.entryExitBody.contains(document.activeElement)) {
                 renderEntryExitPanel();
             }
-            renderInstances();
+            if (!instanceControlActive()) {
+                renderInstances();
+            }
         }, 1000);
     }
 
-    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.auditFilter, els.liqAuditFilter].forEach(el => {
+    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.instanceFilterAtomic, els.instanceFilterAtomicRegime, els.auditFilter, els.liqAuditFilter].forEach(el => {
         if (el) el.addEventListener('input', render);
+        if (el) el.addEventListener('change', render);
     });
     [els.riskDailyTarget, els.riskDailyMaxLoss].forEach(el => {
         if (el) el.addEventListener('input', renderRiskSettings);
@@ -1698,6 +1781,16 @@
         });
     }
     if (els.instanceBody) {
+        els.instanceBody.addEventListener('pointerdown', ev => {
+            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle')) {
+                pauseStateRefresh(5000);
+            }
+        });
+        els.instanceBody.addEventListener('focusin', ev => {
+            if (ev.target.closest('.v2-half-be-select, .v2-lot-input, .v2-mode-toggle, .v2-policy-toggle')) {
+                pauseStateRefresh(5000);
+            }
+        });
         els.instanceBody.addEventListener('click', ev => {
             const btn = ev.target.closest('.v2-instance-toggle');
             if (!btn) return;
@@ -1716,7 +1809,31 @@
             const input = ev.target.closest('.v2-lot-input');
             const modeToggle = ev.target.closest('.v2-mode-toggle');
             const policyToggle = ev.target.closest('.v2-policy-toggle');
-            if (!input && !modeToggle && !policyToggle) return;
+            const halfBeSelect = ev.target.closest('.v2-half-be-select');
+            if (!input && !modeToggle && !policyToggle && !halfBeSelect) return;
+            if (halfBeSelect) {
+                const key = halfBeSelect.getAttribute('data-instance') || '';
+                const row = allInstances().find(r => String(r.instance_key || '') === key);
+                if (!row) return;
+                const tpIndex = Math.max(0, Math.min(5, Number(halfBeSelect.value || 0)));
+                halfBeSelect.disabled = true;
+                patchInstanceState(row, {
+                    half_be_enabled: tpIndex > 0,
+                    half_be_tp_index: tpIndex
+                });
+                renderInstances();
+                updateInstanceSettings(row, {
+                    half_be_enabled: tpIndex > 0,
+                    half_be_tp_index: tpIndex
+                }).then(() => {
+                    const fresh = document.querySelector(`.v2-half-be-select[data-instance="${CSS.escape(key)}"]`);
+                    if (fresh) fresh.disabled = false;
+                }).catch(err => {
+                    showError(err);
+                    renderInstances();
+                });
+                return;
+            }
             if (modeToggle || policyToggle) {
                 const el = modeToggle || policyToggle;
                 const key = el.getAttribute('data-instance') || '';

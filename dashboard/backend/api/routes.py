@@ -1173,6 +1173,8 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
         sync_entry_tf = p.get("sync_entry_tf") if "sync_entry_tf" in p else p.get("sync_trigger_tf")
         sync_exit_tf = p.get("sync_exit_tf") if "sync_exit_tf" in p else p.get("sync_trigger_tf")
         sync_reentry_enabled = p.get("sync_reentry_enabled") if "sync_reentry_enabled" in p else None
+        half_be_enabled = p.get("half_be_enabled") if "half_be_enabled" in p else None
+        half_be_tp_index = p.get("half_be_tp_index") if "half_be_tp_index" in p else None
         lot_val = None
         if lot_size is not None:
             try:
@@ -1209,6 +1211,12 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
                 signal_confirm_sec_val = float(signal_confirm_sec)
             except Exception:
                 return {"ok": False, "error": "invalid_signal_confirm_sec"}
+        half_be_tp_index_val = None
+        if half_be_tp_index is not None:
+            try:
+                half_be_tp_index_val = int(float(half_be_tp_index))
+            except Exception:
+                return {"ok": False, "error": "invalid_half_be_tp_index"}
         result = svc.update_indicator_bridge_instance_settings(
             terminal_family=str(terminal_family),
             indicator=str(indicator),
@@ -1235,6 +1243,8 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),
             sync_reentry_enabled=(bool(sync_reentry_enabled) if sync_reentry_enabled is not None else None),
+            half_be_enabled=(bool(half_be_enabled) if half_be_enabled is not None else None),
+            half_be_tp_index=half_be_tp_index_val,
         )
         return {
             "ok": bool((result or {}).get("ok", True)),

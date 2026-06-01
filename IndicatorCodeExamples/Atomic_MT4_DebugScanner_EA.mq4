@@ -23,6 +23,11 @@ input int    InpCandidateLookbackSeconds = 86400;
 input bool   InpPrintLatestSignalNeighborhood = true;
 input int    InpNeighborhoodBars = 3;
 input int    InpNeighborhoodMaxRows = 160;
+input bool   InpPrintRegimeBufferCandidates = true;
+input int    InpRegimeCandidateShiftMax = 80;
+input int    InpRegimeCandidateBufferMax = 64;
+input int    InpRegimeUpTrendStopBufferHint = 0;
+input int    InpRegimeDnTrendStopBufferHint = 1;
 
 double g_params[];
 int g_paramCount = 0;
@@ -272,6 +277,131 @@ double _buffer_value(int b,int sh)
    return iCustom(NULL,0,InpIndicatorName,b,sh);
 }
 
+bool _valid_buffer_price(double v)
+{
+   if(!MathIsValidNumber(v) || v == EMPTY_VALUE || v == 2147483647.0 || v <= 0.0)
+      return false;
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   if(bid <= 0.0)
+      bid = Close[0];
+   if(bid <= 0.0)
+      return true;
+   return (v > bid * 0.20 && v < bid * 5.00);
+}
+
+string _buffer_short_row(int bufferIndex,int maxShift)
+{
+   string row = "";
+   int n = MathMax(1, MathMin(30, maxShift));
+   for(int sh=0; sh<n; sh++)
+   {
+      double v = _buffer_value(bufferIndex, sh);
+      row += StringFormat(" sh%d=%s%s", sh, DoubleToString(v, Digits), (_valid_buffer_price(v) ? "*" : ""));
+   }
+   return row;
+}
+
+void PrintRegimeBufferCandidates()
+{
+   if(!InpPrintRegimeBufferCandidates)
+      return;
+
+   int maxB = MathMax(1, MathMin(512, InpRegimeCandidateBufferMax));
+   int maxS = MathMax(5, MathMin(300, InpRegimeCandidateShiftMax));
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   if(bid <= 0.0)
+      bid = Close[0];
+
+   int upHint = MathMax(0, InpRegimeUpTrendStopBufferHint);
+   int dnHint = MathMax(0, InpRegimeDnTrendStopBufferHint);
+   double up0 = _buffer_value(upHint, 0);
+   double dn0 = _buffer_value(dnHint, 0);
+   bool upActive = _valid_buffer_price(up0);
+   bool dnActive = _valid_buffer_price(dn0);
+   string state = "NONE";
+   if(upActive && !dnActive) state = "BUY";
+   else if(dnActive && !upActive) state = "SELL";
+   else if(upActive && dnActive) state = "AMBIGUOUS_BOTH_ACTIVE";
+
+   PrintFormat(
+      "ATOMIC_REGIME_PAIR_TEST up_buffer=%d dn_buffer=%d state=%s up0=%s dn0=%s up_row=%s dn_row=%s",
+      upHint,
+      dnHint,
+      state,
+      DoubleToString(up0, Digits),
+      DoubleToString(dn0, Digits),
+      _buffer_short_row(upHint, MathMin(20, maxS)),
+      _buffer_short_row(dnHint, MathMin(20, maxS))
+   );
+
+   int printed = 0;
+   for(int b=0; b<maxB; b++)
+   {
+      int validCount = 0;
+      int aboveClose = 0;
+      int belowClose = 0;
+      int transitions = 0;
+      int lastActive = -1;
+      double first = 0.0, last = 0.0, minV = 0.0, maxV = 0.0;
+      for(int sh=0; sh<maxS; sh++)
+      {
+         double v = _buffer_value(b, sh);
+         bool active = _valid_buffer_price(v);
+         if(active)
+         {
+            if(validCount == 0)
+            {
+               first = v;
+               minV = v;
+               maxV = v;
+            }
+            last = v;
+            if(v < minV) minV = v;
+            if(v > maxV) maxV = v;
+            validCount++;
+            double c = Close[sh];
+            if(c > 0.0)
+            {
+               if(v > c) aboveClose++;
+               if(v < c) belowClose++;
+            }
+         }
+         int curActive = active ? 1 : 0;
+         if(lastActive >= 0 && curActive != lastActive)
+            transitions++;
+         lastActive = curActive;
+      }
+      if(validCount <= 0)
+         continue;
+      double coverage = 100.0 * validCount / maxS;
+      string sideGuess = "MIXED";
+      if(aboveClose > belowClose * 2) sideGuess = "ABOVE_PRICE_LIKELY_SELL_STOP";
+      else if(belowClose > aboveClose * 2) sideGuess = "BELOW_PRICE_LIKELY_BUY_STOP";
+      string quality = "sparse";
+      if(coverage >= 80.0) quality = "continuous";
+      else if(coverage >= 25.0) quality = "segment";
+
+      PrintFormat(
+         "ATOMIC_REGIME_BUFFER_CANDIDATE buffer=%d valid=%d/%d coverage=%.1f%% transitions=%d side=%s quality=%s first=%s last=%s min=%s max=%s row=%s",
+         b,
+         validCount,
+         maxS,
+         coverage,
+         transitions,
+         sideGuess,
+         quality,
+         DoubleToString(first, Digits),
+         DoubleToString(last, Digits),
+         DoubleToString(minV, Digits),
+         DoubleToString(maxV, Digits),
+         _buffer_short_row(b, MathMin(20, maxS))
+      );
+      if(++printed >= 32)
+         break;
+   }
+   Print("ATOMIC_REGIME_BUFFER_CANDIDATE summary printed=", printed, " buffers_scanned=", maxB, " shifts=", maxS, " bid=", DoubleToString(bid, Digits));
+}
+
 void CreateButton()
 {
    ObjectDelete(0,InpButtonName);
@@ -376,6 +506,7 @@ void RunScan()
    }
 
    PrintLatestSignalNeighborhood();
+   PrintRegimeBufferCandidates();
 
    int maxB=MathMax(1,MathMin(512,InpScanBufferMax));
    int maxS=MathMax(1,MathMin(300,InpScanShiftMax));

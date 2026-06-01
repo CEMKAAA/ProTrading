@@ -25,7 +25,12 @@ input string InpRegimeSignalProfile = "atomic_regime";
 input string InpRegimeIndicatorName = "AtomicRegime";
 input int    InpRegimeAtrPeriod = 14;
 input double InpRegimeAtrMultiplier = 1.5;
-input double InpRegimeRR = 1.0;
+input double InpRegimeRR = 3.0;
+input bool   InpRegimeUseTrendStopBuffers = true;
+input int    InpRegimeUpTrendStopBuffer = 0;
+input int    InpRegimeDnTrendStopBuffer = 1;
+input bool   InpRegimeUseClosedBar = false;
+input int    InpRegimeBufferLookbackBars = 200;
 
 string   g_lastEventId = "";
 datetime g_lastSignalTime = 0;
@@ -35,6 +40,8 @@ string   g_lastRegimeDirection = "";
 string   g_lastRegimeEventId = "";
 string   g_lastRegimeConfirmedEventId = "";
 datetime g_lastRegimeResolvedPostTime = 0;
+int      g_lastRegimeSignalIndex = -1;
+datetime g_lastRegimeSignalTime = 0;
 
 string _trim(string s)
 {
@@ -526,6 +533,110 @@ double _valid_price_or_zero(double value)
    return value;
 }
 
+bool _valid_atomic_buffer_price(double value)
+{
+   if(_valid_price_or_zero(value) <= 0.0)
+      return false;
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   if(bid <= 0.0)
+      bid = Close[0];
+   if(bid <= 0.0)
+      return true;
+   return (value > bid * 0.20 && value < bid * 5.00);
+}
+
+double _atomic_buffer_value(int bufferIndex, int shift)
+{
+   return iCustom(NULL, 0, InpIndicatorName, bufferIndex, shift);
+}
+
+string _regime_buffer_state_at_shift(int shift, double &upValue, double &dnValue)
+{
+   upValue = _atomic_buffer_value(MathMax(0, InpRegimeUpTrendStopBuffer), shift);
+   dnValue = _atomic_buffer_value(MathMax(0, InpRegimeDnTrendStopBuffer), shift);
+   bool upActive = _valid_atomic_buffer_price(upValue);
+   bool dnActive = _valid_atomic_buffer_price(dnValue);
+   if(upActive && !dnActive)
+      return "BUY";
+   if(dnActive && !upActive)
+      return "SELL";
+   if(upActive && dnActive)
+   {
+      double c = Close[MathMax(0, shift)];
+      if(c > 0.0)
+      {
+         double upDist = MathAbs(c - upValue);
+         double dnDist = MathAbs(c - dnValue);
+         return (upDist <= dnDist ? "BUY" : "SELL");
+      }
+   }
+   return "";
+}
+
+bool _find_current_atomic_regime_from_buffers(string &direction, int &signalIndex, datetime &signalTime, double &entryPrice, string &sourceName)
+{
+   direction = "";
+   signalIndex = -1;
+   signalTime = 0;
+   entryPrice = 0.0;
+   sourceName = "";
+
+   if(!InpRegimeUseTrendStopBuffers)
+      return false;
+
+   int shift = (InpRegimeUseClosedBar ? 1 : 0);
+   if(Bars <= shift)
+      return false;
+
+   double upNow, dnNow;
+   string state = _regime_buffer_state_at_shift(shift, upNow, dnNow);
+   if(state != "BUY" && state != "SELL")
+      return false;
+
+   int startShift = shift;
+   if(state == g_lastRegimeDirection && g_lastRegimeSignalTime > 0 && g_lastRegimeSignalIndex >= 0)
+   {
+      signalTime = g_lastRegimeSignalTime;
+      startShift = iBarShift(NULL, 0, signalTime, true);
+      if(startShift < 0)
+         startShift = g_lastRegimeSignalIndex;
+   }
+   else
+   {
+      int maxLookback = MathMax(shift + 1, MathMin(Bars - 1, InpRegimeBufferLookbackBars));
+      for(int sh = shift + 1; sh <= maxLookback; sh++)
+      {
+         double upPrev, dnPrev;
+         string prevState = _regime_buffer_state_at_shift(sh, upPrev, dnPrev);
+         if(prevState != state)
+            break;
+         startShift = sh;
+      }
+      signalTime = Time[startShift];
+   }
+
+   signalIndex = startShift;
+   double entry = 0.0;
+   if(shift == 0)
+      entry = MarketInfo(Symbol(), (state == "BUY" ? MODE_ASK : MODE_BID));
+   if(entry <= 0.0)
+      entry = Close[shift];
+   if(entry <= 0.0)
+      entry = MarketInfo(Symbol(), (state == "BUY" ? MODE_ASK : MODE_BID));
+   entryPrice = NormalizeDouble(entry, Digits);
+   direction = state;
+   sourceName = StringFormat(
+      "AtomicRegimeBuffer up=%d dn=%d shift=%d start_shift=%d up=%s dn=%s",
+      MathMax(0, InpRegimeUpTrendStopBuffer),
+      MathMax(0, InpRegimeDnTrendStopBuffer),
+      shift,
+      startShift,
+      _fmt_price(upNow),
+      _fmt_price(dnNow)
+   );
+   return entryPrice > 0.0 && signalTime > 0;
+}
+
 double _regime_atr_for_signal(datetime signalTime)
 {
    int period = MathMax(1, InpRegimeAtrPeriod);
@@ -634,7 +745,7 @@ bool _post_atomic_regime_event(
       "\"last_signal_bar_unix\":" + IntegerToString((int)signalTime) + "," 
       "\"last_signal_value\":" + DoubleToString(entryPrice, Digits) + "," 
       "\"secondary_enabled\":true," 
-      "\"secondary_indicator\":\"AtomicRegimeAtr1R\"," 
+      "\"secondary_indicator\":\"AtomicRegimeAtr3R\"," 
       "\"secondary_signal\":\"" + _json_escape(dir) + "\"," 
       "\"secondary_resolved_signal\":\"" + _json_escape(dir) + "\"," 
       "\"secondary_signal_shift\":-1," 
@@ -693,6 +804,8 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    {
       g_lastRegimeDirection = direction;
       g_lastRegimeEventId = regimeEventId;
+      g_lastRegimeSignalIndex = signalIndex;
+      g_lastRegimeSignalTime = signalTime;
       if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
          g_lastRegimeResolvedPostTime = _timer_now();
       if(reason == "init" && InpSendInitialRegimeConfirmedOnStart)
@@ -711,6 +824,8 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
       g_lastRegimeDirection = direction;
       g_lastRegimeConfirmedEventId = regimeEventId;
+      g_lastRegimeSignalIndex = signalIndex;
+      g_lastRegimeSignalTime = signalTime;
    }
    else if(_heartbeat_due(g_lastRegimeResolvedPostTime))
    {
@@ -725,11 +840,37 @@ void ScanAndLogLatest(string reason)
    int signalIndex;
    datetime signalTime;
    double entryPrice;
+   string regimeDirection = "";
+   string regimeSourceName = "";
+   int regimeSignalIndex = -1;
+   datetime regimeSignalTime = 0;
+   double regimeEntryPrice = 0.0;
+   bool hasBufferRegime = _find_current_atomic_regime_from_buffers(
+      regimeDirection,
+      regimeSignalIndex,
+      regimeSignalTime,
+      regimeEntryPrice,
+      regimeSourceName
+   );
 
    if(!_find_latest_atomic_signal(direction, signalIndex, signalTime, entryPrice, trendName))
    {
       Print("AtomicBridge latest_signal NONE reason=", reason, " symbol=", Symbol(), " tf=", _tf_to_string(Period()));
       _debug_print_atomic_objects();
+      if(hasBufferRegime)
+      {
+         PrintFormat(
+            "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+            reason,
+            Symbol(),
+            _tf_to_string(Period()),
+            regimeDirection,
+            _fmt_time(regimeSignalTime),
+            _fmt_price(regimeEntryPrice),
+            regimeSourceName
+         );
+         _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
+      }
       return;
    }
 
@@ -744,7 +885,10 @@ void ScanAndLogLatest(string reason)
          if(_post_atomic_bridge_event("resolved_state", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, "heartbeat"))
             g_lastResolvedPostTime = _timer_now();
       }
-      _handle_regime_event("heartbeat", direction, signalIndex, signalTime, entryPrice, trendName);
+      if(hasBufferRegime)
+         _handle_regime_event("heartbeat", regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
+      else
+         _handle_regime_event("heartbeat", direction, signalIndex, signalTime, entryPrice, trendName);
       return;
    }
 
@@ -793,7 +937,24 @@ void ScanAndLogLatest(string reason)
       }
    }
 
-   _handle_regime_event(reason, direction, signalIndex, signalTime, entryPrice, trendName);
+   if(hasBufferRegime)
+   {
+      PrintFormat(
+         "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+         reason,
+         Symbol(),
+         _tf_to_string(Period()),
+         regimeDirection,
+         _fmt_time(regimeSignalTime),
+         _fmt_price(regimeEntryPrice),
+         regimeSourceName
+      );
+      _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
+   }
+   else
+   {
+      _handle_regime_event(reason, direction, signalIndex, signalTime, entryPrice, trendName);
+   }
 }
 
 int OnInit()
