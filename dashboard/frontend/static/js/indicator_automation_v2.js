@@ -41,6 +41,7 @@
         telemetryFilter: document.getElementById('v2-telemetry-filter'),
         symbolSessionBody: document.getElementById('v2-symbol-session-body'),
         symbolSessionSave: document.getElementById('v2-symbol-session-save'),
+        symbolSessionPreset: document.getElementById('v2-symbol-session-preset'),
         symbolSessionStatus: document.getElementById('v2-symbol-session-status'),
         entryExitPanel: document.getElementById('v2-entry-exit-panel'),
         entryExitBody: document.getElementById('v2-entry-exit-body'),
@@ -54,6 +55,7 @@
         instanceFilterAtomic: document.getElementById('v2-instance-filter-atomic'),
         instanceFilterAtomicRegime: document.getElementById('v2-instance-filter-atomic-regime'),
         instanceFilterSignatics: document.getElementById('v2-instance-filter-signatics'),
+        instanceStartAll: document.getElementById('v2-instance-start-all'),
         auditFilter: document.getElementById('v2-audit-filter'),
         liqAuditFilter: document.getElementById('v2-liq-audit-filter')
     };
@@ -137,6 +139,48 @@
             .map(x => x.trim())
             .filter(Boolean)
             .join('\n');
+    }
+
+    function normalizeSymbolFamily(symbol) {
+        const s = String(symbol || '').trim().toUpperCase();
+        if (s.includes('USTEC')) return 'USTEC';
+        if (s.startsWith('US30')) return 'US30';
+        if (s.startsWith('DE30')) return 'DE30';
+        if (s.startsWith('JP225')) return 'JP225';
+        if (s.startsWith('AUS200')) return 'AUS200';
+        const compact = s.replace(/[^A-Z0-9]/g, '');
+        if (compact.endsWith('M')) return compact.slice(0, -1);
+        return compact;
+    }
+
+    function defaultTradeBlockWindowsForScope(scope) {
+        const profile = String((scope || {}).profile || '').trim().toLowerCase();
+        if (profile !== 'atomic' && profile !== 'atomic_regime') return [];
+        switch (normalizeSymbolFamily((scope || {}).symbol)) {
+            case 'USTEC':
+            case 'US30':
+                return ['20:00-07:00'];
+            case 'DE30':
+                return ['16:30-07:00'];
+            case 'JP225':
+            case 'AUS200':
+                return ['02:30-03:30', '06:30-23:30'];
+            case 'EURUSD':
+            case 'USDJPY':
+                return ['21:00-23:00'];
+            case 'USDCAD':
+                return ['00:00-07:00', '21:00-23:00'];
+            case 'EURJPY':
+            case 'GBPJPY':
+                return ['17:00-21:00', '21:00-23:00'];
+            default:
+                return [];
+        }
+    }
+
+    function isAtomicTradeWindowScope(scope) {
+        const p = String((scope || {}).profile || '').trim().toLowerCase();
+        return p === 'atomic' || p === 'atomic_regime';
     }
 
     async function loadState() {
@@ -913,11 +957,15 @@
     function isReadableTradeAuditRow(row) {
         const status = String((row || {}).status || '').trim().toLowerCase();
         const msg = String((row || {}).message || (row || {}).close_reason || '').trim().toLowerCase();
+        const stage = String((row || {}).stage || '').trim().toLowerCase();
         const ticket = Number((row || {}).ticket || 0);
         const lot = Number((row || {}).lot || 0);
         const mode = String((row || {}).execution_mode || '').trim().toLowerCase();
         const hasTradeIdentity = Number.isFinite(ticket) && ticket > 0 && Number.isFinite(lot) && lot > 0;
         if (msg.includes('_orphan') || msg.includes('orphan')) return false;
+        if (status === 'skipped' && (stage === 'symbol_session_guard' || msg.includes('symbol_session_guard_blocked'))) {
+            return true;
+        }
         if (status === 'opened') {
             return hasTradeIdentity && (msg.includes('order_opened') || msg.includes('opened'));
         }
@@ -925,6 +973,24 @@
             return hasTradeIdentity && !!mode && mode !== '-' && !msg.includes('skipped');
         }
         return false;
+    }
+
+    function symbolSessionAuditDetail(row) {
+        const stage = String((row || {}).stage || '').trim().toLowerCase();
+        const msg = String((row || {}).message || '').trim().toLowerCase();
+        if (stage !== 'symbol_session_guard' && !msg.includes('symbol_session_guard_blocked')) return '';
+        const payload = ((row || {}).stage_payload || {});
+        if (!payload || typeof payload !== 'object') return '';
+        const bits = [];
+        const reason = String(payload.reason || '').trim();
+        const matched = String(payload.matched_range || '').trim();
+        const local = String(payload.local_time || '').trim();
+        const scope = String(payload.scope_key || payload.scope || '').trim();
+        if (reason) bits.push(`reason=${reason}`);
+        if (matched) bits.push(`blocked=${matched}`);
+        if (local) bits.push(`time=${local}`);
+        if (scope) bits.push(`scope=${scope}`);
+        return bits.length ? `<div class="small text-warning">session guard: ${esc(bits.join(' | '))}</div>` : '';
     }
 
     function rowMode(row) {
@@ -1137,9 +1203,38 @@
             adv2,
             row.mode_normal_enabled ? 'NORM' : '',
             row.mode_sync_enabled ? 'SYNC' : '',
-            row.half_be_enabled ? `HBE@TP${Number(row.half_be_tp_index || 0)}` : '',
+            row.half_be_enabled ? halfBeModeLabel(row) : '',
             widen
         ].filter(Boolean).join(' | ') || '-';
+    }
+
+    function halfBeOptionsForRow(row) {
+        const profile = instanceProfile(row);
+        if (profile === 'atomic_regime') {
+            return [
+                { value: 0, label: 'Half BE: Off' },
+                { value: 150, label: 'Half BE: 1.5R' }
+            ];
+        }
+        const maxTp = profile === 'signatics' ? 3 : 5;
+        const out = [{ value: 0, label: 'Half BE: Off' }];
+        for (let i = 1; i <= maxTp; i += 1) {
+            out.push({ value: i, label: `Half BE: TP${i}` });
+        }
+        return out;
+    }
+
+    function normalizeHalfBeValueForRow(row, raw) {
+        const val = Number(raw || 0);
+        const allowed = halfBeOptionsForRow(row).map(x => Number(x.value));
+        if (allowed.includes(val)) return val;
+        return 0;
+    }
+
+    function halfBeModeLabel(row) {
+        const idx = Number(row.half_be_tp_index || 0);
+        if (instanceProfile(row) === 'atomic_regime' && idx === 150) return 'HBE@1.5R';
+        return idx > 0 ? `HBE@TP${idx}` : '';
     }
 
     function renderAtomicSlWidenControls(row) {
@@ -1163,10 +1258,10 @@
     function renderModeControls(row) {
         const p = row.mode_advanced_v2_enabled ? (row.advanced_v2_policies || {}) : {};
         const key = esc(row.instance_key || '');
-        const halfTp = Number(row.half_be_enabled ? row.half_be_tp_index : 0) || 0;
-        const halfOptions = [0, 1, 2, 3, 4, 5].map(n => {
-            const label = n === 0 ? 'Half BE: Off' : `Half BE: TP${n}`;
-            return `<option value="${n}" ${halfTp === n ? 'selected' : ''}>${label}</option>`;
+        const halfTp = normalizeHalfBeValueForRow(row, row.half_be_enabled ? row.half_be_tp_index : 0);
+        const halfOptions = halfBeOptionsForRow(row).map(opt => {
+            const n = Number(opt.value);
+            return `<option value="${n}" ${halfTp === n ? 'selected' : ''}>${esc(opt.label)}</option>`;
         }).join('');
         return `<div class="v2-mode-box">
             <label class="me-2 small"><input type="checkbox" class="form-check-input me-1 v2-mode-toggle" data-mode="advanced" data-instance="${key}" ${row.mode_advanced_enabled ? 'checked' : ''}>ADV</label>
@@ -1431,6 +1526,101 @@
         return hit > 0 ? `TP${hit}` : 'TP0';
     }
 
+    function clampPct(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        return Math.max(0, Math.min(100, n));
+    }
+
+    function tradeRailLegProgress(row) {
+        const side = String((row || {}).direction || '').toUpperCase();
+        const entry = Number((row || {}).entry_price);
+        const current = Number((row || {}).current_price);
+        const tps = Array.isArray((row || {}).tps) ? row.tps : [];
+        if (!['BUY', 'SELL'].includes(side) || !Number.isFinite(entry) || !Number.isFinite(current) || !tps.length) {
+            return { pct: 0, label: 'leg n/a' };
+        }
+        const targets = tps
+            .map((tp, i) => ({ index: Number(tp.index || i + 1), price: Number(tp.price) }))
+            .filter(tp => Number.isFinite(tp.price))
+            .sort((a, b) => a.index - b.index);
+        if (!targets.length) return { pct: 0, label: 'leg n/a' };
+        const favorable = px => side === 'BUY' ? Number(px) >= entry : Number(px) <= entry;
+        let prev = entry;
+        for (const tp of targets) {
+            const reached = side === 'BUY' ? current >= tp.price : current <= tp.price;
+            if (!reached) {
+                const span = Math.abs(tp.price - prev);
+                const done = Math.abs(current - prev);
+                const pct = span > 0 ? clampPct((done / span) * 100) : 0;
+                return { pct, label: `to TP${tp.index}` };
+            }
+            prev = tp.price;
+        }
+        return { pct: 100, label: `TP${targets[targets.length - 1].index} reached` };
+    }
+
+    function renderTradeRail(row) {
+        const side = String((row || {}).direction || '').toUpperCase();
+        const entry = Number((row || {}).entry_price);
+        const current = Number((row || {}).current_price);
+        const sl = Number((row || {}).stop_loss);
+        const tps = Array.isArray((row || {}).tps) ? row.tps : [];
+        const points = [];
+        if (Number.isFinite(sl) && sl > 0) points.push({ key: 'sl', label: 'SL', price: sl, cls: 'v2-rail-sl' });
+        if (Number.isFinite(entry) && entry > 0) {
+            points.push({ key: 'entry', label: (row.half_be_done ? 'BE' : 'Entry'), price: entry, cls: row.half_be_done ? 'v2-rail-be' : 'v2-rail-entry' });
+        }
+        tps.forEach((tp, i) => {
+            const price = Number((tp || {}).price);
+            if (!Number.isFinite(price) || price <= 0) return;
+            const label = String((tp || {}).label || `TP${Number((tp || {}).index || i + 1)}`);
+            points.push({ key: `tp${i}`, label, price, cls: 'v2-rail-tp' });
+        });
+        if (Number.isFinite(current) && current > 0) points.push({ key: 'current-ref', label: 'Px', price: current, cls: 'v2-rail-entry', hidden: true });
+        if (points.length < 2 || !Number.isFinite(entry) || !Number.isFinite(current)) {
+            return '<div class="small text-muted">Rail unavailable</div>';
+        }
+        let minPx = Math.min(...points.map(p => p.price));
+        let maxPx = Math.max(...points.map(p => p.price));
+        const span0 = Math.max(1e-12, maxPx - minPx);
+        const pad = span0 * 0.07;
+        minPx -= pad;
+        maxPx += pad;
+        const span = Math.max(1e-12, maxPx - minPx);
+        const pos = price => clampPct(((Number(price) - minPx) / span) * 100);
+        const entryPct = pos(entry);
+        const currentPct = pos(current);
+        const fillLeft = Math.min(entryPct, currentPct);
+        const fillWidth = Math.abs(currentPct - entryPct);
+        const favorableNow = side === 'BUY' ? current >= entry : current <= entry;
+        const leg = tradeRailLegProgress(row);
+        const secured = Number(row.half_be_secured_profit != null ? row.half_be_secured_profit : row.half_be_realized_pnl);
+        const securedText = Number.isFinite(secured) ? `$${fmtNum(secured, 2)}` : '-';
+        const halfBeStatus = row.half_be_done
+            ? `Half-BE done ${securedText}`
+            : (row.half_be_enabled ? `Half-BE armed ${row.half_be_tp_index === 150 ? '1.5R' : `TP${row.half_be_tp_index || ''}`}` : 'Half-BE off');
+        const markers = points
+            .filter(p => !p.hidden)
+            .map(p => `<div class="v2-rail-point ${esc(p.cls)}" style="left:${fmtNum(pos(p.price), 2)}%" title="${esc(p.label)} ${esc(fmtNum(p.price, 5))}">
+                <span>${esc(p.label)}</span><span class="v2-rail-dot"></span><span class="v2-mono">${esc(fmtNum(p.price, 5))}</span>
+            </div>`)
+            .join('');
+        return `<div class="v2-trade-rail">
+            <div class="v2-rail-track">
+                <div class="v2-rail-base"></div>
+                <div class="v2-rail-fill ${favorableNow ? '' : 'neg'}" style="left:${fmtNum(fillLeft, 2)}%;width:${fmtNum(fillWidth, 2)}%"></div>
+                ${markers}
+                <div class="v2-rail-current" style="left:${fmtNum(currentPct, 2)}%" title="Current ${esc(fmtNum(current, 5))}"></div>
+            </div>
+            <div class="v2-rail-meta">
+                <span class="v2-rail-chip">Px ${esc(fmtNum(current, 5))}</span>
+                <span class="v2-rail-chip">${esc(leg.label)} ${esc(fmtNum(leg.pct, 0))}%</span>
+                <span class="v2-rail-chip ${row.half_be_done ? 'v2-secured-chip' : ''}">${esc(halfBeStatus)}</span>
+            </div>
+        </div>`;
+    }
+
     function renderTradeTelemetry() {
         const q = els.telemetryFilter ? els.telemetryFilter.value : '';
         const rows = openTrades()
@@ -1452,7 +1642,6 @@
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const maxCls = Number.isFinite(maxP) ? (maxP >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const minCls = Number.isFinite(maxL) ? (maxL >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
-            const tpPrice = row.highest_tp_price != null ? fmtNum(row.highest_tp_price, 5) : '-';
             const tpTone = hit > 0 ? 'bg-success' : 'bg-secondary';
             const slText = row.stop_loss != null ? fmtNum(row.stop_loss, 5) : '-';
             const entryText = row.entry_price != null ? fmtNum(row.entry_price, 5) : '-';
@@ -1460,6 +1649,10 @@
             const rrText = Number.isFinite(rr) ? `${fmtNum(rr, 2)}R` : '-';
             const ohlcTone = ohlcHit > 0 ? 'bg-info text-dark' : 'bg-secondary';
             const ohlcPrice = row.ohlc_max_tp_price != null ? fmtNum(row.ohlc_max_tp_price, 5) : '-';
+            const secured = Number(row.half_be_secured_profit != null ? row.half_be_secured_profit : row.half_be_realized_pnl);
+            const securedLine = row.half_be_done
+                ? `<div class="small text-success">secured ${esc(Number.isFinite(secured) ? `$${fmtNum(secured, 2)}` : 'BE')}</div>`
+                : (row.half_be_enabled ? '<div class="small text-warning">half-BE armed</div>' : '');
             const ohlcMeta = [
                 row.ohlc_bars_scanned != null ? `${Number(row.ohlc_bars_scanned || 0)} bars` : '',
                 row.ohlc_replay_open_bar_skipped ? 'open bar skipped' : ''
@@ -1484,13 +1677,14 @@
                     <div class="progress mt-1" style="height: 5px;">
                         <div class="progress-bar ${tpTone}" style="width: ${fmtNum(pct, 0)}%"></div>
                     </div>
+                    ${securedLine}
                 </td>
                 <td>
                     <span class="badge ${ohlcTone}">${esc(ohlcTpLegText(row))}</span>
                     <div class="small text-muted">${esc(ohlcPrice)} ${ohlcMeta ? `/${esc(ohlcMeta)}` : ''}</div>
                     <div class="small text-muted">${row.ohlc_max_tp_time ? esc(fmtTs(row.ohlc_max_tp_time)) : esc(row.ohlc_replay_status || '')}</div>
                 </td>
-                <td class="v2-mono">${esc(tpPrice)}</td>
+                <td>${renderTradeRail(row)}</td>
                 <td>${esc(fmtTs(row.opened_at))}<div class="small text-muted">${row.highest_tp_updated_at ? `TP @ ${esc(fmtTs(row.highest_tp_updated_at))}` : ''}</div></td>
             </tr>`;
         }).join('');
@@ -1779,14 +1973,86 @@
         }
     }
 
-    function renderInstances() {
+    async function applyDefaultTradeBlockWindows() {
+        const sessions = collectSymbolSessions();
+        uniqueSessionScopes().forEach(scope => {
+            const key = String((scope || {}).key || '').trim().toLowerCase();
+            if (!key) return;
+            if (isAtomicTradeWindowScope(scope)) {
+                const block = defaultTradeBlockWindowsForScope(scope);
+                if (block.length) {
+                    sessions[key] = { timezone_offset_minutes: 0, block };
+                } else {
+                    delete sessions[key];
+                }
+                return;
+            }
+            if (String((scope || {}).profile || '').trim().toLowerCase() === 'signatics') {
+                delete sessions[key];
+            }
+        });
+        mergeStatePatch({ trade_block_windows: sessions });
+        renderSymbolSessions();
+        if (els.symbolSessionPreset) {
+            els.symbolSessionPreset.disabled = true;
+            els.symbolSessionPreset.textContent = 'Saving...';
+        }
+        try {
+            await saveSymbolSessions();
+            showNotice('Atomic/AtomicRegime no-trade windows applied. SIGNATICS scopes left blank.', 'success');
+        } finally {
+            if (els.symbolSessionPreset) {
+                els.symbolSessionPreset.disabled = false;
+                els.symbolSessionPreset.textContent = 'Apply Atomic Preset';
+            }
+        }
+    }
+
+    function visibleBridgeInstanceRows() {
         const q = els.instanceFilter ? els.instanceFilter.value : '';
         const selectedProfiles = selectedInstanceProfiles();
-        const rows = displayInstances()
+        return displayInstances()
             .filter(isBridgeInstancesTableRow)
             .filter(r => selectedProfiles.has(instanceProfile(r)))
             .filter(r => textMatch(r, q))
             .sort((a, b) => instanceSortKey(a).localeCompare(instanceSortKey(b)));
+    }
+
+    function allBridgeInstanceRows() {
+        return displayInstances()
+            .filter(isBridgeInstancesTableRow)
+            .sort((a, b) => instanceSortKey(a).localeCompare(instanceSortKey(b)));
+    }
+
+    async function startAllInstances() {
+        const rows = allBridgeInstanceRows().filter(row => !boolish(row.effective_automation_enabled));
+        if (!rows.length) {
+            showNotice('No stopped bridge instances to start.', 'info');
+            return;
+        }
+        pauseStateRefresh(10000);
+        if (els.instanceStartAll) {
+            els.instanceStartAll.disabled = true;
+            els.instanceStartAll.textContent = `Starting ${rows.length}...`;
+        }
+        let ok = 0;
+        try {
+            for (const row of rows) {
+                await updateInstanceAutomation(row, true);
+                ok += 1;
+            }
+            showNotice(`Started ${ok} bridge instance${ok === 1 ? '' : 's'}.`, 'success');
+            refreshStateSoon(300);
+        } finally {
+            if (els.instanceStartAll) {
+                els.instanceStartAll.disabled = false;
+                els.instanceStartAll.textContent = 'Start All';
+            }
+        }
+    }
+
+    function renderInstances() {
+        const rows = visibleBridgeInstanceRows();
         if (!els.instanceBody) return;
         if (!rows.length) {
             els.instanceBody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
@@ -1897,6 +2163,7 @@
             const shadow = row.shadow_outcome ? `<div class="small text-info">shadow: ${esc(row.shadow_outcome)}${row.shadow_reason ? ` / ${esc(row.shadow_reason)}` : ''}</div>` : '';
             const grouped = row._audit_grouped ? `<div class="small text-muted">grouped ${esc(row._audit_group_count || '')} guard rows</div>` : '';
             const entryExitDetail = entryExitAuditDetail(row);
+            const sessionDetail = symbolSessionAuditDetail(row);
             return `<tr>
                 <td>${esc(row.status || row.trigger || '-')}<div class="small text-muted">${esc(fmtTs(row.event_ts || row.opened_at))}</div></td>
                 <td>${esc(row.terminal_family || '-')}</td>
@@ -1907,7 +2174,7 @@
                 <td>${fmtNum(row.lot, 2)}</td>
                 <td class="v2-mono">${esc(row.ticket || '-')}</td>
                 <td class="${pnlCls}">${fmtNum(row.realized_pnl, 2)}</td>
-                <td>${esc(row.message || row.close_reason || '-')}${entryExitDetail}${grouped}${shadow}</td>
+                <td>${esc(row.message || row.close_reason || '-')}${sessionDetail}${entryExitDetail}${grouped}${shadow}</td>
             </tr>`;
         }).join('');
     }
@@ -1978,6 +2245,12 @@
     }
     if (els.symbolSessionSave) {
         els.symbolSessionSave.addEventListener('click', () => saveSymbolSessions().catch(showError));
+    }
+    if (els.symbolSessionPreset) {
+        els.symbolSessionPreset.addEventListener('click', () => applyDefaultTradeBlockWindows().catch(showError));
+    }
+    if (els.instanceStartAll) {
+        els.instanceStartAll.addEventListener('click', () => startAllInstances().catch(showError));
     }
     if (els.symbolSessionBody) {
         els.symbolSessionBody.addEventListener('input', () => {
@@ -2086,7 +2359,7 @@
                 const key = halfBeSelect.getAttribute('data-instance') || '';
                 const row = allInstances().find(r => String(r.instance_key || '') === key);
                 if (!row) return;
-                const tpIndex = Math.max(0, Math.min(5, Number(halfBeSelect.value || 0)));
+                const tpIndex = normalizeHalfBeValueForRow(row, halfBeSelect.value);
                 halfBeSelect.disabled = true;
                 patchInstanceState(row, {
                     half_be_enabled: tpIndex > 0,

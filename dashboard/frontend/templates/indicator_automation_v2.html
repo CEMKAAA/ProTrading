@@ -110,6 +110,104 @@
     .v2-signal-wait { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
     .v2-signal-idle { background: #e2e8f0; color: #334155; border: 1px solid #cbd5e1; }
     .v2-signal-ambiguous { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; }
+    .v2-trade-rail {
+        min-width: 260px;
+        padding: 10px 8px 6px;
+        border: 1px solid #dbeafe;
+        border-radius: 14px;
+        background:
+            radial-gradient(circle at 15% 0%, rgba(34, 197, 94, 0.12), transparent 30%),
+            radial-gradient(circle at 85% 100%, rgba(14, 165, 233, 0.12), transparent 34%),
+            #f8fafc;
+    }
+    .v2-rail-track {
+        position: relative;
+        height: 34px;
+        margin: 8px 4px 12px;
+    }
+    .v2-rail-base {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 15px;
+        height: 7px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #fecaca, #e2e8f0 28%, #bbf7d0 100%);
+        box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.18);
+    }
+    .v2-rail-fill {
+        position: absolute;
+        top: 15px;
+        height: 7px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #22c55e, #06b6d4);
+        box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
+    }
+    .v2-rail-fill.neg {
+        background: linear-gradient(90deg, #ef4444, #f97316);
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.28);
+    }
+    .v2-rail-point {
+        position: absolute;
+        top: 5px;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        white-space: nowrap;
+        font-size: 10px;
+        line-height: 1;
+        color: #475569;
+    }
+    .v2-rail-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        border: 2px solid #fff;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.3);
+    }
+    .v2-rail-sl .v2-rail-dot { background: #dc2626; }
+    .v2-rail-entry .v2-rail-dot { background: #0f172a; }
+    .v2-rail-be .v2-rail-dot { background: #f59e0b; }
+    .v2-rail-tp .v2-rail-dot { background: #16a34a; }
+    .v2-rail-current {
+        position: absolute;
+        top: -1px;
+        transform: translateX(-50%);
+        width: 2px;
+        height: 30px;
+        background: #0ea5e9;
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+    }
+    .v2-rail-current::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: -3px;
+        transform: translateX(-50%);
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: #0284c7;
+        border: 2px solid #fff;
+    }
+    .v2-rail-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .v2-rail-chip {
+        border-radius: 999px;
+        padding: 3px 7px;
+        background: #e2e8f0;
+        color: #334155;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    .v2-secured-chip { background: #dcfce7; color: #166534; }
     .v2-dual-instance + .v2-dual-instance { margin-top: 12px; }
     @media (max-width: 768px) {
         .v2-dual-grid { grid-template-columns: 1fr; }
@@ -351,7 +449,7 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Ticket</th><th>Symbol/TF</th><th>Indicator</th><th>Dir</th><th>SL / R:R</th><th>Live PnL</th><th>Max PnL</th><th>Max DD</th><th>Highest TP</th><th>OHLC Max TP</th><th>TP Price</th><th>Opened</th>
+                            <th>Ticket</th><th>Symbol/TF</th><th>Indicator</th><th>Dir</th><th>SL / R:R</th><th>Live PnL</th><th>Max PnL</th><th>Max DD</th><th>Highest TP</th><th>OHLC Max TP</th><th>Trade Rail</th><th>Opened</th>
                         </tr>
                     </thead>
                     <tbody id="v2-telemetry-body"><tr><td colspan="12" class="text-center text-muted py-3">Loading...</td></tr></tbody>
@@ -368,6 +466,7 @@
             </div>
             <div class="d-flex align-items-center gap-2">
                 <span id="v2-symbol-session-status" class="badge text-bg-secondary">loading</span>
+                <button id="v2-symbol-session-preset" type="button" class="btn btn-sm btn-outline-primary">Apply Atomic Preset</button>
                 <button id="v2-symbol-session-save" type="button" class="btn btn-sm btn-dark">Save Sessions</button>
             </div>
         </div>
@@ -395,6 +494,7 @@
                 <label class="small mb-0"><input id="v2-instance-filter-atomic" type="checkbox" class="form-check-input me-1" checked>Atomic</label>
                 <label class="small mb-0"><input id="v2-instance-filter-atomic-regime" type="checkbox" class="form-check-input me-1" checked>AtomicRegime</label>
                 <label class="small mb-0"><input id="v2-instance-filter-signatics" type="checkbox" class="form-check-input me-1" checked>SIGNATICS</label>
+                <button id="v2-instance-start-all" type="button" class="btn btn-sm btn-outline-success">Start All</button>
                 <input id="v2-instance-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="symbol / state">
             </div>
         </div>
@@ -438,7 +538,7 @@
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
                 <strong>Readable Execution Audit</strong>
-                <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed.</div>
+                <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed, blocked windows.</div>
             </div>
             <input id="v2-audit-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="ticket / status / message">
         </div>
@@ -459,5 +559,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=signatics-bridge-1"></script>
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=trade-windows-halfbe-2"></script>
 {% endblock %}
