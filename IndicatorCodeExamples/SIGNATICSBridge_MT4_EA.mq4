@@ -4,29 +4,47 @@
 //+------------------------------------------------------------------+
 #property strict
 
+#define SIGNATICS_BRIDGE_BUILD "2026-06-02.1840-stable-setup-listener"
+
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
 input bool   InpLogOnInit = true;
+input bool   InpLogInitialSetup = true;
 input bool   InpLogOnlyOnChange = true;
 input bool   InpDebugObjects = false;
 input bool   InpDebugDiscoveryOnNone = false;
 input int    InpNoneDiscoveryIntervalSeconds = 10;
-input int    InpNoneLogIntervalSeconds = 10;
+input int    InpNoneLogIntervalSeconds = 300;
+input int    InpInitialSetupRetrySeconds = 30;
+input bool   InpLogInitialDiscoverySummary = true;
 input string InpIgnoreNamePatterns = "autotrade,->";
 input bool   InpEnableProTradePost = true;
 input bool   InpSendInitialConfirmedOnStart = false;
-input int    InpResolvedHeartbeatSeconds = 60;
+input bool   InpSendResolvedStateEvents = true;
+input int    InpResolvedHeartbeatSeconds = 900;
 input string InpApiBaseUrl = "http://127.0.0.1";
 input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
 input string InpSignalProfile = "signatics";
 input int    InpHttpTimeoutMs = 5000;
+input bool   InpPreferGroupedSetup = true;
+input bool   InpAllowDashboardFallback = false;
+input bool   InpRejectInvalidGeometry = true;
+input int    InpMaxGroupCandidates = 20;
+input bool   InpAllowLevelObjectFallback = true;
+input bool   InpLogOnlyTradeSignals = true;
+input bool   InpLogPostResponses = false;
+input bool   InpLogRejectedGeometry = false;
 
 string   g_lastEventId = "";
 string   g_lastConfirmedEventId = "";
 datetime g_lastResolvedPostTime = 0;
 datetime g_lastNoneDiscoveryTime = 0;
 datetime g_lastNoneLogTime = 0;
+datetime g_initialSetupRetryUntil = 0;
+bool     g_baselineSetupSeen = false;
+datetime g_initialDiscoveryLastPrint = 0;
+int      g_initialDiscoveryPrints = 0;
 
 string _trim(string s){ StringTrimLeft(s); StringTrimRight(s); return s; }
 
@@ -130,6 +148,21 @@ datetime _timer_now()
 }
 
 string _event_ts_now(){ return TimeToString(_timer_now(),TIME_DATE|TIME_SECONDS); }
+
+string _setup_event_id(string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3)
+{
+   return StringFormat(
+      "%s|%s|%I64d|%s|%s|%s|%s|%s",
+      Symbol(),
+      direction,
+      (long)signalTime,
+      DoubleToString(entry,Digits),
+      DoubleToString(sl,Digits),
+      DoubleToString(tp1,Digits),
+      DoubleToString(tp2,Digits),
+      DoubleToString(tp3,Digits)
+   );
+}
 
 bool _heartbeat_due(datetime lastPostTime)
 {
@@ -240,16 +273,58 @@ double _parse_first_price_from_text(string text)
    return 0.0;
 }
 
+double _parse_last_price_from_text(string text)
+{
+   string s=_trim(text);
+   string cur="";
+   string lastToken="";
+   bool seenDigit=false;
+   int len=StringLen(s);
+   for(int i=0;i<len;i++)
+   {
+      int ch=StringGetChar(s,i);
+      bool ok=(ch>='0' && ch<='9') || ch=='.' || ch=='-';
+      if(ok)
+      {
+         cur += StringSubstr(s,i,1);
+         if(ch>='0' && ch<='9')
+            seenDigit=true;
+      }
+      else if(StringLen(cur)>0 && seenDigit)
+      {
+         lastToken=cur;
+         cur="";
+         seenDigit=false;
+      }
+      else
+      {
+         cur="";
+         seenDigit=false;
+      }
+   }
+   if(StringLen(cur)>0 && seenDigit)
+      lastToken=cur;
+   if(StringLen(lastToken)>0)
+   {
+      double v=StrToDouble(lastToken);
+      if(_valid_price(v))
+         return v;
+   }
+   return 0.0;
+}
+
 double _price_from_object_or_text(string name)
 {
    string actual=_find_object_name(name);
    if(StringLen(actual)<=0)
       return 0.0;
    double p=_object_price0(actual);
-   double txt=_parse_first_price_from_text(_object_text(actual));
+   if(_valid_price(p))
+      return p;
+   double txt=_parse_last_price_from_text(_object_text(actual));
    if(_valid_price(txt))
       return txt;
-   return p;
+   return 0.0;
 }
 
 string _clean_direction_text(string text)
@@ -277,6 +352,8 @@ datetime _parse_signal_time(string text)
       return 0;
    return StringToTime(s);
 }
+
+bool _setup_geometry_ok(string direction,double entry,double sl,double tp1,double tp2,double tp3);
 
 bool _parse_int_after_prefix(string name,string prefix,int &idx,int &slot)
 {
@@ -320,11 +397,125 @@ bool _find_latest_dashboard_signal(string &direction,datetime &signalTime,double
    tp3=_price_from_object_or_text("SA_DB_T_V2");
    string timeObj=_find_object_name("SA_DB_S_V3");
    signalTime=(StringLen(timeObj)>0 ? _parse_signal_time(_object_text(timeObj)) : 0);
-   if(signalTime<=0)
-      signalTime=_timer_now();
    sourceName="SA_DB";
 
-   return entry>0.0 && sl>0.0 && tp1>0.0;
+   if(entry<=0.0 || sl<=0.0 || tp1<=0.0)
+      return false;
+   if(InpRejectInvalidGeometry && !_setup_geometry_ok(direction,entry,sl,tp1,tp2,tp3))
+   {
+      if(InpLogRejectedGeometry)
+      {
+         PrintFormat(
+            "SIGNATICSBridge dashboard_setup_rejected reason=invalid_geometry dir=%s entry=%s sl=%s tp1=%s tp2=%s tp3=%s",
+            direction,_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3)
+         );
+      }
+      return false;
+   }
+   return true;
+}
+
+bool _find_latest_level_signal(string &direction,datetime &signalTime,double &entry,double &sl,double &tp1,double &tp2,double &tp3,string &sourceName)
+{
+   direction="";
+   signalTime=0;
+   entry=0.0;
+   sl=0.0;
+   tp1=0.0;
+   tp2=0.0;
+   tp3=0.0;
+   sourceName="";
+
+   entry=_price_from_object_or_text("SA_Lv_Entry_Lb");
+   if(entry<=0.0)
+      entry=_price_from_object_or_text("SA_Lv_Entry_Ln");
+   if(entry<=0.0)
+      entry=_price_from_object_or_text("SA_Lv_Entry_Rb");
+
+   sl=_price_from_object_or_text("SA_Lv_SL_Lb");
+   if(sl<=0.0)
+      sl=_price_from_object_or_text("SA_Lv_SL_Ln");
+   if(sl<=0.0)
+      sl=_price_from_object_or_text("SA_Lv_SL_Rb");
+
+   tp1=_price_from_object_or_text("SA_Lv_TP1_Lb");
+   if(tp1<=0.0)
+      tp1=_price_from_object_or_text("SA_Lv_TP1_Ln");
+   if(tp1<=0.0)
+      tp1=_price_from_object_or_text("SA_Lv_TP1_Rb");
+
+   tp2=_price_from_object_or_text("SA_Lv_TP2_Lb");
+   if(tp2<=0.0)
+      tp2=_price_from_object_or_text("SA_Lv_TP2_Ln");
+   if(tp2<=0.0)
+      tp2=_price_from_object_or_text("SA_Lv_TP2_Rb");
+
+   tp3=_price_from_object_or_text("SA_Lv_TP3_Lb");
+   if(tp3<=0.0)
+      tp3=_price_from_object_or_text("SA_Lv_TP3_Ln");
+   if(tp3<=0.0)
+      tp3=_price_from_object_or_text("SA_Lv_TP3_Rb");
+
+   string entryObj=_find_object_name("SA_Lv_Entry_Lb");
+   if(StringLen(entryObj)<=0)
+      entryObj=_find_object_name("SA_Lv_Entry_Ln");
+   if(StringLen(entryObj)<=0)
+      entryObj=_find_object_name("SA_Lv_Entry_Rb");
+   signalTime=(StringLen(entryObj)>0 ? _object_time0(entryObj) : 0);
+   if(signalTime<=0)
+      signalTime=_timer_now();
+
+   if(entry<=0.0 || sl<=0.0 || tp1<=0.0)
+      return false;
+
+   if(sl < entry && tp1 > entry)
+      direction="BUY";
+   else if(sl > entry && tp1 < entry)
+      direction="SELL";
+   else
+      return false;
+
+   if(InpRejectInvalidGeometry && !_setup_geometry_ok(direction,entry,sl,tp1,tp2,tp3))
+   {
+      if(InpLogRejectedGeometry)
+      {
+         PrintFormat(
+            "SIGNATICSBridge level_setup_rejected reason=invalid_geometry dir=%s entry=%s sl=%s tp1=%s tp2=%s tp3=%s",
+            direction,_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3)
+         );
+      }
+      return false;
+   }
+   sourceName="SA_Lv";
+   return true;
+}
+
+bool _setup_geometry_ok(string direction,double entry,double sl,double tp1,double tp2,double tp3)
+{
+   if(direction!="BUY" && direction!="SELL")
+      return false;
+   if(!_valid_price(entry) || !_valid_price(sl) || !_valid_price(tp1))
+      return false;
+   bool hasTp2=_valid_price(tp2);
+   bool hasTp3=_valid_price(tp3);
+   double pointTol=MathMax(Point*2.0,0.00000001);
+   if(direction=="BUY")
+   {
+      if(!(sl < entry-pointTol && tp1 > entry+pointTol))
+         return false;
+      if(hasTp2 && !(tp2 >= tp1-pointTol && tp2 > entry+pointTol))
+         return false;
+      if(hasTp3 && hasTp2 && !(tp3 >= tp2-pointTol && tp3 > entry+pointTol))
+         return false;
+      return true;
+   }
+   if(!(sl > entry+pointTol && tp1 < entry-pointTol))
+      return false;
+   if(hasTp2 && !(tp2 <= tp1+pointTol && tp2 < entry-pointTol))
+      return false;
+   if(hasTp3 && hasTp2 && !(tp3 <= tp2+pointTol && tp3 < entry-pointTol))
+      return false;
+   return true;
 }
 
 bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,double &entry,double &sl,double &tp1,double &tp2,double &tp3,string &sourceName)
@@ -339,14 +530,18 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
    sourceName="";
 
    int total=ObjectsTotal(0,-1,-1);
-   int bestIdx=-1;
-   int secondIdx=-1;
-   datetime bestTime=0;
-   datetime secondTime=0;
-   string bestDir="";
-   string secondDir="";
-   double bestEntry=0.0;
-   double secondEntry=0.0;
+   int idxs[128];
+   datetime times[128];
+   string dirs[128];
+   double entries[128];
+   for(int init=0; init<128; init++)
+   {
+      idxs[init]=-1;
+      times[init]=0;
+      dirs[init]="";
+      entries[init]=0.0;
+   }
+   int count=0;
    for(int i=total-1;i>=0;i--)
    {
       string name=ObjectName(0,i,-1,-1);
@@ -367,51 +562,92 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
       if(!_valid_price(e) || t<=0)
          continue;
 
-      if(t>bestTime)
+      bool already=false;
+      for(int a=0;a<count;a++)
       {
-         secondIdx=bestIdx;
-         secondTime=bestTime;
-         secondDir=bestDir;
-         secondEntry=bestEntry;
-         bestIdx=idx;
-         bestTime=t;
-         bestDir=dir;
-         bestEntry=e;
+         if(idxs[a]==idx)
+         {
+            already=true;
+            if(t>times[a])
+            {
+               times[a]=t;
+               dirs[a]=dir;
+               entries[a]=e;
+            }
+            break;
+         }
       }
-      else if(t>secondTime && idx!=bestIdx)
-      {
-         secondIdx=idx;
-         secondTime=t;
-         secondDir=dir;
-         secondEntry=e;
-      }
+      if(already)
+         continue;
+      if(count>=128)
+         break;
+      idxs[count]=idx;
+      times[count]=t;
+      dirs[count]=dir;
+      entries[count]=e;
+      count++;
    }
 
-   int useIdx=bestIdx;
-   datetime useTime=bestTime;
-   string useDir=bestDir;
-   double useEntry=bestEntry;
-   if(rank>0)
+   for(int s=0;s<count-1;s++)
    {
-      useIdx=secondIdx;
-      useTime=secondTime;
-      useDir=secondDir;
-      useEntry=secondEntry;
+      for(int j=s+1;j<count;j++)
+      {
+         if(times[j]>times[s])
+         {
+            int ti=idxs[s]; idxs[s]=idxs[j]; idxs[j]=ti;
+            datetime tt=times[s]; times[s]=times[j]; times[j]=tt;
+            string td=dirs[s]; dirs[s]=dirs[j]; dirs[j]=td;
+            double te=entries[s]; entries[s]=entries[j]; entries[j]=te;
+         }
+      }
    }
 
-   if(useIdx<0 || useTime<=0 || useDir=="")
-      return false;
+   int maxCandidates=MathMax(1,MathMin(128,InpMaxGroupCandidates));
+   int validSeen=0;
+   for(int c=0;c<count && c<maxCandidates;c++)
+   {
+      int useIdx=idxs[c];
+      datetime useTime=times[c];
+      string useDir=dirs[c];
+      double useEntry=entries[c];
+      if(useIdx<0 || useTime<=0 || useDir=="")
+         continue;
 
-   string base=StringFormat("SA_SL_%d_",useIdx);
-   direction=useDir;
-   signalTime=useTime;
-   entry=useEntry;
-   sl=_price_from_object_or_text(base+"1");
-   tp1=_price_from_object_or_text(base+"2");
-   tp2=_price_from_object_or_text(base+"3");
-   tp3=_price_from_object_or_text(base+"4");
-   sourceName=base+"group";
-   return entry>0.0 && sl>0.0 && tp1>0.0;
+      string base=StringFormat("SA_SL_%d_",useIdx);
+      double useSl=_price_from_object_or_text(base+"1");
+      double useTp1=_price_from_object_or_text(base+"2");
+      double useTp2=_price_from_object_or_text(base+"3");
+      double useTp3=_price_from_object_or_text(base+"4");
+      if(useEntry<=0.0 || useSl<=0.0 || useTp1<=0.0)
+         continue;
+      if(InpRejectInvalidGeometry && !_setup_geometry_ok(useDir,useEntry,useSl,useTp1,useTp2,useTp3))
+      {
+         if(InpLogRejectedGeometry)
+         {
+            PrintFormat(
+               "SIGNATICSBridge group_setup_rejected idx=%d reason=invalid_geometry dir=%s time=%s entry=%s sl=%s tp1=%s tp2=%s tp3=%s",
+               useIdx,useDir,_fmt_time(useTime),_fmt_price(useEntry),_fmt_price(useSl),_fmt_price(useTp1),_fmt_price(useTp2),_fmt_price(useTp3)
+            );
+         }
+         continue;
+      }
+      if(validSeen<rank)
+      {
+         validSeen++;
+         continue;
+      }
+
+      direction=useDir;
+      signalTime=useTime;
+      entry=useEntry;
+      sl=useSl;
+      tp1=useTp1;
+      tp2=useTp2;
+      tp3=useTp3;
+      sourceName=base+"group";
+      return true;
+   }
+   return false;
 }
 
 bool _find_latest_group_signal(string &direction,datetime &signalTime,double &entry,double &sl,double &tp1,double &tp2,double &tp3,string &sourceName)
@@ -421,7 +657,17 @@ bool _find_latest_group_signal(string &direction,datetime &signalTime,double &en
 
 bool _find_latest_signatics_signal(string &direction,datetime &signalTime,double &entry,double &sl,double &tp1,double &tp2,double &tp3,string &sourceName)
 {
+   if(InpPreferGroupedSetup)
+   {
+      if(_find_latest_group_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName))
+         return true;
+      if(InpAllowLevelObjectFallback && _find_latest_level_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName))
+         return true;
+      return (InpAllowDashboardFallback && _find_latest_dashboard_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName));
+   }
    if(_find_latest_dashboard_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName))
+      return true;
+   if(InpAllowLevelObjectFallback && _find_latest_level_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName))
       return true;
    return _find_latest_group_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
 }
@@ -465,6 +711,38 @@ void _debug_print_signatics_objects()
    }
 }
 
+int _count_objects_contains(string pattern)
+{
+   string needle=_lower_copy(pattern);
+   int total=ObjectsTotal(0,-1,-1);
+   int count=0;
+   for(int i=total-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i,-1,-1);
+      string hay=_lower_copy(name+" "+_object_text(name));
+      if(StringFind(hay,needle)>=0)
+         count++;
+   }
+   return count;
+}
+
+void _print_initial_discovery_candidates()
+{
+   int total=ObjectsTotal(0,-1,-1);
+   int printed=0;
+   for(int i=total-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i,-1,-1);
+      string lc=_lower_copy(name+" "+_object_text(name));
+      if(StringFind(lc,"sa_sl_")<0 && StringFind(lc,"sa_lv_")<0 && StringFind(lc,"sa_db_")<0 && StringFind(lc,"entry")<0 && StringFind(lc,"tp")<0 && StringFind(lc,"sl")<0)
+         continue;
+      PrintFormat("SIGNATICSBridge initial_candidate row=%03d name='%s' time=%s price=%s text='%s'",i,name,_fmt_time(_object_time0(name)),_fmt_price(_object_price0(name)),_object_text(name));
+      if(++printed>=12)
+         break;
+   }
+   PrintFormat("SIGNATICSBridge initial_candidate summary printed=%d",printed);
+}
+
 void _print_probe_object(string wanted)
 {
    string actual=_find_object_name(wanted);
@@ -477,6 +755,50 @@ void _print_probe_object(string wanted)
       "SIGNATICSBridge discovery_probe wanted='%s' actual='%s' time=%s price=%s text='%s'",
       wanted,actual,_fmt_time(_object_time0(actual)),_fmt_price(_object_price0(actual)),_object_text(actual)
    );
+}
+
+void _print_initial_discovery_summary(string reason)
+{
+   if(!InpLogInitialDiscoverySummary)
+      return;
+   datetime nowTs=_timer_now();
+   if(g_initialDiscoveryPrints>=2)
+      return;
+   if(g_initialDiscoveryLastPrint>0 && (nowTs-g_initialDiscoveryLastPrint)<10)
+      return;
+   g_initialDiscoveryLastPrint=nowTs;
+   g_initialDiscoveryPrints++;
+
+   int total=ObjectsTotal(0,-1,-1);
+   PrintFormat(
+      "SIGNATICSBridge initial_setup NONE build=%s reason=%s symbol=%s tf=%s objects=%d sa_sl=%d sa_lv=%d sa_db=%d entry=%d tp=%d sl=%d retry_print=%d",
+      SIGNATICS_BRIDGE_BUILD,
+      reason,
+      Symbol(),
+      _tf_to_string(Period()),
+      total,
+      _count_objects_contains("sa_sl_"),
+      _count_objects_contains("sa_lv_"),
+      _count_objects_contains("sa_db_"),
+      _count_objects_contains("entry"),
+      _count_objects_contains("tp"),
+      _count_objects_contains("sl"),
+      g_initialDiscoveryPrints
+   );
+   _print_probe_object("SA_Lv_Entry_Lb");
+   _print_probe_object("SA_Lv_Entry_Ln");
+   _print_probe_object("SA_Lv_Entry_Rb");
+   _print_probe_object("SA_Lv_SL_Lb");
+   _print_probe_object("SA_Lv_SL_Ln");
+   _print_probe_object("SA_Lv_SL_Rb");
+   _print_probe_object("SA_Lv_TP1_Lb");
+   _print_probe_object("SA_Lv_TP1_Ln");
+   _print_probe_object("SA_Lv_TP1_Rb");
+   _print_probe_object("SA_DB_S_V0");
+   _print_probe_object("SA_DB_L_V0");
+   _print_probe_object("SA_DB_L_V1");
+   _print_probe_object("SA_DB_T_V0");
+   _print_initial_discovery_candidates();
 }
 
 void _debug_print_discovery_on_none(string reason)
@@ -519,6 +841,8 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       return true;
 
    string eventKind=_trim(eventType);
+   if(eventKind=="resolved_state" && !InpSendResolvedStateEvents)
+      return true;
    string dir=_trim(direction);
    string endpoint=_build_endpoint(InpApiBaseUrl,InpApiPath);
    string eventId=StringFormat("signatics|%s|%s|%s|%I64d|%s",Symbol(),_tf_to_string(Period()),dir,(long)signalTime,eventKind);
@@ -579,31 +903,45 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
    string response=CharArrayToString(result,0,-1);
    if(code>=200 && code<300)
    {
-      Print("SIGNATICSBridge sent ",eventKind," ",dir," response=",response);
+      if(InpLogPostResponses || eventKind=="confirmed_signal")
+      {
+         if(InpLogPostResponses)
+            Print("SIGNATICSBridge sent ",eventKind," ",dir," response=",response);
+         else
+            Print("SIGNATICSBridge sent ",eventKind," ",dir);
+      }
       return true;
    }
    Print("SIGNATICSBridge POST failed code=",code," err=",GetLastError()," event=",eventKind," dir=",dir," endpoint=",endpoint," response=",response);
    return false;
 }
 
-void ScanAndLogLatest(string reason)
+bool _is_initial_audit_reason(string reason)
+{
+   return (reason=="init" || reason=="init_retry" || reason=="baseline");
+}
+
+bool ScanAndLogLatest(string reason)
 {
    string direction,sourceName;
    datetime signalTime;
    double entry,sl,tp1,tp2,tp3;
    if(!_find_latest_signatics_signal(direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName))
    {
+      if(_is_initial_audit_reason(reason) || !g_baselineSetupSeen)
+         _print_initial_discovery_summary(reason);
       if(_none_log_due(reason))
       {
          g_lastNoneLogTime=_timer_now();
-         Print("SIGNATICSBridge latest_signal NONE reason=",reason," symbol=",Symbol()," tf=",_tf_to_string(Period()));
+         if(!InpLogOnlyTradeSignals)
+            Print("SIGNATICSBridge latest_signal NONE reason=",reason," symbol=",Symbol()," tf=",_tf_to_string(Period()));
       }
       _debug_print_discovery_on_none(reason);
       _debug_print_signatics_objects();
-      return;
+      return false;
    }
 
-   string eventId=StringFormat("%s|%s|%I64d|%s",Symbol(),direction,(long)signalTime,sourceName);
+   string eventId=_setup_event_id(direction,signalTime,entry,sl,tp1,tp2,tp3);
    if(InpLogOnlyOnChange && eventId==g_lastEventId)
    {
       if(_heartbeat_due(g_lastResolvedPostTime))
@@ -611,40 +949,54 @@ void ScanAndLogLatest(string reason)
          if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,"heartbeat"))
             g_lastResolvedPostTime=_timer_now();
       }
-      return;
+      return true;
    }
 
    g_lastEventId=eventId;
-   _print_setup_line("latest_signal",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
-   _print_setup_line("current_setup",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
-   _print_previous_group_snapshot(reason);
+   bool initialAudit = _is_initial_audit_reason(reason) || !g_baselineSetupSeen;
+   bool shouldPrintSetup = (!InpLogOnlyTradeSignals || (initialAudit && InpLogInitialSetup));
+   if(shouldPrintSetup)
+   {
+      _print_setup_line("latest_signal",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
+      _print_setup_line("current_setup",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
+      _print_previous_group_snapshot(reason);
+   }
 
-   if(reason=="init")
+   if(initialAudit)
    {
       if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason))
          g_lastResolvedPostTime=_timer_now();
       if(InpSendInitialConfirmedOnStart)
       {
+         _print_setup_line("trade_signal_sent",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
          _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason);
          g_lastConfirmedEventId=eventId;
       }
+      g_baselineSetupSeen=true;
    }
    else if(eventId!=g_lastConfirmedEventId)
    {
       if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason))
          g_lastResolvedPostTime=_timer_now();
+      PrintFormat(
+         "SIGNATICSBridge listener_new_setup reason=%s event_id='%s' symbol=%s tf=%s dir=%s bar=%s entry=%s sl=%s tp1=%s tp2=%s tp3=%s source='%s'",
+         reason,eventId,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3),sourceName
+      );
+      _print_setup_line("trade_signal_sent",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
       _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason);
       g_lastConfirmedEventId=eventId;
    }
+   return true;
 }
 
 int OnInit()
 {
    int poll=MathMax(1,InpPollSeconds);
    EventSetTimer(poll);
-   Print("SIGNATICSBridge initialized indicator=",InpIndicatorName," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll);
+   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," lvFallback=",InpAllowLevelObjectFallback);
    if(InpEnableProTradePost)
       _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"","init");
+   g_initialSetupRetryUntil=_timer_now()+MathMax(0,InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
    return INIT_SUCCEEDED;
@@ -653,8 +1005,17 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   Print("SIGNATICSBridge uninit reason=",reason);
+   if(!InpLogOnlyTradeSignals)
+      Print("SIGNATICSBridge uninit reason=",reason);
 }
 
-void OnTimer(){ ScanAndLogLatest("timer"); }
+void OnTimer()
+{
+   if(InpLogOnInit && !g_baselineSetupSeen && _timer_now()<=g_initialSetupRetryUntil)
+   {
+      ScanAndLogLatest("init_retry");
+      return;
+   }
+   ScanAndLogLatest("timer");
+}
 void OnTick(){}

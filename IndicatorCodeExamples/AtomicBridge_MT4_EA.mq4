@@ -5,15 +5,21 @@
 //+------------------------------------------------------------------+
 #property strict
 
+#define ATOMIC_BRIDGE_BUILD "2026-06-02.1825-light-init-retry"
+
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
 input bool   InpLogOnInit = true;
 input bool   InpLogOnlyOnChange = true;
 input bool   InpDebugObjects = false;
+input bool   InpLogPostResponses = false;
+input bool   InpLogNoneSignals = false;
+input bool   InpLogRegimeBuffer = false;
+input int    InpInitialSetupRetrySeconds = 30;
 input string InpIgnoreNamePatterns = "autotrade,->";
 input bool   InpEnableProTradePost = true;
 input bool   InpSendInitialConfirmedOnStart = false;
-input int    InpResolvedHeartbeatSeconds = 60;
+input int    InpResolvedHeartbeatSeconds = 300;
 input string InpApiBaseUrl = "http://127.0.0.1";
 input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
@@ -36,6 +42,7 @@ string   g_lastEventId = "";
 datetime g_lastSignalTime = 0;
 string   g_lastConfirmedEventId = "";
 datetime g_lastResolvedPostTime = 0;
+datetime g_initialSetupRetryUntil = 0;
 string   g_lastRegimeDirection = "";
 string   g_lastRegimeEventId = "";
 string   g_lastRegimeConfirmedEventId = "";
@@ -518,7 +525,13 @@ bool _post_atomic_bridge_event(
    string response = CharArrayToString(result, 0, -1);
    if(code >= 200 && code < 300)
    {
-      Print("AtomicBridge sent ", eventKind, " ", dir, " response=", response);
+      if(InpLogPostResponses || eventKind == "confirmed_signal")
+      {
+         if(InpLogPostResponses)
+            Print("AtomicBridge sent ", eventKind, " ", dir, " response=", response);
+         else
+            Print("AtomicBridge sent ", eventKind, " ", dir);
+      }
       return true;
    }
 
@@ -776,7 +789,13 @@ bool _post_atomic_regime_event(
    string response = CharArrayToString(result, 0, -1);
    if(code >= 200 && code < 300)
    {
-      Print("AtomicBridge regime sent ", eventKind, " ", dir, " response=", response);
+      if(InpLogPostResponses || eventKind == "confirmed_signal")
+      {
+         if(InpLogPostResponses)
+            Print("AtomicBridge regime sent ", eventKind, " ", dir, " response=", response);
+         else
+            Print("AtomicBridge regime sent ", eventKind, " ", dir);
+      }
       return true;
    }
 
@@ -855,20 +874,24 @@ void ScanAndLogLatest(string reason)
 
    if(!_find_latest_atomic_signal(direction, signalIndex, signalTime, entryPrice, trendName))
    {
-      Print("AtomicBridge latest_signal NONE reason=", reason, " symbol=", Symbol(), " tf=", _tf_to_string(Period()));
+      if(InpLogNoneSignals)
+         Print("AtomicBridge latest_signal NONE reason=", reason, " symbol=", Symbol(), " tf=", _tf_to_string(Period()));
       _debug_print_atomic_objects();
       if(hasBufferRegime)
       {
-         PrintFormat(
-            "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
-            reason,
-            Symbol(),
-            _tf_to_string(Period()),
-            regimeDirection,
-            _fmt_time(regimeSignalTime),
-            _fmt_price(regimeEntryPrice),
-            regimeSourceName
-         );
+         if(InpLogRegimeBuffer)
+         {
+            PrintFormat(
+               "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+               reason,
+               Symbol(),
+               _tf_to_string(Period()),
+               regimeDirection,
+               _fmt_time(regimeSignalTime),
+               _fmt_price(regimeEntryPrice),
+               regimeSourceName
+            );
+         }
          _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
       }
       return;
@@ -918,7 +941,7 @@ void ScanAndLogLatest(string reason)
 
    if(StringLen(direction) > 0 && sl > 0.0 && tp1 > 0.0)
    {
-      if(reason == "init")
+      if(reason == "init" || reason == "init_retry")
       {
          if(_post_atomic_bridge_event("resolved_state", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, reason))
             g_lastResolvedPostTime = _timer_now();
@@ -939,16 +962,19 @@ void ScanAndLogLatest(string reason)
 
    if(hasBufferRegime)
    {
-      PrintFormat(
-         "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
-         reason,
-         Symbol(),
-         _tf_to_string(Period()),
-         regimeDirection,
-         _fmt_time(regimeSignalTime),
-         _fmt_price(regimeEntryPrice),
-         regimeSourceName
-      );
+      if(InpLogRegimeBuffer)
+      {
+         PrintFormat(
+            "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+            reason,
+            Symbol(),
+            _tf_to_string(Period()),
+            regimeDirection,
+            _fmt_time(regimeSignalTime),
+            _fmt_price(regimeEntryPrice),
+            regimeSourceName
+         );
+      }
       _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
    }
    else
@@ -961,9 +987,10 @@ int OnInit()
 {
    int poll = MathMax(1, InpPollSeconds);
    EventSetTimer(poll);
-   Print("AtomicBridge initialized indicator=", InpIndicatorName, " symbol=", Symbol(), " tf=", _tf_to_string(Period()), " poll=", poll);
+   Print("AtomicBridge BUILD=", ATOMIC_BRIDGE_BUILD, " indicator=", InpIndicatorName, " symbol=", Symbol(), " tf=", _tf_to_string(Period()), " poll=", poll, " logPost=", InpLogPostResponses);
    if(InpEnableProTradePost)
       _post_atomic_bridge_event("register", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", "init");
+   g_initialSetupRetryUntil = _timer_now() + MathMax(0, InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
    return INIT_SUCCEEDED;
@@ -972,11 +999,17 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   Print("AtomicBridge uninit reason=", reason);
+   if(InpLogPostResponses || InpLogNoneSignals || InpLogRegimeBuffer)
+      Print("AtomicBridge uninit reason=", reason);
 }
 
 void OnTimer()
 {
+   if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
+   {
+      ScanAndLogLatest("init_retry");
+      return;
+   }
    ScanAndLogLatest("timer");
 }
 

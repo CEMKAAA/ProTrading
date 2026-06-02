@@ -142,6 +142,7 @@
         border-radius: 999px;
         background: linear-gradient(90deg, #22c55e, #06b6d4);
         box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
+        transition: left 0.36s linear, width 0.36s linear;
     }
     .v2-rail-fill.neg {
         background: linear-gradient(90deg, #ef4444, #f97316);
@@ -179,6 +180,7 @@
         height: 30px;
         background: #0ea5e9;
         box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+        transition: left 0.36s linear;
     }
     .v2-rail-current::after {
         content: '';
@@ -208,6 +210,76 @@
         font-weight: 700;
     }
     .v2-secured-chip { background: #dcfce7; color: #166534; }
+    .v2-rail-hover-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2140;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        background: radial-gradient(circle at center, rgba(15, 23, 42, 0.10), transparent 46%);
+    }
+    .v2-rail-hover-overlay.active { display: flex; }
+    .v2-rail-hover-card {
+        width: min(920px, calc(100vw - 36px));
+        border-radius: 22px;
+        border: 1px solid rgba(148, 163, 184, 0.36);
+        background: rgba(248, 250, 252, 0.97);
+        box-shadow: 0 30px 90px rgba(15, 23, 42, 0.28);
+        padding: 18px;
+        pointer-events: auto;
+        backdrop-filter: blur(10px);
+    }
+    .v2-rail-hover-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    .v2-rail-hover-title strong { color: #0f172a; }
+    .v2-trade-rail.v2-rail-large {
+        min-width: 0;
+        padding: 18px 16px 14px;
+        border-radius: 20px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-track {
+        height: 96px;
+        margin: 20px 12px 24px;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-base,
+    .v2-trade-rail.v2-rail-large .v2-rail-fill {
+        top: 46px;
+        height: 12px;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-point {
+        top: 20px;
+        font-size: 12px;
+        gap: 5px;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-dot {
+        width: 14px;
+        height: 14px;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-current {
+        top: 9px;
+        height: 70px;
+        width: 3px;
+        transition: left 0.22s linear;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-current::after {
+        width: 14px;
+        height: 14px;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-fill {
+        transition: left 0.22s linear, width 0.22s linear;
+    }
+    .v2-trade-rail.v2-rail-large .v2-rail-chip {
+        font-size: 13px;
+        padding: 5px 10px;
+    }
     .v2-dual-instance + .v2-dual-instance { margin-top: 12px; }
     @media (max-width: 768px) {
         .v2-dual-grid { grid-template-columns: 1fr; }
@@ -535,12 +607,23 @@
     </div>
 
     <div class="card v2-card">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <strong>Readable Execution Audit</strong>
                 <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed, blocked windows.</div>
             </div>
-            <input id="v2-audit-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="ticket / status / message">
+            <div class="d-flex flex-wrap align-items-center gap-2 justify-content-end">
+                <select id="v2-audit-symbol-filter" class="form-select form-select-sm" style="width: 135px;">
+                    <option value="">All pairs</option>
+                </select>
+                <select id="v2-audit-strategy-filter" class="form-select form-select-sm" style="width: 170px;">
+                    <option value="">All strategies</option>
+                </select>
+                <select id="v2-audit-mode-filter" class="form-select form-select-sm" style="width: 125px;">
+                    <option value="">All modes</option>
+                </select>
+                <input id="v2-audit-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="ticket / status / message">
+            </div>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive v2-table-wrap">

@@ -7081,6 +7081,8 @@ class TelegramBridgeService:
         terminal_family: Any,
         limit: int = 300,
         active_only: bool = False,
+        include_ohlc_replay: bool = True,
+        include_rsi: bool = True,
     ) -> Dict[str, Any]:
         family = self._indicator_bridge_family(terminal_family)
         lim = int(max(10, min(1000, int(limit or 300))))
@@ -7187,12 +7189,22 @@ class TelegramBridgeService:
                 highest_tp_reached = int(len(tps))
             row_for_ohlc = dict(row)
             row_for_ohlc["tps"] = list(tps)
-            ohlc_tp = self._evaluate_open_trade_ohlc_tp_replay(
-                row=dict(row_for_ohlc),
-                live_pos=dict(live_pos or {}),
-                svc=svc,
-                bars_cache=ohlc_replay_cache,
-            )
+            if include_ohlc_replay:
+                ohlc_tp = self._evaluate_open_trade_ohlc_tp_replay(
+                    row=dict(row_for_ohlc),
+                    live_pos=dict(live_pos or {}),
+                    svc=svc,
+                    bars_cache=ohlc_replay_cache,
+                )
+            else:
+                ohlc_tp = {
+                    "max_tp_index_hit": 0,
+                    "max_tp_price": None,
+                    "max_tp_time": "",
+                    "evaluated_bars": 0,
+                    "reason": "disabled_fast_state",
+                    "open_bar_skipped": False,
+                }
             out_row = {
                 "terminal_family": str(family),
                 "instance_key": str(instance_key),
@@ -7326,11 +7338,15 @@ class TelegramBridgeService:
             is_live_heartbeat = bool(last_seen_unix is not None and (float(now_ts) - float(last_seen_unix)) <= float(heartbeat_live_sec))
             is_configured = bool(str(row.get("bridge_event_type") or "").strip().lower() == "configured")
             inferred_state = "CONFIGURED" if is_configured else ("IDLE" if is_live_heartbeat else "STALE")
-            latest_rsi = self._latest_indicator_rsi_telemetry(
-                family=str(family),
-                symbol=str(symbol),
-                timeframe=str(timeframe),
-                max_age_sec=86400.0,
+            latest_rsi = (
+                self._latest_indicator_rsi_telemetry(
+                    family=str(family),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                    max_age_sec=86400.0,
+                )
+                if include_rsi
+                else {}
             )
             merged.update(
                 {
@@ -7436,7 +7452,9 @@ class TelegramBridgeService:
         with self._lock:
             cached = dict(self._indicator_open_recovery_cache.get(cache_key) or {})
             if cached and (now_ts - float(cached.get("ts") or 0.0)) <= 5.0:
-                return [dict(x) for x in (cached.get("rows") or []) if isinstance(x, dict)]
+                cached_rows = [dict(x) for x in (cached.get("rows") or []) if isinstance(x, dict)]
+                self._rehydrate_active_ladders_from_recovered_open_rows(cached_rows)
+                return cached_rows
         self._ensure_execution_log_table()
         db = SessionLocal()
         try:
@@ -7564,59 +7582,76 @@ class TelegramBridgeService:
                 half_be_enabled=bool(meta.get("half_be_enabled")),
                 half_be_tp_index=int(_to_float_or_none(meta.get("half_be_tp_index")) or 0),
             )
-            out.append(
-                {
-                    "terminal_family": str(family),
-                    "instance_key": str(instance_key),
-                    "indicator": str(indicator),
-                    "symbol": str(symbol),
-                    "timeframe": str(timeframe),
-                    "execution_mode": str(meta.get("execution_mode") or self._mode_from_bridge_source_tag(meta.get("source_tag")) or "").strip().lower(),
-                    "direction": str(meta.get("direction") or (pos or {}).get("direction") or "").strip().upper(),
-                    "ticket": int(ticket),
-                    "opened_at": str(meta.get("opened_at") or meta.get("created_at") or ""),
-                    "state": "OPEN",
-                    "next_tp_index": 1,
-                    "total_tps": int(len(tps)),
-                    "highest_tp_reached": 0,
-                    "highest_tp_price": None,
-                    "highest_tp_updated_at": "",
-                    "tps": [dict(x) for x in tps if isinstance(x, dict)],
-                    "max_profit": _to_float_or_none(meta.get("max_profit")),
-                    "max_loss": _to_float_or_none(meta.get("max_loss")),
-                    "current_profit": _to_float_or_none((pos or {}).get("profit_loss")),
-                    "current_price": _to_float_or_none((pos or {}).get("current_price")),
-                    "stop_loss": _to_float_or_none(stop_loss_val),
-                    "take_profit": _to_float_or_none(final_tp_val),
-                    "final_tp": _to_float_or_none(final_tp_val),
-                    "entry_price": _to_float_or_none(entry_price_val),
-                    "risk_distance": _to_float_or_none(risk_distance),
-                    "reward_distance": _to_float_or_none(reward_distance),
-                    "rr_to_final_tp": (
-                        float(reward_distance) / float(risk_distance)
-                        if risk_distance is not None and float(risk_distance) > 0.0 and reward_distance is not None
-                        else None
-                    ),
-                    "source_tag": str(meta.get("source_tag") or "").strip().lower(),
-                    "profile": str(meta.get("profile") or "").strip().lower(),
-                    "half_be_enabled": bool(meta.get("half_be_enabled")),
-                    "half_be_tp_index": int(_to_float_or_none(meta.get("half_be_tp_index")) or 0),
-                    "half_be_done": False,
-                    "half_be_done_at": "",
-                    "half_be_secured_profit": None,
-                    "half_be_realized_pnl": None,
-                    "half_be_close_lot": None,
-                    "half_be_sl": None,
-                    "combo_key": str(meta.get("combo_key") or self._build_execution_combo_key(
-                        source_type="mt_indicator",
-                        source_name=str(indicator),
-                        indicator=str(indicator),
-                        symbol=str(symbol),
-                        timeframe=str(timeframe),
-                    )),
-                    "recovered_from_audit": True,
-                }
+            current_profit = _to_float_or_none((pos or {}).get("profit_loss"))
+            max_profit = _to_float_or_none(meta.get("max_profit"))
+            max_loss = _to_float_or_none(meta.get("max_loss"))
+            if current_profit is not None:
+                max_profit = float(current_profit) if max_profit is None else max(float(max_profit), float(current_profit))
+                max_loss = float(current_profit) if max_loss is None else min(float(max_loss), float(current_profit))
+            direction = str(meta.get("direction") or (pos or {}).get("direction") or "").strip().upper()
+            recovered_row = {
+                "terminal_family": str(family),
+                "instance_key": str(instance_key),
+                "indicator": str(indicator),
+                "source_name": str(meta.get("source_name") or indicator),
+                "symbol": str(symbol),
+                "timeframe": str(timeframe),
+                "execution_mode": str(meta.get("execution_mode") or self._mode_from_bridge_source_tag(meta.get("source_tag")) or "").strip().lower(),
+                "direction": str(direction),
+                "ticket": int(ticket),
+                "broker_ticket": int(ticket),
+                "opened_at": str(meta.get("opened_at") or meta.get("created_at") or ""),
+                "created_at": str(meta.get("created_at") or meta.get("opened_at") or ""),
+                "state": "OPEN",
+                "next_tp_index": 1,
+                "total_tps": int(len(tps)),
+                "highest_tp_reached": 0,
+                "highest_tp_price": None,
+                "highest_tp_updated_at": "",
+                "tps": [dict(x) for x in tps if isinstance(x, dict)],
+                "stage_lots": [float(meta.get("lot"))] if _to_float_or_none(meta.get("lot")) is not None else [],
+                "max_profit": _to_float_or_none(max_profit),
+                "max_loss": _to_float_or_none(max_loss),
+                "current_profit": current_profit,
+                "current_price": _to_float_or_none((pos or {}).get("current_price")),
+                "initial_stop_loss": _to_float_or_none(stop_loss_val),
+                "stop_loss": _to_float_or_none(stop_loss_val),
+                "broker_take_profit": _to_float_or_none(final_tp_val),
+                "take_profit": _to_float_or_none(final_tp_val),
+                "final_tp": _to_float_or_none(final_tp_val),
+                "entry_price": _to_float_or_none(entry_price_val),
+                "risk_distance": _to_float_or_none(risk_distance),
+                "reward_distance": _to_float_or_none(reward_distance),
+                "rr_to_final_tp": (
+                    float(reward_distance) / float(risk_distance)
+                    if risk_distance is not None and float(risk_distance) > 0.0 and reward_distance is not None
+                    else None
+                ),
+                "source_tag": str(meta.get("source_tag") or "").strip().lower(),
+                "profile": str(meta.get("profile") or "").strip().lower(),
+                "half_be_enabled": bool(meta.get("half_be_enabled")),
+                "half_be_tp_index": int(_to_float_or_none(meta.get("half_be_tp_index")) or 0),
+                "half_be_done": False,
+                "half_be_done_at": "",
+                "half_be_secured_profit": None,
+                "half_be_realized_pnl": None,
+                "half_be_close_lot": None,
+                "half_be_sl": None,
+                "combo_key": str(meta.get("combo_key") or self._build_execution_combo_key(
+                    source_type="mt_indicator",
+                    source_name=str(indicator),
+                    indicator=str(indicator),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
+                )),
+                "recovered_from_audit": True,
+            }
+            recovered_row = self._update_ladder_tp_reach_state(
+                row=dict(recovered_row),
+                direction=str(direction),
+                current_price=_to_float_or_none(recovered_row.get("current_price")),
             )
+            out.append(dict(recovered_row))
         with self._lock:
             self._indicator_open_recovery_cache[cache_key] = {"ts": float(now_ts), "rows": [dict(x) for x in out]}
             if len(self._indicator_open_recovery_cache) > 64:
@@ -7626,7 +7661,82 @@ class TelegramBridgeService:
                     for k, v in self._indicator_open_recovery_cache.items()
                     if float((v or {}).get("ts") or 0.0) >= cutoff
                 }
+        self._rehydrate_active_ladders_from_recovered_open_rows(out)
         return out
+
+    def _rehydrate_active_ladders_from_recovered_open_rows(self, rows: List[Dict[str, Any]]) -> None:
+        if not isinstance(rows, list) or not rows:
+            return
+        now_iso = self._now_iso()
+        with self._lock:
+            active_by_ticket = {
+                int(_to_float_or_none((v or {}).get("broker_ticket") or (v or {}).get("ticket")) or 0)
+                for v in self._active_confirmation_signal_ladders.values()
+                if isinstance(v, dict)
+            }
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    continue
+                ticket = int(_to_float_or_none(raw.get("broker_ticket") or raw.get("ticket")) or 0)
+                if ticket <= 0 or ticket in active_by_ticket:
+                    continue
+                symbol = str(raw.get("symbol") or "").strip().upper()
+                direction = str(raw.get("direction") or "").strip().upper()
+                source_tag = str(raw.get("source_tag") or "").strip().lower()
+                if not symbol or direction not in {"BUY", "SELL"} or not source_tag:
+                    continue
+                row = dict(raw)
+                row["broker_ticket"] = int(ticket)
+                row["ticket"] = int(ticket)
+                row["state"] = "OPEN"
+                row["symbol"] = str(symbol)
+                row["direction"] = str(direction)
+                row["source_tag"] = str(source_tag)
+                row["execution_mode"] = str(row.get("execution_mode") or self._mode_from_bridge_source_tag(source_tag) or "normal").strip().lower()
+                row["source_name"] = str(row.get("source_name") or row.get("indicator") or "unknown")
+                row["indicator"] = str(row.get("indicator") or row.get("source_name") or "unknown")
+                row["profile"] = str(row.get("profile") or "").strip().lower()
+                row["timeframe"] = str(row.get("timeframe") or "").strip().upper()
+                row["entry_price"] = _to_float_or_none(row.get("entry_price"))
+                row["initial_stop_loss"] = _to_float_or_none(row.get("initial_stop_loss")) or _to_float_or_none(row.get("stop_loss"))
+                row["stop_loss"] = _to_float_or_none(row.get("stop_loss")) or _to_float_or_none(row.get("initial_stop_loss"))
+                row["broker_take_profit"] = _to_float_or_none(row.get("broker_take_profit")) or _to_float_or_none(row.get("take_profit")) or _to_float_or_none(row.get("final_tp"))
+                row["take_profit"] = _to_float_or_none(row.get("take_profit")) or _to_float_or_none(row.get("broker_take_profit"))
+                row["final_tp"] = _to_float_or_none(row.get("final_tp")) or _to_float_or_none(row.get("broker_take_profit"))
+                row["tps"] = [dict(x) for x in (row.get("tps") if isinstance(row.get("tps"), list) else []) if isinstance(x, dict)]
+                row["total_tps"] = int(len(row.get("tps") or []))
+                row["next_tp_index"] = int(_to_float_or_none(row.get("next_tp_index")) or 1)
+                row["highest_tp_reached"] = int(_to_float_or_none(row.get("highest_tp_reached")) or 0)
+                row["highest_tp_updated_at"] = str(row.get("highest_tp_updated_at") or "")
+                row["max_profit"] = _to_float_or_none(row.get("max_profit"))
+                row["max_loss"] = _to_float_or_none(row.get("max_loss"))
+                row["half_be_enabled"] = bool(row.get("half_be_enabled"))
+                row["half_be_tp_index"] = int(_to_float_or_none(row.get("half_be_tp_index")) or 0)
+                row["half_be_done"] = bool(row.get("half_be_done"))
+                row["stage_lots"] = list(row.get("stage_lots") if isinstance(row.get("stage_lots"), list) else [])
+                row["combo_key"] = str(row.get("combo_key") or self._build_execution_combo_key(
+                    source_type="mt_indicator",
+                    source_name=str(row.get("indicator") or "unknown"),
+                    indicator=str(row.get("indicator") or "unknown"),
+                    symbol=str(symbol),
+                    timeframe=str(row.get("timeframe") or ""),
+                ))
+                row["recovered_from_audit"] = True
+                row["recovered_at"] = str(now_iso)
+                key = f"recovered:{source_tag}:{int(ticket)}"
+                self._active_confirmation_signal_ladders[str(key)] = dict(row)
+                active_by_ticket.add(int(ticket))
+                logger.info(
+                    "indicator_open_trade_rehydrated source_tag=%s ticket=%s symbol=%s tf=%s mode=%s half_be=%s tp_index=%s highest_tp=%s",
+                    source_tag,
+                    int(ticket),
+                    symbol,
+                    str(row.get("timeframe") or ""),
+                    str(row.get("execution_mode") or ""),
+                    bool(row.get("half_be_enabled")),
+                    int(row.get("half_be_tp_index") or 0),
+                    int(row.get("highest_tp_reached") or 0),
+                )
 
     @staticmethod
     def _mode_from_bridge_source_tag(source_tag: Any) -> str:
@@ -8083,7 +8193,17 @@ class TelegramBridgeService:
         }
         return trade_logs, liquidity_logs
 
-    def get_indicator_bridge_state(self, *, limit: int = 300, active_only: bool = False) -> Dict[str, Any]:
+    def get_indicator_bridge_state(
+        self,
+        *,
+        limit: int = 300,
+        active_only: bool = False,
+        include_audit: bool = True,
+        include_liquidity: bool = True,
+        include_rsi: bool = True,
+        include_ohlc_replay: bool = True,
+        include_execution_report: bool = True,
+    ) -> Dict[str, Any]:
         try:
             # The dashboard is often the operator's first view after MT5 has
             # already closed positions by TP/SL. Run the lightweight interval-
@@ -8093,31 +8213,72 @@ class TelegramBridgeService:
         except Exception:
             logger.exception("indicator_bridge_state_reconcile_failed")
         lim = int(max(20, min(1000, int(limit or 300))))
-        mt4_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt4", limit=lim, active_only=active_only)
-        mt5_monitor = self._get_indicator_bridge_bot_monitor(terminal_family="mt5", limit=lim, active_only=active_only)
+        mt4_monitor = self._get_indicator_bridge_bot_monitor(
+            terminal_family="mt4",
+            limit=lim,
+            active_only=active_only,
+            include_ohlc_replay=bool(include_ohlc_replay),
+            include_rsi=bool(include_rsi),
+        )
+        mt5_monitor = self._get_indicator_bridge_bot_monitor(
+            terminal_family="mt5",
+            limit=lim,
+            active_only=active_only,
+            include_ohlc_replay=bool(include_ohlc_replay),
+            include_rsi=bool(include_rsi),
+        )
         # Keep the live state endpoint responsive. History-based PnL recovery is
         # available in the audit helpers, but the dashboard poll path must not
         # fan out into many MT5 history calls when the terminal is unavailable.
-        audit_since_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        execution_logs = self.get_indicator_execution_audit_rows(
-            limit=max(1000, min(5000, lim * 5)),
-            resolve_history_pnl=False,
-            since_utc=audit_since_utc,
+        if include_audit:
+            audit_since_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            execution_logs = self.get_indicator_execution_audit_rows(
+                limit=max(1000, min(5000, lim * 5)),
+                resolve_history_pnl=False,
+                since_utc=audit_since_utc,
+            )
+            self._enrich_entry_exit_monitors_from_audit(
+                mt4_monitor=mt4_monitor,
+                mt5_monitor=mt5_monitor,
+                execution_logs=execution_logs,
+            )
+            execution_logs, liquidity_audit_logs = self._split_indicator_liquidity_audit_logs(execution_logs)
+        else:
+            execution_logs = {
+                "ok": True,
+                "rows": [],
+                "count": 0,
+                "generated_at": self._now_iso(),
+                "disabled": True,
+            }
+            liquidity_audit_logs = {
+                "ok": True,
+                "rows": [],
+                "count": 0,
+                "generated_at": self._now_iso(),
+                "disabled": True,
+            }
+        execution_report = (
+            self.get_automation_execution_report(limit=200, resolve_history_pnl=False)
+            if include_execution_report
+            else {"ok": True, "rows": [], "count": 0, "disabled": True}
         )
-        self._enrich_entry_exit_monitors_from_audit(
-            mt4_monitor=mt4_monitor,
-            mt5_monitor=mt5_monitor,
-            execution_logs=execution_logs,
+        rsi_telemetry = (
+            self.get_indicator_rsi_telemetry(limit=max(200, lim))
+            if include_rsi
+            else {"ok": True, "rows": [], "count": 0, "disabled": True}
         )
-        execution_logs, liquidity_audit_logs = self._split_indicator_liquidity_audit_logs(execution_logs)
-        execution_report = self.get_automation_execution_report(limit=200, resolve_history_pnl=False)
-        rsi_telemetry = self.get_indicator_rsi_telemetry(limit=max(200, lim))
         open_trades = list((mt4_monitor or {}).get("rows") or []) + list((mt5_monitor or {}).get("rows") or [])
         open_trades.sort(key=lambda r: str((r or {}).get("opened_at") or ""), reverse=True)
-        liquidity_context_channels = self._indicator_liquidity_context_active_channels(mt4_monitor, mt5_monitor)
-        liquidity_context_channels.extend(self._indicator_liquidity_context_watchlist_channels())
-        self._prewarm_indicator_liquidity_context_for_channels(liquidity_context_channels)
-        liquidity_context_channels = self._hydrate_indicator_liquidity_context_channels(liquidity_context_channels)
+        if include_liquidity:
+            liquidity_context_channels = self._indicator_liquidity_context_active_channels(mt4_monitor, mt5_monitor)
+            liquidity_context_channels.extend(self._indicator_liquidity_context_watchlist_channels())
+            self._prewarm_indicator_liquidity_context_for_channels(liquidity_context_channels)
+            liquidity_context_channels = self._hydrate_indicator_liquidity_context_channels(liquidity_context_channels)
+            liquidity_context_cache = self.get_indicator_bridge_liquidity_context_cache_rows()
+        else:
+            liquidity_context_channels = []
+            liquidity_context_cache = []
         return {
             "ok": True,
             "updated_at": self._now_iso(),
@@ -8141,7 +8302,120 @@ class TelegramBridgeService:
             "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
             "liquidity_context_watchlist": self.get_indicator_bridge_liquidity_context_watchlist(),
             "liquidity_context_channels": liquidity_context_channels,
-            "liquidity_context_cache": self.get_indicator_bridge_liquidity_context_cache_rows(),
+            "liquidity_context_cache": liquidity_context_cache,
+        }
+
+    def get_indicator_open_trade_price_snapshot(self, *, tickets: Optional[List[int]] = None) -> Dict[str, Any]:
+        """
+        Lightweight live-price lane for Indicator Automation V2.
+
+        The full bridge state endpoint intentionally carries audit, replay and
+        instance metadata. This method only reads current broker positions and
+        refreshes the active ladder PnL extrema, so UI price rails can update
+        smoothly without coupling rendering to the heavy monitor poll.
+        """
+        wanted = {
+            int(t)
+            for t in (tickets or [])
+            if _to_float_or_none(t) is not None and int(_to_float_or_none(t) or 0) > 0
+        }
+        with self._lock:
+            ladder_by_ticket: Dict[int, Tuple[str, Dict[str, Any]]] = {}
+            for key, row in self._active_confirmation_signal_ladders.items():
+                if not isinstance(row, dict):
+                    continue
+                ticket = int(_to_float_or_none(row.get("broker_ticket")) or 0)
+                if ticket > 0:
+                    ladder_by_ticket[int(ticket)] = (str(key), dict(row))
+        if not wanted:
+            wanted = set(ladder_by_ticket.keys())
+        svc = self._get_live_service()
+        symbols_to_query = sorted({
+            str((ladder_by_ticket.get(int(t)) or ("", {}))[1].get("symbol") or "").strip().upper()
+            for t in wanted
+            if int(t) in ladder_by_ticket
+        })
+        try:
+            if symbols_to_query:
+                positions = []
+                seen_position_tickets: set[int] = set()
+                for sym in symbols_to_query:
+                    if not sym:
+                        continue
+                    for pos in (svc.get_open_positions(symbol=str(sym)) or []):
+                        if not isinstance(pos, dict):
+                            continue
+                        pt = int(_to_float_or_none((pos or {}).get("ticket")) or 0)
+                        if pt > 0 and pt in seen_position_tickets:
+                            continue
+                        if pt > 0:
+                            seen_position_tickets.add(int(pt))
+                        positions.append(dict(pos))
+            else:
+                positions = [dict(x) for x in (svc.get_open_positions(symbol=None) or []) if isinstance(x, dict)]
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"open_trade_price_snapshot_failed:{type(exc).__name__}:{str(exc)[:180]}",
+                "rows": [],
+                "count": 0,
+                "updated_at": self._now_iso(),
+            }
+
+        updates: Dict[str, Dict[str, Any]] = {}
+        rows: List[Dict[str, Any]] = []
+        now_iso = self._now_iso()
+        for pos in positions:
+            ticket = int(_to_float_or_none(pos.get("ticket")) or 0)
+            if ticket <= 0 or (wanted and ticket not in wanted):
+                continue
+            ladder_key, ladder = ladder_by_ticket.get(ticket, ("", {}))
+            cur_profit = _to_float_or_none(pos.get("profit_loss"))
+            max_profit = _to_float_or_none(ladder.get("max_profit"))
+            max_loss = _to_float_or_none(ladder.get("max_loss"))
+            if cur_profit is not None:
+                if max_profit is None or float(cur_profit) > float(max_profit):
+                    max_profit = float(cur_profit)
+                if max_loss is None or float(cur_profit) < float(max_loss):
+                    max_loss = float(cur_profit)
+                if ladder_key:
+                    next_ladder = dict(ladder)
+                    next_ladder["max_profit"] = float(max_profit)
+                    next_ladder["max_loss"] = float(max_loss)
+                    next_ladder["last_price_snapshot_at"] = str(now_iso)
+                    updates[str(ladder_key)] = next_ladder
+            rows.append(
+                {
+                    "ticket": int(ticket),
+                    "symbol": str(pos.get("symbol") or ladder.get("symbol") or "").strip(),
+                    "direction": str(pos.get("direction") or ladder.get("direction") or "").strip().upper(),
+                    "entry_price": _to_float_or_none(pos.get("entry_price")) or _to_float_or_none(ladder.get("entry_price")),
+                    "current_price": _to_float_or_none(pos.get("current_price")),
+                    "current_profit": _to_float_or_none(cur_profit),
+                    "profit_loss": _to_float_or_none(cur_profit),
+                    "stop_loss": _to_float_or_none(pos.get("stop_loss")) or _to_float_or_none(ladder.get("stop_loss")) or _to_float_or_none(ladder.get("initial_stop_loss")),
+                    "take_profit": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(ladder.get("broker_take_profit")),
+                    "final_tp": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(ladder.get("broker_take_profit")),
+                    "lot_size": _to_float_or_none(pos.get("lot_size")) or _to_float_or_none(ladder.get("lot_size")),
+                    "magic": int(_to_float_or_none(pos.get("magic")) or 0),
+                    "comment": str(pos.get("comment") or ""),
+                    "max_profit": _to_float_or_none(max_profit),
+                    "max_loss": _to_float_or_none(max_loss),
+                    "updated_at": str(now_iso),
+                }
+            )
+        if updates:
+            with self._lock:
+                for key, row in updates.items():
+                    if key in self._active_confirmation_signal_ladders:
+                        self._active_confirmation_signal_ladders[str(key)] = dict(row)
+        rows.sort(key=lambda r: int(_to_float_or_none((r or {}).get("ticket")) or 0), reverse=True)
+        return {
+            "ok": True,
+            "updated_at": str(now_iso),
+            "rows": rows,
+            "count": int(len(rows)),
+            "symbols_queried": [str(x) for x in symbols_to_query],
         }
 
     @staticmethod

@@ -57,6 +57,9 @@
         instanceFilterSignatics: document.getElementById('v2-instance-filter-signatics'),
         instanceStartAll: document.getElementById('v2-instance-start-all'),
         auditFilter: document.getElementById('v2-audit-filter'),
+        auditSymbolFilter: document.getElementById('v2-audit-symbol-filter'),
+        auditStrategyFilter: document.getElementById('v2-audit-strategy-filter'),
+        auditModeFilter: document.getElementById('v2-audit-mode-filter'),
         liqAuditFilter: document.getElementById('v2-liq-audit-filter')
     };
 
@@ -66,6 +69,14 @@
     let stateLoadInFlight = false;
     let stateLoadController = null;
     let stateRefreshPausedUntil = 0;
+    let priceTimer = null;
+    let priceLoadInFlight = false;
+    let priceLoadController = null;
+    let auditTimer = null;
+    let auditLoadInFlight = false;
+    let auditLoadController = null;
+    let tradeRailOverlay = null;
+    let tradeRailOverlayTicket = '';
     let liquidityScanRows = [];
 
     function esc(v) {
@@ -73,6 +84,34 @@
             .replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    function cssEsc(v) {
+        const raw = String(v == null ? '' : v);
+        if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(raw);
+        return raw.replace(/["\\]/g, '\\$&');
+    }
+
+    let apiBase = '/api';
+
+    function apiPath(path) {
+        const clean = String(path || '');
+        return `${apiBase}${clean.startsWith('/') ? clean : `/${clean}`}`;
+    }
+
+    async function apiFetch(path, options) {
+        const clean = String(path || '');
+        const primary = apiPath(clean);
+        let res = await fetch(primary, options || {});
+        if (res.status === 404 && apiBase === '/api') {
+            const fallback = `/api/v1${clean.startsWith('/') ? clean : `/${clean}`}`;
+            const retry = await fetch(fallback, options || {});
+            if (retry.ok || retry.status !== 404) {
+                apiBase = '/api/v1';
+                return retry;
+            }
+        }
+        return res;
     }
 
     function fmtTs(v) {
@@ -187,8 +226,19 @@
         if (stateLoadInFlight || Date.now() < stateRefreshPausedUntil) return;
         stateLoadInFlight = true;
         stateLoadController = new AbortController();
+        const timeoutId = window.setTimeout(() => {
+            try { stateLoadController.abort(); } catch (_) {}
+        }, 6000);
         try {
-            const res = await fetch('/api/indicator-bridge/state?limit=700', {
+            const stateQuery = [
+                'limit=300',
+                'include_audit=false',
+                'include_liquidity=false',
+                'include_rsi=false',
+                'include_ohlc=false',
+                'include_execution_report=false'
+            ].join('&');
+            const res = await apiFetch(`/indicator-bridge/state?${stateQuery}`, {
                 credentials: 'same-origin',
                 signal: stateLoadController.signal
             });
@@ -196,16 +246,147 @@
             if (!res.ok || !data || data.ok === false) {
                 throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
             }
+            if (state) {
+                if (data.execution_logs && data.execution_logs.disabled) {
+                    data.execution_logs = (state || {}).execution_logs || data.execution_logs;
+                }
+                if (data.liquidity_audit_logs && data.liquidity_audit_logs.disabled) {
+                    data.liquidity_audit_logs = (state || {}).liquidity_audit_logs || data.liquidity_audit_logs;
+                }
+            }
             state = data;
             state._client_loaded_at_ms = Date.now();
             if (els.alert) els.alert.innerHTML = '';
             render();
+            loadFastPrices().catch(() => {});
         } catch (err) {
             if (err && err.name === 'AbortError') return;
             throw err;
         } finally {
+            window.clearTimeout(timeoutId);
             stateLoadInFlight = false;
             stateLoadController = null;
+        }
+    }
+
+    async function loadAuditLogs() {
+        if (auditLoadInFlight) return;
+        auditLoadInFlight = true;
+        auditLoadController = new AbortController();
+        const timeoutId = window.setTimeout(() => {
+            try { auditLoadController.abort(); } catch (_) {}
+        }, 10000);
+        try {
+            const res = await apiFetch('/indicator-bridge/execution-log?limit=500', {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: auditLoadController.signal
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false) return;
+            if (!state) state = {};
+            state.execution_logs = data.execution_logs || { ok: true, rows: [], count: 0 };
+            state.liquidity_audit_logs = data.liquidity_audit_logs || { ok: true, rows: [], count: 0 };
+            renderAudit();
+            renderLiquidityAudit();
+        } catch (err) {
+            if (!err || err.name !== 'AbortError') throw err;
+        } finally {
+            window.clearTimeout(timeoutId);
+            auditLoadController = null;
+            auditLoadInFlight = false;
+        }
+    }
+
+    function collectOpenTradeTickets() {
+        const tickets = [];
+        const seen = new Set();
+        openTrades().forEach(row => {
+            const ticket = Number((row || {}).ticket || 0);
+            if (!Number.isFinite(ticket) || ticket <= 0) return;
+            const key = String(Math.trunc(ticket));
+            if (seen.has(key)) return;
+            seen.add(key);
+            tickets.push(key);
+        });
+        return tickets;
+    }
+
+    function patchRowsByTicket(rows, byTicket) {
+        if (!Array.isArray(rows) || !byTicket || typeof byTicket !== 'object') return false;
+        let changed = false;
+        rows.forEach(row => {
+            if (!row || typeof row !== 'object') return;
+            const ticket = String(Math.trunc(Number(row.ticket || 0)));
+            if (!ticket || ticket === '0') return;
+            const snap = byTicket[ticket];
+            if (!snap) return;
+            [
+                'current_price',
+                'current_profit',
+                'entry_price',
+                'stop_loss',
+                'take_profit',
+                'final_tp',
+                'lot_size',
+                'max_profit',
+                'max_loss'
+            ].forEach(key => {
+                if (Object.prototype.hasOwnProperty.call(snap, key) && snap[key] != null) {
+                    row[key] = snap[key];
+                    changed = true;
+                }
+            });
+            row._price_snapshot_at = snap.updated_at || '';
+        });
+        return changed;
+    }
+
+    function applyPriceSnapshot(data) {
+        if (!state || !data || data.ok === false || !Array.isArray(data.rows)) return false;
+        const byTicket = {};
+        data.rows.forEach(row => {
+            const ticket = String(Math.trunc(Number((row || {}).ticket || 0)));
+            if (ticket && ticket !== '0') byTicket[ticket] = row;
+        });
+        if (!Object.keys(byTicket).length) return false;
+        let changed = false;
+        changed = patchRowsByTicket((((state || {}).open_trades || {}).rows || []), byTicket) || changed;
+        changed = patchRowsByTicket((((state || {}).mt4_monitor || {}).rows || []), byTicket) || changed;
+        changed = patchRowsByTicket((((state || {}).mt5_monitor || {}).rows || []), byTicket) || changed;
+        changed = patchRowsByTicket((((state || {}).mt4_monitor || {}).bot_rows || []), byTicket) || changed;
+        changed = patchRowsByTicket((((state || {}).mt5_monitor || {}).bot_rows || []), byTicket) || changed;
+        if (changed) state._price_snapshot_loaded_at_ms = Date.now();
+        return changed;
+    }
+
+    async function loadFastPrices() {
+        if (!state || priceLoadInFlight) return;
+        const tickets = collectOpenTradeTickets();
+        if (!tickets.length) return;
+        priceLoadInFlight = true;
+        priceLoadController = new AbortController();
+        const timeoutId = window.setTimeout(() => {
+            try { priceLoadController.abort(); } catch (_) {}
+        }, 1200);
+        try {
+            const res = await apiFetch(`/indicator-bridge/open-trade/prices?tickets=${encodeURIComponent(tickets.join(','))}`, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: priceLoadController.signal
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) return;
+            if (applyPriceSnapshot(data)) {
+                patchLiveTradeTelemetry();
+                updateTradeRailOverlay();
+            }
+        } catch (err) {
+            if (!err || err.name !== 'AbortError') throw err;
+        } finally {
+            window.clearTimeout(timeoutId);
+            priceLoadController = null;
+            priceLoadInFlight = false;
         }
     }
 
@@ -284,7 +465,7 @@
             symbol: row.symbol || '',
             timeframe: row.timeframe || ''
         }, options || {});
-        const res = await fetch('/api/indicator-bridge/instance-automation', {
+        const res = await apiFetch('/indicator-bridge/instance-automation', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -313,7 +494,7 @@
             els.riskSave.textContent = 'Saving...';
         }
         try {
-            const res = await fetch('/api/indicator-bridge/risk-settings', {
+            const res = await apiFetch('/indicator-bridge/risk-settings', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -345,7 +526,7 @@
             els.riskTargetOverride.textContent = enabled ? 'Enabling...' : 'Disabling...';
         }
         try {
-            const res = await fetch('/api/indicator-bridge/risk-settings', {
+            const res = await apiFetch('/indicator-bridge/risk-settings', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -375,7 +556,7 @@
 
     async function saveDualGateSettings(enabled) {
         pauseStateRefresh(2000);
-        const res = await fetch('/api/indicator-bridge/dual-gate-settings', {
+        const res = await apiFetch('/indicator-bridge/dual-gate-settings', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -407,7 +588,7 @@
             els.liqGovSave.textContent = 'Saving...';
         }
         try {
-            const res = await fetch('/api/indicator-bridge/liquidity-governor-settings', {
+            const res = await apiFetch('/indicator-bridge/liquidity-governor-settings', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -442,7 +623,7 @@
         }
         if (els.liqScanStatus) els.liqScanStatus.textContent = `Scanning ${symbols.length} symbol(s)...`;
         try {
-            const res = await fetch('/api/indicator-bridge/liquidity-opportunity-scan', {
+            const res = await apiFetch('/indicator-bridge/liquidity-opportunity-scan', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -484,7 +665,7 @@
             btn.textContent = act === 'clear' ? 'Clearing...' : 'Tracking...';
         }
         try {
-            const res = await fetch('/api/indicator-bridge/liquidity-watchlist', {
+            const res = await apiFetch('/indicator-bridge/liquidity-watchlist', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -975,6 +1156,55 @@
         return false;
     }
 
+    function auditStrategyKey(row) {
+        const indicator = String((row || {}).indicator || (row || {}).source_name || '').trim();
+        const profile = String((row || {}).profile || '').trim();
+        if (profile && indicator) return `${indicator} / ${profile}`;
+        return indicator || profile || '-';
+    }
+
+    function auditModeKey(row) {
+        return String((row || {}).execution_mode || '-').trim().toLowerCase() || '-';
+    }
+
+    function setSelectOptions(select, values, allLabel) {
+        if (!select) return;
+        const current = String(select.value || '');
+        const opts = [''].concat(Array.from(values || []).filter(Boolean).sort((a, b) => String(a).localeCompare(String(b))));
+        select.innerHTML = opts.map(value => {
+            const label = value ? value : allLabel;
+            return `<option value="${esc(value)}">${esc(label)}</option>`;
+        }).join('');
+        if (opts.includes(current)) select.value = current;
+    }
+
+    function renderAuditFilterOptions(rows) {
+        const symbols = new Set();
+        const strategies = new Set();
+        const modes = new Set();
+        (rows || []).forEach(row => {
+            const symbol = String((row || {}).symbol || '').trim().toUpperCase();
+            if (symbol) symbols.add(symbol);
+            const strategy = auditStrategyKey(row);
+            if (strategy && strategy !== '-') strategies.add(strategy);
+            const mode = auditModeKey(row);
+            if (mode && mode !== '-') modes.add(mode);
+        });
+        setSelectOptions(els.auditSymbolFilter, symbols, 'All pairs');
+        setSelectOptions(els.auditStrategyFilter, strategies, 'All strategies');
+        setSelectOptions(els.auditModeFilter, modes, 'All modes');
+    }
+
+    function auditDropdownMatch(row) {
+        const symbol = String(els.auditSymbolFilter ? els.auditSymbolFilter.value : '').trim().toUpperCase();
+        const strategy = String(els.auditStrategyFilter ? els.auditStrategyFilter.value : '').trim();
+        const mode = String(els.auditModeFilter ? els.auditModeFilter.value : '').trim().toLowerCase();
+        if (symbol && String((row || {}).symbol || '').trim().toUpperCase() !== symbol) return false;
+        if (strategy && auditStrategyKey(row) !== strategy) return false;
+        if (mode && auditModeKey(row) !== mode) return false;
+        return true;
+    }
+
     function symbolSessionAuditDetail(row) {
         const stage = String((row || {}).stage || '').trim().toLowerCase();
         const msg = String((row || {}).message || '').trim().toLowerCase();
@@ -1065,7 +1295,7 @@
         if (!Number.isFinite(ticket) || ticket <= 0 || !symbol) {
             throw new Error('Invalid ticket/symbol for close action');
         }
-        const res = await fetch('/api/indicator-bridge/open-trade/close', {
+        const res = await apiFetch('/indicator-bridge/open-trade/close', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -1090,7 +1320,7 @@
         if (!Number.isFinite(ticket) || ticket <= 0 || !symbol) {
             throw new Error('Invalid ticket/symbol for SL->BE action');
         }
-        const res = await fetch('/api/indicator-bridge/open-trade/sl-be', {
+        const res = await apiFetch('/indicator-bridge/open-trade/sl-be', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -1484,14 +1714,14 @@
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</td>
                 <td>${esc(row.execution_mode || '-')}</td>
                 <td class="${String(row.direction).toUpperCase() === 'BUY' ? 'trade-buy' : 'trade-sell'}">${esc(row.direction || '-')}</td>
-                <td class="${pnlCls}">${fmtNum(row.current_profit, 2)}</td>
+                <td class="${pnlCls}" data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_profit">${fmtNum(row.current_profit, 2)}</td>
                 <td class="v2-mono small">
                     <div>SL ${esc(fmtNum(sl, 5))}</div>
                     <div>TP ${esc(fmtNum(tp, 5))}</div>
                 </td>
                 <td class="v2-mono small">
-                    <div class="${maxCls}">max ${esc(fmtNum(row.max_profit, 2))}</div>
-                    <div class="${minCls}">min ${esc(fmtNum(row.max_loss, 2))}</div>
+                    <div class="${maxCls}">max <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_profit">${esc(fmtNum(row.max_profit, 2))}</span></div>
+                    <div class="${minCls}">min <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_loss">${esc(fmtNum(row.max_loss, 2))}</span></div>
                 </td>
                 <td>${esc(fmtTs(row.opened_at))}</td>
                 <td class="v2-mono small">${esc(row.source_tag || '-')}</td>
@@ -1560,7 +1790,7 @@
         return { pct: 100, label: `TP${targets[targets.length - 1].index} reached` };
     }
 
-    function renderTradeRail(row) {
+    function tradeRailRuntime(row) {
         const side = String((row || {}).direction || '').toUpperCase();
         const entry = Number((row || {}).entry_price);
         const current = Number((row || {}).current_price);
@@ -1579,7 +1809,7 @@
         });
         if (Number.isFinite(current) && current > 0) points.push({ key: 'current-ref', label: 'Px', price: current, cls: 'v2-rail-entry', hidden: true });
         if (points.length < 2 || !Number.isFinite(entry) || !Number.isFinite(current)) {
-            return '<div class="small text-muted">Rail unavailable</div>';
+            return { ok: false, points };
         }
         let minPx = Math.min(...points.map(p => p.price));
         let maxPx = Math.max(...points.map(p => p.price));
@@ -1594,31 +1824,165 @@
         const fillLeft = Math.min(entryPct, currentPct);
         const fillWidth = Math.abs(currentPct - entryPct);
         const favorableNow = side === 'BUY' ? current >= entry : current <= entry;
-        const leg = tradeRailLegProgress(row);
+        return {
+            ok: true,
+            side,
+            entry,
+            current,
+            points,
+            pos,
+            currentPct,
+            fillLeft,
+            fillWidth,
+            favorableNow,
+            leg: tradeRailLegProgress(row),
+        };
+    }
+
+    function patchTradeRailDom(row) {
+        const ticket = String((row || {}).ticket || '').trim();
+        if (!ticket) return;
+        const runtime = tradeRailRuntime(row);
+        if (!runtime.ok) return;
+        document.querySelectorAll(`.v2-trade-rail[data-ticket="${cssEsc(ticket)}"]`).forEach(rail => {
+            const fill = rail.querySelector('.v2-rail-fill');
+            if (fill) {
+                fill.style.left = `${fmtNum(runtime.fillLeft, 2)}%`;
+                fill.style.width = `${fmtNum(runtime.fillWidth, 2)}%`;
+                fill.classList.toggle('neg', !runtime.favorableNow);
+            }
+            const current = rail.querySelector('.v2-rail-current');
+            if (current) {
+                current.style.left = `${fmtNum(runtime.currentPct, 2)}%`;
+                current.setAttribute('title', `Current ${fmtNum(runtime.current, 5)}`);
+            }
+            const pxChip = rail.querySelector('[data-rail-chip="px"]');
+            if (pxChip) pxChip.textContent = `Px ${fmtNum(runtime.current, 5)}`;
+            const legChip = rail.querySelector('[data-rail-chip="leg"]');
+            if (legChip) legChip.textContent = `${runtime.leg.label} ${fmtNum(runtime.leg.pct, 0)}%`;
+        });
+    }
+
+    function patchLiveTradeTelemetry() {
+        openTrades().forEach(row => {
+            const ticket = String((row || {}).ticket || '').trim();
+            if (!ticket) return;
+            const pnl = Number(row.current_profit);
+            const maxP = Number(row.max_profit);
+            const maxL = Number(row.max_loss);
+            document.querySelectorAll(`[data-live-ticket="${cssEsc(ticket)}"][data-live-field="current_profit"]`).forEach(el => {
+                el.textContent = fmtNum(row.current_profit, 2);
+                el.classList.toggle('text-success', Number.isFinite(pnl) && pnl >= 0);
+                el.classList.toggle('text-danger', Number.isFinite(pnl) && pnl < 0);
+                el.classList.toggle('text-muted', !Number.isFinite(pnl));
+            });
+            document.querySelectorAll(`[data-live-ticket="${cssEsc(ticket)}"][data-live-field="max_profit"]`).forEach(el => {
+                el.textContent = fmtNum(row.max_profit, 2);
+                el.classList.toggle('text-success', Number.isFinite(maxP) && maxP >= 0);
+                el.classList.toggle('text-danger', Number.isFinite(maxP) && maxP < 0);
+                el.classList.toggle('text-muted', !Number.isFinite(maxP));
+            });
+            document.querySelectorAll(`[data-live-ticket="${cssEsc(ticket)}"][data-live-field="max_loss"]`).forEach(el => {
+                el.textContent = fmtNum(row.max_loss, 2);
+                el.classList.toggle('text-success', Number.isFinite(maxL) && maxL >= 0);
+                el.classList.toggle('text-danger', Number.isFinite(maxL) && maxL < 0);
+                el.classList.toggle('text-muted', !Number.isFinite(maxL));
+            });
+            patchTradeRailDom(row);
+        });
+    }
+
+    function renderTradeRail(row, options) {
+        const opts = options && typeof options === 'object' ? options : {};
+        const runtime = tradeRailRuntime(row);
+        if (!runtime.ok) {
+            return '<div class="small text-muted">Rail unavailable</div>';
+        }
         const secured = Number(row.half_be_secured_profit != null ? row.half_be_secured_profit : row.half_be_realized_pnl);
         const securedText = Number.isFinite(secured) ? `$${fmtNum(secured, 2)}` : '-';
         const halfBeStatus = row.half_be_done
             ? `Half-BE done ${securedText}`
             : (row.half_be_enabled ? `Half-BE armed ${row.half_be_tp_index === 150 ? '1.5R' : `TP${row.half_be_tp_index || ''}`}` : 'Half-BE off');
-        const markers = points
+        const markers = runtime.points
             .filter(p => !p.hidden)
-            .map(p => `<div class="v2-rail-point ${esc(p.cls)}" style="left:${fmtNum(pos(p.price), 2)}%" title="${esc(p.label)} ${esc(fmtNum(p.price, 5))}">
+            .map(p => `<div class="v2-rail-point ${esc(p.cls)}" style="left:${fmtNum(runtime.pos(p.price), 2)}%" title="${esc(p.label)} ${esc(fmtNum(p.price, 5))}">
                 <span>${esc(p.label)}</span><span class="v2-rail-dot"></span><span class="v2-mono">${esc(fmtNum(p.price, 5))}</span>
             </div>`)
             .join('');
-        return `<div class="v2-trade-rail">
+        const ticketAttr = String((row || {}).ticket || '').trim();
+        return `<div class="v2-trade-rail ${opts.large ? 'v2-rail-large' : ''}" data-ticket="${esc(ticketAttr)}" tabindex="0">
             <div class="v2-rail-track">
                 <div class="v2-rail-base"></div>
-                <div class="v2-rail-fill ${favorableNow ? '' : 'neg'}" style="left:${fmtNum(fillLeft, 2)}%;width:${fmtNum(fillWidth, 2)}%"></div>
+                <div class="v2-rail-fill ${runtime.favorableNow ? '' : 'neg'}" style="left:${fmtNum(runtime.fillLeft, 2)}%;width:${fmtNum(runtime.fillWidth, 2)}%"></div>
                 ${markers}
-                <div class="v2-rail-current" style="left:${fmtNum(currentPct, 2)}%" title="Current ${esc(fmtNum(current, 5))}"></div>
+                <div class="v2-rail-current" style="left:${fmtNum(runtime.currentPct, 2)}%" title="Current ${esc(fmtNum(runtime.current, 5))}"></div>
             </div>
             <div class="v2-rail-meta">
-                <span class="v2-rail-chip">Px ${esc(fmtNum(current, 5))}</span>
-                <span class="v2-rail-chip">${esc(leg.label)} ${esc(fmtNum(leg.pct, 0))}%</span>
+                <span class="v2-rail-chip" data-rail-chip="px">Px ${esc(fmtNum(runtime.current, 5))}</span>
+                <span class="v2-rail-chip" data-rail-chip="leg">${esc(runtime.leg.label)} ${esc(fmtNum(runtime.leg.pct, 0))}%</span>
                 <span class="v2-rail-chip ${row.half_be_done ? 'v2-secured-chip' : ''}">${esc(halfBeStatus)}</span>
             </div>
         </div>`;
+    }
+
+    function ensureTradeRailOverlay() {
+        if (tradeRailOverlay) return tradeRailOverlay;
+        const overlay = document.createElement('div');
+        overlay.id = 'v2-rail-hover-overlay';
+        overlay.className = 'v2-rail-hover-overlay';
+        overlay.innerHTML = '<div class="v2-rail-hover-card"></div>';
+        document.body.appendChild(overlay);
+        const card = overlay.querySelector('.v2-rail-hover-card');
+        if (card) {
+            card.addEventListener('mouseleave', hideTradeRailOverlay);
+        }
+        overlay.addEventListener('click', ev => {
+            if (ev.target === overlay) hideTradeRailOverlay();
+        });
+        tradeRailOverlay = overlay;
+        return overlay;
+    }
+
+    function renderTradeRailOverlayContent(row) {
+        if (!row) return '';
+        const dir = String((row || {}).direction || '').toUpperCase();
+        const pnl = Number((row || {}).current_profit);
+        const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
+        return `<div class="v2-rail-hover-title">
+            <div>
+                <strong>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</strong>
+                <span class="${dir === 'BUY' ? 'trade-buy' : 'trade-sell'} fw-bold ms-2">${esc(dir || '-')}</span>
+                <span class="small text-muted ms-2">#${esc(row.ticket || '-')} / ${esc(row.indicator || row.source_name || '-')}</span>
+            </div>
+            <div class="v2-mono ${pnlCls} fw-bold">PnL <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_profit">${esc(fmtNum(row.current_profit, 2))}</span></div>
+        </div>
+        ${renderTradeRail(row, { large: true })}`;
+    }
+
+    function showTradeRailOverlay(row) {
+        if (!row) return;
+        const overlay = ensureTradeRailOverlay();
+        const card = overlay.querySelector('.v2-rail-hover-card');
+        tradeRailOverlayTicket = String((row || {}).ticket || '').trim();
+        if (card) card.innerHTML = renderTradeRailOverlayContent(row);
+        overlay.classList.add('active');
+    }
+
+    function updateTradeRailOverlay() {
+        if (!tradeRailOverlay || !tradeRailOverlay.classList.contains('active') || !tradeRailOverlayTicket) return;
+        const row = openTrades().find(r => String((r || {}).ticket || '') === tradeRailOverlayTicket);
+        if (!row) {
+            hideTradeRailOverlay();
+            return;
+        }
+        const card = tradeRailOverlay.querySelector('.v2-rail-hover-card');
+        if (card) card.innerHTML = renderTradeRailOverlayContent(row);
+    }
+
+    function hideTradeRailOverlay() {
+        if (!tradeRailOverlay) return;
+        tradeRailOverlay.classList.remove('active');
+        tradeRailOverlayTicket = '';
     }
 
     function renderTradeTelemetry() {
@@ -1666,9 +2030,9 @@
                     <div>SL ${esc(slText)}</div>
                     <div class="small text-muted">Entry ${esc(entryText)} / ${esc(rrText)}</div>
                 </td>
-                <td class="${pnlCls} fw-semibold">${fmtNum(row.current_profit, 2)}</td>
-                <td class="${maxCls} fw-semibold">${fmtNum(row.max_profit, 2)}</td>
-                <td class="${minCls} fw-semibold">${fmtNum(row.max_loss, 2)}</td>
+                <td class="${pnlCls} fw-semibold" data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_profit">${fmtNum(row.current_profit, 2)}</td>
+                <td class="${maxCls} fw-semibold" data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_profit">${fmtNum(row.max_profit, 2)}</td>
+                <td class="${minCls} fw-semibold" data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_loss">${fmtNum(row.max_loss, 2)}</td>
                 <td>
                     <div class="d-flex align-items-center gap-2">
                         <span class="badge ${tpTone}">${esc(tpLegText(row))}</span>
@@ -1952,7 +2316,7 @@
             els.symbolSessionSave.textContent = 'Saving...';
         }
         try {
-            const res = await fetch('/api/indicator-bridge/symbol-sessions', {
+            const res = await apiFetch('/indicator-bridge/symbol-sessions', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
@@ -2138,11 +2502,15 @@
 
     function renderAudit() {
         const q = els.auditFilter ? els.auditFilter.value : '';
-        const meaningfulRaw = auditRows()
+        const baseRows = auditRows()
             .filter(row => !isZeroPnlBreakEvenOperation(row))
-            .filter(isReadableTradeAuditRow)
+            .filter(isReadableTradeAuditRow);
+        renderAuditFilterOptions(baseRows);
+        const meaningfulRaw = baseRows
+            .filter(auditDropdownMatch)
             .filter(r => textMatch(r, q));
         const meaningful = groupAuditRows(meaningfulRaw).slice(0, 1000);
+        if (els.auditCount) els.auditCount.textContent = String(meaningfulRaw.length);
         if (!els.auditBody) return;
         if (!meaningful.length) {
             els.auditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No meaningful audit rows yet.</td></tr>';
@@ -2207,7 +2575,11 @@
 
     function schedule() {
         if (timer) clearInterval(timer);
-        timer = setInterval(() => loadState().catch(showError), 1000);
+        timer = setInterval(() => loadState().catch(showError), 12000);
+        if (priceTimer) clearInterval(priceTimer);
+        priceTimer = setInterval(() => loadFastPrices().catch(() => {}), 500);
+        if (auditTimer) clearInterval(auditTimer);
+        auditTimer = setInterval(() => loadAuditLogs().catch(() => {}), 90000);
         if (uiTimer) clearInterval(uiTimer);
         uiTimer = setInterval(() => {
             if (!state) return;
@@ -2221,10 +2593,10 @@
             if (!symbolSessionControlActive()) {
                 renderSymbolSessions();
             }
-        }, 1000);
+        }, 3000);
     }
 
-    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.instanceFilterAtomic, els.instanceFilterAtomicRegime, els.instanceFilterSignatics, els.auditFilter, els.liqAuditFilter].forEach(el => {
+    [els.openFilter, els.telemetryFilter, els.instanceFilter, els.instanceFilterAtomic, els.instanceFilterAtomicRegime, els.instanceFilterSignatics, els.auditFilter, els.auditSymbolFilter, els.auditStrategyFilter, els.auditModeFilter, els.liqAuditFilter].forEach(el => {
         if (el) el.addEventListener('input', render);
         if (el) el.addEventListener('change', render);
     });
@@ -2618,7 +2990,31 @@
             });
         });
     }
-    if (els.refresh) els.refresh.addEventListener('click', () => loadState().catch(showError));
-    loadState().catch(showError);
+    if (els.telemetryBody) {
+        els.telemetryBody.addEventListener('mouseover', ev => {
+            const rail = ev.target.closest('.v2-trade-rail');
+            if (!rail || !els.telemetryBody.contains(rail)) return;
+            const ticket = String(rail.getAttribute('data-ticket') || '').trim();
+            if (!ticket) return;
+            if (tradeRailOverlay && tradeRailOverlay.classList.contains('active') && tradeRailOverlayTicket === ticket) return;
+            const row = openTrades().find(r => String((r || {}).ticket || '') === ticket);
+            if (row) showTradeRailOverlay(row);
+        });
+        els.telemetryBody.addEventListener('focusin', ev => {
+            const rail = ev.target.closest('.v2-trade-rail');
+            if (!rail || !els.telemetryBody.contains(rail)) return;
+            const ticket = String(rail.getAttribute('data-ticket') || '').trim();
+            const row = openTrades().find(r => String((r || {}).ticket || '') === ticket);
+            if (row) showTradeRailOverlay(row);
+        });
+    }
+    document.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape') hideTradeRailOverlay();
+    });
+    if (els.refresh) els.refresh.addEventListener('click', () => {
+        loadState().then(() => loadAuditLogs().catch(() => {})).catch(showError);
+    });
+    loadState().then(() => loadAuditLogs().catch(() => {})).catch(showError);
     schedule();
 })();
+

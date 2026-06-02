@@ -459,7 +459,10 @@ class LiveTradingService:
             for pos in positions:
                 pos_symbol = str(getattr(pos, "symbol", "") or "").strip() or str(symbol_resolved or "")
                 tick = mt5.symbol_info_tick(pos_symbol) if pos_symbol else None
-                current_price = tick.bid if pos.type == 0 else tick.ask if tick else pos.price_current
+                if tick:
+                    current_price = tick.bid if pos.type == 0 else tick.ask
+                else:
+                    current_price = pos.price_current
 
                 result.append({
                     "ticket": pos.ticket,

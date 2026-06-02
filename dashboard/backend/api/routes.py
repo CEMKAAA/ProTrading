@@ -860,6 +860,11 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
 def indicator_bridge_state(
     limit: int = Query(300, ge=20, le=2000),
     active_only: bool = Query(False),
+    include_audit: bool = Query(True),
+    include_liquidity: bool = Query(True),
+    include_rsi: bool = Query(True),
+    include_ohlc: bool = Query(True),
+    include_execution_report: bool = Query(True),
 ):
     """Bridge-only MT4/MT5 indicator bot monitor state."""
     try:
@@ -868,9 +873,81 @@ def indicator_bridge_state(
         svc = telegram_bridge_service
         if svc is None:
             return {"ok": False, "error": "telegram_bridge_unavailable"}
-        return svc.get_indicator_bridge_state(limit=int(limit), active_only=bool(active_only))
+        return svc.get_indicator_bridge_state(
+            limit=int(limit),
+            active_only=bool(active_only),
+            include_audit=bool(include_audit),
+            include_liquidity=bool(include_liquidity),
+            include_rsi=bool(include_rsi),
+            include_ohlc_replay=bool(include_ohlc),
+            include_execution_report=bool(include_execution_report),
+        )
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/open-trade/prices")
+def indicator_bridge_open_trade_prices(
+    tickets: str = Query("", max_length=4000),
+):
+    """Fast broker-price snapshot for currently displayed indicator trades."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+        parsed: List[int] = []
+        for part in str(tickets or "").split(","):
+            raw = str(part or "").strip()
+            if not raw:
+                continue
+            try:
+                value = int(float(raw))
+            except Exception:
+                continue
+            if value > 0:
+                parsed.append(int(value))
+        # Keep the endpoint intentionally narrow; it is called frequently by the UI.
+        parsed = list(dict.fromkeys(parsed))[:300]
+        return svc.get_indicator_open_trade_price_snapshot(tickets=parsed)
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_open_trade_prices_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.get("/indicator-bridge/execution-log")
+def indicator_bridge_execution_log(
+    limit: int = Query(1000, ge=20, le=5000),
+):
+    """Separated audit lane for Indicator Automation V2.
+
+    The main state endpoint is polled frequently by the dashboard. Audit rows
+    can involve larger in-memory/history scans, so they are fetched on a slower
+    lane to keep live telemetry responsive.
+    """
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {
+                "ok": False,
+                "error": "telegram_bridge_unavailable",
+                "execution_logs": {"ok": False, "rows": [], "count": 0},
+                "liquidity_audit_logs": {"ok": False, "rows": [], "count": 0},
+            }
+        audit = svc.get_indicator_execution_audit_rows(limit=int(limit), resolve_history_pnl=False)
+        if hasattr(svc, "_split_indicator_liquidity_audit_logs"):
+            execution_logs, liquidity_audit_logs = svc._split_indicator_liquidity_audit_logs(audit)
+        else:
+            execution_logs, liquidity_audit_logs = audit, {"ok": True, "rows": [], "count": 0}
+        return {
+            "ok": True,
+            "execution_logs": execution_logs,
+            "liquidity_audit_logs": liquidity_audit_logs,
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_execution_log_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.post("/indicator-bridge/risk-settings")
