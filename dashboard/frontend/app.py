@@ -1506,10 +1506,17 @@ def mt4_log_indicator_logs_proxy():
 @app.route('/api/indicator-bridge/state')
 def indicator_bridge_state_proxy():
     params = {}
-    if request.args.get('limit') is not None:
-        params['limit'] = request.args.get('limit')
-    if request.args.get('active_only') is not None:
-        params['active_only'] = request.args.get('active_only')
+    for key in (
+        'limit',
+        'active_only',
+        'include_audit',
+        'include_liquidity',
+        'include_rsi',
+        'include_ohlc',
+        'include_execution_report',
+    ):
+        if request.args.get(key) is not None:
+            params[key] = request.args.get(key)
     res, err = api_request(
         'GET',
         '/api/v1/indicator-bridge/state',
@@ -1519,6 +1526,45 @@ def indicator_bridge_state_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/open-trade/prices')
+def indicator_bridge_open_trade_prices_proxy():
+    params = {}
+    if request.args.get('tickets') is not None:
+        params['tickets'] = request.args.get('tickets')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/open-trade/prices',
+        params=params,
+        return_error=True,
+        timeout_sec=10,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge open trade prices'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/execution-log')
+def indicator_bridge_execution_log_proxy():
+    params = {}
+    if request.args.get('limit') is not None:
+        params['limit'] = request.args.get('limit')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/execution-log',
+        params=params,
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({
+            'ok': False,
+            'error': err or 'Failed to load indicator bridge execution log',
+            'execution_logs': {'ok': False, 'rows': [], 'count': 0},
+            'liquidity_audit_logs': {'ok': False, 'rows': [], 'count': 0},
+        }), 500
     return jsonify(res)
 
 
@@ -1534,6 +1580,36 @@ def indicator_bridge_instance_automation_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to update indicator bridge instance state'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/symbol-sessions', methods=['POST'])
+def indicator_bridge_symbol_sessions_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/symbol-sessions',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update indicator bridge symbol sessions'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/dual-gate-settings', methods=['POST'])
+def indicator_bridge_dual_gate_settings_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/dual-gate-settings',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update indicator bridge dual gate settings'}), 500
     return jsonify(res)
 
 

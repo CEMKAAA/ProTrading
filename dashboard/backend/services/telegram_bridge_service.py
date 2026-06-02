@@ -4683,17 +4683,17 @@ class TelegramBridgeService:
         base = TelegramBridgeService._normalize_indicator_bridge_symbol_session(
             {
                 "timezone_offset_minutes": cfg.get("timezone_offset_minutes", cfg.get("tz_offset_minutes")),
-                "block": cfg.get("block", cfg.get("block_ranges")),
+                "allow": cfg.get("allow", cfg.get("allow_ranges")),
             }
         )
         return {
             "timezone_offset_minutes": int(base.get("timezone_offset_minutes") or 0),
-            "block": list(base.get("block") or []),
+            "allow": list(base.get("allow") or []),
         }
 
     @classmethod
     def get_indicator_bridge_trade_block_windows(cls) -> Dict[str, Dict[str, Any]]:
-        raw = str(cls._get_env_value("INDICATOR_BRIDGE_TRADE_BLOCK_WINDOWS", "") or "").strip()
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_TRADE_ALLOWED_WINDOWS", "") or "").strip()
         try:
             parsed = json.loads(raw) if raw else {}
         except Exception:
@@ -4714,7 +4714,7 @@ class TelegramBridgeService:
             if not key:
                 continue
             cfg = cls._normalize_indicator_bridge_trade_block_window(v)
-            if cfg.get("block") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
+            if cfg.get("allow") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
                 out[key] = cfg
         return json.dumps(out, separators=(",", ":"), sort_keys=True)
 
@@ -4727,7 +4727,10 @@ class TelegramBridgeService:
                     continue
                 cfg_map[key] = self._normalize_indicator_bridge_trade_block_window(v)
         ok, msg = self._upsert_indicator_bridge_env_values(
-            {"INDICATOR_BRIDGE_TRADE_BLOCK_WINDOWS": self._serialize_indicator_bridge_trade_block_windows(cfg_map)}
+            {
+                "INDICATOR_BRIDGE_TRADE_ALLOWED_WINDOWS": self._serialize_indicator_bridge_trade_block_windows(cfg_map),
+                "INDICATOR_BRIDGE_TRADE_BLOCK_WINDOWS": "",
+            }
         )
         return {
             "ok": bool(ok),
@@ -4783,18 +4786,19 @@ class TelegramBridgeService:
         cfg = scoped_cfg or (
             {
                 "timezone_offset_minutes": int((legacy_cfg or {}).get("timezone_offset_minutes") or 0),
-                "block": list((legacy_cfg or {}).get("block") or []),
+                "allow": list((legacy_cfg or {}).get("allow") or []),
             }
-            if legacy_cfg
+            if legacy_cfg and ((legacy_cfg or {}).get("allow") or int((legacy_cfg or {}).get("timezone_offset_minutes") or 0) != 0)
             else None
         )
         if not cfg:
             return {
                 "ok": True,
                 "allowed": True,
-                "reason": "no_trade_block_window",
+                "reason": "no_trade_allowed_window_config",
                 "symbol": sym,
                 "scope_key": str(scope_key),
+                "window_mode": "allow",
             }
         base_dt = now_dt or datetime.now(timezone.utc)
         if base_dt.tzinfo is None:
@@ -4802,28 +4806,44 @@ class TelegramBridgeService:
         offset = int(_to_float_or_none((cfg or {}).get("timezone_offset_minutes")) or 0)
         local_dt = base_dt.astimezone(timezone.utc) + timedelta(minutes=int(offset))
         minute = int(local_dt.hour * 60 + local_dt.minute)
-        block_ranges = [str(x) for x in ((cfg or {}).get("block") or [])]
-        matched_block = next((r for r in block_ranges if self._time_in_session_range(minute, r)), "")
-        if matched_block:
+        allow_ranges = [str(x) for x in ((cfg or {}).get("allow") or [])]
+        if not allow_ranges:
             return {
                 "ok": True,
-                "allowed": False,
-                "reason": "trade_block_window",
+                "allowed": True,
+                "reason": "no_trade_allowed_window_config",
                 "symbol": sym,
                 "scope_key": str(scope_key),
                 "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
-                "matched_range": str(matched_block),
+                "window_mode": "allow",
+                "local_time": local_dt.strftime("%H:%M"),
+                "timezone_offset_minutes": int(offset),
+                "config": dict(cfg),
+            }
+        matched_allow = next((r for r in allow_ranges if self._time_in_session_range(minute, r)), "")
+        if matched_allow:
+            return {
+                "ok": True,
+                "allowed": True,
+                "reason": "inside_trade_allowed_window",
+                "symbol": sym,
+                "scope_key": str(scope_key),
+                "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
+                "window_mode": "allow",
+                "matched_allowed_range": str(matched_allow),
                 "local_time": local_dt.strftime("%H:%M"),
                 "timezone_offset_minutes": int(offset),
                 "config": dict(cfg),
             }
         return {
             "ok": True,
-            "allowed": True,
-            "reason": "outside_trade_block_windows",
+            "allowed": False,
+            "reason": "outside_trade_allowed_windows",
             "symbol": sym,
             "scope_key": str(scope_key),
             "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
+            "window_mode": "allow",
+            "allowed_ranges": list(allow_ranges),
             "local_time": local_dt.strftime("%H:%M"),
             "timezone_offset_minutes": int(offset),
             "config": dict(cfg),

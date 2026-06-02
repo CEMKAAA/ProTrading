@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-02.1825-light-init-retry"
+#define ATOMIC_BRIDGE_BUILD "2026-06-02.2055-regime-signal-buffers"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -32,7 +32,10 @@ input string InpRegimeIndicatorName = "AtomicRegime";
 input int    InpRegimeAtrPeriod = 14;
 input double InpRegimeAtrMultiplier = 1.5;
 input double InpRegimeRR = 3.0;
-input bool   InpRegimeUseTrendStopBuffers = true;
+input bool   InpRegimeUseTrendSignalBuffers = true;
+input int    InpRegimeUpTrendSignalBuffer = 2;
+input int    InpRegimeDnTrendSignalBuffer = 3;
+input bool   InpRegimeUseTrendStopBuffers = false;
 input int    InpRegimeUpTrendStopBuffer = 0;
 input int    InpRegimeDnTrendStopBuffer = 1;
 input bool   InpRegimeUseClosedBar = false;
@@ -586,7 +589,135 @@ string _regime_buffer_state_at_shift(int shift, double &upValue, double &dnValue
    return "";
 }
 
-bool _find_current_atomic_regime_from_buffers(string &direction, int &signalIndex, datetime &signalTime, double &entryPrice, string &sourceName)
+bool _find_latest_regime_signal_buffer(
+   int bufferIndex,
+   int startShift,
+   int maxLookback,
+   int &foundShift,
+   datetime &foundTime,
+   double &foundValue
+)
+{
+   foundShift = -1;
+   foundTime = 0;
+   foundValue = 0.0;
+   int buf = MathMax(0, bufferIndex);
+   for(int sh = startShift; sh <= maxLookback; sh++)
+   {
+      double v = _atomic_buffer_value(buf, sh);
+      if(!_valid_atomic_buffer_price(v))
+         continue;
+      foundShift = sh;
+      foundTime = Time[sh];
+      foundValue = v;
+      return foundTime > 0;
+   }
+   return false;
+}
+
+bool _find_current_atomic_regime_from_signal_buffers(string &direction, int &signalIndex, datetime &signalTime, double &entryPrice, string &sourceName)
+{
+   direction = "";
+   signalIndex = -1;
+   signalTime = 0;
+   entryPrice = 0.0;
+   sourceName = "";
+
+   if(!InpRegimeUseTrendSignalBuffers)
+      return false;
+
+   int shift = (InpRegimeUseClosedBar ? 1 : 0);
+   if(Bars <= shift)
+      return false;
+
+   int maxLookback = MathMax(shift, MathMin(Bars - 1, InpRegimeBufferLookbackBars));
+   int upShift = -1;
+   int dnShift = -1;
+   datetime upTime = 0;
+   datetime dnTime = 0;
+   double upValue = 0.0;
+   double dnValue = 0.0;
+   bool hasUp = _find_latest_regime_signal_buffer(
+      InpRegimeUpTrendSignalBuffer,
+      shift,
+      maxLookback,
+      upShift,
+      upTime,
+      upValue
+   );
+   bool hasDn = _find_latest_regime_signal_buffer(
+      InpRegimeDnTrendSignalBuffer,
+      shift,
+      maxLookback,
+      dnShift,
+      dnTime,
+      dnValue
+   );
+
+   string state = "";
+   int selectedShift = -1;
+   double selectedValue = 0.0;
+   if(hasUp && (!hasDn || upShift < dnShift))
+   {
+      state = "BUY";
+      selectedShift = upShift;
+      signalTime = upTime;
+      selectedValue = upValue;
+   }
+   else if(hasDn && (!hasUp || dnShift < upShift))
+   {
+      state = "SELL";
+      selectedShift = dnShift;
+      signalTime = dnTime;
+      selectedValue = dnValue;
+   }
+   else if(hasUp && hasDn && upShift == dnShift)
+   {
+      if(InpLogRegimeBuffer)
+      {
+         PrintFormat(
+            "AtomicBridge regime_signal ambiguous symbol=%s tf=%s up_buf=%d dn_buf=%d shift=%d up=%s dn=%s",
+            Symbol(),
+            _tf_to_string(Period()),
+            MathMax(0, InpRegimeUpTrendSignalBuffer),
+            MathMax(0, InpRegimeDnTrendSignalBuffer),
+            upShift,
+            _fmt_price(upValue),
+            _fmt_price(dnValue)
+         );
+      }
+      return false;
+   }
+
+   if(state != "BUY" && state != "SELL")
+      return false;
+
+   signalIndex = selectedShift;
+   double entry = 0.0;
+   if(shift == 0)
+      entry = MarketInfo(Symbol(), (state == "BUY" ? MODE_ASK : MODE_BID));
+   if(entry <= 0.0)
+      entry = Close[MathMax(0, selectedShift)];
+   if(entry <= 0.0)
+      entry = MarketInfo(Symbol(), (state == "BUY" ? MODE_ASK : MODE_BID));
+   entryPrice = NormalizeDouble(entry, Digits);
+   direction = state;
+   sourceName = StringFormat(
+      "AtomicRegimeSignalBuffer up=%d dn=%d shift=%d selected_shift=%d up_shift=%d dn_shift=%d up=%s dn=%s selected=%s",
+      MathMax(0, InpRegimeUpTrendSignalBuffer),
+      MathMax(0, InpRegimeDnTrendSignalBuffer),
+      shift,
+      selectedShift,
+      upShift,
+      dnShift,
+      _fmt_price(upValue),
+      _fmt_price(dnValue),
+      _fmt_price(selectedValue)
+   );
+   return entryPrice > 0.0 && signalTime > 0;
+}
+
+bool _find_current_atomic_regime_from_stop_buffers(string &direction, int &signalIndex, datetime &signalTime, double &entryPrice, string &sourceName)
 {
    direction = "";
    signalIndex = -1;
@@ -639,7 +770,7 @@ bool _find_current_atomic_regime_from_buffers(string &direction, int &signalInde
    entryPrice = NormalizeDouble(entry, Digits);
    direction = state;
    sourceName = StringFormat(
-      "AtomicRegimeBuffer up=%d dn=%d shift=%d start_shift=%d up=%s dn=%s",
+      "AtomicRegimeStopBuffer up=%d dn=%d shift=%d start_shift=%d up=%s dn=%s",
       MathMax(0, InpRegimeUpTrendStopBuffer),
       MathMax(0, InpRegimeDnTrendStopBuffer),
       shift,
@@ -648,6 +779,13 @@ bool _find_current_atomic_regime_from_buffers(string &direction, int &signalInde
       _fmt_price(dnNow)
    );
    return entryPrice > 0.0 && signalTime > 0;
+}
+
+bool _find_current_atomic_regime_from_buffers(string &direction, int &signalIndex, datetime &signalTime, double &entryPrice, string &sourceName)
+{
+   if(_find_current_atomic_regime_from_signal_buffers(direction, signalIndex, signalTime, entryPrice, sourceName))
+      return true;
+   return _find_current_atomic_regime_from_stop_buffers(direction, signalIndex, signalTime, entryPrice, sourceName);
 }
 
 double _regime_atr_for_signal(datetime signalTime)
@@ -882,7 +1020,7 @@ void ScanAndLogLatest(string reason)
          if(InpLogRegimeBuffer)
          {
             PrintFormat(
-               "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+               "AtomicBridge regime_signal reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
                reason,
                Symbol(),
                _tf_to_string(Period()),
@@ -965,7 +1103,7 @@ void ScanAndLogLatest(string reason)
       if(InpLogRegimeBuffer)
       {
          PrintFormat(
-            "AtomicBridge regime_buffer reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
+            "AtomicBridge regime_signal reason=%s symbol=%s tf=%s dir=%s start_bar=%s entry=%s source='%s'",
             reason,
             Symbol(),
             _tf_to_string(Period()),
@@ -987,7 +1125,18 @@ int OnInit()
 {
    int poll = MathMax(1, InpPollSeconds);
    EventSetTimer(poll);
-   Print("AtomicBridge BUILD=", ATOMIC_BRIDGE_BUILD, " indicator=", InpIndicatorName, " symbol=", Symbol(), " tf=", _tf_to_string(Period()), " poll=", poll, " logPost=", InpLogPostResponses);
+   Print(
+      "AtomicBridge BUILD=", ATOMIC_BRIDGE_BUILD,
+      " indicator=", InpIndicatorName,
+      " symbol=", Symbol(),
+      " tf=", _tf_to_string(Period()),
+      " poll=", poll,
+      " logPost=", InpLogPostResponses,
+      " regimeSignalBuffers=", (InpRegimeUseTrendSignalBuffers ? "true" : "false"),
+      " upSignal=", InpRegimeUpTrendSignalBuffer,
+      " dnSignal=", InpRegimeDnTrendSignalBuffer,
+      " stopFallback=", (InpRegimeUseTrendStopBuffers ? "true" : "false")
+   );
    if(InpEnableProTradePost)
       _post_atomic_bridge_event("register", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", "init");
    g_initialSetupRetryUntil = _timer_now() + MathMax(0, InpInitialSetupRetrySeconds);

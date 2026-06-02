@@ -533,12 +533,12 @@
     <div class="card v2-card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
-                <strong>Indicator Trade Block Windows</strong>
-                <div class="small text-muted">UTC/GMT based no-trade windows per indicator and symbol. Outside blocked windows, instances can trade; open trades keep running.</div>
+                <strong>Indicator Trade Allowed Windows</strong>
+                <div class="small text-muted">UTC/GMT based allowed entry windows per indicator and symbol. If windows are configured, new trades only open inside them; open trades keep running.</div>
             </div>
             <div class="d-flex align-items-center gap-2">
                 <span id="v2-symbol-session-status" class="badge text-bg-secondary">loading</span>
-                <button id="v2-symbol-session-preset" type="button" class="btn btn-sm btn-outline-primary">Apply Atomic Preset</button>
+                <button id="v2-symbol-session-preset" type="button" class="btn btn-sm btn-outline-primary">Apply Atomic Allowed Preset</button>
                 <button id="v2-symbol-session-save" type="button" class="btn btn-sm btn-dark">Save Sessions</button>
             </div>
         </div>
@@ -547,7 +547,7 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Indicator/Profile</th><th>Symbol</th><th>UTC Offset Min</th><th>Blocked Windows</th><th>Instances</th>
+                            <th>Indicator/Profile</th><th>Symbol</th><th>UTC Offset Min</th><th>Allowed Windows</th><th>Instances</th>
                         </tr>
                     </thead>
                     <tbody id="v2-symbol-session-body"><tr><td colspan="5" class="text-center text-muted py-3">Loading...</td></tr></tbody>
@@ -610,7 +610,7 @@
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <strong>Readable Execution Audit</strong>
-                <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed, blocked windows.</div>
+                <div class="small text-muted">Condensed indicator events: opened, closed, partial, BE, reconcile, failed, time-window skips.</div>
             </div>
             <div class="d-flex flex-wrap align-items-center gap-2 justify-content-end">
                 <select id="v2-audit-symbol-filter" class="form-select form-select-sm" style="width: 135px;">
@@ -642,5 +642,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=trade-windows-halfbe-2"></script>
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=proxy-sync-20260602"></script>
 {% endblock %}

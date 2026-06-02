@@ -192,26 +192,27 @@
         return compact;
     }
 
-    function defaultTradeBlockWindowsForScope(scope) {
+    function defaultTradeAllowedWindowsForScope(scope) {
         const profile = String((scope || {}).profile || '').trim().toLowerCase();
         if (profile !== 'atomic' && profile !== 'atomic_regime') return [];
         switch (normalizeSymbolFamily((scope || {}).symbol)) {
             case 'USTEC':
             case 'US30':
-                return ['20:00-07:00'];
+                return ['13:30-18:00', '07:00-10:30'];
             case 'DE30':
-                return ['16:30-07:00'];
+                return ['07:00-11:30', '13:30-16:00'];
             case 'JP225':
             case 'AUS200':
-                return ['02:30-03:30', '06:30-23:30'];
+                return ['00:00-02:30', '03:30-05:30'];
             case 'EURUSD':
+                return ['12:30-16:30', '07:00-10:30'];
             case 'USDJPY':
-                return ['21:00-23:00'];
+                return ['12:30-16:30', '00:00-04:00'];
             case 'USDCAD':
-                return ['00:00-07:00', '21:00-23:00'];
+                return ['12:30-16:30'];
             case 'EURJPY':
             case 'GBPJPY':
-                return ['17:00-21:00', '21:00-23:00'];
+                return ['07:00-11:30', '00:00-04:00'];
             default:
                 return [];
         }
@@ -1213,14 +1214,18 @@
         if (!payload || typeof payload !== 'object') return '';
         const bits = [];
         const reason = String(payload.reason || '').trim();
-        const matched = String(payload.matched_range || '').trim();
+        const matched = String(payload.matched_allowed_range || payload.matched_range || '').trim();
+        const allowed = Array.isArray(payload.allowed_ranges)
+            ? payload.allowed_ranges.map(x => String(x || '').trim()).filter(Boolean).join(',')
+            : '';
         const local = String(payload.local_time || '').trim();
         const scope = String(payload.scope_key || payload.scope || '').trim();
         if (reason) bits.push(`reason=${reason}`);
-        if (matched) bits.push(`blocked=${matched}`);
+        if (matched) bits.push(`allowed=${matched}`);
+        if (allowed) bits.push(`allowed=${allowed}`);
         if (local) bits.push(`time=${local}`);
         if (scope) bits.push(`scope=${scope}`);
-        return bits.length ? `<div class="small text-warning">session guard: ${esc(bits.join(' | '))}</div>` : '';
+        return bits.length ? `<div class="small text-warning">time guard: ${esc(bits.join(' | '))}</div>` : '';
     }
 
     function rowMode(row) {
@@ -2273,13 +2278,13 @@
         els.symbolSessionBody.innerHTML = scopes.map(row => {
             const cfg = cfgMap[String(row.key || '').toLowerCase()] || {};
             const offset = Number(cfg.timezone_offset_minutes || 0);
-            const block = Array.isArray(cfg.block) ? cfg.block.join('\n') : '';
+            const allow = Array.isArray(cfg.allow) ? cfg.allow.join('\n') : '';
             const instances = Array.from(new Set(row.instances || [])).slice(0, 8).join(', ');
             return `<tr>
                 <td><strong>${esc(row.indicatorLabel || row.indicator)}</strong><div class="small text-muted">${esc(String(row.family || '').toUpperCase())} / ${esc(row.profile || 'generic')}</div></td>
                 <td><strong>${esc(row.symbol)}</strong></td>
                 <td><input type="number" class="form-control form-control-sm v2-symbol-session-offset" data-scope="${esc(row.key)}" step="1" min="-720" max="840" value="${esc(offset)}"></td>
-                <td><textarea class="form-control form-control-sm v2-symbol-session-block" data-scope="${esc(row.key)}" rows="2" placeholder="20:00-07:00&#10;11:30-12:00">${esc(block)}</textarea></td>
+                <td><textarea class="form-control form-control-sm v2-symbol-session-block" data-scope="${esc(row.key)}" rows="2" placeholder="13:30-18:00&#10;07:00-10:30">${esc(allow)}</textarea></td>
                 <td class="small text-muted">${esc(row.count)} instance${row.count === 1 ? '' : 's'}${instances ? `<div>${esc(instances)}</div>` : ''}</td>
             </tr>`;
         }).join('');
@@ -2300,9 +2305,9 @@
             const blockEl = tr.querySelector('.v2-symbol-session-block');
             const offsetRaw = Number(String(offsetEl.value || '0').trim().replace(',', '.'));
             const offset = Number.isFinite(offsetRaw) ? Math.max(-720, Math.min(840, Math.round(offsetRaw))) : 0;
-            const block = normalizeWindowsText(blockEl ? blockEl.value : '').split('\n').filter(Boolean);
-            if (offset !== 0 || block.length) {
-                sessions[scope] = { timezone_offset_minutes: offset, block };
+            const allow = normalizeWindowsText(blockEl ? blockEl.value : '').split('\n').filter(Boolean);
+            if (offset !== 0 || allow.length) {
+                sessions[scope] = { timezone_offset_minutes: offset, allow };
             }
         });
         return sessions;
@@ -2343,9 +2348,9 @@
             const key = String((scope || {}).key || '').trim().toLowerCase();
             if (!key) return;
             if (isAtomicTradeWindowScope(scope)) {
-                const block = defaultTradeBlockWindowsForScope(scope);
-                if (block.length) {
-                    sessions[key] = { timezone_offset_minutes: 0, block };
+                const allow = defaultTradeAllowedWindowsForScope(scope);
+                if (allow.length) {
+                    sessions[key] = { timezone_offset_minutes: 0, allow };
                 } else {
                     delete sessions[key];
                 }
@@ -2363,11 +2368,11 @@
         }
         try {
             await saveSymbolSessions();
-            showNotice('Atomic/AtomicRegime no-trade windows applied. SIGNATICS scopes left blank.', 'success');
+            showNotice('Atomic/AtomicRegime allowed windows applied. SIGNATICS scopes left blank.', 'success');
         } finally {
             if (els.symbolSessionPreset) {
                 els.symbolSessionPreset.disabled = false;
-                els.symbolSessionPreset.textContent = 'Apply Atomic Preset';
+                els.symbolSessionPreset.textContent = 'Apply Atomic Allowed Preset';
             }
         }
     }

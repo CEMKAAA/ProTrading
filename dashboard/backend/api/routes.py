@@ -995,7 +995,7 @@ def indicator_bridge_risk_settings(payload: Dict[str, Any]):
 
 @router.post("/indicator-bridge/symbol-sessions")
 def indicator_bridge_symbol_sessions(payload: Dict[str, Any]):
-    """Persist indicator+symbol block-only trading windows for Indicator Automation V2."""
+    """Persist indicator+symbol allowed trading windows for Indicator Automation V2."""
     try:
         from ..main import telegram_bridge_service
 
