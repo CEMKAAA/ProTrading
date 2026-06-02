@@ -915,6 +915,20 @@ def indicator_bridge_open_trade_prices(
         raise HTTPException(500, f"indicator_bridge_open_trade_prices_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.post("/indicator-bridge/reset-registry")
+def indicator_bridge_reset_registry():
+    """Clear transient bridge instance registry rows."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        return svc.reset_indicator_bridge_registry()
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_reset_registry_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.get("/indicator-bridge/execution-log")
 def indicator_bridge_execution_log(
     limit: int = Query(1000, ge=20, le=5000),
@@ -1351,19 +1365,19 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             indicator=str(indicator),
             symbol=str(symbol),
             timeframe=str(timeframe),
-            enabled=(bool(enabled) if enabled is not None else None),
+            enabled=_optional_bool(enabled),
             lot_size=lot_val,
-            mode_advanced_enabled=(bool(mode_advanced_enabled) if mode_advanced_enabled is not None else None),
-            mode_advanced_v2_enabled=(bool(mode_advanced_v2_enabled) if mode_advanced_v2_enabled is not None else None),
-            mode_normal_enabled=(bool(mode_normal_enabled) if mode_normal_enabled is not None else None),
-            mode_sync_enabled=(bool(mode_sync_enabled) if mode_sync_enabled is not None else None),
+            mode_advanced_enabled=_optional_bool(mode_advanced_enabled),
+            mode_advanced_v2_enabled=_optional_bool(mode_advanced_v2_enabled),
+            mode_normal_enabled=_optional_bool(mode_normal_enabled),
+            mode_sync_enabled=_optional_bool(mode_sync_enabled),
             mode_advanced_lot=mode_advanced_lot_val,
             mode_advanced_v2_lot=mode_advanced_v2_lot_val,
             mode_normal_lot=mode_normal_lot_val,
             mode_sync_lot=mode_sync_lot_val,
             advanced_v2_policies=(dict(advanced_v2_policies) if isinstance(advanced_v2_policies, dict) else None),
             signal_confirm_sec=signal_confirm_sec_val,
-            entry_exit_exit_wait_for_blank=(bool(entry_exit_exit_wait_for_blank) if entry_exit_exit_wait_for_blank is not None else None),
+            entry_exit_exit_wait_for_blank=_optional_bool(entry_exit_exit_wait_for_blank),
             entry_exit_exit_mode=(str(entry_exit_exit_mode) if entry_exit_exit_mode is not None else None),
             entry_exit_exit_modes=([str(x) for x in entry_exit_exit_modes] if isinstance(entry_exit_exit_modes, list) else None),
             entry_exit_lifecycle_mode=(str(entry_exit_lifecycle_mode) if entry_exit_lifecycle_mode is not None else None),
@@ -1371,8 +1385,8 @@ def indicator_bridge_instance_automation(payload: Dict[str, Any]):
             sync_direction_tf=(str(sync_direction_tf) if sync_direction_tf is not None else None),
             sync_entry_tf=(str(sync_entry_tf) if sync_entry_tf is not None else None),
             sync_exit_tf=(str(sync_exit_tf) if sync_exit_tf is not None else None),
-            sync_reentry_enabled=(bool(sync_reentry_enabled) if sync_reentry_enabled is not None else None),
-            half_be_enabled=(bool(half_be_enabled) if half_be_enabled is not None else None),
+            sync_reentry_enabled=_optional_bool(sync_reentry_enabled),
+            half_be_enabled=_optional_bool(half_be_enabled),
             half_be_tp_index=half_be_tp_index_val,
             atomic_sl_widen_enabled=_optional_bool(atomic_sl_widen_enabled),
             atomic_sl_widen_tight_pct=atomic_sl_widen_tight_pct_val,

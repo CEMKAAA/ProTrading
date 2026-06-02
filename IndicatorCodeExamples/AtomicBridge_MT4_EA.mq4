@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-02.2055-regime-signal-buffers"
+#define ATOMIC_BRIDGE_BUILD "2026-06-03.0115-register-heartbeat"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -13,13 +13,16 @@ input bool   InpLogOnInit = true;
 input bool   InpLogOnlyOnChange = true;
 input bool   InpDebugObjects = false;
 input bool   InpLogPostResponses = false;
+input bool   InpLogHandshakeResponses = true;
 input bool   InpLogNoneSignals = false;
 input bool   InpLogRegimeBuffer = false;
 input int    InpInitialSetupRetrySeconds = 30;
 input string InpIgnoreNamePatterns = "autotrade,->";
 input bool   InpEnableProTradePost = true;
+input bool   InpSendUnregisterOnDeinit = true;
 input bool   InpSendInitialConfirmedOnStart = false;
 input int    InpResolvedHeartbeatSeconds = 300;
+input int    InpRegisterHeartbeatSeconds = 120;
 input string InpApiBaseUrl = "http://127.0.0.1";
 input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
@@ -40,11 +43,14 @@ input int    InpRegimeUpTrendStopBuffer = 0;
 input int    InpRegimeDnTrendStopBuffer = 1;
 input bool   InpRegimeUseClosedBar = false;
 input int    InpRegimeBufferLookbackBars = 200;
+input int    InpRegimeConfirmStableSeconds = 5;
+input int    InpRegimeMaxConfirmShift = 1;
 
 string   g_lastEventId = "";
 datetime g_lastSignalTime = 0;
 string   g_lastConfirmedEventId = "";
 datetime g_lastResolvedPostTime = 0;
+datetime g_lastRegisterPostTime = 0;
 datetime g_initialSetupRetryUntil = 0;
 string   g_lastRegimeDirection = "";
 string   g_lastRegimeEventId = "";
@@ -52,12 +58,40 @@ string   g_lastRegimeConfirmedEventId = "";
 datetime g_lastRegimeResolvedPostTime = 0;
 int      g_lastRegimeSignalIndex = -1;
 datetime g_lastRegimeSignalTime = 0;
+string   g_lastRegimeConfirmedDirection = "";
+datetime g_lastRegimeConfirmedSignalTime = 0;
+string   g_pendingRegimeEventId = "";
+string   g_pendingRegimeDirection = "";
+datetime g_pendingRegimeFirstSeen = 0;
 
 string _trim(string s)
 {
    StringTrimLeft(s);
    StringTrimRight(s);
    return s;
+}
+
+string _compact_bridge_response(string response)
+{
+   string out = _trim(response);
+   StringReplace(out, "\r", " ");
+   StringReplace(out, "\n", " ");
+   if(StringLen(out) > 500)
+      out = StringSubstr(out, 0, 500) + "...";
+   return out;
+}
+
+bool _should_log_handshake_response(string eventKind, string reason)
+{
+   if(!InpLogHandshakeResponses)
+      return false;
+   string evt = _trim(eventKind);
+   string why = _trim(reason);
+   if(evt == "unregister")
+      return true;
+   if(evt == "register")
+      return (why == "init" || why == "init_retry");
+   return (why == "init" || why == "init_retry");
 }
 
 string _lower_copy(string s)
@@ -179,6 +213,25 @@ bool _heartbeat_due(datetime lastPostTime)
    if(lastPostTime <= 0)
       return true;
    return (nowTs - lastPostTime) >= sec;
+}
+
+bool _register_heartbeat_due()
+{
+   int sec = MathMax(0, InpRegisterHeartbeatSeconds);
+   if(sec <= 0)
+      return false;
+   datetime nowTs = _timer_now();
+   if(g_lastRegisterPostTime <= 0)
+      return true;
+   return (nowTs - g_lastRegisterPostTime) >= sec;
+}
+
+void MaybePostRegisterHeartbeat(string reason)
+{
+   if(!InpEnableProTradePost || !_register_heartbeat_due())
+      return;
+   _post_atomic_bridge_event("register", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", reason);
+   g_lastRegisterPostTime = _timer_now();
 }
 
 bool _parse_atomic_object_name(string name, string &direction, string &kind, int &tpIndex, int &signalIndex)
@@ -528,12 +581,13 @@ bool _post_atomic_bridge_event(
    string response = CharArrayToString(result, 0, -1);
    if(code >= 200 && code < 300)
    {
-      if(InpLogPostResponses || eventKind == "confirmed_signal")
+      if(InpLogPostResponses || _should_log_handshake_response(eventKind, reason))
       {
-         if(InpLogPostResponses)
-            Print("AtomicBridge sent ", eventKind, " ", dir, " response=", response);
-         else
-            Print("AtomicBridge sent ", eventKind, " ", dir);
+         Print("AtomicBridge handshake sent ", eventKind, " ", dir, " reason=", reason, " response=", _compact_bridge_response(response));
+      }
+      else if(eventKind == "confirmed_signal")
+      {
+         Print("AtomicBridge sent ", eventKind, " ", dir);
       }
       return true;
    }
@@ -566,10 +620,17 @@ double _atomic_buffer_value(int bufferIndex, int shift)
    return iCustom(NULL, 0, InpIndicatorName, bufferIndex, shift);
 }
 
+double _regime_buffer_value(int bufferIndex, int shift)
+{
+   // AtomicRegime is a logical strategy label. The regime signal buffers are
+   // exposed by the Atomic indicator itself; there is no AtomicRegime.ex4.
+   return _atomic_buffer_value(bufferIndex, shift);
+}
+
 string _regime_buffer_state_at_shift(int shift, double &upValue, double &dnValue)
 {
-   upValue = _atomic_buffer_value(MathMax(0, InpRegimeUpTrendStopBuffer), shift);
-   dnValue = _atomic_buffer_value(MathMax(0, InpRegimeDnTrendStopBuffer), shift);
+   upValue = _regime_buffer_value(MathMax(0, InpRegimeUpTrendStopBuffer), shift);
+   dnValue = _regime_buffer_value(MathMax(0, InpRegimeDnTrendStopBuffer), shift);
    bool upActive = _valid_atomic_buffer_price(upValue);
    bool dnActive = _valid_atomic_buffer_price(dnValue);
    if(upActive && !dnActive)
@@ -604,7 +665,7 @@ bool _find_latest_regime_signal_buffer(
    int buf = MathMax(0, bufferIndex);
    for(int sh = startShift; sh <= maxLookback; sh++)
    {
-      double v = _atomic_buffer_value(buf, sh);
+      double v = _regime_buffer_value(buf, sh);
       if(!_valid_atomic_buffer_price(v))
          continue;
       foundShift = sh;
@@ -927,12 +988,13 @@ bool _post_atomic_regime_event(
    string response = CharArrayToString(result, 0, -1);
    if(code >= 200 && code < 300)
    {
-      if(InpLogPostResponses || eventKind == "confirmed_signal")
+      if(InpLogPostResponses || _should_log_handshake_response(eventKind, reason))
       {
-         if(InpLogPostResponses)
-            Print("AtomicBridge regime sent ", eventKind, " ", dir, " response=", response);
-         else
-            Print("AtomicBridge regime sent ", eventKind, " ", dir);
+         Print("AtomicBridge regime handshake sent ", eventKind, " ", dir, " reason=", reason, " response=", _compact_bridge_response(response));
+      }
+      else if(eventKind == "confirmed_signal")
+      {
+         Print("AtomicBridge regime sent ", eventKind, " ", dir);
       }
       return true;
    }
@@ -969,6 +1031,8 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       {
          _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
          g_lastRegimeConfirmedEventId = regimeEventId;
+         g_lastRegimeConfirmedDirection = direction;
+         g_lastRegimeConfirmedSignalTime = signalTime;
       }
       return;
    }
@@ -976,6 +1040,39 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    g_lastRegimeEventId = regimeEventId;
    if(directionChanged && regimeEventId != g_lastRegimeConfirmedEventId)
    {
+      if(InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift)
+      {
+         if(_heartbeat_due(g_lastRegimeResolvedPostTime))
+         {
+            if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, "heartbeat"))
+               g_lastRegimeResolvedPostTime = _timer_now();
+         }
+         return;
+      }
+      if(g_lastRegimeConfirmedSignalTime > 0 && signalTime == g_lastRegimeConfirmedSignalTime && direction != g_lastRegimeConfirmedDirection)
+      {
+         if(InpLogRegimeBuffer)
+            Print("AtomicBridge regime_signal suppressed same_bar_flip dir=", direction, " bar=", _fmt_time(signalTime), " last=", g_lastRegimeConfirmedDirection);
+         return;
+      }
+      datetime nowStable = _timer_now();
+      int stableSeconds = MathMax(0, InpRegimeConfirmStableSeconds);
+      if(g_pendingRegimeEventId != regimeEventId)
+      {
+         g_pendingRegimeEventId = regimeEventId;
+         g_pendingRegimeDirection = direction;
+         g_pendingRegimeFirstSeen = nowStable;
+         if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
+            g_lastRegimeResolvedPostTime = nowStable;
+         if(stableSeconds > 0)
+            return;
+      }
+      if(stableSeconds > 0 && (nowStable - g_pendingRegimeFirstSeen) < stableSeconds)
+      {
+         if(InpLogRegimeBuffer)
+            Print("AtomicBridge regime_signal pending stable dir=", direction, " age=", IntegerToString((int)(nowStable - g_pendingRegimeFirstSeen)), " event=", regimeEventId);
+         return;
+      }
       if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
          g_lastRegimeResolvedPostTime = _timer_now();
       _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
@@ -983,6 +1080,11 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       g_lastRegimeConfirmedEventId = regimeEventId;
       g_lastRegimeSignalIndex = signalIndex;
       g_lastRegimeSignalTime = signalTime;
+      g_lastRegimeConfirmedDirection = direction;
+      g_lastRegimeConfirmedSignalTime = signalTime;
+      g_pendingRegimeEventId = "";
+      g_pendingRegimeDirection = "";
+      g_pendingRegimeFirstSeen = 0;
    }
    else if(_heartbeat_due(g_lastRegimeResolvedPostTime))
    {
@@ -1048,8 +1150,6 @@ void ScanAndLogLatest(string reason)
       }
       if(hasBufferRegime)
          _handle_regime_event("heartbeat", regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
-      else
-         _handle_regime_event("heartbeat", direction, signalIndex, signalTime, entryPrice, trendName);
       return;
    }
 
@@ -1115,10 +1215,6 @@ void ScanAndLogLatest(string reason)
       }
       _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
    }
-   else
-   {
-      _handle_regime_event(reason, direction, signalIndex, signalTime, entryPrice, trendName);
-   }
 }
 
 int OnInit()
@@ -1128,6 +1224,8 @@ int OnInit()
    Print(
       "AtomicBridge BUILD=", ATOMIC_BRIDGE_BUILD,
       " indicator=", InpIndicatorName,
+      " regimeLabel=", InpRegimeIndicatorName,
+      " regimeBufferSource=", InpIndicatorName,
       " symbol=", Symbol(),
       " tf=", _tf_to_string(Period()),
       " poll=", poll,
@@ -1135,10 +1233,15 @@ int OnInit()
       " regimeSignalBuffers=", (InpRegimeUseTrendSignalBuffers ? "true" : "false"),
       " upSignal=", InpRegimeUpTrendSignalBuffer,
       " dnSignal=", InpRegimeDnTrendSignalBuffer,
-      " stopFallback=", (InpRegimeUseTrendStopBuffers ? "true" : "false")
+      " stopFallback=", (InpRegimeUseTrendStopBuffers ? "true" : "false"),
+      " stableSec=", InpRegimeConfirmStableSeconds,
+      " maxConfirmShift=", InpRegimeMaxConfirmShift
    );
    if(InpEnableProTradePost)
+   {
       _post_atomic_bridge_event("register", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", "init");
+      g_lastRegisterPostTime = _timer_now();
+   }
    g_initialSetupRetryUntil = _timer_now() + MathMax(0, InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
@@ -1148,12 +1251,20 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if(InpSendUnregisterOnDeinit && InpEnableProTradePost)
+   {
+      string why = "deinit_" + IntegerToString(reason);
+      _post_atomic_bridge_event("unregister", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", why);
+      if(InpEnableRegimeChangePost)
+         _post_atomic_regime_event("unregister", "", -1, 0, 0.0, 0.0, 0.0, "", why);
+   }
    if(InpLogPostResponses || InpLogNoneSignals || InpLogRegimeBuffer)
       Print("AtomicBridge uninit reason=", reason);
 }
 
 void OnTimer()
 {
+   MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
    {
       ScanAndLogLatest("init_retry");

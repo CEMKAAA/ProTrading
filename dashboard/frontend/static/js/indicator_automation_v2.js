@@ -56,6 +56,8 @@
         instanceFilterAtomicRegime: document.getElementById('v2-instance-filter-atomic-regime'),
         instanceFilterSignatics: document.getElementById('v2-instance-filter-signatics'),
         instanceStartAll: document.getElementById('v2-instance-start-all'),
+        instanceAllNormal: document.getElementById('v2-instance-all-normal'),
+        instanceResetRegistry: document.getElementById('v2-instance-reset-registry'),
         auditFilter: document.getElementById('v2-audit-filter'),
         auditSymbolFilter: document.getElementById('v2-audit-symbol-filter'),
         auditStrategyFilter: document.getElementById('v2-audit-strategy-filter'),
@@ -229,7 +231,7 @@
         stateLoadController = new AbortController();
         const timeoutId = window.setTimeout(() => {
             try { stateLoadController.abort(); } catch (_) {}
-        }, 6000);
+        }, 30000);
         try {
             const stateQuery = [
                 'limit=300',
@@ -454,7 +456,8 @@
         });
     }
 
-    async function updateInstanceSettings(row, options) {
+    async function updateInstanceSettings(row, options, uiOptions) {
+        const ui = uiOptions && typeof uiOptions === 'object' ? uiOptions : {};
         pauseStateRefresh(2000);
         patchInstanceState(row, options || {});
         applyInstancePatch(row, options || {});
@@ -480,7 +483,9 @@
         patchInstanceState(row, options || {});
         renderInstances();
         renderEntryExitPanel();
-        refreshStateSoon(150);
+        if (!ui.suppressRefresh) {
+            refreshStateSoon(150);
+        }
     }
 
     async function saveRiskSettings() {
@@ -553,6 +558,10 @@
 
     async function updateInstanceAutomation(row, enabled) {
         return updateInstanceSettings(row, { enabled: !!enabled });
+    }
+
+    async function updateInstanceAutomationQuiet(row, enabled) {
+        return updateInstanceSettings(row, { enabled: !!enabled }, { suppressRefresh: true });
     }
 
     async function saveDualGateSettings(enabled) {
@@ -747,11 +756,11 @@
     }
 
     function hasDisplayableBridgeConnection(row) {
-        const stateText = String((row || {}).state || '').trim().toUpperCase();
-        return boolish((row || {}).has_live_heartbeat)
-            || boolish((row || {}).has_open_ladder)
-            || stateText === 'OPEN'
-            || stateText === 'IDLE';
+        // Operator view must show known/configured V2 instances even when the
+        // bridge heartbeat is intentionally sparse or the backend just restarted.
+        // State badges still distinguish LIVE/STALE/CONFIGURED; visibility should
+        // not depend on a fresh heartbeat.
+        return !!row && typeof row === 'object';
     }
 
     function displayInstances() {
@@ -2399,7 +2408,7 @@
             showNotice('No stopped bridge instances to start.', 'info');
             return;
         }
-        pauseStateRefresh(10000);
+        pauseStateRefresh(30000);
         if (els.instanceStartAll) {
             els.instanceStartAll.disabled = true;
             els.instanceStartAll.textContent = `Starting ${rows.length}...`;
@@ -2407,15 +2416,77 @@
         let ok = 0;
         try {
             for (const row of rows) {
-                await updateInstanceAutomation(row, true);
+                await updateInstanceAutomationQuiet(row, true);
                 ok += 1;
             }
             showNotice(`Started ${ok} bridge instance${ok === 1 ? '' : 's'}.`, 'success');
-            refreshStateSoon(300);
+            refreshStateSoon(2500);
         } finally {
             if (els.instanceStartAll) {
                 els.instanceStartAll.disabled = false;
                 els.instanceStartAll.textContent = 'Start All';
+            }
+        }
+    }
+
+    async function setAllInstancesNormal() {
+        const rows = allBridgeInstanceRows();
+        if (!rows.length) {
+            showNotice('No bridge instances to update.', 'info');
+            return;
+        }
+        const normalPatch = {
+            mode_advanced_enabled: false,
+            mode_advanced_v2_enabled: false,
+            mode_normal_enabled: true,
+            mode_sync_enabled: false
+        };
+        pauseStateRefresh(30000);
+        if (els.instanceAllNormal) {
+            els.instanceAllNormal.disabled = true;
+            els.instanceAllNormal.textContent = `Normalizing ${rows.length}...`;
+        }
+        let ok = 0;
+        try {
+            for (const row of rows) {
+                await updateInstanceSettings(row, normalPatch, { suppressRefresh: true });
+                ok += 1;
+            }
+            showNotice(`Set ${ok} bridge instance${ok === 1 ? '' : 's'} to normal mode.`, 'success');
+            refreshStateSoon(2500);
+        } finally {
+            if (els.instanceAllNormal) {
+                els.instanceAllNormal.disabled = false;
+                els.instanceAllNormal.textContent = 'All Normal';
+            }
+        }
+    }
+
+    async function resetBridgeRegistry() {
+        if (!window.confirm('Clear transient Bridge Instances registry? This does not close trades or delete automation settings. Reattach/reregister bridges to repopulate.')) {
+            return;
+        }
+        pauseStateRefresh(6000);
+        if (els.instanceResetRegistry) {
+            els.instanceResetRegistry.disabled = true;
+            els.instanceResetRegistry.textContent = 'Resetting...';
+        }
+        try {
+            const res = await apiFetch('/indicator-bridge/reset-registry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.ok === false) {
+                throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+            }
+            showNotice(`Bridge registry cleared (${Number(data.cleared || 0)} row${Number(data.cleared || 0) === 1 ? '' : 's'}).`, 'success');
+            refreshStateSoon(200);
+        } finally {
+            if (els.instanceResetRegistry) {
+                els.instanceResetRegistry.disabled = false;
+                els.instanceResetRegistry.textContent = 'Reset Registry';
             }
         }
     }
@@ -2628,6 +2699,12 @@
     }
     if (els.instanceStartAll) {
         els.instanceStartAll.addEventListener('click', () => startAllInstances().catch(showError));
+    }
+    if (els.instanceAllNormal) {
+        els.instanceAllNormal.addEventListener('click', () => setAllInstancesNormal().catch(showError));
+    }
+    if (els.instanceResetRegistry) {
+        els.instanceResetRegistry.addEventListener('click', () => resetBridgeRegistry().catch(showError));
     }
     if (els.symbolSessionBody) {
         els.symbolSessionBody.addEventListener('input', () => {

@@ -567,6 +567,8 @@
                 <label class="small mb-0"><input id="v2-instance-filter-atomic-regime" type="checkbox" class="form-check-input me-1" checked>AtomicRegime</label>
                 <label class="small mb-0"><input id="v2-instance-filter-signatics" type="checkbox" class="form-check-input me-1" checked>SIGNATICS</label>
                 <button id="v2-instance-start-all" type="button" class="btn btn-sm btn-outline-success">Start All</button>
+                <button id="v2-instance-all-normal" type="button" class="btn btn-sm btn-outline-primary">All Normal</button>
+                <button id="v2-instance-reset-registry" type="button" class="btn btn-sm btn-outline-secondary">Reset Registry</button>
                 <input id="v2-instance-filter" class="form-control form-control-sm" style="max-width: 280px;" placeholder="symbol / state">
             </div>
         </div>
@@ -642,5 +644,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=proxy-sync-20260602"></script>
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=bridge-startall-normal-cachefix-20260603"></script>
 {% endblock %}

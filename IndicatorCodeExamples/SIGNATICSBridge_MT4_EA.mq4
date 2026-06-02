@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-02.1840-stable-setup-listener"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-03.0115-register-heartbeat"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -19,9 +19,11 @@ input int    InpInitialSetupRetrySeconds = 30;
 input bool   InpLogInitialDiscoverySummary = true;
 input string InpIgnoreNamePatterns = "autotrade,->";
 input bool   InpEnableProTradePost = true;
+input bool   InpSendUnregisterOnDeinit = true;
 input bool   InpSendInitialConfirmedOnStart = false;
 input bool   InpSendResolvedStateEvents = true;
 input int    InpResolvedHeartbeatSeconds = 900;
+input int    InpRegisterHeartbeatSeconds = 120;
 input string InpApiBaseUrl = "http://127.0.0.1";
 input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
@@ -34,11 +36,13 @@ input int    InpMaxGroupCandidates = 20;
 input bool   InpAllowLevelObjectFallback = true;
 input bool   InpLogOnlyTradeSignals = true;
 input bool   InpLogPostResponses = false;
+input bool   InpLogHandshakeResponses = true;
 input bool   InpLogRejectedGeometry = false;
 
 string   g_lastEventId = "";
 string   g_lastConfirmedEventId = "";
 datetime g_lastResolvedPostTime = 0;
+datetime g_lastRegisterPostTime = 0;
 datetime g_lastNoneDiscoveryTime = 0;
 datetime g_lastNoneLogTime = 0;
 datetime g_initialSetupRetryUntil = 0;
@@ -47,6 +51,29 @@ datetime g_initialDiscoveryLastPrint = 0;
 int      g_initialDiscoveryPrints = 0;
 
 string _trim(string s){ StringTrimLeft(s); StringTrimRight(s); return s; }
+
+string _compact_bridge_response(string response)
+{
+   string out=_trim(response);
+   StringReplace(out,"\r"," ");
+   StringReplace(out,"\n"," ");
+   if(StringLen(out)>500)
+      out=StringSubstr(out,0,500)+"...";
+   return out;
+}
+
+bool _should_log_handshake_response(string eventKind,string reason)
+{
+   if(!InpLogHandshakeResponses)
+      return false;
+   string evt=_trim(eventKind);
+   string why=_trim(reason);
+   if(evt=="unregister")
+      return true;
+   if(evt=="register")
+      return (why=="init" || why=="init_retry");
+   return (why=="init" || why=="init_retry");
+}
 
 string _lower_copy(string s)
 {
@@ -173,6 +200,25 @@ bool _heartbeat_due(datetime lastPostTime)
    if(lastPostTime<=0)
       return true;
    return (nowTs-lastPostTime)>=sec;
+}
+
+bool _register_heartbeat_due()
+{
+   int sec=MathMax(0,InpRegisterHeartbeatSeconds);
+   if(sec<=0)
+      return false;
+   datetime nowTs=_timer_now();
+   if(g_lastRegisterPostTime<=0)
+      return true;
+   return (nowTs-g_lastRegisterPostTime)>=sec;
+}
+
+void MaybePostRegisterHeartbeat(string reason)
+{
+   if(!InpEnableProTradePost || !_register_heartbeat_due())
+      return;
+   _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"",reason);
+   g_lastRegisterPostTime=_timer_now();
 }
 
 bool _none_log_due(string reason)
@@ -903,12 +949,13 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
    string response=CharArrayToString(result,0,-1);
    if(code>=200 && code<300)
    {
-      if(InpLogPostResponses || eventKind=="confirmed_signal")
+      if(InpLogPostResponses || _should_log_handshake_response(eventKind,reason))
       {
-         if(InpLogPostResponses)
-            Print("SIGNATICSBridge sent ",eventKind," ",dir," response=",response);
-         else
-            Print("SIGNATICSBridge sent ",eventKind," ",dir);
+         Print("SIGNATICSBridge handshake sent ",eventKind," ",dir," reason=",reason," response=",_compact_bridge_response(response));
+      }
+      else if(eventKind=="confirmed_signal")
+      {
+         Print("SIGNATICSBridge sent ",eventKind," ",dir);
       }
       return true;
    }
@@ -995,7 +1042,10 @@ int OnInit()
    EventSetTimer(poll);
    Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," lvFallback=",InpAllowLevelObjectFallback);
    if(InpEnableProTradePost)
+   {
       _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"","init");
+      g_lastRegisterPostTime=_timer_now();
+   }
    g_initialSetupRetryUntil=_timer_now()+MathMax(0,InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
@@ -1005,12 +1055,15 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if(InpSendUnregisterOnDeinit && InpEnableProTradePost)
+      _post_signatics_bridge_event("unregister","",-1,0.0,0.0,0.0,0.0,0.0,"","deinit_"+IntegerToString(reason));
    if(!InpLogOnlyTradeSignals)
       Print("SIGNATICSBridge uninit reason=",reason);
 }
 
 void OnTimer()
 {
+   MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && !g_baselineSetupSeen && _timer_now()<=g_initialSetupRetryUntil)
    {
       ScanAndLogLatest("init_retry");

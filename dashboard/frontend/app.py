@@ -1522,7 +1522,7 @@ def indicator_bridge_state_proxy():
         '/api/v1/indicator-bridge/state',
         params=params,
         return_error=True,
-        timeout_sec=20,
+        timeout_sec=45,
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge state'}), 500
@@ -1543,6 +1543,20 @@ def indicator_bridge_open_trade_prices_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge open trade prices'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/reset-registry', methods=['POST'])
+def indicator_bridge_reset_registry_proxy():
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/reset-registry',
+        data={},
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to reset indicator bridge registry'}), 500
     return jsonify(res)
 
 
