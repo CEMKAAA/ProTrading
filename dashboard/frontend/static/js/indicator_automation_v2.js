@@ -74,12 +74,18 @@
     let priceTimer = null;
     let priceLoadInFlight = false;
     let priceLoadController = null;
+    let priceSmoothRaf = null;
+    let priceSmoothLastMs = 0;
+    let priceSmoothLastDomMs = 0;
     let auditTimer = null;
     let auditLoadInFlight = false;
     let auditLoadController = null;
     let tradeRailOverlay = null;
     let tradeRailOverlayTicket = '';
     let liquidityScanRows = [];
+    const priceVisuals = new Map();
+    const PRICE_SMOOTH_TAU_MS = 260;
+    const PRICE_SMOOTH_DOM_MS = 33;
 
     function esc(v) {
         return String(v == null ? '' : v)
@@ -315,6 +321,102 @@
         return tickets;
     }
 
+    function ticketKey(rowOrTicket) {
+        const raw = (rowOrTicket && typeof rowOrTicket === 'object') ? rowOrTicket.ticket : rowOrTicket;
+        const ticket = Number(raw || 0);
+        if (!Number.isFinite(ticket) || ticket <= 0) return '';
+        return String(Math.trunc(ticket));
+    }
+
+    function visualCurrentPrice(row) {
+        const key = ticketKey(row);
+        const visual = key ? priceVisuals.get(key) : null;
+        const visualPrice = Number((visual || {}).current);
+        if (Number.isFinite(visualPrice) && visualPrice > 0) return visualPrice;
+        const rawPrice = Number((row || {}).current_price);
+        return Number.isFinite(rawPrice) ? rawPrice : NaN;
+    }
+
+    function syncPriceVisualTarget(ticket, price) {
+        const key = ticketKey(ticket);
+        const target = Number(price);
+        if (!key || !Number.isFinite(target) || target <= 0) return NaN;
+        const now = Date.now();
+        const existing = priceVisuals.get(key) || {};
+        const current = Number(existing.current);
+        const next = {
+            current: Number.isFinite(current) && current > 0 ? current : target,
+            target,
+            lastRaw: target,
+            updatedAtMs: now,
+        };
+        priceVisuals.set(key, next);
+        ensurePriceSmoothingLoop();
+        return next.current;
+    }
+
+    function patchLiveCurrentPrice(row) {
+        const ticket = ticketKey(row);
+        if (!ticket) return;
+        const price = visualCurrentPrice(row);
+        document.querySelectorAll(`[data-live-ticket="${cssEsc(ticket)}"][data-live-field="current_price"]`).forEach(el => {
+            el.textContent = fmtNum(price, Number(el.getAttribute('data-live-digits') || 5));
+        });
+    }
+
+    function runPriceSmoothingFrame(ts) {
+        if (!state) {
+            priceSmoothRaf = null;
+            priceSmoothLastMs = 0;
+            return;
+        }
+        const now = Number(ts || performance.now());
+        const dt = priceSmoothLastMs > 0 ? Math.max(1, Math.min(120, now - priceSmoothLastMs)) : 16;
+        priceSmoothLastMs = now;
+        const alpha = 1 - Math.exp(-dt / PRICE_SMOOTH_TAU_MS);
+        const liveTickets = new Set(collectOpenTradeTickets());
+        let active = false;
+        priceVisuals.forEach((visual, key) => {
+            if (!liveTickets.has(key) && Date.now() - Number(visual.updatedAtMs || 0) > 10000) {
+                priceVisuals.delete(key);
+                return;
+            }
+            const current = Number(visual.current);
+            const target = Number(visual.target);
+            if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return;
+            const epsilon = Math.max(Math.abs(target) * 0.0000002, 0.000001);
+            const delta = target - current;
+            if (Math.abs(delta) <= epsilon) {
+                visual.current = target;
+                return;
+            }
+            visual.current = current + (delta * alpha);
+            active = true;
+        });
+        if (now - priceSmoothLastDomMs >= PRICE_SMOOTH_DOM_MS) {
+            priceSmoothLastDomMs = now;
+            openTrades().forEach(row => {
+                const key = ticketKey(row);
+                const visual = key ? priceVisuals.get(key) : null;
+                if (!visual) return;
+                row._visual_current_price = visual.current;
+                patchLiveCurrentPrice(row);
+                patchTradeRailDom(row);
+            });
+        }
+        if (active) {
+            priceSmoothRaf = window.requestAnimationFrame(runPriceSmoothingFrame);
+        } else {
+            priceSmoothRaf = null;
+            priceSmoothLastMs = 0;
+        }
+    }
+
+    function ensurePriceSmoothingLoop() {
+        if (priceSmoothRaf) return;
+        priceSmoothRaf = window.requestAnimationFrame(runPriceSmoothingFrame);
+    }
+
     function patchRowsByTicket(rows, byTicket) {
         if (!Array.isArray(rows) || !byTicket || typeof byTicket !== 'object') return false;
         let changed = false;
@@ -340,6 +442,9 @@
                     changed = true;
                 }
             });
+            if (Object.prototype.hasOwnProperty.call(snap, 'current_price') && snap.current_price != null) {
+                row._visual_current_price = syncPriceVisualTarget(ticket, snap.current_price);
+            }
             row._price_snapshot_at = snap.updated_at || '';
         });
         return changed;
@@ -1732,6 +1837,7 @@
                 <td class="v2-mono small">
                     <div>SL ${esc(fmtNum(sl, 5))}</div>
                     <div>TP ${esc(fmtNum(tp, 5))}</div>
+                    <div class="small text-info">Px <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_price" data-live-digits="5">${esc(fmtNum(visualCurrentPrice(row), 5))}</span></div>
                 </td>
                 <td class="v2-mono small">
                     <div class="${maxCls}">max <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_profit">${esc(fmtNum(row.max_profit, 2))}</span></div>
@@ -1779,7 +1885,7 @@
     function tradeRailLegProgress(row) {
         const side = String((row || {}).direction || '').toUpperCase();
         const entry = Number((row || {}).entry_price);
-        const current = Number((row || {}).current_price);
+        const current = visualCurrentPrice(row);
         const tps = Array.isArray((row || {}).tps) ? row.tps : [];
         if (!['BUY', 'SELL'].includes(side) || !Number.isFinite(entry) || !Number.isFinite(current) || !tps.length) {
             return { pct: 0, label: 'leg n/a' };
@@ -1807,7 +1913,7 @@
     function tradeRailRuntime(row) {
         const side = String((row || {}).direction || '').toUpperCase();
         const entry = Number((row || {}).entry_price);
-        const current = Number((row || {}).current_price);
+        const current = visualCurrentPrice(row);
         const sl = Number((row || {}).stop_loss);
         const tps = Array.isArray((row || {}).tps) ? row.tps : [];
         const points = [];
@@ -1902,6 +2008,7 @@
                 el.classList.toggle('text-danger', Number.isFinite(maxL) && maxL < 0);
                 el.classList.toggle('text-muted', !Number.isFinite(maxL));
             });
+            patchLiveCurrentPrice(row);
             patchTradeRailDom(row);
         });
     }
@@ -2043,6 +2150,7 @@
                 <td class="v2-mono">
                     <div>SL ${esc(slText)}</div>
                     <div class="small text-muted">Entry ${esc(entryText)} / ${esc(rrText)}</div>
+                    <div class="small text-info">Px <span data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_price" data-live-digits="5">${esc(fmtNum(visualCurrentPrice(row), 5))}</span></div>
                 </td>
                 <td class="${pnlCls} fw-semibold" data-live-ticket="${esc(row.ticket || '')}" data-live-field="current_profit">${fmtNum(row.current_profit, 2)}</td>
                 <td class="${maxCls} fw-semibold" data-live-ticket="${esc(row.ticket || '')}" data-live-field="max_profit">${fmtNum(row.max_profit, 2)}</td>

@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-03.0115-register-heartbeat"
+#define ATOMIC_BRIDGE_BUILD "2026-06-03.0245-atomic-geometry-first-seen-guard"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -452,6 +452,93 @@ void _find_atomic_levels(string direction, int signalIndex, double &sl, double &
          if(tpIdx == 4) tp5 = p;
       }
    }
+}
+
+double _atomic_final_tp(double tp1, double tp2, double tp3, double tp4, double tp5)
+{
+   if(tp5 > 0.0) return tp5;
+   if(tp4 > 0.0) return tp4;
+   if(tp3 > 0.0) return tp3;
+   if(tp2 > 0.0) return tp2;
+   if(tp1 > 0.0) return tp1;
+   return 0.0;
+}
+
+bool _atomic_signal_geometry_valid(
+   string direction,
+   double signalEntry,
+   double sl,
+   double tp1,
+   double tp2,
+   double tp3,
+   double tp4,
+   double tp5,
+   string &reason
+)
+{
+   reason = "";
+   string dir = _trim(direction);
+   double finalTp = _atomic_final_tp(tp1, tp2, tp3, tp4, tp5);
+   double point = MarketInfo(Symbol(), MODE_POINT);
+   if(point <= 0.0)
+      point = Point;
+   double minGap = MathMax(point * 2.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * point);
+   double livePx = 0.0;
+
+   if(dir == "BUY")
+      livePx = MarketInfo(Symbol(), MODE_ASK);
+   else if(dir == "SELL")
+      livePx = MarketInfo(Symbol(), MODE_BID);
+   else
+   {
+      reason = "invalid_direction";
+      return false;
+   }
+
+   if(signalEntry <= 0.0 || sl <= 0.0 || finalTp <= 0.0)
+   {
+      reason = "missing_entry_sl_tp";
+      return false;
+   }
+
+   if(dir == "BUY")
+   {
+      if(sl >= signalEntry - minGap)
+      {
+         reason = "buy_sl_not_below_signal_entry";
+         return false;
+      }
+      if(finalTp <= signalEntry + minGap)
+      {
+         reason = "buy_tp_not_above_signal_entry";
+         return false;
+      }
+      if(livePx > 0.0 && finalTp <= livePx + minGap)
+      {
+         reason = "buy_tp_already_passed_live_price";
+         return false;
+      }
+   }
+   else
+   {
+      if(sl <= signalEntry + minGap)
+      {
+         reason = "sell_sl_not_above_signal_entry";
+         return false;
+      }
+      if(finalTp >= signalEntry - minGap)
+      {
+         reason = "sell_tp_not_below_signal_entry";
+         return false;
+      }
+      if(livePx > 0.0 && finalTp >= livePx - minGap)
+      {
+         reason = "sell_tp_already_passed_live_price";
+         return false;
+      }
+   }
+
+   return true;
 }
 
 void _debug_print_atomic_objects()
@@ -1141,9 +1228,12 @@ void ScanAndLogLatest(string reason)
    _find_atomic_levels(direction, signalIndex, sl, tp1, tp2, tp3, tp4, tp5);
 
    string eventId = StringFormat("%s|%s|%d|%I64d", Symbol(), direction, signalIndex, (long)signalTime);
+   bool firstObservation = (StringLen(g_lastEventId) <= 0 || g_lastSignalTime <= 0);
+   string geometryReason = "";
+   bool geometryOk = _atomic_signal_geometry_valid(direction, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, geometryReason);
    if(InpLogOnlyOnChange && eventId == g_lastEventId)
    {
-      if(StringLen(direction) > 0 && sl > 0.0 && tp1 > 0.0 && _heartbeat_due(g_lastResolvedPostTime))
+      if(StringLen(direction) > 0 && sl > 0.0 && tp1 > 0.0 && geometryOk && _heartbeat_due(g_lastResolvedPostTime))
       {
          if(_post_atomic_bridge_event("resolved_state", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, "heartbeat"))
             g_lastResolvedPostTime = _timer_now();
@@ -1176,17 +1266,34 @@ void ScanAndLogLatest(string reason)
 
    if(sl <= 0.0 || tp1 <= 0.0)
       Print("AtomicBridge warning: missing SL/TP data for latest signal. Check object naming/scan timing.");
-
-   if(StringLen(direction) > 0 && sl > 0.0 && tp1 > 0.0)
+   else if(!geometryOk)
    {
-      if(reason == "init" || reason == "init_retry")
+      double livePx = (direction == "BUY" ? MarketInfo(Symbol(), MODE_ASK) : MarketInfo(Symbol(), MODE_BID));
+      PrintFormat(
+         "AtomicBridge warning: invalid signal geometry; not posting reason=%s dir=%s signal_entry=%s live_px=%s sl=%s final_tp=%s",
+         geometryReason,
+         direction,
+         _fmt_price(entryPrice),
+         _fmt_price(livePx),
+         _fmt_price(sl),
+         _fmt_price(_atomic_final_tp(tp1, tp2, tp3, tp4, tp5))
+      );
+   }
+
+   if(StringLen(direction) > 0 && sl > 0.0 && tp1 > 0.0 && geometryOk)
+   {
+      if(reason == "init" || reason == "init_retry" || firstObservation)
       {
          if(_post_atomic_bridge_event("resolved_state", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, reason))
             g_lastResolvedPostTime = _timer_now();
-         if(InpSendInitialConfirmedOnStart)
+         if((reason == "init" || reason == "init_retry") && InpSendInitialConfirmedOnStart)
          {
             _post_atomic_bridge_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, reason);
             g_lastConfirmedEventId = eventId;
+         }
+         else if(firstObservation && reason != "init" && reason != "init_retry")
+         {
+            Print("AtomicBridge first_observation resolved only; confirmed_signal suppressed reason=", reason, " event=", eventId);
          }
       }
       else if(eventId != g_lastConfirmedEventId)

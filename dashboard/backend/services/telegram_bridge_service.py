@@ -13310,6 +13310,7 @@ class TelegramBridgeService:
             entry_price = last
         if entry_price is None and isinstance(bars, list) and bars:
             entry_price = _to_float_or_none((bars[-1] or {}).get("close"))
+        execution_price = _to_float_or_none(entry_price)
 
         def _payload_bool(key: str, default: bool = False) -> bool:
             raw = p.get(key)
@@ -13503,6 +13504,46 @@ class TelegramBridgeService:
             signal["rsi_indicator_tf"] = str(latest_rsi.get("indicator_tf") or "")
             signal["rsi_period"] = _to_float_or_none(latest_rsi.get("rsi_period"))
             signal["rsi_seen_ts"] = _to_float_or_none(latest_rsi.get("seen_ts"))
+        geometry_guard = self._indicator_signal_geometry_guard(
+            direction=str(hint),
+            execution_price=execution_price,
+            signal_entry=entry_price,
+            stop_loss=stop_loss,
+            take_profit=_to_float_or_none((tps[-1] if tps else {}).get("price")),
+            tps=list(tps),
+            min_distance=max(float(min_stop_dist), float(point) * 2.0),
+        )
+        if not bool((geometry_guard or {}).get("ok", True)):
+            reason = str((geometry_guard or {}).get("reason") or "invalid_signal_geometry")
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name=str(indicator),
+                trigger="indicator_signal",
+                status="skipped",
+                symbol=str(symbol_exec).strip().upper(),
+                timeframe=str(timeframe),
+                direction=str(hint),
+                stop_loss=_to_float_or_none(stop_loss),
+                final_tp=_to_float_or_none((tps[-1] if tps else {}).get("price")),
+                stages_total=len(tps),
+                message=f"invalid_signal_geometry:{reason}",
+                profile=str(profile),
+                indicator=str(indicator),
+                source_tag=str(combo_key),
+                event_ts=event_ts,
+                stage="geometry_guard",
+                stage_status="blocked",
+                stage_payload=dict(geometry_guard or {}),
+                error_code=str(reason),
+            )
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": "invalid_signal_geometry",
+                "geometry": dict(geometry_guard or {}),
+                "runtime": runtime_cfg,
+                "bridge": registered,
+            }
         combo_source_tag = (
             f"{family}|{str(profile)}|{str(indicator_key)}|{str(symbol_exec).strip().upper()}|{str(timeframe).strip().upper()}"
         )
@@ -15901,10 +15942,23 @@ class TelegramBridgeService:
             if isinstance(x, dict) and _to_float_or_none((x or {}).get("price")) is not None
         ]
         rows.sort(key=lambda r: int((r or {}).get("index") or 0))
+        side = str(direction or "").strip().upper()
+        entry = _to_float_or_none(entry_price)
+        if side in {"BUY", "SELL"} and entry is not None and float(entry) > 0.0:
+            if side == "BUY":
+                rows = [dict(x) for x in rows if float((x or {}).get("price") or 0.0) > float(entry)]
+            else:
+                rows = [dict(x) for x in rows if float((x or {}).get("price") or 0.0) < float(entry)]
+            if not rows:
+                final = _to_float_or_none(final_tp)
+                if final is not None and float(final) > 0.0:
+                    if (side == "BUY" and float(final) > float(entry)) or (side == "SELL" and float(final) < float(entry)):
+                        rows = [{"index": 1, "price": float(final)}]
+            for i, row in enumerate(rows):
+                row["index"] = int(i + 1)
         if not cls._is_atomic_regime_context(profile=profile, indicator=indicator, source_tag=source_tag):
             return [dict(x) for x in rows]
 
-        entry = _to_float_or_none(entry_price)
         final = _to_float_or_none(final_tp)
         if final is None and rows:
             if entry is not None and float(entry) > 0.0:
@@ -16349,6 +16403,77 @@ class TelegramBridgeService:
             or ("normal mode order executed" in msg)
             or ("exec_ok" in msg)
         )
+
+    @staticmethod
+    def _indicator_signal_geometry_guard(
+        *,
+        direction: Any,
+        execution_price: Any,
+        signal_entry: Any = None,
+        stop_loss: Any = None,
+        take_profit: Any = None,
+        tps: Optional[List[Dict[str, Any]]] = None,
+        min_distance: float = 0.0,
+    ) -> Dict[str, Any]:
+        side = str(direction or "").strip().upper()
+        exec_px = _to_float_or_none(execution_price)
+        sig_entry = _to_float_or_none(signal_entry)
+        sl = _to_float_or_none(stop_loss)
+        final_tp = _to_float_or_none(take_profit)
+        tp_rows = [
+            dict(x)
+            for x in (tps if isinstance(tps, list) else [])
+            if isinstance(x, dict) and _to_float_or_none((x or {}).get("price")) is not None
+        ]
+        tp_rows.sort(key=lambda x: int(_to_float_or_none((x or {}).get("index")) or 0))
+        tp_prices = [float(_to_float_or_none((x or {}).get("price")) or 0.0) for x in tp_rows]
+        tp_prices = [float(x) for x in tp_prices if math.isfinite(float(x)) and float(x) > 0.0]
+        if final_tp is None and tp_prices:
+            final_tp = float(tp_prices[-1])
+        ref = sig_entry if sig_entry is not None and float(sig_entry) > 0.0 else exec_px
+        min_dist = max(0.0, float(min_distance or 0.0))
+        out = {
+            "ok": True,
+            "reason": "ok",
+            "direction": str(side),
+            "execution_price": (_to_float_or_none(exec_px) if exec_px is not None else None),
+            "signal_entry": (_to_float_or_none(sig_entry) if sig_entry is not None else None),
+            "reference_entry": (_to_float_or_none(ref) if ref is not None else None),
+            "stop_loss": (_to_float_or_none(sl) if sl is not None else None),
+            "take_profit": (_to_float_or_none(final_tp) if final_tp is not None else None),
+            "tp_count": int(len(tp_prices)),
+            "tp_prices": [float(x) for x in tp_prices[:12]],
+            "min_distance": float(min_dist),
+        }
+        if side not in {"BUY", "SELL"}:
+            out.update({"ok": False, "reason": "invalid_direction"})
+            return out
+        if exec_px is None or float(exec_px) <= 0.0 or not math.isfinite(float(exec_px)):
+            out.update({"ok": False, "reason": "execution_price_unavailable"})
+            return out
+        if ref is None or float(ref) <= 0.0 or not math.isfinite(float(ref)):
+            out.update({"ok": False, "reason": "entry_reference_unavailable"})
+            return out
+        if sl is not None and float(sl) > 0.0:
+            if side == "BUY" and float(sl) >= float(exec_px) - min_dist:
+                out.update({"ok": False, "reason": "stop_loss_not_below_buy_execution"})
+                return out
+            if side == "SELL" and float(sl) <= float(exec_px) + min_dist:
+                out.update({"ok": False, "reason": "stop_loss_not_above_sell_execution"})
+                return out
+        if final_tp is not None and float(final_tp) > 0.0:
+            if side == "BUY" and float(final_tp) <= float(exec_px) + min_dist:
+                out.update({"ok": False, "reason": "take_profit_already_passed_for_buy"})
+                return out
+            if side == "SELL" and float(final_tp) >= float(exec_px) - min_dist:
+                out.update({"ok": False, "reason": "take_profit_already_passed_for_sell"})
+                return out
+        if tp_prices:
+            future_tps = [float(x) for x in tp_prices if (float(x) > float(exec_px) + min_dist if side == "BUY" else float(x) < float(exec_px) - min_dist)]
+            if not future_tps:
+                out.update({"ok": False, "reason": "all_signal_tps_already_passed"})
+                return out
+        return out
 
     def _execute_confirmation_signal_with_channel_modes(
         self,
@@ -17191,6 +17316,55 @@ class TelegramBridgeService:
                 str(order_magic),
                 str(trace_id),
             )
+        exec_px = None
+        min_dist = 0.0
+        try:
+            info = svc.get_symbol_info(symbol=str(sym))
+            point = _to_float_or_none((info or {}).get("point")) or 0.0
+            stops = _to_float_or_none((info or {}).get("trade_stops_level")) or 0.0
+            min_dist = max(0.0, float(point) * float(stops), float(point) * 2.0)
+            tick = svc.get_symbol_tick(symbol=str((info or {}).get("resolved_symbol") or sym), resolve_symbol=False)
+            exec_px = _to_float_or_none((tick or {}).get("ask")) if side == "BUY" else _to_float_or_none((tick or {}).get("bid"))
+            if exec_px is None:
+                exec_px = _to_float_or_none((tick or {}).get("last"))
+        except Exception:
+            exec_px = None
+        geometry_guard = self._indicator_signal_geometry_guard(
+            direction=str(side),
+            execution_price=exec_px,
+            signal_entry=None,
+            stop_loss=order_stop_loss,
+            take_profit=order_take_profit,
+            tps=list(signal_tps),
+            min_distance=float(min_dist),
+        )
+        if not bool((geometry_guard or {}).get("ok", True)):
+            reason = str((geometry_guard or {}).get("reason") or "invalid_signal_geometry")
+            self._append_automation_execution_log(
+                source_type=audit_source_type,
+                source_name=audit_source_name,
+                trigger=audit_trigger,
+                status="skipped",
+                symbol=sym,
+                timeframe=tf,
+                direction=side,
+                lot=qty,
+                stop_loss=order_stop_loss,
+                final_tp=order_take_profit,
+                stages_total=len(signal_tps),
+                message=f"invalid_signal_geometry:{reason}",
+                profile=audit_profile,
+                indicator=audit_indicator,
+                source_tag=source_tag,
+                event_ts=audit_event_ts,
+                execution_mode=exec_mode,
+                trace_id=str(trace_id),
+                stage="geometry_guard",
+                stage_status="blocked",
+                stage_payload=dict(geometry_guard or {}),
+                error_code=str(reason),
+            )
+            return f"Normal mode trade skipped: invalid_signal_geometry:{reason}"
         try:
             data = svc.place_market_order(
                 symbol=str(sym),
