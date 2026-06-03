@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-03.1145-chartobject-atomic-grade-strict-groups"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-03.1315-buffer-first-live-confirm"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -1372,7 +1372,7 @@ bool ScanFastBufferSignal(string reason)
    if(eventId==g_lastFastBufferEventId)
       return true;
 
-   bool initialAudit=_is_initial_audit_reason(reason) || !g_baselineSetupSeen;
+   bool initialAudit=_is_initial_audit_reason(reason);
    g_lastFastBufferEventId=eventId;
    string sourceName=StringFormat("SIGNATICS_BUFFER_%d_shift_%d",bufferIndex,shift);
    if(InpLogFastBufferSignals)
@@ -1387,12 +1387,16 @@ bool ScanFastBufferSignal(string reason)
       g_lastResolvedPostTime=_timer_now();
 
    if(initialAudit && !InpSendInitialConfirmedOnStart)
+   {
+      g_baselineSetupSeen=true;
       return true;
+   }
 
    _print_setup_line("trade_signal_sent_fast_buffer",reason,direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName);
    _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName,reason,false);
    g_lastFastConfirmedDirection=direction;
    g_lastFastConfirmedSignalTime=signalTime;
+   g_baselineSetupSeen=true;
    return true;
 }
 
