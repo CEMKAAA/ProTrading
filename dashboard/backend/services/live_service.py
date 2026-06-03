@@ -933,6 +933,47 @@ class LiveTradingService:
             requested_price = float(tick.ask) if direction_u == "BUY" else float(tick.bid)
             if requested_price <= 0.0:
                 return {"ok": False, "error": f"invalid_market_price:{symbol_resolved}"}
+            point = _to_float_or_none(getattr(info, "point", None)) or 0.0
+            stops_level = _to_float_or_none(getattr(info, "trade_stops_level", None)) or 0.0
+            min_dist = max(0.0, float(point) * float(stops_level), float(point) * 2.0)
+            if direction_u == "BUY":
+                if sl is not None and float(sl) >= float(requested_price) - float(min_dist):
+                    return {
+                        "ok": False,
+                        "error": "invalid_order_geometry:buy_sl_not_below_market",
+                        "requested_price": float(requested_price),
+                        "sl": float(sl),
+                        "tp": (float(tp) if tp is not None else None),
+                        "min_distance": float(min_dist),
+                    }
+                if tp is not None and float(tp) <= float(requested_price) + float(min_dist):
+                    return {
+                        "ok": False,
+                        "error": "invalid_order_geometry:buy_tp_not_above_market",
+                        "requested_price": float(requested_price),
+                        "sl": (float(sl) if sl is not None else None),
+                        "tp": float(tp),
+                        "min_distance": float(min_dist),
+                    }
+            else:
+                if sl is not None and float(sl) <= float(requested_price) + float(min_dist):
+                    return {
+                        "ok": False,
+                        "error": "invalid_order_geometry:sell_sl_not_above_market",
+                        "requested_price": float(requested_price),
+                        "sl": float(sl),
+                        "tp": (float(tp) if tp is not None else None),
+                        "min_distance": float(min_dist),
+                    }
+                if tp is not None and float(tp) >= float(requested_price) - float(min_dist):
+                    return {
+                        "ok": False,
+                        "error": "invalid_order_geometry:sell_tp_not_below_market",
+                        "requested_price": float(requested_price),
+                        "sl": (float(sl) if sl is not None else None),
+                        "tp": float(tp),
+                        "min_distance": float(min_dist),
+                    }
 
             filling_candidates = self._ordered_filling_candidates(
                 symbol=symbol_resolved,

@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-03.0115-register-heartbeat"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-03.1145-chartobject-atomic-grade-strict-groups"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -28,16 +28,33 @@ input string InpApiBaseUrl = "http://127.0.0.1";
 input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
 input string InpSignalProfile = "signatics";
+input string InpBridgeSignalMode = "buffer"; // buffer | chart_object
 input int    InpHttpTimeoutMs = 5000;
 input bool   InpPreferGroupedSetup = true;
 input bool   InpAllowDashboardFallback = false;
 input bool   InpRejectInvalidGeometry = true;
-input int    InpMaxGroupCandidates = 20;
-input bool   InpAllowLevelObjectFallback = true;
+input int    InpMaxGroupCandidates = 300;
+input bool   InpAllowLevelObjectFallback = false;
 input bool   InpLogOnlyTradeSignals = true;
 input bool   InpLogPostResponses = false;
 input bool   InpLogHandshakeResponses = true;
 input bool   InpLogRejectedGeometry = false;
+input int    InpMaxConfirmedBarAgeSeconds = 180;
+input bool   InpEnableFastSignalBuffers = true;
+input int    InpFastBuyBufferIndex = 0;
+input int    InpFastSellBufferIndex = 1;
+input int    InpFastSignalLookbackBars = 2;
+input int    InpFastSignalHistoryLookbackBars = 1000;
+input bool   InpSendBufferHistoryResolvedOnInit = true;
+input bool   InpLogFastBufferSignals = true;
+input bool   InpScanFastBuffersOnTick = true;
+input int    InpBufferHistoryNoneLogSeconds = 300;
+input bool   InpAllowObjectConfirmedFallback = false;
+input bool   InpChartObjectStrictGroups = true;
+input bool   InpChartObjectRequireAllTps = true;
+input int    InpChartObjectMaxSlotTimeSkewSeconds = 5;
+input int    InpChartObjectStableSeconds = 1;
+input bool   InpChartObjectRequireFreshConfirmed = true;
 
 string   g_lastEventId = "";
 string   g_lastConfirmedEventId = "";
@@ -49,6 +66,12 @@ datetime g_initialSetupRetryUntil = 0;
 bool     g_baselineSetupSeen = false;
 datetime g_initialDiscoveryLastPrint = 0;
 int      g_initialDiscoveryPrints = 0;
+string   g_lastFastBufferEventId = "";
+string   g_lastFastConfirmedDirection = "";
+datetime g_lastFastConfirmedSignalTime = 0;
+datetime g_lastBufferHistoryNoneLogTime = 0;
+string   g_pendingObjectEventId = "";
+datetime g_pendingObjectFirstSeen = 0;
 
 string _trim(string s){ StringTrimLeft(s); StringTrimRight(s); return s; }
 
@@ -179,8 +202,9 @@ string _event_ts_now(){ return TimeToString(_timer_now(),TIME_DATE|TIME_SECONDS)
 string _setup_event_id(string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3)
 {
    return StringFormat(
-      "%s|%s|%I64d|%s|%s|%s|%s|%s",
+      "%s|%s|%s|%I64d|%s|%s|%s|%s|%s",
       Symbol(),
+      _bridge_signal_mode(),
       direction,
       (long)signalTime,
       DoubleToString(entry,Digits),
@@ -189,6 +213,245 @@ string _setup_event_id(string direction,datetime signalTime,double entry,double 
       DoubleToString(tp2,Digits),
       DoubleToString(tp3,Digits)
    );
+}
+
+string _bridge_signal_mode()
+{
+   string mode=_lower_copy(_trim(InpBridgeSignalMode));
+   StringReplace(mode,"-","_");
+   StringReplace(mode," ","_");
+   if(mode=="chart" || mode=="object" || mode=="chartobject" || mode=="chart_objects" || mode=="chart_object")
+      return "chart_object";
+   return "buffer";
+}
+
+bool _is_buffer_mode()
+{
+   return _bridge_signal_mode()=="buffer";
+}
+
+bool _is_chart_object_mode()
+{
+   return _bridge_signal_mode()=="chart_object";
+}
+
+bool _fast_buffers_active()
+{
+   return _is_buffer_mode() && InpEnableFastSignalBuffers;
+}
+
+bool _object_confirm_active()
+{
+   return _is_chart_object_mode() || (!_fast_buffers_active()) || InpAllowObjectConfirmedFallback;
+}
+
+string _bridge_indicator_label()
+{
+   string base=_trim(InpIndicatorName);
+   if(StringLen(base)<=0)
+      base="SIGNATICS";
+   if(_is_chart_object_mode())
+      return base+" [ChartObject]";
+   return base+" [Buffer]";
+}
+
+string _fast_buffer_event_id(string direction,datetime signalTime,double entry,int bufferIndex,int shift)
+{
+   return StringFormat(
+      "%s|%s|%s|fastbuf|%s|%I64d|%d|%d|%s",
+      Symbol(),_tf_to_string(Period()),_bridge_signal_mode(),direction,(long)signalTime,bufferIndex,shift,DoubleToString(entry,Digits)
+   );
+}
+
+bool _valid_signal_buffer_value(double value)
+{
+   if(!MathIsValidNumber(value))
+      return false;
+   if(value==EMPTY_VALUE || value==2147483647.0 || value<=0.0)
+      return false;
+   return true;
+}
+
+bool _read_signal_buffer(int bufferIndex,int shift,double &value)
+{
+   ResetLastError();
+   value=iCustom(Symbol(),Period(),InpIndicatorName,bufferIndex,shift);
+   if(GetLastError()!=0)
+      ResetLastError();
+   return _valid_signal_buffer_value(value);
+}
+
+void _insert_buffer_candidate(string candDir,datetime candTime,double candEntry,int candBuffer,int candShift,
+                              string &bestDir,datetime &bestTime,double &bestEntry,int &bestBuffer,int &bestShift,
+                              string &secondDir,datetime &secondTime,double &secondEntry,int &secondBuffer,int &secondShift)
+{
+   if((candDir!="BUY" && candDir!="SELL") || candTime<=0 || !_valid_signal_buffer_value(candEntry))
+      return;
+   if(candTime>bestTime)
+   {
+      secondDir=bestDir;
+      secondTime=bestTime;
+      secondEntry=bestEntry;
+      secondBuffer=bestBuffer;
+      secondShift=bestShift;
+      bestDir=candDir;
+      bestTime=candTime;
+      bestEntry=candEntry;
+      bestBuffer=candBuffer;
+      bestShift=candShift;
+      return;
+   }
+   if(candTime==bestTime)
+      return;
+   if(candTime>secondTime)
+   {
+      secondDir=candDir;
+      secondTime=candTime;
+      secondEntry=candEntry;
+      secondBuffer=candBuffer;
+      secondShift=candShift;
+   }
+}
+
+bool _find_fast_buffer_signal_by_rank(int rank,int maxShift,string &direction,datetime &signalTime,double &entry,int &bufferIndex,int &shiftOut)
+{
+   direction="";
+   signalTime=0;
+   entry=0.0;
+   bufferIndex=-1;
+   shiftOut=-1;
+   if(!_fast_buffers_active())
+      return false;
+
+   int cappedRank=MathMax(0,MathMin(1,rank));
+   int scanMax=MathMax(0,maxShift);
+   datetime bestTime=0;
+   double bestEntry=0.0;
+   string bestDir="";
+   int bestBuf=-1;
+   int bestShift=-1;
+   datetime secondTime=0;
+   double secondEntry=0.0;
+   string secondDir="";
+   int secondBuf=-1;
+   int secondShift=-1;
+   for(int sh=0; sh<=scanMax; sh++)
+   {
+      double buyVal=0.0;
+      if(_read_signal_buffer(InpFastBuyBufferIndex,sh,buyVal))
+      {
+         datetime t=iTime(Symbol(),Period(),sh);
+         _insert_buffer_candidate("BUY",t,buyVal,InpFastBuyBufferIndex,sh,bestDir,bestTime,bestEntry,bestBuf,bestShift,secondDir,secondTime,secondEntry,secondBuf,secondShift);
+      }
+      double sellVal=0.0;
+      if(_read_signal_buffer(InpFastSellBufferIndex,sh,sellVal))
+      {
+         datetime t2=iTime(Symbol(),Period(),sh);
+         _insert_buffer_candidate("SELL",t2,sellVal,InpFastSellBufferIndex,sh,bestDir,bestTime,bestEntry,bestBuf,bestShift,secondDir,secondTime,secondEntry,secondBuf,secondShift);
+      }
+   }
+   if(cappedRank==0)
+   {
+      direction=bestDir;
+      signalTime=bestTime;
+      entry=bestEntry;
+      bufferIndex=bestBuf;
+      shiftOut=bestShift;
+   }
+   else
+   {
+      direction=secondDir;
+      signalTime=secondTime;
+      entry=secondEntry;
+      bufferIndex=secondBuf;
+      shiftOut=secondShift;
+   }
+   if(direction!="BUY" && direction!="SELL")
+      return false;
+   if(signalTime<=0 || !_valid_signal_buffer_value(entry))
+      return false;
+   return true;
+}
+
+bool _find_latest_fast_buffer_signal(string &direction,datetime &signalTime,double &entry,int &bufferIndex,int &shiftOut)
+{
+   return _find_fast_buffer_signal_by_rank(0,InpFastSignalLookbackBars,direction,signalTime,entry,bufferIndex,shiftOut);
+}
+
+bool _find_latest_history_buffer_signal(string &direction,datetime &signalTime,double &entry,int &bufferIndex,int &shiftOut)
+{
+   return _find_fast_buffer_signal_by_rank(0,InpFastSignalHistoryLookbackBars,direction,signalTime,entry,bufferIndex,shiftOut);
+}
+
+bool _find_previous_history_buffer_signal(string &direction,datetime &signalTime,double &entry,int &bufferIndex,int &shiftOut)
+{
+   return _find_fast_buffer_signal_by_rank(1,InpFastSignalHistoryLookbackBars,direction,signalTime,entry,bufferIndex,shiftOut);
+}
+
+void _print_buffer_history_snapshot(string reason)
+{
+   if(!InpLogFastBufferSignals || !_fast_buffers_active())
+      return;
+
+   string direction;
+   datetime signalTime;
+   double entry;
+   int bufferIndex,shift;
+   if(_find_previous_history_buffer_signal(direction,signalTime,entry,bufferIndex,shift))
+   {
+      PrintFormat(
+         "SIGNATICSBridge previous_buffer_signal reason=%s symbol=%s tf=%s dir=%s bar=%s entry=%s buffer=%d shift=%d history_lookback=%d",
+         reason,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),bufferIndex,shift,MathMax(0,InpFastSignalHistoryLookbackBars)
+      );
+   }
+}
+
+bool _chart_object_confirm_ready(string eventId,string reason,datetime signalTime)
+{
+   if(!_is_chart_object_mode())
+      return true;
+   if(InpChartObjectRequireFreshConfirmed && !_confirmed_bar_fresh(signalTime))
+   {
+      PrintFormat(
+         "SIGNATICSBridge chart_object_confirm_suppressed reason=%s event_id='%s' why=stale_signal bar=%s age_sec=%d max_age_sec=%d",
+         reason,eventId,_fmt_time(signalTime),(int)MathMax(0,_timer_now()-signalTime),_max_confirmed_bar_age_sec()
+      );
+      return false;
+   }
+   int stableSeconds=MathMax(0,InpChartObjectStableSeconds);
+   if(stableSeconds<=0)
+      return true;
+   datetime nowTs=_timer_now();
+   if(g_pendingObjectEventId!=eventId)
+   {
+      g_pendingObjectEventId=eventId;
+      g_pendingObjectFirstSeen=nowTs;
+      PrintFormat(
+         "SIGNATICSBridge chart_object_confirm_pending reason=%s event_id='%s' stable_sec=%d bar=%s",
+         reason,eventId,stableSeconds,_fmt_time(signalTime)
+      );
+      return false;
+   }
+   int age=(int)(nowTs-g_pendingObjectFirstSeen);
+   if(age<stableSeconds)
+   {
+      PrintFormat(
+         "SIGNATICSBridge chart_object_confirm_pending reason=%s event_id='%s' age=%d stable_sec=%d",
+         reason,eventId,age,stableSeconds
+      );
+      return false;
+   }
+   return true;
+}
+
+bool _matches_last_fast_signal(string direction,datetime signalTime)
+{
+   if(g_lastFastConfirmedSignalTime<=0)
+      return false;
+   if(direction!=g_lastFastConfirmedDirection)
+      return false;
+   int tolerance=MathMax(_tf_seconds()*2,120);
+   return MathAbs((int)(signalTime-g_lastFastConfirmedSignalTime))<=tolerance;
 }
 
 bool _heartbeat_due(datetime lastPostTime)
@@ -213,11 +476,49 @@ bool _register_heartbeat_due()
    return (nowTs-g_lastRegisterPostTime)>=sec;
 }
 
+bool _buffer_history_none_log_due()
+{
+   int sec=MathMax(0,InpBufferHistoryNoneLogSeconds);
+   if(sec<=0)
+      return false;
+   datetime nowTs=_timer_now();
+   if(g_lastBufferHistoryNoneLogTime<=0)
+      return true;
+   return (nowTs-g_lastBufferHistoryNoneLogTime)>=sec;
+}
+
+int _tf_seconds()
+{
+   int tf=Period();
+   if(tf==PERIOD_M1) return 60;
+   if(tf==PERIOD_M5) return 300;
+   if(tf==PERIOD_M15) return 900;
+   if(tf==PERIOD_M30) return 1800;
+   if(tf==PERIOD_H1) return 3600;
+   if(tf==PERIOD_H4) return 14400;
+   if(tf==PERIOD_D1) return 86400;
+   return 300;
+}
+
+int _max_confirmed_bar_age_sec()
+{
+   int configured=MathMax(0,InpMaxConfirmedBarAgeSeconds);
+   return (configured>0 ? configured : MathMax(180,(int)MathRound(_tf_seconds()*2.5)));
+}
+
+bool _confirmed_bar_fresh(datetime signalTime)
+{
+   if(signalTime<=0)
+      return false;
+   datetime nowTs=_timer_now();
+   return (nowTs-signalTime)<=_max_confirmed_bar_age_sec();
+}
+
 void MaybePostRegisterHeartbeat(string reason)
 {
    if(!InpEnableProTradePost || !_register_heartbeat_due())
       return;
-   _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"",reason);
+   _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"",reason,false);
    g_lastRegisterPostTime=_timer_now();
 }
 
@@ -371,6 +672,39 @@ double _price_from_object_or_text(string name)
    if(_valid_price(txt))
       return txt;
    return 0.0;
+}
+
+bool _group_slot_read(int groupIndex,int slot,string &actualName,datetime &slotTime,double &slotPrice,string &slotText)
+{
+   actualName="";
+   slotTime=0;
+   slotPrice=0.0;
+   slotText="";
+   string wanted=StringFormat("SA_SL_%d_%d",groupIndex,slot);
+   actualName=_find_object_name(wanted);
+   if(StringLen(actualName)<=0)
+      return false;
+   slotTime=_object_time0(actualName);
+   slotText=_object_text(actualName);
+   slotPrice=_object_price0(actualName);
+   if(!_valid_price(slotPrice))
+   {
+      if(slot==0)
+         slotPrice=_parse_first_price_from_text(slotText);
+      else
+         slotPrice=_parse_last_price_from_text(slotText);
+   }
+   return slotTime>0 && _valid_price(slotPrice);
+}
+
+bool _group_slot_time_ok(datetime baseTime,datetime slotTime)
+{
+   if(baseTime<=0 || slotTime<=0)
+      return false;
+   int maxSkew=MathMax(0,InpChartObjectMaxSlotTimeSkewSeconds);
+   if(maxSkew<=0)
+      return baseTime==slotTime;
+   return MathAbs((int)(baseTime-slotTime))<=maxSkew;
 }
 
 string _clean_direction_text(string text)
@@ -576,16 +910,16 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
    sourceName="";
 
    int total=ObjectsTotal(0,-1,-1);
-   int idxs[128];
-   datetime times[128];
-   string dirs[128];
-   double entries[128];
-   for(int init=0; init<128; init++)
+   int idxs[512];
+   datetime times[512];
+   string dirs[512];
+   double entries[512];
+   ArrayInitialize(idxs,-1);
+   ArrayInitialize(times,0);
+   ArrayInitialize(entries,0.0);
+   for(int init=0; init<512; init++)
    {
-      idxs[init]=-1;
-      times[init]=0;
       dirs[init]="";
-      entries[init]=0.0;
    }
    int count=0;
    for(int i=total-1;i>=0;i--)
@@ -625,7 +959,7 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
       }
       if(already)
          continue;
-      if(count>=128)
+      if(count>=512)
          break;
       idxs[count]=idx;
       times[count]=t;
@@ -648,7 +982,7 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
       }
    }
 
-   int maxCandidates=MathMax(1,MathMin(128,InpMaxGroupCandidates));
+   int maxCandidates=MathMax(1,MathMin(512,InpMaxGroupCandidates));
    int validSeen=0;
    for(int c=0;c<count && c<maxCandidates;c++)
    {
@@ -660,12 +994,56 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
          continue;
 
       string base=StringFormat("SA_SL_%d_",useIdx);
-      double useSl=_price_from_object_or_text(base+"1");
-      double useTp1=_price_from_object_or_text(base+"2");
-      double useTp2=_price_from_object_or_text(base+"3");
-      double useTp3=_price_from_object_or_text(base+"4");
+      string entryName,slName,tp1Name,tp2Name,tp3Name;
+      datetime entryTime,slTime,tp1Time,tp2Time,tp3Time;
+      double slotEntry,slotSl,slotTp1,slotTp2,slotTp3;
+      string entryText,slText,tp1Text,tp2Text,tp3Text;
+      bool hasEntry=_group_slot_read(useIdx,0,entryName,entryTime,slotEntry,entryText);
+      bool hasSl=_group_slot_read(useIdx,1,slName,slTime,slotSl,slText);
+      bool hasTp1=_group_slot_read(useIdx,2,tp1Name,tp1Time,slotTp1,tp1Text);
+      bool hasTp2=_group_slot_read(useIdx,3,tp2Name,tp2Time,slotTp2,tp2Text);
+      bool hasTp3=_group_slot_read(useIdx,4,tp3Name,tp3Time,slotTp3,tp3Text);
+      if(hasEntry)
+      {
+         useEntry=slotEntry;
+         useTime=entryTime;
+      }
+      double useSl=(hasSl ? slotSl : 0.0);
+      double useTp1=(hasTp1 ? slotTp1 : 0.0);
+      double useTp2=(hasTp2 ? slotTp2 : 0.0);
+      double useTp3=(hasTp3 ? slotTp3 : 0.0);
+      if(InpChartObjectStrictGroups && (!hasEntry || !hasSl || !hasTp1 || (InpChartObjectRequireAllTps && (!hasTp2 || !hasTp3))))
+      {
+         if(InpLogRejectedGeometry)
+         {
+            PrintFormat(
+               "SIGNATICSBridge group_setup_rejected idx=%d reason=incomplete_group has_entry=%s has_sl=%s has_tp1=%s has_tp2=%s has_tp3=%s",
+               useIdx,(hasEntry?"true":"false"),(hasSl?"true":"false"),(hasTp1?"true":"false"),(hasTp2?"true":"false"),(hasTp3?"true":"false")
+            );
+         }
+         continue;
+      }
       if(useEntry<=0.0 || useSl<=0.0 || useTp1<=0.0)
          continue;
+      if(InpChartObjectStrictGroups)
+      {
+         bool timeOk=_group_slot_time_ok(useTime,slTime) && _group_slot_time_ok(useTime,tp1Time);
+         if(hasTp2)
+            timeOk = timeOk && _group_slot_time_ok(useTime,tp2Time);
+         if(hasTp3)
+            timeOk = timeOk && _group_slot_time_ok(useTime,tp3Time);
+         if(!timeOk)
+         {
+            if(InpLogRejectedGeometry)
+            {
+               PrintFormat(
+                  "SIGNATICSBridge group_setup_rejected idx=%d reason=time_skew entry_time=%s sl_time=%s tp1_time=%s tp2_time=%s tp3_time=%s",
+                  useIdx,_fmt_time(useTime),_fmt_time(slTime),_fmt_time(tp1Time),_fmt_time(tp2Time),_fmt_time(tp3Time)
+               );
+            }
+            continue;
+         }
+      }
       if(InpRejectInvalidGeometry && !_setup_geometry_ok(useDir,useEntry,useSl,useTp1,useTp2,useTp3))
       {
          if(InpLogRejectedGeometry)
@@ -690,7 +1068,7 @@ bool _find_group_signal_by_rank(int rank,string &direction,datetime &signalTime,
       tp1=useTp1;
       tp2=useTp2;
       tp3=useTp3;
-      sourceName=base+"group";
+      sourceName=StringFormat("SA_SL_%d_group strict=%s entry='%s' sl='%s' tp1='%s' tp2='%s' tp3='%s'",useIdx,(InpChartObjectStrictGroups?"true":"false"),entryName,slName,tp1Name,tp2Name,tp3Name);
       return true;
    }
    return false;
@@ -881,7 +1259,7 @@ void _debug_print_discovery_on_none(string reason)
    PrintFormat("SIGNATICSBridge discovery_candidate summary printed=%d",printed);
 }
 
-bool _post_signatics_bridge_event(string eventType,string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3,string sourceName,string reason)
+bool _post_signatics_bridge_event(string eventType,string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3,string sourceName,string reason,bool levelsAvailable)
 {
    if(!InpEnableProTradePost)
       return true;
@@ -897,9 +1275,16 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       Symbol(),_tf_to_string(Period()),dir,_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3),sourceName
    );
    string resolved=(dir=="BUY" || dir=="SELL") ? dir : "NONE";
+   int signalBarAgeSec=-1;
+   if(signalTime>0)
+      signalBarAgeSec=(int)MathMax(0,_timer_now()-signalTime);
+   bool confirmedFresh=_confirmed_bar_fresh(signalTime);
+   int maxConfirmedAgeSec=_max_confirmed_bar_age_sec();
    string body=
       "{"
-      "\"indicator\":\""+_json_escape(InpIndicatorName)+"\","
+      "\"indicator\":\""+_json_escape(_bridge_indicator_label())+"\","
+      "\"indicator_base\":\""+_json_escape(InpIndicatorName)+"\","
+      "\"bridge_signal_mode\":\""+_json_escape(_bridge_signal_mode())+"\","
       "\"signal_hint\":\""+_json_escape(dir)+"\","
       "\"resolved_signal\":\""+_json_escape(resolved)+"\","
       "\"confirmed_direction\":\""+_json_escape((eventKind=="confirmed_signal")?dir:"")+"\","
@@ -912,6 +1297,9 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       "\"event_ts\":\""+_json_escape(_event_ts_now())+"\","
       "\"resolved_signal_bar_time\":\""+_json_escape(_fmt_time(signalTime))+"\","
       "\"resolved_signal_bar_unix\":"+IntegerToString((int)signalTime)+","
+      "\"signal_bar_age_sec\":"+IntegerToString(signalBarAgeSec)+","
+      "\"confirmed_bar_fresh\":"+(confirmedFresh ? "true" : "false")+","
+      "\"max_confirmed_bar_age_sec\":"+IntegerToString(maxConfirmedAgeSec)+","
       "\"last_signal_direction\":\""+_json_escape(dir)+"\","
       "\"last_signal_bar_time\":\""+_json_escape(_fmt_time(signalTime))+"\","
       "\"last_signal_bar_unix\":"+IntegerToString((int)signalTime)+","
@@ -924,9 +1312,9 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       "\"secondary_resolved_bar_time\":\""+_json_escape(_fmt_time(signalTime))+"\","
       "\"secondary_entry_enabled\":true,"
       "\"secondary_entry\":"+DoubleToString(entry,Digits)+","
-      "\"secondary_sl_enabled\":true,"
+      "\"secondary_sl_enabled\":"+(levelsAvailable ? "true" : "false")+","
       "\"secondary_stop_loss\":"+DoubleToString(sl,Digits)+","
-      "\"secondary_tp_enabled\":true,"
+      "\"secondary_tp_enabled\":"+(levelsAvailable ? "true" : "false")+","
       "\"secondary_tp1\":"+DoubleToString(tp1,Digits)+","
       "\"secondary_tp2\":"+DoubleToString(tp2,Digits)+","
       "\"secondary_tp3\":"+DoubleToString(tp3,Digits)+","
@@ -968,8 +1356,109 @@ bool _is_initial_audit_reason(string reason)
    return (reason=="init" || reason=="init_retry" || reason=="baseline");
 }
 
+bool ScanFastBufferSignal(string reason)
+{
+   if(!_fast_buffers_active())
+      return false;
+
+   string direction;
+   datetime signalTime;
+   double entry;
+   int bufferIndex,shift;
+   if(!_find_latest_fast_buffer_signal(direction,signalTime,entry,bufferIndex,shift))
+      return false;
+
+   string eventId=_fast_buffer_event_id(direction,signalTime,entry,bufferIndex,shift);
+   if(eventId==g_lastFastBufferEventId)
+      return true;
+
+   bool initialAudit=_is_initial_audit_reason(reason) || !g_baselineSetupSeen;
+   g_lastFastBufferEventId=eventId;
+   string sourceName=StringFormat("SIGNATICS_BUFFER_%d_shift_%d",bufferIndex,shift);
+   if(InpLogFastBufferSignals)
+   {
+      PrintFormat(
+         "SIGNATICSBridge fast_buffer_signal reason=%s event_id='%s' symbol=%s tf=%s dir=%s bar=%s entry=%s buffer=%d shift=%d initial=%s",
+         reason,eventId,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),bufferIndex,shift,(initialAudit ? "true" : "false")
+      );
+   }
+
+   if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName,reason,false))
+      g_lastResolvedPostTime=_timer_now();
+
+   if(initialAudit && !InpSendInitialConfirmedOnStart)
+      return true;
+
+   _print_setup_line("trade_signal_sent_fast_buffer",reason,direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName);
+   _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName,reason,false);
+   g_lastFastConfirmedDirection=direction;
+   g_lastFastConfirmedSignalTime=signalTime;
+   return true;
+}
+
+bool ScanBufferHistoryResolvedState(string reason)
+{
+   if(!_fast_buffers_active() || !InpSendBufferHistoryResolvedOnInit)
+      return false;
+   if(!_is_initial_audit_reason(reason) && g_baselineSetupSeen)
+      return false;
+
+   string direction;
+   datetime signalTime;
+   double entry;
+   int bufferIndex,shift;
+   if(!_find_latest_history_buffer_signal(direction,signalTime,entry,bufferIndex,shift))
+      return false;
+
+   string eventId=_fast_buffer_event_id(direction,signalTime,entry,bufferIndex,shift)+"|history";
+   string sourceName=StringFormat("SIGNATICS_BUFFER_HISTORY_%d_shift_%d",bufferIndex,shift);
+   if(InpLogFastBufferSignals)
+   {
+      PrintFormat(
+         "SIGNATICSBridge buffer_history_resolved reason=%s event_id='%s' symbol=%s tf=%s dir=%s bar=%s entry=%s buffer=%d shift=%d history_lookback=%d",
+         reason,eventId,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),bufferIndex,shift,MathMax(0,InpFastSignalHistoryLookbackBars)
+      );
+      _print_buffer_history_snapshot(reason);
+   }
+
+   if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName,reason,false))
+      g_lastResolvedPostTime=_timer_now();
+   g_lastFastBufferEventId=eventId;
+   g_baselineSetupSeen=true;
+   return true;
+}
+
 bool ScanAndLogLatest(string reason)
 {
+   bool initialReason=_is_initial_audit_reason(reason);
+   bool fastFound=ScanFastBufferSignal(reason);
+   if(fastFound && initialReason && _fast_buffers_active())
+   {
+      _print_buffer_history_snapshot(reason);
+      g_baselineSetupSeen=true;
+      return true;
+   }
+
+   if(_fast_buffers_active() && (initialReason || !g_baselineSetupSeen))
+   {
+      bool historyFound=ScanBufferHistoryResolvedState(reason);
+      if(historyFound)
+         return true;
+   }
+
+   if(_fast_buffers_active() && !InpAllowObjectConfirmedFallback)
+   {
+      if((initialReason || !g_baselineSetupSeen) && InpLogFastBufferSignals && _buffer_history_none_log_due())
+      {
+         g_lastBufferHistoryNoneLogTime=_timer_now();
+         PrintFormat(
+            "SIGNATICSBridge buffer_history NONE reason=%s symbol=%s tf=%s live_lookback=%d history_lookback=%d object_scan=false",
+            reason,Symbol(),_tf_to_string(Period()),MathMax(0,InpFastSignalLookbackBars),MathMax(0,InpFastSignalHistoryLookbackBars)
+         );
+      }
+      return g_baselineSetupSeen;
+   }
+
    string direction,sourceName;
    datetime signalTime;
    double entry,sl,tp1,tp2,tp3;
@@ -991,16 +1480,16 @@ bool ScanAndLogLatest(string reason)
    string eventId=_setup_event_id(direction,signalTime,entry,sl,tp1,tp2,tp3);
    if(InpLogOnlyOnChange && eventId==g_lastEventId)
    {
-      if(_heartbeat_due(g_lastResolvedPostTime))
+      if(_object_confirm_active() && _heartbeat_due(g_lastResolvedPostTime))
       {
-         if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,"heartbeat"))
+         if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,"heartbeat",true))
             g_lastResolvedPostTime=_timer_now();
       }
       return true;
    }
 
    g_lastEventId=eventId;
-   bool initialAudit = _is_initial_audit_reason(reason) || !g_baselineSetupSeen;
+   bool initialAudit = initialReason || !g_baselineSetupSeen;
    bool shouldPrintSetup = (!InpLogOnlyTradeSignals || (initialAudit && InpLogInitialSetup));
    if(shouldPrintSetup)
    {
@@ -1011,27 +1500,52 @@ bool ScanAndLogLatest(string reason)
 
    if(initialAudit)
    {
-      if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason))
+      if(_object_confirm_active() && _post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason,true))
          g_lastResolvedPostTime=_timer_now();
-      if(InpSendInitialConfirmedOnStart)
+      if(InpSendInitialConfirmedOnStart && _object_confirm_active() && _chart_object_confirm_ready(eventId,reason,signalTime))
       {
          _print_setup_line("trade_signal_sent",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
-         _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason);
+         _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason,true);
          g_lastConfirmedEventId=eventId;
+         g_pendingObjectEventId="";
+         g_pendingObjectFirstSeen=0;
       }
       g_baselineSetupSeen=true;
    }
    else if(eventId!=g_lastConfirmedEventId)
    {
-      if(_post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason))
+      if(_object_confirm_active() && _post_signatics_bridge_event("resolved_state",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason,true))
          g_lastResolvedPostTime=_timer_now();
       PrintFormat(
          "SIGNATICSBridge listener_new_setup reason=%s event_id='%s' symbol=%s tf=%s dir=%s bar=%s entry=%s sl=%s tp1=%s tp2=%s tp3=%s source='%s'",
          reason,eventId,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3),sourceName
       );
-      _print_setup_line("trade_signal_sent",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
-      _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason);
-      g_lastConfirmedEventId=eventId;
+      if(_matches_last_fast_signal(direction,signalTime))
+      {
+         PrintFormat(
+            "SIGNATICSBridge object_enrichment_only reason=%s event_id='%s' matched_fast_dir=%s fast_bar=%s object_bar=%s source='%s'",
+            reason,eventId,direction,_fmt_time(g_lastFastConfirmedSignalTime),_fmt_time(signalTime),sourceName
+         );
+         _post_signatics_bridge_event("level_update",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason,true);
+         g_lastConfirmedEventId=eventId;
+         return true;
+      }
+      if(_fast_buffers_active() && !InpAllowObjectConfirmedFallback)
+      {
+         PrintFormat(
+            "SIGNATICSBridge object_enrichment_skipped reason=%s event_id='%s' fast_buffer_primary=true object_bar=%s last_fast_bar=%s source='%s' why=object_does_not_match_fast_signal",
+            reason,eventId,_fmt_time(signalTime),_fmt_time(g_lastFastConfirmedSignalTime),sourceName
+         );
+         return true;
+      }
+      if(_chart_object_confirm_ready(eventId,reason,signalTime))
+      {
+         _print_setup_line("trade_signal_sent",reason,direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName);
+         _post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,sl,tp1,tp2,tp3,sourceName,reason,true);
+         g_lastConfirmedEventId=eventId;
+         g_pendingObjectEventId="";
+         g_pendingObjectFirstSeen=0;
+      }
    }
    return true;
 }
@@ -1040,10 +1554,10 @@ int OnInit()
 {
    int poll=MathMax(1,InpPollSeconds);
    EventSetTimer(poll);
-   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," lvFallback=",InpAllowLevelObjectFallback);
+   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds);
    if(InpEnableProTradePost)
    {
-      _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"","init");
+      _post_signatics_bridge_event("register","",-1,0.0,0.0,0.0,0.0,0.0,"","init",false);
       g_lastRegisterPostTime=_timer_now();
    }
    g_initialSetupRetryUntil=_timer_now()+MathMax(0,InpInitialSetupRetrySeconds);
@@ -1056,7 +1570,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    if(InpSendUnregisterOnDeinit && InpEnableProTradePost)
-      _post_signatics_bridge_event("unregister","",-1,0.0,0.0,0.0,0.0,0.0,"","deinit_"+IntegerToString(reason));
+      _post_signatics_bridge_event("unregister","",-1,0.0,0.0,0.0,0.0,0.0,"","deinit_"+IntegerToString(reason),false);
    if(!InpLogOnlyTradeSignals)
       Print("SIGNATICSBridge uninit reason=",reason);
 }
@@ -1071,4 +1585,8 @@ void OnTimer()
    }
    ScanAndLogLatest("timer");
 }
-void OnTick(){}
+void OnTick()
+{
+   if(_fast_buffers_active() && InpScanFastBuffersOnTick)
+      ScanFastBufferSignal("tick");
+}
