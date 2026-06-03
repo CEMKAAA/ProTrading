@@ -142,7 +142,7 @@
         border-radius: 999px;
         background: linear-gradient(90deg, #22c55e, #06b6d4);
         box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
-        transition: left 0.08s linear, width 0.08s linear;
+        transition: left 0.06s linear, width 0.06s linear;
         will-change: left, width;
     }
     .v2-rail-fill.neg {
@@ -181,8 +181,12 @@
         height: 30px;
         background: #0ea5e9;
         box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
-        transition: left 0.08s linear;
+        transition: left 0.06s linear;
         will-change: left;
+    }
+    .progress .progress-bar[data-live-field="tp_leg_progress"] {
+        transition: width 0.10s linear;
+        will-change: width;
     }
     .v2-rail-current::after {
         content: '';
@@ -269,14 +273,14 @@
         top: 9px;
         height: 70px;
         width: 3px;
-        transition: left 0.08s linear;
+        transition: left 0.06s linear;
     }
     .v2-trade-rail.v2-rail-large .v2-rail-current::after {
         width: 14px;
         height: 14px;
     }
     .v2-trade-rail.v2-rail-large .v2-rail-fill {
-        transition: left 0.08s linear, width 0.08s linear;
+        transition: left 0.06s linear, width 0.06s linear;
     }
     .v2-trade-rail.v2-rail-large .v2-rail-chip {
         font-size: 13px;
@@ -646,5 +650,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=bridge-startall-normal-cachefix-20260603"></script>
+<script src="{{ url_for('static', filename='js/indicator_automation_v2.js') }}?v=fast-lane-price-smooth-20260603"></script>
 {% endblock %}

@@ -456,9 +456,14 @@ class LiveTradingService:
                 return []
 
             result = []
+            tick_cache: Dict[str, Any] = {}
             for pos in positions:
                 pos_symbol = str(getattr(pos, "symbol", "") or "").strip() or str(symbol_resolved or "")
-                tick = mt5.symbol_info_tick(pos_symbol) if pos_symbol else None
+                tick = None
+                if pos_symbol:
+                    if pos_symbol not in tick_cache:
+                        tick_cache[pos_symbol] = mt5.symbol_info_tick(pos_symbol)
+                    tick = tick_cache.get(pos_symbol)
                 if tick:
                     current_price = tick.bid if pos.type == 0 else tick.ask
                 else:

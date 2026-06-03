@@ -8600,31 +8600,13 @@ class TelegramBridgeService:
         })
         price_cache_ttl = self._indicator_bridge_price_positions_cache_ttl_sec()
         try:
-            if symbols_to_query:
-                positions = []
-                seen_position_tickets: set[int] = set()
-                for sym in symbols_to_query:
-                    if not sym:
-                        continue
-                    for pos in self._cached_indicator_open_positions(
-                        svc=svc,
-                        symbol=str(sym),
-                        ttl_sec=float(price_cache_ttl),
-                    ):
-                        if not isinstance(pos, dict):
-                            continue
-                        pt = int(_to_float_or_none((pos or {}).get("ticket")) or 0)
-                        if pt > 0 and pt in seen_position_tickets:
-                            continue
-                        if pt > 0:
-                            seen_position_tickets.add(int(pt))
-                        positions.append(dict(pos))
-            else:
-                positions = self._cached_indicator_open_positions(
-                    svc=svc,
-                    symbol=None,
-                    ttl_sec=float(price_cache_ttl),
-                )
+            # Fast UI lane: one all-position snapshot is cheaper and smoother
+            # than fanning out into one broker query per symbol every 500ms.
+            positions = self._cached_indicator_open_positions(
+                svc=svc,
+                symbol=None,
+                ttl_sec=float(price_cache_ttl),
+            )
         except Exception as exc:
             return {
                 "ok": False,
@@ -8637,42 +8619,85 @@ class TelegramBridgeService:
         updates: Dict[str, Dict[str, Any]] = {}
         rows: List[Dict[str, Any]] = []
         now_iso = self._now_iso()
+        quote_by_symbol: Dict[str, Dict[str, Any]] = {}
         for pos in positions:
             ticket = int(_to_float_or_none(pos.get("ticket")) or 0)
             if ticket <= 0 or (wanted and ticket not in wanted):
                 continue
             ladder_key, ladder = ladder_by_ticket.get(ticket, ("", {}))
+            symbol_out = str(pos.get("symbol") or ladder.get("symbol") or "").strip()
+            direction_out = str(pos.get("direction") or ladder.get("direction") or "").strip().upper()
+            quote_key = str(symbol_out or "").strip().upper()
+            quote_px = None
+            quote_ts = ""
+            if quote_key:
+                quote = quote_by_symbol.get(quote_key)
+                if quote is None:
+                    try:
+                        quote = svc.get_symbol_tick(symbol_out, resolve_symbol=True)
+                    except Exception:
+                        quote = {}
+                    quote_by_symbol[quote_key] = dict(quote or {})
+                if direction_out == "BUY":
+                    quote_px = _to_float_or_none((quote or {}).get("bid"))
+                elif direction_out == "SELL":
+                    quote_px = _to_float_or_none((quote or {}).get("ask"))
+                if quote_px is None:
+                    quote_px = _to_float_or_none((quote or {}).get("last"))
+                quote_ts = str((quote or {}).get("time") or "")
+            live_px = _to_float_or_none(quote_px) or _to_float_or_none(pos.get("current_price"))
             cur_profit = _to_float_or_none(pos.get("profit_loss"))
             max_profit = _to_float_or_none(ladder.get("max_profit"))
             max_loss = _to_float_or_none(ladder.get("max_loss"))
+            next_ladder = dict(ladder)
+            if ladder_key:
+                next_ladder = self._update_ladder_tp_reach_state(
+                    row=next_ladder,
+                    direction=str(direction_out),
+                    current_price=live_px,
+                )
             if cur_profit is not None:
                 if max_profit is None or float(cur_profit) > float(max_profit):
                     max_profit = float(cur_profit)
                 if max_loss is None or float(cur_profit) < float(max_loss):
                     max_loss = float(cur_profit)
-                if ladder_key:
-                    next_ladder = dict(ladder)
-                    next_ladder["max_profit"] = float(max_profit)
-                    next_ladder["max_loss"] = float(max_loss)
-                    next_ladder["last_price_snapshot_at"] = str(now_iso)
-                    updates[str(ladder_key)] = next_ladder
+            if ladder_key:
+                next_ladder["max_profit"] = float(max_profit) if max_profit is not None else _to_float_or_none(next_ladder.get("max_profit"))
+                next_ladder["max_loss"] = float(max_loss) if max_loss is not None else _to_float_or_none(next_ladder.get("max_loss"))
+                next_ladder["last_price_snapshot_at"] = str(now_iso)
+                updates[str(ladder_key)] = next_ladder
             rows.append(
                 {
                     "ticket": int(ticket),
-                    "symbol": str(pos.get("symbol") or ladder.get("symbol") or "").strip(),
-                    "direction": str(pos.get("direction") or ladder.get("direction") or "").strip().upper(),
+                    "symbol": symbol_out,
+                    "direction": direction_out,
                     "entry_price": _to_float_or_none(pos.get("entry_price")) or _to_float_or_none(ladder.get("entry_price")),
-                    "current_price": _to_float_or_none(pos.get("current_price")),
+                    "current_price": live_px,
+                    "current_price_source": ("mt5_tick" if _to_float_or_none(quote_px) is not None else "position_snapshot"),
+                    "current_price_tick_time": quote_ts,
                     "current_profit": _to_float_or_none(cur_profit),
                     "profit_loss": _to_float_or_none(cur_profit),
-                    "stop_loss": _to_float_or_none(pos.get("stop_loss")) or _to_float_or_none(ladder.get("stop_loss")) or _to_float_or_none(ladder.get("initial_stop_loss")),
-                    "take_profit": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(ladder.get("broker_take_profit")),
-                    "final_tp": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(ladder.get("broker_take_profit")),
-                    "lot_size": _to_float_or_none(pos.get("lot_size")) or _to_float_or_none(ladder.get("lot_size")),
+                    "stop_loss": _to_float_or_none(pos.get("stop_loss")) or _to_float_or_none(next_ladder.get("stop_loss")) or _to_float_or_none(next_ladder.get("initial_stop_loss")),
+                    "take_profit": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(next_ladder.get("broker_take_profit")),
+                    "final_tp": _to_float_or_none(pos.get("take_profit")) or _to_float_or_none(next_ladder.get("broker_take_profit")),
+                    "lot_size": _to_float_or_none(pos.get("lot_size")) or _to_float_or_none(next_ladder.get("lot_size")),
                     "magic": int(_to_float_or_none(pos.get("magic")) or 0),
                     "comment": str(pos.get("comment") or ""),
                     "max_profit": _to_float_or_none(max_profit),
                     "max_loss": _to_float_or_none(max_loss),
+                    "tps": list(next_ladder.get("tps") or []) if isinstance(next_ladder.get("tps"), list) else [],
+                    "total_tps": int(_to_float_or_none(next_ladder.get("total_tps")) or 0),
+                    "highest_tp_reached": int(_to_float_or_none(next_ladder.get("highest_tp_reached")) or 0),
+                    "highest_tp_price": _to_float_or_none(next_ladder.get("highest_tp_price")),
+                    "highest_tp_updated_at": str(next_ladder.get("highest_tp_updated_at") or ""),
+                    "half_be_enabled": bool(next_ladder.get("half_be_enabled")),
+                    "half_be_tp_index": int(_to_float_or_none(next_ladder.get("half_be_tp_index")) or 0),
+                    "half_be_done": bool(next_ladder.get("half_be_done")),
+                    "half_be_done_at": str(next_ladder.get("half_be_done_at") or ""),
+                    "half_be_secured_profit": _to_float_or_none(next_ladder.get("half_be_secured_profit")),
+                    "half_be_realized_pnl": _to_float_or_none(next_ladder.get("half_be_realized_pnl")),
+                    "half_be_close_lot": _to_float_or_none(next_ladder.get("half_be_close_lot")),
+                    "half_be_sl": _to_float_or_none(next_ladder.get("half_be_sl")),
                     "updated_at": str(now_iso),
                 }
             )
@@ -12786,6 +12811,9 @@ class TelegramBridgeService:
         if str(profile).strip().lower() == "entryexit":
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "entryexit_resolved_state_no_entry_execution"}
             return base
+        if str(profile).strip().lower() == "atomic_regime":
+            base["reconcile"] = {"ok": True, "corrected": False, "reason": "atomic_regime_requires_bridge_levels"}
+            return base
         if not self._indicator_bridge_v2_reconcile_enabled():
             base["reconcile"] = {"ok": True, "corrected": False, "reason": "v2_reconcile_disabled"}
             return base
@@ -14389,8 +14417,11 @@ class TelegramBridgeService:
                         # farthest TP as the standalone broker TP instead of
                         # synthesizing an advanced ladder.
                         mode_take_profit = _to_float_or_none((mode_tps[-1] or {}).get("price"))
+                    profile_l = str(profile).strip().lower()
+                    native_mode_stop_loss = _to_float_or_none(mode_stop_loss)
+                    native_mode_take_profit = _to_float_or_none(mode_take_profit)
                     atomic_sl_widen: Dict[str, Any] = {}
-                    if str(profile).strip().lower() == "atomic":
+                    if profile_l == "atomic":
                         widened_sl, atomic_sl_widen = self._widen_atomic_native_stop_loss(
                             profile=str(profile),
                             direction=str(hint),
@@ -14407,6 +14438,26 @@ class TelegramBridgeService:
                             catastrophe_plan["effective_stop_loss"] = _to_float_or_none(mode_stop_loss)
                             if _to_float_or_none(mode_stop_loss) is not None:
                                 catastrophe_plan["effective_price_distance"] = abs(float(entry_price) - float(mode_stop_loss))
+                    elif profile_l == "atomic_regime":
+                        # AtomicRegime already sends an independent runner-risk SL/TP
+                        # pair from the EA. Backend SL widening must not collapse its
+                        # intended RR; preserve the native RR if any future guard
+                        # adjusts the effective stop before execution.
+                        final_mode_stop = _to_float_or_none(mode_stop_loss)
+                        if (
+                            native_mode_stop_loss is not None
+                            and native_mode_take_profit is not None
+                            and final_mode_stop is not None
+                            and float(entry_price) > 0.0
+                        ):
+                            native_risk = abs(float(entry_price) - float(native_mode_stop_loss))
+                            native_reward = abs(float(native_mode_take_profit) - float(entry_price))
+                            native_rr = float(native_reward) / float(native_risk) if float(native_risk) > 0.0 else 0.0
+                            if native_rr >= 1.0:
+                                if str(hint).strip().upper() == "BUY":
+                                    mode_take_profit = round(float(entry_price) + (abs(float(entry_price) - float(final_mode_stop)) * native_rr), int(digits))
+                                elif str(hint).strip().upper() == "SELL":
+                                    mode_take_profit = round(float(entry_price) - (abs(float(entry_price) - float(final_mode_stop)) * native_rr), int(digits))
                     exec_msg = self._execute_indicator_normal_signal(
                         chat_id=int(chat_id),
                         symbol=str(symbol_exec_raw),
@@ -19124,11 +19175,12 @@ class TelegramBridgeService:
             self._active_confirmation_signal_ladders[str(key)] = dict(item)
         return item
 
-    def _push_confirmation_signal_ladders(self) -> None:
-        try:
-            self._reconcile_execution_ticket_state()
-        except Exception:
-            logger.exception("telegram_execution_reconcile_failed")
+    def _push_confirmation_signal_ladders(self, *, skip_reconcile: bool = False) -> None:
+        if not bool(skip_reconcile):
+            try:
+                self._reconcile_execution_ticket_state()
+            except Exception:
+                logger.exception("telegram_execution_reconcile_failed")
         with self._lock:
             ladders = {str(k): dict(v) for k, v in self._active_confirmation_signal_ladders.items()}
         if not ladders:
@@ -19143,6 +19195,15 @@ class TelegramBridgeService:
         missing_retries = int(self._confirm_ladder_missing_retries())
         missing_grace_sec = float(self._confirm_ladder_missing_grace_sec())
         remove_keys: List[str] = []
+        try:
+            all_positions = [dict(x) for x in (svc.get_open_positions(symbol=None) or []) if isinstance(x, dict)]
+        except Exception:
+            all_positions = []
+        positions_by_ticket = {
+            int(_to_float_or_none((p or {}).get("ticket")) or 0): dict(p)
+            for p in all_positions
+            if int(_to_float_or_none((p or {}).get("ticket")) or 0) > 0
+        }
         for key, row in ladders.items():
             sym = str(row.get("symbol") or "").strip().upper()
             ticket = int(row.get("broker_ticket") or 0)
@@ -19157,11 +19218,13 @@ class TelegramBridgeService:
             if execution_mode != "normal" and (next_idx <= 0 or next_idx > len(tps)):
                 remove_keys.append(str(key))
                 continue
-            try:
-                rows = svc.get_open_positions(symbol=str(sym))
-            except Exception:
-                rows = []
-            pos = next((dict(r) for r in rows if int((r or {}).get("ticket") or 0) == int(ticket)), None)
+            pos = positions_by_ticket.get(int(ticket))
+            if not isinstance(pos, dict):
+                try:
+                    rows = svc.get_open_positions(symbol=str(sym))
+                except Exception:
+                    rows = []
+                pos = next((dict(r) for r in rows if int((r or {}).get("ticket") or 0) == int(ticket)), None)
             if not isinstance(pos, dict):
                 miss_count = int(_to_float_or_none(row.get("missing_seen_count")) or 0) + 1
                 first_miss_ts = _to_float_or_none(row.get("missing_first_ts"))
@@ -19572,11 +19635,11 @@ class TelegramBridgeService:
                 for key in remove_keys:
                     self._active_confirmation_signal_ladders.pop(str(key), None)
 
-    def _push_confirmation_signal_ladders_guarded(self) -> None:
+    def _push_confirmation_signal_ladders_guarded(self, *, skip_reconcile: bool = False) -> None:
         if not self._confirmation_ladder_push_lock.acquire(blocking=False):
             return
         try:
-            self._push_confirmation_signal_ladders()
+            self._push_confirmation_signal_ladders(skip_reconcile=bool(skip_reconcile))
         finally:
             self._confirmation_ladder_push_lock.release()
 
@@ -19584,12 +19647,10 @@ class TelegramBridgeService:
         with self._lock:
             rows = [dict(v) for v in self._active_confirmation_signal_ladders.values() if isinstance(v, dict)]
         for row in rows:
-            profile = str((row or {}).get("profile") or "").strip().lower()
             execution_mode = str((row or {}).get("execution_mode") or "").strip().lower()
             ticket = int(_to_float_or_none((row or {}).get("broker_ticket")) or 0)
             if (
-                profile == "atomic"
-                and execution_mode in {"normal", "sync"}
+                execution_mode in {"normal", "sync"}
                 and ticket > 0
                 and bool((row or {}).get("half_be_enabled"))
                 and not bool((row or {}).get("half_be_done"))
@@ -24364,7 +24425,7 @@ class TelegramBridgeService:
             has_fast_ladder = bool(self._has_fast_atomic_half_be_ladder())
             if bool(has_fast_ladder):
                 try:
-                    self._push_confirmation_signal_ladders_guarded()
+                    self._push_confirmation_signal_ladders_guarded(skip_reconcile=True)
                 except Exception as exc:
                     logger.warning("Telegram confirmation ladder push failed (entry-watch): %s", str(exc)[:220])
             # Dynamic pacing: tight when queue exists, relaxed otherwise.

@@ -84,8 +84,10 @@
     let tradeRailOverlayTicket = '';
     let liquidityScanRows = [];
     const priceVisuals = new Map();
-    const PRICE_SMOOTH_TAU_MS = 260;
-    const PRICE_SMOOTH_DOM_MS = 33;
+    const PRICE_SMOOTH_DEFAULT_MS = 900;
+    const PRICE_SMOOTH_MIN_MS = 120;
+    const PRICE_SMOOTH_MAX_MS = 2200;
+    const PRICE_SMOOTH_DOM_MS = 16;
 
     function esc(v) {
         return String(v == null ? '' : v)
@@ -341,18 +343,54 @@
         const key = ticketKey(ticket);
         const target = Number(price);
         if (!key || !Number.isFinite(target) || target <= 0) return NaN;
-        const now = Date.now();
+        const nowWall = Date.now();
+        const nowPerf = performance.now();
         const existing = priceVisuals.get(key) || {};
-        const current = Number(existing.current);
+        const current = advancePriceVisual(existing, nowPerf);
+        const lastTargetAtMs = Number(existing.lastTargetAtMs || 0);
+        const observedIntervalMs = lastTargetAtMs > 0 ? Math.max(1, nowWall - lastTargetAtMs) : PRICE_SMOOTH_DEFAULT_MS;
+        const durationMs = Math.max(
+            PRICE_SMOOTH_MIN_MS,
+            Math.min(PRICE_SMOOTH_MAX_MS, observedIntervalMs * 0.90)
+        );
         const next = {
             current: Number.isFinite(current) && current > 0 ? current : target,
+            from: Number.isFinite(current) && current > 0 ? current : target,
             target,
             lastRaw: target,
-            updatedAtMs: now,
+            startedAtMs: nowPerf,
+            durationMs,
+            updatedAtMs: nowWall,
+            lastTargetAtMs: nowWall,
         };
         priceVisuals.set(key, next);
         ensurePriceSmoothingLoop();
         return next.current;
+    }
+
+    function easeDisplayPrice(t) {
+        const x = Math.max(0, Math.min(1, Number(t || 0)));
+        return x;
+    }
+
+    function advancePriceVisual(visual, nowPerf) {
+        if (!visual || typeof visual !== 'object') return NaN;
+        const from = Number(Object.prototype.hasOwnProperty.call(visual, 'from') ? visual.from : visual.current);
+        const target = Number(visual.target);
+        if (!Number.isFinite(from) || !Number.isFinite(target) || target <= 0) {
+            const fallback = Number(visual.current);
+            return Number.isFinite(fallback) ? fallback : NaN;
+        }
+        const startedAtMs = Number(visual.startedAtMs || 0);
+        const durationMs = Math.max(PRICE_SMOOTH_MIN_MS, Number(visual.durationMs || PRICE_SMOOTH_DEFAULT_MS));
+        if (!startedAtMs || durationMs <= 0) {
+            visual.current = target;
+            return target;
+        }
+        const progress = Math.max(0, Math.min(1, (Number(nowPerf || performance.now()) - startedAtMs) / durationMs));
+        const current = from + ((target - from) * easeDisplayPrice(progress));
+        visual.current = Number.isFinite(current) ? current : target;
+        return visual.current;
     }
 
     function patchLiveCurrentPrice(row) {
@@ -371,9 +409,7 @@
             return;
         }
         const now = Number(ts || performance.now());
-        const dt = priceSmoothLastMs > 0 ? Math.max(1, Math.min(120, now - priceSmoothLastMs)) : 16;
         priceSmoothLastMs = now;
-        const alpha = 1 - Math.exp(-dt / PRICE_SMOOTH_TAU_MS);
         const liveTickets = new Set(collectOpenTradeTickets());
         let active = false;
         priceVisuals.forEach((visual, key) => {
@@ -381,17 +417,15 @@
                 priceVisuals.delete(key);
                 return;
             }
-            const current = Number(visual.current);
             const target = Number(visual.target);
-            if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return;
-            const epsilon = Math.max(Math.abs(target) * 0.0000002, 0.000001);
-            const delta = target - current;
-            if (Math.abs(delta) <= epsilon) {
+            if (!Number.isFinite(target) || target <= 0) return;
+            const current = advancePriceVisual(visual, now);
+            const progress = (now - Number(visual.startedAtMs || 0)) / Math.max(PRICE_SMOOTH_MIN_MS, Number(visual.durationMs || PRICE_SMOOTH_DEFAULT_MS));
+            if (progress >= 1) {
                 visual.current = target;
                 return;
             }
-            visual.current = current + (delta * alpha);
-            active = true;
+            if (Number.isFinite(current)) active = true;
         });
         if (now - priceSmoothLastDomMs >= PRICE_SMOOTH_DOM_MS) {
             priceSmoothLastDomMs = now;
@@ -435,7 +469,22 @@
                 'final_tp',
                 'lot_size',
                 'max_profit',
-                'max_loss'
+                'max_loss',
+                'tps',
+                'total_tps',
+                'highest_tp_reached',
+                'highest_tp_price',
+                'highest_tp_updated_at',
+                'half_be_enabled',
+                'half_be_tp_index',
+                'half_be_done',
+                'half_be_done_at',
+                'half_be_secured_profit',
+                'half_be_realized_pnl',
+                'half_be_close_lot',
+                'half_be_sl',
+                'current_price_source',
+                'current_price_tick_time'
             ].forEach(key => {
                 if (Object.prototype.hasOwnProperty.call(snap, key) && snap[key] != null) {
                     row[key] = snap[key];
@@ -1896,6 +1945,7 @@
             .sort((a, b) => a.index - b.index);
         if (!targets.length) return { pct: 0, label: 'leg n/a' };
         const favorable = px => side === 'BUY' ? Number(px) >= entry : Number(px) <= entry;
+        if (!favorable(current)) return { pct: 0, label: `to TP${targets[0].index}` };
         let prev = entry;
         for (const tp of targets) {
             const reached = side === 'BUY' ? current >= tp.price : current <= tp.price;
@@ -1981,12 +2031,29 @@
             const legChip = rail.querySelector('[data-rail-chip="leg"]');
             if (legChip) legChip.textContent = `${runtime.leg.label} ${fmtNum(runtime.leg.pct, 0)}%`;
         });
+        patchTpLegProgressDom(ticket, runtime.leg);
+    }
+
+    function patchTpLegProgressDom(ticket, leg) {
+        const key = String(ticket || '').trim();
+        if (!key || !leg) return;
+        const pct = clampPct(Number(leg.pct || 0));
+        const label = String(leg.label || 'TP progress');
+        document.querySelectorAll(`[data-live-ticket="${cssEsc(key)}"][data-live-field="tp_leg_progress"]`).forEach(el => {
+            el.style.width = `${fmtNum(pct, 1)}%`;
+            el.setAttribute('aria-valuenow', `${fmtNum(pct, 1)}`);
+            el.setAttribute('title', `${label} ${fmtNum(pct, 1)}%`);
+        });
+        document.querySelectorAll(`[data-live-ticket="${cssEsc(key)}"][data-live-field="tp_leg_label"]`).forEach(el => {
+            el.textContent = `${label} ${fmtNum(pct, 0)}%`;
+        });
     }
 
     function patchLiveTradeTelemetry() {
         openTrades().forEach(row => {
             const ticket = String((row || {}).ticket || '').trim();
             if (!ticket) return;
+            const runtime = tradeRailRuntime(row);
             const pnl = Number(row.current_profit);
             const maxP = Number(row.max_profit);
             const maxL = Number(row.max_loss);
@@ -2010,6 +2077,9 @@
             });
             patchLiveCurrentPrice(row);
             patchTradeRailDom(row);
+            if (runtime.ok) {
+                patchTpLegProgressDom(ticket, runtime.leg);
+            }
         });
     }
 
@@ -2123,7 +2193,9 @@
             const hit = Number(row.highest_tp_reached || 0);
             const total = Number(row.total_tps || 0);
             const ohlcHit = Number(row.ohlc_max_tp_reached || 0);
-            const pct = tpProgressPct(row);
+            const runtime = tradeRailRuntime(row);
+            const liveLeg = runtime.ok ? runtime.leg : { pct: tpProgressPct(row), label: 'TP progress' };
+            const pct = liveLeg.pct;
             const pnlCls = Number.isFinite(pnl) ? (pnl >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const maxCls = Number.isFinite(maxP) ? (maxP >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
             const minCls = Number.isFinite(maxL) ? (maxL >= 0 ? 'text-success' : 'text-danger') : 'text-muted';
@@ -2161,8 +2233,9 @@
                         <span class="small text-muted">${Number.isFinite(total) && total > 0 ? `${Math.max(0, Math.min(hit, total))}/${total}` : 'n/a'}</span>
                     </div>
                     <div class="progress mt-1" style="height: 5px;">
-                        <div class="progress-bar ${tpTone}" style="width: ${fmtNum(pct, 0)}%"></div>
+                        <div class="progress-bar ${tpTone}" data-live-ticket="${esc(row.ticket || '')}" data-live-field="tp_leg_progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${esc(fmtNum(pct, 1))}" title="${esc(liveLeg.label)} ${esc(fmtNum(pct, 1))}%" style="width: ${fmtNum(pct, 1)}%"></div>
                     </div>
+                    <div class="small text-muted" data-live-ticket="${esc(row.ticket || '')}" data-live-field="tp_leg_label">${esc(liveLeg.label)} ${esc(fmtNum(pct, 0))}%</div>
                     ${securedLine}
                 </td>
                 <td>
@@ -2761,7 +2834,7 @@
         if (timer) clearInterval(timer);
         timer = setInterval(() => loadState().catch(showError), 12000);
         if (priceTimer) clearInterval(priceTimer);
-        priceTimer = setInterval(() => loadFastPrices().catch(() => {}), 500);
+        priceTimer = setInterval(() => loadFastPrices().catch(() => {}), 250);
         if (auditTimer) clearInterval(auditTimer);
         auditTimer = setInterval(() => loadAuditLogs().catch(() => {}), 90000);
         if (uiTimer) clearInterval(uiTimer);
