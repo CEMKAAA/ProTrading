@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-03.1315-buffer-first-live-confirm"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-04.0000-transport-audit-gmt"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -198,6 +198,29 @@ datetime _timer_now()
 }
 
 string _event_ts_now(){ return TimeToString(_timer_now(),TIME_DATE|TIME_SECONDS); }
+
+string _bridge_runtime_telemetry_json()
+{
+   RefreshRates();
+   datetime serverTs=_timer_now();
+   datetime gmtTs=TimeGMT();
+   datetime localTs=TimeLocal();
+   double bid=MarketInfo(Symbol(),MODE_BID);
+   double ask=MarketInfo(Symbol(),MODE_ASK);
+   double point=MarketInfo(Symbol(),MODE_POINT);
+   int spread=(int)MarketInfo(Symbol(),MODE_SPREAD);
+   return
+      "\"mt4_server_time\":\""+_json_escape(TimeToString(serverTs,TIME_DATE|TIME_SECONDS))+"\","
+      "\"mt4_server_unix\":"+IntegerToString((int)serverTs)+","
+      "\"mt4_gmt_time\":\""+_json_escape(TimeToString(gmtTs,TIME_DATE|TIME_SECONDS))+"\","
+      "\"mt4_gmt_unix\":"+IntegerToString((int)gmtTs)+","
+      "\"mt4_local_time\":\""+_json_escape(TimeToString(localTs,TIME_DATE|TIME_SECONDS))+"\","
+      "\"mt4_local_unix\":"+IntegerToString((int)localTs)+","
+      "\"mt4_bid\":"+DoubleToString(bid,Digits)+","
+      "\"mt4_ask\":"+DoubleToString(ask,Digits)+","
+      "\"mt4_point\":"+DoubleToString(point,Digits+2)+","
+      "\"mt4_spread_points\":"+IntegerToString(spread)+",";
+}
 
 string _setup_event_id(string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3)
 {
@@ -1294,7 +1317,8 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       "\"signal_profile\":\""+_json_escape(InpSignalProfile)+"\","
       "\"bridge_event_type\":\""+_json_escape(eventKind)+"\","
       "\"event_id\":\""+_json_escape(eventId)+"\","
-      "\"event_ts\":\""+_json_escape(_event_ts_now())+"\","
+      "\"event_ts\":\""+_json_escape(_event_ts_now())+"\","+
+      _bridge_runtime_telemetry_json()+
       "\"resolved_signal_bar_time\":\""+_json_escape(_fmt_time(signalTime))+"\","
       "\"resolved_signal_bar_unix\":"+IntegerToString((int)signalTime)+","
       "\"signal_bar_age_sec\":"+IntegerToString(signalBarAgeSec)+","

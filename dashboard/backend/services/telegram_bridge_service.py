@@ -434,6 +434,7 @@ class TelegramBridgeService:
         self._indicator_recent_open: Dict[str, Dict[str, Any]] = {}
         self._indicator_sync_last_dir: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._indicator_bridge_instances: Dict[str, Dict[str, Any]] = {}
+        self._indicator_bridge_health_state: Dict[str, Dict[str, Any]] = {}
         self._indicator_rsi_telemetry: Dict[str, Dict[str, Any]] = {}
         self._indicator_rsi_telemetry_seq: int = 0
         self._automation_execution_logs: List[Dict[str, Any]] = []
@@ -4337,6 +4338,16 @@ class TelegramBridgeService:
         return max(10.0, min(86400.0, float(raw)))
 
     @staticmethod
+    def _indicator_bridge_health_gap_sec() -> float:
+        try:
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_HEALTH_GAP_SEC", "300"))
+        except Exception:
+            raw = 300.0
+        if not math.isfinite(float(raw)):
+            raw = 300.0
+        return max(30.0, min(86400.0, float(raw)))
+
+    @staticmethod
     def _indicator_bridge_state_positions_cache_ttl_sec() -> float:
         try:
             raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_STATE_POSITIONS_CACHE_TTL_SEC", "2.0"))
@@ -6602,6 +6613,209 @@ class TelegramBridgeService:
         )
         return out
 
+    def _bridge_source_tag_for_payload(
+        self,
+        *,
+        family: Any,
+        profile: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+    ) -> str:
+        return (
+            f"{self._indicator_bridge_family(family)}|{str(profile or 'generic').strip().lower()}|"
+            f"{self._normalize_mt_indicator_key(indicator)}|{str(symbol or '').strip().upper()}|{str(timeframe or '').strip().upper()}"
+        )
+
+    def _build_bridge_transport_audit_context(
+        self,
+        *,
+        payload: Dict[str, Any],
+        backend_receive_ts: float,
+        mt5_tick: Optional[Dict[str, Any]] = None,
+        symbol_exec_raw: Any = "",
+    ) -> Dict[str, Any]:
+        p = payload if isinstance(payload, dict) else {}
+        receive_ts = float(backend_receive_ts or time.time())
+        mt4_server_unix = _to_float_or_none(p.get("mt4_server_unix"))
+        mt4_gmt_unix = _to_float_or_none(p.get("mt4_gmt_unix"))
+        mt4_local_unix = _to_float_or_none(p.get("mt4_local_unix"))
+        event_unix_raw = _to_unix_or_none(p.get("event_ts"))
+        event_unix = mt4_gmt_unix if mt4_gmt_unix is not None else event_unix_raw
+        signal_bar_unix = (
+            _to_float_or_none(p.get("resolved_signal_bar_unix"))
+            or _to_float_or_none(p.get("last_signal_bar_unix"))
+        )
+        tick = dict(mt5_tick or {}) if isinstance(mt5_tick, dict) else {}
+        mt5_tick_unix = _to_float_or_none(tick.get("time_unix"))
+        mt4_bid = _to_float_or_none(p.get("mt4_bid"))
+        mt4_ask = _to_float_or_none(p.get("mt4_ask"))
+        mt5_bid = _to_float_or_none(tick.get("bid"))
+        mt5_ask = _to_float_or_none(tick.get("ask"))
+        out: Dict[str, Any] = {
+            "backend_receive_time_utc": datetime.fromtimestamp(receive_ts, tz=timezone.utc).isoformat(),
+            "backend_receive_unix": float(receive_ts),
+            "bridge_event_time_raw": str(p.get("event_ts") or ""),
+            "bridge_event_unix": _to_float_or_none(event_unix),
+            "bridge_event_unix_raw": _to_float_or_none(event_unix_raw),
+            "bridge_event_unix_source": ("mt4_gmt_unix" if mt4_gmt_unix is not None else "event_ts"),
+            "signal_bar_time": str(p.get("resolved_signal_bar_time") or p.get("last_signal_bar_time") or ""),
+            "signal_bar_unix": _to_float_or_none(signal_bar_unix),
+            "mt4_server_time": str(p.get("mt4_server_time") or ""),
+            "mt4_server_unix": _to_float_or_none(mt4_server_unix),
+            "mt4_gmt_time": str(p.get("mt4_gmt_time") or ""),
+            "mt4_gmt_unix": _to_float_or_none(mt4_gmt_unix),
+            "mt4_local_time": str(p.get("mt4_local_time") or ""),
+            "mt4_local_unix": _to_float_or_none(mt4_local_unix),
+            "mt4_bid": mt4_bid,
+            "mt4_ask": mt4_ask,
+            "mt4_point": _to_float_or_none(p.get("mt4_point")),
+            "mt4_spread_points": _to_float_or_none(p.get("mt4_spread_points")),
+            "mt5_requested_symbol": str(tick.get("requested_symbol") or ""),
+            "mt5_resolved_symbol": str(tick.get("resolved_symbol") or symbol_exec_raw or ""),
+            "mt5_tick_time_utc": str(tick.get("time") or ""),
+            "mt5_tick_unix": _to_float_or_none(mt5_tick_unix),
+            "mt5_bid": mt5_bid,
+            "mt5_ask": mt5_ask,
+            "mt5_last": _to_float_or_none(tick.get("last")),
+        }
+        if event_unix is not None:
+            out["backend_receive_minus_event_sec"] = float(receive_ts) - float(event_unix)
+        if mt4_server_unix is not None:
+            out["backend_receive_minus_mt4_server_sec"] = float(receive_ts) - float(mt4_server_unix)
+        if mt4_gmt_unix is not None:
+            out["backend_receive_minus_mt4_gmt_sec"] = float(receive_ts) - float(mt4_gmt_unix)
+        if mt5_tick_unix is not None:
+            out["backend_receive_minus_mt5_tick_sec"] = float(receive_ts) - float(mt5_tick_unix)
+        if signal_bar_unix is not None:
+            out["backend_receive_minus_signal_bar_sec"] = float(receive_ts) - float(signal_bar_unix)
+        if mt4_bid is not None and mt5_bid is not None:
+            out["mt5_bid_minus_mt4_bid"] = float(mt5_bid) - float(mt4_bid)
+        if mt4_ask is not None and mt5_ask is not None:
+            out["mt5_ask_minus_mt4_ask"] = float(mt5_ask) - float(mt4_ask)
+        return out
+
+    def _append_indicator_bridge_health_log(
+        self,
+        *,
+        status: str,
+        message: str,
+        family: Any,
+        profile: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+        event_ts: Any,
+        stage_payload: Dict[str, Any],
+    ) -> None:
+        source_tag = self._bridge_source_tag_for_payload(
+            family=family,
+            profile=profile or "generic",
+            indicator=indicator,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        self._append_automation_execution_log(
+            source_type="mt_indicator",
+            source_name=str(indicator or f"{str(family).upper()}Bridge"),
+            trigger="bridge_health",
+            status=str(status or "info"),
+            symbol=str(symbol or "").strip().upper(),
+            timeframe=str(timeframe or "").strip().upper(),
+            message=str(message or "bridge_health"),
+            profile=str(profile or "generic").strip().lower(),
+            indicator=str(indicator or ""),
+            source_tag=str(source_tag),
+            event_ts=event_ts,
+            stage="bridge_health",
+            stage_status=str(status or "info"),
+            stage_payload=dict(stage_payload or {}),
+            error_code=(None if str(status).lower() in {"connected", "recovered", "registered"} else str(status).lower()),
+        )
+
+    def _audit_indicator_bridge_health_event(
+        self,
+        *,
+        family: Any,
+        profile: Any,
+        indicator: Any,
+        symbol: Any,
+        timeframe: Any,
+        instance_key: Any,
+        event_ts: Any,
+        payload: Dict[str, Any],
+        prev_last_seen: Any = None,
+        event_type: Any = "",
+    ) -> None:
+        key = str(instance_key or "").strip()
+        if not key:
+            return
+        now_unix = time.time()
+        health_event_ts = datetime.fromtimestamp(float(now_unix), tz=timezone.utc).isoformat()
+        prev_unix = _to_unix_or_none(prev_last_seen)
+        threshold = float(self._indicator_bridge_health_gap_sec())
+        transport = self._build_bridge_transport_audit_context(
+            payload=dict(payload or {}),
+            backend_receive_ts=time.time(),
+            mt5_tick=None,
+        )
+        if prev_unix is None:
+            with self._lock:
+                already = bool(self._indicator_bridge_health_state.get(key, {}).get("ever_seen"))
+                self._indicator_bridge_health_state[key] = {
+                    "ever_seen": True,
+                    "last_seen_unix": float(now_unix),
+                    "state": "connected",
+                }
+            if not already:
+                self._append_indicator_bridge_health_log(
+                    status="connected",
+                    message="bridge_connected",
+                    family=family,
+                    profile=profile,
+                    indicator=indicator,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    event_ts=health_event_ts,
+                    stage_payload={
+                        "instance_key": str(key),
+                        "event_type": str(event_type or ""),
+                        "bridge_event_ts_raw": str(event_ts or ""),
+                        "health_gap_threshold_sec": float(threshold),
+                        "transport": dict(transport),
+                    },
+                )
+            return
+        gap = float(now_unix) - float(prev_unix)
+        with self._lock:
+            self._indicator_bridge_health_state[key] = {
+                "ever_seen": True,
+                "last_seen_unix": float(now_unix),
+                "state": "connected",
+                "last_gap_sec": float(gap),
+            }
+        if float(gap) > float(threshold):
+            self._append_indicator_bridge_health_log(
+                status="recovered",
+                message="bridge_recovered_after_gap",
+                family=family,
+                profile=profile,
+                indicator=indicator,
+                symbol=symbol,
+                timeframe=timeframe,
+                event_ts=health_event_ts,
+                stage_payload={
+                    "instance_key": str(key),
+                    "event_type": str(event_type or ""),
+                    "bridge_event_ts_raw": str(event_ts or ""),
+                    "gap_sec": float(gap),
+                    "health_gap_threshold_sec": float(threshold),
+                    "last_seen_before_gap": str(prev_last_seen or ""),
+                    "recovered_at": str(event_ts or ""),
+                    "transport": dict(transport),
+                },
+            )
+
     def register_indicator_bridge_instance(
         self,
         *,
@@ -6619,6 +6833,8 @@ class TelegramBridgeService:
         message = str(p.get("message") or p.get("raw_text") or "").strip()
         event_ts = str(p.get("event_ts") or self._now_iso()).strip() or self._now_iso()
         bridge_event_type = str(p.get("bridge_event_type") or p.get("event_type") or "signal").strip().lower() or "signal"
+        backend_seen_ts = float(time.time())
+        backend_seen_iso = datetime.fromtimestamp(float(backend_seen_ts), tz=timezone.utc).isoformat()
         has_buy_exit_buffer = "buy_exit_buffer" in p
         has_sell_exit_buffer = "sell_exit_buffer" in p
         buy_exit_buffer_val = _to_float_or_none(p.get("buy_exit_buffer")) if has_buy_exit_buffer else None
@@ -6658,6 +6874,8 @@ class TelegramBridgeService:
             "timeframe": str(timeframe),
             "instance_key": str(instance_key),
             "last_seen": str(event_ts),
+            "backend_last_seen": str(backend_seen_iso),
+            "backend_last_seen_unix": float(backend_seen_ts),
             "bridge_event_type": str(bridge_event_type),
             "message": str(message),
             "automation_mode": str(runtime_cfg.get("automation_mode") or "inherit"),
@@ -6745,9 +6963,15 @@ class TelegramBridgeService:
         }
         if not instance_key:
             return row
+        prev_last_seen_for_health: Any = None
         with self._lock:
             prev = self._indicator_bridge_instances.get(str(instance_key))
             prev_row = dict(prev) if isinstance(prev, dict) else {}
+            prev_last_seen_for_health = (
+                prev_row.get("backend_last_seen_unix")
+                or prev_row.get("backend_last_seen")
+                or prev_row.get("last_seen")
+            ) if prev_row else None
             last_signal_side = self._bridge_direction(row.get("last_signal_direction"))
             if last_signal_side in {"BUY", "SELL"}:
                 row["last_signal_direction"] = str(last_signal_side)
@@ -6823,6 +7047,18 @@ class TelegramBridgeService:
                 family=str(family),
                 parent_row=dict(row),
             )
+        self._audit_indicator_bridge_health_event(
+            family=str(family),
+            profile=str(profile or "generic"),
+            indicator=str(indicator),
+            symbol=str(symbol),
+            timeframe=str(timeframe),
+            instance_key=str(instance_key),
+            event_ts=event_ts,
+            payload=dict(p),
+            prev_last_seen=prev_last_seen_for_health,
+            event_type=str(bridge_event_type),
+        )
         return dict(row)
 
     def unregister_indicator_bridge_instance(
@@ -6856,6 +7092,33 @@ class TelegramBridgeService:
                     if str(row.get("dual_parent_instance_key") or "").strip() == str(instance_key):
                         self._indicator_bridge_instances.pop(str(key), None)
                         removed.append(str(key))
+        profile = str(p.get("signal_profile") or p.get("profile") or "generic").strip().lower() or "generic"
+        event_ts = str(p.get("event_ts") or self._now_iso()).strip() or self._now_iso()
+        backend_event_ts = self._now_iso()
+        if instance_key:
+            self._append_indicator_bridge_health_log(
+                status="unregistered",
+                message="bridge_unregistered",
+                family=str(family),
+                profile=str(profile),
+                indicator=str(indicator),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                event_ts=backend_event_ts,
+                stage_payload={
+                    "instance_key": str(instance_key),
+                    "removed": [str(x) for x in removed],
+                    "event_type": str(p.get("bridge_event_type") or p.get("event_type") or ""),
+                    "bridge_event_ts_raw": str(event_ts or ""),
+                    "transport": self._build_bridge_transport_audit_context(
+                        payload=dict(p),
+                        backend_receive_ts=time.time(),
+                        mt5_tick=None,
+                    ),
+                },
+            )
+            with self._lock:
+                self._indicator_bridge_health_state.pop(str(instance_key), None)
         return {
             "ok": True,
             "executed": False,
@@ -13639,6 +13902,14 @@ class TelegramBridgeService:
             "secondary": dict(secondary_context),
             "signatics_buffer_risk_model": dict(signatics_buffer_risk_model or {}),
             "secondary_sl_policy": str(secondary_sl_policy),
+            "transport_audit": dict(
+                self._build_bridge_transport_audit_context(
+                    payload=dict(p),
+                    backend_receive_ts=float(now_ts),
+                    mt5_tick=dict(tick or {}) if isinstance(tick, dict) else {},
+                    symbol_exec_raw=str(symbol_exec_raw),
+                )
+            ),
             "secondary_entry_enabled": bool(secondary_entry_enabled),
             "secondary_tp_enabled": bool(secondary_tp_enabled and bool(secondary_tps)),
             "secondary_sl_enabled": bool(secondary_sl_enabled and stop_loss is not None),
@@ -13653,6 +13924,12 @@ class TelegramBridgeService:
             "profit_lock_min_close_usd": (25.0 if str(active_regime) == "trend" else 8.0),
         }
         if bool(bridge_v2_confirmed):
+            transport_audit = self._build_bridge_transport_audit_context(
+                payload=dict(p),
+                backend_receive_ts=float(now_ts),
+                mt5_tick=dict(tick or {}) if isinstance(tick, dict) else {},
+                symbol_exec_raw=str(symbol_exec_raw),
+            )
             signal_bar_unix_preview = (
                 _to_float_or_none(p.get("resolved_signal_bar_unix"))
                 or _to_float_or_none(p.get("last_signal_bar_unix"))
@@ -13704,6 +13981,7 @@ class TelegramBridgeService:
                     "effective_stop_loss": _to_float_or_none(stop_loss),
                     "effective_tps": [dict(x) for x in tps],
                     "levels_from_bridge": bool(secondary_entry_enabled or secondary_sl_enabled or secondary_tp_enabled),
+                    "transport_audit": dict(transport_audit),
                     "raw_message": str(message),
                 },
             )
@@ -13742,6 +14020,7 @@ class TelegramBridgeService:
                 "timeframe": str(timeframe),
                 "bridge_event_type": str(bridge_event_type),
                 "event_ts": event_ts,
+                "transport_audit": dict(signal.get("transport_audit") or {}),
             }
             self._append_automation_execution_log(
                 source_type="mt_indicator",
@@ -13788,6 +14067,7 @@ class TelegramBridgeService:
             if signal_bar_age is not None:
                 geometry_guard["signal_bar_age_sec"] = float(signal_bar_age)
             geometry_guard["max_signal_bar_age_sec"] = float(max_bar_age)
+            geometry_guard["transport_audit"] = dict(signal.get("transport_audit") or {})
         if not bool((geometry_guard or {}).get("ok", True)):
             reason = str((geometry_guard or {}).get("reason") or "invalid_signal_geometry")
             self._append_automation_execution_log(

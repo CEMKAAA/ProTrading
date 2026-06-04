@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-03.1305-regime-ambiguous-buffer-tiebreak"
+#define ATOMIC_BRIDGE_BUILD "2026-06-04.0000-transport-audit-gmt"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -197,6 +197,29 @@ string _event_ts_now()
    if(nowTs <= 0)
       nowTs = TimeLocal();
    return TimeToString(nowTs, TIME_DATE | TIME_SECONDS);
+}
+
+string _bridge_runtime_telemetry_json()
+{
+   RefreshRates();
+   datetime serverTs = _timer_now();
+   datetime gmtTs = TimeGMT();
+   datetime localTs = TimeLocal();
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   double ask = MarketInfo(Symbol(), MODE_ASK);
+   double point = MarketInfo(Symbol(), MODE_POINT);
+   int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
+   return
+      "\"mt4_server_time\":\"" + _json_escape(TimeToString(serverTs, TIME_DATE | TIME_SECONDS)) + "\","
+      "\"mt4_server_unix\":" + IntegerToString((int)serverTs) + ","
+      "\"mt4_gmt_time\":\"" + _json_escape(TimeToString(gmtTs, TIME_DATE | TIME_SECONDS)) + "\","
+      "\"mt4_gmt_unix\":" + IntegerToString((int)gmtTs) + ","
+      "\"mt4_local_time\":\"" + _json_escape(TimeToString(localTs, TIME_DATE | TIME_SECONDS)) + "\","
+      "\"mt4_local_unix\":" + IntegerToString((int)localTs) + ","
+      "\"mt4_bid\":" + DoubleToString(bid, Digits) + ","
+      "\"mt4_ask\":" + DoubleToString(ask, Digits) + ","
+      "\"mt4_point\":" + DoubleToString(point, Digits + 2) + ","
+      "\"mt4_spread_points\":" + IntegerToString(spread) + ",";
 }
 
 datetime _timer_now()
@@ -628,7 +651,8 @@ bool _post_atomic_bridge_event(
       "\"signal_profile\":\"" + _json_escape(InpSignalProfile) + "\","
       "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\","
       "\"event_id\":\"" + _json_escape(eventId) + "\","
-      "\"event_ts\":\"" + _json_escape(_event_ts_now()) + "\","
+      "\"event_ts\":\"" + _json_escape(_event_ts_now()) + "\"," +
+      _bridge_runtime_telemetry_json() +
       "\"resolved_signal_bar_time\":\"" + _json_escape(_fmt_time(signalTime)) + "\","
       "\"resolved_signal_bar_unix\":" + IntegerToString((int)signalTime) + ","
       "\"last_signal_direction\":\"" + _json_escape(dir) + "\","
@@ -1085,7 +1109,8 @@ bool _post_atomic_regime_event(
       "\"signal_profile\":\"" + _json_escape(InpRegimeSignalProfile) + "\"," 
       "\"bridge_event_type\":\"" + _json_escape(eventKind) + "\"," 
       "\"event_id\":\"" + _json_escape(eventId) + "\"," 
-      "\"event_ts\":\"" + _json_escape(_event_ts_now()) + "\"," 
+      "\"event_ts\":\"" + _json_escape(_event_ts_now()) + "\"," +
+      _bridge_runtime_telemetry_json() +
       "\"resolved_signal_bar_time\":\"" + _json_escape(_fmt_time(signalTime)) + "\"," 
       "\"resolved_signal_bar_unix\":" + IntegerToString((int)signalTime) + "," 
       "\"last_signal_direction\":\"" + _json_escape(dir) + "\"," 
