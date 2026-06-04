@@ -13445,6 +13445,30 @@ class TelegramBridgeService:
             "tp_enabled": bool(secondary_tp_enabled),
             "tps": list(secondary_tps),
         }
+        signatics_source = str(p.get("signatics_source") or "")
+        bridge_signal_mode = str(p.get("bridge_signal_mode") or "").strip().lower()
+        signatics_buffer_label = any(
+            "[buffer]" in str(x or "").strip().lower()
+            for x in (
+                indicator,
+                source_name,
+                p.get("indicator"),
+                p.get("indicator_base"),
+                p.get("secondary_indicator"),
+            )
+        )
+        signatics_buffer_risk_active = (
+            str(profile).strip().lower() == "signatics"
+            and (str(bridge_signal_mode) == "buffer" or bool(signatics_buffer_label))
+            and (
+                not str(signatics_source).strip()
+                or str(signatics_source).strip().upper().startswith("SIGNATICS_BUFFER")
+            )
+        )
+        if signatics_buffer_risk_active and not str(signatics_source).strip():
+            signatics_source = "SIGNATICS_BUFFER_INFERRED"
+        signatics_buffer_risk_model: Optional[Dict[str, Any]] = None
+        secondary_sl_policy = "not_provided"
 
         sync_base_key = self._indicator_sync_base_key(
             family=str(family),
@@ -13465,6 +13489,41 @@ class TelegramBridgeService:
         sl_distance = max(float(sl_distance), float(min_stop_dist) * 1.80, float(point) * 25.0)
         tp_base_distance = float(atr or default_dist) * float(self._mt4_exec_profile_tp_atr(profile))
         tp_base_distance = max(float(tp_base_distance), float(min_stop_dist) * 2.20, float(point) * 40.0)
+        if signatics_buffer_risk_active:
+            atr_mult = float(
+                _to_float_or_none(self._get_env_value("TELEGRAM_MT4_SIGNATICS_BUFFER_RISK_ATR_MULT", "3.0"))
+                or 3.0
+            )
+            min_price_pct = float(
+                _to_float_or_none(self._get_env_value("TELEGRAM_MT4_SIGNATICS_BUFFER_MIN_RISK_PRICE_PCT", "0.0020"))
+                or 0.0020
+            )
+            absolute_floor = float(
+                _to_float_or_none(self._get_env_value("TELEGRAM_MT4_SIGNATICS_BUFFER_MIN_RISK_POINTS", "0.0"))
+                or 0.0
+            )
+            atr_mult = max(0.1, min(10.0, float(atr_mult)))
+            min_price_pct = max(0.0, min(0.05, float(min_price_pct)))
+            absolute_floor = max(0.0, float(absolute_floor))
+            atr_risk = float(atr or default_dist) * float(atr_mult)
+            pct_risk = abs(float(entry_price)) * float(min_price_pct)
+            broker_floor = max(float(point) * 20.0, float(min_stop_dist) * 1.50)
+            runner_risk = max(float(atr_risk), float(pct_risk), float(broker_floor), float(absolute_floor))
+            sl_distance = float(runner_risk)
+            tp_base_distance = float(runner_risk)
+            signatics_buffer_risk_model = {
+                "model": "atomic_regime_runner_risk",
+                "source": str(signatics_source),
+                "atr": _to_float_or_none(atr),
+                "atr_mult": float(atr_mult),
+                "atr_risk": float(atr_risk),
+                "min_price_pct": float(min_price_pct),
+                "pct_risk": float(pct_risk),
+                "absolute_floor": float(absolute_floor),
+                "broker_floor": float(broker_floor),
+                "final_risk": float(runner_risk),
+                "tp_multipliers": [1.0, 2.0, 3.0],
+            }
         tp_r_start = float(self._mt4_exec_profile_tp_r_start(profile))
         tp_r_step = float(self._mt4_exec_profile_tp_r_step(profile))
         base_tp_multipliers = [float(x) for x in self._mt4_exec_profile_tp_levels(profile)]
@@ -13502,6 +13561,11 @@ class TelegramBridgeService:
         if stage_cap > 0:
             tp_multipliers = [float(x) for x in tp_multipliers[:stage_cap]]
             stage_weights = [float(x) for x in stage_weights[:stage_cap]]
+        if signatics_buffer_risk_model:
+            # Buffer mode has no reliable object levels at trigger time, so use
+            # AtomicRegime-style runner risk with three compatible TP legs.
+            tp_multipliers = [1.0, 2.0, 3.0]
+            stage_weights = [40.0, 30.0, 30.0]
         if not stage_weights:
             stage_weights = [1.0 for _ in range(len(tp_multipliers))]
 
@@ -13534,8 +13598,19 @@ class TelegramBridgeService:
             and float(secondary_stop_loss) > 0.0
             and ((str(hint) == "BUY" and float(secondary_stop_loss) < float(entry_price)) or (str(hint) == "SELL" and float(secondary_stop_loss) > float(entry_price)))
         ):
-            stop_loss = round(float(secondary_stop_loss), int(max(0, digits)))
-            no_stop_loss = False
+            if signatics_buffer_risk_model and stop_loss is not None:
+                existing_dist = abs(float(entry_price) - float(stop_loss))
+                incoming_dist = abs(float(entry_price) - float(secondary_stop_loss))
+                if float(incoming_dist) > float(existing_dist):
+                    stop_loss = round(float(secondary_stop_loss), int(max(0, digits)))
+                    secondary_sl_policy = "incoming_wider"
+                else:
+                    secondary_sl_policy = "kept_buffer_wider"
+                no_stop_loss = False
+            else:
+                stop_loss = round(float(secondary_stop_loss), int(max(0, digits)))
+                secondary_sl_policy = "incoming_applied"
+                no_stop_loss = False
 
         tps = [{"index": int(i + 1), "price": round(float(px), int(max(0, digits)))} for i, px in enumerate(tp_prices)]
         if bool(secondary_tps):
@@ -13562,6 +13637,8 @@ class TelegramBridgeService:
             "market_regime_info": dict(regime_info or {}),
             "hard_sl_mode": str(hard_sl_mode),
             "secondary": dict(secondary_context),
+            "signatics_buffer_risk_model": dict(signatics_buffer_risk_model or {}),
+            "secondary_sl_policy": str(secondary_sl_policy),
             "secondary_entry_enabled": bool(secondary_entry_enabled),
             "secondary_tp_enabled": bool(secondary_tp_enabled and bool(secondary_tps)),
             "secondary_sl_enabled": bool(secondary_sl_enabled and stop_loss is not None),
@@ -13613,12 +13690,15 @@ class TelegramBridgeService:
                     "confirmed_bar_fresh_from_ea": bool(self._truthy_bridge_value(p.get("confirmed_bar_fresh"), False)),
                     "max_confirmed_bar_age_from_ea_sec": _to_float_or_none(p.get("max_confirmed_bar_age_sec")),
                     "signatics_source": str(p.get("signatics_source") or ""),
+                    "signatics_buffer_risk_active": bool(signatics_buffer_risk_model),
+                    "signatics_buffer_risk_model": dict(signatics_buffer_risk_model or {}),
                     "signal_entry": _to_float_or_none(entry_price),
                     "market_execution_price": _to_float_or_none(execution_price),
                     "secondary_entry_enabled": bool(secondary_entry_enabled),
                     "secondary_entry": _to_float_or_none(secondary_entry),
                     "secondary_sl_enabled": bool(secondary_sl_enabled),
                     "secondary_stop_loss": _to_float_or_none(secondary_stop_loss),
+                    "secondary_sl_policy": str(secondary_sl_policy),
                     "secondary_tp_enabled": bool(secondary_tp_enabled),
                     "secondary_tps": [dict(x) for x in secondary_tps],
                     "effective_stop_loss": _to_float_or_none(stop_loss),
@@ -16236,6 +16316,7 @@ class TelegramBridgeService:
             if chosen_sl is not None:
                 row["initial_stop_loss"] = float(chosen_sl)
                 row["stop_loss"] = float(chosen_sl)
+            row["signatics_sl_update_policy"] = str(sl_policy)
             row["signatics_level_update_at"] = self._now_iso()
             row["signatics_level_update_source"] = str(payload.get("signatics_source") or "")
             if chosen_sl is not None or current_tp is not None:
@@ -16259,6 +16340,19 @@ class TelegramBridgeService:
                     "ticket": int(ticket),
                     "sl_policy": str(sl_policy),
                     "tp_policy": str(tp_policy),
+                    "entry": _to_float_or_none(row_entry),
+                    "current_sl_before": _to_float_or_none(current_sl),
+                    "incoming_sl": _to_float_or_none(incoming_sl),
+                    "current_sl_distance": (
+                        abs(float(row_entry) - float(current_sl))
+                        if row_entry is not None and current_sl is not None
+                        else None
+                    ),
+                    "incoming_sl_distance": (
+                        abs(float(row_entry) - float(incoming_sl))
+                        if row_entry is not None and incoming_sl is not None
+                        else None
+                    ),
                     "chosen_sl": _to_float_or_none(chosen_sl),
                     "chosen_tp": _to_float_or_none(current_tp),
                     "modify": dict(modify_out or {}),
