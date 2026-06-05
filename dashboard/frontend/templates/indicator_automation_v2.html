@@ -49,6 +49,9 @@
     .v2-liq-card {
         background: linear-gradient(135deg, #fff7ed 0%, #fefce8 52%, #ecfccb 100%);
     }
+    .v2-spread-card {
+        background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 54%, #fee2e2 100%);
+    }
     .v2-liq-context {
         border: 1px solid #fed7aa;
         background: rgba(255, 255, 255, 0.76);
@@ -355,6 +358,25 @@
         </div>
     </div>
 
+    <div class="card v2-card v2-spread-card mb-3">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <strong>Spread Governor</strong>
+                <div class="small text-muted">Global execution gate for high-spread conditions. Default OFF means spreads are measured and shown, but they do not block new trades.</div>
+            </div>
+            <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+                <span id="v2-spread-gov-status" class="badge text-bg-secondary">OFF</span>
+                <label class="form-check form-switch m-0 small">
+                    <input id="v2-spread-gov-toggle" class="form-check-input" type="checkbox">
+                    <span class="form-check-label">Enable spread blocking</span>
+                </label>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="v2-spread-gov-context" class="small text-muted">Spread governor disabled. Dashboard spread labels remain informational only.</div>
+        </div>
+    </div>
+
     <div class="card v2-card v2-liq-card mb-3">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
@@ -539,12 +561,12 @@
     <div class="card v2-card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
-                <strong>Indicator Trade Allowed Windows</strong>
-                <div class="small text-muted">UTC/GMT based allowed entry windows per indicator and symbol. If windows are configured, new trades only open inside them; open trades keep running.</div>
+                <strong>Indicator Trade Windows</strong>
+                <div class="small text-muted">UTC/GMT based allow/block windows per indicator and symbol. Blocked windows stop new entries only; open trades keep running.</div>
             </div>
             <div class="d-flex align-items-center gap-2">
                 <span id="v2-symbol-session-status" class="badge text-bg-secondary">loading</span>
-                <button id="v2-symbol-session-preset" type="button" class="btn btn-sm btn-outline-primary">Apply Atomic Allowed Preset</button>
+                <button id="v2-symbol-session-preset" type="button" class="btn btn-sm btn-outline-primary">Apply Default Windows</button>
                 <button id="v2-symbol-session-save" type="button" class="btn btn-sm btn-dark">Save Sessions</button>
             </div>
         </div>
@@ -553,10 +575,10 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Indicator/Profile</th><th>Symbol</th><th>UTC Offset Min</th><th>Allowed Windows</th><th>Instances</th>
+                            <th>Indicator/Profile</th><th>Symbol</th><th>UTC Offset Min</th><th>Allowed Windows</th><th>Blocked Windows</th><th>Instances</th>
                         </tr>
                     </thead>
-                    <tbody id="v2-symbol-session-body"><tr><td colspan="5" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                    <tbody id="v2-symbol-session-body"><tr><td colspan="6" class="text-center text-muted py-3">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -583,10 +605,10 @@
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light sticky-top">
                         <tr>
-                            <th>Last Seen</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>State</th><th>Automation</th><th>Modes</th><th>Resolved</th><th>Confirmed</th><th>Pending</th><th>Lot</th><th>Action</th>
+                            <th>Last Seen</th><th>Terminal</th><th>Indicator</th><th>Symbol/TF</th><th>Spread</th><th>State</th><th>Automation</th><th>Modes</th><th>Resolved</th><th>Confirmed</th><th>Pending</th><th>Lot</th><th>Action</th>
                         </tr>
                     </thead>
-                    <tbody id="v2-instance-body"><tr><td colspan="12" class="text-center text-muted py-3">Loading...</td></tr></tbody>
+                    <tbody id="v2-instance-body"><tr><td colspan="13" class="text-center text-muted py-3">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>

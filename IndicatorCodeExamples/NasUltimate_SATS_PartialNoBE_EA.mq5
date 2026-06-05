@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.06"
+#property version "1.07"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -45,6 +45,11 @@ input bool   InpBlockSameDirectionUntilReverse = true;
 input bool   InpUseTradingTimeWindow = true;
 input string InpTradeStartTime = "09:00";
 input string InpTradeEndTime = "14:00";
+input bool   InpSpreadGovernorEnabled = true;
+input double InpSpreadGoodPoints = 0.0;    // 0 = auto by symbol
+input double InpSpreadNormalPoints = 0.0;  // 0 = auto by symbol
+input double InpSpreadWidePoints = 0.0;    // 0 = auto by symbol, red/blocked above this
+input bool   InpEaEnabled = true;
 
 input SATS_PRESET InpRiskPreset = SATS_PRESET_AUTO;
 input SATS_SOURCE InpRiskSource = SATS_SOURCE_CLOSE;
@@ -122,8 +127,35 @@ double   g_maxDd = 0.0;
 string   g_historySummary[3];
 string   g_tradeStartTimeRuntime = "";
 string   g_tradeEndTimeRuntime = "";
+double   g_totalLotRuntime = 0.0;
+double   g_fixedLotRuntime = 0.0;
+bool     g_eaEnabledRuntime = true;
+string   g_lastExecutionStatus = "READY";
+string   g_lastExecutionBlockReason = "";
+double   g_lastSpreadPoints = 0.0;
+string   g_lastSpreadStatus = "UNKNOWN";
 
 string PREFIX = "NAS_SATS_NO_BE_EA_";
+uint     g_dashboardDoorStartMs = 0;
+bool     g_dashboardDoorFinished = false;
+bool     g_dashboardCollapsed = false;
+bool     g_dashboardOpening = false;
+uint     g_visualMetricsCacheMs = 0;
+
+struct NasVisualMetrics
+{
+   bool ok;
+   double price;
+   double superTrend;
+   double sma13;
+   double buyPct;
+   double sellPct;
+   bool buyArmed;
+   bool sellArmed;
+   string status;
+};
+
+NasVisualMetrics g_visualMetricsCache;
 
 long RuntimeMagic()
 {
@@ -251,8 +283,6 @@ int ServerClockMinutes()
 
 bool IsTradingTimeOpen()
 {
-   if(!InpUseTradingTimeWindow)
-      return true;
    string startText = g_tradeStartTimeRuntime == "" ? InpTradeStartTime : g_tradeStartTimeRuntime;
    string endText = g_tradeEndTimeRuntime == "" ? InpTradeEndTime : g_tradeEndTimeRuntime;
    int startMin = ParseClockMinutes(startText, 0);
@@ -267,13 +297,147 @@ bool IsTradingTimeOpen()
 
 string TradingTimeStateText()
 {
-   if(!InpUseTradingTimeWindow)
-      return "OFF";
    string startText = g_tradeStartTimeRuntime == "" ? InpTradeStartTime : g_tradeStartTimeRuntime;
    string endText = g_tradeEndTimeRuntime == "" ? InpTradeEndTime : g_tradeEndTimeRuntime;
    return string(IsTradingTimeOpen() ? "OPEN " : "CLOSED ")
           + startText + "-" + endText
           + " server=" + TimeToString(TimeCurrent(), TIME_MINUTES);
+}
+
+void AutoSpreadThresholds(double &goodPts, double &normalPts, double &widePts)
+{
+   string sym = _Symbol;
+   StringToUpper(sym);
+
+   goodPts = 100.0;
+   normalPts = 300.0;
+   widePts = 800.0;
+
+   if(StringFind(sym, "USTEC") >= 0 || StringFind(sym, "NAS") >= 0 || StringFind(sym, "US100") >= 0 || StringFind(sym, "NDX") >= 0)
+   {
+      goodPts = 180.0;
+      normalPts = 350.0;
+      widePts = 800.0;
+   }
+   else if(StringFind(sym, "DE30") >= 0 || StringFind(sym, "GER40") >= 0 || StringFind(sym, "DAX") >= 0)
+   {
+      goodPts = 35.0;
+      normalPts = 80.0;
+      widePts = 200.0;
+   }
+   else if(StringFind(sym, "UK100") >= 0 || StringFind(sym, "FTSE") >= 0)
+   {
+      goodPts = 120.0;
+      normalPts = 250.0;
+      widePts = 500.0;
+   }
+   else if(StringFind(sym, "FR40") >= 0 || StringFind(sym, "CAC") >= 0)
+   {
+      goodPts = 180.0;
+      normalPts = 450.0;
+      widePts = 1000.0;
+   }
+   else if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0)
+   {
+      goodPts = 180.0;
+      normalPts = 350.0;
+      widePts = 800.0;
+   }
+   else if(StringFind(sym, "EUR") >= 0 || StringFind(sym, "GBP") >= 0 || StringFind(sym, "USD") >= 0 || StringFind(sym, "JPY") >= 0)
+   {
+      goodPts = 20.0;
+      normalPts = 50.0;
+      widePts = 120.0;
+   }
+
+   if(InpSpreadGoodPoints > 0.0)
+      goodPts = InpSpreadGoodPoints;
+   if(InpSpreadNormalPoints > 0.0)
+      normalPts = InpSpreadNormalPoints;
+   if(InpSpreadWidePoints > 0.0)
+      widePts = InpSpreadWidePoints;
+
+   normalPts = MathMax(normalPts, goodPts);
+   widePts = MathMax(widePts, normalPts);
+}
+
+bool SpreadSnapshot(double &bid,
+                    double &ask,
+                    double &spreadPts,
+                    string &status,
+                    color &statusColor,
+                    double &goodPts,
+                    double &normalPts,
+                    double &widePts)
+{
+   AutoSpreadThresholds(goodPts, normalPts, widePts);
+
+   MqlTick tick;
+   bool hasTick = SymbolInfoTick(_Symbol, tick);
+   bid = hasTick && tick.bid > 0.0 ? tick.bid : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   ask = hasTick && tick.ask > 0.0 ? tick.ask : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
+   if(bid <= 0.0 || ask <= 0.0 || point <= 0.0)
+   {
+      spreadPts = 0.0;
+      status = "BLOCKED";
+      statusColor = C'221,55,78';
+      return false;
+   }
+
+   spreadPts = MathMax(0.0, (ask - bid) / point);
+   if(spreadPts <= goodPts)
+   {
+      status = "GOOD";
+      statusColor = C'80,255,180';
+      return true;
+   }
+   if(spreadPts <= normalPts)
+   {
+      status = "NORMAL";
+      statusColor = C'90,178,255';
+      return true;
+   }
+   if(spreadPts <= widePts)
+   {
+      status = "WIDE";
+      statusColor = C'255,204,82';
+      return true;
+   }
+
+   status = "BLOCKED";
+   statusColor = C'221,55,78';
+   return false;
+}
+
+bool IsSpreadExecutionAllowed(string &reason)
+{
+   double bid, ask, spreadPts, goodPts, normalPts, widePts;
+   string status;
+   color statusColor;
+   bool allowed = SpreadSnapshot(bid, ask, spreadPts, status, statusColor, goodPts, normalPts, widePts);
+   g_lastSpreadPoints = spreadPts;
+   g_lastSpreadStatus = status;
+
+   if(!InpSpreadGovernorEnabled)
+   {
+      reason = "spread_governor_disabled";
+      return true;
+   }
+
+   if(allowed)
+   {
+      reason = status + "_SPREAD";
+      return true;
+   }
+
+   reason = "spread_blocked status=" + status
+            + " spread_pts=" + DoubleToString(spreadPts, 0)
+            + " good=" + DoubleToString(goodPts, 0)
+            + " normal=" + DoubleToString(normalPts, 0)
+            + " wide=" + DoubleToString(widePts, 0);
+   return false;
 }
 
 NasSettings BuildNasSettings()
@@ -339,12 +503,15 @@ int OnInit()
    trade.SetDeviationInPoints(InpDeviationPoints);
    g_tradeStartTimeRuntime = InpTradeStartTime;
    g_tradeEndTimeRuntime = InpTradeEndTime;
+   g_totalLotRuntime = InpTotalLot;
+   g_fixedLotRuntime = InpFixedLot;
+   g_eaEnabledRuntime = InpEaEnabled;
    g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    HydrateExecutedDirectionFromOpenPosition();
    PrintStartupDiagnostics();
    BaselineStartupSignal();
    DrawDashboard();
-   CreateButtons();
+   EventSetMillisecondTimer(40);
    if(InpDrawLastSignalsOnStart)
    {
       DrawRecentSignalHistory();
@@ -355,7 +522,14 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    ObjectsDeleteAll(0, PREFIX);
+}
+
+void OnTimer()
+{
+   if(!g_dashboardDoorFinished)
+      UpdateDashboard();
 }
 
 void OnTick()
@@ -402,6 +576,12 @@ void PrintStartupDiagnostics()
          " pine_risk_distance_multiplier=", DoubleToString(InpPineRiskDistanceMultiplier, 2),
          " signal_bar_mode=", EnumToString(InpSignalBarMode),
          " block_same_direction_until_reverse=", InpBlockSameDirectionUntilReverse,
+         " same_direction_hard_safety=true",
+         " spread_governor_enabled=", InpSpreadGovernorEnabled,
+         " spread_good_pts=", DoubleToString(InpSpreadGoodPoints, 1),
+         " spread_normal_pts=", DoubleToString(InpSpreadNormalPoints, 1),
+         " spread_wide_pts=", DoubleToString(InpSpreadWidePoints, 1),
+         " ea_enabled=", InpEaEnabled,
          " risk_engine=", EnumToString(InpRiskEngine),
          " risk_preset=", EnumToString(InpRiskPreset),
          " risk_source=", EnumToString(InpRiskSource),
@@ -604,6 +784,22 @@ void ProcessSignalBar()
       return;
    }
 
+   if(!g_eaEnabledRuntime)
+   {
+      g_lastSignalTime = rates[i].time;
+      g_lastSignalKeyDirection = direction;
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = "global_ea_kill_switch_off";
+      MarkDirectionProcessedOnBar(rates[i].time, direction);
+      if(InpDrawExecutionArrows)
+         DrawBlockedSignal(direction, rates[i].time, rates[i].high, rates[i].low, NasSignalText(p[i]), "EA OFF");
+      Print("NAS SATS EA global kill switch blocked signal dir=", (direction > 0 ? "BUY" : "SELL"),
+            " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+            " label=", NasSignalText(p[i]));
+      UpdateDashboard();
+      return;
+   }
+
    bool tradingWindowOpen = IsTradingTimeOpen();
    if(!tradingWindowOpen)
    {
@@ -615,12 +811,12 @@ void ProcessSignalBar()
       if(InpCloseExistingOnNewSignal && openDir != 0 && openDir != direction)
       {
          CloseManagedPositions();
-         g_lastExecutedDirection = 0;
          Print("NAS SATS EA reverse signal closed existing position outside trading window dir=",
                (direction > 0 ? "BUY" : "SELL"),
                " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
                " trading_window=", TradingTimeStateText(),
-               " no_new_entry=true");
+               " no_new_entry=true",
+               " same_direction_lock_retained=", (g_lastExecutedDirection > 0 ? "BUY" : (g_lastExecutedDirection < 0 ? "SELL" : "NONE")));
       }
       else
       {
@@ -630,11 +826,13 @@ void ProcessSignalBar()
                " trading_window=", TradingTimeStateText(),
                " audit=window_before_same_direction_guard");
       }
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = "trading_window_closed";
       MarkDirectionProcessedOnBar(rates[i].time, direction);
       return;
    }
 
-   if(InpBlockSameDirectionUntilReverse && direction == g_lastExecutedDirection)
+   if(direction == g_lastExecutedDirection)
    {
       g_lastSignalTime = rates[i].time;
       g_lastSignalKeyDirection = direction;
@@ -642,7 +840,29 @@ void ProcessSignalBar()
       Print("NAS SATS EA same-direction signal ignored dir=", (direction > 0 ? "BUY" : "SELL"),
             " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
             " label=", NasSignalText(p[i]),
-            " reason=already_executed_direction_waiting_for_opposite");
+            " reason=already_executed_direction_waiting_for_opposite",
+            " hard_safety=true",
+            " input_block_same_direction=", (InpBlockSameDirectionUntilReverse ? "true" : "false"));
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = "same_direction_waiting_for_opposite";
+      return;
+   }
+
+   string spreadReason = "";
+   if(!IsSpreadExecutionAllowed(spreadReason))
+   {
+      g_lastSignalTime = rates[i].time;
+      g_lastSignalKeyDirection = direction;
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = spreadReason;
+      MarkDirectionProcessedOnBar(rates[i].time, direction);
+      if(InpDrawExecutionArrows)
+         DrawBlockedSignal(direction, rates[i].time, rates[i].high, rates[i].low, NasSignalText(p[i]), "SPREAD");
+      Print("NAS SATS EA spread governor blocked signal dir=", (direction > 0 ? "BUY" : "SELL"),
+            " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+            " label=", NasSignalText(p[i]),
+            " reason=", spreadReason);
+      UpdateDashboard();
       return;
    }
 
@@ -651,6 +871,8 @@ void ProcessSignalBar()
    {
       Print("NAS SATS EA risk calculation failed signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
             " direction=", (direction > 0 ? "BUY" : "SELL"));
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = "risk_calculation_failed";
       return;
    }
 
@@ -667,6 +889,8 @@ void ProcessSignalBar()
    g_lastTp3 = NormalizeDouble(g_lastTp3, _Digits);
    ApplyExecutionModeRisk(direction);
    g_beMoved = false;
+   g_lastExecutionStatus = "EXECUTING";
+   g_lastExecutionBlockReason = "";
 
    if(InpCloseExistingOnNewSignal)
       CloseManagedPositions();
@@ -702,6 +926,13 @@ void ProcessSignalBar()
          DrawTradeLevels(direction);
       if(InpDrawExecutionArrows)
          DrawExecutionSignal(direction, rates[i].time, rates[i].high, rates[i].low, NasSignalText(p[i]));
+      g_lastExecutionStatus = "OPENED";
+      g_lastExecutionBlockReason = "";
+   }
+   else
+   {
+      g_lastExecutionStatus = "BLOCKED";
+      g_lastExecutionBlockReason = "broker_order_open_failed";
    }
 }
 
@@ -766,8 +997,8 @@ void ReconcileLiveSignalAfterBarClose()
    if(ManagedPositionDirection() == 0)
    {
       ClearTradeLevelObjects();
-      if(g_lastExecutedDirection == g_liveSignalDirection)
-         g_lastExecutedDirection = 0;
+      // Do not clear g_lastExecutedDirection here. Same-direction re-entry
+      // must stay blocked until an opposite NAS signal is actually accepted.
    }
    if(g_lastSignalTime == g_liveSignalBarTime && g_lastSignalKeyDirection == g_liveSignalDirection)
    {
@@ -901,12 +1132,14 @@ double LegVolume()
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0)
       step = 0.01;
-   return NormalizeVolume(MathFloor((InpTotalLot / 3.0) / step) * step);
+   double totalLot = g_totalLotRuntime > 0.0 ? g_totalLotRuntime : InpTotalLot;
+   return NormalizeVolume(MathFloor((totalLot / 3.0) / step) * step);
 }
 
 double FixedVolume()
 {
-   return NormalizeVolume(InpFixedLot);
+   double fixedLot = g_fixedLotRuntime > 0.0 ? g_fixedLotRuntime : InpFixedLot;
+   return NormalizeVolume(fixedLot);
 }
 
 void ApplyExecutionModeRisk(const int direction)
@@ -1264,6 +1497,250 @@ void DrawTradeLevels(const int direction)
    DrawTextLabel("TP3_TXT", "TP3 " + DoubleToString(g_lastTp3, _Digits), g_lastTp3, clrLime);
 }
 
+double UiClamp(const double v, const double lo, const double hi)
+{
+   if(v < lo)
+      return lo;
+   if(v > hi)
+      return hi;
+   return v;
+}
+
+int UiClampInt(const int v, const int lo, const int hi)
+{
+   if(v < lo)
+      return lo;
+   if(v > hi)
+      return hi;
+   return v;
+}
+
+string UiPctText(const double pct)
+{
+   return IntegerToString((int)MathRound(UiClamp(pct, 0.0, 100.0))) + "%";
+}
+
+string UiShort(const string text, const int maxLen)
+{
+   if(StringLen(text) <= maxLen)
+      return text;
+   return StringSubstr(text, 0, MathMax(0, maxLen - 3)) + "...";
+}
+
+double UiLivePrice(const int direction)
+{
+   MqlTick tick;
+   if(SymbolInfoTick(_Symbol, tick))
+   {
+      if(direction > 0 && tick.bid > 0.0)
+         return tick.bid;
+      if(direction < 0 && tick.ask > 0.0)
+         return tick.ask;
+      if(tick.last > 0.0)
+         return tick.last;
+   }
+   return direction > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+}
+
+void CreateRect(const string name, const int x, const int y, const int w, const int h, const color bg, const color border)
+{
+   string obj = PREFIX + name;
+   if(ObjectFind(0, obj) < 0)
+      ObjectCreate(0, obj, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, obj, OBJPROP_XSIZE, (int)MathMax(1, w));
+   ObjectSetInteger(0, obj, OBJPROP_YSIZE, (int)MathMax(1, h));
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, border);
+   ObjectSetInteger(0, obj, OBJPROP_COLOR, border);
+}
+
+void CreateProgressBar(const string name,
+                       const int x,
+                       const int y,
+                       const int w,
+                       const int h,
+                       const double pct,
+                       const string text,
+                       const color fill,
+                       const color bg,
+                       const color border)
+{
+   double clamped = UiClamp(pct, 0.0, 100.0);
+   int fillW = UiClampInt((int)MathRound((double)w * clamped / 100.0), 1, w);
+   CreateRect(name + "_BG", x, y, w, h, bg, border);
+   CreateRect(name + "_FILL", x + 2, y + 2, MathMax(1, fillW - 4), MathMax(1, h - 4), fill, fill);
+   CreateLabel(name + "_TXT", x + 10, y + 3, text, clrWhite, 8);
+}
+
+bool BuildNasVisualMetrics(NasVisualMetrics &m)
+{
+   m.ok = false;
+   m.price = 0.0;
+   m.superTrend = 0.0;
+   m.sma13 = 0.0;
+   m.buyPct = 0.0;
+   m.sellPct = 0.0;
+   m.buyArmed = false;
+   m.sellArmed = false;
+   m.status = "NAS SENSOR OFFLINE";
+
+   MqlRates rates[];
+   int bars = MathMax(300, MathMin(SignalBarsToCopy(), 800));
+   int copied = LoadNasRates(rates, bars, true);
+   if(copied < 20)
+      return false;
+
+   NasPoint p[];
+   NAS_Calculate(rates, copied, BuildNasSettings(), p);
+   int i = copied - 1;
+   int prev = i - 1;
+   if(i <= 0 || !NAS_IsValid(p[i].superTrend) || !NAS_IsValid(p[i].sma13) || !NAS_IsValid(p[prev].superTrend))
+      return false;
+
+   double price = rates[i].close;
+   double st = p[i].superTrend;
+   double sma13 = p[i].sma13;
+   double prevClose = rates[prev].close;
+   double prevSt = p[prev].superTrend;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double barRange = MathMax(rates[i].high - rates[i].low, point * 250.0);
+   double scale = MathMax(barRange, MathMax(MathAbs(price - st), MathAbs(price - sma13)));
+   if(scale <= 0.0)
+      scale = point > 0.0 ? point * 250.0 : 1.0;
+
+   double buySt = price >= st ? 100.0 : 100.0 - ((st - price) / scale) * 100.0;
+   double buySma = price >= sma13 ? 100.0 : 100.0 - ((sma13 - price) / scale) * 100.0;
+   double sellSt = price <= st ? 100.0 : 100.0 - ((price - st) / scale) * 100.0;
+   double sellSma = price <= sma13 ? 100.0 : 100.0 - ((price - sma13) / scale) * 100.0;
+
+   m.buyArmed = prevClose <= prevSt;
+   m.sellArmed = prevClose >= prevSt;
+   m.buyPct = UiClamp((UiClamp(buySt, 0.0, 100.0) * 0.65) + (UiClamp(buySma, 0.0, 100.0) * 0.35), 0.0, 100.0);
+   m.sellPct = UiClamp((UiClamp(sellSt, 0.0, 100.0) * 0.65) + (UiClamp(sellSma, 0.0, 100.0) * 0.35), 0.0, 100.0);
+
+   if(!m.buyArmed && !p[i].buy)
+      m.buyPct *= 0.55;
+   if(!m.sellArmed && !p[i].sell)
+      m.sellPct *= 0.55;
+
+   if(p[i].buy)
+      m.buyPct = 100.0;
+   if(p[i].sell)
+      m.sellPct = 100.0;
+
+   m.ok = true;
+   m.price = price;
+   m.superTrend = st;
+   m.sma13 = sma13;
+   if(p[i].buy)
+      m.status = "BUY IGNITION";
+   else if(p[i].sell)
+      m.status = "SELL IGNITION";
+   else if(m.buyPct > m.sellPct)
+      m.status = m.buyArmed ? "BUY VECTOR ARMED" : "BUY VECTOR WATCH";
+   else
+      m.status = m.sellArmed ? "SELL VECTOR ARMED" : "SELL VECTOR WATCH";
+   return true;
+}
+
+bool GetNasVisualMetrics(NasVisualMetrics &m)
+{
+   uint nowMs = GetTickCount();
+   if(g_visualMetricsCache.ok && (nowMs - g_visualMetricsCacheMs) < 250)
+   {
+      m = g_visualMetricsCache;
+      return true;
+   }
+
+   bool ok = BuildNasVisualMetrics(m);
+   if(ok)
+   {
+      g_visualMetricsCache = m;
+      g_visualMetricsCacheMs = nowMs;
+   }
+   return ok;
+}
+
+bool BuildTradeProgress(double &pct, string &label, color &fill)
+{
+   pct = 0.0;
+   label = "NO LIVE TRADE VECTOR";
+   fill = C'66,155,255';
+
+   double totalVolume = 0.0;
+   double weightedEntry = 0.0;
+   double openPnl = 0.0;
+   double sl = 0.0;
+   double tp = 0.0;
+   int direction = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!IsManagedPosition())
+         continue;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      int posDir = type == POSITION_TYPE_BUY ? 1 : -1;
+      if(direction == 0)
+         direction = posDir;
+      if(direction != posDir)
+         continue;
+
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSl = PositionGetDouble(POSITION_SL);
+      double posTp = PositionGetDouble(POSITION_TP);
+      totalVolume += vol;
+      weightedEntry += entry * vol;
+      openPnl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+
+      if(posSl > 0.0)
+         sl = posSl;
+      if(posTp > 0.0)
+      {
+         if(tp <= 0.0)
+            tp = posTp;
+         else if(direction > 0)
+            tp = MathMax(tp, posTp);
+         else
+            tp = MathMin(tp, posTp);
+      }
+   }
+
+   if(totalVolume <= 0.0 || direction == 0)
+      return false;
+
+   double entryAvg = weightedEntry / totalVolume;
+   if(sl <= 0.0)
+      sl = g_lastSl;
+   if(tp <= 0.0)
+      tp = g_lastTp3;
+   double px = UiLivePrice(direction);
+   if(px <= 0.0 || sl <= 0.0 || tp <= 0.0 || MathAbs(tp - sl) <= 0.0)
+      return false;
+
+   if(direction > 0)
+      pct = ((px - sl) / (tp - sl)) * 100.0;
+   else
+      pct = ((sl - px) / (sl - tp)) * 100.0;
+   pct = UiClamp(pct, 0.0, 100.0);
+
+   string dirText = direction > 0 ? "BUY" : "SELL";
+   fill = direction > 0 ? C'31,141,255' : C'225,49,76';
+   label = "LIVE VECTOR " + dirText
+           + " Px " + DoubleToString(px, _Digits)
+           + " -> TP " + UiPctText(pct)
+           + " | PnL " + DoubleToString(openPnl, 2)
+           + " | Entry " + DoubleToString(entryAvg, _Digits);
+   return true;
+}
+
 void CreateLabel(const string name, const int x, const int y, const string text, const color clr, const int size = 9)
 {
    string obj = PREFIX + name;
@@ -1294,8 +1771,8 @@ void CreateEdit(const string name, const int x, const int y, const int w, const 
    ObjectSetInteger(0, obj, OBJPROP_YSIZE, h);
    if(created)
       ObjectSetString(0, obj, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, C'18,23,54');
-   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, C'111,84,255');
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, C'35,43,58');
+   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, C'90,178,255');
    ObjectSetInteger(0, obj, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, 9);
    ObjectSetString(0, obj, OBJPROP_FONT, "Consolas");
@@ -1317,15 +1794,88 @@ void CreateButton(const string name, const int x, const int y, const int w, cons
    ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, 9);
 }
 
+void DeleteObjectIfExists(const string name)
+{
+   ObjectDelete(0, PREFIX + name);
+}
+
+void DeleteProgressBar(const string name)
+{
+   DeleteObjectIfExists(name + "_BG");
+   DeleteObjectIfExists(name + "_FILL");
+   DeleteObjectIfExists(name + "_TXT");
+}
+
+void ClearDashboardObjects()
+{
+   string names[] =
+   {
+      "DASH_BG", "DASH_HULL", "DASH_CORE", "DASH_ACTION_PANEL", "DASH_LOG_PANEL",
+      "DASH_DOOR_L", "DASH_DOOR_R", "DASH_DOOR_TEXT",
+      "DASH_DOCK_BG", "DASH_DOCK_STRIPE", "DASH_DOCK_TEXT", "DASH_DOCK_HINT",
+      "DASH_COLLAPSED_HINT",
+      "BTN_DASH_EXPAND", "BTN_DASH_COLLAPSE",
+      "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
+      "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_WIN", "DASH_WIN_STATE",
+      "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
+      "DASH_CFG_NOTE", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_EA_TOGGLE",
+      "EDIT_START", "EDIT_END", "EDIT_LOT"
+   };
+   for(int i = 0; i < ArraySize(names); i++)
+      DeleteObjectIfExists(names[i]);
+   DeleteProgressBar("TRADE_VECTOR");
+   DeleteProgressBar("BUY_FUEL");
+   DeleteProgressBar("SELL_FUEL");
+}
+
+void DrawCollapsedDashboardToggle()
+{
+   CreateRect("DASH_DOCK_BG", 10, 18, 940, 34, C'54,62,75', C'134,158,182');
+   CreateRect("DASH_DOCK_STRIPE", 18, 25, 924, 4, C'90,178,255', C'90,178,255');
+   CreateLabel("DASH_DOCK_TEXT", 28, 33, "NAS STARSHIP COCKPIT DOCKED", C'216,222,230', 9);
+   CreateButton("BTN_DASH_EXPAND", 438, 58, 110, 24, "v EXPAND", C'38,101,176');
+   CreateLabel("DASH_DOCK_HINT", 560, 62, "chart view clear", C'184,196,210', 8);
+}
+
+void SetDashboardCollapsed(const bool collapsed)
+{
+   ClearDashboardObjects();
+   if(collapsed)
+   {
+      g_dashboardCollapsed = true;
+      g_dashboardOpening = false;
+      g_dashboardDoorFinished = true;
+      EventKillTimer();
+      DrawCollapsedDashboardToggle();
+   }
+   else
+   {
+      g_dashboardCollapsed = false;
+      g_dashboardOpening = true;
+      g_dashboardDoorFinished = false;
+      g_dashboardDoorStartMs = GetTickCount();
+      DeleteObjectIfExists("BTN_DASH_EXPAND");
+      DeleteObjectIfExists("DASH_DOCK_HINT");
+      EventSetMillisecondTimer(35);
+      DrawDashboard();
+   }
+   ChartRedraw(0);
+}
+
 void CreateButtons()
 {
-   CreateButton("BTN_CLOSE_ALL", 500, 58, 110, 24, "CLOSE ALL", C'109,30,95');
-   CreateButton("BTN_CLOSE_1_3", 500, 88, 110, 24,
+   CreateButton("BTN_DASH_COLLAPSE", 904, 30, 24, 22, "^", C'90,178,255');
+   CreateButton("BTN_EA_TOGGLE", 684, 58, 244, 24,
+                g_eaEnabledRuntime ? "EA ON - CLICK TO KILL" : "EA OFF - CLICK TO ARM",
+                g_eaEnabledRuntime ? C'30,150,95' : C'178,37,57');
+   CreateButton("BTN_CLOSE_ALL", 684, 82, 118, 25, "CLOSE ALL", C'178,37,57');
+   CreateButton("BTN_CLOSE_1_3", 810, 82, 118, 25,
                 InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? "CLOSE ONE" : "CLOSE 1/3",
-                C'38,65,145');
+                C'38,101,176');
    if(InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL)
-      CreateButton("BTN_BE", 500, 118, 110, 24, "SL -> BE", C'40,116,145');
-   CreateButton("BTN_APPLY_WINDOW", 406, 176, 72, 22, "APPLY", C'92,67,220');
+      CreateButton("BTN_BE", 684, 112, 118, 25, "SL -> BE", C'34,136,160');
+   CreateButton("BTN_APPLY_WINDOW", 684, 199, 118, 24, "APPLY CFG", C'38,101,176');
 }
 
 bool ApplyTradingWindowFromDashboard(const string source)
@@ -1368,6 +1918,46 @@ bool ApplyTradingWindowFromDashboard(const string source)
    return true;
 }
 
+bool ApplyLotFromDashboard(const string source)
+{
+   string lotObj = PREFIX + "EDIT_LOT";
+   if(ObjectFind(0, lotObj) < 0)
+   {
+      Print("NAS SATS EA lot apply failed missing edit object source=", source);
+      return false;
+   }
+
+   string lotText = ObjectGetString(0, lotObj, OBJPROP_TEXT);
+   StringTrimLeft(lotText);
+   StringTrimRight(lotText);
+   double requested = StringToDouble(lotText);
+   if(requested <= 0.0)
+   {
+      Print("NAS SATS EA lot apply failed invalid lot source=", source, " lot=", lotText);
+      return false;
+   }
+
+   double normalized = NormalizeVolume(requested);
+   if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
+      g_fixedLotRuntime = normalized;
+   else
+      g_totalLotRuntime = normalized;
+
+   ObjectSetString(0, lotObj, OBJPROP_TEXT, DoubleToString(normalized, 2));
+   Print("NAS SATS EA lot updated source=", source,
+         " mode=", EnumToString(InpExecutionMode),
+         " lot=", DoubleToString(normalized, 8));
+   UpdateDashboard();
+   ChartRedraw(0);
+   return true;
+}
+
+void ApplyDashboardSettings(const string source)
+{
+   ApplyTradingWindowFromDashboard(source);
+   ApplyLotFromDashboard(source);
+}
+
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT)
@@ -1377,39 +1967,106 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       if(sparam == PREFIX + "EDIT_START" || sparam == PREFIX + "EDIT_END")
          ApplyTradingWindowFromDashboard("edit_end");
+      else if(sparam == PREFIX + "EDIT_LOT")
+         ApplyLotFromDashboard("edit_end");
       return;
    }
 
-   if(sparam == PREFIX + "BTN_CLOSE_ALL")
+   if(sparam == PREFIX + "BTN_DASH_COLLAPSE")
+      SetDashboardCollapsed(true);
+   else if(sparam == PREFIX + "BTN_DASH_EXPAND")
+      SetDashboardCollapsed(false);
+   else if(sparam == PREFIX + "BTN_EA_TOGGLE")
+   {
+      g_eaEnabledRuntime = !g_eaEnabledRuntime;
+      g_lastExecutionStatus = g_eaEnabledRuntime ? "READY" : "BLOCKED";
+      g_lastExecutionBlockReason = g_eaEnabledRuntime ? "" : "global_ea_kill_switch_off";
+      Print("NAS SATS EA global kill switch toggled state=", (g_eaEnabledRuntime ? "ON" : "OFF"));
+      UpdateDashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == PREFIX + "BTN_CLOSE_ALL")
       CloseManagedPositions();
    else if(sparam == PREFIX + "BTN_BE")
       MoveRemainingToBE();
    else if(sparam == PREFIX + "BTN_CLOSE_1_3")
       CloseOneLeg();
    else if(sparam == PREFIX + "BTN_APPLY_WINDOW")
-      ApplyTradingWindowFromDashboard("apply_button");
+      ApplyDashboardSettings("apply_button");
 }
 
 void DrawDashboard()
 {
    if(!InpShowDashboard)
       return;
-   string bg = PREFIX + "DASH_BG";
-   if(ObjectFind(0, bg) < 0)
-      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 18);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 620);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 285);
-   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'13,16,42');
-   ObjectSetInteger(0, bg, OBJPROP_BORDER_COLOR, C'111,84,255');
-   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'111,84,255');
+   if(g_dashboardCollapsed)
+   {
+      DrawCollapsedDashboardToggle();
+      return;
+   }
+   if(!g_dashboardOpening && !g_dashboardDoorFinished)
+   {
+      g_dashboardOpening = true;
+      g_dashboardDoorStartMs = GetTickCount();
+      EventSetMillisecondTimer(35);
+   }
    UpdateDashboard();
+}
+
+void DrawDashboardShell(const int height)
+{
+   int h = UiClampInt(height, 34, 430);
+   CreateRect("DASH_BG", 10, 18, 940, h, C'24,30,42', C'134,158,182');
+   CreateRect("DASH_HULL", 17, 25, 926, MathMax(22, h - 14), C'40,48,62', C'90,178,255');
+   CreateRect("DASH_DOCK_STRIPE", 18, 31, 924, 4, C'90,178,255', C'90,178,255');
+   if(h >= 98)
+      CreateRect("DASH_CORE", 26, 56, 640, MathMax(20, h - 80), C'18,24,36', C'65,116,172');
+   if(h >= 224)
+      CreateRect("DASH_ACTION_PANEL", 676, 56, 252, 168, C'31,38,52', C'221,55,78');
+   if(h >= 350)
+      CreateRect("DASH_LOG_PANEL", 676, 236, 252, 180, C'31,38,52', C'90,178,255');
+}
+
+void UpdateDoorAnimation()
+{
+   if(g_dashboardCollapsed || g_dashboardDoorFinished || g_dashboardDoorStartMs == 0)
+      return;
+
+   uint elapsedMs = GetTickCount() - g_dashboardDoorStartMs;
+   double open = UiClamp((double)elapsedMs / 700.0, 0.0, 1.0);
+   double eased = 1.0 - MathPow(1.0 - open, 3.0);
+   int h = 34 + (int)MathRound(396.0 * eased);
+   DrawDashboardShell(h);
+   CreateLabel("DASH_DOOR_TEXT", 398, 38 + h / 2, "COCKPIT DEPLOY " + UiPctText(open * 100.0), C'216,222,230', 9);
+
+   if(open >= 1.0)
+   {
+      ObjectDelete(0, PREFIX + "DASH_DOOR_TEXT");
+      g_dashboardDoorFinished = true;
+      g_dashboardOpening = false;
+      EventKillTimer();
+      return;
+   }
 }
 
 void UpdateDashboard()
 {
+   if(g_dashboardCollapsed)
+      return;
+
+   if(!g_dashboardDoorFinished)
+   {
+      UpdateDoorAnimation();
+      if(!g_dashboardDoorFinished)
+      {
+         ChartRedraw(0);
+         return;
+      }
+   }
+
+   DrawDashboardShell(430);
+   CreateButtons();
+
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(g_equityPeak <= 0.0 || equity > g_equityPeak)
       g_equityPeak = equity;
@@ -1422,35 +2079,97 @@ void UpdateDashboard()
    double openPnl = ManagedOpenPnl();
 
    string modeText = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R
-                     ? "FIXED 1:3R"
+                     ? "FIXED 1:" + DoubleToString(InpFixedRR, 1) + "R"
                      : (InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL ? "ORIGINAL PARTIAL BE" : "PARTIAL NO-BE");
-   color titleColor = C'99,219,255';
-   color accent = C'186,148,255';
-   color muted = C'172,183,226';
-   CreateLabel("DASH_TITLE", 24, 30, "NAS + SATS " + modeText + " DESK", titleColor, 11);
-   CreateLabel("DASH_1", 24, 54, "Symbol/TF: " + _Symbol + " " + EnumToString(_Period), clrWhite);
-   CreateLabel("DASH_2", 24, 74, "Total PnL: " + DoubleToString(totalPnl, 2) + "   Daily: " + DoubleToString(dailyPnl, 2), muted);
-   CreateLabel("DASH_3", 24, 94, "Open PnL: " + DoubleToString(openPnl, 2) + "   Max DD: " + DoubleToString(g_maxDd, 2), muted);
+   color titleColor = C'108,202,255';
+   color accentBlue = C'90,178,255';
+   color accentRed = C'221,55,78';
+   color muted = C'184,196,210';
+   color steel = C'216,222,230';
+   double bid = 0.0;
+   double ask = 0.0;
+   double spreadPts = 0.0;
+   double spreadGood = 0.0;
+   double spreadNormal = 0.0;
+   double spreadWide = 0.0;
+   string spreadStatus = "";
+   color spreadColor = C'184,196,210';
+   bool spreadAllowed = SpreadSnapshot(bid, ask, spreadPts, spreadStatus, spreadColor, spreadGood, spreadNormal, spreadWide);
+   g_lastSpreadPoints = spreadPts;
+   g_lastSpreadStatus = spreadStatus;
+
+   CreateLabel("DASH_TITLE", 34, 32, "AI STARSHIP NAS COCKPIT", steel, 12);
+   CreateLabel("DASH_SUB", 356, 34, "AUTOPILOT " + modeText, titleColor, 9);
+   CreateLabel("DASH_1", 38, 66, "Bridge: " + _Symbol + " " + EnumToString(_Period) + " | Magic " + IntegerToString(RuntimeMagic()), clrWhite);
+   CreateLabel("DASH_PRICE", 38, 86, "Live price  BID " + DoubleToString(bid, _Digits) + " / ASK " + DoubleToString(ask, _Digits), titleColor);
+   CreateLabel("DASH_SPREAD", 38, 106,
+               "Spread " + DoubleToString(spreadPts, 0) + " pt | " + spreadStatus
+               + " | limits G/N/W " + DoubleToString(spreadGood, 0) + "/"
+               + DoubleToString(spreadNormal, 0) + "/" + DoubleToString(spreadWide, 0)
+               + (InpSpreadGovernorEnabled ? "" : " | governor OFF"),
+               InpSpreadGovernorEnabled ? spreadColor : muted, 8);
+   CreateLabel("DASH_STATUS", 38, 126,
+               "Trade status " + g_lastExecutionStatus
+               + (g_lastExecutionBlockReason == "" ? "" : " | " + UiShort(g_lastExecutionBlockReason, 58)),
+               (g_lastExecutionStatus == "BLOCKED" ? accentRed : (spreadAllowed ? C'80,255,180' : accentRed)), 8);
+   CreateLabel("DASH_2", 38, 146, "Total PnL " + DoubleToString(totalPnl, 2) + "   Daily " + DoubleToString(dailyPnl, 2)
+               + "   Open " + DoubleToString(openPnl, 2) + "   Max DD " + DoubleToString(g_maxDd, 2), muted);
    string dir = g_lastDirection > 0 ? "BUY" : (g_lastDirection < 0 ? "SELL" : "-");
-   CreateLabel("DASH_4", 24, 114, "Last NAS: " + dir + " entry=" + DoubleToString(g_lastEntry, _Digits), clrWhite);
+   CreateLabel("DASH_4", 38, 166, "Last NAS " + dir + " | entry " + DoubleToString(g_lastEntry, _Digits)
+               + " | SL " + DoubleToString(g_lastSl, _Digits)
+               + " | TP3 " + DoubleToString(g_lastTp3, _Digits), clrWhite);
    if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
-      CreateLabel("DASH_5", 24, 134, "Risk: SATS SL | fixed lot=" + DoubleToString(FixedVolume(), 2)
-                  + " | TP=" + DoubleToString(InpFixedRR, 1) + "R | reverse closes", accent);
+      CreateLabel("DASH_5", 38, 181, "Risk: SATS SL | fixed lot=" + DoubleToString(FixedVolume(), 2)
+                  + " | TP=" + DoubleToString(InpFixedRR, 1) + "R | reverse closes", accentBlue);
    else if(InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL)
-      CreateLabel("DASH_5", 24, 134, "Risk: SATS TP/SL | partial TP ON | TP1 => SL->BE", accent);
+      CreateLabel("DASH_5", 38, 181, "Risk: SATS TP/SL | partial TP ON | TP1 => SL->BE", accentBlue);
    else
-      CreateLabel("DASH_5", 24, 134, "Risk: SATS TP/SL | partial TP ON | SL->BE OFF", accent);
+      CreateLabel("DASH_5", 38, 181, "Risk: SATS TP/SL | partial TP ON | SL->BE OFF", accentBlue);
 
-   CreateLabel("DASH_WIN", 24, 158, "Trading window", titleColor, 9);
-   CreateLabel("DASH_WIN_STATE", 24, 180, TradingTimeStateText(), IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
-   CreateLabel("DASH_START_LBL", 250, 158, "Start", muted, 8);
-   CreateLabel("DASH_END_LBL", 330, 158, "End", muted, 8);
-   CreateEdit("EDIT_START", 248, 176, 64, 22, g_tradeStartTimeRuntime == "" ? InpTradeStartTime : g_tradeStartTimeRuntime);
-   CreateEdit("EDIT_END", 328, 176, 64, 22, g_tradeEndTimeRuntime == "" ? InpTradeEndTime : g_tradeEndTimeRuntime);
-   CreateLabel("DASH_ACTIONS", 500, 36, "Actions", titleColor, 9);
+   double tradePct = 0.0;
+   string tradeLabel = "";
+   color tradeFill = accentBlue;
+   if(BuildTradeProgress(tradePct, tradeLabel, tradeFill))
+      CreateProgressBar("TRADE_VECTOR", 38, 193, 590, 24, tradePct, tradeLabel, tradeFill, C'42,51,68', C'134,158,182');
+   else
+      CreateProgressBar("TRADE_VECTOR", 38, 193, 590, 24, 0.0, "LIVE VECTOR STANDBY | no managed position", C'88,96,112', C'42,51,68', C'134,158,182');
 
-   CreateLabel("DASH_H0", 24, 212, "Recent NAS signals:", titleColor);
-   CreateLabel("DASH_H1", 24, 228, g_historySummary[0], muted, 8);
-   CreateLabel("DASH_H2", 24, 244, g_historySummary[1], muted, 8);
-   CreateLabel("DASH_H3", 24, 260, g_historySummary[2], muted, 8);
+   NasVisualMetrics visual;
+   if(GetNasVisualMetrics(visual))
+   {
+      CreateLabel("DASH_SENSOR", 38, 226, "NAS SENSOR " + visual.status
+                  + " | ST " + DoubleToString(visual.superTrend, _Digits)
+                  + " | SMA13 " + DoubleToString(visual.sma13, _Digits), steel, 8);
+      CreateLabel("DASH_SENSOR_HELP", 38, 246, "Fuel = live close proximity to SuperTrend cross + SMA13 filter; visual only, no trade logic mutation.", muted, 7);
+      CreateProgressBar("BUY_FUEL", 38, 268, 285, 24, visual.buyPct,
+                        "BUY ROCKET FUEL " + UiPctText(visual.buyPct), C'31,141,255', C'35,43,58', C'90,178,255');
+      CreateProgressBar("SELL_FUEL", 343, 268, 285, 24, visual.sellPct,
+                        "SELL ROCKET FUEL " + UiPctText(visual.sellPct), C'221,55,78', C'35,43,58', C'221,55,78');
+   }
+   else
+   {
+      CreateLabel("DASH_SENSOR", 38, 226, "NAS SENSOR awaiting enough live bars", accentRed, 8);
+      CreateLabel("DASH_SENSOR_HELP", 38, 246, "Fuel = live close proximity to SuperTrend cross + SMA13 filter; visual only, no trade logic mutation.", muted, 7);
+      CreateProgressBar("BUY_FUEL", 38, 268, 285, 24, 0.0, "BUY ROCKET FUEL --", C'31,141,255', C'35,43,58', C'90,178,255');
+      CreateProgressBar("SELL_FUEL", 343, 268, 285, 24, 0.0, "SELL ROCKET FUEL --", C'221,55,78', C'35,43,58', C'221,55,78');
+   }
+
+   CreateLabel("DASH_WIN", 38, 315, "Trading window", titleColor, 9);
+   CreateLabel("DASH_WIN_STATE", 38, 339, TradingTimeStateText(), IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
+   CreateLabel("DASH_ACTIONS", 696, 34, "AIRLOCK / CONFIG", steel, 9);
+   CreateLabel("DASH_ACTION_HINT", 684, 116, "Manual controls", muted, 7);
+   CreateLabel("DASH_START_LBL", 684, 146, "Start", muted, 8);
+   CreateLabel("DASH_END_LBL", 760, 146, "End", muted, 8);
+   CreateLabel("DASH_LOT_LBL", 836, 146, InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? "Fixed lot" : "Total lot", muted, 8);
+   CreateEdit("EDIT_START", 684, 164, 68, 22, g_tradeStartTimeRuntime == "" ? InpTradeStartTime : g_tradeStartTimeRuntime);
+   CreateEdit("EDIT_END", 760, 164, 68, 22, g_tradeEndTimeRuntime == "" ? InpTradeEndTime : g_tradeEndTimeRuntime);
+   double shownLot = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? FixedVolume() : (g_totalLotRuntime > 0.0 ? g_totalLotRuntime : InpTotalLot);
+   CreateEdit("EDIT_LOT", 836, 164, 68, 22, DoubleToString(shownLot, 2));
+   CreateLabel("DASH_CFG_NOTE", 810, 203, "00:00-24:00 = always open", muted, 7);
+
+   CreateLabel("DASH_H0", 690, 250, "Recent NAS signals", titleColor, 8);
+   CreateLabel("DASH_H1", 690, 276, UiShort(g_historySummary[0], 35), muted, 7);
+   CreateLabel("DASH_H2", 690, 303, UiShort(g_historySummary[1], 35), muted, 7);
+   CreateLabel("DASH_H3", 690, 330, UiShort(g_historySummary[2], 35), muted, 7);
+   UpdateDoorAnimation();
 }

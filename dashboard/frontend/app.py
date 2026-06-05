@@ -1627,6 +1627,21 @@ def indicator_bridge_dual_gate_settings_proxy():
     return jsonify(res)
 
 
+@app.route('/api/indicator-bridge/spread-governor-settings', methods=['POST'])
+def indicator_bridge_spread_governor_settings_proxy():
+    payload = request.get_json(silent=True) or {}
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/spread-governor-settings',
+        data=payload,
+        return_error=True,
+        timeout_sec=20,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to update spread governor settings'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/indicator-bridge/risk-settings', methods=['POST'])
 def indicator_bridge_risk_settings_proxy():
     payload = request.get_json(silent=True) or {}

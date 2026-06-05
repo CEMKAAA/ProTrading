@@ -3019,6 +3019,8 @@ class TelegramBridgeService:
             ckey = str(combo_key or "").strip().lower()
             if not ckey:
                 return None
+            spread_points = _to_float_or_none(ev.get("mt4_spread_points") if "mt4_spread_points" in ev else ev.get("spread_points"))
+            spread_status = self._indicator_bridge_spread_status(symbol=symbol, spread_points=spread_points)
             return {
                 "indicator": str(resolved_indicator),
                 "symbol": str(symbol),
@@ -3034,6 +3036,13 @@ class TelegramBridgeService:
                 "mode_sync_enabled": bool(runtime_cfg.get("mode_sync_enabled")),
                 "sync": dict(runtime_cfg.get("sync") or {}),
                 "last_seen": str(ev_ts),
+                "mt4_bid": _to_float_or_none(ev.get("mt4_bid")),
+                "mt4_ask": _to_float_or_none(ev.get("mt4_ask")),
+                "mt4_point": _to_float_or_none(ev.get("mt4_point")),
+                "mt4_spread_points": spread_points,
+                "spread_status": str(spread_status.get("status") or "unknown"),
+                "spread_label": str(spread_status.get("label") or "unknown"),
+                "spread_guard": dict(spread_status),
                 "source_tag": f"mt4|{profile}|{self._normalize_mt_indicator_key(resolved_indicator)}|{symbol}|{timeframe}",
                 "combo_key": ckey,
                 "bridge_active": True,
@@ -3125,6 +3134,9 @@ class TelegramBridgeService:
                         merged_existing["bridge_active"] = True
                         merged_existing["last_seen"] = str(row.get("last_seen") or merged_existing.get("last_seen") or "")
                         merged_existing["instance_key"] = str(row.get("instance_key") or merged_existing.get("instance_key") or "")
+                        for spread_key in ("mt4_bid", "mt4_ask", "mt4_point", "mt4_spread_points", "spread_status", "spread_label", "spread_guard"):
+                            if row.get(spread_key) not in (None, ""):
+                                merged_existing[spread_key] = row.get(spread_key)
                         bot_rows[idx] = merged_existing
                         break
                     continue
@@ -3140,6 +3152,7 @@ class TelegramBridgeService:
                 merged["has_open_ladder"] = bool(linked_ladder)
                 merged["ladder_ticket"] = int(_to_float_or_none(linked_ladder.get("ticket")) or 0)
                 bot_rows.append(merged)
+        self._hydrate_indicator_bridge_live_spreads(bot_rows)
         bot_rows.sort(key=lambda r: str(r.get("last_seen") or ""), reverse=True)
         bot_rows = bot_rows[:lim]
         bot_open_count = len([r for r in bot_rows if bool(r.get("has_open_ladder"))])
@@ -4811,11 +4824,13 @@ class TelegramBridgeService:
             {
                 "timezone_offset_minutes": cfg.get("timezone_offset_minutes", cfg.get("tz_offset_minutes")),
                 "allow": cfg.get("allow", cfg.get("allow_ranges")),
+                "block": cfg.get("block", cfg.get("block_ranges")),
             }
         )
         return {
             "timezone_offset_minutes": int(base.get("timezone_offset_minutes") or 0),
             "allow": list(base.get("allow") or []),
+            "block": list(base.get("block") or []),
         }
 
     @classmethod
@@ -4841,7 +4856,7 @@ class TelegramBridgeService:
             if not key:
                 continue
             cfg = cls._normalize_indicator_bridge_trade_block_window(v)
-            if cfg.get("allow") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
+            if cfg.get("allow") or cfg.get("block") or int(cfg.get("timezone_offset_minutes") or 0) != 0:
                 out[key] = cfg
         return json.dumps(out, separators=(",", ":"), sort_keys=True)
 
@@ -4892,6 +4907,234 @@ class TelegramBridgeService:
             return bool(int(start) <= cur < int(end))
         return bool(cur >= int(start) or cur < int(end))
 
+    @classmethod
+    def _indicator_bridge_default_block_ranges(cls) -> List[str]:
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_DEFAULT_BLOCK_WINDOWS_GMT", "19:30-20:30") or "").strip()
+        return cls._normalize_indicator_bridge_symbol_session({"block": raw}).get("block") or []
+
+    @classmethod
+    def _indicator_bridge_spread_limits(cls, symbol: Any) -> Dict[str, float]:
+        defaults: Dict[str, Dict[str, float]] = {
+            "DEFAULT": {"good": 100.0, "warn": 300.0, "block": 800.0},
+            "FR40": {"good": 80.0, "warn": 180.0, "block": 350.0},
+            "DE30": {"good": 80.0, "warn": 180.0, "block": 350.0},
+            "UK100": {"good": 80.0, "warn": 180.0, "block": 350.0},
+            "HK50": {"good": 200.0, "warn": 500.0, "block": 900.0},
+            "USTEC": {"good": 120.0, "warn": 350.0, "block": 900.0},
+            "US30": {"good": 120.0, "warn": 350.0, "block": 900.0},
+            "XAUUSD": {"good": 120.0, "warn": 300.0, "block": 700.0},
+        }
+        raw = str(cls._get_env_value("INDICATOR_BRIDGE_SPREAD_LIMITS_JSON", "") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    for key, val in parsed.items():
+                        if not isinstance(val, dict):
+                            continue
+                        k = str(key or "").strip().upper()
+                        if not k:
+                            continue
+                        merged = dict(defaults.get(k) or defaults.get("DEFAULT") or {})
+                        for fld in ("good", "warn", "block"):
+                            num = _to_float_or_none(val.get(fld))
+                            if num is not None and float(num) > 0.0:
+                                merged[fld] = float(num)
+                        defaults[k] = merged
+            except Exception:
+                pass
+        sym = re.sub(r"[^A-Z0-9]", "", str(symbol or "").strip().upper())
+        base = re.sub(r"M$", "", sym)
+        return dict(defaults.get(sym) or defaults.get(base) or defaults.get("DEFAULT") or {})
+
+    @classmethod
+    def _indicator_bridge_spread_status(cls, *, symbol: Any, spread_points: Any) -> Dict[str, Any]:
+        spread = _to_float_or_none(spread_points)
+        limits = cls._indicator_bridge_spread_limits(symbol)
+        out: Dict[str, Any] = {
+            "ok": True,
+            "allow": True,
+            "symbol": str(symbol or "").strip().upper(),
+            "spread_points": spread,
+            "limits": dict(limits),
+            "status": "unknown",
+            "label": "unknown",
+            "reason": "spread_unavailable",
+        }
+        if spread is None or float(spread) < 0.0:
+            return out
+        good = float(limits.get("good") or 0.0)
+        warn = float(limits.get("warn") or 0.0)
+        block = float(limits.get("block") or 0.0)
+        if block > 0.0 and float(spread) >= block:
+            out.update({"allow": False, "status": "blocked", "label": "kotu", "reason": "wide_spread_block"})
+        elif warn > 0.0 and float(spread) >= warn:
+            out.update({"allow": True, "status": "wide", "label": "kotu", "reason": "wide_spread_warn"})
+        elif good > 0.0 and float(spread) <= good:
+            out.update({"allow": True, "status": "good", "label": "iyi", "reason": "spread_good"})
+        else:
+            out.update({"allow": True, "status": "normal", "label": "normal", "reason": "spread_normal"})
+        return out
+
+    @classmethod
+    def _indicator_bridge_spread_guard(cls, *, symbol: Any, spread_points: Any) -> Dict[str, Any]:
+        status = cls._indicator_bridge_spread_status(symbol=symbol, spread_points=spread_points)
+        settings = cls.get_indicator_bridge_spread_governor_settings()
+        if not bool(settings.get("enabled")):
+            out = dict(status)
+            out.update(
+                {
+                    "allow": True,
+                    "governor_enabled": False,
+                    "guard_status": str(status.get("status") or "unknown"),
+                    "reason": "spread_governor_disabled",
+                }
+            )
+            return out
+        out = dict(status)
+        out["governor_enabled"] = True
+        return out
+
+    @classmethod
+    def get_indicator_bridge_spread_governor_settings(cls) -> Dict[str, Any]:
+        enabled = str(cls._get_env_value("INDICATOR_BRIDGE_SPREAD_GOVERNOR_ENABLED", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        return {
+            "enabled": bool(enabled),
+            "limits": cls._indicator_bridge_spread_limits("DEFAULT"),
+            "symbol_limits": {
+                "FR40": cls._indicator_bridge_spread_limits("FR40"),
+                "DE30": cls._indicator_bridge_spread_limits("DE30"),
+                "UK100": cls._indicator_bridge_spread_limits("UK100"),
+                "HK50": cls._indicator_bridge_spread_limits("HK50"),
+                "USTEC": cls._indicator_bridge_spread_limits("USTEC"),
+                "US30": cls._indicator_bridge_spread_limits("US30"),
+                "XAUUSD": cls._indicator_bridge_spread_limits("XAUUSD"),
+            },
+        }
+
+    def update_indicator_bridge_spread_governor_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {}
+        if enabled is not None:
+            updates["INDICATOR_BRIDGE_SPREAD_GOVERNOR_ENABLED"] = "1" if bool(enabled) else "0"
+        if not updates:
+            return {"ok": False, "error": "no_updates"}
+        ok, msg = self._upsert_indicator_bridge_env_values(updates)
+        return {
+            "ok": bool(ok),
+            "message": str(msg),
+            "spread_governor": self.get_indicator_bridge_spread_governor_settings(),
+        }
+
+    def _hydrate_indicator_bridge_live_spreads(self, rows: List[Dict[str, Any]]) -> None:
+        if not isinstance(rows, list) or not rows:
+            return
+        symbols = sorted({
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in rows
+            if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+        })
+        if not symbols:
+            return
+        try:
+            svc = self._get_live_service()
+        except Exception:
+            return
+        live_by_symbol: Dict[str, Dict[str, Any]] = {}
+        for sym in symbols[:80]:
+            tick: Dict[str, Any] = {}
+            info: Dict[str, Any] = {}
+            try:
+                tick = dict(svc.get_symbol_tick(str(sym), resolve_symbol=True) or {})
+            except Exception:
+                tick = {}
+            try:
+                info = dict(svc.get_symbol_info(str(sym)) or {})
+            except Exception:
+                info = {}
+            bid = _to_float_or_none(tick.get("bid"))
+            ask = _to_float_or_none(tick.get("ask"))
+            point = _to_float_or_none(info.get("point"))
+            if point is None or float(point) <= 0.0:
+                point = _to_float_or_none(info.get("trade_tick_size"))
+            has_live_tick = bool(
+                bid is not None
+                and ask is not None
+                and float(bid) > 0.0
+                and float(ask) > 0.0
+            )
+            if not has_live_tick:
+                live_by_symbol[str(sym)] = {
+                    "bid": bid,
+                    "ask": ask,
+                    "point": point,
+                    "spread_points": None,
+                    "resolved_symbol": str(tick.get("resolved_symbol") or info.get("resolved_symbol") or info.get("name") or ""),
+                    "tick_time": str(tick.get("time") or ""),
+                    "status": "no_tick",
+                }
+                continue
+            spread_points = _to_float_or_none(info.get("spread"))
+            if bid is not None and ask is not None and point is not None and float(point) > 0.0:
+                spread_points = max(0.0, (float(ask) - float(bid)) / float(point))
+            if spread_points is None:
+                continue
+            live_by_symbol[str(sym)] = {
+                "bid": bid,
+                "ask": ask,
+                "point": point,
+                "spread_points": float(spread_points),
+                "resolved_symbol": str(tick.get("resolved_symbol") or info.get("resolved_symbol") or info.get("name") or ""),
+                "tick_time": str(tick.get("time") or ""),
+            }
+        if not live_by_symbol:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            live = live_by_symbol.get(sym)
+            if not live:
+                continue
+            original_spread = _to_float_or_none(row.get("mt4_spread_points"))
+            if str(live.get("status") or "").strip().lower() == "no_tick":
+                row["mt4_bid"] = live.get("bid")
+                row["mt4_ask"] = live.get("ask")
+                row["mt4_point"] = live.get("point")
+                row["mt4_spread_points"] = None
+                row["spread_source"] = "mt5_live_no_tick"
+                row["spread_resolved_symbol"] = live.get("resolved_symbol")
+                row["spread_tick_time"] = live.get("tick_time")
+                row["spread_status"] = "no_tick"
+                row["spread_label"] = "no tick"
+                row["spread_guard"] = {
+                    "ok": True,
+                    "status": "no_tick",
+                    "label": "no tick",
+                    "reason": "mt5_live_tick_unavailable",
+                    "spread_points": None,
+                }
+                continue
+            row["mt4_bid"] = live.get("bid")
+            row["mt4_ask"] = live.get("ask")
+            row["mt4_point"] = live.get("point")
+            row["mt4_spread_points"] = live.get("spread_points")
+            row["spread_source"] = "mt5_live_fallback" if original_spread is None else "mt5_live_refresh"
+            row["spread_resolved_symbol"] = live.get("resolved_symbol")
+            row["spread_tick_time"] = live.get("tick_time")
+            spread_status = self._indicator_bridge_spread_status(symbol=sym, spread_points=live.get("spread_points"))
+            row["spread_status"] = str(spread_status.get("status") or "unknown")
+            row["spread_label"] = str(spread_status.get("label") or "unknown")
+            row["spread_guard"] = dict(spread_status)
+
     def _indicator_bridge_symbol_session_guard(
         self,
         *,
@@ -4914,10 +5157,15 @@ class TelegramBridgeService:
             {
                 "timezone_offset_minutes": int((legacy_cfg or {}).get("timezone_offset_minutes") or 0),
                 "allow": list((legacy_cfg or {}).get("allow") or []),
+                "block": list((legacy_cfg or {}).get("block") or []),
             }
-            if legacy_cfg and ((legacy_cfg or {}).get("allow") or int((legacy_cfg or {}).get("timezone_offset_minutes") or 0) != 0)
+            if legacy_cfg and ((legacy_cfg or {}).get("allow") or (legacy_cfg or {}).get("block") or int((legacy_cfg or {}).get("timezone_offset_minutes") or 0) != 0)
             else None
         )
+        if cfg is None:
+            default_blocks = self._indicator_bridge_default_block_ranges()
+            if default_blocks:
+                cfg = {"timezone_offset_minutes": 0, "allow": [], "block": list(default_blocks), "_default_block": True}
         if not cfg:
             return {
                 "ok": True,
@@ -4934,6 +5182,22 @@ class TelegramBridgeService:
         local_dt = base_dt.astimezone(timezone.utc) + timedelta(minutes=int(offset))
         minute = int(local_dt.hour * 60 + local_dt.minute)
         allow_ranges = [str(x) for x in ((cfg or {}).get("allow") or [])]
+        block_ranges = [str(x) for x in ((cfg or {}).get("block") or [])]
+        matched_block = next((r for r in block_ranges if self._time_in_session_range(minute, r)), "")
+        if matched_block:
+            return {
+                "ok": True,
+                "allowed": False,
+                "reason": "inside_trade_block_window",
+                "symbol": sym,
+                "scope_key": str(scope_key),
+                "scope": ("default_block" if (cfg or {}).get("_default_block") else ("indicator_symbol" if scoped_cfg else "legacy_symbol")),
+                "window_mode": "block",
+                "matched_blocked_range": str(matched_block),
+                "local_time": local_dt.strftime("%H:%M"),
+                "timezone_offset_minutes": int(offset),
+                "config": dict(cfg),
+            }
         if not allow_ranges:
             return {
                 "ok": True,
@@ -4941,8 +5205,8 @@ class TelegramBridgeService:
                 "reason": "no_trade_allowed_window_config",
                 "symbol": sym,
                 "scope_key": str(scope_key),
-                "scope": ("indicator_symbol" if scoped_cfg else "legacy_symbol"),
-                "window_mode": "allow",
+                "scope": ("default_block" if (cfg or {}).get("_default_block") else ("indicator_symbol" if scoped_cfg else "legacy_symbol")),
+                "window_mode": "block" if block_ranges else "allow",
                 "local_time": local_dt.strftime("%H:%M"),
                 "timezone_offset_minutes": int(offset),
                 "config": dict(cfg),
@@ -7938,6 +8202,7 @@ class TelegramBridgeService:
                 if not (bool(merged.get("has_open_ladder")) or bool(merged.get("has_live_heartbeat"))):
                     continue
             bot_rows.append(merged)
+        self._hydrate_indicator_bridge_live_spreads(bot_rows)
         bot_rows.sort(key=lambda r: (str(r.get("opened_at") or ""), str(r.get("last_seen") or "")), reverse=True)
         bot_rows = bot_rows[:lim]
         return {
@@ -8825,6 +9090,7 @@ class TelegramBridgeService:
             "trade_block_windows": self.get_indicator_bridge_trade_block_windows(),
             "daily_risk": self.get_indicator_bridge_daily_risk_status(),
             "dual_gate_settings": self.get_indicator_bridge_dual_gate_settings(),
+            "spread_governor": self.get_indicator_bridge_spread_governor_settings(),
             "liquidity_context_governor": self.get_indicator_bridge_liquidity_context_governor_settings(),
             "liquidity_context_watchlist": self.get_indicator_bridge_liquidity_context_watchlist(),
             "liquidity_context_channels": liquidity_context_channels,
@@ -13708,6 +13974,7 @@ class TelegramBridgeService:
             "tp_enabled": bool(secondary_tp_enabled),
             "tps": list(secondary_tps),
         }
+        source_name = str(p.get("source_name") or p.get("indicator") or indicator or "unknown").strip() or "unknown"
         signatics_source = str(p.get("signatics_source") or "")
         bridge_signal_mode = str(p.get("bridge_signal_mode") or "").strip().lower()
         signatics_buffer_label = any(
@@ -14051,16 +14318,12 @@ class TelegramBridgeService:
                 "runtime": runtime_cfg,
                 "bridge": registered,
             }
-        geometry_guard = self._indicator_signal_geometry_guard(
-            direction=str(hint),
-            execution_price=execution_price,
-            signal_entry=entry_price,
-            stop_loss=stop_loss,
-            take_profit=_to_float_or_none((tps[-1] if tps else {}).get("price")),
-            tps=list(tps),
-            min_distance=max(float(min_stop_dist), float(point) * 2.0),
-            atr=atr,
-        )
+        geometry_guard = {
+            "ok": True,
+            "reason": "indicator_geometry_guard_bypassed",
+            "profile": str(profile),
+            "indicator": str(indicator),
+        }
         if isinstance(geometry_guard, dict):
             if signal_bar_unix is not None:
                 geometry_guard["signal_bar_unix"] = int(float(signal_bar_unix))
@@ -14196,6 +14459,10 @@ class TelegramBridgeService:
             profile=str(profile),
             indicator=str(indicator),
         )
+        spread_guard = self._indicator_bridge_spread_guard(
+            symbol=str(symbol_exec_raw),
+            spread_points=p.get("mt4_spread_points"),
+        )
 
         mode_results: List[Dict[str, Any]] = []
         executed_any = False
@@ -14301,6 +14568,44 @@ class TelegramBridgeService:
                                 "reason": str(reason),
                                 "message": f"liquidity_context_guard_blocked:{reason}",
                                 "liquidity_context_guard": dict(liquidity_context_guard or {}),
+                            }
+                        )
+                        market_closed_only = False
+                        continue
+                    if not bool((spread_guard or {}).get("allow", True)):
+                        reason = str((spread_guard or {}).get("reason") or "spread_guard_blocked")
+                        self._append_automation_execution_log(
+                            source_type="mt_indicator",
+                            source_name=str(indicator),
+                            trigger="indicator_signal",
+                            status="skipped",
+                            symbol=str(symbol_exec).strip().upper(),
+                            timeframe=str(timeframe),
+                            direction=str(hint),
+                            lot=float(mode_lot),
+                            stop_loss=_to_float_or_none(stop_loss),
+                            message=f"spread_guard_blocked:{reason}",
+                            profile=str(profile),
+                            indicator=str(indicator),
+                            source_tag=str(mode_source_tag),
+                            event_ts=event_ts,
+                            execution_mode=str(mode),
+                            trace_id=str(signal.get("trace_id") or ""),
+                            stage="spread_guard",
+                            stage_status="blocked",
+                            stage_payload=dict(spread_guard or {}),
+                            error_code=str(reason),
+                        )
+                        mode_results.append(
+                            {
+                                "mode": "sync",
+                                "exit_mode": str(exit_mode_name),
+                                "lifecycle_mode": str(lifecycle_mode_name),
+                                "ok": True,
+                                "executed": False,
+                                "reason": str(reason),
+                                "message": f"spread_guard_blocked:{reason}",
+                                "spread_guard": dict(spread_guard or {}),
                             }
                         )
                         market_closed_only = False
@@ -14451,6 +14756,44 @@ class TelegramBridgeService:
                             "reason": str(reason),
                             "message": f"liquidity_context_guard_blocked:{reason}",
                             "liquidity_context_guard": dict(liquidity_context_guard or {}),
+                        }
+                    )
+                    market_closed_only = False
+                    continue
+                if not bool((spread_guard or {}).get("allow", True)):
+                    reason = str((spread_guard or {}).get("reason") or "spread_guard_blocked")
+                    self._append_automation_execution_log(
+                        source_type="mt_indicator",
+                        source_name=str(indicator),
+                        trigger="indicator_signal",
+                        status="skipped",
+                        symbol=str(symbol_exec).strip().upper(),
+                        timeframe=str(timeframe),
+                        direction=str(hint),
+                        lot=float(mode_lot),
+                        stop_loss=_to_float_or_none(stop_loss),
+                        message=f"spread_guard_blocked:{reason}",
+                        profile=str(profile),
+                        indicator=str(indicator),
+                        source_tag=str(mode_source_tag),
+                        event_ts=event_ts,
+                        execution_mode=str(mode),
+                        trace_id=str(signal.get("trace_id") or ""),
+                        stage="spread_guard",
+                        stage_status="blocked",
+                        stage_payload=dict(spread_guard or {}),
+                        error_code=str(reason),
+                    )
+                    mode_results.append(
+                        {
+                            "mode": str(mode),
+                            "exit_mode": str(exit_mode_name),
+                            "policy": str(policy_name),
+                            "ok": True,
+                            "executed": False,
+                            "reason": str(reason),
+                            "message": f"spread_guard_blocked:{reason}",
+                            "spread_guard": dict(spread_guard or {}),
                         }
                     )
                     market_closed_only = False
@@ -15189,6 +15532,10 @@ class TelegramBridgeService:
             profile=str(profile),
             indicator=str(indicator),
         )
+        spread_guard = self._indicator_bridge_spread_guard(
+            symbol=str(symbol_exec_raw),
+            spread_points=p.get("mt4_spread_points"),
+        )
         if not bool((symbol_session_guard or {}).get("allowed", True)):
             reason = str((symbol_session_guard or {}).get("reason") or "symbol_session_blocked")
             self._append_automation_execution_log(
@@ -15233,6 +15580,51 @@ class TelegramBridgeService:
                 "reason": str(reason),
                 "runtime": runtime_cfg,
                 "symbol_session_guard": dict(symbol_session_guard or {}),
+            }
+        if not bool((spread_guard or {}).get("allow", True)):
+            reason = str((spread_guard or {}).get("reason") or "spread_guard_blocked")
+            self._append_automation_execution_log(
+                source_type="mt_indicator",
+                source_name=str(indicator),
+                trigger="indicator_signal",
+                status="skipped",
+                symbol=str(symbol_exec).strip().upper(),
+                timeframe=str(timeframe),
+                direction=str(hint),
+                lot=float(_to_float_or_none(runtime_cfg.get("lot_size")) or self._mt4_exec_profile_lot(profile)),
+                stop_loss=_to_float_or_none(stop_loss),
+                message=f"spread_guard_blocked:{reason}",
+                profile=str(profile),
+                indicator=str(indicator),
+                source_tag=str(combo_source_tag),
+                event_ts=event_ts,
+                execution_mode=str(profile),
+                stage="spread_guard",
+                stage_status="blocked",
+                stage_payload=dict(spread_guard or {}),
+                error_code=str(reason),
+            )
+            self._append_confirm_signal_feed(
+                source=str(source),
+                chat={"title": str(source), "type": "channel"},
+                text=str(message),
+                kind="mt4_spread_guard_blocked",
+                parsed={
+                    "symbol": str(symbol_exec_raw),
+                    "direction": str(hint),
+                    "profile": str(profile),
+                    "timeframe": str(timeframe),
+                    "spread_guard": dict(spread_guard or {}),
+                },
+                event_ts=event_ts,
+                source_message_id=None,
+            )
+            return {
+                "ok": True,
+                "executed": False,
+                "reason": str(reason),
+                "runtime": runtime_cfg,
+                "spread_guard": dict(spread_guard or {}),
             }
         if not bool((liquidity_context_guard or {}).get("allow", True)):
             reason = str((liquidity_context_guard or {}).get("reason") or "liquidity_context_guard_blocked")
@@ -18139,16 +18531,12 @@ class TelegramBridgeService:
                 exec_px = _to_float_or_none((tick or {}).get("last"))
         except Exception:
             exec_px = None
-        geometry_guard = self._indicator_signal_geometry_guard(
-            direction=str(side),
-            execution_price=exec_px,
-            signal_entry=audit_signal_entry,
-            stop_loss=order_stop_loss,
-            take_profit=order_take_profit,
-            tps=list(signal_tps),
-            min_distance=float(min_dist),
-            atr=audit_signal_atr,
-        )
+        geometry_guard = {
+            "ok": True,
+            "reason": "indicator_geometry_guard_bypassed",
+            "profile": str(audit_profile),
+            "indicator": str(audit_indicator),
+        }
         if not bool((geometry_guard or {}).get("ok", True)):
             reason = str((geometry_guard or {}).get("reason") or "invalid_signal_geometry")
             self._append_automation_execution_log(

@@ -707,6 +707,26 @@ def mt4_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "secondary_tp3",
             "secondary_tp4",
             "secondary_tp5",
+            "mt4_server_time",
+            "mt4_server_unix",
+            "mt4_gmt_time",
+            "mt4_gmt_unix",
+            "mt4_local_time",
+            "mt4_local_unix",
+            "mt4_bid",
+            "mt4_ask",
+            "mt4_point",
+            "mt4_spread_points",
+            "mt5_server_time",
+            "mt5_server_unix",
+            "mt5_gmt_time",
+            "mt5_gmt_unix",
+            "mt5_local_time",
+            "mt5_local_unix",
+            "mt5_bid",
+            "mt5_ask",
+            "mt5_point",
+            "mt5_spread_points",
         ):
             if key in p:
                 bridge_payload[key] = p.get(key)
@@ -840,6 +860,26 @@ def mt5_bridge_signal_ingest(payload: Dict[str, Any], request: Request):
             "secondary_tp3",
             "secondary_tp4",
             "secondary_tp5",
+            "mt4_server_time",
+            "mt4_server_unix",
+            "mt4_gmt_time",
+            "mt4_gmt_unix",
+            "mt4_local_time",
+            "mt4_local_unix",
+            "mt4_bid",
+            "mt4_ask",
+            "mt4_point",
+            "mt4_spread_points",
+            "mt5_server_time",
+            "mt5_server_unix",
+            "mt5_gmt_time",
+            "mt5_gmt_unix",
+            "mt5_local_time",
+            "mt5_local_unix",
+            "mt5_bid",
+            "mt5_ask",
+            "mt5_point",
+            "mt5_spread_points",
         ):
             if key in p:
                 bridge_payload[key] = p.get(key)
@@ -1056,6 +1096,33 @@ def indicator_bridge_dual_gate_settings(payload: Dict[str, Any]):
         }
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_dual_gate_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/spread-governor-settings")
+def indicator_bridge_spread_governor_settings(payload: Dict[str, Any]):
+    """Persist global spread governor settings for Indicator Automation V2."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable"}
+        p = payload if isinstance(payload, dict) else {}
+        enabled_raw = p.get("enabled")
+        enabled = None
+        if enabled_raw is not None:
+            if isinstance(enabled_raw, bool):
+                enabled = bool(enabled_raw)
+            else:
+                enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+        result = svc.update_indicator_bridge_spread_governor_settings(enabled=enabled)
+        return {
+            "ok": bool((result or {}).get("ok", True)),
+            "update_result": result,
+            "spread_governor": svc.get_indicator_bridge_spread_governor_settings(),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_spread_governor_settings_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.post("/indicator-bridge/liquidity-governor-settings")

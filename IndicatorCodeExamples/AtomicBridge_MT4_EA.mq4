@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-04.0000-transport-audit-gmt"
+#define ATOMIC_BRIDGE_BUILD "2026-06-05.0100-direct-defaults"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -16,6 +16,7 @@ input bool   InpLogPostResponses = false;
 input bool   InpLogHandshakeResponses = true;
 input bool   InpLogNoneSignals = false;
 input bool   InpLogRegimeBuffer = false;
+input bool   InpShowDashboard = true;
 input int    InpInitialSetupRetrySeconds = 30;
 input string InpIgnoreNamePatterns = "autotrade,->";
 input bool   InpEnableProTradePost = true;
@@ -28,6 +29,16 @@ input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
 input string InpSignalProfile = "atomic";
 input int    InpHttpTimeoutMs = 5000;
+input bool   InpDirectMt4ExecutionEnabled = true;
+input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
+input double InpDirectMt4Lot = 1.00;
+input int    InpDirectMt4Magic = 970101;
+input int    InpDirectMt4Slippage = 30;
+input int    InpDirectMt4MaxSpreadPoints = 0;
+input string InpDirectMt4NoTradeWindowsGmt = "19:30-20:30";
+input bool   InpDirectMt4CloseReverse = false;
+input int    InpDirectMt4TpIndex = 5;
+input double InpDirectMt4HalfBeR = 2.0;
 input bool   InpEnableRegimeChangePost = true;
 input bool   InpSendInitialRegimeConfirmedOnStart = false;
 input string InpRegimeSignalProfile = "atomic_regime";
@@ -35,7 +46,9 @@ input string InpRegimeIndicatorName = "AtomicRegime";
 input int    InpRegimeAtrPeriod = 14;
 input double InpRegimeAtrMultiplier = 3.0;
 input double InpRegimeRR = 3.0;
-input double InpRegimeMinRiskPricePct = 0.0020;
+input double InpRegimeMinRiskPricePct = 0.00075;
+input double InpRegimeMaxRiskPricePct = 0.00150;
+input double InpRegimeMaxRiskMoneyPerLot = 0.0;
 input double InpRegimeMinRiskPoints = 0.0;
 input bool   InpRegimeUseTrendSignalBuffers = true;
 input int    InpRegimeUpTrendSignalBuffer = 2;
@@ -44,7 +57,7 @@ input bool   InpRegimeUseTrendStopBuffers = false;
 input int    InpRegimeUpTrendStopBuffer = 0;
 input int    InpRegimeDnTrendStopBuffer = 1;
 input bool   InpRegimeUseAtomicSignalAsTieBreak = true;
-input bool   InpRegimeUseClosedBar = false;
+input bool   InpRegimeUseClosedBar = true;
 input int    InpRegimeBufferLookbackBars = 200;
 input int    InpRegimeConfirmStableSeconds = 5;
 input int    InpRegimeMaxConfirmShift = 1;
@@ -66,6 +79,15 @@ datetime g_lastRegimeConfirmedSignalTime = 0;
 string   g_pendingRegimeEventId = "";
 string   g_pendingRegimeDirection = "";
 datetime g_pendingRegimeFirstSeen = 0;
+string   g_lastDirectMt4EventId = "";
+bool     g_directMt4EnabledRuntime = false;
+bool     g_directMt4PriorityDirectFirst = true;
+double   g_directMt4LotRuntime = 0.0;
+int      g_directMt4MaxSpreadRuntime = 0;
+double   g_directMt4HalfBeRRuntime = 0.0;
+double   g_regimeRRRuntime = 0.0;
+bool     g_regimeUseClosedBarRuntime = true;
+string   DASH_PREFIX = "ATOMIC_BRIDGE_DASH_";
 
 string _trim(string s)
 {
@@ -109,6 +131,141 @@ bool _contains_ci(string h, string n)
    StringToLower(h);
    StringToLower(n);
    return StringLen(n) > 0 && StringFind(h, n) >= 0;
+}
+
+int _direct_minutes_from_hhmm(string value)
+{
+   string s = _trim(value);
+   int pos = StringFind(s, ":");
+   if(pos <= 0)
+      return -1;
+   int hh = StrToInteger(StringSubstr(s, 0, pos));
+   int mm = StrToInteger(StringSubstr(s, pos + 1));
+   if(hh < 0 || hh > 23 || mm < 0 || mm > 59)
+      return -1;
+   return hh * 60 + mm;
+}
+
+bool _direct_minute_in_range(int minuteOfDay, string rangeText)
+{
+   string s = _trim(rangeText);
+   int sep = StringFind(s, "-");
+   if(sep <= 0)
+      return false;
+   int start = _direct_minutes_from_hhmm(StringSubstr(s, 0, sep));
+   int stop = _direct_minutes_from_hhmm(StringSubstr(s, sep + 1));
+   if(start < 0 || stop < 0)
+      return false;
+   int cur = MathMax(0, MathMin(1439, minuteOfDay));
+   if(start == stop)
+      return true;
+   if(start < stop)
+      return (cur >= start && cur < stop);
+   return (cur >= start || cur < stop);
+}
+
+bool _direct_in_no_trade_window_gmt()
+{
+   string raw = _trim(InpDirectMt4NoTradeWindowsGmt);
+   if(StringLen(raw) <= 0)
+      return false;
+   datetime nowGmt = TimeGMT();
+   int minute = TimeHour(nowGmt) * 60 + TimeMinute(nowGmt);
+   StringReplace(raw, ";", ",");
+   StringReplace(raw, "|", ",");
+   string parts[];
+   int n = StringSplit(raw, 44, parts);
+   for(int i = 0; i < n; i++)
+   {
+      if(_direct_minute_in_range(minute, parts[i]))
+         return true;
+   }
+   return false;
+}
+
+bool _direct_priority_direct_first()
+{
+   return g_directMt4PriorityDirectFirst;
+}
+
+bool _direct_close_reverse_positions(string direction)
+{
+   if(!InpDirectMt4CloseReverse)
+      return true;
+   int targetType = (direction == "BUY") ? OP_SELL : OP_BUY;
+   bool ok = true;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || OrderMagicNumber() != InpDirectMt4Magic || OrderType() != targetType)
+         continue;
+      RefreshRates();
+      double closePx = (targetType == OP_BUY) ? Bid : Ask;
+      if(!OrderClose(OrderTicket(), OrderLots(), closePx, InpDirectMt4Slippage, clrSilver))
+      {
+         Print("AtomicBridge direct_mt4 reverse close failed ticket=", OrderTicket(), " err=", GetLastError());
+         ok = false;
+      }
+   }
+   return ok;
+}
+
+double _select_direct_tp(double tp1, double tp2, double tp3, double tp4, double tp5)
+{
+   int idx = MathMax(1, MathMin(5, InpDirectMt4TpIndex));
+   if(idx == 1 && tp1 > 0.0) return tp1;
+   if(idx == 2 && tp2 > 0.0) return tp2;
+   if(idx == 3 && tp3 > 0.0) return tp3;
+   if(idx == 4 && tp4 > 0.0) return tp4;
+   if(idx == 5 && tp5 > 0.0) return tp5;
+   if(tp5 > 0.0) return tp5;
+   if(tp4 > 0.0) return tp4;
+   if(tp3 > 0.0) return tp3;
+   if(tp2 > 0.0) return tp2;
+   return tp1;
+}
+
+bool _direct_mt4_execute(string eventId, string direction, double sl, double tp, string source)
+{
+   if(!g_directMt4EnabledRuntime)
+      return true;
+   string dir = _trim(direction);
+   if(dir != "BUY" && dir != "SELL")
+      return false;
+   if(eventId == g_lastDirectMt4EventId)
+      return true;
+   if(_direct_in_no_trade_window_gmt())
+   {
+      g_lastDirectMt4EventId = eventId;
+      Print("AtomicBridge direct_mt4 skipped reason=no_trade_window_gmt event=", eventId, " dir=", dir);
+      return false;
+   }
+   int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
+   if(g_directMt4MaxSpreadRuntime > 0 && spread > g_directMt4MaxSpreadRuntime)
+   {
+      g_lastDirectMt4EventId = eventId;
+      Print("AtomicBridge direct_mt4 skipped reason=spread_too_wide spread=", spread, " max=", g_directMt4MaxSpreadRuntime, " event=", eventId);
+      return false;
+   }
+   _direct_close_reverse_positions(dir);
+   RefreshRates();
+   int type = (dir == "BUY") ? OP_BUY : OP_SELL;
+   double price = (type == OP_BUY) ? Ask : Bid;
+   double stopLoss = (sl > 0.0 ? NormalizeDouble(sl, Digits) : 0.0);
+   double takeProfit = (tp > 0.0 ? NormalizeDouble(tp, Digits) : 0.0);
+   double lot = MathMax(0.01, g_directMt4LotRuntime);
+   string comment = "AtomicBridgeMT4|" + source;
+   ResetLastError();
+   int ticket = OrderSend(Symbol(), type, lot, NormalizeDouble(price, Digits), InpDirectMt4Slippage, stopLoss, takeProfit, comment, InpDirectMt4Magic, 0, (type == OP_BUY ? clrLime : clrTomato));
+   g_lastDirectMt4EventId = eventId;
+   if(ticket > 0)
+   {
+      Print("AtomicBridge direct_mt4 order_sent ticket=", ticket, " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(price), " sl=", _fmt_price(stopLoss), " tp=", _fmt_price(takeProfit), " event=", eventId);
+      return true;
+   }
+   Print("AtomicBridge direct_mt4 order_failed err=", GetLastError(), " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(price), " sl=", _fmt_price(stopLoss), " tp=", _fmt_price(takeProfit), " event=", eventId);
+   return false;
 }
 
 bool _csv_name_hit(string csv, string name)
@@ -608,9 +765,6 @@ bool _post_atomic_bridge_event(
    string reason
 )
 {
-   if(!InpEnableProTradePost)
-      return true;
-
    string eventKind = _trim(eventType);
    string dir = _trim(direction);
    string endpoint = _build_endpoint(InpApiBaseUrl, InpApiPath);
@@ -623,6 +777,15 @@ bool _post_atomic_bridge_event(
       (long)signalTime,
       eventKind
    );
+   bool directFirst = (eventKind == "confirmed_signal" && _direct_priority_direct_first());
+   if(directFirst)
+      _direct_mt4_execute(eventId, dir, sl, _select_direct_tp(tp1, tp2, tp3, tp4, tp5), InpIndicatorName);
+   if(!InpEnableProTradePost)
+   {
+      if(eventKind == "confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId, dir, sl, _select_direct_tp(tp1, tp2, tp3, tp4, tp5), InpIndicatorName);
+      return true;
+   }
    string msg = StringFormat(
       "Atomic %s %s %s idx=%d entry=%s sl=%s tp1=%s tp2=%s tp3=%s tp4=%s tp5=%s",
       Symbol(),
@@ -703,10 +866,14 @@ bool _post_atomic_bridge_event(
       {
          Print("AtomicBridge sent ", eventKind, " ", dir);
       }
+      if(eventKind == "confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId, dir, sl, _select_direct_tp(tp1, tp2, tp3, tp4, tp5), InpIndicatorName);
       return true;
    }
 
    Print("AtomicBridge POST failed code=", code, " err=", GetLastError(), " event=", eventKind, " dir=", dir, " endpoint=", endpoint, " response=", response);
+   if(eventKind == "confirmed_signal" && !directFirst)
+      _direct_mt4_execute(eventId, dir, sl, _select_direct_tp(tp1, tp2, tp3, tp4, tp5), InpIndicatorName);
    return false;
 }
 
@@ -715,6 +882,240 @@ double _valid_price_or_zero(double value)
    if(!MathIsValidNumber(value) || value == EMPTY_VALUE || value == 2147483647.0 || value <= 0.0)
       return 0.0;
    return value;
+}
+
+double _clamp_double(double value, double lo, double hi)
+{
+   return MathMax(lo, MathMin(hi, value));
+}
+
+void _dash_rect(string name, int x, int y, int w, int h, color bg, color border)
+{
+   string obj = DASH_PREFIX + name;
+   if(ObjectFind(0, obj) < 0)
+      ObjectCreate(0, obj, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, obj, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, obj, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, border);
+}
+
+void _dash_label(string name, int x, int y, string text, color clr, int size = 8)
+{
+   string obj = DASH_PREFIX + name;
+   if(ObjectFind(0, obj) < 0)
+      ObjectCreate(0, obj, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, obj, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, obj, OBJPROP_FONT, "Consolas");
+}
+
+void _dash_button(string name, int x, int y, int w, int h, string text, color bg)
+{
+   string obj = DASH_PREFIX + name;
+   if(ObjectFind(0, obj) < 0)
+      ObjectCreate(0, obj, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, obj, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, obj, OBJPROP_YSIZE, h);
+   ObjectSetString(0, obj, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, obj, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, 8);
+}
+
+void _dash_edit(string name, int x, int y, int w, int h, string text)
+{
+   string obj = DASH_PREFIX + name;
+   bool created = false;
+   if(ObjectFind(0, obj) < 0)
+   {
+      ObjectCreate(0, obj, OBJ_EDIT, 0, 0, 0);
+      created = true;
+   }
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, obj, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, obj, OBJPROP_YSIZE, h);
+   if(created)
+      ObjectSetString(0, obj, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, C'35,43,58');
+   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, C'90,178,255');
+   ObjectSetInteger(0, obj, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, obj, OBJPROP_FONT, "Consolas");
+}
+
+void _dash_progress(string name, int x, int y, int w, int h, double pct, string text, color fill)
+{
+   pct = _clamp_double(pct, 0.0, 100.0);
+   _dash_rect(name + "_BG", x, y, w, h, C'35,43,58', C'134,158,182');
+   _dash_rect(name + "_FILL", x, y, (int)MathRound(w * pct / 100.0), h, fill, fill);
+   _dash_label(name + "_TXT", x + 8, y + 4, text, clrWhite, 8);
+}
+
+void _delete_dash()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string obj = ObjectName(0, i, -1, -1);
+      if(StringFind(obj, DASH_PREFIX) == 0)
+         ObjectDelete(0, obj);
+   }
+}
+
+bool _direct_open_progress(double &pct, string &label, color &fill)
+{
+   pct = 0.0;
+   label = "DIRECT MT4 POSITION: none";
+   fill = C'88,96,112';
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || OrderMagicNumber() != InpDirectMt4Magic)
+         continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+      double entry = OrderOpenPrice();
+      double sl = OrderStopLoss();
+      double tp = OrderTakeProfit();
+      int dir = OrderType() == OP_BUY ? 1 : -1;
+      RefreshRates();
+      double px = dir > 0 ? Bid : Ask;
+      if(sl <= 0.0 || tp <= 0.0 || MathAbs(tp - sl) <= 0.0)
+         continue;
+      if(dir > 0)
+         pct = ((px - sl) / (tp - sl)) * 100.0;
+      else
+         pct = ((sl - px) / (sl - tp)) * 100.0;
+      pct = _clamp_double(pct, 0.0, 100.0);
+      fill = dir > 0 ? C'31,141,255' : C'221,55,78';
+      label = StringFormat("%s ticket=%d Px=%s SL=%s TP=%s %.0f%%",
+                           (dir > 0 ? "BUY" : "SELL"),
+                           OrderTicket(),
+                           _fmt_price(px),
+                           _fmt_price(sl),
+                           _fmt_price(tp),
+                           pct);
+      return true;
+   }
+   return false;
+}
+
+void _manage_direct_mt4_positions()
+{
+   double halfR = g_directMt4HalfBeRRuntime;
+   if(halfR <= 0.0)
+      return;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || OrderMagicNumber() != InpDirectMt4Magic)
+         continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+      double entry = OrderOpenPrice();
+      double sl = OrderStopLoss();
+      double tp = OrderTakeProfit();
+      if(sl <= 0.0 || tp <= 0.0)
+         continue;
+      int dir = OrderType() == OP_BUY ? 1 : -1;
+      double risk = MathAbs(entry - sl);
+      if(risk <= Point)
+         continue;
+      RefreshRates();
+      double px = dir > 0 ? Bid : Ask;
+      bool reached = (dir > 0) ? (px >= entry + risk * halfR) : (px <= entry - risk * halfR);
+      bool alreadyBe = (dir > 0) ? (sl >= entry - Point) : (sl <= entry + Point);
+      if(!reached || alreadyBe)
+         continue;
+      if(OrderModify(OrderTicket(), entry, NormalizeDouble(entry, Digits), tp, 0, clrDodgerBlue))
+         Print("AtomicBridge direct_mt4 half_be moved ticket=", OrderTicket(), " halfR=", DoubleToString(halfR, 1));
+      else
+         Print("AtomicBridge direct_mt4 half_be failed ticket=", OrderTicket(), " err=", GetLastError());
+   }
+}
+
+void _draw_dashboard()
+{
+   if(!InpShowDashboard)
+      return;
+   _dash_rect("BG", 10, 20, 760, 210, C'24,30,42', C'134,158,182');
+   _dash_rect("CORE", 18, 28, 744, 194, C'35,43,58', C'90,178,255');
+   _dash_label("TITLE", 28, 34, "ATOMIC BRIDGE DIRECT COCKPIT", C'216,222,230', 10);
+   _dash_label("SUB", 330, 36, Symbol() + " " + _tf_to_string(Period()) + " | " + ATOMIC_BRIDGE_BUILD, C'90,178,255', 8);
+   _dash_button("BTN_DIRECT", 28, 62, 120, 24, g_directMt4EnabledRuntime ? "DIRECT ON" : "DIRECT OFF", g_directMt4EnabledRuntime ? C'32,150,96' : C'178,37,57');
+   _dash_button("BTN_PRIORITY", 156, 62, 135, 24, g_directMt4PriorityDirectFirst ? "DIRECT FIRST" : "POST FIRST", C'38,101,176');
+   _dash_button("BTN_HALFBE", 300, 62, 110, 24, "HALFBE " + DoubleToString(g_directMt4HalfBeRRuntime, 1) + "R", C'34,136,160');
+   _dash_button("BTN_REGIME_SHIFT", 418, 62, 118, 24, g_regimeUseClosedBarRuntime ? "REGIME SH1" : "REGIME SH0", g_regimeUseClosedBarRuntime ? C'34,136,160' : C'178,37,57');
+   _dash_button("BTN_APPLY", 544, 62, 90, 24, "APPLY", C'38,101,176');
+   _dash_label("L_LOT", 28, 100, "Lot", C'184,196,210', 8);
+   _dash_edit("EDIT_LOT", 70, 96, 70, 22, DoubleToString(g_directMt4LotRuntime, 2));
+   _dash_label("L_SPREAD", 156, 100, "Max spread pts", C'184,196,210', 8);
+   _dash_edit("EDIT_SPREAD", 260, 96, 70, 22, IntegerToString(g_directMt4MaxSpreadRuntime));
+   _dash_label("L_RR", 348, 100, "Regime TP R", C'184,196,210', 8);
+   _dash_edit("EDIT_RR", 438, 96, 54, 22, DoubleToString(g_regimeRRRuntime, 1));
+   _dash_label("L_HB", 510, 100, "BE at R", C'184,196,210', 8);
+   _dash_edit("EDIT_HALFBE", 570, 96, 54, 22, DoubleToString(g_directMt4HalfBeRRuntime, 1));
+   int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
+   RefreshRates();
+   _dash_label("STATE", 28, 132, StringFormat("Bid %s Ask %s Spread %d | Regime closed-bar shift=%s",
+              _fmt_price(Bid), _fmt_price(Ask), spread, (g_regimeUseClosedBarRuntime ? "1" : "0")), clrWhite, 8);
+   double pct; string label; color fill;
+   if(_direct_open_progress(pct, label, fill))
+      _dash_progress("TRADE", 28, 158, 700, 24, pct, label, fill);
+   else
+      _dash_progress("TRADE", 28, 158, 700, 24, 0.0, "DIRECT MT4 POSITION: none | dashboard does not mutate signal math", C'88,96,112');
+}
+
+void _apply_dashboard()
+{
+   string obj;
+   obj = DASH_PREFIX + "EDIT_LOT";
+   if(ObjectFind(0, obj) >= 0)
+      g_directMt4LotRuntime = MathMax(0.01, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_SPREAD";
+   if(ObjectFind(0, obj) >= 0)
+      g_directMt4MaxSpreadRuntime = MathMax(0, StrToInteger(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_RR";
+   if(ObjectFind(0, obj) >= 0)
+      g_regimeRRRuntime = MathMax(0.1, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_HALFBE";
+   if(ObjectFind(0, obj) >= 0)
+      g_directMt4HalfBeRRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   Print("AtomicBridge dashboard applied direct=", (g_directMt4EnabledRuntime ? "true" : "false"),
+         " priority=", (g_directMt4PriorityDirectFirst ? "direct_first" : "post_first"),
+         " lot=", DoubleToString(g_directMt4LotRuntime, 2),
+         " max_spread=", g_directMt4MaxSpreadRuntime,
+         " regime_rr=", DoubleToString(g_regimeRRRuntime, 2),
+         " halfbe_r=", DoubleToString(g_directMt4HalfBeRRuntime, 2),
+         " regime_closed_bar=", (g_regimeUseClosedBarRuntime ? "true" : "false"));
+   _draw_dashboard();
+   ChartRedraw(0);
+}
+
+double _value_per_price_unit_per_lot()
+{
+   double tickSize = MarketInfo(Symbol(), MODE_TICKSIZE);
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   if(tickSize <= 0.0)
+      tickSize = Point;
+   if(tickSize <= 0.0 || tickValue <= 0.0)
+      return 0.0;
+   return tickValue / tickSize;
 }
 
 bool _valid_atomic_buffer_price(double value)
@@ -801,7 +1202,7 @@ bool _find_current_atomic_regime_from_signal_buffers(string directionHint, strin
    if(!InpRegimeUseTrendSignalBuffers)
       return false;
 
-   int shift = (InpRegimeUseClosedBar ? 1 : 0);
+   int shift = (g_regimeUseClosedBarRuntime ? 1 : 0);
    if(Bars <= shift)
       return false;
 
@@ -929,7 +1330,7 @@ bool _find_current_atomic_regime_from_stop_buffers(string &direction, int &signa
    if(!InpRegimeUseTrendStopBuffers)
       return false;
 
-   int shift = (InpRegimeUseClosedBar ? 1 : 0);
+   int shift = (g_regimeUseClosedBarRuntime ? 1 : 0);
    if(Bars <= shift)
       return false;
 
@@ -1021,12 +1422,27 @@ void _compute_regime_levels(string direction, datetime signalTime, double entryP
    double minStop = MathMax(Point * 20.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point * 1.5);
    double atrRisk = atr * MathMax(0.1, InpRegimeAtrMultiplier);
    double pctRisk = entry * MathMax(0.0, InpRegimeMinRiskPricePct);
+   double pctCap = entry * MathMax(0.0, InpRegimeMaxRiskPricePct);
+   double moneyCap = 0.0;
+   double valuePerUnit = _value_per_price_unit_per_lot();
+   if(InpRegimeMaxRiskMoneyPerLot > 0.0 && valuePerUnit > 0.0)
+      moneyCap = InpRegimeMaxRiskMoneyPerLot / valuePerUnit;
    double absoluteRisk = _valid_price_or_zero(InpRegimeMinRiskPoints);
    double risk = MathMax(MathMax(atrRisk, pctRisk), MathMax(minStop, absoluteRisk));
+   double hardFloor = MathMax(minStop, absoluteRisk);
+   double riskCap = 0.0;
+   if(pctCap > hardFloor)
+      riskCap = pctCap;
+   if(moneyCap > hardFloor)
+      riskCap = (riskCap > 0.0 ? MathMin(riskCap, moneyCap) : moneyCap);
+   if(riskCap > hardFloor && risk > riskCap)
+      risk = riskCap;
+   if(risk < hardFloor)
+      risk = hardFloor;
    if(InpLogRegimeBuffer)
    {
       PrintFormat(
-         "AtomicBridge regime risk model dir=%s entry=%s atr=%s atr_mult=%.2f atr_risk=%s pct_floor=%.4f pct_risk=%s abs_floor=%s min_stop=%s final_risk=%s rr=%.2f",
+         "AtomicBridge regime risk model dir=%s entry=%s atr=%s atr_mult=%.2f atr_risk=%s pct_floor=%.5f pct_risk=%s pct_cap=%.5f pct_cap_risk=%s money_cap_per_lot=%s money_cap_risk=%s abs_floor=%s min_stop=%s final_risk=%s rr=%.2f",
          direction,
          _fmt_price(entry),
          _fmt_price(atr),
@@ -1034,13 +1450,17 @@ void _compute_regime_levels(string direction, datetime signalTime, double entryP
          _fmt_price(atrRisk),
          MathMax(0.0, InpRegimeMinRiskPricePct),
          _fmt_price(pctRisk),
+         MathMax(0.0, InpRegimeMaxRiskPricePct),
+         _fmt_price(pctCap),
+         _fmt_price(InpRegimeMaxRiskMoneyPerLot),
+         _fmt_price(moneyCap),
          _fmt_price(absoluteRisk),
          _fmt_price(minStop),
          _fmt_price(risk),
          MathMax(0.1, InpRegimeRR)
       );
    }
-   double rr = MathMax(0.1, InpRegimeRR);
+   double rr = MathMax(0.1, g_regimeRRRuntime);
 
    if(direction == "BUY")
    {
@@ -1066,7 +1486,7 @@ bool _post_atomic_regime_event(
    string reason
 )
 {
-   if(!InpEnableProTradePost || !InpEnableRegimeChangePost)
+   if(!InpEnableRegimeChangePost)
       return true;
 
    string eventKind = _trim(eventType);
@@ -1082,8 +1502,17 @@ bool _post_atomic_regime_event(
       (long)signalTime,
       eventKind
    );
+   bool directFirst = (eventKind == "confirmed_signal" && _direct_priority_direct_first());
+   if(directFirst)
+      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName);
+   if(!InpEnableProTradePost)
+   {
+      if(eventKind == "confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName);
+      return true;
+   }
    string msg = StringFormat(
-      "AtomicRegime %s %s %s idx=%d entry=%s sl=%s tp=%s atr_period=%d atr_mult=%.2f rr=%.2f",
+      "AtomicRegime %s %s %s idx=%d entry=%s sl=%s tp=%s atr_period=%d atr_mult=%.2f rr=%.2f min_pct=%.5f max_pct=%.5f",
       Symbol(),
       _tf_to_string(Period()),
       dir,
@@ -1093,7 +1522,9 @@ bool _post_atomic_regime_event(
       _fmt_price(tp),
       regimePeriod,
       MathMax(0.1, InpRegimeAtrMultiplier),
-      MathMax(0.1, InpRegimeRR)
+      MathMax(0.1, g_regimeRRRuntime),
+      MathMax(0.0, InpRegimeMinRiskPricePct),
+      MathMax(0.0, InpRegimeMaxRiskPricePct)
    );
 
    string resolved = (dir == "BUY" || dir == "SELL") ? dir : "NONE";
@@ -1129,6 +1560,12 @@ bool _post_atomic_regime_event(
       "\"secondary_stop_loss\":" + DoubleToString(sl, Digits) + "," 
       "\"secondary_tp_enabled\":true," 
       "\"secondary_tp1\":" + DoubleToString(tp, Digits) + "," 
+      "\"atomic_regime_atr_period\":" + IntegerToString(regimePeriod) + ","
+      "\"atomic_regime_atr_multiplier\":" + DoubleToString(MathMax(0.1, InpRegimeAtrMultiplier), 2) + ","
+      "\"atomic_regime_rr\":" + DoubleToString(MathMax(0.1, g_regimeRRRuntime), 2) + ","
+      "\"atomic_regime_min_risk_price_pct\":" + DoubleToString(MathMax(0.0, InpRegimeMinRiskPricePct), 6) + ","
+      "\"atomic_regime_max_risk_price_pct\":" + DoubleToString(MathMax(0.0, InpRegimeMaxRiskPricePct), 6) + ","
+      "\"atomic_regime_max_risk_money_per_lot\":" + DoubleToString(MathMax(0.0, InpRegimeMaxRiskMoneyPerLot), 2) + ","
       "\"message\":\"" + _json_escape(msg) + "\"," 
       "\"atomic_signal_index\":" + IntegerToString(signalIndex) + "," 
       "\"atomic_trend_object\":\"" + _json_escape(trendName) + "\"," 
@@ -1157,10 +1594,14 @@ bool _post_atomic_regime_event(
       {
          Print("AtomicBridge regime sent ", eventKind, " ", dir);
       }
+      if(eventKind == "confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName);
       return true;
    }
 
    Print("AtomicBridge regime POST failed code=", code, " err=", GetLastError(), " event=", eventKind, " dir=", dir, " endpoint=", endpoint, " response=", response);
+   if(eventKind == "confirmed_signal" && !directFirst)
+      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName);
    return false;
 }
 
@@ -1415,6 +1856,14 @@ int OnInit()
 {
    int poll = MathMax(1, InpPollSeconds);
    EventSetTimer(poll);
+   g_directMt4EnabledRuntime = InpDirectMt4ExecutionEnabled;
+   string priority = _lower_copy(_trim(InpDirectMt4Priority));
+   g_directMt4PriorityDirectFirst = (priority != "post_first" && priority != "quantdesk_first");
+   g_directMt4LotRuntime = MathMax(0.01, InpDirectMt4Lot);
+   g_directMt4MaxSpreadRuntime = MathMax(0, InpDirectMt4MaxSpreadPoints);
+   g_directMt4HalfBeRRuntime = MathMax(0.0, InpDirectMt4HalfBeR);
+   g_regimeRRRuntime = MathMax(0.1, InpRegimeRR);
+   g_regimeUseClosedBarRuntime = InpRegimeUseClosedBar;
    Print(
       "AtomicBridge BUILD=", ATOMIC_BRIDGE_BUILD,
       " indicator=", InpIndicatorName,
@@ -1439,6 +1888,7 @@ int OnInit()
    g_initialSetupRetryUntil = _timer_now() + MathMax(0, InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
+   _draw_dashboard();
    return INIT_SUCCEEDED;
 }
 
@@ -1454,10 +1904,12 @@ void OnDeinit(const int reason)
    }
    if(InpLogPostResponses || InpLogNoneSignals || InpLogRegimeBuffer)
       Print("AtomicBridge uninit reason=", reason);
+   _delete_dash();
 }
 
 void OnTimer()
 {
+   _manage_direct_mt4_positions();
    MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
    {
@@ -1465,8 +1917,57 @@ void OnTimer()
       return;
    }
    ScanAndLogLatest("timer");
+   _draw_dashboard();
 }
 
 void OnTick()
 {
+   _manage_direct_mt4_positions();
+   _draw_dashboard();
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT)
+      return;
+   if(id == CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      if(StringFind(sparam, DASH_PREFIX + "EDIT_") == 0)
+         _apply_dashboard();
+      return;
+   }
+   if(sparam == DASH_PREFIX + "BTN_DIRECT")
+   {
+      g_directMt4EnabledRuntime = !g_directMt4EnabledRuntime;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_PRIORITY")
+   {
+      g_directMt4PriorityDirectFirst = !g_directMt4PriorityDirectFirst;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_HALFBE")
+   {
+      if(g_directMt4HalfBeRRuntime <= 0.0)
+         g_directMt4HalfBeRRuntime = 1.0;
+      else if(g_directMt4HalfBeRRuntime < 2.0)
+         g_directMt4HalfBeRRuntime = 2.0;
+      else if(g_directMt4HalfBeRRuntime < 3.0)
+         g_directMt4HalfBeRRuntime = 3.0;
+      else
+         g_directMt4HalfBeRRuntime = 0.0;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_REGIME_SHIFT")
+   {
+      g_regimeUseClosedBarRuntime = !g_regimeUseClosedBarRuntime;
+      Print("AtomicBridge dashboard regime closed-bar mode=", (g_regimeUseClosedBarRuntime ? "shift_1_closed_bar" : "shift_0_live_bar"));
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_APPLY")
+      _apply_dashboard();
 }

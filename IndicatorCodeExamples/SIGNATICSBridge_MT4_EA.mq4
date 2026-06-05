@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-04.0000-transport-audit-gmt"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-05.0100-direct-defaults"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -18,6 +18,7 @@ input int    InpNoneLogIntervalSeconds = 300;
 input int    InpInitialSetupRetrySeconds = 30;
 input bool   InpLogInitialDiscoverySummary = true;
 input string InpIgnoreNamePatterns = "autotrade,->";
+input bool   InpShowDashboard = true;
 input bool   InpEnableProTradePost = true;
 input bool   InpSendUnregisterOnDeinit = true;
 input bool   InpSendInitialConfirmedOnStart = false;
@@ -30,6 +31,20 @@ input string InpBridgeToken = "";
 input string InpSignalProfile = "signatics";
 input string InpBridgeSignalMode = "buffer"; // buffer | chart_object
 input int    InpHttpTimeoutMs = 5000;
+input bool   InpDirectMt4ExecutionEnabled = true;
+input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
+input double InpDirectMt4Lot = 1.00;
+input int    InpDirectMt4Magic = 970201;
+input int    InpDirectMt4Slippage = 30;
+input int    InpDirectMt4MaxSpreadPoints = 0;
+input string InpDirectMt4NoTradeWindowsGmt = "19:30-20:30";
+input bool   InpDirectMt4CloseReverse = false;
+input double InpDirectMt4HalfBeR = 2.0;
+input int    InpDirectAtrPeriod = 14;
+input double InpDirectAtrMultiplier = 3.0;
+input double InpDirectRR = 3.0;
+input double InpDirectMinRiskPricePct = 0.0020;
+input double InpDirectMinRiskPoints = 0.0;
 input bool   InpPreferGroupedSetup = true;
 input bool   InpAllowDashboardFallback = false;
 input bool   InpRejectInvalidGeometry = true;
@@ -72,6 +87,13 @@ datetime g_lastFastConfirmedSignalTime = 0;
 datetime g_lastBufferHistoryNoneLogTime = 0;
 string   g_pendingObjectEventId = "";
 datetime g_pendingObjectFirstSeen = 0;
+string   g_lastDirectMt4EventId = "";
+bool     g_directMt4EnabledRuntime = false;
+bool     g_directMt4PriorityDirectFirst = true;
+double   g_directMt4LotRuntime = 0.0;
+int      g_directMt4MaxSpreadRuntime = 0;
+double   g_directMt4HalfBeRRuntime = 0.0;
+string   DASH_PREFIX = "SIGNATICS_BRIDGE_DASH_";
 
 string _trim(string s){ StringTrimLeft(s); StringTrimRight(s); return s; }
 
@@ -110,6 +132,330 @@ bool _contains_ci(string h,string n)
    StringToLower(h);
    StringToLower(n);
    return StringLen(n)>0 && StringFind(h,n)>=0;
+}
+
+int _direct_minutes_from_hhmm(string value)
+{
+   string s=_trim(value);
+   int pos=StringFind(s,":");
+   if(pos<=0)
+      return -1;
+   int hh=StrToInteger(StringSubstr(s,0,pos));
+   int mm=StrToInteger(StringSubstr(s,pos+1));
+   if(hh<0 || hh>23 || mm<0 || mm>59)
+      return -1;
+   return hh*60+mm;
+}
+
+bool _direct_minute_in_range(int minuteOfDay,string rangeText)
+{
+   string s=_trim(rangeText);
+   int sep=StringFind(s,"-");
+   if(sep<=0)
+      return false;
+   int start=_direct_minutes_from_hhmm(StringSubstr(s,0,sep));
+   int stop=_direct_minutes_from_hhmm(StringSubstr(s,sep+1));
+   if(start<0 || stop<0)
+      return false;
+   int cur=MathMax(0,MathMin(1439,minuteOfDay));
+   if(start==stop)
+      return true;
+   if(start<stop)
+      return (cur>=start && cur<stop);
+   return (cur>=start || cur<stop);
+}
+
+bool _direct_in_no_trade_window_gmt()
+{
+   string raw=_trim(InpDirectMt4NoTradeWindowsGmt);
+   if(StringLen(raw)<=0)
+      return false;
+   datetime nowGmt=TimeGMT();
+   int minute=TimeHour(nowGmt)*60+TimeMinute(nowGmt);
+   StringReplace(raw,";",",");
+   StringReplace(raw,"|",",");
+   string parts[];
+   int n=StringSplit(raw,44,parts);
+   for(int i=0;i<n;i++)
+   {
+      if(_direct_minute_in_range(minute,parts[i]))
+         return true;
+   }
+   return false;
+}
+
+bool _direct_priority_direct_first()
+{
+   return g_directMt4PriorityDirectFirst;
+}
+
+bool _direct_close_reverse_positions(string direction)
+{
+   if(!InpDirectMt4CloseReverse)
+      return true;
+   int targetType=(direction=="BUY")?OP_SELL:OP_BUY;
+   bool ok=true;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+         continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic || OrderType()!=targetType)
+         continue;
+      RefreshRates();
+      double closePx=(targetType==OP_BUY)?Bid:Ask;
+      if(!OrderClose(OrderTicket(),OrderLots(),closePx,InpDirectMt4Slippage,clrSilver))
+      {
+         Print("SIGNATICSBridge direct_mt4 reverse close failed ticket=",OrderTicket()," err=",GetLastError());
+         ok=false;
+      }
+   }
+   return ok;
+}
+
+bool _direct_price_ok(double value)
+{
+   return (MathIsValidNumber(value) && value!=EMPTY_VALUE && value!=2147483647.0 && value>0.0);
+}
+
+void _direct_fill_fallback_levels(string direction,double entry,double &sl,double &tp)
+{
+   if(_direct_price_ok(sl) && _direct_price_ok(tp))
+      return;
+   double point=MarketInfo(Symbol(),MODE_POINT);
+   if(point<=0.0)
+      point=Point;
+   double atr=iATR(Symbol(),Period(),MathMax(1,InpDirectAtrPeriod),1);
+   double defaultDist=MathMax(point*120.0,MathAbs(entry)*0.001);
+   double atrRisk=MathMax(atr,defaultDist)*MathMax(0.1,InpDirectAtrMultiplier);
+   double pctRisk=MathAbs(entry)*MathMax(0.0,InpDirectMinRiskPricePct);
+   double absoluteRisk=MathMax(0.0,InpDirectMinRiskPoints)*point;
+   double brokerFloor=MathMax(point*20.0,MarketInfo(Symbol(),MODE_STOPLEVEL)*point*1.5);
+   double risk=MathMax(MathMax(atrRisk,pctRisk),MathMax(absoluteRisk,brokerFloor));
+   double rr=MathMax(0.1,InpDirectRR);
+   if(direction=="BUY")
+   {
+      if(!_direct_price_ok(sl))
+         sl=entry-risk;
+      if(!_direct_price_ok(tp))
+         tp=entry+risk*rr;
+   }
+   else if(direction=="SELL")
+   {
+      if(!_direct_price_ok(sl))
+         sl=entry+risk;
+      if(!_direct_price_ok(tp))
+         tp=entry-risk*rr;
+   }
+}
+
+bool _direct_mt4_execute(string eventId,string direction,double entry,double sl,double tp,string source)
+{
+   if(!g_directMt4EnabledRuntime)
+      return true;
+   string dir=_trim(direction);
+   if(dir!="BUY" && dir!="SELL")
+      return false;
+   if(eventId==g_lastDirectMt4EventId)
+      return true;
+   if(_direct_in_no_trade_window_gmt())
+   {
+      g_lastDirectMt4EventId=eventId;
+      Print("SIGNATICSBridge direct_mt4 skipped reason=no_trade_window_gmt event=",eventId," dir=",dir);
+      return false;
+   }
+   int spread=(int)MarketInfo(Symbol(),MODE_SPREAD);
+   if(g_directMt4MaxSpreadRuntime>0 && spread>g_directMt4MaxSpreadRuntime)
+   {
+      g_lastDirectMt4EventId=eventId;
+      Print("SIGNATICSBridge direct_mt4 skipped reason=spread_too_wide spread=",spread," max=",g_directMt4MaxSpreadRuntime," event=",eventId);
+      return false;
+   }
+   _direct_fill_fallback_levels(dir,entry,sl,tp);
+   _direct_close_reverse_positions(dir);
+   RefreshRates();
+   int type=(dir=="BUY")?OP_BUY:OP_SELL;
+   double price=(type==OP_BUY)?Ask:Bid;
+   double stopLoss=(_direct_price_ok(sl)?NormalizeDouble(sl,Digits):0.0);
+   double takeProfit=(_direct_price_ok(tp)?NormalizeDouble(tp,Digits):0.0);
+   double lot=MathMax(0.01,g_directMt4LotRuntime);
+   string comment="SIGNATICSBridgeMT4|"+source;
+   ResetLastError();
+   int ticket=OrderSend(Symbol(),type,lot,NormalizeDouble(price,Digits),InpDirectMt4Slippage,stopLoss,takeProfit,comment,InpDirectMt4Magic,0,(type==OP_BUY?clrLime:clrTomato));
+   g_lastDirectMt4EventId=eventId;
+   if(ticket>0)
+   {
+      Print("SIGNATICSBridge direct_mt4 order_sent ticket=",ticket," dir=",dir," lot=",DoubleToString(lot,2)," price=",DoubleToString(price,Digits)," sl=",DoubleToString(stopLoss,Digits)," tp=",DoubleToString(takeProfit,Digits)," event=",eventId);
+      return true;
+   }
+   Print("SIGNATICSBridge direct_mt4 order_failed err=",GetLastError()," dir=",dir," lot=",DoubleToString(lot,2)," price=",DoubleToString(price,Digits)," sl=",DoubleToString(stopLoss,Digits)," tp=",DoubleToString(takeProfit,Digits)," event=",eventId);
+   return false;
+}
+
+double _dash_clamp(double value,double lo,double hi){ return MathMax(lo,MathMin(hi,value)); }
+
+void _dash_rect(string name,int x,int y,int w,int h,color bg,color border)
+{
+   string obj=DASH_PREFIX+name;
+   if(ObjectFind(0,obj)<0) ObjectCreate(0,obj,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,obj,OBJPROP_BORDER_COLOR,border);
+}
+
+void _dash_label(string name,int x,int y,string text,color clr,int size=8)
+{
+   string obj=DASH_PREFIX+name;
+   if(ObjectFind(0,obj)<0) ObjectCreate(0,obj,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
+   ObjectSetString(0,obj,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,obj,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,size);
+   ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");
+}
+
+void _dash_button(string name,int x,int y,int w,int h,string text,color bg)
+{
+   string obj=DASH_PREFIX+name;
+   if(ObjectFind(0,obj)<0) ObjectCreate(0,obj,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
+   ObjectSetString(0,obj,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,8);
+}
+
+void _dash_edit(string name,int x,int y,int w,int h,string text)
+{
+   string obj=DASH_PREFIX+name;
+   bool created=false;
+   if(ObjectFind(0,obj)<0){ ObjectCreate(0,obj,OBJ_EDIT,0,0,0); created=true; }
+   ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
+   if(created) ObjectSetString(0,obj,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,C'35,43,58');
+   ObjectSetInteger(0,obj,OBJPROP_BORDER_COLOR,C'90,178,255');
+   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,8);
+   ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");
+}
+
+void _dash_progress(string name,int x,int y,int w,int h,double pct,string text,color fill)
+{
+   pct=_dash_clamp(pct,0.0,100.0);
+   _dash_rect(name+"_BG",x,y,w,h,C'35,43,58',C'134,158,182');
+   _dash_rect(name+"_FILL",x,y,(int)MathRound(w*pct/100.0),h,fill,fill);
+   _dash_label(name+"_TXT",x+8,y+4,text,clrWhite,8);
+}
+
+void _delete_dash()
+{
+   int total=ObjectsTotal(0,-1,-1);
+   for(int i=total-1;i>=0;i--)
+   {
+      string obj=ObjectName(0,i,-1,-1);
+      if(StringFind(obj,DASH_PREFIX)==0) ObjectDelete(0,obj);
+   }
+}
+
+bool _direct_open_progress(double &pct,string &label,color &fill)
+{
+   pct=0.0; label="DIRECT MT4 POSITION: none"; fill=C'88,96,112';
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic) continue;
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL) continue;
+      double sl=OrderStopLoss(), tp=OrderTakeProfit();
+      int dir=OrderType()==OP_BUY?1:-1;
+      RefreshRates();
+      double px=dir>0?Bid:Ask;
+      if(sl<=0.0 || tp<=0.0 || MathAbs(tp-sl)<=0.0) continue;
+      pct=(dir>0)?((px-sl)/(tp-sl))*100.0:((sl-px)/(sl-tp))*100.0;
+      pct=_dash_clamp(pct,0.0,100.0);
+      fill=dir>0?C'31,141,255':C'221,55,78';
+      label=StringFormat("%s ticket=%d Px=%s SL=%s TP=%s %.0f%%",(dir>0?"BUY":"SELL"),OrderTicket(),DoubleToString(px,Digits),DoubleToString(sl,Digits),DoubleToString(tp,Digits),pct);
+      return true;
+   }
+   return false;
+}
+
+void _manage_direct_mt4_positions()
+{
+   double halfR=g_directMt4HalfBeRRuntime;
+   if(halfR<=0.0) return;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic) continue;
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL) continue;
+      double entry=OrderOpenPrice(), sl=OrderStopLoss(), tp=OrderTakeProfit();
+      if(sl<=0.0 || tp<=0.0) continue;
+      int dir=OrderType()==OP_BUY?1:-1;
+      double risk=MathAbs(entry-sl);
+      if(risk<=Point) continue;
+      RefreshRates();
+      double px=dir>0?Bid:Ask;
+      bool reached=(dir>0)?(px>=entry+risk*halfR):(px<=entry-risk*halfR);
+      bool alreadyBe=(dir>0)?(sl>=entry-Point):(sl<=entry+Point);
+      if(!reached || alreadyBe) continue;
+      if(OrderModify(OrderTicket(),entry,NormalizeDouble(entry,Digits),tp,0,clrDodgerBlue))
+         Print("SIGNATICSBridge direct_mt4 half_be moved ticket=",OrderTicket()," halfR=",DoubleToString(halfR,1));
+      else
+         Print("SIGNATICSBridge direct_mt4 half_be failed ticket=",OrderTicket()," err=",GetLastError());
+   }
+}
+
+void _draw_dashboard()
+{
+   if(!InpShowDashboard) return;
+   _dash_rect("BG",10,244,720,178,C'24,30,42',C'134,158,182');
+   _dash_rect("CORE",18,252,704,162,C'35,43,58',C'90,178,255');
+   _dash_label("TITLE",28,258,"SIGNATICS BRIDGE DIRECT COCKPIT",C'216,222,230',10);
+   _dash_label("SUB",342,260,Symbol()+" "+_tf_to_string(Period())+" | "+_bridge_signal_mode(),C'90,178,255',8);
+   _dash_button("BTN_DIRECT",28,286,120,24,g_directMt4EnabledRuntime?"DIRECT ON":"DIRECT OFF",g_directMt4EnabledRuntime?C'32,150,96':C'178,37,57');
+   _dash_button("BTN_PRIORITY",156,286,135,24,g_directMt4PriorityDirectFirst?"DIRECT FIRST":"POST FIRST",C'38,101,176');
+   _dash_button("BTN_HALFBE",300,286,110,24,"HALFBE "+DoubleToString(g_directMt4HalfBeRRuntime,1)+"R",C'34,136,160');
+   _dash_button("BTN_APPLY",418,286,90,24,"APPLY",C'38,101,176');
+   _dash_label("L_LOT",28,326,"Lot",C'184,196,210',8);
+   _dash_edit("EDIT_LOT",70,322,70,22,DoubleToString(g_directMt4LotRuntime,2));
+   _dash_label("L_SPREAD",156,326,"Max spread pts",C'184,196,210',8);
+   _dash_edit("EDIT_SPREAD",260,322,70,22,IntegerToString(g_directMt4MaxSpreadRuntime));
+   _dash_label("L_HB",348,326,"BE at R",C'184,196,210',8);
+   _dash_edit("EDIT_HALFBE",410,322,54,22,DoubleToString(g_directMt4HalfBeRRuntime,1));
+   int spread=(int)MarketInfo(Symbol(),MODE_SPREAD);
+   RefreshRates();
+   _dash_label("STATE",28,356,StringFormat("Bid %s Ask %s Spread %d | buffer/chart signal math unchanged",DoubleToString(Bid,Digits),DoubleToString(Ask,Digits),spread),clrWhite,8);
+   double pct; string label; color fill;
+   if(_direct_open_progress(pct,label,fill))
+      _dash_progress("TRADE",28,382,665,22,pct,label,fill);
+   else
+      _dash_progress("TRADE",28,382,665,22,0.0,"DIRECT MT4 POSITION: none | dashboard does not mutate signal math",C'88,96,112');
+}
+
+void _apply_dashboard()
+{
+   string obj=DASH_PREFIX+"EDIT_LOT";
+   if(ObjectFind(0,obj)>=0) g_directMt4LotRuntime=MathMax(0.01,StrToDouble(ObjectGetString(0,obj,OBJPROP_TEXT)));
+   obj=DASH_PREFIX+"EDIT_SPREAD";
+   if(ObjectFind(0,obj)>=0) g_directMt4MaxSpreadRuntime=MathMax(0,StrToInteger(ObjectGetString(0,obj,OBJPROP_TEXT)));
+   obj=DASH_PREFIX+"EDIT_HALFBE";
+   if(ObjectFind(0,obj)>=0) g_directMt4HalfBeRRuntime=MathMax(0.0,StrToDouble(ObjectGetString(0,obj,OBJPROP_TEXT)));
+   Print("SIGNATICSBridge dashboard applied direct=",(g_directMt4EnabledRuntime?"true":"false")," priority=",(g_directMt4PriorityDirectFirst?"direct_first":"post_first")," lot=",DoubleToString(g_directMt4LotRuntime,2)," max_spread=",g_directMt4MaxSpreadRuntime," halfbe_r=",DoubleToString(g_directMt4HalfBeRRuntime,2));
+   _draw_dashboard();
+   ChartRedraw(0);
 }
 
 bool _csv_name_hit(string csv,string name)
@@ -1284,15 +1630,21 @@ void _debug_print_discovery_on_none(string reason)
 
 bool _post_signatics_bridge_event(string eventType,string direction,datetime signalTime,double entry,double sl,double tp1,double tp2,double tp3,string sourceName,string reason,bool levelsAvailable)
 {
-   if(!InpEnableProTradePost)
-      return true;
-
    string eventKind=_trim(eventType);
    if(eventKind=="resolved_state" && !InpSendResolvedStateEvents)
       return true;
    string dir=_trim(direction);
    string endpoint=_build_endpoint(InpApiBaseUrl,InpApiPath);
    string eventId=StringFormat("signatics|%s|%s|%s|%I64d|%s",Symbol(),_tf_to_string(Period()),dir,(long)signalTime,eventKind);
+   bool directFirst=(eventKind=="confirmed_signal" && _direct_priority_direct_first());
+   if(directFirst)
+      _direct_mt4_execute(eventId,dir,entry,sl,tp3>0.0?tp3:tp1,sourceName);
+   if(!InpEnableProTradePost)
+   {
+      if(eventKind=="confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId,dir,entry,sl,tp3>0.0?tp3:tp1,sourceName);
+      return true;
+   }
    string msg=StringFormat(
       "SIGNATICS %s %s %s entry=%s sl=%s tp1=%s tp2=%s tp3=%s source=%s",
       Symbol(),_tf_to_string(Period()),dir,_fmt_price(entry),_fmt_price(sl),_fmt_price(tp1),_fmt_price(tp2),_fmt_price(tp3),sourceName
@@ -1369,9 +1721,13 @@ bool _post_signatics_bridge_event(string eventType,string direction,datetime sig
       {
          Print("SIGNATICSBridge sent ",eventKind," ",dir);
       }
+      if(eventKind=="confirmed_signal" && !directFirst)
+         _direct_mt4_execute(eventId,dir,entry,sl,tp3>0.0?tp3:tp1,sourceName);
       return true;
    }
    Print("SIGNATICSBridge POST failed code=",code," err=",GetLastError()," event=",eventKind," dir=",dir," endpoint=",endpoint," response=",response);
+   if(eventKind=="confirmed_signal" && !directFirst)
+      _direct_mt4_execute(eventId,dir,entry,sl,tp3>0.0?tp3:tp1,sourceName);
    return false;
 }
 
@@ -1582,6 +1938,12 @@ int OnInit()
 {
    int poll=MathMax(1,InpPollSeconds);
    EventSetTimer(poll);
+   g_directMt4EnabledRuntime=InpDirectMt4ExecutionEnabled;
+   string priority=_lower_copy(_trim(InpDirectMt4Priority));
+   g_directMt4PriorityDirectFirst=(priority!="post_first" && priority!="quantdesk_first");
+   g_directMt4LotRuntime=MathMax(0.01,InpDirectMt4Lot);
+   g_directMt4MaxSpreadRuntime=MathMax(0,InpDirectMt4MaxSpreadPoints);
+   g_directMt4HalfBeRRuntime=MathMax(0.0,InpDirectMt4HalfBeR);
    Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds);
    if(InpEnableProTradePost)
    {
@@ -1591,6 +1953,7 @@ int OnInit()
    g_initialSetupRetryUntil=_timer_now()+MathMax(0,InpInitialSetupRetrySeconds);
    if(InpLogOnInit)
       ScanAndLogLatest("init");
+   _draw_dashboard();
    return INIT_SUCCEEDED;
 }
 
@@ -1601,10 +1964,12 @@ void OnDeinit(const int reason)
       _post_signatics_bridge_event("unregister","",-1,0.0,0.0,0.0,0.0,0.0,"","deinit_"+IntegerToString(reason),false);
    if(!InpLogOnlyTradeSignals)
       Print("SIGNATICSBridge uninit reason=",reason);
+   _delete_dash();
 }
 
 void OnTimer()
 {
+   _manage_direct_mt4_positions();
    MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && !g_baselineSetupSeen && _timer_now()<=g_initialSetupRetryUntil)
    {
@@ -1612,9 +1977,51 @@ void OnTimer()
       return;
    }
    ScanAndLogLatest("timer");
+   _draw_dashboard();
 }
 void OnTick()
 {
+   _manage_direct_mt4_positions();
    if(_fast_buffers_active() && InpScanFastBuffersOnTick)
       ScanFastBufferSignal("tick");
+   _draw_dashboard();
+}
+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id!=CHARTEVENT_OBJECT_CLICK && id!=CHARTEVENT_OBJECT_ENDEDIT)
+      return;
+   if(id==CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      if(StringFind(sparam,DASH_PREFIX+"EDIT_")==0)
+         _apply_dashboard();
+      return;
+   }
+   if(sparam==DASH_PREFIX+"BTN_DIRECT")
+   {
+      g_directMt4EnabledRuntime=!g_directMt4EnabledRuntime;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam==DASH_PREFIX+"BTN_PRIORITY")
+   {
+      g_directMt4PriorityDirectFirst=!g_directMt4PriorityDirectFirst;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam==DASH_PREFIX+"BTN_HALFBE")
+   {
+      if(g_directMt4HalfBeRRuntime<=0.0)
+         g_directMt4HalfBeRRuntime=1.0;
+      else if(g_directMt4HalfBeRRuntime<2.0)
+         g_directMt4HalfBeRRuntime=2.0;
+      else if(g_directMt4HalfBeRRuntime<3.0)
+         g_directMt4HalfBeRRuntime=3.0;
+      else
+         g_directMt4HalfBeRRuntime=0.0;
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam==DASH_PREFIX+"BTN_APPLY")
+      _apply_dashboard();
 }

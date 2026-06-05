@@ -20,6 +20,9 @@
         dualNoneCloseStatus: document.getElementById('v2-dual-none-close-status'),
         dualGatePanel: document.getElementById('v2-dual-gate-panel'),
         dualGateBody: document.getElementById('v2-dual-gate-body'),
+        spreadGovToggle: document.getElementById('v2-spread-gov-toggle'),
+        spreadGovStatus: document.getElementById('v2-spread-gov-status'),
+        spreadGovContext: document.getElementById('v2-spread-gov-context'),
         liqGovToggle: document.getElementById('v2-liq-gov-toggle'),
         liqGovStatus: document.getElementById('v2-liq-gov-status'),
         liqGovTf: document.getElementById('v2-liq-gov-tf'),
@@ -74,6 +77,11 @@
     let priceTimer = null;
     let priceLoadInFlight = false;
     let priceLoadController = null;
+    let priceWs = null;
+    let priceWsConnected = false;
+    let priceWsReconnectTimer = null;
+    let priceWsLastTicketsKey = '';
+    let priceWsLastMessageAtMs = 0;
     let priceSmoothRaf = null;
     let priceSmoothLastMs = 0;
     let priceSmoothLastDomMs = 0;
@@ -84,10 +92,11 @@
     let tradeRailOverlayTicket = '';
     let liquidityScanRows = [];
     const priceVisuals = new Map();
-    const PRICE_SMOOTH_DEFAULT_MS = 900;
-    const PRICE_SMOOTH_MIN_MS = 120;
-    const PRICE_SMOOTH_MAX_MS = 2200;
+    const PRICE_SMOOTH_DEFAULT_MS = 260;
+    const PRICE_SMOOTH_MIN_MS = 50;
+    const PRICE_SMOOTH_MAX_MS = 650;
     const PRICE_SMOOTH_DOM_MS = 16;
+    const PRICE_WS_INTERVAL_MS = 200;
 
     function esc(v) {
         return String(v == null ? '' : v)
@@ -269,6 +278,8 @@
             state._client_loaded_at_ms = Date.now();
             if (els.alert) els.alert.innerHTML = '';
             render();
+            ensurePriceWebSocket();
+            sendPriceWsSubscription(false);
             loadFastPrices().catch(() => {});
         } catch (err) {
             if (err && err.name === 'AbortError') return;
@@ -321,6 +332,84 @@
             tickets.push(key);
         });
         return tickets;
+    }
+
+    function openTradeTicketsKey() {
+        return collectOpenTradeTickets().join(',');
+    }
+
+    function indicatorPriceWsUrl() {
+        const loc = window.location;
+        const proto = loc.protocol === 'https:' ? 'wss' : 'ws';
+        const host = loc.hostname || '127.0.0.1';
+        const directPort = loc.port === '8000' ? loc.port : '8000';
+        return `${proto}://${host}:${directPort}/ws/indicator-open-prices`;
+    }
+
+    function sendPriceWsSubscription(force) {
+        if (!priceWs || priceWs.readyState !== WebSocket.OPEN) return;
+        const tickets = collectOpenTradeTickets();
+        const key = tickets.join(',');
+        if (!force && key === priceWsLastTicketsKey) return;
+        priceWsLastTicketsKey = key;
+        try {
+            priceWs.send(JSON.stringify({
+                type: 'subscribe',
+                tickets,
+                interval_ms: PRICE_WS_INTERVAL_MS
+            }));
+        } catch (_) {}
+    }
+
+    function schedulePriceWsReconnect() {
+        priceWsConnected = false;
+        if (priceWsReconnectTimer) return;
+        priceWsReconnectTimer = window.setTimeout(() => {
+            priceWsReconnectTimer = null;
+            ensurePriceWebSocket();
+        }, 1500);
+    }
+
+    function ensurePriceWebSocket() {
+        if (!('WebSocket' in window)) return;
+        if (priceWs && (priceWs.readyState === WebSocket.OPEN || priceWs.readyState === WebSocket.CONNECTING)) {
+            sendPriceWsSubscription(false);
+            return;
+        }
+        try {
+            priceWs = new WebSocket(indicatorPriceWsUrl());
+        } catch (_) {
+            schedulePriceWsReconnect();
+            return;
+        }
+        priceWs.onopen = () => {
+            priceWsConnected = true;
+            priceWsLastTicketsKey = '';
+            sendPriceWsSubscription(true);
+        };
+        priceWs.onmessage = ev => {
+            let msg = null;
+            try { msg = JSON.parse(ev.data); } catch (_) { return; }
+            const typ = String((msg || {}).type || '').trim();
+            if (typ === 'indicator_open_prices') {
+                const data = (msg || {}).data || {};
+                priceWsLastMessageAtMs = Date.now();
+                if (applyPriceSnapshot(data)) {
+                    patchLiveTradeTelemetry();
+                    updateTradeRailOverlay();
+                }
+            } else if (typ === 'indicator_open_prices_ready' || typ === 'indicator_open_prices_subscribed') {
+                priceWsConnected = true;
+            }
+        };
+        priceWs.onerror = () => {
+            priceWsConnected = false;
+        };
+        priceWs.onclose = () => {
+            priceWsConnected = false;
+            priceWs = null;
+            schedulePriceWsReconnect();
+        };
     }
 
     function ticketKey(rowOrTicket) {
@@ -519,6 +608,7 @@
 
     async function loadFastPrices() {
         if (!state || priceLoadInFlight) return;
+        if (priceWsConnected && Date.now() - Number(priceWsLastMessageAtMs || 0) < 1500) return;
         const tickets = collectOpenTradeTickets();
         if (!tickets.length) return;
         priceLoadInFlight = true;
@@ -732,6 +822,24 @@
         }
         mergeStatePatch(data);
         showNotice(`Dual NONE timeout close ${enabled ? 'enabled' : 'disabled'}.`, 'success');
+        render();
+        refreshStateSoon(250);
+    }
+
+    async function saveSpreadGovernorSettings(enabled) {
+        pauseStateRefresh(2000);
+        const res = await apiFetch('/indicator-bridge/spread-governor-settings', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+            throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        }
+        mergeStatePatch(data);
+        showNotice(`Spread governor ${enabled ? 'enabled' : 'disabled'}.`, enabled ? 'warning' : 'success');
         render();
         refreshStateSoon(250);
     }
@@ -2293,6 +2401,26 @@
         }
     }
 
+    function renderSpreadGovernorSettings() {
+        const cfg = (state || {}).spread_governor || {};
+        const enabled = boolish(cfg.enabled);
+        if (els.spreadGovToggle) els.spreadGovToggle.checked = enabled;
+        if (els.spreadGovStatus) {
+            els.spreadGovStatus.className = enabled ? 'badge text-bg-danger' : 'badge text-bg-secondary';
+            els.spreadGovStatus.textContent = enabled ? 'SPREAD BLOCK ON' : 'OFF';
+        }
+        if (els.spreadGovContext) {
+            const symbolLimits = cfg.symbol_limits && typeof cfg.symbol_limits === 'object' ? cfg.symbol_limits : {};
+            const items = Object.keys(symbolLimits).sort().slice(0, 8).map(sym => {
+                const limits = symbolLimits[sym] || {};
+                return `${sym}: block ${fmtNum(limits.block, 0)}pt`;
+            });
+            els.spreadGovContext.innerHTML = enabled
+                ? `Spread governor is active. ${items.length ? `<span class="v2-mono">${esc(items.join(' / '))}</span>` : 'Current symbol limits are active.'}`
+                : 'Spread governor disabled. Dashboard spread labels remain informational only; execution will not be blocked by spread.';
+        }
+    }
+
     function renderLiquidityGovernorSettings() {
         const cfg = (state || {}).liquidity_context_governor || {};
         const enabled = boolish(cfg.enabled);
@@ -2458,7 +2586,7 @@
         const scopes = uniqueSessionScopes();
         const cfgMap = (state || {}).trade_block_windows || {};
         if (!scopes.length) {
-            els.symbolSessionBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
+            els.symbolSessionBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
             if (els.symbolSessionStatus) {
                 els.symbolSessionStatus.className = 'badge text-bg-secondary';
                 els.symbolSessionStatus.textContent = 'no scopes';
@@ -2469,12 +2597,14 @@
             const cfg = cfgMap[String(row.key || '').toLowerCase()] || {};
             const offset = Number(cfg.timezone_offset_minutes || 0);
             const allow = Array.isArray(cfg.allow) ? cfg.allow.join('\n') : '';
+            const block = Array.isArray(cfg.block) ? cfg.block.join('\n') : '';
             const instances = Array.from(new Set(row.instances || [])).slice(0, 8).join(', ');
             return `<tr>
                 <td><strong>${esc(row.indicatorLabel || row.indicator)}</strong><div class="small text-muted">${esc(String(row.family || '').toUpperCase())} / ${esc(row.profile || 'generic')}</div></td>
                 <td><strong>${esc(row.symbol)}</strong></td>
                 <td><input type="number" class="form-control form-control-sm v2-symbol-session-offset" data-scope="${esc(row.key)}" step="1" min="-720" max="840" value="${esc(offset)}"></td>
-                <td><textarea class="form-control form-control-sm v2-symbol-session-block" data-scope="${esc(row.key)}" rows="2" placeholder="13:30-18:00&#10;07:00-10:30">${esc(allow)}</textarea></td>
+                <td><textarea class="form-control form-control-sm v2-symbol-session-allow" data-scope="${esc(row.key)}" rows="2" placeholder="13:30-18:00&#10;07:00-10:30">${esc(allow)}</textarea></td>
+                <td><textarea class="form-control form-control-sm v2-symbol-session-block" data-scope="${esc(row.key)}" rows="2" placeholder="19:30-20:30">${esc(block)}</textarea></td>
                 <td class="small text-muted">${esc(row.count)} instance${row.count === 1 ? '' : 's'}${instances ? `<div>${esc(instances)}</div>` : ''}</td>
             </tr>`;
         }).join('');
@@ -2492,12 +2622,14 @@
             if (!offsetEl) return;
             const scope = String(offsetEl.getAttribute('data-scope') || '').trim().toLowerCase();
             if (!scope) return;
+            const allowEl = tr.querySelector('.v2-symbol-session-allow');
             const blockEl = tr.querySelector('.v2-symbol-session-block');
             const offsetRaw = Number(String(offsetEl.value || '0').trim().replace(',', '.'));
             const offset = Number.isFinite(offsetRaw) ? Math.max(-720, Math.min(840, Math.round(offsetRaw))) : 0;
-            const allow = normalizeWindowsText(blockEl ? blockEl.value : '').split('\n').filter(Boolean);
-            if (offset !== 0 || allow.length) {
-                sessions[scope] = { timezone_offset_minutes: offset, allow };
+            const allow = normalizeWindowsText(allowEl ? allowEl.value : '').split('\n').filter(Boolean);
+            const block = normalizeWindowsText(blockEl ? blockEl.value : '').split('\n').filter(Boolean);
+            if (offset !== 0 || allow.length || block.length) {
+                sessions[scope] = { timezone_offset_minutes: offset, allow, block };
             }
         });
         return sessions;
@@ -2539,15 +2671,16 @@
             if (!key) return;
             if (isAtomicTradeWindowScope(scope)) {
                 const allow = defaultTradeAllowedWindowsForScope(scope);
+                const block = ['19:30-20:30'];
                 if (allow.length) {
-                    sessions[key] = { timezone_offset_minutes: 0, allow };
+                    sessions[key] = { timezone_offset_minutes: 0, allow, block };
                 } else {
-                    delete sessions[key];
+                    sessions[key] = { timezone_offset_minutes: 0, block };
                 }
                 return;
             }
             if (String((scope || {}).profile || '').trim().toLowerCase() === 'signatics') {
-                delete sessions[key];
+                sessions[key] = { timezone_offset_minutes: 0, block: ['19:30-20:30'] };
             }
         });
         mergeStatePatch({ trade_block_windows: sessions });
@@ -2558,7 +2691,7 @@
         }
         try {
             await saveSymbolSessions();
-            showNotice('Atomic/AtomicRegime allowed windows applied. SIGNATICS scopes left blank.', 'success');
+            showNotice('Default allowed/block windows applied. GMT 19:30-20:30 blocks new entries.', 'success');
         } finally {
             if (els.symbolSessionPreset) {
                 els.symbolSessionPreset.disabled = false;
@@ -2581,6 +2714,23 @@
         return displayInstances()
             .filter(isBridgeInstancesTableRow)
             .sort((a, b) => instanceSortKey(a).localeCompare(instanceSortKey(b)));
+    }
+
+    function renderSpreadBadge(row) {
+        const spread = Number(row.mt4_spread_points);
+        const guard = row.spread_guard && typeof row.spread_guard === 'object' ? row.spread_guard : {};
+        const status = String(row.spread_status || guard.status || '').trim().toLowerCase();
+        const label = String(row.spread_label || guard.label || '').trim().toLowerCase();
+        const cls = status === 'good'
+            ? 'text-bg-success'
+            : (status === 'normal' ? 'text-bg-info' : (status === 'wide' ? 'text-bg-warning' : (status === 'blocked' ? 'text-bg-danger' : 'text-bg-secondary')));
+        const text = Number.isFinite(spread) ? `${fmtNum(spread, 0)} pt` : (status === 'no_tick' ? 'no tick' : '-');
+        const human = label || (status || 'unknown');
+        const source = String(row.spread_source || '').trim();
+        const sourceLabel = source === 'mt5_live_fallback'
+            ? 'MT5 live'
+            : (source === 'mt5_live_refresh' ? 'MT5 live refresh' : (source === 'mt5_live_no_tick' ? 'MT5 no tick' : (source ? source : 'bridge')));
+        return `<span class="badge ${cls}">${esc(text)}</span><div class="small text-muted">${esc(human)} / ${esc(sourceLabel)}</div>`;
     }
 
     async function startAllInstances() {
@@ -2676,7 +2826,7 @@
         const rows = visibleBridgeInstanceRows();
         if (!els.instanceBody) return;
         if (!rows.length) {
-            els.instanceBody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
+            els.instanceBody.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-3">No bridge instances yet.</td></tr>';
             return;
         }
         els.instanceBody.innerHTML = rows.map(row => {
@@ -2700,6 +2850,7 @@
                 <td>${esc(String(row.terminal_family || '').toUpperCase())}</td>
                 <td>${esc(row.indicator || '-')}<div class="small text-muted">${esc(row.bridge_version || '')}</div></td>
                 <td>${esc(row.symbol || '-')} ${esc(row.timeframe || '')}</td>
+                <td>${renderSpreadBadge(row)}</td>
                 <td class="${stateClass(row)}">${esc(row.state || '-')}</td>
                 <td>${auto}</td>
                 <td>${renderModeControls(row)}<div class="small text-muted">${esc(modeText(row))}</div></td>
@@ -2816,6 +2967,7 @@
         if (els.auditCount) els.auditCount.textContent = String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).filter(isReadableTradeAuditRow).length);
         renderRiskSettings();
         renderDualGateSettings();
+        renderSpreadGovernorSettings();
         renderLiquidityGovernorSettings();
         renderLiquidityScanResults();
         renderDualGatePanel();
@@ -2828,13 +2980,20 @@
         renderInstances();
         renderLiquidityAudit();
         renderAudit();
+        ensurePriceWebSocket();
+        sendPriceWsSubscription(false);
     }
 
     function schedule() {
         if (timer) clearInterval(timer);
         timer = setInterval(() => loadState().catch(showError), 12000);
         if (priceTimer) clearInterval(priceTimer);
-        priceTimer = setInterval(() => loadFastPrices().catch(() => {}), 250);
+        ensurePriceWebSocket();
+        priceTimer = setInterval(() => {
+            ensurePriceWebSocket();
+            sendPriceWsSubscription(false);
+            loadFastPrices().catch(() => {});
+        }, 500);
         if (auditTimer) clearInterval(auditTimer);
         auditTimer = setInterval(() => loadAuditLogs().catch(() => {}), 90000);
         if (uiTimer) clearInterval(uiTimer);
@@ -2909,6 +3068,19 @@
                 showError(err);
                 input.checked = !input.checked;
                 renderDualGateSettings();
+            }).finally(() => {
+                input.disabled = false;
+            });
+        });
+    }
+    if (els.spreadGovToggle) {
+        els.spreadGovToggle.addEventListener('change', ev => {
+            const input = ev.target;
+            input.disabled = true;
+            saveSpreadGovernorSettings(!!input.checked).catch(err => {
+                showError(err);
+                input.checked = !input.checked;
+                renderSpreadGovernorSettings();
             }).finally(() => {
                 input.disabled = false;
             });

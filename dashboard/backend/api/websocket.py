@@ -255,6 +255,96 @@ async def live_trading_websocket(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+@websocket_router.websocket("/ws/indicator-open-prices")
+async def indicator_open_prices_websocket(websocket: WebSocket):
+    """Low-latency MT5 price stream for Indicator Automation V2 open trades."""
+    await manager.connect(websocket)
+    tickets: List[int] = []
+    interval_sec = 0.20
+    try:
+        await manager.send_personal_message(
+            {
+                "type": "indicator_open_prices_ready",
+                "timestamp": datetime.utcnow().isoformat(),
+                "interval_sec": interval_sec,
+            },
+            websocket,
+        )
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=interval_sec)
+                msg_type = str((data or {}).get("type") or "").strip().lower()
+                if msg_type == "ping":
+                    await manager.send_personal_message(
+                        {"type": "pong", "timestamp": datetime.utcnow().isoformat()},
+                        websocket,
+                    )
+                    continue
+                if msg_type in {"subscribe", "set_tickets", "indicator_open_prices_subscribe"}:
+                    next_tickets: List[int] = []
+                    for raw in (data or {}).get("tickets") or []:
+                        try:
+                            value = int(float(raw))
+                        except Exception:
+                            continue
+                        if value > 0 and value not in next_tickets:
+                            next_tickets.append(value)
+                    tickets = next_tickets[:300]
+                    requested_interval = (data or {}).get("interval_ms")
+                    try:
+                        interval_ms = int(float(requested_interval))
+                    except Exception:
+                        interval_ms = 200
+                    interval_sec = max(0.10, min(1.0, float(interval_ms) / 1000.0))
+                    await manager.send_personal_message(
+                        {
+                            "type": "indicator_open_prices_subscribed",
+                            "tickets": tickets,
+                            "interval_sec": interval_sec,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        },
+                        websocket,
+                    )
+                    continue
+            except asyncio.TimeoutError:
+                pass
+
+            try:
+                from ..main import telegram_bridge_service
+
+                svc = telegram_bridge_service
+                if svc is None:
+                    payload = {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+                else:
+                    payload = await asyncio.to_thread(
+                        svc.get_indicator_open_trade_price_snapshot,
+                        tickets=list(tickets),
+                    )
+                await manager.send_personal_message(
+                    {
+                        "type": "indicator_open_prices",
+                        "data": payload,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                    websocket,
+                )
+            except Exception as exc:
+                await manager.send_personal_message(
+                    {
+                        "type": "indicator_open_prices_error",
+                        "error": f"{type(exc).__name__}:{str(exc)[:180]}",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                    websocket,
+                )
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"Indicator open prices WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+
 @websocket_router.websocket("/ws/mt4-log-automation")
 async def mt4_log_automation_websocket(websocket: WebSocket):
     """WebSocket endpoint for MT4/MT5 log automation alert stream."""
