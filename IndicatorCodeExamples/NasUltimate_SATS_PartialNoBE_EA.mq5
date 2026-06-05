@@ -38,7 +38,7 @@ input int    InpNasSensitivity = 4;
 input int    InpNasRsiLength = 14;
 input int    InpNasAtrRisk = 1;
 input int    InpNasAtrLen = 14;
-input double InpPineRiskDistanceMultiplier = 1.0;
+input double InpPineRiskDistanceMultiplier = 0.75;
 input NAS_SIGNAL_BAR_MODE InpSignalBarMode = NAS_SIGNAL_BAR_CLOSED;
 input NAS_RISK_ENGINE InpRiskEngine = NAS_RISK_PINE;
 input bool   InpBlockSameDirectionUntilReverse = true;
@@ -2109,9 +2109,9 @@ void UpdateDashboard()
                + (InpSpreadGovernorEnabled ? "" : " | governor OFF"),
                InpSpreadGovernorEnabled ? spreadColor : muted, 8);
    CreateLabel("DASH_STATUS", 38, 126,
-               "Trade status " + g_lastExecutionStatus
+               "EA " + string(g_eaEnabledRuntime ? "ON" : "OFF") + " | Trade status " + g_lastExecutionStatus
                + (g_lastExecutionBlockReason == "" ? "" : " | " + UiShort(g_lastExecutionBlockReason, 58)),
-               (g_lastExecutionStatus == "BLOCKED" ? accentRed : (spreadAllowed ? C'80,255,180' : accentRed)), 8);
+               (!g_eaEnabledRuntime || g_lastExecutionStatus == "BLOCKED" ? accentRed : (spreadAllowed ? C'80,255,180' : accentRed)), 8);
    CreateLabel("DASH_2", 38, 146, "Total PnL " + DoubleToString(totalPnl, 2) + "   Daily " + DoubleToString(dailyPnl, 2)
                + "   Open " + DoubleToString(openPnl, 2) + "   Max DD " + DoubleToString(g_maxDd, 2), muted);
    string dir = g_lastDirection > 0 ? "BUY" : (g_lastDirection < 0 ? "SELL" : "-");

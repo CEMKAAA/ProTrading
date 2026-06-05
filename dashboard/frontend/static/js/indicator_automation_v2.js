@@ -61,6 +61,11 @@
         instanceStartAll: document.getElementById('v2-instance-start-all'),
         instanceAllNormal: document.getElementById('v2-instance-all-normal'),
         instanceResetRegistry: document.getElementById('v2-instance-reset-registry'),
+        auditOpen: document.getElementById('v2-audit-open'),
+        auditReload: document.getElementById('v2-audit-reload'),
+        auditCleanOld: document.getElementById('v2-audit-clean-old'),
+        auditModal: document.getElementById('v2-audit-modal'),
+        auditModalStatus: document.getElementById('v2-audit-modal-status'),
         auditFilter: document.getElementById('v2-audit-filter'),
         auditSymbolFilter: document.getElementById('v2-audit-symbol-filter'),
         auditStrategyFilter: document.getElementById('v2-audit-strategy-filter'),
@@ -88,10 +93,26 @@
     let auditTimer = null;
     let auditLoadInFlight = false;
     let auditLoadController = null;
+    let spreadTimer = null;
+    let spreadLoadInFlight = false;
+    let spreadLoadController = null;
     let tradeRailOverlay = null;
     let tradeRailOverlayTicket = '';
     let liquidityScanRows = [];
     const priceVisuals = new Map();
+    const spreadSnapshotBySymbol = new Map();
+    const SPREAD_SNAPSHOT_FIELDS = [
+        'mt4_bid',
+        'mt4_ask',
+        'mt4_point',
+        'mt4_spread_points',
+        'spread_source',
+        'spread_resolved_symbol',
+        'spread_tick_time',
+        'spread_status',
+        'spread_label',
+        'spread_guard'
+    ];
     const PRICE_SMOOTH_DEFAULT_MS = 260;
     const PRICE_SMOOTH_MIN_MS = 50;
     const PRICE_SMOOTH_MAX_MS = 650;
@@ -251,12 +272,14 @@
         }, 30000);
         try {
             const stateQuery = [
-                'limit=300',
+                'limit=120',
                 'include_audit=false',
                 'include_liquidity=false',
                 'include_rsi=false',
                 'include_ohlc=false',
-                'include_execution_report=false'
+                'include_execution_report=false',
+                'include_live_positions=true',
+                'include_spreads=false'
             ].join('&');
             const res = await apiFetch(`/indicator-bridge/state?${stateQuery}`, {
                 credentials: 'same-origin',
@@ -276,6 +299,7 @@
             }
             state = data;
             state._client_loaded_at_ms = Date.now();
+            applyCachedSpreadSnapshotsToState();
             if (els.alert) els.alert.innerHTML = '';
             render();
             ensurePriceWebSocket();
@@ -299,7 +323,8 @@
             try { auditLoadController.abort(); } catch (_) {}
         }, 10000);
         try {
-            const res = await apiFetch('/indicator-bridge/execution-log?limit=500', {
+            if (els.auditModalStatus) els.auditModalStatus.textContent = "Loading today's audit rows...";
+            const res = await apiFetch('/indicator-bridge/execution-log?limit=1000&today_only=true', {
                 credentials: 'same-origin',
                 cache: 'no-store',
                 signal: auditLoadController.signal
@@ -311,12 +336,93 @@
             state.liquidity_audit_logs = data.liquidity_audit_logs || { ok: true, rows: [], count: 0 };
             renderAudit();
             renderLiquidityAudit();
+            if (els.auditModalStatus) {
+                const tradeCount = Number((state.execution_logs || {}).count || ((state.execution_logs || {}).rows || []).length || 0);
+                const liqCount = Number((state.liquidity_audit_logs || {}).count || ((state.liquidity_audit_logs || {}).rows || []).length || 0);
+                els.auditModalStatus.textContent = `Today audit loaded: ${tradeCount} trade / ${liqCount} liquidity row.`;
+            }
         } catch (err) {
             if (!err || err.name !== 'AbortError') throw err;
         } finally {
             window.clearTimeout(timeoutId);
             auditLoadController = null;
             auditLoadInFlight = false;
+        }
+    }
+
+    function clearAuditState() {
+        if (!state) state = {};
+        state.execution_logs = { ok: true, rows: [], count: 0, disabled: true };
+        state.liquidity_audit_logs = { ok: true, rows: [], count: 0, disabled: true };
+        if (els.auditCount) els.auditCount.textContent = '-';
+        if (els.liqAuditCount) els.liqAuditCount.textContent = '-';
+        if (els.auditBody) els.auditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">Loaded only when audit modal is opened.</td></tr>';
+        if (els.liqAuditBody) els.liqAuditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">Loaded only when audit modal is opened.</td></tr>';
+        if (els.auditModalStatus) els.auditModalStatus.textContent = 'Audit modal closed; rows were dropped from page state.';
+    }
+
+    async function cleanupOldAuditLogs() {
+        if (!window.confirm('Delete indicator audit rows before today? This cannot be undone.')) return;
+        if (els.auditCleanOld) {
+            els.auditCleanOld.disabled = true;
+            els.auditCleanOld.textContent = 'Deleting...';
+        }
+        try {
+            const res = await apiFetch('/indicator-bridge/execution-log/cleanup-old', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false) {
+                throw new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+            }
+            if (els.auditModalStatus) els.auditModalStatus.textContent = `Old audit rows deleted: ${Number(data.deleted || 0)} row(s).`;
+            await loadAuditLogs();
+        } finally {
+            if (els.auditCleanOld) {
+                els.auditCleanOld.disabled = false;
+                els.auditCleanOld.textContent = 'Delete Before Today';
+            }
+        }
+    }
+
+    async function loadSpreadSnapshot() {
+        if (spreadLoadInFlight || !state) return;
+        const symbols = Array.from(new Set(allInstances().map(row => String((row || {}).symbol || '').trim().toUpperCase()).filter(Boolean))).slice(0, 80);
+        if (!symbols.length) return;
+        spreadLoadInFlight = true;
+        spreadLoadController = new AbortController();
+        const timeoutId = window.setTimeout(() => {
+            try { spreadLoadController.abort(); } catch (_) {}
+        }, 5000);
+        try {
+            const res = await apiFetch(`/indicator-bridge/spreads?symbols=${encodeURIComponent(symbols.join(','))}`, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: spreadLoadController.signal
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || data.ok === false || !Array.isArray(data.rows)) return;
+            data.rows.forEach(row => {
+                const sym = spreadSymbolKey((row || {}).symbol);
+                if (sym) spreadSnapshotBySymbol.set(sym, row);
+            });
+            ['mt4_monitor', 'mt5_monitor'].forEach(section => {
+                const rows = (((state || {})[section] || {}).bot_rows || []);
+                if (!Array.isArray(rows)) return;
+                rows.forEach(row => {
+                    applyCachedSpreadSnapshot(row);
+                });
+            });
+            if (!instanceControlActive()) renderInstances();
+        } catch (err) {
+            if (!err || err.name !== 'AbortError') throw err;
+        } finally {
+            window.clearTimeout(timeoutId);
+            spreadLoadController = null;
+            spreadLoadInFlight = false;
         }
     }
 
@@ -1005,9 +1111,35 @@
         return sourceTagMatchKey(row) || instanceMatchKey(row);
     }
 
+    function spreadSymbolKey(value) {
+        return String(value == null ? '' : value).trim().toUpperCase();
+    }
+
+    function copySpreadSnapshotFields(target, source) {
+        if (!target || !source) return target;
+        SPREAD_SNAPSHOT_FIELDS.forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key];
+        });
+        return target;
+    }
+
+    function applyCachedSpreadSnapshot(row) {
+        const sym = spreadSymbolKey((row || {}).symbol);
+        const cached = sym ? spreadSnapshotBySymbol.get(sym) : null;
+        return cached ? copySpreadSnapshotFields(row, cached) : row;
+    }
+
+    function applyCachedSpreadSnapshotsToState() {
+        ['mt4_monitor', 'mt5_monitor'].forEach(section => {
+            const rows = (((state || {})[section] || {}).bot_rows || []);
+            if (!Array.isArray(rows)) return;
+            rows.forEach(applyCachedSpreadSnapshot);
+        });
+    }
+
     function allInstances() {
-        const mt4 = (((state || {}).mt4_monitor || {}).bot_rows || []).map(r => Object.assign({}, r, { terminal_family: 'MT4' }));
-        const mt5 = (((state || {}).mt5_monitor || {}).bot_rows || []).map(r => Object.assign({}, r, { terminal_family: 'MT5' }));
+        const mt4 = (((state || {}).mt4_monitor || {}).bot_rows || []).map(r => applyCachedSpreadSnapshot(Object.assign({}, r, { terminal_family: 'MT4' })));
+        const mt5 = (((state || {}).mt5_monitor || {}).bot_rows || []).map(r => applyCachedSpreadSnapshot(Object.assign({}, r, { terminal_family: 'MT5' })));
         return mt4.concat(mt5).filter(isV2Instance);
     }
 
@@ -2864,6 +2996,11 @@
     }
 
     function renderLiquidityAudit() {
+        if (((state || {}).liquidity_audit_logs || {}).disabled) {
+            if (els.liqAuditCount) els.liqAuditCount.textContent = '-';
+            if (els.liqAuditBody) els.liqAuditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">Loaded only when audit modal is opened.</td></tr>';
+            return;
+        }
         const q = els.liqAuditFilter ? els.liqAuditFilter.value : '';
         const rows = liquidityAuditRows().filter(r => textMatch(r, q)).slice(0, 1000);
         if (els.liqAuditCount) els.liqAuditCount.textContent = String(rows.length);
@@ -2909,6 +3046,11 @@
     }
 
     function renderAudit() {
+        if (((state || {}).execution_logs || {}).disabled) {
+            if (els.auditCount) els.auditCount.textContent = '-';
+            if (els.auditBody) els.auditBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">Loaded only when audit modal is opened.</td></tr>';
+            return;
+        }
         const q = els.auditFilter ? els.auditFilter.value : '';
         const baseRows = auditRows()
             .filter(row => !isZeroPnlBreakEvenOperation(row))
@@ -2964,7 +3106,14 @@
         if (els.mt4Count) els.mt4Count.textContent = String(mt4Rows.length);
         if (els.mt5Count) els.mt5Count.textContent = String(mt5Rows.length);
         if (els.openCount) els.openCount.textContent = String(openTrades().length);
-        if (els.auditCount) els.auditCount.textContent = String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).filter(isReadableTradeAuditRow).length);
+        if (els.auditCount) {
+            const logs = (state || {}).execution_logs || {};
+            els.auditCount.textContent = logs.disabled ? '-' : String(auditRows().filter(row => !isZeroPnlBreakEvenOperation(row)).filter(isReadableTradeAuditRow).length);
+        }
+        if (els.liqAuditCount) {
+            const liqLogs = (state || {}).liquidity_audit_logs || {};
+            els.liqAuditCount.textContent = liqLogs.disabled ? '-' : String(liquidityAuditRows().length);
+        }
         renderRiskSettings();
         renderDualGateSettings();
         renderSpreadGovernorSettings();
@@ -2995,7 +3144,9 @@
             loadFastPrices().catch(() => {});
         }, 500);
         if (auditTimer) clearInterval(auditTimer);
-        auditTimer = setInterval(() => loadAuditLogs().catch(() => {}), 90000);
+        auditTimer = null;
+        if (spreadTimer) clearInterval(spreadTimer);
+        spreadTimer = setInterval(() => loadSpreadSnapshot().catch(() => {}), 3000);
         if (uiTimer) clearInterval(uiTimer);
         uiTimer = setInterval(() => {
             if (!state) return;
@@ -3045,6 +3196,24 @@
     }
     if (els.instanceResetRegistry) {
         els.instanceResetRegistry.addEventListener('click', () => resetBridgeRegistry().catch(showError));
+    }
+    if (els.auditOpen) {
+        els.auditOpen.addEventListener('click', () => {
+            const modalEl = els.auditModal;
+            if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+                window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            }
+            loadAuditLogs().catch(showError);
+        });
+    }
+    if (els.auditReload) {
+        els.auditReload.addEventListener('click', () => loadAuditLogs().catch(showError));
+    }
+    if (els.auditCleanOld) {
+        els.auditCleanOld.addEventListener('click', () => cleanupOldAuditLogs().catch(showError));
+    }
+    if (els.auditModal) {
+        els.auditModal.addEventListener('hidden.bs.modal', clearAuditState);
     }
     if (els.symbolSessionBody) {
         els.symbolSessionBody.addEventListener('input', () => {
@@ -3447,9 +3616,12 @@
         if (ev.key === 'Escape') hideTradeRailOverlay();
     });
     if (els.refresh) els.refresh.addEventListener('click', () => {
-        loadState().then(() => loadAuditLogs().catch(() => {})).catch(showError);
+        loadState().catch(showError);
+        loadSpreadSnapshot().catch(() => {});
     });
-    loadState().then(() => loadAuditLogs().catch(() => {})).catch(showError);
+    loadState().catch(showError);
+    window.setTimeout(() => loadSpreadSnapshot().catch(() => {}), 1500);
+    clearAuditState();
     schedule();
 })();
 

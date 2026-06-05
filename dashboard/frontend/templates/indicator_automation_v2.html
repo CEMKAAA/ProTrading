@@ -510,8 +510,8 @@
         <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT4 Instances</div><div id="v2-mt4-count" class="fs-3 fw-bold">0</div></div></div></div>
         <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">MT5 Instances</div><div id="v2-mt5-count" class="fs-3 fw-bold">0</div></div></div></div>
         <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Open Indicator Trades</div><div id="v2-open-count" class="fs-3 fw-bold">0</div></div></div></div>
-        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Trade Audit Rows</div><div id="v2-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
-        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Liquidity Audit Rows</div><div id="v2-liq-audit-count" class="fs-3 fw-bold">0</div></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Trade Audit Rows</div><div id="v2-audit-count" class="fs-3 fw-bold">-</div><button id="v2-audit-open" type="button" class="btn btn-sm btn-outline-dark mt-2">View Audit</button></div></div></div>
+        <div class="col-md"><div class="card v2-card"><div class="card-body"><div class="small text-muted">Liquidity Audit Rows</div><div id="v2-liq-audit-count" class="fs-3 fw-bold">-</div><div class="small text-muted mt-2">Loaded only inside audit modal.</div></div></div></div>
     </div>
 
     <div class="card v2-card mb-3">
@@ -614,6 +614,25 @@
         </div>
     </div>
 
+    <div class="modal fade" id="v2-audit-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable" style="max-width: 98vw;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title">Indicator Audit</h5>
+                        <div class="small text-muted">Only today's audit rows are loaded. Closing the modal clears audit state.</div>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                        <div class="small text-muted" id="v2-audit-modal-status">Audit has not been loaded yet.</div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <button id="v2-audit-reload" type="button" class="btn btn-sm btn-outline-primary">Load Today's Audit</button>
+                            <button id="v2-audit-clean-old" type="button" class="btn btn-sm btn-outline-danger">Delete Before Today</button>
+                        </div>
+                    </div>
+
     <div class="card v2-card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center">
             <div>
@@ -665,6 +684,10 @@
                     </thead>
                     <tbody id="v2-audit-body"><tr><td colspan="10" class="text-center text-muted py-3">Loading...</td></tr></tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+                </div>
             </div>
         </div>
     </div>

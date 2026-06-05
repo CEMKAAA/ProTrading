@@ -1514,6 +1514,8 @@ def indicator_bridge_state_proxy():
         'include_rsi',
         'include_ohlc',
         'include_execution_report',
+        'include_live_positions',
+        'include_spreads',
     ):
         if request.args.get(key) is not None:
             params[key] = request.args.get(key)
@@ -1546,6 +1548,23 @@ def indicator_bridge_open_trade_prices_proxy():
     return jsonify(res)
 
 
+@app.route('/api/indicator-bridge/spreads')
+def indicator_bridge_spreads_proxy():
+    params = {}
+    if request.args.get('symbols') is not None:
+        params['symbols'] = request.args.get('symbols')
+    res, err = api_request(
+        'GET',
+        '/api/v1/indicator-bridge/spreads',
+        params=params,
+        return_error=True,
+        timeout_sec=10,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to load indicator bridge spreads'}), 500
+    return jsonify(res)
+
+
 @app.route('/api/indicator-bridge/reset-registry', methods=['POST'])
 def indicator_bridge_reset_registry_proxy():
     res, err = api_request(
@@ -1565,6 +1584,8 @@ def indicator_bridge_execution_log_proxy():
     params = {}
     if request.args.get('limit') is not None:
         params['limit'] = request.args.get('limit')
+    if request.args.get('today_only') is not None:
+        params['today_only'] = request.args.get('today_only')
     res, err = api_request(
         'GET',
         '/api/v1/indicator-bridge/execution-log',
@@ -1639,6 +1660,20 @@ def indicator_bridge_spread_governor_settings_proxy():
     )
     if not res:
         return jsonify({'ok': False, 'error': err or 'Failed to update spread governor settings'}), 500
+    return jsonify(res)
+
+
+@app.route('/api/indicator-bridge/execution-log/cleanup-old', methods=['POST'])
+def indicator_bridge_execution_log_cleanup_old_proxy():
+    res, err = api_request(
+        'POST',
+        '/api/v1/indicator-bridge/execution-log/cleanup-old',
+        data={},
+        return_error=True,
+        timeout_sec=30,
+    )
+    if not res:
+        return jsonify({'ok': False, 'error': err or 'Failed to cleanup old indicator bridge execution logs'}), 500
     return jsonify(res)
 
 
@@ -3551,5 +3586,9 @@ if __name__ == '__main__':
     os.makedirs('static/css', exist_ok=True)
     os.makedirs('static/js', exist_ok=True)
 
-    # Run the app
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Keep debug tooling, but disable the Flask reloader for trading sessions.
+    # The reloader can restart on unrelated imported files and leave daemon
+    # request threads writing during interpreter shutdown.
+    debug_enabled = str(os.getenv('PROTRADE_FRONTEND_DEBUG', '1')).strip().lower() not in {'0', 'false', 'no', 'off'}
+    use_reloader = str(os.getenv('PROTRADE_FRONTEND_RELOADER', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    app.run(debug=debug_enabled, use_reloader=use_reloader, host='0.0.0.0', port=5000)

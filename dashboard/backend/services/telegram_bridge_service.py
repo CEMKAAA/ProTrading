@@ -446,6 +446,8 @@ class TelegramBridgeService:
         self._execution_reconcile_last_ts: float = 0.0
         self._indicator_open_recovery_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_open_positions_cache: Dict[str, Dict[str, Any]] = {}
+        self._indicator_live_spread_cache: Dict[str, Dict[str, Any]] = {}
+        self._indicator_execution_audit_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_chop_guard_cache: Dict[str, Dict[str, Any]] = {}
         self._indicator_chop_guard_last_log: Dict[str, float] = {}
         self._indicator_liquidity_context_cache: Dict[str, Dict[str, Any]] = {}
@@ -4353,11 +4355,11 @@ class TelegramBridgeService:
     @staticmethod
     def _indicator_bridge_health_gap_sec() -> float:
         try:
-            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_HEALTH_GAP_SEC", "300"))
+            raw = float(TelegramBridgeService._get_env_value("INDICATOR_BRIDGE_HEALTH_GAP_SEC", "1200"))
         except Exception:
-            raw = 300.0
+            raw = 1200.0
         if not math.isfinite(float(raw)):
-            raw = 300.0
+            raw = 1200.0
         return max(30.0, min(86400.0, float(raw)))
 
     @staticmethod
@@ -4402,6 +4404,20 @@ class TelegramBridgeService:
             cached_rows = cached.get("rows")
             if cached_ts is not None and (float(now_ts) - float(cached_ts)) <= ttl and isinstance(cached_rows, list):
                 return [dict(x) for x in cached_rows if isinstance(x, dict)]
+            if sym:
+                all_cached = dict(self._indicator_open_positions_cache.get("__ALL__") or {})
+                all_cached_ts = _to_float_or_none(all_cached.get("ts"))
+                all_cached_rows = all_cached.get("rows")
+                if (
+                    all_cached_ts is not None
+                    and (float(now_ts) - float(all_cached_ts)) <= ttl
+                    and isinstance(all_cached_rows, list)
+                ):
+                    return [
+                        dict(x)
+                        for x in all_cached_rows
+                        if isinstance(x, dict) and str(x.get("symbol") or "").strip().upper() == sym
+                    ]
         rows = [dict(x) for x in (svc.get_open_positions(symbol=(sym if sym else None)) or []) if isinstance(x, dict)]
         with self._lock:
             self._indicator_open_positions_cache[cache_key] = {"ts": float(now_ts), "rows": [dict(x) for x in rows]}
@@ -5049,7 +5065,20 @@ class TelegramBridgeService:
         except Exception:
             return
         live_by_symbol: Dict[str, Dict[str, Any]] = {}
+        now_ts = float(time.time())
+        cache_ttl_sec = 2.0
         for sym in symbols[:80]:
+            with self._lock:
+                cached = dict(self._indicator_live_spread_cache.get(str(sym)) or {})
+            cached_ts = _to_float_or_none(cached.get("ts"))
+            cached_live = cached.get("live")
+            if (
+                cached_ts is not None
+                and (float(now_ts) - float(cached_ts)) <= float(cache_ttl_sec)
+                and isinstance(cached_live, dict)
+            ):
+                live_by_symbol[str(sym)] = dict(cached_live)
+                continue
             tick: Dict[str, Any] = {}
             info: Dict[str, Any] = {}
             try:
@@ -5072,7 +5101,7 @@ class TelegramBridgeService:
                 and float(ask) > 0.0
             )
             if not has_live_tick:
-                live_by_symbol[str(sym)] = {
+                live_payload = {
                     "bid": bid,
                     "ask": ask,
                     "point": point,
@@ -5081,13 +5110,16 @@ class TelegramBridgeService:
                     "tick_time": str(tick.get("time") or ""),
                     "status": "no_tick",
                 }
+                live_by_symbol[str(sym)] = dict(live_payload)
+                with self._lock:
+                    self._indicator_live_spread_cache[str(sym)] = {"ts": float(now_ts), "live": dict(live_payload)}
                 continue
             spread_points = _to_float_or_none(info.get("spread"))
             if bid is not None and ask is not None and point is not None and float(point) > 0.0:
                 spread_points = max(0.0, (float(ask) - float(bid)) / float(point))
             if spread_points is None:
                 continue
-            live_by_symbol[str(sym)] = {
+            live_payload = {
                 "bid": bid,
                 "ask": ask,
                 "point": point,
@@ -5095,6 +5127,17 @@ class TelegramBridgeService:
                 "resolved_symbol": str(tick.get("resolved_symbol") or info.get("resolved_symbol") or info.get("name") or ""),
                 "tick_time": str(tick.get("time") or ""),
             }
+            live_by_symbol[str(sym)] = dict(live_payload)
+            with self._lock:
+                self._indicator_live_spread_cache[str(sym)] = {"ts": float(now_ts), "live": dict(live_payload)}
+                if len(self._indicator_live_spread_cache) > 128:
+                    cutoff = float(now_ts) - 30.0
+                    self._indicator_live_spread_cache = {
+                        str(k): dict(v)
+                        for k, v in self._indicator_live_spread_cache.items()
+                        if _to_float_or_none((v or {}).get("ts")) is not None
+                        and float(_to_float_or_none((v or {}).get("ts")) or 0.0) >= cutoff
+                    }
         if not live_by_symbol:
             return
         for row in rows:
@@ -5134,6 +5177,40 @@ class TelegramBridgeService:
             row["spread_status"] = str(spread_status.get("status") or "unknown")
             row["spread_label"] = str(spread_status.get("label") or "unknown")
             row["spread_guard"] = dict(spread_status)
+
+    def get_indicator_bridge_spread_snapshot(self, *, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Lightweight spread lane for the Indicator Automation V2 instance table."""
+        unique_symbols = []
+        seen: set[str] = set()
+        for raw in symbols or []:
+            sym = str(raw or "").strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            unique_symbols.append(sym)
+            if len(unique_symbols) >= 80:
+                break
+        rows = [{"symbol": str(sym)} for sym in unique_symbols]
+        self._hydrate_indicator_bridge_live_spreads(rows)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not str(row.get("spread_status") or "").strip():
+                row["spread_status"] = "unknown"
+                row["spread_label"] = "unknown"
+                row["spread_guard"] = {
+                    "ok": True,
+                    "status": "unknown",
+                    "label": "unknown",
+                    "reason": "spread_snapshot_unavailable",
+                    "spread_points": None,
+                }
+        return {
+            "ok": True,
+            "rows": rows,
+            "count": int(len(rows)),
+            "generated_at": self._now_iso(),
+        }
 
     def _indicator_bridge_symbol_session_guard(
         self,
@@ -7323,6 +7400,30 @@ class TelegramBridgeService:
             prev_last_seen=prev_last_seen_for_health,
             event_type=str(bridge_event_type),
         )
+        if str(bridge_event_type).strip().lower() in {"register", "heartbeat", "status", "init"}:
+            self._append_indicator_bridge_health_log(
+                status="registered",
+                message="bridge_heartbeat",
+                family=str(family),
+                profile=str(profile or "generic"),
+                indicator=str(indicator),
+                symbol=str(symbol),
+                timeframe=str(timeframe),
+                event_ts=event_ts,
+                stage_payload={
+                    "instance_key": str(instance_key),
+                    "event_type": str(bridge_event_type),
+                    "bridge_event_ts_raw": str(event_ts or ""),
+                    "last_signal_direction": str(row.get("last_signal_direction") or "").strip().upper(),
+                    "last_signal_bar_time": str(row.get("last_signal_bar_time") or "").strip(),
+                    "last_signal_bar_unix": int(_to_float_or_none(row.get("last_signal_bar_unix")) or 0),
+                    "last_signal_value": _to_float_or_none(row.get("last_signal_value")),
+                    "last_entry_signal_direction": str(row.get("last_entry_signal_direction") or "").strip().upper(),
+                    "last_entry_signal_bar_time": str(row.get("last_entry_signal_bar_time") or "").strip(),
+                    "last_entry_signal_event_id": str(row.get("last_entry_signal_event_id") or "").strip(),
+                    "last_entry_signal_event_type": str(row.get("last_entry_signal_event_type") or "").strip(),
+                },
+            )
         return dict(row)
 
     def unregister_indicator_bridge_instance(
@@ -7856,6 +7957,8 @@ class TelegramBridgeService:
         active_only: bool = False,
         include_ohlc_replay: bool = True,
         include_rsi: bool = True,
+        include_live_positions: bool = True,
+        include_spreads: bool = True,
     ) -> Dict[str, Any]:
         family = self._indicator_bridge_family(terminal_family)
         lim = int(max(10, min(1000, int(limit or 300))))
@@ -7894,19 +7997,28 @@ class TelegramBridgeService:
         }
         include_configured_rows = bool(self._indicator_bridge_include_configured_rows())
         heartbeat_live_sec = float(self._indicator_bridge_live_heartbeat_sec())
-        svc = self._get_live_service()
+        svc: Optional[LiveTradingService] = self._get_live_service() if bool(include_live_positions) else None
         symbols = sorted({str(r.get("symbol") or "").strip().upper() for r in ladder_rows if str(r.get("symbol") or "").strip()})
         open_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
         positions_cache_ttl = self._indicator_bridge_state_positions_cache_ttl_sec()
-        for sym in symbols:
+        all_open_positions: List[Dict[str, Any]] = []
+        if bool(include_live_positions) and svc is not None:
             try:
-                open_by_symbol[str(sym)] = self._cached_indicator_open_positions(
+                all_open_positions = self._cached_indicator_open_positions(
                     svc=svc,
-                    symbol=str(sym),
+                    symbol=None,
                     ttl_sec=float(positions_cache_ttl),
                 )
             except Exception:
-                open_by_symbol[str(sym)] = []
+                all_open_positions = []
+            for pos in all_open_positions:
+                if not isinstance(pos, dict):
+                    continue
+                pos_sym = str(pos.get("symbol") or "").strip().upper()
+                if pos_sym:
+                    open_by_symbol.setdefault(str(pos_sym), []).append(dict(pos))
+        for sym in symbols:
+            open_by_symbol.setdefault(str(sym), [])
 
         open_rows: List[Dict[str, Any]] = []
         ladder_by_instance: Dict[str, Dict[str, Any]] = {}
@@ -7967,7 +8079,7 @@ class TelegramBridgeService:
                 highest_tp_reached = int(len(tps))
             row_for_ohlc = dict(row)
             row_for_ohlc["tps"] = list(tps)
-            if include_ohlc_replay:
+            if include_ohlc_replay and svc is not None:
                 ohlc_tp = self._evaluate_open_trade_ohlc_tp_replay(
                     row=dict(row_for_ohlc),
                     live_pos=dict(live_pos or {}),
@@ -8043,7 +8155,18 @@ class TelegramBridgeService:
             for r in open_rows
             if int(_to_float_or_none((r or {}).get("ticket")) or 0) > 0
         }
-        if bool(include_ohlc_replay) or self._indicator_bridge_fast_state_audit_recovery_enabled():
+        live_open_tickets = {
+            int(_to_float_or_none((r or {}).get("ticket")) or 0)
+            for r in all_open_positions
+            if isinstance(r, dict) and int(_to_float_or_none((r or {}).get("ticket")) or 0) > 0
+        }
+        missing_live_tickets = set(live_open_tickets) - set(existing_open_tickets)
+        should_recover_from_audit = (
+            bool(include_ohlc_replay)
+            or self._indicator_bridge_fast_state_audit_recovery_enabled()
+            or bool(missing_live_tickets)
+        )
+        if svc is not None and bool(should_recover_from_audit):
             recovery_limit = int(max(500, min(5000, max(int(lim) * 20, 1000))))
             recovered_open_rows = self._recover_live_indicator_open_rows_from_audit(
                 terminal_family=str(family),
@@ -8051,6 +8174,8 @@ class TelegramBridgeService:
                 existing_tickets=set(existing_open_tickets),
                 limit=int(recovery_limit),
                 positions_cache_ttl_sec=float(positions_cache_ttl),
+                target_tickets=set(missing_live_tickets) if missing_live_tickets else None,
+                live_positions=list(all_open_positions),
             )
             for out_row in recovered_open_rows:
                 ticket = int(_to_float_or_none((out_row or {}).get("ticket")) or 0)
@@ -8202,7 +8327,8 @@ class TelegramBridgeService:
                 if not (bool(merged.get("has_open_ladder")) or bool(merged.get("has_live_heartbeat"))):
                     continue
             bot_rows.append(merged)
-        self._hydrate_indicator_bridge_live_spreads(bot_rows)
+        if bool(include_spreads):
+            self._hydrate_indicator_bridge_live_spreads(bot_rows)
         bot_rows.sort(key=lambda r: (str(r.get("opened_at") or ""), str(r.get("last_seen") or "")), reverse=True)
         bot_rows = bot_rows[:lim]
         return {
@@ -8223,13 +8349,21 @@ class TelegramBridgeService:
         terminal_family: Any,
         svc: LiveTradingService,
         existing_tickets: Optional[set[int]] = None,
+        target_tickets: Optional[set[int]] = None,
+        live_positions: Optional[List[Dict[str, Any]]] = None,
         limit: int = 5000,
         positions_cache_ttl_sec: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         family = self._indicator_bridge_family(terminal_family)
         prefix = f"{family}|"
         seen_tickets = {int(x) for x in (existing_tickets or set()) if int(x or 0) > 0}
-        cache_key = f"{family}|{int(max(200, min(50000, int(limit or 5000))))}|{','.join(str(x) for x in sorted(seen_tickets))}"
+        target_ticket_set = {
+            int(_to_float_or_none(x) or 0)
+            for x in (target_tickets or set())
+            if int(_to_float_or_none(x) or 0) > 0
+        }
+        target_part = ",".join(str(x) for x in sorted(target_ticket_set)) if target_ticket_set else "*"
+        cache_key = f"{family}|{int(max(200, min(50000, int(limit or 5000))))}|{','.join(str(x) for x in sorted(seen_tickets))}|{target_part}"
         now_ts = float(time.time())
         with self._lock:
             cached = dict(self._indicator_open_recovery_cache.get(cache_key) or {})
@@ -8240,12 +8374,16 @@ class TelegramBridgeService:
         self._ensure_execution_log_table()
         db = SessionLocal()
         try:
-            rows = (
+            query = (
                 db.query(TelegramAutomationExecutionLogModel)
                 .filter(TelegramAutomationExecutionLogModel.source_type == "mt_indicator")
                 .filter(TelegramAutomationExecutionLogModel.source_tag.like(f"{prefix}%"))
                 .filter(TelegramAutomationExecutionLogModel.ticket.isnot(None))
-                .order_by(TelegramAutomationExecutionLogModel.id.desc())
+            )
+            if target_ticket_set:
+                query = query.filter(TelegramAutomationExecutionLogModel.ticket.in_(list(target_ticket_set)))
+            rows = (
+                query.order_by(TelegramAutomationExecutionLogModel.id.desc())
                 .limit(int(max(200, min(50000, int(limit or 5000)))))
                 .all()
             )
@@ -8263,6 +8401,8 @@ class TelegramBridgeService:
         for r in rows:
             ticket = int(_to_float_or_none(getattr(r, "ticket", None)) or 0)
             if ticket <= 0 or ticket in seen_tickets:
+                continue
+            if target_ticket_set and ticket not in target_ticket_set:
                 continue
             status = str(getattr(r, "status", "") or "").strip().lower()
             if status == "closed":
@@ -8316,24 +8456,30 @@ class TelegramBridgeService:
             return []
         symbols = sorted({str(v.get("symbol") or "").strip().upper() for v in candidates.values() if str(v.get("symbol") or "").strip()})
         live_by_ticket: Dict[int, Dict[str, Any]] = {}
-        ttl = (
-            float(positions_cache_ttl_sec)
-            if positions_cache_ttl_sec is not None and math.isfinite(float(positions_cache_ttl_sec))
-            else self._indicator_bridge_state_positions_cache_ttl_sec()
-        )
-        for sym in symbols:
-            try:
-                live_rows = self._cached_indicator_open_positions(
-                    svc=svc,
-                    symbol=str(sym),
-                    ttl_sec=float(ttl),
-                )
-            except Exception:
-                live_rows = []
-            for pos in live_rows:
+        if isinstance(live_positions, list) and live_positions:
+            for pos in live_positions:
                 ticket = int(_to_float_or_none((pos or {}).get("ticket")) or 0)
                 if ticket > 0:
                     live_by_ticket[int(ticket)] = dict(pos)
+        else:
+            ttl = (
+                float(positions_cache_ttl_sec)
+                if positions_cache_ttl_sec is not None and math.isfinite(float(positions_cache_ttl_sec))
+                else self._indicator_bridge_state_positions_cache_ttl_sec()
+            )
+            for sym in symbols:
+                try:
+                    live_rows = self._cached_indicator_open_positions(
+                        svc=svc,
+                        symbol=str(sym),
+                        ttl_sec=float(ttl),
+                    )
+                except Exception:
+                    live_rows = []
+                for pos in live_rows:
+                    ticket = int(_to_float_or_none((pos or {}).get("ticket")) or 0)
+                    if ticket > 0:
+                        live_by_ticket[int(ticket)] = dict(pos)
 
         out: List[Dict[str, Any]] = []
         for ticket, meta in candidates.items():
@@ -8601,6 +8747,22 @@ class TelegramBridgeService:
         evaluate_shadow: bool = True,
         since_utc: Optional[datetime] = None,
     ) -> Dict[str, Any]:
+        cacheable_fast_audit = bool(not resolve_history_pnl and not evaluate_shadow)
+        cache_key = ""
+        now_ts = float(time.time())
+        if cacheable_fast_audit:
+            since_key = (
+                since_utc.astimezone(timezone.utc).isoformat()
+                if isinstance(since_utc, datetime) and since_utc.tzinfo
+                else (since_utc.isoformat() if isinstance(since_utc, datetime) else "")
+            )
+            cache_key = f"{int(max(100, min(5000, int(limit or 500))))}|{since_key}"
+            with self._lock:
+                cached = dict(self._indicator_execution_audit_cache.get(cache_key) or {})
+            cached_ts = _to_float_or_none(cached.get("ts"))
+            cached_data = cached.get("data")
+            if cached_ts is not None and (float(now_ts) - float(cached_ts)) <= 3.0 and isinstance(cached_data, dict):
+                return dict(cached_data)
         raw_rows = self.get_automation_execution_logs(limit=max(100, min(5000, int(limit or 500))), since_utc=since_utc)
         mode_overrides_by_family = {
             "mt4": self._indicator_bridge_instance_mode_overrides("mt4"),
@@ -8807,12 +8969,24 @@ class TelegramBridgeService:
         lazy_pnl_resolve_max = int(min(500, max(120, len(out_rows))))
         lazy_svc = None
         if not bool(resolve_history_pnl):
-            return {
+            result = {
                 "ok": True,
                 "rows": out_rows,
                 "count": int(len(out_rows)),
                 "generated_at": self._now_iso(),
             }
+            if cacheable_fast_audit and cache_key:
+                with self._lock:
+                    self._indicator_execution_audit_cache[str(cache_key)] = {"ts": float(now_ts), "data": dict(result)}
+                    if len(self._indicator_execution_audit_cache) > 32:
+                        cutoff = float(now_ts) - 30.0
+                        self._indicator_execution_audit_cache = {
+                            str(k): dict(v)
+                            for k, v in self._indicator_execution_audit_cache.items()
+                            if _to_float_or_none((v or {}).get("ts")) is not None
+                            and float(_to_float_or_none((v or {}).get("ts")) or 0.0) >= cutoff
+                        }
+            return result
         for row in out_rows:
             status_check = str(row.get("status") or "").strip().lower()
             if status_check not in {"closed", "tp_partial"}:
@@ -8857,6 +9031,41 @@ class TelegramBridgeService:
             "rows": out_rows,
             "count": int(len(out_rows)),
             "generated_at": self._now_iso(),
+        }
+
+    def delete_indicator_execution_audit_before_today(self) -> Dict[str, Any]:
+        """Delete indicator audit rows older than today's UTC session."""
+        self._ensure_execution_log_table()
+        cutoff_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_naive = cutoff_utc.replace(tzinfo=None)
+        db = SessionLocal()
+        deleted = 0
+        try:
+            deleted = int(
+                db.query(TelegramAutomationExecutionLogModel)
+                .filter(TelegramAutomationExecutionLogModel.source_type == "mt_indicator")
+                .filter(TelegramAutomationExecutionLogModel.created_at < cutoff_naive)
+                .delete(synchronize_session=False)
+            )
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception("indicator_execution_audit_cleanup_failed")
+            return {"ok": False, "error": "indicator_execution_audit_cleanup_failed", "deleted": int(deleted)}
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._indicator_execution_audit_cache.clear()
+        return {
+            "ok": True,
+            "deleted": int(deleted),
+            "cutoff_utc": cutoff_utc.isoformat(),
         }
 
     def _enrich_entry_exit_monitors_from_audit(
@@ -8994,6 +9203,8 @@ class TelegramBridgeService:
         include_rsi: bool = True,
         include_ohlc_replay: bool = True,
         include_execution_report: bool = True,
+        include_live_positions: bool = True,
+        include_spreads: bool = True,
     ) -> Dict[str, Any]:
         if bool(include_audit) or bool(include_ohlc_replay) or bool(include_execution_report):
             try:
@@ -9010,6 +9221,8 @@ class TelegramBridgeService:
             active_only=active_only,
             include_ohlc_replay=bool(include_ohlc_replay),
             include_rsi=bool(include_rsi),
+            include_live_positions=bool(include_live_positions),
+            include_spreads=bool(include_spreads),
         )
         mt5_monitor = self._get_indicator_bridge_bot_monitor(
             terminal_family="mt5",
@@ -9017,6 +9230,8 @@ class TelegramBridgeService:
             active_only=active_only,
             include_ohlc_replay=bool(include_ohlc_replay),
             include_rsi=bool(include_rsi),
+            include_live_positions=bool(include_live_positions),
+            include_spreads=bool(include_spreads),
         )
         # Keep the live state endpoint responsive. History-based PnL recovery is
         # available in the audit helpers, but the dashboard poll path must not
@@ -9026,6 +9241,7 @@ class TelegramBridgeService:
             execution_logs = self.get_indicator_execution_audit_rows(
                 limit=max(1000, min(5000, lim * 5)),
                 resolve_history_pnl=False,
+                evaluate_shadow=False,
                 since_utc=audit_since_utc,
             )
             self._enrich_entry_exit_monitors_from_audit(
@@ -18537,6 +18753,75 @@ class TelegramBridgeService:
             "profile": str(audit_profile),
             "indicator": str(audit_indicator),
         }
+        atomic_regime_reanchor: Dict[str, Any] = {}
+        if (
+            str(audit_profile).strip().lower() == "atomic_regime"
+            and side in {"BUY", "SELL"}
+            and exec_px is not None
+            and float(exec_px) > 0.0
+            and audit_signal_entry is not None
+            and float(audit_signal_entry) > 0.0
+            and order_stop_loss is not None
+            and float(order_stop_loss) > 0.0
+            and order_take_profit is not None
+            and float(order_take_profit) > 0.0
+        ):
+            signal_entry_f = float(audit_signal_entry)
+            original_sl = float(order_stop_loss)
+            original_tp = float(order_take_profit)
+            original_risk = abs(signal_entry_f - original_sl)
+            original_reward = abs(original_tp - signal_entry_f)
+            rr = (original_reward / original_risk) if original_risk > 0.0 else 0.0
+            drift = abs(float(exec_px) - signal_entry_f)
+            min_reanchor_drift = max(float(min_dist or 0.0), float(original_risk) * 0.25)
+            valid_side_geometry = (
+                (side == "BUY" and original_sl < signal_entry_f and original_tp > signal_entry_f)
+                or (side == "SELL" and original_sl > signal_entry_f and original_tp < signal_entry_f)
+            )
+            if valid_side_geometry and original_risk > 0.0 and rr > 0.0 and drift >= min_reanchor_drift:
+                if side == "BUY":
+                    order_stop_loss = float(exec_px) - original_risk
+                    order_take_profit = float(exec_px) + (original_risk * rr)
+                else:
+                    order_stop_loss = float(exec_px) + original_risk
+                    order_take_profit = float(exec_px) - (original_risk * rr)
+                if signal_tps:
+                    signal_tps = [
+                        dict(row, price=float(order_take_profit))
+                        if int(_to_float_or_none((row or {}).get("index")) or 0) == int((signal_tps[-1] or {}).get("index") or 1)
+                        else dict(row)
+                        for row in signal_tps
+                    ]
+                else:
+                    signal_tps = [{"index": 1, "price": float(order_take_profit)}]
+                atomic_regime_reanchor = {
+                    "applied": True,
+                    "reason": "atomic_regime_live_entry_reanchor",
+                    "signal_entry": signal_entry_f,
+                    "execution_price": float(exec_px),
+                    "drift": float(drift),
+                    "original_stop_loss": float(original_sl),
+                    "original_take_profit": float(original_tp),
+                    "original_risk": float(original_risk),
+                    "rr": float(rr),
+                    "reanchored_stop_loss": float(order_stop_loss),
+                    "reanchored_take_profit": float(order_take_profit),
+                    "min_reanchor_drift": float(min_reanchor_drift),
+                }
+            else:
+                atomic_regime_reanchor = {
+                    "applied": False,
+                    "reason": "atomic_regime_reanchor_not_needed_or_invalid",
+                    "signal_entry": float(signal_entry_f),
+                    "execution_price": float(exec_px),
+                    "drift": float(drift),
+                    "original_stop_loss": float(original_sl),
+                    "original_take_profit": float(original_tp),
+                    "original_risk": float(original_risk),
+                    "rr": float(rr),
+                    "valid_side_geometry": bool(valid_side_geometry),
+                    "min_reanchor_drift": float(min_reanchor_drift),
+                }
         if not bool((geometry_guard or {}).get("ok", True)):
             reason = str((geometry_guard or {}).get("reason") or "invalid_signal_geometry")
             self._append_automation_execution_log(
@@ -18599,6 +18884,7 @@ class TelegramBridgeService:
                         "requested_stop_loss": (float(order_stop_loss) if order_stop_loss is not None else None),
                         "requested_take_profit": (float(order_take_profit) if order_take_profit is not None else None),
                         "broker_error": str(err_txt),
+                        "atomic_regime_reanchor": dict(atomic_regime_reanchor or {}),
                     },
                 )
                 if market_closed:
@@ -18724,6 +19010,7 @@ class TelegramBridgeService:
                     "requested_take_profit": (float(order_take_profit) if order_take_profit is not None else None),
                     "signal_tps": [dict(x) for x in signal_tps],
                     "half_be": dict(half_be_plan),
+                    "atomic_regime_reanchor": dict(atomic_regime_reanchor or {}),
                     "broker_returned_stop_loss": _to_float_or_none((data or {}).get("sl")),
                     "broker_returned_take_profit": _to_float_or_none((data or {}).get("tp")),
                     "post_open_stop_loss": _to_float_or_none((post_open_position or {}).get("stop_loss")),

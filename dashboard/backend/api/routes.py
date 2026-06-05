@@ -905,6 +905,8 @@ def indicator_bridge_state(
     include_rsi: bool = Query(True),
     include_ohlc: bool = Query(True),
     include_execution_report: bool = Query(True),
+    include_live_positions: bool = Query(True),
+    include_spreads: bool = Query(True),
 ):
     """Bridge-only MT4/MT5 indicator bot monitor state."""
     try:
@@ -921,6 +923,8 @@ def indicator_bridge_state(
             include_rsi=bool(include_rsi),
             include_ohlc_replay=bool(include_ohlc),
             include_execution_report=bool(include_execution_report),
+            include_live_positions=bool(include_live_positions),
+            include_spreads=bool(include_spreads),
         )
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_state_failed:{type(exc).__name__}:{str(exc)[:220]}")
@@ -955,6 +959,28 @@ def indicator_bridge_open_trade_prices(
         raise HTTPException(500, f"indicator_bridge_open_trade_prices_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
+@router.get("/indicator-bridge/spreads")
+def indicator_bridge_spreads(
+    symbols: str = Query("", max_length=4000),
+):
+    """Fast spread snapshot for visible Indicator Automation V2 symbols."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "rows": [], "count": 0}
+        parsed: List[str] = []
+        for part in str(symbols or "").split(","):
+            raw = str(part or "").strip().upper()
+            if raw:
+                parsed.append(raw)
+        parsed = list(dict.fromkeys(parsed))[:80]
+        return svc.get_indicator_bridge_spread_snapshot(symbols=parsed)
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_spreads_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
 @router.post("/indicator-bridge/reset-registry")
 def indicator_bridge_reset_registry():
     """Clear transient bridge instance registry rows."""
@@ -972,6 +998,7 @@ def indicator_bridge_reset_registry():
 @router.get("/indicator-bridge/execution-log")
 def indicator_bridge_execution_log(
     limit: int = Query(1000, ge=20, le=5000),
+    today_only: bool = Query(True),
 ):
     """Separated audit lane for Indicator Automation V2.
 
@@ -990,7 +1017,13 @@ def indicator_bridge_execution_log(
                 "execution_logs": {"ok": False, "rows": [], "count": 0},
                 "liquidity_audit_logs": {"ok": False, "rows": [], "count": 0},
             }
-        audit = svc.get_indicator_execution_audit_rows(limit=int(limit), resolve_history_pnl=False)
+        since_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) if bool(today_only) else None
+        audit = svc.get_indicator_execution_audit_rows(
+            limit=int(limit),
+            resolve_history_pnl=False,
+            evaluate_shadow=False,
+            since_utc=since_utc,
+        )
         if hasattr(svc, "_split_indicator_liquidity_audit_logs"):
             execution_logs, liquidity_audit_logs = svc._split_indicator_liquidity_audit_logs(audit)
         else:
@@ -1002,6 +1035,20 @@ def indicator_bridge_execution_log(
         }
     except Exception as exc:
         raise HTTPException(500, f"indicator_bridge_execution_log_failed:{type(exc).__name__}:{str(exc)[:220]}")
+
+
+@router.post("/indicator-bridge/execution-log/cleanup-old")
+def indicator_bridge_execution_log_cleanup_old():
+    """Delete indicator execution audit rows older than today's UTC session."""
+    try:
+        from ..main import telegram_bridge_service
+
+        svc = telegram_bridge_service
+        if svc is None:
+            return {"ok": False, "error": "telegram_bridge_unavailable", "deleted": 0}
+        return svc.delete_indicator_execution_audit_before_today()
+    except Exception as exc:
+        raise HTTPException(500, f"indicator_bridge_execution_log_cleanup_old_failed:{type(exc).__name__}:{str(exc)[:220]}")
 
 
 @router.post("/indicator-bridge/risk-settings")
