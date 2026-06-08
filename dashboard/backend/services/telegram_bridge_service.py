@@ -17144,6 +17144,7 @@ class TelegramBridgeService:
         updated: List[Dict[str, Any]] = []
         with self._lock:
             ladder_items = [(str(k), dict(v)) for k, v in self._active_confirmation_signal_ladders.items()]
+        matching_ladders: List[Tuple[str, Dict[str, Any]]] = []
         for key, row in ladder_items:
             if str(row.get("profile") or "").strip().lower() != "signatics":
                 continue
@@ -17156,14 +17157,34 @@ class TelegramBridgeService:
             row_source_tag = str(row.get("source_tag") or "").strip().lower()
             if wanted_source_prefix and row_source_tag and not row_source_tag.startswith(str(wanted_source_prefix)):
                 continue
+            matching_ladders.append((str(key), dict(row)))
+
+        # A level update belongs to the latest matching setup. Updating every
+        # same-direction ladder can corrupt an older still-open trade.
+        matching_ladders.sort(
+            key=lambda item: (
+                float(_to_unix_or_none((item[1] or {}).get("created_at")) or 0.0),
+                int(_to_float_or_none((item[1] or {}).get("broker_ticket")) or 0),
+            ),
+            reverse=True,
+        )
+        try:
+            open_positions = [dict(x) for x in (svc.get_open_positions(symbol=str(sym)) or [])]
+        except Exception:
+            open_positions = []
+
+        for key, row in matching_ladders:
             ticket = int(_to_float_or_none(row.get("broker_ticket")) or 0)
             if ticket <= 0:
                 continue
-            try:
-                positions = svc.get_open_positions(symbol=str(sym))
-            except Exception:
-                positions = []
-            pos = next((dict(x) for x in (positions or []) if int(_to_float_or_none((x or {}).get("ticket")) or 0) == ticket), None)
+            pos = next(
+                (
+                    dict(x)
+                    for x in open_positions
+                    if int(_to_float_or_none((x or {}).get("ticket")) or 0) == ticket
+                ),
+                None,
+            )
             if not isinstance(pos, dict):
                 continue
             row_entry = _to_float_or_none(pos.get("entry_price")) or _to_float_or_none(row.get("entry_price")) or entry
@@ -17246,6 +17267,7 @@ class TelegramBridgeService:
                     "modify": dict(modify_out or {}),
                 }
             )
+            break
         self._append_automation_execution_log(
             source_type="mt_indicator",
             source_name=str(indicator),

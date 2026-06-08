@@ -268,6 +268,87 @@ def _cleanup_execution_logs_for_tickets(*tickets: int) -> None:
         db.close()
 
 
+def test_signatics_level_update_only_modifies_latest_matching_open_trade(monkeypatch):
+    svc, broker = _build_service(monkeypatch)
+    monkeypatch.setattr(svc, "_append_automation_execution_log", lambda **kwargs: None)
+    broker.set_tick(ask=4335.20, bid=4335.00)
+
+    first = broker.place_market_order(
+        symbol="XAUUSDM",
+        direction="SELL",
+        lot_size=0.10,
+        stop_loss=4350.0,
+        take_profit=4300.0,
+        comment="older",
+    )
+    second = broker.place_market_order(
+        symbol="XAUUSDM",
+        direction="SELL",
+        lot_size=0.10,
+        stop_loss=4348.0,
+        take_profit=4298.0,
+        comment="latest",
+    )
+    first_ticket = int(first["position"])
+    second_ticket = int(second["position"])
+    now = datetime.now(timezone.utc)
+    with svc._lock:
+        svc._active_confirmation_signal_ladders = {
+            f"old:{first_ticket}": {
+                "profile": "signatics",
+                "symbol": "XAUUSDM",
+                "timeframe": "M1",
+                "direction": "SELL",
+                "broker_ticket": first_ticket,
+                "created_at": "2026-06-08T17:00:00+00:00",
+                "entry_price": 4335.0,
+                "initial_stop_loss": 4350.0,
+                "broker_take_profit": 4300.0,
+                "highest_tp_reached": 0,
+                "half_be_done": False,
+            },
+            f"new:{second_ticket}": {
+                "profile": "signatics",
+                "symbol": "XAUUSDM",
+                "timeframe": "M1",
+                "direction": "SELL",
+                "broker_ticket": second_ticket,
+                "created_at": now.isoformat(),
+                "entry_price": 4335.0,
+                "initial_stop_loss": 4348.0,
+                "broker_take_profit": 4298.0,
+                "highest_tp_reached": 0,
+                "half_be_done": False,
+            },
+        }
+
+    out = svc._handle_signatics_level_update(
+        family="mt4",
+        profile="signatics",
+        indicator="SIGNATICS-ALGO V2 (2) [Buffer]",
+        symbol="XAUUSDM",
+        timeframe="M1",
+        direction="SELL",
+        payload={
+            "secondary_entry": 4335.0,
+            "secondary_stop_loss": 4355.0,
+            "secondary_tp1": 4320.0,
+            "secondary_tp2": 4305.0,
+            "secondary_tp3": 4290.0,
+            "signatics_source": "SA_SL_1",
+        },
+        event_ts=now.isoformat(),
+    )
+
+    assert out["updated_count"] == 1
+    assert int(out["updated"][0]["ticket"]) == second_ticket
+    with broker._lock:
+        assert broker._positions[first_ticket]["stop_loss"] == 4350.0
+        assert broker._positions[first_ticket]["take_profit"] == 4300.0
+        assert broker._positions[second_ticket]["stop_loss"] == 4355.0
+        assert broker._positions[second_ticket]["take_profit"] == 4290.0
+
+
 def test_smoke_bridge_listener_register_and_signal_flow(monkeypatch):
     svc, broker = _build_service(monkeypatch)
     try:

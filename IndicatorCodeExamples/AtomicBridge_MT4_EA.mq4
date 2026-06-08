@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-07.0500-audit-multi-instance-safe"
+#define ATOMIC_BRIDGE_BUILD "2026-06-08.2330-daily-atr-no-fixed-cap"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -33,7 +33,12 @@ input string InpSignalProfile = "atomic";
 input int    InpHttpTimeoutMs = 5000;
 input bool   InpDirectMt4ExecutionEnabled = true;
 input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
-input double InpDirectMt4Lot = 0.10;
+input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizing is unavailable.
+input bool   InpDirectMt4AutoLotEnabled = true;
+input string InpDirectMt4AutoLotReferenceSymbol = "XAUUSDm";
+input double InpDirectMt4AutoLotReferenceLot = 0.10;
+input int    InpDirectMt4AutoLotDailyAtrPeriod = 14;
+input double InpDirectMt4AutoLotMax = 0.00; // 0=broker maximum only.
 input int    InpDirectMt4Magic = 970101;
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
@@ -43,7 +48,7 @@ input bool   InpDirectMt4CloseReverse = false;
 input int    InpDirectMt4TpIndex = 5;
 input double InpDirectMt4HalfBeR = 2.0;
 input int    InpDirectMt4HalfBeTpIndex = 2;
-input double InpRegimeDirectMt4HalfBeR = 0.0;
+input double InpRegimeDirectMt4HalfBeR = 0.0; // 0=disabled by design; AtomicRegime exits fully at InpRegimeRR
 input bool   InpDirectMt4AuditCsv = true;
 input int    InpDirectMt4HistoryAuditSeconds = 2;
 input bool   InpDirectMt4PositionProbeAudit = true;
@@ -122,6 +127,7 @@ datetime g_directMt4LastHistoryAuditTime = 0;
 int      g_directMt4LastHistoryAuditTicket = 0;
 datetime g_directMt4LastPositionProbe = 0;
 string   g_directMt4LastPositionProbeHash = "";
+datetime g_lastTickLocal = 0;
 string   DASH_PREFIX = "ATOMIC_BRIDGE_DASH_";
 
 string _trim(string s)
@@ -272,6 +278,8 @@ bool _direct_close_reverse_positions(string direction)
          continue;
       if(OrderSymbol() != Symbol() || OrderMagicNumber() != InpDirectMt4Magic || OrderType() != targetType)
          continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
+         continue;
       RefreshRates();
       double closePx = (targetType == OP_BUY) ? Bid : Ask;
       if(!OrderClose(OrderTicket(), OrderLots(), closePx, InpDirectMt4Slippage, clrSilver))
@@ -312,7 +320,89 @@ bool _direct_trigger_price_valid(string direction, double entry, double triggerP
 {
    if(triggerPrice <= 0.0 || entry <= 0.0)
       return false;
-   return (direction == "BUY" || direction == "SELL");
+   double tol = MathMax(Point * 2.0, 0.00000001);
+   if(direction == "BUY")
+      return triggerPrice > entry + tol;
+   if(direction == "SELL")
+      return triggerPrice < entry - tol;
+   return false;
+}
+
+double _direct_normalize_half_trigger(
+   string direction,
+   double entry,
+   double sl,
+   double tp,
+   double requested,
+   double halfR,
+   bool &rebased,
+   string &reason
+)
+{
+   rebased = false;
+   reason = "kept";
+   if(!_direct_trigger_price_valid(direction, entry, requested))
+   {
+      rebased = true;
+      reason = "wrong_side_of_fill";
+      if(requested <= 0.0 && halfR <= 0.0)
+      {
+         reason = reason + "|disabled_by_config";
+         return 0.0;
+      }
+   }
+   else
+   {
+      bool beforeTp = (tp <= 0.0)
+         || (direction == "BUY" && requested < tp - Point)
+         || (direction == "SELL" && requested > tp + Point);
+      if(beforeTp)
+         return NormalizeDouble(requested, Digits);
+      rebased = true;
+      reason = "at_or_beyond_final_tp";
+   }
+
+   double risk = (sl > 0.0 ? MathAbs(entry - sl) : 0.0);
+   double remaining = 0.0;
+   if(tp > 0.0)
+      remaining = (direction == "BUY") ? (tp - entry) : (entry - tp);
+   double minDistance = MathMax(Point * 4.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point);
+   if(risk <= Point || remaining <= minDistance)
+   {
+      reason = reason + "|disabled_no_profitable_room";
+      return 0.0;
+   }
+
+   double desiredDistance = risk * MathMax(0.1, halfR);
+   double safeDistance = MathMin(desiredDistance, remaining * 0.50);
+   if(safeDistance < minDistance)
+      safeDistance = remaining * 0.50;
+   if(safeDistance < minDistance || safeDistance >= remaining - Point)
+   {
+      reason = reason + "|disabled_no_safe_trigger";
+      return 0.0;
+   }
+   reason = reason + "|rebased_between_fill_and_tp";
+   return NormalizeDouble(
+      direction == "BUY" ? entry + safeDistance : entry - safeDistance,
+      Digits
+   );
+}
+
+bool _direct_be_price_legal(int orderType, double entry)
+{
+   RefreshRates();
+   double brokerDistance = (
+      MathMax(
+         MarketInfo(Symbol(), MODE_STOPLEVEL),
+         MarketInfo(Symbol(), MODE_FREEZELEVEL)
+      ) + 2.0
+   ) * Point;
+   if(orderType == OP_BUY)
+      return entry <= Bid - brokerDistance;
+   if(orderType == OP_SELL)
+      return entry >= Ask + brokerDistance;
+   return false;
 }
 
 string _direct_trigger_gv_key(int ticket)
@@ -357,6 +447,47 @@ void _direct_state_copy(string kind, int fromTicket, int toTicket)
       _direct_state_set(kind, toTicket, value);
 }
 
+int _direct_parent_ticket_from_comment(string source)
+{
+   int pos = StringFind(source, "from #");
+   if(pos < 0)
+      return 0;
+   string tail = StringSubstr(source, pos + 6);
+   string digits = "";
+   for(int i = 0; i < StringLen(tail); i++)
+   {
+      int ch = StringGetCharacter(tail, i);
+      if(ch < '0' || ch > '9')
+         break;
+      digits += StringSubstr(tail, i, 1);
+   }
+   return StrToInteger(digits);
+}
+
+bool _direct_order_owned_by_instance(int ticket, string source, bool inheritPartial)
+{
+   double owner = _direct_state_get("OWNER", ticket);
+   if(owner > 0.0)
+      return (int)owner == Period();
+   if(!inheritPartial)
+      return false;
+   int parentTicket = _direct_parent_ticket_from_comment(source);
+   if(parentTicket <= 0)
+      return false;
+   double parentOwner = _direct_state_get("OWNER", parentTicket);
+   if(parentOwner <= 0.0)
+      return false;
+   _direct_state_copy("IRISK", parentTicket, ticket);
+   _direct_state_copy("HTP", parentTicket, ticket);
+   _direct_state_copy("TP1", parentTicket, ticket);
+   _direct_state_copy("BE", parentTicket, ticket);
+   _direct_state_copy("HALF", parentTicket, ticket);
+   _direct_state_copy("SEEN", parentTicket, ticket);
+   _direct_state_copy("MAXR", parentTicket, ticket);
+   _direct_state_set("OWNER", ticket, parentOwner);
+   return (int)parentOwner == Period();
+}
+
 bool _direct_failure_log_due(string kind, int ticket, int seconds)
 {
    datetime now = TimeCurrent();
@@ -365,6 +496,124 @@ bool _direct_failure_log_due(string kind, int ticket, int seconds)
       return false;
    _direct_state_set(kind, ticket, now);
    return true;
+}
+
+int _direct_lot_digits(double step)
+{
+   if(step >= 1.0) return 0;
+   if(step >= 0.1) return 1;
+   if(step >= 0.01) return 2;
+   return 3;
+}
+
+double _direct_normalize_order_lot(double requestedLot)
+{
+   double step = MarketInfo(Symbol(), MODE_LOTSTEP);
+   double minLot = MarketInfo(Symbol(), MODE_MINLOT);
+   double maxLot = MarketInfo(Symbol(), MODE_MAXLOT);
+   if(step <= 0.0) step = 0.01;
+   if(minLot <= 0.0) minLot = step;
+   if(maxLot <= 0.0) maxLot = 100.0;
+   double configuredCap = (InpDirectMt4AutoLotMax > 0.0)
+      ? MathMin(maxLot, MathMax(minLot, InpDirectMt4AutoLotMax))
+      : maxLot;
+   double capped = MathMin(MathMax(requestedLot, minLot), configuredCap);
+   double units = MathFloor((capped / step) + 0.0000001);
+   double minUnits = MathCeil((minLot / step) - 0.0000001);
+   // Prefer an even number of broker volume steps so half-close is exactly 50/50.
+   if(((int)units % 2) != 0 && units - 1.0 >= MathMax(2.0, minUnits))
+      units -= 1.0;
+   double lot = NormalizeDouble(units * step, _direct_lot_digits(step));
+   if(lot < minLot)
+      lot = NormalizeDouble(minLot, _direct_lot_digits(step));
+   return lot;
+}
+
+double _direct_closed_daily_atr(string symbol, int period)
+{
+   int atrPeriod = MathMax(2, period);
+   double atr = iATR(symbol, PERIOD_D1, atrPeriod, 1);
+   return (MathIsValidNumber(atr) && atr > 0.0) ? atr : 0.0;
+}
+
+bool _direct_reference_daily_money(double &targetMoney, double &referenceAtr, string &detail)
+{
+   string ref = _trim(InpDirectMt4AutoLotReferenceSymbol);
+   if(ref == "")
+   {
+      detail = "auto_lot_fallback=empty_reference";
+      return false;
+   }
+   SymbolSelect(ref, true);
+   double tickSize = MarketInfo(ref, MODE_TICKSIZE);
+   double tickValue = MarketInfo(ref, MODE_TICKVALUE);
+   double refLot = MathMax(0.0, InpDirectMt4AutoLotReferenceLot);
+   referenceAtr = _direct_closed_daily_atr(ref, InpDirectMt4AutoLotDailyAtrPeriod);
+   if(referenceAtr <= 0.0 || tickSize <= 0.0 || tickValue <= 0.0 || refLot <= 0.0)
+   {
+      detail = "auto_lot_fallback=invalid_reference_market_data"
+         + " ref=" + ref
+         + " daily_atr=" + DoubleToString(referenceAtr, 5)
+         + " tick_size=" + DoubleToString(tickSize, 8)
+         + " tick_value=" + DoubleToString(tickValue, 5);
+      return false;
+   }
+   targetMoney = (referenceAtr / tickSize) * tickValue * refLot;
+   detail = "auto_lot_ref=" + ref
+      + " ref_lot=" + DoubleToString(refLot, 2)
+      + " atr_d1_period=" + IntegerToString(MathMax(2, InpDirectMt4AutoLotDailyAtrPeriod))
+      + " ref_daily_atr=" + DoubleToString(referenceAtr, 5)
+      + " target_daily_money=" + DoubleToString(targetMoney, 2);
+   return targetMoney > 0.0;
+}
+
+double _direct_resolve_order_lot(double entry, double sl, string &detail)
+{
+   double fallbackLot = _direct_normalize_order_lot(g_directMt4LotRuntime);
+   if(!InpDirectMt4AutoLotEnabled)
+   {
+      detail = "auto_lot=off fallback_lot=" + DoubleToString(fallbackLot, 3);
+      return fallbackLot;
+   }
+   double riskDistance = MathAbs(entry - sl);
+   double tickSize = MarketInfo(Symbol(), MODE_TICKSIZE);
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double targetMoney = 0.0;
+   double referenceAtr = 0.0;
+   string refDetail = "";
+   double symbolAtr = _direct_closed_daily_atr(Symbol(), InpDirectMt4AutoLotDailyAtrPeriod);
+   if(symbolAtr <= 0.0 || tickSize <= 0.0 || tickValue <= 0.0
+      || !_direct_reference_daily_money(targetMoney, referenceAtr, refDetail))
+   {
+      detail = "auto_lot=fallback fallback_lot=" + DoubleToString(fallbackLot, 3)
+         + " symbol_daily_atr=" + DoubleToString(symbolAtr, Digits)
+         + " risk_distance=" + DoubleToString(riskDistance, Digits)
+         + " tick_size=" + DoubleToString(tickSize, 8)
+         + " tick_value=" + DoubleToString(tickValue, 5)
+         + " " + refDetail;
+      return fallbackLot;
+   }
+   double dailyMoneyPerLot = (symbolAtr / tickSize) * tickValue;
+   if(dailyMoneyPerLot <= 0.0)
+   {
+      detail = "auto_lot=fallback invalid_daily_money_per_lot fallback_lot=" + DoubleToString(fallbackLot, 3);
+      return fallbackLot;
+   }
+   double adrLot = targetMoney / dailyMoneyPerLot;
+   double slMoneyPerLot = (riskDistance > 0.0 ? (riskDistance / tickSize) * tickValue : 0.0);
+   double slLimitedLot = (slMoneyPerLot > 0.0 ? targetMoney / slMoneyPerLot : adrLot);
+   double rawLot = MathMin(adrLot, slLimitedLot);
+   double finalLot = _direct_normalize_order_lot(rawLot);
+   detail = "auto_lot=on " + refDetail
+      + " symbol_daily_atr=" + DoubleToString(symbolAtr, Digits)
+      + " daily_money_per_lot=" + DoubleToString(dailyMoneyPerLot, 2)
+      + " adr_lot=" + DoubleToString(adrLot, 4)
+      + " risk_distance=" + DoubleToString(riskDistance, Digits)
+      + " sl_money_per_lot=" + DoubleToString(slMoneyPerLot, 2)
+      + " sl_limited_lot=" + DoubleToString(slLimitedLot, 4)
+      + " raw_lot=" + DoubleToString(rawLot, 4)
+      + " final_lot=" + DoubleToString(finalLot, 3);
+   return finalLot;
 }
 
 bool _direct_mt4_execute(string eventId, string direction, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel)
@@ -414,35 +663,51 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    double price = (type == OP_BUY) ? Ask : Bid;
    double stopLoss = (sl > 0.0 ? NormalizeDouble(sl, Digits) : 0.0);
    double takeProfit = (tp > 0.0 ? NormalizeDouble(tp, Digits) : 0.0);
-   double lot = MathMax(0.01, g_directMt4LotRuntime);
+   string lotDetail = "";
+   double lot = _direct_resolve_order_lot(price, stopLoss, lotDetail);
    string comment = "AtomicBridgeMT4|" + source;
    ResetLastError();
    int ticket = OrderSend(Symbol(), type, lot, NormalizeDouble(price, Digits), InpDirectMt4Slippage, stopLoss, takeProfit, comment, InpDirectMt4Magic, 0, (type == OP_BUY ? clrLime : clrTomato));
    g_lastDirectMt4EventId = eventId;
    if(ticket > 0)
    {
-      double initialRisk = (stopLoss > 0.0 ? MathAbs(price - stopLoss) : 0.0);
+      double fillPrice = price;
+      double actualSl = stopLoss;
+      double actualTp = takeProfit;
+      if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         fillPrice = OrderOpenPrice();
+         actualSl = OrderStopLoss();
+         actualTp = OrderTakeProfit();
+      }
+      double initialRisk = (actualSl > 0.0 ? MathAbs(fillPrice - actualSl) : 0.0);
       if(initialRisk > Point)
          _direct_state_set("IRISK", ticket, initialRisk);
       _direct_state_set("OWNER", ticket, Period());
-      if(!_direct_trigger_price_valid(dir, price, halfTriggerPrice) && initialRisk > Point)
-      {
-         double activeHalfR = (_contains_ci(source, "AtomicRegime") ? g_regimeDirectMt4HalfBeRRuntime : g_directMt4HalfBeRRuntime);
-         if(activeHalfR > 0.0)
-            halfTriggerPrice = (dir == "BUY") ? (price + initialRisk * activeHalfR) : (price - initialRisk * activeHalfR);
-      }
-      if(_direct_trigger_price_valid(dir, price, halfTriggerPrice))
+      double activeHalfR = (_contains_ci(source, "AtomicRegime") ? g_regimeDirectMt4HalfBeRRuntime : g_directMt4HalfBeRRuntime);
+      bool triggerRebased = false;
+      string triggerGeometry = "";
+      halfTriggerPrice = _direct_normalize_half_trigger(
+         dir, fillPrice, actualSl, actualTp, halfTriggerPrice, activeHalfR,
+         triggerRebased, triggerGeometry
+      );
+      if(_direct_trigger_price_valid(dir, fillPrice, halfTriggerPrice))
          _direct_set_half_trigger_price(ticket, NormalizeDouble(halfTriggerPrice, Digits));
       else
          halfTriggerPrice = 0.0;
-      string halfExtra = "half_trigger_label=" + _trim(halfTriggerLabel) + " half_trigger=" + _fmt_price(halfTriggerPrice) + " initial_risk=" + DoubleToString(initialRisk, Digits);
-      Print("AtomicBridge direct_mt4 order_sent ticket=", ticket, " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(price), " sl=", _fmt_price(stopLoss), " tp=", _fmt_price(takeProfit), " event=", eventId);
+      string halfExtra = "half_trigger_label=" + _trim(halfTriggerLabel)
+         + " half_trigger=" + _fmt_price(halfTriggerPrice)
+         + " initial_risk=" + DoubleToString(initialRisk, Digits)
+         + " requested_price=" + _fmt_price(price)
+         + " actual_fill=" + _fmt_price(fillPrice)
+         + " trigger_geometry=" + triggerGeometry
+         + " trigger_rebased=" + (triggerRebased ? "1" : "0")
+         + " " + lotDetail;
+      Print("AtomicBridge direct_mt4 order_sent ticket=", ticket, " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(fillPrice), " sl=", _fmt_price(actualSl), " tp=", _fmt_price(actualTp), " event=", eventId);
       _direct_audit_write("direct_signal_received", source, eventId, 0, dir, lot, signalPx, sl, tp, "confirmed_signal", 0.0, "written_after_order_send_to_avoid_latency " + halfExtra);
-      _direct_audit_write("direct_order_sent", source, eventId, ticket, dir, lot, price, stopLoss, takeProfit, "order_send_ok", 0.0, comment + " " + halfExtra);
-      bool triggerAtOrBeyondTp = (takeProfit > 0.0 && halfTriggerPrice > 0.0)
-         && ((dir == "BUY" && halfTriggerPrice >= takeProfit - Point) || (dir == "SELL" && halfTriggerPrice <= takeProfit + Point));
-      if(triggerAtOrBeyondTp)
-         _direct_audit_write("direct_halfbe_config_conflict", source, eventId, ticket, dir, lot, price, stopLoss, takeProfit, "half_trigger_not_before_final_tp", 0.0, halfExtra);
+      _direct_audit_write("direct_order_sent", source, eventId, ticket, dir, lot, fillPrice, actualSl, actualTp, "order_send_ok", 0.0, comment + " " + halfExtra);
+      if(triggerRebased)
+         _direct_audit_write("direct_halfbe_fill_geometry_rebased", source, eventId, ticket, dir, lot, fillPrice, actualSl, actualTp, triggerGeometry, 0.0, halfExtra);
       return true;
    }
    int err = GetLastError();
@@ -519,14 +784,51 @@ void _direct_audit_mark(string kind, int ticket)
    GlobalVariableSet(_direct_audit_gv_key(kind, ticket), TimeCurrent());
 }
 
+string _direct_audit_lock_key(string lane)
+{
+   return "AtomicBridgeMT4|AUDIT_LOCK|" + lane;
+}
+
+bool _direct_audit_lock_acquire(string lane, int maxWaitMs)
+{
+   string key = _direct_audit_lock_key(lane);
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   uint started = GetTickCount();
+   int waitMs = MathMax(1, maxWaitMs);
+   while((uint)(GetTickCount() - started) < (uint)waitMs)
+   {
+      double current = GlobalVariableGet(key);
+      double now = (double)TimeLocal();
+      if(current <= 0.0 || current < now)
+      {
+         if(GlobalVariableSetOnCondition(key, now + 2.0, current))
+            return true;
+      }
+      Sleep(1);
+   }
+   return false;
+}
+
+void _direct_audit_lock_release_lane(string lane)
+{
+   GlobalVariableSet(_direct_audit_lock_key(lane), 0.0);
+}
+
 void _direct_audit_write(string eventName, string source, string eventId, int ticket, string direction, double lot, double price, double sl, double tp, string reason, double pnl, string extra)
 {
    if(!InpDirectMt4AuditCsv)
       return;
+   if(!_direct_audit_lock_acquire("DIRECT", 75))
+   {
+      Print("AtomicBridge direct_mt4 audit lock timeout event=", eventName, " ticket=", ticket);
+      return;
+   }
    int h = FileOpen(_direct_audit_file_name(), FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE)
    {
       Print("AtomicBridge direct_mt4 audit open failed err=", GetLastError(), " file=", _direct_audit_file_name());
+      _direct_audit_lock_release_lane("DIRECT");
       return;
    }
    bool empty = (FileSize(h) <= 0);
@@ -563,7 +865,9 @@ void _direct_audit_write(string eventName, string source, string eventId, int ti
       DoubleToString(pnl, 2),
       extra
    );
+   FileFlush(h);
    FileClose(h);
+   _direct_audit_lock_release_lane("DIRECT");
 }
 
 string _direct_position_probe_file_name()
@@ -596,10 +900,16 @@ void _direct_position_probe_write(
 {
    if(!InpDirectMt4PositionProbeAudit)
       return;
+   if(!_direct_audit_lock_acquire("POSITION", 5))
+   {
+      Print("AtomicBridge position_probe audit lock timeout ticket=", ticket);
+      return;
+   }
    int h = FileOpen(_direct_position_probe_file_name(), FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE)
    {
       Print("AtomicBridge position_probe open failed err=", GetLastError(), " file=", _direct_position_probe_file_name());
+      _direct_audit_lock_release_lane("POSITION");
       return;
    }
    bool empty = (FileSize(h) <= 0);
@@ -650,6 +960,7 @@ void _direct_position_probe_write(
       extra
    );
    FileClose(h);
+   _direct_audit_lock_release_lane("POSITION");
 }
 
 void _direct_position_probe_scan()
@@ -657,7 +968,8 @@ void _direct_position_probe_scan()
    if(!InpDirectMt4PositionProbeAudit)
       return;
    int interval = MathMax(1, InpDirectMt4PositionProbeIntervalSeconds);
-   datetime now = TimeCurrent();
+   datetime now = TimeLocal();
+   int scheduleGap = (g_directMt4LastPositionProbe > 0 ? (int)(now - g_directMt4LastPositionProbe) : 0);
    if(g_directMt4LastPositionProbe > 0 && now - g_directMt4LastPositionProbe < interval)
       return;
    g_directMt4LastPositionProbe = now;
@@ -673,10 +985,11 @@ void _direct_position_probe_scan()
          continue;
       if(OrderType() != OP_BUY && OrderType() != OP_SELL)
          continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
+         continue;
 
       int ticket = OrderTicket();
-      double ownerTf = _direct_state_get("OWNER", ticket);
-      if(ownerTf > 0.0 && (int)ownerTf != Period())
+      if(!_direct_order_owned_by_instance(ticket, OrderComment(), true))
          continue;
       int dir = OrderType() == OP_BUY ? 1 : -1;
       string direction = (dir > 0 ? "BUY" : "SELL");
@@ -698,18 +1011,18 @@ void _direct_position_probe_scan()
          currentR = (dir > 0) ? ((px - entry) / risk) : ((entry - px) / risk);
       }
       double storedTrigger = _direct_get_half_trigger_price(ticket);
-      double triggerPrice = 0.0;
+      bool triggerRebased = false;
+      string triggerGeometry = "";
+      double triggerPrice = _direct_normalize_half_trigger(
+         direction, entry, sl, tp, storedTrigger, activeHalfR,
+         triggerRebased, triggerGeometry
+      );
       string triggerLabel = "r" + DoubleToString(activeHalfR, 2);
-      if(_direct_trigger_price_valid(direction, entry, storedTrigger))
+      if(_direct_trigger_price_valid(direction, entry, triggerPrice))
       {
-         triggerPrice = storedTrigger;
          triggerLabel = isRegime ? ("stored_r" + DoubleToString(activeHalfR, 2)) : ("stored_tp" + IntegerToString(MathMax(1, MathMin(5, g_directMt4HalfBeTpIndexRuntime))));
       }
-      else if(risk > Point && activeHalfR > 0.0)
-      {
-         triggerPrice = (dir > 0) ? (entry + risk * activeHalfR) : (entry - risk * activeHalfR);
-      }
-      bool reached = (triggerPrice > 0.0) ? ((dir > 0) ? (px >= triggerPrice) : (px <= triggerPrice)) : false;
+      bool reached = (triggerPrice > 0.0 && currentR > 0.0) ? ((dir > 0) ? (px >= triggerPrice) : (px <= triggerPrice)) : false;
       bool alreadyBe = (sl > 0.0) ? ((dir > 0) ? (sl >= entry - Point) : (sl <= entry + Point)) : false;
       bool halfMarked = _direct_audit_marked("HALF", ticket);
       bool beMarked = _direct_audit_marked("BE", ticket);
@@ -738,7 +1051,13 @@ void _direct_position_probe_scan()
          halfMarked,
          beMarked,
          pnl,
-         "trigger_seen=" + (triggerSeen ? "1" : "0") + " max_r=" + DoubleToString(maxR, 3) + " initial_risk=" + DoubleToString(risk, Digits)
+         "trigger_seen=" + (triggerSeen ? "1" : "0")
+         + " max_r=" + DoubleToString(maxR, 3)
+         + " initial_risk=" + DoubleToString(risk, Digits)
+         + " schedule_gap_sec=" + IntegerToString(scheduleGap)
+         + " tick_age_sec=" + IntegerToString(g_lastTickLocal > 0 ? (int)MathMax(0, now - g_lastTickLocal) : -1)
+         + " connected=" + (IsConnected() ? "1" : "0")
+         + " trigger_geometry=" + triggerGeometry
       );
    }
 
@@ -777,6 +1096,8 @@ int _direct_find_remainder_ticket(int oldTicket, int orderType, double entry, st
       if(OrderTicket() == oldTicket)
          return oldTicket;
       if(OrderSymbol() != Symbol() || OrderMagicNumber() != InpDirectMt4Magic || OrderType() != orderType)
+         continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
          continue;
       if(source != "" && OrderComment() != source)
          continue;
@@ -820,8 +1141,7 @@ void _direct_history_cursor_init()
          continue;
       datetime ct = OrderCloseTime();
       int tk = OrderTicket();
-      double ownerTf = _direct_state_get("OWNER", tk);
-      if(ownerTf > 0.0 && (int)ownerTf != Period())
+      if(!_direct_order_owned_by_instance(tk, OrderComment(), true))
          continue;
       if(ct > newestTime || (ct == newestTime && tk > newestTicket))
       {
@@ -857,7 +1177,11 @@ bool _direct_history_trigger_touched(int orderType, datetime openTime, datetime 
    int lowShift = iLowest(NULL, 0, MODE_LOW, count, start);
    if(lowShift < 0)
       return false;
-   extremePrice = iLow(NULL, 0, lowShift);
+   // MT4 chart lows are Bid-based, while SELL positions close at Ask.
+   // Historical tick spread is unavailable here, so use the current spread
+   // as a conservative executable-price estimate and label it as suspected.
+   double spreadEstimate = MathMax(0.0, MarketInfo(Symbol(), MODE_SPREAD) * Point);
+   extremePrice = iLow(NULL, 0, lowShift) + spreadEstimate;
    return extremePrice <= triggerPrice;
 }
 
@@ -883,13 +1207,22 @@ void _direct_history_audit_scan()
       scanned++;
       datetime ct = OrderCloseTime();
       int tk = OrderTicket();
-      double ownerTf = _direct_state_get("OWNER", tk);
-      if(ownerTf > 0.0 && (int)ownerTf != Period())
+      if(!_direct_order_owned_by_instance(tk, OrderComment(), true))
          continue;
       if(ct <= 0)
          continue;
       if(ct < g_directMt4LastHistoryAuditTime || (ct == g_directMt4LastHistoryAuditTime && tk <= g_directMt4LastHistoryAuditTicket))
          continue;
+      if(_direct_audit_marked("HIST", tk))
+      {
+         if(ct > newestTime || (ct == newestTime && tk > newestTicket))
+         {
+            newestTime = ct;
+            newestTicket = tk;
+         }
+         continue;
+      }
+      _direct_audit_mark("HIST", tk);
       string dir = (OrderType() == OP_BUY ? "BUY" : "SELL");
       double closePx = OrderClosePrice();
       double sl = OrderStopLoss();
@@ -918,10 +1251,15 @@ void _direct_history_audit_scan()
          + " be_marked=" + (beMarked ? "1" : "0")
          + " half_marked=" + (halfMarked ? "1" : "0");
       _direct_audit_write(eventName, OrderComment(), "", tk, dir, OrderLots(), closePx, sl, tp, "history_close", pnl, lifecycle);
-      if((triggerSeen || barTouched) && (!beMarked || !halfMarked))
+      if(triggerSeen && (!beMarked || !halfMarked))
       {
          string missing = (!beMarked && !halfMarked) ? "be_and_half" : (!beMarked ? "be" : "half");
          _direct_audit_write("direct_halfbe_missed_detected", OrderComment(), "", tk, dir, OrderLots(), closePx, sl, tp, "missing=" + missing, pnl, lifecycle);
+      }
+      else if(barTouched && (!beMarked || !halfMarked))
+      {
+         string missing = (!beMarked && !halfMarked) ? "be_and_half" : (!beMarked ? "be" : "half");
+         _direct_audit_write("direct_halfbe_missed_suspected", OrderComment(), "", tk, dir, OrderLots(), closePx, sl, tp, "missing=" + missing + " bid_ask_history_estimate", pnl, lifecycle);
       }
       if(ct > newestTime || (ct == newestTime && tk > newestTicket))
       {
@@ -1692,8 +2030,7 @@ void _manage_direct_mt4_positions()
       int orderType = OrderType();
       int dir = orderType == OP_BUY ? 1 : -1;
       int ticket = OrderTicket();
-      double ownerTf = _direct_state_get("OWNER", ticket);
-      if(ownerTf > 0.0 && (int)ownerTf != Period())
+      if(!_direct_order_owned_by_instance(ticket, OrderComment(), true))
          continue;
       string direction = (dir > 0 ? "BUY" : "SELL");
       string source = OrderComment();
@@ -1711,21 +2048,29 @@ void _manage_direct_mt4_positions()
       bool isRegime = _contains_ci(source, "AtomicRegime");
       double halfR = (isRegime ? g_regimeDirectMt4HalfBeRRuntime : g_directMt4HalfBeRRuntime);
       double storedTrigger = _direct_get_half_trigger_price(ticket);
-      double triggerPrice = 0.0;
+      bool triggerRebased = false;
+      string triggerGeometry = "";
+      double triggerPrice = _direct_normalize_half_trigger(
+         direction, entry, sl, tp, storedTrigger, halfR,
+         triggerRebased, triggerGeometry
+      );
       string triggerLabel = "r" + DoubleToString(halfR, 2);
-      if(_direct_trigger_price_valid(direction, entry, storedTrigger))
+      if(_direct_trigger_price_valid(direction, entry, triggerPrice))
       {
-         triggerPrice = storedTrigger;
          triggerLabel = isRegime ? ("stored_r" + DoubleToString(halfR, 2)) : ("stored_tp" + IntegerToString(MathMax(1, MathMin(5, g_directMt4HalfBeTpIndexRuntime))));
       }
-      else if(halfR <= 0.0)
+      if(triggerRebased && triggerPrice > 0.0)
       {
+         _direct_set_half_trigger_price(ticket, triggerPrice);
+         triggerLabel = "fill_rebased";
+         if(!_direct_audit_marked("HTFIX", ticket))
+         {
+            _direct_audit_mark("HTFIX", ticket);
+            _direct_audit_write("direct_halfbe_fill_geometry_repaired", source, "", ticket, direction, OrderLots(), entry, sl, tp, triggerGeometry, 0.0, "old_trigger=" + _fmt_price(storedTrigger) + " new_trigger=" + _fmt_price(triggerPrice));
+         }
+      }
+      if(!_direct_trigger_price_valid(direction, entry, triggerPrice))
          continue;
-      }
-      else
-      {
-         triggerPrice = (dir > 0) ? (entry + initialRisk * halfR) : (entry - initialRisk * halfR);
-      }
       double currentR = (dir > 0) ? ((px - entry) / initialRisk) : ((entry - px) / initialRisk);
       double maxR = _direct_state_get("MAXR", ticket);
       if(currentR > maxR)
@@ -1733,7 +2078,7 @@ void _manage_direct_mt4_positions()
          maxR = currentR;
          _direct_state_set("MAXR", ticket, maxR);
       }
-      bool reached = (dir > 0) ? (px >= triggerPrice) : (px <= triggerPrice);
+      bool reached = currentR > 0.0 && ((dir > 0) ? (px >= triggerPrice) : (px <= triggerPrice));
       bool alreadyBe = (dir > 0) ? (sl >= entry - Point) : (sl <= entry + Point);
       if(!reached)
          continue;
@@ -1749,6 +2094,12 @@ void _manage_direct_mt4_positions()
       // replace the ticket after a partial close.
       if(!alreadyBe)
       {
+         if(!_direct_be_price_legal(orderType, entry))
+         {
+            if(_direct_failure_log_due("BEWAITLOG", ticket, 5))
+               _direct_audit_write("direct_sl_to_be_waiting_broker_distance", source, "", ticket, direction, OrderLots(), px, sl, tp, thresholdReason, 0.0, "stop_or_freeze_level_not_clear");
+            continue;
+         }
          ResetLastError();
          if(OrderModify(ticket, entry, NormalizeDouble(entry, Digits), tp, 0, clrDodgerBlue))
          {
@@ -1889,8 +2240,10 @@ void _draw_dashboard()
    RefreshRates();
    _dash_label("STATE", 38, 112, StringFormat("Live BID %s / ASK %s | %s | %s",
               _fmt_price(Bid), _fmt_price(Ask), _direct_spread_status(spread), _direct_trade_window_status()), clrWhite, 8);
-   _dash_label("MODES", 38, 134, StringFormat("Modes: Atomic=%s | AtomicRegime=%s | ProTrade=%s | Regime shift=%s | AtomicBE=TP%d | RegimeBE=%.1fR",
-              (g_atomicModeEnabledRuntime ? "ON" : "OFF"), (g_atomicRegimeModeEnabledRuntime ? "ON" : "OFF"), (g_proTradePostEnabledRuntime ? "ON" : "OFF"), (g_regimeUseClosedBarRuntime ? "1" : "0"), g_directMt4HalfBeTpIndexRuntime, g_regimeDirectMt4HalfBeRRuntime), C'90,178,255', 8);
+   _dash_label("MODES", 38, 134, StringFormat("Modes: Atomic=%s | Regime=%s | ProTrade=%s | AutoLot=%s (%s %.2f ATR%d) | Regime shift=%s",
+              (g_atomicModeEnabledRuntime ? "ON" : "OFF"), (g_atomicRegimeModeEnabledRuntime ? "ON" : "OFF"), (g_proTradePostEnabledRuntime ? "ON" : "OFF"),
+              (InpDirectMt4AutoLotEnabled ? "ON" : "OFF"), InpDirectMt4AutoLotReferenceSymbol, InpDirectMt4AutoLotReferenceLot,
+              InpDirectMt4AutoLotDailyAtrPeriod, (g_regimeUseClosedBarRuntime ? "1" : "0")), C'90,178,255', 8);
    _dash_label("LAST_A", 38, 154, "Last Atomic: " + (g_lastObservedSignalDirection == "" ? "NONE" : g_lastObservedSignalDirection) + " | " + _fmt_time(g_lastObservedSignalTime), C'184,196,210', 8);
    _dash_label("LAST_R", 38, 172, "Last Regime: " + (g_lastRegimeObservedSignalDirection == "" ? "NONE" : g_lastRegimeObservedSignalDirection) + " | " + _fmt_time(g_lastRegimeObservedSignalTime), C'184,196,210', 8);
    double pct; string label; color fill;
@@ -2771,6 +3124,7 @@ int OnInit()
 {
    int poll = MathMax(1, InpPollSeconds);
    EventSetTimer(poll);
+   g_lastTickLocal = TimeLocal();
    g_directMt4EnabledRuntime = InpDirectMt4ExecutionEnabled;
    g_proTradePostEnabledRuntime = InpEnableProTradePost;
    g_atomicModeEnabledRuntime = InpEnableAtomicMode;
@@ -2805,6 +3159,11 @@ int OnInit()
       " atomicHalfTpIndex=", g_directMt4HalfBeTpIndexRuntime,
       " atomicFallbackHalfR=", DoubleToString(g_directMt4HalfBeRRuntime, 2),
       " regimeHalfR=", DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2),
+      " autoLot=", (InpDirectMt4AutoLotEnabled ? "true" : "false"),
+      " autoLotRef=", InpDirectMt4AutoLotReferenceSymbol,
+      " autoLotRefLot=", DoubleToString(InpDirectMt4AutoLotReferenceLot, 2),
+      " autoLotDailyAtrPeriod=", InpDirectMt4AutoLotDailyAtrPeriod,
+      " autoLotMax=", DoubleToString(InpDirectMt4AutoLotMax, 2),
       " regimeMinRiskPct=", DoubleToString(InpRegimeMinRiskPricePct, 5),
       " regimeMaxRiskPct=", DoubleToString(InpRegimeMaxRiskPricePct, 5),
       " regimeSlWiden=", (InpRegimeSlWidenEnabled ? "true" : "false"),
@@ -2854,6 +3213,7 @@ void OnTimer()
 
 void OnTick()
 {
+   g_lastTickLocal = TimeLocal();
    _manage_direct_mt4_positions();
    _draw_dashboard();
 }
