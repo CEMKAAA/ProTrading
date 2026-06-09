@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-08.2330-daily-atr-no-fixed-cap"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-09.0310-ftmo-risk-audit-hardened"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -35,10 +35,21 @@ input bool   InpDirectMt4ExecutionEnabled = true;
 input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
 input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizing is unavailable.
 input bool   InpDirectMt4AutoLotEnabled = true;
-input string InpDirectMt4AutoLotReferenceSymbol = "XAUUSDm";
-input double InpDirectMt4AutoLotReferenceLot = 0.10;
 input int    InpDirectMt4AutoLotDailyAtrPeriod = 14;
 input double InpDirectMt4AutoLotMax = 0.00; // 0=broker maximum only.
+input bool   InpAdvancedAccountRiskEnabled = false;
+input double InpAccountRiskPerTradePct = 1.00;
+input double InpAccountRiskDailyAtrExposurePct = 2.00;
+input double InpAccountRiskMaxPortfolioPct = 4.00;
+input double InpAccountRiskDailyLossLimitPct = 5.00;
+input double InpAccountRiskMaxDrawdownPct = 10.00;
+input double InpAccountRiskMaxMarginUsagePct = 40.00;
+input double InpAccountRiskInitialBalanceOverride = 0.00;
+input int    InpAccountRiskDayResetHourGmt = 0;
+input bool   InpAccountRiskLiquidateOnBreach = true;
+input double InpAccountRiskSafetyBufferPct = 95.00;
+input bool   InpAccountRiskBlockUnprotectedPositions = true;
+input bool   InpAccountRiskFailClosed = true;
 input int    InpDirectMt4Magic = 970201;
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
@@ -196,6 +207,8 @@ int      g_directMt4LastHistoryAuditTicket = 0;
 datetime g_directMt4LastPositionProbe = 0;
 string   g_directMt4LastPositionProbeHash = "";
 string   DASH_PREFIX = "SIGNATICS_BRIDGE_DASH_";
+uint     g_lastAccountRiskGuardMs = 0;
+double   g_accountRiskLockValue = 0.0;
 
 string _trim(string s){ StringTrimLeft(s); StringTrimRight(s); return s; }
 
@@ -360,7 +373,7 @@ bool _direct_close_reverse_positions(string direction)
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
          continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic || OrderType()!=targetType)
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber()) || OrderType()!=targetType)
          continue;
       if(!_direct_order_owned_by_instance(OrderTicket(),OrderComment(),true))
          continue;
@@ -413,13 +426,17 @@ void _direct_fill_fallback_levels(string direction,double entry,double &sl,doubl
 
 int _direct_lot_digits(double step)
 {
-   if(step>=1.0) return 0;
-   if(step>=0.1) return 1;
-   if(step>=0.01) return 2;
-   return 3;
+   int digits=0;
+   double scaled=step;
+   while(digits<8 && MathAbs(scaled-MathRound(scaled))>0.00000001)
+   {
+      scaled*=10.0;
+      digits++;
+   }
+   return digits;
 }
 
-double _direct_normalize_order_lot(double requestedLot)
+double _direct_normalize_order_lot(double requestedLot,bool requireHalfSplit=false)
 {
    double step=MarketInfo(Symbol(),MODE_LOTSTEP);
    double minLot=MarketInfo(Symbol(),MODE_MINLOT);
@@ -433,11 +450,18 @@ double _direct_normalize_order_lot(double requestedLot)
    double capped=MathMin(MathMax(requestedLot,minLot),configuredCap);
    double units=MathFloor((capped/step)+0.0000001);
    double minUnits=MathCeil((minLot/step)-0.0000001);
-   // Prefer an even number of broker volume steps so half-close is exactly 50/50.
-   if(((int)units%2)!=0 && units-1.0>=MathMax(2.0,minUnits))
-      units-=1.0;
+   if(requireHalfSplit)
+   {
+      double requiredUnits=MathMax(2.0,2.0*minUnits);
+      if(units<requiredUnits)
+         return 0.0;
+      if(((int)units%2)!=0)
+         units-=1.0;
+      if(units<requiredUnits)
+         return 0.0;
+   }
    double lot=NormalizeDouble(units*step,_direct_lot_digits(step));
-   if(lot<minLot)
+   if(!requireHalfSplit && lot<minLot)
       lot=NormalizeDouble(minLot,_direct_lot_digits(step));
    return lot;
 }
@@ -449,83 +473,402 @@ double _direct_closed_daily_atr(string symbol,int period)
    return (MathIsValidNumber(atr) && atr>0.0)?atr:0.0;
 }
 
-bool _direct_reference_daily_money(double &targetMoney,double &referenceAtr,string &detail)
+string _account_risk_key(string kind)
 {
-   string ref=_trim(InpDirectMt4AutoLotReferenceSymbol);
-   if(ref=="")
-   {
-      detail="auto_lot_fallback=empty_reference";
-      return false;
-   }
-   SymbolSelect(ref,true);
-   double tickSize=MarketInfo(ref,MODE_TICKSIZE);
-   double tickValue=MarketInfo(ref,MODE_TICKVALUE);
-   double refLot=MathMax(0.0,InpDirectMt4AutoLotReferenceLot);
-   referenceAtr=_direct_closed_daily_atr(ref,InpDirectMt4AutoLotDailyAtrPeriod);
-   if(referenceAtr<=0.0 || tickSize<=0.0 || tickValue<=0.0 || refLot<=0.0)
-   {
-      detail="auto_lot_fallback=invalid_reference_market_data"
-         +" ref="+ref
-         +" daily_atr="+DoubleToString(referenceAtr,5)
-         +" tick_size="+DoubleToString(tickSize,8)
-         +" tick_value="+DoubleToString(tickValue,5);
-      return false;
-   }
-   targetMoney=(referenceAtr/tickSize)*tickValue*refLot;
-   detail="auto_lot_ref="+ref
-      +" ref_lot="+DoubleToString(refLot,2)
-      +" atr_d1_period="+IntegerToString(MathMax(2,InpDirectMt4AutoLotDailyAtrPeriod))
-      +" ref_daily_atr="+DoubleToString(referenceAtr,5)
-      +" target_daily_money="+DoubleToString(targetMoney,2);
-   return targetMoney>0.0;
+   return "PTS_FTMO_RISK_"+IntegerToString(AccountNumber())+"_"+kind;
 }
 
-double _direct_resolve_order_lot(double entry,double sl,string &detail)
+bool _account_risk_magic_scoped(int magic)
 {
-   double fallbackLot=_direct_normalize_order_lot(g_directMt4LotRuntime);
-   if(!InpDirectMt4AutoLotEnabled)
+   return magic>=1000000000 && magic<2000000000;
+}
+
+int _direct_magic()
+{
+   if(!InpAdvancedAccountRiskEnabled)
+      return InpDirectMt4Magic;
+   long baseMagic=InpDirectMt4Magic;
+   if(baseMagic<0)
+      baseMagic=-baseMagic;
+   baseMagic%=1000000000;
+   return (int)(1000000000+baseMagic);
+}
+
+int _direct_ftmo_magic()
+{
+   long baseMagic=InpDirectMt4Magic;
+   if(baseMagic<0)
+      baseMagic=-baseMagic;
+   baseMagic%=1000000000;
+   return (int)(1000000000+baseMagic);
+}
+
+bool _direct_magic_owned(int magic)
+{
+   return magic==InpDirectMt4Magic || magic==_direct_ftmo_magic();
+}
+
+datetime _account_risk_gmt_day_start()
+{
+   datetime now=TimeGMT();
+   int resetHour=MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt));
+   datetime shifted=now-resetHour*3600;
+   return shifted-(shifted%86400)+resetHour*3600;
+}
+
+datetime _account_risk_start_gmt()
+{
+   string key=_account_risk_key("START_GMT");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key,(double)TimeGMT());
+   return (datetime)GlobalVariableGet(key);
+}
+
+void _account_risk_cache_invalidate()
+{
+   int resetHour=MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt));
+   GlobalVariableSet(_account_risk_key("METRICS_TS_H"+IntegerToString(resetHour)),0.0);
+}
+
+void _account_risk_scope_performance(double &closedAll,double &closedToday,double &floating)
+{
+   int resetHour=MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt));
+   string cacheSuffix="_H"+IntegerToString(resetHour);
+   string cacheTsKey=_account_risk_key("METRICS_TS"+cacheSuffix);
+   string closedAllKey=_account_risk_key("CLOSED_ALL"+cacheSuffix);
+   string closedTodayKey=_account_risk_key("CLOSED_TODAY"+cacheSuffix);
+   string floatingKey=_account_risk_key("FLOATING"+cacheSuffix);
+   double nowLocal=(double)TimeLocal();
+   if(GlobalVariableCheck(cacheTsKey)
+      && nowLocal-GlobalVariableGet(cacheTsKey)<1.0
+      && GlobalVariableCheck(closedAllKey)
+      && GlobalVariableCheck(closedTodayKey)
+      && GlobalVariableCheck(floatingKey))
    {
-      detail="auto_lot=off fallback_lot="+DoubleToString(fallbackLot,3);
+      closedAll=GlobalVariableGet(closedAllKey);
+      closedToday=GlobalVariableGet(closedTodayKey);
+      floating=GlobalVariableGet(floatingKey);
+      return;
+   }
+   closedAll=0.0;
+   closedToday=0.0;
+   floating=0.0;
+   datetime dayStartGmt=_account_risk_gmt_day_start();
+   datetime startGmt=_account_risk_start_gmt();
+   datetime serverNow=TimeCurrent();
+   datetime gmtNow=TimeGMT();
+   datetime dayStartServer=dayStartGmt+(serverNow-gmtNow);
+   datetime startServer=startGmt+(serverNow-gmtNow);
+   datetime historyStartServer=MathMax(dayStartServer,startServer);
+   for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_HISTORY))
+         continue;
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
+         continue;
+      if(!_account_risk_magic_scoped(OrderMagicNumber()))
+         continue;
+      if(OrderCloseTime()<startServer)
+         continue;
+      double pnl=OrderProfit()+OrderSwap()+OrderCommission();
+      closedAll+=pnl;
+      if(OrderCloseTime()>=historyStartServer)
+         closedToday+=pnl;
+   }
+   for(int j=OrdersTotal()-1;j>=0;j--)
+   {
+      if(!OrderSelect(j,SELECT_BY_POS,MODE_TRADES))
+         continue;
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
+         continue;
+      if(!_account_risk_magic_scoped(OrderMagicNumber()))
+         continue;
+      floating+=OrderProfit()+OrderSwap()+OrderCommission();
+   }
+   GlobalVariableSet(closedAllKey,closedAll);
+   GlobalVariableSet(closedTodayKey,closedToday);
+   GlobalVariableSet(floatingKey,floating);
+   GlobalVariableSet(cacheTsKey,nowLocal);
+}
+
+void _account_risk_metrics(double &riskCapital,double &dailyLossPct,double &totalDdPct)
+{
+   double initial=_account_risk_initial_balance();
+   double closedAll,closedToday,floating;
+   _account_risk_scope_performance(closedAll,closedToday,floating);
+   double scopeEquity=MathMax(0.01,initial+closedAll+floating);
+   int resetHour=MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt));
+   datetime dayStartGmt=_account_risk_gmt_day_start();
+   string suffix="_H"+IntegerToString(resetHour);
+   string dayKey=_account_risk_key("DAY_SCOPE_"+IntegerToString((int)dayStartGmt)+suffix);
+   string lastEquityKey=_account_risk_key("LAST_SCOPE_EQUITY"+suffix);
+   string lastEquityTimeKey=_account_risk_key("LAST_SCOPE_EQUITY_GMT"+suffix);
+   if(!GlobalVariableCheck(dayKey))
+   {
+      double reconstructed=MathMax(0.01,initial+closedAll-closedToday);
+      if(GlobalVariableCheck(lastEquityKey) && GlobalVariableCheck(lastEquityTimeKey))
+      {
+         datetime previousGmt=(datetime)GlobalVariableGet(lastEquityTimeKey);
+         if(previousGmt<=dayStartGmt && dayStartGmt-previousGmt<=300)
+            reconstructed=MathMax(0.01,GlobalVariableGet(lastEquityKey));
+      }
+      GlobalVariableSet(dayKey,reconstructed);
+   }
+   double dayStartScope=MathMax(0.01,GlobalVariableGet(dayKey));
+   GlobalVariableSet(lastEquityKey,scopeEquity);
+   GlobalVariableSet(lastEquityTimeKey,(double)TimeGMT());
+   riskCapital=MathMax(0.01,MathMin(AccountEquity(),scopeEquity));
+   dailyLossPct=MathMax(0.0,(dayStartScope-scopeEquity)/dayStartScope*100.0);
+   totalDdPct=MathMax(0.0,-(closedAll+floating)/initial*100.0);
+}
+
+double _account_risk_initial_balance()
+{
+   if(InpAccountRiskInitialBalanceOverride>0.0)
+      return InpAccountRiskInitialBalanceOverride;
+   string key=_account_risk_key("INITIAL_BALANCE");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key,MathMax(0.01,AccountBalance()));
+   return MathMax(0.01,GlobalVariableGet(key));
+}
+
+bool _account_open_risk(double &riskMoney,int &unprotectedCount)
+{
+   riskMoney=0.0;
+   unprotectedCount=0;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+         continue;
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
+         continue;
+      if(!_account_risk_magic_scoped(OrderMagicNumber()))
+         continue;
+      double sl=OrderStopLoss();
+      if(sl<=0.0)
+      {
+         unprotectedCount++;
+         continue;
+      }
+      double adverseDistance=(OrderType()==OP_BUY)
+         ?MathMax(0.0,OrderOpenPrice()-sl)
+         :MathMax(0.0,sl-OrderOpenPrice());
+      if(adverseDistance<=0.0)
+         continue;
+      double tickSize=MarketInfo(OrderSymbol(),MODE_TICKSIZE);
+      double tickValue=MarketInfo(OrderSymbol(),MODE_TICKVALUE);
+      if(tickSize<=0.0 || tickValue<=0.0)
+      {
+         unprotectedCount++;
+         continue;
+      }
+      riskMoney+=(adverseDistance/tickSize)*tickValue*OrderLots();
+   }
+   return true;
+}
+
+bool _account_risk_lock_acquire()
+{
+   string key=_account_risk_key("LOCK");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key,0.0);
+   for(int i=0;i<50;i++)
+   {
+      double observed=GlobalVariableGet(key);
+      double now=(double)TimeLocal();
+      double leaseUntil=MathFloor(observed);
+      if(leaseUntil<=now)
+      {
+         long chartPart=ChartID()%100000;
+         double tokenFraction=(double)(chartPart*10+(GetTickCount()%10)+1)/1000001.0;
+         double candidate=MathFloor(now+30.0)+tokenFraction;
+         if(GlobalVariableSetOnCondition(key,candidate,observed))
+         {
+            g_accountRiskLockValue=candidate;
+            return true;
+         }
+      }
+      Sleep(5);
+   }
+   return false;
+}
+
+void _account_risk_lock_release()
+{
+   if(g_accountRiskLockValue>0.0)
+      GlobalVariableSetOnCondition(_account_risk_key("LOCK"),0.0,g_accountRiskLockValue);
+   g_accountRiskLockValue=0.0;
+}
+
+void _account_risk_enforce_breach()
+{
+   if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskLiquidateOnBreach)
+      return;
+   uint guardNow=GetTickCount();
+   if(guardNow-g_lastAccountRiskGuardMs<100)
+      return;
+   g_lastAccountRiskGuardMs=guardNow;
+   double riskCapital,dailyPct,totalPct;
+   _account_risk_metrics(riskCapital,dailyPct,totalPct);
+   double safety=MathMax(1.0,MathMin(100.0,InpAccountRiskSafetyBufferPct))/100.0;
+   bool breached=(InpAccountRiskDailyLossLimitPct>0.0 && dailyPct>=InpAccountRiskDailyLossLimitPct*safety)
+      || (InpAccountRiskMaxDrawdownPct>0.0 && totalPct>=InpAccountRiskMaxDrawdownPct*safety);
+   if(!breached)
+      return;
+   string attemptKey=_account_risk_key("BREACH_ATTEMPT");
+   double now=(double)TimeLocal();
+   if(GlobalVariableCheck(attemptKey) && now-GlobalVariableGet(attemptKey)<2.0)
+      return;
+   GlobalVariableSet(attemptKey,now);
+   if(!_account_risk_lock_acquire())
+      return;
+   _account_risk_cache_invalidate();
+   _account_risk_metrics(riskCapital,dailyPct,totalPct);
+   breached=(InpAccountRiskDailyLossLimitPct>0.0 && dailyPct>=InpAccountRiskDailyLossLimitPct*safety)
+      || (InpAccountRiskMaxDrawdownPct>0.0 && totalPct>=InpAccountRiskMaxDrawdownPct*safety);
+   if(!breached)
+   {
+      _account_risk_lock_release();
+      return;
+   }
+   Print("SIGNATICSBridge ACCOUNT RISK LIQUIDATION daily_loss_pct=",DoubleToString(dailyPct,3),
+      " total_dd_pct=",DoubleToString(totalPct,3)," safety_pct=",DoubleToString(InpAccountRiskSafetyBufferPct,1));
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+         continue;
+      if(!_account_risk_magic_scoped(OrderMagicNumber()))
+         continue;
+      int type=OrderType();
+      bool ok=false;
+      if(type==OP_BUY || type==OP_SELL)
+      {
+         RefreshRates();
+         double px=MarketInfo(OrderSymbol(),type==OP_BUY?MODE_BID:MODE_ASK);
+         ok=OrderClose(OrderTicket(),OrderLots(),px,InpDirectMt4Slippage,clrRed);
+      }
+      else
+         ok=OrderDelete(OrderTicket(),clrRed);
+      if(!ok)
+         Print("SIGNATICSBridge account risk liquidation failed ticket=",OrderTicket()," err=",GetLastError());
+   }
+   _account_risk_cache_invalidate();
+   _account_risk_lock_release();
+}
+
+double _direct_resolve_order_lot(double entry,double sl,int orderType,bool requireHalfSplit,string &detail)
+{
+   double fallbackLot=_direct_normalize_order_lot(g_directMt4LotRuntime,requireHalfSplit);
+   if(!InpAdvancedAccountRiskEnabled)
+   {
+      detail="advanced_account_risk=off manual_lot="+DoubleToString(fallbackLot,3);
       return fallbackLot;
+   }
+   bool autoLotEnabled=InpDirectMt4AutoLotEnabled;
+   double equity,dailyLossPct,totalDdPct;
+   _account_risk_metrics(equity,dailyLossPct,totalDdPct);
+   double marginUsagePct=(equity>0.0?AccountMargin()/equity*100.0:100.0);
+   double safety=MathMax(1.0,MathMin(100.0,InpAccountRiskSafetyBufferPct))/100.0;
+   if(equity<=0.0
+      || (InpAccountRiskDailyLossLimitPct>0.0 && dailyLossPct>=InpAccountRiskDailyLossLimitPct*safety)
+      || (InpAccountRiskMaxDrawdownPct>0.0 && totalDdPct>=InpAccountRiskMaxDrawdownPct*safety)
+      || (InpAccountRiskMaxMarginUsagePct>0.0 && marginUsagePct>=InpAccountRiskMaxMarginUsagePct))
+   {
+      detail="account_risk_block"
+         +" equity="+DoubleToString(equity,2)
+         +" daily_loss_pct="+DoubleToString(dailyLossPct,3)
+         +" total_dd_pct="+DoubleToString(totalDdPct,3)
+         +" margin_usage_pct="+DoubleToString(marginUsagePct,3);
+      return 0.0;
    }
    double riskDistance=MathAbs(entry-sl);
    double tickSize=MarketInfo(Symbol(),MODE_TICKSIZE);
    double tickValue=MarketInfo(Symbol(),MODE_TICKVALUE);
-   double targetMoney=0.0;
-   double referenceAtr=0.0;
-   string refDetail="";
    double symbolAtr=_direct_closed_daily_atr(Symbol(),InpDirectMt4AutoLotDailyAtrPeriod);
-   if(symbolAtr<=0.0 || tickSize<=0.0 || tickValue<=0.0
-      || !_direct_reference_daily_money(targetMoney,referenceAtr,refDetail))
+   if(sl<=0.0 || riskDistance<=0.0 || symbolAtr<=0.0 || tickSize<=0.0 || tickValue<=0.0)
    {
-      detail="auto_lot=fallback fallback_lot="+DoubleToString(fallbackLot,3)
+      detail="auto_lot=invalid_inputs fallback_lot="+DoubleToString(fallbackLot,3)
          +" symbol_daily_atr="+DoubleToString(symbolAtr,Digits)
          +" risk_distance="+DoubleToString(riskDistance,Digits)
          +" tick_size="+DoubleToString(tickSize,8)
-         +" tick_value="+DoubleToString(tickValue,5)
-         +" "+refDetail;
-      return fallbackLot;
+         +" tick_value="+DoubleToString(tickValue,5);
+      return InpAccountRiskFailClosed?0.0:fallbackLot;
    }
    double dailyMoneyPerLot=(symbolAtr/tickSize)*tickValue;
-   if(dailyMoneyPerLot<=0.0)
+   double slMoneyPerLot=(riskDistance/tickSize)*tickValue;
+   if(dailyMoneyPerLot<=0.0 || slMoneyPerLot<=0.0)
    {
-      detail="auto_lot=fallback invalid_daily_money_per_lot fallback_lot="+DoubleToString(fallbackLot,3);
-      return fallbackLot;
+      detail="auto_lot=invalid_money_per_lot";
+      return InpAccountRiskFailClosed?0.0:fallbackLot;
    }
-   double adrLot=targetMoney/dailyMoneyPerLot;
-   double slMoneyPerLot=(riskDistance>0.0?(riskDistance/tickSize)*tickValue:0.0);
-   double slLimitedLot=(slMoneyPerLot>0.0?targetMoney/slMoneyPerLot:adrLot);
-   double rawLot=MathMin(adrLot,slLimitedLot);
-   double finalLot=_direct_normalize_order_lot(rawLot);
-   detail="auto_lot=on "+refDetail
+   double openRiskMoney=0.0;
+   int unprotectedCount=0;
+   _account_open_risk(openRiskMoney,unprotectedCount);
+   if(InpAccountRiskBlockUnprotectedPositions && unprotectedCount>0)
+   {
+      detail="account_risk_block unprotected_positions="+IntegerToString(unprotectedCount);
+      return 0.0;
+   }
+   double tradeRiskBudget=equity*MathMax(0.0,InpAccountRiskPerTradePct)/100.0;
+   double dailyAtrBudget=equity*MathMax(0.0,InpAccountRiskDailyAtrExposurePct)/100.0;
+   double portfolioBudget=equity*MathMax(0.0,InpAccountRiskMaxPortfolioPct)/100.0;
+   double availablePortfolioRisk=MathMax(0.0,portfolioBudget-openRiskMoney);
+   if(tradeRiskBudget<=0.0 || dailyAtrBudget<=0.0 || availablePortfolioRisk<=0.0)
+   {
+      detail="account_risk_block exhausted_budget"
+         +" open_risk="+DoubleToString(openRiskMoney,2)
+         +" portfolio_budget="+DoubleToString(portfolioBudget,2);
+      return 0.0;
+   }
+   double slLot=tradeRiskBudget/slMoneyPerLot;
+   double atrLot=dailyAtrBudget/dailyMoneyPerLot;
+   double portfolioLot=availablePortfolioRisk/slMoneyPerLot;
+   double rawLot=autoLotEnabled?MathMin(slLot,MathMin(atrLot,portfolioLot)):fallbackLot;
+   double finalLot=autoLotEnabled?_direct_normalize_order_lot(rawLot,requireHalfSplit):fallbackLot;
+   double projectedRisk=slMoneyPerLot*finalLot;
+   double projectedAtrExposure=dailyMoneyPerLot*finalLot;
+   if(finalLot<=0.0
+      || projectedRisk>tradeRiskBudget+0.01
+      || projectedRisk>availablePortfolioRisk+0.01
+      || projectedAtrExposure>dailyAtrBudget+0.01)
+   {
+      detail="account_risk_block volume_below_min_or_budget"
+         +" raw_lot="+DoubleToString(rawLot,4)
+         +" projected_risk="+DoubleToString(projectedRisk,2)
+         +" available_risk="+DoubleToString(availablePortfolioRisk,2)
+         +" projected_atr_exposure="+DoubleToString(projectedAtrExposure,2);
+      return 0.0;
+   }
+   ResetLastError();
+   double freeAfter=AccountFreeMarginCheck(Symbol(),orderType,finalLot);
+   double addedMargin=MathMax(0.0,AccountFreeMargin()-freeAfter);
+   double projectedMarginPct=(equity>0.0?(AccountMargin()+addedMargin)/equity*100.0:100.0);
+   if(freeAfter<=0.0
+      || (InpAccountRiskMaxMarginUsagePct>0.0 && projectedMarginPct>InpAccountRiskMaxMarginUsagePct))
+   {
+      detail="account_risk_block insufficient_margin lot="+DoubleToString(finalLot,3)
+         +" projected_margin_pct="+DoubleToString(projectedMarginPct,3)
+         +" err="+IntegerToString(GetLastError());
+      return 0.0;
+   }
+   detail=(autoLotEnabled?"auto_lot=account_risk":"auto_lot=off_risk_validated")
+      +" equity="+DoubleToString(equity,2)
+      +" risk_pct="+DoubleToString(InpAccountRiskPerTradePct,3)
+      +" atr_exposure_pct="+DoubleToString(InpAccountRiskDailyAtrExposurePct,3)
+      +" open_risk="+DoubleToString(openRiskMoney,2)
+      +" portfolio_budget="+DoubleToString(portfolioBudget,2)
       +" symbol_daily_atr="+DoubleToString(symbolAtr,Digits)
       +" daily_money_per_lot="+DoubleToString(dailyMoneyPerLot,2)
-      +" adr_lot="+DoubleToString(adrLot,4)
+      +" atr_lot="+DoubleToString(atrLot,4)
       +" risk_distance="+DoubleToString(riskDistance,Digits)
       +" sl_money_per_lot="+DoubleToString(slMoneyPerLot,2)
-      +" sl_limited_lot="+DoubleToString(slLimitedLot,4)
+      +" sl_lot="+DoubleToString(slLot,4)
+      +" portfolio_lot="+DoubleToString(portfolioLot,4)
       +" raw_lot="+DoubleToString(rawLot,4)
-      +" final_lot="+DoubleToString(finalLot,3);
+      +" final_lot="+DoubleToString(finalLot,3)
+      +" projected_risk="+DoubleToString(projectedRisk,2)
+      +" daily_loss_pct="+DoubleToString(dailyLossPct,3)
+      +" total_dd_pct="+DoubleToString(totalDdPct,3);
    return finalLot;
 }
 
@@ -580,36 +923,72 @@ bool _direct_mt4_execute(string eventId,string direction,double entry,double sl,
    double price=(type==OP_BUY)?Ask:Bid;
    double stopLoss=(_direct_price_ok(sl)?NormalizeDouble(sl,Digits):0.0);
    double takeProfit=(_direct_price_ok(tp)?NormalizeDouble(tp,Digits):0.0);
+   bool riskLockHeld=false;
+   if(InpAdvancedAccountRiskEnabled && !_account_risk_lock_acquire())
+   {
+      string lockDetail="account_risk_block lock_busy";
+      Print("SIGNATICSBridge direct_mt4 deferred by account risk lock event=",eventId);
+      _direct_audit_write("direct_skip_account_risk",source,eventId,0,dir,0.0,price,stopLoss,takeProfit,"risk_lock_busy",0.0,lockDetail);
+      return false;
+   }
+   riskLockHeld=InpAdvancedAccountRiskEnabled;
+   if(riskLockHeld)
+      _account_risk_cache_invalidate();
    string lotDetail="";
-   double lot=_direct_resolve_order_lot(price,stopLoss,lotDetail);
+   double lot=_direct_resolve_order_lot(price,stopLoss,type,g_directMt4HalfBeRRuntime>0.0,lotDetail);
+   if(lot<=0.0)
+   {
+      if(riskLockHeld)
+         _account_risk_lock_release();
+      g_lastDirectMt4EventId=eventId;
+      Print("SIGNATICSBridge direct_mt4 blocked by account risk engine event=",eventId," ",lotDetail);
+      _direct_audit_write("direct_signal_received",source,eventId,0,dir,0.0,auditEntry,sl,tp,"confirmed_signal",0.0,lotDetail);
+      _direct_audit_write("direct_skip_account_risk",source,eventId,0,dir,0.0,price,stopLoss,takeProfit,"account_risk_block",0.0,lotDetail);
+      return false;
+   }
    string comment="SIGNATICSBridgeMT4|"+source;
    ResetLastError();
-   int ticket=OrderSend(Symbol(),type,lot,NormalizeDouble(price,Digits),InpDirectMt4Slippage,stopLoss,takeProfit,comment,InpDirectMt4Magic,0,(type==OP_BUY?clrLime:clrTomato));
+   int ticket=OrderSend(Symbol(),type,lot,NormalizeDouble(price,Digits),InpDirectMt4Slippage,stopLoss,takeProfit,comment,_direct_magic(),0,(type==OP_BUY?clrLime:clrTomato));
+   if(ticket>0 && riskLockHeld)
+      _account_risk_cache_invalidate();
+   if(riskLockHeld)
+      _account_risk_lock_release();
    g_lastDirectMt4EventId=eventId;
    if(ticket>0)
    {
       g_lastDirectMt4Ticket=ticket;
-      double initialRisk=(stopLoss>0.0?MathAbs(price-stopLoss):0.0);
+      double fillPrice=price;
+      double actualSl=stopLoss;
+      double actualTp=takeProfit;
+      if(OrderSelect(ticket,SELECT_BY_TICKET,MODE_TRADES))
+      {
+         fillPrice=OrderOpenPrice();
+         actualSl=OrderStopLoss();
+         actualTp=OrderTakeProfit();
+      }
+      double initialRisk=(actualSl>0.0?MathAbs(fillPrice-actualSl):0.0);
       if(initialRisk>Point)
          _direct_state_set("IRISK",ticket,initialRisk);
       _direct_state_set("OWNER",ticket,_direct_owner_code());
       double halfTrigger=0.0;
       if(initialRisk>Point && g_directMt4HalfBeRRuntime>0.0)
-         halfTrigger=(dir=="BUY")?price+initialRisk*g_directMt4HalfBeRRuntime:price-initialRisk*g_directMt4HalfBeRRuntime;
+         halfTrigger=(dir=="BUY")?fillPrice+initialRisk*g_directMt4HalfBeRRuntime:fillPrice-initialRisk*g_directMt4HalfBeRRuntime;
       if(halfTrigger>0.0)
          _direct_state_set("HTP",ticket,NormalizeDouble(halfTrigger,Digits));
       string lifecycle="initial_risk="+DoubleToString(initialRisk,Digits)
          +" half_trigger="+_fmt_price(halfTrigger)
          +" half_r="+DoubleToString(g_directMt4HalfBeRRuntime,2)
          +" owner="+IntegerToString(_direct_owner_code())
+         +" requested_price="+_fmt_price(price)
+         +" actual_fill="+_fmt_price(fillPrice)
          +" "+lotDetail;
-      Print("SIGNATICSBridge direct_mt4 order_sent ticket=",ticket," dir=",dir," lot=",DoubleToString(lot,2)," price=",DoubleToString(price,Digits)," sl=",DoubleToString(stopLoss,Digits)," tp=",DoubleToString(takeProfit,Digits)," event=",eventId);
+      Print("SIGNATICSBridge direct_mt4 order_sent ticket=",ticket," dir=",dir," lot=",DoubleToString(lot,2)," price=",DoubleToString(fillPrice,Digits)," sl=",DoubleToString(actualSl,Digits)," tp=",DoubleToString(actualTp,Digits)," event=",eventId);
       _direct_audit_write("direct_signal_received",source,eventId,0,dir,lot,auditEntry,sl,tp,"confirmed_signal",0.0,"written_after_order_send_to_avoid_latency "+lifecycle);
-      _direct_audit_write("direct_order_sent",source,eventId,ticket,dir,lot,price,stopLoss,takeProfit,"order_send_ok",0.0,comment+" "+lifecycle);
-      bool triggerAtOrBeyondTp=(takeProfit>0.0 && halfTrigger>0.0)
-         && ((dir=="BUY" && halfTrigger>=takeProfit-Point) || (dir=="SELL" && halfTrigger<=takeProfit+Point));
+      _direct_audit_write("direct_order_sent",source,eventId,ticket,dir,lot,fillPrice,actualSl,actualTp,"order_send_ok",0.0,comment+" "+lifecycle);
+      bool triggerAtOrBeyondTp=(actualTp>0.0 && halfTrigger>0.0)
+         && ((dir=="BUY" && halfTrigger>=actualTp-Point) || (dir=="SELL" && halfTrigger<=actualTp+Point));
       if(triggerAtOrBeyondTp)
-         _direct_audit_write("direct_halfbe_config_conflict",source,eventId,ticket,dir,lot,price,stopLoss,takeProfit,"half_trigger_not_before_final_tp",0.0,lifecycle);
+         _direct_audit_write("direct_halfbe_config_conflict",source,eventId,ticket,dir,lot,fillPrice,actualSl,actualTp,"half_trigger_not_before_final_tp",0.0,lifecycle);
       return true;
    }
    int err=GetLastError();
@@ -630,7 +1009,7 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
 
    int ticket=g_lastDirectMt4Ticket;
    if(ticket<=0 || direction!=g_lastDirectMt4Direction || !OrderSelect(ticket,SELECT_BY_TICKET,MODE_TRADES)
-      || OrderCloseTime()>0 || OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic
+      || OrderCloseTime()>0 || OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber())
       || OrderType()!=wantedType || !_direct_order_owned_by_instance(OrderTicket(),OrderComment(),true))
    {
       _direct_audit_write("direct_level_update_no_position",source,"",0,direction,0.0,0.0,incomingSl,incomingTp,
@@ -646,6 +1025,7 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
    double chosenTp=currentTp;
    string slPolicy="unchanged";
    string tpPolicy="unchanged";
+   bool riskLockHeld=false;
 
    bool incomingSlValid=_direct_price_ok(incomingSl)
       && ((wantedType==OP_BUY && incomingSl<entry) || (wantedType==OP_SELL && incomingSl>entry));
@@ -655,8 +1035,56 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
       double incomingDist=MathAbs(entry-incomingSl);
       if(currentDist<0.0 || incomingDist>currentDist+Point)
       {
-         chosenSl=NormalizeDouble(incomingSl,Digits);
-         slPolicy="incoming_wider";
+         if(!InpAdvancedAccountRiskEnabled)
+         {
+            chosenSl=NormalizeDouble(incomingSl,Digits);
+            slPolicy="incoming_wider_risk_off";
+         }
+         else if(!_account_risk_lock_acquire())
+         {
+            slPolicy="incoming_wider_rejected_risk_lock_busy";
+            _direct_audit_write("direct_level_update_risk_blocked",source,"",ticket,direction,OrderLots(),entry,currentSl,currentTp,
+               "risk_lock_busy",0.0,"");
+         }
+         else
+         {
+            riskLockHeld=true;
+         _account_risk_cache_invalidate();
+         double tickSize=MarketInfo(Symbol(),MODE_TICKSIZE);
+         double tickValue=MarketInfo(Symbol(),MODE_TICKVALUE);
+         double candidateRisk=(tickSize>0.0 && tickValue>0.0)
+            ?(incomingDist/tickSize)*tickValue*OrderLots()
+            :-1.0;
+         double currentRisk=(currentDist>0.0 && tickSize>0.0 && tickValue>0.0)
+            ?(currentDist/tickSize)*tickValue*OrderLots()
+            :0.0;
+         double openRisk=0.0;
+         int unprotectedCount=0;
+         _account_open_risk(openRisk,unprotectedCount);
+         double equity,dailyLossPct,totalDdPct;
+         _account_risk_metrics(equity,dailyLossPct,totalDdPct);
+         double tradeBudget=equity*MathMax(0.0,InpAccountRiskPerTradePct)/100.0;
+         double portfolioBudget=equity*MathMax(0.0,InpAccountRiskMaxPortfolioPct)/100.0;
+         double projectedPortfolio=MathMax(0.0,openRisk-currentRisk)+MathMax(0.0,candidateRisk);
+         bool safe=(candidateRisk>=0.0
+            && candidateRisk<=tradeBudget+0.01
+            && projectedPortfolio<=portfolioBudget+0.01
+            && (!InpAccountRiskBlockUnprotectedPositions || unprotectedCount<=0));
+         if(safe)
+         {
+            chosenSl=NormalizeDouble(incomingSl,Digits);
+            slPolicy="incoming_wider_risk_checked";
+         }
+         else
+         {
+            slPolicy="incoming_wider_rejected_account_risk";
+            _direct_audit_write("direct_level_update_risk_blocked",source,"",ticket,direction,OrderLots(),entry,currentSl,currentTp,
+               "candidate_risk="+DoubleToString(candidateRisk,2)
+               +" trade_budget="+DoubleToString(tradeBudget,2)
+               +" projected_portfolio="+DoubleToString(projectedPortfolio,2)
+               +" portfolio_budget="+DoubleToString(portfolioBudget,2),0.0,"");
+         }
+         }
       }
       else
          slPolicy="kept_existing_wider";
@@ -680,6 +1108,8 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
    {
       _direct_audit_write("direct_level_update_no_change",source,"",ticket,direction,OrderLots(),entry,currentSl,currentTp,
          "sl_policy="+slPolicy+" tp_policy="+tpPolicy,0.0,"");
+      if(riskLockHeld)
+         _account_risk_lock_release();
       return true;
    }
 
@@ -690,11 +1120,15 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
       _direct_audit_write("direct_level_update_failed",source,"",ticket,direction,OrderLots(),entry,chosenSl,chosenTp,
          "err="+IntegerToString(err)+" sl_policy="+slPolicy+" tp_policy="+tpPolicy,0.0,"");
       Print("SIGNATICSBridge direct level_update failed ticket=",ticket," err=",err);
+      if(riskLockHeld)
+         _account_risk_lock_release();
       return false;
    }
 
    if(slChanged)
    {
+      if(riskLockHeld)
+         _account_risk_cache_invalidate();
       double risk=MathAbs(entry-chosenSl);
       if(risk>Point)
       {
@@ -713,6 +1147,8 @@ bool _direct_mt4_apply_level_update(string direction,double incomingSl,double in
    Print("SIGNATICSBridge direct level_update applied ticket=",ticket,
       " sl=",DoubleToString(chosenSl,Digits)," tp=",DoubleToString(chosenTp,Digits),
       " sl_policy=",slPolicy," tp_policy=",tpPolicy);
+   if(riskLockHeld)
+      _account_risk_lock_release();
    return true;
 }
 
@@ -822,7 +1258,7 @@ bool _direct_open_progress(double &pct,string &label,color &fill)
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic) continue;
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber())) continue;
       if(OrderType()!=OP_BUY && OrderType()!=OP_SELL) continue;
       if(!_direct_order_owned_by_instance(OrderTicket(),OrderComment(),true)) continue;
       double sl=OrderStopLoss(), tp=OrderTakeProfit();
@@ -851,7 +1287,7 @@ void _manage_direct_mt4_positions()
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic) continue;
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber())) continue;
       if(OrderType()!=OP_BUY && OrderType()!=OP_SELL) continue;
       double entry=OrderOpenPrice(), sl=OrderStopLoss(), tp=OrderTakeProfit();
       if(sl<=0.0 || tp<=0.0) continue;
@@ -1034,10 +1470,9 @@ void _draw_dashboard()
    RefreshRates();
    _dash_label("STATE",38,92,StringFormat("Live BID %s / ASK %s | %s | %s",DoubleToString(Bid,Digits),DoubleToString(Ask,Digits),_direct_spread_status(spread),_direct_trade_window_status()),clrWhite,8);
    _dash_label("LAST_SIG",38,116,"Last SIGNATICS signal: "+(g_lastObservedSignalDirection==""?"NONE":g_lastObservedSignalDirection)+" | "+_fmt_time(g_lastObservedSignalTime)+" | value "+_fmt_price(g_lastObservedSignalValue),C'90,178,255',8);
-   _dash_label("MODE_STATE",38,138,StringFormat("Mode %s | ProTrade=%s | Direct=%s | AutoLot=%s (%s %.2f ATR%d)",
+   _dash_label("MODE_STATE",38,138,StringFormat("Mode %s | ProTrade=%s | Direct=%s | FTMO Risk=%s %.2f%% / %.2f%%",
       _bridge_signal_mode(),(g_proTradePostEnabledRuntime?"ON":"OFF"),(g_directMt4EnabledRuntime?"ON":"OFF"),
-      (InpDirectMt4AutoLotEnabled?"ON":"OFF"),InpDirectMt4AutoLotReferenceSymbol,InpDirectMt4AutoLotReferenceLot,
-      InpDirectMt4AutoLotDailyAtrPeriod),C'184,196,210',8);
+      (InpAdvancedAccountRiskEnabled?"ON":"OFF"),InpAccountRiskPerTradePct,InpAccountRiskMaxPortfolioPct),C'184,196,210',8);
    double pct; string label; color fill;
    if(_direct_open_progress(pct,label,fill))
       _dash_progress("TRADE",38,184,590,24,pct,label,fill);
@@ -1113,7 +1548,10 @@ string _direct_audit_file_name()
 
 string _direct_audit_gv_key(string kind,int ticket)
 {
-   return "SIGNATICSBridgeMT4|"+Symbol()+"|"+IntegerToString(InpDirectMt4Magic)+"|"+kind+"|"+IntegerToString(ticket);
+   int magic=_direct_magic();
+   if(ticket>0 && OrderSelect(ticket,SELECT_BY_TICKET))
+      magic=OrderMagicNumber();
+   return "SIGNATICSBridgeMT4|"+Symbol()+"|"+IntegerToString(magic)+"|"+kind+"|"+IntegerToString(ticket);
 }
 
 bool _direct_audit_marked(string kind,int ticket)
@@ -1257,7 +1695,7 @@ void _direct_position_probe_scan()
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
          continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic)
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber()))
          continue;
       if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
          continue;
@@ -1311,7 +1749,7 @@ double _direct_lot_down(double lots)
    if(minLot<=0.0)
       minLot=0.01;
    double units=MathFloor((lots/step)+0.0000001);
-   double out=NormalizeDouble(units*step,2);
+   double out=NormalizeDouble(units*step,_direct_lot_digits(step));
    if(out<minLot)
       return 0.0;
    return out;
@@ -1327,7 +1765,7 @@ int _direct_find_remainder_ticket(int oldTicket,int orderType,double entry,strin
          continue;
       if(OrderTicket()==oldTicket)
          return oldTicket;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic || OrderType()!=orderType)
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber()) || OrderType()!=orderType)
          continue;
       if(!_direct_order_owned_by_instance(OrderTicket(),OrderComment(),false))
          continue;
@@ -1365,7 +1803,7 @@ void _direct_history_cursor_init()
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_HISTORY))
          continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic)
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber()))
          continue;
       if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
          continue;
@@ -1425,7 +1863,7 @@ void _direct_history_audit_scan()
    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_HISTORY))
          continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=InpDirectMt4Magic)
+      if(OrderSymbol()!=Symbol() || !_direct_magic_owned(OrderMagicNumber()))
          continue;
       if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
          continue;
@@ -3437,7 +3875,8 @@ int OnInit()
    g_directMt4AllowedWindowsRuntime=_trim(InpDirectMt4AllowedTradeWindowsGmt);
    g_directMt4NoTradeWindowsRuntime=_trim(InpDirectMt4NoTradeWindowsGmt);
    _direct_history_cursor_init();
-   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," fastMaxAge=",InpFastSignalMaxAgeSeconds," recoveryLookback=",InpFastSignalRecoveryLookbackBars," retrySec=",InpFastSignalRetrySeconds," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," probe=",InpEnableFastBufferProbeAudit," probeSec=",InpFastBufferProbeIntervalSeconds," probeShift=",InpFastBufferProbeMaxShift," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds," autoLot=",InpDirectMt4AutoLotEnabled," autoLotRef=",InpDirectMt4AutoLotReferenceSymbol," autoLotRefLot=",DoubleToString(InpDirectMt4AutoLotReferenceLot,2)," autoLotDailyAtrPeriod=",InpDirectMt4AutoLotDailyAtrPeriod," autoLotMax=",DoubleToString(InpDirectMt4AutoLotMax,2));
+   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," fastMaxAge=",InpFastSignalMaxAgeSeconds," recoveryLookback=",InpFastSignalRecoveryLookbackBars," retrySec=",InpFastSignalRetrySeconds," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," probe=",InpEnableFastBufferProbeAudit," probeSec=",InpFastBufferProbeIntervalSeconds," probeShift=",InpFastBufferProbeMaxShift," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds);
+   Print("SIGNATICSBridge account_risk enabled=",InpAdvancedAccountRiskEnabled," effectiveMagic=",_direct_magic()," autoLot=",InpDirectMt4AutoLotEnabled," dailyAtrPeriod=",InpDirectMt4AutoLotDailyAtrPeriod," autoLotMax=",DoubleToString(InpDirectMt4AutoLotMax,2)," riskPerTradePct=",DoubleToString(InpAccountRiskPerTradePct,3)," atrExposurePct=",DoubleToString(InpAccountRiskDailyAtrExposurePct,3)," maxPortfolioPct=",DoubleToString(InpAccountRiskMaxPortfolioPct,3)," dailyLossLimitPct=",DoubleToString(InpAccountRiskDailyLossLimitPct,3)," maxDrawdownPct=",DoubleToString(InpAccountRiskMaxDrawdownPct,3)," maxMarginUsagePct=",DoubleToString(InpAccountRiskMaxMarginUsagePct,3)," initialBalanceOverride=",DoubleToString(InpAccountRiskInitialBalanceOverride,2)," dayResetHourGmt=",MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt)));
    Print("SIGNATICSBridge iCustom_sync=",InpSyncICustomInputsToChart,
       " isolateHiddenSmcObjects=",InpSuppressHiddenICustomSideEffects,
       " protectVisibleZones=",InpProtectVisibleSignaticsZones,
@@ -3474,6 +3913,7 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   _account_risk_enforce_breach();
    _manage_direct_mt4_positions();
    MaybeWriteFastBufferProbeAudit("timer",true);
    MaybePostRegisterHeartbeat("heartbeat");
@@ -3487,6 +3927,7 @@ void OnTimer()
 }
 void OnTick()
 {
+   _account_risk_enforce_breach();
    _manage_direct_mt4_positions();
    if(_fast_buffers_active() && InpScanFastBuffersOnTick)
       ScanFastBufferSignal("tick");

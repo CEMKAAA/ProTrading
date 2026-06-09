@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.10"
+#property version "1.24"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -100,6 +100,22 @@ input double InpTotalLot = 0.03;
 input NAS_EXECUTION_MODE InpExecutionMode = NAS_EXEC_PARTIAL_NO_BE;
 input double InpFixedLot = 0.03;
 input double InpFixedRR = 3.0;
+input bool   InpAdvancedLotEngineEnabled = true;
+input int    InpAdvancedLotDailyAtrPeriod = 14;
+input bool   InpAdvancedAccountRiskEnabled = false;
+input double InpAccountRiskPerTradePct = 1.00;
+input double InpAccountRiskDailyAtrExposurePct = 2.00;
+input double InpAccountRiskMaxPortfolioPct = 4.00;
+input double InpAccountRiskDailyLossLimitPct = 5.00;
+input double InpAccountRiskMaxDrawdownPct = 10.00;
+input double InpAccountRiskMaxMarginUsagePct = 40.00;
+input double InpAccountRiskInitialBalanceOverride = 0.00;
+input int    InpAccountRiskDayResetHourGmt = 0;
+input bool   InpAccountRiskLiquidateOnBreach = true;
+input double InpAccountRiskSafetyBufferPct = 95.00;
+input double InpAdvancedLotMax = 0.00; // 0=broker maximum only.
+input bool   InpAccountRiskBlockUnprotectedPositions = true;
+input bool   InpAccountRiskFailClosed = true;
 input int    InpDeviationPoints = 30;
 input bool   InpEnforceTpTouchClose = true; // Safety watchdog: close managed positions if live price touches broker TP.
 input double InpTpTouchCloseTolerancePoints = 2.0;
@@ -160,6 +176,10 @@ double   g_lastRiskSwingProminence = 0.0;
 int      g_lastRiskSwingAgeBars = -1;
 double   g_lastRiskPreWidenSl = 0.0;
 double   g_lastRiskWidenPct = 0.0;
+double   g_lastAdvancedLot = 0.0;
+string   g_lastAdvancedLotDetail = "";
+uint     g_lastAccountRiskGuardMs = 0;
+double   g_accountRiskLockValue = 0.0;
 
 string PREFIX = "NAS_SATS_NO_BE_EA_";
 uint     g_dashboardDoorStartMs = 0;
@@ -189,8 +209,37 @@ long RuntimeMagic()
       return g_runtimeMagic;
    ulong chartId = ChartID();
    long chartPart = (long)(chartId % 1000000);
-   g_runtimeMagic = InpMagic * 1000000 + chartPart;
+   if(InpAdvancedAccountRiskEnabled)
+   {
+      long safeInput = InpMagic % 1000000000000;
+      if(safeInput < 0)
+         safeInput = -safeInput;
+      long safeBase = safeInput * 1000000 + chartPart;
+      g_runtimeMagic = 4000000000000000000 + safeBase;
+   }
+   else
+      g_runtimeMagic = InpMagic * 1000000 + chartPart;
    return g_runtimeMagic;
+}
+
+long NormalRuntimeMagic()
+{
+   long chartPart = (long)(ChartID() % 1000000);
+   return InpMagic * 1000000 + chartPart;
+}
+
+long FtmoRuntimeMagic()
+{
+   long chartPart = (long)(ChartID() % 1000000);
+   long safeInput = InpMagic % 1000000000000;
+   if(safeInput < 0)
+      safeInput = -safeInput;
+   return 4000000000000000000 + safeInput * 1000000 + chartPart;
+}
+
+bool RuntimeMagicOwned(const long magic)
+{
+   return magic == NormalRuntimeMagic() || magic == FtmoRuntimeMagic();
 }
 
 int SignalBarsToCopy()
@@ -274,7 +323,7 @@ void HydrateExecutedDirectionFromOpenPosition()
          continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
-      if((long)PositionGetInteger(POSITION_MAGIC) != RuntimeMagic())
+      if(!RuntimeMagicOwned((long)PositionGetInteger(POSITION_MAGIC)))
          continue;
 
       long type = PositionGetInteger(POSITION_TYPE);
@@ -543,6 +592,13 @@ SATSSettings BuildRiskSettings()
 
 int OnInit()
 {
+   ENUM_ACCOUNT_MARGIN_MODE marginMode = (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   if(InpExecutionMode != NAS_EXEC_FIXED_1_TO_3R && marginMode != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      Print("NAS SATS initialization blocked: partial three-leg execution requires a hedging account. margin_mode=",
+            EnumToString(marginMode));
+      return INIT_PARAMETERS_INCORRECT;
+   }
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
@@ -574,6 +630,7 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   EnforceAccountRiskBreach();
    EnforceManagedTpTouchClose(false);
    if(!g_dashboardDoorFinished)
       UpdateDashboard();
@@ -581,6 +638,7 @@ void OnTimer()
 
 void OnTick()
 {
+   EnforceAccountRiskBreach();
    ManageOpenPositions();
    UpdateDashboard();
 
@@ -651,6 +709,18 @@ void PrintStartupDiagnostics()
          " volume_min=", DoubleToString(minLot, 8),
          " volume_max=", DoubleToString(maxLot, 8),
          " volume_step=", DoubleToString(step, 8));
+   Print("NAS SATS account risk enabled=", InpAdvancedAccountRiskEnabled,
+         " advanced_lot=", InpAdvancedLotEngineEnabled,
+         " scoped_magic=", RuntimeMagic(),
+         " risk_per_trade_pct=", DoubleToString(InpAccountRiskPerTradePct, 3),
+         " atr_exposure_pct=", DoubleToString(InpAccountRiskDailyAtrExposurePct, 3),
+         " max_portfolio_pct=", DoubleToString(InpAccountRiskMaxPortfolioPct, 3),
+         " daily_loss_limit_pct=", DoubleToString(InpAccountRiskDailyLossLimitPct, 3),
+         " max_drawdown_pct=", DoubleToString(InpAccountRiskMaxDrawdownPct, 3),
+         " max_margin_usage_pct=", DoubleToString(InpAccountRiskMaxMarginUsagePct, 3),
+         " day_reset_hour_gmt=", MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt)),
+         " d1_atr_period=", InpAdvancedLotDailyAtrPeriod,
+         " max_lot=", DoubleToString(InpAdvancedLotMax, 2));
 
    MqlRates rates[];
    int copied = LoadNasRates(rates, SignalBarsToCopy(), InpSignalBarMode == NAS_SIGNAL_BAR_LIVE);
@@ -1214,7 +1284,16 @@ void ProcessSignalBar()
    else
    {
       g_lastExecutionStatus = "BLOCKED";
-      g_lastExecutionBlockReason = "broker_order_open_failed";
+      if(g_lastExecutionBlockReason == "")
+         g_lastExecutionBlockReason = "broker_order_open_failed";
+      if(StringFind(g_lastExecutionBlockReason, "lock_busy") >= 0)
+      {
+         g_lastSignalTime = 0;
+         g_lastSignalKeyDirection = 0;
+         Print("NAS SATS EA signal deferred for account risk lock retry dir=",
+               (direction > 0 ? "BUY" : "SELL"),
+               " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS));
+      }
    }
 }
 
@@ -1409,6 +1488,442 @@ double NormalizeVolume(const double volume)
    return NormalizeDouble(v, 8);
 }
 
+string AccountRiskKey(const string kind)
+{
+   return "PTS_FTMO_RISK_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "_" + kind;
+}
+
+bool AccountRiskMagicScoped(const long magic)
+{
+   return magic >= 4000000000000000000 && magic < 5000000000000000000;
+}
+
+datetime AccountRiskGmtDayStart()
+{
+   datetime now = TimeGMT();
+   int resetHour = MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt));
+   datetime shifted = now - resetHour * 3600;
+   return shifted - (shifted % 86400) + resetHour * 3600;
+}
+
+datetime AccountRiskStartGmt()
+{
+   string key = AccountRiskKey("START_GMT");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, (double)TimeGMT());
+   return (datetime)GlobalVariableGet(key);
+}
+
+void AccountRiskCacheInvalidate()
+{
+   int resetHour = MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt));
+   GlobalVariableSet(AccountRiskKey("METRICS_TS_H" + IntegerToString(resetHour)), 0.0);
+}
+
+double AccountRiskInitialBalance()
+{
+   if(InpAccountRiskInitialBalanceOverride > 0.0)
+      return InpAccountRiskInitialBalanceOverride;
+   string key = AccountRiskKey("INITIAL_BALANCE");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, MathMax(0.01, AccountInfoDouble(ACCOUNT_BALANCE)));
+   return MathMax(0.01, GlobalVariableGet(key));
+}
+
+void AccountRiskScopePerformance(double &closedAll, double &closedToday, double &floating)
+{
+   int resetHour = MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt));
+   string cacheSuffix = "_H" + IntegerToString(resetHour);
+   string cacheTsKey = AccountRiskKey("METRICS_TS" + cacheSuffix);
+   string closedAllKey = AccountRiskKey("CLOSED_ALL" + cacheSuffix);
+   string closedTodayKey = AccountRiskKey("CLOSED_TODAY" + cacheSuffix);
+   string floatingKey = AccountRiskKey("FLOATING" + cacheSuffix);
+   double nowLocal = (double)TimeLocal();
+   if(GlobalVariableCheck(cacheTsKey)
+      && nowLocal - GlobalVariableGet(cacheTsKey) < 1.0
+      && GlobalVariableCheck(closedAllKey)
+      && GlobalVariableCheck(closedTodayKey)
+      && GlobalVariableCheck(floatingKey))
+   {
+      closedAll = GlobalVariableGet(closedAllKey);
+      closedToday = GlobalVariableGet(closedTodayKey);
+      floating = GlobalVariableGet(floatingKey);
+      return;
+   }
+   closedAll = 0.0;
+   closedToday = 0.0;
+   floating = 0.0;
+   datetime dayStartGmt = AccountRiskGmtDayStart();
+   datetime startGmt = AccountRiskStartGmt();
+   datetime serverNow = TimeTradeServer();
+   datetime gmtNow = TimeGMT();
+   datetime dayStartServer = dayStartGmt + (serverNow - gmtNow);
+   datetime startServer = startGmt + (serverNow - gmtNow);
+   datetime historyStartServer = MathMax(dayStartServer, startServer);
+   if(HistorySelect(startServer, serverNow))
+   {
+      int deals = HistoryDealsTotal();
+      for(int i = 0; i < deals; i++)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0)
+            continue;
+         ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+         if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+            continue;
+         if(!AccountRiskMagicScoped((long)HistoryDealGetInteger(ticket, DEAL_MAGIC)))
+            continue;
+         double pnl = HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                    + HistoryDealGetDouble(ticket, DEAL_SWAP)
+                    + HistoryDealGetDouble(ticket, DEAL_COMMISSION)
+                    + HistoryDealGetDouble(ticket, DEAL_FEE);
+         closedAll += pnl;
+         if((datetime)HistoryDealGetInteger(ticket, DEAL_TIME) >= historyStartServer)
+            closedToday += pnl;
+      }
+   }
+   for(int j = PositionsTotal() - 1; j >= 0; j--)
+   {
+      ulong ticket = PositionGetTicket(j);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!AccountRiskMagicScoped((long)PositionGetInteger(POSITION_MAGIC)))
+         continue;
+      floating += PositionGetDouble(POSITION_PROFIT)
+                + PositionGetDouble(POSITION_SWAP);
+   }
+   GlobalVariableSet(closedAllKey, closedAll);
+   GlobalVariableSet(closedTodayKey, closedToday);
+   GlobalVariableSet(floatingKey, floating);
+   GlobalVariableSet(cacheTsKey, nowLocal);
+}
+
+void AccountRiskMetrics(double &riskCapital, double &dailyLossPct, double &totalDdPct)
+{
+   double initial = AccountRiskInitialBalance();
+   double closedAll, closedToday, floating;
+   AccountRiskScopePerformance(closedAll, closedToday, floating);
+   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
+   int resetHour = MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt));
+   datetime dayStartGmt = AccountRiskGmtDayStart();
+   string suffix = "_H" + IntegerToString(resetHour);
+   string dayKey = AccountRiskKey("DAY_SCOPE_" + IntegerToString((int)dayStartGmt) + suffix);
+   string lastEquityKey = AccountRiskKey("LAST_SCOPE_EQUITY" + suffix);
+   string lastEquityTimeKey = AccountRiskKey("LAST_SCOPE_EQUITY_GMT" + suffix);
+   if(!GlobalVariableCheck(dayKey))
+   {
+      double reconstructed = MathMax(0.01, initial + closedAll - closedToday);
+      if(GlobalVariableCheck(lastEquityKey) && GlobalVariableCheck(lastEquityTimeKey))
+      {
+         datetime previousGmt = (datetime)GlobalVariableGet(lastEquityTimeKey);
+         if(previousGmt <= dayStartGmt && dayStartGmt - previousGmt <= 300)
+            reconstructed = MathMax(0.01, GlobalVariableGet(lastEquityKey));
+      }
+      GlobalVariableSet(dayKey, reconstructed);
+   }
+   double dayStartScope = MathMax(0.01, GlobalVariableGet(dayKey));
+   GlobalVariableSet(lastEquityKey, scopeEquity);
+   GlobalVariableSet(lastEquityTimeKey, (double)TimeGMT());
+   riskCapital = MathMax(0.01, MathMin(AccountInfoDouble(ACCOUNT_EQUITY), scopeEquity));
+   dailyLossPct = MathMax(0.0, (dayStartScope - scopeEquity) / dayStartScope * 100.0);
+   totalDdPct = MathMax(0.0, -(closedAll + floating) / initial * 100.0);
+}
+
+double ClosedDailyAtr(const string symbol, const int period)
+{
+   int handle = iATR(symbol, PERIOD_D1, MathMax(2, period));
+   if(handle == INVALID_HANDLE)
+      return 0.0;
+   double values[];
+   ArraySetAsSeries(values, true);
+   int copied = CopyBuffer(handle, 0, 1, 1, values);
+   IndicatorRelease(handle);
+   if(copied != 1 || !MathIsValidNumber(values[0]) || values[0] <= 0.0)
+      return 0.0;
+   return values[0];
+}
+
+bool AccountOpenRisk(double &riskMoney, int &unprotectedCount)
+{
+   riskMoney = 0.0;
+   unprotectedCount = 0;
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string symbol = PositionGetSymbol(i);
+      if(symbol == "")
+         continue;
+      if(!AccountRiskMagicScoped((long)PositionGetInteger(POSITION_MAGIC)))
+         continue;
+      double sl = PositionGetDouble(POSITION_SL);
+      if(sl <= 0.0)
+      {
+         unprotectedCount++;
+         continue;
+      }
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      bool exposed = (posType == POSITION_TYPE_BUY && sl < entry)
+                  || (posType == POSITION_TYPE_SELL && sl > entry);
+      if(!exposed)
+         continue;
+      ENUM_ORDER_TYPE orderType = posType == POSITION_TYPE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double result = 0.0;
+      if(!OrderCalcProfit(orderType, symbol, volume, entry, sl, result))
+      {
+         unprotectedCount++;
+         continue;
+      }
+      riskMoney += MathMax(0.0, -result);
+   }
+   return true;
+}
+
+bool AccountRiskLockAcquire()
+{
+   string key = AccountRiskKey("LOCK");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   for(int i = 0; i < 50; i++)
+   {
+      double observed = GlobalVariableGet(key);
+      double now = (double)TimeLocal();
+      double leaseUntil = MathFloor(observed);
+      if(leaseUntil <= now)
+      {
+         long chartPart = (long)(ChartID() % 100000);
+         double tokenFraction = (double)(chartPart * 10 + (GetTickCount() % 10) + 1) / 1000001.0;
+         double candidate = MathFloor(now + 30.0) + tokenFraction;
+         if(GlobalVariableSetOnCondition(key, candidate, observed))
+         {
+            g_accountRiskLockValue = candidate;
+            return true;
+         }
+      }
+      Sleep(5);
+   }
+   return false;
+}
+
+void AccountRiskLockRelease()
+{
+   if(g_accountRiskLockValue > 0.0)
+      GlobalVariableSetOnCondition(AccountRiskKey("LOCK"), 0.0, g_accountRiskLockValue);
+   g_accountRiskLockValue = 0.0;
+}
+
+void EnforceAccountRiskBreach()
+{
+   if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskLiquidateOnBreach)
+      return;
+   uint guardNow = GetTickCount();
+   if(guardNow - g_lastAccountRiskGuardMs < 100)
+      return;
+   g_lastAccountRiskGuardMs = guardNow;
+   double riskCapital, dailyPct, totalPct;
+   AccountRiskMetrics(riskCapital, dailyPct, totalPct);
+   double safety = MathMax(1.0, MathMin(100.0, InpAccountRiskSafetyBufferPct)) / 100.0;
+   bool breached = (InpAccountRiskDailyLossLimitPct > 0.0 && dailyPct >= InpAccountRiskDailyLossLimitPct * safety)
+      || (InpAccountRiskMaxDrawdownPct > 0.0 && totalPct >= InpAccountRiskMaxDrawdownPct * safety);
+   if(!breached)
+      return;
+   string attemptKey = AccountRiskKey("BREACH_ATTEMPT");
+   double now = (double)TimeLocal();
+   if(GlobalVariableCheck(attemptKey) && now - GlobalVariableGet(attemptKey) < 2.0)
+      return;
+   GlobalVariableSet(attemptKey, now);
+   if(!AccountRiskLockAcquire())
+      return;
+   AccountRiskCacheInvalidate();
+   AccountRiskMetrics(riskCapital, dailyPct, totalPct);
+   breached = (InpAccountRiskDailyLossLimitPct > 0.0 && dailyPct >= InpAccountRiskDailyLossLimitPct * safety)
+      || (InpAccountRiskMaxDrawdownPct > 0.0 && totalPct >= InpAccountRiskMaxDrawdownPct * safety);
+   if(!breached)
+   {
+      AccountRiskLockRelease();
+      return;
+   }
+   Print("NAS SATS ACCOUNT RISK LIQUIDATION daily_loss_pct=", DoubleToString(dailyPct, 3),
+         " total_dd_pct=", DoubleToString(totalPct, 3),
+         " safety_pct=", DoubleToString(InpAccountRiskSafetyBufferPct, 1));
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)
+         || !AccountRiskMagicScoped((long)PositionGetInteger(POSITION_MAGIC)))
+         continue;
+      if(!trade.PositionClose(ticket))
+         Print("NAS SATS account risk close failed ticket=", ticket,
+               " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+   }
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !OrderSelect(ticket)
+         || !AccountRiskMagicScoped((long)OrderGetInteger(ORDER_MAGIC)))
+         continue;
+      if(!trade.OrderDelete(ticket))
+         Print("NAS SATS account risk pending delete failed ticket=", ticket,
+               " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+   }
+   AccountRiskCacheInvalidate();
+   AccountRiskLockRelease();
+}
+
+double NormalizeRiskVolume(const double requested, const int divisor)
+{
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   double configuredMax = InpAdvancedLotMax > 0.0 ? MathMin(maxLot, InpAdvancedLotMax) : maxLot;
+   double capped = MathMin(requested, configuredMax);
+   if(capped < minLot)
+      return 0.0;
+   long units = (long)MathFloor(capped / step + 0.0000001);
+   int split = MathMax(1, divisor);
+   long minUnits = (long)MathCeil(minLot / step - 0.0000001);
+   long requiredUnits = minUnits * split;
+   if(units < requiredUnits)
+      return 0.0;
+   units -= units % split;
+   if(units < requiredUnits)
+      return 0.0;
+   double volume = NormalizeDouble((double)units * step, 8);
+   if(volume < minLot || volume > configuredMax)
+      return 0.0;
+   return volume;
+}
+
+double ResolveAdvancedVolume(const int direction, const double entry, const double sl, string &detail)
+{
+   double fallback = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? FixedVolume() : NormalizeVolume(g_totalLotRuntime > 0.0 ? g_totalLotRuntime : InpTotalLot);
+   int divisor = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 1 : 3;
+   if(!InpAdvancedAccountRiskEnabled)
+   {
+      double manualVolume = NormalizeRiskVolume(fallback, divisor);
+      detail = "advanced_account_risk=off manual_volume=" + DoubleToString(manualVolume, 4);
+      return manualVolume;
+   }
+   bool advancedLotEnabled = InpAdvancedLotEngineEnabled;
+
+   double equity, dailyLossPct, totalDdPct;
+   AccountRiskMetrics(equity, dailyLossPct, totalDdPct);
+   double marginUsagePct = equity > 0.0 ? AccountInfoDouble(ACCOUNT_MARGIN) / equity * 100.0 : 100.0;
+   double safety = MathMax(1.0, MathMin(100.0, InpAccountRiskSafetyBufferPct)) / 100.0;
+   if(equity <= 0.0
+      || (InpAccountRiskDailyLossLimitPct > 0.0 && dailyLossPct >= InpAccountRiskDailyLossLimitPct * safety)
+      || (InpAccountRiskMaxDrawdownPct > 0.0 && totalDdPct >= InpAccountRiskMaxDrawdownPct * safety)
+      || (InpAccountRiskMaxMarginUsagePct > 0.0 && marginUsagePct >= InpAccountRiskMaxMarginUsagePct))
+   {
+      detail = "account_risk_block equity=" + DoubleToString(equity, 2)
+         + " daily_loss_pct=" + DoubleToString(dailyLossPct, 3)
+         + " total_dd_pct=" + DoubleToString(totalDdPct, 3)
+         + " margin_usage_pct=" + DoubleToString(marginUsagePct, 3);
+      return 0.0;
+   }
+
+   double dailyAtr = ClosedDailyAtr(_Symbol, InpAdvancedLotDailyAtrPeriod);
+   if(sl <= 0.0 || MathAbs(entry - sl) <= 0.0 || dailyAtr <= 0.0)
+   {
+      detail = "advanced_lot_invalid_inputs atr=" + DoubleToString(dailyAtr, _Digits)
+         + " entry=" + DoubleToString(entry, _Digits)
+         + " sl=" + DoubleToString(sl, _Digits);
+      return InpAccountRiskFailClosed ? 0.0 : fallback;
+   }
+
+   ENUM_ORDER_TYPE orderType = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double slResult = 0.0;
+   double atrResult = 0.0;
+   double atrExit = direction > 0 ? entry - dailyAtr : entry + dailyAtr;
+   if(!OrderCalcProfit(orderType, _Symbol, 1.0, entry, sl, slResult)
+      || !OrderCalcProfit(orderType, _Symbol, 1.0, entry, atrExit, atrResult))
+   {
+      detail = "advanced_lot_profit_calc_failed err=" + IntegerToString(GetLastError());
+      return InpAccountRiskFailClosed ? 0.0 : fallback;
+   }
+   double slMoneyPerLot = MathAbs(slResult);
+   double atrMoneyPerLot = MathAbs(atrResult);
+   if(slMoneyPerLot <= 0.0 || atrMoneyPerLot <= 0.0)
+   {
+      detail = "advanced_lot_invalid_money_per_lot";
+      return InpAccountRiskFailClosed ? 0.0 : fallback;
+   }
+
+   double openRisk = 0.0;
+   int unprotectedCount = 0;
+   AccountOpenRisk(openRisk, unprotectedCount);
+   if(InpAccountRiskBlockUnprotectedPositions && unprotectedCount > 0)
+   {
+      detail = "account_risk_block unprotected_positions=" + IntegerToString(unprotectedCount);
+      return 0.0;
+   }
+
+   double tradeBudget = equity * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
+   double atrBudget = equity * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
+   double portfolioBudget = equity * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
+   double availablePortfolio = MathMax(0.0, portfolioBudget - openRisk);
+   if(tradeBudget <= 0.0 || atrBudget <= 0.0 || availablePortfolio <= 0.0)
+   {
+      detail = "account_risk_block exhausted_budget open_risk=" + DoubleToString(openRisk, 2)
+         + " portfolio_budget=" + DoubleToString(portfolioBudget, 2);
+      return 0.0;
+   }
+
+   double slVolume = tradeBudget / slMoneyPerLot;
+   double atrVolume = atrBudget / atrMoneyPerLot;
+   double portfolioVolume = availablePortfolio / slMoneyPerLot;
+   double rawVolume = advancedLotEnabled ? MathMin(slVolume, MathMin(atrVolume, portfolioVolume)) : fallback;
+   double volume = advancedLotEnabled ? NormalizeRiskVolume(rawVolume, divisor) : NormalizeRiskVolume(fallback, divisor);
+   double projectedRisk = slMoneyPerLot * volume;
+   double projectedAtr = atrMoneyPerLot * volume;
+   if(volume <= 0.0
+      || projectedRisk > tradeBudget + 0.01
+      || projectedRisk > availablePortfolio + 0.01
+      || projectedAtr > atrBudget + 0.01)
+   {
+      detail = "account_risk_block volume_below_min_or_budget raw=" + DoubleToString(rawVolume, 4)
+         + " projected_risk=" + DoubleToString(projectedRisk, 2)
+         + " projected_atr=" + DoubleToString(projectedAtr, 2);
+      return 0.0;
+   }
+
+   double requiredMargin = 0.0;
+   bool marginCalculated = OrderCalcMargin(orderType, _Symbol, volume, entry, requiredMargin);
+   double projectedMarginPct = equity > 0.0
+      ? (AccountInfoDouble(ACCOUNT_MARGIN) + requiredMargin) / equity * 100.0
+      : 100.0;
+   if(!marginCalculated
+      || requiredMargin > AccountInfoDouble(ACCOUNT_MARGIN_FREE)
+      || (InpAccountRiskMaxMarginUsagePct > 0.0 && projectedMarginPct > InpAccountRiskMaxMarginUsagePct))
+   {
+      detail = "account_risk_block insufficient_margin volume=" + DoubleToString(volume, 4)
+         + " required=" + DoubleToString(requiredMargin, 2)
+         + " projected_margin_pct=" + DoubleToString(projectedMarginPct, 3);
+      return 0.0;
+   }
+
+   detail = (advancedLotEnabled ? "advanced_lot=account_risk" : "advanced_lot=off_risk_validated")
+      + " equity=" + DoubleToString(equity, 2)
+      + " daily_atr=" + DoubleToString(dailyAtr, _Digits)
+      + " sl_money_per_lot=" + DoubleToString(slMoneyPerLot, 2)
+      + " atr_money_per_lot=" + DoubleToString(atrMoneyPerLot, 2)
+      + " open_risk=" + DoubleToString(openRisk, 2)
+      + " trade_budget=" + DoubleToString(tradeBudget, 2)
+      + " atr_budget=" + DoubleToString(atrBudget, 2)
+      + " portfolio_budget=" + DoubleToString(portfolioBudget, 2)
+      + " sl_volume=" + DoubleToString(slVolume, 4)
+      + " atr_volume=" + DoubleToString(atrVolume, 4)
+      + " portfolio_volume=" + DoubleToString(portfolioVolume, 4)
+      + " final_volume=" + DoubleToString(volume, 4)
+      + " projected_risk=" + DoubleToString(projectedRisk, 2)
+      + " daily_loss_pct=" + DoubleToString(dailyLossPct, 3)
+      + " total_dd_pct=" + DoubleToString(totalDdPct, 3);
+   return volume;
+}
+
 double LegVolume()
 {
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
@@ -1444,15 +1959,46 @@ bool OpenThreeLegs(const int direction)
    if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
       return OpenFixedOneToThreeR(direction);
 
-   double leg = LegVolume();
-   if(leg <= 0.0)
-   {
-      Print("NAS SATS Partial-NoBE EA: invalid leg volume from total lot ", InpTotalLot);
-      return false;
-   }
-
    ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double price = direction > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   bool riskLockHeld = false;
+   if(InpAdvancedAccountRiskEnabled && !AccountRiskLockAcquire())
+   {
+      g_lastAdvancedLotDetail = "account_risk_block lock_busy";
+      g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      return false;
+   }
+   riskLockHeld = InpAdvancedAccountRiskEnabled;
+   if(riskLockHeld)
+      AccountRiskCacheInvalidate();
+   g_lastAdvancedLotDetail = "";
+   double totalVolume = ResolveAdvancedVolume(direction, price, g_lastSl, g_lastAdvancedLotDetail);
+   g_lastAdvancedLot = totalVolume;
+   if(totalVolume <= 0.0)
+   {
+      if(riskLockHeld)
+         AccountRiskLockRelease();
+      g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      Print("NAS SATS Partial-NoBE EA: account risk blocked open reason=", g_lastAdvancedLotDetail);
+      return false;
+   }
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(step <= 0.0)
+      step = 0.01;
+   double leg = NormalizeDouble(totalVolume / 3.0, 8);
+   double legUnits = leg / step;
+   bool exactLeg = MathAbs(legUnits - MathRound(legUnits)) <= 0.0000001;
+   if(leg < minLot - 0.0000001 || !exactLeg)
+   {
+      if(riskLockHeld)
+         AccountRiskLockRelease();
+      g_lastExecutionBlockReason = "invalid_leg_after_advanced_lot " + g_lastAdvancedLotDetail;
+      Print("NAS SATS Partial-NoBE EA: invalid leg volume from advanced total lot ", DoubleToString(totalVolume, 8));
+      return false;
+   }
+   Print("NAS SATS advanced lot resolved mode=partial total=", DoubleToString(totalVolume, 8),
+         " leg=", DoubleToString(leg, 8), " ", g_lastAdvancedLotDetail);
    double tps[3] = {g_lastTp1, g_lastTp2, g_lastTp3};
    string comments[3];
    if(InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL)
@@ -1467,32 +2013,104 @@ bool OpenThreeLegs(const int direction)
       comments[1] = "NAS_NOBE_TP2";
       comments[2] = "NAS_NOBE_TP3";
    }
-   bool anyOpened = false;
+   ulong existingTickets[];
+   int existingCount = 0;
+   for(int p = PositionsTotal() - 1; p >= 0; p--)
+   {
+      ulong existingTicket = PositionGetTicket(p);
+      if(existingTicket == 0 || !PositionSelectByTicket(existingTicket) || !IsManagedPosition())
+         continue;
+      ArrayResize(existingTickets, existingCount + 1);
+      existingTickets[existingCount++] = existingTicket;
+   }
+   int openedCount = 0;
 
    for(int i = 0; i < 3; i++)
    {
-      bool ok = trade.PositionOpen(_Symbol, type, leg, price, g_lastSl, tps[i], comments[i]);
+      bool requestOk = trade.PositionOpen(_Symbol, type, leg, price, g_lastSl, tps[i], comments[i]);
+      uint retcode = trade.ResultRetcode();
+      bool ok = requestOk && (retcode == TRADE_RETCODE_DONE
+         || retcode == TRADE_RETCODE_DONE_PARTIAL
+         || retcode == TRADE_RETCODE_PLACED);
       if(!ok)
          Print("NAS SATS Partial-NoBE EA open failed leg=", i + 1, " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
       else
-         anyOpened = true;
+         openedCount++;
    }
-   return anyOpened;
+   if(openedCount != 3)
+   {
+      for(int p = PositionsTotal() - 1; p >= 0; p--)
+      {
+         ulong ticket = PositionGetTicket(p);
+         if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsManagedPosition())
+            continue;
+         bool existed = false;
+         for(int e = 0; e < existingCount; e++)
+         {
+            if(existingTickets[e] == ticket)
+            {
+               existed = true;
+               break;
+            }
+         }
+         if(existed)
+            continue;
+         if(!trade.PositionClose(ticket))
+            Print("NAS SATS partial batch rollback failed ticket=", ticket,
+                  " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      }
+      if(riskLockHeld)
+         AccountRiskCacheInvalidate();
+      if(riskLockHeld)
+         AccountRiskLockRelease();
+      g_lastExecutionBlockReason = "partial_batch_incomplete opened=" + IntegerToString(openedCount) + "/3";
+      return false;
+   }
+   if(riskLockHeld)
+      AccountRiskCacheInvalidate();
+   if(riskLockHeld)
+      AccountRiskLockRelease();
+   return true;
 }
 
 bool OpenFixedOneToThreeR(const int direction)
 {
-   double lot = FixedVolume();
-   if(lot <= 0.0)
-   {
-      Print("NAS SATS Fixed 1:3R EA: invalid fixed lot ", InpFixedLot);
-      return false;
-   }
-
    ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double price = direction > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   bool riskLockHeld = false;
+   if(InpAdvancedAccountRiskEnabled && !AccountRiskLockAcquire())
+   {
+      g_lastAdvancedLotDetail = "account_risk_block lock_busy";
+      g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      return false;
+   }
+   riskLockHeld = InpAdvancedAccountRiskEnabled;
+   if(riskLockHeld)
+      AccountRiskCacheInvalidate();
+   g_lastAdvancedLotDetail = "";
+   double lot = ResolveAdvancedVolume(direction, price, g_lastSl, g_lastAdvancedLotDetail);
+   g_lastAdvancedLot = lot;
+   if(lot <= 0.0)
+   {
+      if(riskLockHeld)
+         AccountRiskLockRelease();
+      g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      Print("NAS SATS Fixed 1:3R EA: account risk blocked open reason=", g_lastAdvancedLotDetail);
+      return false;
+   }
+   Print("NAS SATS advanced lot resolved mode=fixed lot=", DoubleToString(lot, 8),
+         " ", g_lastAdvancedLotDetail);
+
    string comment = direction > 0 ? "NAS_FIXED_3R_BUY" : "NAS_FIXED_3R_SELL";
-   bool ok = trade.PositionOpen(_Symbol, type, lot, price, g_lastSl, g_lastTp3, comment);
+   bool requestOk = trade.PositionOpen(_Symbol, type, lot, price, g_lastSl, g_lastTp3, comment);
+   uint retcode = trade.ResultRetcode();
+   bool ok = requestOk && (retcode == TRADE_RETCODE_DONE
+      || retcode == TRADE_RETCODE_DONE_PARTIAL
+      || retcode == TRADE_RETCODE_PLACED);
+   if(ok && riskLockHeld)
+      AccountRiskCacheInvalidate();
+   if(riskLockHeld)
+      AccountRiskLockRelease();
    if(!ok)
    {
       Print("NAS SATS Fixed 1:3R open failed ret=", trade.ResultRetcode(),
@@ -1509,7 +2127,7 @@ bool IsManagedPosition()
 {
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return false;
-   return (long)PositionGetInteger(POSITION_MAGIC) == RuntimeMagic();
+   return RuntimeMagicOwned((long)PositionGetInteger(POSITION_MAGIC));
 }
 
 int ManagedPositionDirection()
@@ -1735,7 +2353,7 @@ double HistoryPnl(const datetime fromTime)
          continue;
       if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol)
          continue;
-      if((long)HistoryDealGetInteger(deal, DEAL_MAGIC) != RuntimeMagic())
+      if(!RuntimeMagicOwned((long)HistoryDealGetInteger(deal, DEAL_MAGIC)))
          continue;
       pnl += HistoryDealGetDouble(deal, DEAL_PROFIT);
       pnl += HistoryDealGetDouble(deal, DEAL_SWAP);
@@ -2553,12 +3171,19 @@ void UpdateDashboard()
                + " | SL " + DoubleToString(g_lastSl, _Digits)
                + " | TP3 " + DoubleToString(g_lastTp3, _Digits), clrWhite);
    if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
-      CreateLabel("DASH_5", 38, 181, "Risk: SATS SL | fixed lot=" + DoubleToString(FixedVolume(), 2)
-                  + " | TP=" + DoubleToString(InpFixedRR, 1) + "R | reverse closes", accentBlue);
+      CreateLabel("DASH_5", 38, 181, "FTMO risk " + string(InpAdvancedAccountRiskEnabled ? "ON" : "OFF")
+                  + " | lot " + string(InpAdvancedLotEngineEnabled && InpAdvancedAccountRiskEnabled ? "AUTO" : "MANUAL")
+                  + " | last lot=" + DoubleToString(g_lastAdvancedLot, 2)
+                  + " | risk " + DoubleToString(InpAccountRiskPerTradePct, 2) + "%"
+                  + " | TP=" + DoubleToString(InpFixedRR, 1) + "R", accentBlue);
    else if(InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL)
-      CreateLabel("DASH_5", 38, 181, "Risk: SATS TP/SL | partial TP ON | TP1 => SL->BE", accentBlue);
+      CreateLabel("DASH_5", 38, 181, "FTMO risk " + string(InpAdvancedAccountRiskEnabled ? "ON" : "OFF")
+                  + " | last total=" + DoubleToString(g_lastAdvancedLot, 2)
+                  + " | portfolio " + DoubleToString(InpAccountRiskMaxPortfolioPct, 2) + "% | TP1 => SL->BE", accentBlue);
    else
-      CreateLabel("DASH_5", 38, 181, "Risk: SATS TP/SL | partial TP ON | SL->BE OFF", accentBlue);
+      CreateLabel("DASH_5", 38, 181, "FTMO risk " + string(InpAdvancedAccountRiskEnabled ? "ON" : "OFF")
+                  + " | last total=" + DoubleToString(g_lastAdvancedLot, 2)
+                  + " | portfolio " + DoubleToString(InpAccountRiskMaxPortfolioPct, 2) + "% | SL->BE OFF", accentBlue);
 
    double tradePct = 0.0;
    string tradeLabel = "";
