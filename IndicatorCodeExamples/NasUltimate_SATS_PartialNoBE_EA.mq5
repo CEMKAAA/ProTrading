@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.24"
+#property version "1.25"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -116,6 +116,8 @@ input double InpAccountRiskSafetyBufferPct = 95.00;
 input double InpAdvancedLotMax = 0.00; // 0=broker maximum only.
 input bool   InpAccountRiskBlockUnprotectedPositions = true;
 input bool   InpAccountRiskFailClosed = true;
+input bool   InpAccountRiskAuditEnabled = true;
+input int    InpAccountRiskAuditIntervalSeconds = 60;
 input int    InpDeviationPoints = 30;
 input bool   InpEnforceTpTouchClose = true; // Safety watchdog: close managed positions if live price touches broker TP.
 input double InpTpTouchCloseTolerancePoints = 2.0;
@@ -631,6 +633,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    EnforceAccountRiskBreach();
+   WriteAccountRiskAudit("snapshot", "periodic_health", true);
    EnforceManagedTpTouchClose(false);
    if(!g_dashboardDoorFinished)
       UpdateDashboard();
@@ -1713,6 +1716,159 @@ void AccountRiskLockRelease()
    g_accountRiskLockValue = 0.0;
 }
 
+bool AccountRiskAuditClaimSnapshot()
+{
+   int interval = MathMax(15, InpAccountRiskAuditIntervalSeconds);
+   string key = AccountRiskKey("AUDIT_SNAPSHOT_GMT");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   double now = (double)TimeGMT();
+   double observed = GlobalVariableGet(key);
+   if(now - observed < interval)
+      return false;
+   return GlobalVariableSetOnCondition(key, now, observed);
+}
+
+bool AccountRiskAuditFileLock(double &token)
+{
+   token = 0.0;
+   string key = AccountRiskKey("AUDIT_FILE_LOCK");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   uint started = GetTickCount();
+   while((uint)(GetTickCount() - started) < 10)
+   {
+      double observed = GlobalVariableGet(key);
+      double now = (double)TimeLocal();
+      if(observed <= 0.0 || MathFloor(observed) <= now)
+      {
+         double candidate = MathFloor(now + 2.0) + (double)((ChartID() % 100000) + 1) / 100001.0;
+         if(GlobalVariableSetOnCondition(key, candidate, observed))
+         {
+            token = candidate;
+            return true;
+         }
+      }
+      Sleep(1);
+   }
+   return false;
+}
+
+void AccountRiskAuditFileUnlock(const double token)
+{
+   if(token > 0.0)
+      GlobalVariableSetOnCondition(AccountRiskKey("AUDIT_FILE_LOCK"), 0.0, token);
+}
+
+string AccountRiskPositionSummary(int &openCount, int &protectedCount, int &unprotectedCount, double &totalVolume, double &openRisk)
+{
+   openCount = 0;
+   protectedCount = 0;
+   unprotectedCount = 0;
+   totalVolume = 0.0;
+   openRisk = 0.0;
+   string summary = "";
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)
+         || !AccountRiskMagicScoped((long)PositionGetInteger(POSITION_MAGIC)))
+         continue;
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      openCount++;
+      totalVolume += volume;
+      double risk = -1.0;
+      bool exposed = (posType == POSITION_TYPE_BUY && sl > 0.0 && sl < entry)
+                  || (posType == POSITION_TYPE_SELL && sl > entry);
+      if(exposed)
+      {
+         double result = 0.0;
+         ENUM_ORDER_TYPE orderType = posType == POSITION_TYPE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         if(OrderCalcProfit(orderType, symbol, volume, entry, sl, result))
+         {
+            risk = MathMax(0.0, -result);
+            openRisk += risk;
+            protectedCount++;
+         }
+         else
+            unprotectedCount++;
+      }
+      else
+         unprotectedCount++;
+      if(StringLen(summary) < 1800)
+      {
+         if(StringLen(summary) > 0)
+            summary += "|";
+         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+         summary += (string)ticket + ":" + symbol + ":" + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL")
+            + ":v=" + DoubleToString(volume, 4)
+            + ":e=" + DoubleToString(entry, digits)
+            + ":sl=" + DoubleToString(sl, digits)
+            + ":risk=" + (risk >= 0.0 ? DoubleToString(risk, 2) : "UNPROTECTED");
+      }
+   }
+   return summary;
+}
+
+void WriteAccountRiskAudit(const string eventName, const string detail, const bool periodic)
+{
+   if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskAuditEnabled)
+      return;
+   if(periodic && !AccountRiskAuditClaimSnapshot())
+      return;
+   double closedAll, closedToday, floating;
+   AccountRiskScopePerformance(closedAll, closedToday, floating);
+   double riskCapital, dailyLossPct, totalDdPct;
+   AccountRiskMetrics(riskCapital, dailyLossPct, totalDdPct);
+   double initial = AccountRiskInitialBalance();
+   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
+   int openCount, protectedCount, unprotectedCount;
+   double totalVolume, openRisk;
+   string positions = AccountRiskPositionSummary(openCount, protectedCount, unprotectedCount, totalVolume, openRisk);
+   double tradeBudget = riskCapital * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
+   double atrBudget = riskCapital * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
+   double portfolioBudget = riskCapital * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
+   double margin = AccountInfoDouble(ACCOUNT_MARGIN);
+   double marginUsagePct = riskCapital > 0.0 ? margin / riskCapital * 100.0 : 100.0;
+   string fileName = "AccountRiskAudit_MT5_" + NasAuditDate(TimeGMT()) + ".csv";
+   double auditLock = 0.0;
+   if(!AccountRiskAuditFileLock(auditLock))
+      return;
+   int h = FileOpen(fileName, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE)
+   {
+      AccountRiskAuditFileUnlock(auditLock);
+      return;
+   }
+   bool empty = FileSize(h) <= 0;
+   FileSeek(h, 0, SEEK_END);
+   if(empty)
+      FileWrite(h, "ts_gmt", "ts_server", "event", "build", "terminal", "account", "reporter", "symbol", "timeframe",
+         "initial_balance", "account_balance", "account_equity", "scope_closed_all", "scope_closed_today", "scope_floating",
+         "scope_equity", "risk_capital", "daily_loss_pct", "total_dd_pct", "margin", "margin_usage_pct", "open_positions",
+         "protected_positions", "unprotected_positions", "total_volume", "open_sl_risk", "trade_budget", "atr_budget",
+         "portfolio_budget", "available_portfolio_risk", "safety_pct", "day_reset_gmt", "positions", "detail");
+   FileWrite(h, TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+      eventName, "1.25", "MT5", (string)AccountInfoInteger(ACCOUNT_LOGIN), "NasUltimate", _Symbol, EnumToString(_Period),
+      DoubleToString(initial, 2), DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
+      DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), DoubleToString(closedAll, 2),
+      DoubleToString(closedToday, 2), DoubleToString(floating, 2), DoubleToString(scopeEquity, 2),
+      DoubleToString(riskCapital, 2), DoubleToString(dailyLossPct, 3), DoubleToString(totalDdPct, 3),
+      DoubleToString(margin, 2), DoubleToString(marginUsagePct, 3), IntegerToString(openCount),
+      IntegerToString(protectedCount), IntegerToString(unprotectedCount), DoubleToString(totalVolume, 4),
+      DoubleToString(openRisk, 2), DoubleToString(tradeBudget, 2), DoubleToString(atrBudget, 2),
+      DoubleToString(portfolioBudget, 2), DoubleToString(MathMax(0.0, portfolioBudget - openRisk), 2),
+      DoubleToString(InpAccountRiskSafetyBufferPct, 1),
+      IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt))), positions, detail);
+   FileFlush(h);
+   FileClose(h);
+   AccountRiskAuditFileUnlock(auditLock);
+}
+
 void EnforceAccountRiskBreach()
 {
    if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskLiquidateOnBreach)
@@ -1747,6 +1903,8 @@ void EnforceAccountRiskBreach()
    Print("NAS SATS ACCOUNT RISK LIQUIDATION daily_loss_pct=", DoubleToString(dailyPct, 3),
          " total_dd_pct=", DoubleToString(totalPct, 3),
          " safety_pct=", DoubleToString(InpAccountRiskSafetyBufferPct, 1));
+   WriteAccountRiskAudit("liquidation_triggered",
+      "daily_loss_pct=" + DoubleToString(dailyPct, 3) + " total_dd_pct=" + DoubleToString(totalPct, 3), false);
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -1768,6 +1926,7 @@ void EnforceAccountRiskBreach()
                " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
    }
    AccountRiskCacheInvalidate();
+   WriteAccountRiskAudit("liquidation_complete", "scoped_positions_close_attempted", false);
    AccountRiskLockRelease();
 }
 
@@ -1966,6 +2125,7 @@ bool OpenThreeLegs(const int direction)
    {
       g_lastAdvancedLotDetail = "account_risk_block lock_busy";
       g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      WriteAccountRiskAudit("lot_blocked", "mode=partial dir=" + IntegerToString(direction) + " " + g_lastAdvancedLotDetail, false);
       return false;
    }
    riskLockHeld = InpAdvancedAccountRiskEnabled;
@@ -1973,11 +2133,23 @@ bool OpenThreeLegs(const int direction)
       AccountRiskCacheInvalidate();
    g_lastAdvancedLotDetail = "";
    double totalVolume = ResolveAdvancedVolume(direction, price, g_lastSl, g_lastAdvancedLotDetail);
+   string riskGeometry = "mode=partial dir=" + IntegerToString(direction)
+      + " entry=" + DoubleToString(price, _Digits) + " sl=" + DoubleToString(g_lastSl, _Digits)
+      + " base_sl=" + DoubleToString(g_lastRiskBaseSl, _Digits)
+      + " structural_used=" + (g_lastRiskUsedStructuralStop ? "1" : "0")
+      + " swing=" + DoubleToString(g_lastRiskSwingPrice, _Digits)
+      + " swing_age=" + IntegerToString(g_lastRiskSwingAgeBars)
+      + " swing_atr=" + DoubleToString(g_lastRiskSwingAtr, _Digits)
+      + " prominence_atr=" + DoubleToString(g_lastRiskSwingProminence, 2)
+      + " pre_widen_sl=" + DoubleToString(g_lastRiskPreWidenSl, _Digits)
+      + " widen_pct=" + DoubleToString(g_lastRiskWidenPct, 2)
+      + " " + g_lastAdvancedLotDetail;
    g_lastAdvancedLot = totalVolume;
    if(totalVolume <= 0.0)
    {
       if(riskLockHeld)
          AccountRiskLockRelease();
+      WriteAccountRiskAudit("lot_blocked", riskGeometry, false);
       g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
       Print("NAS SATS Partial-NoBE EA: account risk blocked open reason=", g_lastAdvancedLotDetail);
       return false;
@@ -2064,12 +2236,16 @@ bool OpenThreeLegs(const int direction)
       if(riskLockHeld)
          AccountRiskLockRelease();
       g_lastExecutionBlockReason = "partial_batch_incomplete opened=" + IntegerToString(openedCount) + "/3";
+      WriteAccountRiskAudit("lot_selected",
+         riskGeometry + " opened_legs=" + IntegerToString(openedCount) + " execution=partial_batch_incomplete", false);
       return false;
    }
    if(riskLockHeld)
       AccountRiskCacheInvalidate();
    if(riskLockHeld)
       AccountRiskLockRelease();
+   WriteAccountRiskAudit("lot_selected",
+      riskGeometry + " opened_legs=" + IntegerToString(openedCount), false);
    return true;
 }
 
@@ -2082,6 +2258,7 @@ bool OpenFixedOneToThreeR(const int direction)
    {
       g_lastAdvancedLotDetail = "account_risk_block lock_busy";
       g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
+      WriteAccountRiskAudit("lot_blocked", "mode=fixed dir=" + IntegerToString(direction) + " " + g_lastAdvancedLotDetail, false);
       return false;
    }
    riskLockHeld = InpAdvancedAccountRiskEnabled;
@@ -2089,11 +2266,23 @@ bool OpenFixedOneToThreeR(const int direction)
       AccountRiskCacheInvalidate();
    g_lastAdvancedLotDetail = "";
    double lot = ResolveAdvancedVolume(direction, price, g_lastSl, g_lastAdvancedLotDetail);
+   string fixedRiskGeometry = "mode=fixed dir=" + IntegerToString(direction)
+      + " entry=" + DoubleToString(price, _Digits) + " sl=" + DoubleToString(g_lastSl, _Digits)
+      + " base_sl=" + DoubleToString(g_lastRiskBaseSl, _Digits)
+      + " structural_used=" + (g_lastRiskUsedStructuralStop ? "1" : "0")
+      + " swing=" + DoubleToString(g_lastRiskSwingPrice, _Digits)
+      + " swing_age=" + IntegerToString(g_lastRiskSwingAgeBars)
+      + " swing_atr=" + DoubleToString(g_lastRiskSwingAtr, _Digits)
+      + " prominence_atr=" + DoubleToString(g_lastRiskSwingProminence, 2)
+      + " pre_widen_sl=" + DoubleToString(g_lastRiskPreWidenSl, _Digits)
+      + " widen_pct=" + DoubleToString(g_lastRiskWidenPct, 2)
+      + " " + g_lastAdvancedLotDetail;
    g_lastAdvancedLot = lot;
    if(lot <= 0.0)
    {
       if(riskLockHeld)
          AccountRiskLockRelease();
+      WriteAccountRiskAudit("lot_blocked", fixedRiskGeometry, false);
       g_lastExecutionBlockReason = g_lastAdvancedLotDetail;
       Print("NAS SATS Fixed 1:3R EA: account risk blocked open reason=", g_lastAdvancedLotDetail);
       return false;
@@ -2111,6 +2300,8 @@ bool OpenFixedOneToThreeR(const int direction)
       AccountRiskCacheInvalidate();
    if(riskLockHeld)
       AccountRiskLockRelease();
+   WriteAccountRiskAudit("lot_selected",
+      fixedRiskGeometry + " order_retcode=" + IntegerToString((int)retcode), false);
    if(!ok)
    {
       Print("NAS SATS Fixed 1:3R open failed ret=", trade.ResultRetcode(),

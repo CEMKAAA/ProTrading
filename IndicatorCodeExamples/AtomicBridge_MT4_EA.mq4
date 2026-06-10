@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-09.0310-ftmo-risk-audit-hardened"
+#define ATOMIC_BRIDGE_BUILD "2026-06-10.0100-risk-health-audit"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -50,6 +50,8 @@ input bool   InpAccountRiskLiquidateOnBreach = true;
 input double InpAccountRiskSafetyBufferPct = 95.00;
 input bool   InpAccountRiskBlockUnprotectedPositions = true;
 input bool   InpAccountRiskFailClosed = true;
+input bool   InpAccountRiskAuditEnabled = true;
+input int    InpAccountRiskAuditIntervalSeconds = 60;
 input int    InpDirectMt4Magic = 970101;
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
@@ -787,6 +789,151 @@ void _account_risk_lock_release()
    g_accountRiskLockValue = 0.0;
 }
 
+bool _account_risk_audit_claim_snapshot()
+{
+   int interval = MathMax(15, InpAccountRiskAuditIntervalSeconds);
+   string key = _account_risk_key("AUDIT_SNAPSHOT_GMT");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   double now = (double)TimeGMT();
+   double observed = GlobalVariableGet(key);
+   if(now - observed < interval)
+      return false;
+   return GlobalVariableSetOnCondition(key, now, observed);
+}
+
+bool _account_risk_audit_file_lock(double &token)
+{
+   token = 0.0;
+   string key = _account_risk_key("AUDIT_FILE_LOCK");
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   uint started = GetTickCount();
+   while((uint)(GetTickCount() - started) < 10)
+   {
+      double observed = GlobalVariableGet(key);
+      double now = (double)TimeLocal();
+      if(observed <= 0.0 || MathFloor(observed) <= now)
+      {
+         double candidate = MathFloor(now + 2.0) + (double)((ChartID() % 100000) + 1) / 100001.0;
+         if(GlobalVariableSetOnCondition(key, candidate, observed))
+         {
+            token = candidate;
+            return true;
+         }
+      }
+      Sleep(1);
+   }
+   return false;
+}
+
+void _account_risk_audit_file_unlock(double token)
+{
+   if(token > 0.0)
+      GlobalVariableSetOnCondition(_account_risk_key("AUDIT_FILE_LOCK"), 0.0, token);
+}
+
+string _account_risk_position_summary(int &openCount, int &protectedCount, int &unprotectedCount, double &totalVolume, double &openRisk)
+{
+   openCount = 0;
+   protectedCount = 0;
+   unprotectedCount = 0;
+   totalVolume = 0.0;
+   openRisk = 0.0;
+   string summary = "";
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      int type = OrderType();
+      if((type != OP_BUY && type != OP_SELL) || !_account_risk_magic_scoped(OrderMagicNumber()))
+         continue;
+      openCount++;
+      totalVolume += OrderLots();
+      double risk = -1.0;
+      double sl = OrderStopLoss();
+      double adverseDistance = type == OP_BUY
+         ? MathMax(0.0, OrderOpenPrice() - sl)
+         : MathMax(0.0, sl - OrderOpenPrice());
+      double tickSize = MarketInfo(OrderSymbol(), MODE_TICKSIZE);
+      double tickValue = MarketInfo(OrderSymbol(), MODE_TICKVALUE);
+      if(sl > 0.0 && adverseDistance > 0.0 && tickSize > 0.0 && tickValue > 0.0)
+      {
+         risk = (adverseDistance / tickSize) * tickValue * OrderLots();
+         openRisk += risk;
+         protectedCount++;
+      }
+      else
+         unprotectedCount++;
+      if(StringLen(summary) < 1800)
+      {
+         if(StringLen(summary) > 0)
+            summary += "|";
+         summary += IntegerToString(OrderTicket()) + ":" + OrderSymbol() + ":" + (type == OP_BUY ? "BUY" : "SELL")
+            + ":v=" + DoubleToString(OrderLots(), 3)
+            + ":e=" + DoubleToString(OrderOpenPrice(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS))
+            + ":sl=" + DoubleToString(sl, (int)MarketInfo(OrderSymbol(), MODE_DIGITS))
+            + ":risk=" + (risk >= 0.0 ? DoubleToString(risk, 2) : "UNPROTECTED");
+      }
+   }
+   return summary;
+}
+
+void _account_risk_audit_write(string eventName, string detail, bool periodic)
+{
+   if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskAuditEnabled)
+      return;
+   if(periodic && !_account_risk_audit_claim_snapshot())
+      return;
+
+   double closedAll, closedToday, floating;
+   _account_risk_scope_performance(closedAll, closedToday, floating);
+   double riskCapital, dailyLossPct, totalDdPct;
+   _account_risk_metrics(riskCapital, dailyLossPct, totalDdPct);
+   double initial = _account_risk_initial_balance();
+   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
+   int openCount, protectedCount, unprotectedCount;
+   double totalVolume, openRisk;
+   string positions = _account_risk_position_summary(openCount, protectedCount, unprotectedCount, totalVolume, openRisk);
+   double tradeBudget = riskCapital * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
+   double atrBudget = riskCapital * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
+   double portfolioBudget = riskCapital * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
+   double marginUsagePct = riskCapital > 0.0 ? AccountMargin() / riskCapital * 100.0 : 100.0;
+   string fileName = "AccountRiskAudit_MT4_" + _direct_audit_date(TimeGMT()) + ".csv";
+   double auditLock = 0.0;
+   if(!_account_risk_audit_file_lock(auditLock))
+      return;
+   int h = FileOpen(fileName, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE)
+   {
+      _account_risk_audit_file_unlock(auditLock);
+      return;
+   }
+   bool empty = FileSize(h) <= 0;
+   FileSeek(h, 0, SEEK_END);
+   if(empty)
+      FileWrite(h, "ts_gmt", "ts_server", "event", "build", "terminal", "account", "reporter", "symbol", "timeframe",
+         "initial_balance", "account_balance", "account_equity", "scope_closed_all", "scope_closed_today", "scope_floating",
+         "scope_equity", "risk_capital", "daily_loss_pct", "total_dd_pct", "margin", "margin_usage_pct", "open_positions",
+         "protected_positions", "unprotected_positions", "total_volume", "open_sl_risk", "trade_budget", "atr_budget",
+         "portfolio_budget", "available_portfolio_risk", "safety_pct", "day_reset_gmt", "positions", "detail");
+   FileWrite(h,
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+      eventName, ATOMIC_BRIDGE_BUILD, "MT4", IntegerToString(AccountNumber()), "AtomicBridge", Symbol(), _tf_to_string(Period()),
+      DoubleToString(initial, 2), DoubleToString(AccountBalance(), 2), DoubleToString(AccountEquity(), 2),
+      DoubleToString(closedAll, 2), DoubleToString(closedToday, 2), DoubleToString(floating, 2),
+      DoubleToString(scopeEquity, 2), DoubleToString(riskCapital, 2), DoubleToString(dailyLossPct, 3),
+      DoubleToString(totalDdPct, 3), DoubleToString(AccountMargin(), 2), DoubleToString(marginUsagePct, 3),
+      IntegerToString(openCount), IntegerToString(protectedCount), IntegerToString(unprotectedCount),
+      DoubleToString(totalVolume, 3), DoubleToString(openRisk, 2), DoubleToString(tradeBudget, 2),
+      DoubleToString(atrBudget, 2), DoubleToString(portfolioBudget, 2),
+      DoubleToString(MathMax(0.0, portfolioBudget - openRisk), 2), DoubleToString(InpAccountRiskSafetyBufferPct, 1),
+      IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt))), positions, detail);
+   FileFlush(h);
+   FileClose(h);
+   _account_risk_audit_file_unlock(auditLock);
+}
+
 void _account_risk_enforce_breach()
 {
    if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskLiquidateOnBreach)
@@ -820,6 +967,8 @@ void _account_risk_enforce_breach()
    }
    Print("AtomicBridge ACCOUNT RISK LIQUIDATION daily_loss_pct=", DoubleToString(dailyPct, 3),
       " total_dd_pct=", DoubleToString(totalPct, 3), " safety_pct=", DoubleToString(InpAccountRiskSafetyBufferPct, 1));
+   _account_risk_audit_write("liquidation_triggered",
+      "daily_loss_pct=" + DoubleToString(dailyPct, 3) + " total_dd_pct=" + DoubleToString(totalPct, 3), false);
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -840,6 +989,7 @@ void _account_risk_enforce_breach()
          Print("AtomicBridge account risk liquidation failed ticket=", OrderTicket(), " err=", GetLastError());
    }
    _account_risk_cache_invalidate();
+   _account_risk_audit_write("liquidation_complete", "scoped_positions_close_attempted", false);
    _account_risk_lock_release();
 }
 
@@ -1011,6 +1161,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    {
       string lockDetail = "account_risk_block lock_busy";
       Print("AtomicBridge direct_mt4 deferred by account risk lock event=", eventId);
+      _account_risk_audit_write("lot_blocked", "event=" + eventId + " dir=" + dir + " " + lockDetail, false);
       _direct_audit_write("direct_skip_account_risk", source, eventId, 0, dir, 0.0, price, stopLoss, takeProfit, "risk_lock_busy", 0.0, lockDetail);
       return false;
    }
@@ -1026,6 +1177,10 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    {
       if(riskLockHeld)
          _account_risk_lock_release();
+      _account_risk_audit_write("lot_blocked",
+         "event=" + eventId + " source=" + source + " dir=" + dir
+         + " entry=" + _fmt_price(price) + " sl=" + _fmt_price(stopLoss) + " tp=" + _fmt_price(takeProfit)
+         + " " + lotDetail, false);
       g_lastDirectMt4EventId = eventId;
       Print("AtomicBridge direct_mt4 blocked by account risk engine event=", eventId, " ", lotDetail);
       _direct_audit_write("direct_signal_received", source, eventId, 0, dir, 0.0, signalPx, sl, tp, "confirmed_signal", 0.0, lotDetail);
@@ -1039,6 +1194,10 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _account_risk_cache_invalidate();
    if(riskLockHeld)
       _account_risk_lock_release();
+   _account_risk_audit_write("lot_selected",
+      "event=" + eventId + " source=" + source + " dir=" + dir
+      + " entry=" + _fmt_price(price) + " sl=" + _fmt_price(stopLoss) + " tp=" + _fmt_price(takeProfit)
+      + " order_ticket=" + IntegerToString(ticket) + " " + lotDetail, false);
    g_lastDirectMt4EventId = eventId;
    if(ticket > 0)
    {
@@ -3585,6 +3744,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    _account_risk_enforce_breach();
+   _account_risk_audit_write("snapshot", "periodic_health", true);
    _manage_direct_mt4_positions();
    MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
