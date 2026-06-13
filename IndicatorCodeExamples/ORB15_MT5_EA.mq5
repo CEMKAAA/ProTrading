@@ -9,6 +9,8 @@
 
 #include <Trade/Trade.mqh>
 
+#define ORB15_BUILD "2026-06-14.0010-dashboard-history"
+
 input bool            InpEaEnabled = true;
 input long            InpMagic = 15091501;
 input ENUM_TIMEFRAMES InpSignalTimeframe = PERIOD_M1;
@@ -29,6 +31,11 @@ input double          InpMaxLot = 0.0;          // 0 = broker maximum only
 input int             InpDeviationPoints = 30;
 input int             InpMaxSpreadPoints = 0;   // 0 = off
 input bool            InpDrawOrbLevels = true;
+input bool            InpShowDashboard = true;
+input int             InpDashboardX = 18;
+input int             InpDashboardY = 28;
+input bool            InpDrawHistoricalSignals = true;
+input int             InpHistoricalDays = 7;
 input bool            InpAuditCsv = true;
 input bool            InpLogOnInit = true;
 
@@ -44,6 +51,8 @@ datetime g_orbStartServer = 0;
 datetime g_orbEndServer = 0;
 datetime g_tradeEndServer = 0;
 datetime g_lastSignalBarTime = 0;
+string   g_lastHistSummary = "-";
+datetime g_lastHistBuild = 0;
 
 int ParseClockMinutes(string value, int fallback)
 {
@@ -115,6 +124,14 @@ datetime NyLocalToServer(const int year, const int mon, const int day, const int
    return utc + (int)MathRound(InpBrokerGmtOffsetHours * 3600.0);
 }
 
+datetime ServerToNyLocal(datetime serverTime)
+{
+   datetime utc = serverTime - (int)MathRound(InpBrokerGmtOffsetHours * 3600.0);
+   MqlDateTime utcSt;
+   TimeToStruct(utc, utcSt);
+   return utc + NyUtcOffsetSecondsForDate(utcSt.year, utcSt.mon, utcSt.day);
+}
+
 int CurrentNyDayKey(int &year, int &mon, int &day)
 {
    datetime utcNow = TimeCurrent() - (int)MathRound(InpBrokerGmtOffsetHours * 3600.0);
@@ -135,6 +152,11 @@ string FmtTime(datetime t)
    if(t <= 0)
       return "-";
    return TimeToString(t, TIME_DATE | TIME_SECONDS);
+}
+
+string BoolText(bool v)
+{
+   return v ? "true" : "false";
 }
 
 double NormalizePrice(double price)
@@ -264,6 +286,134 @@ void DeleteLevelObjects()
    ObjectDelete(0, PREFIX + "ORB_TXT");
 }
 
+void DeleteObjectsByPrefix(const string prefix)
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      if(StringFind(name, prefix) == 0)
+         ObjectDelete(0, name);
+   }
+}
+
+void DeleteHistoricalSignals()
+{
+   DeleteObjectsByPrefix(PREFIX + "HIST_");
+}
+
+void DeleteDashboard()
+{
+   DeleteObjectsByPrefix(PREFIX + "DASH_");
+}
+
+void RectLabel(const string name, int x, int y, int w, int h, color bg, color border)
+{
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, border);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+void DashLabel(const string name, int x, int y, string text, color clr, int size = 8)
+{
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+void DrawDashboard()
+{
+   if(!InpShowDashboard)
+   {
+      DeleteDashboard();
+      return;
+   }
+
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   RectLabel(PREFIX + "DASH_BG", x, y, 430, 188, (color)0x202020, clrSteelBlue);
+   RectLabel(PREFIX + "DASH_TOP", x, y, 430, 26, (color)0x35180E, clrSteelBlue);
+   DashLabel(PREFIX + "DASH_TITLE", x + 12, y + 6, "ORB15 MT5 // " + ORB15_BUILD, clrAliceBlue, 9);
+   UpdateDashboard();
+}
+
+void UpdateDashboard()
+{
+   if(!InpShowDashboard)
+      return;
+
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   string state = InpEaEnabled ? "EA ON" : "EA OFF";
+   string orb = g_orbReady ? "READY" : "WAITING";
+   string sigTime = g_lastSignalBarTime > 0 ? FmtTime(g_lastSignalBarTime) : "-";
+   DashLabel(PREFIX + "DASH_L1", x + 12, y + 36,
+             "State " + state + " | ORB " + orb + " | SignalTF " + EnumToString(InpSignalTimeframe),
+             InpEaEnabled ? clrPaleGreen : clrTomato, 8);
+   DashLabel(PREFIX + "DASH_L2", x + 12, y + 56,
+             "NY ORB " + InpOrbStartNy + "-" + InpOrbEndNy + " | TradeEnd " + InpTradeEndNy + " | BrokerGMT " + DoubleToString(InpBrokerGmtOffsetHours, 2),
+             clrLightSteelBlue, 8);
+   DashLabel(PREFIX + "DASH_L3", x + 12, y + 76,
+             "ORB High " + DoubleToString(g_orbHigh, _Digits) + " | Low " + DoubleToString(g_orbLow, _Digits) + " | Spread " + IntegerToString(CurrentSpreadPoints()) + " pt",
+             clrWhite, 8);
+   DashLabel(PREFIX + "DASH_L4", x + 12, y + 96,
+             "Risk " + DoubleToString(InpRiskPerTradePct, 2) + "% | AutoLot " + BoolText(InpUseAutoRiskLot) + " | RR " + DoubleToString(InpTakeProfitR, 2) + " | One/day " + BoolText(InpOneTradePerNyDay),
+             clrLightCyan, 8);
+   DashLabel(PREFIX + "DASH_L5", x + 12, y + 116,
+             "Last signal bar " + sigTime + " | TradeTaken " + BoolText(g_tradeTaken),
+             clrWheat, 8);
+   DashLabel(PREFIX + "DASH_L6", x + 12, y + 136,
+             "History arrows: " + g_lastHistSummary,
+             clrDeepSkyBlue, 8);
+   DashLabel(PREFIX + "DASH_L7", x + 12, y + 158,
+             "Attach TF can be M15; EA internally reads " + EnumToString(InpSignalTimeframe) + " data.",
+             clrSilver, 8);
+}
+
+void DrawSignalArrow(const string name, datetime t, double price, bool buy, bool historical)
+{
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
+   else
+      ObjectMove(0, name, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, buy ? 233 : 234);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, buy ? clrLime : clrTomato);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, historical ? 2 : 3);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+}
+
+void DrawSignalText(const string name, datetime t, double price, string text, color clr)
+{
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   else
+      ObjectMove(0, name, 0, t, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+}
+
 void DrawLevels()
 {
    if(!InpDrawOrbLevels || !g_orbReady)
@@ -289,6 +439,151 @@ void DrawLevels()
    ObjectSetString(0, PREFIX + "ORB_TXT", OBJPROP_TEXT, "15m ORB NY " + InpOrbStartNy + "-" + InpOrbEndNy + " H=" + DoubleToString(g_orbHigh, _Digits) + " L=" + DoubleToString(g_orbLow, _Digits));
    ObjectSetInteger(0, PREFIX + "ORB_TXT", OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, PREFIX + "ORB_TXT", OBJPROP_FONTSIZE, 8);
+}
+
+bool BuildOrbForNyDate(const int y, const int m, const int d, double &hi, double &lo, datetime &orbStart, datetime &orbEnd, datetime &tradeEnd, int &used)
+{
+   int startMin = ParseClockMinutes(InpOrbStartNy, 9 * 60 + 30);
+   int endMin = ParseClockMinutes(InpOrbEndNy, 9 * 60 + 45);
+   int tradeEndMin = ParseClockMinutes(InpTradeEndNy, 16 * 60);
+   orbStart = NyLocalToServer(y, m, d, startMin);
+   orbEnd = NyLocalToServer(y, m, d, endMin);
+   tradeEnd = NyLocalToServer(y, m, d, tradeEndMin);
+   hi = -DBL_MAX;
+   lo = DBL_MAX;
+   used = 0;
+
+   MqlRates rates[];
+   int copied = CopyRates(_Symbol, InpSignalTimeframe, orbStart, orbEnd, rates);
+   if(copied <= 0)
+      return false;
+
+   for(int i = 0; i < copied; i++)
+   {
+      if(rates[i].time < orbStart || rates[i].time >= orbEnd)
+         continue;
+      hi = MathMax(hi, rates[i].high);
+      lo = MathMin(lo, rates[i].low);
+      used++;
+   }
+   if(used <= 0 || hi <= lo || hi == -DBL_MAX || lo == DBL_MAX)
+      return false;
+   hi = NormalizePrice(hi);
+   lo = NormalizePrice(lo);
+   return true;
+}
+
+bool FindHistoricalBreakout(datetime fromTime, datetime toTime, double hi, double lo, string &dir, datetime &sigTime, double &sigClose, double &sigHigh, double &sigLow)
+{
+   dir = "";
+   sigTime = 0;
+   sigClose = 0.0;
+   sigHigh = 0.0;
+   sigLow = 0.0;
+
+   MqlRates rates[];
+   int copied = CopyRates(_Symbol, InpSignalTimeframe, fromTime, toTime, rates);
+   if(copied <= 0)
+      return false;
+
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minBreakout = MathMax(0.0, InpMinBreakoutPoints) * point;
+   datetime bestTime = 0;
+   int bestIndex = -1;
+   string bestDir = "";
+
+   for(int i = 0; i < copied; i++)
+   {
+      if(rates[i].time < fromTime || rates[i].time > toTime)
+         continue;
+      double close = rates[i].close;
+      string d = "";
+      if(close > hi + minBreakout)
+         d = "BUY";
+      else if(close < lo - minBreakout)
+         d = "SELL";
+      if(d == "")
+         continue;
+      if(bestTime == 0 || rates[i].time < bestTime)
+      {
+         bestTime = rates[i].time;
+         bestIndex = i;
+         bestDir = d;
+      }
+   }
+
+   if(bestIndex < 0)
+      return false;
+   dir = bestDir;
+   sigTime = rates[bestIndex].time;
+   sigClose = rates[bestIndex].close;
+   sigHigh = rates[bestIndex].high;
+   sigLow = rates[bestIndex].low;
+   return true;
+}
+
+void DrawHistoricalSignals()
+{
+   if(!InpDrawHistoricalSignals)
+   {
+      DeleteHistoricalSignals();
+      g_lastHistSummary = "off";
+      return;
+   }
+
+   datetime now = TimeCurrent();
+   if(g_lastHistBuild > 0 && now - g_lastHistBuild < 60)
+      return;
+   g_lastHistBuild = now;
+   DeleteHistoricalSignals();
+
+   datetime nyNow = ServerToNyLocal(now);
+   MqlDateTime nySt;
+   TimeToStruct(nyNow, nySt);
+   datetime nyTodayMid = MakeDateTime(nySt.year, nySt.mon, nySt.day, 0, 0, 0);
+
+   int days = MathMax(1, MathMin(30, InpHistoricalDays));
+   int drawn = 0;
+   int checked = 0;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0)
+      point = 0.0001;
+
+   for(int back = days - 1; back >= 0; back--)
+   {
+      datetime nyDay = nyTodayMid - back * 86400;
+      MqlDateTime daySt;
+      TimeToStruct(nyDay, daySt);
+      if(daySt.day_of_week == 0 || daySt.day_of_week == 6)
+         continue;
+
+      double hi, lo;
+      datetime orbStart, orbEnd, tradeEnd;
+      int used;
+      checked++;
+      if(!BuildOrbForNyDate(daySt.year, daySt.mon, daySt.day, hi, lo, orbStart, orbEnd, tradeEnd, used))
+         continue;
+
+      string dir;
+      datetime sigTime;
+      double sigClose, sigHigh, sigLow;
+      if(!FindHistoricalBreakout(orbEnd, tradeEnd, hi, lo, dir, sigTime, sigClose, sigHigh, sigLow))
+         continue;
+
+      bool buy = (dir == "BUY");
+      double pad = MathMax((hi - lo) * 0.12, point * 40.0);
+      double arrowPrice = buy ? (sigLow - pad) : (sigHigh + pad);
+      string dateKey = IntegerToString(daySt.year) + StringFormat("%02d%02d", daySt.mon, daySt.day);
+      string base = PREFIX + "HIST_" + dateKey + "_" + dir + "_";
+      DrawSignalArrow(base + "ARW", sigTime, arrowPrice, buy, true);
+      DrawSignalText(base + "TXT", sigTime, buy ? arrowPrice - pad * 0.6 : arrowPrice + pad * 0.6,
+                     "ORB " + dir + " " + TimeToString(sigTime, TIME_DATE | TIME_MINUTES),
+                     buy ? clrPaleGreen : clrLightSalmon);
+      drawn++;
+   }
+
+   g_lastHistSummary = IntegerToString(drawn) + " arrows / " + IntegerToString(checked) + " sessions";
+   Audit("history_redraw", "", 0, 0, 0, 0, g_lastHistSummary + " days=" + IntegerToString(days));
 }
 
 void ResetForNewNyDay()
@@ -401,6 +696,22 @@ void TryOpenSignal()
       return;
    g_lastSignalBarTime = barTime;
 
+   int signalShift = InpUseClosedBarBreakout ? 1 : 0;
+   double signalHigh = iHigh(_Symbol, InpSignalTimeframe, signalShift);
+   double signalLow = iLow(_Symbol, InpSignalTimeframe, signalShift);
+   double livePad = MathMax(MathAbs(g_orbHigh - g_orbLow) * 0.12, SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 40.0);
+   bool liveBuy = (dir == "BUY");
+   double liveArrowPrice = liveBuy ? (signalLow - livePad) : (signalHigh + livePad);
+   DrawSignalArrow(PREFIX + "LIVE_" + IntegerToString((int)barTime) + "_" + dir + "_ARW", barTime, liveArrowPrice, liveBuy, false);
+   DrawSignalText(PREFIX + "LIVE_" + IntegerToString((int)barTime) + "_" + dir + "_TXT", barTime,
+                  liveBuy ? liveArrowPrice - livePad * 0.6 : liveArrowPrice + livePad * 0.6,
+                  "ORB LIVE " + dir, liveBuy ? clrLime : clrTomato);
+   Audit("signal_detected", dir, 0, signalClose, 0, 0,
+         "signal_bar=" + FmtTime(barTime)
+         + " close=" + DoubleToString(signalClose, _Digits)
+         + " orb_high=" + DoubleToString(g_orbHigh, _Digits)
+         + " orb_low=" + DoubleToString(g_orbLow, _Digits));
+
    if(!SpreadAllowed())
    {
       Audit("signal_blocked_spread", dir, 0, signalClose, 0, 0, "signal_bar=" + FmtTime(barTime));
@@ -469,9 +780,12 @@ int OnInit()
    trade.SetDeviationInPoints(InpDeviationPoints);
    ResetForNewNyDay();
    EventSetTimer(1);
+   DrawDashboard();
+   DrawHistoricalSignals();
    if(InpLogOnInit)
    {
       Print("ORB15 MT5 EA initialized symbol=", _Symbol,
+            " build=", ORB15_BUILD,
             " tf=", EnumToString(InpSignalTimeframe),
             " magic=", InpMagic,
             " broker_gmt_offset_h=", DoubleToString(InpBrokerGmtOffsetHours, 2),
@@ -488,17 +802,22 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    DeleteLevelObjects();
+   DeleteDashboard();
+   DeleteHistoricalSignals();
 }
 
 void OnTimer()
 {
    ResetForNewNyDay();
    BuildOrb();
+   DrawHistoricalSignals();
    TryOpenSignal();
+   UpdateDashboard();
 }
 
 void OnTick()
 {
    ResetForNewNyDay();
    TryOpenSignal();
+   UpdateDashboard();
 }
