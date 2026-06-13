@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-10.0100-risk-health-audit"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-12.0200-reverse-close-default"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -57,7 +57,7 @@ input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
 input string InpDirectMt4AllowedTradeWindowsGmt = "";
 input string InpDirectMt4NoTradeWindowsGmt = "19:30-20:30";
-input bool   InpDirectMt4CloseReverse = false;
+input bool   InpDirectMt4CloseReverse = true;
 input double InpDirectMt4HalfBeR = 2.0;
 input bool   InpDirectMt4AuditCsv = true;
 input int    InpDirectMt4HistoryAuditSeconds = 2;
@@ -94,6 +94,13 @@ input bool   InpEnableFastBufferProbeAudit = true;
 input int    InpFastBufferProbeIntervalSeconds = 30;
 input int    InpFastBufferProbeMaxShift = 3;
 input bool   InpFastBufferProbeWriteOnChange = true;
+input bool   InpFastBufferProbeDeepAudit = true;
+input int    InpFastBufferProbeDeepMaxShift = 300;
+input bool   InpFastBufferProbeDualReadOnMiss = true;
+input bool   InpFastBufferProbeMapWhenPrimaryEmpty = true;
+input int    InpFastBufferProbeMapBufferMax = 16;
+input int    InpFastBufferProbeMapMaxShift = 100;
+input int    InpFastBufferProbeMaxHitRows = 12;
 input int    InpBufferHistoryNoneLogSeconds = 300;
 input bool   InpAllowObjectConfirmedFallback = false;
 input bool   InpChartObjectStrictGroups = true;
@@ -380,11 +387,23 @@ bool _direct_close_reverse_positions(string direction)
       if(!_direct_order_owned_by_instance(OrderTicket(),OrderComment(),true))
          continue;
       RefreshRates();
+      int ticket=OrderTicket();
+      string closedDirection=(OrderType()==OP_BUY)?"BUY":"SELL";
+      double lots=OrderLots();
+      double sl=OrderStopLoss();
+      double tp=OrderTakeProfit();
+      string source=OrderComment();
       double closePx=(targetType==OP_BUY)?Bid:Ask;
-      if(!OrderClose(OrderTicket(),OrderLots(),closePx,InpDirectMt4Slippage,clrSilver))
+      if(!OrderClose(ticket,lots,closePx,InpDirectMt4Slippage,clrSilver))
       {
-         Print("SIGNATICSBridge direct_mt4 reverse close failed ticket=",OrderTicket()," err=",GetLastError());
+         int err=GetLastError();
+         _direct_audit_write("direct_reverse_close_failed",source,"",ticket,closedDirection,lots,closePx,sl,tp,"err="+IntegerToString(err),0.0,"before_new_direction="+direction);
+         Print("SIGNATICSBridge direct_mt4 reverse close failed ticket=",ticket," err=",err);
          ok=false;
+      }
+      else
+      {
+         _direct_audit_write("direct_reverse_close_sent",source,"",ticket,closedDirection,lots,closePx,sl,tp,"before_new_direction="+direction,0.0,"");
       }
    }
    return ok;
@@ -2404,6 +2423,24 @@ double _signatics_icustom_buffer_value(int bufferIndex,int shift)
    return value;
 }
 
+double _signatics_icustom_buffer_value_simple(int bufferIndex,int shift)
+{
+   bool ownsProtection=(g_zoneProtectionDepth<=0);
+   if(ownsProtection)
+      _begin_signatics_zone_protection();
+   double value=iCustom(Symbol(),Period(),InpIndicatorName,bufferIndex,shift);
+   if(ownsProtection)
+      _end_signatics_zone_protection();
+   return value;
+}
+
+string _fast_buffer_read_mode_name(int mode)
+{
+   if(mode==1)
+      return "simple_icustom";
+   return "protected_icustom";
+}
+
 bool _read_signal_buffer(int bufferIndex,int shift,double &value)
 {
    ResetLastError();
@@ -2431,6 +2468,19 @@ bool _read_raw_signal_buffer(int bufferIndex,int shift,double &value,int &err)
 {
    ResetLastError();
    value=_signatics_icustom_buffer_value(bufferIndex,shift);
+   err=GetLastError();
+   if(err!=0)
+      ResetLastError();
+   return _valid_signal_buffer_value(value);
+}
+
+bool _read_raw_signal_buffer_mode(int mode,int bufferIndex,int shift,double &value,int &err)
+{
+   ResetLastError();
+   if(mode==1)
+      value=_signatics_icustom_buffer_value_simple(bufferIndex,shift);
+   else
+      value=_signatics_icustom_buffer_value(bufferIndex,shift);
    err=GetLastError();
    if(err!=0)
       ResetLastError();
@@ -2520,6 +2570,338 @@ void _fast_buffer_probe_audit_write(string eventName,string reason)
    FileClose(h);
 }
 
+string _fast_buffer_deep_probe_file_name()
+{
+   return "SIGNATICSBridge_BufferDeepProbe_"+_direct_audit_date(TimeGMT())+".csv";
+}
+
+void _fast_buffer_deep_probe_write_row(
+   int h,
+   string rowKind,
+   string eventName,
+   string reason,
+   string scope,
+   string readMode,
+   int bufferIndex,
+   string directionGuess,
+   int shift,
+   datetime barTime,
+   double rawValue,
+   bool valid,
+   int err,
+   int hitsTotal,
+   int firstBuffer,
+   string firstDirection,
+   int firstShift,
+   datetime firstBarTime,
+   double firstValue,
+   bool objectOk,
+   string objectDirection,
+   datetime objectTime,
+   double objectEntry,
+   double objectSl,
+   double objectTp1,
+   double objectTp2,
+   double objectTp3,
+   string objectSource
+)
+{
+   int ageSec=0;
+   if(barTime>0)
+   {
+      ageSec=(int)(TimeCurrent()-barTime);
+      if(ageSec<0)
+         ageSec=0;
+   }
+   FileWrite(h,
+      TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+      IntegerToString((int)(GetTickCount()%1000)),
+      rowKind,
+      eventName,
+      reason,
+      SIGNATICS_BRIDGE_BUILD,
+      InpIndicatorName,
+      Symbol(),
+      _tf_to_string(Period()),
+      scope,
+      readMode,
+      IntegerToString(bufferIndex),
+      directionGuess,
+      IntegerToString(shift),
+      _fmt_time(barTime),
+      _raw_buffer_label(rawValue),
+      IntegerToString(valid?1:0),
+      IntegerToString(err),
+      IntegerToString(ageSec),
+      IntegerToString(hitsTotal),
+      IntegerToString(firstBuffer),
+      firstDirection,
+      IntegerToString(firstShift),
+      _fmt_time(firstBarTime),
+      _fmt_price(firstValue),
+      IntegerToString(objectOk?1:0),
+      objectDirection,
+      _fmt_time(objectTime),
+      _fmt_price(objectEntry),
+      _fmt_price(objectSl),
+      _fmt_price(objectTp1),
+      _fmt_price(objectTp2),
+      _fmt_price(objectTp3),
+      objectSource,
+      IntegerToString(InpFastBuyBufferIndex),
+      IntegerToString(InpFastSellBufferIndex),
+      IntegerToString(MathMax(0,InpFastBufferProbeDeepMaxShift)),
+      IntegerToString(MathMax(0,InpFastBufferProbeMapBufferMax)),
+      IntegerToString(MathMax(0,InpFastBufferProbeMapMaxShift)),
+      _fmt_price(Bid),
+      _fmt_price(Ask),
+      IntegerToString((int)MarketInfo(Symbol(),MODE_SPREAD))
+   );
+}
+
+int _fast_buffer_probe_directional_scan(
+   int h,
+   string eventName,
+   string reason,
+   string scope,
+   int readMode,
+   int maxShift,
+   bool objectOk,
+   string objectDirection,
+   datetime objectTime,
+   double objectEntry,
+   double objectSl,
+   double objectTp1,
+   double objectTp2,
+   double objectTp3,
+   string objectSource,
+   int &firstBuffer,
+   string &firstDirection,
+   int &firstShift,
+   datetime &firstBarTime,
+   double &firstValue
+)
+{
+   int scanMax=MathMax(0,maxShift);
+   int hitRowsMax=MathMax(0,InpFastBufferProbeMaxHitRows);
+   int hits=0;
+   int rows=0;
+   firstBuffer=-1;
+   firstDirection="";
+   firstShift=-1;
+   firstBarTime=0;
+   firstValue=0.0;
+
+   for(int sh=0; sh<=scanMax; sh++)
+   {
+      int buffers[2];
+      string dirs[2];
+      buffers[0]=InpFastBuyBufferIndex; dirs[0]="BUY";
+      buffers[1]=InpFastSellBufferIndex; dirs[1]="SELL";
+      for(int i=0;i<2;i++)
+      {
+         double value=0.0;
+         int err=0;
+         bool ok=_read_raw_signal_buffer_mode(readMode,buffers[i],sh,value,err);
+         if(!ok)
+            continue;
+         datetime bt=iTime(Symbol(),Period(),sh);
+         hits++;
+         if(firstShift<0)
+         {
+            firstBuffer=buffers[i];
+            firstDirection=dirs[i];
+            firstShift=sh;
+            firstBarTime=bt;
+            firstValue=value;
+         }
+         if(rows<hitRowsMax)
+         {
+            _fast_buffer_deep_probe_write_row(
+               h,"hit",eventName,reason,scope,_fast_buffer_read_mode_name(readMode),
+               buffers[i],dirs[i],sh,bt,value,true,err,hits,
+               firstBuffer,firstDirection,firstShift,firstBarTime,firstValue,
+               objectOk,objectDirection,objectTime,objectEntry,objectSl,objectTp1,objectTp2,objectTp3,objectSource
+            );
+            rows++;
+         }
+      }
+   }
+   return hits;
+}
+
+int _fast_buffer_probe_map_scan(
+   int h,
+   string eventName,
+   string reason,
+   int readMode,
+   int maxBuffer,
+   int maxShift,
+   bool objectOk,
+   string objectDirection,
+   datetime objectTime,
+   double objectEntry,
+   double objectSl,
+   double objectTp1,
+   double objectTp2,
+   double objectTp3,
+   string objectSource,
+   int &firstBuffer,
+   string &firstDirection,
+   int &firstShift,
+   datetime &firstBarTime,
+   double &firstValue
+)
+{
+   int bufferMax=MathMax(0,MathMin(127,maxBuffer));
+   int shiftMax=MathMax(0,maxShift);
+   int hitRowsMax=MathMax(0,InpFastBufferProbeMaxHitRows);
+   int hits=0;
+   int rows=0;
+   firstBuffer=-1;
+   firstDirection="";
+   firstShift=-1;
+   firstBarTime=0;
+   firstValue=0.0;
+
+   for(int b=0; b<=bufferMax; b++)
+   {
+      for(int sh=0; sh<=shiftMax; sh++)
+      {
+         double value=0.0;
+         int err=0;
+         bool ok=_read_raw_signal_buffer_mode(readMode,b,sh,value,err);
+         if(!ok)
+            continue;
+         string dir="UNKNOWN";
+         if(b==InpFastBuyBufferIndex)
+            dir="BUY";
+         else if(b==InpFastSellBufferIndex)
+            dir="SELL";
+         datetime bt=iTime(Symbol(),Period(),sh);
+         hits++;
+         if(firstShift<0 || sh<firstShift)
+         {
+            firstBuffer=b;
+            firstDirection=dir;
+            firstShift=sh;
+            firstBarTime=bt;
+            firstValue=value;
+         }
+         if(rows<hitRowsMax)
+         {
+            _fast_buffer_deep_probe_write_row(
+               h,"hit",eventName,reason,"buffer_map",_fast_buffer_read_mode_name(readMode),
+               b,dir,sh,bt,value,true,err,hits,
+               firstBuffer,firstDirection,firstShift,firstBarTime,firstValue,
+               objectOk,objectDirection,objectTime,objectEntry,objectSl,objectTp1,objectTp2,objectTp3,objectSource
+            );
+            rows++;
+         }
+      }
+   }
+   return hits;
+}
+
+void _fast_buffer_deep_probe_audit_write(string eventName,string reason)
+{
+   if(!InpEnableFastBufferProbeAudit || !InpFastBufferProbeDeepAudit || !_fast_buffers_active())
+      return;
+
+   int h=FileOpen(_fast_buffer_deep_probe_file_name(),FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
+   if(h==INVALID_HANDLE)
+   {
+      Print("SIGNATICSBridge buffer_deep_probe audit open failed err=",GetLastError()," file=",_fast_buffer_deep_probe_file_name());
+      return;
+   }
+   bool empty=(FileSize(h)<=0);
+   FileSeek(h,0,SEEK_END);
+   if(empty)
+      FileWrite(h,"ts_gmt","ts_server","ts_local","ms","row_kind","event","reason","build","indicator","symbol","timeframe","scope","read_mode","buffer_index","direction_guess","shift","bar_time","raw_value","valid","error","age_sec","hits_total","first_buffer","first_direction","first_shift","first_bar_time","first_value","object_ok","object_direction","object_time","object_entry","object_sl","object_tp1","object_tp2","object_tp3","object_source","configured_buy_buffer","configured_sell_buffer","deep_max_shift","map_buffer_max","map_max_shift","bid","ask","spread");
+
+   RefreshRates();
+   string objDir="",objSource="";
+   datetime objTime=0;
+   double objEntry=0.0,objSl=0.0,objTp1=0.0,objTp2=0.0,objTp3=0.0;
+   bool objectOk=_find_latest_signatics_signal(objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource);
+
+   int firstBuffer=-1,firstShift=-1;
+   string firstDir="";
+   datetime firstTime=0;
+   double firstValue=0.0;
+   int primaryHits=_fast_buffer_probe_directional_scan(
+      h,eventName,reason,"configured_buffers",0,MathMax(0,InpFastBufferProbeDeepMaxShift),
+      objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource,
+      firstBuffer,firstDir,firstShift,firstTime,firstValue
+   );
+   _fast_buffer_deep_probe_write_row(
+      h,"summary",eventName,reason,"configured_buffers",_fast_buffer_read_mode_name(0),
+      -1,"",-1,0,0.0,false,0,primaryHits,
+      firstBuffer,firstDir,firstShift,firstTime,firstValue,
+      objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource
+   );
+
+   int simpleHits=0;
+   if(primaryHits<=0 && InpFastBufferProbeDualReadOnMiss)
+   {
+      int sf=-1,ss=-1;
+      string sd="";
+      datetime st=0;
+      double sv=0.0;
+      simpleHits=_fast_buffer_probe_directional_scan(
+         h,eventName,reason,"configured_buffers",1,MathMax(0,InpFastBufferProbeDeepMaxShift),
+         objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource,
+         sf,sd,ss,st,sv
+      );
+      _fast_buffer_deep_probe_write_row(
+         h,"summary",eventName,reason,"configured_buffers",_fast_buffer_read_mode_name(1),
+         -1,"",-1,0,0.0,false,0,simpleHits,
+         sf,sd,ss,st,sv,
+         objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource
+      );
+   }
+
+   if(primaryHits<=0 && simpleHits<=0 && objectOk && InpFastBufferProbeMapWhenPrimaryEmpty)
+   {
+      int mf=-1,ms=-1;
+      string md="";
+      datetime mt=0;
+      double mv=0.0;
+      int mapHits=_fast_buffer_probe_map_scan(
+         h,eventName,reason,0,InpFastBufferProbeMapBufferMax,InpFastBufferProbeMapMaxShift,
+         objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource,
+         mf,md,ms,mt,mv
+      );
+      _fast_buffer_deep_probe_write_row(
+         h,"summary",eventName,reason,"buffer_map",_fast_buffer_read_mode_name(0),
+         -1,"",-1,0,0.0,false,0,mapHits,
+         mf,md,ms,mt,mv,
+         objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource
+      );
+      if(mapHits<=0 && InpFastBufferProbeDualReadOnMiss)
+      {
+         int rf=-1,rs=-1;
+         string rd="";
+         datetime rt=0;
+         double rv=0.0;
+         int rawMapHits=_fast_buffer_probe_map_scan(
+            h,eventName,reason,1,InpFastBufferProbeMapBufferMax,InpFastBufferProbeMapMaxShift,
+            objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource,
+            rf,rd,rs,rt,rv
+         );
+         _fast_buffer_deep_probe_write_row(
+            h,"summary",eventName,reason,"buffer_map",_fast_buffer_read_mode_name(1),
+            -1,"",-1,0,0.0,false,0,rawMapHits,
+            rf,rd,rs,rt,rv,
+            objectOk,objDir,objTime,objEntry,objSl,objTp1,objTp2,objTp3,objSource
+         );
+      }
+   }
+   FileClose(h);
+}
+
 void MaybeWriteFastBufferProbeAudit(string reason,bool allowChange)
 {
    if(!InpEnableFastBufferProbeAudit || !_fast_buffers_active())
@@ -2529,6 +2911,7 @@ void MaybeWriteFastBufferProbeAudit(string reason,bool allowChange)
    if(g_lastFastBufferProbeSnapshot<=0 || now-g_lastFastBufferProbeSnapshot>=interval)
    {
       _fast_buffer_probe_audit_write("snapshot",reason);
+      _fast_buffer_deep_probe_audit_write("snapshot",reason);
       g_lastFastBufferProbeSnapshot=now;
       g_lastFastBufferProbeSignature=_fast_buffer_probe_signature();
       g_lastFastBufferProbeChangeCheck=now;
@@ -2543,6 +2926,7 @@ void MaybeWriteFastBufferProbeAudit(string reason,bool allowChange)
    if(g_lastFastBufferProbeSignature=="" || sig!=g_lastFastBufferProbeSignature)
    {
       _fast_buffer_probe_audit_write("change",reason);
+      _fast_buffer_deep_probe_audit_write("change",reason);
       g_lastFastBufferProbeSignature=sig;
    }
 }
@@ -4030,7 +4414,7 @@ int OnInit()
    g_directMt4AllowedWindowsRuntime=_trim(InpDirectMt4AllowedTradeWindowsGmt);
    g_directMt4NoTradeWindowsRuntime=_trim(InpDirectMt4NoTradeWindowsGmt);
    _direct_history_cursor_init();
-   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," fastMaxAge=",InpFastSignalMaxAgeSeconds," recoveryLookback=",InpFastSignalRecoveryLookbackBars," retrySec=",InpFastSignalRetrySeconds," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," probe=",InpEnableFastBufferProbeAudit," probeSec=",InpFastBufferProbeIntervalSeconds," probeShift=",InpFastBufferProbeMaxShift," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds);
+   Print("SIGNATICSBridge BUILD=",SIGNATICS_BRIDGE_BUILD," indicator=",InpIndicatorName," instanceIndicator=",_bridge_indicator_label()," mode=",_bridge_signal_mode()," symbol=",Symbol()," tf=",_tf_to_string(Period())," poll=",poll," light=",InpLogOnlyTradeSignals," resolved=",InpSendResolvedStateEvents," groupPrimary=",InpPreferGroupedSetup," lvFallback=",InpAllowLevelObjectFallback," fastBuffers=",_fast_buffers_active()," fastLookback=",InpFastSignalLookbackBars," fastMaxAge=",InpFastSignalMaxAgeSeconds," recoveryLookback=",InpFastSignalRecoveryLookbackBars," retrySec=",InpFastSignalRetrySeconds," historyLookback=",InpFastSignalHistoryLookbackBars," tickScan=",InpScanFastBuffersOnTick," probe=",InpEnableFastBufferProbeAudit," probeSec=",InpFastBufferProbeIntervalSeconds," probeShift=",InpFastBufferProbeMaxShift," deepProbe=",InpFastBufferProbeDeepAudit," deepShift=",InpFastBufferProbeDeepMaxShift," dualOnMiss=",InpFastBufferProbeDualReadOnMiss," mapOnEmpty=",InpFastBufferProbeMapWhenPrimaryEmpty," mapBufferMax=",InpFastBufferProbeMapBufferMax," mapShift=",InpFastBufferProbeMapMaxShift," strictGroups=",InpChartObjectStrictGroups," requireAllTps=",InpChartObjectRequireAllTps," objectStableSec=",InpChartObjectStableSeconds);
    Print("SIGNATICSBridge account_risk enabled=",InpAdvancedAccountRiskEnabled," effectiveMagic=",_direct_magic()," autoLot=",InpDirectMt4AutoLotEnabled," dailyAtrPeriod=",InpDirectMt4AutoLotDailyAtrPeriod," autoLotMax=",DoubleToString(InpDirectMt4AutoLotMax,2)," riskPerTradePct=",DoubleToString(InpAccountRiskPerTradePct,3)," atrExposurePct=",DoubleToString(InpAccountRiskDailyAtrExposurePct,3)," maxPortfolioPct=",DoubleToString(InpAccountRiskMaxPortfolioPct,3)," dailyLossLimitPct=",DoubleToString(InpAccountRiskDailyLossLimitPct,3)," maxDrawdownPct=",DoubleToString(InpAccountRiskMaxDrawdownPct,3)," maxMarginUsagePct=",DoubleToString(InpAccountRiskMaxMarginUsagePct,3)," initialBalanceOverride=",DoubleToString(InpAccountRiskInitialBalanceOverride,2)," dayResetHourGmt=",MathMax(0,MathMin(23,InpAccountRiskDayResetHourGmt)));
    Print("SIGNATICSBridge iCustom_sync=",InpSyncICustomInputsToChart,
       " isolateHiddenSmcObjects=",InpSuppressHiddenICustomSideEffects,

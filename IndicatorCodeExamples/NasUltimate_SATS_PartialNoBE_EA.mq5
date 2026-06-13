@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.25"
+#property version "1.26"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -51,6 +51,7 @@ input bool   InpAdaptiveSlWidenEnabled = true;
 input double InpSlWidenTightPct = 30.0;
 input double InpSlWidenNormalPct = 25.0;
 input double InpSlWidenWidePct = 20.0;
+input double InpFinalRiskScalePct = 75.0; // 100=unchanged; 75 trims final SL/TP distance by 25%.
 input NAS_SIGNAL_BAR_MODE InpSignalBarMode = NAS_SIGNAL_BAR_CLOSED;
 input NAS_RISK_ENGINE InpRiskEngine = NAS_RISK_PINE;
 input bool   InpBlockSameDirectionUntilReverse = true;
@@ -178,6 +179,8 @@ double   g_lastRiskSwingProminence = 0.0;
 int      g_lastRiskSwingAgeBars = -1;
 double   g_lastRiskPreWidenSl = 0.0;
 double   g_lastRiskWidenPct = 0.0;
+double   g_lastRiskFinalScalePct = 100.0;
+double   g_finalRiskScalePctRuntime = 100.0;
 double   g_lastAdvancedLot = 0.0;
 string   g_lastAdvancedLotDetail = "";
 uint     g_lastAccountRiskGuardMs = 0;
@@ -610,6 +613,7 @@ int OnInit()
    g_fixedLotRuntime = InpFixedLot;
    g_spreadMaxPointsRuntime = MathMax(0.0, InpSpreadWidePoints);
    g_eaEnabledRuntime = InpEaEnabled;
+   g_finalRiskScalePctRuntime = MathMax(10.0, MathMin(200.0, InpFinalRiskScalePct));
    g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    HydrateExecutedDirectionFromOpenPosition();
    PrintStartupDiagnostics();
@@ -699,7 +703,8 @@ void PrintStartupDiagnostics()
          " adaptive_widen=", InpAdaptiveSlWidenEnabled,
          " widen_tight_pct=", DoubleToString(InpSlWidenTightPct, 1),
          " widen_normal_pct=", DoubleToString(InpSlWidenNormalPct, 1),
-         " widen_wide_pct=", DoubleToString(InpSlWidenWidePct, 1));
+         " widen_wide_pct=", DoubleToString(InpSlWidenWidePct, 1),
+         " final_scale_pct=", DoubleToString(InpFinalRiskScalePct, 1));
    Print("NAS SATS execution spread_governor_enabled=", InpSpreadGovernorEnabled,
          " spread_good_pts=", DoubleToString(InpSpreadGoodPoints, 1),
          " spread_normal_pts=", DoubleToString(InpSpreadNormalPoints, 1),
@@ -1051,6 +1056,43 @@ bool ApplyAdaptiveSlWiden(const int direction,
    return true;
 }
 
+bool ApplyFinalRiskScale(const int direction,
+                         const double entry,
+                         double &sl,
+                         double &tp1,
+                         double &tp2,
+                         double &tp3)
+{
+   g_lastRiskFinalScalePct = 100.0;
+   if(direction == 0 || entry <= 0.0)
+      return false;
+
+   double pct = MathMax(10.0, MathMin(200.0, g_finalRiskScalePctRuntime));
+   g_lastRiskFinalScalePct = pct;
+   if(MathAbs(pct - 100.0) < 0.0001)
+      return false;
+
+   double rawRisk = MathAbs(entry - sl);
+   if(rawRisk <= 0.0)
+      return false;
+
+   double r1 = MathAbs(tp1 - entry) / rawRisk;
+   double r2 = MathAbs(tp2 - entry) / rawRisk;
+   double r3 = MathAbs(tp3 - entry) / rawRisk;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long stopLevelPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStop = MathMax(point * 20.0, (double)stopLevelPoints * point * 1.5);
+   double targetRisk = MathMax(minStop, rawRisk * pct / 100.0);
+   if(MathAbs(targetRisk - rawRisk) <= point * 0.5)
+      return false;
+
+   sl = direction > 0 ? entry - targetRisk : entry + targetRisk;
+   tp1 = direction > 0 ? entry + targetRisk * r1 : entry - targetRisk * r1;
+   tp2 = direction > 0 ? entry + targetRisk * r2 : entry - targetRisk * r2;
+   tp3 = direction > 0 ? entry + targetRisk * r3 : entry - targetRisk * r3;
+   return true;
+}
+
 bool CalculateRisk(const MqlRates &rates[],
                    const int copied,
                    const int signalIndex,
@@ -1085,6 +1127,7 @@ bool CalculateRisk(const MqlRates &rates[],
       }
       ApplyStructuralSwingStop(rates, copied, signalIndex, direction, entry, sl, tp1, tp2, tp3);
       ApplyAdaptiveSlWiden(direction, entry, sl, tp1, tp2, tp3);
+      ApplyFinalRiskScale(direction, entry, sl, tp1, tp2, tp3);
       return true;
    }
 
@@ -1094,6 +1137,7 @@ bool CalculateRisk(const MqlRates &rates[],
       return false;
    ApplyStructuralSwingStop(rates, copied, signalIndex, direction, entry, sl, tp1, tp2, tp3);
    ApplyAdaptiveSlWiden(direction, entry, sl, tp1, tp2, tp3);
+   ApplyFinalRiskScale(direction, entry, sl, tp1, tp2, tp3);
    return true;
 }
 
@@ -2143,6 +2187,7 @@ bool OpenThreeLegs(const int direction)
       + " prominence_atr=" + DoubleToString(g_lastRiskSwingProminence, 2)
       + " pre_widen_sl=" + DoubleToString(g_lastRiskPreWidenSl, _Digits)
       + " widen_pct=" + DoubleToString(g_lastRiskWidenPct, 2)
+      + " final_scale_pct=" + DoubleToString(g_lastRiskFinalScalePct, 2)
       + " " + g_lastAdvancedLotDetail;
    g_lastAdvancedLot = totalVolume;
    if(totalVolume <= 0.0)
@@ -2276,6 +2321,7 @@ bool OpenFixedOneToThreeR(const int direction)
       + " prominence_atr=" + DoubleToString(g_lastRiskSwingProminence, 2)
       + " pre_widen_sl=" + DoubleToString(g_lastRiskPreWidenSl, _Digits)
       + " widen_pct=" + DoubleToString(g_lastRiskWidenPct, 2)
+      + " final_scale_pct=" + DoubleToString(g_lastRiskFinalScalePct, 2)
       + " " + g_lastAdvancedLotDetail;
    g_lastAdvancedLot = lot;
    if(lot <= 0.0)
@@ -3028,9 +3074,9 @@ void ClearDashboardObjects()
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
-      "DASH_SPREAD_MAX_LBL", "DASH_CFG_NOTE", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_CFG_NOTE", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_EA_TOGGLE",
-      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_SPREAD_MAX"
+      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE"
    };
    for(int i = 0; i < ArraySize(names); i++)
       DeleteObjectIfExists(names[i]);
@@ -3191,11 +3237,41 @@ bool ApplySpreadMaxFromDashboard(const string source)
    return true;
 }
 
+bool ApplyFinalRiskScaleFromDashboard(const string source)
+{
+   string scaleObj = PREFIX + "EDIT_FINAL_SCALE";
+   if(ObjectFind(0, scaleObj) < 0)
+   {
+      Print("NAS SATS EA final risk scale apply failed missing edit object source=", source);
+      return false;
+   }
+
+   string scaleText = ObjectGetString(0, scaleObj, OBJPROP_TEXT);
+   StringTrimLeft(scaleText);
+   StringTrimRight(scaleText);
+   double requested = StringToDouble(scaleText);
+   if(requested <= 0.0)
+   {
+      Print("NAS SATS EA final risk scale apply failed invalid value source=", source, " scale_pct=", scaleText);
+      return false;
+   }
+
+   g_finalRiskScalePctRuntime = MathMax(10.0, MathMin(200.0, requested));
+   ObjectSetString(0, scaleObj, OBJPROP_TEXT, DoubleToString(g_finalRiskScalePctRuntime, 0));
+   Print("NAS SATS EA final risk scale updated source=", source,
+         " final_scale_pct=", DoubleToString(g_finalRiskScalePctRuntime, 2),
+         " note=100_keeps_raw_sl_75_trims_distance_by_25pct");
+   UpdateDashboard();
+   ChartRedraw(0);
+   return true;
+}
+
 void ApplyDashboardSettings(const string source)
 {
    ApplyTradingWindowFromDashboard(source);
    ApplyLotFromDashboard(source);
    ApplySpreadMaxFromDashboard(source);
+   ApplyFinalRiskScaleFromDashboard(source);
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -3211,6 +3287,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          ApplyLotFromDashboard("edit_end");
       else if(sparam == PREFIX + "EDIT_SPREAD_MAX")
          ApplySpreadMaxFromDashboard("edit_end");
+      else if(sparam == PREFIX + "EDIT_FINAL_SCALE")
+         ApplyFinalRiskScaleFromDashboard("edit_end");
       return;
    }
 
@@ -3417,7 +3495,9 @@ void UpdateDashboard()
    CreateEdit("EDIT_LOT", 836, 164, 68, 22, DoubleToString(shownLot, 2));
    CreateLabel("DASH_SPREAD_MAX_LBL", 684, 194, "MaxSpr", muted, 8);
    CreateEdit("EDIT_SPREAD_MAX", 760, 190, 68, 22, DoubleToString(g_spreadMaxPointsRuntime, 0));
-   CreateLabel("DASH_CFG_NOTE", 684, 220, "MaxSpr 0=OFF | G/N/W Good/Normal/Wide; >0 blocks above max", muted, 7);
+   CreateLabel("DASH_FINAL_SCALE_LBL", 836, 194, "SL %", muted, 8);
+   CreateEdit("EDIT_FINAL_SCALE", 884, 190, 44, 22, DoubleToString(g_finalRiskScalePctRuntime, 0));
+   CreateLabel("DASH_CFG_NOTE", 684, 220, "MaxSpr 0=OFF | SL%: 100 raw, 75 trims distance by 25%", muted, 7);
 
    CreateLabel("DASH_H0", 690, 250, "Recent NAS signals", titleColor, 8);
    CreateLabel("DASH_H1", 690, 276, UiShort(g_historySummary[0], 35), muted, 7);
