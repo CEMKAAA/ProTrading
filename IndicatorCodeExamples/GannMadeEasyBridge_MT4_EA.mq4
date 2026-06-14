@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-06-14.0020-gann-market-first"
+#define BUILD_TAG "2026-06-14.0125-gann-stopguard-lifecycle"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpIndicatorName = "Asiller\\Gann Made Easy\\GannMadeEasy @PaidCrackedEA"; // informational; EA trades chart objects.
@@ -48,8 +48,10 @@ input int    InpMagic = 42061301;
 input bool   InpUseSymbolTimeframeMagic = true;
 input int    InpSlippage = 30;
 input int    InpMaxMarketEntryDriftPoints = 50; // If market is worse than arrow by more than this, place limit at arrow price. 0=always market.
-input bool   InpUsePendingAtSignalOnDrift = false;
+// New name intentionally avoids old .set files that may still contain InpUsePendingAtSignalOnDrift=true.
+input bool   InpPendingOnDriftStartup = false;
 input int    InpPendingExpiryMinutes = 30;
+input int    InpBrokerStopSafetyPoints = 3;
 input int    InpMaxSpreadPoints = 0;      // 0=off
 input string InpAllowedWindowsGmt = "";   // empty=24/7, HH:MM-HH:MM,...
 input string InpNoTradeWindowsGmt = "21:55-22:10";
@@ -93,6 +95,7 @@ input int    InpRiskAuditSeconds = 60;
 
 input bool   InpEnableAudit = true;
 input int    InpPositionProbeSeconds = 30;
+input int    InpLifecycleAuditSeconds = 10;
 
 string   g_prefix;
 bool     g_eaEnabled;
@@ -102,6 +105,7 @@ int      g_maxSpreadRuntime;
 double   g_finalScaleRuntime;
 int      g_targetTpRuntime;
 int      g_halfTpRuntime;
+bool     g_pendingOnDriftRuntime;
 string   g_allowedWindowsRuntime;
 string   g_noTradeWindowsRuntime;
 string   g_lastEventId = "";
@@ -111,6 +115,7 @@ double   g_lastSignalPrice = 0.0;
 datetime g_lastScanTs = 0;
 datetime g_lastRiskAuditTs = 0;
 datetime g_lastProbeTs = 0;
+datetime g_lastLifecycleAuditTs = 0;
 bool     g_lastGeometryUsedFallback = false;
 
 int OnInit()
@@ -122,6 +127,7 @@ int OnInit()
    g_finalScaleRuntime = MathMax(10.0, MathMin(200.0, InpFinalRiskScalePct));
    g_targetTpRuntime = MathMax(0, MathMin(3, InpTargetTpIndex));
    g_halfTpRuntime = MathMax(0, MathMin(3, InpHalfBeTpIndex));
+   g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
    g_allowedWindowsRuntime = InpAllowedWindowsGmt;
    g_noTradeWindowsRuntime = InpNoTradeWindowsGmt;
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
@@ -129,8 +135,8 @@ int OnInit()
    EventSetTimer(MathMax(1, InpPollSeconds));
 
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName, 0, "");
-   RiskAudit("init", "build=" + BUILD_TAG);
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"), 0, "");
+   RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
 
    if(!InpTradeLatestSignalOnAttach)
    {
@@ -144,7 +150,7 @@ int OnInit()
          Audit("startup_baseline", eid, 0, dir, 0, px, 0, 0, "shift=" + IntegerToString(sh) + " buffer=" + IntegerToString(buf), 0, "old signal ignored on attach");
       }
    }
-   Print("GannMadeEasyBridge BUILD=", BUILD_TAG, " indicator=", InpIndicatorName, " buyBuffer=", InpBuyBuffer, " sellBuffer=", InpSellBuffer);
+   Print("GannMadeEasyBridge BUILD=", BUILD_TAG, " indicator=", InpIndicatorName, " buyBuffer=", InpBuyBuffer, " sellBuffer=", InpSellBuffer, " pendingOnDrift=", (g_pendingOnDriftRuntime ? "true" : "false"));
    return INIT_SUCCEEDED;
 }
 
@@ -160,6 +166,7 @@ void OnTick()
 {
    if(InpScanOnTick) ProcessSignals("tick");
    ManagePositions();
+   MaybeLifecycleAudit();
    if(InpShowDashboard) DashboardUpdate();
 }
 
@@ -167,6 +174,7 @@ void OnTimer()
 {
    ProcessSignals("timer");
    ManagePositions();
+   MaybeLifecycleAudit();
    MaybeProbe();
    MaybeRiskAudit();
    if(InpShowDashboard) DashboardUpdate();
@@ -193,6 +201,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_collapsed = !g_collapsed;
       DashboardCreate();
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("drift"))
+   {
+      g_pendingOnDriftRuntime = !g_pendingOnDriftRuntime;
+      Audit("dashboard_drift_toggle", "", 0, "", 0, 0, 0, 0, g_pendingOnDriftRuntime ? "pending_on_drift=true" : "pending_on_drift=false", 0, "");
       DashboardUpdate();
       return;
    }
@@ -347,6 +362,157 @@ bool FindLevelPrice(string wantedName, double &price, string &detail)
    return false;
 }
 
+double TickSizePrice()
+{
+   double tick = MarketInfo(Symbol(), MODE_TICKSIZE);
+   if(tick <= 0.0) tick = Point;
+   if(tick < Point * 0.5) tick = Point;
+   return tick;
+}
+
+double NormalizePriceToTick(double price)
+{
+   if(price <= 0.0) return 0.0;
+   double tick = TickSizePrice();
+   if(tick <= 0.0) tick = Point;
+   return NormalizeDouble(MathRound(price / tick) * tick, Digits);
+}
+
+double BrokerMinStopDistance()
+{
+   double stop = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
+   double freeze = MarketInfo(Symbol(), MODE_FREEZELEVEL) * Point;
+   double safety = MathMax(0, InpBrokerStopSafetyPoints) * Point;
+   return MathMax(MathMax(stop, freeze) + safety, MathMax(Point, TickSizePrice()));
+}
+
+bool ValidateDirectionLevels(int logicalType, double entry, double sl, double tp, string &detail)
+{
+   if(logicalType == OP_BUY)
+   {
+      if(sl > 0.0 && sl >= entry)
+      {
+         detail = "buy_sl_not_below_entry entry=" + PriceText(entry) + " sl=" + PriceText(sl);
+         return false;
+      }
+      if(tp > 0.0 && tp <= entry)
+      {
+         detail = "buy_tp_not_above_entry entry=" + PriceText(entry) + " tp=" + PriceText(tp);
+         return false;
+      }
+   }
+   else
+   {
+      if(sl > 0.0 && sl <= entry)
+      {
+         detail = "sell_sl_not_above_entry entry=" + PriceText(entry) + " sl=" + PriceText(sl);
+         return false;
+      }
+      if(tp > 0.0 && tp >= entry)
+      {
+         detail = "sell_tp_not_below_entry entry=" + PriceText(entry) + " tp=" + PriceText(tp);
+         return false;
+      }
+   }
+   return true;
+}
+
+bool PrepareBrokerOrderLevels(int sendType, int logicalType, double &entry, double &sl, double &tp, string &detail)
+{
+   RefreshRates();
+   double minDist = BrokerMinStopDistance();
+   double rawEntry = entry, rawSl = sl, rawTp = tp;
+   double bid = Bid, ask = Ask;
+
+   if(sendType == OP_BUY)
+   {
+      entry = ask;
+      if(sl > 0.0 && sl > bid - minDist) sl = bid - minDist;
+      if(tp > 0.0 && tp < bid + minDist) tp = bid + minDist;
+   }
+   else if(sendType == OP_SELL)
+   {
+      entry = bid;
+      if(sl > 0.0 && sl < ask + minDist) sl = ask + minDist;
+      if(tp > 0.0 && tp > ask - minDist) tp = ask - minDist;
+   }
+   else if(sendType == OP_BUYLIMIT)
+   {
+      if(entry > ask - minDist) entry = ask - minDist;
+      if(sl > 0.0 && sl > entry - minDist) sl = entry - minDist;
+      if(tp > 0.0 && tp < entry + minDist) tp = entry + minDist;
+   }
+   else if(sendType == OP_SELLLIMIT)
+   {
+      if(entry < bid + minDist) entry = bid + minDist;
+      if(sl > 0.0 && sl < entry + minDist) sl = entry + minDist;
+      if(tp > 0.0 && tp > entry - minDist) tp = entry - minDist;
+   }
+
+   entry = NormalizePriceToTick(entry);
+   sl = NormalizePriceToTick(sl);
+   tp = NormalizePriceToTick(tp);
+
+   if(sl <= 0.0)
+   {
+      detail = "missing_stop_after_broker_guard";
+      return false;
+   }
+   string dirDetail;
+   if(!ValidateDirectionLevels(logicalType, entry, sl, tp, dirDetail))
+   {
+      detail = dirDetail + " raw_entry=" + PriceText(rawEntry) + " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTp) + " min_dist=" + PriceText(minDist);
+      return false;
+   }
+
+   bool changed = (MathAbs(entry - rawEntry) > Point * 0.5 || MathAbs(sl - rawSl) > Point * 0.5 || MathAbs(tp - rawTp) > Point * 0.5);
+   detail = "broker_stop_guard changed=" + (changed ? "true" : "false") +
+            " raw_entry=" + PriceText(rawEntry) + " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTp) +
+            " final_entry=" + PriceText(entry) + " final_sl=" + PriceText(sl) + " final_tp=" + PriceText(tp) +
+            " bid=" + PriceText(bid) + " ask=" + PriceText(ask) +
+            " stop_points=" + DoubleToString(MarketInfo(Symbol(), MODE_STOPLEVEL), 0) +
+            " freeze_points=" + DoubleToString(MarketInfo(Symbol(), MODE_FREEZELEVEL), 0) +
+            " safety_points=" + IntegerToString(MathMax(0, InpBrokerStopSafetyPoints)) +
+            " tick=" + PriceText(TickSizePrice());
+   return true;
+}
+
+bool PrepareBrokerModifyStops(int logicalType, double openPrice, double &sl, double &tp, string &detail)
+{
+   RefreshRates();
+   double minDist = BrokerMinStopDistance();
+   double rawSl = sl, rawTp = tp;
+   double bid = Bid, ask = Ask;
+
+   if(logicalType == OP_BUY)
+   {
+      if(sl > 0.0 && sl > bid - minDist) sl = bid - minDist;
+      if(tp > 0.0 && tp < bid + minDist) tp = bid + minDist;
+   }
+   else
+   {
+      if(sl > 0.0 && sl < ask + minDist) sl = ask + minDist;
+      if(tp > 0.0 && tp > ask - minDist) tp = ask - minDist;
+   }
+
+   sl = NormalizePriceToTick(sl);
+   tp = NormalizePriceToTick(tp);
+
+   string dirDetail;
+   if(!ValidateDirectionLevels(logicalType, openPrice, sl, tp, dirDetail))
+   {
+      detail = dirDetail + " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTp) + " min_dist=" + PriceText(minDist);
+      return false;
+   }
+   bool changed = (MathAbs(sl - rawSl) > Point * 0.5 || MathAbs(tp - rawTp) > Point * 0.5);
+   detail = "broker_modify_guard changed=" + (changed ? "true" : "false") +
+            " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTp) +
+            " final_sl=" + PriceText(sl) + " final_tp=" + PriceText(tp) +
+            " bid=" + PriceText(bid) + " ask=" + PriceText(ask) +
+            " min_dist=" + PriceText(minDist);
+   return true;
+}
+
 void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int buffer)
 {
    RefreshRates();
@@ -358,7 +524,7 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    double entry = marketEntry;
    bool worseThanSignal = (type == OP_BUY && marketEntry > signalPx) || (type == OP_SELL && marketEntry < signalPx);
    double driftPoints = (signalPx > 0.0) ? MathAbs(marketEntry - signalPx) / Point : 0.0;
-   bool usePending = (InpUsePendingAtSignalOnDrift && InpMaxMarketEntryDriftPoints > 0 && worseThanSignal && driftPoints > InpMaxMarketEntryDriftPoints);
+   bool usePending = (g_pendingOnDriftRuntime && InpMaxMarketEntryDriftPoints > 0 && worseThanSignal && driftPoints > InpMaxMarketEntryDriftPoints);
    if(usePending) entry = signalPx;
    double sl, tp1, tp2, tp3;
    string geom;
@@ -369,7 +535,32 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    }
    double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
    double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
-   Audit("signal_received", eventId, 0, dir, g_lotRuntime, signalPx, sl, target, "source=chart_object shift=" + IntegerToString(shift) + " bid=" + PriceText(liveBid) + " ask=" + PriceText(liveAsk) + " spread_points=" + IntegerToString(spreadNow) + " market_entry=" + PriceText(marketEntry) + " planned_entry=" + PriceText(entry) + " drift_points=" + DoubleToString(driftPoints, 1) + " pending_at_signal=" + (usePending ? "true" : "false") + " " + geom + " half_trigger=" + PriceText(half), 0, "");
+
+   int sendType = type;
+   datetime expiry = 0;
+   if(usePending)
+   {
+      sendType = (type == OP_BUY) ? OP_BUYLIMIT : OP_SELLLIMIT;
+      expiry = TimeCurrent() + MathMax(1, InpPendingExpiryMinutes) * 60;
+   }
+
+   double rawPlannedEntry = entry, rawSl = sl, rawTarget = target;
+   string brokerGuard;
+   if(!PrepareBrokerOrderLevels(sendType, type, entry, sl, target, brokerGuard))
+   {
+      Audit("trade_blocked_broker_stops", eventId, 0, dir, 0, rawPlannedEntry, rawSl, rawTarget, brokerGuard + " " + geom, 0, "");
+      return;
+   }
+   if(MathAbs(entry - rawPlannedEntry) > Point * 0.5 || MathAbs(sl - rawSl) > Point * 0.5 || MathAbs(target - rawTarget) > Point * 0.5)
+   {
+      if(g_targetTpRuntime == 1) tp1 = target;
+      if(g_targetTpRuntime == 2) tp2 = target;
+      if(g_targetTpRuntime == 3) tp3 = target;
+      if(g_halfTpRuntime == g_targetTpRuntime) half = target;
+      Audit("broker_stop_adjusted", eventId, 0, dir, 0, entry, sl, target, brokerGuard, 0, "raw_entry=" + PriceText(rawPlannedEntry) + " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTarget));
+   }
+
+   Audit("signal_received", eventId, 0, dir, g_lotRuntime, signalPx, sl, target, "source=chart_object shift=" + IntegerToString(shift) + " bid=" + PriceText(liveBid) + " ask=" + PriceText(liveAsk) + " spread_points=" + IntegerToString(spreadNow) + " market_entry=" + PriceText(marketEntry) + " planned_entry=" + PriceText(entry) + " drift_points=" + DoubleToString(driftPoints, 1) + " pending_at_signal=" + (usePending ? "true" : "false") + " " + geom + " " + brokerGuard + " half_trigger=" + PriceText(half), 0, "");
 
    if(!g_eaEnabled) { Audit("trade_blocked_disabled", eventId, 0, dir, 0, entry, sl, target, "ea_disabled", 0, ""); return; }
    if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
@@ -399,14 +590,7 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       return;
    }
 
-   int sendType = type;
-   datetime expiry = 0;
-   if(usePending)
-   {
-      sendType = (type == OP_BUY) ? OP_BUYLIMIT : OP_SELLLIMIT;
-      expiry = TimeCurrent() + MathMax(1, InpPendingExpiryMinutes) * 60;
-   }
-   int ticket = OrderSend(Symbol(), sendType, lot, NormalizeDouble(entry, Digits), InpSlippage, NormalizeDouble(sl, Digits), NormalizeDouble(target, Digits), "GannBridge " + dir, EffectiveMagic(), expiry, (type == OP_BUY ? clrLime : clrTomato));
+   int ticket = OrderSend(Symbol(), sendType, lot, NormalizePriceToTick(entry), InpSlippage, NormalizePriceToTick(sl), NormalizePriceToTick(target), "GannBridge " + dir, EffectiveMagic(), expiry, (type == OP_BUY ? clrLime : clrTomato));
    int err = GetLastError();
    if(ticket > 0)
    {
@@ -417,7 +601,97 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       if(g_lastGeometryUsedFallback) DrawCalculatedFallbackLevels(ticket, sl, tp1, tp2, tp3);
       DrawTradeLevels();
    }
-   else Audit(usePending ? "pending_order_failed" : "order_failed", eventId, 0, dir, lot, entry, sl, target, "err=" + IntegerToString(err) + " market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail, 0, "");
+   else
+   {
+      if(err == 130 && TrySecondLevelStopGuardOpen(eventId, dir, sendType, type, lot, entry, sl, target, tp1, tp2, tp3, half, marketEntry, driftPoints, lotDetail, usePending))
+         return;
+      Audit(usePending ? "pending_order_failed" : "order_failed", eventId, 0, dir, lot, entry, sl, target, "err=" + IntegerToString(err) + " market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail, 0, "");
+   }
+}
+
+bool TrySecondLevelStopGuardOpen(string eventId, string dir, int sendType, int type, double lot, double entry, double sl, double target,
+                                 double tp1, double tp2, double tp3, double half, double marketEntry, double driftPoints,
+                                 string lotDetail, bool usePending)
+{
+   if(sendType != OP_BUY && sendType != OP_SELL)
+   {
+      Audit(usePending ? "pending_order_failed" : "order_failed", eventId, 0, dir, lot, entry, sl, target,
+            "err=130 second_level_skipped_non_market market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail, 0, "");
+      return false;
+   }
+
+   RefreshRates();
+   double nakedEntry = (type == OP_BUY) ? Ask : Bid;
+   int ticket = OrderSend(Symbol(), type, lot, NormalizePriceToTick(nakedEntry), InpSlippage, 0, 0,
+                          "GannBridge " + dir + " guarded", EffectiveMagic(), 0, (type == OP_BUY ? clrLime : clrTomato));
+   int openErr = GetLastError();
+   if(ticket <= 0)
+   {
+      Audit("order_failed_stopguard_open", eventId, 0, dir, lot, nakedEntry, sl, target,
+            "initial_err=130 fallback_err=" + IntegerToString(openErr) + " market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail, 0, "");
+      return false;
+   }
+
+   if(!OrderSelect(ticket, SELECT_BY_TICKET))
+   {
+      Audit("order_sent_stopguard_select_failed", eventId, ticket, dir, lot, nakedEntry, sl, target,
+            "initial_err=130 ticket_opened_but_select_failed", 0, "");
+      return true;
+   }
+
+   double openPrice = OrderOpenPrice();
+   StoreTicket(ticket, tp1, tp2, tp3, half, g_halfTpRuntime, g_targetTpRuntime, g_lastGeometryUsedFallback);
+   Audit("order_sent_stopguard_unprotected", eventId, ticket, dir, lot, openPrice, 0, 0,
+         "initial_err=130 naked_market_opened; attempting immediate protective_modify market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail,
+         OrderProfit(), "raw_sl=" + PriceText(sl) + " raw_tp=" + PriceText(target));
+
+   double modSl = sl;
+   double modTp = target;
+   string modifyGuard;
+   bool canModify = PrepareBrokerModifyStops(type, openPrice, modSl, modTp, modifyGuard);
+   if(canModify)
+   {
+      bool modOk = OrderModify(ticket, openPrice, NormalizePriceToTick(modSl), NormalizePriceToTick(modTp), 0, clrDodgerBlue);
+      int modErr = GetLastError();
+      if(modOk)
+      {
+         if(g_targetTpRuntime == 1) tp1 = modTp;
+         if(g_targetTpRuntime == 2) tp2 = modTp;
+         if(g_targetTpRuntime == 3) tp3 = modTp;
+         if(g_halfTpRuntime == g_targetTpRuntime) half = modTp;
+         StoreTicket(ticket, tp1, tp2, tp3, half, g_halfTpRuntime, g_targetTpRuntime, g_lastGeometryUsedFallback);
+         Audit("order_stopguard_modify_done", eventId, ticket, dir, lot, openPrice, modSl, modTp,
+               modifyGuard + " protective_stops_attached " + lotDetail, OrderProfit(), "initial_order_err=130");
+         RiskAudit("lot_selected", "event=" + eventId + " ticket=" + IntegerToString(ticket) + " lot=" + DoubleToString(lot, 3) + " stopguard=true " + lotDetail);
+         if(g_lastGeometryUsedFallback) DrawCalculatedFallbackLevels(ticket, modSl, tp1, tp2, tp3);
+         DrawTradeLevels();
+         return true;
+      }
+      Audit("order_stopguard_modify_failed", eventId, ticket, dir, lot, openPrice, modSl, modTp,
+            "err=" + IntegerToString(modErr) + " " + modifyGuard, OrderProfit(), "emergency_close_next");
+   }
+   else
+   {
+      Audit("order_stopguard_modify_blocked", eventId, ticket, dir, lot, openPrice, modSl, modTp,
+            modifyGuard, OrderProfit(), "emergency_close_next");
+   }
+
+   RefreshRates();
+   double closePx = (type == OP_BUY) ? Bid : Ask;
+   bool closeOk = OrderClose(ticket, OrderLots(), closePx, InpSlippage, clrRed);
+   int closeErr = GetLastError();
+   if(closeOk)
+   {
+      TicketGVSet(ticket, "CLOSED", 1.0);
+      Audit("order_stopguard_emergency_close_done", eventId, ticket, dir, lot, closePx, 0, 0,
+            "protective_modify_failed_or_blocked; unprotected_position_closed", OrderProfit(), "");
+   }
+   else
+   {
+      Audit("order_stopguard_emergency_close_failed", eventId, ticket, dir, lot, closePx, 0, 0,
+            "CRITICAL_UNPROTECTED err=" + IntegerToString(closeErr) + " protective_modify_failed_or_blocked", OrderProfit(), "");
+   }
+   return true;
 }
 
 bool BuildGeometry(int type, double entry, double signalPx, int signalShift, double &sl, double &tp1, double &tp2, double &tp3, string &detail)
@@ -675,7 +949,11 @@ void ManagePositions()
          double lots = OrderLots();
          bool ok2 = OrderClose(ticket, lots, px, InpSlippage, clrGold);
          int err2 = GetLastError();
-         if(ok2) Audit("full_tp_close_done", TicketEvent(ticket), ticket, dir, lots, px, OrderStopLoss(), target, "manual_guard_tp_reached", OrderProfit(), "");
+         if(ok2)
+         {
+            TicketGVSet(ticket, "CLOSED", 1.0);
+            Audit("full_tp_close_done", TicketEvent(ticket), ticket, dir, lots, px, OrderStopLoss(), target, "manual_guard_tp_reached", OrderProfit(), "");
+         }
          else Audit("full_tp_close_failed", TicketEvent(ticket), ticket, dir, lots, px, OrderStopLoss(), target, "err=" + IntegerToString(err2), 0, "broker_tp_may_handle_it");
       }
    }
@@ -708,24 +986,20 @@ void TryEnrichFallbackTrade(int ticket, int type)
    double newTarget = TpByIndex(targetIdx, tp1, tp2, tp3);
    double newHalf = TpByIndex(halfIdx, tp1, tp2, tp3);
 
-   RefreshRates();
-   double stopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
-   double live = (type == OP_BUY) ? Bid : Ask;
-   if(type == OP_BUY)
+   double rawSl = sl, rawTarget = newTarget;
+   string brokerGuard;
+   if(!PrepareBrokerModifyStops(type, OrderOpenPrice(), sl, newTarget, brokerGuard))
    {
-      if(sl >= live - stopLevel || (newTarget > 0.0 && newTarget <= live + stopLevel))
-      {
-         Audit("object_enrich_wait_stop_level", TicketEvent(ticket), ticket, "BUY", OrderLots(), live, sl, newTarget, detail, OrderProfit(), "broker_stop_level_guard");
-         return;
-      }
+      Audit("object_enrich_blocked_broker_stops", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), OrderOpenPrice(), rawSl, rawTarget, brokerGuard + " " + detail, OrderProfit(), "");
+      return;
    }
-   else
+   if(MathAbs(sl - rawSl) > Point * 0.5 || MathAbs(newTarget - rawTarget) > Point * 0.5)
    {
-      if(sl <= live + stopLevel || (newTarget > 0.0 && newTarget >= live - stopLevel))
-      {
-         Audit("object_enrich_wait_stop_level", TicketEvent(ticket), ticket, "SELL", OrderLots(), live, sl, newTarget, detail, OrderProfit(), "broker_stop_level_guard");
-         return;
-      }
+      if(targetIdx == 1) tp1 = newTarget;
+      if(targetIdx == 2) tp2 = newTarget;
+      if(targetIdx == 3) tp3 = newTarget;
+      if(halfIdx == targetIdx) newHalf = newTarget;
+      Audit("object_enrich_broker_stop_adjusted", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), OrderOpenPrice(), sl, newTarget, brokerGuard, OrderProfit(), "raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTarget));
    }
 
    bool changed = (MathAbs(OrderStopLoss() - sl) > Point || MathAbs(OrderTakeProfit() - newTarget) > Point);
@@ -738,7 +1012,7 @@ void TryEnrichFallbackTrade(int ticket, int type)
       return;
    }
 
-   bool ok = OrderModify(ticket, OrderOpenPrice(), NormalizeDouble(sl, Digits), NormalizeDouble(newTarget, Digits), 0, clrDodgerBlue);
+   bool ok = OrderModify(ticket, OrderOpenPrice(), NormalizePriceToTick(sl), NormalizePriceToTick(newTarget), 0, clrDodgerBlue);
    int err = GetLastError();
    if(ok)
    {
@@ -762,7 +1036,21 @@ void MoveSlToBE(int ticket, int type)
    double sl = OrderStopLoss();
    bool improve = (type == OP_BUY && (sl <= 0 || be > sl + Point)) || (type == OP_SELL && (sl <= 0 || be < sl - Point));
    if(!improve) return;
-   bool ok = OrderModify(ticket, OrderOpenPrice(), be, OrderTakeProfit(), 0, clrAqua);
+
+   RefreshRates();
+   double minDist = BrokerMinStopDistance();
+   if(type == OP_BUY && be > Bid - minDist)
+   {
+      Audit("sl_to_be_wait_stop_level", TicketEvent(ticket), ticket, "BUY", OrderLots(), be, sl, OrderTakeProfit(), "bid=" + PriceText(Bid) + " min_dist=" + PriceText(minDist), OrderProfit(), "");
+      return;
+   }
+   if(type == OP_SELL && be < Ask + minDist)
+   {
+      Audit("sl_to_be_wait_stop_level", TicketEvent(ticket), ticket, "SELL", OrderLots(), be, sl, OrderTakeProfit(), "ask=" + PriceText(Ask) + " min_dist=" + PriceText(minDist), OrderProfit(), "");
+      return;
+   }
+
+   bool ok = OrderModify(ticket, OrderOpenPrice(), NormalizePriceToTick(be), OrderTakeProfit(), 0, clrAqua);
    int err = GetLastError();
    Audit(ok ? "sl_to_be_done" : "sl_to_be_failed", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), be, sl, OrderTakeProfit(), ok ? "" : "err=" + IntegerToString(err), OrderProfit(), "");
 }
@@ -779,6 +1067,7 @@ void CloseOpposite(int newType, string eventId)
       int ticket = OrderTicket();
       bool ok = OrderClose(ticket, OrderLots(), px, InpSlippage, clrSilver);
       int err = GetLastError();
+      if(ok) TicketGVSet(ticket, "CLOSED", 1.0);
       Audit(ok ? "reverse_close_done" : "reverse_close_failed", eventId, ticket, (opposite == OP_BUY ? "BUY" : "SELL"), OrderLots(), px, OrderStopLoss(), OrderTakeProfit(), ok ? "before_new_signal" : "err=" + IntegerToString(err), OrderProfit(), "");
    }
 }
@@ -1085,8 +1374,10 @@ void LiquidateScoped(string reason)
       string osym = OrderSymbol();
       double px = (type == OP_BUY) ? MarketInfo(osym, MODE_BID) : MarketInfo(osym, MODE_ASK);
       if(px <= 0.0) continue;
+      int ticket = OrderTicket();
       bool ok = OrderClose(OrderTicket(), OrderLots(), px, InpSlippage, clrRed);
-      Audit(ok ? "risk_liquidation_close_done" : "risk_liquidation_close_failed", TicketEvent(OrderTicket()), OrderTicket(), (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), px, OrderStopLoss(), OrderTakeProfit(), reason, OrderProfit(), "");
+      if(ok) TicketGVSet(ticket, "CLOSED", 1.0);
+      Audit(ok ? "risk_liquidation_close_done" : "risk_liquidation_close_failed", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), px, OrderStopLoss(), OrderTakeProfit(), reason, OrderProfit(), "");
    }
 }
 
@@ -1133,6 +1424,7 @@ void StoreTicket(int ticket, double tp1, double tp2, double tp3, double half, in
    TicketGVSet(ticket, "HTP", half); TicketGVSet(ticket, "HIDX", halfIdx); TicketGVSet(ticket, "TIDX", targetIdx); TicketGVSet(ticket, "HDONE", 0);
    TicketGVSet(ticket, "FB", fallbackLevels ? 1.0 : 0.0);
    TicketGVSet(ticket, "ENRICH", 0.0);
+   TicketGVSet(ticket, "OPENED", 1.0);
 }
 
 string TicketKey(int ticket, string field) { return "GannBridge|" + IntegerToString(AccountNumber()) + "|" + IntegerToString(ticket) + "|" + field; }
@@ -1166,6 +1458,57 @@ void MaybeProbe()
       double r = (risk > 0) ? ((type == OP_BUY ? live - OrderOpenPrice() : OrderOpenPrice() - live) / risk) : 0;
       Audit("position_probe", TicketEvent(OrderTicket()), OrderTicket(), (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), live, OrderStopLoss(), OrderTakeProfit(), "r=" + DoubleToString(r, 3) + " spread=" + IntegerToString(CurrentSpreadPoints()), OrderProfit(), "");
    }
+}
+
+void MaybeLifecycleAudit()
+{
+   if(InpLifecycleAuditSeconds <= 0) return;
+   datetime now = TimeGMT();
+   if(now - g_lastLifecycleAuditTs < InpLifecycleAuditSeconds) return;
+   g_lastLifecycleAuditTs = now;
+   AuditClosedHistoryTickets();
+}
+
+void AuditClosedHistoryTickets()
+{
+   for(int i = OrdersHistoryTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
+      if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      int ticket = OrderTicket();
+      if(TicketGV(ticket, "CLOSED", 0.0) > 0.5) continue;
+      bool tracked = (TicketGV(ticket, "OPENED", 0.0) > 0.5 || StringFind(OrderComment(), "GannBridge") == 0);
+      if(!tracked) continue;
+
+      string eventName = ClassifyClosedOrder(type, OrderClosePrice(), OrderStopLoss(), OrderTakeProfit());
+      string dir = (type == OP_BUY ? "BUY" : "SELL");
+      double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+      string detail = "open_time=" + TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS)
+                    + " close_time=" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS)
+                    + " open_price=" + PriceText(OrderOpenPrice())
+                    + " close_price=" + PriceText(OrderClosePrice())
+                    + " comment='" + OrderComment() + "'";
+      Audit(eventName, TicketEvent(ticket), ticket, dir, OrderLots(), OrderClosePrice(), OrderStopLoss(), OrderTakeProfit(), detail, pnl, "history_lifecycle_tracker");
+      TicketGVSet(ticket, "CLOSED", 1.0);
+   }
+}
+
+string ClassifyClosedOrder(int type, double closePrice, double sl, double tp)
+{
+   double tol = MathMax(TickSizePrice() * 2.0, Point * 2.0);
+   if(type == OP_BUY)
+   {
+      if(sl > 0.0 && closePrice <= sl + tol) return "closed_by_broker_sl";
+      if(tp > 0.0 && closePrice >= tp - tol) return "closed_by_broker_tp";
+   }
+   else
+   {
+      if(sl > 0.0 && closePrice >= sl - tol) return "closed_by_broker_sl";
+      if(tp > 0.0 && closePrice <= tp + tol) return "closed_by_broker_tp";
+   }
+   return "closed_by_unknown_manual";
 }
 
 void RiskAudit(string eventName, string detail)
@@ -1207,6 +1550,7 @@ void DashboardCreate()
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
    if(g_collapsed) return;
    Button(Obj("toggle"), x+12, y+34, 78, 24, g_eaEnabled ? "EA ON" : "EA OFF", g_eaEnabled ? clrDarkGreen : clrMaroon, clrWhite);
+   Button(Obj("drift"), x+98, y+34, 92, 24, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT", g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
    Button(Obj("apply"), x+302, y+34, 72, 24, "APPLY", clrSteelBlue, clrWhite);
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
@@ -1229,9 +1573,11 @@ void DashboardUpdate()
    if(ObjectFind(0, Obj("bg")) < 0) DashboardCreate();
    ObjectSetString(0, Obj("toggle"), OBJPROP_TEXT, g_eaEnabled ? "EA ON" : "EA OFF");
    ObjectSetInteger(0, Obj("toggle"), OBJPROP_BGCOLOR, g_eaEnabled ? clrDarkGreen : clrMaroon);
+   ObjectSetString(0, Obj("drift"), OBJPROP_TEXT, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT");
+   ObjectSetInteger(0, Obj("drift"), OBJPROP_BGCOLOR, g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | " + (InpAdvancedAccountRiskEnabled ? "RISK ON" : "RISK OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | " + (InpAdvancedAccountRiskEnabled ? "RISK ON" : "RISK OFF") + " | Drift " + (g_pendingOnDriftRuntime ? "LIMIT" : "MARKET") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");
@@ -1268,7 +1614,7 @@ void ApplyDashboardInputs()
    g_halfTpRuntime = MathMax(0, MathMin(3, (int)StringToInteger(ObjectGetString(0, Obj("e_half"), OBJPROP_TEXT))));
    g_allowedWindowsRuntime = ObjectGetString(0, Obj("e_allowed"), OBJPROP_TEXT);
    g_noTradeWindowsRuntime = ObjectGetString(0, Obj("e_no"), OBJPROP_TEXT);
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
