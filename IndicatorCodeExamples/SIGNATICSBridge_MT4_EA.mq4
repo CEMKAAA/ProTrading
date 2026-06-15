@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define SIGNATICS_BRIDGE_BUILD "2026-06-12.0200-reverse-close-default"
+#define SIGNATICS_BRIDGE_BUILD "2026-06-15.2035-risklot-default"
 
 input string InpIndicatorName = "SIGNATICS-ALGO V2 (2)";
 input int    InpPollSeconds = 1;
@@ -37,12 +37,12 @@ input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizi
 input bool   InpDirectMt4AutoLotEnabled = true;
 input int    InpDirectMt4AutoLotDailyAtrPeriod = 14;
 input double InpDirectMt4AutoLotMax = 0.00; // 0=broker maximum only.
-input bool   InpAdvancedAccountRiskEnabled = false;
+input bool   InpAdvancedAccountRiskEnabled = true;
 input double InpAccountRiskPerTradePct = 1.00;
 input double InpAccountRiskDailyAtrExposurePct = 2.00;
 input double InpAccountRiskMaxPortfolioPct = 4.00;
-input double InpAccountRiskDailyLossLimitPct = 5.00;
-input double InpAccountRiskMaxDrawdownPct = 10.00;
+input double InpAccountRiskDailyLossLimitPct = 0.00;
+input double InpAccountRiskMaxDrawdownPct = 0.00;
 input double InpAccountRiskMaxMarginUsagePct = 40.00;
 input double InpAccountRiskInitialBalanceOverride = 0.00;
 input int    InpAccountRiskDayResetHourGmt = 0;
@@ -527,6 +527,38 @@ int _direct_ftmo_magic()
 bool _direct_magic_owned(int magic)
 {
    return magic==InpDirectMt4Magic || magic==_direct_ftmo_magic();
+}
+
+int _direct_event_hash(string text)
+{
+   int h=5381;
+   for(int i=0; i<StringLen(text); i++)
+      h=((h<<5)+h)+StringGetChar(text,i);
+   if(h<0)
+      h=-h;
+   return h;
+}
+
+string _direct_event_global_key(string eventId)
+{
+   return "SIGNATICSBridgeMT4|EVT|"+IntegerToString(AccountNumber())+"|"+Symbol()+"|"+_tf_to_string(Period())+"|"+IntegerToString(_direct_event_hash(eventId));
+}
+
+bool _direct_event_claim(string eventId)
+{
+   string key=_direct_event_global_key(eventId);
+   double now=(double)TimeLocal();
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key,0.0);
+   double observed=GlobalVariableGet(key);
+   if(observed>0.0 && now-observed<86400.0)
+      return false;
+   return GlobalVariableSetOnCondition(key,now,observed);
+}
+
+void _direct_event_release(string eventId)
+{
+   GlobalVariableSet(_direct_event_global_key(eventId),0.0);
 }
 
 datetime _account_risk_gmt_day_start()
@@ -1116,6 +1148,15 @@ bool _direct_mt4_execute(string eventId,string direction,double entry,double sl,
       _direct_audit_write("direct_skip_account_risk",source,eventId,0,dir,0.0,price,stopLoss,takeProfit,"account_risk_block",0.0,lotDetail);
       return false;
    }
+   if(!_direct_event_claim(eventId))
+   {
+      if(riskLockHeld)
+         _account_risk_lock_release();
+      g_lastDirectMt4EventId=eventId;
+      Print("SIGNATICSBridge direct_mt4 duplicate suppressed event=",eventId," dir=",dir);
+      _direct_audit_write("direct_duplicate_suppressed",source,eventId,0,dir,lot,price,stopLoss,takeProfit,"terminal_global_event_lock",0.0,lotDetail);
+      return true;
+   }
    string comment="SIGNATICSBridgeMT4|"+source;
    ResetLastError();
    int ticket=OrderSend(Symbol(),type,lot,NormalizeDouble(price,Digits),InpDirectMt4Slippage,stopLoss,takeProfit,comment,_direct_magic(),0,(type==OP_BUY?clrLime:clrTomato));
@@ -1166,6 +1207,7 @@ bool _direct_mt4_execute(string eventId,string direction,double entry,double sl,
       return true;
    }
    int err=GetLastError();
+   _direct_event_release(eventId);
    Print("SIGNATICSBridge direct_mt4 order_failed err=",err," dir=",dir," lot=",DoubleToString(lot,2)," price=",DoubleToString(price,Digits)," sl=",DoubleToString(stopLoss,Digits)," tp=",DoubleToString(takeProfit,Digits)," event=",eventId);
    _direct_audit_write("direct_signal_received",source,eventId,0,dir,lot,auditEntry,sl,tp,"confirmed_signal",0.0,"written_after_order_send_to_avoid_latency");
    _direct_audit_write("direct_order_failed",source,eventId,0,dir,lot,price,stopLoss,takeProfit,"err="+IntegerToString(err),0.0,comment);
@@ -1738,6 +1780,37 @@ void _direct_audit_mark(string kind,int ticket)
    GlobalVariableSet(_direct_audit_gv_key(kind,ticket),TimeCurrent());
 }
 
+string _direct_audit_lock_key(string lane)
+{
+   return "SIGNATICSBridgeMT4|AUDIT_LOCK|"+lane;
+}
+
+bool _direct_audit_lock_acquire(string lane,int maxWaitMs)
+{
+   string key=_direct_audit_lock_key(lane);
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key,0.0);
+   uint started=GetTickCount();
+   int waitMs=MathMax(1,maxWaitMs);
+   while((uint)(GetTickCount()-started)<(uint)waitMs)
+   {
+      double current=GlobalVariableGet(key);
+      double now=(double)TimeLocal();
+      if(current<=0.0 || current<now)
+      {
+         if(GlobalVariableSetOnCondition(key,now+2.0,current))
+            return true;
+      }
+      Sleep(1);
+   }
+   return false;
+}
+
+void _direct_audit_lock_release_lane(string lane)
+{
+   GlobalVariableSet(_direct_audit_lock_key(lane),0.0);
+}
+
 double _direct_state_get(string kind,int ticket)
 {
    string key=_direct_audit_gv_key(kind,ticket);
@@ -1774,10 +1847,16 @@ void _direct_audit_write(string eventName,string source,string eventId,int ticke
 {
    if(!InpDirectMt4AuditCsv)
       return;
+   if(!_direct_audit_lock_acquire("DIRECT",75))
+   {
+      Print("SIGNATICSBridge direct_mt4 audit lock timeout event=",eventName," ticket=",ticket);
+      return;
+   }
    int h=FileOpen(_direct_audit_file_name(),FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE)
    {
       Print("SIGNATICSBridge direct_mt4 audit open failed err=",GetLastError()," file=",_direct_audit_file_name());
+      _direct_audit_lock_release_lane("DIRECT");
       return;
    }
    bool empty=(FileSize(h)<=0);
@@ -1811,7 +1890,9 @@ void _direct_audit_write(string eventName,string source,string eventId,int ticke
       DoubleToString(pnl,2),
       extra
    );
+   FileFlush(h);
    FileClose(h);
+   _direct_audit_lock_release_lane("DIRECT");
 }
 
 string _direct_position_probe_file_name()
@@ -2513,10 +2594,16 @@ void _fast_buffer_probe_audit_write(string eventName,string reason)
    int maxShift=MathMax(0,InpFastBufferProbeMaxShift);
    if(maxShift>20)
       maxShift=20;
+   if(!_direct_audit_lock_acquire("BUFFER_PROBE",75))
+   {
+      Print("SIGNATICSBridge buffer_probe audit lock timeout event=",eventName);
+      return;
+   }
    int h=FileOpen(_fast_buffer_probe_file_name(),FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE)
    {
       Print("SIGNATICSBridge buffer_probe audit open failed err=",GetLastError()," file=",_fast_buffer_probe_file_name());
+      _direct_audit_lock_release_lane("BUFFER_PROBE");
       return;
    }
    bool empty=(FileSize(h)<=0);
@@ -2567,7 +2654,9 @@ void _fast_buffer_probe_audit_write(string eventName,string reason)
          IntegerToString((int)MarketInfo(Symbol(),MODE_SPREAD))
       );
    }
+   FileFlush(h);
    FileClose(h);
+   _direct_audit_lock_release_lane("BUFFER_PROBE");
 }
 
 string _fast_buffer_deep_probe_file_name()
@@ -2810,10 +2899,16 @@ void _fast_buffer_deep_probe_audit_write(string eventName,string reason)
    if(!InpEnableFastBufferProbeAudit || !InpFastBufferProbeDeepAudit || !_fast_buffers_active())
       return;
 
+   if(!_direct_audit_lock_acquire("BUFFER_DEEP_PROBE",150))
+   {
+      Print("SIGNATICSBridge buffer_deep_probe audit lock timeout event=",eventName);
+      return;
+   }
    int h=FileOpen(_fast_buffer_deep_probe_file_name(),FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE)
    {
       Print("SIGNATICSBridge buffer_deep_probe audit open failed err=",GetLastError()," file=",_fast_buffer_deep_probe_file_name());
+      _direct_audit_lock_release_lane("BUFFER_DEEP_PROBE");
       return;
    }
    bool empty=(FileSize(h)<=0);
@@ -2899,7 +2994,9 @@ void _fast_buffer_deep_probe_audit_write(string eventName,string reason)
          );
       }
    }
+   FileFlush(h);
    FileClose(h);
+   _direct_audit_lock_release_lane("BUFFER_DEEP_PROBE");
 }
 
 void MaybeWriteFastBufferProbeAudit(string reason,bool allowChange)
@@ -4186,6 +4283,7 @@ bool ScanFastBufferSignal(string reason)
          "SIGNATICSBridge fast_buffer_signal reason=%s event_id='%s' symbol=%s tf=%s dir=%s bar=%s entry=%s buffer=%d shift=%d initial=%s",
          reason,eventId,Symbol(),_tf_to_string(Period()),direction,_fmt_time(signalTime),_fmt_price(entry),bufferIndex,shift,(initialAudit ? "true" : "false")
       );
+      _direct_audit_write("fast_buffer_selected",sourceName,eventId,0,direction,0.0,entry,0.0,0.0,"reason="+reason,0.0,"buffer="+IntegerToString(bufferIndex)+" shift="+IntegerToString(shift)+" initial="+(initialAudit ? "1" : "0")+" confirm_id="+confirmEventId);
    }
    g_lastFastBufferEventId=eventId;
 
@@ -4194,6 +4292,7 @@ bool ScanFastBufferSignal(string reason)
 
    if(initialAudit && !InpSendInitialConfirmedOnStart)
    {
+      _direct_audit_write("confirmed_suppressed_initial_fast_buffer",sourceName,confirmEventId,0,direction,0.0,entry,0.0,0.0,"InpSendInitialConfirmedOnStart=false",0.0,"buffer="+IntegerToString(bufferIndex)+" shift="+IntegerToString(shift)+" reason="+reason);
       g_lastFastConfirmedEventId=confirmEventId;
       g_lastFastConfirmedDirection=direction;
       g_lastFastConfirmedSignalTime=signalTime;
@@ -4205,6 +4304,7 @@ bool ScanFastBufferSignal(string reason)
 
    _print_setup_line("trade_signal_sent_fast_buffer",reason,direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName);
    _store_pending_fast_confirm(confirmEventId,direction,signalTime,entry,bufferIndex,shift);
+   _direct_audit_write("confirmed_attempt_fast_buffer",sourceName,confirmEventId,0,direction,0.0,entry,0.0,0.0,"reason="+reason,0.0,"buffer="+IntegerToString(bufferIndex)+" shift="+IntegerToString(shift));
    bool confirmedOk=_post_signatics_bridge_event("confirmed_signal",direction,signalTime,entry,0.0,0.0,0.0,0.0,sourceName,reason,false);
    if(!confirmedOk)
    {
@@ -4285,6 +4385,7 @@ bool ScanAndLogLatest(string reason)
             "SIGNATICSBridge buffer_history NONE reason=%s symbol=%s tf=%s live_lookback=%d history_lookback=%d object_scan=enrichment_only",
             reason,Symbol(),_tf_to_string(Period()),MathMax(0,InpFastSignalLookbackBars),MathMax(0,InpFastSignalHistoryLookbackBars)
          );
+         _direct_audit_write("buffer_no_live_selection",_bridge_signal_mode(),"",0,"",0.0,0.0,0.0,0.0,"fast_buffer_primary_no_live_signal",0.0,"reason="+reason+" live_lookback="+IntegerToString(MathMax(0,InpFastSignalLookbackBars))+" history_lookback="+IntegerToString(MathMax(0,InpFastSignalHistoryLookbackBars))+" object_scan=enrichment_only");
       }
    }
 
@@ -4386,6 +4487,7 @@ bool ScanAndLogLatest(string reason)
             "SIGNATICSBridge object_enrichment_skipped reason=%s event_id='%s' fast_buffer_primary=true object_bar=%s last_fast_bar=%s source='%s' why=object_does_not_match_fast_signal",
             reason,eventId,_fmt_time(signalTime),_fmt_time(g_lastFastConfirmedSignalTime),sourceName
          );
+         _direct_audit_write("object_seen_but_fast_primary_blocked",sourceName,eventId,0,direction,0.0,entry,sl,tp3>0.0?tp3:tp1,"object_does_not_match_fast_signal",0.0,"object_bar="+_fmt_time(signalTime)+" last_fast_bar="+_fmt_time(g_lastFastConfirmedSignalTime)+" allow_object_fallback=0");
          return true;
       }
       if(_chart_object_confirm_ready(eventId,reason,signalTime))

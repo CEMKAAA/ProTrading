@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-12.0315-regime-risk-scale-dashboard"
+#define ATOMIC_BRIDGE_BUILD "2026-06-15.2145-regime-probe-same-dir"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -37,12 +37,12 @@ input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizi
 input bool   InpDirectMt4AutoLotEnabled = true;
 input int    InpDirectMt4AutoLotDailyAtrPeriod = 14;
 input double InpDirectMt4AutoLotMax = 0.00; // 0=broker maximum only.
-input bool   InpAdvancedAccountRiskEnabled = false;
+input bool   InpAdvancedAccountRiskEnabled = true;
 input double InpAccountRiskPerTradePct = 1.00;
 input double InpAccountRiskDailyAtrExposurePct = 2.00;
 input double InpAccountRiskMaxPortfolioPct = 4.00;
-input double InpAccountRiskDailyLossLimitPct = 5.00;
-input double InpAccountRiskMaxDrawdownPct = 10.00;
+input double InpAccountRiskDailyLossLimitPct = 0.00;
+input double InpAccountRiskMaxDrawdownPct = 0.00;
 input double InpAccountRiskMaxMarginUsagePct = 40.00;
 input double InpAccountRiskInitialBalanceOverride = 0.00;
 input int    InpAccountRiskDayResetHourGmt = 0;
@@ -67,6 +67,10 @@ input int    InpDirectMt4HistoryAuditSeconds = 2;
 input bool   InpDirectMt4PositionProbeAudit = true;
 input int    InpDirectMt4PositionProbeIntervalSeconds = 30;
 input bool   InpDirectMt4PositionProbeWriteOnChange = true;
+input bool   InpRegimeSignalProbeAudit = true;
+input int    InpRegimeSignalProbeIntervalSeconds = 30;
+input bool   InpRegimeSignalProbeWriteOnChange = true;
+input int    InpRegimeSignalProbeMaxShift = 20;
 input bool   InpShowAtomicRegimeTradeLevels = true;
 input int    InpAtomicRegimeTradeLevelLabelBars = 8;
 input bool   InpEnableRegimeChangePost = true;
@@ -146,6 +150,8 @@ datetime g_directMt4LastHistoryAuditTime = 0;
 int      g_directMt4LastHistoryAuditTicket = 0;
 datetime g_directMt4LastPositionProbe = 0;
 string   g_directMt4LastPositionProbeHash = "";
+datetime g_lastRegimeSignalProbe = 0;
+string   g_lastRegimeSignalProbeHash = "";
 datetime g_lastTickLocal = 0;
 string   DASH_PREFIX = "ATOMIC_BRIDGE_DASH_";
 string   REGIME_LEVEL_PREFIX = "ATOMIC_REGIME_TRADE_LEVEL_";
@@ -286,6 +292,38 @@ string _direct_spread_status(int spread)
 bool _direct_priority_direct_first()
 {
    return g_directMt4PriorityDirectFirst;
+}
+
+int _direct_event_hash(string text)
+{
+   int h = 5381;
+   for(int i = 0; i < StringLen(text); i++)
+      h = ((h << 5) + h) + StringGetChar(text, i);
+   if(h < 0)
+      h = -h;
+   return h;
+}
+
+string _direct_event_global_key(string eventId)
+{
+   return "AtomicBridgeMT4|EVT|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + IntegerToString(_direct_event_hash(eventId));
+}
+
+bool _direct_event_claim(string eventId)
+{
+   string key = _direct_event_global_key(eventId);
+   double now = (double)TimeLocal();
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   double observed = GlobalVariableGet(key);
+   if(observed > 0.0 && now - observed < 86400.0)
+      return false;
+   return GlobalVariableSetOnCondition(key, now, observed);
+}
+
+void _direct_event_release(string eventId)
+{
+   GlobalVariableSet(_direct_event_global_key(eventId), 0.0);
 }
 
 bool _direct_close_reverse_positions(string direction)
@@ -1206,6 +1244,15 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_skip_account_risk", source, eventId, 0, dir, 0.0, price, stopLoss, takeProfit, "account_risk_block", 0.0, lotDetail);
       return false;
    }
+   if(!_direct_event_claim(eventId))
+   {
+      if(riskLockHeld)
+         _account_risk_lock_release();
+      g_lastDirectMt4EventId = eventId;
+      Print("AtomicBridge direct_mt4 duplicate suppressed event=", eventId, " dir=", dir);
+      _direct_audit_write("direct_duplicate_suppressed", source, eventId, 0, dir, lot, price, stopLoss, takeProfit, "terminal_global_event_lock", 0.0, lotDetail);
+      return true;
+   }
    string comment = "AtomicBridgeMT4|" + source;
    ResetLastError();
    int ticket = OrderSend(Symbol(), type, lot, NormalizeDouble(price, Digits), InpDirectMt4Slippage, stopLoss, takeProfit, comment, _direct_magic(), 0, (type == OP_BUY ? clrLime : clrTomato));
@@ -1260,6 +1307,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       return true;
    }
    int err = GetLastError();
+   _direct_event_release(eventId);
    Print("AtomicBridge direct_mt4 order_failed err=", err, " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(price), " sl=", _fmt_price(stopLoss), " tp=", _fmt_price(takeProfit), " event=", eventId);
    _direct_audit_write("direct_signal_received", source, eventId, 0, dir, lot, signalPx, sl, tp, "confirmed_signal", 0.0, "written_after_order_send_to_avoid_latency half_trigger=" + _fmt_price(halfTriggerPrice));
    _direct_audit_write("direct_order_failed", source, eventId, 0, dir, lot, price, stopLoss, takeProfit, "err=" + IntegerToString(err), 0.0, comment);
@@ -1425,6 +1473,159 @@ void _direct_audit_write(string eventName, string source, string eventId, int ti
 string _direct_position_probe_file_name()
 {
    return "AtomicBridge_PositionProbe_" + _direct_audit_date(TimeGMT()) + ".csv";
+}
+
+string _regime_signal_probe_file_name()
+{
+   return "AtomicBridge_RegimeSignalProbe_" + _direct_audit_date(TimeGMT()) + ".csv";
+}
+
+void _regime_signal_probe_write(
+   string eventName,
+   string reason,
+   string selectedDirection,
+   int selectedShift,
+   datetime selectedTime,
+   double selectedEntry,
+   int upShift,
+   datetime upTime,
+   double upValue,
+   int dnShift,
+   datetime dnTime,
+   double dnValue,
+   string sourceName,
+   string extra
+)
+{
+   if(!InpRegimeSignalProbeAudit)
+      return;
+   if(!_direct_audit_lock_acquire("REGIME_SIGNAL", 25))
+   {
+      Print("AtomicBridge regime_signal_probe lock timeout event=", eventName);
+      return;
+   }
+   int h = FileOpen(_regime_signal_probe_file_name(), FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("AtomicBridge regime_signal_probe open failed err=", GetLastError(), " file=", _regime_signal_probe_file_name());
+      _direct_audit_lock_release_lane("REGIME_SIGNAL");
+      return;
+   }
+   bool empty = (FileSize(h) <= 0);
+   FileSeek(h, 0, SEEK_END);
+   if(empty)
+   {
+      FileWrite(
+         h,
+         "ts_gmt", "ts_server", "ts_local", "ms", "event", "reason", "build", "indicator",
+         "symbol", "timeframe", "mode_enabled", "closed_bar", "base_shift", "max_shift",
+         "up_buffer", "dn_buffer", "up_shift", "up_time", "up_value", "dn_shift", "dn_time",
+         "dn_value", "selected_direction", "selected_shift", "selected_time", "selected_entry",
+         "last_seen_event_id", "last_confirmed_event_id", "last_direction", "pending_event_id",
+         "pending_direction", "pending_age_sec", "confirm_delay_sec", "max_confirm_shift",
+         "bid", "ask", "spread", "source", "extra"
+      );
+   }
+   RefreshRates();
+   int ms = (int)(GetTickCount() % 1000);
+   int baseShift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   int pendingAge = (g_pendingRegimeFirstSeen > 0 ? (int)(_timer_now() - g_pendingRegimeFirstSeen) : -1);
+   FileWrite(
+      h,
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+      TimeToString(TimeLocal(), TIME_DATE | TIME_SECONDS),
+      IntegerToString(ms),
+      eventName,
+      reason,
+      ATOMIC_BRIDGE_BUILD,
+      InpIndicatorName,
+      Symbol(),
+      _tf_to_string(Period()),
+      (g_atomicRegimeModeEnabledRuntime ? "1" : "0"),
+      (g_regimeUseClosedBarRuntime ? "1" : "0"),
+      IntegerToString(baseShift),
+      IntegerToString(MathMax(0, InpRegimeSignalProbeMaxShift)),
+      IntegerToString(MathMax(0, InpRegimeUpTrendSignalBuffer)),
+      IntegerToString(MathMax(0, InpRegimeDnTrendSignalBuffer)),
+      IntegerToString(upShift),
+      _fmt_time(upTime),
+      _fmt_price(upValue),
+      IntegerToString(dnShift),
+      _fmt_time(dnTime),
+      _fmt_price(dnValue),
+      selectedDirection,
+      IntegerToString(selectedShift),
+      _fmt_time(selectedTime),
+      _fmt_price(selectedEntry),
+      g_lastRegimeEventId,
+      g_lastRegimeConfirmedEventId,
+      g_lastRegimeDirection,
+      g_pendingRegimeEventId,
+      g_pendingRegimeDirection,
+      IntegerToString(pendingAge),
+      IntegerToString(g_regimeConfirmDelaySecondsRuntime),
+      IntegerToString(InpRegimeMaxConfirmShift),
+      _fmt_price(Bid),
+      _fmt_price(Ask),
+      IntegerToString((int)MarketInfo(Symbol(), MODE_SPREAD)),
+      sourceName,
+      extra
+   );
+   FileFlush(h);
+   FileClose(h);
+   _direct_audit_lock_release_lane("REGIME_SIGNAL");
+}
+
+void _regime_signal_probe_scan(string reason, bool hasRegime, string selectedDirection, int selectedShift, datetime selectedTime, double selectedEntry, string sourceName)
+{
+   if(!InpRegimeSignalProbeAudit)
+      return;
+   int baseShift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   if(Bars <= baseShift)
+      return;
+   int maxShift = MathMax(baseShift, MathMin(Bars - 1, MathMax(baseShift, InpRegimeSignalProbeMaxShift)));
+   int upShift = -1;
+   int dnShift = -1;
+   datetime upTime = 0;
+   datetime dnTime = 0;
+   double upValue = 0.0;
+   double dnValue = 0.0;
+   bool hasUp = _find_latest_regime_signal_buffer(MathMax(0, InpRegimeUpTrendSignalBuffer), baseShift, maxShift, upShift, upTime, upValue);
+   bool hasDn = _find_latest_regime_signal_buffer(MathMax(0, InpRegimeDnTrendSignalBuffer), baseShift, maxShift, dnShift, dnTime, dnValue);
+   string eventId = "";
+   if(hasRegime && selectedDirection != "" && selectedTime > 0)
+      eventId = StringFormat("%s|%s|%d|%I64d", Symbol(), selectedDirection, selectedShift, (long)selectedTime);
+   string hash = StringFormat(
+      "%s|%d|%I64d|%s|%d|%d|%d|%d|%s|%s|%s|%s",
+      selectedDirection,
+      selectedShift,
+      (long)selectedTime,
+      eventId,
+      upShift,
+      dnShift,
+      (hasUp ? 1 : 0),
+      (hasDn ? 1 : 0),
+      g_lastRegimeEventId,
+      g_lastRegimeConfirmedEventId,
+      g_pendingRegimeEventId,
+      g_lastRegimeDirection
+   );
+   datetime now = TimeLocal();
+   bool changed = (hash != g_lastRegimeSignalProbeHash);
+   int interval = MathMax(1, InpRegimeSignalProbeIntervalSeconds);
+   if(!changed && InpRegimeSignalProbeWriteOnChange && g_lastRegimeSignalProbe > 0 && now - g_lastRegimeSignalProbe < interval)
+      return;
+   if(!InpRegimeSignalProbeWriteOnChange && g_lastRegimeSignalProbe > 0 && now - g_lastRegimeSignalProbe < interval)
+      return;
+   string eventName = hasRegime ? "regime_signal_seen" : "regime_signal_none";
+   string extra = "event_id=" + eventId
+      + " has_up=" + (hasUp ? "1" : "0")
+      + " has_dn=" + (hasDn ? "1" : "0")
+      + " changed=" + (changed ? "1" : "0");
+   _regime_signal_probe_write(eventName, reason, selectedDirection, selectedShift, selectedTime, selectedEntry, upShift, upTime, upValue, dnShift, dnTime, dnValue, sourceName, extra);
+   g_lastRegimeSignalProbe = now;
+   g_lastRegimeSignalProbeHash = hash;
 }
 
 void _direct_position_probe_write(
@@ -3589,8 +3790,9 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
 
    string regimeEventId = StringFormat("%s|%s|%d|%I64d", Symbol(), direction, signalIndex, (long)signalTime);
    bool directionChanged = (StringLen(g_lastRegimeDirection) > 0 && direction != g_lastRegimeDirection);
+   bool regimeEventChanged = (StringLen(g_lastRegimeEventId) <= 0 || regimeEventId != g_lastRegimeEventId);
 
-   if(reason == "init" || StringLen(g_lastRegimeDirection) <= 0)
+   if(reason == "init" || reason == "init_retry")
    {
       g_lastRegimeDirection = direction;
       g_lastRegimeEventId = regimeEventId;
@@ -3609,7 +3811,59 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    }
 
    g_lastRegimeEventId = regimeEventId;
-   if(directionChanged && regimeEventId != g_lastRegimeConfirmedEventId)
+   if(StringLen(g_lastRegimeDirection) <= 0)
+   {
+      if(InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift)
+      {
+         g_lastRegimeDirection = direction;
+         g_lastRegimeSignalIndex = signalIndex;
+         g_lastRegimeSignalTime = signalTime;
+         if(_heartbeat_due(g_lastRegimeResolvedPostTime))
+         {
+            if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, "initial_stale_heartbeat"))
+               g_lastRegimeResolvedPostTime = _timer_now();
+         }
+         return;
+      }
+
+      datetime initialNowStable = _timer_now();
+      int initialStableSeconds = (g_regimeConfirmDelaySecondsRuntime >= 0 ? MathMax(0, g_regimeConfirmDelaySecondsRuntime) : MathMax(0, InpRegimeConfirmStableSeconds));
+      if(g_pendingRegimeEventId != regimeEventId)
+      {
+         g_pendingRegimeEventId = regimeEventId;
+         g_pendingRegimeDirection = direction;
+         g_pendingRegimeFirstSeen = initialNowStable;
+         if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
+            g_lastRegimeResolvedPostTime = initialNowStable;
+         if(initialStableSeconds > 0)
+         {
+            if(InpLogRegimeBuffer)
+               Print("AtomicBridge regime_signal initial delay_started dir=", direction, " delay_sec=", IntegerToString(initialStableSeconds), " event=", regimeEventId);
+            return;
+         }
+      }
+      if(initialStableSeconds > 0 && (initialNowStable - g_pendingRegimeFirstSeen) < initialStableSeconds)
+      {
+         if(InpLogRegimeBuffer)
+            Print("AtomicBridge regime_signal initial pending delay dir=", direction, " age=", IntegerToString((int)(initialNowStable - g_pendingRegimeFirstSeen)), " delay_sec=", IntegerToString(initialStableSeconds), " event=", regimeEventId);
+         return;
+      }
+      if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
+         g_lastRegimeResolvedPostTime = _timer_now();
+      _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
+      g_lastRegimeDirection = direction;
+      g_lastRegimeConfirmedEventId = regimeEventId;
+      g_lastRegimeSignalIndex = signalIndex;
+      g_lastRegimeSignalTime = signalTime;
+      g_lastRegimeConfirmedDirection = direction;
+      g_lastRegimeConfirmedSignalTime = signalTime;
+      g_pendingRegimeEventId = "";
+      g_pendingRegimeDirection = "";
+      g_pendingRegimeFirstSeen = 0;
+      return;
+   }
+
+   if(regimeEventChanged && regimeEventId != g_lastRegimeConfirmedEventId)
    {
       if(InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift)
       {
@@ -3620,7 +3874,7 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
          }
          return;
       }
-      if(g_lastRegimeConfirmedSignalTime > 0 && signalTime == g_lastRegimeConfirmedSignalTime && direction != g_lastRegimeConfirmedDirection)
+      if(directionChanged && g_lastRegimeConfirmedSignalTime > 0 && signalTime == g_lastRegimeConfirmedSignalTime && direction != g_lastRegimeConfirmedDirection)
       {
          if(InpLogRegimeBuffer)
             Print("AtomicBridge regime_signal suppressed same_bar_flip dir=", direction, " bar=", _fmt_time(signalTime), " last=", g_lastRegimeConfirmedDirection);
@@ -3693,6 +3947,7 @@ void ScanAndLogLatest(string reason)
       if(InpLogNoneSignals)
          Print("AtomicBridge latest_signal NONE reason=", reason, " symbol=", Symbol(), " tf=", _tf_to_string(Period()));
       _debug_print_atomic_objects();
+      _regime_signal_probe_scan(reason, hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
       if(hasBufferRegime && g_atomicRegimeModeEnabledRuntime)
       {
          if(InpLogRegimeBuffer)
@@ -3739,6 +3994,7 @@ void ScanAndLogLatest(string reason)
          if(_post_atomic_bridge_event("resolved_state", direction, signalIndex, signalTime, entryPrice, sl, tp1, tp2, tp3, tp4, tp5, trendName, "heartbeat"))
             g_lastResolvedPostTime = _timer_now();
       }
+      _regime_signal_probe_scan("heartbeat", hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
       if(hasBufferRegime && g_atomicRegimeModeEnabledRuntime)
          _handle_regime_event("heartbeat", regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName, direction, entryPrice, sl);
       return;
@@ -3808,6 +4064,7 @@ void ScanAndLogLatest(string reason)
 
    if(hasBufferRegime && g_atomicRegimeModeEnabledRuntime)
    {
+      _regime_signal_probe_scan(reason, hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
       if(InpLogRegimeBuffer)
       {
          PrintFormat(
@@ -3822,6 +4079,10 @@ void ScanAndLogLatest(string reason)
          );
       }
       _handle_regime_event(reason, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName, direction, entryPrice, sl);
+   }
+   else
+   {
+      _regime_signal_probe_scan(reason, hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
    }
 }
 

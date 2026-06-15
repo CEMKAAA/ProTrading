@@ -1,5 +1,5 @@
-//+------------------------------------------------------------------+
-//| NAS Ultimate Signal Lab v2.2 — PRODUCTION                         |
+﻿//+------------------------------------------------------------------+
+//| NAS Ultimate Signal Lab v2.2 â€” PRODUCTION                         |
 //| Toggleable signal modes + HC+BE partial close + full execution.    |
 //| FTMO-grade account risk, spread governor, TP watchdog.             |
 //| Signal source: NasUltimate_Core.mqh                                |
@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
 
-#define NAS_V2_BUILD "2026-06-14.v2.2-prod"
+#define NAS_V2_BUILD "2026-06-15.v2.2-risklot-default"
 
 //=====================================================================
 //  ENUMS
@@ -27,7 +27,7 @@ enum BT_FILL_MODE { BT_FILL_SIGNAL_CLOSE=0, BT_FILL_NEXT_BAR_OPEN=1, BT_FILL_CON
 enum BT_SAME_BAR_POLICY { BT_SAMEBAR_CONSERVATIVE=0, BT_SAMEBAR_NEAREST_OPEN=1, BT_SAMEBAR_TP_FIRST=2, BT_SAMEBAR_SL_FIRST=3 };
 
 //=====================================================================
-//  INPUTS — SIGNAL
+//  INPUTS â€” SIGNAL
 //=====================================================================
 input int             InpSensitivity       = 4;
 input int             InpRsiLength         = 14;
@@ -38,7 +38,7 @@ input NAS_RR_MODE     InpRRMode            = NAS_RR_2;
 input double          InpPineRiskMult      = 1.125;
 input bool            InpBlockSameDir      = true;
 
-//=== INPUTS — EXECUTION ================================================
+//=== INPUTS â€” EXECUTION ================================================
 input bool   InpEaEnabled             = true;
 input long   InpMagic                 = 27052712;
 input int    InpDeviationPoints       = 30;
@@ -47,27 +47,27 @@ input bool   InpUseTradingWindow      = true;
 input string InpTradeStartTime        = "09:00";
 input string InpTradeEndTime          = "14:00";
 
-//=== INPUTS — SPREAD GOVERNOR ==========================================
+//=== INPUTS â€” SPREAD GOVERNOR ==========================================
 input bool   InpSpreadEnabled         = true;
 input double InpSpreadGoodPts         = 0.0;
 input double InpSpreadNormalPts       = 0.0;
 input double InpSpreadWidePts         = 0.0;
 
-//=== INPUTS — TP TOUCH WATCHDOG ========================================
+//=== INPUTS â€” TP TOUCH WATCHDOG ========================================
 input bool   InpEnforceTpTouch        = true;
 input double InpTpTouchTolPts         = 2.0;
 input int    InpTpTouchTimerMs        = 100;
 input int    InpTpTouchRetries        = 2;
 
-//=== INPUTS — LOT SIZING & ACCOUNT RISK (FTMO) ========================
+//=== INPUTS â€” LOT SIZING & ACCOUNT RISK (FTMO) ========================
 input bool   InpAdvancedLotEnabled    = true;
 input int    InpLotDailyAtrPeriod     = 14;
-input bool   InpAccountRiskEnabled    = false;
+input bool   InpAccountRiskEnabled    = true;
 input double InpRiskPerTradePct       = 1.00;
 input double InpAtrExposurePct        = 2.00;
 input double InpMaxPortfolioPct       = 4.00;
-input double InpDailyLossLimitPct     = 5.00;
-input double InpMaxDrawdownPct        = 10.00;
+input double InpDailyLossLimitPct     = 0.00;
+input double InpMaxDrawdownPct        = 0.00;
 input double InpMaxMarginUsagePct     = 40.00;
 input double InpInitialBalanceOverride= 0.0;
 input int    InpDayResetHourGmt       = 0;
@@ -80,14 +80,14 @@ input bool   InpAuditEnabled          = true;
 input int    InpAuditIntervalSec      = 60;
 input double InpFixedLot              = 0.03;
 
-//=== INPUTS — AUDIT ENGINE =============================================
+//=== INPUTS â€” AUDIT ENGINE =============================================
 input bool   InpAuditTradeCsv             = true;
 input bool   InpAuditPositionProbe        = true;
 input int    InpAuditPositionProbeSec     = 30;
 input bool   InpAuditProbeOnChangeOnly    = true;
 input int    InpAuditHistoryScanSec       = 2;
 
-//=== INPUTS — DISPLAY ==================================================
+//=== INPUTS â€” DISPLAY ==================================================
 input bool InpShowDashboard           = true;
 input int  InpDashX                   = 10;
 input int  InpDashY                   = 18;
@@ -103,7 +103,7 @@ input double InpBacktestCommissionPerLot= 0.0;
 //  RUNTIME STATE
 //=====================================================================
 CTrade trade;
-string PREFIX = "NAS_LAB_";
+string PREFIX = "NAS_V3_LAB_";
 
 NAS_SIGNAL_MODE g_mode        = NAS_MODE_ST_SMA13;
 NAS_RR_MODE     g_rr          = NAS_RR_2;
@@ -167,6 +167,7 @@ int      g_btWeeks       = 2;
 string   g_btFileName    = "";
 string   g_btLastResult  = "";
 uint     g_btStartMs     = 0;
+uint     g_btElapsedMs   = 0;
 BT_FILL_MODE g_btFillMode = BT_FILL_SIGNAL_CLOSE;
 BT_SAME_BAR_POLICY g_btSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
 double   g_btSpreadPts = 0.0;
@@ -253,7 +254,7 @@ double CalcSMA(const MqlRates &r[],int i,int p){if(i<p-1)return EMPTY_VALUE;doub
 bool IsManagedPos(){return PositionGetString(POSITION_SYMBOL)==_Symbol && MagicOwned((long)PositionGetInteger(POSITION_MAGIC));}
 int ManagedDir(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsManagedPos())return(long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;}return 0;}
 int ManagedCount(){int c=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsManagedPos())c++;}return c;}
-void CloseManaged(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsManagedPos()){bool ok=trade.PositionClose(t);if(!ok)NasAudit_TradeWrite("close_failed","NAS_LAB",IntegerToString((long)t),"",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode()),PositionGetDouble(POSITION_PROFIT),trade.ResultRetcodeDescription());}}}
+void CloseManaged(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsManagedPos()){bool ok=trade.PositionClose(t);if(!ok)NasAudit_TradeWrite("close_failed","NAS_V3_LAB",IntegerToString((long)t),"",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode()),PositionGetDouble(POSITION_PROFIT),trade.ResultRetcodeDescription());}}}
 void HydrateDirection(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsManagedPos()){g_lastExecDir=(long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;return;}}}
 
 bool ValidateOpenStops(int dir,double entry,double sl,double tp,string &reason)
@@ -273,6 +274,88 @@ bool ValidateOpenStops(int dir,double entry,double sl,double tp,string &reason)
    return true;
 }
 
+void BuildExecutableGeometry(int dir,double liveEntry,double rawSl,NAS_RR_MODE rr,double &execSl,double &execTp,string &detail)
+{
+   double md=MinStopDistance()*1.20;
+   double ts=TickSize();
+   double originalSl=NormTradePrice(rawSl);
+   execSl=originalSl;
+   if(dir>0 && execSl>=liveEntry-md)
+      execSl=NormTradePrice(liveEntry-md);
+   if(dir<0 && execSl<=liveEntry+md)
+      execSl=NormTradePrice(liveEntry+md);
+
+   double risk=MathAbs(liveEntry-execSl);
+   if(risk<=ts)
+   {
+      risk=MathMax(md,ts*10.0);
+      execSl=NormTradePrice(dir>0?liveEntry-risk:liveEntry+risk);
+   }
+   execTp=NormTradePrice(dir>0?liveEntry+risk*RRMult(rr):liveEntry-risk*RRMult(rr));
+   detail="";
+   if(MathAbs(originalSl-execSl)>ts*0.5)
+      detail="sl_adjusted_for_live_fill original_sl="+DoubleToString(originalSl,_Digits)+" exec_sl="+DoubleToString(execSl,_Digits)+" ";
+}
+
+ulong NewestManagedTicket()
+{
+   ulong best=0;
+   datetime bestTime=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0||!PositionSelectByTicket(t)||!IsManagedPos())continue;
+      datetime tm=(datetime)PositionGetInteger(POSITION_TIME);
+      if(best==0||tm>=bestTime){best=t;bestTime=tm;}
+   }
+   return best;
+}
+
+bool SendNasMarketOrder(int dir,double lot,double px,double sl,double tp,string comment,string &detail)
+{
+   ENUM_ORDER_TYPE ot=dir>0?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   bool ok=trade.PositionOpen(_Symbol,ot,lot,px,sl,tp,comment);
+   uint rc=trade.ResultRetcode();
+   if(ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED))
+   {
+      detail="order_ok ret="+IntegerToString((int)rc);
+      return true;
+   }
+
+   if(rc!=TRADE_RETCODE_INVALID_STOPS && rc!=10016)
+   {
+      detail="order_failed ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+      return false;
+   }
+
+   string firstFail="invalid_stops ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+   bool naked=trade.PositionOpen(_Symbol,ot,lot,px,0,0,comment+"|naked");
+   uint nakedRc=trade.ResultRetcode();
+   if(!(naked&&(nakedRc==TRADE_RETCODE_DONE||nakedRc==TRADE_RETCODE_DONE_PARTIAL||nakedRc==TRADE_RETCODE_PLACED)))
+   {
+      detail=firstFail+" naked_failed ret="+IntegerToString((int)nakedRc)+" "+trade.ResultRetcodeDescription();
+      return false;
+   }
+
+   ulong ticket=NewestManagedTicket();
+   if(ticket>0&&PositionSelectByTicket(ticket))
+   {
+      bool mod=trade.PositionModify(ticket,sl,tp);
+      uint modRc=trade.ResultRetcode();
+      if(mod)
+      {
+         detail=firstFail+" naked_modify_ok ticket="+IntegerToString((long)ticket);
+         return true;
+      }
+      bool closed=trade.PositionClose(ticket);
+      detail=firstFail+" naked_modify_failed ret="+IntegerToString((int)modRc)+" "+trade.ResultRetcodeDescription()+" emergency_close="+(closed?"1":"0");
+      return false;
+   }
+
+   detail=firstFail+" naked_opened_but_ticket_not_found";
+   return false;
+}
+
 bool CanModifySlTo(double sl,int dir,string &reason)
 {
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID),ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
@@ -283,7 +366,7 @@ bool CanModifySlTo(double sl,int dir,string &reason)
    return true;
 }
 
-string NasPosKey(ulong t,string f){return "NAS_LAB_POS_"+IntegerToString((long)t)+"_"+f;}
+string NasPosKey(ulong t,string f){return "NAS_V3_LAB_POS_"+IntegerToString((long)t)+"_"+f;}
 double NasPosGet(ulong t,string f,double def)
 {
    string k=NasPosKey(t,f);
@@ -331,12 +414,19 @@ void ManageHcBe()
       {
          string leg=doTp1?"TP1":"TP2";
          double part=PartialCloseVolume(vol);
+         bool markDone=false;
          if(part>0)
          {
             bool closed=trade.PositionClosePartial(t,part);
-            NasAudit_TradeWrite(closed?"half_close":"half_close_failed","NAS_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",part,entry,curSl,tp,leg,PositionGetDouble(POSITION_PROFIT),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+            NasAudit_TradeWrite(closed?"half_close":"half_close_failed","NAS_V3_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",part,entry,curSl,tp,leg,PositionGetDouble(POSITION_PROFIT),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+            markDone=closed;
          }
-         else NasAudit_TradeWrite("half_close_skip","NAS_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",vol,entry,curSl,tp,"volume_too_small",PositionGetDouble(POSITION_PROFIT),"");
+         else
+         {
+            NasAudit_TradeWrite("half_close_skip","NAS_V3_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",vol,entry,curSl,tp,"volume_too_small",PositionGetDouble(POSITION_PROFIT),"");
+            markDone=true;
+         }
+         if(!markDone)continue;
          if(doTp1)NasPosSet(t,"TP1_DONE",1);else NasPosSet(t,"TP2_DONE",1);
       }
       bool needsBe=(NasPosGet(t,"TP1_DONE",0)>0.5||NasPosGet(t,"TP2_DONE",0)>0.5);
@@ -346,9 +436,9 @@ void ManageHcBe()
          if(CanModifySlTo(be,dir,rr))
          {
             bool mod=trade.PositionModify(t,be,tp);
-            NasAudit_TradeWrite(mod?"sl_to_be":"sl_to_be_failed","NAS_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),entry,be,tp,rr,PositionGetDouble(POSITION_PROFIT),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+            NasAudit_TradeWrite(mod?"sl_to_be":"sl_to_be_failed","NAS_V3_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),entry,be,tp,rr,PositionGetDouble(POSITION_PROFIT),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
          }
-         else NasAudit_TradeWrite("sl_to_be_deferred","NAS_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),entry,be,tp,rr,PositionGetDouble(POSITION_PROFIT),"");
+         else NasAudit_TradeWrite("sl_to_be_deferred","NAS_V3_LAB",IntegerToString((long)t),dir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),entry,be,tp,rr,PositionGetDouble(POSITION_PROFIT),"");
       }
    }
 }
@@ -447,7 +537,7 @@ void EnforceRiskBreach()
    if(!RiskLockAcquire())return;RiskCacheInvalidate();RiskMetrics(cap,dp,tp);
    breach=(InpDailyLossLimitPct>0&&dp>=InpDailyLossLimitPct*sf)||(InpMaxDrawdownPct>0&&tp>=InpMaxDrawdownPct*sf);
    if(!breach){RiskLockRelease();return;}
-   Print("NAS_LAB LIQUIDATION daily=",DoubleToString(dp,3)," dd=",DoubleToString(tp,3));
+   Print("NAS_V3_LAB LIQUIDATION daily=",DoubleToString(dp,3)," dd=",DoubleToString(tp,3));
    for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t)||!MagicScoped((long)PositionGetInteger(POSITION_MAGIC)))continue;trade.PositionClose(t);}
    RiskCacheInvalidate();RiskLockRelease();
 }
@@ -508,7 +598,7 @@ void EnforceTpTouch()
       double tol=MathMax(0,InpTpTouchTolPts)*_Point;
       bool hit=d>0?(bid+tol>=tpx):(ask-tol<=tpx);
       if(!hit)continue;
-      NasAudit_TradeWrite("tp_watchdog_close","NAS_LAB",IntegerToString((int)t),d>0?"BUY":"SELL",
+      NasAudit_TradeWrite("tp_watchdog_close","NAS_V3_LAB",IntegerToString((int)t),d>0?"BUY":"SELL",
          PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),
          PositionGetDouble(POSITION_SL),tpx,"tp_touch",PositionGetDouble(POSITION_PROFIT),"");
       for(int a=0;a<MathMax(1,InpTpTouchRetries);a++){if(trade.PositionClose(t))break;}
@@ -603,14 +693,13 @@ void ProcessSignalBar()
       g_lastStatus="BLOCKED";g_lastBlockReason="invalid_risk";return;
    }
 
-   double entry=NormTradePrice(p[si].nasEntry),sl=NormTradePrice(p[si].nasSl);
-   double risk=MathAbs(entry-sl);if(risk<=SymbolInfoDouble(_Symbol,SYMBOL_POINT)*5)return;
-   double rrm=RRMult(g_rr);
-   double tp=NormTradePrice(dir>0?entry+risk*rrm:entry-risk*rrm);
-   g_lastEntry=entry;g_lastSl=sl;g_lastTp=tp;
+   double signalEntry=NormTradePrice(p[si].nasEntry),signalSl=NormTradePrice(p[si].nasSl);
+   double signalRisk=MathAbs(signalEntry-signalSl);if(signalRisk<=SymbolInfoDouble(_Symbol,SYMBOL_POINT)*5)return;
+   double signalTp=NormTradePrice(dir>0?signalEntry+signalRisk*RRMult(g_rr):signalEntry-signalRisk*RRMult(g_rr));
+   g_lastEntry=signalEntry;g_lastSl=signalSl;g_lastTp=signalTp;
 
    NasAudit_TradeWrite("signal_received",ModeLabel(g_mode),"",dirStr,0,g_lastEntry,g_lastSl,g_lastTp,"confirmed_signal",0,
-      "risk="+DoubleToString(risk,_Digits)+" rr="+RRLabel(g_rr));
+      "risk="+DoubleToString(signalRisk,_Digits)+" rr="+RRLabel(g_rr));
 
    if(InpCloseOnReverse&&ManagedDir()!=0&&ManagedDir()!=dir)
    {
@@ -629,7 +718,18 @@ void ProcessSignalBar()
       lockHeld=true;RiskCacheInvalidate();
    }
    g_lastAdvDetail="";
-   double lot=ResolveVolume(dir,SymbolInfoDouble(_Symbol,dir>0?SYMBOL_ASK:SYMBOL_BID),g_lastSl,g_lastAdvDetail);
+
+   double px=dir>0?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   px=NormTradePrice(px);
+   double execSl=0,execTp=0;
+   string geomDetail="";
+   BuildExecutableGeometry(dir,px,signalSl,g_rr,execSl,execTp,geomDetail);
+   g_lastEntry=px;g_lastSl=execSl;g_lastTp=execTp;
+   double execRisk=MathAbs(px-execSl);
+   NasAudit_TradeWrite("exec_geometry",ModeLabel(g_mode),"",dirStr,0,px,execSl,execTp,"live_fill_geometry",0,
+      geomDetail+"signal_entry="+DoubleToString(signalEntry,_Digits)+" signal_sl="+DoubleToString(signalSl,_Digits)+" signal_tp="+DoubleToString(signalTp,_Digits)+" exec_risk="+DoubleToString(execRisk,_Digits));
+
+   double lot=ResolveVolume(dir,px,execSl,g_lastAdvDetail);
    g_lastAdvLot=lot;
    if(lot<=0)
    {
@@ -638,38 +738,35 @@ void ProcessSignalBar()
    }
 
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
-   ENUM_ORDER_TYPE ot=dir>0?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
-   double px=dir>0?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   px=NormTradePrice(px);
    string stopReason="";
-   if(!ValidateOpenStops(dir,px,g_lastSl,g_lastTp,stopReason))
+   if(!ValidateOpenStops(dir,px,execSl,execTp,stopReason))
    {
       if(lockHeld)RiskLockRelease();
-      NasAudit_TradeWrite("signal_skip_stops",ModeLabel(g_mode),"",dirStr,lot,px,g_lastSl,g_lastTp,stopReason,0,g_lastAdvDetail);
+      NasAudit_TradeWrite("signal_skip_stops",ModeLabel(g_mode),"",dirStr,lot,px,execSl,execTp,stopReason,0,g_lastAdvDetail);
       g_lastStatus="BLOCKED";g_lastBlockReason=stopReason;return;
    }
-   string cm="NAS_LAB_"+(dir>0?"BUY":"SELL")+"_"+ModeLabel(g_mode);
-   bool ok=trade.PositionOpen(_Symbol,ot,lot,px,g_lastSl,g_lastTp,cm);
+   string cm="NAS_V3_LAB_"+(dir>0?"BUY":"SELL")+"_"+ModeLabel(g_mode);
+   string sendDetail="";
+   bool success=SendNasMarketOrder(dir,lot,px,execSl,execTp,cm,sendDetail);
    uint rc=trade.ResultRetcode();
-   bool success=ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED);
    if(lockHeld){RiskCacheInvalidate();RiskLockRelease();}
    if(success)
    {
       g_lastExecDir=dir;g_lastStatus="OPENED";g_lastBlockReason="";
-      NasAudit_TradeWrite("order_sent",ModeLabel(g_mode),"",dirStr,lot,px,g_lastSl,g_lastTp,"order_ok",0,
-         "lot="+DoubleToString(lot,4)+" "+g_lastAdvDetail);
-      Print("NAS_LAB OPENED ",dirStr," lot=",DoubleToString(lot,4)," entry=",DoubleToString(px,_Digits)," sl=",DoubleToString(g_lastSl,_Digits)," tp=",DoubleToString(g_lastTp,_Digits)," mode=",ModeLabel(g_mode));
+      NasAudit_TradeWrite("order_sent",ModeLabel(g_mode),"",dirStr,lot,px,execSl,execTp,sendDetail,0,
+         "lot="+DoubleToString(lot,4)+" "+geomDetail+g_lastAdvDetail);
+      Print("NAS_V3_LAB OPENED ",dirStr," lot=",DoubleToString(lot,4)," entry=",DoubleToString(px,_Digits)," sl=",DoubleToString(execSl,_Digits)," tp=",DoubleToString(execTp,_Digits)," mode=",ModeLabel(g_mode));
    }
    else
    {
       g_lastStatus="FAIL";g_lastBlockReason="ret="+IntegerToString((int)rc);
-      NasAudit_TradeWrite("order_failed",ModeLabel(g_mode),"",dirStr,lot,px,g_lastSl,g_lastTp,"ret="+IntegerToString((int)rc),0,trade.ResultRetcodeDescription());
-      Print("NAS_LAB OPEN FAIL ret=",rc," ",trade.ResultRetcodeDescription());
+      NasAudit_TradeWrite("order_failed",ModeLabel(g_mode),"",dirStr,lot,px,execSl,execTp,"ret="+IntegerToString((int)rc),0,sendDetail);
+      Print("NAS_V3_LAB OPEN FAIL ret=",rc," ",trade.ResultRetcodeDescription());
    }
 }
 
 //=====================================================================
-//  TRADE SIMULATION — with HC+BE partial close support
+//  TRADE SIMULATION â€” with HC+BE partial close support
 //  Tracks lot fraction through TP levels. EXIT/T/O compute actual R.
 //=====================================================================
 struct SimResult{string outcome;double netR;bool isWin;bool isLoss;};
@@ -732,7 +829,7 @@ SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d
             {
                accR += 1.0 * lotFrac * 0.5;
                lotFrac *= 0.5;
-               curSl = e; // SL→BE
+               curSl = e; // SLâ†’BE
                tp1Done = true;
             }
             bool tp2Hit = !tp2Done && rrm>=3.0 && (d>0?(rates[j].high>=tp2):(rates[j].low<=tp2));
@@ -746,7 +843,7 @@ SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d
             r.netR = accR-BtCostR(risk); r.outcome = "TP"; r.isWin = (r.netR>0); r.isLoss=(r.netR<0);
             return r;
          }
-         else // SL closer → SL first
+         else // SL closer â†’ SL first
          {
             double slR = (curSl == e) ? 0.0 : -1.0;
             accR += slR * lotFrac;
@@ -761,7 +858,7 @@ SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d
       {
          accR += 1.0 * lotFrac * 0.5;
          lotFrac *= 0.5;
-         curSl = e; // SL→BE
+         curSl = e; // SLâ†’BE
          tp1Done = true;
       }
 
@@ -853,7 +950,7 @@ void DrawHistoricalSignals()
    g_total=0;g_wins=0;g_losses=0;g_other=0;g_netR=0;
    g_totalWonR=0;g_totalLostR=0;g_sumRiskPts=0;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.01;
-   Print("NAS_LAB ======= HIST Mode=",ModeLabel(g_mode)," RR=",RRLabel(g_rr)," S=",g_sensitivity,
+   Print("NAS_V3_LAB ======= HIST Mode=",ModeLabel(g_mode)," RR=",RRLabel(g_rr)," S=",g_sensitivity,
          " HC1=",g_hcTp1?" ON":" OFF"," HC2=",g_hcTp2?" ON":" OFF"," =======");
    for(int i=1;i<copied-1;i++)
    {
@@ -873,7 +970,7 @@ void DrawHistoricalSignals()
       if(sim.netR>0)g_totalWonR+=sim.netR;
       if(sim.netR<0)g_totalLostR+=MathAbs(sim.netR);
 
-      Print("NAS_LAB #",g_total," ",d>0?"BUY":"SELL"," ",TimeToString(rates[i].time,TIME_DATE|TIME_MINUTES),
+      Print("NAS_V3_LAB #",g_total," ",d>0?"BUY":"SELL"," ",TimeToString(rates[i].time,TIME_DATE|TIME_MINUTES),
             " E=",DoubleToString(entry,_Digits)," SL=",DoubleToString(sl,_Digits),
             " => ",sim.outcome," ",DoubleToString(sim.netR,2),"R");
       double pad=MathMax(MathAbs(rates[i].high-rates[i].low)*0.15,pt*40);
@@ -891,11 +988,11 @@ void DrawHistoricalSignals()
    g_statLine=IntegerToString(g_total)+" sig | "+IntegerToString(g_wins)+"W "+IntegerToString(g_losses)+"L "+IntegerToString(g_other)+"E"
               +" | WR "+DoubleToString(wr,1)+"%"
               +" | Net "+DoubleToString(g_netR,1)+"R";
-   Print("NAS_LAB ======= ",g_statLine," =======");
+   Print("NAS_V3_LAB ======= ",g_statLine," =======");
 }
 
 //=====================================================================
-//  AUDIT ENGINE — Trade CSV, Position Probe, History Scan, Risk Audit
+//  AUDIT ENGINE â€” Trade CSV, Position Probe, History Scan, Risk Audit
 //  Pattern: Signatics Bridge EA (daily-rotated CSV, append+header)
 //=====================================================================
 
@@ -904,6 +1001,36 @@ string NasAudit_DateStr(datetime t)
 {
    MqlDateTime d; TimeToStruct(t,d);
    return StringFormat("%04d%02d%02d",d.year,d.mon,d.day);
+}
+
+void NasBT_ProcessAudit(string ev,string detail)
+{
+   string fileName="NasV3Lab_BacktestProcess_"+NasAudit_DateStr(TimeGMT())+".csv";
+   bool exists=FileIsExist(fileName);
+   int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
+   if(h==INVALID_HANDLE)return;
+   if(!exists||FileSize(h)==0)
+      FileWrite(h,"gmt_time","server_time","event","build","symbol","chart_tf","result_file","weeks","requested_from","loaded_from","loaded_to","rates_copied","rates_requested","coverage_pct","combos_total","step","elapsed_ms","detail");
+   FileSeek(h,0,SEEK_END);
+   datetime loadedFrom=(g_btRatesCopied>0?g_btRates[0].time:0);
+   datetime loadedTo=(g_btRatesCopied>0?g_btRates[g_btRatesCopied-1].time:0);
+   double requestedSec=MathMax(1.0,(double)g_btWeeks*7.0*86400.0);
+   double loadedSec=(loadedFrom>0&&loadedTo>loadedFrom)?(double)(loadedTo-loadedFrom):0.0;
+   double coverage=MathMin(100.0,loadedSec/requestedSec*100.0);
+   int sec=PeriodSeconds(_Period);if(sec<=0)sec=60;
+   int barsNeeded=(int)MathCeil(requestedSec/(double)sec)+500;
+   FileWrite(h,
+      TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+      ev,NAS_V2_BUILD,_Symbol,EnumToString(_Period),g_btFileName,
+      IntegerToString(g_btWeeks),
+      TimeToString(g_btCutoff,TIME_DATE|TIME_SECONDS),
+      loadedFrom>0?TimeToString(loadedFrom,TIME_DATE|TIME_SECONDS):"",
+      loadedTo>0?TimeToString(loadedTo,TIME_DATE|TIME_SECONDS):"",
+      IntegerToString(g_btRatesCopied),IntegerToString(barsNeeded),
+      DoubleToString(coverage,2),IntegerToString(g_btTotal),IntegerToString(g_btStep),
+      IntegerToString((int)g_btElapsedMs),detail);
+   FileClose(h);
 }
 
 // --- Format price with symbol digits ---
@@ -922,14 +1049,14 @@ string NasAudit_TF()
 //---------------------------------------------------------------------
 // LAYER 1: Trade Lifecycle CSV
 // Every signal, skip, open, close, toggle event is logged here.
-// File: NasLab_TradeAudit_YYYYMMDD.csv
+// File: NasV3Lab_TradeAudit_YYYYMMDD.csv
 //---------------------------------------------------------------------
 void NasAudit_TradeWrite(string eventName,string source,string eventId,string direction,
                          double lot,double price,double sl,double tp,
                          string reason,double pnl,string extra)
 {
    if(!InpAuditTradeCsv) return;
-   string fileName="NasLab_TradeAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
+   string fileName="NasV3Lab_TradeAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE){Print("NAS_AUDIT trade csv open fail err=",GetLastError());return;}
    bool empty=(FileSize(h)<=0);
@@ -960,7 +1087,7 @@ void NasAudit_TradeWrite(string eventName,string source,string eventId,string di
 //---------------------------------------------------------------------
 // LAYER 2: Position Probe CSV
 // Periodic snapshot of all managed positions with live R, SL dist, PnL.
-// File: NasLab_PositionProbe_YYYYMMDD.csv
+// File: NasV3Lab_PositionProbe_YYYYMMDD.csv
 //---------------------------------------------------------------------
 void NasAudit_PositionProbe()
 {
@@ -970,7 +1097,7 @@ void NasAudit_PositionProbe()
    if(g_auditLastProbeTime>0 && now-g_auditLastProbeTime<interval) return;
    g_auditLastProbeTime=now;
 
-   string fileName="NasLab_PositionProbe_"+NasAudit_DateStr(TimeGMT())+".csv";
+   string fileName="NasV3Lab_PositionProbe_"+NasAudit_DateStr(TimeGMT())+".csv";
    string hash="";
    int count=0;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
@@ -1058,7 +1185,7 @@ void NasAudit_PositionProbe()
 //---------------------------------------------------------------------
 // LAYER 3: History Audit Scan
 // Detects newly closed trades and writes them to the Trade Audit CSV.
-// File: NasLab_TradeAudit_YYYYMMDD.csv (same as Layer 1)
+// File: NasV3Lab_TradeAudit_YYYYMMDD.csv (same as Layer 1)
 //---------------------------------------------------------------------
 void NasAudit_HistoryScan()
 {
@@ -1088,6 +1215,9 @@ void NasAudit_HistoryScan()
 
       datetime ct=(datetime)HistoryDealGetInteger(dealTicket,DEAL_TIME);
       if(ct<g_auditLastHistTime || (ct==g_auditLastHistTime && dealTicket<=g_auditLastHistTicket))
+         continue;
+      string dealAuditKey="NAS_V3_LAB_HIST_DEAL_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+_Symbol+"_"+IntegerToString((long)dealTicket);
+      if(GlobalVariableCheck(dealAuditKey))
          continue;
 
       // Determine close type
@@ -1125,8 +1255,9 @@ void NasAudit_HistoryScan()
       if(origEntry>0)
          extra+=" orig_entry="+NasAudit_Px(origEntry);
 
-      NasAudit_TradeWrite(eventName,"NAS_LAB",IntegerToString((int)dealTicket),dir,vol,closePx,origSl,origTp,
+      NasAudit_TradeWrite(eventName,"NAS_V3_LAB",IntegerToString((int)dealTicket),dir,vol,closePx,origSl,origTp,
          "history_close",pnl,extra);
+      GlobalVariableSet(dealAuditKey,(double)TimeCurrent());
 
       if(ct>newestTime || (ct==newestTime && dealTicket>newestTicket))
       {
@@ -1141,7 +1272,7 @@ void NasAudit_HistoryScan()
 //---------------------------------------------------------------------
 // LAYER 3b: Account Risk Audit Snapshot
 // Periodic equity/DD/margin CSV for FTMO compliance monitoring.
-// File: NasLab_RiskAudit_YYYYMMDD.csv
+// File: NasV3Lab_RiskAudit_YYYYMMDD.csv
 //---------------------------------------------------------------------
 bool NasAudit_RiskClaimSnapshot()
 {
@@ -1189,7 +1320,7 @@ void NasAudit_RiskSnapshot()
    double ab=cap*MathMax(0,InpAtrExposurePct)/100;
    double pb=cap*MathMax(0,InpMaxPortfolioPct)/100;
 
-   string fileName="NasLab_RiskAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
+   string fileName="NasV3Lab_RiskAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE){Print("NAS_AUDIT risk csv open fail");return;}
    bool empty=(FileSize(h)<=0);
@@ -1283,28 +1414,37 @@ void BT_Start()
    if(g_btRunning) return;
    g_btWeeks=MathMax(1,g_btWeeks);
    g_btStartMs=GetTickCount();
-   // Layer 1: CopyRates
-   g_btRatesCopied=CopyRates(_Symbol,_Period,0,MathMax(InpCalcBars,300),g_btRates);
-   if(g_btRatesCopied<200){Print("BT: not enough data");return;}
-   if(g_btRates[0].time>g_btRates[g_btRatesCopied-1].time) ArrayReverse(g_btRates,0,WHOLE_ARRAY);
+   g_btElapsedMs=0;
    g_btCutoff=TimeCurrent()-g_btWeeks*7*86400;
+   // Layer 1: CopyRates
+   int sec=PeriodSeconds(_Period);
+   if(sec<=0)sec=60;
+   int barsNeeded=(int)MathCeil((double)g_btWeeks*7.0*86400.0/(double)sec)+500;
+   int copyBars=MathMax(MathMax(InpCalcBars,300),barsNeeded);
+   g_btRatesCopied=CopyRates(_Symbol,_Period,0,copyBars,g_btRates);
+   if(g_btRatesCopied<200){g_btTotal=0;g_btStep=0;NasBT_ProcessAudit("start_failed","not_enough_data copyBars="+IntegerToString(copyBars));Print("BT: not enough data");return;}
+   if(g_btRates[0].time>g_btRates[g_btRatesCopied-1].time) ArrayReverse(g_btRates,0,WHOLE_ARRAY);
    // Generate combos
    BT_GenerateCombos();
-   // Precompute (Layer 2+3) — ~400ms blocking, acceptable
+   // Precompute (Layer 2+3) â€” ~400ms blocking, acceptable
    BT_PrecomputeSignals();
    // Open CSV
    MqlDateTime d;TimeToStruct(TimeGMT(),d);
-   g_btFileName="NasLab_BruteBacktest_"+StringFormat("%04d%02d%02d_%02d%02d%02d",d.year,d.mon,d.day,d.hour,d.min,d.sec)+".csv";
+   g_btFileName="NasV3Lab_BruteBacktest_"+StringFormat("%04d%02d%02d_%02d%02d%02d",d.year,d.mon,d.day,d.hour,d.min,d.sec)+".csv";
    int h=FileOpen(g_btFileName,FILE_CSV|FILE_WRITE|FILE_SHARE_READ,',');
    if(h!=INVALID_HANDLE)
    {
-      FileWrite(h,"timestamp","signal_mode","sensitivity","rr_mode","hc_tp1","hc_tp2","weeks",
+      FileWrite(h,"timestamp","symbol","chart_tf","signal_mode","sensitivity","rr_mode","hc_tp1","hc_tp2","weeks",
+         "requested_from","loaded_from","loaded_to","rates_copied",
          "fill_mode","same_bar_policy","spread_pts","slippage_pts","commission_per_lot",
          "total_signals","wins","losses","other","win_rate","be_win_rate",
          "total_won_r","total_lost_r","net_r","pf","edge_pct","avg_r_per_trade");
       FileClose(h);
    }
    g_btStep=0;g_btRunning=true;g_btLastResult="Starting...";
+   string coverageDetail=(g_btRatesCopied>0&&g_btRates[0].time>g_btCutoff)?"insufficient_history":"ok";
+   coverageDetail+=" copyBars="+IntegerToString(copyBars)+" first="+(g_btRatesCopied>0?TimeToString(g_btRates[0].time,TIME_DATE|TIME_SECONDS):"");
+   NasBT_ProcessAudit("start",coverageDetail);
    Print("BT: started ",g_btTotal," combos, ",g_btWeeks," weeks");
 }
 
@@ -1395,8 +1535,13 @@ void BT_WriteRow(const BtCombo &c,const BtStats &s)
    double avgR=s.total>0?s.netR/s.total:0;
    FileWrite(h,
       TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),
+      _Symbol,EnumToString(_Period),
       ModeLabel(g_btModes[c.modeIdx]),IntegerToString(g_btSensVals[c.sensIdx]),
       RRLabel(rr),(c.hc1?"1":"0"),(c.hc2?"1":"0"),IntegerToString(g_btWeeks),
+      TimeToString(g_btCutoff,TIME_DATE|TIME_SECONDS),
+      g_btRatesCopied>0?TimeToString(g_btRates[0].time,TIME_DATE|TIME_SECONDS):"",
+      g_btRatesCopied>0?TimeToString(g_btRates[g_btRatesCopied-1].time,TIME_DATE|TIME_SECONDS):"",
+      IntegerToString(g_btRatesCopied),
       BtFillLabel(g_btFillMode),BtSameBarLabel(g_btSameBarPolicy),
       DoubleToString(g_btSpreadPts,2),DoubleToString(g_btSlippagePts,2),DoubleToString(g_btCommissionPerLot,2),
       IntegerToString(s.total),IntegerToString(s.wins),IntegerToString(s.losses),IntegerToString(s.other),
@@ -1409,9 +1554,11 @@ void BT_WriteRow(const BtCombo &c,const BtStats &s)
 void BT_Finish()
 {
    g_btRunning=false;
-   uint elapsed=GetTickCount()-g_btStartMs;
-   Print("BT: COMPLETE ",g_btTotal," combos in ",elapsed,"ms → ",g_btFileName);
-   g_btLastResult="DONE "+IntegerToString(g_btTotal)+" combos in "+DoubleToString(elapsed/1000.0,1)+"s";
+   g_btElapsedMs=GetTickCount()-g_btStartMs;
+   uint elapsed=g_btElapsedMs;
+   Print("BT: COMPLETE ",g_btTotal," combos in ",elapsed,"ms â†’ ",g_btFileName);
+   g_btLastResult="DONE "+IntegerToString(g_btTotal)+" combos in "+DoubleToString(g_btElapsedMs/1000.0,1)+"s";
+   NasBT_ProcessAudit("finish","completed");
    // Free cached data
    ArrayFree(g_btRates);g_btRatesCopied=0;
    ArrayFree(g_btSigs);ArrayInitialize(g_btSigOffset,0);ArrayInitialize(g_btSigCount,0);
@@ -1430,7 +1577,7 @@ void BT_Stop()
 }
 
 //=====================================================================
-//  DASHBOARD — v2.2 wide layout (640x570)
+//  DASHBOARD â€” v2.2 wide layout (640x570)
 //=====================================================================
 void DrawDashboard()
 {
@@ -1453,7 +1600,7 @@ void UpdateDashboard()
    int pad=14; // left padding
    int iW=W-2*pad; // inner content width
 
-   // ─────── ROW 0: Active config summary ───────
+   // â”€â”€â”€â”€â”€â”€â”€ ROW 0: Active config summary â”€â”€â”€â”€â”€â”€â”€
    int ry=y+38;
    string hcLbl="";
    if(g_rr==NAS_RR_2) hcLbl=g_hcTp1?" [HC@TP1]":"";
@@ -1462,13 +1609,13 @@ void UpdateDashboard()
            ModeLabel(g_mode)+" | "+RRLabel(g_rr)+hcLbl+" | S="+IntegerToString(g_sensitivity)+" | "+EnumToString(_Period)+" | "+_Symbol,
            C'80,255,180',8);
 
-   // ─────── SECTION: CONTROLS ───────
+   // â”€â”€â”€â”€â”€â”€â”€ SECTION: CONTROLS â”€â”€â”€â”€â”€â”€â”€
    int secY=ry+20;
    MkRect("DASH_SEC1_BG",x+4,secY,W-8,82,C'26,32,44',C'45,90,150');
-   MkLabel("DASH_SEC1_T",x+pad,secY+4,"▸ CONTROLS",ac,8);
+   MkLabel("DASH_SEC1_T",x+pad,secY+4,"â–¸ CONTROLS",ac,8);
    MkRect("DASH_SEC1_L",x+pad,secY+18,iW,1,C'45,90,150',C'45,90,150');
 
-   // Signal mode buttons — row 1
+   // Signal mode buttons â€” row 1
    int btnY1=secY+24;
    MkLabel("DASH_MLBL",x+pad,btnY1+3,"SIGNAL:",C'120,140,165',7);
    int bx=x+pad+62;int bw=90;int bg=4;
@@ -1478,7 +1625,7 @@ void UpdateDashboard()
    MkBtn("BTN_M3",bx+3*(bw+bg),btnY1,bw,bh,"ST+SMA5", g_mode==NAS_MODE_ST_SMA5?on:off);
    MkBtn("BTN_M4",bx+4*(bw+bg),btnY1,bw-4,bh,"ST+SMA21",g_mode==NAS_MODE_ST_SMA21?on:off);
 
-   // RR + Sensitivity + HC — row 2
+   // RR + Sensitivity + HC â€” row 2
    int btnY2=btnY1+26;
    MkLabel("DASH_RLBL",x+pad,btnY2+3,"R:R:",C'120,140,165',7);
    int rx=x+pad+42;
@@ -1495,7 +1642,7 @@ void UpdateDashboard()
    MkBtn("BTN_S5",sx+3*(sw+3),btnY2,sw,bh,"S=5",g_sensitivity==5?on:off);
    MkBtn("BTN_S6",sx+4*(sw+3),btnY2,sw,bh,"S=6",g_sensitivity==6?on:off);
 
-   // HC+BE — row 3 (conditional, inside CONTROLS section)
+   // HC+BE â€” row 3 (conditional, inside CONTROLS section)
    int btnY3=btnY2+26;
    color hcOn=C'0,85,130',hcOff=C'55,55,62';
    if(g_rr==NAS_RR_1)
@@ -1516,11 +1663,11 @@ void UpdateDashboard()
       MkBtn("BTN_HC2",x+pad+188,btnY3,120,bh,g_hcTp2?"HC@TP2: ON":"HC@TP2: OFF",g_hcTp2?hcOn:hcOff);
    }
 
-   // ─────── SECTION: AUDIT RESULTS ───────
+   // â”€â”€â”€â”€â”€â”€â”€ SECTION: AUDIT RESULTS â”€â”€â”€â”€â”€â”€â”€
    int sec2Y=secY+88;
    MkRect("DASH_SEC2_BG",x+4,sec2Y,W-8,126,C'26,32,44',C'45,90,150');
    MkLabel("DASH_SEC2_T",x+pad,sec2Y+4,
-           "▸ AUDIT  "+IntegerToString(InpHistoryDays)+"D | "+ModeLabel(g_mode)+" | "+RRLabel(g_rr)
+           "â–¸ AUDIT  "+IntegerToString(InpHistoryDays)+"D | "+ModeLabel(g_mode)+" | "+RRLabel(g_rr)
            +(g_hcTp1?" +HC@1":"")+(g_hcTp2?" +HC@2":""),ac,8);
    MkRect("DASH_SEC2_L",x+pad,sec2Y+18,iW,1,C'45,90,150',C'45,90,150');
 
@@ -1576,10 +1723,10 @@ void UpdateDashboard()
            "PF "+DoubleToString(pf,2)+"  |  BE WR="+DoubleToString(be_wr,1)+"%  |  "+edge,
            wr>be_wr?C'80,255,180':C'255,95,140',9);
 
-   // ─────── SECTION: EXECUTION ───────
+   // â”€â”€â”€â”€â”€â”€â”€ SECTION: EXECUTION â”€â”€â”€â”€â”€â”€â”€
    int sec3Y=sec2Y+132;
    MkRect("DASH_SEC3_BG",x+4,sec3Y,W-8,100,C'26,32,44',C'45,90,150');
-   MkLabel("DASH_SEC3_T",x+pad,sec3Y+4,"▸ EXECUTION",ac,8);
+   MkLabel("DASH_SEC3_T",x+pad,sec3Y+4,"â–¸ EXECUTION",ac,8);
    MkRect("DASH_SEC3_L",x+pad,sec3Y+18,iW,1,C'45,90,150',C'45,90,150');
 
    // EA + Close buttons
@@ -1617,10 +1764,10 @@ void UpdateDashboard()
    else
       MkLabel("DASH_RISK",x+pad,exY4,"FixedLot="+DoubleToString(InpFixedLot,4)+"  |  RiskMult="+DoubleToString(InpPineRiskMult,3),C'125,140,160',7);
 
-   // ─────── SECTION: BACKTEST ENGINE ───────
+   // â”€â”€â”€â”€â”€â”€â”€ SECTION: BACKTEST ENGINE â”€â”€â”€â”€â”€â”€â”€
    int sec4Y=sec3Y+106;
    MkRect("DASH_SEC4_BG",x+4,sec4Y,W-8,142,C'26,32,44',C'45,90,150');
-   MkLabel("DASH_SEC4_T",x+pad,sec4Y+4,"▸ BACKTEST ENGINE",ac,8);
+   MkLabel("DASH_SEC4_T",x+pad,sec4Y+4,"â–¸ BACKTEST ENGINE",ac,8);
    MkRect("DASH_SEC4_L",x+pad,sec4Y+18,iW,1,C'45,90,150',C'45,90,150');
 
    // Weeks input + buttons
@@ -1648,8 +1795,8 @@ void UpdateDashboard()
    ObjectSetInteger(0,editName,OBJPROP_YSIZE,bh);
 
    color runBg=g_btRunning?C'80,80,80':C'30,120,70';
-   MkBtn("BTN_BT_RUN",x+pad+100,btY,130,bh,g_btRunning?"RUNNING...":"▶ RUN BACKTEST",runBg);
-   MkBtn("BTN_BT_STOP",x+pad+236,btY,70,bh,"■ STOP",g_btRunning?C'178,37,57':C'60,60,68');
+   MkBtn("BTN_BT_RUN",x+pad+100,btY,130,bh,g_btRunning?"RUNNING...":"â–¶ RUN BACKTEST",runBg);
+   MkBtn("BTN_BT_STOP",x+pad+236,btY,70,bh,"â–  STOP",g_btRunning?C'178,37,57':C'60,60,68');
 
    // Combo count label
    MkLabel("DASH_BTCNT",x+pad+316,btY+3,"175 combos",C'100,112,130',7);
@@ -1684,7 +1831,7 @@ void UpdateDashboard()
       int fw=(int)MathRound(pbW*MathMax(0,MathMin(1,pct)));
       if(fw>2) MkRect("DASH_BTPB_FG",x+pad+1,pbY+1,fw-2,pbH-2,C'60,200,120',C'60,200,120');
       else MkRect("DASH_BTPB_FG",x+pad+1,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      uint elapsed=GetTickCount()-g_btStartMs;
+      uint elapsed=g_btRunning?(GetTickCount()-g_btStartMs):g_btElapsedMs;
       string pTxt=IntegerToString(g_btStep)+"/"+IntegerToString(g_btTotal)
          +" ("+IntegerToString((int)(pct*100))+"%)  "
          +DoubleToString(elapsed/1000.0,1)+"s";
@@ -1705,7 +1852,7 @@ void UpdateDashboard()
    else
       MkLabel("DASH_BTLAST",x+pad,lrY,"",C'100,112,130',7);
 
-   // ─────── FOOTER ───────
+   // â”€â”€â”€â”€â”€â”€â”€ FOOTER â”€â”€â”€â”€â”€â”€â”€
    int fY=sec4Y+148;
    MkRect("DASH_FOOT_L",x+pad,fY,iW,1,C'45,90,150',C'45,90,150');
    MkLabel("DASH_VER",x+pad,fY+4,
@@ -1731,10 +1878,10 @@ int OnInit()
    HydrateDirection();
    DrawDashboard();DrawHistoricalSignals();UpdateDashboard();
    EventSetMillisecondTimer(40);
-   NasAudit_TradeWrite("ea_init","NAS_LAB","","",0,0,0,0,"init",0,
+   NasAudit_TradeWrite("ea_init","NAS_V3_LAB","","",0,0,0,0,"init",0,
       "mode="+ModeLabel(g_mode)+" rr="+RRLabel(g_rr)+" s="+IntegerToString(g_sensitivity)
       +" magic="+IntegerToString(RuntimeMagic())+" ftmo="+(InpAccountRiskEnabled?"ON":"OFF"));
-   Print("NAS_LAB v2.2 prod init ",_Symbol," tf=",EnumToString(_Period)," mode=",ModeLabel(g_mode)," rr=",RRLabel(g_rr),
+   Print("NAS_V3_LAB v2.2 prod init ",_Symbol," tf=",EnumToString(_Period)," mode=",ModeLabel(g_mode)," rr=",RRLabel(g_rr),
          " hc1=",g_hcTp1," hc2=",g_hcTp2," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled);
    return INIT_SUCCEEDED;
 }
@@ -1781,7 +1928,7 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
    else if(sp==PREFIX+"BTN_M2"){g_mode=NAS_MODE_ST_SMA8;nr=true;}
    else if(sp==PREFIX+"BTN_M3"){g_mode=NAS_MODE_ST_SMA5;nr=true;}
    else if(sp==PREFIX+"BTN_M4"){g_mode=NAS_MODE_ST_SMA21;nr=true;}
-   // RR — auto-disable HC when changing RR
+   // RR â€” auto-disable HC when changing RR
    else if(sp==PREFIX+"BTN_RR0"){g_rr=NAS_RR_1;g_hcTp1=false;g_hcTp2=false;nr=true;}
    else if(sp==PREFIX+"BTN_RR1"){g_rr=NAS_RR_2;g_hcTp2=false;nr=true;}
    else if(sp==PREFIX+"BTN_RR2"){g_rr=NAS_RR_3;nr=true;}
@@ -1808,7 +1955,7 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
    else if(sp==PREFIX+"BTN_EA")
    {
       g_eaEnabled=!g_eaEnabled;g_lastStatus=g_eaEnabled?"READY":"EA_OFF";
-      NasAudit_TradeWrite("ea_toggle","NAS_LAB","","",0,0,0,0,g_eaEnabled?"EA_ON":"EA_OFF",0,"");
+      NasAudit_TradeWrite("ea_toggle","NAS_V3_LAB","","",0,0,0,0,g_eaEnabled?"EA_ON":"EA_OFF",0,"");
       ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    // Close All
@@ -1849,8 +1996,10 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       ObjectSetInteger(0,sp,OBJPROP_STATE,false);
       g_needsRedraw=true;g_lastBuild=0;
       DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);
-      Print("NAS_LAB changed: ",ModeLabel(g_mode)," RR=",RRLabel(g_rr)," S=",g_sensitivity,
+      Print("NAS_V3_LAB changed: ",ModeLabel(g_mode)," RR=",RRLabel(g_rr)," S=",g_sensitivity,
             " HC1=",g_hcTp1," HC2=",g_hcTp2);
    }
 }
 //+------------------------------------------------------------------+
+
+

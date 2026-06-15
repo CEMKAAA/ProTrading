@@ -7,7 +7,7 @@
 #property strict
 #property version "3.10"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-14.v3.1-prod"
+#define ORB15_BUILD "2026-06-15.v3.1-risklot-default"
 
 //=== CORE INPUTS ========================================================
 input bool            InpEaEnabled          = true;
@@ -66,11 +66,11 @@ input double InpRiskPerTradePct  = 1.0;
 input double InpFixedLot         = 0.10;
 input double InpMaxLot           = 0.0;
 input bool   InpUseChartScopedMagic = true;
-input bool   InpAccountRiskEnabled  = false;
+input bool   InpAccountRiskEnabled  = true;
 input double InpAtrExposurePct      = 2.0;
 input double InpMaxPortfolioPct     = 4.0;
-input double InpDailyLossLimitPct   = 5.0;
-input double InpMaxDrawdownPct      = 10.0;
+input double InpDailyLossLimitPct   = 0.0;
+input double InpMaxDrawdownPct      = 0.0;
 input double InpMaxMarginUsagePct   = 40.0;
 input double InpInitialBalanceOverride = 0.0;
 input int    InpDayResetHourGmt    = 0;
@@ -128,6 +128,10 @@ string   g_lastFilterReason = "";
 string   g_lastExecStatus = "READY";
 long     g_runtimeMagic = 0;
 uint     g_lastRiskGuardMs = 0;
+datetime g_riskPerfCacheAt = 0;
+double   g_riskPerfClosedAll = 0.0;
+double   g_riskPerfClosedToday = 0.0;
+double   g_riskPerfFloating = 0.0;
 
 //--- Historical stats ---------------------------------------------------
 int    g_histTotal = 0, g_histWins = 0, g_histLosses = 0;
@@ -162,6 +166,7 @@ int      g_btWeeks       = 2;
 string   g_btFileName    = "";
 string   g_btLastResult  = "";
 uint     g_btStartMs     = 0;
+uint     g_btElapsedMs   = 0;
 BT_FILL_MODE g_btFillMode = BT_FILL_SIGNAL_CLOSE;
 BT_SAME_BAR_POLICY g_btSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
 double   g_btSpreadPts = 0.0;
@@ -262,6 +267,83 @@ bool ValidateOpenStops(string dir,double entry,double sl,double tp,string &reaso
    return true;
 }
 
+void AdjustOpenStops(string dir,double entry,double &sl,double &tp,string &detail)
+{
+   double md=MinStopDistance()*1.20;
+   double ts=TickSize();
+   double oldSl=NormalizeTradePrice(sl),oldTp=NormalizeTradePrice(tp);
+   sl=oldSl;tp=oldTp;
+   if(dir=="BUY")
+   {
+      if(sl>=entry-md)sl=NormalizeTradePrice(entry-md);
+      if(tp<=entry+md)tp=NormalizeTradePrice(entry+md);
+   }
+   else
+   {
+      if(sl<=entry+md)sl=NormalizeTradePrice(entry+md);
+      if(tp>=entry-md)tp=NormalizeTradePrice(entry-md);
+   }
+   detail="";
+   if(MathAbs(sl-oldSl)>ts*0.5||MathAbs(tp-oldTp)>ts*0.5)
+      detail="stops_adjusted old_sl="+DoubleToString(oldSl,_Digits)+" old_tp="+DoubleToString(oldTp,_Digits)+" sl="+DoubleToString(sl,_Digits)+" tp="+DoubleToString(tp,_Digits)+" ";
+}
+
+ulong NewestOwnTicket()
+{
+   ulong best=0;
+   datetime bestTime=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;
+      datetime tm=(datetime)PositionGetInteger(POSITION_TIME);
+      if(best==0||tm>=bestTime){best=t;bestTime=tm;}
+   }
+   return best;
+}
+
+bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string comment,string &detail)
+{
+   ENUM_ORDER_TYPE type=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   bool ok=trade.PositionOpen(_Symbol,type,lot,entry,sl,tp,comment);
+   uint rc=trade.ResultRetcode();
+   if(ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED))
+   {
+      detail="order_ok ret="+IntegerToString((int)rc);
+      return true;
+   }
+   if(rc!=TRADE_RETCODE_INVALID_STOPS && rc!=10016)
+   {
+      detail="order_failed ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+      return false;
+   }
+
+   string firstFail="invalid_stops ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+   bool naked=trade.PositionOpen(_Symbol,type,lot,entry,0,0,comment+"|naked");
+   uint nakedRc=trade.ResultRetcode();
+   if(!(naked&&(nakedRc==TRADE_RETCODE_DONE||nakedRc==TRADE_RETCODE_DONE_PARTIAL||nakedRc==TRADE_RETCODE_PLACED)))
+   {
+      detail=firstFail+" naked_failed ret="+IntegerToString((int)nakedRc)+" "+trade.ResultRetcodeDescription();
+      return false;
+   }
+   ulong t=NewestOwnTicket();
+   if(t>0&&PositionSelectByTicket(t))
+   {
+      bool mod=trade.PositionModify(t,sl,tp);
+      uint modRc=trade.ResultRetcode();
+      if(mod)
+      {
+         detail=firstFail+" naked_modify_ok ticket="+IntegerToString((long)t);
+         return true;
+      }
+      bool closed=trade.PositionClose(t);
+      detail=firstFail+" naked_modify_failed ret="+IntegerToString((int)modRc)+" "+trade.ResultRetcodeDescription()+" emergency_close="+(closed?"1":"0");
+      return false;
+   }
+   detail=firstFail+" naked_opened_but_ticket_not_found";
+   return false;
+}
+
 bool CanModifySlTo(double sl,int dir,string &reason)
 {
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID),ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
@@ -278,6 +360,28 @@ bool CanModifySlTo(double sl,int dir,string &reason)
 string AuditDateStr(){MqlDateTime d;TimeToStruct(TimeGMT(),d);return StringFormat("%04d%02d%02d",d.year,d.mon,d.day);}
 string AuditFileName(){return "ORB15_TradeAudit_"+AuditDateStr()+".csv";}
 string AuditPx(double p){return p<=0?"0":DoubleToString(p,(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS));}
+
+void OBT_ProcessAudit(string ev,string detail)
+{
+   string fileName="ORB15_BacktestProcess_"+AuditDateStr()+".csv";
+   bool exists=FileIsExist(fileName);
+   int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
+   if(h==INVALID_HANDLE)return;
+   if(!exists||FileSize(h)==0)
+      FileWrite(h,"gmt_time","server_time","event","build","symbol","chart_tf","result_file","weeks","requested_from","calendar_days","trading_days_cached","valid_orb_days","combos_total","step","elapsed_ms","detail");
+   FileSeek(h,0,SEEK_END);
+   int validDays=0;
+   for(int i=0;i<g_btDayCount;i++)if(g_btDays[i].valid)validDays++;
+   FileWrite(h,
+      TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+      ev,ORB15_BUILD,_Symbol,EnumToString(_Period),g_btFileName,
+      IntegerToString(g_btWeeks),
+      TimeToString(TimeCurrent()-g_btWeeks*7*86400,TIME_DATE|TIME_SECONDS),
+      IntegerToString(g_btWeeks*7),IntegerToString(g_btDayCount),IntegerToString(validDays),
+      IntegerToString(g_btTotal),IntegerToString(g_btStep),IntegerToString((int)g_btElapsedMs),detail);
+   FileClose(h);
+}
 
 void Audit(string ev,string dir,double lot,double entry,double sl,double tp,string detail)
 {
@@ -329,6 +433,14 @@ double RiskInitialBal(){if(InpInitialBalanceOverride>0)return InpInitialBalanceO
 
 void RiskScopePerf(double &closedAll,double &closedToday,double &floating)
 {
+   datetime now=TimeCurrent();
+   if(g_riskPerfCacheAt==now)
+   {
+      closedAll=g_riskPerfClosedAll;
+      closedToday=g_riskPerfClosedToday;
+      floating=g_riskPerfFloating;
+      return;
+   }
    closedAll=0;closedToday=0;floating=0;
    datetime dayStart=RiskDayStart();
    HistorySelect(0,TimeCurrent());
@@ -349,6 +461,10 @@ void RiskScopePerf(double &closedAll,double &closedToday,double &floating)
       if(!MagicScoped((long)PositionGetInteger(POSITION_MAGIC)))continue;
       floating+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
    }
+   g_riskPerfCacheAt=now;
+   g_riskPerfClosedAll=closedAll;
+   g_riskPerfClosedToday=closedToday;
+   g_riskPerfFloating=floating;
 }
 
 void RiskMetrics(double &cap,double &dailyPct,double &totalPct)
@@ -966,7 +1082,7 @@ void OBT_PrecomputeDays()
 void OBT_Start()
 {
    if(g_btRunning) return;
-   g_btWeeks=MathMax(1,g_btWeeks);g_btStartMs=GetTickCount();
+   g_btWeeks=MathMax(1,g_btWeeks);g_btStartMs=GetTickCount();g_btElapsedMs=0;
    OBT_GenerateCombos();
    OBT_PrecomputeDays();
    MqlDateTime d;TimeToStruct(TimeGMT(),d);
@@ -974,12 +1090,13 @@ void OBT_Start()
    int h=FileOpen(g_btFileName,FILE_CSV|FILE_WRITE|FILE_SHARE_READ,',');
    if(h!=INVALID_HANDLE)
    {
-      FileWrite(h,"timestamp","signal_tf","delay_min","atr_filter","vol_filter","day_filter","be_on_tp1",
+      FileWrite(h,"timestamp","symbol","chart_tf","signal_tf","delay_min","atr_filter","vol_filter","day_filter","be_on_tp1",
          "fill_mode","same_bar_policy","spread_pts","slippage_pts","commission_per_lot",
-         "weeks","total_signals","wins","losses","win_rate","net_r","pf","avg_r_per_trade");
+         "weeks","requested_from","day_count","total_signals","wins","losses","win_rate","net_r","pf","avg_r_per_trade");
       FileClose(h);
    }
    g_btStep=0;g_btRunning=true;g_btLastResult="Starting...";
+   OBT_ProcessAudit("start","ok");
    Print("OBT: started ",g_btTotal," combos, ",g_btWeeks," weeks, ",g_btDayCount," days");
 }
 
@@ -1052,11 +1169,13 @@ void OBT_WriteRow(const OrbBtCombo &c,const OrbBtStats &s)
    double avgR=s.total>0?s.netR/s.total:0;
    FileWrite(h,
       TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),
+      _Symbol,EnumToString(_Period),
       TfLabel(g_btTFs[c.tfIdx]),IntegerToString(g_btDelays[c.delayIdx]),
       (c.atr?"1":"0"),(c.vol?"1":"0"),(c.day?"1":"0"),(c.be?"1":"0"),
       BtFillLabel(g_btFillMode),BtSameBarLabel(g_btSameBarPolicy),
       DoubleToString(g_btSpreadPts,2),DoubleToString(g_btSlippagePts,2),DoubleToString(g_btCommissionPerLot,2),
-      IntegerToString(g_btWeeks),IntegerToString(s.total),IntegerToString(s.wins),IntegerToString(s.losses),
+      IntegerToString(g_btWeeks),TimeToString(TimeCurrent()-g_btWeeks*7*86400,TIME_DATE|TIME_SECONDS),IntegerToString(g_btDayCount),
+      IntegerToString(s.total),IntegerToString(s.wins),IntegerToString(s.losses),
       DoubleToString(wr,2),DoubleToString(s.netR,2),DoubleToString(pf,2),DoubleToString(avgR,3));
    FileClose(h);
 }
@@ -1064,9 +1183,11 @@ void OBT_WriteRow(const OrbBtCombo &c,const OrbBtStats &s)
 void OBT_Finish()
 {
    g_btRunning=false;
-   uint elapsed=GetTickCount()-g_btStartMs;
+   g_btElapsedMs=GetTickCount()-g_btStartMs;
+   uint elapsed=g_btElapsedMs;
    Print("OBT: COMPLETE ",g_btTotal," combos in ",elapsed,"ms -> ",g_btFileName);
-   g_btLastResult="DONE "+IntegerToString(g_btTotal)+" combos in "+DoubleToString(elapsed/1000.0,1)+"s";
+   g_btLastResult="DONE "+IntegerToString(g_btTotal)+" combos in "+DoubleToString(g_btElapsedMs/1000.0,1)+"s";
+   OBT_ProcessAudit("finish","completed");
    ArrayFree(g_btDays);ArrayFree(g_btCombos);g_btDayCount=0;
    ArrayResize(g_btBreakouts,0);
 }
@@ -1257,7 +1378,7 @@ void UpdateDashboard()
       int fw=(int)MathRound(pbW*MathMax(0,MathMin(1,pct)));
       if(fw>2) CreateRect("DASH_BTPB_FG",x+13,pbY+1,fw-2,pbH-2,C'60,200,120',C'60,200,120');
       else CreateRect("DASH_BTPB_FG",x+13,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      uint elapsed=GetTickCount()-g_btStartMs;
+      uint elapsed=g_btRunning?(GetTickCount()-g_btStartMs):g_btElapsedMs;
       string pTxt=IntegerToString(g_btStep)+"/"+IntegerToString(g_btTotal)
          +" ("+IntegerToString((int)(pct*100))+"%) "
          +DoubleToString(elapsed/1000.0,1)+"s";
@@ -1345,23 +1466,30 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
 //=========================================================================
 //  TRADE EXECUTION
 //=========================================================================
-bool ExecSingle(string dir,double entry,double sl,double tp,double lot)
+bool ExecSingle(string dir,double &entry,double &sl,double &tp,double lot)
 {
    entry=NormalizeTradePrice(entry);sl=NormalizeTradePrice(sl);tp=NormalizeTradePrice(tp);
+   string adj="";AdjustOpenStops(dir,entry,sl,tp,adj);
    string vr="";if(!ValidateOpenStops(dir,entry,sl,tp,vr)){Audit("order_skip_stops",dir,lot,entry,sl,tp,vr);return false;}
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
-   bool ok=dir=="BUY"?trade.Buy(lot,_Symbol,0,sl,tp,"ORB15v3|"+dir):trade.Sell(lot,_Symbol,0,sl,tp,"ORB15v3|"+dir);
-   if(!ok)Audit("order_fail",dir,lot,entry,sl,tp,"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+   string detail="";
+   bool ok=SendOrbOrder(dir,lot,entry,sl,tp,"ORB15v3|"+dir,detail);
+   if(!ok)Audit("order_fail",dir,lot,entry,sl,tp,adj+detail);
+   else if(adj!="")Audit("order_adjusted",dir,lot,entry,sl,tp,adj+detail);
    return ok;
 }
-bool ExecThreeLegs(string dir,double entry,double sl,double tp1,double tp2,double tp3,double totalLot)
+bool ExecThreeLegs(string dir,double &entry,double &sl,double &tp1,double &tp2,double &tp3,double totalLot)
 {
    double leg=NormalizeLegVolume(totalLot,3);
    if(leg<=0)return ExecSingle(dir,entry,sl,tp2,NormalizeVolume(totalLot));
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
-   ENUM_ORDER_TYPE type=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    double price=NormalizeTradePrice(dir=="BUY"?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID));
+   entry=price;
    sl=NormalizeTradePrice(sl);tp1=NormalizeTradePrice(tp1);tp2=NormalizeTradePrice(tp2);tp3=NormalizeTradePrice(tp3);
+   string adj1="",adj2="",adj3="";
+   AdjustOpenStops(dir,price,sl,tp1,adj1);
+   AdjustOpenStops(dir,price,sl,tp2,adj2);
+   AdjustOpenStops(dir,price,sl,tp3,adj3);
    string vr="";
    if(!ValidateOpenStops(dir,price,sl,tp1,vr)){Audit("order_skip_stops",dir,leg,price,sl,tp1,"tp1 "+vr);return false;}
    if(!ValidateOpenStops(dir,price,sl,tp2,vr)){Audit("order_skip_stops",dir,leg,price,sl,tp2,"tp2 "+vr);return false;}
@@ -1371,8 +1499,28 @@ bool ExecThreeLegs(string dir,double entry,double sl,double tp1,double tp2,doubl
    ulong existing[];int ec=0;
    for(int p=PositionsTotal()-1;p>=0;p--){ulong t=PositionGetTicket(p);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;ArrayResize(existing,ec+1);existing[ec++]=t;}
    int opened=0;
-   for(int i=0;i<3;i++){bool ok=trade.PositionOpen(_Symbol,type,leg,price,sl,tps[i],cm[i]);uint rc=trade.ResultRetcode();if(ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED))opened++;else{Print("ORB15v3 leg",i+1," fail ret=",rc);Audit("leg_fail",dir,leg,price,sl,tps[i],"leg="+IntegerToString(i+1)+" ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription());}}
-   if(opened>0&&opened<3){for(int p=PositionsTotal()-1;p>=0;p--){ulong t=PositionGetTicket(p);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;bool ex=false;for(int e=0;e<ec;e++)if(existing[e]==t){ex=true;break;}if(!ex){bool ck=trade.PositionClose(t);Audit(ck?"rollback_close":"rollback_close_failed","",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());}}return false;}
+   for(int i=0;i<3;i++){string detail="";bool ok=SendOrbOrder(dir,leg,price,sl,tps[i],cm[i],detail);if(ok)opened++;else{Print("ORB15v3 leg",i+1," fail ",detail);Audit("leg_fail",dir,leg,price,sl,tps[i],"leg="+IntegerToString(i+1)+" "+detail);}}
+   if(opened>0&&opened<3)
+   {
+      int remaining=0;
+      for(int p=PositionsTotal()-1;p>=0;p--)
+      {
+         ulong t=PositionGetTicket(p);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;
+         bool ex=false;for(int e=0;e<ec;e++)if(existing[e]==t){ex=true;break;}
+         if(!ex)
+         {
+            bool ck=trade.PositionClose(t);
+            Audit(ck?"rollback_close":"rollback_close_failed","",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+            if(!ck)remaining++;
+         }
+      }
+      if(remaining>0)
+      {
+         Audit("rollback_orphan_managed",dir,leg,price,sl,tp3,"remaining="+IntegerToString(remaining));
+         return true;
+      }
+      return false;
+   }
    return opened==3;
 }
 
@@ -1391,8 +1539,28 @@ void ManagePositions()
       {
          double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
          double be=NormalizePrice(g_tradeEntry+(g_tradeDir>0?1:-1)*InpBEOffsetPoints*pt);
-         for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;string br="";if(!CanModifySlTo(be,g_tradeDir,br)){Audit("sl_to_be_deferred",g_tradeDir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),g_tradeEntry,be,PositionGetDouble(POSITION_TP),br);continue;}bool mk=trade.PositionModify(t,be,PositionGetDouble(POSITION_TP));Audit(mk?"sl_to_be":"sl_to_be_failed",g_tradeDir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),g_tradeEntry,be,PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());}
-         g_beMoved=true;g_tradeSl=be;Audit("sl_to_be",g_tradeDir>0?"BUY":"SELL",0,g_tradeEntry,be,0,"tp1_hit");
+         int attempts=0,moved=0,deferred=0;
+         for(int i=PositionsTotal()-1;i>=0;i--)
+         {
+            ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;
+            string br="";
+            if(!CanModifySlTo(be,g_tradeDir,br))
+            {
+               deferred++;
+               Audit("sl_to_be_deferred",g_tradeDir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),g_tradeEntry,be,PositionGetDouble(POSITION_TP),br);
+               continue;
+            }
+            attempts++;
+            bool mk=trade.PositionModify(t,be,PositionGetDouble(POSITION_TP));
+            if(mk)moved++;
+            Audit(mk?"sl_to_be":"sl_to_be_failed",g_tradeDir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),g_tradeEntry,be,PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+         }
+         if(moved>0)
+         {
+            g_beMoved=true;g_tradeSl=be;Audit("sl_to_be_done",g_tradeDir>0?"BUY":"SELL",0,g_tradeEntry,be,0,"moved="+IntegerToString(moved)+" attempts="+IntegerToString(attempts));
+         }
+         else
+            Audit("sl_to_be_pending",g_tradeDir>0?"BUY":"SELL",0,g_tradeEntry,be,0,"attempts="+IntegerToString(attempts)+" deferred="+IntegerToString(deferred));
       }
    }
    // TP touch watchdog
@@ -1458,7 +1626,7 @@ void TryOpenSignal()
       opened=ExecSingle(dir,entry,sl,tp,lot);
       if(opened){g_tradeTp1=tp;g_tradeTp2=tp;g_tradeTp3=tp;Audit("opened",dir,lot,entry,sl,tp,lotDetail);}
    }
-   if(opened){g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_tradeRisk=risk;g_lastExecStatus="OPENED";}
+   if(opened){g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_tradeRisk=MathAbs(entry-sl);g_lastExecStatus="OPENED";}
    else{g_lastExecStatus="FAIL";Audit("order_fail",dir,0,entry,sl,0,"ret="+IntegerToString((int)trade.ResultRetcode()));}
 }
 

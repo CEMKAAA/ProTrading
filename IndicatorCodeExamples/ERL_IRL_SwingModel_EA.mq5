@@ -1,46 +1,1953 @@
+//+------------------------------------------------------------------+
+//| ERL -> IRL Higher Timeframe Swing Model EA                       |
+//| Sweep -> reclaim -> HTF FVG -> entry-TF tap automation.           |
+//| Dashboard, historical audit, brute-force backtest, risk engine.   |
+//+------------------------------------------------------------------+
 #property strict
-#property version "1.00"
+#property version "1.10"
+
 #include <Trade/Trade.mqh>
-#define BUILD_TAG "2026-06-14.erl-irl-v1"
-#define PREFIX_BASE "ERLIRL_"
-enum BT_FILL_MODE{BT_FILL_SIGNAL_CLOSE=0,BT_FILL_NEXT_OPEN=1,BT_FILL_WORST_TOUCH=2};
-enum BT_SAME_BAR_POLICY{BT_SAMEBAR_CONSERVATIVE=0,BT_SAMEBAR_NEAREST_OPEN=1,BT_SAMEBAR_TP_FIRST=2,BT_SAMEBAR_SL_FIRST=3};
-enum ERL_HTF_CHOICE{ERL_HTF_H4=0,ERL_HTF_D1=1};
-enum ERL_ENTRY_TF_CHOICE{ERL_ENTRY_M15=0,ERL_ENTRY_M30=1,ERL_ENTRY_H1=2};
-input bool InpEaEnabled=false; input long InpMagic=26061401; input int InpDeviationPoints=30; input bool InpCloseOnReverse=true; input bool InpBlockSameDirection=true;
-input bool InpShowDashboard=true; input int InpDashboardX=12; input int InpDashboardY=24; input int InpHistoricalDays=7; input int InpBacktestWeeks=2;
-input int InpCalcHtfBars=900; input int InpMaxFvgSearchBars=12; input double InpMinFvgAtrPct=8.0; input int InpAtrPeriod=14; input double InpSlBufferAtrPct=5.0; input bool InpDrawFvgZones=true;
-input ERL_HTF_CHOICE InpDefaultHtf=ERL_HTF_H4; input ERL_ENTRY_TF_CHOICE InpDefaultEntryTf=ERL_ENTRY_M15; input int InpDefaultSwingLookback=5; input int InpDefaultTargetLeg=2; input int InpDefaultHalfBeLeg=1; input bool InpDefaultWeeklyBias=true;
-input bool InpAccountRiskEnabled=false; input double InpFixedLot=0.10; input double InpRiskPerTradePct=1.00; input double InpMaxPortfolioRiskPct=4.00; input double InpDailyLossLimitPct=0.00; input double InpMaxDrawdownPct=0.00; input double InpInitialBalanceOverride=0.00; input int InpDayResetHourGmt=0;
-input bool InpAuditTradeCsv=true; input bool InpAuditPositionProbe=true; input int InpAuditPositionProbeSec=30; input int InpAuditHistoryScanSec=2; input bool InpLogOnInit=true;
-input BT_FILL_MODE InpBacktestFillMode=BT_FILL_SIGNAL_CLOSE; input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy=BT_SAMEBAR_NEAREST_OPEN; input double InpBacktestSpreadPts=0.0; input double InpBacktestSlippagePts=0.0; input double InpBacktestCommissionPerLot=0.0;
-struct Sig{datetime time;int dir;double entry,sl,tp1,tp2,tp3;datetime sweepTime,fvgTime;double swing,flo,fhi;string detail;};
-struct Res{string outcome;double netR;bool win,loss;datetime exitTime;double maxR,minR;};
-struct Stats{int total,wins,losses,open;double netR,wonR,lostR,pf,avgR;};
-CTrade trade; string PFX; bool g_on,g_bias; ENUM_TIMEFRAMES g_htf,g_etf; int g_sw,g_tp,g_hc,g_btProg,g_btTotal,g_lastDir=0; datetime g_lastSig=0,g_lastProbe=0,g_lastHist=0,g_lastDash=0; string g_status="READY",g_btLast="Ready"; Stats g_stats; ulong g_lastDeal=0; BT_SAME_BAR_POLICY g_same;
-string TL(ENUM_TIMEFRAMES tf){if(tf==PERIOD_M15)return"M15";if(tf==PERIOD_M30)return"M30";if(tf==PERIOD_H1)return"H1";if(tf==PERIOD_H4)return"H4";if(tf==PERIOD_D1)return"D1";return EnumToString(tf);} string DT(int d){return d>0?"BUY":"SELL";} string PX(double p){return p<=0?"-":DoubleToString(p,_Digits);} string DS(datetime t){MqlDateTime d;TimeToStruct(t,d);return StringFormat("%04d%02d%02d",d.year,d.mon,d.day);} string TS(datetime t){MqlDateTime d;TimeToStruct(t,d);return StringFormat("%04d%02d%02d_%02d%02d%02d",d.year,d.mon,d.day,d.hour,d.min,d.sec);} 
-ENUM_TIMEFRAMES Htf(ERL_HTF_CHOICE c){return c==ERL_HTF_D1?PERIOD_D1:PERIOD_H4;} ENUM_TIMEFRAMES Etf(ERL_ENTRY_TF_CHOICE c){if(c==ERL_ENTRY_M30)return PERIOD_M30;if(c==ERL_ENTRY_H1)return PERIOD_H1;return PERIOD_M15;} double TR(int leg){if(leg<=1)return 1.0;if(leg==2)return 1.5;return 2.0;} int HC(int tp,int hc){if(tp<=1)return 0;if(hc<0)return 0;if(tp==2)return hc>=1?1:0;return MathMin(2,hc);} 
-bool CR(ENUM_TIMEFRAMES tf,datetime f,datetime t,MqlRates&r[]){ArrayFree(r);int c=CopyRates(_Symbol,tf,f,t,r);if(c<=0)return false;ArraySetAsSeries(r,false);return true;} double ATR(MqlRates&r[],int n,int i,int p){if(i<=0)return 0;int s=MathMax(1,i-MathMax(2,p)+1);double z=0;int c=0;for(int k=s;k<=i;k++){z+=MathMax(r[k].high-r[k].low,MathMax(MathAbs(r[k].high-r[k-1].close),MathAbs(r[k].low-r[k-1].close)));c++;}return c>0?z/c:0;}
-bool SH(MqlRates&r[],int i,int n,int lb){if(i-lb<0||i+lb>=n)return false;for(int k=1;k<=lb;k++)if(r[i].high<=r[i-k].high||r[i].high<=r[i+k].high)return false;return true;} bool SLw(MqlRates&r[],int i,int n,int lb){if(i-lb<0||i+lb>=n)return false;for(int k=1;k<=lb;k++)if(r[i].low>=r[i-k].low||r[i].low>=r[i+k].low)return false;return true;}
-bool WB(int dir,datetime t){int sh=iBarShift(_Symbol,PERIOD_W1,t,false);double o=iOpen(_Symbol,PERIOD_W1,sh+1),c=iClose(_Symbol,PERIOD_W1,sh+1);if(o<=0||c<=0)return true;return dir>0?c>o:c<o;} int Add(Sig&a[],Sig&s){int n=ArraySize(a);if(n>0&&a[n-1].time==s.time&&a[n-1].dir==s.dir)return n;ArrayResize(a,n+1);a[n]=s;return n+1;}
-bool FindSignals(ENUM_TIMEFRAMES htf,ENUM_TIMEFRAMES etf,int lb,bool bias,datetime from,datetime to,Sig&out[]){ArrayFree(out);MqlRates hr[],er[];datetime lf=from-(datetime)(PeriodSeconds(htf)*MathMax(200,InpCalcHtfBars/3));if(!CR(htf,lf,to,hr)||!CR(etf,from-(datetime)(PeriodSeconds(etf)*20),to,er))return false;int hn=ArraySize(hr),en=ArraySize(er);if(hn<80||en<20)return false;double lh=0,ll=0;datetime lht=0,llt=0;for(int j=lb+1;j<hn-2;j++){int p=j-1;if(SH(hr,p,hn,lb)){lh=hr[p].high;lht=hr[p].time;}if(SLw(hr,p,hn,lb)){ll=hr[p].low;llt=hr[p].time;}int dir=0,rec=-1;double sw=0;datetime swt=0;if(ll>0&&hr[j].low<ll){if(hr[j].close>ll){dir=1;sw=ll;swt=llt;rec=j;}else if(j+1<hn&&hr[j+1].close>ll){dir=1;sw=ll;swt=llt;rec=j+1;}}if(dir==0&&lh>0&&hr[j].high>lh){if(hr[j].close<lh){dir=-1;sw=lh;swt=lht;rec=j;}else if(j+1<hn&&hr[j+1].close<lh){dir=-1;sw=lh;swt=lht;rec=j+1;}}if(dir==0||rec<0)continue;if(bias&&!WB(dir,hr[rec].time))continue;int fi=-1;double flo=0,fhi=0;for(int k=rec+1;k<=MathMin(hn-2,rec+MathMax(1,InpMaxFvgSearchBars));k++){double atr=ATR(hr,hn,k,InpAtrPeriod);if(atr<=0)atr=hr[k].high-hr[k].low;if(dir>0&&hr[k-1].high<hr[k+1].low){flo=hr[k-1].high;fhi=hr[k+1].low;if(fhi-flo>=atr*InpMinFvgAtrPct/100.0){fi=k;break;}}if(dir<0&&hr[k-1].low>hr[k+1].high){flo=hr[k+1].high;fhi=hr[k-1].low;if(fhi-flo>=atr*InpMinFvgAtrPct/100.0){fi=k;break;}}}if(fi<0)continue;for(int e=0;e<en;e++){if(er[e].time<=hr[fi].time||er[e].time<from||er[e].time>to)continue;if(!(er[e].low<=fhi&&er[e].high>=flo))continue;double entry=er[e].close,buf=ATR(hr,hn,fi,InpAtrPeriod)*InpSlBufferAtrPct/100.0;if(buf<=0)buf=SymbolInfoDouble(_Symbol,SYMBOL_POINT)*5;double sl=dir>0?flo-buf:fhi+buf,risk=MathAbs(entry-sl);if(risk<=SymbolInfoDouble(_Symbol,SYMBOL_POINT)*2)break;Sig s;s.time=er[e].time;s.dir=dir;s.entry=entry;s.sl=sl;s.tp1=entry+dir*risk;s.tp2=entry+dir*risk*1.5;s.tp3=entry+dir*risk*2.0;s.sweepTime=hr[j].time;s.fvgTime=hr[fi].time;s.swing=sw;s.flo=flo;s.fhi=fhi;s.detail="swing="+DoubleToString(sw,_Digits)+" sweep="+TimeToString(hr[j].time,TIME_DATE|TIME_MINUTES)+" fvg="+DoubleToString(flo,_Digits)+"-"+DoubleToString(fhi,_Digits)+" htf="+TL(htf)+" entry="+TL(etf)+" sw="+IntegerToString(lb);Add(out,s);break;}}return ArraySize(out)>0;}
-bool TpFirst(MqlRates&b,int dir,double sl,double tp){if(g_same==BT_SAMEBAR_TP_FIRST)return true;if(g_same==BT_SAMEBAR_SL_FIRST||g_same==BT_SAMEBAR_CONSERVATIVE)return false;return MathAbs(b.open-tp)<MathAbs(b.open-sl);} double CostR(double risk){return risk<=0?0:(InpBacktestSpreadPts+InpBacktestSlippagePts)*SymbolInfoDouble(_Symbol,SYMBOL_POINT)/risk;}
-Res Sim(Sig&s,ENUM_TIMEFRAMES etf,int tpLeg,int hcLeg,datetime to){Res r;r.outcome="OPEN";r.netR=0;r.win=false;r.loss=false;r.exitTime=0;r.maxR=0;r.minR=0;MqlRates a[];if(!CR(etf,s.time,to,a))return r;int n=ArraySize(a);double risk=MathAbs(s.entry-s.sl);if(n<2||risk<=0)return r;double target=tpLeg==1?s.tp1:(tpLeg==2?s.tp2:s.tp3),hc=hcLeg==1?s.tp1:(hcLeg==2?s.tp2:0),asl=s.sl,acc=0,rem=1;bool hd=false;for(int i=1;i<n;i++){double hi=a[i].high,lo=a[i].low;double fav=s.dir>0?hi-s.entry:s.entry-lo,adv=s.dir>0?s.entry-lo:hi-s.entry;r.maxR=MathMax(r.maxR,fav/risk);r.minR=MathMin(r.minR,-adv/risk);bool slh=s.dir>0?lo<=asl:hi>=asl,tph=s.dir>0?hi>=target:lo<=target,hch=(hc>0&&!hd)?(s.dir>0?hi>=hc:lo<=hc):false;if(slh&&(tph||hch)&&!TpFirst(a[i],s.dir,asl,tph?target:hc)){double sr=MathAbs(asl-s.entry)<risk*.05?0:-1;r.netR=acc+rem*sr-CostR(risk);r.outcome=sr==0?"BE":"SL";r.win=r.netR>0;r.loss=r.netR<0;r.exitTime=a[i].time;return r;}if(hch){acc+=.5*MathAbs(hc-s.entry)/risk;rem=.5;asl=s.entry;hd=true;}if(tph){r.netR=acc+rem*MathAbs(target-s.entry)/risk-CostR(risk);r.outcome="TP"+IntegerToString(tpLeg);r.win=r.netR>0;r.loss=r.netR<0;r.exitTime=a[i].time;return r;}if(slh){double sr=MathAbs(asl-s.entry)<risk*.05?0:-1;r.netR=acc+rem*sr-CostR(risk);r.outcome=sr==0?"BE":"SL";r.win=r.netR>0;r.loss=r.netR<0;r.exitTime=a[i].time;return r;}}return r;}
-void SR(Stats&x){x.total=0;x.wins=0;x.losses=0;x.open=0;x.netR=0;x.wonR=0;x.lostR=0;x.pf=0;x.avgR=0;} void SA(Stats&x,Res&r){x.total++;if(r.outcome=="OPEN")x.open++;if(r.win){x.wins++;x.wonR+=r.netR;}if(r.loss){x.losses++;x.lostR+=MathAbs(r.netR);}x.netR+=r.netR;x.pf=x.lostR>0?x.wonR/x.lostR:(x.wonR>0?999:0);x.avgR=x.total>0?x.netR/x.total:0;}
-void DelP(string p){for(int i=ObjectsTotal(0)-1;i>=0;i--){string n=ObjectName(0,i);if(StringFind(n,p)==0)ObjectDelete(0,n);}} void Ar(string n,datetime t,double p,int d,color c){ObjectCreate(0,n,OBJ_ARROW,0,t,p);ObjectSetInteger(0,n,OBJPROP_ARROWCODE,d>0?233:234);ObjectSetInteger(0,n,OBJPROP_COLOR,c);ObjectSetInteger(0,n,OBJPROP_WIDTH,2);} void Tx(string n,datetime t,double p,string s,color c){ObjectCreate(0,n,OBJ_TEXT,0,t,p);ObjectSetString(0,n,OBJPROP_TEXT,s);ObjectSetInteger(0,n,OBJPROP_COLOR,c);ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);} void Fvg(string n,datetime a,datetime b,double lo,double hi,int d){if(!InpDrawFvgZones)return;ObjectCreate(0,n,OBJ_RECTANGLE,0,a,lo,b,hi);ObjectSetInteger(0,n,OBJPROP_COLOR,d>0?clrDarkGreen:clrMaroon);ObjectSetInteger(0,n,OBJPROP_BACK,true);ObjectSetInteger(0,n,OBJPROP_FILL,true);}
-void DrawHist(){string p=PFX+"SIG_";DelP(p);datetime to=TimeCurrent(),from=to-(datetime)(MathMax(1,InpHistoricalDays)*86400);Sig s[];SR(g_stats);if(!FindSignals(g_htf,g_etf,g_sw,g_bias,from,to,s)){g_status="NO HIST SIGNALS";return;}for(int i=0;i<ArraySize(s);i++){Res r=Sim(s[i],g_etf,g_tp,g_hc,to);SA(g_stats,r);string b=p+IntegerToString(i)+"_";double pad=SymbolInfoDouble(_Symbol,SYMBOL_POINT)*80;Ar(b+"A",s[i].time,s[i].dir>0?s[i].entry-pad:s[i].entry+pad,s[i].dir,s[i].dir>0?clrLime:clrTomato);Tx(b+"T",s[i].time,s[i].dir>0?s[i].entry-pad*2:s[i].entry+pad*2,DT(s[i].dir)+" "+r.outcome+" "+DoubleToString(r.netR,2)+"R",r.win?clrLime:(r.loss?clrTomato:clrSilver));Fvg(b+"F",s[i].fvgTime,s[i].time,s[i].flo,s[i].fhi,s[i].dir);}g_status="HIST "+IntegerToString(ArraySize(s))+" signals";}
-void Audit(string ev,string id,int dir,double lot,double price,double sl,double tp,string detail,double pnl,string extra){if(!InpAuditTradeCsv)return;string fn="ERL_IRL_TradeAudit_"+DS(TimeGMT())+".csv";int h=FileOpen(fn,FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI,';');if(h==INVALID_HANDLE)return;bool hd=FileSize(h)==0;FileSeek(h,0,SEEK_END);if(hd)FileWrite(h,"gmt","broker","build","symbol","chart_tf","event","event_id","dir","lot","price","sl","tp","bid","ask","spread_pts","pnl","htf","entry_tf","swing","target_leg","half_be_leg","weekly_bias","detail","extra");double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID),ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);int sp=(int)MathRound((ask-bid)/SymbolInfoDouble(_Symbol,SYMBOL_POINT));FileWrite(h,TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),TimeToString(TimeTradeServer(),TIME_DATE|TIME_SECONDS),BUILD_TAG,_Symbol,TL((ENUM_TIMEFRAMES)_Period),ev,id,dir==0?"":DT(dir),DoubleToString(lot,4),PX(price),PX(sl),PX(tp),PX(bid),PX(ask),sp,DoubleToString(pnl,2),TL(g_htf),TL(g_etf),g_sw,g_tp,g_hc,g_bias?"true":"false",detail,extra);FileClose(h);}
-void Probe(){if(!InpAuditPositionProbe)return;datetime now=TimeGMT();if(now-g_lastProbe<MathMax(5,InpAuditPositionProbeSec))return;g_lastProbe=now;string fn="ERL_IRL_PositionProbe_"+DS(now)+".csv";int h=FileOpen(fn,FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI,';');if(h==INVALID_HANDLE)return;bool hd=FileSize(h)==0;FileSeek(h,0,SEEK_END);if(hd)FileWrite(h,"gmt","broker","build","symbol","ticket","dir","lot","entry","sl","tp","live","r","pnl","detail");for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;int d=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;double e=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP),live=d>0?SymbolInfoDouble(_Symbol,SYMBOL_BID):SymbolInfoDouble(_Symbol,SYMBOL_ASK),risk=MathAbs(e-sl),rr=risk>0?(d>0?(live-e):(e-live))/risk:0;FileWrite(h,TimeToString(now,TIME_DATE|TIME_SECONDS),TimeToString(TimeTradeServer(),TIME_DATE|TIME_SECONDS),BUILD_TAG,_Symbol,(string)t,DT(d),DoubleToString(PositionGetDouble(POSITION_VOLUME),4),PX(e),PX(sl),PX(tp),PX(live),DoubleToString(rr,3),DoubleToString(PositionGetDouble(POSITION_PROFIT),2),"probe");}FileClose(h);}
-void HistScan(){datetime now=TimeGMT();if(now-g_lastHist<MathMax(1,InpAuditHistoryScanSec))return;g_lastHist=now;if(!HistorySelect(now-864000,now))return;for(int i=HistoryDealsTotal()-1;i>=0;i--){ulong d=HistoryDealGetTicket(i);if(d==0||d<=g_lastDeal)continue;if(HistoryDealGetString(d,DEAL_SYMBOL)!=_Symbol||(long)HistoryDealGetInteger(d,DEAL_MAGIC)!=InpMagic||(ENUM_DEAL_ENTRY)HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_OUT)continue;int dir=(int)HistoryDealGetInteger(d,DEAL_TYPE)==DEAL_TYPE_SELL?1:-1;double pnl=HistoryDealGetDouble(d,DEAL_PROFIT)+HistoryDealGetDouble(d,DEAL_SWAP)+HistoryDealGetDouble(d,DEAL_COMMISSION);Audit("history_close",(string)d,dir,HistoryDealGetDouble(d,DEAL_VOLUME),HistoryDealGetDouble(d,DEAL_PRICE),0,0,"reason="+(string)HistoryDealGetInteger(d,DEAL_REASON),pnl,HistoryDealGetString(d,DEAL_COMMENT));if(d>g_lastDeal)g_lastDeal=d;}}
-string RK(string k){return"ERL_IRL_RISK_"+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"_"+k;} datetime Day0(){datetime n=TimeGMT();int rh=MathMax(0,MathMin(23,InpDayResetHourGmt));datetime sh=n-rh*3600;return sh-(sh%86400)+rh*3600;} double InitBal(){if(InpInitialBalanceOverride>0)return InpInitialBalanceOverride;string k=RK("INIT");if(!GlobalVariableCheck(k))GlobalVariableSet(k,MathMax(1.0,AccountInfoDouble(ACCOUNT_BALANCE)));return GlobalVariableGet(k);} 
-void Metrics(double&cap,double&daily,double&dd){double init=InitBal(),ca=0,ct=0,fl=0;datetime ds=Day0(),now=TimeCurrent();HistorySelect(0,now);for(int i=HistoryDealsTotal()-1;i>=0;i--){ulong d=HistoryDealGetTicket(i);if(d==0||(long)HistoryDealGetInteger(d,DEAL_MAGIC)!=InpMagic||(ENUM_DEAL_ENTRY)HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_OUT)continue;double p=HistoryDealGetDouble(d,DEAL_PROFIT)+HistoryDealGetDouble(d,DEAL_SWAP)+HistoryDealGetDouble(d,DEAL_COMMISSION);ca+=p;if((datetime)HistoryDealGetInteger(d,DEAL_TIME)>=ds)ct+=p;}for(int p=PositionsTotal()-1;p>=0;p--){ulong t=PositionGetTicket(p);if(t==0||!PositionSelectByTicket(t)||(long)PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;fl+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);}cap=MathMax(1.0,init+ca+fl);daily=MathMax(0.0,-(ct+fl)/init*100.0);dd=MathMax(0.0,-(ca+fl)/init*100.0);} 
-double OpenRisk(){double z=0;for(int p=PositionsTotal()-1;p>=0;p--){ulong t=PositionGetTicket(p);if(t==0||!PositionSelectByTicket(t)||(long)PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;double e=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),v=PositionGetDouble(POSITION_VOLUME);if(sl<=0)continue;ENUM_ORDER_TYPE ot=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?ORDER_TYPE_BUY:ORDER_TYPE_SELL;double loss=0;if(OrderCalcProfit(ot,_Symbol,v,e,sl,loss))z+=MathMax(0,-loss);}return z;} double NormLot(double l){double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN),mx=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);if(st<=0)st=.01;l=MathMax(mn,MathMin(mx,l));l=MathFloor(l/st+1e-7)*st;return NormalizeDouble(l,2);} 
-double Lot(int dir,double e,double sl,string&det){double fb=NormLot(InpFixedLot);if(!InpAccountRiskEnabled){det="risk_off lot="+DoubleToString(fb,4);return fb;}double cap,dy,dd;Metrics(cap,dy,dd);if(InpDailyLossLimitPct>0&&dy>=InpDailyLossLimitPct){det="daily_loss_block";return 0;}if(InpMaxDrawdownPct>0&&dd>=InpMaxDrawdownPct){det="max_dd_block";return 0;}double one=0;ENUM_ORDER_TYPE ot=dir>0?ORDER_TYPE_BUY:ORDER_TYPE_SELL;if(!OrderCalcProfit(ot,_Symbol,1.0,e,sl,one)){det="risk_calc_fail";return 0;}double rpl=MathAbs(one);if(rpl<=0){det="risk_per_lot_zero";return 0;}double b=MathMin(cap*InpRiskPerTradePct/100.0,MathMax(0,cap*InpMaxPortfolioRiskPct/100.0-OpenRisk()));if(b<=0){det="portfolio_budget_exhausted";return 0;}double l=NormLot(b/rpl);det="risk_on lot="+DoubleToString(l,4)+" cap="+DoubleToString(cap,2)+" budget="+DoubleToString(b,2)+" risk_per_lot="+DoubleToString(rpl,2)+" open_risk="+DoubleToString(OpenRisk(),2)+" daily="+DoubleToString(dy,2)+" dd="+DoubleToString(dd,2);return l;}
-int PosDir(){int d=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;int pd=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;if(d==0)d=pd;else if(d!=pd)return 2;}return d;} void CloseOpp(int dir){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;int pd=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;if(pd==-dir)trade.PositionClose(t);}}
-bool OpenSig(Sig&s){if(!g_on){Audit("signal_skip_disabled",(string)s.time,s.dir,0,s.entry,s.sl,s.tp3,"ea_off",0,s.detail);return false;}int od=PosDir();if(InpBlockSameDirection&&od==s.dir){Audit("signal_skip_samedir",(string)s.time,s.dir,0,s.entry,s.sl,s.tp3,"same_dir",0,s.detail);return false;}if(InpCloseOnReverse)CloseOpp(s.dir);double target=g_tp==1?s.tp1:(g_tp==2?s.tp2:s.tp3);string det;double lot=Lot(s.dir,s.entry,s.sl,det);if(lot<=0){Audit("signal_skip_risk",(string)s.time,s.dir,0,s.entry,s.sl,target,det,0,s.detail);return false;}trade.SetExpertMagicNumber(InpMagic);trade.SetDeviationInPoints(InpDeviationPoints);ENUM_ORDER_TYPE typ=s.dir>0?ORDER_TYPE_BUY:ORDER_TYPE_SELL;double px=s.dir>0?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);bool ok=trade.PositionOpen(_Symbol,typ,lot,px,s.sl,target,"ERL_IRL "+DT(s.dir));Audit(ok?"order_sent":"order_failed",(string)s.time,s.dir,lot,px,s.sl,target,det,0,ok?s.detail:(s.detail+" ret="+(string)trade.ResultRetcode()+" "+trade.ResultRetcodeDescription()));return ok;} void Live(){datetime to=TimeCurrent(),from=to-(datetime)(PeriodSeconds(g_etf)*200);Sig s[];if(!FindSignals(g_htf,g_etf,g_sw,g_bias,from,to,s))return;int n=ArraySize(s);if(n<=0)return;Sig x=s[n-1];if(x.time==g_lastSig&&x.dir==g_lastDir)return;g_lastSig=x.time;g_lastDir=x.dir;Audit("signal_received",(string)x.time,x.dir,0,x.entry,x.sl,x.tp3,"live_signal",0,x.detail);OpenSig(x);}
-void RunBT(){datetime to=TimeCurrent(),from=to-(datetime)(MathMax(1,InpBacktestWeeks)*7*86400);string fn="ERL_IRL_BruteBacktest_"+TS(TimeGMT())+".csv";int h=FileOpen(fn,FILE_WRITE|FILE_CSV|FILE_ANSI,';');if(h==INVALID_HANDLE){g_btLast="CSV open failed";return;}FileWrite(h,"timestamp","htf","entry_tf","swing_lookback","target_leg","rr","half_be_leg","bias_filter","weeks","total","wins","losses","open","win_rate","net_r","won_r","lost_r","pf","avg_r");ENUM_TIMEFRAMES hs[2]={PERIOD_H4,PERIOD_D1};ENUM_TIMEFRAMES es[3]={PERIOD_M15,PERIOD_M30,PERIOD_H1};int sws[3]={3,5,8};bool bs[2]={false,true};g_btTotal=0;for(int a=0;a<2;a++)for(int b=0;b<3;b++)for(int c=0;c<3;c++)for(int tl=1;tl<=3;tl++)for(int hb=0;hb<=2;hb++)for(int bi=0;bi<2;bi++)if(HC(tl,hb)==hb)g_btTotal++;g_btProg=0;for(int a=0;a<2;a++)for(int b=0;b<3;b++)for(int c=0;c<3;c++)for(int tl=1;tl<=3;tl++)for(int hb=0;hb<=2;hb++)for(int bi=0;bi<2;bi++){if(HC(tl,hb)!=hb)continue;Sig sg[];Stats st;SR(st);FindSignals(hs[a],es[b],sws[c],bs[bi],from,to,sg);for(int s=0;s<ArraySize(sg);s++){Res r=Sim(sg[s],es[b],tl,hb,to);SA(st,r);}double wr=st.total>0?(double)st.wins/st.total*100.0:0.0;FileWrite(h,TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),TL(hs[a]),TL(es[b]),sws[c],tl,DoubleToString(TR(tl),1),hb,bs[bi]?"ON":"OFF",InpBacktestWeeks,st.total,st.wins,st.losses,st.open,DoubleToString(wr,2),DoubleToString(st.netR,2),DoubleToString(st.wonR,2),DoubleToString(st.lostR,2),DoubleToString(st.pf,2),DoubleToString(st.avgR,3));g_btProg++;g_btLast=TL(hs[a])+" "+TL(es[b])+" Sw="+(string)sws[c]+" TP"+(string)tl+" HC"+(string)hb+" Bias="+(bs[bi]?"ON":"OFF")+" WR="+DoubleToString(wr,1)+" Net="+DoubleToString(st.netR,2)+"R";if(InpShowDashboard)DashUpdate();}FileClose(h);g_btLast="Backtest done: "+fn;DashUpdate();}
-void Btn(string n,int x,int y,int w,int h,string text,color bg){string o=PFX+n;ObjectCreate(0,o,OBJ_BUTTON,0,0,0);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetInteger(0,o,OBJPROP_XSIZE,w);ObjectSetInteger(0,o,OBJPROP_YSIZE,h);ObjectSetInteger(0,o,OBJPROP_BGCOLOR,bg);ObjectSetInteger(0,o,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,8);ObjectSetString(0,o,OBJPROP_TEXT,text);} void Lab(string n,int x,int y,string text,color c,int fs=8){string o=PFX+n;ObjectCreate(0,o,OBJ_LABEL,0,0,0);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,fs);ObjectSetString(0,o,OBJPROP_TEXT,text);} void Rect(string n,int x,int y,int w,int h,color bg,color br){string o=PFX+n;ObjectCreate(0,o,OBJ_RECTANGLE_LABEL,0,0,0);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetInteger(0,o,OBJPROP_XSIZE,w);ObjectSetInteger(0,o,OBJPROP_YSIZE,h);ObjectSetInteger(0,o,OBJPROP_BGCOLOR,bg);ObjectSetInteger(0,o,OBJPROP_BORDER_COLOR,br);} 
-void Dash(){if(!InpShowDashboard)return;DelP(PFX+"D_");int x=InpDashboardX,y=InpDashboardY,yy=y+64;Rect("D_BG",x,y,700,580,C'13,18,28',C'70,95,125');Lab("D_TITLE",x+14,y+10,"ERL->IRL SWING MODEL // "+BUILD_TAG,clrAliceBlue,10);Lab("D_STATE",x+14,y+34,(g_on?"EA ON":"EA OFF")+" | "+_Symbol+" | HTF "+TL(g_htf)+" | ENTRY "+TL(g_etf)+" | Swing "+(string)g_sw,clrLightSteelBlue,8);Lab("D_C1",x+14,yy,"HTF",clrSilver);Btn("D_H4",x+70,yy-4,48,19,"H4",g_htf==PERIOD_H4?C'38,101,176':C'45,55,70');Btn("D_D1",x+124,yy-4,48,19,"D1",g_htf==PERIOD_D1?C'38,101,176':C'45,55,70');Lab("D_C2",x+190,yy,"ENTRY",clrSilver);Btn("D_M15",x+252,yy-4,54,19,"M15",g_etf==PERIOD_M15?C'38,101,176':C'45,55,70');Btn("D_M30",x+312,yy-4,54,19,"M30",g_etf==PERIOD_M30?C'38,101,176':C'45,55,70');Btn("D_H1",x+372,yy-4,48,19,"H1",g_etf==PERIOD_H1?C'38,101,176':C'45,55,70');yy+=30;Lab("D_C3",x+14,yy,"SWING",clrSilver);Btn("D_SW3",x+70,yy-4,42,19,"3",g_sw==3?C'38,101,176':C'45,55,70');Btn("D_SW5",x+118,yy-4,42,19,"5",g_sw==5?C'38,101,176':C'45,55,70');Btn("D_SW8",x+166,yy-4,42,19,"8",g_sw==8?C'38,101,176':C'45,55,70');Lab("D_C4",x+230,yy,"TP",clrSilver);Btn("D_TP1",x+270,yy-4,58,19,"TP1",g_tp==1?C'38,101,176':C'45,55,70');Btn("D_TP2",x+334,yy-4,58,19,"TP2",g_tp==2?C'38,101,176':C'45,55,70');Btn("D_TP3",x+398,yy-4,58,19,"TP3",g_tp==3?C'38,101,176':C'45,55,70');yy+=30;Lab("D_C5",x+14,yy,"HC+BE",clrSilver);Btn("D_HC0",x+70,yy-4,58,19,"OFF",g_hc==0?C'38,101,176':C'45,55,70');Btn("D_HC1",x+134,yy-4,68,19,"TP1",g_hc==1?C'38,101,176':(g_tp>=2?C'45,55,70':C'30,32,38'));Btn("D_HC2",x+208,yy-4,68,19,"TP2",g_hc==2?C'38,101,176':(g_tp>=3?C'45,55,70':C'30,32,38'));Lab("D_C6",x+298,yy,"BIAS",clrSilver);Btn("D_BIAS",x+344,yy-4,70,19,g_bias?"ON":"OFF",g_bias?C'35,120,72':C'95,65,45');Btn("D_EA",x+430,yy-4,76,19,g_on?"EA ON":"EA OFF",g_on?C'35,120,72':C'120,55,55');yy+=38;double wr=g_stats.total>0?(double)g_stats.wins/g_stats.total*100.0:0.0;Lab("D_AUDT",x+14,yy,"SIGNAL AUDIT",clrAqua,9);yy+=22;Lab("D_AUD1",x+14,yy,(string)InpHistoricalDays+"D: "+(string)g_stats.total+" sig | "+(string)g_stats.wins+"W "+(string)g_stats.losses+"L "+(string)g_stats.open+"O | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_stats.netR,2)+"R | PF "+DoubleToString(g_stats.pf,2),clrWhite,8);yy+=26;Rect("D_WRBG",x+14,yy,300,14,C'35,43,57',C'35,43,57');int fw=(int)MathRound(298*MathMin(100.0,wr)/100.0);if(fw>2)Rect("D_WRFG",x+15,yy+1,fw,12,C'40,190,120',C'40,190,120');Lab("D_WRL",x+324,yy-1,"WR "+DoubleToString(wr,1)+"%",clrLightSteelBlue,8);yy+=42;Lab("D_EX",x+14,yy,"EXECUTION",clrAqua,9);yy+=22;Lab("D_EX1",x+14,yy,"Status: "+g_status+" | Last signal: "+(g_lastSig>0?TimeToString(g_lastSig,TIME_DATE|TIME_MINUTES):"-")+" "+(g_lastDir==0?"":DT(g_lastDir)),clrWhite,8);yy+=28;Lab("D_BT",x+14,yy,"BACKTEST ENGINE",clrAqua,9);yy+=22;Btn("D_RUNBT",x+14,yy-4,120,22,"RUN 216 COMBOS",C'38,101,176');Lab("D_BTL",x+150,yy,"Weeks: "+(string)InpBacktestWeeks+" | "+(string)g_btProg+"/"+(string)g_btTotal+" | "+g_btLast,clrLightSteelBlue,8);}
-void DashUpdate(){if(!InpShowDashboard)return;if(TimeLocal()==g_lastDash)return;g_lastDash=TimeLocal();Dash();} void Combo(){g_hc=HC(g_tp,g_hc);DrawHist();Dash();ChartRedraw(0);} 
-void OnChartEvent(const int id,const long&l,const double&d,const string&s){if(id!=CHARTEVENT_OBJECT_CLICK||StringFind(s,PFX)!=0)return;string b=StringSubstr(s,StringLen(PFX));if(b=="D_H4"){g_htf=PERIOD_H4;Combo();}else if(b=="D_D1"){g_htf=PERIOD_D1;Combo();}else if(b=="D_M15"){g_etf=PERIOD_M15;Combo();}else if(b=="D_M30"){g_etf=PERIOD_M30;Combo();}else if(b=="D_H1"){g_etf=PERIOD_H1;Combo();}else if(b=="D_SW3"){g_sw=3;Combo();}else if(b=="D_SW5"){g_sw=5;Combo();}else if(b=="D_SW8"){g_sw=8;Combo();}else if(b=="D_TP1"){g_tp=1;Combo();}else if(b=="D_TP2"){g_tp=2;Combo();}else if(b=="D_TP3"){g_tp=3;Combo();}else if(b=="D_HC0"){g_hc=0;Combo();}else if(b=="D_HC1"&&g_tp>=2){g_hc=1;Combo();}else if(b=="D_HC2"&&g_tp>=3){g_hc=2;Combo();}else if(b=="D_BIAS"){g_bias=!g_bias;Combo();}else if(b=="D_EA"){g_on=!g_on;Audit("dashboard_toggle","",0,0,0,0,0,g_on?"ea_on":"ea_off",0,"");Dash();}else if(b=="D_RUNBT")RunBT();}
-int OnInit(){PFX=PREFIX_BASE+(string)ChartID()+"_";g_on=InpEaEnabled;g_htf=Htf(InpDefaultHtf);g_etf=Etf(InpDefaultEntryTf);g_sw=InpDefaultSwingLookback<=3?3:(InpDefaultSwingLookback>=8?8:5);g_tp=MathMax(1,MathMin(3,InpDefaultTargetLeg));g_hc=HC(g_tp,InpDefaultHalfBeLeg);g_bias=InpDefaultWeeklyBias;g_same=InpBacktestSameBarPolicy;trade.SetExpertMagicNumber(InpMagic);trade.SetDeviationInPoints(InpDeviationPoints);EventSetTimer(2);DrawHist();Dash();Audit("init","",0,0,0,0,0,"build="+BUILD_TAG,0,"htf="+TL(g_htf)+" entry="+TL(g_etf));if(InpLogOnInit)Print("ERL_IRL init ",BUILD_TAG," ",_Symbol," ",TL(g_htf)," ",TL(g_etf));return INIT_SUCCEEDED;} void OnDeinit(const int r){EventKillTimer();DelP(PFX);Audit("deinit","",0,0,0,0,0,"reason="+(string)r,0,"");} void OnTick(){Live();Probe();HistScan();} void OnTimer(){Live();Probe();HistScan();DashUpdate();}
+
+#define ERL_BUILD "2026-06-15.erl-irl-bt-process-risklot-default"
+#define ERL_PREFIX "ERLIRL_"
+
+//=====================================================================
+//  ENUMS
+//=====================================================================
+enum ERL_RR_MODE
+{
+   ERL_RR_TP1 = 0,   // 1.0R
+   ERL_RR_TP2 = 1,   // 1.5R
+   ERL_RR_TP3 = 2    // 2.0R
+};
+
+enum ERL_HC_MODE
+{
+   ERL_HC_OFF = 0,
+   ERL_HC_TP1 = 1,
+   ERL_HC_TP2 = 2
+};
+
+enum BT_FILL_MODE
+{
+   BT_FILL_SIGNAL_CLOSE = 0,
+   BT_FILL_NEXT_BAR_OPEN = 1,
+   BT_FILL_CONSERVATIVE = 2
+};
+
+enum BT_SAME_BAR_POLICY
+{
+   BT_SAMEBAR_CONSERVATIVE = 0,
+   BT_SAMEBAR_NEAREST_OPEN = 1,
+   BT_SAMEBAR_TP_FIRST = 2,
+   BT_SAMEBAR_SL_FIRST = 3
+};
+
+//=====================================================================
+//  INPUTS
+//=====================================================================
+input bool            InpEaEnabled              = true;
+input long            InpMagic                  = 31061501;
+input int             InpDeviationPoints        = 30;
+input bool            InpCloseOnReverse         = true;
+input bool            InpBlockSameDirection     = true;
+
+input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H4;
+input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M15;
+input int             InpDefaultSwingLookback   = 5;
+input ERL_RR_MODE     InpDefaultTarget          = ERL_RR_TP2;
+input ERL_HC_MODE     InpDefaultHalfBe          = ERL_HC_TP1;
+input bool            InpDefaultWeeklyBias      = false;
+
+input int             InpCalcHtfBars            = 900;
+input int             InpCalcEntryBars          = 5000;
+input int             InpMaxSwings              = 20;
+input int             InpMaxFvgSearchBars       = 20;
+input int             InpAtrPeriod              = 14;
+input double          InpMinFvgAtrPct           = 8.0;
+input double          InpSlBufferAtrPct         = 10.0;
+input int             InpHistoricalDays         = 14;
+input bool            InpDrawHistoricalSignals  = true;
+input bool            InpDrawFvgZones           = true;
+input bool            InpDrawLiveLevels         = true;
+
+input bool            InpShowDashboard          = true;
+input int             InpDashboardX             = 10;
+input int             InpDashboardY             = 18;
+
+input bool            InpAccountRiskEnabled     = true;
+input double          InpRiskPerTradePct        = 1.0;
+input double          InpMaxPortfolioRiskPct    = 4.0;
+input double          InpDailyLossLimitPct      = 0.0;
+input double          InpMaxDrawdownPct         = 0.0;
+input double          InpInitialBalanceOverride = 0.0;
+input double          InpFixedLot               = 0.10;
+input double          InpMaxLot                 = 0.0;
+input int             InpDayResetHourGmt        = 0;
+input bool            InpLiquidateOnBreach      = true;
+
+input bool            InpAuditTradeCsv          = true;
+input bool            InpAuditPositionProbe     = true;
+input int             InpAuditProbeSec          = 30;
+input bool            InpAuditProbeOnChangeOnly = true;
+input int             InpAuditHistoryScanSec    = 3;
+
+input int             InpBacktestWeeks          = 4;
+input BT_FILL_MODE    InpBacktestFillMode       = BT_FILL_SIGNAL_CLOSE;
+input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
+input double          InpBacktestSpreadPts      = 0.0;
+input double          InpBacktestSlippagePts    = 0.0;
+input double          InpBacktestCommissionPerLot = 0.0;
+
+//=====================================================================
+//  STRUCTS
+//=====================================================================
+struct SwingLevel
+{
+   datetime time;
+   double   price;
+   int      index;
+   int      dir;       // +1 high, -1 low
+};
+
+struct FvgZone
+{
+   bool     valid;
+   int      dir;       // +1 bullish, -1 bearish
+   datetime time;
+   double   low;
+   double   high;
+   double   anchor;
+};
+
+struct ErlSignal
+{
+   bool     valid;
+   int      dir;
+   datetime htfTime;
+   datetime entryTime;
+   double   sweepLevel;
+   double   fvgLow;
+   double   fvgHigh;
+   double   entry;
+   double   sl;
+   double   tp1;
+   double   tp2;
+   double   tp3;
+   double   risk;
+   string   reason;
+   string   id;
+};
+
+struct SimStats
+{
+   int      total;
+   int      wins;
+   int      losses;
+   int      open;
+   double   wonR;
+   double   lostR;
+   double   netR;
+   double   pf;
+};
+
+struct BtCombo
+{
+   ENUM_TIMEFRAMES htf;
+   ENUM_TIMEFRAMES entryTf;
+   int      swing;
+   ERL_RR_MODE target;
+   ERL_HC_MODE hc;
+   bool     bias;
+};
+
+//=====================================================================
+//  GLOBAL STATE
+//=====================================================================
+CTrade trade;
+string PFX = ERL_PREFIX;
+
+bool             g_eaEnabled;
+ENUM_TIMEFRAMES  g_htf;
+ENUM_TIMEFRAMES  g_entryTf;
+int              g_swingLookback;
+ERL_RR_MODE      g_target;
+ERL_HC_MODE      g_hc;
+bool             g_weeklyBias;
+
+SimStats         g_hist;
+string           g_lastStatus = "READY";
+string           g_lastBlock  = "";
+datetime         g_lastSignalTime = 0;
+int              g_lastSignalDir = 0;
+string           g_lastSignalId = "";
+double           g_lastEntry = 0.0;
+double           g_lastSl = 0.0;
+double           g_lastTp = 0.0;
+double           g_lastSpreadPts = 0.0;
+string           g_lastSpreadStatus = "?";
+
+datetime         g_lastAuditProbe = 0;
+string           g_lastProbeHash = "";
+datetime         g_lastHistoryScan = 0;
+ulong            g_lastHistoryTicket = 0;
+double           g_equityPeak = 0.0;
+datetime         g_lastLiveScanBar = 0;
+
+BtCombo          g_btCombos[];
+bool             g_btRunning = false;
+int              g_btStep = 0;
+int              g_btTotal = 0;
+int              g_btWeeks = 4;
+string           g_btFileName = "";
+string           g_btLastResult = "Ready";
+uint             g_btStartMs = 0;
+uint             g_btElapsedMs = 0;
+datetime         g_btCutoff = 0;
+string           g_btCoverageSummary = "";
+BT_FILL_MODE     g_btFillMode;
+BT_SAME_BAR_POLICY g_btSameBarPolicy;
+double           g_btSpreadPts;
+double           g_btSlippagePts;
+double           g_btCommissionPerLot;
+
+//=====================================================================
+//  BASIC UTILITY
+//=====================================================================
+string TfLabel(ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M1:  return "M1";
+      case PERIOD_M5:  return "M5";
+      case PERIOD_M15: return "M15";
+      case PERIOD_M30: return "M30";
+      case PERIOD_H1:  return "H1";
+      case PERIOD_H4:  return "H4";
+      case PERIOD_D1:  return "D1";
+      case PERIOD_W1:  return "W1";
+   }
+   return EnumToString(tf);
+}
+
+string DirLabel(int dir)
+{
+   if(dir > 0) return "BUY";
+   if(dir < 0) return "SELL";
+   return "-";
+}
+
+string TargetLabel(ERL_RR_MODE rr)
+{
+   if(rr == ERL_RR_TP1) return "TP1 1.0R";
+   if(rr == ERL_RR_TP2) return "TP2 1.5R";
+   return "TP3 2.0R";
+}
+
+string HcLabel(ERL_HC_MODE hc)
+{
+   if(hc == ERL_HC_TP1) return "HC@TP1";
+   if(hc == ERL_HC_TP2) return "HC@TP2";
+   return "HC OFF";
+}
+
+string BtFillLabel(BT_FILL_MODE mode)
+{
+   if(mode == BT_FILL_NEXT_BAR_OPEN) return "NEXT";
+   if(mode == BT_FILL_CONSERVATIVE) return "CONS";
+   return "SIGNAL";
+}
+
+string BtSameLabel(BT_SAME_BAR_POLICY policy)
+{
+   if(policy == BT_SAMEBAR_NEAREST_OPEN) return "NEAR";
+   if(policy == BT_SAMEBAR_TP_FIRST) return "TP1ST";
+   if(policy == BT_SAMEBAR_SL_FIRST) return "SL1ST";
+   return "CONS";
+}
+
+double TargetR(ERL_RR_MODE rr)
+{
+   if(rr == ERL_RR_TP1) return 1.0;
+   if(rr == ERL_RR_TP2) return 1.5;
+   return 2.0;
+}
+
+double NormPrice(double price)
+{
+   return NormalizeDouble(price, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+}
+
+double TickSize()
+{
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0.0) tickSize = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(tickSize <= 0.0) tickSize = 0.00001;
+   return tickSize;
+}
+
+double NormTradePrice(double price)
+{
+   double tickSize = TickSize();
+   return NormPrice(MathRound(price / tickSize) * tickSize);
+}
+
+double ValuePerPriceUnitPerLot()
+{
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tickSize <= 0.0) tickSize = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(tickSize <= 0.0 || tickValue <= 0.0) return 0.0;
+   return tickValue / tickSize;
+}
+
+double NormalizeVolume(double volume)
+{
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(minLot <= 0.0) minLot = 0.01;
+   if(maxLot <= 0.0) maxLot = 100.0;
+   if(InpMaxLot > 0.0) maxLot = MathMin(maxLot, InpMaxLot);
+   if(step <= 0.0) step = minLot;
+   volume = MathMax(minLot, MathMin(maxLot, volume));
+   volume = MathFloor(volume / step + 0.0000001) * step;
+   return NormalizeDouble(MathMax(minLot, volume), 8);
+}
+
+long RuntimeMagic()
+{
+   return InpMagic * 1000000 + (long)(ChartID() % 1000000);
+}
+
+bool IsOwnMagic(long magic)
+{
+   return magic == RuntimeMagic();
+}
+
+string FmtTime(datetime t)
+{
+   if(t <= 0) return "-";
+   return TimeToString(t, TIME_DATE | TIME_SECONDS);
+}
+
+int CurrentSpreadPoints()
+{
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return 0;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) return 0;
+   return (int)MathRound((tick.ask - tick.bid) / point);
+}
+
+string FileDate(datetime t)
+{
+   MqlDateTime dt;
+   TimeToStruct(t, dt);
+   return StringFormat("%04d%02d%02d", dt.year, dt.mon, dt.day);
+}
+
+string FileStamp(datetime t)
+{
+   MqlDateTime dt;
+   TimeToStruct(t, dt);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d", dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
+}
+
+bool CopySeries(ENUM_TIMEFRAMES tf, int bars, MqlRates &rates[])
+{
+   ArrayFree(rates);
+   int copied = CopyRates(_Symbol, tf, 0, bars, rates);
+   if(copied <= 20) return false;
+   ArraySetAsSeries(rates, true);
+   return true;
+}
+
+//=====================================================================
+//  MARKET DATA HELPERS
+//=====================================================================
+double AtrFromRates(const MqlRates &rates[], int index, int period)
+{
+   int total = ArraySize(rates);
+   if(index < 1 || index + period >= total) return 0.0;
+   double sum = 0.0;
+   int count = 0;
+   for(int i = index; i < index + period && i + 1 < total; ++i)
+   {
+      double tr1 = rates[i].high - rates[i].low;
+      double tr2 = MathAbs(rates[i].high - rates[i + 1].close);
+      double tr3 = MathAbs(rates[i].low - rates[i + 1].close);
+      sum += MathMax(tr1, MathMax(tr2, tr3));
+      count++;
+   }
+   return count > 0 ? sum / count : 0.0;
+}
+
+bool PreviousWeekBiasAllowsAt(int dir, datetime referenceTime)
+{
+   MqlRates week[];
+   int currentShift = iBarShift(_Symbol, PERIOD_W1, referenceTime, false);
+   if(currentShift < 0) currentShift = 0;
+   int copied = CopyRates(_Symbol, PERIOD_W1, currentShift + 1, 1, week);
+   if(copied < 1) return true;
+   bool bull = week[0].close > week[0].open;
+   bool bear = week[0].close < week[0].open;
+   if(dir > 0) return bull || !bear;
+   if(dir < 0) return bear || !bull;
+   return true;
+}
+
+double MinStopDistance()
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = TickSize();
+   long stops = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long freeze = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   return MathMax((double)MathMax(stops, freeze) * point, TickSize());
+}
+
+double RiskMoneyForLot(double lot, int dir, double entry, double sl)
+{
+   if(lot <= 0.0 || sl <= 0.0) return 0.0;
+   double profit = 0.0;
+   ENUM_ORDER_TYPE closeSide = dir > 0 ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   if(!OrderCalcProfit(closeSide, _Symbol, lot, entry, sl, profit)) return 0.0;
+   return MathAbs(profit);
+}
+
+bool IsSwingHigh(const MqlRates &rates[], int index, int lookback)
+{
+   int total = ArraySize(rates);
+   if(index - lookback < 1 || index + lookback >= total) return false;
+   double price = rates[index].high;
+   for(int k = 1; k <= lookback; ++k)
+   {
+      if(price <= rates[index - k].high) return false; // newer side
+      if(price <= rates[index + k].high) return false; // older side
+   }
+   return true;
+}
+
+bool IsSwingLow(const MqlRates &rates[], int index, int lookback)
+{
+   int total = ArraySize(rates);
+   if(index - lookback < 1 || index + lookback >= total) return false;
+   double price = rates[index].low;
+   for(int k = 1; k <= lookback; ++k)
+   {
+      if(price >= rates[index - k].low) return false;
+      if(price >= rates[index + k].low) return false;
+   }
+   return true;
+}
+
+int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[])
+{
+   ArrayFree(swings);
+   int total = ArraySize(rates);
+   int found = 0;
+   for(int i = lookback + 2; i < total - lookback && found < InpMaxSwings * 2; ++i)
+   {
+      if(IsSwingHigh(rates, i, lookback))
+      {
+         int n = ArraySize(swings);
+         ArrayResize(swings, n + 1);
+         swings[n].time = rates[i].time;
+         swings[n].price = rates[i].high;
+         swings[n].index = i;
+         swings[n].dir = 1;
+         found++;
+      }
+      if(IsSwingLow(rates, i, lookback))
+      {
+         int n = ArraySize(swings);
+         ArrayResize(swings, n + 1);
+         swings[n].time = rates[i].time;
+         swings[n].price = rates[i].low;
+         swings[n].index = i;
+         swings[n].dir = -1;
+         found++;
+      }
+   }
+   return ArraySize(swings);
+}
+
+bool IsBullishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone &zone)
+{
+   int total = ArraySize(rates);
+   if(midIndex - 1 < 0 || midIndex + 1 >= total) return false;
+   double olderHigh = rates[midIndex + 1].high;
+   double newerLow = rates[midIndex - 1].low;
+   if(olderHigh >= newerLow) return false;
+   double size = newerLow - olderHigh;
+   if(size < minSize) return false;
+   zone.valid = true;
+   zone.dir = 1;
+   zone.time = rates[midIndex].time;
+   zone.low = olderHigh;
+   zone.high = newerLow;
+   zone.anchor = rates[midIndex].low;
+   return true;
+}
+
+bool IsBearishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone &zone)
+{
+   int total = ArraySize(rates);
+   if(midIndex - 1 < 0 || midIndex + 1 >= total) return false;
+   double olderLow = rates[midIndex + 1].low;
+   double newerHigh = rates[midIndex - 1].high;
+   if(olderLow <= newerHigh) return false;
+   double size = olderLow - newerHigh;
+   if(size < minSize) return false;
+   zone.valid = true;
+   zone.dir = -1;
+   zone.time = rates[midIndex].time;
+   zone.low = newerHigh;
+   zone.high = olderLow;
+   zone.anchor = rates[midIndex].high;
+   return true;
+}
+
+bool DetectSweepReclaim(const MqlRates &rates[], const SwingLevel &swing, int &reclaimIndex)
+{
+   reclaimIndex = -1;
+   // Series arrays: lower index is newer. Scan from just after swing toward latest.
+   for(int j = swing.index - 1; j >= 1; --j)
+   {
+      if(swing.dir < 0)
+      {
+         bool swept = rates[j].low < swing.price;
+         bool reclaimedSame = rates[j].close > swing.price;
+         bool reclaimedNext = (j - 1 >= 1 && rates[j - 1].close > swing.price);
+         if(swept && (reclaimedSame || reclaimedNext))
+         {
+            reclaimIndex = reclaimedSame ? j : j - 1;
+            return true;
+         }
+      }
+      else
+      {
+         bool swept = rates[j].high > swing.price;
+         bool reclaimedSame = rates[j].close < swing.price;
+         bool reclaimedNext = (j - 1 >= 1 && rates[j - 1].close < swing.price);
+         if(swept && (reclaimedSame || reclaimedNext))
+         {
+            reclaimIndex = reclaimedSame ? j : j - 1;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+bool FindFirstFvgAfterReclaim(const MqlRates &rates[], int dir, int reclaimIndex, FvgZone &zone)
+{
+   zone.valid = false;
+   double atr = AtrFromRates(rates, MathMax(1, reclaimIndex), InpAtrPeriod);
+   double minSize = atr * MathMax(0.0, InpMinFvgAtrPct) / 100.0;
+   int maxBars = MathMax(3, InpMaxFvgSearchBars);
+   int scanned = 0;
+   for(int i = reclaimIndex - 1; i >= 1 && scanned < maxBars; --i, ++scanned)
+   {
+      FvgZone z;
+      ZeroMemory(z);
+      bool ok = dir > 0 ? IsBullishFvg(rates, i, minSize, z) : IsBearishFvg(rates, i, minSize, z);
+      if(ok)
+      {
+         zone = z;
+         return true;
+      }
+   }
+   return false;
+}
+
+bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir, ErlSignal &sig)
+{
+   int total = ArraySize(entryRates);
+   if(total < 10) return false;
+   double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
+   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   for(int i = total - 2; i >= 1; --i)
+   {
+      if(entryRates[i].time < zone.time) continue;
+      bool tapped = entryRates[i].low <= zone.high && entryRates[i].high >= zone.low;
+      if(!tapped) continue;
+      double entry = entryRates[i].close;
+      double sl = dir > 0 ? zone.low - buffer : zone.high + buffer;
+      double risk = MathAbs(entry - sl);
+      if(risk <= TickSize()) continue;
+      sig.valid = true;
+      sig.dir = dir;
+      sig.entryTime = entryRates[i].time;
+      sig.entry = NormTradePrice(entry);
+      sig.sl = NormTradePrice(sl);
+      sig.risk = MathAbs(sig.entry - sig.sl);
+      if(sig.risk <= TickSize()) continue;
+      sig.tp1 = NormTradePrice(sig.entry + dir * sig.risk * 1.0);
+      sig.tp2 = NormTradePrice(sig.entry + dir * sig.risk * 1.5);
+      sig.tp3 = NormTradePrice(sig.entry + dir * sig.risk * 2.0);
+      sig.fvgLow = zone.low;
+      sig.fvgHigh = zone.high;
+      sig.reason = "fvg_tap";
+      return true;
+   }
+   return false;
+}
+
+string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool bias)
+{
+   return _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
+      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.entryTime);
+}
+
+int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool useBias, datetime cutoff, ErlSignal &signals[])
+{
+   ArrayFree(signals);
+   MqlRates htfRates[], entryRates[];
+   if(!CopySeries(htf, InpCalcHtfBars, htfRates)) return 0;
+   if(!CopySeries(entryTf, InpCalcEntryBars, entryRates)) return 0;
+
+   SwingLevel swings[];
+   int swCount = CollectSwings(htfRates, swingLookback, swings);
+   if(swCount <= 0) return 0;
+
+   for(int s = 0; s < swCount; ++s)
+   {
+      int dir = swings[s].dir < 0 ? 1 : -1; // sweep low -> buy, sweep high -> sell
+      int reclaimIndex = -1;
+      if(!DetectSweepReclaim(htfRates, swings[s], reclaimIndex)) continue;
+      if(useBias && !PreviousWeekBiasAllowsAt(dir, htfRates[reclaimIndex].time)) continue;
+      FvgZone zone;
+      ZeroMemory(zone);
+      if(!FindFirstFvgAfterReclaim(htfRates, dir, reclaimIndex, zone)) continue;
+      ErlSignal sig;
+      ZeroMemory(sig);
+      if(!EntryTapFromFvg(entryRates, zone, dir, sig)) continue;
+      if(cutoff > 0 && sig.entryTime < cutoff) continue;
+      sig.htfTime = htfRates[reclaimIndex].time;
+      sig.sweepLevel = swings[s].price;
+      sig.id = SignalId(sig, htf, entryTf, swingLookback, useBias);
+      bool duplicate = false;
+      for(int k = 0; k < ArraySize(signals); ++k)
+      {
+         if(signals[k].id == sig.id)
+         {
+            duplicate = true;
+            break;
+         }
+      }
+      if(duplicate) continue;
+      int n = ArraySize(signals);
+      ArrayResize(signals, n + 1);
+      signals[n] = sig;
+   }
+
+   // Sort oldest -> newest for drawing/backtesting readability.
+   int n = ArraySize(signals);
+   for(int i = 0; i < n - 1; ++i)
+   {
+      for(int j = i + 1; j < n; ++j)
+      {
+         if(signals[i].entryTime > signals[j].entryTime)
+         {
+            ErlSignal tmp = signals[i];
+            signals[i] = signals[j];
+            signals[j] = tmp;
+         }
+      }
+   }
+   return n;
+}
+
+double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
+{
+   if(target == ERL_RR_TP1) return sig.tp1;
+   if(target == ERL_RR_TP2) return sig.tp2;
+   return sig.tp3;
+}
+
+double HalfTrigger(const ErlSignal &sig, ERL_HC_MODE hc)
+{
+   if(hc == ERL_HC_TP1) return sig.tp1;
+   if(hc == ERL_HC_TP2) return sig.tp2;
+   return 0.0;
+}
+
+void SanitizeHalfMode()
+{
+   if(g_target == ERL_RR_TP1) g_hc = ERL_HC_OFF;
+   if(g_target == ERL_RR_TP2 && g_hc == ERL_HC_TP2) g_hc = ERL_HC_TP1;
+}
+
+//=====================================================================
+//  SIMULATION AND HISTORICAL AUDIT
+//=====================================================================
+int FindEntryBarIndex(const MqlRates &rates[], datetime t)
+{
+   for(int i = 0; i < ArraySize(rates); ++i)
+      if(rates[i].time == t) return i;
+   return -1;
+}
+
+int ResolveSameBar(const MqlRates &bar, int dir, double openPx, double tp, double sl)
+{
+   bool hitTp = dir > 0 ? bar.high >= tp : bar.low <= tp;
+   bool hitSl = dir > 0 ? bar.low <= sl : bar.high >= sl;
+   if(hitTp && !hitSl) return 1;
+   if(hitSl && !hitTp) return -1;
+   if(!hitTp && !hitSl) return 0;
+   if(g_btSameBarPolicy == BT_SAMEBAR_TP_FIRST) return 1;
+   if(g_btSameBarPolicy == BT_SAMEBAR_SL_FIRST) return -1;
+   if(g_btSameBarPolicy == BT_SAMEBAR_CONSERVATIVE) return -1;
+   double distTp = MathAbs(tp - openPx);
+   double distSl = MathAbs(openPx - sl);
+   return distTp < distSl ? 1 : -1;
+}
+
+double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
+{
+   closed = false;
+   won = false;
+   MqlRates rates[];
+   if(!CopySeries(entryTf, InpCalcEntryBars, rates)) return 0.0;
+   int entryIdx = FindEntryBarIndex(rates, sig.entryTime);
+   if(entryIdx < 1) return 0.0;
+
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = TickSize();
+   double rawEntry = sig.entry;
+   if(g_btFillMode == BT_FILL_NEXT_BAR_OPEN && entryIdx - 1 >= 1)
+   {
+      entryIdx = entryIdx - 1;
+      rawEntry = rates[entryIdx].open;
+   }
+   else if(g_btFillMode == BT_FILL_CONSERVATIVE)
+   {
+      rawEntry = sig.dir > 0 ? rates[entryIdx].high : rates[entryIdx].low;
+   }
+   double executionCost = MathMax(0.0, g_btSpreadPts + g_btSlippagePts) * point;
+   double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
+   double activeSl = sig.sl;
+   double simRisk = MathAbs(simEntry - activeSl);
+   if(simRisk <= TickSize()) return 0.0;
+   double tp = NormTradePrice(simEntry + sig.dir * simRisk * TargetR(target));
+   double half = 0.0;
+   if(hc == ERL_HC_TP1) half = NormTradePrice(simEntry + sig.dir * simRisk * 1.0);
+   if(hc == ERL_HC_TP2) half = NormTradePrice(simEntry + sig.dir * simRisk * 1.5);
+   bool halfDone = (hc == ERL_HC_OFF || half <= 0.0);
+   double pnlR = 0.0;
+   double commissionR = 0.0;
+   double valuePerUnit = ValuePerPriceUnitPerLot();
+   if(g_btCommissionPerLot > 0.0 && valuePerUnit > 0.0)
+      commissionR = g_btCommissionPerLot / (simRisk * valuePerUnit);
+
+   for(int i = entryIdx; i >= 1; --i)
+   {
+      if(maxTime > 0 && rates[i].time > maxTime) break;
+      if(!halfDone)
+      {
+         bool hitHalf = sig.dir > 0 ? rates[i].high >= half : rates[i].low <= half;
+         if(hitHalf)
+         {
+            double halfR = MathAbs(half - simEntry) / simRisk;
+            pnlR += halfR * 0.5;
+            activeSl = simEntry;
+            halfDone = true;
+         }
+      }
+
+      double openRef = (i == entryIdx ? simEntry : rates[i].open);
+      int res = ResolveSameBar(rates[i], sig.dir, openRef, tp, activeSl);
+      if(res > 0)
+      {
+         double targetR = MathAbs(tp - simEntry) / simRisk;
+         pnlR += halfDone && hc != ERL_HC_OFF ? targetR * 0.5 : targetR;
+         pnlR -= commissionR;
+         closed = true;
+         won = pnlR > 0.0;
+         return pnlR;
+      }
+      if(res < 0)
+      {
+         double slR = MathAbs(simEntry - activeSl) / simRisk;
+         pnlR -= halfDone && hc != ERL_HC_OFF ? slR * 0.5 : slR;
+         pnlR -= commissionR;
+         closed = true;
+         won = pnlR > 0.0;
+         return pnlR;
+      }
+   }
+   return pnlR;
+}
+
+SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ENUM_TIMEFRAMES entryTf)
+{
+   SimStats st;
+   ZeroMemory(st);
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      bool closed = false, won = false;
+      double r = SimulateSignal(signals[i], target, hc, entryTf, 0, closed, won);
+      st.total++;
+      st.netR += r;
+      if(!closed)
+      {
+         st.open++;
+         continue;
+      }
+      if(won)
+      {
+         st.wins++;
+         st.wonR += MathMax(0.0, r);
+      }
+      else
+      {
+         st.losses++;
+         st.lostR += MathAbs(MathMin(0.0, r));
+      }
+   }
+   st.pf = st.lostR > 0.0 ? st.wonR / st.lostR : (st.wonR > 0.0 ? 99.0 : 0.0);
+   return st;
+}
+
+void RecalculateHistoricalStats()
+{
+   datetime cutoff = TimeCurrent() - InpHistoricalDays * 86400;
+   ErlSignal signals[];
+   BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
+   g_hist = CalculateStats(signals, g_target, g_hc, g_entryTf);
+}
+
+//=====================================================================
+//  RISK ENGINE
+//=====================================================================
+double BaseCapital()
+{
+   if(InpInitialBalanceOverride > 0.0) return InpInitialBalanceOverride;
+   return AccountInfoDouble(ACCOUNT_BALANCE);
+}
+
+double DailyClosedPnl()
+{
+   MqlDateTime now;
+   TimeToStruct(TimeGMT(), now);
+   now.hour = InpDayResetHourGmt;
+   now.min = 0;
+   now.sec = 0;
+   datetime start = StructToTime(now);
+   if(TimeGMT() < start) start -= 86400;
+   HistorySelect(start, TimeCurrent());
+   double pnl = 0.0;
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; ++i)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol) continue;
+      long magic = (long)HistoryDealGetInteger(ticket, DEAL_MAGIC);
+      if(!IsOwnMagic(magic)) continue;
+      long entryType = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_INOUT) continue;
+      pnl += HistoryDealGetDouble(ticket, DEAL_PROFIT) + HistoryDealGetDouble(ticket, DEAL_SWAP) + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+   }
+   return pnl;
+}
+
+double OwnOpenRiskMoney()
+{
+   double risk = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      if(sl <= 0.0 || vol <= 0.0) continue;
+      double profit = 0.0;
+      ENUM_ORDER_TYPE side = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      if(OrderCalcProfit(side, _Symbol, vol, open, sl, profit)) risk += MathAbs(profit);
+   }
+   return risk;
+}
+
+bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
+{
+   reason = "";
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(minLot <= 0.0) minLot = 0.01;
+   lot = NormalizeVolume(InpFixedLot);
+
+   double riskDistance = MathAbs(entry - sl);
+   double valuePerUnit = ValuePerPriceUnitPerLot();
+   if(riskDistance <= TickSize() || valuePerUnit <= 0.0)
+   {
+      reason = "invalid_risk_geometry";
+      return false;
+   }
+
+   if(InpAccountRiskEnabled)
+   {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double base = BaseCapital();
+      if(g_equityPeak <= 0.0) g_equityPeak = equity;
+      g_equityPeak = MathMax(g_equityPeak, equity);
+
+      double dailyPnl = DailyClosedPnl();
+      double ddFromPeak = g_equityPeak - equity;
+      if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
+      {
+         reason = "daily_loss_limit";
+         return false;
+      }
+      if(InpMaxDrawdownPct > 0.0 && ddFromPeak >= base * InpMaxDrawdownPct / 100.0)
+      {
+         reason = "max_drawdown_limit";
+         return false;
+      }
+
+      double riskMoney = equity * MathMax(0.01, InpRiskPerTradePct) / 100.0;
+      lot = NormalizeVolume(riskMoney / (riskDistance * valuePerUnit));
+      double actualRiskMoney = RiskMoneyForLot(lot, sl < entry ? 1 : -1, entry, sl);
+      double portfolioCap = equity * MathMax(0.01, InpMaxPortfolioRiskPct) / 100.0;
+      if(actualRiskMoney <= 0.0)
+      {
+         reason = "risk_calc_failed";
+         return false;
+      }
+      if(OwnOpenRiskMoney() + actualRiskMoney > portfolioCap)
+      {
+         reason = "portfolio_risk_limit";
+         return false;
+      }
+   }
+
+   if(lot < minLot)
+   {
+      reason = "lot_below_min";
+      return false;
+   }
+   return true;
+}
+
+//=====================================================================
+//  AUDIT ENGINE
+//=====================================================================
+void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
+{
+   if(!InpAuditTradeCsv) return;
+   string file = "ERL_IRL_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
+   bool exists = FileIsExist(file);
+   int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(h == INVALID_HANDLE) return;
+   FileSeek(h, 0, SEEK_END);
+   if(!exists || FileSize(h) == 0)
+   {
+      FileWrite(h, "server_time", "gmt_time", "symbol", "tf", "event", "id", "dir", "entry", "sl", "tp", "lot", "spread_pts", "status", "detail");
+   }
+   FileWrite(h, TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      _Symbol, TfLabel(_Period), eventName, id, DirLabel(dir), DoubleToString(entry, _Digits), DoubleToString(sl, _Digits),
+      DoubleToString(tp, _Digits), DoubleToString(lot, 4), DoubleToString(g_lastSpreadPts, 0), g_lastStatus, detail);
+   FileClose(h);
+}
+
+void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string label, string &detail)
+{
+   MqlRates rates[];
+   int copied = CopyRates(_Symbol, tf, 0, bars, rates);
+   datetime oldest = 0;
+   datetime newest = 0;
+   for(int i = 0; i < copied; ++i)
+   {
+      datetime t = rates[i].time;
+      if(t <= 0) continue;
+      if(oldest == 0 || t < oldest) oldest = t;
+      if(newest == 0 || t > newest) newest = t;
+   }
+   double requestedSec = MathMax(1.0, (double)g_btWeeks * 7.0 * 86400.0);
+   double loadedSec = (oldest > 0 && newest > oldest) ? (double)(newest - oldest) : 0.0;
+   double coverage = MathMin(100.0, loadedSec / requestedSec * 100.0);
+   if(detail != "") detail += " | ";
+   detail += label + "=" + TfLabel(tf)
+      + " bars=" + IntegerToString(copied) + "/" + IntegerToString(bars)
+      + " oldest=" + (oldest > 0 ? TimeToString(oldest, TIME_DATE | TIME_SECONDS) : "")
+      + " newest=" + (newest > 0 ? TimeToString(newest, TIME_DATE | TIME_SECONDS) : "")
+      + " coverage=" + DoubleToString(coverage, 1) + "%";
+   if(cutoff > 0 && oldest > cutoff) detail += " insufficient_history";
+}
+
+string BtBuildCoverageSummary()
+{
+   string detail = "";
+   BtAppendCoverage(PERIOD_H4, InpCalcHtfBars, g_btCutoff, "htf_h4", detail);
+   BtAppendCoverage(PERIOD_D1, InpCalcHtfBars, g_btCutoff, "htf_d1", detail);
+   BtAppendCoverage(PERIOD_M15, InpCalcEntryBars, g_btCutoff, "entry_m15", detail);
+   BtAppendCoverage(PERIOD_M30, InpCalcEntryBars, g_btCutoff, "entry_m30", detail);
+   BtAppendCoverage(PERIOD_H1, InpCalcEntryBars, g_btCutoff, "entry_h1", detail);
+   return detail;
+}
+
+void BtProcessAudit(string eventName, string detail)
+{
+   if(!InpAuditTradeCsv) return;
+   string file = "ERL_IRL_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
+   bool exists = FileIsExist(file);
+   int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return;
+   FileSeek(h, 0, SEEK_END);
+   if(!exists || FileSize(h) == 0)
+   {
+      FileWrite(h, "gmt_time", "server_time", "event", "build", "symbol", "chart_tf", "result_file",
+         "weeks", "requested_from", "combos_total", "step", "elapsed_ms", "fill_mode", "same_bar_policy",
+         "spread_pts", "slippage_pts", "commission_per_lot", "coverage_summary", "detail");
+   }
+   FileWrite(h,
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+      eventName, ERL_BUILD, _Symbol, TfLabel(_Period), g_btFileName,
+      IntegerToString(g_btWeeks),
+      g_btCutoff > 0 ? TimeToString(g_btCutoff, TIME_DATE | TIME_SECONDS) : "",
+      IntegerToString(g_btTotal), IntegerToString(g_btStep), IntegerToString((int)g_btElapsedMs),
+      BtFillLabel(g_btFillMode), BtSameLabel(g_btSameBarPolicy),
+      DoubleToString(g_btSpreadPts, 1), DoubleToString(g_btSlippagePts, 1), DoubleToString(g_btCommissionPerLot, 2),
+      g_btCoverageSummary, detail);
+   FileClose(h);
+}
+
+void ProbePositions()
+{
+   if(!InpAuditPositionProbe) return;
+   datetime now = TimeCurrent();
+   if(now - g_lastAuditProbe < InpAuditProbeSec) return;
+   g_lastAuditProbe = now;
+
+   string hash = "";
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      hash += IntegerToString((int)ticket) + ":" + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + ";";
+   }
+   if(InpAuditProbeOnChangeOnly && hash == g_lastProbeHash) return;
+   g_lastProbeHash = hash;
+
+   string file = "ERL_IRL_PositionProbe_" + FileDate(now) + ".csv";
+   bool exists = FileIsExist(file);
+   int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(h == INVALID_HANDLE) return;
+   FileSeek(h, 0, SEEK_END);
+   if(!exists || FileSize(h) == 0)
+      FileWrite(h, "server_time", "symbol", "ticket", "type", "volume", "open", "sl", "tp", "bid", "ask", "profit", "risk_money");
+
+   MqlTick tick;
+   SymbolInfoTick(_Symbol, tick);
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double risk = 0.0;
+      if(sl > 0.0)
+      {
+         double p = 0.0;
+         ENUM_ORDER_TYPE closeSide = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+         if(OrderCalcProfit(closeSide, _Symbol, vol, open, sl, p)) risk = MathAbs(p);
+      }
+      FileWrite(h, TimeToString(now, TIME_DATE | TIME_SECONDS), _Symbol, IntegerToString((int)ticket),
+         PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL",
+         DoubleToString(vol, 4), DoubleToString(open, _Digits), DoubleToString(sl, _Digits), DoubleToString(PositionGetDouble(POSITION_TP), _Digits),
+         DoubleToString(tick.bid, _Digits), DoubleToString(tick.ask, _Digits), DoubleToString(PositionGetDouble(POSITION_PROFIT), 2), DoubleToString(risk, 2));
+   }
+   FileClose(h);
+}
+
+void ScanClosedHistory()
+{
+   datetime now = TimeCurrent();
+   if(now - g_lastHistoryScan < InpAuditHistoryScanSec) return;
+   g_lastHistoryScan = now;
+   HistorySelect(now - 86400 * 7, now);
+   int total = HistoryDealsTotal();
+   for(int i = MathMax(0, total - 80); i < total; ++i)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0 || deal <= g_lastHistoryTicket) continue;
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)HistoryDealGetInteger(deal, DEAL_MAGIC))) continue;
+      long entryType = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_INOUT) continue;
+      g_lastHistoryTicket = deal;
+      string reason = "closed_by_unknown";
+      long why = HistoryDealGetInteger(deal, DEAL_REASON);
+      if(why == DEAL_REASON_SL) reason = "closed_by_broker_sl";
+      if(why == DEAL_REASON_TP) reason = "closed_by_broker_tp";
+      if(why == DEAL_REASON_CLIENT || why == DEAL_REASON_MOBILE || why == DEAL_REASON_WEB) reason = "closed_manual";
+      AuditWrite(reason, IntegerToString((int)deal), 0, HistoryDealGetDouble(deal, DEAL_PRICE), 0, 0,
+         HistoryDealGetDouble(deal, DEAL_VOLUME), "profit=" + DoubleToString(HistoryDealGetDouble(deal, DEAL_PROFIT), 2));
+   }
+}
+
+//=====================================================================
+//  CHART OBJECT HELPERS
+//=====================================================================
+void DeleteByPrefix(string prefix)
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; --i)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      if(StringFind(name, prefix) == 0) ObjectDelete(0, name);
+   }
+}
+
+void RectObj(string id, int x, int y, int w, int h, color bg, color border)
+{
+   string name = PFX + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, border);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
+{
+   string name = PFX + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
+{
+   string name = PFX + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void EditObj(string id, int x, int y, int w, int h, string text)
+{
+   string name = PFX + id;
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0);
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'38,46,60');
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'90,178,255');
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_CENTER);
+   }
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+}
+
+void DrawArrow(string id, datetime t, double price, int dir, color clr)
+{
+   string name = PFX + "HIST_" + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, dir > 0 ? 233 : 234);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void DrawHLine(string id, double price, color clr, ENUM_LINE_STYLE style = STYLE_DASH)
+{
+   string name = PFX + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void DrawFvgBox(string id, datetime t1, datetime t2, double low, double high, color clr)
+{
+   if(!InpDrawFvgZones) return;
+   string name = PFX + "FVG_" + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, high, t2, low);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, high);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 1, low);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_FILL, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void DrawHistoricalSignals()
+{
+   DeleteByPrefix(PFX + "HIST_");
+   DeleteByPrefix(PFX + "FVG_");
+   if(!InpDrawHistoricalSignals) return;
+   datetime cutoff = TimeCurrent() - InpHistoricalDays * 86400;
+   ErlSignal signals[];
+   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
+   for(int i = 0; i < count; ++i)
+   {
+      string id = IntegerToString(i) + "_" + IntegerToString((int)signals[i].entryTime);
+      color clr = signals[i].dir > 0 ? C'60,220,140' : C'255,80,110';
+      DrawArrow(id, signals[i].entryTime, signals[i].entry, signals[i].dir, clr);
+      DrawFvgBox(id, signals[i].htfTime, signals[i].entryTime + PeriodSeconds(g_entryTf) * 4, signals[i].fvgLow, signals[i].fvgHigh, clr);
+   }
+   RecalculateHistoricalStats();
+}
+
+void DrawLiveLevelsForPosition()
+{
+   DeleteByPrefix(PFX + "LV_");
+   if(!InpDrawLiveLevels) return;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      DrawHLine("LV_ENTRY_" + IntegerToString((int)ticket), open, C'90,178,255', STYLE_SOLID);
+      if(sl > 0) DrawHLine("LV_SL_" + IntegerToString((int)ticket), sl, C'255,80,110', STYLE_DASH);
+      if(tp > 0) DrawHLine("LV_TP_" + IntegerToString((int)ticket), tp, C'80,255,180', STYLE_DASH);
+   }
+}
+
+//=====================================================================
+//  LIVE EXECUTION AND POSITION MANAGEMENT
+//=====================================================================
+string TicketKey(ulong ticket, string field)
+{
+   return "ERLIRL|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + IntegerToString((int)ticket) + "|" + field;
+}
+
+void StorePositionPlan(ulong ticket, const ErlSignal &sig, ERL_HC_MODE hc)
+{
+   GlobalVariableSet(TicketKey(ticket, "entry"), sig.entry);
+   GlobalVariableSet(TicketKey(ticket, "sl"), sig.sl);
+   GlobalVariableSet(TicketKey(ticket, "tp1"), sig.tp1);
+   GlobalVariableSet(TicketKey(ticket, "tp2"), sig.tp2);
+   GlobalVariableSet(TicketKey(ticket, "tp3"), sig.tp3);
+   GlobalVariableSet(TicketKey(ticket, "hc"), (double)hc);
+   GlobalVariableSet(TicketKey(ticket, "halfDone"), 0.0);
+}
+
+double GetPlan(ulong ticket, string field, double fallback = 0.0)
+{
+   string key = TicketKey(ticket, field);
+   if(!GlobalVariableCheck(key)) return fallback;
+   return GlobalVariableGet(key);
+}
+
+ulong FindNewestOwnPosition()
+{
+   ulong best = 0;
+   datetime bestTime = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+      if(t >= bestTime)
+      {
+         bestTime = t;
+         best = ticket;
+      }
+   }
+   return best;
+}
+
+int OwnPositionCount(int dirFilter = 0)
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
+      if(dirFilter == 0 || dirFilter == dir) count++;
+   }
+   return count;
+}
+
+void CloseOwnPositions(int dirFilter = 0)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
+      if(dirFilter != 0 && dirFilter != dir) continue;
+      trade.PositionClose(ticket);
+      AuditWrite("close_request", IntegerToString((int)ticket), dir, PositionGetDouble(POSITION_PRICE_OPEN),
+         PositionGetDouble(POSITION_SL), PositionGetDouble(POSITION_TP), PositionGetDouble(POSITION_VOLUME), "manual_or_reverse");
+   }
+}
+
+void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &execSig, string &detail)
+{
+   execSig = raw;
+   detail = "";
+   double minStop = MinStopDistance() * 1.20;
+   execSig.entry = NormTradePrice(liveEntry);
+   execSig.sl = NormTradePrice(raw.sl);
+   double originalSl = execSig.sl;
+
+   if(execSig.dir > 0)
+   {
+      if(execSig.sl >= execSig.entry - minStop)
+         execSig.sl = NormTradePrice(execSig.entry - minStop);
+   }
+   else
+   {
+      if(execSig.sl <= execSig.entry + minStop)
+         execSig.sl = NormTradePrice(execSig.entry + minStop);
+   }
+
+   execSig.risk = MathAbs(execSig.entry - execSig.sl);
+   if(execSig.risk <= TickSize())
+      execSig.risk = minStop;
+   execSig.tp1 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.0);
+   execSig.tp2 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.5);
+   execSig.tp3 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 2.0);
+
+   if(MathAbs(originalSl - execSig.sl) > TickSize() * 0.5)
+      detail = "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits);
+}
+
+bool OpenSignal(const ErlSignal &sig)
+{
+   if(!g_eaEnabled)
+   {
+      g_lastBlock = "ea_disabled";
+      return false;
+   }
+   if(sig.id == g_lastSignalId)
+   {
+      g_lastBlock = "duplicate_signal";
+      return false;
+   }
+   if(InpBlockSameDirection && OwnPositionCount(sig.dir) > 0)
+   {
+      g_lastBlock = "same_direction_position";
+      return false;
+   }
+   if(InpCloseOnReverse && OwnPositionCount(-sig.dir) > 0)
+      CloseOwnPositions(-sig.dir);
+
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return false;
+   g_lastSpreadPts = CurrentSpreadPoints();
+   double liveEntry = sig.dir > 0 ? tick.ask : tick.bid;
+   ErlSignal execSig;
+   string execDetail = "";
+   BuildExecutableSignal(sig, liveEntry, execSig, execDetail);
+   double tp = SelectedTarget(execSig, g_target);
+   double lot = 0.0;
+   string riskReason = "";
+   if(!RiskGateAllows(execSig.entry, execSig.sl, lot, riskReason))
+   {
+      g_lastBlock = riskReason;
+      AuditWrite("risk_block", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot, riskReason + " " + execDetail);
+      return false;
+   }
+   trade.SetExpertMagicNumber(RuntimeMagic());
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   bool ok = trade.PositionOpen(_Symbol, sig.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot,
+      execSig.entry, execSig.sl, tp, "ERL_IRL " + DirLabel(sig.dir));
+   if(!ok)
+   {
+      string detail = "ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription();
+      g_lastStatus = "ORDER_FAILED";
+      g_lastBlock = detail;
+      AuditWrite("order_failed", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot, detail + " " + execDetail);
+      return false;
+   }
+
+   ulong posTicket = FindNewestOwnPosition();
+   if(posTicket > 0) StorePositionPlan(posTicket, execSig, g_hc);
+   g_lastSignalId = sig.id;
+   g_lastSignalTime = sig.entryTime;
+   g_lastSignalDir = sig.dir;
+   g_lastEntry = execSig.entry;
+   g_lastSl = execSig.sl;
+   g_lastTp = tp;
+   g_lastStatus = "OPENED";
+   g_lastBlock = "";
+   AuditWrite("order_opened", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot,
+      "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket) + " " + execDetail);
+   return true;
+}
+
+void TryOpenLatestSignal()
+{
+   datetime closedBarTime = iTime(_Symbol, g_entryTf, 1);
+   if(closedBarTime <= 0) return;
+   if(closedBarTime == g_lastLiveScanBar) return;
+   g_lastLiveScanBar = closedBarTime;
+
+   datetime cutoff = TimeCurrent() - 7 * 86400;
+   ErlSignal signals[];
+   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
+   if(count <= 0)
+   {
+      g_lastStatus = "NO_SIGNAL";
+      return;
+   }
+   ErlSignal latest = signals[count - 1];
+   if(latest.entryTime <= g_lastSignalTime && latest.id == g_lastSignalId) return;
+   // Only live-trade fresh signals; historical chart load must not open old setups.
+   int freshSec = MathMax(PeriodSeconds(g_entryTf) * 2, 180);
+   if(TimeCurrent() - latest.entryTime > freshSec)
+   {
+      g_lastStatus = "LATEST_OLD";
+      g_lastSignalTime = MathMax(g_lastSignalTime, latest.entryTime);
+      return;
+   }
+   OpenSignal(latest);
+}
+
+void ManagePositions()
+{
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+
+      int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      ERL_HC_MODE hc = (ERL_HC_MODE)(int)GetPlan(ticket, "hc", (double)ERL_HC_OFF);
+      bool halfDone = GetPlan(ticket, "halfDone", 0.0) > 0.5;
+      if(hc == ERL_HC_OFF || halfDone) continue;
+      double trigger = hc == ERL_HC_TP1 ? GetPlan(ticket, "tp1") : GetPlan(ticket, "tp2");
+      if(trigger <= 0.0) continue;
+      bool hit = dir > 0 ? tick.bid >= trigger : tick.ask <= trigger;
+      if(!hit) continue;
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      if(step <= 0.0) step = minLot;
+      double halfVol = NormalizeVolume(MathFloor((vol * 0.5) / step) * step);
+      bool partialOk = false;
+      if(halfVol >= minLot && halfVol < vol)
+      {
+         partialOk = trade.PositionClosePartial(ticket, halfVol);
+         AuditWrite(partialOk ? "half_close_done" : "half_close_failed", IntegerToString((int)ticket), dir,
+            open, sl, tp, halfVol, "trigger=" + DoubleToString(trigger, _Digits));
+      }
+      else
+      {
+         partialOk = true;
+         AuditWrite("half_close_skipped_min_volume", IntegerToString((int)ticket), dir,
+            open, sl, tp, vol, "trigger=" + DoubleToString(trigger, _Digits));
+      }
+      if(!partialOk)
+         continue;
+      bool mod = trade.PositionModify(ticket, NormTradePrice(open), tp);
+      AuditWrite(mod ? "sl_to_be_done" : "sl_to_be_failed", IntegerToString((int)ticket), dir, open, open, tp, vol,
+         "trigger=" + DoubleToString(trigger, _Digits));
+      if(mod)
+         GlobalVariableSet(TicketKey(ticket, "halfDone"), 1.0);
+   }
+}
+
+//=====================================================================
+//  BRUTE-FORCE BACKTEST ENGINE
+//=====================================================================
+void BuildCombos()
+{
+   ArrayFree(g_btCombos);
+   ENUM_TIMEFRAMES htfs[] = { PERIOD_H4, PERIOD_D1 };
+   ENUM_TIMEFRAMES etfs[] = { PERIOD_M15, PERIOD_M30, PERIOD_H1 };
+   int swings[] = { 3, 5, 8 };
+   bool biases[] = { false, true };
+   for(int h = 0; h < ArraySize(htfs); ++h)
+   {
+      for(int e = 0; e < ArraySize(etfs); ++e)
+      {
+         for(int s = 0; s < ArraySize(swings); ++s)
+         {
+            for(int b = 0; b < ArraySize(biases); ++b)
+            {
+               for(int rr = 0; rr < 3; ++rr)
+               {
+                  int maxHc = rr == 0 ? 0 : (rr == 1 ? 1 : 2);
+                  for(int hc = 0; hc <= maxHc; ++hc)
+                  {
+                     int n = ArraySize(g_btCombos);
+                     ArrayResize(g_btCombos, n + 1);
+                     g_btCombos[n].htf = htfs[h];
+                     g_btCombos[n].entryTf = etfs[e];
+                     g_btCombos[n].swing = swings[s];
+                     g_btCombos[n].target = (ERL_RR_MODE)rr;
+                     g_btCombos[n].hc = (ERL_HC_MODE)hc;
+                     g_btCombos[n].bias = biases[b];
+                  }
+               }
+            }
+         }
+      }
+   }
+   g_btTotal = ArraySize(g_btCombos);
+}
+
+bool BtWriteHeader(int h)
+{
+   return FileWrite(h, "timestamp", "symbol", "htf", "entry_tf", "swing", "target", "hc_be", "weekly_bias", "weeks",
+      "total", "wins", "losses", "open", "win_rate", "net_r", "won_r", "lost_r", "pf", "avg_r") > 0;
+}
+
+void StartBacktest()
+{
+   if(g_btRunning) return;
+   string edit = PFX + "EDIT_BT_WEEKS";
+   if(ObjectFind(0, edit) >= 0)
+   {
+      int v = (int)StringToInteger(ObjectGetString(0, edit, OBJPROP_TEXT));
+      if(v > 0 && v <= 52) g_btWeeks = v;
+   }
+   string spreadEdit = PFX + "EDIT_BT_SPREAD";
+   string slipEdit = PFX + "EDIT_BT_SLIP";
+   string commEdit = PFX + "EDIT_BT_COMM";
+   if(ObjectFind(0, spreadEdit) >= 0) g_btSpreadPts = MathMax(0.0, StringToDouble(ObjectGetString(0, spreadEdit, OBJPROP_TEXT)));
+   if(ObjectFind(0, slipEdit) >= 0) g_btSlippagePts = MathMax(0.0, StringToDouble(ObjectGetString(0, slipEdit, OBJPROP_TEXT)));
+   if(ObjectFind(0, commEdit) >= 0) g_btCommissionPerLot = MathMax(0.0, StringToDouble(ObjectGetString(0, commEdit, OBJPROP_TEXT)));
+   BuildCombos();
+   g_btStep = 0;
+   g_btRunning = true;
+   g_btStartMs = GetTickCount();
+   g_btElapsedMs = 0;
+   g_btCutoff = TimeCurrent() - g_btWeeks * 7 * 86400;
+   g_btLastResult = "Starting";
+   g_btFileName = "ERL_IRL_BruteBacktest_" + FileStamp(TimeCurrent()) + ".csv";
+   g_btCoverageSummary = BtBuildCoverageSummary();
+   int h = FileOpen(g_btFileName, FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(h != INVALID_HANDLE)
+   {
+      BtWriteHeader(h);
+      FileClose(h);
+   }
+   AuditWrite("backtest_start", g_btFileName, 0, 0, 0, 0, 0, "combos=" + IntegerToString(g_btTotal));
+   BtProcessAudit("start", "combos=" + IntegerToString(g_btTotal));
+}
+
+void StopBacktest()
+{
+   if(!g_btRunning) return;
+   g_btRunning = false;
+   g_btElapsedMs = GetTickCount() - g_btStartMs;
+   g_btLastResult = "Stopped " + IntegerToString(g_btStep) + "/" + IntegerToString(g_btTotal);
+   AuditWrite("backtest_stop", g_btFileName, 0, 0, 0, 0, 0, g_btLastResult);
+   BtProcessAudit("stop", g_btLastResult);
+}
+
+void BacktestStep()
+{
+   if(!g_btRunning) return;
+   if(g_btStep >= g_btTotal)
+   {
+      g_btRunning = false;
+      g_btElapsedMs = GetTickCount() - g_btStartMs;
+      g_btLastResult = "Done " + IntegerToString(g_btTotal) + " rows -> " + g_btFileName;
+      AuditWrite("backtest_done", g_btFileName, 0, 0, 0, 0, 0, g_btLastResult);
+      BtProcessAudit("finish", g_btLastResult);
+      return;
+   }
+
+   int h = FileOpen(g_btFileName, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+   {
+      g_btRunning = false;
+      g_btElapsedMs = GetTickCount() - g_btStartMs;
+      g_btLastResult = "CSV open failed";
+      BtProcessAudit("csv_open_failed", g_btLastResult);
+      return;
+   }
+   FileSeek(h, 0, SEEK_END);
+
+   int batch = 4;
+   g_btElapsedMs = GetTickCount() - g_btStartMs;
+   datetime cutoff = g_btCutoff;
+   for(int n = 0; n < batch && g_btStep < g_btTotal; ++n, ++g_btStep)
+   {
+      BtCombo c = g_btCombos[g_btStep];
+      ErlSignal signals[];
+      BuildSignals(c.htf, c.entryTf, c.swing, c.bias, cutoff, signals);
+      SimStats st = CalculateStats(signals, c.target, c.hc, c.entryTf);
+      double resolved = st.wins + st.losses;
+      double wr = resolved > 0 ? (double)st.wins / resolved * 100.0 : 0.0;
+      double avg = st.total > 0 ? st.netR / st.total : 0.0;
+      FileWrite(h, TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), _Symbol, TfLabel(c.htf), TfLabel(c.entryTf),
+         IntegerToString(c.swing), TargetLabel(c.target), HcLabel(c.hc), c.bias ? "ON" : "OFF", IntegerToString(g_btWeeks),
+         IntegerToString(st.total), IntegerToString(st.wins), IntegerToString(st.losses), IntegerToString(st.open),
+         DoubleToString(wr, 2), DoubleToString(st.netR, 2), DoubleToString(st.wonR, 2), DoubleToString(st.lostR, 2),
+         DoubleToString(st.pf, 2), DoubleToString(avg, 3));
+      g_btLastResult = TfLabel(c.htf) + " " + TfLabel(c.entryTf) + " SW" + IntegerToString(c.swing) + " "
+         + TargetLabel(c.target) + " " + HcLabel(c.hc) + " BIAS=" + (c.bias ? "ON" : "OFF")
+         + " -> " + IntegerToString(st.wins) + "W/" + IntegerToString(st.losses) + "L Net=" + DoubleToString(st.netR, 2) + "R";
+   }
+   FileClose(h);
+}
+
+//=====================================================================
+//  DASHBOARD
+//=====================================================================
+void DrawDashboard()
+{
+   if(!InpShowDashboard)
+   {
+      DeleteByPrefix(PFX + "DASH_");
+      return;
+   }
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   int W = 700;
+   int H = 590;
+   RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
+   RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
+   RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
+   LabelObj("DASH_TITLE", x + 14, y + 12, "ERL->IRL SWING MODEL // " + ERL_BUILD, C'225,232,242', 10);
+   UpdateDashboard();
+}
+
+void UpdateDashboard()
+{
+   if(!InpShowDashboard) return;
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   color ac = C'90,178,255';
+   color muted = C'145,160,180';
+   color on = C'30,130,78';
+   color off = C'70,72,82';
+   int bh = 20;
+
+   LabelObj("DASH_STATE", x + 14, y + 38,
+      (g_eaEnabled ? "EA ON" : "EA OFF") + " | " + _Symbol + " | HTF " + TfLabel(g_htf)
+      + " | ENTRY " + TfLabel(g_entryTf) + " | SW" + IntegerToString(g_swingLookback)
+      + " | " + TargetLabel(g_target) + " | " + HcLabel(g_hc),
+      g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
+
+   int sec1 = y + 64;
+   RectObj("DASH_SEC1", x + 8, sec1, 684, 116, C'24,31,45', C'60,110,170');
+   LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
+   int row = sec1 + 30;
+   LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
+   ButtonObj("BTN_HTF_H4", x + 66, row, 54, bh, "H4", g_htf == PERIOD_H4 ? on : off);
+   ButtonObj("BTN_HTF_D1", x + 126, row, 54, bh, "D1", g_htf == PERIOD_D1 ? on : off);
+   LabelObj("DASH_ETF_L", x + 205, row + 4, "ENTRY:", muted, 8);
+   ButtonObj("BTN_ETF_M15", x + 266, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
+   ButtonObj("BTN_ETF_M30", x + 330, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
+   ButtonObj("BTN_ETF_H1", x + 394, row, 52, bh, "H1", g_entryTf == PERIOD_H1 ? on : off);
+   ButtonObj("BTN_EA", x + 584, row, 88, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
+
+   row += 28;
+   LabelObj("DASH_SW_L", x + 16, row + 4, "SWING:", muted, 8);
+   ButtonObj("BTN_SW_3", x + 76, row, 44, bh, "3", g_swingLookback == 3 ? on : off);
+   ButtonObj("BTN_SW_5", x + 126, row, 44, bh, "5", g_swingLookback == 5 ? on : off);
+   ButtonObj("BTN_SW_8", x + 176, row, 44, bh, "8", g_swingLookback == 8 ? on : off);
+   LabelObj("DASH_TP_L", x + 246, row + 4, "TARGET:", muted, 8);
+   ButtonObj("BTN_TP_1", x + 318, row, 70, bh, "TP1", g_target == ERL_RR_TP1 ? on : off);
+   ButtonObj("BTN_TP_2", x + 394, row, 70, bh, "TP2", g_target == ERL_RR_TP2 ? on : off);
+   ButtonObj("BTN_TP_3", x + 470, row, 70, bh, "TP3", g_target == ERL_RR_TP3 ? on : off);
+   ButtonObj("BTN_CLOSE", x + 584, row, 88, bh, "CLOSE ALL", C'170,45,62');
+
+   row += 28;
+   LabelObj("DASH_HC_L", x + 16, row + 4, "HC+BE:", muted, 8);
+   ButtonObj("BTN_HC_OFF", x + 76, row, 66, bh, "OFF", g_hc == ERL_HC_OFF ? on : off);
+   ButtonObj("BTN_HC_TP1", x + 148, row, 74, bh, "TP1", g_hc == ERL_HC_TP1 ? on : (g_target >= ERL_RR_TP2 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP2", x + 228, row, 74, bh, "TP2", g_hc == ERL_HC_TP2 ? on : (g_target >= ERL_RR_TP3 ? off : C'35,37,44'));
+   LabelObj("DASH_BIAS_L", x + 330, row + 4, "WEEKLY BIAS:", muted, 8);
+   ButtonObj("BTN_BIAS", x + 440, row, 82, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
+
+   int sec2 = sec1 + 124;
+   RectObj("DASH_SEC2", x + 8, sec2, 684, 112, C'24,31,45', C'60,110,170');
+   LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
+   double resolved = g_hist.wins + g_hist.losses;
+   double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
+   LabelObj("DASH_AUD1", x + 16, sec2 + 30,
+      IntegerToString(InpHistoricalDays) + "D: " + IntegerToString(g_hist.total) + " sig | "
+      + IntegerToString(g_hist.wins) + "W " + IntegerToString(g_hist.losses) + "L " + IntegerToString(g_hist.open)
+      + "O | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | PF " + DoubleToString(g_hist.pf, 2),
+      g_hist.netR >= 0 ? C'80,255,180' : C'255,95,140', 9);
+   RectObj("DASH_WR_BG", x + 16, sec2 + 58, 420, 14, C'38,46,60', C'60,80,110');
+   int fill = (int)MathRound(418.0 * MathMax(0.0, MathMin(100.0, wr)) / 100.0);
+   if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 59, fill, 12, wr >= 50 ? C'80,220,140' : C'255,95,140', wr >= 50 ? C'80,220,140' : C'255,95,140');
+   LabelObj("DASH_AUD2", x + 16, sec2 + 80,
+      "Won +" + DoubleToString(g_hist.wonR, 2) + "R | Lost -" + DoubleToString(g_hist.lostR, 2) + "R | Avg "
+      + DoubleToString(g_hist.total > 0 ? g_hist.netR / g_hist.total : 0.0, 3) + "R/trade", muted, 8);
+
+   int sec3 = sec2 + 120;
+   RectObj("DASH_SEC3", x + 8, sec3, 684, 96, C'24,31,45', C'60,110,170');
+   LabelObj("DASH_SEC3_T", x + 16, sec3 + 7, "EXECUTION", ac, 9);
+   LabelObj("DASH_EX1", x + 16, sec3 + 30,
+      "Status: " + g_lastStatus + " | Block: " + (g_lastBlock == "" ? "-" : g_lastBlock)
+      + " | Spread " + DoubleToString(g_lastSpreadPts, 0) + " pts | Positions " + IntegerToString(OwnPositionCount()),
+      g_lastBlock == "" ? C'80,255,180' : C'255,204,82', 8);
+   LabelObj("DASH_EX2", x + 16, sec3 + 52,
+      "Last: " + DirLabel(g_lastSignalDir) + " " + FmtTime(g_lastSignalTime)
+      + " | Entry " + DoubleToString(g_lastEntry, _Digits) + " SL " + DoubleToString(g_lastSl, _Digits)
+      + " TP " + DoubleToString(g_lastTp, _Digits), muted, 8);
+   LabelObj("DASH_EX3", x + 16, sec3 + 74,
+      "Risk: " + (InpAccountRiskEnabled ? "ON" : "OFF") + " " + DoubleToString(InpRiskPerTradePct, 2)
+      + "% | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+
+   int sec4 = sec3 + 104;
+   RectObj("DASH_SEC4", x + 8, sec4, 684, 148, C'24,31,45', C'60,110,170');
+   LabelObj("DASH_SEC4_T", x + 16, sec4 + 7, "BACKTEST ENGINE", ac, 9);
+   int btY = sec4 + 30;
+   LabelObj("DASH_BTW_L", x + 16, btY + 4, "Weeks:", muted, 8);
+   EditObj("EDIT_BT_WEEKS", x + 76, btY, 42, bh, IntegerToString(g_btWeeks));
+   ButtonObj("BTN_BT_RUN", x + 126, btY, 126, bh, g_btRunning ? "RUNNING..." : "RUN BACKTEST", g_btRunning ? C'80,80,80' : on);
+   ButtonObj("BTN_BT_STOP", x + 260, btY, 66, bh, "STOP", g_btRunning ? C'170,45,62' : off);
+   LabelObj("DASH_BT_COUNT", x + 338, btY + 4, IntegerToString(g_btTotal > 0 ? g_btTotal : 216) + " combos", muted, 8);
+
+   int optY = btY + 26;
+   LabelObj("DASH_FILL_L", x + 16, optY + 4, "Fill:", muted, 8);
+   ButtonObj("BTN_FILL_SIGNAL", x + 60, optY, 64, bh, "SIGNAL", g_btFillMode == BT_FILL_SIGNAL_CLOSE ? C'38,101,176' : off);
+   ButtonObj("BTN_FILL_NEXT", x + 130, optY, 54, bh, "NEXT", g_btFillMode == BT_FILL_NEXT_BAR_OPEN ? C'38,101,176' : off);
+   ButtonObj("BTN_FILL_CONS", x + 190, optY, 54, bh, "CONS", g_btFillMode == BT_FILL_CONSERVATIVE ? C'38,101,176' : off);
+   LabelObj("DASH_SAME_L", x + 260, optY + 4, "Same:", muted, 8);
+   ButtonObj("BTN_SAME_CONS", x + 308, optY, 54, bh, "CONS", g_btSameBarPolicy == BT_SAMEBAR_CONSERVATIVE ? C'38,101,176' : off);
+   ButtonObj("BTN_SAME_NEAR", x + 368, optY, 54, bh, "NEAR", g_btSameBarPolicy == BT_SAMEBAR_NEAREST_OPEN ? C'38,101,176' : off);
+   ButtonObj("BTN_SAME_TP", x + 428, optY, 58, bh, "TP1ST", g_btSameBarPolicy == BT_SAMEBAR_TP_FIRST ? C'38,101,176' : off);
+   ButtonObj("BTN_SAME_SL", x + 492, optY, 58, bh, "SL1ST", g_btSameBarPolicy == BT_SAMEBAR_SL_FIRST ? C'38,101,176' : off);
+
+   int costY = optY + 26;
+   LabelObj("DASH_COST_L1", x + 16, costY + 4, "Spr:", muted, 8);
+   EditObj("EDIT_BT_SPREAD", x + 48, costY, 48, bh, DoubleToString(g_btSpreadPts, 1));
+   LabelObj("DASH_COST_L2", x + 104, costY + 4, "Slip:", muted, 8);
+   EditObj("EDIT_BT_SLIP", x + 140, costY, 48, bh, DoubleToString(g_btSlippagePts, 1));
+   LabelObj("DASH_COST_L3", x + 196, costY + 4, "Comm/Lot:", muted, 8);
+   EditObj("EDIT_BT_COMM", x + 270, costY, 64, bh, DoubleToString(g_btCommissionPerLot, 2));
+   LabelObj("DASH_COST_HINT", x + 344, costY + 4, "0 = old model", muted, 8);
+
+   int pbY = costY + 28;
+   RectObj("DASH_BTPB_BG", x + 16, pbY, 640, 14, C'38,46,60', C'60,80,110');
+   double pct = g_btTotal > 0 ? (double)g_btStep / (double)g_btTotal : 0.0;
+   int pbFill = (int)MathRound(638.0 * MathMax(0.0, MathMin(1.0, pct)));
+   if(pbFill > 2) RectObj("DASH_BTPB_FG", x + 17, pbY + 1, pbFill, 12, C'60,200,120', C'60,200,120');
+   LabelObj("DASH_BTPB_TXT", x + 22, pbY - 1,
+      IntegerToString(g_btStep) + "/" + IntegerToString(g_btTotal) + " " + IntegerToString((int)(pct * 100.0)) + "% | " + g_btLastResult,
+      clrWhite, 8);
+}
+
+//=====================================================================
+//  RISK BREACH AND EVENTS
+//=====================================================================
+void EnforceRiskBreach()
+{
+   if(!InpAccountRiskEnabled || !InpLiquidateOnBreach) return;
+   double base = BaseCapital();
+   if(base <= 0.0) return;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(g_equityPeak <= 0.0) g_equityPeak = equity;
+   g_equityPeak = MathMax(g_equityPeak, equity);
+   double dailyPnl = DailyClosedPnl();
+   double dd = g_equityPeak - equity;
+   bool breach = false;
+   string why = "";
+   if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
+   {
+      breach = true;
+      why = "daily_loss_breach";
+   }
+   if(InpMaxDrawdownPct > 0.0 && dd >= base * InpMaxDrawdownPct / 100.0)
+   {
+      breach = true;
+      why = "max_drawdown_breach";
+   }
+   if(breach)
+   {
+      AuditWrite("risk_liquidation", why, 0, 0, 0, 0, 0, "closing own positions");
+      CloseOwnPositions(0);
+   }
+}
+
+void RefreshAfterConfigChange()
+{
+   SanitizeHalfMode();
+   g_lastLiveScanBar = 0;
+   RecalculateHistoricalStats();
+   DrawHistoricalSignals();
+   UpdateDashboard();
+   ChartRedraw(0);
+}
+
+bool Clicked(const string sparam, string id)
+{
+   return sparam == PFX + id;
+}
+
+//=====================================================================
+//  MT5 EVENT HANDLERS
+//=====================================================================
+int OnInit()
+{
+   PFX = ERL_PREFIX + IntegerToString((int)ChartID()) + "_";
+   g_eaEnabled = InpEaEnabled;
+   g_htf = InpDefaultHtf;
+   g_entryTf = InpDefaultEntryTf;
+   g_swingLookback = InpDefaultSwingLookback;
+   g_target = InpDefaultTarget;
+   g_hc = InpDefaultHalfBe;
+   g_weeklyBias = InpDefaultWeeklyBias;
+   g_btWeeks = InpBacktestWeeks;
+   g_btFillMode = InpBacktestFillMode;
+   g_btSameBarPolicy = InpBacktestSameBarPolicy;
+   g_btSpreadPts = InpBacktestSpreadPts;
+   g_btSlippagePts = InpBacktestSlippagePts;
+   g_btCommissionPerLot = InpBacktestCommissionPerLot;
+   g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
+   SanitizeHalfMode();
+   BuildCombos();
+   trade.SetExpertMagicNumber(RuntimeMagic());
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   trade.SetTypeFillingBySymbol(_Symbol);
+   RecalculateHistoricalStats();
+   DrawDashboard();
+   DrawHistoricalSignals();
+   DrawLiveLevelsForPosition();
+   EventSetTimer(1);
+   AuditWrite("ea_init", "init", 0, 0, 0, 0, 0,
+      "build=" + (string)ERL_BUILD + " htf=" + TfLabel(g_htf) + " entry_tf=" + TfLabel(g_entryTf)
+      + " swing=" + IntegerToString(g_swingLookback) + " target=" + TargetLabel(g_target) + " hc=" + HcLabel(g_hc));
+   Print("ERL_IRL init build=", ERL_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf));
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   DeleteByPrefix(PFX);
+}
+
+void OnTick()
+{
+   g_lastSpreadPts = CurrentSpreadPoints();
+   TryOpenLatestSignal();
+   ManagePositions();
+   DrawLiveLevelsForPosition();
+}
+
+void OnTimer()
+{
+   g_lastSpreadPts = CurrentSpreadPoints();
+   EnforceRiskBreach();
+   TryOpenLatestSignal();
+   ManagePositions();
+   ProbePositions();
+   ScanClosedHistory();
+   BacktestStep();
+   UpdateDashboard();
+   DrawLiveLevelsForPosition();
+   ChartRedraw(0);
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      if(sparam == PFX + "EDIT_BT_WEEKS")
+      {
+         int v = (int)StringToInteger(ObjectGetString(0, sparam, OBJPROP_TEXT));
+         if(v > 0 && v <= 52) g_btWeeks = v;
+         UpdateDashboard();
+      }
+      if(sparam == PFX + "EDIT_BT_SPREAD")
+      {
+         g_btSpreadPts = MathMax(0.0, StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
+         UpdateDashboard();
+      }
+      if(sparam == PFX + "EDIT_BT_SLIP")
+      {
+         g_btSlippagePts = MathMax(0.0, StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
+         UpdateDashboard();
+      }
+      if(sparam == PFX + "EDIT_BT_COMM")
+      {
+         g_btCommissionPerLot = MathMax(0.0, StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
+         UpdateDashboard();
+      }
+      return;
+   }
+
+   if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HTF_D1")) { g_htf = PERIOD_D1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ETF_M15")) { g_entryTf = PERIOD_M15; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ETF_M30")) { g_entryTf = PERIOD_M30; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ETF_H1")) { g_entryTf = PERIOD_H1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_SW_3")) { g_swingLookback = 3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; if(g_hc == ERL_HC_TP2) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP1")) { if(g_target >= ERL_RR_TP2) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP2")) { if(g_target >= ERL_RR_TP3) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_EA")) { g_eaEnabled = !g_eaEnabled; UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
+
+   if(Clicked(sparam, "BTN_FILL_SIGNAL")) { g_btFillMode = BT_FILL_SIGNAL_CLOSE; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_FILL_NEXT")) { g_btFillMode = BT_FILL_NEXT_BAR_OPEN; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_FILL_CONS")) { g_btFillMode = BT_FILL_CONSERVATIVE; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_SAME_CONS")) { g_btSameBarPolicy = BT_SAMEBAR_CONSERVATIVE; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_SAME_NEAR")) { g_btSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_SAME_TP")) { g_btSameBarPolicy = BT_SAMEBAR_TP_FIRST; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_SAME_SL")) { g_btSameBarPolicy = BT_SAMEBAR_SL_FIRST; UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_BT_RUN")) { StartBacktest(); UpdateDashboard(); return; }
+   if(Clicked(sparam, "BTN_BT_STOP")) { StopBacktest(); UpdateDashboard(); return; }
+}
