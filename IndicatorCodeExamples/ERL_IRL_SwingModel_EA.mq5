@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ERL_BUILD "2026-06-15.erl-irl-bt-process-risklot-default"
+#define ERL_BUILD "2026-06-16.erl-irl-dynamic-bt-history"
 #define ERL_PREFIX "ERLIRL_"
 
 //=====================================================================
@@ -363,6 +363,15 @@ bool CopySeries(ENUM_TIMEFRAMES tf, int bars, MqlRates &rates[])
    return true;
 }
 
+int RequiredBarsForWindow(ENUM_TIMEFRAMES tf, datetime cutoff, int warmupBars)
+{
+   if(cutoff <= 0) return 0;
+   int sec = PeriodSeconds(tf);
+   if(sec <= 0) sec = 60;
+   double windowSec = MathMax(1.0, (double)(TimeCurrent() - cutoff));
+   return (int)MathCeil(windowSec / (double)sec) + MathMax(0, warmupBars);
+}
+
 //=====================================================================
 //  MARKET DATA HELPERS
 //=====================================================================
@@ -604,8 +613,10 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
 {
    ArrayFree(signals);
    MqlRates htfRates[], entryRates[];
-   if(!CopySeries(htf, InpCalcHtfBars, htfRates)) return 0;
-   if(!CopySeries(entryTf, InpCalcEntryBars, entryRates)) return 0;
+   int htfBars = MathMax(InpCalcHtfBars, RequiredBarsForWindow(htf, cutoff, 250));
+   int entryBars = MathMax(InpCalcEntryBars, RequiredBarsForWindow(entryTf, cutoff, 500));
+   if(!CopySeries(htf, htfBars, htfRates)) return 0;
+   if(!CopySeries(entryTf, entryBars, entryRates)) return 0;
 
    SwingLevel swings[];
    int swCount = CollectSwings(htfRates, swingLookback, swings);
@@ -709,7 +720,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    closed = false;
    won = false;
    MqlRates rates[];
-   if(!CopySeries(entryTf, InpCalcEntryBars, rates)) return 0.0;
+   int simBars = MathMax(InpCalcEntryBars, RequiredBarsForWindow(entryTf, g_btCutoff, 500));
+   if(!CopySeries(entryTf, simBars, rates)) return 0.0;
    int entryIdx = FindEntryBarIndex(rates, sig.entryTime);
    if(entryIdx < 1) return 0.0;
 
@@ -956,7 +968,8 @@ void AuditWrite(string eventName, string id, int dir, double entry, double sl, d
 void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string label, string &detail)
 {
    MqlRates rates[];
-   int copied = CopyRates(_Symbol, tf, 0, bars, rates);
+   int requestedBars = MathMax(bars, RequiredBarsForWindow(tf, cutoff, 500));
+   int copied = CopyRates(_Symbol, tf, 0, requestedBars, rates);
    datetime oldest = 0;
    datetime newest = 0;
    for(int i = 0; i < copied; ++i)
@@ -971,7 +984,7 @@ void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string labe
    double coverage = MathMin(100.0, loadedSec / requestedSec * 100.0);
    if(detail != "") detail += " | ";
    detail += label + "=" + TfLabel(tf)
-      + " bars=" + IntegerToString(copied) + "/" + IntegerToString(bars)
+      + " bars=" + IntegerToString(copied) + "/" + IntegerToString(requestedBars)
       + " oldest=" + (oldest > 0 ? TimeToString(oldest, TIME_DATE | TIME_SECONDS) : "")
       + " newest=" + (newest > 0 ? TimeToString(newest, TIME_DATE | TIME_SECONDS) : "")
       + " coverage=" + DoubleToString(coverage, 1) + "%";

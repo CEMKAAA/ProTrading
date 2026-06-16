@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-15.2145-regime-probe-same-dir"
+#define ATOMIC_BRIDGE_BUILD "2026-06-16.0135-regime-delay-audit-fix"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -56,7 +56,7 @@ input int    InpDirectMt4Magic = 970101;
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
 input string InpDirectMt4AllowedTradeWindowsGmt = "";
-input string InpDirectMt4NoTradeWindowsGmt = "19:30-20:30";
+input string InpDirectMt4NoTradeWindowsGmt = "21:55-22:10";
 input bool   InpDirectMt4CloseReverse = true;
 input int    InpDirectMt4TpIndex = 5;
 input double InpDirectMt4HalfBeR = 2.0;
@@ -97,6 +97,7 @@ input int    InpRegimeDnTrendStopBuffer = 1;
 input bool   InpRegimeUseAtomicSignalAsTieBreak = true;
 input bool   InpRegimeUseClosedBar = true;
 input int    InpRegimeBufferLookbackBars = 200;
+input bool   InpRegimeDelayValidationMode = false; // false=direct shift-1 execution; true=live delay + vanish validation.
 input int    InpRegimeConfirmDelaySeconds = 300; // 0=confirm immediately; -1=use legacy stable seconds.
 input int    InpRegimeConfirmStableSeconds = 5;
 input int    InpRegimeMaxConfirmShift = 1;
@@ -124,6 +125,14 @@ double   g_lastRegimeObservedSignalValue = 0.0;
 string   g_pendingRegimeEventId = "";
 string   g_pendingRegimeDirection = "";
 datetime g_pendingRegimeFirstSeen = 0;
+datetime g_pendingRegimeSignalTime = 0;
+int      g_pendingRegimeSignalIndex = -1;
+string   g_lastRegimeLifecycleSignalEventId = "";
+string   g_lastRegimeLifecycleDelayStartEventId = "";
+string   g_lastRegimeLifecycleDelayFinishEventId = "";
+string   g_lastRegimeDelayOpenedEventId = "";
+datetime g_lastRegimeDelayOpenedSignalTime = 0;
+string   g_lastRegimeDelayOpenedDirection = "";
 string   g_lastDirectMt4EventId = "";
 bool     g_proTradePostEnabledRuntime = true;
 bool     g_directMt4EnabledRuntime = false;
@@ -138,6 +147,7 @@ double   g_regimeDirectMt4HalfBeRRuntime = 0.0;
 double   g_regimeRRRuntime = 0.0;
 double   g_regimeFinalRiskScalePctRuntime = 100.0;
 bool     g_regimeUseClosedBarRuntime = true;
+bool     g_regimeDelayValidationRuntime = false;
 int      g_regimeConfirmDelaySecondsRuntime = 300;
 string   g_directMt4AllowedWindowsRuntime = "";
 string   g_directMt4NoTradeWindowsRuntime = "";
@@ -271,6 +281,20 @@ bool _direct_in_allowed_trade_window_gmt()
    return false;
 }
 
+int _regime_base_shift()
+{
+   if(g_regimeDelayValidationRuntime)
+      return 0;
+   return (g_regimeUseClosedBarRuntime ? 1 : 0);
+}
+
+int _regime_effective_delay_seconds()
+{
+   if(!g_regimeDelayValidationRuntime)
+      return 0;
+   return (g_regimeConfirmDelaySecondsRuntime >= 0 ? MathMax(0, g_regimeConfirmDelaySecondsRuntime) : MathMax(0, InpRegimeConfirmStableSeconds));
+}
+
 string _direct_trade_window_status()
 {
    if(!_direct_in_allowed_trade_window_gmt())
@@ -358,6 +382,48 @@ bool _direct_close_reverse_positions(string direction)
       else
       {
          _direct_audit_write("direct_reverse_close_sent", source, "", ticket, closedDirection, lots, closePx, sl, tp, "before_new_direction=" + direction, 0.0, "");
+      }
+   }
+   return ok;
+}
+
+bool _regime_close_delay_validation_positions(string eventId, string direction, string reason, int signalIndex, datetime signalTime)
+{
+   bool ok = true;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || !_direct_magic_owned(OrderMagicNumber()))
+         continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
+         continue;
+      if(!_contains_ci(OrderComment(), "AtomicRegime"))
+         continue;
+      string openDir = (OrderType() == OP_BUY) ? "BUY" : (OrderType() == OP_SELL ? "SELL" : "");
+      if(openDir == "")
+         continue;
+      if(direction != "" && openDir != direction)
+         continue;
+      RefreshRates();
+      int ticket = OrderTicket();
+      double lots = OrderLots();
+      double sl = OrderStopLoss();
+      double tp = OrderTakeProfit();
+      double closePx = (OrderType() == OP_BUY) ? Bid : Ask;
+      string extra = "event_id=" + eventId
+         + " signal_shift=" + IntegerToString(signalIndex)
+         + " signal_time=" + _fmt_time(signalTime)
+         + " signal_hms=" + _fmt_hms(signalTime);
+      if(!OrderClose(ticket, lots, closePx, InpDirectMt4Slippage, clrTomato))
+      {
+         int err = GetLastError();
+         _direct_audit_write("regime_signal_vanished_close_failed", OrderComment(), eventId, ticket, openDir, lots, closePx, sl, tp, "err=" + IntegerToString(err) + " " + reason, 0.0, extra);
+         ok = false;
+      }
+      else
+      {
+         _direct_audit_write("regime_signal_vanished_close_sent", OrderComment(), eventId, ticket, openDir, lots, closePx, sl, tp, reason, 0.0, extra);
       }
    }
    return ok;
@@ -1470,6 +1536,112 @@ void _direct_audit_write(string eventName, string source, string eventId, int ti
    _direct_audit_lock_release_lane("DIRECT");
 }
 
+string _fmt_hms(datetime t)
+{
+   if(t <= 0)
+      return "-";
+   return StringFormat("%02d:%02d:%02d", TimeHour(t), TimeMinute(t), TimeSeconds(t));
+}
+
+void _regime_lifecycle_audit(string eventName, string eventId, string direction, int signalIndex, datetime signalTime, double entryPrice, double sl, double tp, string reason, datetime delayStart, datetime delayEnd, int delaySeconds, int ageSeconds, string extra)
+{
+   string detail = "signal_shift=" + IntegerToString(signalIndex)
+      + " signal_time=" + _fmt_time(signalTime)
+      + " signal_hms=" + _fmt_hms(signalTime)
+      + " delay_start=" + _fmt_time(delayStart)
+      + " delay_start_hms=" + _fmt_hms(delayStart)
+      + " delay_end=" + _fmt_time(delayEnd)
+      + " delay_end_hms=" + _fmt_hms(delayEnd)
+      + " delay_sec=" + IntegerToString(delaySeconds)
+      + " age_sec=" + IntegerToString(ageSeconds);
+   if(StringLen(extra) > 0)
+      detail = detail + " " + extra;
+   _direct_audit_write(eventName, InpRegimeIndicatorName, eventId, 0, direction, 0.0, entryPrice, sl, tp, reason, 0.0, detail);
+}
+
+string _regime_event_id(string direction, datetime signalTime)
+{
+   if(direction == "" || signalTime <= 0)
+      return "";
+   return StringFormat("%s|%s|%I64d", Symbol(), direction, (long)signalTime);
+}
+
+void _regime_mark_delay_opened_if_needed(string eventId, string direction, datetime signalTime)
+{
+   if(!g_regimeDelayValidationRuntime || eventId == "")
+      return;
+   g_lastRegimeDelayOpenedEventId = eventId;
+   g_lastRegimeDelayOpenedDirection = direction;
+   g_lastRegimeDelayOpenedSignalTime = signalTime;
+}
+
+void _regime_clear_pending_state()
+{
+   g_pendingRegimeEventId = "";
+   g_pendingRegimeDirection = "";
+   g_pendingRegimeFirstSeen = 0;
+   g_pendingRegimeSignalTime = 0;
+   g_pendingRegimeSignalIndex = -1;
+}
+
+void _regime_validate_delayed_open_trade(bool hasRegime, string direction, int signalIndex, datetime signalTime)
+{
+   if(!g_regimeDelayValidationRuntime || g_lastRegimeDelayOpenedEventId == "")
+      return;
+   string currentEventId = (hasRegime ? _regime_event_id(direction, signalTime) : "");
+   bool stillFresh = (
+      currentEventId == g_lastRegimeDelayOpenedEventId
+      && direction == g_lastRegimeDelayOpenedDirection
+      && (InpRegimeMaxConfirmShift < 0 || signalIndex <= InpRegimeMaxConfirmShift)
+   );
+   if(stillFresh)
+      return;
+
+   string reason = "delay_validation_signal_vanished";
+   if(currentEventId != g_lastRegimeDelayOpenedEventId)
+      reason = "delay_validation_signal_replaced_or_missing";
+   else if(InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift)
+      reason = "delay_validation_signal_not_on_confirm_shift";
+
+   _regime_close_delay_validation_positions(
+      g_lastRegimeDelayOpenedEventId,
+      g_lastRegimeDelayOpenedDirection,
+      reason,
+      signalIndex,
+      signalTime
+   );
+   g_lastRegimeDelayOpenedEventId = "";
+   g_lastRegimeDelayOpenedDirection = "";
+   g_lastRegimeDelayOpenedSignalTime = 0;
+}
+
+void _regime_cancel_pending_delay(string reason, bool hasRegime, string direction, int signalIndex, datetime signalTime)
+{
+   if(!g_regimeDelayValidationRuntime || g_pendingRegimeEventId == "")
+      return;
+   _regime_lifecycle_audit(
+      "regime_delay_cancelled",
+      g_pendingRegimeEventId,
+      g_pendingRegimeDirection,
+      signalIndex,
+      signalTime,
+      0.0,
+      0.0,
+      0.0,
+      reason,
+      g_pendingRegimeFirstSeen,
+      _timer_now(),
+      _regime_effective_delay_seconds(),
+      (g_pendingRegimeFirstSeen > 0 ? (int)(_timer_now() - g_pendingRegimeFirstSeen) : -1),
+      "pending_signal_time=" + _fmt_time(g_pendingRegimeSignalTime)
+         + " pending_signal_hms=" + _fmt_hms(g_pendingRegimeSignalTime)
+         + " pending_started_shift=" + IntegerToString(g_pendingRegimeSignalIndex)
+         + " current_has_regime=" + (hasRegime ? "1" : "0")
+         + " current_dir=" + direction
+   );
+   _regime_clear_pending_state();
+}
+
 string _direct_position_probe_file_name()
 {
    return "AtomicBridge_PositionProbe_" + _direct_audit_date(TimeGMT()) + ".csv";
@@ -1528,7 +1700,7 @@ void _regime_signal_probe_write(
    }
    RefreshRates();
    int ms = (int)(GetTickCount() % 1000);
-   int baseShift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   int baseShift = _regime_base_shift();
    int pendingAge = (g_pendingRegimeFirstSeen > 0 ? (int)(_timer_now() - g_pendingRegimeFirstSeen) : -1);
    FileWrite(
       h,
@@ -1581,7 +1753,7 @@ void _regime_signal_probe_scan(string reason, bool hasRegime, string selectedDir
 {
    if(!InpRegimeSignalProbeAudit)
       return;
-   int baseShift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   int baseShift = _regime_base_shift();
    if(Bars <= baseShift)
       return;
    int maxShift = MathMax(baseShift, MathMin(Bars - 1, MathMax(baseShift, InpRegimeSignalProbeMaxShift)));
@@ -1595,7 +1767,7 @@ void _regime_signal_probe_scan(string reason, bool hasRegime, string selectedDir
    bool hasDn = _find_latest_regime_signal_buffer(MathMax(0, InpRegimeDnTrendSignalBuffer), baseShift, maxShift, dnShift, dnTime, dnValue);
    string eventId = "";
    if(hasRegime && selectedDirection != "" && selectedTime > 0)
-      eventId = StringFormat("%s|%s|%d|%I64d", Symbol(), selectedDirection, selectedShift, (long)selectedTime);
+      eventId = _regime_event_id(selectedDirection, selectedTime);
    string hash = StringFormat(
       "%s|%d|%I64d|%s|%d|%d|%d|%d|%s|%s|%s|%s",
       selectedDirection,
@@ -3069,6 +3241,7 @@ void _draw_dashboard()
    _dash_button("BTN_REGIME_MODE", 816, 144, 118, 24, g_atomicRegimeModeEnabledRuntime ? "[x] REGIME" : "[ ] REGIME", g_atomicRegimeModeEnabledRuntime ? C'32,150,96' : C'88,96,112');
    _dash_button("BTN_REGIME_SHIFT", 690, 172, 118, 24, g_regimeUseClosedBarRuntime ? "REGIME SH1" : "REGIME SH0", g_regimeUseClosedBarRuntime ? C'34,136,160' : C'178,37,57');
    _dash_button("BTN_APPLY", 816, 172, 100, 24, "APPLY CFG", C'38,101,176');
+   _dash_button("BTN_REGIME_DELAY_MODE", 690, 200, 226, 24, g_regimeDelayValidationRuntime ? "REG DELAY VALIDATE" : "REG DIRECT", g_regimeDelayValidationRuntime ? C'221,145,45' : C'32,150,96');
    _dash_label("L_LOT", 38, 66, "Lot", C'184,196,210', 8);
    _dash_edit("EDIT_LOT", 70, 62, 70, 22, DoubleToString(g_directMt4LotRuntime, 2));
    _dash_label("L_SPREAD", 158, 66, "Max spread pts", C'184,196,210', 8);
@@ -3093,8 +3266,9 @@ void _draw_dashboard()
    RefreshRates();
    _dash_label("STATE", 38, 112, StringFormat("Live BID %s / ASK %s | %s | %s",
               _fmt_price(Bid), _fmt_price(Ask), _direct_spread_status(spread), _direct_trade_window_status()), clrWhite, 8);
-   _dash_label("MODES", 38, 134, StringFormat("Modes: Atomic=%s | Regime=%s | ProTrade=%s | FTMO Risk=%s %.2f%%/%.2f%% | Shift=%s",
-              (g_atomicModeEnabledRuntime ? "ON" : "OFF"), (g_atomicRegimeModeEnabledRuntime ? "ON" : "OFF"), (g_proTradePostEnabledRuntime ? "ON" : "OFF"),
+   _dash_label("MODES", 38, 134, StringFormat("Modes: Atomic=%s | Regime=%s | RegExec=%s | ProTrade=%s | FTMO Risk=%s %.2f%%/%.2f%% | Shift=%s",
+              (g_atomicModeEnabledRuntime ? "ON" : "OFF"), (g_atomicRegimeModeEnabledRuntime ? "ON" : "OFF"),
+              (g_regimeDelayValidationRuntime ? "DELAY" : "DIRECT"), (g_proTradePostEnabledRuntime ? "ON" : "OFF"),
               (InpAdvancedAccountRiskEnabled ? "ON" : "OFF"), InpAccountRiskPerTradePct, InpAccountRiskMaxPortfolioPct,
               (g_regimeUseClosedBarRuntime ? "1" : "0")), C'90,178,255', 8);
    _dash_label("LAST_A", 38, 154, "Last Atomic: " + (g_lastObservedSignalDirection == "" ? "NONE" : g_lastObservedSignalDirection) + " | " + _fmt_time(g_lastObservedSignalTime), C'184,196,210', 8);
@@ -3150,6 +3324,7 @@ void _apply_dashboard()
          " atomic_halfbe_tp=", g_directMt4HalfBeTpIndexRuntime,
          " atomic_fallback_halfbe_r=", DoubleToString(g_directMt4HalfBeRRuntime, 2),
          " regime_halfbe_r=", DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2),
+         " regime_exec_mode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"),
          " regime_confirm_delay_sec=", g_regimeConfirmDelaySecondsRuntime,
          " regime_final_scale_pct=", DoubleToString(g_regimeFinalRiskScalePctRuntime, 2),
          " regime_closed_bar=", (g_regimeUseClosedBarRuntime ? "true" : "false"));
@@ -3252,7 +3427,7 @@ bool _find_current_atomic_regime_from_signal_buffers(string directionHint, strin
    if(!InpRegimeUseTrendSignalBuffers)
       return false;
 
-   int shift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   int shift = _regime_base_shift();
    if(Bars <= shift)
       return false;
 
@@ -3380,7 +3555,7 @@ bool _find_current_atomic_regime_from_stop_buffers(string &direction, int &signa
    if(!InpRegimeUseTrendStopBuffers)
       return false;
 
-   int shift = (g_regimeUseClosedBarRuntime ? 1 : 0);
+   int shift = _regime_base_shift();
    if(Bars <= shift)
       return false;
 
@@ -3788,7 +3963,9 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    if(_regime_apply_final_risk_scale(direction, entryPrice, regimeSl, regimeTp, scaleReason))
       trendName = trendName + "|" + scaleReason;
 
-   string regimeEventId = StringFormat("%s|%s|%d|%I64d", Symbol(), direction, signalIndex, (long)signalTime);
+   // Shift is not a stable identity during delayed confirmation: a fresh shift=1
+   // signal naturally becomes shift=2/3/... while the 300s timer is running.
+   string regimeEventId = _regime_event_id(direction, signalTime);
    bool directionChanged = (StringLen(g_lastRegimeDirection) > 0 && direction != g_lastRegimeDirection);
    bool regimeEventChanged = (StringLen(g_lastRegimeEventId) <= 0 || regimeEventId != g_lastRegimeEventId);
 
@@ -3803,6 +3980,7 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       if(reason == "init" && InpSendInitialRegimeConfirmedOnStart)
       {
          _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
+         _regime_mark_delay_opened_if_needed(regimeEventId, direction, signalTime);
          g_lastRegimeConfirmedEventId = regimeEventId;
          g_lastRegimeConfirmedDirection = direction;
          g_lastRegimeConfirmedSignalTime = signalTime;
@@ -3811,6 +3989,86 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    }
 
    g_lastRegimeEventId = regimeEventId;
+   if(g_lastRegimeLifecycleSignalEventId != regimeEventId)
+   {
+      bool freshForConfirm = (InpRegimeMaxConfirmShift < 0 || signalIndex <= InpRegimeMaxConfirmShift);
+      _regime_lifecycle_audit(
+         "regime_signal_seen",
+         regimeEventId,
+         direction,
+         signalIndex,
+         signalTime,
+         entryPrice,
+         regimeSl,
+         regimeTp,
+         reason,
+         0,
+         0,
+         _regime_effective_delay_seconds(),
+         -1,
+         "fresh_for_confirm=" + (freshForConfirm ? "1" : "0") + " max_confirm_shift=" + IntegerToString(InpRegimeMaxConfirmShift)
+      );
+      g_lastRegimeLifecycleSignalEventId = regimeEventId;
+   }
+
+   datetime nowPending = _timer_now();
+   int pendingStableSeconds = _regime_effective_delay_seconds();
+   bool pendingSameSignal = (
+      StringLen(g_pendingRegimeEventId) > 0
+      && g_pendingRegimeEventId == regimeEventId
+      && g_pendingRegimeDirection == direction
+      && g_pendingRegimeSignalTime == signalTime
+   );
+   if(pendingSameSignal)
+   {
+      int pendingAge = (int)(nowPending - g_pendingRegimeFirstSeen);
+      bool signalClosedToConfirmBar = (g_regimeDelayValidationRuntime && g_pendingRegimeSignalIndex == 0 && signalIndex == 1);
+      bool signalTooStale = (InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift);
+      if(signalTooStale)
+      {
+         _regime_cancel_pending_delay("signal_too_stale_before_open", true, direction, signalIndex, signalTime);
+         return;
+      }
+      if(pendingStableSeconds > 0 && pendingAge < pendingStableSeconds && !signalClosedToConfirmBar)
+      {
+         if(InpLogRegimeBuffer)
+            Print("AtomicBridge regime_signal pending delay dir=", direction, " age=", IntegerToString(pendingAge), " delay_sec=", IntegerToString(pendingStableSeconds), " event=", regimeEventId);
+         return;
+      }
+      if(g_lastRegimeLifecycleDelayFinishEventId != regimeEventId)
+      {
+         _regime_lifecycle_audit(
+            "regime_delay_finished",
+            regimeEventId,
+            direction,
+            signalIndex,
+            signalTime,
+            entryPrice,
+            regimeSl,
+            regimeTp,
+            signalClosedToConfirmBar ? "signal_bar_closed_confirm_now" : "timer_elapsed",
+            g_pendingRegimeFirstSeen,
+            nowPending,
+            pendingStableSeconds,
+            pendingAge,
+            "pending_started_shift=" + IntegerToString(g_pendingRegimeSignalIndex)
+         );
+         g_lastRegimeLifecycleDelayFinishEventId = regimeEventId;
+      }
+      if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
+         g_lastRegimeResolvedPostTime = nowPending;
+      _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
+      _regime_mark_delay_opened_if_needed(regimeEventId, direction, signalTime);
+      g_lastRegimeDirection = direction;
+      g_lastRegimeConfirmedEventId = regimeEventId;
+      g_lastRegimeSignalIndex = signalIndex;
+      g_lastRegimeSignalTime = signalTime;
+      g_lastRegimeConfirmedDirection = direction;
+      g_lastRegimeConfirmedSignalTime = signalTime;
+      _regime_clear_pending_state();
+      return;
+   }
+
    if(StringLen(g_lastRegimeDirection) <= 0)
    {
       if(InpRegimeMaxConfirmShift >= 0 && signalIndex > InpRegimeMaxConfirmShift)
@@ -3827,16 +4085,38 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       }
 
       datetime initialNowStable = _timer_now();
-      int initialStableSeconds = (g_regimeConfirmDelaySecondsRuntime >= 0 ? MathMax(0, g_regimeConfirmDelaySecondsRuntime) : MathMax(0, InpRegimeConfirmStableSeconds));
+      int initialStableSeconds = _regime_effective_delay_seconds();
       if(g_pendingRegimeEventId != regimeEventId)
       {
          g_pendingRegimeEventId = regimeEventId;
          g_pendingRegimeDirection = direction;
          g_pendingRegimeFirstSeen = initialNowStable;
+         g_pendingRegimeSignalTime = signalTime;
+         g_pendingRegimeSignalIndex = signalIndex;
          if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
             g_lastRegimeResolvedPostTime = initialNowStable;
          if(initialStableSeconds > 0)
          {
+            if(g_lastRegimeLifecycleDelayStartEventId != regimeEventId)
+            {
+               _regime_lifecycle_audit(
+                  "regime_delay_started",
+                  regimeEventId,
+                  direction,
+                  signalIndex,
+                  signalTime,
+                  entryPrice,
+                  regimeSl,
+                  regimeTp,
+                  reason,
+                  initialNowStable,
+                  0,
+                  initialStableSeconds,
+                  0,
+                  "start_shift=" + IntegerToString(signalIndex)
+               );
+               g_lastRegimeLifecycleDelayStartEventId = regimeEventId;
+            }
             if(InpLogRegimeBuffer)
                Print("AtomicBridge regime_signal initial delay_started dir=", direction, " delay_sec=", IntegerToString(initialStableSeconds), " event=", regimeEventId);
             return;
@@ -3851,15 +4131,14 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
          g_lastRegimeResolvedPostTime = _timer_now();
       _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
+      _regime_mark_delay_opened_if_needed(regimeEventId, direction, signalTime);
       g_lastRegimeDirection = direction;
       g_lastRegimeConfirmedEventId = regimeEventId;
       g_lastRegimeSignalIndex = signalIndex;
       g_lastRegimeSignalTime = signalTime;
       g_lastRegimeConfirmedDirection = direction;
       g_lastRegimeConfirmedSignalTime = signalTime;
-      g_pendingRegimeEventId = "";
-      g_pendingRegimeDirection = "";
-      g_pendingRegimeFirstSeen = 0;
+      _regime_clear_pending_state();
       return;
    }
 
@@ -3881,16 +4160,38 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
          return;
       }
       datetime nowStable = _timer_now();
-      int stableSeconds = (g_regimeConfirmDelaySecondsRuntime >= 0 ? MathMax(0, g_regimeConfirmDelaySecondsRuntime) : MathMax(0, InpRegimeConfirmStableSeconds));
+      int stableSeconds = _regime_effective_delay_seconds();
       if(g_pendingRegimeEventId != regimeEventId)
       {
          g_pendingRegimeEventId = regimeEventId;
          g_pendingRegimeDirection = direction;
          g_pendingRegimeFirstSeen = nowStable;
+         g_pendingRegimeSignalTime = signalTime;
+         g_pendingRegimeSignalIndex = signalIndex;
          if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
             g_lastRegimeResolvedPostTime = nowStable;
          if(stableSeconds > 0)
          {
+            if(g_lastRegimeLifecycleDelayStartEventId != regimeEventId)
+            {
+               _regime_lifecycle_audit(
+                  "regime_delay_started",
+                  regimeEventId,
+                  direction,
+                  signalIndex,
+                  signalTime,
+                  entryPrice,
+                  regimeSl,
+                  regimeTp,
+                  reason,
+                  nowStable,
+                  0,
+                  stableSeconds,
+                  0,
+                  "start_shift=" + IntegerToString(signalIndex)
+               );
+               g_lastRegimeLifecycleDelayStartEventId = regimeEventId;
+            }
             if(InpLogRegimeBuffer)
                Print("AtomicBridge regime_signal delay_started dir=", direction, " delay_sec=", IntegerToString(stableSeconds), " event=", regimeEventId);
             return;
@@ -3905,15 +4206,14 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       if(_post_atomic_regime_event("resolved_state", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason))
          g_lastRegimeResolvedPostTime = _timer_now();
       _post_atomic_regime_event("confirmed_signal", direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, trendName, reason);
+      _regime_mark_delay_opened_if_needed(regimeEventId, direction, signalTime);
       g_lastRegimeDirection = direction;
       g_lastRegimeConfirmedEventId = regimeEventId;
       g_lastRegimeSignalIndex = signalIndex;
       g_lastRegimeSignalTime = signalTime;
       g_lastRegimeConfirmedDirection = direction;
       g_lastRegimeConfirmedSignalTime = signalTime;
-      g_pendingRegimeEventId = "";
-      g_pendingRegimeDirection = "";
-      g_pendingRegimeFirstSeen = 0;
+      _regime_clear_pending_state();
    }
    else if(_heartbeat_due(g_lastRegimeResolvedPostTime))
    {
@@ -3948,6 +4248,9 @@ void ScanAndLogLatest(string reason)
          Print("AtomicBridge latest_signal NONE reason=", reason, " symbol=", Symbol(), " tf=", _tf_to_string(Period()));
       _debug_print_atomic_objects();
       _regime_signal_probe_scan(reason, hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
+      _regime_validate_delayed_open_trade(hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime);
+      if(!hasBufferRegime)
+         _regime_cancel_pending_delay("signal_missing_before_open", hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime);
       if(hasBufferRegime && g_atomicRegimeModeEnabledRuntime)
       {
          if(InpLogRegimeBuffer)
@@ -3979,6 +4282,9 @@ void ScanAndLogLatest(string reason)
          regimeSourceName
       );
    }
+   _regime_validate_delayed_open_trade(hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime);
+   if(!hasBufferRegime)
+      _regime_cancel_pending_delay("signal_missing_before_open", hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime);
 
    double sl, tp1, tp2, tp3, tp4, tp5;
    _find_atomic_levels(direction, signalIndex, sl, tp1, tp2, tp3, tp4, tp5);
@@ -3995,6 +4301,8 @@ void ScanAndLogLatest(string reason)
             g_lastResolvedPostTime = _timer_now();
       }
       _regime_signal_probe_scan("heartbeat", hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName);
+      if(!hasBufferRegime)
+         _regime_cancel_pending_delay("signal_missing_before_open", hasBufferRegime, regimeDirection, regimeSignalIndex, regimeSignalTime);
       if(hasBufferRegime && g_atomicRegimeModeEnabledRuntime)
          _handle_regime_event("heartbeat", regimeDirection, regimeSignalIndex, regimeSignalTime, regimeEntryPrice, regimeSourceName, direction, entryPrice, sl);
       return;
@@ -4105,6 +4413,7 @@ int OnInit()
    g_regimeRRRuntime = MathMax(0.1, InpRegimeRR);
    g_regimeFinalRiskScalePctRuntime = MathMax(10.0, MathMin(200.0, InpRegimeFinalRiskScalePct));
    g_regimeUseClosedBarRuntime = InpRegimeUseClosedBar;
+   g_regimeDelayValidationRuntime = InpRegimeDelayValidationMode;
    g_regimeConfirmDelaySecondsRuntime = MathMax(-1, InpRegimeConfirmDelaySeconds);
    g_directMt4AllowedWindowsRuntime = _trim(InpDirectMt4AllowedTradeWindowsGmt);
    g_directMt4NoTradeWindowsRuntime = _trim(InpDirectMt4NoTradeWindowsGmt);
@@ -4122,6 +4431,7 @@ int OnInit()
       " upSignal=", InpRegimeUpTrendSignalBuffer,
       " dnSignal=", InpRegimeDnTrendSignalBuffer,
       " stopFallback=", (InpRegimeUseTrendStopBuffers ? "true" : "false"),
+      " regimeExecMode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"),
       " confirmDelaySec=", g_regimeConfirmDelaySecondsRuntime,
       " stableSec=", InpRegimeConfirmStableSeconds,
       " maxConfirmShift=", InpRegimeMaxConfirmShift,
@@ -4291,6 +4601,17 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_regimeUseClosedBarRuntime = !g_regimeUseClosedBarRuntime;
       Print("AtomicBridge dashboard regime closed-bar mode=", (g_regimeUseClosedBarRuntime ? "shift_1_closed_bar" : "shift_0_live_bar"));
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_REGIME_DELAY_MODE")
+   {
+      g_regimeDelayValidationRuntime = !g_regimeDelayValidationRuntime;
+      _regime_clear_pending_state();
+      g_lastRegimeDelayOpenedEventId = "";
+      g_lastRegimeDelayOpenedDirection = "";
+      g_lastRegimeDelayOpenedSignalTime = 0;
+      Print("AtomicBridge dashboard AtomicRegime execution mode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"));
       _draw_dashboard();
       ChartRedraw(0);
    }

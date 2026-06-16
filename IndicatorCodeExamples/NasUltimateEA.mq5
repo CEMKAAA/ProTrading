@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
 
-#define NAS_V2_BUILD "2026-06-15.v2.2-risklot-default"
+#define NAS_V2_BUILD "2026-06-16.v2.4-bt-effective-window"
 
 //=====================================================================
 //  ENUMS
@@ -43,9 +43,10 @@ input bool   InpEaEnabled             = true;
 input long   InpMagic                 = 27052712;
 input int    InpDeviationPoints       = 30;
 input bool   InpCloseOnReverse        = true;
-input bool   InpUseTradingWindow      = true;
-input string InpTradeStartTime        = "09:00";
-input string InpTradeEndTime          = "14:00";
+input bool   InpUseTradingWindow      = false;
+input string InpTradeStartTime        = "";
+input string InpTradeEndTime          = "";
+input string InpNoTradeWindowsGmt     = "21:55-22:10";
 
 //=== INPUTS â€” SPREAD GOVERNOR ==========================================
 input bool   InpSpreadEnabled         = true;
@@ -246,6 +247,23 @@ bool BtTpFirst(int d,double openPx,double sl,double tp)
 }
 int ParseClock(string v,int fb){int c=StringFind(v,":");if(c<0)return fb;int h=(int)StringToInteger(StringSubstr(v,0,c));int m=(int)StringToInteger(StringSubstr(v,c+1));if(h==24&&m==0)return 1440;if(h<0||h>23||m<0||m>59)return fb;return h*60+m;}
 int ServerClockMin(){MqlDateTime d;TimeToStruct(TimeCurrent(),d);return d.hour*60+d.min;}
+int GmtClockMin(){MqlDateTime d;TimeToStruct(TimeGMT(),d);return d.hour*60+d.min;}
+string TrimText(string s){StringTrimLeft(s);StringTrimRight(s);return s;}
+bool MinuteInRange(int minute,string rangeText)
+{
+   string r=TrimText(rangeText);int sep=StringFind(r,"-");if(sep<=0)return false;
+   int a=ParseClock(StringSubstr(r,0,sep),-1),b=ParseClock(StringSubstr(r,sep+1),-1);
+   if(a<0||b<0)return false;if(a==b)return true;
+   return (a<b)?(minute>=a&&minute<b):(minute>=a||minute<b);
+}
+bool IsNoTradeWindowGmt()
+{
+   string raw=TrimText(InpNoTradeWindowsGmt);if(raw=="")return false;
+   StringReplace(raw,";",",");StringReplace(raw,"|",",");
+   string parts[];int n=StringSplit(raw,',',parts);int m=GmtClockMin();
+   for(int i=0;i<n;i++)if(MinuteInRange(m,parts[i]))return true;
+   return false;
+}
 double CalcSMA(const MqlRates &r[],int i,int p){if(i<p-1)return EMPTY_VALUE;double s=0;for(int k=i-p+1;k<=i;k++)s+=r[k].close;return s/(double)p;}
 
 //=====================================================================
@@ -475,12 +493,19 @@ bool SpreadAllowed(string &reason)
 //=====================================================================
 bool IsWindowOpen()
 {
+   if(IsNoTradeWindowGmt()) return false;
    if(!InpUseTradingWindow) return true;
+   if(TrimText(InpTradeStartTime)=="" || TrimText(InpTradeEndTime)=="") return true;
    int s=ParseClock(InpTradeStartTime,0),e=ParseClock(InpTradeEndTime,1439),n=ServerClockMin();
    if(s==e)return true;
    return s<e?(n>=s&&n<=e):(n>=s||n<=e);
 }
-string WindowText(){return(IsWindowOpen()?"OPEN ":"CLOSED ")+InpTradeStartTime+"-"+InpTradeEndTime;}
+string WindowText()
+{
+   if(IsNoTradeWindowGmt()) return "CLOSED no-trade GMT "+InpNoTradeWindowsGmt;
+   if(!InpUseTradingWindow || TrimText(InpTradeStartTime)=="" || TrimText(InpTradeEndTime)=="") return "OPEN 24/7";
+   return(IsWindowOpen()?"OPEN ":"CLOSED ")+InpTradeStartTime+"-"+InpTradeEndTime;
+}
 
 //=====================================================================
 //  ACCOUNT RISK ENGINE (FTMO)
@@ -1435,7 +1460,7 @@ void BT_Start()
    if(h!=INVALID_HANDLE)
    {
       FileWrite(h,"timestamp","symbol","chart_tf","signal_mode","sensitivity","rr_mode","hc_tp1","hc_tp2","weeks",
-         "requested_from","loaded_from","loaded_to","rates_copied",
+         "effective_from","loaded_from","loaded_to","rates_copied",
          "fill_mode","same_bar_policy","spread_pts","slippage_pts","commission_per_lot",
          "total_signals","wins","losses","other","win_rate","be_win_rate",
          "total_won_r","total_lost_r","net_r","pf","edge_pct","avg_r_per_trade");
@@ -1443,7 +1468,7 @@ void BT_Start()
    }
    g_btStep=0;g_btRunning=true;g_btLastResult="Starting...";
    string coverageDetail=(g_btRatesCopied>0&&g_btRates[0].time>g_btCutoff)?"insufficient_history":"ok";
-   coverageDetail+=" copyBars="+IntegerToString(copyBars)+" first="+(g_btRatesCopied>0?TimeToString(g_btRates[0].time,TIME_DATE|TIME_SECONDS):"");
+   coverageDetail+=" effective_from="+TimeToString(g_btCutoff,TIME_DATE|TIME_SECONDS)+" copyBars="+IntegerToString(copyBars)+" first="+(g_btRatesCopied>0?TimeToString(g_btRates[0].time,TIME_DATE|TIME_SECONDS):"")+" note=loaded_from_includes_warmup";
    NasBT_ProcessAudit("start",coverageDetail);
    Print("BT: started ",g_btTotal," combos, ",g_btWeeks," weeks");
 }

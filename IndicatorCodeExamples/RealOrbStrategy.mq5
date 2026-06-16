@@ -7,7 +7,7 @@
 #property strict
 #property version "3.10"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-15.v3.1-risklot-default"
+#define ORB15_BUILD "2026-06-16.v3.2-bt-tf15-timing-fix"
 
 //=== CORE INPUTS ========================================================
 input bool            InpEaEnabled          = true;
@@ -248,6 +248,21 @@ bool BtTpFirst(bool isBuy,double openPx,double sl,double tp)
    double dTp=isBuy?(tp-openPx):(openPx-tp);
    double dSl=isBuy?(openPx-sl):(sl-openPx);
    return dTp<dSl;
+}
+
+datetime BarCloseTime(ENUM_TIMEFRAMES tf, datetime barOpen)
+{
+   int sec = PeriodSeconds(tf);
+   if(sec <= 0) sec = 60;
+   return barOpen + sec;
+}
+
+int RuntimeBtTfIndex()
+{
+   for(int i = 0; i < OBT_TF_COUNT; i++)
+      if(g_btTFs[i] == g_rtSignalTf)
+         return i;
+   return 2; // M15 default.
 }
 
 bool ValidateOpenStops(string dir,double entry,double sl,double tp,string &reason)
@@ -692,28 +707,38 @@ bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
       effectiveFrom = from + g_rtDelayMin * 60;
    if(effectiveFrom >= to) return false;
 
-   MqlRates r[];int c=CopyRates(_Symbol,g_rtSignalTf,effectiveFrom,to,r);if(c<=0)return false;
+   MqlRates r[];int c=CopyRates(_Symbol,g_rtSignalTf,from,to,r);if(c<=0)return false;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
    int bi=-1;string bd="";
    for(int i=0;i<c;i++)
    {
-      if(r[i].time<effectiveFrom||r[i].time>to)continue;
+      datetime closeTime = BarCloseTime(g_rtSignalTf, r[i].time);
+      if(closeTime<effectiveFrom||closeTime>to)continue;
       string d="";
       if(r[i].close>hi+mb)d="BUY";
       else if(r[i].close<lo-mb)d="SELL";
       if(d=="")continue;
       // Confirmation: check that the next N bars also confirm the breakout
-      if(InpConfirmBars > 1 && i + InpConfirmBars - 1 < c)
+      int confirmIdx = i;
+      if(InpConfirmBars > 1)
       {
          bool confirmed = true;
+         if(i + InpConfirmBars - 1 >= c)
+            confirmed = false;
          for(int cb = 1; cb < InpConfirmBars && i+cb < c; cb++)
          {
             if(d=="BUY" && r[i+cb].close <= hi) { confirmed = false; break; }
             if(d=="SELL" && r[i+cb].close >= lo) { confirmed = false; break; }
          }
+         if(confirmed)
+         {
+            confirmIdx = i + InpConfirmBars - 1;
+            if(BarCloseTime(g_rtSignalTf, r[confirmIdx].time) > to)
+               confirmed = false;
+         }
          if(!confirmed) continue;
       }
-      bi=i;bd=d;break; // first valid breakout
+      bi=confirmIdx;bd=d;break; // first valid confirmed breakout
    }
    if(bi<0)return false;
    dir=bd;sigT=r[bi].time;sigC=r[bi].close;sigH=r[bi].high;sigL=r[bi].low;sigVol=(double)r[bi].tick_volume;
@@ -1021,12 +1046,16 @@ void OrbAudit_HistoryScan()
 void OBT_GenerateCombos()
 {
    ArrayResize(g_btCombos,0);
+   int selectedTfIdx = RuntimeBtTfIndex();
    for(int ti=0;ti<OBT_TF_COUNT;ti++)
+   {
+   if(ti != selectedTfIdx) continue;
    for(int di=0;di<OBT_DELAY_COUNT;di++)
    for(int a=0;a<2;a++)for(int v=0;v<2;v++)for(int d=0;d<2;d++)for(int b=0;b<2;b++)
    {
       OrbBtCombo c;c.tfIdx=ti;c.delayIdx=di;c.atr=(a==1);c.vol=(v==1);c.day=(d==1);c.be=(b==1);
       int n=ArraySize(g_btCombos);ArrayResize(g_btCombos,n+1);g_btCombos[n]=c;
+   }
    }
    g_btTotal=ArraySize(g_btCombos);
 }
@@ -1097,7 +1126,7 @@ void OBT_Start()
    }
    g_btStep=0;g_btRunning=true;g_btLastResult="Starting...";
    OBT_ProcessAudit("start","ok");
-   Print("OBT: started ",g_btTotal," combos, ",g_btWeeks," weeks, ",g_btDayCount," days");
+   Print("OBT: started ",g_btTotal," combos, ",g_btWeeks," weeks, ",g_btDayCount," days signal_tf=",TfLabel(g_rtSignalTf));
 }
 
 void OBT_Tick()
@@ -1456,7 +1485,7 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    int sh=InpUseClosedBarBreakout?1:0;
    bt=iTime(_Symbol,g_rtSignalTf,sh);
    if(bt<=0||bt==g_lastSignalBarTime)return false;
-   if(bt<effectiveStart)return false; // bar is from before delay window
+   if(BarCloseTime(g_rtSignalTf, bt)<effectiveStart)return false; // signal is only known after bar close
    sc=iClose(_Symbol,g_rtSignalTf,sh);if(sc<=0)return false;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
    if(sc>g_orbHigh+mb)dir="BUY";else if(sc<g_orbLow-mb)dir="SELL";
