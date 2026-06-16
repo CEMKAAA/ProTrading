@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ERL_BUILD "2026-06-16.erl-irl-dynamic-bt-history"
+#define ERL_BUILD "2026-06-16.erl-irl-tester-trade-audit"
 #define ERL_PREFIX "ERLIRL_"
 
 //=====================================================================
@@ -91,6 +91,9 @@ input bool            InpAuditPositionProbe     = true;
 input int             InpAuditProbeSec          = 30;
 input bool            InpAuditProbeOnChangeOnly = true;
 input int             InpAuditHistoryScanSec    = 3;
+input bool            InpTesterTradeAuditCsv    = true;
+input int             InpTesterTradeAuditMaxRows= 50000;
+input string          InpValidationJobId        = "";
 
 input int             InpBacktestWeeks          = 4;
 input BT_FILL_MODE    InpBacktestFillMode       = BT_FILL_SIGNAL_CLOSE;
@@ -166,6 +169,13 @@ struct BtCombo
 //=====================================================================
 CTrade trade;
 string PFX = ERL_PREFIX;
+string g_testerTradeAuditFile = "";
+int    g_testerTradeAuditRows = 0;
+
+bool IsValidationTester()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER) && StringLen(InpValidationJobId) > 0;
+}
 
 bool             g_eaEnabled;
 ENUM_TIMEFRAMES  g_htf;
@@ -965,6 +975,93 @@ void AuditWrite(string eventName, string id, int dir, double entry, double sl, d
    FileClose(h);
 }
 
+string ErlTesterAudit_FileStamp()
+{
+   MqlDateTime d; TimeToStruct(TimeGMT(), d);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d", d.year, d.mon, d.day, d.hour, d.min, d.sec);
+}
+
+string ErlTesterAudit_DealEntryLabel(long entryType)
+{
+   if(entryType == DEAL_ENTRY_IN) return "IN";
+   if(entryType == DEAL_ENTRY_OUT) return "OUT";
+   if(entryType == DEAL_ENTRY_INOUT) return "INOUT";
+   if(entryType == DEAL_ENTRY_OUT_BY) return "OUT_BY";
+   return IntegerToString((int)entryType);
+}
+
+string ErlTesterAudit_DealTypeLabel(long dealType)
+{
+   if(dealType == DEAL_TYPE_BUY) return "BUY";
+   if(dealType == DEAL_TYPE_SELL) return "SELL";
+   if(dealType == DEAL_TYPE_BALANCE) return "BALANCE";
+   if(dealType == DEAL_TYPE_CREDIT) return "CREDIT";
+   return IntegerToString((int)dealType);
+}
+
+string ErlTesterAudit_DealReasonLabel(long reason)
+{
+   if(reason == DEAL_REASON_SL) return "SL";
+   if(reason == DEAL_REASON_TP) return "TP";
+   if(reason == DEAL_REASON_SO) return "STOP_OUT";
+   if(reason == DEAL_REASON_EXPERT) return "EXPERT";
+   if(reason == DEAL_REASON_CLIENT) return "CLIENT";
+   if(reason == DEAL_REASON_MOBILE) return "MOBILE";
+   if(reason == DEAL_REASON_WEB) return "WEB";
+   return IntegerToString((int)reason);
+}
+
+void ErlTesterAudit_Init()
+{
+   g_testerTradeAuditRows = 0;
+   g_testerTradeAuditFile = "ERL_IRL_TesterTradeAudit_" + ErlTesterAudit_FileStamp() + ".csv";
+}
+
+void ErlTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(!InpTesterTradeAuditCsv || !MQLInfoInteger(MQL_TESTER)) return;
+   if(InpTesterTradeAuditMaxRows > 0 && g_testerTradeAuditRows >= InpTesterTradeAuditMaxRows) return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   long magic = (long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+   if(!IsOwnMagic(magic)) return;
+
+   bool exists = FileIsExist(g_testerTradeAuditFile);
+   int h = FileOpen(g_testerTradeAuditFile, FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE) return;
+   if(!exists || FileSize(h) == 0)
+      FileWrite(h,
+         "job_id","engine","ea","build","symbol","timeframe","server_time","gmt_time",
+         "deal","position_id","order","entry_type","deal_type","reason","magic",
+         "volume","price","request_price","request_sl","request_tp","profit","swap","commission","fee",
+         "retcode","comment");
+   FileSeek(h, 0, SEEK_END);
+   double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+   double swap = HistoryDealGetDouble(trans.deal, DEAL_SWAP);
+   double commission = HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   double fee = HistoryDealGetDouble(trans.deal, DEAL_FEE);
+   FileWrite(h,
+      InpValidationJobId, "mt5_strategy_tester_trade", "ERL_IRL_SwingModel_EA", ERL_BUILD, _Symbol, TfLabel(_Period),
+      TimeToString((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS),
+      IntegerToString((long)trans.deal),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID)),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_ORDER)),
+      ErlTesterAudit_DealEntryLabel(HistoryDealGetInteger(trans.deal, DEAL_ENTRY)),
+      ErlTesterAudit_DealTypeLabel(HistoryDealGetInteger(trans.deal, DEAL_TYPE)),
+      ErlTesterAudit_DealReasonLabel(HistoryDealGetInteger(trans.deal, DEAL_REASON)),
+      IntegerToString(magic),
+      DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 4),
+      DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits),
+      DoubleToString(request.price, _Digits), DoubleToString(request.sl, _Digits), DoubleToString(request.tp, _Digits),
+      DoubleToString(profit, 2), DoubleToString(swap, 2), DoubleToString(commission, 2), DoubleToString(fee, 2),
+      IntegerToString((int)result.retcode),
+      HistoryDealGetString(trans.deal, DEAL_COMMENT));
+   FileClose(h);
+   g_testerTradeAuditRows++;
+}
+
 void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string label, string &detail)
 {
    MqlRates rates[];
@@ -1229,6 +1326,7 @@ void DrawHistoricalSignals()
 {
    DeleteByPrefix(PFX + "HIST_");
    DeleteByPrefix(PFX + "FVG_");
+   if(IsValidationTester()) return;
    if(!InpDrawHistoricalSignals) return;
    datetime cutoff = TimeCurrent() - InpHistoricalDays * 86400;
    ErlSignal signals[];
@@ -1846,6 +1944,7 @@ bool Clicked(const string sparam, string id)
 //=====================================================================
 int OnInit()
 {
+   ErlTesterAudit_Init();
    PFX = ERL_PREFIX + IntegerToString((int)ChartID()) + "_";
    g_eaEnabled = InpEaEnabled;
    g_htf = InpDefaultHtf;
@@ -1866,10 +1965,13 @@ int OnInit()
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   RecalculateHistoricalStats();
-   DrawDashboard();
-   DrawHistoricalSignals();
-   DrawLiveLevelsForPosition();
+   if(!IsValidationTester())
+   {
+      RecalculateHistoricalStats();
+      DrawDashboard();
+      DrawHistoricalSignals();
+      DrawLiveLevelsForPosition();
+   }
    EventSetTimer(1);
    AuditWrite("ea_init", "init", 0, 0, 0, 0, 0,
       "build=" + (string)ERL_BUILD + " htf=" + TfLabel(g_htf) + " entry_tf=" + TfLabel(g_entryTf)
@@ -1884,12 +1986,17 @@ void OnDeinit(const int reason)
    DeleteByPrefix(PFX);
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+   ErlTesterAudit_WriteDeal(trans, request, result);
+}
+
 void OnTick()
 {
    g_lastSpreadPts = CurrentSpreadPoints();
    TryOpenLatestSignal();
    ManagePositions();
-   DrawLiveLevelsForPosition();
+   if(!IsValidationTester())DrawLiveLevelsForPosition();
 }
 
 void OnTimer()
@@ -1900,10 +2007,13 @@ void OnTimer()
    ManagePositions();
    ProbePositions();
    ScanClosedHistory();
-   BacktestStep();
-   UpdateDashboard();
-   DrawLiveLevelsForPosition();
-   ChartRedraw(0);
+   if(!IsValidationTester())
+   {
+      BacktestStep();
+      UpdateDashboard();
+      DrawLiveLevelsForPosition();
+      ChartRedraw(0);
+   }
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)

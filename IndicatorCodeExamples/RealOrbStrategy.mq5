@@ -7,7 +7,7 @@
 #property strict
 #property version "3.10"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-16.v3.2-bt-tf15-timing-fix"
+#define ORB15_BUILD "2026-06-16.v3.3-tester-trade-audit"
 
 //=== CORE INPUTS ========================================================
 input bool            InpEaEnabled          = true;
@@ -87,6 +87,9 @@ input bool InpDrawHistoricalSignals  = true;
 input int  InpHistoricalDays         = 14;
 input bool InpAuditCsv               = true;
 input bool InpLogOnInit              = true;
+input bool InpTesterTradeAuditCsv    = true;
+input int  InpTesterTradeAuditMaxRows= 50000;
+input string InpValidationJobId      = "";
 input BT_FILL_MODE InpBacktestFillMode = BT_FILL_SIGNAL_CLOSE;
 input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
 input double InpBacktestSpreadPts       = 0.0;
@@ -96,6 +99,13 @@ input double InpBacktestCommissionPerLot= 0.0;
 //--- Objects ------------------------------------------------------------
 CTrade trade;
 string PREFIX = "ORB15v3_";
+string g_testerTradeAuditFile = "";
+int    g_testerTradeAuditRows = 0;
+
+bool IsValidationTester()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER) && StringLen(InpValidationJobId) > 0;
+}
 
 //--- Core state ---------------------------------------------------------
 int      g_nyDayKey = 0;
@@ -425,6 +435,93 @@ void Audit(string ev,string dir,double lot,double entry,double sl,double tp,stri
       AuditPx(g_orbHigh), AuditPx(g_orbLow), AuditPx(bid), AuditPx(ask),
       IntegerToString(CurrentSpreadPoints()), detail);
    FileClose(h);
+}
+
+string OrbTesterAudit_FileStamp()
+{
+   MqlDateTime d; TimeToStruct(TimeGMT(), d);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d", d.year, d.mon, d.day, d.hour, d.min, d.sec);
+}
+
+string OrbTesterAudit_DealEntryLabel(long entryType)
+{
+   if(entryType == DEAL_ENTRY_IN) return "IN";
+   if(entryType == DEAL_ENTRY_OUT) return "OUT";
+   if(entryType == DEAL_ENTRY_INOUT) return "INOUT";
+   if(entryType == DEAL_ENTRY_OUT_BY) return "OUT_BY";
+   return IntegerToString((int)entryType);
+}
+
+string OrbTesterAudit_DealTypeLabel(long dealType)
+{
+   if(dealType == DEAL_TYPE_BUY) return "BUY";
+   if(dealType == DEAL_TYPE_SELL) return "SELL";
+   if(dealType == DEAL_TYPE_BALANCE) return "BALANCE";
+   if(dealType == DEAL_TYPE_CREDIT) return "CREDIT";
+   return IntegerToString((int)dealType);
+}
+
+string OrbTesterAudit_DealReasonLabel(long reason)
+{
+   if(reason == DEAL_REASON_SL) return "SL";
+   if(reason == DEAL_REASON_TP) return "TP";
+   if(reason == DEAL_REASON_SO) return "STOP_OUT";
+   if(reason == DEAL_REASON_EXPERT) return "EXPERT";
+   if(reason == DEAL_REASON_CLIENT) return "CLIENT";
+   if(reason == DEAL_REASON_MOBILE) return "MOBILE";
+   if(reason == DEAL_REASON_WEB) return "WEB";
+   return IntegerToString((int)reason);
+}
+
+void OrbTesterAudit_Init()
+{
+   g_testerTradeAuditRows = 0;
+   g_testerTradeAuditFile = "ORB15_TesterTradeAudit_" + OrbTesterAudit_FileStamp() + ".csv";
+}
+
+void OrbTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(!InpTesterTradeAuditCsv || !MQLInfoInteger(MQL_TESTER)) return;
+   if(InpTesterTradeAuditMaxRows > 0 && g_testerTradeAuditRows >= InpTesterTradeAuditMaxRows) return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   long magic = (long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+   if(!MagicOwned(magic)) return;
+
+   bool exists = FileIsExist(g_testerTradeAuditFile);
+   int h = FileOpen(g_testerTradeAuditFile, FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE) return;
+   if(!exists || FileSize(h) == 0)
+      FileWrite(h,
+         "job_id","engine","ea","build","symbol","timeframe","server_time","gmt_time",
+         "deal","position_id","order","entry_type","deal_type","reason","magic",
+         "volume","price","request_price","request_sl","request_tp","profit","swap","commission","fee",
+         "retcode","comment");
+   FileSeek(h, 0, SEEK_END);
+   double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+   double swap = HistoryDealGetDouble(trans.deal, DEAL_SWAP);
+   double commission = HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   double fee = HistoryDealGetDouble(trans.deal, DEAL_FEE);
+   FileWrite(h,
+      InpValidationJobId, "mt5_strategy_tester_trade", "OrbUltimateEA", ORB15_BUILD, _Symbol, EnumToString(_Period),
+      TimeToString((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS),
+      IntegerToString((long)trans.deal),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID)),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_ORDER)),
+      OrbTesterAudit_DealEntryLabel(HistoryDealGetInteger(trans.deal, DEAL_ENTRY)),
+      OrbTesterAudit_DealTypeLabel(HistoryDealGetInteger(trans.deal, DEAL_TYPE)),
+      OrbTesterAudit_DealReasonLabel(HistoryDealGetInteger(trans.deal, DEAL_REASON)),
+      IntegerToString(magic),
+      DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 4),
+      AuditPx(HistoryDealGetDouble(trans.deal, DEAL_PRICE)),
+      AuditPx(request.price), AuditPx(request.sl), AuditPx(request.tp),
+      DoubleToString(profit, 2), DoubleToString(swap, 2), DoubleToString(commission, 2), DoubleToString(fee, 2),
+      IntegerToString((int)result.retcode),
+      HistoryDealGetString(trans.deal, DEAL_COMMENT));
+   FileClose(h);
+   g_testerTradeAuditRows++;
 }
 
 //=========================================================================
@@ -854,6 +951,7 @@ bool HistCheckDay(int dow,string &reason)
 //=========================================================================
 void DrawHistoricalSignals()
 {
+   if(IsValidationTester()){DeleteHist();g_histStatLine="validation";return;}
    if(!InpDrawHistoricalSignals){DeleteHist();g_histStatLine="off";return;}
    datetime now=TimeCurrent();
    if(!g_histNeedsRedraw&&g_lastHistBuild>0&&now-g_lastHistBuild<300)return;
@@ -1664,6 +1762,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   OrbTesterAudit_Init();
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
    {
       ENUM_ACCOUNT_MARGIN_MODE mm=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
@@ -1679,7 +1778,8 @@ int OnInit()
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;
    g_btSpreadPts=InpBacktestSpreadPts;g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    g_lastHistBuild=0;g_histNeedsRedraw=true;
-   ResetForNewNyDay();EventSetTimer(5);DrawDashboard();DrawHistoricalSignals();
+   ResetForNewNyDay();EventSetTimer(5);
+   if(!IsValidationTester()){DrawDashboard();DrawHistoricalSignals();}
    if(InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars");
@@ -1692,22 +1792,27 @@ void OnDeinit(const int reason)
    if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();}
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+   OrbTesterAudit_WriteDeal(trans, request, result);
+}
+
 void OnTimer()
 {
    EnforceRiskBreach();
    bool dc=ResetForNewNyDay();BuildOrb();
-   if(dc)DrawHistoricalSignals();
+   if(dc&&!IsValidationTester())DrawHistoricalSignals();
    TryOpenSignal();ManagePositions();
    OrbAudit_PositionProbe();
    OrbAudit_HistoryScan();
-   OBT_Tick();
-   UpdateDashboard();
+   if(!IsValidationTester()){OBT_Tick();UpdateDashboard();}
 }
 
 void OnTick()
 {
    EnforceRiskBreach();
-   ResetForNewNyDay();TryOpenSignal();ManagePositions();UpdateDashboard();
+   ResetForNewNyDay();TryOpenSignal();ManagePositions();
+   if(!IsValidationTester())UpdateDashboard();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)

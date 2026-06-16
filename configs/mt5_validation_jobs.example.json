@@ -1,0 +1,102 @@
+{
+  "jobs": [
+    {
+      "job_id": "nas_v3_ustec_m15_20w_1to2r",
+      "ea": "NasUltimateEa",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/NAS/V3/FTMO/RiskLotOnly/NasUltimateEA_V3_FTMO_RiskLotOnly_10k_1to2R.set",
+      "symbol": "USTECm",
+      "timeframe": "M15",
+      "from_date": "2026.01.27",
+      "to_date": "2026.06.16",
+      "terminal_shortcut": "C:/Users/Cem/Desktop/DEMOMT5.lnk",
+      "terminal_data_dir": "C:/MT5/DEMO",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 3600,
+      "preset_overrides": {
+        "InpBacktestFillMode": "0",
+        "InpBacktestSameBarPolicy": "1",
+        "InpBacktestSpreadPts": "0.0",
+        "InpBacktestSlippagePts": "0.0",
+        "InpBacktestCommissionPerLot": "0.0"
+      },
+      "internal_backtest_csv": "../IndicatorCodeExamples/NasV3Lab_BruteBacktest_LATEST.csv",
+      "internal_process_csv": "../IndicatorCodeExamples/NasV3Lab_BacktestProcess_LATEST.csv",
+      "tester_trade_audit_csv": "../IndicatorCodeExamples/NasV3Lab_TesterTradeAudit_LATEST.csv",
+      "combo_filter": {
+        "rr_mode": "1:2R"
+      }
+    },
+    {
+      "job_id": "orb_ustec_m15_20w",
+      "ea": "OrbUltimateEA",
+      "ea_kind": "orb",
+      "preset": "../IndicatorCodeExamples/EaPresets/ORB15/FTMO/RiskLotOnly/RealOrbStrategy_FTMO_RiskLotOnly_10k_USTEC_GMT0.set",
+      "symbol": "USTECm",
+      "timeframe": "M1",
+      "from_date": "2026.01.27",
+      "to_date": "2026.06.16",
+      "terminal_shortcut": "C:/Users/Cem/Desktop/DEMOMT5.lnk",
+      "terminal_data_dir": "C:/MT5/DEMO",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 3600,
+      "preset_overrides": {
+        "InpSignalTimeframe": "PERIOD_M15",
+        "InpBacktestFillMode": "0",
+        "InpBacktestSameBarPolicy": "1",
+        "InpBacktestSpreadPts": "0.0",
+        "InpBacktestSlippagePts": "0.0",
+        "InpBacktestCommissionPerLot": "0.0"
+      },
+      "internal_backtest_csv": "../IndicatorCodeExamples/ORB15_BruteBacktest_LATEST.csv",
+      "internal_process_csv": "../IndicatorCodeExamples/ORB15_BacktestProcess_LATEST.csv",
+      "tester_trade_audit_csv": "../IndicatorCodeExamples/ORB15_TesterTradeAudit_LATEST.csv",
+      "combo_filter": {
+        "signal_tf": "M15"
+      }
+    },
+    {
+      "job_id": "erl_irl_ustec_m15_20w",
+      "ea": "ERL_IRL_SwingModel_EA",
+      "ea_kind": "erl",
+      "preset": "../IndicatorCodeExamples/EaPresets/ERL_IRL/FTMO/RiskLotOnly/ERL_IRL_FTMO_RiskLotOnly_10k.set",
+      "symbol": "USTECm",
+      "timeframe": "M15",
+      "from_date": "2026.01.27",
+      "to_date": "2026.06.16",
+      "terminal_shortcut": "C:/Users/Cem/Desktop/DEMOMT5.lnk",
+      "terminal_data_dir": "C:/MT5/DEMO",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 3600,
+      "preset_overrides": {
+        "InpBacktestWeeks": "20",
+        "InpBacktestFillMode": "0",
+        "InpBacktestSameBarPolicy": "1",
+        "InpBacktestSpreadPts": "0.0",
+        "InpBacktestSlippagePts": "0.0",
+        "InpBacktestCommissionPerLot": "0.0"
+      },
+      "internal_backtest_csv": "../IndicatorCodeExamples/ERL_IRL_BruteBacktest_LATEST.csv",
+      "internal_process_csv": "../IndicatorCodeExamples/ERL_IRL_BacktestProcess_LATEST.csv",
+      "tester_trade_audit_csv": "../IndicatorCodeExamples/ERL_IRL_TesterTradeAudit_LATEST.csv",
+      "combo_filter": {
+        "entry_tf": "M15"
+      }
+    }
+  ]
+}

@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
 
-#define NAS_V2_BUILD "2026-06-16.v2.4-bt-effective-window"
+#define NAS_V2_BUILD "2026-06-16.v2.6-tester-trade-audit"
 
 //=====================================================================
 //  ENUMS
@@ -87,6 +87,9 @@ input bool   InpAuditPositionProbe        = true;
 input int    InpAuditPositionProbeSec     = 30;
 input bool   InpAuditProbeOnChangeOnly    = true;
 input int    InpAuditHistoryScanSec       = 2;
+input bool   InpTesterTradeAuditCsv       = true;
+input int    InpTesterTradeAuditMaxRows   = 50000;
+input string InpValidationJobId           = "";
 
 //=== INPUTS â€” DISPLAY ==================================================
 input bool InpShowDashboard           = true;
@@ -112,6 +115,13 @@ int             g_sensitivity = 4;
 bool            g_needsRedraw = true;
 datetime        g_lastBuild   = 0;
 bool            g_eaEnabled   = true;
+string          g_testerTradeAuditFile = "";
+int             g_testerTradeAuditRows = 0;
+
+bool IsValidationTester()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER) && StringLen(InpValidationJobId) > 0;
+}
 
 // Half-close + SL->BE state
 bool   g_hcTp1 = false;   // HC+BE at TP1 (for 1:2R, 1:3R)
@@ -698,8 +708,9 @@ void ProcessSignalBar()
    if(!IsWindowOpen())
    {
       if(InpCloseOnReverse&&ManagedDir()!=0&&ManagedDir()!=dir)CloseManaged();
-      NasAudit_TradeWrite("signal_skip_window",ModeLabel(g_mode),"",dirStr,0,0,0,0,"window_closed",0,"");
-      g_lastStatus="BLOCKED";g_lastBlockReason="window_closed";return;
+      string windowReason = IsNoTradeWindowGmt() ? "no_trade_window" : "allowed_trading_window_closed";
+      NasAudit_TradeWrite("signal_skip_window",ModeLabel(g_mode),"",dirStr,0,0,0,0,windowReason,0,WindowText());
+      g_lastStatus="BLOCKED";g_lastBlockReason=windowReason;return;
    }
    if(InpBlockSameDir&&dir==g_lastExecDir)
    {
@@ -962,6 +973,7 @@ void HideBtn(const string nm){string o=PREFIX+nm;if(ObjectFind(0,o)>=0){ObjectSe
 
 void DrawHistoricalSignals()
 {
+   if(IsValidationTester()) return;
    datetime now=TimeCurrent();
    if(!g_needsRedraw&&g_lastBuild>0&&now-g_lastBuild<300)return;
    g_lastBuild=now;g_needsRedraw=false;DelHist();
@@ -1107,6 +1119,93 @@ void NasAudit_TradeWrite(string eventName,string source,string eventId,string di
       NasAudit_Px(bid), NasAudit_Px(ask), IntegerToString(sp),
       reason, DoubleToString(pnl,2), extra);
    FileClose(h);
+}
+
+string NasTesterAudit_FileStamp()
+{
+   MqlDateTime d; TimeToStruct(TimeGMT(), d);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d", d.year, d.mon, d.day, d.hour, d.min, d.sec);
+}
+
+string NasTesterAudit_DealEntryLabel(long entryType)
+{
+   if(entryType == DEAL_ENTRY_IN) return "IN";
+   if(entryType == DEAL_ENTRY_OUT) return "OUT";
+   if(entryType == DEAL_ENTRY_INOUT) return "INOUT";
+   if(entryType == DEAL_ENTRY_OUT_BY) return "OUT_BY";
+   return IntegerToString((int)entryType);
+}
+
+string NasTesterAudit_DealTypeLabel(long dealType)
+{
+   if(dealType == DEAL_TYPE_BUY) return "BUY";
+   if(dealType == DEAL_TYPE_SELL) return "SELL";
+   if(dealType == DEAL_TYPE_BALANCE) return "BALANCE";
+   if(dealType == DEAL_TYPE_CREDIT) return "CREDIT";
+   return IntegerToString((int)dealType);
+}
+
+string NasTesterAudit_DealReasonLabel(long reason)
+{
+   if(reason == DEAL_REASON_SL) return "SL";
+   if(reason == DEAL_REASON_TP) return "TP";
+   if(reason == DEAL_REASON_SO) return "STOP_OUT";
+   if(reason == DEAL_REASON_EXPERT) return "EXPERT";
+   if(reason == DEAL_REASON_CLIENT) return "CLIENT";
+   if(reason == DEAL_REASON_MOBILE) return "MOBILE";
+   if(reason == DEAL_REASON_WEB) return "WEB";
+   return IntegerToString((int)reason);
+}
+
+void NasTesterAudit_Init()
+{
+   g_testerTradeAuditRows = 0;
+   g_testerTradeAuditFile = "NasV3Lab_TesterTradeAudit_" + NasTesterAudit_FileStamp() + ".csv";
+}
+
+void NasTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(!InpTesterTradeAuditCsv || !MQLInfoInteger(MQL_TESTER)) return;
+   if(InpTesterTradeAuditMaxRows > 0 && g_testerTradeAuditRows >= InpTesterTradeAuditMaxRows) return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   long magic = (long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+   if(!MagicOwned(magic)) return;
+
+   bool exists = FileIsExist(g_testerTradeAuditFile);
+   int h = FileOpen(g_testerTradeAuditFile, FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE) return;
+   if(!exists || FileSize(h) == 0)
+      FileWrite(h,
+         "job_id","engine","ea","build","symbol","timeframe","server_time","gmt_time",
+         "deal","position_id","order","entry_type","deal_type","reason","magic",
+         "volume","price","request_price","request_sl","request_tp","profit","swap","commission","fee",
+         "retcode","comment");
+   FileSeek(h, 0, SEEK_END);
+   double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+   double swap = HistoryDealGetDouble(trans.deal, DEAL_SWAP);
+   double commission = HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   double fee = HistoryDealGetDouble(trans.deal, DEAL_FEE);
+   FileWrite(h,
+      InpValidationJobId, "mt5_strategy_tester_trade", "NasUltimateEA", NAS_V2_BUILD, _Symbol, EnumToString(_Period),
+      TimeToString((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS),
+      IntegerToString((long)trans.deal),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID)),
+      IntegerToString((long)HistoryDealGetInteger(trans.deal, DEAL_ORDER)),
+      NasTesterAudit_DealEntryLabel(HistoryDealGetInteger(trans.deal, DEAL_ENTRY)),
+      NasTesterAudit_DealTypeLabel(HistoryDealGetInteger(trans.deal, DEAL_TYPE)),
+      NasTesterAudit_DealReasonLabel(HistoryDealGetInteger(trans.deal, DEAL_REASON)),
+      IntegerToString(magic),
+      DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 4),
+      NasAudit_Px(HistoryDealGetDouble(trans.deal, DEAL_PRICE)),
+      NasAudit_Px(request.price), NasAudit_Px(request.sl), NasAudit_Px(request.tp),
+      DoubleToString(profit, 2), DoubleToString(swap, 2), DoubleToString(commission, 2), DoubleToString(fee, 2),
+      IntegerToString((int)result.retcode),
+      HistoryDealGetString(trans.deal, DEAL_COMMENT));
+   FileClose(h);
+   g_testerTradeAuditRows++;
 }
 
 //---------------------------------------------------------------------
@@ -1891,6 +1990,7 @@ void UpdateDashboard()
 //=====================================================================
 int OnInit()
 {
+   NasTesterAudit_Init();
    g_mode=InpSignalMode;g_rr=InpRRMode;g_sensitivity=MathMax(1,MathMin(10,InpSensitivity));
    g_eaEnabled=InpEaEnabled;g_needsRedraw=true;g_lastBuild=0;
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;
@@ -1901,20 +2001,33 @@ int OnInit()
    if(g_rr==NAS_RR_2){g_hcTp2=false;}
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
    HydrateDirection();
-   DrawDashboard();DrawHistoricalSignals();UpdateDashboard();
-   EventSetMillisecondTimer(40);
+   if(!IsValidationTester())
+   {
+      DrawDashboard();DrawHistoricalSignals();UpdateDashboard();
+      EventSetMillisecondTimer(40);
+   }
    NasAudit_TradeWrite("ea_init","NAS_V3_LAB","","",0,0,0,0,"init",0,
       "mode="+ModeLabel(g_mode)+" rr="+RRLabel(g_rr)+" s="+IntegerToString(g_sensitivity)
-      +" magic="+IntegerToString(RuntimeMagic())+" ftmo="+(InpAccountRiskEnabled?"ON":"OFF"));
+      +" magic="+IntegerToString(RuntimeMagic())+" ftmo="+(InpAccountRiskEnabled?"ON":"OFF")
+      +" use_trading_window="+(InpUseTradingWindow?"true":"false")
+      +" trade_start='"+InpTradeStartTime+"' trade_end='"+InpTradeEndTime+"' no_trade='"+InpNoTradeWindowsGmt+"' window='"+WindowText()+"'");
    Print("NAS_V3_LAB v2.2 prod init ",_Symbol," tf=",EnumToString(_Period)," mode=",ModeLabel(g_mode)," rr=",RRLabel(g_rr),
-         " hc1=",g_hcTp1," hc2=",g_hcTp2," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled);
+         " hc1=",g_hcTp1," hc2=",g_hcTp2," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled,
+         " useTradingWindow=",InpUseTradingWindow," tradeWindow=",InpTradeStartTime,"-",InpTradeEndTime,
+         " noTrade=",InpNoTradeWindowsGmt);
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason){EventKillTimer();DelHist();DelDash();}
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+   NasTesterAudit_WriteDeal(trans, request, result);
+}
+
 void OnTimer()
 {
+   if(IsValidationTester()) return;
    EnforceRiskBreach();
    EnforceTpTouch();
    ManageHcBe();
@@ -1930,16 +2043,19 @@ void OnTick()
    EnforceRiskBreach();
    EnforceTpTouch();
    ManageHcBe();
-   UpdateDashboard();
+   if(!IsValidationTester()) UpdateDashboard();
    datetime cur=iTime(_Symbol,_Period,0);
    if(cur!=0&&cur!=g_lastBarTime)
    {
       g_lastBarTime=cur;
       ProcessSignalBar();
-      g_needsRedraw=true;
-      DrawHistoricalSignals();
-      UpdateDashboard();
-      ChartRedraw(0);
+      if(!IsValidationTester())
+      {
+         g_needsRedraw=true;
+         DrawHistoricalSignals();
+         UpdateDashboard();
+         ChartRedraw(0);
+      }
    }
 }
 
