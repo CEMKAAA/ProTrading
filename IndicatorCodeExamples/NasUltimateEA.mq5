@@ -37,6 +37,8 @@ input NAS_SIGNAL_MODE InpSignalMode        = NAS_MODE_ST_SMA13;
 input NAS_RR_MODE     InpRRMode            = NAS_RR_2;
 input double          InpPineRiskMult      = 1.125;
 input bool            InpBlockSameDir      = true;
+input bool            InpDefaultHcTp1      = false;
+input bool            InpDefaultHcTp2      = false;
 
 //=== INPUTS â€” EXECUTION ================================================
 input bool   InpEaEnabled             = true;
@@ -77,19 +79,23 @@ input double InpSafetyBufferPct       = 95.00;
 input double InpAdvancedLotMax        = 0.0;
 input bool   InpBlockUnprotected      = true;
 input bool   InpFailClosed            = true;
-input bool   InpAuditEnabled          = true;
+input bool   InpAuditEnabled          = false;
 input int    InpAuditIntervalSec      = 60;
 input double InpFixedLot              = 0.03;
 
 //=== INPUTS â€” AUDIT ENGINE =============================================
-input bool   InpAuditTradeCsv             = true;
-input bool   InpAuditPositionProbe        = true;
+input bool   InpAuditTradeCsv             = false;
+input bool   InpAuditPositionProbe        = false;
 input int    InpAuditPositionProbeSec     = 30;
 input bool   InpAuditProbeOnChangeOnly    = true;
 input int    InpAuditHistoryScanSec       = 2;
-input bool   InpTesterTradeAuditCsv       = true;
+input bool   InpTesterTradeAuditCsv       = false;
 input int    InpTesterTradeAuditMaxRows   = 50000;
 input string InpValidationJobId           = "";
+input bool   InpValidationInternalTradeExport = false;
+input bool   InpValidationInternalExportOnly = false;
+input string InpValidationExportFrom      = "";
+input string InpValidationExportTo        = "";
 
 //=== INPUTS â€” DISPLAY ==================================================
 input bool InpShowDashboard           = true;
@@ -117,6 +123,8 @@ datetime        g_lastBuild   = 0;
 bool            g_eaEnabled   = true;
 string          g_testerTradeAuditFile = "";
 int             g_testerTradeAuditRows = 0;
+bool            g_validationInternalExportDone = false;
+bool            g_auditRuntime = false;
 
 bool IsValidationTester()
 {
@@ -234,6 +242,20 @@ string RRLabel(NAS_RR_MODE r){switch(r){case NAS_RR_1:return"1:1R";case NAS_RR_2
 double RRMult(NAS_RR_MODE r){switch(r){case NAS_RR_1:return 1.0;case NAS_RR_2:return 2.0;case NAS_RR_3:return 3.0;}return 2.0;}
 string BtFillLabel(BT_FILL_MODE m){switch(m){case BT_FILL_SIGNAL_CLOSE:return"SIGNAL";case BT_FILL_NEXT_BAR_OPEN:return"NEXT";case BT_FILL_CONSERVATIVE:return"CONS";}return"SIGNAL";}
 string BtSameBarLabel(BT_SAME_BAR_POLICY p){switch(p){case BT_SAMEBAR_CONSERVATIVE:return"CONS";case BT_SAMEBAR_NEAREST_OPEN:return"NEAR";case BT_SAMEBAR_TP_FIRST:return"TP1ST";case BT_SAMEBAR_SL_FIRST:return"SL1ST";}return"CONS";}
+string CsvSafe(string s){StringReplace(s,"\"","'");StringReplace(s,"\r"," ");StringReplace(s,"\n"," ");return s;}
+string FileSafe(string s)
+{
+   string out="";
+   for(int i=0;i<StringLen(s);i++)
+   {
+      ushort ch=StringGetCharacter(s,i);
+      bool ok=(ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='_'||ch=='-';
+      out+=ok?ShortToString(ch):"_";
+   }
+   if(out=="") out="manual";
+   if(StringLen(out)>72) out=StringSubstr(out,0,72);
+   return out;
+}
 double BtCostR(double risk)
 {
    if(risk<=0)return 0;
@@ -562,6 +584,7 @@ void RiskCacheInvalidate(){int rh=MathMax(0,MathMin(23,InpDayResetHourGmt));Glob
 void EnforceRiskBreach()
 {
    if(!InpAccountRiskEnabled||!InpLiquidateOnBreach)return;
+   if(InpDailyLossLimitPct<=0&&InpMaxDrawdownPct<=0)return;
    uint now=GetTickCount();if(now-g_lastRiskGuardMs<100)return;g_lastRiskGuardMs=now;
    double cap,dp,tp;RiskMetrics(cap,dp,tp);
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
@@ -954,6 +977,95 @@ SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d
    return r;
 }
 
+void ValidationExportInternalTrades()
+{
+   if(!InpValidationInternalTradeExport) return;
+   if(!IsValidationTester()) return;
+   if(g_validationInternalExportDone) return;
+   g_validationInternalExportDone=true;
+
+   datetime from=StringToTime(InpValidationExportFrom);
+   datetime to=StringToTime(InpValidationExportTo);
+   if(from<=0 || to<=0 || to<=from)
+   {
+      Print("NAS validation export skipped: invalid range from='",InpValidationExportFrom,"' to='",InpValidationExportTo,"'");
+      return;
+   }
+
+   int sec=PeriodSeconds(_Period); if(sec<=0) sec=60;
+   datetime warmFrom=from-(datetime)(sec*MathMax(600,InpAtrLen*20+200));
+   MqlRates rates[];
+   int copied=CopyRates(_Symbol,_Period,warmFrom,to,rates);
+   if(copied<200)
+   {
+      Print("NAS validation export skipped: not enough rates copied=",copied," range=",TimeToString(from,TIME_DATE|TIME_SECONDS),"-",TimeToString(to,TIME_DATE|TIME_SECONDS));
+      return;
+   }
+   if(rates[0].time>rates[copied-1].time) ArrayReverse(rates,0,WHOLE_ARRAY);
+
+   NasSettings cfg;cfg.sensitivity=g_sensitivity;cfg.rsiLength=InpRsiLength;cfg.atrRisk=InpAtrRisk;cfg.atrLen=InpAtrLen;
+   NasPoint p[];NAS_Calculate(rates,copied,cfg,p);
+   ApplySignalMode(rates,p,copied,g_mode);
+
+   string job=FileSafe(InpValidationJobId);
+   string fileName="NasV3Lab_InternalTradeEvents_"+job+"_"+NasAudit_DateStr(TimeGMT())+".csv";
+   int h=FileOpen(fileName,FILE_CSV|FILE_WRITE|FILE_SHARE_READ,',');
+   if(h==INVALID_HANDLE)
+   {
+      Print("NAS validation export failed: file open ",fileName);
+      return;
+   }
+
+   FileWrite(h,
+      "job_id","build","symbol","chart_tf","signal_mode","sensitivity","rr_mode","hc_tp1","hc_tp2",
+      "export_from","export_to","loaded_from","loaded_to","rates_copied",
+      "fill_mode","same_bar_policy","spread_pts","slippage_pts","commission_per_lot",
+      "signal_time","signal_bar_index","direction","signal_entry","signal_sl","risk",
+      "tp1","tp2","final_tp","outcome","net_r","is_win","is_loss");
+
+   int rows=0;
+   double rrm=RRMult(g_rr);
+   for(int i=1;i<copied-1;i++)
+   {
+      if(rates[i].time<from || rates[i].time>to) continue;
+      if(!p[i].buy && !p[i].sell) continue;
+      if(!NAS_IsValid(p[i].nasEntry) || !NAS_IsValid(p[i].nasSl)) continue;
+      int d=p[i].buy?1:-1;
+      double entry=p[i].nasEntry;
+      double sl=p[i].nasSl;
+      double risk=MathAbs(entry-sl);
+      if(risk<=0) continue;
+      SimResult sim=SimulateTrade(rates,p,i,d,entry,sl,copied-1,risk,g_hcTp1,g_hcTp2,g_rr);
+      double execEntry=entry;
+      if(g_btFillMode==BT_FILL_NEXT_BAR_OPEN && i+1<copied) execEntry=rates[i+1].open;
+      else if(g_btFillMode==BT_FILL_CONSERVATIVE && i+1<copied)
+      {
+         double no=rates[i+1].open;
+         execEntry=d>0?MathMax(entry,no):MathMin(entry,no);
+      }
+      double execRisk=MathAbs(execEntry-sl);
+      if(execRisk<=0) execRisk=risk;
+      double tp1=d>0?execEntry+execRisk:execEntry-execRisk;
+      double tp2=d>0?execEntry+execRisk*2.0:execEntry-execRisk*2.0;
+      double finalTp=d>0?execEntry+execRisk*rrm:execEntry-execRisk*rrm;
+
+      FileWrite(h,
+         InpValidationJobId,NAS_V2_BUILD,_Symbol,EnumToString(_Period),ModeLabel(g_mode),IntegerToString(g_sensitivity),
+         RRLabel(g_rr),(g_hcTp1?"1":"0"),(g_hcTp2?"1":"0"),
+         TimeToString(from,TIME_DATE|TIME_SECONDS),TimeToString(to,TIME_DATE|TIME_SECONDS),
+         TimeToString(rates[0].time,TIME_DATE|TIME_SECONDS),TimeToString(rates[copied-1].time,TIME_DATE|TIME_SECONDS),
+         IntegerToString(copied),BtFillLabel(g_btFillMode),BtSameBarLabel(g_btSameBarPolicy),
+         DoubleToString(g_btSpreadPts,2),DoubleToString(g_btSlippagePts,2),DoubleToString(g_btCommissionPerLot,2),
+         TimeToString(rates[i].time,TIME_DATE|TIME_SECONDS),IntegerToString(i),d>0?"BUY":"SELL",
+         DoubleToString(entry,_Digits),DoubleToString(sl,_Digits),DoubleToString(execRisk,_Digits),
+         DoubleToString(tp1,_Digits),DoubleToString(tp2,_Digits),DoubleToString(finalTp,_Digits),
+         sim.outcome,DoubleToString(sim.netR,4),(sim.isWin?"1":"0"),(sim.isLoss?"1":"0"));
+      rows++;
+   }
+   FileClose(h);
+   Print("NAS validation internal trade export rows=",rows," file=",fileName);
+}
+
 //=====================================================================
 //  HISTORICAL SIGNAL DRAWING + SIMULATION
 //=====================================================================
@@ -1042,6 +1154,7 @@ string NasAudit_DateStr(datetime t)
 
 void NasBT_ProcessAudit(string ev,string detail)
 {
+   if(!g_auditRuntime) return;
    string fileName="NasV3Lab_BacktestProcess_"+NasAudit_DateStr(TimeGMT())+".csv";
    bool exists=FileIsExist(fileName);
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
@@ -1092,7 +1205,7 @@ void NasAudit_TradeWrite(string eventName,string source,string eventId,string di
                          double lot,double price,double sl,double tp,
                          string reason,double pnl,string extra)
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    string fileName="NasV3Lab_TradeAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE){Print("NAS_AUDIT trade csv open fail err=",GetLastError());return;}
@@ -1215,7 +1328,7 @@ void NasTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRe
 //---------------------------------------------------------------------
 void NasAudit_PositionProbe()
 {
-   if(!InpAuditPositionProbe) return;
+   if(!g_auditRuntime) return;
    datetime now=TimeCurrent();
    int interval=MathMax(5,InpAuditPositionProbeSec);
    if(g_auditLastProbeTime>0 && now-g_auditLastProbeTime<interval) return;
@@ -1313,7 +1426,7 @@ void NasAudit_PositionProbe()
 //---------------------------------------------------------------------
 void NasAudit_HistoryScan()
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    int interval=MathMax(1,InpAuditHistoryScanSec);
    datetime now=TimeCurrent();
    if(g_auditLastHistScan>0 && now-g_auditLastHistScan<interval) return;
@@ -1411,7 +1524,7 @@ bool NasAudit_RiskClaimSnapshot()
 
 void NasAudit_RiskSnapshot()
 {
-   if(!InpAccountRiskEnabled || !InpAuditEnabled) return;
+   if(!InpAccountRiskEnabled || !g_auditRuntime) return;
    if(!NasAudit_RiskClaimSnapshot()) return;
 
    double cap,dp,tpp;RiskMetrics(cap,dp,tpp);
@@ -1857,10 +1970,11 @@ void UpdateDashboard()
    int exY=sec3Y+24;
    MkBtn("BTN_EA",x+pad,exY,100,bh,g_eaEnabled?"EA: ON":"EA: OFF",g_eaEnabled?C'30,150,95':C'178,37,57');
    MkBtn("BTN_CLOSE",x+pad+108,exY,96,bh,"CLOSE ALL",C'178,37,57');
+   MkBtn("BTN_AUDIT",x+pad+212,exY,96,bh,g_auditRuntime?"AUDIT ON":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'55,55,62');
 
    // Spread status (same row, right side)
    string spTxt="Spread: "+g_lastSpreadStatus+" "+DoubleToString(g_lastSpreadPts,0)+"pts";
-   MkLabel("DASH_SP",x+pad+220,exY+3,spTxt,
+   MkLabel("DASH_SP",x+pad+320,exY+3,spTxt,
            g_lastSpreadStatus=="GOOD"?C'80,255,180':(g_lastSpreadStatus=="BLOCKED"?C'255,95,140':C'255,204,82'),8);
 
    // Window + status
@@ -1992,7 +2106,9 @@ int OnInit()
 {
    NasTesterAudit_Init();
    g_mode=InpSignalMode;g_rr=InpRRMode;g_sensitivity=MathMax(1,MathMin(10,InpSensitivity));
+   g_hcTp1=InpDefaultHcTp1;g_hcTp2=InpDefaultHcTp2;
    g_eaEnabled=InpEaEnabled;g_needsRedraw=true;g_lastBuild=0;
+   g_auditRuntime=(InpAuditEnabled || InpAuditTradeCsv || InpAuditPositionProbe);
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;
    g_btSpreadPts=InpBacktestSpreadPts;g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    g_equityPeak=AccountInfoDouble(ACCOUNT_EQUITY);
@@ -2018,7 +2134,19 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason){EventKillTimer();DelHist();DelDash();}
+void OnDeinit(const int reason)
+{
+   ValidationExportInternalTrades();
+   EventKillTimer();
+   DelHist();
+   DelDash();
+}
+
+double OnTester()
+{
+   ValidationExportInternalTrades();
+   return 0.0;
+}
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
@@ -2040,6 +2168,8 @@ void OnTimer()
 
 void OnTick()
 {
+   if(IsValidationTester() && InpValidationInternalExportOnly)
+      return;
    EnforceRiskBreach();
    EnforceTpTouch();
    ManageHcBe();
@@ -2103,6 +2233,12 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
    else if(sp==PREFIX+"BTN_CLOSE")
    {
       CloseManaged();g_lastExecDir=0;
+      ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sp==PREFIX+"BTN_AUDIT")
+   {
+      g_auditRuntime=!g_auditRuntime;
+      Print("NAS_V3_LAB audit logging ",g_auditRuntime?"enabled":"disabled");
       ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    // Backtest buttons

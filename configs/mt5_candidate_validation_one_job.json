@@ -1,0 +1,49 @@
+{
+  "jobs": [
+    {
+      "job_id": "cand__nas__ustecm__h1__r01__s01",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/h1/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma8/ustecm_nas_h1_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "H1",
+      "from_date": "2026.01.27",
+      "to_date": "2026.01.29",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 120,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__h1__r01__s01",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000"
+      },
+      "combo_filter": {
+        "signal_mode": "ST+SMA8",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_H1"
+        ],
+        "score": 50.095,
+        "total": 113,
+        "net_r": 38.72,
+        "pf": 3.63,
+        "win_rate": 52.68,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133414.csv"
+      }
+    }
+  ]
+}

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html
 import io
 import json
@@ -89,7 +90,7 @@ class ValidationJob:
     execution_mode: int = 0
     optimization: bool = False
     visual: bool = False
-    shutdown_terminal: bool = False
+    shutdown_terminal: bool = True
     timeout_sec: int = 3600
     preset_overrides: Dict[str, str] = field(default_factory=dict)
     internal_backtest_csv: Optional[Path] = None
@@ -128,7 +129,7 @@ class ValidationJob:
             execution_mode=int(raw.get("execution_mode", 0)),
             optimization=bool(raw.get("optimization", False)),
             visual=bool(raw.get("visual", False)),
-            shutdown_terminal=bool(raw.get("shutdown_terminal", False)),
+            shutdown_terminal=bool(raw.get("shutdown_terminal", True)),
             timeout_sec=int(raw.get("timeout_sec", 3600)),
             preset_overrides={str(k): str(v) for k, v in dict(raw.get("preset_overrides", {})).items()},
             internal_backtest_csv=p(raw.get("internal_backtest_csv")),
@@ -222,6 +223,15 @@ def write_set_file(path: Path, values: Dict[str, str]) -> None:
     path.write_text("\n".join(f"{k}={v}" for k, v in values.items()) + "\n", encoding="utf-8")
 
 
+def fs_safe_id(value: str, prefix_len: int = 44) -> str:
+    raw = str(value)
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").lower()
+    digest = hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:10]
+    if len(slug) > prefix_len:
+        slug = slug[:prefix_len].rstrip("_")
+    return f"{slug or 'job'}__{digest}"
+
+
 def materialize_preset(job: ValidationJob, run_dir: Path) -> Path:
     if not job.preset.exists():
         raise FileNotFoundError(f"Preset not found: {job.preset}")
@@ -230,7 +240,7 @@ def materialize_preset(job: ValidationJob, run_dir: Path) -> Path:
     values.setdefault("InpValidationJobId", job.job_id)
     values.setdefault("InpTesterTradeAuditCsv", "true")
     values.setdefault("InpTesterTradeAuditMaxRows", "50000")
-    out = run_dir / "presets" / f"{job.job_id}.set"
+    out = run_dir / "presets" / f"{fs_safe_id(job.job_id)}.set"
     write_set_file(out, values)
     return out
 
@@ -241,7 +251,7 @@ def tester_preset_ref(job: ValidationJob, preset_path: Path, run_dir: Path) -> s
     tester_profile_dir = job.terminal_data_dir / "MQL5" / "Profiles" / "Tester"
     try:
         ensure_dir(tester_profile_dir)
-        target = tester_profile_dir / f"{job.job_id}.set"
+        target = tester_profile_dir / f"{fs_safe_id(job.job_id)}.set"
         shutil.copy2(preset_path, target)
         (run_dir / "tester_profile_preset.txt").write_text(str(target), encoding="utf-8")
         return target.name
@@ -251,9 +261,10 @@ def tester_preset_ref(job: ValidationJob, preset_path: Path, run_dir: Path) -> s
 
 def tester_ini(job: ValidationJob, run_dir: Path, preset_ref: str) -> Tuple[Path, Path]:
     ensure_dir(run_dir)
-    report_path = run_dir / "reports" / f"{job.job_id}.xml"
+    short_id = fs_safe_id(job.job_id)
+    report_path = run_dir / "reports" / f"{short_id}.xml"
     ensure_dir(report_path.parent)
-    ini_path = run_dir / "tester_configs" / f"{job.job_id}.ini"
+    ini_path = run_dir / "tester_configs" / f"{short_id}.ini"
     ensure_dir(ini_path.parent)
     lines = [
         "[Tester]",
@@ -281,7 +292,7 @@ def tester_ini(job: ValidationJob, run_dir: Path, preset_ref: str) -> Tuple[Path
 
 def run_job(job: ValidationJob, out_root: Path, dry_run: bool = False) -> Dict[str, Any]:
     terminal, terminal_args, terminal_cwd = resolve_terminal(job)
-    run_dir = out_root / job.job_id / stamp()
+    run_dir = out_root / fs_safe_id(job.job_id) / stamp()
     ensure_dir(run_dir)
     preset_path = materialize_preset(job, run_dir)
     preset_ref = tester_preset_ref(job, preset_path, run_dir)
@@ -331,12 +342,39 @@ def run_job(job: ValidationJob, out_root: Path, dry_run: bool = False) -> Dict[s
     else:
         status = "ok"
         audit_path = auto_find_tester_trade_audit(job)
+    if audit_path and audit_path.exists():
+        artifact_dir = run_dir / "artifacts"
+        ensure_dir(artifact_dir)
+        stable_audit_path = artifact_dir / audit_path.name
+        try:
+            shutil.copy2(audit_path, stable_audit_path)
+            audit_path = stable_audit_path
+        except OSError:
+            # Keep the original path in the manifest if copying fails; the
+            # caller can still inspect the terminal agent directory.
+            pass
+    copied_artifacts: List[str] = []
+    artifact_dir = run_dir / "artifacts"
+    for extra_path in auto_find_validation_artifacts(job):
+        if audit_path and extra_path.resolve() == Path(audit_path).resolve():
+            copied_artifacts.append(str(audit_path))
+            continue
+        ensure_dir(artifact_dir)
+        target = artifact_dir / extra_path.name
+        try:
+            shutil.copy2(extra_path, target)
+            copied_artifacts.append(str(target))
+        except OSError:
+            copied_artifacts.append(str(extra_path))
+    if status == "no_report_generated" and any("InternalTradeEvents" in Path(p).name for p in copied_artifacts):
+        status = "ok_internal_event_export"
     return {
         **meta,
         "status": status,
         "returncode": proc.returncode,
         "elapsed_sec": round(elapsed, 3),
         "tester_trade_audit": str(audit_path) if audit_path else "",
+        "artifacts": copied_artifacts,
     }
 
 
@@ -553,6 +591,44 @@ def auto_find_tester_trade_audit(job: ValidationJob) -> Optional[Path]:
         if fallback_match:
             return fallback_match
     return None
+
+
+def validation_artifact_patterns(job: ValidationJob) -> List[str]:
+    patterns = [tester_audit_prefix(job) + "*.csv"]
+    if job.ea_kind == "nas":
+        patterns.append("NasV3Lab_InternalTradeEvents_*.csv")
+    return patterns
+
+
+def auto_find_validation_artifacts(job: ValidationJob) -> List[Path]:
+    roots: List[Path] = []
+    if job.terminal_data_dir:
+        roots.append(job.terminal_data_dir)
+        roots.append(job.terminal_data_dir / "MQL5" / "Files")
+        roots.append(job.terminal_data_dir / "Tester")
+    roots.append(DEFAULT_OUT_DIR)
+
+    out: List[Path] = []
+    seen = set()
+    for root in roots:
+        if not root or not root.exists():
+            continue
+        for pattern in validation_artifact_patterns(job):
+            try:
+                iterator = root.rglob(pattern) if root.is_dir() else []
+                for path in iterator:
+                    sp = str(path).lower()
+                    if sp in seen or not path.is_file():
+                        continue
+                    seen.add(sp)
+                    rows = sniff_csv_tail(path, limit=200)
+                    if not any(row.get("job_id") == job.job_id for row in rows):
+                        continue
+                    out.append(path)
+            except OSError:
+                continue
+    out.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return out[:20]
 
 
 def normalize_tester_period(value: str) -> str:

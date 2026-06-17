@@ -1,0 +1,46 @@
+﻿{
+  "jobs": [
+    {
+      "job_id": "orb_ustec_m15_winner_2w_20260603_20260617",
+      "ea": "OrbUltimateEA",
+      "ea_kind": "orb",
+      "preset": "../IndicatorCodeExamples/EaPresets/ORB15/Winners/RiskLotOnly/ustecm/period_m15/best_edge/ustecm_orb_period_m15_best_edge__sig-m15__delay-0__atr-0__vol-1__day-0__be-1.set",
+      "symbol": "USTECm",
+      "timeframe": "M15",
+      "from_date": "2026.06.03",
+      "to_date": "2026.06.17",
+      "terminal_shortcut": "C:/Users/Cem/Desktop/DEMOMT5.lnk",
+      "terminal_data_dir": "C:/MT5/DEMO",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 900,
+      "preset_overrides": {
+        "InpSignalTimeframe": "15",
+        "InpBreakoutDelayMinutes": "0",
+        "InpUseAtrRangeFilter": "false",
+        "InpUseVolumeFilter": "true",
+        "InpUseDayFilter": "false",
+        "InpMoveToBEOnTp1": "true",
+        "InpBacktestFillMode": "0",
+        "InpBacktestSameBarPolicy": "1",
+        "InpBacktestSpreadPts": "0.0",
+        "InpBacktestSlippagePts": "0.0",
+        "InpBacktestCommissionPerLot": "0.0"
+      },
+      "internal_backtest_csv": "../IndicatorCodeExamples/ORB15_BruteBacktest_LATEST.csv",
+      "internal_process_csv": "../IndicatorCodeExamples/ORB15_BacktestProcess_LATEST.csv",
+      "tester_trade_audit_csv": "../IndicatorCodeExamples/ORB15_TesterTradeAudit_LATEST.csv",
+      "combo_filter": {
+        "signal_tf": "M15",
+        "delay_min": "0",
+        "vol_filter": "1",
+        "be_on_tp1": "1"
+      }
+    }
+  ]
+}
+

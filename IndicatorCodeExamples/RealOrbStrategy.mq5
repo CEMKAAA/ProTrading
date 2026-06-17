@@ -85,9 +85,9 @@ input int  InpDashboardX             = 10;
 input int  InpDashboardY             = 18;
 input bool InpDrawHistoricalSignals  = true;
 input int  InpHistoricalDays         = 14;
-input bool InpAuditCsv               = true;
-input bool InpLogOnInit              = true;
-input bool InpTesterTradeAuditCsv    = true;
+input bool InpAuditCsv               = false;
+input bool InpLogOnInit              = false;
+input bool InpTesterTradeAuditCsv    = false;
 input int  InpTesterTradeAuditMaxRows= 50000;
 input string InpValidationJobId      = "";
 input BT_FILL_MODE InpBacktestFillMode = BT_FILL_SIGNAL_CLOSE;
@@ -114,6 +114,7 @@ bool     g_tradeTaken = false;
 double   g_orbHigh = 0, g_orbLow = 0, g_orbAvgVolume = 0;
 datetime g_orbStartServer = 0, g_orbEndServer = 0, g_tradeEndServer = 0;
 datetime g_lastSignalBarTime = 0;
+datetime g_lastCheckedSignalBarTime = 0;
 datetime g_lastHistBuild = 0;
 bool     g_histNeedsRedraw = true;
 
@@ -124,6 +125,7 @@ bool            g_rtFilterDay     = false;
 bool            g_rtTimeExit      = true;
 bool            g_rtBEOnTp1       = true;
 bool            g_rtEaEnabled     = true;
+bool            g_auditRuntime    = false;
 ENUM_TIMEFRAMES g_rtSignalTf      = PERIOD_M15;  // runtime signal timeframe
 int             g_rtDelayMin      = 5;            // runtime confirmation delay
 bool            g_rtUseDelay      = true;         // toggle for confirmation delay
@@ -388,6 +390,7 @@ string AuditPx(double p){return p<=0?"0":DoubleToString(p,(int)SymbolInfoInteger
 
 void OBT_ProcessAudit(string ev,string detail)
 {
+   if(!g_auditRuntime) return;
    string fileName="ORB15_BacktestProcess_"+AuditDateStr()+".csv";
    bool exists=FileIsExist(fileName);
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
@@ -410,7 +413,7 @@ void OBT_ProcessAudit(string ev,string detail)
 
 void Audit(string ev,string dir,double lot,double entry,double sl,double tp,string detail)
 {
-   if(!InpAuditCsv)return;
+   if(!g_auditRuntime)return;
    string fileName=AuditFileName();
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE)return;
@@ -532,7 +535,10 @@ bool OwnPositionExists(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=Position
 int OwnPositionCount(){int c=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsOwnPosition())c++;}return c;}
 void CloseAllOwn(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(!IsOwnPosition())continue;bool ok=trade.PositionClose(t);Audit(ok?"close":"close_failed","",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());}}
 
-string RiskKey(string n){return "ORB15_FTMO_"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+n;}
+string RiskKey(const string keyName)
+{
+   return "ORB15_FTMO_"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+keyName;
+}
 datetime RiskDayStart()
 {
    MqlDateTime g;TimeToStruct(TimeGMT(),g);
@@ -639,6 +645,7 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
 void EnforceRiskBreach()
 {
    if(!InpAccountRiskEnabled||!InpLiquidateOnBreach)return;
+   if(InpDailyLossLimitPct<=0&&InpMaxDrawdownPct<=0)return;
    uint now=GetTickCount();if(now-g_lastRiskGuardMs<250)return;g_lastRiskGuardMs=now;
    double cap,dp,tp;RiskMetrics(cap,dp,tp);
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
@@ -1068,7 +1075,7 @@ void DrawHistoricalSignals()
 //=========================================================================
 void OrbAudit_PositionProbe()
 {
-   if(!InpAuditCsv) return;
+   if(!g_auditRuntime) return;
    datetime now=TimeCurrent();
    if(g_auditLastProbeTime>0 && now-g_auditLastProbeTime<30) return;
    g_auditLastProbeTime=now;
@@ -1112,7 +1119,7 @@ void OrbAudit_PositionProbe()
 
 void OrbAudit_HistoryScan()
 {
-   if(!InpAuditCsv) return;
+   if(!g_auditRuntime) return;
    datetime now=TimeCurrent();
    if(g_auditLastHistScan>0 && now-g_auditLastHistScan<2) return;
    g_auditLastHistScan=now;
@@ -1390,9 +1397,10 @@ void UpdateDashboard()
    CreateLabel("DASH_TFLBL",x+12,r2y+2,"SIGNAL:",acB,8);
    CreateButton("BTN_TF",x+80,r2y,60,18,"TF:"+TfLabel(g_rtSignalTf),C'38,101,176');
    CreateButton("BTN_DELAY",x+144,r2y,80,18,g_rtUseDelay?"DLY:"+IntegerToString(g_rtDelayMin)+"m":"DLY:OFF",g_rtUseDelay?C'30,120,70':C'80,80,80');
+   CreateButton("BTN_AUDIT",x+228,r2y,92,18,g_auditRuntime?"AUDIT ON":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'80,80,80');
 
    CreateButton("BTN_EA",x+420,r2y,90,18,g_rtEaEnabled?"EA: ON":"EA: OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
-   CreateButton("BTN_CLOSEALL",x+330,r2y,86,18,"CLOSE ALL",C'178,37,57');
+   CreateButton("BTN_CLOSEALL",x+326,r2y,86,18,"CLOSE ALL",C'178,37,57');
 
    // Separator
    CreateRect("DASH_SEP2",x+8,y+132,504,1,C'65,116,172',C'65,116,172');
@@ -1531,7 +1539,7 @@ bool ResetForNewNyDay()
 {
    int y,m,d;int key=CurrentNyDayKey(y,m,d);if(key==g_nyDayKey)return false;
    g_nyDayKey=key;g_orbReady=false;g_tradeTaken=false;g_orbHigh=0;g_orbLow=0;g_orbAvgVolume=0;
-   g_lastSignalBarTime=0;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;g_beMoved=false;
+   g_lastSignalBarTime=0;g_lastCheckedSignalBarTime=0;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;g_beMoved=false;
    g_tradeRisk=0;g_lastFilterReason="";g_lastExecStatus="READY";
    int sm=ParseClockMinutes(InpOrbStartNy,570);int em=ParseClockMinutes(InpOrbEndNy,585);int tem=ParseClockMinutes(InpTradeEndNy,960);
    g_orbStartServer=NyLocalToServer(y,m,d,sm);g_orbEndServer=NyLocalToServer(y,m,d,em);g_tradeEndServer=NyLocalToServer(y,m,d,tem);
@@ -1583,7 +1591,9 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    int sh=InpUseClosedBarBreakout?1:0;
    bt=iTime(_Symbol,g_rtSignalTf,sh);
    if(bt<=0||bt==g_lastSignalBarTime)return false;
+   if(InpUseClosedBarBreakout&&bt==g_lastCheckedSignalBarTime)return false;
    if(BarCloseTime(g_rtSignalTf, bt)<effectiveStart)return false; // signal is only known after bar close
+   if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
    sc=iClose(_Symbol,g_rtSignalTf,sh);if(sc<=0)return false;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
    if(sc>g_orbHigh+mb)dir="BUY";else if(sc<g_orbLow-mb)dir="SELL";
@@ -1775,12 +1785,14 @@ int OnInit()
    g_rtSignalTf=InpSignalTimeframe;
    g_rtDelayMin=InpBreakoutDelayMinutes;
    g_rtUseDelay=InpBreakoutDelayMinutes>0;
+   g_auditRuntime=(InpAuditCsv || InpLogOnInit);
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;
    g_btSpreadPts=InpBacktestSpreadPts;g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    g_lastHistBuild=0;g_histNeedsRedraw=true;
-   ResetForNewNyDay();EventSetTimer(5);
+   ResetForNewNyDay();
+   if(!IsValidationTester())EventSetTimer(5);
    if(!IsValidationTester()){DrawDashboard();DrawHistoricalSignals();}
-   if(InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
+   if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars");
    return INIT_SUCCEEDED;
@@ -1803,9 +1815,13 @@ void OnTimer()
    bool dc=ResetForNewNyDay();BuildOrb();
    if(dc&&!IsValidationTester())DrawHistoricalSignals();
    TryOpenSignal();ManagePositions();
-   OrbAudit_PositionProbe();
-   OrbAudit_HistoryScan();
-   if(!IsValidationTester()){OBT_Tick();UpdateDashboard();}
+   if(!IsValidationTester())
+   {
+      OrbAudit_PositionProbe();
+      OrbAudit_HistoryScan();
+      OBT_Tick();
+      UpdateDashboard();
+   }
 }
 
 void OnTick()
@@ -1826,6 +1842,12 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_DAY"){g_rtFilterDay=!g_rtFilterDay;needRedraw=true;}
    else if(sparam==PREFIX+"BTN_TIME"){g_rtTimeExit=!g_rtTimeExit;needRedraw=true;}
    else if(sparam==PREFIX+"BTN_BE"){g_rtBEOnTp1=!g_rtBEOnTp1;needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUDIT")
+   {
+      g_auditRuntime=!g_auditRuntime;
+      Print("ORB15v3 audit logging ",g_auditRuntime?"enabled":"disabled");
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    else if(sparam==PREFIX+"BTN_TF")
    {
       // Cycle through M1 → M5 → M15 → M1...

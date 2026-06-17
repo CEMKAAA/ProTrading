@@ -1,0 +1,299 @@
+{
+  "jobs": [
+    {
+      "job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev01__20260407_122500",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/m5/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma5/ustecm_nas_m5_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "M5",
+      "from_date": "2026.04.06",
+      "to_date": "2026.04.08",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev01__20260407_122500",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000",
+        "InpValidationInternalTradeExport": "true",
+        "InpValidationInternalExportOnly": "false",
+        "InpValidationExportFrom": "2026.04.06 00:00:00",
+        "InpValidationExportTo": "2026.04.08 23:59:59"
+      },
+      "internal_backtest_csv": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv",
+      "combo_filter": {
+        "signal_mode": "ST+SMA5",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_M5"
+        ],
+        "score": 450.165,
+        "total": 1404,
+        "net_r": 439.82,
+        "pf": 3.19,
+        "win_rate": 54.56,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv"
+      },
+      "event_sample": {
+        "source_export_job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__export",
+        "signal_time": "2026.04.07 12:25:00",
+        "direction": "BUY",
+        "signal_entry": "24097.56",
+        "signal_sl": "24029.75",
+        "net_r": "-0.6684",
+        "outcome": "EXIT"
+      }
+    },
+    {
+      "job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev02__20260407_191500",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/m5/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma5/ustecm_nas_m5_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "M5",
+      "from_date": "2026.04.06",
+      "to_date": "2026.04.08",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev02__20260407_191500",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000",
+        "InpValidationInternalTradeExport": "true",
+        "InpValidationInternalExportOnly": "false",
+        "InpValidationExportFrom": "2026.04.06 00:00:00",
+        "InpValidationExportTo": "2026.04.08 23:59:59"
+      },
+      "internal_backtest_csv": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv",
+      "combo_filter": {
+        "signal_mode": "ST+SMA5",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_M5"
+        ],
+        "score": 450.165,
+        "total": 1404,
+        "net_r": 439.82,
+        "pf": 3.19,
+        "win_rate": 54.56,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv"
+      },
+      "event_sample": {
+        "source_export_job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__export",
+        "signal_time": "2026.04.07 19:15:00",
+        "direction": "BUY",
+        "signal_entry": "24107.74",
+        "signal_sl": "23920.46",
+        "net_r": "3.0000",
+        "outcome": "TP"
+      }
+    },
+    {
+      "job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev03__20260407_001500",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/m5/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma5/ustecm_nas_m5_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "M5",
+      "from_date": "2026.04.06",
+      "to_date": "2026.04.08",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev03__20260407_001500",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000",
+        "InpValidationInternalTradeExport": "true",
+        "InpValidationInternalExportOnly": "false",
+        "InpValidationExportFrom": "2026.04.06 00:00:00",
+        "InpValidationExportTo": "2026.04.08 23:59:59"
+      },
+      "internal_backtest_csv": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv",
+      "combo_filter": {
+        "signal_mode": "ST+SMA5",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_M5"
+        ],
+        "score": 450.165,
+        "total": 1404,
+        "net_r": 439.82,
+        "pf": 3.19,
+        "win_rate": 54.56,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv"
+      },
+      "event_sample": {
+        "source_export_job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__export",
+        "signal_time": "2026.04.07 00:15:00",
+        "direction": "BUY",
+        "signal_entry": "24202.69",
+        "signal_sl": "24147.28",
+        "net_r": "-0.5325",
+        "outcome": "EXIT"
+      }
+    },
+    {
+      "job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev04__20260408_221500",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/m5/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma5/ustecm_nas_m5_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "M5",
+      "from_date": "2026.04.07",
+      "to_date": "2026.04.09",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev04__20260408_221500",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000",
+        "InpValidationInternalTradeExport": "true",
+        "InpValidationInternalExportOnly": "false",
+        "InpValidationExportFrom": "2026.04.07 00:00:00",
+        "InpValidationExportTo": "2026.04.09 23:59:59"
+      },
+      "internal_backtest_csv": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv",
+      "combo_filter": {
+        "signal_mode": "ST+SMA5",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_M5"
+        ],
+        "score": 450.165,
+        "total": 1404,
+        "net_r": 439.82,
+        "pf": 3.19,
+        "win_rate": 54.56,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv"
+      },
+      "event_sample": {
+        "source_export_job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__export",
+        "signal_time": "2026.04.08 22:15:00",
+        "direction": "SELL",
+        "signal_entry": "24880.69",
+        "signal_sl": "24929.20",
+        "net_r": "0.0000",
+        "outcome": "open"
+      }
+    },
+    {
+      "job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev05__20260408_072000",
+      "ea": "NasUltimateEA",
+      "ea_kind": "nas",
+      "preset": "../IndicatorCodeExamples/EaPresets/CandidateValidation/NAS/ustecm/m5/rank01__hc_tp1-0__hc_tp2-0__rr_mode-1_3r__sensitivity-2__signal_mode-st_sma5/ustecm_nas_m5_rank01.set",
+      "symbol": "USTECm",
+      "timeframe": "M5",
+      "from_date": "2026.04.07",
+      "to_date": "2026.04.09",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300,
+      "preset_overrides": {
+        "InpValidationJobId": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__native__ev05__20260408_072000",
+        "InpTesterTradeAuditCsv": "true",
+        "InpTesterTradeAuditMaxRows": "50000",
+        "InpValidationInternalTradeExport": "true",
+        "InpValidationInternalExportOnly": "false",
+        "InpValidationExportFrom": "2026.04.07 00:00:00",
+        "InpValidationExportTo": "2026.04.09 23:59:59"
+      },
+      "internal_backtest_csv": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv",
+      "combo_filter": {
+        "signal_mode": "ST+SMA5",
+        "sensitivity": "2",
+        "rr_mode": "1:3R",
+        "hc_tp1": "0",
+        "hc_tp2": "0"
+      },
+      "candidate_source": {
+        "rank": 1,
+        "summary_key": [
+          "nas",
+          "USTECm",
+          "PERIOD_M5"
+        ],
+        "score": 450.165,
+        "total": 1404,
+        "net_r": 439.82,
+        "pf": 3.19,
+        "win_rate": 54.56,
+        "internal_file": "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Files\\NasV3Lab_BruteBacktest_20260616_133342.csv"
+      },
+      "event_sample": {
+        "source_export_job_id": "cand__nas__ustecm__m5__r01__s01__2026_04_07__2026_04_09__export",
+        "signal_time": "2026.04.08 07:20:00",
+        "direction": "BUY",
+        "signal_entry": "25041.28",
+        "signal_sl": "24992.64",
+        "net_r": "-0.4065",
+        "outcome": "EXIT"
+      }
+    }
+  ]
+}

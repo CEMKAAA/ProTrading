@@ -1,4 +1,4 @@
-InpEaEnabled=true
+﻿InpEaEnabled=true
 InpMagic=15091503
 InpSignalTimeframe=15
 InpBrokerGmtOffsetHours=0.0
@@ -60,10 +60,11 @@ InpDashboardX=10
 InpDashboardY=18
 InpDrawHistoricalSignals=true
 InpHistoricalDays=14
-InpAuditCsv=true
-InpLogOnInit=true
+InpAuditCsv=false
+InpLogOnInit=false
 InpBacktestFillMode=0
 InpBacktestSameBarPolicy=1
 InpBacktestSpreadPts=0.0
 InpBacktestSlippagePts=0.0
 InpBacktestCommissionPerLot=0.0
+

@@ -86,12 +86,12 @@ input double          InpMaxLot                 = 0.0;
 input int             InpDayResetHourGmt        = 0;
 input bool            InpLiquidateOnBreach      = true;
 
-input bool            InpAuditTradeCsv          = true;
-input bool            InpAuditPositionProbe     = true;
+input bool            InpAuditTradeCsv          = false;
+input bool            InpAuditPositionProbe     = false;
 input int             InpAuditProbeSec          = 30;
 input bool            InpAuditProbeOnChangeOnly = true;
 input int             InpAuditHistoryScanSec    = 3;
-input bool            InpTesterTradeAuditCsv    = true;
+input bool            InpTesterTradeAuditCsv    = false;
 input int             InpTesterTradeAuditMaxRows= 50000;
 input string          InpValidationJobId        = "";
 
@@ -184,6 +184,7 @@ int              g_swingLookback;
 ERL_RR_MODE      g_target;
 ERL_HC_MODE      g_hc;
 bool             g_weeklyBias;
+bool             g_auditRuntime = false;
 
 SimStats         g_hist;
 string           g_lastStatus = "READY";
@@ -959,7 +960,7 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 //=====================================================================
 void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    string file = "ERL_IRL_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
@@ -1101,7 +1102,7 @@ string BtBuildCoverageSummary()
 
 void BtProcessAudit(string eventName, string detail)
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    string file = "ERL_IRL_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -1128,7 +1129,7 @@ void BtProcessAudit(string eventName, string detail)
 
 void ProbePositions()
 {
-   if(!InpAuditPositionProbe) return;
+   if(!g_auditRuntime) return;
    datetime now = TimeCurrent();
    if(now - g_lastAuditProbe < InpAuditProbeSec) return;
    g_lastAuditProbe = now;
@@ -1181,6 +1182,7 @@ void ProbePositions()
 
 void ScanClosedHistory()
 {
+   if(!g_auditRuntime) return;
    datetime now = TimeCurrent();
    if(now - g_lastHistoryScan < InpAuditHistoryScanSec) return;
    g_lastHistoryScan = now;
@@ -1819,6 +1821,7 @@ void UpdateDashboard()
    ButtonObj("BTN_HC_TP2", x + 228, row, 74, bh, "TP2", g_hc == ERL_HC_TP2 ? on : (g_target >= ERL_RR_TP3 ? off : C'35,37,44'));
    LabelObj("DASH_BIAS_L", x + 330, row + 4, "WEEKLY BIAS:", muted, 8);
    ButtonObj("BTN_BIAS", x + 440, row, 82, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
+   ButtonObj("BTN_AUDIT", x + 584, row, 88, bh, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? C'120,88,25' : off);
 
    int sec2 = sec1 + 124;
    RectObj("DASH_SEC2", x + 8, sec2, 684, 112, C'24,31,45', C'60,110,170');
@@ -1898,6 +1901,7 @@ void UpdateDashboard()
 void EnforceRiskBreach()
 {
    if(!InpAccountRiskEnabled || !InpLiquidateOnBreach) return;
+   if(InpDailyLossLimitPct <= 0.0 && InpMaxDrawdownPct <= 0.0) return;
    double base = BaseCapital();
    if(base <= 0.0) return;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -1959,6 +1963,7 @@ int OnInit()
    g_btSpreadPts = InpBacktestSpreadPts;
    g_btSlippagePts = InpBacktestSlippagePts;
    g_btCommissionPerLot = InpBacktestCommissionPerLot;
+   g_auditRuntime = (InpAuditTradeCsv || InpAuditPositionProbe);
    g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    SanitizeHalfMode();
    BuildCombos();
@@ -1972,7 +1977,7 @@ int OnInit()
       DrawHistoricalSignals();
       DrawLiveLevelsForPosition();
    }
-   EventSetTimer(1);
+   if(!IsValidationTester()) EventSetTimer(1);
    AuditWrite("ea_init", "init", 0, 0, 0, 0, 0,
       "build=" + (string)ERL_BUILD + " htf=" + TfLabel(g_htf) + " entry_tf=" + TfLabel(g_entryTf)
       + " swing=" + IntegerToString(g_swingLookback) + " target=" + TargetLabel(g_target) + " hc=" + HcLabel(g_hc));
@@ -2001,6 +2006,7 @@ void OnTick()
 
 void OnTimer()
 {
+   if(IsValidationTester()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
    EnforceRiskBreach();
    TryOpenLatestSignal();
@@ -2063,6 +2069,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_EA")) { g_eaEnabled = !g_eaEnabled; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_AUDIT")) { g_auditRuntime = !g_auditRuntime; Print("ERL_IRL audit logging ", g_auditRuntime ? "enabled" : "disabled"); UpdateDashboard(); ChartRedraw(0); return; }
 
    if(Clicked(sparam, "BTN_FILL_SIGNAL")) { g_btFillMode = BT_FILL_SIGNAL_CLOSE; UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_FILL_NEXT")) { g_btFillMode = BT_FILL_NEXT_BAR_OPEN; UpdateDashboard(); return; }

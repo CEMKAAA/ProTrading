@@ -1,4 +1,4 @@
-InpEaEnabled=true
+﻿InpEaEnabled=true
 InpMagic=15101502
 InpSignalTimeframe=1
 InpBrokerGmtOffsetHours=0.0
@@ -45,5 +45,6 @@ InpMaxLot=0.0
 InpDeviationPoints=30
 InpMaxSpreadPoints=0
 InpDrawOrbLevels=true
-InpAuditCsv=true
-InpLogOnInit=true
+InpAuditCsv=false
+InpLogOnInit=false
+

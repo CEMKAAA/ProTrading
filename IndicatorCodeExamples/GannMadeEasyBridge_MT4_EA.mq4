@@ -93,7 +93,7 @@ input bool   InpRiskScopeByMagic = true;
 input bool   InpLiquidateOnBreach = false;
 input int    InpRiskAuditSeconds = 60;
 
-input bool   InpEnableAudit = true;
+input bool   InpEnableAudit = false;
 input int    InpPositionProbeSeconds = 30;
 input int    InpLifecycleAuditSeconds = 10;
 
@@ -106,6 +106,7 @@ double   g_finalScaleRuntime;
 int      g_targetTpRuntime;
 int      g_halfTpRuntime;
 bool     g_pendingOnDriftRuntime;
+bool     g_auditRuntime;
 string   g_allowedWindowsRuntime;
 string   g_noTradeWindowsRuntime;
 string   g_lastEventId = "";
@@ -128,6 +129,7 @@ int OnInit()
    g_targetTpRuntime = MathMax(0, MathMin(3, InpTargetTpIndex));
    g_halfTpRuntime = MathMax(0, MathMin(3, InpHalfBeTpIndex));
    g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
+   g_auditRuntime = InpEnableAudit;
    g_allowedWindowsRuntime = InpAllowedWindowsGmt;
    g_noTradeWindowsRuntime = InpNoTradeWindowsGmt;
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
@@ -208,6 +210,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_pendingOnDriftRuntime = !g_pendingOnDriftRuntime;
       Audit("dashboard_drift_toggle", "", 0, "", 0, 0, 0, 0, g_pendingOnDriftRuntime ? "pending_on_drift=true" : "pending_on_drift=false", 0, "");
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("audit"))
+   {
+      g_auditRuntime = !g_auditRuntime;
+      Print("GannMadeEasyBridge audit logging ", g_auditRuntime ? "enabled" : "disabled");
       DashboardUpdate();
       return;
    }
@@ -1434,7 +1443,7 @@ string TicketEvent(int ticket) { return "ticket=" + IntegerToString(ticket); }
 
 void MaybeRiskAudit()
 {
-   if(!InpAdvancedAccountRiskEnabled || InpRiskAuditSeconds <= 0) return;
+   if(!g_auditRuntime || !InpAdvancedAccountRiskEnabled || InpRiskAuditSeconds <= 0) return;
    datetime now = TimeGMT();
    if(now - g_lastRiskAuditTs < InpRiskAuditSeconds) return;
    g_lastRiskAuditTs = now;
@@ -1443,7 +1452,7 @@ void MaybeRiskAudit()
 
 void MaybeProbe()
 {
-   if(InpPositionProbeSeconds <= 0) return;
+   if(!g_auditRuntime || InpPositionProbeSeconds <= 0) return;
    datetime now = TimeGMT();
    if(now - g_lastProbeTs < InpPositionProbeSeconds) return;
    g_lastProbeTs = now;
@@ -1462,7 +1471,7 @@ void MaybeProbe()
 
 void MaybeLifecycleAudit()
 {
-   if(InpLifecycleAuditSeconds <= 0) return;
+   if(!g_auditRuntime || InpLifecycleAuditSeconds <= 0) return;
    datetime now = TimeGMT();
    if(now - g_lastLifecycleAuditTs < InpLifecycleAuditSeconds) return;
    g_lastLifecycleAuditTs = now;
@@ -1513,7 +1522,7 @@ string ClassifyClosedOrder(int type, double closePrice, double sl, double tp)
 
 void RiskAudit(string eventName, string detail)
 {
-   if(!InpEnableAudit) return;
+   if(!g_auditRuntime) return;
    double cap, daily, dd;
    AccountRiskMetrics(cap, daily, dd);
    int h = FileOpen("GannMadeEasyBridge_AccountRiskAudit_" + DateStamp(TimeGMT()) + ".csv", FILE_CSV|FILE_READ|FILE_WRITE, ';');
@@ -1527,7 +1536,7 @@ void RiskAudit(string eventName, string detail)
 
 void Audit(string eventName, string eventId, int ticket, string dir, double lot, double price, double sl, double tp, string detail, double pnl, string extra)
 {
-   if(!InpEnableAudit) return;
+   if(!g_auditRuntime) return;
    int h = FileOpen("GannMadeEasyBridge_DirectAudit_" + DateStamp(TimeGMT()) + ".csv", FILE_CSV|FILE_READ|FILE_WRITE, ';');
    if(h == INVALID_HANDLE) return;
    bool header = (FileSize(h) == 0);
@@ -1551,6 +1560,7 @@ void DashboardCreate()
    if(g_collapsed) return;
    Button(Obj("toggle"), x+12, y+34, 78, 24, g_eaEnabled ? "EA ON" : "EA OFF", g_eaEnabled ? clrDarkGreen : clrMaroon, clrWhite);
    Button(Obj("drift"), x+98, y+34, 92, 24, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT", g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
+   Button(Obj("audit"), x+198, y+34, 96, 24, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
    Button(Obj("apply"), x+302, y+34, 72, 24, "APPLY", clrSteelBlue, clrWhite);
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
@@ -1575,9 +1585,11 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("toggle"), OBJPROP_BGCOLOR, g_eaEnabled ? clrDarkGreen : clrMaroon);
    ObjectSetString(0, Obj("drift"), OBJPROP_TEXT, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT");
    ObjectSetInteger(0, Obj("drift"), OBJPROP_BGCOLOR, g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray);
+   ObjectSetString(0, Obj("audit"), OBJPROP_TEXT, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF");
+   ObjectSetInteger(0, Obj("audit"), OBJPROP_BGCOLOR, g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | " + (InpAdvancedAccountRiskEnabled ? "RISK ON" : "RISK OFF") + " | Drift " + (g_pendingOnDriftRuntime ? "LIMIT" : "MARKET") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | " + (InpAdvancedAccountRiskEnabled ? "RISK ON" : "RISK OFF") + " | Audit " + (g_auditRuntime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");

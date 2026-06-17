@@ -49,5 +49,5 @@ InpDayResetHourGmt=0
 InpRiskScopeByMagic=true
 InpLiquidateOnBreach=false
 InpRiskAuditSeconds=60
-InpEnableAudit=true
+InpEnableAudit=false
 InpPositionProbeSeconds=30
