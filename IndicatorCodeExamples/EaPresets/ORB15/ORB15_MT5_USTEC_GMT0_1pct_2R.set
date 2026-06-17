@@ -20,4 +20,14 @@ InpMaxSpreadPoints=0
 InpDrawOrbLevels=true
 InpAuditCsv=false
 InpLogOnInit=false
-
+InpExecutionMode=0
+InpTargetTpLeg=2
+InpHalfBeMode=0
+InpTp1R=1.0
+InpTp2R=2.0
+InpTp3R=3.0
+InpSingleTpR=2.0
+InpMoveToBEOnTp1=false
+InpHistoricalWeeks=2
+InpDailyLossLimitPct=5.0
+InpMaxDrawdownPct=10.0
