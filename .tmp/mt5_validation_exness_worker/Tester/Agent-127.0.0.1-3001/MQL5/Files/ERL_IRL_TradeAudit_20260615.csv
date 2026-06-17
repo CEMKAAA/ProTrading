@@ -1,0 +1,2 @@
+server_time	gmt_time	symbol	tf	event	id	dir	entry	sl	tp	lot	spread_pts	status	detail
+2026.06.15 00:00:00	2026.06.15 00:00:00	XAUUSDm	M15	ea_init	init	-	0.000	0.000	0.000	0.0000	0	READY	build=2026-06-16.erl-irl-tester-trade-audit htf=D1 entry_tf=M15 swing=8 target=TP1 1.0R hc=HC OFF
