@@ -4,11 +4,11 @@
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.10"
+#property version "1.11"
 
 #include <Trade/Trade.mqh>
 
-#define ERL_BUILD "2026-06-16.erl-irl-tester-trade-audit"
+#define ERL_BUILD "2026-06-18.erl-irl-six-tp-sl-pct"
 #define ERL_PREFIX "ERLIRL_"
 
 //=====================================================================
@@ -16,16 +16,22 @@
 //=====================================================================
 enum ERL_RR_MODE
 {
-   ERL_RR_TP1 = 0,   // 1.0R
-   ERL_RR_TP2 = 1,   // 1.5R
-   ERL_RR_TP3 = 2    // 2.0R
+   ERL_RR_TP1 = 0,   // 0.5R
+   ERL_RR_TP2 = 1,   // 1.0R
+   ERL_RR_TP3 = 2,   // 1.5R
+   ERL_RR_TP4 = 3,   // 2.0R
+   ERL_RR_TP5 = 4,   // 2.5R
+   ERL_RR_TP6 = 5    // 3.0R
 };
 
 enum ERL_HC_MODE
 {
    ERL_HC_OFF = 0,
    ERL_HC_TP1 = 1,
-   ERL_HC_TP2 = 2
+   ERL_HC_TP2 = 2,
+   ERL_HC_TP3 = 3,
+   ERL_HC_TP4 = 4,
+   ERL_HC_TP5 = 5
 };
 
 enum BT_FILL_MODE
@@ -55,8 +61,8 @@ input bool            InpBlockSameDirection     = true;
 input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H4;
 input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M15;
 input int             InpDefaultSwingLookback   = 5;
-input ERL_RR_MODE     InpDefaultTarget          = ERL_RR_TP2;
-input ERL_HC_MODE     InpDefaultHalfBe          = ERL_HC_TP1;
+input ERL_RR_MODE     InpDefaultTarget          = ERL_RR_TP4;
+input ERL_HC_MODE     InpDefaultHalfBe          = ERL_HC_OFF;
 input bool            InpDefaultWeeklyBias      = false;
 
 input int             InpCalcHtfBars            = 900;
@@ -66,7 +72,9 @@ input int             InpMaxFvgSearchBars       = 20;
 input int             InpAtrPeriod              = 14;
 input double          InpMinFvgAtrPct           = 8.0;
 input double          InpSlBufferAtrPct         = 10.0;
+input double          InpSlDistancePct          = 100.0;
 input int             InpHistoricalDays         = 14;
+input int             InpHistoricalWeeks        = 2;
 input bool            InpDrawHistoricalSignals  = true;
 input bool            InpDrawFvgZones           = true;
 input bool            InpDrawLiveLevels         = true;
@@ -86,12 +94,12 @@ input double          InpMaxLot                 = 0.0;
 input int             InpDayResetHourGmt        = 0;
 input bool            InpLiquidateOnBreach      = true;
 
-input bool            InpAuditTradeCsv          = true;
-input bool            InpAuditPositionProbe     = true;
+input bool            InpAuditTradeCsv          = false;
+input bool            InpAuditPositionProbe     = false;
 input int             InpAuditProbeSec          = 30;
 input bool            InpAuditProbeOnChangeOnly = true;
 input int             InpAuditHistoryScanSec    = 3;
-input bool            InpTesterTradeAuditCsv    = true;
+input bool            InpTesterTradeAuditCsv    = false;
 input int             InpTesterTradeAuditMaxRows= 50000;
 input string          InpValidationJobId        = "";
 
@@ -137,6 +145,9 @@ struct ErlSignal
    double   tp1;
    double   tp2;
    double   tp3;
+   double   tp4;
+   double   tp5;
+   double   tp6;
    double   risk;
    string   reason;
    string   id;
@@ -184,6 +195,7 @@ int              g_swingLookback;
 ERL_RR_MODE      g_target;
 ERL_HC_MODE      g_hc;
 bool             g_weeklyBias;
+bool             g_auditRuntime = false;
 
 SimStats         g_hist;
 string           g_lastStatus = "READY";
@@ -220,6 +232,9 @@ BT_SAME_BAR_POLICY g_btSameBarPolicy;
 double           g_btSpreadPts;
 double           g_btSlippagePts;
 double           g_btCommissionPerLot;
+double           g_slDistancePct = 100.0;
+int              g_histWeeks = 2;
+long             DASH_Z = 1000000;
 
 //=====================================================================
 //  BASIC UTILITY
@@ -249,16 +264,13 @@ string DirLabel(int dir)
 
 string TargetLabel(ERL_RR_MODE rr)
 {
-   if(rr == ERL_RR_TP1) return "TP1 1.0R";
-   if(rr == ERL_RR_TP2) return "TP2 1.5R";
-   return "TP3 2.0R";
+   return "TP" + IntegerToString((int)rr + 1) + " " + DoubleToString(TargetR(rr), 1) + "R";
 }
 
 string HcLabel(ERL_HC_MODE hc)
 {
-   if(hc == ERL_HC_TP1) return "HC@TP1";
-   if(hc == ERL_HC_TP2) return "HC@TP2";
-   return "HC OFF";
+   if(hc == ERL_HC_OFF) return "HC OFF";
+   return "HC@TP" + IntegerToString((int)hc);
 }
 
 string BtFillLabel(BT_FILL_MODE mode)
@@ -278,9 +290,39 @@ string BtSameLabel(BT_SAME_BAR_POLICY policy)
 
 double TargetR(ERL_RR_MODE rr)
 {
-   if(rr == ERL_RR_TP1) return 1.0;
-   if(rr == ERL_RR_TP2) return 1.5;
-   return 2.0;
+   int leg = (int)rr + 1;
+   return MathMax(0.5, 0.5 * leg);
+}
+
+double ClampSlDistancePct(double pct)
+{
+   return MathMax(10.0, MathMin(300.0, pct));
+}
+
+double ApplySlDistancePct(int dir, double entry, double rawSl)
+{
+   double dist = MathAbs(entry - rawSl) * ClampSlDistancePct(g_slDistancePct) / 100.0;
+   if(dist <= 0.0) return rawSl;
+   return NormTradePrice(dir > 0 ? entry - dist : entry + dist);
+}
+
+double ApproxMoneyFromR(double r)
+{
+   double base = InpInitialBalanceOverride > 0.0 ? InpInitialBalanceOverride : MathMax(0.01, AccountInfoDouble(ACCOUNT_BALANCE));
+   return r * base * MathMax(0.0, InpRiskPerTradePct) / 100.0;
+}
+
+int ClampHistWeeks(int weeks)
+{
+   if(weeks <= 2) return 2;
+   if(weeks <= 5) return 5;
+   if(weeks <= 10) return 10;
+   return 20;
+}
+
+int HistDays()
+{
+   return ClampHistWeeks(g_histWeeks) * 7;
 }
 
 double NormPrice(double price)
@@ -593,6 +635,7 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
       if(!tapped) continue;
       double entry = entryRates[i].close;
       double sl = dir > 0 ? zone.low - buffer : zone.high + buffer;
+      sl = ApplySlDistancePct(dir, entry, sl);
       double risk = MathAbs(entry - sl);
       if(risk <= TickSize()) continue;
       sig.valid = true;
@@ -602,9 +645,12 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
       sig.sl = NormTradePrice(sl);
       sig.risk = MathAbs(sig.entry - sig.sl);
       if(sig.risk <= TickSize()) continue;
-      sig.tp1 = NormTradePrice(sig.entry + dir * sig.risk * 1.0);
-      sig.tp2 = NormTradePrice(sig.entry + dir * sig.risk * 1.5);
-      sig.tp3 = NormTradePrice(sig.entry + dir * sig.risk * 2.0);
+      sig.tp1 = NormTradePrice(sig.entry + dir * sig.risk * 0.5);
+      sig.tp2 = NormTradePrice(sig.entry + dir * sig.risk * 1.0);
+      sig.tp3 = NormTradePrice(sig.entry + dir * sig.risk * 1.5);
+      sig.tp4 = NormTradePrice(sig.entry + dir * sig.risk * 2.0);
+      sig.tp5 = NormTradePrice(sig.entry + dir * sig.risk * 2.5);
+      sig.tp6 = NormTradePrice(sig.entry + dir * sig.risk * 3.0);
       sig.fvgLow = zone.low;
       sig.fvgHigh = zone.high;
       sig.reason = "fvg_tap";
@@ -684,20 +730,28 @@ double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 {
    if(target == ERL_RR_TP1) return sig.tp1;
    if(target == ERL_RR_TP2) return sig.tp2;
-   return sig.tp3;
+   if(target == ERL_RR_TP3) return sig.tp3;
+   if(target == ERL_RR_TP4) return sig.tp4;
+   if(target == ERL_RR_TP5) return sig.tp5;
+   return sig.tp6;
 }
 
 double HalfTrigger(const ErlSignal &sig, ERL_HC_MODE hc)
 {
    if(hc == ERL_HC_TP1) return sig.tp1;
    if(hc == ERL_HC_TP2) return sig.tp2;
+   if(hc == ERL_HC_TP3) return sig.tp3;
+   if(hc == ERL_HC_TP4) return sig.tp4;
+   if(hc == ERL_HC_TP5) return sig.tp5;
    return 0.0;
 }
 
 void SanitizeHalfMode()
 {
-   if(g_target == ERL_RR_TP1) g_hc = ERL_HC_OFF;
-   if(g_target == ERL_RR_TP2 && g_hc == ERL_HC_TP2) g_hc = ERL_HC_TP1;
+   int targetLeg = (int)g_target + 1;
+   int hcLeg = (int)g_hc;
+   if(targetLeg <= 1) g_hc = ERL_HC_OFF;
+   else if(hcLeg >= targetLeg) g_hc = (ERL_HC_MODE)(targetLeg - 1);
 }
 
 //=====================================================================
@@ -754,8 +808,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    if(simRisk <= TickSize()) return 0.0;
    double tp = NormTradePrice(simEntry + sig.dir * simRisk * TargetR(target));
    double half = 0.0;
-   if(hc == ERL_HC_TP1) half = NormTradePrice(simEntry + sig.dir * simRisk * 1.0);
-   if(hc == ERL_HC_TP2) half = NormTradePrice(simEntry + sig.dir * simRisk * 1.5);
+   if(hc != ERL_HC_OFF) half = NormTradePrice(simEntry + sig.dir * simRisk * TargetR((ERL_RR_MODE)((int)hc - 1)));
    bool halfDone = (hc == ERL_HC_OFF || half <= 0.0);
    double pnlR = 0.0;
    double commissionR = 0.0;
@@ -834,7 +887,7 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
 
 void RecalculateHistoricalStats()
 {
-   datetime cutoff = TimeCurrent() - InpHistoricalDays * 86400;
+   datetime cutoff = TimeCurrent() - HistDays() * 86400;
    ErlSignal signals[];
    BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
    g_hist = CalculateStats(signals, g_target, g_hc, g_entryTf);
@@ -959,7 +1012,7 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 //=====================================================================
 void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    string file = "ERL_IRL_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
@@ -1101,7 +1154,7 @@ string BtBuildCoverageSummary()
 
 void BtProcessAudit(string eventName, string detail)
 {
-   if(!InpAuditTradeCsv) return;
+   if(!g_auditRuntime) return;
    string file = "ERL_IRL_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -1128,7 +1181,7 @@ void BtProcessAudit(string eventName, string detail)
 
 void ProbePositions()
 {
-   if(!InpAuditPositionProbe) return;
+   if(!g_auditRuntime) return;
    datetime now = TimeCurrent();
    if(now - g_lastAuditProbe < InpAuditProbeSec) return;
    g_lastAuditProbe = now;
@@ -1181,6 +1234,7 @@ void ProbePositions()
 
 void ScanClosedHistory()
 {
+   if(!g_auditRuntime) return;
    datetime now = TimeCurrent();
    if(now - g_lastHistoryScan < InpAuditHistoryScanSec) return;
    g_lastHistoryScan = now;
@@ -1230,6 +1284,7 @@ void RectObj(string id, int x, int y, int w, int h, color bg, color border)
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, border);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z);
 }
 
 void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
@@ -1244,6 +1299,8 @@ void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z + 1);
 }
 
 void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
@@ -1261,6 +1318,8 @@ void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z + 2);
 }
 
 void EditObj(string id, int x, int y, int w, int h, string text)
@@ -1276,12 +1335,15 @@ void EditObj(string id, int x, int y, int w, int h, string text)
       ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
       ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
       ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_CENTER);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z + 3);
    }
    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z + 3);
 }
 
 void DrawArrow(string id, datetime t, double price, int dir, color clr)
@@ -1293,6 +1355,19 @@ void DrawArrow(string id, datetime t, double price, int dir, color clr)
    ObjectSetInteger(0, name, OBJPROP_ARROWCODE, dir > 0 ? 233 : 234);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void DrawChartText(string id, datetime t, double price, string text, color clr)
+{
+   string name = PFX + "HISTTXT_" + id;
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
 }
 
@@ -1325,17 +1400,24 @@ void DrawFvgBox(string id, datetime t1, datetime t2, double low, double high, co
 void DrawHistoricalSignals()
 {
    DeleteByPrefix(PFX + "HIST_");
+   DeleteByPrefix(PFX + "HISTTXT_");
    DeleteByPrefix(PFX + "FVG_");
    if(IsValidationTester()) return;
    if(!InpDrawHistoricalSignals) return;
-   datetime cutoff = TimeCurrent() - InpHistoricalDays * 86400;
+   datetime cutoff = TimeCurrent() - HistDays() * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
    for(int i = 0; i < count; ++i)
    {
       string id = IntegerToString(i) + "_" + IntegerToString((int)signals[i].entryTime);
-      color clr = signals[i].dir > 0 ? C'60,220,140' : C'255,80,110';
+      bool closed=false, won=false;
+      double r=SimulateSignal(signals[i], g_target, g_hc, g_entryTf, 0, closed, won);
+      color clr = won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82');
       DrawArrow(id, signals[i].entryTime, signals[i].entry, signals[i].dir, clr);
+      double pad = MathMax(MathAbs(signals[i].entry - signals[i].sl) * 0.25, TickSize() * 30.0);
+      string txt = DirLabel(signals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
+         + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
+      DrawChartText(id, signals[i].entryTime, signals[i].dir > 0 ? signals[i].entry - pad : signals[i].entry + pad, txt, clr);
       DrawFvgBox(id, signals[i].htfTime, signals[i].entryTime + PeriodSeconds(g_entryTf) * 4, signals[i].fvgLow, signals[i].fvgHigh, clr);
    }
    RecalculateHistoricalStats();
@@ -1375,6 +1457,9 @@ void StorePositionPlan(ulong ticket, const ErlSignal &sig, ERL_HC_MODE hc)
    GlobalVariableSet(TicketKey(ticket, "tp1"), sig.tp1);
    GlobalVariableSet(TicketKey(ticket, "tp2"), sig.tp2);
    GlobalVariableSet(TicketKey(ticket, "tp3"), sig.tp3);
+   GlobalVariableSet(TicketKey(ticket, "tp4"), sig.tp4);
+   GlobalVariableSet(TicketKey(ticket, "tp5"), sig.tp5);
+   GlobalVariableSet(TicketKey(ticket, "tp6"), sig.tp6);
    GlobalVariableSet(TicketKey(ticket, "hc"), (double)hc);
    GlobalVariableSet(TicketKey(ticket, "halfDone"), 0.0);
 }
@@ -1457,12 +1542,16 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
          execSig.sl = NormTradePrice(execSig.entry + minStop);
    }
 
+   execSig.sl = ApplySlDistancePct(execSig.dir, execSig.entry, execSig.sl);
    execSig.risk = MathAbs(execSig.entry - execSig.sl);
    if(execSig.risk <= TickSize())
       execSig.risk = minStop;
-   execSig.tp1 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.0);
-   execSig.tp2 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.5);
-   execSig.tp3 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 2.0);
+   execSig.tp1 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 0.5);
+   execSig.tp2 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.0);
+   execSig.tp3 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 1.5);
+   execSig.tp4 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 2.0);
+   execSig.tp5 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 2.5);
+   execSig.tp6 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 3.0);
 
    if(MathAbs(originalSl - execSig.sl) > TickSize() * 0.5)
       detail = "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits);
@@ -1581,7 +1670,7 @@ void ManagePositions()
       ERL_HC_MODE hc = (ERL_HC_MODE)(int)GetPlan(ticket, "hc", (double)ERL_HC_OFF);
       bool halfDone = GetPlan(ticket, "halfDone", 0.0) > 0.5;
       if(hc == ERL_HC_OFF || halfDone) continue;
-      double trigger = hc == ERL_HC_TP1 ? GetPlan(ticket, "tp1") : GetPlan(ticket, "tp2");
+      double trigger = GetPlan(ticket, "tp" + IntegerToString((int)hc));
       if(trigger <= 0.0) continue;
       bool hit = dir > 0 ? tick.bid >= trigger : tick.ask <= trigger;
       if(!hit) continue;
@@ -1630,9 +1719,9 @@ void BuildCombos()
          {
             for(int b = 0; b < ArraySize(biases); ++b)
             {
-               for(int rr = 0; rr < 3; ++rr)
+               for(int rr = 0; rr < 6; ++rr)
                {
-                  int maxHc = rr == 0 ? 0 : (rr == 1 ? 1 : 2);
+                  int maxHc = rr == 0 ? 0 : rr;
                   for(int hc = 0; hc <= maxHc; ++hc)
                   {
                      int n = ArraySize(g_btCombos);
@@ -1762,8 +1851,8 @@ void DrawDashboard()
    }
    int x = InpDashboardX;
    int y = InpDashboardY;
-   int W = 700;
-   int H = 590;
+   int W = 760;
+   int H = 620;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
@@ -1789,7 +1878,7 @@ void UpdateDashboard()
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
    int sec1 = y + 64;
-   RectObj("DASH_SEC1", x + 8, sec1, 684, 116, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC1", x + 8, sec1, 744, 116, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
    LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
@@ -1807,29 +1896,41 @@ void UpdateDashboard()
    ButtonObj("BTN_SW_5", x + 126, row, 44, bh, "5", g_swingLookback == 5 ? on : off);
    ButtonObj("BTN_SW_8", x + 176, row, 44, bh, "8", g_swingLookback == 8 ? on : off);
    LabelObj("DASH_TP_L", x + 246, row + 4, "TARGET:", muted, 8);
-   ButtonObj("BTN_TP_1", x + 318, row, 70, bh, "TP1", g_target == ERL_RR_TP1 ? on : off);
-   ButtonObj("BTN_TP_2", x + 394, row, 70, bh, "TP2", g_target == ERL_RR_TP2 ? on : off);
-   ButtonObj("BTN_TP_3", x + 470, row, 70, bh, "TP3", g_target == ERL_RR_TP3 ? on : off);
-   ButtonObj("BTN_CLOSE", x + 584, row, 88, bh, "CLOSE ALL", C'170,45,62');
+   ButtonObj("BTN_TP_1", x + 318, row, 52, bh, "TP1", g_target == ERL_RR_TP1 ? on : off);
+   ButtonObj("BTN_TP_2", x + 374, row, 52, bh, "TP2", g_target == ERL_RR_TP2 ? on : off);
+   ButtonObj("BTN_TP_3", x + 430, row, 52, bh, "TP3", g_target == ERL_RR_TP3 ? on : off);
+   ButtonObj("BTN_TP_4", x + 486, row, 52, bh, "TP4", g_target == ERL_RR_TP4 ? on : off);
+   ButtonObj("BTN_TP_5", x + 542, row, 52, bh, "TP5", g_target == ERL_RR_TP5 ? on : off);
+   ButtonObj("BTN_TP_6", x + 598, row, 52, bh, "TP6", g_target == ERL_RR_TP6 ? on : off);
+   ButtonObj("BTN_CLOSE", x + 660, row, 84, bh, "CLOSE ALL", C'170,45,62');
 
    row += 28;
    LabelObj("DASH_HC_L", x + 16, row + 4, "HC+BE:", muted, 8);
-   ButtonObj("BTN_HC_OFF", x + 76, row, 66, bh, "OFF", g_hc == ERL_HC_OFF ? on : off);
-   ButtonObj("BTN_HC_TP1", x + 148, row, 74, bh, "TP1", g_hc == ERL_HC_TP1 ? on : (g_target >= ERL_RR_TP2 ? off : C'35,37,44'));
-   ButtonObj("BTN_HC_TP2", x + 228, row, 74, bh, "TP2", g_hc == ERL_HC_TP2 ? on : (g_target >= ERL_RR_TP3 ? off : C'35,37,44'));
-   LabelObj("DASH_BIAS_L", x + 330, row + 4, "WEEKLY BIAS:", muted, 8);
-   ButtonObj("BTN_BIAS", x + 440, row, 82, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
+   ButtonObj("BTN_HC_OFF", x + 76, row, 52, bh, "OFF", g_hc == ERL_HC_OFF ? on : off);
+   ButtonObj("BTN_HC_TP1", x + 132, row, 54, bh, "TP1", g_hc == ERL_HC_TP1 ? on : ((int)g_target + 1 > 1 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP2", x + 190, row, 54, bh, "TP2", g_hc == ERL_HC_TP2 ? on : ((int)g_target + 1 > 2 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP3", x + 248, row, 54, bh, "TP3", g_hc == ERL_HC_TP3 ? on : ((int)g_target + 1 > 3 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP4", x + 306, row, 54, bh, "TP4", g_hc == ERL_HC_TP4 ? on : ((int)g_target + 1 > 4 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP5", x + 364, row, 54, bh, "TP5", g_hc == ERL_HC_TP5 ? on : ((int)g_target + 1 > 5 ? off : C'35,37,44'));
+   LabelObj("DASH_BIAS_L", x + 430, row + 4, "WEEKLY:", muted, 8);
+   ButtonObj("BTN_BIAS", x + 490, row, 68, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
+   ButtonObj("BTN_AUDIT", x + 660, row, 84, bh, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? C'120,88,25' : off);
 
    int sec2 = sec1 + 124;
-   RectObj("DASH_SEC2", x + 8, sec2, 684, 112, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC2", x + 8, sec2, 744, 112, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
    double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
    LabelObj("DASH_AUD1", x + 16, sec2 + 30,
-      IntegerToString(InpHistoricalDays) + "D: " + IntegerToString(g_hist.total) + " sig | "
+      IntegerToString(g_histWeeks) + "W: " + IntegerToString(g_hist.total) + " sig | "
       + IntegerToString(g_hist.wins) + "W " + IntegerToString(g_hist.losses) + "L " + IntegerToString(g_hist.open)
-      + "O | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | PF " + DoubleToString(g_hist.pf, 2),
+      + "O | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | $ "
+      + (ApproxMoneyFromR(g_hist.netR) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(g_hist.netR), 2),
       g_hist.netR >= 0 ? C'80,255,180' : C'255,95,140', 9);
+   ButtonObj("BTN_AUD_2W", x + 520, sec2 + 28, 48, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_5W", x + 572, sec2 + 28, 48, bh, "5W", g_histWeeks == 5 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_10W", x + 624, sec2 + 28, 52, bh, "10W", g_histWeeks == 10 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_20W", x + 680, sec2 + 28, 52, bh, "20W", g_histWeeks == 20 ? C'38,101,176' : off);
    RectObj("DASH_WR_BG", x + 16, sec2 + 58, 420, 14, C'38,46,60', C'60,80,110');
    int fill = (int)MathRound(418.0 * MathMax(0.0, MathMin(100.0, wr)) / 100.0);
    if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 59, fill, 12, wr >= 50 ? C'80,220,140' : C'255,95,140', wr >= 50 ? C'80,220,140' : C'255,95,140');
@@ -1838,7 +1939,7 @@ void UpdateDashboard()
       + DoubleToString(g_hist.total > 0 ? g_hist.netR / g_hist.total : 0.0, 3) + "R/trade", muted, 8);
 
    int sec3 = sec2 + 120;
-   RectObj("DASH_SEC3", x + 8, sec3, 684, 96, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC3", x + 8, sec3, 744, 96, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC3_T", x + 16, sec3 + 7, "EXECUTION", ac, 9);
    LabelObj("DASH_EX1", x + 16, sec3 + 30,
       "Status: " + g_lastStatus + " | Block: " + (g_lastBlock == "" ? "-" : g_lastBlock)
@@ -1850,17 +1951,20 @@ void UpdateDashboard()
       + " TP " + DoubleToString(g_lastTp, _Digits), muted, 8);
    LabelObj("DASH_EX3", x + 16, sec3 + 74,
       "Risk: " + (InpAccountRiskEnabled ? "ON" : "OFF") + " " + DoubleToString(InpRiskPerTradePct, 2)
-      + "% | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+      + "% | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+   LabelObj("DASH_SL_L", x + 510, sec3 + 74, "SL%:", muted, 8);
+   EditObj("EDIT_SL_PCT", x + 550, sec3 + 72, 56, bh, DoubleToString(g_slDistancePct, 0));
+   ButtonObj("BTN_SL_APPLY", x + 612, sec3 + 72, 70, bh, "APPLY", C'38,101,176');
 
    int sec4 = sec3 + 104;
-   RectObj("DASH_SEC4", x + 8, sec4, 684, 148, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC4", x + 8, sec4, 744, 148, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC4_T", x + 16, sec4 + 7, "BACKTEST ENGINE", ac, 9);
    int btY = sec4 + 30;
    LabelObj("DASH_BTW_L", x + 16, btY + 4, "Weeks:", muted, 8);
    EditObj("EDIT_BT_WEEKS", x + 76, btY, 42, bh, IntegerToString(g_btWeeks));
    ButtonObj("BTN_BT_RUN", x + 126, btY, 126, bh, g_btRunning ? "RUNNING..." : "RUN BACKTEST", g_btRunning ? C'80,80,80' : on);
    ButtonObj("BTN_BT_STOP", x + 260, btY, 66, bh, "STOP", g_btRunning ? C'170,45,62' : off);
-   LabelObj("DASH_BT_COUNT", x + 338, btY + 4, IntegerToString(g_btTotal > 0 ? g_btTotal : 216) + " combos", muted, 8);
+   LabelObj("DASH_BT_COUNT", x + 338, btY + 4, IntegerToString(g_btTotal > 0 ? g_btTotal : 756) + " combos", muted, 8);
 
    int optY = btY + 26;
    LabelObj("DASH_FILL_L", x + 16, optY + 4, "Fill:", muted, 8);
@@ -1954,12 +2058,15 @@ int OnInit()
    g_target = InpDefaultTarget;
    g_hc = InpDefaultHalfBe;
    g_weeklyBias = InpDefaultWeeklyBias;
+   g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
+   g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
    g_btFillMode = InpBacktestFillMode;
    g_btSameBarPolicy = InpBacktestSameBarPolicy;
    g_btSpreadPts = InpBacktestSpreadPts;
    g_btSlippagePts = InpBacktestSlippagePts;
    g_btCommissionPerLot = InpBacktestCommissionPerLot;
+   g_auditRuntime = (InpAuditTradeCsv || InpAuditPositionProbe);
    g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    SanitizeHalfMode();
    BuildCombos();
@@ -2045,6 +2152,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_btCommissionPerLot = MathMax(0.0, StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
          UpdateDashboard();
       }
+      if(sparam == PFX + "EDIT_SL_PCT")
+      {
+         g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
+         RefreshAfterConfigChange();
+      }
       return;
    }
 
@@ -2057,14 +2169,26 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; if(g_hc == ERL_HC_TP2) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP1")) { if(g_target >= ERL_RR_TP2) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP2")) { if(g_target >= ERL_RR_TP3) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP3")) { if((int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP4")) { if((int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP5")) { if((int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_EA")) { g_eaEnabled = !g_eaEnabled; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_AUDIT")) { g_auditRuntime = !g_auditRuntime; Print("ERL_IRL audit logging ", g_auditRuntime ? "enabled" : "disabled"); UpdateDashboard(); ChartRedraw(0); return; }
 
    if(Clicked(sparam, "BTN_FILL_SIGNAL")) { g_btFillMode = BT_FILL_SIGNAL_CLOSE; UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_FILL_NEXT")) { g_btFillMode = BT_FILL_NEXT_BAR_OPEN; UpdateDashboard(); return; }

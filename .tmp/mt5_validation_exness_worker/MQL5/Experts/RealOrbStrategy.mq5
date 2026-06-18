@@ -5,9 +5,9 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.20"
+#property version "3.21"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-18.v3.4-single-position-rr-audit"
+#define ORB15_BUILD "2026-06-18.v3.5-six-tp-pnl-arrows"
 
 //=== CORE INPUTS ========================================================
 input bool            InpEaEnabled          = true;
@@ -21,6 +21,7 @@ input string          InpTradeEndNy         = "16:00";
 input bool            InpUseClosedBarBreakout = true;
 input double          InpMinBreakoutPoints  = 0.0;
 input double          InpSlBufferPoints     = 0.0;
+input double          InpSlDistancePct      = 100.0; // 100 = raw ORB SL distance, 80 = tighter, 120 = wider.
 input bool            InpOneTradePerNyDay   = true;
 input int             InpDeviationPoints    = 30;
 input int             InpMaxSpreadPoints    = 0;
@@ -31,16 +32,19 @@ input int    InpConfirmBars          = 1;    // Breakout bar must hold N closed 
 
 //=== EXECUTION MODE =====================================================
 enum ORB_EXEC_MODE { ORB_EXEC_SINGLE=0, ORB_EXEC_PARTIAL_3LEG=1 };
-enum ORB_TARGET_LEG { ORB_TARGET_TP1=1, ORB_TARGET_TP2=2, ORB_TARGET_TP3=3 };
-enum ORB_HC_BE_MODE { ORB_HC_BE_OFF=0, ORB_HC_BE_TP1=1, ORB_HC_BE_TP2=2 };
+enum ORB_TARGET_LEG { ORB_TARGET_TP1=1, ORB_TARGET_TP2=2, ORB_TARGET_TP3=3, ORB_TARGET_TP4=4, ORB_TARGET_TP5=5, ORB_TARGET_TP6=6 };
+enum ORB_HC_BE_MODE { ORB_HC_BE_OFF=0, ORB_HC_BE_TP1=1, ORB_HC_BE_TP2=2, ORB_HC_BE_TP3=3, ORB_HC_BE_TP4=4, ORB_HC_BE_TP5=5 };
 enum BT_FILL_MODE { BT_FILL_SIGNAL_CLOSE=0, BT_FILL_NEXT_BAR_OPEN=1, BT_FILL_CONSERVATIVE=2 };
 enum BT_SAME_BAR_POLICY { BT_SAMEBAR_CONSERVATIVE=0, BT_SAMEBAR_NEAREST_OPEN=1, BT_SAMEBAR_TP_FIRST=2, BT_SAMEBAR_SL_FIRST=3 };
 input ORB_EXEC_MODE InpExecutionMode = ORB_EXEC_SINGLE;
-input ORB_TARGET_LEG InpTargetTpLeg = ORB_TARGET_TP2;
+input ORB_TARGET_LEG InpTargetTpLeg = ORB_TARGET_TP4;
 input ORB_HC_BE_MODE InpHalfBeMode = ORB_HC_BE_OFF;
-input double InpTp1R      = 1.0;
-input double InpTp2R      = 2.0;
-input double InpTp3R      = 3.0;
+input double InpTp1R      = 0.5;
+input double InpTp2R      = 1.0;
+input double InpTp3R      = 1.5;
+input double InpTp4R      = 2.0;
+input double InpTp5R      = 2.5;
+input double InpTp6R      = 3.0;
 input double InpSingleTpR = 2.0;    // Legacy fallback; target leg is preferred.
 
 //=== FILTERS (initial state – toggleable from dashboard) ================
@@ -106,6 +110,7 @@ CTrade trade;
 string PREFIX = "ORB15v3_";
 string g_testerTradeAuditFile = "";
 int    g_testerTradeAuditRows = 0;
+long   DASH_Z = 1000000;
 
 bool IsValidationTester()
 {
@@ -134,14 +139,15 @@ bool            g_auditRuntime    = false;
 ENUM_TIMEFRAMES g_rtSignalTf      = PERIOD_M15;  // runtime signal timeframe
 int             g_rtDelayMin      = 5;            // runtime confirmation delay
 bool            g_rtUseDelay      = true;         // toggle for confirmation delay
-int             g_rtTargetLeg     = 2;
+int             g_rtTargetLeg     = 4;
 int             g_rtHalfBeLeg     = 0;
 int             g_rtHistoricalWeeks = 2;
+double          g_rtSlDistancePct = 100.0;
 
 //--- Trade management state ---------------------------------------------
 int      g_tradeDir = 0;
 double   g_tradeEntry = 0, g_tradeSl = 0, g_tradeRisk = 0;
-double   g_tradeTp1 = 0, g_tradeTp2 = 0, g_tradeTp3 = 0;
+double   g_tradeTp1 = 0, g_tradeTp2 = 0, g_tradeTp3 = 0, g_tradeTp4 = 0, g_tradeTp5 = 0, g_tradeTp6 = 0;
 datetime g_tradeOpenTime = 0;
 bool     g_beMoved = false;
 bool     g_halfClosed = false;
@@ -157,6 +163,7 @@ double   g_riskPerfFloating = 0.0;
 //--- Historical stats ---------------------------------------------------
 int    g_histTotal = 0, g_histWins = 0, g_histLosses = 0;
 double g_histNetR = 0.0;
+double g_histNetMoney = 0.0;
 string g_histStatLine = "-";
 
 //--- Audit engine state -------------------------------------------------
@@ -232,20 +239,42 @@ bool SpreadAllowed(){if(InpMaxSpreadPoints<=0)return true;return CurrentSpreadPo
 double NormalizeLegVolume(double total,int legs){double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);if(st<=0)st=0.01;if(mn<=0)mn=0.01;double leg=MathFloor(total/(double)legs/st+1e-7)*st;return NormalizeDouble(leg,8)<mn?0:NormalizeDouble(leg,8);}
 string TfLabel(ENUM_TIMEFRAMES tf){if(tf==PERIOD_M1)return "M1";if(tf==PERIOD_M5)return "M5";if(tf==PERIOD_M15)return "M15";return EnumToString(tf);}
 ENUM_TIMEFRAMES CycleTf(ENUM_TIMEFRAMES current){if(current==PERIOD_M1)return PERIOD_M5;if(current==PERIOD_M5)return PERIOD_M15;return PERIOD_M1;}
-int ClampTargetLeg(int leg){return MathMax(1,MathMin(3,leg));}
+int ClampTargetLeg(int leg){return MathMax(1,MathMin(6,leg));}
 int ClampHalfBeLeg(int leg,int target){if(target<=1)return 0;return MathMax(0,MathMin(target-1,leg));}
 int RuntimeTargetLeg(){return ClampTargetLeg(g_rtTargetLeg);}
 int RuntimeHalfBeLeg(){return ClampHalfBeLeg(g_rtHalfBeLeg,RuntimeTargetLeg());}
-double LegR(int leg){if(leg<=1)return MathMax(0.1,InpTp1R);if(leg==2)return MathMax(0.1,InpTp2R);return MathMax(0.1,InpTp3R);}
+double LegR(int leg)
+{
+   if(leg<=1)return MathMax(0.1,InpTp1R);
+   if(leg==2)return MathMax(0.1,InpTp2R);
+   if(leg==3)return MathMax(0.1,InpTp3R);
+   if(leg==4)return MathMax(0.1,InpTp4R);
+   if(leg==5)return MathMax(0.1,InpTp5R);
+   return MathMax(0.1,InpTp6R);
+}
 double RuntimeTargetR(){return LegR(RuntimeTargetLeg());}
+double PriceAtLeg(bool isBuy,double entry,double risk,int leg){return NormalizeTradePrice(isBuy?entry+risk*LegR(leg):entry-risk*LegR(leg));}
+double SimMoneyPnl(double netR)
+{
+   double base=InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE));
+   return netR*base*MathMax(0,InpRiskPerTradePct)/100.0;
+}
 string TargetLabel(){return "TP"+IntegerToString(RuntimeTargetLeg())+"="+DoubleToString(RuntimeTargetR(),1)+"R";}
 string HalfBeLabel(){int h=RuntimeHalfBeLeg();return h<=0?"HC:OFF":"HC:TP"+IntegerToString(h);}
 void SetTargetLeg(int leg){g_rtTargetLeg=ClampTargetLeg(leg);g_rtHalfBeLeg=ClampHalfBeLeg(g_rtHalfBeLeg,g_rtTargetLeg);}
-void CycleTargetLeg(){SetTargetLeg(RuntimeTargetLeg()>=3?1:RuntimeTargetLeg()+1);}
+void CycleTargetLeg(){SetTargetLeg(RuntimeTargetLeg()>=6?1:RuntimeTargetLeg()+1);}
 void CycleHalfBeLeg(){int target=RuntimeTargetLeg();if(target<=1){g_rtHalfBeLeg=0;return;}int h=RuntimeHalfBeLeg()+1;if(h>=target)h=0;g_rtHalfBeLeg=h;}
 int ClampHistWeeks(int weeks){if(weeks<=2)return 2;if(weeks<=5)return 5;if(weeks<=10)return 10;return 20;}
 void SetHistoricalWeeks(int weeks){g_rtHistoricalWeeks=ClampHistWeeks(weeks);}
 int RuntimeHistoricalDays(){return MathMax(1,ClampHistWeeks(g_rtHistoricalWeeks)*7);}
+double ClampSlDistancePct(double pct){return MathMax(10.0,MathMin(300.0,pct));}
+void SetSlDistancePct(double pct){g_rtSlDistancePct=ClampSlDistancePct(pct);}
+double ScaleSlFromEntry(bool isBuy,double entry,double rawSl)
+{
+   double dist=MathAbs(entry-rawSl)*ClampSlDistancePct(g_rtSlDistancePct)/100.0;
+   if(dist<=0)return rawSl;
+   return NormalizeTradePrice(isBuy?entry-dist:entry+dist);
+}
 
 long RuntimeMagic()
 {
@@ -701,6 +730,7 @@ void CreateRect(const string name,int x,int y,int w,int h,color bg,color brd)
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,MathMax(1,w));ObjectSetInteger(0,obj,OBJPROP_YSIZE,MathMax(1,h));
    ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);ObjectSetInteger(0,obj,OBJPROP_BORDER_COLOR,brd);
    ObjectSetInteger(0,obj,OBJPROP_BACK,false);ObjectSetInteger(0,obj,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,obj,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z);
 }
 void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
 {
@@ -711,6 +741,7 @@ void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
    ObjectSetString(0,obj,OBJPROP_TEXT,text);ObjectSetInteger(0,obj,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,sz);ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");
    ObjectSetInteger(0,obj,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,obj,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,obj,OBJPROP_BACK,false);ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+1);
 }
 void CreateButton(const string name,int x,int y,int w,int h,string text,color bg)
 {
@@ -722,6 +753,7 @@ void CreateButton(const string name,int x,int y,int w,int h,string text,color bg
    ObjectSetString(0,obj,OBJPROP_TEXT,text);ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);
    ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,8);
    ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,obj,OBJPROP_STATE,false);
+   ObjectSetInteger(0,obj,OBJPROP_BACK,false);ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+2);
 }
 void CreateEdit(const string name,int x,int y,int w,int h,string text)
 {
@@ -738,10 +770,13 @@ void CreateEdit(const string name,int x,int y,int w,int h,string text)
       ObjectSetInteger(0,obj,OBJPROP_ALIGN,ALIGN_CENTER);
       ObjectSetInteger(0,obj,OBJPROP_READONLY,false);
       ObjectSetInteger(0,obj,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,obj,OBJPROP_BACK,false);
+      ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+3);
    }
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
    ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+3);
 }
 
 //=========================================================================
@@ -880,8 +915,8 @@ bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
 //=========================================================================
 struct HistResult
 {
-   int maxTp;       // 0,1,2,3
-   string outcome;  // "TP1","TP2","TP3","SL","BE","open","timeout"
+   int maxTp;       // 0..6
+   string outcome;  // "TP1".."TP6","SL","BE","open","timeout"
    double netR;     // net R-multiple
    bool isWin;      // maxTp >= 1
 };
@@ -900,41 +935,58 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    double risk=MathAbs(entry-sl);
    if(risk<=0)return res;
-   double r1=MathMax(0.1,InpTp1R),r2=MathMax(0.1,InpTp2R),r3=MathMax(0.1,InpTp3R);
+
    int targetLeg=RuntimeTargetLeg();
    int hcLeg=ClampHalfBeLeg(halfBeLeg,targetLeg);
-   tp1=NormalizePrice(isBuy?entry+risk*r1:entry-risk*r1);
-   tp2=NormalizePrice(isBuy?entry+risk*r2:entry-risk*r2);
-   tp3=NormalizePrice(isBuy?entry+risk*r3:entry-risk*r3);
+   double tps[6];
+   for(int k=0;k<6;k++)
+   {
+      double rr=LegR(k+1);
+      tps[k]=NormalizePrice(isBuy?entry+risk*rr:entry-risk*rr);
+   }
+
    double effSl=sl;bool beApplied=false;
    for(int i=1;i<c;i++) // skip signal bar itself
    {
       if(r[i].time>tradeEnd)break;
       bool slHit=isBuy?(r[i].low<=effSl):(r[i].high>=effSl);
-      bool t1Hit=isBuy?(r[i].high>=tp1):(r[i].low<=tp1);
-      bool t2Hit=isBuy?(r[i].high>=tp2):(r[i].low<=tp2);
-      bool t3Hit=isBuy?(r[i].high>=tp3):(r[i].low<=tp3);
-      // Same-bar conflict: use bar open proximity to decide which hit first.
-      if(slHit&&t1Hit&&res.maxTp==0)
+
+      int hitLeg=0;
+      for(int k=0;k<6;k++)
       {
-         if(BtTpFirst(isBuy,r[i].open,effSl,tp1)){res.maxTp=1;if(hcLeg==1&&!beApplied){effSl=entry;beApplied=true;}if(targetLeg==1){res.outcome="TP1";break;}}
+         bool hit=isBuy?(r[i].high>=tps[k]):(r[i].low<=tps[k]);
+         if(hit)hitLeg=k+1;
+      }
+
+      // Same-bar first-touch approximation only matters before any profit leg has been reached.
+      if(slHit&&hitLeg>0&&res.maxTp==0)
+      {
+         if(BtTpFirst(isBuy,r[i].open,effSl,tps[0]))
+         {
+            res.maxTp=hitLeg;
+            if(hcLeg>0 && res.maxTp>=hcLeg && !beApplied){effSl=entry;beApplied=true;}
+            if(res.maxTp>=targetLeg){res.outcome="TP"+IntegerToString(targetLeg);break;}
+         }
          else{res.outcome="SL";break;}
       }
-      if(slHit){res.outcome=beApplied?"BE":"SL";break;}
-      if(t1Hit&&res.maxTp<1){res.maxTp=1;if(hcLeg==1&&!beApplied){effSl=entry;beApplied=true;}}
-      if(t2Hit&&res.maxTp<2)res.maxTp=2;
-      if(t3Hit&&res.maxTp<3)res.maxTp=3;
+      else
+      {
+         if(slHit){res.outcome=beApplied?"BE":"SL";break;}
+         if(hitLeg>res.maxTp)res.maxTp=hitLeg;
+      }
+
       if(hcLeg>0 && res.maxTp>=hcLeg && !beApplied){effSl=entry;beApplied=true;}
       if(res.maxTp>=targetLeg){res.outcome="TP"+IntegerToString(targetLeg);break;}
       if(i-1>=200){res.outcome="timeout";break;}
    }
    if(res.outcome=="open"&&res.maxTp>0)res.outcome="TP"+IntegerToString(res.maxTp);
-   // Net R calculation
+
+   // Net R calculation.
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
    {
-      double leg1=res.maxTp>=1?r1:(res.outcome=="SL"?-1.0:0);
-      double leg2=res.maxTp>=2?r2:(res.maxTp>=1&&hcLeg>0?0:-1.0);
-      double leg3=res.maxTp>=3?r3:(res.maxTp>=1&&hcLeg>0?0:-1.0);
+      double leg1=res.maxTp>=1?LegR(1):(res.outcome=="SL"?-1.0:0);
+      double leg2=res.maxTp>=2?LegR(2):(res.maxTp>=1&&hcLeg>0?0:-1.0);
+      double leg3=res.maxTp>=3?LegR(3):(res.maxTp>=1&&hcLeg>0?0:-1.0);
       if(res.outcome=="SL"&&res.maxTp==0){leg1=-1;leg2=-1;leg3=-1;}
       res.netR=(leg1+leg2+leg3)/3.0;
    }
@@ -946,8 +998,8 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
          if(hcLeg>0)res.netR=0.5*LegR(hcLeg)+0.5*targetR;
          else res.netR=targetR;
       }
-      else if(res.outcome=="BE"&&hcLeg>0&&res.maxTp>=hcLeg)res.netR=0.5*LegR(hcLeg);
-      else if(res.outcome=="open"&&hcLeg>0&&res.maxTp>=hcLeg)res.netR=0.5*LegR(hcLeg);
+      else if((res.outcome=="BE"||res.outcome=="open"||res.outcome=="TP"+IntegerToString(res.maxTp))&&hcLeg>0&&res.maxTp>=hcLeg)
+         res.netR=0.5*LegR(hcLeg);
       else if(res.outcome=="SL")res.netR=-1.0;
    }
    res.netR-=BtCostR(risk);
@@ -1003,7 +1055,7 @@ void DrawHistoricalSignals()
    int days=RuntimeHistoricalDays();
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.0001;
 
-   g_histTotal=0;g_histWins=0;g_histLosses=0;g_histNetR=0;
+   g_histTotal=0;g_histWins=0;g_histLosses=0;g_histNetR=0;g_histNetMoney=0;
    int checked=0,drawn=0,filtered=0;
 
    Print("ORB15v3 ======= HIST REDRAW START ======= TF=",TfLabel(g_rtSignalTf),
@@ -1048,17 +1100,22 @@ void DrawHistoricalSignals()
       bool isBuy=(dir=="BUY");
       double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
       double entry=sigC;
-      double sl=isBuy?(lo-buffer):(hi+buffer);
+      double rawSl=isBuy?(lo-buffer):(hi+buffer);
+      double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
       double risk=MathAbs(entry-sl);if(risk<=pt)continue;
       double r1v=MathMax(0.1,InpTp1R),r2v=MathMax(0.1,InpTp2R),r3v=MathMax(0.1,InpTp3R);
       double tp1=NormalizePrice(isBuy?entry+risk*r1v:entry-risk*r1v);
       double tp2=NormalizePrice(isBuy?entry+risk*r2v:entry-risk*r2v);
       double tp3=NormalizePrice(isBuy?entry+risk*r3v:entry-risk*r3v);
+      double tp4=NormalizePrice(isBuy?entry+risk*LegR(4):entry-risk*LegR(4));
+      double tp5=NormalizePrice(isBuy?entry+risk*LegR(5):entry-risk*LegR(5));
+      double tp6=NormalizePrice(isBuy?entry+risk*LegR(6):entry-risk*LegR(6));
 
       HistResult sim=SimulateTrade(sigT,te,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg());
       if(sim.netR>0)g_histWins++;
       else if(sim.netR<0)g_histLosses++;
       g_histNetR+=sim.netR;
+      g_histNetMoney+=SimMoneyPnl(sim.netR);
 
       // Debug audit
       Print("ORB15v3 HIST #",g_histTotal," ",dir,
@@ -1068,6 +1125,9 @@ void DrawHistoricalSignals()
             " tp1=",DoubleToString(tp1,_Digits),
             " tp2=",DoubleToString(tp2,_Digits),
             " tp3=",DoubleToString(tp3,_Digits),
+            " tp4=",DoubleToString(tp4,_Digits),
+            " tp5=",DoubleToString(tp5,_Digits),
+            " tp6=",DoubleToString(tp6,_Digits),
             " risk=",DoubleToString(risk,_Digits),
             " outcome=",sim.outcome,
             " maxTp=",sim.maxTp,
@@ -1089,7 +1149,9 @@ void DrawHistoricalSignals()
       ObjectSetInteger(0,base+"ARW",OBJPROP_SELECTABLE,false);ObjectSetInteger(0,base+"ARW",OBJPROP_HIDDEN,false);
 
       // Result text with detail
-      string txt=dir+" "+sim.outcome+" "+DoubleToString(sim.netR,1)+"R E="+DoubleToString(entry,_Digits);
+      double simPnl=SimMoneyPnl(sim.netR);
+      string txt=dir+" "+sim.outcome+" "+DoubleToString(sim.netR,1)+"R "
+         +(simPnl>=0?"+":"")+DoubleToString(simPnl,2)+"$ E="+DoubleToString(entry,_Digits);
       color txtClr=sim.isWin?clrPaleGreen:(sim.outcome=="SL"?clrLightSalmon:clrKhaki);
       double txtP=isBuy?arwP-pad*0.6:arwP+pad*0.6;
       DrawSignalText(base+"TXT",sigT,txtP,txt,txtClr);
@@ -1097,7 +1159,7 @@ void DrawHistoricalSignals()
    }
 
    double wr=g_histTotal>0?(double)g_histWins/(double)g_histTotal*100.0:0;
-   g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_histNetR,1)+"R";
+   g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2);
    if(filtered>0)g_histStatLine+=" | "+IntegerToString(filtered)+" filt";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",checked," drawn=",drawn," =======");
    Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(days));
@@ -1299,7 +1361,8 @@ void OBT_Tick()
       bool isBuy=(ob.dir=="BUY");
       double buffer=MathMax(0,InpSlBufferPoints)*pt;
       double entry=ob.sigClose;
-      double sl=isBuy?(g_btDays[di].orbLo-buffer):(g_btDays[di].orbHi+buffer);
+      double rawSl=isBuy?(g_btDays[di].orbLo-buffer):(g_btDays[di].orbHi+buffer);
+      double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
       double risk=MathAbs(entry-sl);if(risk<=pt) continue;
       double r1v=MathMax(0.1,InpTp1R),r2v=MathMax(0.1,InpTp2R),r3v=MathMax(0.1,InpTp3R);
       double tp1=NormalizePrice(isBuy?entry+risk*r1v:entry-risk*r1v);
@@ -1453,6 +1516,7 @@ void UpdateDashboard()
       wrClr,9);
    CreateLabel("DASH_STAT2",x+12,y+174,
       "Net R: "+DoubleToString(g_histNetR,1)+"R"
+      +" | Net $: "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)
       +" | Avg W: "+DoubleToString(g_histWins>0?g_histNetR/(double)g_histWins:0,1)+"R"
       +" | "+IntegerToString(g_histTotal-g_histWins-g_histLosses)+" open/timeout",
       muted,8);
@@ -1461,7 +1525,10 @@ void UpdateDashboard()
    string tpInfo=InpExecutionMode==ORB_EXEC_PARTIAL_3LEG
       ?"TP1="+DoubleToString(InpTp1R,1)+"R TP2="+DoubleToString(InpTp2R,1)+"R TP3="+DoubleToString(InpTp3R,1)+"R"
       :TargetLabel()+" "+HalfBeLabel();
-   CreateLabel("DASH_STAT3",x+12,y+190,tpInfo+" | Confirm="+IntegerToString(InpConfirmBars)+" bars | AutoLot "+BoolText(InpUseAutoRiskLot),C'134,158,182',7);
+   CreateLabel("DASH_STAT3",x+12,y+190,tpInfo+" | SL% "+DoubleToString(g_rtSlDistancePct,0)+" | AutoLot "+BoolText(InpUseAutoRiskLot),C'134,158,182',7);
+   CreateLabel("DASH_SL_L",x+330,y+190,"SL%:",C'134,158,182',7);
+   CreateEdit("EDIT_SL_PCT",x+362,y+188,48,18,DoubleToString(g_rtSlDistancePct,0));
+   CreateButton("BTN_SL_APPLY",x+416,y+188,58,18,"APPLY",C'38,101,176');
 
    // Win rate bar
    int barW=496,barH=14;
@@ -1510,11 +1577,14 @@ void UpdateDashboard()
       ObjectSetInteger(0,editName,OBJPROP_ALIGN,ALIGN_CENTER);
       ObjectSetInteger(0,editName,OBJPROP_READONLY,false);
       ObjectSetInteger(0,editName,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,editName,OBJPROP_BACK,false);
+      ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
    }
    ObjectSetInteger(0,editName,OBJPROP_XDISTANCE,x+52);
    ObjectSetInteger(0,editName,OBJPROP_YDISTANCE,btY);
    ObjectSetInteger(0,editName,OBJPROP_XSIZE,38);
    ObjectSetInteger(0,editName,OBJPROP_YSIZE,18);
+   ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
 
    color runBg=g_btRunning?C'80,80,80':C'30,120,70';
    CreateButton("BTN_BT_RUN",x+96,btY,120,18,g_btRunning?"RUNNING...":"RUN BACKTEST",runBg);
@@ -1737,6 +1807,9 @@ void ManagePositions()
    double hcPrice=0;
    if(hcLeg==1)hcPrice=g_tradeTp1;
    else if(hcLeg==2)hcPrice=g_tradeTp2;
+   else if(hcLeg==3)hcPrice=g_tradeTp3;
+   else if(hcLeg==4)hcPrice=g_tradeTp4;
+   else if(hcLeg==5)hcPrice=g_tradeTp5;
 
    // Optional half-close + SL to BE at selected TP leg. Default is OFF for clean 1:2R.
    if(hcLeg>0&&!g_beMoved&&hcPrice>0)
@@ -1823,11 +1896,16 @@ void TryOpenSignal()
    // Tick & geometry
    MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double buf=MathMax(0,InpSlBufferPoints)*pt;
-   double entry=NormalizeTradePrice(isBuy?tick.ask:tick.bid);double sl=NormalizeTradePrice(isBuy?(g_orbLow-buf):(g_orbHigh+buf));
+   double entry=NormalizeTradePrice(isBuy?tick.ask:tick.bid);
+   double rawSl=NormalizeTradePrice(isBuy?(g_orbLow-buf):(g_orbHigh+buf));
+   double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
    double risk=MathAbs(entry-sl);if(risk<=pt)return;
-   double tp1=NormalizeTradePrice(isBuy?entry+risk*MathMax(.1,InpTp1R):entry-risk*MathMax(.1,InpTp1R));
-   double tp2=NormalizeTradePrice(isBuy?entry+risk*MathMax(.1,InpTp2R):entry-risk*MathMax(.1,InpTp2R));
-   double tp3=NormalizeTradePrice(isBuy?entry+risk*MathMax(.1,InpTp3R):entry-risk*MathMax(.1,InpTp3R));
+   double tp1=PriceAtLeg(isBuy,entry,risk,1);
+   double tp2=PriceAtLeg(isBuy,entry,risk,2);
+   double tp3=PriceAtLeg(isBuy,entry,risk,3);
+   double tp4=PriceAtLeg(isBuy,entry,risk,4);
+   double tp5=PriceAtLeg(isBuy,entry,risk,5);
+   double tp6=PriceAtLeg(isBuy,entry,risk,6);
    bool opened=false;
    string lotDetail="";
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
@@ -1840,11 +1918,11 @@ void TryOpenSignal()
    else
    {
       int targetLeg=RuntimeTargetLeg();
-      double tp=targetLeg==1?tp1:(targetLeg==2?tp2:tp3);
+      double tp=targetLeg==1?tp1:(targetLeg==2?tp2:(targetLeg==3?tp3:(targetLeg==4?tp4:(targetLeg==5?tp5:tp6))));
       double lot=ResolveLot(dir,entry,sl,lotDetail);
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",dir,0,entry,sl,tp,lotDetail);return;}
       opened=ExecSingle(dir,entry,sl,tp,lot);
-      if(opened){g_tradeTp1=tp1;g_tradeTp2=tp2;g_tradeTp3=tp3;Audit("opened",dir,lot,entry,sl,tp,lotDetail+" "+TargetLabel()+" "+HalfBeLabel());}
+      if(opened){g_tradeTp1=tp1;g_tradeTp2=tp2;g_tradeTp3=tp3;g_tradeTp4=tp4;g_tradeTp5=tp5;g_tradeTp6=tp6;Audit("opened",dir,lot,entry,sl,tp,lotDetail+" "+TargetLabel()+" "+HalfBeLabel());}
    }
    if(opened){g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_lastExecStatus="OPENED";}
    else{g_lastExecStatus="FAIL";Audit("order_fail",dir,0,entry,sl,0,"ret="+IntegerToString((int)trade.ResultRetcode()));}
@@ -1868,6 +1946,7 @@ int OnInit()
    g_rtTargetLeg=(int)InpTargetTpLeg;SetTargetLeg(g_rtTargetLeg);
    g_rtHalfBeLeg=ClampHalfBeLeg((int)InpHalfBeMode,g_rtTargetLeg);
    g_rtHistoricalWeeks=ClampHistWeeks(InpHistoricalWeeks>0?InpHistoricalWeeks:(int)MathCeil((double)MathMax(1,InpHistoricalDays)/7.0));
+   g_rtSlDistancePct=ClampSlDistancePct(InpSlDistancePct);
    g_rtSignalTf=InpSignalTimeframe;
    g_rtDelayMin=InpBreakoutDelayMinutes;
    g_rtUseDelay=InpBreakoutDelayMinutes>0;
@@ -1879,7 +1958,7 @@ int OnInit()
    if(!IsValidationTester())EventSetTimer(5);
    if(!IsValidationTester()){DrawDashboard();DrawHistoricalSignals();}
    if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
-                         " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),
+                         " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),"/",DoubleToString(InpTp4R,1),"/",DoubleToString(InpTp5R,1),"/",DoubleToString(InpTp6R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars");
    return INIT_SUCCEEDED;
 }
@@ -1934,6 +2013,13 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_AUD_5W"){SetHistoricalWeeks(5);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_10W"){SetHistoricalWeeks(10);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_20W"){SetHistoricalWeeks(20);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_SL_APPLY")
+   {
+      string pctTxt=ObjectGetString(0,PREFIX+"EDIT_SL_PCT",OBJPROP_TEXT);
+      SetSlDistancePct(StringToDouble(pctTxt));
+      ObjectSetString(0,PREFIX+"EDIT_SL_PCT",OBJPROP_TEXT,DoubleToString(g_rtSlDistancePct,0));
+      needRedraw=true;
+   }
    else if(sparam==PREFIX+"BTN_AUDIT")
    {
       g_auditRuntime=!g_auditRuntime;

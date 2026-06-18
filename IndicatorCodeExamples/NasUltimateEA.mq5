@@ -36,6 +36,7 @@ input int             InpAtrLen            = 14;
 input NAS_SIGNAL_MODE InpSignalMode        = NAS_MODE_ST_SMA13;
 input NAS_RR_MODE     InpRRMode            = NAS_RR_2;
 input double          InpPineRiskMult      = 1.125;
+input double          InpSlDistancePct     = 100.0;
 input bool            InpBlockSameDir      = true;
 input bool            InpDefaultHcTp1      = false;
 input bool            InpDefaultHcTp2      = false;
@@ -101,7 +102,7 @@ input string InpValidationExportTo        = "";
 input bool InpShowDashboard           = true;
 input int  InpDashX                   = 10;
 input int  InpDashY                   = 18;
-input int  InpHistoryDays             = 14;
+input int  InpHistoryDays             = 35;
 input int  InpCalcBars                = 5000;
 input BT_FILL_MODE InpBacktestFillMode = BT_FILL_SIGNAL_CLOSE;
 input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
@@ -118,6 +119,7 @@ string PREFIX = "NAS_V3_LAB_";
 NAS_SIGNAL_MODE g_mode        = NAS_MODE_ST_SMA13;
 NAS_RR_MODE     g_rr          = NAS_RR_2;
 int             g_sensitivity = 4;
+double          g_slDistancePct = 100.0;
 bool            g_needsRedraw = true;
 datetime        g_lastBuild   = 0;
 bool            g_eaEnabled   = true;
@@ -242,6 +244,13 @@ string RRLabel(NAS_RR_MODE r){switch(r){case NAS_RR_1:return"1:1R";case NAS_RR_2
 double RRMult(NAS_RR_MODE r){switch(r){case NAS_RR_1:return 1.0;case NAS_RR_2:return 2.0;case NAS_RR_3:return 3.0;}return 2.0;}
 string BtFillLabel(BT_FILL_MODE m){switch(m){case BT_FILL_SIGNAL_CLOSE:return"SIGNAL";case BT_FILL_NEXT_BAR_OPEN:return"NEXT";case BT_FILL_CONSERVATIVE:return"CONS";}return"SIGNAL";}
 string BtSameBarLabel(BT_SAME_BAR_POLICY p){switch(p){case BT_SAMEBAR_CONSERVATIVE:return"CONS";case BT_SAMEBAR_NEAREST_OPEN:return"NEAR";case BT_SAMEBAR_TP_FIRST:return"TP1ST";case BT_SAMEBAR_SL_FIRST:return"SL1ST";}return"CONS";}
+double ClampSlDistancePct(double pct){if(pct<=0.0)return 100.0;return MathMax(5.0,MathMin(300.0,pct));}
+double ApplySlDistancePct(int dir,double entry,double rawSl)
+{
+   double dist=MathAbs(entry-rawSl)*ClampSlDistancePct(g_slDistancePct)/100.0;
+   if(dist<=TickSize())dist=TickSize()*10.0;
+   return NormTradePrice(dir>0?entry-dist:entry+dist);
+}
 string CsvSafe(string s){StringReplace(s,"\"","'");StringReplace(s,"\r"," ");StringReplace(s,"\n"," ");return s;}
 string FileSafe(string s)
 {
@@ -693,6 +702,8 @@ void ApplySignalMode(const MqlRates &rates[],NasPoint &p[],int n,NAS_SIGNAL_MODE
             p[i].nasSl=d>0?rates[i].low-ab:rates[i].high+ab;
             double rk=MathAbs(p[i].nasEntry-p[i].nasSl)*MathMax(0.1,InpPineRiskMult);
             p[i].nasSl=d>0?p[i].nasEntry-rk:p[i].nasEntry+rk;
+            p[i].nasSl=ApplySlDistancePct(d,p[i].nasEntry,p[i].nasSl);
+            rk=MathAbs(p[i].nasEntry-p[i].nasSl);
             p[i].nasTp1=d>0?p[i].nasEntry+rk:p[i].nasEntry-rk;
             p[i].nasTp2=d>0?p[i].nasEntry+rk*2:p[i].nasEntry-rk*2;
             p[i].nasTp3=d>0?p[i].nasEntry+rk*3:p[i].nasEntry-rk*3;
@@ -1095,7 +1106,7 @@ void DrawHistoricalSignals()
    NasSettings cfg;cfg.sensitivity=g_sensitivity;cfg.rsiLength=InpRsiLength;cfg.atrRisk=InpAtrRisk;cfg.atrLen=InpAtrLen;
    NasPoint p[];NAS_Calculate(rates,copied,cfg,p);
    ApplySignalMode(rates,p,copied,g_mode);
-   int days=MathMax(1,MathMin(30,InpHistoryDays));datetime cutoff=now-days*86400;
+   int days=MathMax(1,MathMin(365,InpHistoryDays));datetime cutoff=now-days*86400;
    g_total=0;g_wins=0;g_losses=0;g_other=0;g_netR=0;
    g_totalWonR=0;g_totalLostR=0;g_sumRiskPts=0;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.01;
@@ -1899,6 +1910,9 @@ void UpdateDashboard()
       MkBtn("BTN_HC1",x+pad+62,btnY3,120,bh,g_hcTp1?"HC@TP1: ON":"HC@TP1: OFF",g_hcTp1?hcOn:hcOff);
       MkBtn("BTN_HC2",x+pad+188,btnY3,120,bh,g_hcTp2?"HC@TP2: ON":"HC@TP2: OFF",g_hcTp2?hcOn:hcOff);
    }
+   MkLabel("DASH_SLPCT_L",x+pad+420,btnY3+3,"SL%:",C'120,140,165',7);
+   MkEdit("EDIT_SL_PCT",x+pad+452,btnY3,52,bh,DoubleToString(g_slDistancePct,0));
+   MkBtn("BTN_SL_APPLY",x+pad+508,btnY3,64,bh,"APPLY",C'38,101,176');
 
    // â”€â”€â”€â”€â”€â”€â”€ SECTION: AUDIT RESULTS â”€â”€â”€â”€â”€â”€â”€
    int sec2Y=secY+88;
@@ -2096,6 +2110,7 @@ void UpdateDashboard()
    MkLabel("DASH_VER",x+pad,fY+4,
            "ATR("+IntegerToString(InpAtrLen)+")x"+IntegerToString(InpAtrRisk)
            +"  |  ST ATR(11)x"+IntegerToString(g_sensitivity)
+           +"  |  SL%="+DoubleToString(g_slDistancePct,0)
            +"  |  SameDir="+(InpBlockSameDir?"BLOCK":"ALLOW"),C'100,112,130',7);
 }
 
@@ -2106,6 +2121,7 @@ int OnInit()
 {
    NasTesterAudit_Init();
    g_mode=InpSignalMode;g_rr=InpRRMode;g_sensitivity=MathMax(1,MathMin(10,InpSensitivity));
+   g_slDistancePct=ClampSlDistancePct(InpSlDistancePct);
    g_hcTp1=InpDefaultHcTp1;g_hcTp2=InpDefaultHcTp2;
    g_eaEnabled=InpEaEnabled;g_needsRedraw=true;g_lastBuild=0;
    g_auditRuntime=(InpAuditEnabled || InpAuditTradeCsv || InpAuditPositionProbe);
@@ -2124,11 +2140,12 @@ int OnInit()
    }
    NasAudit_TradeWrite("ea_init","NAS_V3_LAB","","",0,0,0,0,"init",0,
       "mode="+ModeLabel(g_mode)+" rr="+RRLabel(g_rr)+" s="+IntegerToString(g_sensitivity)
+      +" sl_pct="+DoubleToString(g_slDistancePct,1)
       +" magic="+IntegerToString(RuntimeMagic())+" ftmo="+(InpAccountRiskEnabled?"ON":"OFF")
       +" use_trading_window="+(InpUseTradingWindow?"true":"false")
       +" trade_start='"+InpTradeStartTime+"' trade_end='"+InpTradeEndTime+"' no_trade='"+InpNoTradeWindowsGmt+"' window='"+WindowText()+"'");
    Print("NAS_V3_LAB v2.2 prod init ",_Symbol," tf=",EnumToString(_Period)," mode=",ModeLabel(g_mode)," rr=",RRLabel(g_rr),
-         " hc1=",g_hcTp1," hc2=",g_hcTp2," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled,
+         " hc1=",g_hcTp1," hc2=",g_hcTp2," slPct=",DoubleToString(g_slDistancePct,1)," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled,
          " useTradingWindow=",InpUseTradingWindow," tradeWindow=",InpTradeStartTime,"-",InpTradeEndTime,
          " noTrade=",InpNoTradeWindowsGmt);
    return INIT_SUCCEEDED;
@@ -2222,6 +2239,12 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       ObjectSetInteger(0,sp,OBJPROP_STATE,false);
       nr=true;
    }
+   else if(sp==PREFIX+"BTN_SL_APPLY")
+   {
+      g_slDistancePct=ClampSlDistancePct(StringToDouble(ObjectGetString(0,PREFIX+"EDIT_SL_PCT",OBJPROP_TEXT)));
+      ObjectSetInteger(0,sp,OBJPROP_STATE,false);
+      nr=true;
+   }
    // EA toggle
    else if(sp==PREFIX+"BTN_EA")
    {
@@ -2274,7 +2297,7 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       g_needsRedraw=true;g_lastBuild=0;
       DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);
       Print("NAS_V3_LAB changed: ",ModeLabel(g_mode)," RR=",RRLabel(g_rr)," S=",g_sensitivity,
-            " HC1=",g_hcTp1," HC2=",g_hcTp2);
+            " HC1=",g_hcTp1," HC2=",g_hcTp2," SL%=",DoubleToString(g_slDistancePct,1));
    }
 }
 //+------------------------------------------------------------------+

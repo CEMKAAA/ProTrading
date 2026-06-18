@@ -1,0 +1,26 @@
+﻿{
+    "jobs":  [
+                 {
+                     "visual":  false,
+                     "job_id":  "orb_ustec_m15_sl10_tp6_hctp5_delay3_realtick_2w",
+                     "preset":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\EaPresets\\CandidateValidation\\ORB\\orb_ustec_m15_sl10_tp6_hctp5_delay3_realtick.set",
+                     "shutdown_terminal":  true,
+                     "execution_mode":  0,
+                     "to_date":  "2026.06.18",
+                     "deposit":  10000,
+                     "ea":  "RealOrbStrategy",
+                     "model":  4,
+                     "currency":  "USD",
+                     "optimization":  false,
+                     "from_date":  "2026.06.03",
+                     "timeframe":  "M15",
+                     "ea_kind":  "orb",
+                     "symbol":  "USTECm",
+                     "leverage":  "1:100",
+                     "terminal_data_dir":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\mt5_validation_exness_worker",
+                     "portable":  true,
+                     "terminal_exe":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\mt5_validation_exness_worker\\terminal64.exe",
+                     "timeout_sec":  1800
+                 }
+             ]
+}
