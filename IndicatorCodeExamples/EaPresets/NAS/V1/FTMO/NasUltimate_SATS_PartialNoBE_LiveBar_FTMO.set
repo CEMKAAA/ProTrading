@@ -95,3 +95,4 @@ InpTradeLatestSignalOnAttach=false
 InpDrawLastSignalsOnStart=true
 InpStartupSignalCount=3
 InpShowDashboard=true
+InpBacktestUseTickReplay=true

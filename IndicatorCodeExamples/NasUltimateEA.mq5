@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| NAS Ultimate Signal Lab v2.2 â€” PRODUCTION                         |
 //| Toggleable signal modes + HC+BE partial close + full execution.    |
 //| FTMO-grade account risk, spread governor, TP watchdog.             |
@@ -67,6 +67,8 @@ input int    InpTpTouchRetries        = 2;
 input bool   InpAdvancedLotEnabled    = true;
 input int    InpLotDailyAtrPeriod     = 14;
 input bool   InpAccountRiskEnabled    = true;
+input bool   InpFtmoModeDefault       = false;
+input bool   InpRiskLotOnlyModeDefault= false;
 input double InpRiskPerTradePct       = 1.00;
 input double InpAtrExposurePct        = 2.00;
 input double InpMaxPortfolioPct       = 4.00;
@@ -104,8 +106,9 @@ input int  InpDashX                   = 10;
 input int  InpDashY                   = 18;
 input int  InpHistoryDays             = 35;
 input int  InpCalcBars                = 5000;
-input BT_FILL_MODE InpBacktestFillMode = BT_FILL_SIGNAL_CLOSE;
-input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
+input BT_FILL_MODE InpBacktestFillMode = BT_FILL_NEXT_BAR_OPEN;
+input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_CONSERVATIVE;
+input bool   InpBacktestUseTickReplay    = true;
 input double InpBacktestSpreadPts       = 0.0;
 input double InpBacktestSlippagePts     = 0.0;
 input double InpBacktestCommissionPerLot= 0.0;
@@ -123,6 +126,8 @@ double          g_slDistancePct = 100.0;
 bool            g_needsRedraw = true;
 datetime        g_lastBuild   = 0;
 bool            g_eaEnabled   = true;
+bool            g_ftmoMode    = false;
+bool            g_riskLotOnlyMode = false;
 string          g_testerTradeAuditFile = "";
 int             g_testerTradeAuditRows = 0;
 bool            g_validationInternalExportDone = false;
@@ -131,6 +136,11 @@ bool            g_auditRuntime = false;
 bool IsValidationTester()
 {
    return (bool)MQLInfoInteger(MQL_TESTER) && StringLen(InpValidationJobId) > 0;
+}
+
+bool IsTesterMode()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER);
 }
 
 // Half-close + SL->BE state
@@ -189,8 +199,8 @@ string   g_btFileName    = "";
 string   g_btLastResult  = "";
 uint     g_btStartMs     = 0;
 uint     g_btElapsedMs   = 0;
-BT_FILL_MODE g_btFillMode = BT_FILL_SIGNAL_CLOSE;
-BT_SAME_BAR_POLICY g_btSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
+BT_FILL_MODE g_btFillMode = BT_FILL_NEXT_BAR_OPEN;
+BT_SAME_BAR_POLICY g_btSameBarPolicy = BT_SAMEBAR_CONSERVATIVE;
 double   g_btSpreadPts = 0.0;
 double   g_btSlippagePts = 0.0;
 double   g_btCommissionPerLot = 0.0;
@@ -214,11 +224,21 @@ NAS_SIGNAL_MODE g_btModes[] = {NAS_MODE_ST_SMA13,NAS_MODE_ST_ONLY,NAS_MODE_ST_SM
 //=====================================================================
 //  MAGIC NUMBER (FTMO-compatible scoping)
 //=====================================================================
+bool ManagedRiskMode(){return g_ftmoMode||g_riskLotOnlyMode;}
+string RuntimeRiskModeLabel(){if(g_ftmoMode)return "FTMO";if(g_riskLotOnlyMode)return "RISKLOT";return "NORMAL";}
+bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode();}
+double EffRiskPerTradePct(){return ManagedRiskMode()?1.00:InpRiskPerTradePct;}
+double EffAtrExposurePct(){return ManagedRiskMode()?2.00:InpAtrExposurePct;}
+double EffMaxPortfolioPct(){return g_ftmoMode?4.00:InpMaxPortfolioPct;}
+double EffDailyLossLimitPct(){return g_ftmoMode?5.00:InpDailyLossLimitPct;}
+double EffMaxDrawdownPct(){return g_ftmoMode?10.00:InpMaxDrawdownPct;}
+double EffMaxMarginUsagePct(){return g_ftmoMode?40.00:InpMaxMarginUsagePct;}
+
 long RuntimeMagic()
 {
    if(g_runtimeMagic!=0) return g_runtimeMagic;
    long cp=(long)(ChartID()%1000000);
-   if(InpAccountRiskEnabled)
+   if(RiskEnabled())
    {
       long safe=InpMagic%1000000000000; if(safe<0)safe=-safe;
       g_runtimeMagic=4000000000000000000+safe*1000000+cp;
@@ -592,17 +612,17 @@ void RiskCacheInvalidate(){int rh=MathMax(0,MathMin(23,InpDayResetHourGmt));Glob
 
 void EnforceRiskBreach()
 {
-   if(!InpAccountRiskEnabled||!InpLiquidateOnBreach)return;
-   if(InpDailyLossLimitPct<=0&&InpMaxDrawdownPct<=0)return;
+   if(!RiskEnabled()||!InpLiquidateOnBreach)return;
+   if(EffDailyLossLimitPct()<=0&&EffMaxDrawdownPct()<=0)return;
    uint now=GetTickCount();if(now-g_lastRiskGuardMs<100)return;g_lastRiskGuardMs=now;
    double cap,dp,tp;RiskMetrics(cap,dp,tp);
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
-   bool breach=(InpDailyLossLimitPct>0&&dp>=InpDailyLossLimitPct*sf)||(InpMaxDrawdownPct>0&&tp>=InpMaxDrawdownPct*sf);
+   bool breach=(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf);
    if(!breach)return;
    string ak=RiskKey("BREACH_ATTEMPT");double nowL=(double)TimeLocal();
    if(GlobalVariableCheck(ak)&&nowL-GlobalVariableGet(ak)<2)return;GlobalVariableSet(ak,nowL);
    if(!RiskLockAcquire())return;RiskCacheInvalidate();RiskMetrics(cap,dp,tp);
-   breach=(InpDailyLossLimitPct>0&&dp>=InpDailyLossLimitPct*sf)||(InpMaxDrawdownPct>0&&tp>=InpMaxDrawdownPct*sf);
+   breach=(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf);
    if(!breach){RiskLockRelease();return;}
    Print("NAS_V3_LAB LIQUIDATION daily=",DoubleToString(dp,3)," dd=",DoubleToString(tp,3));
    for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t)||!MagicScoped((long)PositionGetInteger(POSITION_MAGIC)))continue;trade.PositionClose(t);}
@@ -617,11 +637,11 @@ double ClosedDailyAtr(){int h=iATR(_Symbol,PERIOD_D1,MathMax(2,InpLotDailyAtrPer
 double ResolveVolume(int dir,double entry,double sl,string &detail)
 {
    double fallback=NormVol(InpFixedLot);
-   if(!InpAccountRiskEnabled){detail="risk_off lot="+DoubleToString(fallback,4);return fallback;}
+   if(!RiskEnabled()){detail="risk_off lot="+DoubleToString(fallback,4);return fallback;}
    double eq,dp,tp;RiskMetrics(eq,dp,tp);
    double mu=eq>0?AccountInfoDouble(ACCOUNT_MARGIN)/eq*100:100;
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
-   if(eq<=0||(InpDailyLossLimitPct>0&&dp>=InpDailyLossLimitPct*sf)||(InpMaxDrawdownPct>0&&tp>=InpMaxDrawdownPct*sf)||(InpMaxMarginUsagePct>0&&mu>=InpMaxMarginUsagePct))
+   if(eq<=0||(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf)||(EffMaxMarginUsagePct()>0&&mu>=EffMaxMarginUsagePct()))
    {detail="risk_block eq="+DoubleToString(eq,2)+" dp="+DoubleToString(dp,3);return 0;}
    double atr=ClosedDailyAtr();
    if(sl<=0||MathAbs(entry-sl)<=0||atr<=0){detail="invalid_inputs";return InpFailClosed?0:fallback;}
@@ -633,16 +653,16 @@ double ResolveVolume(int dir,double entry,double sl,string &detail)
    double openRisk=0;int unprot=0;
    for(int i=PositionsTotal()-1;i>=0;i--){string sym=PositionGetSymbol(i);if(sym==""||!MagicScoped((long)PositionGetInteger(POSITION_MAGIC)))continue;double psl=PositionGetDouble(POSITION_SL);if(psl<=0){unprot++;continue;}ENUM_POSITION_TYPE pt=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);double pe=PositionGetDouble(POSITION_PRICE_OPEN);double pv=PositionGetDouble(POSITION_VOLUME);bool exp=(pt==POSITION_TYPE_BUY&&psl<pe)||(pt==POSITION_TYPE_SELL&&psl>pe);if(!exp)continue;double r=0;if(OrderCalcProfit(pt==POSITION_TYPE_BUY?ORDER_TYPE_BUY:ORDER_TYPE_SELL,sym,pv,pe,psl,r))openRisk+=MathMax(0,-r);else unprot++;}
    if(InpBlockUnprotected&&unprot>0){detail="unprotected="+IntegerToString(unprot);return 0;}
-   double tb=eq*MathMax(0,InpRiskPerTradePct)/100,ab=eq*MathMax(0,InpAtrExposurePct)/100,pb=eq*MathMax(0,InpMaxPortfolioPct)/100;
+   double tb=eq*MathMax(0,EffRiskPerTradePct())/100,ab=eq*MathMax(0,EffAtrExposurePct())/100,pb=eq*MathMax(0,EffMaxPortfolioPct())/100;
    double avail=MathMax(0,pb-openRisk);
    if(tb<=0||ab<=0||avail<=0){detail="budget_exhausted";return 0;}
    double slV=tb/slMpl,atrV=ab/atrMpl,pV=avail/slMpl;
-   double raw=InpAdvancedLotEnabled?MathMin(slV,MathMin(atrV,pV)):InpFixedLot;
+   double raw=(InpAdvancedLotEnabled||ManagedRiskMode())?MathMin(slV,MathMin(atrV,pV)):InpFixedLot;
    double vol=NormVol(raw);
    if(vol<=0){detail="vol_zero";return 0;}
    double reqM=0;bool mc=OrderCalcMargin(ot,_Symbol,vol,entry,reqM);
    double projM=eq>0?(AccountInfoDouble(ACCOUNT_MARGIN)+reqM)/eq*100:100;
-   if(!mc||reqM>AccountInfoDouble(ACCOUNT_MARGIN_FREE)||(InpMaxMarginUsagePct>0&&projM>InpMaxMarginUsagePct)){detail="margin_block";return 0;}
+   if(!mc||reqM>AccountInfoDouble(ACCOUNT_MARGIN_FREE)||(EffMaxMarginUsagePct()>0&&projM>EffMaxMarginUsagePct())){detail="margin_block";return 0;}
    detail="lot="+DoubleToString(vol,4)+" sl_v="+DoubleToString(slV,4)+" atr_v="+DoubleToString(atrV,4);
    return vol;
 }
@@ -778,7 +798,7 @@ void ProcessSignalBar()
    }
 
    bool lockHeld=false;
-   if(InpAccountRiskEnabled)
+   if(RiskEnabled())
    {
       if(!RiskLockAcquire())
       {
@@ -841,6 +861,91 @@ void ProcessSignalBar()
 //=====================================================================
 struct SimResult{string outcome;double netR;bool isWin;bool isLoss;};
 
+bool SimulateTradeTicks(const MqlRates &rates[],int si,int d,double &e,double sl,int endBar,double risk,
+                        bool hcTp1,bool hcTp2,NAS_RR_MODE rr,SimResult &r)
+{
+   if(!InpBacktestUseTickReplay) return false;
+   int last=ArraySize(rates)-1;
+   if(si>=last||risk<=0)return false;
+   int startIdx=MathMin(si+1,last);
+   datetime startTime=rates[startIdx].time;
+   datetime endTime=rates[MathMin(endBar,last)].time;
+   int sec=PeriodSeconds(_Period);if(sec<=0)sec=60;
+   endTime+=(datetime)sec;
+   if(endTime<=startTime)return false;
+   MqlTick ticks[];
+   int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_ALL,(ulong)startTime*1000,(ulong)endTime*1000);
+   if(copied<=0)return false;
+   int first=-1;
+   for(int i=0;i<copied;i++)
+   {
+      if(ticks[i].bid>0.0&&ticks[i].ask>0.0){first=i;break;}
+   }
+   if(first<0)return false;
+
+   double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.00001;
+   double slip=MathMax(0.0,g_btSlippagePts)*pt;
+   e=NormalizeDouble(d>0?ticks[first].ask+slip:ticks[first].bid-slip,_Digits);
+   risk=MathAbs(e-sl);
+   if(risk<=0)return false;
+
+   double rrm=RRMult(rr);
+   double tp1=d>0?e+risk:e-risk;
+   double tp2=d>0?e+risk*2.0:e-risk*2.0;
+   double finalTp=d>0?e+risk*rrm:e-risk*rrm;
+   double curSl=sl;
+   double lotFrac=1.0;
+   double accR=0.0;
+   bool tp1Done=false;
+   bool tp2Done=false;
+
+   for(int i=first;i<copied;i++)
+   {
+      double bid=ticks[i].bid, ask=ticks[i].ask;
+      if(bid<=0.0||ask<=0.0)continue;
+      double closePx=d>0?bid:ask;
+
+      bool slHit=d>0?(closePx<=curSl):(closePx>=curSl);
+      if(slHit)
+      {
+         double slR=(curSl==e)?0.0:-1.0;
+         accR+=slR*lotFrac;
+         r.netR=accR-BtCostR(risk);
+         r.outcome=(curSl==e)?"BE":"SL";
+         r.isWin=(r.netR>0);r.isLoss=(r.netR<0);
+         return true;
+      }
+
+      bool tp1Hit=!tp1Done&&(d>0?(closePx>=tp1):(closePx<=tp1));
+      if(tp1Hit&&hcTp1&&rrm>=2.0)
+      {
+         accR+=1.0*lotFrac*0.5;
+         lotFrac*=0.5;
+         curSl=e;
+         tp1Done=true;
+      }
+
+      bool tp2Hit=!tp2Done&&rrm>=3.0&&(d>0?(closePx>=tp2):(closePx<=tp2));
+      if(tp2Hit&&hcTp2&&rrm>=3.0)
+      {
+         accR+=2.0*lotFrac*0.5;
+         lotFrac*=0.5;
+         tp2Done=true;
+      }
+
+      bool finalHit=d>0?(closePx>=finalTp):(closePx<=finalTp);
+      if(finalHit)
+      {
+         accR+=rrm*lotFrac;
+         r.netR=accR-BtCostR(risk);
+         r.outcome="TP";
+         r.isWin=(r.netR>0);r.isLoss=(r.netR<0);
+         return true;
+      }
+   }
+   return false;
+}
+
 SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d,
                         double e,double sl,int last,double risk,
                         bool hcTp1,bool hcTp2,NAS_RR_MODE rr)
@@ -873,6 +978,9 @@ SimResult SimulateTrade(const MqlRates &rates[],const NasPoint &p[],int si,int d
    {
       if(j>si+1 && (p[j].buy || p[j].sell)) { endBar=j-1; break; }
    }
+
+   if(SimulateTradeTicks(rates,si,d,e,sl,endBar,risk,hcTp1,hcTp2,rr,r))
+      return r;
 
    for(int j=si+1; j<=endBar; j++)
    {
@@ -1088,15 +1196,15 @@ void MkRect(const string nm,int x,int y,int w,int h,color bg,color bd){string o=
 void MkLabel(const string nm,int x,int y,string txt,color c,int sz=9){string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_LABEL,0,0,0);ObjectSetInteger(0,o,OBJPROP_CORNER,CORNER_LEFT_UPPER);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetString(0,o,OBJPROP_TEXT,txt);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,sz);ObjectSetString(0,o,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,o,OBJPROP_HIDDEN,true);}
 void MkBtn(const string nm,int x,int y,int w,int h,string txt,color bg){string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_BUTTON,0,0,0);ObjectSetInteger(0,o,OBJPROP_CORNER,CORNER_LEFT_UPPER);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetInteger(0,o,OBJPROP_XSIZE,w);ObjectSetInteger(0,o,OBJPROP_YSIZE,h);ObjectSetString(0,o,OBJPROP_TEXT,txt);ObjectSetInteger(0,o,OBJPROP_BGCOLOR,bg);ObjectSetInteger(0,o,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,8);ObjectSetString(0,o,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,o,OBJPROP_STATE,false);}
 void MkEdit(const string nm,int x,int y,int w,int h,string txt){string o=PREFIX+nm;if(ObjectFind(0,o)<0){ObjectCreate(0,o,OBJ_EDIT,0,0,0);ObjectSetString(0,o,OBJPROP_TEXT,txt);ObjectSetInteger(0,o,OBJPROP_BGCOLOR,C'38,46,60');ObjectSetInteger(0,o,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,o,OBJPROP_BORDER_COLOR,C'80,100,130');ObjectSetInteger(0,o,OBJPROP_FONTSIZE,8);ObjectSetString(0,o,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,o,OBJPROP_ALIGN,ALIGN_CENTER);ObjectSetInteger(0,o,OBJPROP_READONLY,false);ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);}ObjectSetInteger(0,o,OBJPROP_CORNER,CORNER_LEFT_UPPER);ObjectSetInteger(0,o,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,y);ObjectSetInteger(0,o,OBJPROP_XSIZE,w);ObjectSetInteger(0,o,OBJPROP_YSIZE,h);}
-void MkArrow(const string nm,datetime t,double pr,int code,color c){string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_ARROW,0,t,pr);else ObjectMove(0,o,0,t,pr);ObjectSetInteger(0,o,OBJPROP_ARROWCODE,code);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_WIDTH,2);ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,o,OBJPROP_HIDDEN,false);}
-void MkText(const string nm,datetime t,double pr,string txt,color c){string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_TEXT,0,t,pr);else ObjectMove(0,o,0,t,pr);ObjectSetString(0,o,OBJPROP_TEXT,txt);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,8);ObjectSetString(0,o,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,o,OBJPROP_HIDDEN,false);}
+void MkArrow(const string nm,datetime t,double pr,int code,color c){if(IsTesterMode())return;string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_ARROW,0,t,pr);else ObjectMove(0,o,0,t,pr);ObjectSetInteger(0,o,OBJPROP_ARROWCODE,code);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_WIDTH,2);ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,o,OBJPROP_HIDDEN,false);}
+void MkText(const string nm,datetime t,double pr,string txt,color c){if(IsTesterMode())return;string o=PREFIX+nm;if(ObjectFind(0,o)<0)ObjectCreate(0,o,OBJ_TEXT,0,t,pr);else ObjectMove(0,o,0,t,pr);ObjectSetString(0,o,OBJPROP_TEXT,txt);ObjectSetInteger(0,o,OBJPROP_COLOR,c);ObjectSetInteger(0,o,OBJPROP_FONTSIZE,8);ObjectSetString(0,o,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,o,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,o,OBJPROP_HIDDEN,false);}
 
 // Hide a button by moving it off-screen
 void HideBtn(const string nm){string o=PREFIX+nm;if(ObjectFind(0,o)>=0){ObjectSetInteger(0,o,OBJPROP_XDISTANCE,-9999);ObjectSetInteger(0,o,OBJPROP_YDISTANCE,-9999);}}
 
 void DrawHistoricalSignals()
 {
-   if(IsValidationTester()) return;
+   if(IsTesterMode()) return;
    datetime now=TimeCurrent();
    if(!g_needsRedraw&&g_lastBuild>0&&now-g_lastBuild<300)return;
    g_lastBuild=now;g_needsRedraw=false;DelHist();
@@ -1166,6 +1274,7 @@ string NasAudit_DateStr(datetime t)
 void NasBT_ProcessAudit(string ev,string detail)
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode() && !IsValidationTester()) return;
    string fileName="NasV3Lab_BacktestProcess_"+NasAudit_DateStr(TimeGMT())+".csv";
    bool exists=FileIsExist(fileName);
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
@@ -1217,6 +1326,7 @@ void NasAudit_TradeWrite(string eventName,string source,string eventId,string di
                          string reason,double pnl,string extra)
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode()) return;
    string fileName="NasV3Lab_TradeAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE){Print("NAS_AUDIT trade csv open fail err=",GetLastError());return;}
@@ -1535,7 +1645,7 @@ bool NasAudit_RiskClaimSnapshot()
 
 void NasAudit_RiskSnapshot()
 {
-   if(!InpAccountRiskEnabled || !g_auditRuntime) return;
+   if(!RiskEnabled() || !g_auditRuntime) return;
    if(!NasAudit_RiskClaimSnapshot()) return;
 
    double cap,dp,tpp;RiskMetrics(cap,dp,tpp);
@@ -1564,9 +1674,9 @@ void NasAudit_RiskSnapshot()
       }
    }
 
-   double tb=cap*MathMax(0,InpRiskPerTradePct)/100;
-   double ab=cap*MathMax(0,InpAtrExposurePct)/100;
-   double pb=cap*MathMax(0,InpMaxPortfolioPct)/100;
+   double tb=cap*MathMax(0,EffRiskPerTradePct())/100;
+   double ab=cap*MathMax(0,EffAtrExposurePct())/100;
+   double pb=cap*MathMax(0,EffMaxPortfolioPct())/100;
 
    string fileName="NasV3Lab_RiskAudit_"+NasAudit_DateStr(TimeGMT())+".csv";
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
@@ -1721,6 +1831,16 @@ void BT_Tick()
       }
       risk=MathAbs(e-sl);
       if(risk<=0)continue;
+      SimResult tickRes;
+      tickRes.outcome="open";tickRes.netR=0;tickRes.isWin=false;tickRes.isLoss=false;
+      if(SimulateTradeTicks(g_btRates,si,d,e,sl,endBar,risk,combo.hc1,combo.hc2,rr,tickRes))
+      {
+         double finalR=tickRes.netR;
+         if(finalR>0){st.wonR+=finalR;st.wins++;}else if(finalR<0){st.lostR+=MathAbs(finalR);st.losses++;}else st.other++;
+         st.total++;
+         st.netR+=finalR;
+         continue;
+      }
       double tp1=d>0?e+risk:e-risk;
       double tp2=d>0?e+risk*2.0:e-risk*2.0;
       double fTp=d>0?e+risk*rrm:e-risk*rrm;
@@ -1982,9 +2102,11 @@ void UpdateDashboard()
 
    // EA + Close buttons
    int exY=sec3Y+24;
-   MkBtn("BTN_EA",x+pad,exY,100,bh,g_eaEnabled?"EA: ON":"EA: OFF",g_eaEnabled?C'30,150,95':C'178,37,57');
-   MkBtn("BTN_CLOSE",x+pad+108,exY,96,bh,"CLOSE ALL",C'178,37,57');
-   MkBtn("BTN_AUDIT",x+pad+212,exY,96,bh,g_auditRuntime?"AUDIT ON":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'55,55,62');
+   MkBtn("BTN_EA",x+pad,exY,84,bh,g_eaEnabled?"EA: ON":"EA: OFF",g_eaEnabled?C'30,150,95':C'178,37,57');
+   MkBtn("BTN_FTMO",x+pad+90,exY,70,bh,g_ftmoMode?"FTMO ON":"FTMO",g_ftmoMode?C'30,150,95':C'55,55,62');
+   MkBtn("BTN_RISKLOT",x+pad+166,exY,78,bh,g_riskLotOnlyMode?"RISK ON":"RISKLOT",g_riskLotOnlyMode?C'30,150,95':C'55,55,62');
+   MkBtn("BTN_CLOSE",x+pad+250,exY,86,bh,"CLOSE ALL",C'178,37,57');
+   MkBtn("BTN_AUDIT",x+pad+342,exY,84,bh,g_auditRuntime?"AUDIT ON":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'55,55,62');
 
    // Spread status (same row, right side)
    string spTxt="Spread: "+g_lastSpreadStatus+" "+DoubleToString(g_lastSpreadPts,0)+"pts";
@@ -2002,16 +2124,16 @@ void UpdateDashboard()
    if(g_lastBlockReason!="")
       MkLabel("DASH_BLK",x+pad,exY3,"Block: "+g_lastBlockReason,C'255,204,82',7);
    else
-      MkLabel("DASH_BLK",x+pad,exY3,"Magic: "+IntegerToString(RuntimeMagic())+"  |  FTMO: "+(InpAccountRiskEnabled?"ON":"OFF"),C'125,140,160',7);
+      MkLabel("DASH_BLK",x+pad,exY3,"Magic: "+IntegerToString(RuntimeMagic())+"  |  Mode: "+RuntimeRiskModeLabel()+"  |  RiskEngine: "+(RiskEnabled()?"ON":"OFF"),C'125,140,160',7);
 
    // Risk info
    int exY4=exY3+18;
-   if(InpAccountRiskEnabled)
+   if(RiskEnabled())
    {
       double cap,dp,tpp;RiskMetrics(cap,dp,tpp);
       MkLabel("DASH_RISK",x+pad,exY4,
-              "Risk: Daily "+DoubleToString(dp,1)+"% / "+DoubleToString(InpDailyLossLimitPct,0)+"%  |  DD "+DoubleToString(tpp,1)+"% / "+DoubleToString(InpMaxDrawdownPct,0)+"%  |  Lot "+DoubleToString(g_lastAdvLot,4),
-              dp>InpDailyLossLimitPct*0.8?C'255,95,140':C'125,140,160',7);
+              "Risk: Daily "+DoubleToString(dp,1)+"% / "+DoubleToString(EffDailyLossLimitPct(),0)+"%  |  DD "+DoubleToString(tpp,1)+"% / "+DoubleToString(EffMaxDrawdownPct(),0)+"%  |  Lot "+DoubleToString(g_lastAdvLot,4),
+              EffDailyLossLimitPct()>0&&dp>EffDailyLossLimitPct()*0.8?C'255,95,140':C'125,140,160',7);
    }
    else
       MkLabel("DASH_RISK",x+pad,exY4,"FixedLot="+DoubleToString(InpFixedLot,4)+"  |  RiskMult="+DoubleToString(InpPineRiskMult,3),C'125,140,160',7);
@@ -2071,7 +2193,7 @@ void UpdateDashboard()
    MkEdit("EDIT_BT_SLIP",x+pad+118,costY,46,bh,DoubleToString(g_btSlippagePts,1));
    MkLabel("DASH_BTCOMM_L",x+pad+172,costY+3,"Comm/Lot:",C'120,140,165',7);
    MkEdit("EDIT_BT_COMM",x+pad+236,costY,58,bh,DoubleToString(g_btCommissionPerLot,2));
-   MkLabel("DASH_BTASSUMP",x+pad+304,costY+3,"defaults=0 means old model",C'100,112,130',7);
+   MkLabel("DASH_BTASSUMP",x+pad+304,costY+3,"0 spread = live spread",C'100,112,130',7);
 
    // Progress bar
    int pbY=costY+26;
@@ -2123,17 +2245,18 @@ int OnInit()
    g_mode=InpSignalMode;g_rr=InpRRMode;g_sensitivity=MathMax(1,MathMin(10,InpSensitivity));
    g_slDistancePct=ClampSlDistancePct(InpSlDistancePct);
    g_hcTp1=InpDefaultHcTp1;g_hcTp2=InpDefaultHcTp2;
-   g_eaEnabled=InpEaEnabled;g_needsRedraw=true;g_lastBuild=0;
+   g_eaEnabled=InpEaEnabled;g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;g_needsRedraw=true;g_lastBuild=0;
    g_auditRuntime=(InpAuditEnabled || InpAuditTradeCsv || InpAuditPositionProbe);
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;
-   g_btSpreadPts=InpBacktestSpreadPts;g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
+   g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
+   g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    g_equityPeak=AccountInfoDouble(ACCOUNT_EQUITY);
    // Auto-disable HC based on RR
    if(g_rr==NAS_RR_1){g_hcTp1=false;g_hcTp2=false;}
    if(g_rr==NAS_RR_2){g_hcTp2=false;}
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
    HydrateDirection();
-   if(!IsValidationTester())
+   if(!IsTesterMode())
    {
       DrawDashboard();DrawHistoricalSignals();UpdateDashboard();
       EventSetMillisecondTimer(40);
@@ -2141,11 +2264,11 @@ int OnInit()
    NasAudit_TradeWrite("ea_init","NAS_V3_LAB","","",0,0,0,0,"init",0,
       "mode="+ModeLabel(g_mode)+" rr="+RRLabel(g_rr)+" s="+IntegerToString(g_sensitivity)
       +" sl_pct="+DoubleToString(g_slDistancePct,1)
-      +" magic="+IntegerToString(RuntimeMagic())+" ftmo="+(InpAccountRiskEnabled?"ON":"OFF")
+      +" magic="+IntegerToString(RuntimeMagic())+" mode="+RuntimeRiskModeLabel()+" risk_engine="+(RiskEnabled()?"ON":"OFF")
       +" use_trading_window="+(InpUseTradingWindow?"true":"false")
       +" trade_start='"+InpTradeStartTime+"' trade_end='"+InpTradeEndTime+"' no_trade='"+InpNoTradeWindowsGmt+"' window='"+WindowText()+"'");
    Print("NAS_V3_LAB v2.2 prod init ",_Symbol," tf=",EnumToString(_Period)," mode=",ModeLabel(g_mode)," rr=",RRLabel(g_rr),
-         " hc1=",g_hcTp1," hc2=",g_hcTp2," slPct=",DoubleToString(g_slDistancePct,1)," magic=",RuntimeMagic()," ftmo=",InpAccountRiskEnabled,
+         " hc1=",g_hcTp1," hc2=",g_hcTp2," slPct=",DoubleToString(g_slDistancePct,1)," magic=",RuntimeMagic()," mode=",RuntimeRiskModeLabel()," riskEngine=",RiskEnabled(),
          " useTradingWindow=",InpUseTradingWindow," tradeWindow=",InpTradeStartTime,"-",InpTradeEndTime,
          " noTrade=",InpNoTradeWindowsGmt);
    return INIT_SUCCEEDED;
@@ -2172,7 +2295,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
 void OnTimer()
 {
-   if(IsValidationTester()) return;
+   if(IsTesterMode()) return;
    EnforceRiskBreach();
    EnforceTpTouch();
    ManageHcBe();
@@ -2190,13 +2313,13 @@ void OnTick()
    EnforceRiskBreach();
    EnforceTpTouch();
    ManageHcBe();
-   if(!IsValidationTester()) UpdateDashboard();
+   if(!IsTesterMode()) UpdateDashboard();
    datetime cur=iTime(_Symbol,_Period,0);
    if(cur!=0&&cur!=g_lastBarTime)
    {
       g_lastBarTime=cur;
       ProcessSignalBar();
-      if(!IsValidationTester())
+      if(!IsTesterMode())
       {
          g_needsRedraw=true;
          DrawHistoricalSignals();
@@ -2252,6 +2375,20 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       NasAudit_TradeWrite("ea_toggle","NAS_V3_LAB","","",0,0,0,0,g_eaEnabled?"EA_ON":"EA_OFF",0,"");
       ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
+   else if(sp==PREFIX+"BTN_FTMO")
+   {
+      g_ftmoMode=!g_ftmoMode;if(g_ftmoMode)g_riskLotOnlyMode=false;g_runtimeMagic=0;RiskCacheInvalidate();
+      g_lastStatus=g_ftmoMode?"FTMO_ON":"FTMO_OFF";
+      NasAudit_TradeWrite("ftmo_toggle","NAS_V3_LAB","","",0,0,0,0,g_ftmoMode?"FTMO_ON":"FTMO_OFF",0,"");
+      ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sp==PREFIX+"BTN_RISKLOT")
+   {
+      g_riskLotOnlyMode=!g_riskLotOnlyMode;if(g_riskLotOnlyMode)g_ftmoMode=false;g_runtimeMagic=0;RiskCacheInvalidate();
+      g_lastStatus=g_riskLotOnlyMode?"RISKLOT_ON":"RISKLOT_OFF";
+      NasAudit_TradeWrite("risklot_toggle","NAS_V3_LAB","","",0,0,0,0,g_riskLotOnlyMode?"RISKLOT_ON":"RISKLOT_OFF",0,"");
+      ObjectSetInteger(0,sp,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    // Close All
    else if(sp==PREFIX+"BTN_CLOSE")
    {
@@ -2278,7 +2415,8 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       {
          string wkTxt=ObjectGetString(0,PREFIX+"EDIT_BT_WEEKS",OBJPROP_TEXT);
          g_btWeeks=MathMax(1,(int)StringToInteger(wkTxt));
-         g_btSpreadPts=MathMax(0,StringToDouble(ObjectGetString(0,PREFIX+"EDIT_BT_SPREAD",OBJPROP_TEXT)));
+         g_btSpreadPts=StringToDouble(ObjectGetString(0,PREFIX+"EDIT_BT_SPREAD",OBJPROP_TEXT));
+         if(g_btSpreadPts<=0) g_btSpreadPts=(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
          g_btSlippagePts=MathMax(0,StringToDouble(ObjectGetString(0,PREFIX+"EDIT_BT_SLIP",OBJPROP_TEXT)));
          g_btCommissionPerLot=MathMax(0,StringToDouble(ObjectGetString(0,PREFIX+"EDIT_BT_COMM",OBJPROP_TEXT)));
          BT_Start();

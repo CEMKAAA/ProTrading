@@ -188,6 +188,11 @@ double   g_accountRiskLockValue = 0.0;
 
 string PREFIX = "NAS_SATS_NO_BE_EA_";
 uint     g_dashboardDoorStartMs = 0;
+
+bool IsTesterMode()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER);
+}
 bool     g_dashboardDoorFinished = false;
 bool     g_dashboardCollapsed = false;
 bool     g_dashboardOpening = false;
@@ -618,12 +623,15 @@ int OnInit()
    HydrateExecutedDirectionFromOpenPosition();
    PrintStartupDiagnostics();
    BaselineStartupSignal();
-   DrawDashboard();
-   EventSetMillisecondTimer(40);
-   if(InpDrawLastSignalsOnStart)
+   if(!IsTesterMode())
    {
-      DrawRecentSignalHistory();
-      UpdateDashboard();
+      DrawDashboard();
+      EventSetMillisecondTimer(40);
+      if(InpDrawLastSignalsOnStart)
+      {
+         DrawRecentSignalHistory();
+         UpdateDashboard();
+      }
    }
    return INIT_SUCCEEDED;
 }
@@ -636,6 +644,8 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(IsTesterMode())
+      return;
    EnforceAccountRiskBreach();
    WriteAccountRiskAudit("snapshot", "periodic_health", true);
    EnforceManagedTpTouchClose(false);
@@ -647,7 +657,8 @@ void OnTick()
 {
    EnforceAccountRiskBreach();
    ManageOpenPositions();
-   UpdateDashboard();
+   if(!IsTesterMode())
+      UpdateDashboard();
 
    if(InpSignalBarMode == NAS_SIGNAL_BAR_LIVE)
    {
@@ -825,6 +836,8 @@ void PrintSignalParityAudit(const MqlRates &rates[],
                             const int i,
                             const string stage)
 {
+   if(IsTesterMode())
+      return;
    if(!InpSignalParityAudit || i < 1)
       return;
    double prevClose = rates[i - 1].close;
@@ -1472,6 +1485,8 @@ int MaxTpHitBeforeExit(const MqlRates &rates[], const NasPoint &p[], const int s
 
 void DrawRecentSignalHistory()
 {
+   if(IsTesterMode())
+      return;
    ObjectsDeleteAll(0, PREFIX + "HIST_");
 
    MqlRates rates[];
@@ -1860,6 +1875,8 @@ string AccountRiskPositionSummary(int &openCount, int &protectedCount, int &unpr
 
 void WriteAccountRiskAudit(const string eventName, const string detail, const bool periodic)
 {
+   if(IsTesterMode())
+      return;
    if(!InpAdvancedAccountRiskEnabled || !InpAccountRiskAuditEnabled)
       return;
    if(periodic && !AccountRiskAuditClaimSnapshot())
@@ -2440,6 +2457,8 @@ string NasAuditDate(datetime t)
 
 void WriteTpWatchdogAudit(const string eventName, const ulong ticket, const string dirText, const double vol, const double entry, const double tp, const double closePx, const string reason)
 {
+   if(IsTesterMode())
+      return;
    string fileName = "NasUltimate_TpWatchdog_" + NasAuditDate(TimeGMT()) + ".csv";
    int h = FileOpen(fileName, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ, ',');
    if(h == INVALID_HANDLE)
@@ -2611,6 +2630,8 @@ datetime DayStart()
 
 void DrawHLine(const string name, const double price, const color clr, const ENUM_LINE_STYLE style, const int width)
 {
+   if(IsTesterMode())
+      return;
    string obj = PREFIX + name;
    if(ObjectFind(0, obj) < 0)
       ObjectCreate(0, obj, OBJ_HLINE, 0, 0, price);
@@ -2622,6 +2643,8 @@ void DrawHLine(const string name, const double price, const color clr, const ENU
 
 void DrawHistoricalArrow(const string name, const datetime t, const double price, const int arrowCode, const color clr)
 {
+   if(IsTesterMode())
+      return;
    string obj = PREFIX + name;
    if(ObjectFind(0, obj) < 0)
       ObjectCreate(0, obj, OBJ_ARROW, 0, t, price);
@@ -2680,6 +2703,8 @@ void DrawBlockedSignal(const int direction,
 
 void DrawHistoricalText(const string name, const string text, const datetime t, const double price, const color clr)
 {
+   if(IsTesterMode())
+      return;
    string obj = PREFIX + name;
    if(ObjectFind(0, obj) < 0)
       ObjectCreate(0, obj, OBJ_TEXT, 0, t, price);
@@ -2716,6 +2741,8 @@ void DrawHistoricalSignal(const int idx,
 
 void DrawTextLabel(const string name, const string text, const double price, const color clr)
 {
+   if(IsTesterMode())
+      return;
    string obj = PREFIX + name;
    datetime t = iTime(_Symbol, _Period, 0) + PeriodSeconds(_Period) * 8;
    if(ObjectFind(0, obj) < 0)
@@ -3317,6 +3344,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 
 void DrawDashboard()
 {
+   if(IsTesterMode())
+      return;
    if(!InpShowDashboard)
       return;
    if(g_dashboardCollapsed)
@@ -3371,6 +3400,8 @@ void UpdateDoorAnimation()
 
 void UpdateDashboard()
 {
+   if(IsTesterMode())
+      return;
    if(g_dashboardCollapsed)
       return;
 

@@ -101,3 +101,4 @@ InpCloseVanishedLiveSignalPosition=false
 InpSignalParityAudit=true
 InpAuditNoSignalEvaluations=false
 InpShowDashboard=true
+InpBacktestUseTickReplay=true

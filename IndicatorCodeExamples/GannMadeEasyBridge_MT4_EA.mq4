@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-06-14.0125-gann-stopguard-lifecycle"
+#define BUILD_TAG "2026-06-20.0100-gann-ftmo-risklot-toggle"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpIndicatorName = "Asiller\\Gann Made Easy\\GannMadeEasy @PaidCrackedEA"; // informational; EA trades chart objects.
@@ -77,6 +77,8 @@ input int    InpDashboardX = 18;
 input int    InpDashboardY = 28;
 
 input bool   InpAdvancedAccountRiskEnabled = true;
+input bool   InpFtmoModeDefault = false;
+input bool   InpRiskLotOnlyModeDefault = false;
 input bool   InpAutoLotByRisk = true;
 input double InpAccountRiskPerTradePct = 1.0;
 input int    InpAccountRiskDailyAtrPeriod = 14;
@@ -107,6 +109,8 @@ int      g_targetTpRuntime;
 int      g_halfTpRuntime;
 bool     g_pendingOnDriftRuntime;
 bool     g_auditRuntime;
+bool     g_ftmoMode;
+bool     g_riskLotOnlyMode;
 string   g_allowedWindowsRuntime;
 string   g_noTradeWindowsRuntime;
 string   g_lastEventId = "";
@@ -130,6 +134,8 @@ int OnInit()
    g_halfTpRuntime = MathMax(0, MathMin(3, InpHalfBeTpIndex));
    g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
    g_auditRuntime = InpEnableAudit;
+   g_ftmoMode = InpFtmoModeDefault;
+   g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
    g_allowedWindowsRuntime = InpAllowedWindowsGmt;
    g_noTradeWindowsRuntime = InpNoTradeWindowsGmt;
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
@@ -217,6 +223,22 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_auditRuntime = !g_auditRuntime;
       Print("GannMadeEasyBridge audit logging ", g_auditRuntime ? "enabled" : "disabled");
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("ftmo"))
+   {
+      g_ftmoMode = !g_ftmoMode;
+      if(g_ftmoMode) g_riskLotOnlyMode = false;
+      Audit("dashboard_ftmo_toggle", "", 0, "", 0, 0, 0, 0, g_ftmoMode ? "FTMO_ON" : "FTMO_OFF", 0, "");
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("risklot"))
+   {
+      g_riskLotOnlyMode = !g_riskLotOnlyMode;
+      if(g_riskLotOnlyMode) g_ftmoMode = false;
+      Audit("dashboard_risklot_toggle", "", 0, "", 0, 0, 0, 0, g_riskLotOnlyMode ? "RISKLOT_ON" : "RISKLOT_OFF", 0, "");
       DashboardUpdate();
       return;
    }
@@ -1095,7 +1117,17 @@ bool HasOpenDirection(int type)
    return false;
 }
 
-int LegacyEffectiveMagic() { if(InpAdvancedAccountRiskEnabled) return 1000000000 + MathAbs(InpMagic % 900000000); return InpMagic; }
+bool ManagedRiskMode(){ return g_ftmoMode || g_riskLotOnlyMode; }
+bool EffectiveRiskEnabled(){ return InpAdvancedAccountRiskEnabled || ManagedRiskMode(); }
+string RuntimeRiskModeLabel(){ if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
+double EffAccountRiskPerTradePct(){ return ManagedRiskMode() ? 1.0 : InpAccountRiskPerTradePct; }
+double EffAccountRiskDailyAtrExposurePct(){ return ManagedRiskMode() ? 2.0 : InpAccountRiskDailyAtrExposurePct; }
+double EffMaxPortfolioRiskPct(){ return g_ftmoMode ? 4.0 : InpMaxPortfolioRiskPct; }
+double EffDailyLossLimitPct(){ return g_ftmoMode ? 5.0 : InpDailyLossLimitPct; }
+double EffMaxDrawdownPct(){ return g_ftmoMode ? 10.0 : InpMaxDrawdownPct; }
+double EffMaxMarginUsagePct(){ return g_ftmoMode ? 40.0 : InpMaxMarginUsagePct; }
+
+int LegacyEffectiveMagic() { if(EffectiveRiskEnabled()) return 1000000000 + MathAbs(InpMagic % 900000000); return InpMagic; }
 
 int StableHash(string s)
 {
@@ -1111,7 +1143,7 @@ int StableHash(string s)
 
 int EffectiveMagic()
 {
-   if(!InpAdvancedAccountRiskEnabled) return InpMagic;
+   if(!EffectiveRiskEnabled()) return InpMagic;
    if(!InpUseSymbolTimeframeMagic) return LegacyEffectiveMagic();
    int h = StableHash(Symbol() + "|" + IntegerToString(Period()));
    return 1000000000 + MathAbs((MathAbs(InpMagic % 100000000) * 31 + h) % 900000000);
@@ -1123,27 +1155,27 @@ bool IsOurMagic(int magic) { return IsCurrentInstanceMagic(magic) || magic == Le
 double ResolveLot(double entry, double sl, int type, bool requireHalfSplit, string &detail)
 {
    double fallback = NormalizeOrderLot(g_lotRuntime, requireHalfSplit);
-   if(!InpAdvancedAccountRiskEnabled) { detail = "risk_engine=off lot=" + DoubleToString(fallback, 3); return fallback; }
+   if(!EffectiveRiskEnabled()) { detail = "risk_engine=off lot=" + DoubleToString(fallback, 3); return fallback; }
    double cap, daily, dd;
    AccountRiskMetrics(cap, daily, dd);
-   if(InpDailyLossLimitPct > 0 && daily >= InpDailyLossLimitPct) { if(InpLiquidateOnBreach) LiquidateScoped("daily_loss_breach"); detail = "risk_block daily_loss_pct=" + DoubleToString(daily,2); return 0; }
-   if(InpMaxDrawdownPct > 0 && dd >= InpMaxDrawdownPct) { if(InpLiquidateOnBreach) LiquidateScoped("max_drawdown_breach"); detail = "risk_block total_dd_pct=" + DoubleToString(dd,2); return 0; }
+   if(EffDailyLossLimitPct() > 0 && daily >= EffDailyLossLimitPct()) { if(InpLiquidateOnBreach) LiquidateScoped("daily_loss_breach"); detail = "risk_block daily_loss_pct=" + DoubleToString(daily,2); return 0; }
+   if(EffMaxDrawdownPct() > 0 && dd >= EffMaxDrawdownPct()) { if(InpLiquidateOnBreach) LiquidateScoped("max_drawdown_breach"); detail = "risk_block total_dd_pct=" + DoubleToString(dd,2); return 0; }
    double riskPerLot = MoneyRiskPerLot(entry, sl);
    if(riskPerLot <= 0) { detail = "risk_block invalid_risk_per_lot"; return 0; }
-   double tradeBudget = cap * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
-   double atrBudget = cap * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
+   double tradeBudget = cap * MathMax(0.0, EffAccountRiskPerTradePct()) / 100.0;
+   double atrBudget = cap * MathMax(0.0, EffAccountRiskDailyAtrExposurePct()) / 100.0;
    double openRisk = CurrentOpenRisk();
-   double portfolioBudget = cap * MathMax(0.0, InpMaxPortfolioRiskPct) / 100.0 - openRisk;
-   double budget = (InpMaxPortfolioRiskPct > 0) ? MathMin(tradeBudget, portfolioBudget) : tradeBudget;
+   double portfolioBudget = cap * MathMax(0.0, EffMaxPortfolioRiskPct()) / 100.0 - openRisk;
+   double budget = (EffMaxPortfolioRiskPct() > 0) ? MathMin(tradeBudget, portfolioBudget) : tradeBudget;
    if(budget <= 0) { detail = "risk_block exhausted_budget open_risk=" + DoubleToString(openRisk,2); return 0; }
    double dailyAtr = ClosedDailyAtr(Symbol(), InpAccountRiskDailyAtrPeriod);
    double dailyMoneyPerLot = MoneyMovePerLot(dailyAtr);
    double slLot = budget / riskPerLot;
    double atrLot = 0.0;
-   bool atrCapActive = (InpAccountRiskDailyAtrExposurePct > 0.0 && atrBudget > 0.0 && dailyAtr > 0.0 && dailyMoneyPerLot > 0.0);
+   bool atrCapActive = (EffAccountRiskDailyAtrExposurePct() > 0.0 && atrBudget > 0.0 && dailyAtr > 0.0 && dailyMoneyPerLot > 0.0);
    if(atrCapActive) atrLot = atrBudget / dailyMoneyPerLot;
-   double rawLot = InpAutoLotByRisk ? slLot : fallback;
-   if(InpAutoLotByRisk && atrCapActive) rawLot = MathMin(rawLot, atrLot);
+   double rawLot = (InpAutoLotByRisk || ManagedRiskMode()) ? slLot : fallback;
+   if((InpAutoLotByRisk || ManagedRiskMode()) && atrCapActive) rawLot = MathMin(rawLot, atrLot);
    double lot = NormalizeOrderLot(rawLot, requireHalfSplit);
    if(lot <= 0) { detail = "risk_block lot_below_min raw=" + DoubleToString(rawLot,4); return 0; }
    double freeAfter = AccountFreeMarginCheck(Symbol(), type, lot);
@@ -1151,7 +1183,7 @@ double ResolveLot(double entry, double sl, int type, bool requireHalfSplit, stri
    double incrementalMarginPct = (AccountEquity() > 0.0) ? MathMax(0.0, AccountFreeMargin() - freeAfter) / AccountEquity() * 100.0 : 0.0;
    double singleMarginLimitPct = SingleTradeMarginLimitPct();
    string clampDetail = "";
-   if(freeAfter <= 0 || (InpMaxMarginUsagePct > 0 && marginUsedPct > InpMaxMarginUsagePct) || (singleMarginLimitPct > 0.0 && incrementalMarginPct > singleMarginLimitPct))
+   if(freeAfter <= 0 || (EffMaxMarginUsagePct() > 0 && marginUsedPct > EffMaxMarginUsagePct()) || (singleMarginLimitPct > 0.0 && incrementalMarginPct > singleMarginLimitPct))
    {
       double clamped = ClampLotToMargin(lot, type, requireHalfSplit, clampDetail);
       if(clamped <= 0) { detail = "risk_block margin lot=" + DoubleToString(lot,3) + " " + clampDetail; return 0; }
@@ -1200,7 +1232,7 @@ bool IsMarginAcceptable(double lot, int type, double &freeAfter, double &marginU
    freeAfter = AccountFreeMarginCheck(Symbol(), type, lot);
    marginUsedPct = (AccountEquity() > 0) ? (AccountEquity() - freeAfter) / AccountEquity() * 100.0 : 0.0;
    if(freeAfter <= 0) return false;
-   if(InpMaxMarginUsagePct > 0 && marginUsedPct > InpMaxMarginUsagePct) return false;
+   if(EffMaxMarginUsagePct() > 0 && marginUsedPct > EffMaxMarginUsagePct()) return false;
    double singleLimit = SingleTradeMarginLimitPct();
    if(singleLimit > 0.0 && AccountEquity() > 0.0)
    {
@@ -1443,7 +1475,7 @@ string TicketEvent(int ticket) { return "ticket=" + IntegerToString(ticket); }
 
 void MaybeRiskAudit()
 {
-   if(!g_auditRuntime || !InpAdvancedAccountRiskEnabled || InpRiskAuditSeconds <= 0) return;
+   if(!g_auditRuntime || !EffectiveRiskEnabled() || InpRiskAuditSeconds <= 0) return;
    datetime now = TimeGMT();
    if(now - g_lastRiskAuditTs < InpRiskAuditSeconds) return;
    g_lastRiskAuditTs = now;
@@ -1530,7 +1562,7 @@ void RiskAudit(string eventName, string detail)
    bool header = (FileSize(h) == 0);
    FileSeek(h, 0, SEEK_END);
    if(header) FileWrite(h, "gmt", "broker", "account", "symbol", "tf", "event", "risk_capital", "open_risk", "daily_loss_pct", "total_dd_pct", "enabled", "detail");
-   FileWrite(h, TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), AccountNumber(), Symbol(), Period(), eventName, DoubleToString(cap, 2), DoubleToString(CurrentOpenRisk(), 2), DoubleToString(daily, 3), DoubleToString(dd, 3), InpAdvancedAccountRiskEnabled ? "true" : "false", detail);
+   FileWrite(h, TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), AccountNumber(), Symbol(), Period(), eventName, DoubleToString(cap, 2), DoubleToString(CurrentOpenRisk(), 2), DoubleToString(daily, 3), DoubleToString(dd, 3), EffectiveRiskEnabled() ? "true" : "false", detail);
    FileClose(h);
 }
 
@@ -1553,15 +1585,17 @@ void DashboardCreate()
 {
    DeleteDashboard();
    if(!InpShowDashboard) return;
-   int x = InpDashboardX, y = InpDashboardY, w = 390, h = g_collapsed ? 34 : 280;
+   int x = InpDashboardX, y = InpDashboardY, w = 480, h = g_collapsed ? 34 : 280;
    Rect(Obj("bg"), x, y, w, h, clrDimGray, clrBlack);
    Label(Obj("title"), x+12, y+8, "GANN MADE EASY // " + BUILD_TAG, clrAliceBlue, 9);
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
    if(g_collapsed) return;
-   Button(Obj("toggle"), x+12, y+34, 78, 24, g_eaEnabled ? "EA ON" : "EA OFF", g_eaEnabled ? clrDarkGreen : clrMaroon, clrWhite);
-   Button(Obj("drift"), x+98, y+34, 92, 24, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT", g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
-   Button(Obj("audit"), x+198, y+34, 96, 24, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
-   Button(Obj("apply"), x+302, y+34, 72, 24, "APPLY", clrSteelBlue, clrWhite);
+   Button(Obj("toggle"), x+12, y+34, 68, 24, g_eaEnabled ? "EA ON" : "EA OFF", g_eaEnabled ? clrDarkGreen : clrMaroon, clrWhite);
+   Button(Obj("drift"), x+86, y+34, 86, 24, g_pendingOnDriftRuntime ? "DRIFT LIM" : "DRIFT MKT", g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
+   Button(Obj("ftmo"), x+178, y+34, 62, 24, g_ftmoMode ? "FTMO" : "FTMO", g_ftmoMode ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Button(Obj("risklot"), x+246, y+34, 66, 24, g_riskLotOnlyMode ? "RISK" : "RISK", g_riskLotOnlyMode ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Button(Obj("audit"), x+318, y+34, 78, 24, g_auditRuntime ? "AUDIT" : "AUDIT", g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
+   Button(Obj("apply"), x+402, y+34, 62, 24, "APPLY", clrSteelBlue, clrWhite);
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
    Label(Obj("l_scale"), x+270, y+68, "CalcSL%", clrLightSteelBlue, 8); Edit(Obj("e_scale"), x+318, y+64, 56, 20, DoubleToString(g_finalScaleRuntime, 1));
@@ -1585,11 +1619,15 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("toggle"), OBJPROP_BGCOLOR, g_eaEnabled ? clrDarkGreen : clrMaroon);
    ObjectSetString(0, Obj("drift"), OBJPROP_TEXT, g_pendingOnDriftRuntime ? "DRIFT LIMIT" : "DRIFT MKT");
    ObjectSetInteger(0, Obj("drift"), OBJPROP_BGCOLOR, g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray);
-   ObjectSetString(0, Obj("audit"), OBJPROP_TEXT, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF");
+   ObjectSetString(0, Obj("audit"), OBJPROP_TEXT, g_auditRuntime ? "AUDIT" : "AUDIT");
    ObjectSetInteger(0, Obj("audit"), OBJPROP_BGCOLOR, g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray);
+   ObjectSetString(0, Obj("ftmo"), OBJPROP_TEXT, g_ftmoMode ? "FTMO" : "FTMO");
+   ObjectSetInteger(0, Obj("ftmo"), OBJPROP_BGCOLOR, g_ftmoMode ? clrDarkGreen : clrDarkSlateGray);
+   ObjectSetString(0, Obj("risklot"), OBJPROP_TEXT, g_riskLotOnlyMode ? "RISK" : "RISK");
+   ObjectSetInteger(0, Obj("risklot"), OBJPROP_BGCOLOR, g_riskLotOnlyMode ? clrDarkGreen : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | " + (InpAdvancedAccountRiskEnabled ? "RISK ON" : "RISK OFF") + " | Audit " + (g_auditRuntime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk " + (EffectiveRiskEnabled() ? "ON" : "OFF") + " | Audit " + (g_auditRuntime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");

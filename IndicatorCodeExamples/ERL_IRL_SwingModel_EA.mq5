@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ERL_BUILD "2026-06-18.erl-irl-six-tp-sl-pct"
+#define ERL_BUILD "2026-06-20.erl-incremental-audit-cache"
 #define ERL_PREFIX "ERLIRL_"
 
 //=====================================================================
@@ -32,6 +32,25 @@ enum ERL_HC_MODE
    ERL_HC_TP3 = 3,
    ERL_HC_TP4 = 4,
    ERL_HC_TP5 = 5
+};
+
+enum ERL_ENTRY_MODEL
+{
+   ERL_ENTRY_LEGACY_HTF_FVG_TAP = 0,
+   ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG = 1
+};
+
+enum ERL_STOP_MODEL
+{
+   ERL_STOP_FVG_BOUNDARY = 0,
+   ERL_STOP_FIRST_FVG_CANDLE = 1
+};
+
+enum ERL_TARGET_MODEL
+{
+   ERL_TARGET_FIXED_R = 0,
+   ERL_TARGET_NEXT_EXTERNAL = 1,
+   ERL_TARGET_AUTO_STOP_SIZE = 2
 };
 
 enum BT_FILL_MODE
@@ -59,20 +78,33 @@ input bool            InpCloseOnReverse         = true;
 input bool            InpBlockSameDirection     = true;
 
 input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H4;
-input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M15;
+input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M30;
 input int             InpDefaultSwingLookback   = 5;
 input ERL_RR_MODE     InpDefaultTarget          = ERL_RR_TP4;
 input ERL_HC_MODE     InpDefaultHalfBe          = ERL_HC_OFF;
 input bool            InpDefaultWeeklyBias      = false;
+input ERL_ENTRY_MODEL InpDefaultEntryModel      = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG;
+input ERL_STOP_MODEL  InpDefaultStopModel       = ERL_STOP_FIRST_FVG_CANDLE;
+input ERL_TARGET_MODEL InpDefaultTargetModel    = ERL_TARGET_NEXT_EXTERNAL;
+input bool            InpDefaultRequireIrlTouch = true;
+input bool            InpDefaultRequireEntrySweep = true;
+input bool            InpDefaultRequireDisplacementFvg = true;
 
 input int             InpCalcHtfBars            = 900;
 input int             InpCalcEntryBars          = 5000;
 input int             InpMaxSwings              = 20;
 input int             InpMaxFvgSearchBars       = 20;
+input int             InpEntrySweepLookback     = 3;
+input int             InpEntrySweepMaxBars      = 160;
+input int             InpEntryFvgMaxWaitBars    = 40;
+input int             InpEntryFvgTapMaxBars     = 80;
 input int             InpAtrPeriod              = 14;
 input double          InpMinFvgAtrPct           = 8.0;
 input double          InpSlBufferAtrPct         = 10.0;
 input double          InpSlDistancePct          = 100.0;
+input double          InpSmallStopThresholdPts  = 30.0;
+input ERL_RR_MODE     InpSmallStopTarget        = ERL_RR_TP4;
+input ERL_RR_MODE     InpLargeStopTarget        = ERL_RR_TP2;
 input int             InpHistoricalDays         = 14;
 input int             InpHistoricalWeeks        = 2;
 input bool            InpDrawHistoricalSignals  = true;
@@ -84,6 +116,8 @@ input int             InpDashboardX             = 10;
 input int             InpDashboardY             = 18;
 
 input bool            InpAccountRiskEnabled     = true;
+input bool            InpFtmoModeDefault        = false;
+input bool            InpRiskLotOnlyModeDefault = false;
 input double          InpRiskPerTradePct        = 1.0;
 input double          InpMaxPortfolioRiskPct    = 4.0;
 input double          InpDailyLossLimitPct      = 0.0;
@@ -104,8 +138,9 @@ input int             InpTesterTradeAuditMaxRows= 50000;
 input string          InpValidationJobId        = "";
 
 input int             InpBacktestWeeks          = 4;
-input BT_FILL_MODE    InpBacktestFillMode       = BT_FILL_SIGNAL_CLOSE;
-input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_NEAREST_OPEN;
+input BT_FILL_MODE    InpBacktestFillMode       = BT_FILL_NEXT_BAR_OPEN;
+input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_CONSERVATIVE;
+input bool            InpBacktestUseTickReplay  = true;
 input double          InpBacktestSpreadPts      = 0.0;
 input double          InpBacktestSlippagePts    = 0.0;
 input double          InpBacktestCommissionPerLot = 0.0;
@@ -129,6 +164,8 @@ struct FvgZone
    double   low;
    double   high;
    double   anchor;
+   double   firstLow;
+   double   firstHigh;
 };
 
 struct ErlSignal
@@ -149,6 +186,8 @@ struct ErlSignal
    double   tp5;
    double   tp6;
    double   risk;
+   double   externalTarget;
+   datetime externalTime;
    string   reason;
    string   id;
 };
@@ -165,6 +204,14 @@ struct SimStats
    double   pf;
 };
 
+struct SimCacheEntry
+{
+   string   key;
+   double   r;
+   bool     closed;
+   bool     won;
+};
+
 struct BtCombo
 {
    ENUM_TIMEFRAMES htf;
@@ -173,6 +220,12 @@ struct BtCombo
    ERL_RR_MODE target;
    ERL_HC_MODE hc;
    bool     bias;
+   ERL_ENTRY_MODEL entryModel;
+   ERL_STOP_MODEL stopModel;
+   ERL_TARGET_MODEL targetModel;
+   bool     requireIrlTouch;
+   bool     requireEntrySweep;
+   bool     requireDisplacementFvg;
 };
 
 //=====================================================================
@@ -188,6 +241,11 @@ bool IsValidationTester()
    return (bool)MQLInfoInteger(MQL_TESTER) && StringLen(InpValidationJobId) > 0;
 }
 
+bool IsTesterMode()
+{
+   return (bool)MQLInfoInteger(MQL_TESTER);
+}
+
 bool             g_eaEnabled;
 ENUM_TIMEFRAMES  g_htf;
 ENUM_TIMEFRAMES  g_entryTf;
@@ -195,9 +253,30 @@ int              g_swingLookback;
 ERL_RR_MODE      g_target;
 ERL_HC_MODE      g_hc;
 bool             g_weeklyBias;
+ERL_ENTRY_MODEL  g_entryModel;
+ERL_STOP_MODEL   g_stopModel;
+ERL_TARGET_MODEL g_targetModel;
+bool             g_requireIrlTouch = true;
+bool             g_requireEntrySweep = true;
+bool             g_requireDisplacementFvg = true;
 bool             g_auditRuntime = false;
+bool             g_ftmoMode = false;
+bool             g_riskLotOnlyMode = false;
+bool             g_dashboardCollapsed = false;
 
 SimStats         g_hist;
+ErlSignal        g_histSignals[];
+double           g_histSignalR[];
+bool             g_histSignalClosed[];
+bool             g_histSignalWon[];
+ErlSignal        g_histRawCache[];
+string           g_histRawCacheSignature = "";
+int              g_histRawCacheWeeks = 0;
+SimCacheEntry    g_simCache[];
+bool             g_configRefreshPending = false;
+datetime         g_configRefreshDue = 0;
+bool             g_configRefreshRebuildSignals = true;
+string           g_liveLevelsSignature = "";
 string           g_lastStatus = "READY";
 string           g_lastBlock  = "";
 datetime         g_lastSignalTime = 0;
@@ -273,6 +352,30 @@ string HcLabel(ERL_HC_MODE hc)
    return "HC@TP" + IntegerToString((int)hc);
 }
 
+string EntryModelLabel(ERL_ENTRY_MODEL model)
+{
+   if(model == ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG) return "PRO";
+   return "LEGACY";
+}
+
+string StopModelLabel(ERL_STOP_MODEL model)
+{
+   if(model == ERL_STOP_FIRST_FVG_CANDLE) return "FVG1";
+   return "ZONE";
+}
+
+string TargetModelLabel(ERL_TARGET_MODEL model)
+{
+   if(model == ERL_TARGET_NEXT_EXTERNAL) return "EXT";
+   if(model == ERL_TARGET_AUTO_STOP_SIZE) return "AUTO";
+   return "FIXED";
+}
+
+string StrictnessLabel(bool irlTouch, bool entrySweep, bool displacementFvg)
+{
+   return "IRL" + (irlTouch ? "1" : "0") + "-SWP" + (entrySweep ? "1" : "0") + "-DSP" + (displacementFvg ? "1" : "0");
+}
+
 string BtFillLabel(BT_FILL_MODE mode)
 {
    if(mode == BT_FILL_NEXT_BAR_OPEN) return "NEXT";
@@ -294,6 +397,24 @@ double TargetR(ERL_RR_MODE rr)
    return MathMax(0.5, 0.5 * leg);
 }
 
+ERL_RR_MODE EffectiveTargetMode(const ErlSignal &sig, ERL_RR_MODE selected, ERL_TARGET_MODEL model)
+{
+   if(model != ERL_TARGET_AUTO_STOP_SIZE) return selected;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = TickSize();
+   double riskPts = point > 0.0 ? sig.risk / point : 0.0;
+   return riskPts > 0.0 && riskPts <= InpSmallStopThresholdPts ? InpSmallStopTarget : InpLargeStopTarget;
+}
+
+ERL_RR_MODE EffectiveTargetModeByRisk(double risk, ERL_RR_MODE selected, ERL_TARGET_MODEL model)
+{
+   if(model != ERL_TARGET_AUTO_STOP_SIZE) return selected;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = TickSize();
+   double riskPts = point > 0.0 ? risk / point : 0.0;
+   return riskPts > 0.0 && riskPts <= InpSmallStopThresholdPts ? InpSmallStopTarget : InpLargeStopTarget;
+}
+
 double ClampSlDistancePct(double pct)
 {
    return MathMax(10.0, MathMin(300.0, pct));
@@ -306,10 +427,18 @@ double ApplySlDistancePct(int dir, double entry, double rawSl)
    return NormTradePrice(dir > 0 ? entry - dist : entry + dist);
 }
 
+bool ManagedRiskMode() { return g_ftmoMode || g_riskLotOnlyMode; }
+string RuntimeRiskModeLabel() { if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
+bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode(); }
+double RiskPerTradePct() { return ManagedRiskMode() ? 1.0 : InpRiskPerTradePct; }
+double MaxPortfolioRiskPct() { return g_ftmoMode ? 4.0 : InpMaxPortfolioRiskPct; }
+double DailyLossLimitPct() { return g_ftmoMode ? 5.0 : InpDailyLossLimitPct; }
+double MaxDrawdownPct() { return g_ftmoMode ? 10.0 : InpMaxDrawdownPct; }
+
 double ApproxMoneyFromR(double r)
 {
    double base = InpInitialBalanceOverride > 0.0 ? InpInitialBalanceOverride : MathMax(0.01, AccountInfoDouble(ACCOUNT_BALANCE));
-   return r * base * MathMax(0.0, InpRiskPerTradePct) / 100.0;
+   return r * base * MathMax(0.0, RiskPerTradePct()) / 100.0;
 }
 
 int ClampHistWeeks(int weeks)
@@ -323,6 +452,69 @@ int ClampHistWeeks(int weeks)
 int HistDays()
 {
    return ClampHistWeeks(g_histWeeks) * 7;
+}
+
+string HistRawSignature()
+{
+   return _Symbol
+      + "|HTF=" + TfLabel(g_htf)
+      + "|ETF=" + TfLabel(g_entryTf)
+      + "|SW=" + IntegerToString(g_swingLookback)
+      + "|BIAS=" + (g_weeklyBias ? "1" : "0")
+      + "|ENTRY=" + EntryModelLabel(g_entryModel)
+      + "|STOP=" + StopModelLabel(g_stopModel)
+      + "|STRICT=" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
+      + "|SLPCT=" + DoubleToString(g_slDistancePct, 2);
+}
+
+string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
+{
+   return sig.id
+      + "|T=" + IntegerToString((int)sig.entryTime)
+      + "|D=" + IntegerToString(sig.dir)
+      + "|E=" + DoubleToString(sig.entry, _Digits)
+      + "|SL=" + DoubleToString(sig.sl, _Digits)
+      + "|EXT=" + DoubleToString(sig.externalTarget, _Digits)
+      + "|RR=" + IntegerToString((int)target)
+      + "|HC=" + IntegerToString((int)hc)
+      + "|TM=" + IntegerToString((int)targetModel)
+      + "|ETF=" + TfLabel(entryTf)
+      + "|FILL=" + IntegerToString((int)g_btFillMode)
+      + "|SAME=" + IntegerToString((int)g_btSameBarPolicy)
+      + "|TICK=" + (InpBacktestUseTickReplay ? "1" : "0")
+      + "|SPR=" + DoubleToString(g_btSpreadPts, 2)
+      + "|SLIP=" + DoubleToString(g_btSlippagePts, 2)
+      + "|COMM=" + DoubleToString(g_btCommissionPerLot, 2);
+}
+
+bool SimCacheGet(const string key, double &r, bool &closed, bool &won)
+{
+   for(int i = 0; i < ArraySize(g_simCache); ++i)
+   {
+      if(g_simCache[i].key == key)
+      {
+         r = g_simCache[i].r;
+         closed = g_simCache[i].closed;
+         won = g_simCache[i].won;
+         return true;
+      }
+   }
+   return false;
+}
+
+void SimCachePut(const string key, double r, bool closed, bool won)
+{
+   int n = ArraySize(g_simCache);
+   if(n > 5000)
+   {
+      ArrayFree(g_simCache);
+      n = 0;
+   }
+   ArrayResize(g_simCache, n + 1);
+   g_simCache[n].key = key;
+   g_simCache[n].r = r;
+   g_simCache[n].closed = closed;
+   g_simCache[n].won = won;
 }
 
 double NormPrice(double price)
@@ -502,12 +694,14 @@ bool IsSwingLow(const MqlRates &rates[], int index, int lookback)
    return true;
 }
 
-int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[])
+int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[], int maxLevels = 0)
 {
    ArrayFree(swings);
    int total = ArraySize(rates);
    int found = 0;
-   for(int i = lookback + 2; i < total - lookback && found < InpMaxSwings * 2; ++i)
+   int limit = maxLevels > 0 ? maxLevels : InpMaxSwings * 2;
+   limit = MathMax(InpMaxSwings * 2, MathMin(2000, limit));
+   for(int i = lookback + 2; i < total - lookback && found < limit; ++i)
    {
       if(IsSwingHigh(rates, i, lookback))
       {
@@ -548,6 +742,8 @@ bool IsBullishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone
    zone.low = olderHigh;
    zone.high = newerLow;
    zone.anchor = rates[midIndex].low;
+   zone.firstLow = rates[midIndex + 1].low;
+   zone.firstHigh = rates[midIndex + 1].high;
    return true;
 }
 
@@ -566,6 +762,8 @@ bool IsBearishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone
    zone.low = newerHigh;
    zone.high = olderLow;
    zone.anchor = rates[midIndex].high;
+   zone.firstLow = rates[midIndex + 1].low;
+   zone.firstHigh = rates[midIndex + 1].high;
    return true;
 }
 
@@ -608,7 +806,7 @@ bool FindFirstFvgAfterReclaim(const MqlRates &rates[], int dir, int reclaimIndex
    double minSize = atr * MathMax(0.0, InpMinFvgAtrPct) / 100.0;
    int maxBars = MathMax(3, InpMaxFvgSearchBars);
    int scanned = 0;
-   for(int i = reclaimIndex - 1; i >= 1 && scanned < maxBars; --i, ++scanned)
+   for(int i = reclaimIndex - 1; i >= 2 && scanned < maxBars; --i, ++scanned)
    {
       FvgZone z;
       ZeroMemory(z);
@@ -622,7 +820,7 @@ bool FindFirstFvgAfterReclaim(const MqlRates &rates[], int dir, int reclaimIndex
    return false;
 }
 
-bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir, ErlSignal &sig)
+bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir, ERL_STOP_MODEL stopModel, ErlSignal &sig)
 {
    int total = ArraySize(entryRates);
    if(total < 10) return false;
@@ -634,7 +832,10 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
       bool tapped = entryRates[i].low <= zone.high && entryRates[i].high >= zone.low;
       if(!tapped) continue;
       double entry = entryRates[i].close;
-      double sl = dir > 0 ? zone.low - buffer : zone.high + buffer;
+      double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
+         ? (dir > 0 ? zone.firstLow : zone.firstHigh)
+         : (dir > 0 ? zone.low : zone.high);
+      double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
       sl = ApplySlDistancePct(dir, entry, sl);
       double risk = MathAbs(entry - sl);
       if(risk <= TickSize()) continue;
@@ -659,13 +860,263 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
    return false;
 }
 
+bool FindEntrySweepReclaim(const MqlRates &entryRates[], int dir, datetime afterTime, int &reclaimIndex, double &sweepLevel)
+{
+   reclaimIndex = -1;
+   sweepLevel = 0.0;
+   SwingLevel entrySwings[];
+   int swCount = CollectSwings(entryRates, MathMax(1, InpEntrySweepLookback), entrySwings);
+   if(swCount <= 0) return false;
+
+   int scanned = 0;
+   for(int i = ArraySize(entryRates) - 2; i >= 2 && scanned < MathMax(10, InpEntrySweepMaxBars); --i)
+   {
+      if(entryRates[i].time < afterTime) continue;
+      scanned++;
+      for(int s = 0; s < swCount; ++s)
+      {
+         if(entrySwings[s].time >= entryRates[i].time) continue;
+         if(dir > 0 && entrySwings[s].dir < 0)
+         {
+            bool swept = entryRates[i].low < entrySwings[s].price;
+            bool reclaimed = entryRates[i].close > entrySwings[s].price;
+            bool reclaimedNext = (i - 1 >= 1 && entryRates[i - 1].close > entrySwings[s].price);
+            if(swept && (reclaimed || reclaimedNext))
+            {
+               reclaimIndex = reclaimed ? i : i - 1;
+               sweepLevel = entrySwings[s].price;
+               return true;
+            }
+         }
+         if(dir < 0 && entrySwings[s].dir > 0)
+         {
+            bool swept = entryRates[i].high > entrySwings[s].price;
+            bool reclaimed = entryRates[i].close < entrySwings[s].price;
+            bool reclaimedNext = (i - 1 >= 1 && entryRates[i - 1].close < entrySwings[s].price);
+            if(swept && (reclaimed || reclaimedNext))
+            {
+               reclaimIndex = reclaimed ? i : i - 1;
+               sweepLevel = entrySwings[s].price;
+               return true;
+            }
+         }
+      }
+   }
+   return false;
+}
+
+bool FindEntryFvgAfterReclaim(const MqlRates &entryRates[], int dir, int reclaimIndex, FvgZone &zone)
+{
+   zone.valid = false;
+   double atr = AtrFromRates(entryRates, MathMax(1, reclaimIndex), InpAtrPeriod);
+   double minSize = atr * MathMax(0.0, InpMinFvgAtrPct) / 100.0;
+   int maxBars = MathMax(3, InpEntryFvgMaxWaitBars);
+   int scanned = 0;
+   for(int i = reclaimIndex - 1; i >= 2 && scanned < maxBars; --i, ++scanned)
+   {
+      FvgZone z;
+      ZeroMemory(z);
+      bool ok = dir > 0 ? IsBullishFvg(entryRates, i, minSize, z) : IsBearishFvg(entryRates, i, minSize, z);
+      if(ok)
+      {
+         zone = z;
+         return true;
+      }
+   }
+   return false;
+}
+
+bool FindZoneTouchTime(const MqlRates &rates[], const FvgZone &zone, datetime afterTime, datetime &touchTime)
+{
+   touchTime = 0;
+   for(int i = ArraySize(rates) - 2; i >= 1; --i)
+   {
+      if(rates[i].time < afterTime) continue;
+      bool touched = rates[i].low <= zone.high && rates[i].high >= zone.low;
+      if(!touched) continue;
+      touchTime = rates[i].time;
+      return true;
+   }
+   return false;
+}
+
+int FirstClosedBarAtOrAfter(const MqlRates &rates[], datetime afterTime)
+{
+   for(int i = ArraySize(rates) - 2; i >= 1; --i)
+   {
+      if(rates[i].time < afterTime) continue;
+      return i;
+   }
+   return -1;
+}
+
+bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, int dir, ERL_STOP_MODEL stopModel, int maxTapBars, ErlSignal &sig)
+{
+   int total = ArraySize(entryRates);
+   if(total < 10) return false;
+   double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
+   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   int scanned = 0;
+   for(int i = total - 2; i >= 1 && scanned < MathMax(3, maxTapBars); --i)
+   {
+      if(entryRates[i].time < zone.time) continue;
+      scanned++;
+      bool tapped = entryRates[i].low <= zone.high && entryRates[i].high >= zone.low;
+      if(!tapped) continue;
+      double entry = entryRates[i].close;
+      double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
+         ? (dir > 0 ? zone.firstLow : zone.firstHigh)
+         : (dir > 0 ? zone.low : zone.high);
+      double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
+      sl = ApplySlDistancePct(dir, entry, sl);
+      double risk = MathAbs(entry - sl);
+      if(risk <= TickSize()) continue;
+      sig.valid = true;
+      sig.dir = dir;
+      sig.entryTime = entryRates[i].time;
+      sig.entry = NormTradePrice(entry);
+      sig.sl = NormTradePrice(sl);
+      sig.risk = MathAbs(sig.entry - sig.sl);
+      if(sig.risk <= TickSize()) continue;
+      sig.tp1 = NormTradePrice(sig.entry + dir * sig.risk * 0.5);
+      sig.tp2 = NormTradePrice(sig.entry + dir * sig.risk * 1.0);
+      sig.tp3 = NormTradePrice(sig.entry + dir * sig.risk * 1.5);
+      sig.tp4 = NormTradePrice(sig.entry + dir * sig.risk * 2.0);
+      sig.tp5 = NormTradePrice(sig.entry + dir * sig.risk * 2.5);
+      sig.tp6 = NormTradePrice(sig.entry + dir * sig.risk * 3.0);
+      sig.fvgLow = zone.low;
+      sig.fvgHigh = zone.high;
+      sig.reason = "entry_sweep_reclaim_displace_fvg_tap";
+      return true;
+   }
+   return false;
+}
+
+bool BuildDirectEntryAtBar(const MqlRates &entryRates[], int barIndex, const FvgZone &zone, int dir, ERL_STOP_MODEL stopModel,
+   string reason, ErlSignal &sig)
+{
+   if(barIndex < 1 || barIndex >= ArraySize(entryRates)) return false;
+   double atr = AtrFromRates(entryRates, MathMax(1, barIndex), InpAtrPeriod);
+   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   double entry = entryRates[barIndex].close;
+   double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
+      ? (dir > 0 ? zone.firstLow : zone.firstHigh)
+      : (dir > 0 ? zone.low : zone.high);
+   double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
+   sl = ApplySlDistancePct(dir, entry, sl);
+   double risk = MathAbs(entry - sl);
+   if(risk <= TickSize()) return false;
+   sig.valid = true;
+   sig.dir = dir;
+   sig.entryTime = entryRates[barIndex].time;
+   sig.entry = NormTradePrice(entry);
+   sig.sl = NormTradePrice(sl);
+   sig.risk = MathAbs(sig.entry - sig.sl);
+   if(sig.risk <= TickSize()) return false;
+   sig.tp1 = NormTradePrice(sig.entry + dir * sig.risk * 0.5);
+   sig.tp2 = NormTradePrice(sig.entry + dir * sig.risk * 1.0);
+   sig.tp3 = NormTradePrice(sig.entry + dir * sig.risk * 1.5);
+   sig.tp4 = NormTradePrice(sig.entry + dir * sig.risk * 2.0);
+   sig.tp5 = NormTradePrice(sig.entry + dir * sig.risk * 2.5);
+   sig.tp6 = NormTradePrice(sig.entry + dir * sig.risk * 3.0);
+   sig.fvgLow = zone.low;
+   sig.fvgHigh = zone.high;
+   sig.reason = reason;
+   return true;
+}
+
+bool ProEntrySweepReclaimFvg(const MqlRates &entryRates[], const FvgZone &htfIrlZone, int dir, datetime afterTime,
+   ERL_STOP_MODEL stopModel, bool requireIrlTouch, bool requireEntrySweep, bool requireDisplacementFvg, ErlSignal &sig)
+{
+   datetime searchStart = afterTime;
+   if(requireIrlTouch)
+   {
+      datetime irlTouch = 0;
+      if(!FindZoneTouchTime(entryRates, htfIrlZone, afterTime, irlTouch)) return false;
+      searchStart = irlTouch;
+   }
+
+   int entryReclaim = -1;
+   double entrySweep = 0.0;
+   if(requireEntrySweep)
+   {
+      if(!FindEntrySweepReclaim(entryRates, dir, searchStart, entryReclaim, entrySweep)) return false;
+      searchStart = entryRates[entryReclaim].time;
+   }
+   else
+   {
+      entryReclaim = FirstClosedBarAtOrAfter(entryRates, searchStart);
+      if(entryReclaim < 1) return false;
+   }
+
+   if(requireDisplacementFvg)
+   {
+      FvgZone entryZone;
+      ZeroMemory(entryZone);
+      if(!FindEntryFvgAfterReclaim(entryRates, dir, entryReclaim, entryZone)) return false;
+      if(!EntryTapFromFvgLimited(entryRates, entryZone, dir, stopModel, InpEntryFvgTapMaxBars, sig)) return false;
+   }
+   else
+   {
+      if(!BuildDirectEntryAtBar(entryRates, entryReclaim, htfIrlZone, dir, stopModel, "pro_relaxed_reclaim_close", sig)) return false;
+   }
+   sig.sweepLevel = entrySweep;
+   return true;
+}
+
 string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool bias)
 {
    return _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
+      + "|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel)
+      + "|" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.entryTime);
 }
 
-int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool useBias, datetime cutoff, ErlSignal &signals[])
+void AssignExternalTarget(ErlSignal &sig, const SwingLevel &swings[])
+{
+   sig.externalTarget = 0.0;
+   sig.externalTime = 0;
+   double bestDist = DBL_MAX;
+   for(int i = 0; i < ArraySize(swings); ++i)
+   {
+      if(swings[i].time > sig.entryTime) continue;
+      if(sig.dir > 0 && swings[i].dir > 0 && swings[i].price > sig.entry)
+      {
+         double dist = swings[i].price - sig.entry;
+         if(dist < bestDist)
+         {
+            bestDist = dist;
+            sig.externalTarget = NormTradePrice(swings[i].price);
+            sig.externalTime = swings[i].time;
+         }
+      }
+      if(sig.dir < 0 && swings[i].dir < 0 && swings[i].price < sig.entry)
+      {
+         double dist = sig.entry - swings[i].price;
+         if(dist < bestDist)
+         {
+            bestDist = dist;
+            sig.externalTarget = NormTradePrice(swings[i].price);
+            sig.externalTime = swings[i].time;
+         }
+      }
+   }
+}
+
+string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool bias,
+   ERL_ENTRY_MODEL entryModel, ERL_STOP_MODEL stopModel, ERL_TARGET_MODEL targetModel,
+   bool requireIrlTouch, bool requireEntrySweep, bool requireDisplacementFvg)
+{
+   return _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
+      + "|" + EntryModelLabel(entryModel) + "|" + StopModelLabel(stopModel) + "|" + TargetModelLabel(targetModel)
+      + "|" + StrictnessLabel(requireIrlTouch, requireEntrySweep, requireDisplacementFvg)
+      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.entryTime);
+}
+
+int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool useBias,
+   ERL_ENTRY_MODEL entryModel, ERL_STOP_MODEL stopModel, ERL_TARGET_MODEL targetModel,
+   bool requireIrlTouch, bool requireEntrySweep, bool requireDisplacementFvg,
+   datetime cutoff, ErlSignal &signals[])
 {
    ArrayFree(signals);
    MqlRates htfRates[], entryRates[];
@@ -675,7 +1126,9 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
    if(!CopySeries(entryTf, entryBars, entryRates)) return 0;
 
    SwingLevel swings[];
-   int swCount = CollectSwings(htfRates, swingLookback, swings);
+   int dynamicSwingCap = MathMax(InpMaxSwings * 2, RequiredBarsForWindow(htf, cutoff, 250));
+   dynamicSwingCap = MathMin(2000, dynamicSwingCap);
+   int swCount = CollectSwings(htfRates, swingLookback, swings, dynamicSwingCap);
    if(swCount <= 0) return 0;
 
    for(int s = 0; s < swCount; ++s)
@@ -689,11 +1142,19 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
       if(!FindFirstFvgAfterReclaim(htfRates, dir, reclaimIndex, zone)) continue;
       ErlSignal sig;
       ZeroMemory(sig);
-      if(!EntryTapFromFvg(entryRates, zone, dir, sig)) continue;
+      bool entryOk = false;
+      if(entryModel == ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG)
+         entryOk = ProEntrySweepReclaimFvg(entryRates, zone, dir, htfRates[reclaimIndex].time, stopModel,
+            requireIrlTouch, requireEntrySweep, requireDisplacementFvg, sig);
+      else
+         entryOk = EntryTapFromFvg(entryRates, zone, dir, stopModel, sig);
+      if(!entryOk) continue;
       if(cutoff > 0 && sig.entryTime < cutoff) continue;
       sig.htfTime = htfRates[reclaimIndex].time;
-      sig.sweepLevel = swings[s].price;
-      sig.id = SignalId(sig, htf, entryTf, swingLookback, useBias);
+      if(sig.sweepLevel <= 0.0) sig.sweepLevel = swings[s].price;
+      AssignExternalTarget(sig, swings);
+      sig.id = SignalId(sig, htf, entryTf, swingLookback, useBias, entryModel, stopModel, targetModel,
+         requireIrlTouch, requireEntrySweep, requireDisplacementFvg);
       bool duplicate = false;
       for(int k = 0; k < ArraySize(signals); ++k)
       {
@@ -726,7 +1187,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
    return n;
 }
 
-double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
+double SelectedFixedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 {
    if(target == ERL_RR_TP1) return sig.tp1;
    if(target == ERL_RR_TP2) return sig.tp2;
@@ -734,6 +1195,25 @@ double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
    if(target == ERL_RR_TP4) return sig.tp4;
    if(target == ERL_RR_TP5) return sig.tp5;
    return sig.tp6;
+}
+
+double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel)
+{
+   if(targetModel == ERL_TARGET_NEXT_EXTERNAL)
+   {
+      if(sig.externalTarget > 0.0)
+      {
+         bool validSide = sig.dir > 0 ? sig.externalTarget > sig.entry + TickSize() : sig.externalTarget < sig.entry - TickSize();
+         if(validSide) return sig.externalTarget;
+      }
+   }
+   ERL_RR_MODE effective = EffectiveTargetMode(sig, target, targetModel);
+   return SelectedFixedTarget(sig, effective);
+}
+
+double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
+{
+   return SelectedTarget(sig, target, g_targetModel);
 }
 
 double HalfTrigger(const ErlSignal &sig, ERL_HC_MODE hc)
@@ -779,7 +1259,19 @@ int ResolveSameBar(const MqlRates &bar, int dir, double openPx, double tp, doubl
    return distTp < distSl ? 1 : -1;
 }
 
-double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
+double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel, double simEntry, double simRisk)
+{
+   if(targetModel == ERL_TARGET_NEXT_EXTERNAL && sig.externalTarget > 0.0)
+   {
+      bool validSide = sig.dir > 0 ? sig.externalTarget > simEntry + TickSize() : sig.externalTarget < simEntry - TickSize();
+      if(validSide) return NormTradePrice(sig.externalTarget);
+   }
+   ERL_RR_MODE effective = EffectiveTargetModeByRisk(simRisk, target, targetModel);
+   return NormTradePrice(simEntry + sig.dir * simRisk * TargetR(effective));
+}
+
+double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel,
+   ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
 {
    closed = false;
    won = false;
@@ -806,7 +1298,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double activeSl = sig.sl;
    double simRisk = MathAbs(simEntry - activeSl);
    if(simRisk <= TickSize()) return 0.0;
-   double tp = NormTradePrice(simEntry + sig.dir * simRisk * TargetR(target));
+   double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
    if(hc != ERL_HC_OFF) half = NormTradePrice(simEntry + sig.dir * simRisk * TargetR((ERL_RR_MODE)((int)hc - 1)));
    bool halfDone = (hc == ERL_HC_OFF || half <= 0.0);
@@ -815,6 +1307,91 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double valuePerUnit = ValuePerPriceUnitPerLot();
    if(g_btCommissionPerLot > 0.0 && valuePerUnit > 0.0)
       commissionR = g_btCommissionPerLot / (simRisk * valuePerUnit);
+
+   if(InpBacktestUseTickReplay)
+   {
+      datetime tickStart = sig.entryTime;
+      if((g_btFillMode == BT_FILL_NEXT_BAR_OPEN || g_btFillMode == BT_FILL_CONSERVATIVE) && entryIdx >= 0 && entryIdx < ArraySize(rates))
+         tickStart = rates[entryIdx].time;
+      datetime tickEnd = maxTime > 0 ? maxTime : TimeCurrent();
+      if(tickEnd > tickStart)
+      {
+         MqlTick ticks[];
+         int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, (ulong)tickStart * 1000, (ulong)tickEnd * 1000);
+         if(copied > 0)
+         {
+            int first = -1;
+            for(int k = 0; k < copied; ++k)
+            {
+               if(ticks[k].bid > 0.0 && ticks[k].ask > 0.0)
+               {
+                  first = k;
+                  break;
+               }
+            }
+            if(first >= 0)
+            {
+               double slip = MathMax(0.0, g_btSlippagePts) * point;
+               simEntry = NormTradePrice(sig.dir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
+               activeSl = sig.sl;
+               simRisk = MathAbs(simEntry - activeSl);
+               if(simRisk > TickSize())
+               {
+                  tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
+                  half = 0.0;
+                  if(hc != ERL_HC_OFF) half = NormTradePrice(simEntry + sig.dir * simRisk * TargetR((ERL_RR_MODE)((int)hc - 1)));
+                  halfDone = (hc == ERL_HC_OFF || half <= 0.0);
+                  pnlR = 0.0;
+                  commissionR = 0.0;
+                  if(g_btCommissionPerLot > 0.0 && valuePerUnit > 0.0)
+                     commissionR = g_btCommissionPerLot / (simRisk * valuePerUnit);
+
+                  for(int k = first; k < copied; ++k)
+                  {
+                     double bid = ticks[k].bid;
+                     double ask = ticks[k].ask;
+                     if(bid <= 0.0 || ask <= 0.0) continue;
+                     double closePx = sig.dir > 0 ? bid : ask;
+
+                     if(!halfDone)
+                     {
+                        bool hitHalf = sig.dir > 0 ? closePx >= half : closePx <= half;
+                        if(hitHalf)
+                        {
+                           double halfR = MathAbs(half - simEntry) / simRisk;
+                           pnlR += halfR * 0.5;
+                           activeSl = simEntry;
+                           halfDone = true;
+                        }
+                     }
+
+                     bool hitSl = sig.dir > 0 ? closePx <= activeSl : closePx >= activeSl;
+                     if(hitSl)
+                     {
+                        double slR = MathAbs(simEntry - activeSl) / simRisk;
+                        pnlR -= halfDone && hc != ERL_HC_OFF ? slR * 0.5 : slR;
+                        pnlR -= commissionR;
+                        closed = true;
+                        won = pnlR > 0.0;
+                        return pnlR;
+                     }
+
+                     bool hitTp = sig.dir > 0 ? closePx >= tp : closePx <= tp;
+                     if(hitTp)
+                     {
+                        double targetR = MathAbs(tp - simEntry) / simRisk;
+                        pnlR += halfDone && hc != ERL_HC_OFF ? targetR * 0.5 : targetR;
+                        pnlR -= commissionR;
+                        closed = true;
+                        won = pnlR > 0.0;
+                        return pnlR;
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
 
    for(int i = entryIdx; i >= 1; --i)
    {
@@ -855,14 +1432,14 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    return pnlR;
 }
 
-SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ENUM_TIMEFRAMES entryTf)
+SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
 {
    SimStats st;
    ZeroMemory(st);
    for(int i = 0; i < ArraySize(signals); ++i)
    {
       bool closed = false, won = false;
-      double r = SimulateSignal(signals[i], target, hc, entryTf, 0, closed, won);
+      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, 0, closed, won);
       st.total++;
       st.netR += r;
       if(!closed)
@@ -885,12 +1462,61 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    return st;
 }
 
-void RecalculateHistoricalStats()
+void RecalculateHistoricalStats(bool rebuildSignals = true)
 {
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
-   ErlSignal signals[];
-   BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
-   g_hist = CalculateStats(signals, g_target, g_hc, g_entryTf);
+   string signature = HistRawSignature();
+   bool rawCacheValid = (g_histRawCacheSignature == signature && g_histRawCacheWeeks >= ClampHistWeeks(g_histWeeks) && ArraySize(g_histRawCache) > 0);
+   if(rebuildSignals && !rawCacheValid)
+   {
+      BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel,
+         g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, cutoff, g_histRawCache);
+      g_histRawCacheSignature = signature;
+      g_histRawCacheWeeks = ClampHistWeeks(g_histWeeks);
+      rawCacheValid = true;
+   }
+
+   if(rawCacheValid)
+   {
+      ArrayFree(g_histSignals);
+      for(int i = 0; i < ArraySize(g_histRawCache); ++i)
+      {
+         if(g_histRawCache[i].entryTime < cutoff) continue;
+         int n = ArraySize(g_histSignals);
+         ArrayResize(g_histSignals, n + 1);
+         g_histSignals[n] = g_histRawCache[i];
+      }
+   }
+   else if(rebuildSignals || ArraySize(g_histSignals) <= 0)
+   {
+      BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel,
+         g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, cutoff, g_histSignals);
+   }
+   ArrayResize(g_histSignalR, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
+
+   ZeroMemory(g_hist);
+   for(int i = 0; i < ArraySize(g_histSignals); ++i)
+   {
+      bool closed = false, won = false;
+      double r = 0.0;
+      string cacheKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf);
+      if(!SimCacheGet(cacheKey, r, closed, won))
+      {
+         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, 0, closed, won);
+         SimCachePut(cacheKey, r, closed, won);
+      }
+      g_histSignalR[i] = r;
+      g_histSignalClosed[i] = closed;
+      g_histSignalWon[i] = won;
+      g_hist.total++;
+      g_hist.netR += r;
+      if(!closed) { g_hist.open++; continue; }
+      if(won) { g_hist.wins++; g_hist.wonR += MathMax(0.0, r); }
+      else { g_hist.losses++; g_hist.lostR += MathAbs(MathMin(0.0, r)); }
+   }
+   g_hist.pf = g_hist.lostR > 0.0 ? g_hist.wonR / g_hist.lostR : (g_hist.wonR > 0.0 ? 99.0 : 0.0);
 }
 
 //=====================================================================
@@ -963,7 +1589,7 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
       return false;
    }
 
-   if(InpAccountRiskEnabled)
+   if(RiskEnabled())
    {
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       double base = BaseCapital();
@@ -972,21 +1598,21 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 
       double dailyPnl = DailyClosedPnl();
       double ddFromPeak = g_equityPeak - equity;
-      if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
+      if(DailyLossLimitPct() > 0.0 && dailyPnl <= -base * DailyLossLimitPct() / 100.0)
       {
          reason = "daily_loss_limit";
          return false;
       }
-      if(InpMaxDrawdownPct > 0.0 && ddFromPeak >= base * InpMaxDrawdownPct / 100.0)
+      if(MaxDrawdownPct() > 0.0 && ddFromPeak >= base * MaxDrawdownPct() / 100.0)
       {
          reason = "max_drawdown_limit";
          return false;
       }
 
-      double riskMoney = equity * MathMax(0.01, InpRiskPerTradePct) / 100.0;
+      double riskMoney = equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
       lot = NormalizeVolume(riskMoney / (riskDistance * valuePerUnit));
       double actualRiskMoney = RiskMoneyForLot(lot, sl < entry ? 1 : -1, entry, sl);
-      double portfolioCap = equity * MathMax(0.01, InpMaxPortfolioRiskPct) / 100.0;
+      double portfolioCap = equity * MathMax(0.01, MaxPortfolioRiskPct()) / 100.0;
       if(actualRiskMoney <= 0.0)
       {
          reason = "risk_calc_failed";
@@ -1013,6 +1639,7 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode()) return;
    string file = "ERL_IRL_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
@@ -1155,6 +1782,7 @@ string BtBuildCoverageSummary()
 void BtProcessAudit(string eventName, string detail)
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode() && !IsValidationTester()) return;
    string file = "ERL_IRL_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -1182,6 +1810,7 @@ void BtProcessAudit(string eventName, string detail)
 void ProbePositions()
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode()) return;
    datetime now = TimeCurrent();
    if(now - g_lastAuditProbe < InpAuditProbeSec) return;
    g_lastAuditProbe = now;
@@ -1235,6 +1864,7 @@ void ProbePositions()
 void ScanClosedHistory()
 {
    if(!g_auditRuntime) return;
+   if(IsTesterMode()) return;
    datetime now = TimeCurrent();
    if(now - g_lastHistoryScan < InpAuditHistoryScanSec) return;
    g_lastHistoryScan = now;
@@ -1273,6 +1903,7 @@ void DeleteByPrefix(string prefix)
 
 void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 {
+   if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1289,6 +1920,7 @@ void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 
 void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
 {
+   if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1305,6 +1937,7 @@ void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
 
 void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
 {
+   if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1324,6 +1957,7 @@ void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
 
 void EditObj(string id, int x, int y, int w, int h, string text)
 {
+   if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0)
    {
@@ -1348,6 +1982,7 @@ void EditObj(string id, int x, int y, int w, int h, string text)
 
 void DrawArrow(string id, datetime t, double price, int dir, color clr)
 {
+   if(IsTesterMode()) return;
    string name = PFX + "HIST_" + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
    ObjectSetInteger(0, name, OBJPROP_TIME, t);
@@ -1358,8 +1993,23 @@ void DrawArrow(string id, datetime t, double price, int dir, color clr)
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
 }
 
+double SignalArrowPrice(datetime t, int dir, double fallbackEntry, double risk)
+{
+   int shift = iBarShift(_Symbol, g_entryTf, t, true);
+   double pad = MathMax(MathMax(risk, TickSize()) * 0.18, TickSize() * 40.0);
+   if(shift >= 0)
+   {
+      double low = iLow(_Symbol, g_entryTf, shift);
+      double high = iHigh(_Symbol, g_entryTf, shift);
+      if(dir > 0 && low > 0.0) return low - pad;
+      if(dir < 0 && high > 0.0) return high + pad;
+   }
+   return dir > 0 ? fallbackEntry - pad : fallbackEntry + pad;
+}
+
 void DrawChartText(string id, datetime t, double price, string text, color clr)
 {
+   if(IsTesterMode()) return;
    string name = PFX + "HISTTXT_" + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
    ObjectSetInteger(0, name, OBJPROP_TIME, t);
@@ -1373,6 +2023,7 @@ void DrawChartText(string id, datetime t, double price, string text, color clr)
 
 void DrawHLine(string id, double price, color clr, ENUM_LINE_STYLE style = STYLE_DASH)
 {
+   if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
@@ -1384,6 +2035,7 @@ void DrawHLine(string id, double price, color clr, ENUM_LINE_STYLE style = STYLE
 
 void DrawFvgBox(string id, datetime t1, datetime t2, double low, double high, color clr)
 {
+   if(IsTesterMode()) return;
    if(!InpDrawFvgZones) return;
    string name = PFX + "FVG_" + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, high, t2, low);
@@ -1402,30 +2054,36 @@ void DrawHistoricalSignals()
    DeleteByPrefix(PFX + "HIST_");
    DeleteByPrefix(PFX + "HISTTXT_");
    DeleteByPrefix(PFX + "FVG_");
-   if(IsValidationTester()) return;
+   if(IsTesterMode()) return;
    if(!InpDrawHistoricalSignals) return;
-   datetime cutoff = TimeCurrent() - HistDays() * 86400;
-   ErlSignal signals[];
-   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
+   int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
-      string id = IntegerToString(i) + "_" + IntegerToString((int)signals[i].entryTime);
-      bool closed=false, won=false;
-      double r=SimulateSignal(signals[i], g_target, g_hc, g_entryTf, 0, closed, won);
+      string id = IntegerToString(i) + "_" + IntegerToString((int)g_histSignals[i].entryTime);
+      bool closed = g_histSignalClosed[i];
+      bool won = g_histSignalWon[i];
+      double r = g_histSignalR[i];
       color clr = won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82');
-      DrawArrow(id, signals[i].entryTime, signals[i].entry, signals[i].dir, clr);
-      double pad = MathMax(MathAbs(signals[i].entry - signals[i].sl) * 0.25, TickSize() * 30.0);
-      string txt = DirLabel(signals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
-         + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
-      DrawChartText(id, signals[i].entryTime, signals[i].dir > 0 ? signals[i].entry - pad : signals[i].entry + pad, txt, clr);
-      DrawFvgBox(id, signals[i].htfTime, signals[i].entryTime + PeriodSeconds(g_entryTf) * 4, signals[i].fvgLow, signals[i].fvgHigh, clr);
+      double arrowPrice = SignalArrowPrice(g_histSignals[i].entryTime, g_histSignals[i].dir, g_histSignals[i].entry, g_histSignals[i].risk);
+      DrawArrow(id, g_histSignals[i].entryTime, arrowPrice, g_histSignals[i].dir, clr);
+      double pad = MathMax(MathAbs(g_histSignals[i].entry - g_histSignals[i].sl) * 0.25, TickSize() * 30.0);
+      double targetPrice = SelectedTarget(g_histSignals[i], g_target, g_targetModel);
+      double hcPrice = HalfTrigger(g_histSignals[i], g_hc);
+      string txt = DirLabel(g_histSignals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
+         + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2)
+         + "\nSL " + DoubleToString(g_histSignals[i].sl, _Digits)
+         + "\nTP " + DoubleToString(targetPrice, _Digits);
+      if(g_hc != ERL_HC_OFF && hcPrice > 0.0)
+         txt += "\nHC " + DoubleToString(hcPrice, _Digits);
+      DrawChartText(id, g_histSignals[i].entryTime, g_histSignals[i].dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
+      DrawFvgBox(id, g_histSignals[i].htfTime, g_histSignals[i].entryTime + PeriodSeconds(g_entryTf) * 4, g_histSignals[i].fvgLow, g_histSignals[i].fvgHigh, clr);
    }
-   RecalculateHistoricalStats();
 }
 
 void DrawLiveLevelsForPosition()
 {
    DeleteByPrefix(PFX + "LV_");
+   if(IsTesterMode()) return;
    if(!InpDrawLiveLevels) return;
    for(int i = PositionsTotal() - 1; i >= 0; --i)
    {
@@ -1632,7 +2290,7 @@ void TryOpenLatestSignal()
 
    datetime cutoff = TimeCurrent() - 7 * 86400;
    ErlSignal signals[];
-   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, cutoff, signals);
+   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, cutoff, signals);
    if(count <= 0)
    {
       g_lastStatus = "NO_SIGNAL";
@@ -1711,6 +2369,9 @@ void BuildCombos()
    ENUM_TIMEFRAMES etfs[] = { PERIOD_M15, PERIOD_M30, PERIOD_H1 };
    int swings[] = { 3, 5, 8 };
    bool biases[] = { false, true };
+   ERL_ENTRY_MODEL entryModels[] = { ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG, ERL_ENTRY_LEGACY_HTF_FVG_TAP };
+   ERL_STOP_MODEL stopModels[] = { ERL_STOP_FIRST_FVG_CANDLE, ERL_STOP_FVG_BOUNDARY };
+   ERL_TARGET_MODEL targetModels[] = { ERL_TARGET_NEXT_EXTERNAL, ERL_TARGET_AUTO_STOP_SIZE, ERL_TARGET_FIXED_R };
    for(int h = 0; h < ArraySize(htfs); ++h)
    {
       for(int e = 0; e < ArraySize(etfs); ++e)
@@ -1719,19 +2380,34 @@ void BuildCombos()
          {
             for(int b = 0; b < ArraySize(biases); ++b)
             {
-               for(int rr = 0; rr < 6; ++rr)
+               for(int em = 0; em < ArraySize(entryModels); ++em)
                {
-                  int maxHc = rr == 0 ? 0 : rr;
-                  for(int hc = 0; hc <= maxHc; ++hc)
+                  for(int sm = 0; sm < ArraySize(stopModels); ++sm)
                   {
-                     int n = ArraySize(g_btCombos);
-                     ArrayResize(g_btCombos, n + 1);
-                     g_btCombos[n].htf = htfs[h];
-                     g_btCombos[n].entryTf = etfs[e];
-                     g_btCombos[n].swing = swings[s];
-                     g_btCombos[n].target = (ERL_RR_MODE)rr;
-                     g_btCombos[n].hc = (ERL_HC_MODE)hc;
-                     g_btCombos[n].bias = biases[b];
+                     for(int tm = 0; tm < ArraySize(targetModels); ++tm)
+                     {
+                        for(int rr = 0; rr < 6; ++rr)
+                        {
+                           int maxHc = rr == 0 ? 0 : rr;
+                           for(int hc = 0; hc <= maxHc; ++hc)
+                           {
+                              int n = ArraySize(g_btCombos);
+                              ArrayResize(g_btCombos, n + 1);
+                              g_btCombos[n].htf = htfs[h];
+                              g_btCombos[n].entryTf = etfs[e];
+                              g_btCombos[n].swing = swings[s];
+                              g_btCombos[n].target = (ERL_RR_MODE)rr;
+                              g_btCombos[n].hc = (ERL_HC_MODE)hc;
+                              g_btCombos[n].bias = biases[b];
+                              g_btCombos[n].entryModel = entryModels[em];
+                              g_btCombos[n].stopModel = stopModels[sm];
+                              g_btCombos[n].targetModel = targetModels[tm];
+                              g_btCombos[n].requireIrlTouch = g_requireIrlTouch;
+                              g_btCombos[n].requireEntrySweep = g_requireEntrySweep;
+                              g_btCombos[n].requireDisplacementFvg = g_requireDisplacementFvg;
+                           }
+                        }
+                     }
                   }
                }
             }
@@ -1743,7 +2419,8 @@ void BuildCombos()
 
 bool BtWriteHeader(int h)
 {
-   return FileWrite(h, "timestamp", "symbol", "htf", "entry_tf", "swing", "target", "hc_be", "weekly_bias", "weeks",
+   return FileWrite(h, "timestamp", "symbol", "htf", "entry_tf", "swing", "entry_model", "stop_model", "target_model", "strictness",
+      "target", "hc_be", "weekly_bias", "weeks",
       "total", "wins", "losses", "open", "win_rate", "net_r", "won_r", "lost_r", "pf", "avg_r") > 0;
 }
 
@@ -1759,7 +2436,11 @@ void StartBacktest()
    string spreadEdit = PFX + "EDIT_BT_SPREAD";
    string slipEdit = PFX + "EDIT_BT_SLIP";
    string commEdit = PFX + "EDIT_BT_COMM";
-   if(ObjectFind(0, spreadEdit) >= 0) g_btSpreadPts = MathMax(0.0, StringToDouble(ObjectGetString(0, spreadEdit, OBJPROP_TEXT)));
+   if(ObjectFind(0, spreadEdit) >= 0)
+   {
+      g_btSpreadPts = StringToDouble(ObjectGetString(0, spreadEdit, OBJPROP_TEXT));
+      if(g_btSpreadPts <= 0.0) g_btSpreadPts = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   }
    if(ObjectFind(0, slipEdit) >= 0) g_btSlippagePts = MathMax(0.0, StringToDouble(ObjectGetString(0, slipEdit, OBJPROP_TEXT)));
    if(ObjectFind(0, commEdit) >= 0) g_btCommissionPerLot = MathMax(0.0, StringToDouble(ObjectGetString(0, commEdit, OBJPROP_TEXT)));
    BuildCombos();
@@ -1822,18 +2503,22 @@ void BacktestStep()
    {
       BtCombo c = g_btCombos[g_btStep];
       ErlSignal signals[];
-      BuildSignals(c.htf, c.entryTf, c.swing, c.bias, cutoff, signals);
-      SimStats st = CalculateStats(signals, c.target, c.hc, c.entryTf);
+      BuildSignals(c.htf, c.entryTf, c.swing, c.bias, c.entryModel, c.stopModel, c.targetModel, c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg, cutoff, signals);
+      SimStats st = CalculateStats(signals, c.target, c.hc, c.targetModel, c.entryTf);
       double resolved = st.wins + st.losses;
       double wr = resolved > 0 ? (double)st.wins / resolved * 100.0 : 0.0;
       double avg = st.total > 0 ? st.netR / st.total : 0.0;
       FileWrite(h, TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), _Symbol, TfLabel(c.htf), TfLabel(c.entryTf),
-         IntegerToString(c.swing), TargetLabel(c.target), HcLabel(c.hc), c.bias ? "ON" : "OFF", IntegerToString(g_btWeeks),
+         IntegerToString(c.swing), EntryModelLabel(c.entryModel), StopModelLabel(c.stopModel), TargetModelLabel(c.targetModel),
+         StrictnessLabel(c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg),
+         TargetLabel(c.target), HcLabel(c.hc), c.bias ? "ON" : "OFF", IntegerToString(g_btWeeks),
          IntegerToString(st.total), IntegerToString(st.wins), IntegerToString(st.losses), IntegerToString(st.open),
          DoubleToString(wr, 2), DoubleToString(st.netR, 2), DoubleToString(st.wonR, 2), DoubleToString(st.lostR, 2),
          DoubleToString(st.pf, 2), DoubleToString(avg, 3));
       g_btLastResult = TfLabel(c.htf) + " " + TfLabel(c.entryTf) + " SW" + IntegerToString(c.swing) + " "
-         + TargetLabel(c.target) + " " + HcLabel(c.hc) + " BIAS=" + (c.bias ? "ON" : "OFF")
+         + EntryModelLabel(c.entryModel) + " " + StopModelLabel(c.stopModel) + " " + TargetModelLabel(c.targetModel)
+         + " " + StrictnessLabel(c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg)
+         + " " + TargetLabel(c.target) + " " + HcLabel(c.hc) + " BIAS=" + (c.bias ? "ON" : "OFF")
          + " -> " + IntegerToString(st.wins) + "W/" + IntegerToString(st.losses) + "L Net=" + DoubleToString(st.netR, 2) + "R";
    }
    FileClose(h);
@@ -1844,25 +2529,45 @@ void BacktestStep()
 //=====================================================================
 void DrawDashboard()
 {
+   if(IsTesterMode()) return;
    if(!InpShowDashboard)
    {
       DeleteByPrefix(PFX + "DASH_");
       return;
    }
+   DeleteByPrefix(PFX + "DASH_");
    int x = InpDashboardX;
    int y = InpDashboardY;
+   if(g_dashboardCollapsed)
+   {
+      RectObj("DASH_MIN_BG", x, y, 760, 34, C'15,20,31', C'90,178,255');
+      LabelObj("DASH_MIN_TITLE", x + 14, y + 10,
+         "ERL->IRL // " + (g_eaEnabled ? "EA ON" : "EA OFF") + " | " + _Symbol
+         + " | " + TfLabel(g_htf) + "->" + TfLabel(g_entryTf)
+         + " | " + EntryModelLabel(g_entryModel) + "/" + StopModelLabel(g_stopModel) + "/" + TargetModelLabel(g_targetModel),
+         g_eaEnabled ? C'80,255,180' : C'255,95,140', 9);
+      ButtonObj("BTN_DASH_TOGGLE", x + 674, y + 7, 72, 20, "EXPAND", C'38,101,176');
+      return;
+   }
    int W = 760;
-   int H = 620;
+   int H = 680;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
    LabelObj("DASH_TITLE", x + 14, y + 12, "ERL->IRL SWING MODEL // " + ERL_BUILD, C'225,232,242', 10);
+   ButtonObj("BTN_DASH_TOGGLE", x + 674, y + 7, 72, 20, "HIDE", C'70,72,82');
    UpdateDashboard();
 }
 
 void UpdateDashboard()
 {
+   if(IsTesterMode()) return;
    if(!InpShowDashboard) return;
+   if(g_dashboardCollapsed)
+   {
+      DrawDashboard();
+      return;
+   }
    int x = InpDashboardX;
    int y = InpDashboardY;
    color ac = C'90,178,255';
@@ -1874,11 +2579,13 @@ void UpdateDashboard()
    LabelObj("DASH_STATE", x + 14, y + 38,
       (g_eaEnabled ? "EA ON" : "EA OFF") + " | " + _Symbol + " | HTF " + TfLabel(g_htf)
       + " | ENTRY " + TfLabel(g_entryTf) + " | SW" + IntegerToString(g_swingLookback)
+      + " | " + EntryModelLabel(g_entryModel) + "/" + StopModelLabel(g_stopModel) + "/" + TargetModelLabel(g_targetModel)
+      + " | " + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " | " + TargetLabel(g_target) + " | " + HcLabel(g_hc),
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
    int sec1 = y + 64;
-   RectObj("DASH_SEC1", x + 8, sec1, 744, 116, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC1", x + 8, sec1, 744, 172, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
    LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
@@ -1888,7 +2595,9 @@ void UpdateDashboard()
    ButtonObj("BTN_ETF_M15", x + 266, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
    ButtonObj("BTN_ETF_M30", x + 330, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
    ButtonObj("BTN_ETF_H1", x + 394, row, 52, bh, "H1", g_entryTf == PERIOD_H1 ? on : off);
-   ButtonObj("BTN_EA", x + 584, row, 88, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
+   ButtonObj("BTN_EA", x + 530, row, 76, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
+   ButtonObj("BTN_FTMO", x + 610, row, 62, bh, g_ftmoMode ? "FTMO" : "FTMO", g_ftmoMode ? on : off);
+   ButtonObj("BTN_RISKLOT", x + 676, row, 68, bh, g_riskLotOnlyMode ? "RISK" : "RISK", g_riskLotOnlyMode ? on : off);
 
    row += 28;
    LabelObj("DASH_SW_L", x + 16, row + 4, "SWING:", muted, 8);
@@ -1916,7 +2625,26 @@ void UpdateDashboard()
    ButtonObj("BTN_BIAS", x + 490, row, 68, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
    ButtonObj("BTN_AUDIT", x + 660, row, 84, bh, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? C'120,88,25' : off);
 
-   int sec2 = sec1 + 124;
+   row += 28;
+   LabelObj("DASH_EM_L", x + 16, row + 4, "ENTRY MODEL:", muted, 8);
+   ButtonObj("BTN_ENTRY_PRO", x + 112, row, 62, bh, "PRO", g_entryModel == ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG ? on : off);
+   ButtonObj("BTN_ENTRY_LEG", x + 180, row, 78, bh, "LEGACY", g_entryModel == ERL_ENTRY_LEGACY_HTF_FVG_TAP ? on : off);
+   LabelObj("DASH_SM_L", x + 276, row + 4, "STOP:", muted, 8);
+   ButtonObj("BTN_STOP_FVG1", x + 326, row, 62, bh, "FVG1", g_stopModel == ERL_STOP_FIRST_FVG_CANDLE ? on : off);
+   ButtonObj("BTN_STOP_ZONE", x + 394, row, 62, bh, "ZONE", g_stopModel == ERL_STOP_FVG_BOUNDARY ? on : off);
+   LabelObj("DASH_TM_L", x + 474, row + 4, "TARGET:", muted, 8);
+   ButtonObj("BTN_TM_EXT", x + 538, row, 54, bh, "EXT", g_targetModel == ERL_TARGET_NEXT_EXTERNAL ? on : off);
+   ButtonObj("BTN_TM_AUTO", x + 598, row, 58, bh, "AUTO", g_targetModel == ERL_TARGET_AUTO_STOP_SIZE ? on : off);
+   ButtonObj("BTN_TM_FIXED", x + 662, row, 68, bh, "FIXED", g_targetModel == ERL_TARGET_FIXED_R ? on : off);
+
+   row += 28;
+   LabelObj("DASH_STRICT_L", x + 16, row + 4, "STRICT FILTERS:", muted, 8);
+   ButtonObj("BTN_REQ_IRL", x + 130, row, 94, bh, g_requireIrlTouch ? "IRL: ON" : "IRL: OFF", g_requireIrlTouch ? on : off);
+   ButtonObj("BTN_REQ_SWEEP", x + 232, row, 104, bh, g_requireEntrySweep ? "SWEEP: ON" : "SWEEP: OFF", g_requireEntrySweep ? on : off);
+   ButtonObj("BTN_REQ_DISP", x + 344, row, 96, bh, g_requireDisplacementFvg ? "DISP: ON" : "DISP: OFF", g_requireDisplacementFvg ? on : off);
+   LabelObj("DASH_STRICT_HINT", x + 456, row + 4, "OFF = more signals, less strict pro confirmation", C'255,204,82', 8);
+
+   int sec2 = sec1 + 180;
    RectObj("DASH_SEC2", x + 8, sec2, 744, 112, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
@@ -1950,8 +2678,8 @@ void UpdateDashboard()
       + " | Entry " + DoubleToString(g_lastEntry, _Digits) + " SL " + DoubleToString(g_lastSl, _Digits)
       + " TP " + DoubleToString(g_lastTp, _Digits), muted, 8);
    LabelObj("DASH_EX3", x + 16, sec3 + 74,
-      "Risk: " + (InpAccountRiskEnabled ? "ON" : "OFF") + " " + DoubleToString(InpRiskPerTradePct, 2)
-      + "% | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+      "Risk: " + (RiskEnabled() ? "ON" : "OFF") + " " + DoubleToString(RiskPerTradePct(), 2)
+      + "% | Mode " + RuntimeRiskModeLabel() + " | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
    LabelObj("DASH_SL_L", x + 510, sec3 + 74, "SL%:", muted, 8);
    EditObj("EDIT_SL_PCT", x + 550, sec3 + 72, 56, bh, DoubleToString(g_slDistancePct, 0));
    ButtonObj("BTN_SL_APPLY", x + 612, sec3 + 72, 70, bh, "APPLY", C'38,101,176');
@@ -1964,7 +2692,7 @@ void UpdateDashboard()
    EditObj("EDIT_BT_WEEKS", x + 76, btY, 42, bh, IntegerToString(g_btWeeks));
    ButtonObj("BTN_BT_RUN", x + 126, btY, 126, bh, g_btRunning ? "RUNNING..." : "RUN BACKTEST", g_btRunning ? C'80,80,80' : on);
    ButtonObj("BTN_BT_STOP", x + 260, btY, 66, bh, "STOP", g_btRunning ? C'170,45,62' : off);
-   LabelObj("DASH_BT_COUNT", x + 338, btY + 4, IntegerToString(g_btTotal > 0 ? g_btTotal : 756) + " combos", muted, 8);
+   LabelObj("DASH_BT_COUNT", x + 338, btY + 4, IntegerToString(g_btTotal > 0 ? g_btTotal : 9072) + " combos", muted, 8);
 
    int optY = btY + 26;
    LabelObj("DASH_FILL_L", x + 16, optY + 4, "Fill:", muted, 8);
@@ -1984,7 +2712,7 @@ void UpdateDashboard()
    EditObj("EDIT_BT_SLIP", x + 140, costY, 48, bh, DoubleToString(g_btSlippagePts, 1));
    LabelObj("DASH_COST_L3", x + 196, costY + 4, "Comm/Lot:", muted, 8);
    EditObj("EDIT_BT_COMM", x + 270, costY, 64, bh, DoubleToString(g_btCommissionPerLot, 2));
-   LabelObj("DASH_COST_HINT", x + 344, costY + 4, "0 = old model", muted, 8);
+   LabelObj("DASH_COST_HINT", x + 344, costY + 4, "0 spread = live spread", muted, 8);
 
    int pbY = costY + 28;
    RectObj("DASH_BTPB_BG", x + 16, pbY, 640, 14, C'38,46,60', C'60,80,110');
@@ -2001,8 +2729,8 @@ void UpdateDashboard()
 //=====================================================================
 void EnforceRiskBreach()
 {
-   if(!InpAccountRiskEnabled || !InpLiquidateOnBreach) return;
-   if(InpDailyLossLimitPct <= 0.0 && InpMaxDrawdownPct <= 0.0) return;
+   if(!RiskEnabled() || !InpLiquidateOnBreach) return;
+   if(DailyLossLimitPct() <= 0.0 && MaxDrawdownPct() <= 0.0) return;
    double base = BaseCapital();
    if(base <= 0.0) return;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -2012,12 +2740,12 @@ void EnforceRiskBreach()
    double dd = g_equityPeak - equity;
    bool breach = false;
    string why = "";
-   if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
+   if(DailyLossLimitPct() > 0.0 && dailyPnl <= -base * DailyLossLimitPct() / 100.0)
    {
       breach = true;
       why = "daily_loss_breach";
    }
-   if(InpMaxDrawdownPct > 0.0 && dd >= base * InpMaxDrawdownPct / 100.0)
+   if(MaxDrawdownPct() > 0.0 && dd >= base * MaxDrawdownPct() / 100.0)
    {
       breach = true;
       why = "max_drawdown_breach";
@@ -2029,12 +2757,28 @@ void EnforceRiskBreach()
    }
 }
 
-void RefreshAfterConfigChange()
+void RefreshAfterConfigChange(bool rebuildSignals = true)
 {
    SanitizeHalfMode();
+   // Coalesce rapid UI clicks; heavy signal generation runs once after input settles.
+   g_configRefreshRebuildSignals = g_configRefreshPending ? (g_configRefreshRebuildSignals || rebuildSignals) : rebuildSignals;
+   g_configRefreshPending = true;
+   g_configRefreshDue = TimeLocal() + 1;
+   g_lastStatus = rebuildSignals ? "CONFIG UPDATE QUEUED" : "RESULT UPDATE QUEUED";
+   UpdateDashboard();
+   ChartRedraw(0);
+}
+
+void ProcessPendingConfigRefresh()
+{
+   if(!g_configRefreshPending || TimeLocal() < g_configRefreshDue) return;
+   bool rebuildSignals = g_configRefreshRebuildSignals;
+   g_configRefreshPending = false;
+   g_configRefreshRebuildSignals = true;
    g_lastLiveScanBar = 0;
-   RecalculateHistoricalStats();
-   DrawHistoricalSignals();
+   RecalculateHistoricalStats(rebuildSignals);
+   if(!IsTesterMode()) DrawHistoricalSignals();
+   g_lastStatus = "CONFIG UPDATED";
    UpdateDashboard();
    ChartRedraw(0);
 }
@@ -2052,18 +2796,26 @@ int OnInit()
    ErlTesterAudit_Init();
    PFX = ERL_PREFIX + IntegerToString((int)ChartID()) + "_";
    g_eaEnabled = InpEaEnabled;
+   g_ftmoMode = InpFtmoModeDefault;
+   g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
    g_htf = InpDefaultHtf;
    g_entryTf = InpDefaultEntryTf;
    g_swingLookback = InpDefaultSwingLookback;
    g_target = InpDefaultTarget;
    g_hc = InpDefaultHalfBe;
    g_weeklyBias = InpDefaultWeeklyBias;
+   g_entryModel = InpDefaultEntryModel;
+   g_stopModel = InpDefaultStopModel;
+   g_targetModel = InpDefaultTargetModel;
+   g_requireIrlTouch = InpDefaultRequireIrlTouch;
+   g_requireEntrySweep = InpDefaultRequireEntrySweep;
+   g_requireDisplacementFvg = InpDefaultRequireDisplacementFvg;
    g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
    g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
    g_btFillMode = InpBacktestFillMode;
    g_btSameBarPolicy = InpBacktestSameBarPolicy;
-   g_btSpreadPts = InpBacktestSpreadPts;
+   g_btSpreadPts = InpBacktestSpreadPts > 0.0 ? InpBacktestSpreadPts : (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    g_btSlippagePts = InpBacktestSlippagePts;
    g_btCommissionPerLot = InpBacktestCommissionPerLot;
    g_auditRuntime = (InpAuditTradeCsv || InpAuditPositionProbe);
@@ -2073,17 +2825,20 @@ int OnInit()
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   if(!IsValidationTester())
+   if(!IsTesterMode())
    {
       RecalculateHistoricalStats();
       DrawDashboard();
       DrawHistoricalSignals();
       DrawLiveLevelsForPosition();
    }
-   if(!IsValidationTester()) EventSetTimer(1);
+   if(!IsTesterMode()) EventSetTimer(1);
    AuditWrite("ea_init", "init", 0, 0, 0, 0, 0,
       "build=" + (string)ERL_BUILD + " htf=" + TfLabel(g_htf) + " entry_tf=" + TfLabel(g_entryTf)
-      + " swing=" + IntegerToString(g_swingLookback) + " target=" + TargetLabel(g_target) + " hc=" + HcLabel(g_hc));
+      + " swing=" + IntegerToString(g_swingLookback) + " target=" + TargetLabel(g_target) + " hc=" + HcLabel(g_hc)
+      + " entry_model=" + EntryModelLabel(g_entryModel) + " stop_model=" + StopModelLabel(g_stopModel)
+      + " target_model=" + TargetModelLabel(g_targetModel)
+      + " strictness=" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg));
    Print("ERL_IRL init build=", ERL_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf));
    return INIT_SUCCEEDED;
 }
@@ -2104,24 +2859,25 @@ void OnTick()
    g_lastSpreadPts = CurrentSpreadPoints();
    TryOpenLatestSignal();
    ManagePositions();
-   if(!IsValidationTester())DrawLiveLevelsForPosition();
+   if(!IsTesterMode())DrawLiveLevelsForPosition();
 }
 
 void OnTimer()
 {
-   if(IsValidationTester()) return;
+   if(IsTesterMode()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
    EnforceRiskBreach();
    TryOpenLatestSignal();
    ManagePositions();
    ProbePositions();
    ScanClosedHistory();
+   ProcessPendingConfigRefresh();
    if(!IsValidationTester())
    {
-      BacktestStep();
+      if(g_btRunning) BacktestStep();
       UpdateDashboard();
       DrawLiveLevelsForPosition();
-      ChartRedraw(0);
+      if(g_btRunning) ChartRedraw(0);
    }
 }
 
@@ -2160,6 +2916,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   if(Clicked(sparam, "BTN_DASH_TOGGLE"))
+   {
+      g_dashboardCollapsed = !g_dashboardCollapsed;
+      DrawDashboard();
+      ChartRedraw(0);
+      return;
+   }
+
    if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_D1")) { g_htf = PERIOD_D1; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ETF_M15")) { g_entryTf = PERIOD_M15; RefreshAfterConfigChange(); return; }
@@ -2168,25 +2932,37 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_SW_3")) { g_swingLookback = 3; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP3")) { if((int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP4")) { if((int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_HC_TP5")) { if((int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP3")) { if((int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP4")) { if((int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP5")) { if((int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ENTRY_PRO")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ENTRY_LEG")) { g_entryModel = ERL_ENTRY_LEGACY_HTF_FVG_TAP; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_STOP_FVG1")) { g_stopModel = ERL_STOP_FIRST_FVG_CANDLE; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_STOP_ZONE")) { g_stopModel = ERL_STOP_FVG_BOUNDARY; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TM_EXT")) { g_targetModel = ERL_TARGET_NEXT_EXTERNAL; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TM_AUTO")) { g_targetModel = ERL_TARGET_AUTO_STOP_SIZE; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TM_FIXED")) { g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_REQ_IRL")) { g_requireIrlTouch = !g_requireIrlTouch; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_REQ_SWEEP")) { g_requireEntrySweep = !g_requireEntrySweep; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_REQ_DISP")) { g_requireDisplacementFvg = !g_requireDisplacementFvg; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_EA")) { g_eaEnabled = !g_eaEnabled; UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_FTMO")) { g_ftmoMode = !g_ftmoMode; if(g_ftmoMode) g_riskLotOnlyMode = false; UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_RISKLOT")) { g_riskLotOnlyMode = !g_riskLotOnlyMode; if(g_riskLotOnlyMode) g_ftmoMode = false; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_AUDIT")) { g_auditRuntime = !g_auditRuntime; Print("ERL_IRL audit logging ", g_auditRuntime ? "enabled" : "disabled"); UpdateDashboard(); ChartRedraw(0); return; }
 
