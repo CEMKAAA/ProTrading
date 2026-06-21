@@ -78,6 +78,14 @@ input bool   InpTradeLatestSignalOnAttach = false;
 input bool   InpDrawLastSignalsOnStart = true;
 input int    InpStartupSignalCount = 3;
 input bool   InpShowDashboard = true;
+input bool   InpUseHtfRegimeFilter = false;
+input ENUM_TIMEFRAMES InpHtfRegimeTimeframe = PERIOD_H4;
+input int    InpHtfRegimeSmaLen = 200;
+input bool   InpUseHtfTrendFilter = false;
+input ENUM_TIMEFRAMES InpHtfTrendTimeframe = PERIOD_H1;
+input int    InpHtfTrendFastLen = 50;
+input int    InpHtfTrendSlowLen = 200;
+input bool   InpBlockSameDirectionUntilOpposite = false;
 
 CTrade trade;
 datetime g_lastBarTime = 0;
@@ -95,12 +103,238 @@ bool     g_beMoved = false;
 double   g_equityPeak = 0.0;
 double   g_maxDd = 0.0;
 string   g_historySummary[3];
+int      g_auditWindowDays = 14;
+int      g_historyDrawnCount = 0;
+int      g_lastAcceptedDirection = 0;
+bool     g_useHtfRegimeFilter = false;
+ENUM_TIMEFRAMES g_htfRegimeTimeframe = PERIOD_H4;
+int      g_htfRegimeSmaLen = 200;
+bool     g_useHtfTrendFilter = false;
+ENUM_TIMEFRAMES g_htfTrendTimeframe = PERIOD_H1;
+int      g_htfTrendFastLen = 50;
+int      g_htfTrendSlowLen = 200;
+bool     g_blockSameDirectionUntilOpposite = false;
 
 string PREFIX = "NAS_SATS_EA_";
 
 int SignalBarsToCopy()
 {
    return MathMax(InpSignalCalcBars, 300);
+}
+
+int AuditWindowBars()
+{
+   int sec = PeriodSeconds(_Period);
+   if(sec <= 0)
+      sec = 60;
+   long estimated = ((long)g_auditWindowDays * 86400L) / sec + 300L;
+   if(estimated < 500L)
+      estimated = 500L;
+   if(estimated > 250000L)
+      estimated = 250000L;
+   return (int)estimated;
+}
+
+datetime AuditWindowStart()
+{
+   return TimeCurrent() - (datetime)((long)g_auditWindowDays * 86400L);
+}
+
+string AuditWindowLabel()
+{
+   if(g_auditWindowDays <= 14)
+      return "2W";
+   if(g_auditWindowDays <= 35)
+      return "5W";
+   if(g_auditWindowDays <= 70)
+      return "10W";
+   return "20W";
+}
+
+void RefreshAuditOverlay()
+{
+   DrawRecentSignalHistory();
+   UpdateDashboard();
+}
+
+void SetAuditWindowDays(const int days)
+{
+   if(days <= 0 || g_auditWindowDays == days)
+      return;
+   g_auditWindowDays = days;
+   RefreshAuditOverlay();
+}
+
+double NAS_SMA_Range(const MqlRates &rates[], const int fromIndex, const int toIndex)
+{
+   if(fromIndex < 0 || toIndex < fromIndex)
+      return NAS_Empty();
+   double sum = 0.0;
+   int count = 0;
+   for(int i = fromIndex; i <= toIndex; i++)
+   {
+      if(!NAS_IsValid(rates[i].close))
+         return NAS_Empty();
+      sum += rates[i].close;
+      count++;
+   }
+   return count > 0 ? sum / (double)count : NAS_Empty();
+}
+
+double NAS_EMA_AtIndex(const MqlRates &rates[], const int index, const int len)
+{
+   if(index < 0 || len <= 1)
+      return index >= 0 ? rates[index].close : NAS_Empty();
+   double alpha = 2.0 / ((double)len + 1.0);
+   double ema = rates[0].close;
+   for(int i = 1; i <= index; i++)
+      ema = alpha * rates[i].close + (1.0 - alpha) * ema;
+   return ema;
+}
+
+bool BuildHigherTfRates(const ENUM_TIMEFRAMES tf, const datetime signalTime, const int minBars, MqlRates &out[], int &outIndex)
+{
+   outIndex = -1;
+   int shift = iBarShift(_Symbol, tf, signalTime, false);
+   if(shift < 0)
+      return false;
+   int need = MathMax(minBars + shift + 20, 300);
+   MqlRates tmp[];
+   int copied = CopyRates(_Symbol, tf, 0, need, tmp);
+   if(copied <= shift || copied < minBars)
+      return false;
+   if(tmp[0].time > tmp[copied - 1].time)
+      ArrayReverse(tmp, 0, WHOLE_ARRAY);
+   ArrayResize(out, copied);
+   ArrayCopy(out, tmp);
+   outIndex = copied - 1 - shift;
+   if(outIndex < 0 || outIndex >= copied)
+      return false;
+   return true;
+}
+
+bool HtfRegimeAllows(const datetime signalTime, const int direction, string &reason)
+{
+   reason = "";
+   if(!g_useHtfRegimeFilter)
+      return true;
+   MqlRates htf[];
+   int idx = -1;
+   if(!BuildHigherTfRates(g_htfRegimeTimeframe, signalTime, g_htfRegimeSmaLen + 2, htf, idx))
+   {
+      reason = "htf_regime_data_unavailable";
+      return false;
+   }
+   double sma = NAS_SMA_Range(htf, MathMax(0, idx - g_htfRegimeSmaLen + 1), idx);
+   if(!NAS_IsValid(sma))
+   {
+      reason = "htf_regime_sma_invalid";
+      return false;
+   }
+   if(direction > 0 && htf[idx].close < sma)
+   {
+      reason = "htf_regime_bearish";
+      return false;
+   }
+   if(direction < 0 && htf[idx].close > sma)
+   {
+      reason = "htf_regime_bullish";
+      return false;
+   }
+   return true;
+}
+
+bool HtfTrendAllows(const datetime signalTime, const int direction, string &reason)
+{
+   reason = "";
+   if(!g_useHtfTrendFilter)
+      return true;
+   MqlRates htf[];
+   int idx = -1;
+   int minBars = MathMax(g_htfTrendSlowLen, g_htfTrendFastLen) + 2;
+   if(!BuildHigherTfRates(g_htfTrendTimeframe, signalTime, minBars, htf, idx))
+   {
+      reason = "htf_trend_data_unavailable";
+      return false;
+   }
+   double fast = NAS_EMA_AtIndex(htf, idx, g_htfTrendFastLen);
+   double slow = NAS_EMA_AtIndex(htf, idx, g_htfTrendSlowLen);
+   if(!NAS_IsValid(fast) || !NAS_IsValid(slow))
+   {
+      reason = "htf_trend_ema_invalid";
+      return false;
+   }
+   if(direction > 0 && fast < slow)
+   {
+      reason = "htf_trend_bearish";
+      return false;
+   }
+   if(direction < 0 && fast > slow)
+   {
+      reason = "htf_trend_bullish";
+      return false;
+   }
+   return true;
+}
+
+bool CycleDirectionAllows(const int direction, string &reason)
+{
+   reason = "";
+   if(!g_blockSameDirectionUntilOpposite)
+      return true;
+   if(g_lastAcceptedDirection != 0 && direction == g_lastAcceptedDirection)
+   {
+      reason = "same_direction_blocked";
+      return false;
+   }
+   return true;
+}
+
+bool SignalAcceptanceAllows(const MqlRates &rates[], const int i, const int direction, string &reason)
+{
+   reason = "";
+   if(direction == 0)
+      return false;
+   if(!CycleDirectionAllows(direction, reason))
+      return false;
+
+   string htfReason = "";
+   if(!HtfRegimeAllows(rates[i].time, direction, htfReason))
+   {
+      reason = htfReason;
+      return false;
+   }
+
+   htfReason = "";
+   if(!HtfTrendAllows(rates[i].time, direction, htfReason))
+   {
+      reason = htfReason;
+      return false;
+   }
+
+   return true;
+}
+
+void RestoreManagedState()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!IsManagedPosition())
+         continue;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      g_lastAcceptedDirection = (type == POSITION_TYPE_BUY) ? 1 : -1;
+      g_lastDirection = g_lastAcceptedDirection;
+      g_lastEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+      g_lastSl = PositionGetDouble(POSITION_SL);
+      g_lastTp1 = PositionGetDouble(POSITION_TP);
+      g_lastTp2 = g_lastTp1;
+      g_lastTp3 = g_lastTp1;
+      return;
+   }
 }
 
 bool WasDirectionProcessedOnBar(const datetime signalTime, const int direction)
@@ -179,11 +413,21 @@ SATSSettings BuildRiskSettings()
 
 int OnInit()
 {
+   g_useHtfRegimeFilter = InpUseHtfRegimeFilter;
+   g_htfRegimeTimeframe = InpHtfRegimeTimeframe;
+   g_htfRegimeSmaLen = InpHtfRegimeSmaLen;
+   g_useHtfTrendFilter = InpUseHtfTrendFilter;
+   g_htfTrendTimeframe = InpHtfTrendTimeframe;
+   g_htfTrendFastLen = InpHtfTrendFastLen;
+   g_htfTrendSlowLen = InpHtfTrendSlowLen;
+   g_blockSameDirectionUntilOpposite = InpBlockSameDirectionUntilOpposite;
+
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
    g_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    PrintStartupDiagnostics();
    BaselineStartupSignal();
+   RestoreManagedState();
    DrawDashboard();
    CreateButtons();
    if(InpDrawLastSignalsOnStart)
@@ -387,6 +631,16 @@ void ProcessSignalBar()
       return;
    }
 
+   string acceptReason = "";
+   if(!SignalAcceptanceAllows(rates, i, direction, acceptReason))
+   {
+      Print("NAS SATS EA signal blocked dir=", (direction > 0 ? "BUY" : "SELL"),
+            " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+            " reason=", acceptReason,
+            " label=", NasSignalText(p[i]));
+      return;
+   }
+
    double effAtr = 0.0;
    if(!CalculateRisk(rates, copied, i, direction, p[i], g_lastEntry, g_lastSl, g_lastTp1, g_lastTp2, g_lastTp3, effAtr))
    {
@@ -430,6 +684,7 @@ void ProcessSignalBar()
    bool opened = OpenThreeLegs(direction);
    if(opened)
    {
+      g_lastAcceptedDirection = direction;
       MarkDirectionProcessedOnBar(rates[i].time, direction);
       if(InpDrawTradeLevels)
          DrawTradeLevels(direction);
@@ -438,17 +693,20 @@ void ProcessSignalBar()
    }
 }
 
-int MaxTpHitBeforeExit(const MqlRates &rates[], const NasPoint &p[], const int signalIndex, const int direction, const int lastIndex, string &outcome)
+int MaxTpHitBeforeExit(const MqlRates &rates[],
+                       const NasPoint &p[],
+                       const int signalIndex,
+                       const int direction,
+                       const int lastIndex,
+                       const double entry,
+                       const double sl,
+                       const double tp1,
+                       const double tp2,
+                       const double tp3,
+                       string &outcome)
 {
-   double entry, sl, tp1, tp2, tp3, atr;
    int maxHit = 0;
    outcome = "open";
-   if(!CalculateRisk(rates, lastIndex + 1, signalIndex, direction, p[signalIndex], entry, sl, tp1, tp2, tp3, atr))
-   {
-      outcome = "risk unavailable";
-      return 0;
-   }
-
    int end = lastIndex;
    for(int j = signalIndex + 1; j <= lastIndex; j++)
    {
@@ -479,11 +737,6 @@ int MaxTpHitBeforeExit(const MqlRates &rates[], const NasPoint &p[], const int s
          outcome = "SL";
          break;
       }
-      if(j - signalIndex >= 100)
-      {
-         outcome = "timeout";
-         break;
-      }
    }
    return maxHit;
 }
@@ -491,9 +744,12 @@ int MaxTpHitBeforeExit(const MqlRates &rates[], const NasPoint &p[], const int s
 void DrawRecentSignalHistory()
 {
    ObjectsDeleteAll(0, PREFIX + "HIST_");
+   g_historyDrawnCount = 0;
 
    MqlRates rates[];
-   int copied = CopyRates(_Symbol, _Period, 0, MathMax(InpHistoryBars, 300), rates);
+   datetime fromTime = AuditWindowStart() - (datetime)(PeriodSeconds(_Period) * 300);
+   datetime toTime = TimeCurrent();
+   int copied = CopyRates(_Symbol, _Period, fromTime, toTime, rates);
    if(copied < 200)
    {
       Print("NAS SATS EA history overlay skipped: insufficient bars copied=", copied);
@@ -509,23 +765,37 @@ void DrawRecentSignalHistory()
       g_historySummary[h] = "-";
 
    int drawn = 0;
-   int wanted = MathMax(1, InpStartupSignalCount);
+   int wanted = copied;
+   datetime windowStart = AuditWindowStart();
    for(int i = copied - 2; i >= 0 && drawn < wanted; i--)
    {
+      if(rates[i].time < windowStart)
+         break;
       if(!p[i].buy && !p[i].sell)
          continue;
       int direction = p[i].buy ? 1 : -1;
-      double entry, sl, tp1, tp2, tp3, atr;
-      if(!CalculateRisk(rates, copied, i, direction, p[i], entry, sl, tp1, tp2, tp3, atr))
+      string acceptReason = "";
+      if(!SignalAcceptanceAllows(rates, i, direction, acceptReason))
+         continue;
+      double entry = p[i].nasEntry;
+      double sl = p[i].nasSl;
+      double tp1 = p[i].nasTp1;
+      double tp2 = p[i].nasTp2;
+      double tp3 = p[i].nasTp3;
+      if(!NAS_IsValid(entry) || !NAS_IsValid(sl) || !NAS_IsValid(tp1) || !NAS_IsValid(tp2) || !NAS_IsValid(tp3))
          continue;
       string outcome = "";
-      int maxTp = MaxTpHitBeforeExit(rates, p, i, direction, copied - 2, outcome);
-      DrawHistoricalSignal(drawn + 1, direction, rates[i].time, rates[i].high, rates[i].low, entry, maxTp, outcome);
+      int maxTp = MaxTpHitBeforeExit(rates, p, i, direction, copied - 2, entry, sl, tp1, tp2, tp3, outcome);
+      DrawHistoricalSignal(drawn + 1, direction, rates[i].time, rates[i].high, rates[i].low, entry, sl, tp1, tp2, tp3, maxTp, outcome);
       if(drawn < 3)
       {
          g_historySummary[drawn] = "#" + IntegerToString(drawn + 1) + " " + (direction > 0 ? "BUY " : "SELL ")
                                   + TimeToString(rates[i].time, TIME_DATE|TIME_MINUTES)
                                   + " E=" + DoubleToString(entry, _Digits)
+                                  + " SL=" + DoubleToString(sl, _Digits)
+                                  + " TP1=" + DoubleToString(tp1, _Digits)
+                                  + " TP2=" + DoubleToString(tp2, _Digits)
+                                  + " TP3=" + DoubleToString(tp3, _Digits)
                                   + " max=" + (maxTp > 0 ? "TP" + IntegerToString(maxTp) : "none")
                                   + " " + outcome;
       }
@@ -536,11 +806,16 @@ void DrawRecentSignalHistory()
             " bar=", TimeToString(rates[i].time, TIME_DATE|TIME_MINUTES),
             " nas_st=", DoubleToString(p[i].superTrend, _Digits),
             " entry=", DoubleToString(entry, _Digits),
+            " sl=", DoubleToString(sl, _Digits),
+            " tp1=", DoubleToString(tp1, _Digits),
+            " tp2=", DoubleToString(tp2, _Digits),
+            " tp3=", DoubleToString(tp3, _Digits),
             " max_tp=", maxTp,
             " outcome=", outcome);
       drawn++;
    }
-   Print("NAS SATS EA history overlay drawn=", drawn, " requested=", wanted);
+   g_historyDrawnCount = drawn;
+   Print("NAS SATS EA history overlay drawn=", drawn, " requested=", wanted, " window=", AuditWindowLabel());
 }
 
 double NormalizeVolume(const double volume)
@@ -760,6 +1035,10 @@ void DrawHistoricalSignal(const int idx,
                           const double signalHigh,
                           const double signalLow,
                           const double entry,
+                          const double sl,
+                          const double tp1,
+                          const double tp2,
+                          const double tp3,
                           const int maxTp,
                           const string outcome)
 {
@@ -772,6 +1051,10 @@ void DrawHistoricalSignal(const int idx,
    string maxText = maxTp > 0 ? "TP" + IntegerToString(maxTp) : "none";
    string txt = (direction > 0 ? "BUY" : "SELL") + " #" + IntegerToString(idx)
                 + " E=" + DoubleToString(entry, _Digits)
+                + " SL=" + DoubleToString(sl, _Digits)
+                + " TP1=" + DoubleToString(tp1, _Digits)
+                + " TP2=" + DoubleToString(tp2, _Digits)
+                + " TP3=" + DoubleToString(tp3, _Digits)
                 + " max=" + maxText
                 + " " + outcome;
    DrawHistoricalArrow(base + "ARW", signalTime, arrowPrice, arrowCode, clr);
@@ -840,6 +1123,13 @@ void CreateButtons()
    CreateButton("BTN_CLOSE_ALL", 18, 148, 110, 24, "CLOSE ALL", clrFireBrick);
    CreateButton("BTN_CLOSE_1_3", 136, 148, 110, 24, "CLOSE 1/3", clrDarkSlateGray);
    CreateButton("BTN_BE", 254, 148, 110, 24, "SL -> BE", clrDarkGreen);
+   CreateButton("BTN_AUD_2W", 18, 178, 74, 24, "2W", g_auditWindowDays <= 14 ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_AUD_5W", 98, 178, 74, 24, "5W", g_auditWindowDays <= 35 && g_auditWindowDays > 14 ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_AUD_10W", 178, 178, 74, 24, "10W", g_auditWindowDays <= 70 && g_auditWindowDays > 35 ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_AUD_20W", 258, 178, 74, 24, "20W", g_auditWindowDays > 70 ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_FILT_REG", 18, 208, 110, 24, g_useHtfRegimeFilter ? "HTF REG ON" : "HTF REG OFF", g_useHtfRegimeFilter ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_FILT_TRD", 136, 208, 110, 24, g_useHtfTrendFilter ? "HTF TRND ON" : "HTF TRND OFF", g_useHtfTrendFilter ? clrSeaGreen : clrDimGray);
+   CreateButton("BTN_FILT_DUP", 254, 208, 110, 24, g_blockSameDirectionUntilOpposite ? "NO DUP ON" : "NO DUP OFF", g_blockSameDirectionUntilOpposite ? clrSeaGreen : clrDimGray);
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -852,6 +1142,29 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       MoveRemainingToBE();
    else if(sparam == PREFIX + "BTN_CLOSE_1_3")
       CloseOneLeg();
+   else if(sparam == PREFIX + "BTN_AUD_2W")
+      SetAuditWindowDays(14);
+   else if(sparam == PREFIX + "BTN_AUD_5W")
+      SetAuditWindowDays(35);
+   else if(sparam == PREFIX + "BTN_AUD_10W")
+      SetAuditWindowDays(70);
+   else if(sparam == PREFIX + "BTN_AUD_20W")
+      SetAuditWindowDays(140);
+   else if(sparam == PREFIX + "BTN_FILT_REG")
+   {
+      g_useHtfRegimeFilter = !g_useHtfRegimeFilter;
+      RefreshAuditOverlay();
+   }
+   else if(sparam == PREFIX + "BTN_FILT_TRD")
+   {
+      g_useHtfTrendFilter = !g_useHtfTrendFilter;
+      RefreshAuditOverlay();
+   }
+   else if(sparam == PREFIX + "BTN_FILT_DUP")
+   {
+      g_blockSameDirectionUntilOpposite = !g_blockSameDirectionUntilOpposite;
+      RefreshAuditOverlay();
+   }
 }
 
 void DrawDashboard()
@@ -864,8 +1177,8 @@ void DrawDashboard()
    ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 10);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 18);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 560);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 250);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 640);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 380);
    ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'16,20,28');
    ObjectSetInteger(0, bg, OBJPROP_BORDER_COLOR, C'55,65,80');
    ObjectSetInteger(0, bg, OBJPROP_COLOR, C'55,65,80');
@@ -891,9 +1204,13 @@ void UpdateDashboard()
    CreateLabel("DASH_3", 22, 88, "Open PnL: " + DoubleToString(openPnl, 2) + "   Max DD: " + DoubleToString(g_maxDd, 2), clrWhite);
    string dir = g_lastDirection > 0 ? "BUY" : (g_lastDirection < 0 ? "SELL" : "-");
    CreateLabel("DASH_4", 22, 106, "Last NAS: " + dir + " entry=" + DoubleToString(g_lastEntry, _Digits), clrWhite);
-   CreateLabel("DASH_5", 22, 124, "Risk: SATS TP/SL engine", clrSilver);
-   CreateLabel("DASH_H0", 22, 182, "Recent NAS signals:", clrAqua);
-   CreateLabel("DASH_H1", 22, 198, g_historySummary[0], clrSilver, 8);
-   CreateLabel("DASH_H2", 22, 214, g_historySummary[1], clrSilver, 8);
-   CreateLabel("DASH_H3", 22, 230, g_historySummary[2], clrSilver, 8);
+   CreateLabel("DASH_5", 22, 124, "Risk: SATS TP/SL engine   Window: " + AuditWindowLabel() + "   Signals: " + IntegerToString(g_historyDrawnCount), clrSilver);
+   CreateLabel("DASH_6", 22, 142, "Filters: Regime=" + (g_useHtfRegimeFilter ? "ON" : "OFF")
+                                + " Trend=" + (g_useHtfTrendFilter ? "ON" : "OFF")
+                                + " NoDup=" + (g_blockSameDirectionUntilOpposite ? "ON" : "OFF"), clrSilver);
+   CreateLabel("DASH_H0", 22, 250, "Recent NAS signals in window:", clrAqua);
+   CreateLabel("DASH_H1", 22, 266, g_historySummary[0], clrSilver, 8);
+   CreateLabel("DASH_H2", 22, 282, g_historySummary[1], clrSilver, 8);
+   CreateLabel("DASH_H3", 22, 298, g_historySummary[2], clrSilver, 8);
+   CreateButtons();
 }

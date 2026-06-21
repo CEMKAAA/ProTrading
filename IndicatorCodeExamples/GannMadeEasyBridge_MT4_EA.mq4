@@ -820,11 +820,39 @@ bool BuildObjectGeometry(int type, double entry, double signalPx, double &sl, do
       return false;
    }
 
+   double scale = MathMax(10.0, MathMin(200.0, g_finalScaleRuntime)) / 100.0;
+   double risk = MathAbs(entry - sl) * scale;
+   if(type == OP_BUY)
+   {
+      sl = entry - risk;
+      tp1 = entry + risk;
+      tp2 = entry + 2.0 * risk;
+      tp3 = entry + 3.0 * risk;
+   }
+   else
+   {
+      sl = entry + risk;
+      tp1 = entry - risk;
+      tp2 = entry - 2.0 * risk;
+      tp3 = entry - 3.0 * risk;
+   }
+
+   if(type == OP_BUY && !(sl < entry && tp1 > entry))
+   {
+      detail = "invalid_buy_scaled_object_geometry anchor=" + PriceText(anchor) + " entry=" + PriceText(entry) + " sl=" + PriceText(sl) + " tp1=" + PriceText(tp1);
+      return false;
+   }
+   if(type == OP_SELL && !(sl > entry && tp1 < entry))
+   {
+      detail = "invalid_sell_scaled_object_geometry anchor=" + PriceText(anchor) + " entry=" + PriceText(entry) + " sl=" + PriceText(sl) + " tp1=" + PriceText(tp1);
+      return false;
+   }
+
    sl = NormalizeDouble(sl, Digits);
    tp1 = NormalizeDouble(tp1, Digits);
    tp2 = NormalizeDouble(tp2, Digits);
    tp3 = NormalizeDouble(tp3, Digits);
-   detail = "object_levels anchor=" + PriceText(anchor) + " raw_stop=" + PriceText(rawSl) + " raw_tp1=" + PriceText(rawTp1) + " raw_tp2=" + PriceText(rawTp2) + " raw_tp3=" + PriceText(rawTp3) + " reanchored=" + (reanchored ? "true" : "false") + " stop=" + d0 + " tp1=" + d1 + " tp2=" + d2 + " tp3=" + d3;
+   detail = "object_levels anchor=" + PriceText(anchor) + " raw_stop=" + PriceText(rawSl) + " raw_tp1=" + PriceText(rawTp1) + " raw_tp2=" + PriceText(rawTp2) + " raw_tp3=" + PriceText(rawTp3) + " reanchored=" + (reanchored ? "true" : "false") + " final_scale_pct=" + DoubleToString(g_finalScaleRuntime, 1) + " stop=" + d0 + " tp1=" + d1 + " tp2=" + d2 + " tp3=" + d3;
    return true;
 }
 
