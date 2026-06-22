@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-06-20.0100-gann-ftmo-risklot-toggle"
+#define BUILD_TAG "2026-06-22.0001-gann-trade-disabled-retry-audit"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpIndicatorName = "Asiller\\Gann Made Easy\\GannMadeEasy @PaidCrackedEA"; // informational; EA trades chart objects.
@@ -55,6 +55,7 @@ input int    InpBrokerStopSafetyPoints = 3;
 input int    InpMaxSpreadPoints = 0;      // 0=off
 input string InpAllowedWindowsGmt = "";   // empty=24/7, HH:MM-HH:MM,...
 input string InpNoTradeWindowsGmt = "21:55-22:10";
+input int    InpTradeDisabledRetrySeconds = 30; // Recheck disabled symbols without consuming the signal event.
 input bool   InpCloseOppositeOnSignal = true;
 input bool   InpBlockSameDirectionOpen = true;
 
@@ -68,7 +69,7 @@ input int    InpSwingAtrPeriod = 14;
 input double InpSwingMinProminenceAtr = 0.75;
 input double InpSwingMinDepartureAtr = 1.00;
 input double InpSwingBufferAtr = 0.20;
-input double InpFinalRiskScalePct = 100.0; // Applies only to calculated fallback levels; object SL/TP levels are never scaled.
+input double InpFinalRiskScalePct = 100.0; // Applies to both object levels and calculated fallback levels.
 input int    InpTargetTpIndex = 2;        // 0=broker TP off, 1..3 full close target leg
 input int    InpHalfBeTpIndex = 0;        // 0=off, 1..3 half close + SL->BE leg
 
@@ -121,6 +122,7 @@ datetime g_lastScanTs = 0;
 datetime g_lastRiskAuditTs = 0;
 datetime g_lastProbeTs = 0;
 datetime g_lastLifecycleAuditTs = 0;
+datetime g_nextTradeDisabledRetryTs = 0;
 bool     g_lastGeometryUsedFallback = false;
 
 int OnInit()
@@ -610,6 +612,20 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       Audit("trade_blocked_same_direction", eventId, 0, dir, 0, entry, sl, target, "existing same direction order", 0, "");
       return;
    }
+
+   string tradeState;
+   if(!CanAttemptTradeNow(tradeState))
+   {
+      if(TimeCurrent() >= g_nextTradeDisabledRetryTs)
+      {
+         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, target,
+               tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)), 0, "");
+         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
+      }
+      ReleaseEventForRetry(eventId);
+      return;
+   }
+
    if(InpCloseOppositeOnSignal) CloseOpposite(type, eventId);
 
    string lotDetail;
@@ -636,6 +652,11 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    {
       if(err == 130 && TrySecondLevelStopGuardOpen(eventId, dir, sendType, type, lot, entry, sl, target, tp1, tp2, tp3, half, marketEntry, driftPoints, lotDetail, usePending))
          return;
+      if(RetryableTradeSendError(err))
+      {
+         ReleaseEventForRetry(eventId);
+         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
+      }
       Audit(usePending ? "pending_order_failed" : "order_failed", eventId, 0, dir, lot, entry, sl, target, "err=" + IntegerToString(err) + " market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail, 0, "");
    }
 }
@@ -1020,6 +1041,34 @@ void ManagePositions()
 }
 
 bool PriceReached(int type, double price, double level) { if(level <= 0) return false; return (type == OP_BUY) ? (price >= level) : (price <= level); }
+
+bool RetryableTradeSendError(int err)
+{
+   return err == 133   // ERR_TRADE_DISABLED
+          || err == 146 // ERR_TRADE_CONTEXT_BUSY
+          || err == 136 // ERR_OFF_QUOTES
+          || err == 137 // ERR_BROKER_BUSY
+          || err == 4109; // ERR_TRADE_NOT_ALLOWED
+}
+
+void ReleaseEventForRetry(string eventId)
+{
+   if(g_lastEventId == eventId)
+      g_lastEventId = "";
+}
+
+bool CanAttemptTradeNow(string &detail)
+{
+   bool symbolTradeAllowed = (MarketInfo(Symbol(), MODE_TRADEALLOWED) > 0.5);
+   bool terminalTradeAllowed = IsTradeAllowed();
+   bool contextBusy = IsTradeContextBusy();
+   detail = "symbol_trade_allowed=" + (symbolTradeAllowed ? "true" : "false")
+            + " terminal_trade_allowed=" + (terminalTradeAllowed ? "true" : "false")
+            + " context_busy=" + (contextBusy ? "true" : "false")
+            + " bid=" + PriceText(Bid)
+            + " ask=" + PriceText(Ask);
+   return symbolTradeAllowed && terminalTradeAllowed && !contextBusy;
+}
 
 void TryEnrichFallbackTrade(int ticket, int type)
 {
@@ -1594,9 +1643,20 @@ void RiskAudit(string eventName, string detail)
    FileClose(h);
 }
 
+bool IsCriticalAuditEvent(string eventName)
+{
+   return StringFind(eventName, "order_failed") >= 0
+          || StringFind(eventName, "trade_blocked_trade_disabled") >= 0
+          || StringFind(eventName, "trade_blocked_broker_stops") >= 0
+          || StringFind(eventName, "trade_blocked_geometry") >= 0
+          || StringFind(eventName, "trade_blocked_risk") >= 0
+          || StringFind(eventName, "broker_stop_adjusted") >= 0
+          || StringFind(eventName, "stopguard") >= 0;
+}
+
 void Audit(string eventName, string eventId, int ticket, string dir, double lot, double price, double sl, double tp, string detail, double pnl, string extra)
 {
-   if(!g_auditRuntime) return;
+   if(!g_auditRuntime && !IsCriticalAuditEvent(eventName)) return;
    int h = FileOpen("GannMadeEasyBridge_DirectAudit_" + DateStamp(TimeGMT()) + ".csv", FILE_CSV|FILE_READ|FILE_WRITE, ';');
    if(h == INVALID_HANDLE) return;
    bool header = (FileSize(h) == 0);
