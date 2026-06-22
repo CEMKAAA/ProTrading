@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-06-20.ln-incremental-audit-cache"
+#define LN_BUILD "2026-06-22.ln-opposite-exit-audit"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -325,6 +325,7 @@ double           g_btSpreadPts;
 double           g_btSlippagePts;
 double           g_btCommissionPerLot;
 double           g_slDistancePct = 100.0;
+double           g_slBufferAtrPct = 10.0;
 int              g_histWeeks = 2;
 long             DASH_Z = 1000000;
 
@@ -438,6 +439,11 @@ double ClampSlDistancePct(double pct)
    return MathMax(10.0, MathMin(300.0, pct));
 }
 
+double ClampSlBufferAtrPct(double pct)
+{
+   return MathMax(0.0, MathMin(200.0, pct));
+}
+
 double ApplySlDistancePct(int dir, double entry, double rawSl)
 {
    double dist = MathAbs(entry - rawSl) * ClampSlDistancePct(g_slDistancePct) / 100.0;
@@ -464,7 +470,15 @@ int ClampHistWeeks(int weeks)
    if(weeks <= 2) return 2;
    if(weeks <= 5) return 5;
    if(weeks <= 10) return 10;
-   return 20;
+   if(weeks <= 20) return 20;
+   return 52;
+}
+
+string HistWindowLabel()
+{
+   int weeks = ClampHistWeeks(g_histWeeks);
+   if(weeks >= 52) return "1Y";
+   return IntegerToString(weeks) + "W";
 }
 
 int HistDays()
@@ -483,10 +497,11 @@ string HistRawSignature()
       + "|" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
       + "|ASIA" + IntegerToString(InpAsiaStartHourGmt) + "-" + IntegerToString(InpAsiaEndHourGmt)
       + "|SMT" + InpSmtSymbol + "-" + IntegerToString(InpSmtLookbackBars)
-      + "|SLPCT" + DoubleToString(g_slDistancePct, 2);
+      + "|SLPCT" + DoubleToString(g_slDistancePct, 2)
+      + "|ATRBUF" + DoubleToString(g_slBufferAtrPct, 2);
 }
 
-string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
+string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf, datetime maxTime)
 {
    return sig.id
       + "|ENTRY" + DoubleToString(sig.entry, _Digits)
@@ -496,6 +511,7 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
       + "|HC" + IntegerToString((int)hc)
       + "|TM" + IntegerToString((int)targetModel)
       + "|ETF" + TfLabel(entryTf)
+      + "|MX" + IntegerToString((int)maxTime)
       + "|F" + IntegerToString((int)InpBacktestFillMode)
       + "|SB" + IntegerToString((int)InpBacktestSameBarPolicy)
       + "|TR" + (InpBacktestUseTickReplay ? "1" : "0")
@@ -960,7 +976,7 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
    int total = ArraySize(entryRates);
    if(total < 10) return false;
    double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
-   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
    for(int i = total - 2; i >= 1; --i)
    {
       if(entryRates[i].time < zone.time) continue;
@@ -1090,7 +1106,7 @@ bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, i
    int total = ArraySize(entryRates);
    if(total < 10) return false;
    double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
-   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
    int scanned = 0;
    for(int i = total - 2; i >= 1 && scanned < MathMax(3, maxTapBars); --i)
    {
@@ -1132,7 +1148,7 @@ bool BuildDirectEntryAtBar(const MqlRates &entryRates[], int barIndex, const Fvg
 {
    if(barIndex < 1 || barIndex >= ArraySize(entryRates)) return false;
    double atr = AtrFromRates(entryRates, MathMax(1, barIndex), InpAtrPeriod);
-   double buffer = atr * MathMax(0.0, InpSlBufferAtrPct) / 100.0;
+   double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
    double entry = entryRates[barIndex].close;
    double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
       ? (dir > 0 ? zone.firstLow : zone.firstHigh)
@@ -1408,6 +1424,15 @@ int ResolveSameBar(const MqlRates &bar, int dir, double openPx, double tp, doubl
    return distTp < distSl ? 1 : -1;
 }
 
+double ApplyForcedSignalExit(int dir, double exitPx, double simEntry, double simRisk, bool halfDone, ERL_HC_MODE hc, double pnlR, double commissionR)
+{
+   if(exitPx <= 0.0 || simRisk <= TickSize()) return pnlR;
+   double exitR = (dir > 0 ? (exitPx - simEntry) : (simEntry - exitPx)) / simRisk;
+   pnlR += (halfDone && hc != ERL_HC_OFF) ? exitR * 0.5 : exitR;
+   pnlR -= commissionR;
+   return pnlR;
+}
+
 double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel, double simEntry, double simRisk)
 {
    if(targetModel == ERL_TARGET_NEXT_EXTERNAL && sig.externalTarget > 0.0)
@@ -1536,6 +1561,19 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                         return pnlR;
                      }
                   }
+
+                  if(maxTime > 0)
+                  {
+                     for(int k = copied - 1; k >= first; --k)
+                     {
+                        if(ticks[k].bid <= 0.0 || ticks[k].ask <= 0.0) continue;
+                        double exitPx = sig.dir > 0 ? ticks[k].bid : ticks[k].ask;
+                        pnlR = ApplyForcedSignalExit(sig.dir, exitPx, simEntry, simRisk, halfDone, hc, pnlR, commissionR);
+                        closed = true;
+                        won = pnlR > 0.0;
+                        return pnlR;
+                     }
+                  }
                }
             }
          }
@@ -1544,7 +1582,13 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
 
    for(int i = entryIdx; i >= 1; --i)
    {
-      if(maxTime > 0 && rates[i].time > maxTime) break;
+      if(maxTime > 0 && rates[i].time >= maxTime)
+      {
+         pnlR = ApplyForcedSignalExit(sig.dir, rates[i].open, simEntry, simRisk, halfDone, hc, pnlR, commissionR);
+         closed = true;
+         won = pnlR > 0.0;
+         return pnlR;
+      }
       if(!halfDone)
       {
          bool hitHalf = sig.dir > 0 ? rates[i].high >= half : rates[i].low <= half;
@@ -1581,14 +1625,43 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    return pnlR;
 }
 
+datetime NextSignalTime(const ErlSignal &signals[], int index)
+{
+   datetime current = signals[index].entryTime;
+   int dir = signals[index].dir;
+   for(int i = index + 1; i < ArraySize(signals); ++i)
+   {
+      if(signals[i].entryTime > current && signals[i].dir != dir) return signals[i].entryTime;
+   }
+   return 0;
+}
+
+void FilterAlternatingSignals(ErlSignal &signals[])
+{
+   ErlSignal filtered[];
+   int lastDir = 0;
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      if(lastDir != 0 && signals[i].dir == lastDir) continue;
+      int n = ArraySize(filtered);
+      ArrayResize(filtered, n + 1);
+      filtered[n] = signals[i];
+      lastDir = signals[i].dir;
+   }
+   ArrayFree(signals);
+   ArrayResize(signals, ArraySize(filtered));
+   for(int i = 0; i < ArraySize(filtered); ++i) signals[i] = filtered[i];
+}
+
 SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
 {
    SimStats st;
    ZeroMemory(st);
+   FilterAlternatingSignals(signals);
    for(int i = 0; i < ArraySize(signals); ++i)
    {
       bool closed = false, won = false;
-      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, 0, closed, won);
+      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, NextSignalTime(signals, i), closed, won);
       st.total++;
       st.netR += r;
       if(!closed)
@@ -1645,6 +1718,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       ArrayFree(g_simCache);
    }
 
+   FilterAlternatingSignals(g_histSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
@@ -1653,11 +1727,12 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
       bool closed = false, won = false;
-      string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf);
+      datetime nextSignalTime = NextSignalTime(g_histSignals, i);
+      string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
       if(!SimCacheGet(simKey, r, closed, won))
       {
-         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, 0, closed, won);
+         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won);
          SimCachePut(simKey, r, closed, won);
       }
       g_histSignalR[i] = r;
@@ -2202,11 +2277,14 @@ void DrawFvgBox(string id, datetime t1, datetime t2, double low, double high, co
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
 }
 
-void DrawHistoricalSignals()
+void DrawHistoricalSignals(bool resetObjects = true)
 {
-   DeleteByPrefix(PFX + "HIST_");
-   DeleteByPrefix(PFX + "HISTTXT_");
-   DeleteByPrefix(PFX + "FVG_");
+   if(resetObjects)
+   {
+      DeleteByPrefix(PFX + "HIST_");
+      DeleteByPrefix(PFX + "HISTTXT_");
+      DeleteByPrefix(PFX + "FVG_");
+   }
    if(IsTesterMode()) return;
    if(!InpDrawHistoricalSignals) return;
    int count = ArraySize(g_histSignals);
@@ -2808,7 +2886,12 @@ void UpdateDashboard()
    ButtonObj("BTN_REQ_ASIA", x + 112, row, 96, bh, g_requireAsiaLiquidityDraw ? "ASIA: ON" : "ASIA: OFF", g_requireAsiaLiquidityDraw ? on : off);
    ButtonObj("BTN_ASIA_TGT", x + 216, row, 96, bh, g_useAsiaLiquidityTarget ? "TGT: ON" : "TGT: OFF", g_useAsiaLiquidityTarget ? on : off);
    ButtonObj("BTN_REQ_SMT", x + 320, row, 88, bh, g_requireSmt ? "SMT: ON" : "SMT: OFF", g_requireSmt ? on : off);
-   LabelObj("DASH_NARR_HINT", x + 424, row + 4, "Asia sweep -> liquidity target; SMT optional confirmation", C'255,204,82', 8);
+   LabelObj("DASH_ATRBUF_L", x + 424, row + 4, "ATR BUF:", muted, 8);
+   ButtonObj("BTN_ATRBUF_20", x + 484, row, 40, bh, "20", MathAbs(g_slBufferAtrPct - 20.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_40", x + 528, row, 40, bh, "40", MathAbs(g_slBufferAtrPct - 40.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_60", x + 572, row, 40, bh, "60", MathAbs(g_slBufferAtrPct - 60.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_80", x + 616, row, 40, bh, "80", MathAbs(g_slBufferAtrPct - 80.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_100", x + 660, row, 46, bh, "100", MathAbs(g_slBufferAtrPct - 100.0) < 0.1 ? on : off);
 
    int sec2 = sec1 + 208;
    RectObj("DASH_SEC2", x + 8, sec2, 744, 112, C'24,31,45', C'60,110,170');
@@ -2816,15 +2899,16 @@ void UpdateDashboard()
    double resolved = g_hist.wins + g_hist.losses;
    double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
    LabelObj("DASH_AUD1", x + 16, sec2 + 30,
-      IntegerToString(g_histWeeks) + "W: " + IntegerToString(g_hist.total) + " sig | "
+      HistWindowLabel() + ": " + IntegerToString(g_hist.total) + " sig | "
       + IntegerToString(g_hist.wins) + "W " + IntegerToString(g_hist.losses) + "L " + IntegerToString(g_hist.open)
       + "O | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | $ "
       + (ApproxMoneyFromR(g_hist.netR) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(g_hist.netR), 2),
       g_hist.netR >= 0 ? C'80,255,180' : C'255,95,140', 9);
-   ButtonObj("BTN_AUD_2W", x + 520, sec2 + 28, 48, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_5W", x + 572, sec2 + 28, 48, bh, "5W", g_histWeeks == 5 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_10W", x + 624, sec2 + 28, 52, bh, "10W", g_histWeeks == 10 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_20W", x + 680, sec2 + 28, 52, bh, "20W", g_histWeeks == 20 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_2W", x + 492, sec2 + 28, 40, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_5W", x + 536, sec2 + 28, 40, bh, "5W", g_histWeeks == 5 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_10W", x + 580, sec2 + 28, 48, bh, "10W", g_histWeeks == 10 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_20W", x + 632, sec2 + 28, 48, bh, "20W", g_histWeeks == 20 ? C'38,101,176' : off);
+   ButtonObj("BTN_AUD_1Y", x + 684, sec2 + 28, 48, bh, "1Y", g_histWeeks == 52 ? C'38,101,176' : off);
    RectObj("DASH_WR_BG", x + 16, sec2 + 58, 420, 14, C'38,46,60', C'60,80,110');
    int fill = (int)MathRound(418.0 * MathMax(0.0, MathMin(100.0, wr)) / 100.0);
    if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 59, fill, 12, wr >= 50 ? C'80,220,140' : C'255,95,140', wr >= 50 ? C'80,220,140' : C'255,95,140');
@@ -2845,7 +2929,8 @@ void UpdateDashboard()
       + " TP " + DoubleToString(g_lastTp, _Digits), muted, 8);
    LabelObj("DASH_EX3", x + 16, sec3 + 74,
       "Risk: " + (RiskEnabled() ? "ON" : "OFF") + " " + DoubleToString(RiskPerTradePct(), 2)
-      + "% | Mode " + RuntimeRiskModeLabel() + " | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+      + "% | Mode " + RuntimeRiskModeLabel() + " | SL% " + DoubleToString(g_slDistancePct, 0)
+      + " | ATRbuf " + DoubleToString(g_slBufferAtrPct, 0) + "% | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
    LabelObj("DASH_SL_L", x + 510, sec3 + 74, "SL%:", muted, 8);
    EditObj("EDIT_SL_PCT", x + 550, sec3 + 72, 56, bh, DoubleToString(g_slDistancePct, 0));
    ButtonObj("BTN_SL_APPLY", x + 612, sec3 + 72, 70, bh, "APPLY", C'38,101,176');
@@ -2943,7 +3028,7 @@ void ProcessPendingConfigRefresh()
    bool rebuildSignals = g_configRefreshRebuildSignals;
    g_configRefreshRebuildSignals = false;
    RecalculateHistoricalStats(rebuildSignals);
-   if(!IsTesterMode()) DrawHistoricalSignals();
+   if(!IsTesterMode()) DrawHistoricalSignals(rebuildSignals);
    g_lastStatus = "CONFIG UPDATED";
    UpdateDashboard();
    ChartRedraw(0);
@@ -2980,6 +3065,7 @@ int OnInit()
    g_useAsiaLiquidityTarget = InpDefaultUseAsiaLiquidityTarget;
    g_requireSmt = InpDefaultRequireSmt;
    g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
+   g_slBufferAtrPct = ClampSlBufferAtrPct(InpSlBufferAtrPct);
    g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
    g_btFillMode = InpBacktestFillMode;
@@ -3118,6 +3204,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_1Y")) { g_histWeeks = 52; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_20")) { g_slBufferAtrPct = 20.0; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_40")) { g_slBufferAtrPct = 40.0; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_60")) { g_slBufferAtrPct = 60.0; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_80")) { g_slBufferAtrPct = 80.0; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_100")) { g_slBufferAtrPct = 100.0; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_PRO")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; RefreshAfterConfigChange(); return; }
