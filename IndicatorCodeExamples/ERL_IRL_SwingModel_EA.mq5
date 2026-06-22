@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ERL_BUILD "2026-06-22.erl-opposite-exit-audit"
+#define ERL_BUILD "2026-06-22.erl-directional-sl-guard"
 #define ERL_PREFIX "ERLIRL_"
 
 //=====================================================================
@@ -433,6 +433,28 @@ double ApplySlDistancePct(int dir, double entry, double rawSl)
    return NormTradePrice(dir > 0 ? entry - dist : entry + dist);
 }
 
+double DirectionalStopGuard(int dir, double entry, double rawSl, double fallbackLow, double fallbackHigh, double buffer, double atr)
+{
+   double tick = TickSize();
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = tick;
+   double minDist = MathMax(tick * 10.0, atr * 0.05);
+   int stopLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   if(stopLevel > 0) minDist = MathMax(minDist, stopLevel * point);
+
+   double sl = rawSl;
+   bool validSide = dir > 0 ? sl < entry - tick : sl > entry + tick;
+   if(!validSide)
+      sl = dir > 0 ? fallbackLow - buffer : fallbackHigh + buffer;
+
+   sl = ApplySlDistancePct(dir, entry, sl);
+
+   validSide = dir > 0 ? sl < entry - tick : sl > entry + tick;
+   if(!validSide)
+      sl = dir > 0 ? entry - minDist : entry + minDist;
+   return NormTradePrice(sl);
+}
+
 bool ManagedRiskMode() { return g_ftmoMode || g_riskLotOnlyMode; }
 string RuntimeRiskModeLabel() { if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
 bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode(); }
@@ -852,7 +874,7 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
          ? (dir > 0 ? zone.firstLow : zone.firstHigh)
          : (dir > 0 ? zone.low : zone.high);
       double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
-      sl = ApplySlDistancePct(dir, entry, sl);
+      sl = DirectionalStopGuard(dir, entry, sl, entryRates[i].low, entryRates[i].high, buffer, atr);
       double risk = MathAbs(entry - sl);
       if(risk <= TickSize()) continue;
       sig.valid = true;
@@ -984,7 +1006,7 @@ bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, i
          ? (dir > 0 ? zone.firstLow : zone.firstHigh)
          : (dir > 0 ? zone.low : zone.high);
       double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
-      sl = ApplySlDistancePct(dir, entry, sl);
+      sl = DirectionalStopGuard(dir, entry, sl, entryRates[i].low, entryRates[i].high, buffer, atr);
       double risk = MathAbs(entry - sl);
       if(risk <= TickSize()) continue;
       sig.valid = true;
@@ -1019,7 +1041,7 @@ bool BuildDirectEntryAtBar(const MqlRates &entryRates[], int barIndex, const Fvg
       ? (dir > 0 ? zone.firstLow : zone.firstHigh)
       : (dir > 0 ? zone.low : zone.high);
    double sl = dir > 0 ? rawStop - buffer : rawStop + buffer;
-   sl = ApplySlDistancePct(dir, entry, sl);
+   sl = DirectionalStopGuard(dir, entry, sl, entryRates[barIndex].low, entryRates[barIndex].high, buffer, atr);
    double risk = MathAbs(entry - sl);
    if(risk <= TickSize()) return false;
    sig.valid = true;
@@ -2628,7 +2650,7 @@ void DrawDashboard()
       return;
    }
    int W = 760;
-   int H = 680;
+   int H = 708;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
@@ -2663,7 +2685,7 @@ void UpdateDashboard()
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
    int sec1 = y + 64;
-   RectObj("DASH_SEC1", x + 8, sec1, 744, 172, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC1", x + 8, sec1, 744, 200, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
    LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
@@ -2720,14 +2742,20 @@ void UpdateDashboard()
    ButtonObj("BTN_REQ_IRL", x + 130, row, 94, bh, g_requireIrlTouch ? "IRL: ON" : "IRL: OFF", g_requireIrlTouch ? on : off);
    ButtonObj("BTN_REQ_SWEEP", x + 232, row, 104, bh, g_requireEntrySweep ? "SWEEP: ON" : "SWEEP: OFF", g_requireEntrySweep ? on : off);
    ButtonObj("BTN_REQ_DISP", x + 344, row, 96, bh, g_requireDisplacementFvg ? "DISP: ON" : "DISP: OFF", g_requireDisplacementFvg ? on : off);
-   LabelObj("DASH_ATRBUF_L", x + 456, row + 4, "ATR BUF:", muted, 8);
-   ButtonObj("BTN_ATRBUF_20", x + 516, row, 40, bh, "20", MathAbs(g_slBufferAtrPct - 20.0) < 0.1 ? on : off);
-   ButtonObj("BTN_ATRBUF_40", x + 560, row, 40, bh, "40", MathAbs(g_slBufferAtrPct - 40.0) < 0.1 ? on : off);
-   ButtonObj("BTN_ATRBUF_60", x + 604, row, 40, bh, "60", MathAbs(g_slBufferAtrPct - 60.0) < 0.1 ? on : off);
-   ButtonObj("BTN_ATRBUF_80", x + 648, row, 40, bh, "80", MathAbs(g_slBufferAtrPct - 80.0) < 0.1 ? on : off);
-   ButtonObj("BTN_ATRBUF_100", x + 692, row, 46, bh, "100", MathAbs(g_slBufferAtrPct - 100.0) < 0.1 ? on : off);
+   row += 28;
+   LabelObj("DASH_ATRBUF_L", x + 16, row + 4, "ATR BUF%:", muted, 8);
+   ButtonObj("BTN_ATRBUF_0", x + 88, row, 36, bh, "0", MathAbs(g_slBufferAtrPct) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_20", x + 128, row, 40, bh, "20", MathAbs(g_slBufferAtrPct - 20.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_40", x + 172, row, 40, bh, "40", MathAbs(g_slBufferAtrPct - 40.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_60", x + 216, row, 40, bh, "60", MathAbs(g_slBufferAtrPct - 60.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_80", x + 260, row, 40, bh, "80", MathAbs(g_slBufferAtrPct - 80.0) < 0.1 ? on : off);
+   ButtonObj("BTN_ATRBUF_100", x + 304, row, 46, bh, "100", MathAbs(g_slBufferAtrPct - 100.0) < 0.1 ? on : off);
+   LabelObj("DASH_ATRBUF_MAN_L", x + 372, row + 4, "CUSTOM:", muted, 8);
+   EditObj("EDIT_ATRBUF_PCT", x + 434, row, 58, bh, DoubleToString(g_slBufferAtrPct, 0));
+   ButtonObj("BTN_ATRBUF_APPLY", x + 498, row, 80, bh, "APPLY", C'38,101,176');
+   LabelObj("DASH_ATRBUF_HINT", x + 592, row + 4, "0 = no ATR buffer", C'255,204,82', 8);
 
-   int sec2 = sec1 + 180;
+   int sec2 = sec1 + 208;
    RectObj("DASH_SEC2", x + 8, sec2, 744, 112, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
@@ -2999,6 +3027,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, sparam, OBJPROP_TEXT)));
          RefreshAfterConfigChange();
       }
+      if(sparam == PFX + "EDIT_ATRBUF_PCT")
+      {
+         // Do not apply custom ATR buffer while typing; BTN_ATRBUF_APPLY commits it.
+         UpdateDashboard();
+      }
       return;
    }
 
@@ -3035,11 +3068,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_1Y")) { g_histWeeks = 52; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_ATRBUF_20")) { g_slBufferAtrPct = 20.0; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_ATRBUF_40")) { g_slBufferAtrPct = 40.0; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_ATRBUF_60")) { g_slBufferAtrPct = 60.0; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_ATRBUF_80")) { g_slBufferAtrPct = 80.0; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_ATRBUF_100")) { g_slBufferAtrPct = 100.0; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_0")) { g_slBufferAtrPct = 0.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "0"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_20")) { g_slBufferAtrPct = 20.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "20"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_40")) { g_slBufferAtrPct = 40.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "40"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_60")) { g_slBufferAtrPct = 60.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "60"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_80")) { g_slBufferAtrPct = 80.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "80"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_100")) { g_slBufferAtrPct = 100.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "100"); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_ATRBUF_APPLY")) { g_slBufferAtrPct = ClampSlBufferAtrPct(StringToDouble(ObjectGetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, DoubleToString(g_slBufferAtrPct, 0)); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_PRO")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; RefreshAfterConfigChange(); return; }
