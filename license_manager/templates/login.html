@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EA License Manager Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="mark">EA</div>
+    <h1>License Control</h1>
+    <p>Admin token required.</p>
+    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="password" name="token" placeholder="Admin token" autocomplete="current-password" autofocus>
+      <button type="submit">Enter Control Panel</button>
+    </form>
+  </main>
+</body>
+</html>

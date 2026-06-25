@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-06-22.ln-directional-sl-guard"
+#define LN_BUILD "2026-06-24.ln-rev-no-sl"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -50,7 +50,8 @@ enum ERL_TARGET_MODEL
 {
    ERL_TARGET_FIXED_R = 0,
    ERL_TARGET_NEXT_EXTERNAL = 1,
-   ERL_TARGET_AUTO_STOP_SIZE = 2
+   ERL_TARGET_AUTO_STOP_SIZE = 2,
+   ERL_TARGET_OPPOSITE_SIGNAL = 3
 };
 
 enum BT_FILL_MODE
@@ -158,6 +159,7 @@ input double          InpBacktestCommissionPerLot = 0.0;
 struct SwingLevel
 {
    datetime time;
+   datetime confirmedTime;
    double   price;
    int      index;
    int      dir;       // +1 high, -1 low
@@ -180,7 +182,8 @@ struct ErlSignal
    bool     valid;
    int      dir;
    datetime htfTime;
-   datetime entryTime;
+   datetime entryTime;       // setup bar open time
+   datetime availableTime;   // first time the closed-bar setup was knowable live
    double   sweepLevel;
    double   fvgLow;
    double   fvgHigh;
@@ -307,6 +310,7 @@ datetime         g_lastHistoryScan = 0;
 ulong            g_lastHistoryTicket = 0;
 double           g_equityPeak = 0.0;
 datetime         g_lastLiveScanBar = 0;
+datetime         g_lastLiveScanAttempt = 0;
 
 BtCombo          g_btCombos[];
 bool             g_btRunning = false;
@@ -382,6 +386,7 @@ string TargetModelLabel(ERL_TARGET_MODEL model)
 {
    if(model == ERL_TARGET_NEXT_EXTERNAL) return "EXT";
    if(model == ERL_TARGET_AUTO_STOP_SIZE) return "AUTO";
+   if(model == ERL_TARGET_OPPOSITE_SIGNAL) return "REV";
    return "FIXED";
 }
 
@@ -657,6 +662,15 @@ bool CopySeries(ENUM_TIMEFRAMES tf, int bars, MqlRates &rates[])
    return true;
 }
 
+datetime ClosedBarAvailabilityTime(const MqlRates &rates[], int index)
+{
+   int total = ArraySize(rates);
+   if(index < 1 || index >= total) return 0;
+   // Series arrays: index-1 is the next chronological bar. Its open is the
+   // exact close/availability time of the setup bar at index.
+   return rates[index - 1].time;
+}
+
 int RequiredBarsForWindow(ENUM_TIMEFRAMES tf, datetime cutoff, int warmupBars)
 {
    if(cutoff <= 0) return 0;
@@ -881,6 +895,9 @@ int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[], i
          int n = ArraySize(swings);
          ArrayResize(swings, n + 1);
          swings[n].time = rates[i].time;
+         // A symmetric swing is known only after all newer confirmation bars
+         // have closed. The next bar open is its first causal availability.
+         swings[n].confirmedTime = rates[i - lookback - 1].time;
          swings[n].price = rates[i].high;
          swings[n].index = i;
          swings[n].dir = 1;
@@ -891,6 +908,7 @@ int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[], i
          int n = ArraySize(swings);
          ArrayResize(swings, n + 1);
          swings[n].time = rates[i].time;
+         swings[n].confirmedTime = rates[i - lookback - 1].time;
          swings[n].price = rates[i].low;
          swings[n].index = i;
          swings[n].dir = -1;
@@ -911,7 +929,9 @@ bool IsBullishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone
    if(size < minSize) return false;
    zone.valid = true;
    zone.dir = 1;
-   zone.time = rates[midIndex].time;
+   // A three-candle FVG is actionable only after its third candle closes.
+   // midIndex >= 2 in all callers, so the next newer bar marks that close.
+   zone.time = rates[midIndex - 2].time;
    zone.low = olderHigh;
    zone.high = newerLow;
    zone.anchor = rates[midIndex].low;
@@ -931,7 +951,9 @@ bool IsBearishFvg(const MqlRates &rates[], int midIndex, double minSize, FvgZone
    if(size < minSize) return false;
    zone.valid = true;
    zone.dir = -1;
-   zone.time = rates[midIndex].time;
+   // Keep historical reconstruction causal: do not expose the FVG while its
+   // confirming third candle is still open.
+   zone.time = rates[midIndex - 2].time;
    zone.low = newerHigh;
    zone.high = olderLow;
    zone.anchor = rates[midIndex].high;
@@ -946,6 +968,9 @@ bool DetectSweepReclaim(const MqlRates &rates[], const SwingLevel &swing, int &r
    // Series arrays: lower index is newer. Scan from just after swing toward latest.
    for(int j = swing.index - 1; j >= 1; --j)
    {
+      // Do not let the historical engine sweep a pivot before that pivot was
+      // observable in live execution.
+      if(rates[j].time < swing.confirmedTime) continue;
       if(swing.dir < 0)
       {
          bool swept = rates[j].low < swing.price;
@@ -997,13 +1022,14 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
 {
    int total = ArraySize(entryRates);
    if(total < 10) return false;
-   double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
-   double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
    for(int i = total - 2; i >= 1; --i)
    {
       if(entryRates[i].time < zone.time) continue;
       bool tapped = entryRates[i].low <= zone.high && entryRates[i].high >= zone.low;
       if(!tapped) continue;
+      double atr = AtrFromRates(entryRates, i, InpAtrPeriod);
+      if(atr <= 0.0) continue;
+      double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
       double entry = entryRates[i].close;
       double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
          ? (dir > 0 ? zone.firstLow : zone.firstHigh)
@@ -1015,6 +1041,8 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
       sig.valid = true;
       sig.dir = dir;
       sig.entryTime = entryRates[i].time;
+      sig.availableTime = ClosedBarAvailabilityTime(entryRates, i);
+      if(sig.availableTime <= 0) continue;
       sig.entry = NormTradePrice(entry);
       sig.sl = NormTradePrice(sl);
       sig.risk = MathAbs(sig.entry - sig.sl);
@@ -1049,6 +1077,7 @@ bool FindEntrySweepReclaim(const MqlRates &entryRates[], int dir, datetime after
       for(int s = 0; s < swCount; ++s)
       {
          if(entrySwings[s].time >= entryRates[i].time) continue;
+         if(entrySwings[s].confirmedTime > entryRates[i].time) continue;
          if(dir > 0 && entrySwings[s].dir < 0)
          {
             bool swept = entryRates[i].low < entrySwings[s].price;
@@ -1127,8 +1156,6 @@ bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, i
 {
    int total = ArraySize(entryRates);
    if(total < 10) return false;
-   double atr = AtrFromRates(entryRates, 1, InpAtrPeriod);
-   double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
    int scanned = 0;
    for(int i = total - 2; i >= 1 && scanned < MathMax(3, maxTapBars); --i)
    {
@@ -1136,6 +1163,9 @@ bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, i
       scanned++;
       bool tapped = entryRates[i].low <= zone.high && entryRates[i].high >= zone.low;
       if(!tapped) continue;
+      double atr = AtrFromRates(entryRates, i, InpAtrPeriod);
+      if(atr <= 0.0) continue;
+      double buffer = atr * ClampSlBufferAtrPct(g_slBufferAtrPct) / 100.0;
       double entry = entryRates[i].close;
       double rawStop = (stopModel == ERL_STOP_FIRST_FVG_CANDLE && zone.firstLow > 0.0 && zone.firstHigh > 0.0)
          ? (dir > 0 ? zone.firstLow : zone.firstHigh)
@@ -1147,6 +1177,8 @@ bool EntryTapFromFvgLimited(const MqlRates &entryRates[], const FvgZone &zone, i
       sig.valid = true;
       sig.dir = dir;
       sig.entryTime = entryRates[i].time;
+      sig.availableTime = ClosedBarAvailabilityTime(entryRates, i);
+      if(sig.availableTime <= 0) continue;
       sig.entry = NormTradePrice(entry);
       sig.sl = NormTradePrice(sl);
       sig.risk = MathAbs(sig.entry - sig.sl);
@@ -1182,6 +1214,8 @@ bool BuildDirectEntryAtBar(const MqlRates &entryRates[], int barIndex, const Fvg
    sig.valid = true;
    sig.dir = dir;
    sig.entryTime = entryRates[barIndex].time;
+   sig.availableTime = ClosedBarAvailabilityTime(entryRates, barIndex);
+   if(sig.availableTime <= 0) return false;
    sig.entry = NormTradePrice(entry);
    sig.sl = NormTradePrice(sl);
    sig.risk = MathAbs(sig.entry - sig.sl);
@@ -1243,7 +1277,7 @@ string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entry
       + "|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel)
       + "|" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + "|" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
-      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.entryTime);
+      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
 }
 
 void AssignExternalTarget(ErlSignal &sig, const SwingLevel &swings[])
@@ -1253,7 +1287,8 @@ void AssignExternalTarget(ErlSignal &sig, const SwingLevel &swings[])
    double bestDist = DBL_MAX;
    for(int i = 0; i < ArraySize(swings); ++i)
    {
-      if(swings[i].time > sig.entryTime) continue;
+      if(swings[i].time > sig.availableTime) continue;
+      if(swings[i].confirmedTime > sig.availableTime) continue;
       if(sig.dir > 0 && swings[i].dir > 0 && swings[i].price > sig.entry)
       {
          double dist = swings[i].price - sig.entry;
@@ -1286,7 +1321,7 @@ string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entry
       + "|" + EntryModelLabel(entryModel) + "|" + StopModelLabel(stopModel) + "|" + TargetModelLabel(targetModel)
       + "|" + StrictnessLabel(requireIrlTouch, requireEntrySweep, requireDisplacementFvg)
       + "|" + NarrativeLabel(requireAsiaLiquidityDraw, useAsiaLiquidityTarget, requireSmt)
-      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.entryTime);
+      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
 }
 
 int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool useBias,
@@ -1321,12 +1356,16 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
       ZeroMemory(sig);
       bool entryOk = false;
       if(entryModel == ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG)
-         entryOk = ProEntrySweepReclaimFvg(entryRates, zone, dir, htfRates[reclaimIndex].time, stopModel,
+         entryOk = ProEntrySweepReclaimFvg(entryRates, zone, dir, zone.time, stopModel,
             requireIrlTouch, requireEntrySweep, requireDisplacementFvg, sig);
       else
          entryOk = EntryTapFromFvg(entryRates, zone, dir, stopModel, sig);
       if(!entryOk) continue;
-      if(cutoff > 0 && sig.entryTime < cutoff) continue;
+      // Final causal invariant: a historical signal must not exist before the
+      // setup bar has closed or before its defining HTF FVG became available.
+      if(sig.availableTime <= sig.entryTime) continue;
+      if(sig.availableTime < zone.time) continue;
+      if(cutoff > 0 && sig.availableTime < cutoff) continue;
       if(requireAsiaLiquidityDraw)
       {
          double asiaHigh = 0.0, asiaLow = 0.0;
@@ -1363,7 +1402,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
    {
       for(int j = i + 1; j < n; ++j)
       {
-         if(signals[i].entryTime > signals[j].entryTime)
+         if(signals[i].availableTime > signals[j].availableTime)
          {
             ErlSignal tmp = signals[i];
             signals[i] = signals[j];
@@ -1386,6 +1425,7 @@ double SelectedFixedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 
 double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel)
 {
+   if(targetModel == ERL_TARGET_OPPOSITE_SIGNAL) return 0.0;
    if(targetModel == ERL_TARGET_NEXT_EXTERNAL)
    {
       if(sig.externalTarget > 0.0)
@@ -1415,6 +1455,11 @@ double HalfTrigger(const ErlSignal &sig, ERL_HC_MODE hc)
 
 void SanitizeHalfMode()
 {
+   if(g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL)
+   {
+      g_hc = ERL_HC_OFF;
+      return;
+   }
    int targetLeg = (int)g_target + 1;
    int hcLeg = (int)g_hc;
    if(targetLeg <= 1) g_hc = ERL_HC_OFF;
@@ -1433,7 +1478,7 @@ int FindEntryBarIndex(const MqlRates &rates[], datetime t)
 
 int ResolveSameBar(const MqlRates &bar, int dir, double openPx, double tp, double sl)
 {
-   bool hitTp = dir > 0 ? bar.high >= tp : bar.low <= tp;
+   bool hitTp = tp > 0.0 && (dir > 0 ? bar.high >= tp : bar.low <= tp);
    bool hitSl = dir > 0 ? bar.low <= sl : bar.high >= sl;
    if(hitTp && !hitSl) return 1;
    if(hitSl && !hitTp) return -1;
@@ -1457,6 +1502,7 @@ double ApplyForcedSignalExit(int dir, double exitPx, double simEntry, double sim
 
 double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel, double simEntry, double simRisk)
 {
+   if(targetModel == ERL_TARGET_OPPOSITE_SIGNAL) return 0.0;
    if(targetModel == ERL_TARGET_NEXT_EXTERNAL && sig.externalTarget > 0.0)
    {
       bool validSide = sig.dir > 0 ? sig.externalTarget > simEntry + TickSize() : sig.externalTarget < simEntry - TickSize();
@@ -1469,20 +1515,24 @@ double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TA
 double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel,
    ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
 {
+   bool reverseExitMode = (targetModel == ERL_TARGET_OPPOSITE_SIGNAL);
+   if(reverseExitMode) hc = ERL_HC_OFF;
    closed = false;
    won = false;
    MqlRates rates[];
    int simBars = MathMax(InpCalcEntryBars, RequiredBarsForWindow(entryTf, g_btCutoff, 500));
    if(!CopySeries(entryTf, simBars, rates)) return 0.0;
-   int entryIdx = FindEntryBarIndex(rates, sig.entryTime);
-   if(entryIdx < 1) return 0.0;
+   int setupIdx = FindEntryBarIndex(rates, sig.entryTime);
+   if(setupIdx < 2 || sig.availableTime <= 0) return 0.0;
+   // The setup uses the completed setup bar. Price evolution can only be
+   // evaluated from the next chronological bar onward.
+   int entryIdx = setupIdx - 1;
 
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    if(point <= 0.0) point = TickSize();
    double rawEntry = sig.entry;
-   if(g_btFillMode == BT_FILL_NEXT_BAR_OPEN && entryIdx - 1 >= 1)
+   if(g_btFillMode == BT_FILL_NEXT_BAR_OPEN)
    {
-      entryIdx = entryIdx - 1;
       rawEntry = rates[entryIdx].open;
    }
    else if(g_btFillMode == BT_FILL_CONSERVATIVE)
@@ -1491,8 +1541,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    }
    double executionCost = MathMax(0.0, g_btSpreadPts + g_btSlippagePts) * point;
    double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
-   double activeSl = sig.sl;
-   double simRisk = MathAbs(simEntry - activeSl);
+   double activeSl = reverseExitMode ? 0.0 : sig.sl;
+   double simRisk = MathAbs(simEntry - sig.sl);
    if(simRisk <= TickSize()) return 0.0;
    double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
@@ -1506,9 +1556,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
 
    if(InpBacktestUseTickReplay)
    {
-      datetime tickStart = sig.entryTime;
-      if((g_btFillMode == BT_FILL_NEXT_BAR_OPEN || g_btFillMode == BT_FILL_CONSERVATIVE) && entryIdx >= 0 && entryIdx < ArraySize(rates))
-         tickStart = rates[entryIdx].time;
+      datetime tickStart = sig.availableTime;
       datetime tickEnd = maxTime > 0 ? maxTime : TimeCurrent();
       if(tickEnd > tickStart)
       {
@@ -1529,8 +1577,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
             {
                double slip = MathMax(0.0, g_btSlippagePts) * point;
                simEntry = NormTradePrice(sig.dir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
-               activeSl = sig.sl;
-               simRisk = MathAbs(simEntry - activeSl);
+               activeSl = reverseExitMode ? 0.0 : sig.sl;
+               simRisk = MathAbs(simEntry - sig.sl);
                if(simRisk > TickSize())
                {
                   tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
@@ -1549,7 +1597,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                      if(bid <= 0.0 || ask <= 0.0) continue;
                      double closePx = sig.dir > 0 ? bid : ask;
 
-                     if(!halfDone)
+                     if(!reverseExitMode && !halfDone)
                      {
                         bool hitHalf = sig.dir > 0 ? closePx >= half : closePx <= half;
                         if(hitHalf)
@@ -1561,7 +1609,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                         }
                      }
 
-                     bool hitSl = sig.dir > 0 ? closePx <= activeSl : closePx >= activeSl;
+                     bool hitSl = !reverseExitMode && (sig.dir > 0 ? closePx <= activeSl : closePx >= activeSl);
                      if(hitSl)
                      {
                         double slR = MathAbs(simEntry - activeSl) / simRisk;
@@ -1572,7 +1620,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                         return pnlR;
                      }
 
-                     bool hitTp = sig.dir > 0 ? closePx >= tp : closePx <= tp;
+                     bool hitTp = !reverseExitMode && tp > 0.0 && (sig.dir > 0 ? closePx >= tp : closePx <= tp);
                      if(hitTp)
                      {
                         double targetR = MathAbs(tp - simEntry) / simRisk;
@@ -1611,7 +1659,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          won = pnlR > 0.0;
          return pnlR;
       }
-      if(!halfDone)
+      if(!reverseExitMode && !halfDone)
       {
          bool hitHalf = sig.dir > 0 ? rates[i].high >= half : rates[i].low <= half;
          if(hitHalf)
@@ -1624,7 +1672,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       }
 
       double openRef = (i == entryIdx ? simEntry : rates[i].open);
-      int res = ResolveSameBar(rates[i], sig.dir, openRef, tp, activeSl);
+      int res = reverseExitMode ? 0 : ResolveSameBar(rates[i], sig.dir, openRef, tp, activeSl);
       if(res > 0)
       {
          double targetR = MathAbs(tp - simEntry) / simRisk;
@@ -1649,11 +1697,11 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
 
 datetime NextSignalTime(const ErlSignal &signals[], int index)
 {
-   datetime current = signals[index].entryTime;
+   datetime current = signals[index].availableTime;
    int dir = signals[index].dir;
    for(int i = index + 1; i < ArraySize(signals); ++i)
    {
-      if(signals[i].entryTime > current && signals[i].dir != dir) return signals[i].entryTime;
+      if(signals[i].availableTime > current && signals[i].dir != dir) return signals[i].availableTime;
    }
    return 0;
 }
@@ -1721,7 +1769,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       ArrayFree(g_histSignals);
       for(int i = 0; i < ArraySize(g_histRawCache); ++i)
       {
-         if(g_histRawCache[i].entryTime < cutoff) continue;
+         if(g_histRawCache[i].availableTime < cutoff) continue;
          int n = ArraySize(g_histSignals);
          ArrayResize(g_histSignals, n + 1);
          g_histSignals[n] = g_histRawCache[i];
@@ -2245,15 +2293,9 @@ void DrawArrow(string id, datetime t, double price, int dir, color clr)
 
 double SignalArrowPrice(datetime t, int dir, double fallbackEntry, double risk)
 {
-   int shift = iBarShift(_Symbol, g_entryTf, t, true);
    double pad = MathMax(MathMax(risk, TickSize()) * 0.18, TickSize() * 40.0);
-   if(shift >= 0)
-   {
-      double low = iLow(_Symbol, g_entryTf, shift);
-      double high = iHigh(_Symbol, g_entryTf, shift);
-      if(dir > 0 && low > 0.0) return low - pad;
-      if(dir < 0 && high > 0.0) return high + pad;
-   }
+   // Historical arrows must not use the final high/low of the bar that had
+   // only just opened when the signal became available.
    return dir > 0 ? fallbackEntry - pad : fallbackEntry + pad;
 }
 
@@ -2312,23 +2354,30 @@ void DrawHistoricalSignals(bool resetObjects = true)
    int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
-      string id = IntegerToString(i) + "_" + IntegerToString((int)g_histSignals[i].entryTime);
+      string id = IntegerToString(i) + "_" + IntegerToString((int)g_histSignals[i].availableTime);
       bool closed = g_histSignalClosed[i];
       bool won = g_histSignalWon[i];
       double r = g_histSignalR[i];
       color clr = won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82');
-      double arrowPrice = SignalArrowPrice(g_histSignals[i].entryTime, g_histSignals[i].dir, g_histSignals[i].entry, g_histSignals[i].risk);
-      DrawArrow(id, g_histSignals[i].entryTime, arrowPrice, g_histSignals[i].dir, clr);
+      double arrowPrice = SignalArrowPrice(g_histSignals[i].availableTime, g_histSignals[i].dir, g_histSignals[i].entry, g_histSignals[i].risk);
+      DrawArrow(id, g_histSignals[i].availableTime, arrowPrice, g_histSignals[i].dir, clr);
       double pad = MathMax(MathAbs(g_histSignals[i].entry - g_histSignals[i].sl) * 0.25, TickSize() * 30.0);
       double targetPrice = SelectedTarget(g_histSignals[i], g_target, g_targetModel);
       double hcPrice = HalfTrigger(g_histSignals[i], g_hc);
       string txt = DirLabel(g_histSignals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
          + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
-      txt += "\nSL " + DoubleToString(g_histSignals[i].sl, _Digits);
-      if(targetPrice > 0.0) txt += "\n" + TargetLabel(g_target) + " " + DoubleToString(targetPrice, _Digits);
-      if(g_hc != ERL_HC_OFF && hcPrice > 0.0) txt += "\n" + HcLabel(g_hc) + " " + DoubleToString(hcPrice, _Digits);
-      DrawChartText(id, g_histSignals[i].entryTime, g_histSignals[i].dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
-      DrawFvgBox(id, g_histSignals[i].htfTime, g_histSignals[i].entryTime + PeriodSeconds(g_entryTf) * 4, g_histSignals[i].fvgLow, g_histSignals[i].fvgHigh, clr);
+      if(g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL)
+      {
+         txt += "\nREV EXIT: next opposite";
+      }
+      else
+      {
+         txt += "\nSL " + DoubleToString(g_histSignals[i].sl, _Digits);
+         if(targetPrice > 0.0) txt += "\n" + TargetLabel(g_target) + " " + DoubleToString(targetPrice, _Digits);
+         if(g_hc != ERL_HC_OFF && hcPrice > 0.0) txt += "\n" + HcLabel(g_hc) + " " + DoubleToString(hcPrice, _Digits);
+      }
+      DrawChartText(id, g_histSignals[i].availableTime, g_histSignals[i].dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
+      DrawFvgBox(id, g_histSignals[i].htfTime, g_histSignals[i].availableTime + PeriodSeconds(g_entryTf) * 4, g_histSignals[i].fvgLow, g_histSignals[i].fvgHigh, clr);
    }
 }
 
@@ -2416,8 +2465,9 @@ int OwnPositionCount(int dirFilter = 0)
    return count;
 }
 
-void CloseOwnPositions(int dirFilter = 0)
+bool CloseOwnPositions(int dirFilter = 0)
 {
+   bool allClosed = true;
    for(int i = PositionsTotal() - 1; i >= 0; --i)
    {
       ulong ticket = PositionGetTicket(i);
@@ -2426,10 +2476,16 @@ void CloseOwnPositions(int dirFilter = 0)
       if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
       int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
       if(dirFilter != 0 && dirFilter != dir) continue;
-      trade.PositionClose(ticket);
-      AuditWrite("close_request", IntegerToString((int)ticket), dir, PositionGetDouble(POSITION_PRICE_OPEN),
-         PositionGetDouble(POSITION_SL), PositionGetDouble(POSITION_TP), PositionGetDouble(POSITION_VOLUME), "manual_or_reverse");
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      bool closed = trade.PositionClose(ticket);
+      allClosed = allClosed && closed;
+      AuditWrite(closed ? "close_request" : "close_failed", IntegerToString((int)ticket), dir,
+         open, sl, tp, volume, "manual_or_reverse");
    }
+   return allClosed;
 }
 
 void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &execSig, string &detail)
@@ -2484,8 +2540,16 @@ bool OpenSignal(const ErlSignal &sig)
       g_lastBlock = "same_direction_position";
       return false;
    }
-   if(InpCloseOnReverse && OwnPositionCount(-sig.dir) > 0)
-      CloseOwnPositions(-sig.dir);
+   bool reverseExitMode = (g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL);
+   if((InpCloseOnReverse || reverseExitMode) && OwnPositionCount(-sig.dir) > 0)
+   {
+      if(!CloseOwnPositions(-sig.dir) || OwnPositionCount(-sig.dir) > 0)
+      {
+         g_lastBlock = "reverse_close_failed";
+         Print("LiquidityNarrative reverse_close_failed dir=", DirLabel(sig.dir), " id=", sig.id);
+         return false;
+      }
+   }
 
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return false;
@@ -2495,12 +2559,17 @@ bool OpenSignal(const ErlSignal &sig)
    string execDetail = "";
    BuildExecutableSignal(sig, liveEntry, execSig, execDetail);
    double tp = SelectedTarget(execSig, g_target);
+   double orderSl = reverseExitMode ? 0.0 : execSig.sl;
+   double orderTp = reverseExitMode ? 0.0 : tp;
    double lot = 0.0;
    string riskReason = "";
    if(!RiskGateAllows(execSig.entry, execSig.sl, lot, riskReason))
    {
       g_lastBlock = riskReason;
-      AuditWrite("risk_block", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot, riskReason + " " + execDetail);
+      AuditWrite("risk_block", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot, riskReason + " " + execDetail);
+      Print("LiquidityNarrative risk_block id=", sig.id, " dir=", DirLabel(sig.dir),
+         " entry=", DoubleToString(execSig.entry, _Digits), " sl=", DoubleToString(execSig.sl, _Digits),
+         " reason=", riskReason);
       return false;
    }
    trade.SetExpertMagicNumber(RuntimeMagic());
@@ -2508,28 +2577,35 @@ bool OpenSignal(const ErlSignal &sig)
    trade.SetTypeFillingBySymbol(_Symbol);
 
    bool ok = trade.PositionOpen(_Symbol, sig.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot,
-      execSig.entry, execSig.sl, tp, "LiquidityNarrative " + DirLabel(sig.dir));
+      execSig.entry, orderSl, orderTp, "LiquidityNarrative " + DirLabel(sig.dir));
    if(!ok)
    {
       string detail = "ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription();
       g_lastStatus = "ORDER_FAILED";
       g_lastBlock = detail;
-      AuditWrite("order_failed", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot, detail + " " + execDetail);
+      AuditWrite("order_failed", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot, detail + " " + execDetail);
+      Print("LiquidityNarrative order_failed id=", sig.id, " dir=", DirLabel(sig.dir),
+         " ret=", IntegerToString((int)trade.ResultRetcode()), " ", trade.ResultRetcodeDescription());
       return false;
    }
 
    ulong posTicket = FindNewestOwnPosition();
    if(posTicket > 0) StorePositionPlan(posTicket, execSig, g_hc);
    g_lastSignalId = sig.id;
-   g_lastSignalTime = sig.entryTime;
+   g_lastSignalTime = sig.availableTime;
    g_lastSignalDir = sig.dir;
    g_lastEntry = execSig.entry;
-   g_lastSl = execSig.sl;
-   g_lastTp = tp;
+   g_lastSl = orderSl;
+   g_lastTp = orderTp;
    g_lastStatus = "OPENED";
    g_lastBlock = "";
-   AuditWrite("order_opened", sig.id, sig.dir, execSig.entry, execSig.sl, tp, lot,
-      "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket) + " " + execDetail);
+   AuditWrite("order_opened", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot,
+      "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket)
+      + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + execDetail);
+   Print("LiquidityNarrative order_opened id=", sig.id, " dir=", DirLabel(sig.dir),
+      " ticket=", IntegerToString((int)posTicket), " entry=", DoubleToString(execSig.entry, _Digits),
+      " sl=", DoubleToString(orderSl, _Digits), " tp=", DoubleToString(orderTp, _Digits),
+      " lot=", DoubleToString(lot, 4));
    return true;
 }
 
@@ -2537,10 +2613,22 @@ void TryOpenLatestSignal()
 {
    datetime closedBarTime = iTime(_Symbol, g_entryTf, 1);
    if(closedBarTime <= 0) return;
-   if(closedBarTime == g_lastLiveScanBar) return;
+   datetime now = TimeCurrent();
+   bool firstAttemptForBar = (closedBarTime != g_lastLiveScanBar);
+   int entrySec = MathMax(60, PeriodSeconds(g_entryTf));
+   datetime retryUntil = closedBarTime + entrySec + 90;
+   if(!firstAttemptForBar)
+   {
+      // MT5 can briefly expose the new bar before every dependent timeframe is
+      // synchronized. Retry the just-closed entry bar without rescanning it for
+      // the full candle duration.
+      if(now > retryUntil) return;
+      if(now - g_lastLiveScanAttempt < 5) return;
+   }
    g_lastLiveScanBar = closedBarTime;
+   g_lastLiveScanAttempt = now;
 
-   datetime cutoff = TimeCurrent() - 7 * 86400;
+   datetime cutoff = now - 7 * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
    if(count <= 0)
@@ -2549,15 +2637,20 @@ void TryOpenLatestSignal()
       return;
    }
    ErlSignal latest = signals[count - 1];
-   if(latest.entryTime <= g_lastSignalTime && latest.id == g_lastSignalId) return;
+   if(latest.availableTime <= g_lastSignalTime && latest.id == g_lastSignalId) return;
    // Only live-trade fresh signals; historical chart load must not open old setups.
-   int freshSec = MathMax(PeriodSeconds(g_entryTf) * 2, 180);
-   if(TimeCurrent() - latest.entryTime > freshSec)
+   int freshSec = MathMax(entrySec * 2, 180);
+   if(now - latest.availableTime > freshSec)
    {
       g_lastStatus = "LATEST_OLD";
-      g_lastSignalTime = MathMax(g_lastSignalTime, latest.entryTime);
+      g_lastSignalTime = MathMax(g_lastSignalTime, latest.availableTime);
+      g_lastSignalId = latest.id;
       return;
    }
+   Print("LiquidityNarrative signal_candidate id=", latest.id, " dir=", DirLabel(latest.dir),
+      " setup_bar=", TimeToString(latest.entryTime, TIME_DATE | TIME_SECONDS),
+      " available=", TimeToString(latest.availableTime, TIME_DATE | TIME_SECONDS),
+      " detected=", TimeToString(now, TIME_DATE | TIME_SECONDS));
    OpenSignal(latest);
 }
 
@@ -2623,7 +2716,7 @@ void BuildCombos()
    bool biases[] = { false, true };
    ERL_ENTRY_MODEL entryModels[] = { ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG, ERL_ENTRY_LEGACY_HTF_FVG_TAP };
    ERL_STOP_MODEL stopModels[] = { ERL_STOP_FIRST_FVG_CANDLE, ERL_STOP_FVG_BOUNDARY };
-   ERL_TARGET_MODEL targetModels[] = { ERL_TARGET_NEXT_EXTERNAL, ERL_TARGET_AUTO_STOP_SIZE, ERL_TARGET_FIXED_R };
+   ERL_TARGET_MODEL targetModels[] = { ERL_TARGET_NEXT_EXTERNAL, ERL_TARGET_AUTO_STOP_SIZE, ERL_TARGET_FIXED_R, ERL_TARGET_OPPOSITE_SIGNAL };
    for(int h = 0; h < ArraySize(htfs); ++h)
    {
       for(int e = 0; e < ArraySize(etfs); ++e)
@@ -2640,7 +2733,7 @@ void BuildCombos()
                      {
                         for(int rr = 0; rr < 6; ++rr)
                         {
-                           int maxHc = rr == 0 ? 0 : rr;
+                           int maxHc = targetModels[tm] == ERL_TARGET_OPPOSITE_SIGNAL ? 0 : (rr == 0 ? 0 : rr);
                            for(int hc = 0; hc <= maxHc; ++hc)
                            {
                               int n = ArraySize(g_btCombos);
@@ -2892,9 +2985,10 @@ void UpdateDashboard()
    ButtonObj("BTN_STOP_FVG1", x + 326, row, 62, bh, "FVG1", g_stopModel == ERL_STOP_FIRST_FVG_CANDLE ? on : off);
    ButtonObj("BTN_STOP_ZONE", x + 394, row, 62, bh, "ZONE", g_stopModel == ERL_STOP_FVG_BOUNDARY ? on : off);
    LabelObj("DASH_TM_L", x + 474, row + 4, "TARGET:", muted, 8);
-   ButtonObj("BTN_TM_EXT", x + 538, row, 54, bh, "EXT", g_targetModel == ERL_TARGET_NEXT_EXTERNAL ? on : off);
-   ButtonObj("BTN_TM_AUTO", x + 598, row, 58, bh, "AUTO", g_targetModel == ERL_TARGET_AUTO_STOP_SIZE ? on : off);
-   ButtonObj("BTN_TM_FIXED", x + 662, row, 68, bh, "FIXED", g_targetModel == ERL_TARGET_FIXED_R ? on : off);
+   ButtonObj("BTN_TM_EXT", x + 528, row, 48, bh, "EXT", g_targetModel == ERL_TARGET_NEXT_EXTERNAL ? on : off);
+   ButtonObj("BTN_TM_AUTO", x + 580, row, 50, bh, "AUTO", g_targetModel == ERL_TARGET_AUTO_STOP_SIZE ? on : off);
+   ButtonObj("BTN_TM_FIXED", x + 634, row, 52, bh, "FIX", g_targetModel == ERL_TARGET_FIXED_R ? on : off);
+   ButtonObj("BTN_TM_REV", x + 690, row, 54, bh, "REV", g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL ? on : off);
 
    row += 28;
    LabelObj("DASH_STRICT_L", x + 16, row + 4, "STRICT FILTERS:", muted, 8);
@@ -3059,7 +3153,8 @@ void ProcessPendingConfigRefresh()
    g_configRefreshRebuildSignals = false;
    RecalculateHistoricalStats(rebuildSignals);
    if(!IsTesterMode()) DrawHistoricalSignals(rebuildSignals);
-   g_lastStatus = "CONFIG UPDATED";
+   g_lastStatus = "CONFIG " + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
+      + " " + EntryModelLabel(g_entryModel) + " SIG=" + IntegerToString(g_hist.total);
    UpdateDashboard();
    ChartRedraw(0);
 }
@@ -3256,9 +3351,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_TM_EXT")) { g_targetModel = ERL_TARGET_NEXT_EXTERNAL; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_TM_AUTO")) { g_targetModel = ERL_TARGET_AUTO_STOP_SIZE; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_TM_FIXED")) { g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_REQ_IRL")) { g_requireIrlTouch = !g_requireIrlTouch; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_REQ_SWEEP")) { g_requireEntrySweep = !g_requireEntrySweep; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_REQ_DISP")) { g_requireDisplacementFvg = !g_requireDisplacementFvg; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TM_REV")) { g_targetModel = ERL_TARGET_OPPOSITE_SIGNAL; g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_REQ_IRL")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; g_requireIrlTouch = !g_requireIrlTouch; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_REQ_SWEEP")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; g_requireEntrySweep = !g_requireEntrySweep; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_REQ_DISP")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; g_requireDisplacementFvg = !g_requireDisplacementFvg; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_ASIA")) { g_requireAsiaLiquidityDraw = !g_requireAsiaLiquidityDraw; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ASIA_TGT")) { g_useAsiaLiquidityTarget = !g_useAsiaLiquidityTarget; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_SMT")) { g_requireSmt = !g_requireSmt; RefreshAfterConfigChange(); return; }

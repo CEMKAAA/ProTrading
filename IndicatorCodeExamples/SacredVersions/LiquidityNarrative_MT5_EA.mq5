@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-06-20.ln-incremental-audit-cache"
+#define LN_BUILD "2026-06-19.liquidity-narrative-v1"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -123,8 +123,6 @@ input int             InpDashboardX             = 10;
 input int             InpDashboardY             = 18;
 
 input bool            InpAccountRiskEnabled     = true;
-input bool            InpFtmoModeDefault        = false;
-input bool            InpRiskLotOnlyModeDefault = false;
 input double          InpRiskPerTradePct        = 1.0;
 input double          InpMaxPortfolioRiskPct    = 4.0;
 input double          InpDailyLossLimitPct      = 0.0;
@@ -211,14 +209,6 @@ struct SimStats
    double   pf;
 };
 
-struct SimCacheEntry
-{
-   string   key;
-   double   r;
-   bool     closed;
-   bool     won;
-};
-
 struct BtCombo
 {
    ENUM_TIMEFRAMES htf;
@@ -273,23 +263,9 @@ bool             g_requireAsiaLiquidityDraw = true;
 bool             g_useAsiaLiquidityTarget = true;
 bool             g_requireSmt = false;
 bool             g_auditRuntime = false;
-bool             g_ftmoMode = false;
-bool             g_riskLotOnlyMode = false;
 bool             g_dashboardCollapsed = false;
 
 SimStats         g_hist;
-ErlSignal        g_histSignals[];
-ErlSignal        g_histRawCache[];
-string           g_histRawCacheSignature = "";
-int              g_histRawCacheWeeks = 0;
-double           g_histSignalR[];
-bool             g_histSignalClosed[];
-bool             g_histSignalWon[];
-SimCacheEntry    g_simCache[];
-bool             g_configRefreshPending = false;
-bool             g_configRefreshRebuildSignals = false;
-datetime         g_configRefreshDue = 0;
-string           g_liveLevelsSignature = "";
 string           g_lastStatus = "READY";
 string           g_lastBlock  = "";
 datetime         g_lastSignalTime = 0;
@@ -445,18 +421,10 @@ double ApplySlDistancePct(int dir, double entry, double rawSl)
    return NormTradePrice(dir > 0 ? entry - dist : entry + dist);
 }
 
-bool ManagedRiskMode() { return g_ftmoMode || g_riskLotOnlyMode; }
-string RuntimeRiskModeLabel() { if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
-bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode(); }
-double RiskPerTradePct() { return ManagedRiskMode() ? 1.0 : InpRiskPerTradePct; }
-double MaxPortfolioRiskPct() { return g_ftmoMode ? 4.0 : InpMaxPortfolioRiskPct; }
-double DailyLossLimitPct() { return g_ftmoMode ? 5.0 : InpDailyLossLimitPct; }
-double MaxDrawdownPct() { return g_ftmoMode ? 10.0 : InpMaxDrawdownPct; }
-
 double ApproxMoneyFromR(double r)
 {
    double base = InpInitialBalanceOverride > 0.0 ? InpInitialBalanceOverride : MathMax(0.01, AccountInfoDouble(ACCOUNT_BALANCE));
-   return r * base * MathMax(0.0, RiskPerTradePct()) / 100.0;
+   return r * base * MathMax(0.0, InpRiskPerTradePct) / 100.0;
 }
 
 int ClampHistWeeks(int weeks)
@@ -470,63 +438,6 @@ int ClampHistWeeks(int weeks)
 int HistDays()
 {
    return ClampHistWeeks(g_histWeeks) * 7;
-}
-
-string HistRawSignature()
-{
-   return _Symbol + "|" + TfLabel(g_htf) + "|" + TfLabel(g_entryTf)
-      + "|SW" + IntegerToString(g_swingLookback)
-      + "|BIAS" + (g_weeklyBias ? "1" : "0")
-      + "|" + EntryModelLabel(g_entryModel)
-      + "|" + StopModelLabel(g_stopModel)
-      + "|" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
-      + "|" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
-      + "|ASIA" + IntegerToString(InpAsiaStartHourGmt) + "-" + IntegerToString(InpAsiaEndHourGmt)
-      + "|SMT" + InpSmtSymbol + "-" + IntegerToString(InpSmtLookbackBars)
-      + "|SLPCT" + DoubleToString(g_slDistancePct, 2);
-}
-
-string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
-{
-   return sig.id
-      + "|ENTRY" + DoubleToString(sig.entry, _Digits)
-      + "|SL" + DoubleToString(sig.sl, _Digits)
-      + "|EXT" + DoubleToString(sig.externalTarget, _Digits)
-      + "|TP" + IntegerToString((int)target)
-      + "|HC" + IntegerToString((int)hc)
-      + "|TM" + IntegerToString((int)targetModel)
-      + "|ETF" + TfLabel(entryTf)
-      + "|F" + IntegerToString((int)InpBacktestFillMode)
-      + "|SB" + IntegerToString((int)InpBacktestSameBarPolicy)
-      + "|TR" + (InpBacktestUseTickReplay ? "1" : "0")
-      + "|SP" + DoubleToString(InpBacktestSpreadPts, 2)
-      + "|SLIP" + DoubleToString(InpBacktestSlippagePts, 2)
-      + "|COMM" + DoubleToString(InpBacktestCommissionPerLot, 4);
-}
-
-bool SimCacheGet(const string key, double &r, bool &closed, bool &won)
-{
-   for(int i = 0; i < ArraySize(g_simCache); ++i)
-   {
-      if(g_simCache[i].key == key)
-      {
-         r = g_simCache[i].r;
-         closed = g_simCache[i].closed;
-         won = g_simCache[i].won;
-         return true;
-      }
-   }
-   return false;
-}
-
-void SimCachePut(const string key, double r, bool closed, bool won)
-{
-   int n = ArraySize(g_simCache);
-   ArrayResize(g_simCache, n + 1);
-   g_simCache[n].key = key;
-   g_simCache[n].r = r;
-   g_simCache[n].closed = closed;
-   g_simCache[n].won = won;
 }
 
 double NormPrice(double price)
@@ -829,14 +740,12 @@ bool IsSwingLow(const MqlRates &rates[], int index, int lookback)
    return true;
 }
 
-int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[], int maxLevels = 0)
+int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[])
 {
    ArrayFree(swings);
    int total = ArraySize(rates);
    int found = 0;
-   int cap = maxLevels > 0 ? maxLevels : InpMaxSwings * 2;
-   cap = MathMax(1, MathMin(2000, cap));
-   for(int i = lookback + 2; i < total - lookback && found < cap; ++i)
+   for(int i = lookback + 2; i < total - lookback && found < InpMaxSwings * 2; ++i)
    {
       if(IsSwingHigh(rates, i, lookback))
       {
@@ -1265,9 +1174,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
    if(!CopySeries(entryTf, entryBars, entryRates)) return 0;
 
    SwingLevel swings[];
-   int dynamicSwingCap = MathMax(InpMaxSwings * 2, RequiredBarsForWindow(htf, cutoff, 250));
-   dynamicSwingCap = MathMin(2000, MathMax(1, dynamicSwingCap));
-   int swCount = CollectSwings(htfRates, swingLookback, swings, dynamicSwingCap);
+   int swCount = CollectSwings(htfRates, swingLookback, swings);
    if(swCount <= 0) return 0;
 
    for(int s = 0; s < swCount; ++s)
@@ -1611,65 +1518,12 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    return st;
 }
 
-void RecalculateHistoricalStats(bool rebuildSignals = true)
+void RecalculateHistoricalStats()
 {
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
-   string rawSig = HistRawSignature();
-   int weeks = ClampHistWeeks(g_histWeeks);
-   bool cacheUsable = (!rebuildSignals
-      && g_histRawCacheSignature == rawSig
-      && g_histRawCacheWeeks >= weeks
-      && ArraySize(g_histRawCache) > 0);
-
-   if(cacheUsable)
-   {
-      ArrayFree(g_histSignals);
-      for(int i = 0; i < ArraySize(g_histRawCache); ++i)
-      {
-         if(g_histRawCache[i].entryTime < cutoff) continue;
-         int n = ArraySize(g_histSignals);
-         ArrayResize(g_histSignals, n + 1);
-         g_histSignals[n] = g_histRawCache[i];
-      }
-   }
-   else
-   {
-      BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel,
-         g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw,
-         g_useAsiaLiquidityTarget, g_requireSmt, cutoff, g_histSignals);
-      ArrayFree(g_histRawCache);
-      ArrayResize(g_histRawCache, ArraySize(g_histSignals));
-      for(int i = 0; i < ArraySize(g_histSignals); ++i) g_histRawCache[i] = g_histSignals[i];
-      g_histRawCacheSignature = rawSig;
-      g_histRawCacheWeeks = weeks;
-      ArrayFree(g_simCache);
-   }
-
-   ArrayResize(g_histSignalR, ArraySize(g_histSignals));
-   ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
-   ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
-
-   ZeroMemory(g_hist);
-   for(int i = 0; i < ArraySize(g_histSignals); ++i)
-   {
-      bool closed = false, won = false;
-      string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf);
-      double r = 0.0;
-      if(!SimCacheGet(simKey, r, closed, won))
-      {
-         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, 0, closed, won);
-         SimCachePut(simKey, r, closed, won);
-      }
-      g_histSignalR[i] = r;
-      g_histSignalClosed[i] = closed;
-      g_histSignalWon[i] = won;
-      g_hist.total++;
-      g_hist.netR += r;
-      if(!closed) { g_hist.open++; continue; }
-      if(won) { g_hist.wins++; g_hist.wonR += MathMax(0.0, r); }
-      else { g_hist.losses++; g_hist.lostR += MathAbs(MathMin(0.0, r)); }
-   }
-   g_hist.pf = g_hist.lostR > 0.0 ? g_hist.wonR / g_hist.lostR : (g_hist.wonR > 0.0 ? 99.0 : 0.0);
+   ErlSignal signals[];
+   BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
+   g_hist = CalculateStats(signals, g_target, g_hc, g_targetModel, g_entryTf);
 }
 
 //=====================================================================
@@ -1742,7 +1596,7 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
       return false;
    }
 
-   if(RiskEnabled())
+   if(InpAccountRiskEnabled)
    {
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       double base = BaseCapital();
@@ -1751,21 +1605,21 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 
       double dailyPnl = DailyClosedPnl();
       double ddFromPeak = g_equityPeak - equity;
-      if(DailyLossLimitPct() > 0.0 && dailyPnl <= -base * DailyLossLimitPct() / 100.0)
+      if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
       {
          reason = "daily_loss_limit";
          return false;
       }
-      if(MaxDrawdownPct() > 0.0 && ddFromPeak >= base * MaxDrawdownPct() / 100.0)
+      if(InpMaxDrawdownPct > 0.0 && ddFromPeak >= base * InpMaxDrawdownPct / 100.0)
       {
          reason = "max_drawdown_limit";
          return false;
       }
 
-      double riskMoney = equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
+      double riskMoney = equity * MathMax(0.01, InpRiskPerTradePct) / 100.0;
       lot = NormalizeVolume(riskMoney / (riskDistance * valuePerUnit));
       double actualRiskMoney = RiskMoneyForLot(lot, sl < entry ? 1 : -1, entry, sl);
-      double portfolioCap = equity * MathMax(0.01, MaxPortfolioRiskPct()) / 100.0;
+      double portfolioCap = equity * MathMax(0.01, InpMaxPortfolioRiskPct) / 100.0;
       if(actualRiskMoney <= 0.0)
       {
          reason = "risk_calc_failed";
@@ -2209,27 +2063,24 @@ void DrawHistoricalSignals()
    DeleteByPrefix(PFX + "FVG_");
    if(IsTesterMode()) return;
    if(!InpDrawHistoricalSignals) return;
-   int count = ArraySize(g_histSignals);
+   datetime cutoff = TimeCurrent() - HistDays() * 86400;
+   ErlSignal signals[];
+   int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
    for(int i = 0; i < count; ++i)
    {
-      string id = IntegerToString(i) + "_" + IntegerToString((int)g_histSignals[i].entryTime);
-      bool closed = g_histSignalClosed[i];
-      bool won = g_histSignalWon[i];
-      double r = g_histSignalR[i];
+      string id = IntegerToString(i) + "_" + IntegerToString((int)signals[i].entryTime);
+      bool closed=false, won=false;
+      double r=SimulateSignal(signals[i], g_target, g_hc, g_targetModel, g_entryTf, 0, closed, won);
       color clr = won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82');
-      double arrowPrice = SignalArrowPrice(g_histSignals[i].entryTime, g_histSignals[i].dir, g_histSignals[i].entry, g_histSignals[i].risk);
-      DrawArrow(id, g_histSignals[i].entryTime, arrowPrice, g_histSignals[i].dir, clr);
-      double pad = MathMax(MathAbs(g_histSignals[i].entry - g_histSignals[i].sl) * 0.25, TickSize() * 30.0);
-      double targetPrice = SelectedTarget(g_histSignals[i], g_target, g_targetModel);
-      double hcPrice = HalfTrigger(g_histSignals[i], g_hc);
-      string txt = DirLabel(g_histSignals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
+      double arrowPrice = SignalArrowPrice(signals[i].entryTime, signals[i].dir, signals[i].entry, signals[i].risk);
+      DrawArrow(id, signals[i].entryTime, arrowPrice, signals[i].dir, clr);
+      double pad = MathMax(MathAbs(signals[i].entry - signals[i].sl) * 0.25, TickSize() * 30.0);
+      string txt = DirLabel(signals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
          + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
-      txt += "\nSL " + DoubleToString(g_histSignals[i].sl, _Digits);
-      if(targetPrice > 0.0) txt += "\n" + TargetLabel(g_target) + " " + DoubleToString(targetPrice, _Digits);
-      if(g_hc != ERL_HC_OFF && hcPrice > 0.0) txt += "\n" + HcLabel(g_hc) + " " + DoubleToString(hcPrice, _Digits);
-      DrawChartText(id, g_histSignals[i].entryTime, g_histSignals[i].dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
-      DrawFvgBox(id, g_histSignals[i].htfTime, g_histSignals[i].entryTime + PeriodSeconds(g_entryTf) * 4, g_histSignals[i].fvgLow, g_histSignals[i].fvgHigh, clr);
+      DrawChartText(id, signals[i].entryTime, signals[i].dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
+      DrawFvgBox(id, signals[i].htfTime, signals[i].entryTime + PeriodSeconds(g_entryTf) * 4, signals[i].fvgLow, signals[i].fvgHigh, clr);
    }
+   RecalculateHistoricalStats();
 }
 
 void DrawLiveLevelsForPosition()
@@ -2754,9 +2605,7 @@ void UpdateDashboard()
    ButtonObj("BTN_ETF_M15", x + 266, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
    ButtonObj("BTN_ETF_M30", x + 330, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
    ButtonObj("BTN_ETF_H1", x + 394, row, 52, bh, "H1", g_entryTf == PERIOD_H1 ? on : off);
-   ButtonObj("BTN_EA", x + 530, row, 76, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
-   ButtonObj("BTN_FTMO", x + 610, row, 62, bh, g_ftmoMode ? "FTMO" : "FTMO", g_ftmoMode ? on : off);
-   ButtonObj("BTN_RISKLOT", x + 676, row, 68, bh, g_riskLotOnlyMode ? "RISK" : "RISK", g_riskLotOnlyMode ? on : off);
+   ButtonObj("BTN_EA", x + 584, row, 88, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
 
    row += 28;
    LabelObj("DASH_SW_L", x + 16, row + 4, "SWING:", muted, 8);
@@ -2844,8 +2693,8 @@ void UpdateDashboard()
       + " | Entry " + DoubleToString(g_lastEntry, _Digits) + " SL " + DoubleToString(g_lastSl, _Digits)
       + " TP " + DoubleToString(g_lastTp, _Digits), muted, 8);
    LabelObj("DASH_EX3", x + 16, sec3 + 74,
-      "Risk: " + (RiskEnabled() ? "ON" : "OFF") + " " + DoubleToString(RiskPerTradePct(), 2)
-      + "% | Mode " + RuntimeRiskModeLabel() + " | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
+      "Risk: " + (InpAccountRiskEnabled ? "ON" : "OFF") + " " + DoubleToString(InpRiskPerTradePct, 2)
+      + "% | SL% " + DoubleToString(g_slDistancePct, 0) + " | Magic " + IntegerToString((int)RuntimeMagic()), muted, 8);
    LabelObj("DASH_SL_L", x + 510, sec3 + 74, "SL%:", muted, 8);
    EditObj("EDIT_SL_PCT", x + 550, sec3 + 72, 56, bh, DoubleToString(g_slDistancePct, 0));
    ButtonObj("BTN_SL_APPLY", x + 612, sec3 + 72, 70, bh, "APPLY", C'38,101,176');
@@ -2895,8 +2744,8 @@ void UpdateDashboard()
 //=====================================================================
 void EnforceRiskBreach()
 {
-   if(!RiskEnabled() || !InpLiquidateOnBreach) return;
-   if(DailyLossLimitPct() <= 0.0 && MaxDrawdownPct() <= 0.0) return;
+   if(!InpAccountRiskEnabled || !InpLiquidateOnBreach) return;
+   if(InpDailyLossLimitPct <= 0.0 && InpMaxDrawdownPct <= 0.0) return;
    double base = BaseCapital();
    if(base <= 0.0) return;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -2906,12 +2755,12 @@ void EnforceRiskBreach()
    double dd = g_equityPeak - equity;
    bool breach = false;
    string why = "";
-   if(DailyLossLimitPct() > 0.0 && dailyPnl <= -base * DailyLossLimitPct() / 100.0)
+   if(InpDailyLossLimitPct > 0.0 && dailyPnl <= -base * InpDailyLossLimitPct / 100.0)
    {
       breach = true;
       why = "daily_loss_breach";
    }
-   if(MaxDrawdownPct() > 0.0 && dd >= base * MaxDrawdownPct() / 100.0)
+   if(InpMaxDrawdownPct > 0.0 && dd >= base * InpMaxDrawdownPct / 100.0)
    {
       breach = true;
       why = "max_drawdown_breach";
@@ -2923,28 +2772,13 @@ void EnforceRiskBreach()
    }
 }
 
-void RefreshAfterConfigChange(bool rebuildSignals = true)
+void RefreshAfterConfigChange()
 {
    SanitizeHalfMode();
-   // Coalesce rapid UI clicks; heavy signal generation runs once after input settles.
-   g_configRefreshPending = true;
-   g_configRefreshRebuildSignals = (g_configRefreshRebuildSignals || rebuildSignals);
-   g_configRefreshDue = TimeLocal() + 1;
-   g_lastStatus = "CONFIG UPDATE QUEUED";
-   UpdateDashboard();
-   ChartRedraw(0);
-}
-
-void ProcessPendingConfigRefresh()
-{
-   if(!g_configRefreshPending || TimeLocal() < g_configRefreshDue) return;
-   g_configRefreshPending = false;
    g_lastLiveScanBar = 0;
-   bool rebuildSignals = g_configRefreshRebuildSignals;
-   g_configRefreshRebuildSignals = false;
-   RecalculateHistoricalStats(rebuildSignals);
-   if(!IsTesterMode()) DrawHistoricalSignals();
-   g_lastStatus = "CONFIG UPDATED";
+   RecalculateHistoricalStats();
+   if(IsTesterMode()) return;
+   DrawHistoricalSignals();
    UpdateDashboard();
    ChartRedraw(0);
 }
@@ -2962,8 +2796,6 @@ int OnInit()
    ErlTesterAudit_Init();
    PFX = LN_PREFIX + IntegerToString((int)ChartID()) + "_";
    g_eaEnabled = InpEaEnabled;
-   g_ftmoMode = InpFtmoModeDefault;
-   g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
    g_htf = InpDefaultHtf;
    g_entryTf = InpDefaultEntryTf;
    g_swingLookback = InpDefaultSwingLookback;
@@ -3041,13 +2873,12 @@ void OnTimer()
    ManagePositions();
    ProbePositions();
    ScanClosedHistory();
-   ProcessPendingConfigRefresh();
    if(!IsValidationTester())
    {
-      if(g_btRunning) BacktestStep();
+      BacktestStep();
       UpdateDashboard();
       DrawLiveLevelsForPosition();
-      if(g_btRunning) ChartRedraw(0);
+      ChartRedraw(0);
    }
 }
 
@@ -3102,18 +2933,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_SW_3")) { g_swingLookback = 3; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP3")) { if((int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP4")) { if((int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP5")) { if((int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP3")) { if((int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP4")) { if((int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HC_TP5")) { if((int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
@@ -3124,9 +2955,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_ENTRY_LEG")) { g_entryModel = ERL_ENTRY_LEGACY_HTF_FVG_TAP; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_STOP_FVG1")) { g_stopModel = ERL_STOP_FIRST_FVG_CANDLE; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_STOP_ZONE")) { g_stopModel = ERL_STOP_FVG_BOUNDARY; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TM_EXT")) { g_targetModel = ERL_TARGET_NEXT_EXTERNAL; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TM_AUTO")) { g_targetModel = ERL_TARGET_AUTO_STOP_SIZE; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TM_FIXED")) { g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TM_EXT")) { g_targetModel = ERL_TARGET_NEXT_EXTERNAL; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TM_AUTO")) { g_targetModel = ERL_TARGET_AUTO_STOP_SIZE; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_TM_FIXED")) { g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_IRL")) { g_requireIrlTouch = !g_requireIrlTouch; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_SWEEP")) { g_requireEntrySweep = !g_requireEntrySweep; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_DISP")) { g_requireDisplacementFvg = !g_requireDisplacementFvg; RefreshAfterConfigChange(); return; }
@@ -3134,8 +2965,6 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_ASIA_TGT")) { g_useAsiaLiquidityTarget = !g_useAsiaLiquidityTarget; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_REQ_SMT")) { g_requireSmt = !g_requireSmt; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_EA")) { g_eaEnabled = !g_eaEnabled; UpdateDashboard(); ChartRedraw(0); return; }
-   if(Clicked(sparam, "BTN_FTMO")) { g_ftmoMode = !g_ftmoMode; if(g_ftmoMode) g_riskLotOnlyMode = false; UpdateDashboard(); ChartRedraw(0); return; }
-   if(Clicked(sparam, "BTN_RISKLOT")) { g_riskLotOnlyMode = !g_riskLotOnlyMode; if(g_riskLotOnlyMode) g_ftmoMode = false; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_AUDIT")) { g_auditRuntime = !g_auditRuntime; Print("LiquidityNarrative audit logging ", g_auditRuntime ? "enabled" : "disabled"); UpdateDashboard(); ChartRedraw(0); return; }
 

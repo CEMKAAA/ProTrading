@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EA License Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Remote EA Control</div>
+      <h1>License Manager</h1>
+    </div>
+    <div class="top-actions">
+      {% if not admin_token_set %}
+        <span class="warning">Default admin token is active</span>
+      {% endif %}
+      <button id="refreshBtn">Refresh</button>
+      <form action="{{ url_for('logout') }}" method="post"><button class="ghost" type="submit">Logout</button></form>
+    </div>
+  </header>
+
+  <section class="stats">
+    <div class="stat"><span id="totalCount">0</span><label>Total</label></div>
+    <div class="stat active"><span id="activeCount">0</span><label>Active</label></div>
+    <div class="stat revoked"><span id="inactiveCount">0</span><label>Inactive</label></div>
+    <div class="stat"><span id="lastUpdate">-</span><label>Updated</label></div>
+  </section>
+
+  <main class="grid">
+    <section class="panel editor">
+      <h2>Create / Update License</h2>
+      <div class="form-grid">
+        <label>License Key<input id="licenseKey" placeholder="ERL-CUSTOMER-001"></label>
+        <label>Customer<input id="customer" placeholder="Customer name"></label>
+        <label>Products<input id="product" placeholder="ERL_IRL,LIQUIDITY_NARRATIVE"></label>
+        <label>Accounts<input id="account" placeholder="MT5 account numbers, blank = all"></label>
+        <label>Terminal<input id="terminal" placeholder="MT5"></label>
+        <label>Expires At<input id="expiresAt" placeholder="2026-12-31T23:59:59+00:00"></label>
+        <label class="wide">Note<input id="note" placeholder="Deployment notes"></label>
+        <label class="check"><input id="active" type="checkbox" checked> Active</label>
+      </div>
+      <div class="row-actions">
+        <button id="saveBtn">Save License</button>
+        <button id="clearBtn" class="ghost">Clear</button>
+      </div>
+      <p class="hint">Blank product/account/terminal fields mean wildcard. For remote use, host this app on a VPS and set EA <code>InpLicenseServerUrl</code> to your public HTTPS validate URL.</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Licenses</h2>
+        <input id="search" placeholder="Search key, customer, account...">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Key</th>
+              <th>Customer</th>
+              <th>Product</th>
+              <th>Account</th>
+              <th>Expiry</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="licenseRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel audit">
+      <div class="panel-head">
+        <h2>Audit Tail</h2>
+        <button id="auditBtn" class="ghost">Reload Audit</button>
+      </div>
+      <div id="auditRows" class="audit-list"></div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
