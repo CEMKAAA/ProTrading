@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-25.0330-atomic-r-geometry"
+#define ATOMIC_BRIDGE_BUILD "2026-06-27.atomic-companion-sync-off"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -74,6 +74,7 @@ input int    InpRegimeSignalProbeIntervalSeconds = 30;
 input bool   InpRegimeSignalProbeWriteOnChange = true;
 input int    InpRegimeSignalProbeMaxShift = 20;
 input bool   InpShowAtomicRegimeTradeLevels = true;
+input bool   InpShowLatestAtomicRegimeSignalLevels = true;
 input int    InpAtomicRegimeTradeLevelLabelBars = 8;
 input bool   InpEnableRegimeChangePost = true;
 input bool   InpSendInitialRegimeConfirmedOnStart = false;
@@ -89,7 +90,7 @@ input double InpRegimeMinRiskPoints = 0.0;
 input bool   InpRegimeClampSlToAtomicSignalSl = true;
 input bool   InpRegimeSlWidenEnabled = true;
 input double InpRegimeSlWidenPct = 25.0;
-input double InpRegimeFinalRiskScalePct = 75.0; // 100=unchanged; 75 trims final AtomicRegime SL/TP distance by 25%.
+input double InpRegimeFinalRiskScalePct = 75.0; // 100=unchanged; dashboard accepts 1..200 for fine Regime SL/TP scaling.
 input bool   InpRegimeUseTrendSignalBuffers = true;
 input int    InpRegimeUpTrendSignalBuffer = 2;
 input int    InpRegimeDnTrendSignalBuffer = 3;
@@ -99,10 +100,12 @@ input int    InpRegimeDnTrendStopBuffer = 1;
 input bool   InpRegimeUseAtomicSignalAsTieBreak = true;
 input bool   InpRegimeUseClosedBar = true;
 input int    InpRegimeBufferLookbackBars = 200;
-input bool   InpRegimeDelayValidationMode = false; // false=direct shift-1 execution; true=live delay + vanish validation.
+input bool   InpRegimeDelayValidationMode = false; // false=direct shift-1 execution; true=live delay confirmation.
+input bool   InpRegimeCloseIfSignalVanishesAfterOpen = false; // false=do not auto-close a filled Regime trade just because the indicator repaints/shift-stales after fill.
 input int    InpRegimeConfirmDelaySeconds = 300; // 0=confirm immediately; -1=use legacy stable seconds.
 input int    InpRegimeConfirmStableSeconds = 5;
 input int    InpRegimeMaxConfirmShift = 1;
+input int    InpRegimeAtomicCompanionSyncSeconds = 0; // 0=disabled. Optional wait for Atomic object SL/TP when Atomic+Regime fire on the same bar.
 input bool   InpRegimeOpenPreWindowSignal = false; // If true, AtomicRegime signals seen before allowed window can execute when the window opens if still valid.
 
 string   g_lastEventId = "";
@@ -133,6 +136,9 @@ int      g_pendingRegimeSignalIndex = -1;
 string   g_lastRegimeLifecycleSignalEventId = "";
 string   g_lastRegimeLifecycleDelayStartEventId = "";
 string   g_lastRegimeLifecycleDelayFinishEventId = "";
+string   g_lastRegimeCompanionSyncEventId = "";
+datetime g_lastRegimeCompanionSyncFirstSeen = 0;
+string   g_lastRegimeCompanionSyncedEventId = "";
 string   g_lastRegimeDelayOpenedEventId = "";
 datetime g_lastRegimeDelayOpenedSignalTime = 0;
 string   g_lastRegimeDelayOpenedDirection = "";
@@ -159,8 +165,21 @@ int      g_directMt4HalfBeTpIndexRuntime = 2;
 double   g_regimeDirectMt4HalfBeRRuntime = 0.0;
 double   g_regimeRRRuntime = 0.0;
 double   g_regimeFinalRiskScalePctRuntime = 100.0;
+string   g_latestRegimeLevelDirection = "";
+double   g_latestRegimeLevelEntry = 0.0;
+double   g_latestRegimeLevelSl = 0.0;
+double   g_latestRegimeLevelTp = 0.0;
+datetime g_latestRegimeLevelSignalTime = 0;
+string   g_latestAtomicLevelDirection = "";
+double   g_latestAtomicLevelEntry = 0.0;
+double   g_latestAtomicLevelSl = 0.0;
+double   g_latestAtomicLevelTp = 0.0;
+double   g_latestAtomicLevelHalf = 0.0;
+datetime g_latestAtomicLevelSignalTime = 0;
+string   g_latestAtomicLevelMode = "";
 bool     g_regimeUseClosedBarRuntime = true;
 bool     g_regimeDelayValidationRuntime = false;
+bool     g_regimeCloseIfVanishesRuntime = false;
 int      g_regimeConfirmDelaySecondsRuntime = 300;
 bool     g_regimeOpenPreWindowSignalRuntime = false;
 string   g_directMt4AllowedWindowsRuntime = "";
@@ -182,6 +201,7 @@ string   g_lastRegimeSignalProbeHash = "";
 datetime g_lastTickLocal = 0;
 string   DASH_PREFIX = "ATOMIC_BRIDGE_DASH_";
 string   REGIME_LEVEL_PREFIX = "ATOMIC_REGIME_TRADE_LEVEL_";
+string   ATOMIC_LEVEL_PREFIX = "ATOMIC_SIGNAL_LEVEL_";
 uint     g_lastAccountRiskGuardMs = 0;
 double   g_accountRiskLockValue = 0.0;
 
@@ -663,6 +683,19 @@ bool _atomic_r_geometry_sl(string direction, double entry, double targetTp, doub
       + " risk=" + DoubleToString(risk, Digits)
       + " broker_min=" + DoubleToString(brokerMin, Digits);
    return true;
+}
+bool _atomic_effective_sl_for_mode(string direction, double entry, double indicatorSl, double selectedTp, double &effectiveSl, string &detail)
+{
+   effectiveSl = indicatorSl;
+   detail = "atomic_indicator_sl";
+   if(!g_atomicDirectRiskGeometryRuntime)
+      return (effectiveSl > 0.0);
+
+   effectiveSl = indicatorSl;
+   bool ok = _atomic_r_geometry_sl(direction, entry, selectedTp, g_atomicDirectTargetRRuntime, effectiveSl, detail);
+   if(!ok)
+      effectiveSl = 0.0;
+   return ok;
 }
 bool _direct_trigger_price_valid(string direction, double entry, double triggerPrice)
 {
@@ -1503,19 +1536,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    RefreshRates();
    int type = (dir == "BUY") ? OP_BUY : OP_SELL;
    double price = (type == OP_BUY) ? Ask : Bid;
-   string atomicGeometryDetail = "";
-   if(!sourceIsRegime && g_atomicDirectRiskGeometryRuntime)
-   {
-      double geometrySl = sl;
-      if(!_atomic_r_geometry_sl(dir, price, tp, g_atomicDirectTargetRRuntime, geometrySl, atomicGeometryDetail))
-      {
-         g_lastDirectMt4EventId = eventId;
-         Print("AtomicBridge direct_mt4 skipped reason=atomic_r_geometry_invalid event=", eventId, " dir=", dir, " detail=", atomicGeometryDetail);
-         _direct_audit_write("direct_skip_atomic_geometry", source, eventId, 0, dir, g_directMt4LotRuntime, price, sl, tp, atomicGeometryDetail, 0.0, "");
-         return false;
-      }
-      sl = geometrySl;
-   }
+   string atomicGeometryDetail = (!sourceIsRegime && g_atomicDirectRiskGeometryRuntime) ? "atomic_r_geometry_precomputed" : "";
    double stopLoss = (sl > 0.0 ? NormalizeDouble(sl, Digits) : 0.0);
    double takeProfit = (tp > 0.0 ? NormalizeDouble(tp, Digits) : 0.0);
    bool riskLockHeld = false;
@@ -1827,7 +1848,7 @@ void _regime_clear_pending_state()
 
 void _regime_validate_delayed_open_trade(bool hasRegime, string direction, int signalIndex, datetime signalTime)
 {
-   if(!g_regimeDelayValidationRuntime || g_lastRegimeDelayOpenedEventId == "")
+   if(!g_regimeDelayValidationRuntime || !g_regimeCloseIfVanishesRuntime || g_lastRegimeDelayOpenedEventId == "")
       return;
    string currentEventId = (hasRegime ? _regime_event_id(direction, signalTime) : "");
    bool stillFresh = (
@@ -2770,6 +2791,65 @@ void _find_atomic_levels(string direction, int signalIndex, double &sl, double &
    }
 }
 
+
+bool _find_atomic_levels_for_signal_time(string direction, datetime signalTime, double &entryPrice, int &signalIndex, double &sl, double &tp1, double &tp2, double &tp3, double &tp4, double &tp5, string &trendName)
+{
+   entryPrice = 0.0;
+   signalIndex = -1;
+   sl = 0.0;
+   tp1 = 0.0;
+   tp2 = 0.0;
+   tp3 = 0.0;
+   tp4 = 0.0;
+   tp5 = 0.0;
+   trendName = "";
+
+   string wantedDir = _trim(direction);
+   if((wantedDir != "BUY" && wantedDir != "SELL") || signalTime <= 0)
+      return false;
+
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, -1, -1);
+      if(_csv_name_hit(InpIgnoreNamePatterns, name))
+         continue;
+
+      string dir, kind;
+      int tpIdx, sigIdx;
+      if(!_parse_atomic_object_name(name, dir, kind, tpIdx, sigIdx))
+         continue;
+      if(dir != wantedDir || _object_time0(name) != signalTime)
+         continue;
+
+      double p = _object_price0(name);
+      if(p <= 0.0)
+         continue;
+
+      if(signalIndex < 0 && sigIdx >= 0)
+         signalIndex = sigIdx;
+      if(kind == "TREND")
+      {
+         entryPrice = p;
+         trendName = name;
+         signalIndex = sigIdx;
+      }
+      else if(kind == "SL")
+      {
+         sl = p;
+      }
+      else if(kind == "TP")
+      {
+         if(tpIdx == 0) tp1 = p;
+         if(tpIdx == 1) tp2 = p;
+         if(tpIdx == 2) tp3 = p;
+         if(tpIdx == 3) tp4 = p;
+         if(tpIdx == 4) tp5 = p;
+      }
+   }
+
+   return (entryPrice > 0.0 && signalIndex >= 0 && sl > 0.0 && tp1 > 0.0);
+}
 double _atomic_final_tp(double tp1, double tp2, double tp3, double tp4, double tp5)
 {
    if(tp5 > 0.0) return tp5;
@@ -2913,9 +2993,19 @@ bool _post_atomic_bridge_event(
    bool directFirst = (eventKind == "confirmed_signal" && _direct_priority_direct_first());
    double directTp = _select_direct_tp(tp1, tp2, tp3, tp4, tp5);
    double atomicExecutionSl = sl;
-   string atomicGeometryDetail = "indicator_sl";
-   if(g_atomicDirectRiskGeometryRuntime && (dir == "BUY" || dir == "SELL"))
-      _atomic_r_geometry_sl(dir, entryPrice, directTp, g_atomicDirectTargetRRuntime, atomicExecutionSl, atomicGeometryDetail);
+   string atomicGeometryDetail = "atomic_indicator_sl";
+   if(!_atomic_effective_sl_for_mode(dir, entryPrice, sl, directTp, atomicExecutionSl, atomicGeometryDetail))
+      atomicExecutionSl = 0.0;
+   if((dir == "BUY" || dir == "SELL") && atomicExecutionSl <= 0.0)
+   {
+      Print("AtomicBridge skipped reason=atomic_effective_sl_invalid event=", eventId,
+            " dir=", dir,
+            " mode=", (g_atomicDirectRiskGeometryRuntime ? "r_geometry" : "indicator"),
+            " detail=", atomicGeometryDetail,
+            " indicator_sl=", _fmt_price(sl),
+            " selected_tp=", _fmt_price(directTp));
+      return false;
+   }
    int halfTpIndex = MathMax(1, MathMin(5, g_directMt4HalfBeTpIndexRuntime));
    bool atomicHalfEnabled = (halfTpIndex < g_directMt4TpIndexRuntime);
    double directHalfTrigger = atomicHalfEnabled ? _direct_tp_by_index(halfTpIndex, tp1, tp2, tp3, tp4, tp5) : 0.0;
@@ -3028,6 +3118,132 @@ bool _post_atomic_bridge_event(
    return false;
 }
 
+
+bool _regime_wait_or_sync_atomic_companion(string regimeEventId, string direction, int signalIndex, datetime signalTime, double entryPrice, double regimeSl, double regimeTp, string reason)
+{
+   if(!g_atomicModeEnabledRuntime || InpRegimeAtomicCompanionSyncSeconds <= 0)
+      return false;
+   if(g_lastRegimeCompanionSyncedEventId == regimeEventId)
+      return false;
+   if(_regime_effective_delay_seconds() > 0)
+      return false;
+
+   double atomicEntry, atomicSl, tp1, tp2, tp3, tp4, tp5;
+   int atomicIndex;
+   string atomicTrend;
+   bool atomicReady = _find_atomic_levels_for_signal_time(direction, signalTime, atomicEntry, atomicIndex, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend);
+   if(atomicReady)
+   {
+      string atomicRootEventId = StringFormat("%s|%s|%d|%I64d", Symbol(), direction, atomicIndex, (long)signalTime);
+      if(atomicRootEventId != g_lastConfirmedEventId && regimeEventId != g_lastRegimeCompanionSyncedEventId)
+      {
+         double atomicCompanionTp = _select_direct_tp(tp1, tp2, tp3, tp4, tp5);
+         double atomicGeometrySl = atomicSl;
+         string atomicGeometryBuild = "atomic_indicator_sl";
+         bool atomicSlOk = _atomic_effective_sl_for_mode(direction, atomicEntry, atomicSl, atomicCompanionTp, atomicGeometrySl, atomicGeometryBuild);
+         string geometryReason = "";
+         bool geometryOk = atomicSlOk && _atomic_signal_geometry_valid(direction, atomicEntry, atomicGeometrySl, tp1, tp2, tp3, tp4, tp5, geometryReason);
+         if(geometryOk)
+         {
+            if(_post_atomic_bridge_event("resolved_state", direction, atomicIndex, signalTime, atomicEntry, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend, "regime_companion_sync"))
+               g_lastResolvedPostTime = _timer_now();
+            _post_atomic_bridge_event("confirmed_signal", direction, atomicIndex, signalTime, atomicEntry, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend, "regime_companion_sync");
+            g_lastConfirmedEventId = atomicRootEventId;
+            g_lastRegimeCompanionSyncedEventId = regimeEventId;
+            _regime_lifecycle_audit(
+               "regime_atomic_companion_synced",
+               regimeEventId,
+               direction,
+               signalIndex,
+               signalTime,
+               entryPrice,
+               regimeSl,
+               regimeTp,
+               reason,
+               g_lastRegimeCompanionSyncFirstSeen,
+               _timer_now(),
+               InpRegimeAtomicCompanionSyncSeconds,
+               (g_lastRegimeCompanionSyncFirstSeen > 0 ? (int)(_timer_now() - g_lastRegimeCompanionSyncFirstSeen) : 0),
+               "atomic_idx=" + IntegerToString(atomicIndex) + " atomic_entry=" + _fmt_price(atomicEntry) + " atomic_sl=" + _fmt_price(atomicSl) + " atomic_tp=" + _fmt_price(_select_direct_tp(tp1, tp2, tp3, tp4, tp5))
+            );
+         }
+         else
+         {
+            _regime_lifecycle_audit(
+               "regime_atomic_companion_invalid",
+               regimeEventId,
+               direction,
+               signalIndex,
+               signalTime,
+               entryPrice,
+               regimeSl,
+               regimeTp,
+               geometryReason,
+               0,
+               _timer_now(),
+               InpRegimeAtomicCompanionSyncSeconds,
+               0,
+               "atomic_idx=" + IntegerToString(atomicIndex) + " atomic_entry=" + _fmt_price(atomicEntry) + " atomic_sl=" + _fmt_price(atomicSl)
+            );
+         }
+      }
+      if(g_lastRegimeCompanionSyncEventId == regimeEventId)
+      {
+         g_lastRegimeCompanionSyncEventId = "";
+         g_lastRegimeCompanionSyncFirstSeen = 0;
+      }
+      return false;
+   }
+
+   datetime nowTs = _timer_now();
+   if(g_lastRegimeCompanionSyncEventId != regimeEventId)
+   {
+      g_lastRegimeCompanionSyncEventId = regimeEventId;
+      g_lastRegimeCompanionSyncFirstSeen = nowTs;
+      _regime_lifecycle_audit(
+         "regime_atomic_companion_wait_started",
+         regimeEventId,
+         direction,
+         signalIndex,
+         signalTime,
+         entryPrice,
+         regimeSl,
+         regimeTp,
+         reason,
+         nowTs,
+         0,
+         InpRegimeAtomicCompanionSyncSeconds,
+         0,
+         "waiting_for_atomic_objects same_bar_companion=1"
+      );
+      return true;
+   }
+
+   int age = (int)(nowTs - g_lastRegimeCompanionSyncFirstSeen);
+   if(age < InpRegimeAtomicCompanionSyncSeconds)
+      return true;
+
+   _regime_lifecycle_audit(
+      "regime_atomic_companion_wait_timeout",
+      regimeEventId,
+      direction,
+      signalIndex,
+      signalTime,
+      entryPrice,
+      regimeSl,
+      regimeTp,
+      reason,
+      g_lastRegimeCompanionSyncFirstSeen,
+      nowTs,
+      InpRegimeAtomicCompanionSyncSeconds,
+      age,
+      "atomic_objects_missing_after_sync_window proceed_regime_only=1"
+   );
+   g_lastRegimeCompanionSyncEventId = "";
+   g_lastRegimeCompanionSyncFirstSeen = 0;
+   g_lastRegimeCompanionSyncedEventId = regimeEventId;
+   return false;
+}
 double _valid_price_or_zero(double value)
 {
    if(!MathIsValidNumber(value) || value == EMPTY_VALUE || value == 2147483647.0 || value <= 0.0)
@@ -3133,7 +3349,18 @@ void _delete_regime_trade_levels()
    for(int i = total - 1; i >= 0; i--)
    {
       string obj = ObjectName(0, i, -1, -1);
-      if(StringFind(obj, REGIME_LEVEL_PREFIX) == 0)
+      if(StringFind(obj, REGIME_LEVEL_PREFIX) == 0 || StringFind(obj, ATOMIC_LEVEL_PREFIX) == 0)
+         ObjectDelete(0, obj);
+   }
+}
+
+void _delete_atomic_trade_levels()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string obj = ObjectName(0, i, -1, -1);
+      if(StringFind(obj, ATOMIC_LEVEL_PREFIX) == 0)
          ObjectDelete(0, obj);
    }
 }
@@ -3161,6 +3388,111 @@ void _cleanup_stale_regime_trade_levels(string activeTickets)
    }
 }
 
+bool _atomic_level_ticket_is_active(string obj, string activeTickets)
+{
+   if(StringFind(obj, ATOMIC_LEVEL_PREFIX) != 0)
+      return true;
+   int start = StringLen(ATOMIC_LEVEL_PREFIX);
+   int sep = StringFind(obj, "_", start);
+   if(sep <= start)
+      return false;
+   string ticket = StringSubstr(obj, start, sep - start);
+   return StringFind(activeTickets, "|" + ticket + "|") >= 0;
+}
+
+void _cleanup_stale_atomic_trade_levels(string activeTickets)
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string obj = ObjectName(0, i, -1, -1);
+      if(StringFind(obj, ATOMIC_LEVEL_PREFIX) == 0 && !_atomic_level_ticket_is_active(obj, activeTickets))
+         ObjectDelete(0, obj);
+   }
+}
+
+int _level_label_slot(string kind)
+{
+   string k = _lower_copy(kind);
+   if(StringFind(k, "entry") >= 0) return 0;
+   if(StringFind(k, "sl") >= 0) return 2;
+   if(StringFind(k, "hc") >= 0 || StringFind(k, "be") >= 0) return 4;
+   if(StringFind(k, "tp") >= 0) return 6;
+   return 8;
+}
+
+void _draw_atomic_level_line(string key, string kind, double price, string direction, color clr, int style, int width)
+{
+   if(price <= 0.0 || !MathIsValidNumber(price))
+      return;
+   string base = ATOMIC_LEVEL_PREFIX + key + "_" + kind;
+   if(ObjectFind(0, base) < 0)
+      ObjectCreate(0, base, OBJ_HLINE, 0, 0, price);
+   ObjectSetDouble(0, base, OBJPROP_PRICE1, NormalizeDouble(price, Digits));
+   ObjectSetInteger(0, base, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, base, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, base, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, base, OBJPROP_BACK, false);
+   ObjectSetInteger(0, base, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, base, OBJPROP_HIDDEN, true);
+
+   string label = base + "_TXT";
+   int secondsPerBar = MathMax(60, Period() * 60);
+   int labelSlot = _level_label_slot(kind);
+   datetime labelTime = Time[0] + secondsPerBar * (MathMax(1, InpAtomicRegimeTradeLevelLabelBars - 5) + labelSlot);
+   if(ObjectFind(0, label) < 0)
+      ObjectCreate(0, label, OBJ_TEXT, 0, labelTime, price);
+   else
+      ObjectMove(0, label, 0, labelTime, price);
+   ObjectSetString(0, label, OBJPROP_TEXT, "Atomic " + direction + " " + kind + " " + _fmt_price(price));
+   ObjectSetInteger(0, label, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, label, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, label, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, label, OBJPROP_BACK, false);
+   ObjectSetInteger(0, label, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, label, OBJPROP_HIDDEN, true);
+}
+
+void _draw_atomic_trade_levels_when_regime_off()
+{
+   string activeTickets = "|";
+   if(g_atomicModeEnabledRuntime && g_latestAtomicLevelEntry > 0.0 && g_latestAtomicLevelSl > 0.0 && g_latestAtomicLevelTp > 0.0)
+   {
+      activeTickets += "SIGNAL|";
+      string sigDir = (g_latestAtomicLevelDirection == "SELL" ? "SELL" : "BUY");
+      _draw_atomic_level_line("SIGNAL", "ENTRY_" + g_latestAtomicLevelMode, g_latestAtomicLevelEntry, sigDir, C'90,178,255', STYLE_DOT, 1);
+      _draw_atomic_level_line("SIGNAL", "SL_" + g_latestAtomicLevelMode, g_latestAtomicLevelSl, sigDir, C'255,70,90', STYLE_DOT, 2);
+      _draw_atomic_level_line("SIGNAL", "TP", g_latestAtomicLevelTp, sigDir, C'39,220,124', STYLE_DOT, 2);
+      if(_direct_trigger_price_valid(sigDir, g_latestAtomicLevelEntry, g_latestAtomicLevelHalf))
+         _draw_atomic_level_line("SIGNAL", "HC_BE", g_latestAtomicLevelHalf, sigDir, C'255,174,66', STYLE_DASH, 2);
+   }
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || !_direct_magic_owned(OrderMagicNumber()))
+         continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
+         continue;
+      if(_contains_ci(OrderComment(), "AtomicRegime"))
+         continue;
+
+      string key = IntegerToString(OrderTicket());
+      string direction = (OrderType() == OP_BUY ? "BUY" : "SELL");
+      activeTickets += key + "|";
+      _draw_atomic_level_line(key, "ENTRY", OrderOpenPrice(), direction, C'90,178,255', STYLE_SOLID, 1);
+      _draw_atomic_level_line(key, "SL", OrderStopLoss(), direction, C'255,70,90', STYLE_SOLID, 2);
+      _draw_atomic_level_line(key, "TP", OrderTakeProfit(), direction, C'39,220,124', STYLE_SOLID, 2);
+      double halfTrigger = _direct_get_half_trigger_price(OrderTicket());
+      if(_direct_trigger_price_valid(direction, OrderOpenPrice(), halfTrigger))
+         _draw_atomic_level_line(key, "HC_BE", halfTrigger, direction, C'255,174,66', STYLE_DASH, 2);
+   }
+   _cleanup_stale_atomic_trade_levels(activeTickets);
+}
+
 void _draw_regime_level_line(int ticket, string kind, double price, string direction, color clr, int style, int width)
 {
    if(price <= 0.0 || !MathIsValidNumber(price))
@@ -3178,7 +3510,8 @@ void _draw_regime_level_line(int ticket, string kind, double price, string direc
 
    string label = base + "_TXT";
    int secondsPerBar = MathMax(60, Period() * 60);
-   datetime labelTime = Time[0] + secondsPerBar * MathMax(1, InpAtomicRegimeTradeLevelLabelBars);
+   int labelSlot = _level_label_slot(kind) + 10 + (ticket > 0 ? ((ticket % 4) * 2) : 0);
+   datetime labelTime = Time[0] + secondsPerBar * (MathMax(1, InpAtomicRegimeTradeLevelLabelBars - 5) + labelSlot);
    if(ObjectFind(0, label) < 0)
       ObjectCreate(0, label, OBJ_TEXT, 0, labelTime, price);
    else
@@ -3192,6 +3525,24 @@ void _draw_regime_level_line(int ticket, string kind, double price, string direc
    ObjectSetInteger(0, label, OBJPROP_HIDDEN, true);
 }
 
+bool _has_open_regime_trade_for_chart()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol() || !_direct_magic_owned(OrderMagicNumber()))
+         continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+      if(!_direct_order_owned_by_instance(OrderTicket(), OrderComment(), true))
+         continue;
+      if(_contains_ci(OrderComment(), "AtomicRegime"))
+         return true;
+   }
+   return false;
+}
+
 void _draw_atomic_regime_trade_levels()
 {
    if(!InpShowAtomicRegimeTradeLevels)
@@ -3199,7 +3550,22 @@ void _draw_atomic_regime_trade_levels()
       _delete_regime_trade_levels();
       return;
    }
+   _draw_atomic_trade_levels_when_regime_off();
    string activeTickets = "|";
+   bool hasOpenRegimeTrade = _has_open_regime_trade_for_chart();
+   if(!g_atomicRegimeModeEnabledRuntime)
+   {
+      _cleanup_stale_regime_trade_levels(activeTickets);
+      return;
+   }
+      if(!hasOpenRegimeTrade && InpShowLatestAtomicRegimeSignalLevels && g_latestRegimeLevelEntry > 0.0 && g_latestRegimeLevelSl > 0.0 && g_latestRegimeLevelTp > 0.0)
+      {
+         activeTickets += "0|";
+         string sigDir = (g_latestRegimeLevelDirection == "SELL" ? "SELL" : "BUY");
+         _draw_regime_level_line(0, "SIGNAL_ENTRY", g_latestRegimeLevelEntry, sigDir, C'90,178,255', STYLE_DOT, 1);
+         _draw_regime_level_line(0, "SIGNAL_SL", g_latestRegimeLevelSl, sigDir, C'255,70,90', STYLE_DOT, 2);
+         _draw_regime_level_line(0, "SIGNAL_TP", g_latestRegimeLevelTp, sigDir, C'39,220,124', STYLE_DOT, 2);
+      }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -3593,7 +3959,7 @@ void _apply_dashboard()
       g_regimeConfirmDelaySecondsRuntime = MathMax(-1, StrToInteger(ObjectGetString(0, obj, OBJPROP_TEXT)));
    obj = DASH_PREFIX + "EDIT_REGIME_SCALE";
    if(ObjectFind(0, obj) >= 0)
-      g_regimeFinalRiskScalePctRuntime = MathMax(10.0, MathMin(200.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT))));
+      g_regimeFinalRiskScalePctRuntime = MathMax(1.0, MathMin(200.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT))));
    Print("AtomicBridge dashboard applied direct=", (g_directMt4EnabledRuntime ? "true" : "false"),
          " protrade_post=", (g_proTradePostEnabledRuntime ? "true" : "false"),
          " priority=", (g_directMt4PriorityDirectFirst ? "direct_first" : "post_first"),
@@ -3922,6 +4288,7 @@ double _regime_atr_for_signal(datetime signalTime)
    return MathMax(Point * 20.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point);
 }
 
+
 void _compute_regime_levels(string direction, datetime signalTime, double entryPrice, double &sl, double &tp)
 {
    sl = 0.0;
@@ -3985,7 +4352,6 @@ void _compute_regime_levels(string direction, datetime signalTime, double entryP
       tp = NormalizeDouble(entry - (risk * rr), Digits);
    }
 }
-
 bool _regime_apply_atomic_sl_clamp(string direction, double entryPrice, double atomicEntry, double atomicSl, double &regimeSl, double &regimeTp, string &clampReason)
 {
    clampReason = "";
@@ -4053,7 +4419,7 @@ bool _regime_apply_final_risk_scale(string direction, double entryPrice, double 
    if((dir != "BUY" && dir != "SELL") || entry <= 0.0 || regimeSl <= 0.0 || regimeTp <= 0.0)
       return false;
 
-   double pct = MathMax(10.0, MathMin(200.0, g_regimeFinalRiskScalePctRuntime));
+   double pct = MathMax(1.0, MathMin(200.0, g_regimeFinalRiskScalePctRuntime));
    if(MathAbs(pct - 100.0) < 0.0001)
       return false;
 
@@ -4081,7 +4447,6 @@ bool _regime_apply_final_risk_scale(string direction, double entryPrice, double 
       + " new_tp=" + _fmt_price(regimeTp);
    return true;
 }
-
 bool _post_atomic_regime_event(
    string eventType,
    string direction,
@@ -4185,7 +4550,7 @@ bool _post_atomic_regime_event(
       "\"atomic_regime_max_risk_money_per_lot\":" + DoubleToString(MathMax(0.0, InpRegimeMaxRiskMoneyPerLot), 2) + ","
       "\"atomic_regime_sl_widen_enabled\":" + (InpRegimeSlWidenEnabled ? "true" : "false") + ","
       "\"atomic_regime_sl_widen_pct\":" + DoubleToString(MathMax(0.0, InpRegimeSlWidenPct), 2) + ","
-      "\"atomic_regime_final_risk_scale_pct\":" + DoubleToString(MathMax(10.0, MathMin(200.0, g_regimeFinalRiskScalePctRuntime)), 2) + ","
+      "\"atomic_regime_final_risk_scale_pct\":" + DoubleToString(MathMax(1.0, MathMin(200.0, g_regimeFinalRiskScalePctRuntime)), 2) + ","
       "\"message\":\"" + _json_escape(msg) + "\"," 
       "\"atomic_signal_index\":" + IntegerToString(signalIndex) + "," 
       "\"atomic_trend_object\":\"" + _json_escape(trendName) + "\"," 
@@ -4249,6 +4614,11 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    string scaleReason = "";
    if(_regime_apply_final_risk_scale(direction, entryPrice, regimeSl, regimeTp, scaleReason))
       trendName = trendName + "|" + scaleReason;
+   g_latestRegimeLevelDirection = _trim(direction);
+   g_latestRegimeLevelEntry = entryPrice;
+   g_latestRegimeLevelSl = regimeSl;
+   g_latestRegimeLevelTp = regimeTp;
+   g_latestRegimeLevelSignalTime = signalTime;
 
    // Shift is not a stable identity during delayed confirmation: a fresh shift=1
    // signal naturally becomes shift=2/3/... while the 300s timer is running.
@@ -4297,6 +4667,9 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       );
       g_lastRegimeLifecycleSignalEventId = regimeEventId;
    }
+
+   if(_regime_wait_or_sync_atomic_companion(regimeEventId, direction, signalIndex, signalTime, entryPrice, regimeSl, regimeTp, reason))
+      return;
 
    datetime nowPending = _timer_now();
    int pendingStableSeconds = _regime_effective_delay_seconds();
@@ -4578,12 +4951,25 @@ void ScanAndLogLatest(string reason)
 
    string eventId = StringFormat("%s|%s|%d|%I64d", Symbol(), direction, signalIndex, (long)signalTime);
    bool firstObservation = (StringLen(g_lastEventId) <= 0 || g_lastSignalTime <= 0);
+   double latestAtomicTp = _select_direct_tp(tp1, tp2, tp3, tp4, tp5);
    double atomicGeometrySl = sl;
-   string atomicGeometryBuild = "indicator_sl";
-   if(g_atomicDirectRiskGeometryRuntime)
-      _atomic_r_geometry_sl(direction, entryPrice, _select_direct_tp(tp1, tp2, tp3, tp4, tp5), g_atomicDirectTargetRRuntime, atomicGeometrySl, atomicGeometryBuild);
+   string atomicGeometryBuild = "atomic_indicator_sl";
+   bool atomicSlOk = _atomic_effective_sl_for_mode(direction, entryPrice, sl, latestAtomicTp, atomicGeometrySl, atomicGeometryBuild);
    string geometryReason = "";
-   bool geometryOk = _atomic_signal_geometry_valid(direction, entryPrice, atomicGeometrySl, tp1, tp2, tp3, tp4, tp5, geometryReason);
+   bool geometryOk = atomicSlOk && _atomic_signal_geometry_valid(direction, entryPrice, atomicGeometrySl, tp1, tp2, tp3, tp4, tp5, geometryReason);
+   int latestHalfTpIndex = MathMax(1, MathMin(5, g_directMt4HalfBeTpIndexRuntime));
+   bool latestAtomicHalfEnabled = (latestHalfTpIndex < g_directMt4TpIndexRuntime);
+   double latestAtomicHalf = latestAtomicHalfEnabled ? _direct_tp_by_index(latestHalfTpIndex, tp1, tp2, tp3, tp4, tp5) : 0.0;
+   if(StringLen(direction) > 0 && entryPrice > 0.0 && atomicGeometrySl > 0.0 && latestAtomicTp > 0.0)
+   {
+      g_latestAtomicLevelDirection = direction;
+      g_latestAtomicLevelEntry = entryPrice;
+      g_latestAtomicLevelSl = atomicGeometrySl;
+      g_latestAtomicLevelTp = latestAtomicTp;
+      g_latestAtomicLevelHalf = latestAtomicHalf;
+      g_latestAtomicLevelSignalTime = signalTime;
+      g_latestAtomicLevelMode = (g_atomicDirectRiskGeometryRuntime ? "RGEOM" : "INDIC");
+   }
    if(InpLogOnlyOnChange && eventId == g_lastEventId)
    {
       if(g_atomicModeEnabledRuntime && StringLen(direction) > 0 && atomicGeometrySl > 0.0 && tp1 > 0.0 && geometryOk && _heartbeat_due(g_lastResolvedPostTime))
@@ -4705,9 +5091,10 @@ int OnInit()
    g_directMt4HalfBeTpIndexRuntime = MathMax(1, MathMin(5, InpDirectMt4HalfBeTpIndex));
    g_regimeDirectMt4HalfBeRRuntime = MathMax(0.0, InpRegimeDirectMt4HalfBeR);
    g_regimeRRRuntime = MathMax(0.1, InpRegimeRR);
-   g_regimeFinalRiskScalePctRuntime = MathMax(10.0, MathMin(200.0, InpRegimeFinalRiskScalePct));
+   g_regimeFinalRiskScalePctRuntime = MathMax(1.0, MathMin(200.0, InpRegimeFinalRiskScalePct));
    g_regimeUseClosedBarRuntime = InpRegimeUseClosedBar;
    g_regimeDelayValidationRuntime = InpRegimeDelayValidationMode;
+   g_regimeCloseIfVanishesRuntime = InpRegimeCloseIfSignalVanishesAfterOpen;
    g_regimeConfirmDelaySecondsRuntime = MathMax(-1, InpRegimeConfirmDelaySeconds);
    g_regimeOpenPreWindowSignalRuntime = InpRegimeOpenPreWindowSignal;
    g_directMt4AllowedWindowsRuntime = _trim(InpDirectMt4AllowedTradeWindowsGmt);
@@ -4729,7 +5116,7 @@ int OnInit()
       " upSignal=", InpRegimeUpTrendSignalBuffer,
       " dnSignal=", InpRegimeDnTrendSignalBuffer,
       " stopFallback=", (InpRegimeUseTrendStopBuffers ? "true" : "false"),
-      " regimeExecMode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"),
+      " regimeExecMode=" + (g_regimeDelayValidationRuntime ? "delay_validate" : "direct") + " closeIfVanish=" + (g_regimeCloseIfVanishesRuntime ? "true" : "false"),
       " confirmDelaySec=", g_regimeConfirmDelaySecondsRuntime,
       " stableSec=", InpRegimeConfirmStableSeconds,
       " maxConfirmShift=", InpRegimeMaxConfirmShift,
@@ -4914,7 +5301,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       g_lastRegimeDelayOpenedEventId = "";
       g_lastRegimeDelayOpenedDirection = "";
       g_lastRegimeDelayOpenedSignalTime = 0;
-      Print("AtomicBridge dashboard AtomicRegime execution mode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"));
+      Print("AtomicBridge dashboard AtomicRegime execution mode=", (g_regimeDelayValidationRuntime ? "delay_validate" : "direct"), " close_if_vanish=", (g_regimeCloseIfVanishesRuntime ? "true" : "false"));
       _draw_dashboard();
       ChartRedraw(0);
    }

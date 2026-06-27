@@ -7,7 +7,7 @@
 #property strict
 #property version "3.21"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-19.v4.8-imbalance-m1-entry"
+#define ORB15_BUILD "2026-06-27.v5.0-fixed-tp-controls"
 
 enum ORB_SESSION_PROFILE
 {
@@ -92,7 +92,7 @@ input bool   InpUseAtrRangeFilter   = true;
 input int    InpAtrPeriod           = 14;
 input double InpMinRangeAtrPct      = 15.0;
 input double InpMaxRangeAtrPct      = 80.0;
-input bool   InpUseVolumeFilter     = true;
+input bool   InpUseVolumeFilter     = false;
 input double InpVolumeMultiplier    = 1.0;
 input bool   InpUseDisplacementFilter = false;
 input ORB_FVG_MODE InpFvgMode       = ORB_FVG_OFF;
@@ -504,8 +504,9 @@ string ExitDebugConfig()
    return RuntimeExitLabel()+" "+RuntimeTargetModeLabel()+" startLeg="+IntegerToString(g_rtExitTrailStartLeg)+" atrX="+DoubleToString(g_rtExitAtrMultiplier,1)+" ema="+IntegerToString(g_rtExitEmaPeriod);
 }
 void SetTargetLeg(int leg){g_rtTargetLeg=ClampTargetLeg(leg);g_rtHalfBeLeg=ClampHalfBeLeg(g_rtHalfBeLeg,g_rtTargetLeg);}
-void CycleTargetLeg(){SetTargetLeg(RuntimeTargetLeg()>=6?1:RuntimeTargetLeg()+1);}
-void CycleHalfBeLeg(){int target=RuntimeTargetLeg();if(target<=1){g_rtHalfBeLeg=0;return;}int h=RuntimeHalfBeLeg()+1;if(h>=target)h=0;g_rtHalfBeLeg=h;}
+void ForceFixedRLegTarget(){g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtTargetMode=ORB_TARGET_R_LEG;}
+void CycleTargetLeg(){ForceFixedRLegTarget();SetTargetLeg(RuntimeTargetLeg()>=6?1:RuntimeTargetLeg()+1);}
+void CycleHalfBeLeg(){ForceFixedRLegTarget();int target=RuntimeTargetLeg();if(target<=1){g_rtHalfBeLeg=0;return;}int h=RuntimeHalfBeLeg()+1;if(h>=target)h=0;g_rtHalfBeLeg=h;}
 int ClampHistWeeks(int weeks){if(weeks<=2)return 2;if(weeks<=5)return 5;if(weeks<=10)return 10;return 20;}
 void SetHistoricalWeeks(int weeks)
 {
@@ -1448,7 +1449,7 @@ bool HasDisplacementRates(const MqlRates &rates[],int idx,string dir)
    return body>=threshold && oppWick<=body*MathMax(0.0,InpMaxOpposingWickRatio);
 }
 
-bool FindFreshFvgRates(const MqlRates &rates[],int signalIdx,string dir,double &top,double &bottom,double &size,datetime &fvgTime)
+bool FindFreshFvgRates(const MqlRates &rates[],int signalIdx,string dir,int maxForwardBars,double &top,double &bottom,double &size,datetime &fvgTime)
 {
    top=0.0;bottom=0.0;size=0.0;fvgTime=0;
    int total=ArraySize(rates);
@@ -1456,7 +1457,8 @@ bool FindFreshFvgRates(const MqlRates &rates[],int signalIdx,string dir,double &
    int scan=MathMin(MathMax(3,InpFvgScanWindow),MathMax(3,InpFvgLookback));
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.00001;
    double minGap=MathMax(0.0,InpMinFvgGapPoints)*pt;
-   int scanStart=MathMin(total-1,signalIdx+MathMax(0,InpFvgForwardBars));
+   int safeForward=MathMax(0,maxForwardBars);
+   int scanStart=MathMin(total-1,signalIdx+safeForward);
    int minC3=MathMax(2,signalIdx-scan+1);
    for(int c3=scanStart;c3>=minC3;c3--)
    {
@@ -1519,8 +1521,10 @@ bool AnalyzeModernSetup(datetime from,datetime to,ENUM_TIMEFRAMES tf,datetime si
    if(idx<0||idx>=c){detail="modern_signal_not_found";return false;}
    hasDisp=HasDisplacementRates(rates,idx,dir);
    double top,bottom,size;datetime ft;
-   hasFvg=FindFreshFvgRates(rates,idx,dir,top,bottom,size,ft);
-   detail="disp="+(hasDisp?"1":"0")+" fvg="+(hasFvg?"1":"0")+" idx="+IntegerToString(idx)+" bars="+IntegerToString(c)+" fw="+IntegerToString(InpFvgForwardBars);
+   // FVG filter must be knowable at the signal bar. Forward bars are only valid for explicit wait-entry modes, not for historical filter scoring.
+   int fvgForwardUsed=0;
+   hasFvg=FindFreshFvgRates(rates,idx,dir,fvgForwardUsed,top,bottom,size,ft);
+   detail="disp="+(hasDisp?"1":"0")+" fvg="+(hasFvg?"1":"0")+" idx="+IntegerToString(idx)+" bars="+IntegerToString(c)+" fw_used="+IntegerToString(fvgForwardUsed)+" fw_input="+IntegerToString(InpFvgForwardBars);
    if(hasFvg)detail+=" fvg_top="+DoubleToString(top,_Digits)+" fvg_bottom="+DoubleToString(bottom,_Digits)+" fvg_size="+DoubleToString(size,_Digits)+" fvg_time="+FmtTime(ft);
    return true;
 }
@@ -2542,12 +2546,12 @@ void UpdateDashboard()
    CreateButton("BTN_TF",x+80,r2y,60,18,"TF:"+TfLabel(g_rtSignalTf),C'38,101,176');
    CreateButton("BTN_DELAY",x+144,r2y,80,18,g_rtUseDelay?"DLY:"+IntegerToString(g_rtDelayMin)+"m":"DLY:OFF",g_rtUseDelay?C'30,120,70':C'80,80,80');
    CreateButton("BTN_HC",x+228,r2y,70,18,HalfBeLabel(),RuntimeHalfBeLeg()>0?C'30,120,70':C'80,80,80');
-   CreateButton("BTN_TP",x+302,r2y,70,18,TargetLabel(),C'38,101,176');
-   CreateButton("BTN_TMODE",x+376,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
+   CreateButton("BTN_TP",x+302,r2y,82,18,"FIX "+TargetLabel(),C'38,101,176');
+   CreateButton("BTN_TMODE",x+388,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
 
-   CreateButton("BTN_EA",x+456,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
-   CreateButton("BTN_FTMO",x+514,r2y,52,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
-   CreateButton("BTN_RISKLOT",x+570,r2y,48,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
+   CreateButton("BTN_FTMO",x+526,r2y,46,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_EXIT",x+326,y+452,94,18,RuntimeExitLabel(),g_rtExitMode==ORB_EXIT_FIXED_TARGET?C'80,80,80':C'38,101,176');
    CreateButton("BTN_CLOSEALL",x+326,y+475,86,18,"CLOSE ALL",C'178,37,57');
 
@@ -2759,11 +2763,40 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    if(bt<=0||bt==g_lastSignalBarTime)return false;
    if(InpUseClosedBarBreakout&&bt==g_lastCheckedSignalBarTime)return false;
    if(BarCloseTime(g_rtSignalTf, bt)<effectiveStart)return false; // signal is only known after bar close
-   if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
    sc=iClose(_Symbol,g_rtSignalTf,sh);if(sc<=0)return false;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
    if(sc>g_orbHigh+mb)dir="BUY";else if(sc<g_orbLow-mb)dir="SELL";
-   return dir!="";
+   if(dir=="")
+   {
+      if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+      return false;
+   }
+
+   // Match historical confirmation semantics: the current closed bar is the confirm bar,
+   // and the previous N-1 closed bars must already be beyond the same ORB side.
+   int confirms=MathMax(1,InpConfirmBars);
+   for(int k=sh;k<sh+confirms;k++)
+   {
+      double cc=iClose(_Symbol,g_rtSignalTf,k);
+      datetime kt=iTime(_Symbol,g_rtSignalTf,k);
+      if(cc<=0||kt<=0||BarCloseTime(g_rtSignalTf,kt)<effectiveStart)
+      {
+         if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+         return false;
+      }
+      if(dir=="BUY" && cc<=g_orbHigh+mb)
+      {
+         if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+         return false;
+      }
+      if(dir=="SELL" && cc>=g_orbLow-mb)
+      {
+         if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+         return false;
+      }
+   }
+   if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+   return true;
 }
 
 //=========================================================================
@@ -3352,9 +3385,9 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_XSTART"){CycleExitTrailStart();needRedraw=true;}
    else if(sparam==PREFIX+"BTN_XPARAM"){if(g_rtExitMode==ORB_EXIT_EMA_STOP)CycleExitEmaPeriod();else CycleExitAtrMultiplier();needRedraw=true;}
    else if(sparam==PREFIX+"BTN_BE"){g_rtBEOnTp1=!g_rtBEOnTp1;needRedraw=true;}
-   else if(sparam==PREFIX+"BTN_TP"){CycleTargetLeg();needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_TP"){CycleTargetLeg();g_lastExecStatus="FIXED_TP_"+TargetLabel();needRedraw=true;}
    else if(sparam==PREFIX+"BTN_TMODE"){CycleTargetMode();needRedraw=true;}
-   else if(sparam==PREFIX+"BTN_HC"){CycleHalfBeLeg();needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_HC"){CycleHalfBeLeg();g_lastExecStatus="FIXED_HC_"+HalfBeLabel();needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_2W"){SetHistoricalWeeks(2);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_5W"){SetHistoricalWeeks(5);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_10W"){SetHistoricalWeeks(10);needRedraw=true;}
@@ -3447,3 +3480,5 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
 }
 //+------------------------------------------------------------------+
+
+

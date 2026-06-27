@@ -2381,6 +2381,43 @@ void DrawHistoricalSignals(bool resetObjects = true)
    }
 }
 
+
+void DrawLivePositionMarker(ulong ticket, datetime t, double open, double sl, double tp, int dir)
+{
+   if(IsTesterMode()) return;
+   double risk = (sl > 0.0 ? MathAbs(open - sl) : TickSize() * 80.0);
+   double arrowPrice = SignalArrowPrice(t, dir, open, risk);
+   double pad = MathMax(MathMax(risk, TickSize() * 30.0) * 0.25, TickSize() * 35.0);
+   color clr = dir > 0 ? C'60,220,140' : C'255,80,110';
+   string id = IntegerToString((int)ticket);
+   string arrowName = PFX + "LV_ARROW_" + id;
+   if(ObjectFind(0, arrowName) < 0)
+      ObjectCreate(0, arrowName, OBJ_ARROW, 0, t, arrowPrice);
+   ObjectSetInteger(0, arrowName, OBJPROP_TIME, t);
+   ObjectSetDouble(0, arrowName, OBJPROP_PRICE, arrowPrice);
+   ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, dir > 0 ? 233 : 234);
+   ObjectSetInteger(0, arrowName, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 3);
+   ObjectSetInteger(0, arrowName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, arrowName, OBJPROP_ZORDER, DASH_Z + 2);
+
+   string txtName = PFX + "LV_TXT_" + id;
+   double txtPrice = dir > 0 ? arrowPrice - pad : arrowPrice + pad;
+   if(ObjectFind(0, txtName) < 0)
+      ObjectCreate(0, txtName, OBJ_TEXT, 0, t, txtPrice);
+   ObjectSetInteger(0, txtName, OBJPROP_TIME, t);
+   ObjectSetDouble(0, txtName, OBJPROP_PRICE, txtPrice);
+   string txt = "LIVE " + DirLabel(dir) + " #" + id + "\nEntry " + DoubleToString(open, _Digits);
+   if(sl > 0.0) txt += "\nSL " + DoubleToString(sl, _Digits);
+   if(tp > 0.0) txt += "\nTP " + DoubleToString(tp, _Digits);
+   ObjectSetString(0, txtName, OBJPROP_TEXT, txt);
+   ObjectSetInteger(0, txtName, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, txtName, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, txtName, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, txtName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, txtName, OBJPROP_ZORDER, DASH_Z + 2);
+}
+
 void DrawLiveLevelsForPosition()
 {
    DeleteByPrefix(PFX + "LV_");
@@ -2398,6 +2435,9 @@ void DrawLiveLevelsForPosition()
       DrawHLine("LV_ENTRY_" + IntegerToString((int)ticket), open, C'90,178,255', STYLE_SOLID);
       if(sl > 0) DrawHLine("LV_SL_" + IntegerToString((int)ticket), sl, C'255,80,110', STYLE_DASH);
       if(tp > 0) DrawHLine("LV_TP_" + IntegerToString((int)ticket), tp, C'80,255,180', STYLE_DASH);
+      datetime openedAt = (datetime)PositionGetInteger(POSITION_TIME);
+      int dir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
+      DrawLivePositionMarker(ticket, openedAt, open, sl, tp, dir);
    }
 }
 
