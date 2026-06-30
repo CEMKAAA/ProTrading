@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-06-27.atomic-companion-sync-off"
+#define ATOMIC_BRIDGE_BUILD "2026-06-30.file-bridge-init-marker-ansi"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -31,6 +31,10 @@ input string InpApiPath = "/api/v1/mt4/bridge/signal";
 input string InpBridgeToken = "";
 input string InpSignalProfile = "atomic";
 input int    InpHttpTimeoutMs = 5000;
+input bool   InpFileBridgeMt5Enabled = false; // Writes confirmed Atomic/AtomicRegime signals to Terminal Common\Files for MT5 execution.
+input string InpFileBridgeLatestFile = "AtomicFileBridge_Latest.csv";
+input string InpFileBridgeAuditPrefix = "AtomicFileBridge_Audit_";
+input bool   InpFileBridgeUseCommonFiles = true;
 input bool   InpDirectMt4ExecutionEnabled = true;
 input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
 input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizing is unavailable.
@@ -76,6 +80,8 @@ input int    InpRegimeSignalProbeMaxShift = 20;
 input bool   InpShowAtomicRegimeTradeLevels = true;
 input bool   InpShowLatestAtomicRegimeSignalLevels = true;
 input int    InpAtomicRegimeTradeLevelLabelBars = 8;
+input int    InpAtomicRegimeHistoricalLevelBars = 10; // Historical Regime entry/SL/TP/HCBE segments length in chart bars.
+input int    InpAtomicRegimeHistoricalMaxSignals = 80; // Caps visual overlay cost; signal math is untouched.
 input bool   InpEnableRegimeChangePost = true;
 input bool   InpSendInitialRegimeConfirmedOnStart = false;
 input string InpRegimeSignalProfile = "atomic_regime";
@@ -198,9 +204,11 @@ datetime g_directMt4LastPositionProbe = 0;
 string   g_directMt4LastPositionProbeHash = "";
 datetime g_lastRegimeSignalProbe = 0;
 string   g_lastRegimeSignalProbeHash = "";
+string   g_regimeHistoryLevelsHash = "";
 datetime g_lastTickLocal = 0;
 string   DASH_PREFIX = "ATOMIC_BRIDGE_DASH_";
 string   REGIME_LEVEL_PREFIX = "ATOMIC_REGIME_TRADE_LEVEL_";
+string   REGIME_HIST_LEVEL_PREFIX = "ATOMIC_REGIME_HIST_LEVEL_";
 string   ATOMIC_LEVEL_PREFIX = "ATOMIC_SIGNAL_LEVEL_";
 uint     g_lastAccountRiskGuardMs = 0;
 double   g_accountRiskLockValue = 0.0;
@@ -1475,6 +1483,115 @@ double _direct_resolve_order_lot(double entry, double sl, int orderType, bool re
    return finalLot;
 }
 
+string _file_bridge_time(datetime t)
+{
+   return (t > 0 ? TimeToString(t, TIME_DATE | TIME_SECONDS) : "");
+}
+
+int _file_bridge_flags(int baseFlags)
+{
+   baseFlags |= FILE_ANSI;
+   if(InpFileBridgeUseCommonFiles)
+      baseFlags |= FILE_COMMON;
+   return baseFlags;
+}
+
+void _file_bridge_write_header(int h)
+{
+   FileWrite(h,
+      "version", "written_gmt", "source_login", "source_symbol", "source_tf", "event_id", "source", "direction",
+      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask"
+   );
+}
+
+void _file_bridge_write_row(int h, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   RefreshRates();
+   FileWrite(h,
+      "1",
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      IntegerToString(AccountNumber()),
+      Symbol(),
+      _tf_to_string(Period()),
+      eventId,
+      source,
+      dir,
+      _file_bridge_time(sourceSignalTime),
+      DoubleToString(bridgeEntry, Digits),
+      DoubleToString(sl, Digits),
+      DoubleToString(tp, Digits),
+      DoubleToString(halfTriggerPrice, Digits),
+      halfTriggerLabel,
+      ATOMIC_BRIDGE_BUILD,
+      DoubleToString(Bid, Digits),
+      DoubleToString(Ask, Digits)
+   );
+}
+
+void _file_bridge_write_init_marker()
+{
+   if(!InpFileBridgeMt5Enabled)
+      return;
+   RefreshRates();
+   string eventId = "bridge_init|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
+   int latestFlags = _file_bridge_flags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("AtomicBridge file_bridge init latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
+      return;
+   }
+   _file_bridge_write_header(h);
+   _file_bridge_write_row(h, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   FileClose(h);
+
+   string auditFile = InpFileBridgeAuditPrefix + _direct_audit_date(TimeGMT()) + ".csv";
+   int auditFlags = _file_bridge_flags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a == INVALID_HANDLE)
+   {
+      Print("AtomicBridge file_bridge init audit open failed err=", GetLastError(), " file=", auditFile);
+      return;
+   }
+   bool needHeader = (FileSize(a) == 0);
+   FileSeek(a, 0, SEEK_END);
+   if(needHeader)
+      _file_bridge_write_header(a);
+   _file_bridge_write_row(a, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   FileClose(a);
+   Print("AtomicBridge file_bridge init marker wrote event=", eventId, " file=", InpFileBridgeLatestFile);
+}
+void _file_bridge_write_signal(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   if(!InpFileBridgeMt5Enabled)
+      return;
+   int latestFlags = _file_bridge_flags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("AtomicBridge file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
+      return;
+   }
+   _file_bridge_write_header(h);
+   _file_bridge_write_row(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   FileClose(h);
+
+   string auditFile = InpFileBridgeAuditPrefix + _direct_audit_date(TimeGMT()) + ".csv";
+   int auditFlags = _file_bridge_flags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a == INVALID_HANDLE)
+   {
+      Print("AtomicBridge file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
+      return;
+   }
+   bool needHeader = (FileSize(a) == 0);
+   FileSeek(a, 0, SEEK_END);
+   if(needHeader)
+      _file_bridge_write_header(a);
+   _file_bridge_write_row(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   FileClose(a);
+   Print("AtomicBridge file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+}
 bool _direct_mt4_execute(string eventId, string direction, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
    string dir = _trim(direction);
@@ -1484,6 +1601,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       return true;
    RefreshRates();
    double signalPx = (dir == "BUY") ? Ask : Bid;
+   _file_bridge_write_signal(eventId, dir, signalPx, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
    bool sourceIsRegime = _contains_ci(source, "AtomicRegime");
    if(!g_directMt4EnabledRuntime)
    {
@@ -3525,6 +3643,174 @@ void _draw_regime_level_line(int ticket, string kind, double price, string direc
    ObjectSetInteger(0, label, OBJPROP_HIDDEN, true);
 }
 
+void _delete_regime_level_line(int ticket, string kind)
+{
+   string base = REGIME_LEVEL_PREFIX + IntegerToString(ticket) + "_" + kind;
+   string label = base + "_TXT";
+   if(ObjectFind(0, base) >= 0)
+      ObjectDelete(0, base);
+   if(ObjectFind(0, label) >= 0)
+      ObjectDelete(0, label);
+}
+void _delete_regime_historical_levels()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string obj = ObjectName(0, i, -1, -1);
+      if(StringFind(obj, REGIME_HIST_LEVEL_PREFIX) == 0)
+         ObjectDelete(0, obj);
+   }
+}
+
+void _draw_regime_historical_segment(string name, datetime t1, datetime t2, double price, color clr, int style, int width)
+{
+   if(price <= 0.0 || !MathIsValidNumber(price) || t1 <= 0 || t2 <= t1)
+      return;
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
+   else
+   {
+      ObjectMove(0, name, 0, t1, price);
+      ObjectMove(0, name, 1, t2, price);
+   }
+   ObjectSetDouble(0, name, OBJPROP_PRICE1, NormalizeDouble(price, Digits));
+   ObjectSetDouble(0, name, OBJPROP_PRICE2, NormalizeDouble(price, Digits));
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSet(name, OBJPROP_RAY, false);
+}
+
+void _draw_regime_historical_label(string name, datetime t, double price, string text, color clr)
+{
+   if(price <= 0.0 || !MathIsValidNumber(price) || t <= 0)
+      return;
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   else
+      ObjectMove(0, name, 0, t, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+bool _regime_historical_levels_for_signal(string direction, int signalShift, datetime signalTime, double entry, double &sl, double &tp, double &hc)
+{
+   sl = 0.0;
+   tp = 0.0;
+   hc = 0.0;
+   string dir = _trim(direction);
+   if((dir != "BUY" && dir != "SELL") || signalShift < 0 || signalTime <= 0 || entry <= 0.0)
+      return false;
+
+   _compute_regime_levels(dir, signalTime, entry, sl, tp);
+   if(sl <= 0.0 || tp <= 0.0)
+      return false;
+
+   double atomicEntry = 0.0;
+   double atomicSl = 0.0;
+   double tp1 = 0.0, tp2 = 0.0, tp3 = 0.0, tp4 = 0.0, tp5 = 0.0;
+   int atomicIndex = -1;
+   string atomicTrend = "";
+   if(_find_atomic_levels_for_signal_time(dir, signalTime, atomicEntry, atomicIndex, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend))
+   {
+      string clampReason = "";
+      _regime_apply_atomic_sl_clamp(dir, entry, atomicEntry, atomicSl, sl, tp, clampReason);
+   }
+
+   string widenReason = "";
+   _regime_apply_sl_widen(dir, entry, sl, tp, widenReason);
+   string scaleReason = "";
+   _regime_apply_final_risk_scale(dir, entry, sl, tp, scaleReason);
+
+   bool halfRebased = false;
+   string halfReason = "";
+   hc = _direct_normalize_half_trigger(dir, entry, sl, tp, 0.0, g_regimeDirectMt4HalfBeRRuntime, halfRebased, halfReason);
+   if(!_direct_trigger_price_valid(dir, entry, hc))
+      hc = 0.0;
+   return (sl > 0.0 && tp > 0.0);
+}
+
+void _draw_atomic_regime_historical_levels()
+{
+   if(!InpShowAtomicRegimeTradeLevels || !g_atomicRegimeModeEnabledRuntime)
+   {
+      _delete_regime_historical_levels();
+      g_regimeHistoryLevelsHash = "";
+      return;
+   }
+   if(Bars < 20 || !InpRegimeUseTrendSignalBuffers)
+   {
+      _delete_regime_historical_levels();
+      g_regimeHistoryLevelsHash = "";
+      return;
+   }
+
+   int baseShift = MathMax(1, _regime_base_shift() + 1);
+   int maxLookback = MathMin(Bars - 1, MathMax(baseShift, InpRegimeBufferLookbackBars));
+   int maxSignals = MathMax(1, InpAtomicRegimeHistoricalMaxSignals);
+   int segmentBars = MathMax(1, InpAtomicRegimeHistoricalLevelBars);
+   string hash = StringFormat("%I64d|%d|%d|%.2f|%.2f|%.2f|%d|%d|%d|%d",
+      (long)Time[baseShift], maxLookback, maxSignals,
+      g_regimeRRRuntime, g_regimeDirectMt4HalfBeRRuntime, g_regimeFinalRiskScalePctRuntime,
+      InpRegimeUpTrendSignalBuffer, InpRegimeDnTrendSignalBuffer, InpRegimeUseTrendSignalBuffers ? 1 : 0, segmentBars);
+   if(hash == g_regimeHistoryLevelsHash)
+      return;
+   g_regimeHistoryLevelsHash = hash;
+   _delete_regime_historical_levels();
+
+   int drawn = 0;
+   string lastKey = "";
+   int secondsPerBar = MathMax(60, Period() * 60);
+   for(int sh = maxLookback; sh >= baseShift && drawn < maxSignals; sh--)
+   {
+      double upValue = _regime_buffer_value(MathMax(0, InpRegimeUpTrendSignalBuffer), sh);
+      double dnValue = _regime_buffer_value(MathMax(0, InpRegimeDnTrendSignalBuffer), sh);
+      bool hasUp = _valid_atomic_buffer_price(upValue);
+      bool hasDn = _valid_atomic_buffer_price(dnValue);
+      if(!hasUp && !hasDn)
+         continue;
+
+      string dir = "";
+      if(hasUp && !hasDn)
+         dir = "BUY";
+      else if(hasDn && !hasUp)
+         dir = "SELL";
+      else
+      {
+         double closePx = Close[sh];
+         dir = (MathAbs(closePx - upValue) <= MathAbs(closePx - dnValue) ? "BUY" : "SELL");
+      }
+      datetime signalTime = Time[sh];
+      string eventKey = dir + "|" + IntegerToString((int)signalTime);
+      if(eventKey == lastKey)
+         continue;
+      lastKey = eventKey;
+
+      double entry = NormalizeDouble(Close[sh], Digits);
+      double sl = 0.0, tp = 0.0, hc = 0.0;
+      if(!_regime_historical_levels_for_signal(dir, sh, signalTime, entry, sl, tp, hc))
+         continue;
+
+      datetime lineEnd = signalTime + secondsPerBar * segmentBars;
+      string base = REGIME_HIST_LEVEL_PREFIX + IntegerToString((int)signalTime) + "_" + dir + "_";
+      _draw_regime_historical_segment(base + "ENTRY", signalTime, lineEnd, entry, C'230,230,230', STYLE_SOLID, 1);
+      _draw_regime_historical_segment(base + "SL", signalTime, lineEnd, sl, C'255,70,90', STYLE_SOLID, 2);
+      _draw_regime_historical_segment(base + "TP", signalTime, lineEnd, tp, C'39,220,124', STYLE_SOLID, 2);
+      _draw_regime_historical_label(base + "LBL", lineEnd, entry, "Reg " + dir + " E " + _fmt_price(entry) + " SL " + _fmt_price(sl) + " TP " + _fmt_price(tp) + (hc > 0.0 ? " HC " + _fmt_price(hc) : ""), C'184,196,210');
+      if(hc > 0.0)
+         _draw_regime_historical_segment(base + "HCBE", signalTime, lineEnd, hc, C'255,174,66', STYLE_DOT, 2);
+      drawn++;
+   }
+}
 bool _has_open_regime_trade_for_chart()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -3548,6 +3834,8 @@ void _draw_atomic_regime_trade_levels()
    if(!InpShowAtomicRegimeTradeLevels)
    {
       _delete_regime_trade_levels();
+      _delete_regime_historical_levels();
+      g_regimeHistoryLevelsHash = "";
       return;
    }
    _draw_atomic_trade_levels_when_regime_off();
@@ -3555,9 +3843,12 @@ void _draw_atomic_regime_trade_levels()
    bool hasOpenRegimeTrade = _has_open_regime_trade_for_chart();
    if(!g_atomicRegimeModeEnabledRuntime)
    {
+      _delete_regime_historical_levels();
+      g_regimeHistoryLevelsHash = "";
       _cleanup_stale_regime_trade_levels(activeTickets);
       return;
    }
+   _draw_atomic_regime_historical_levels();
       if(!hasOpenRegimeTrade && InpShowLatestAtomicRegimeSignalLevels && g_latestRegimeLevelEntry > 0.0 && g_latestRegimeLevelSl > 0.0 && g_latestRegimeLevelTp > 0.0)
       {
          activeTickets += "0|";
@@ -3565,6 +3856,22 @@ void _draw_atomic_regime_trade_levels()
          _draw_regime_level_line(0, "SIGNAL_ENTRY", g_latestRegimeLevelEntry, sigDir, C'90,178,255', STYLE_DOT, 1);
          _draw_regime_level_line(0, "SIGNAL_SL", g_latestRegimeLevelSl, sigDir, C'255,70,90', STYLE_DOT, 2);
          _draw_regime_level_line(0, "SIGNAL_TP", g_latestRegimeLevelTp, sigDir, C'39,220,124', STYLE_DOT, 2);
+         bool sigHalfRebased = false;
+         string sigHalfReason = "";
+         double sigHalfTrigger = _direct_normalize_half_trigger(
+            sigDir,
+            g_latestRegimeLevelEntry,
+            g_latestRegimeLevelSl,
+            g_latestRegimeLevelTp,
+            0.0,
+            g_regimeDirectMt4HalfBeRRuntime,
+            sigHalfRebased,
+            sigHalfReason
+         );
+         if(_direct_trigger_price_valid(sigDir, g_latestRegimeLevelEntry, sigHalfTrigger))
+            _draw_regime_level_line(0, "SIGNAL_HC_BE", sigHalfTrigger, sigDir, C'255,174,66', STYLE_DASH, 2);
+         else
+            _delete_regime_level_line(0, "SIGNAL_HC_BE");
       }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -3604,6 +3911,21 @@ void _draw_atomic_regime_trade_levels()
          if(triggerRebased)
             _direct_set_half_trigger_price(ticket, halfTrigger);
          _draw_regime_level_line(ticket, "HC_BE", halfTrigger, direction, C'255,174,66', STYLE_DASH, 2);
+      }
+      else
+      {
+         _delete_regime_level_line(ticket, "HC_BE");
+         static datetime lastRegimeHcbeSkipLog = 0;
+         if(g_regimeDirectMt4HalfBeRRuntime > 0.0 && TimeCurrent() - lastRegimeHcbeSkipLog >= 30)
+         {
+            lastRegimeHcbeSkipLog = TimeCurrent();
+            Print("AtomicBridge Regime HC/BE level skipped ticket=", ticket,
+                  " reason=", triggerReason,
+                  " halfR=", DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2),
+                  " entry=", _fmt_price(OrderOpenPrice()),
+                  " sl=", _fmt_price(OrderStopLoss()),
+                  " tp=", _fmt_price(OrderTakeProfit()));
+         }
       }
    }
    _cleanup_stale_regime_trade_levels(activeTickets);
@@ -3960,6 +4282,7 @@ void _apply_dashboard()
    obj = DASH_PREFIX + "EDIT_REGIME_SCALE";
    if(ObjectFind(0, obj) >= 0)
       g_regimeFinalRiskScalePctRuntime = MathMax(1.0, MathMin(200.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT))));
+   g_regimeHistoryLevelsHash = "";
    Print("AtomicBridge dashboard applied direct=", (g_directMt4EnabledRuntime ? "true" : "false"),
          " protrade_post=", (g_proTradePostEnabledRuntime ? "true" : "false"),
          " priority=", (g_directMt4PriorityDirectFirst ? "direct_first" : "post_first"),
@@ -5149,6 +5472,7 @@ int OnInit()
       " initialBalanceOverride=", DoubleToString(InpAccountRiskInitialBalanceOverride, 2),
       " dayResetHourGmt=", MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt))
    );
+   _file_bridge_write_init_marker();
    if(g_proTradePostEnabledRuntime)
    {
       _post_atomic_bridge_event("register", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", "init");
@@ -5233,7 +5557,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
    else if(sparam == DASH_PREFIX + "BTN_POST")
    {
-      if(g_proTradePostEnabledRuntime)
+   if(g_proTradePostEnabledRuntime)
       {
          _post_atomic_bridge_event("unregister", "", -1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", "dashboard_post_off");
          _post_atomic_regime_event("unregister", "", -1, 0, 0.0, 0.0, 0.0, "", "dashboard_post_off");
@@ -5277,6 +5601,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_atomicModeEnabledRuntime = !g_atomicModeEnabledRuntime;
       Print("AtomicBridge dashboard Atomic mode=", (g_atomicModeEnabledRuntime ? "ON" : "OFF"));
+      _draw_atomic_regime_trade_levels();
       _draw_dashboard();
       ChartRedraw(0);
    }
@@ -5284,6 +5609,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_atomicRegimeModeEnabledRuntime = !g_atomicRegimeModeEnabledRuntime;
       Print("AtomicBridge dashboard AtomicRegime mode=", (g_atomicRegimeModeEnabledRuntime ? "ON" : "OFF"));
+      _draw_atomic_regime_trade_levels();
       _draw_dashboard();
       ChartRedraw(0);
    }
@@ -5367,3 +5693,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == DASH_PREFIX + "BTN_APPLY")
       _apply_dashboard();
 }
+
+
+
+
+
+
+

@@ -1,0 +1,10 @@
+InpFileBridgeMt5Enabled=true
+InpFileBridgeLatestFile=AtomicFileBridge_Latest.csv
+InpFileBridgeAuditPrefix=AtomicFileBridge_Audit_
+InpFileBridgeUseCommonFiles=true
+InpDirectMt4ExecutionEnabled=false
+InpEnableProTradePost=false
+InpDirectMt4AllowedTradeWindowsGmt=
+InpDirectMt4NoTradeWindowsGmt=21:55-22:10
+InpEnableAtomicMode=true
+InpEnableAtomicRegimeMode=true
