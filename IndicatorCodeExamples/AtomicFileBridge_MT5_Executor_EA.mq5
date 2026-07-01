@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-01.1030-oil-symbol-map"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-01.1305-close-only"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -17,7 +17,9 @@ input int    InpPollMilliseconds = 250;
 input int    InpMaxSignalAgeSeconds = 900;
 input string InpSymbolMapCsv = ""; // Explicit overrides, example: BTCUSDm=BTCUSD,USTECm=USTEC
 input bool   InpUseBuiltInOilSymbolMap = true;
-input string InpBuiltInOilSymbolMapCsv = "UKOILm=XRBUSD,UKOIL=XRBUSD,USOILm=XTIUSD,USOIL=XTIUSD";
+input string InpBuiltInOilSymbolMapCsv = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIUSD,USOIL=XTIUSD";
+input bool   InpRebaseMappedLevelsToLiveEntry = true; // Preserve MT4 geometry distances on mapped MT5 symbols.
+input bool   InpRebaseOnlyWhenSourceDiffers = true;
 input bool   InpRequireMappedSymbolEqualsChart = true;
 input string InpSourceTimeframeFilter = ""; // Empty=all, example M5
 input string InpSourceFilter = ""; // Empty=all, example AtomicRegime
@@ -173,6 +175,90 @@ string MapSymbol(string src)
    return Trim(src);
 }
 
+bool SameTextCi(string a, string b)
+{
+   StringToLower(a);
+   StringToLower(b);
+   return a == b;
+}
+
+bool ShouldRebaseLevels(const BridgeSignal &sig)
+{
+   if(!InpRebaseMappedLevelsToLiveEntry)
+      return false;
+   if(sig.bridgeEntry <= 0.0 || sig.sl <= 0.0 || sig.tp <= 0.0)
+      return false;
+   string mapped = MapSymbol(sig.sourceSymbol);
+   if(!SameTextCi(mapped, _Symbol))
+      return false;
+   if(InpRebaseOnlyWhenSourceDiffers && SameTextCi(sig.sourceSymbol, _Symbol))
+      return false;
+   return true;
+}
+
+void RebaseLevelsToLiveEntry(BridgeSignal &sig, double liveEntry, string &detail)
+{
+   detail = "";
+   double srcEntry = sig.bridgeEntry;
+   if(srcEntry <= 0.0 || liveEntry <= 0.0)
+      return;
+
+   double oldSl = sig.sl;
+   double oldTp = sig.tp;
+   double oldHalf = sig.halfTrigger;
+   double risk = 0.0;
+   double reward = 0.0;
+   double halfDist = 0.0;
+
+   if(sig.direction > 0)
+   {
+      risk = srcEntry - oldSl;
+      reward = oldTp - srcEntry;
+      if(risk > 0.0)
+         sig.sl = liveEntry - risk;
+      if(reward > 0.0)
+         sig.tp = liveEntry + reward;
+      if(oldHalf > 0.0)
+      {
+         halfDist = oldHalf - srcEntry;
+         if(halfDist > 0.0)
+            sig.halfTrigger = liveEntry + halfDist;
+      }
+   }
+   else if(sig.direction < 0)
+   {
+      risk = oldSl - srcEntry;
+      reward = srcEntry - oldTp;
+      if(risk > 0.0)
+         sig.sl = liveEntry + risk;
+      if(reward > 0.0)
+         sig.tp = liveEntry - reward;
+      if(oldHalf > 0.0)
+      {
+         halfDist = srcEntry - oldHalf;
+         if(halfDist > 0.0)
+            sig.halfTrigger = liveEntry - halfDist;
+      }
+   }
+
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   sig.sl = NormalizeDouble(sig.sl, digits);
+   sig.tp = NormalizeDouble(sig.tp, digits);
+   if(sig.halfTrigger > 0.0)
+      sig.halfTrigger = NormalizeDouble(sig.halfTrigger, digits);
+
+   detail = "source_entry=" + DoubleToString(srcEntry, digits)
+          + " live_entry=" + DoubleToString(liveEntry, digits)
+          + " old_sl=" + DoubleToString(oldSl, digits)
+          + " old_tp=" + DoubleToString(oldTp, digits)
+          + " old_half=" + DoubleToString(oldHalf, digits)
+          + " new_sl=" + DoubleToString(sig.sl, digits)
+          + " new_tp=" + DoubleToString(sig.tp, digits)
+          + " new_half=" + DoubleToString(sig.halfTrigger, digits)
+          + " risk_dist=" + DoubleToString(risk, digits)
+          + " reward_dist=" + DoubleToString(reward, digits)
+          + " mapped=" + MapSymbol(sig.sourceSymbol);
+}
 string PriceStr(double v)
 {
    if(v <= 0.0 || !MathIsValidNumber(v))
@@ -611,6 +697,100 @@ double NormalizeVolume(double lot)
    return NormalizeDouble(v, 2);
 }
 
+bool ProjectedMarginPctForLot(const int direction, double lot, double entry, double &projectedPct, double &orderMargin)
+{
+   projectedPct = 0.0;
+   orderMargin = 0.0;
+   if(lot <= 0.0 || entry <= 0.0)
+      return false;
+   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcMargin(type, _Symbol, lot, entry, orderMargin))
+      return false;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity <= 0.0)
+      return false;
+   projectedPct = (AccountInfoDouble(ACCOUNT_MARGIN) + orderMargin) * 100.0 / equity;
+   return true;
+}
+
+double ShrinkLotToMarginLimit(const int direction, double requestedLot, double entry, double maxMarginPct, string &detail)
+{
+   detail = "";
+   if(maxMarginPct <= 0.0)
+      return requestedLot;
+
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+
+   double minPct = 0.0;
+   double minMargin = 0.0;
+   if(!ProjectedMarginPctForLot(direction, minVol, entry, minPct, minMargin))
+   {
+      detail = "margin_calc_failed_min_lot min_lot=" + DoubleToString(minVol, 2);
+      return 0.0;
+   }
+   if(minPct > maxMarginPct)
+   {
+      detail = "min_lot_margin_exceeds_limit min_lot=" + DoubleToString(minVol, 2)
+             + " projected_margin_pct=" + DoubleToString(minPct, 2)
+             + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
+      return 0.0;
+   }
+
+   double reqPct = 0.0;
+   double reqMargin = 0.0;
+   if(ProjectedMarginPctForLot(direction, requestedLot, entry, reqPct, reqMargin) && reqPct <= maxMarginPct)
+      return requestedLot;
+
+   double lo = minVol;
+   double hi = requestedLot;
+   double best = minVol;
+   for(int i = 0; i < 32; i++)
+   {
+      double mid = (lo + hi) * 0.5;
+      double candidate = NormalizeVolume(mid);
+      if(candidate < minVol)
+         candidate = minVol;
+      double pct = 0.0;
+      double margin = 0.0;
+      if(!ProjectedMarginPctForLot(direction, candidate, entry, pct, margin))
+      {
+         hi = mid;
+         continue;
+      }
+      if(pct <= maxMarginPct)
+      {
+         best = candidate;
+         lo = mid;
+      }
+      else
+      {
+         hi = mid;
+      }
+   }
+
+   best = NormalizeVolume(best);
+   double bestPct = 0.0;
+   double bestMargin = 0.0;
+   while(best >= minVol && ProjectedMarginPctForLot(direction, best, entry, bestPct, bestMargin) && bestPct > maxMarginPct)
+      best = NormalizeDouble(best - step, 2);
+
+   if(best < minVol)
+   {
+      detail = "margin_shrink_no_valid_lot requested_lot=" + DoubleToString(requestedLot, 2)
+             + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
+      return 0.0;
+   }
+
+   ProjectedMarginPctForLot(direction, best, entry, bestPct, bestMargin);
+   detail = "margin_shrink requested_lot=" + DoubleToString(requestedLot, 2)
+          + " shrunk_lot=" + DoubleToString(best, 2)
+          + " projected_margin_pct=" + DoubleToString(bestPct, 2)
+          + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
+   return best;
+}
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -649,6 +829,7 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
       }
    }
    double lot = NormalizeVolume(rawLot);
+   string marginDetail = "";
    double actualRisk = lot * moneyPerLot;
    if(InpBlockIfMinLotExceedsRisk && actualRisk > budget * 1.001)
    {
@@ -657,23 +838,20 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
              + " money_per_lot=" + DoubleToString(moneyPerLot, 2)
              + " raw_lot=" + DoubleToString(rawLot, 4)
              + " lot=" + DoubleToString(lot, 2)
-             + " actual_risk=" + DoubleToString(actualRisk, 2);
+             + " actual_risk=" + DoubleToString(actualRisk, 2) + (marginDetail != "" ? " " + marginDetail : "");
       return 0.0;
    }
-
    if(InpMaxMarginUsagePct > 0.0)
    {
-      double margin = 0.0;
-      ENUM_ORDER_TYPE type = sig.direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      if(OrderCalcMargin(type, _Symbol, lot, entry, margin) && AccountInfoDouble(ACCOUNT_EQUITY) > 0.0)
+      double requestedLot = lot;
+      lot = ShrinkLotToMarginLimit(sig.direction, lot, entry, InpMaxMarginUsagePct, marginDetail);
+      if(lot <= 0.0)
       {
-         double marginPct = (AccountInfoDouble(ACCOUNT_MARGIN) + margin) * 100.0 / AccountInfoDouble(ACCOUNT_EQUITY);
-         if(marginPct > InpMaxMarginUsagePct)
-         {
-            detail = "margin_block raw_lot=" + DoubleToString(rawLot, 4) + " lot=" + DoubleToString(lot, 2) + " projected_margin_pct=" + DoubleToString(marginPct, 2);
-            return 0.0;
-         }
+         detail = marginDetail;
+         return 0.0;
       }
+      if(lot < requestedLot - 0.0000001)
+         actualRisk = lot * moneyPerLot;
    }
 
    detail = "risk_lot symbol=" + _Symbol
@@ -686,7 +864,7 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
           + " money_per_lot=" + DoubleToString(moneyPerLot, 2)
           + " raw_lot=" + DoubleToString(rawLot, 4)
           + " lot=" + DoubleToString(lot, 2)
-          + " actual_risk=" + DoubleToString(actualRisk, 2);
+          + " actual_risk=" + DoubleToString(actualRisk, 2) + (marginDetail != "" ? " " + marginDetail : "");
    return lot;
 }
 
@@ -704,6 +882,61 @@ bool IsManagedBridgePosition()
    return false;
 }
 
+
+bool IsCloseOnlySignal(const BridgeSignal &sig)
+{
+   return (StringFind(sig.source, "CloseOnly") >= 0 || StringFind(sig.eventId, "invalidate_close") >= 0);
+}
+
+bool CloseSameDirectionPositions(const BridgeSignal &sig, string &detail)
+{
+   int found = 0;
+   int closed = 0;
+   int failed = 0;
+   string errors = "";
+   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if(!IsManagedBridgePosition())
+         continue;
+      long type = PositionGetInteger(POSITION_TYPE);
+      bool sameDirection = (sig.direction > 0 && type == POSITION_TYPE_BUY) || (sig.direction < 0 && type == POSITION_TYPE_SELL);
+      if(!sameDirection)
+         continue;
+      found++;
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      string dir = (type == POSITION_TYPE_BUY ? "BUY" : "SELL");
+      ResetLastError();
+      bool ok = trade.PositionClose(ticket);
+      long ret = trade.ResultRetcode();
+      if(ok)
+      {
+         closed++;
+         Audit("close_only_sent", sig, "ticket=" + IntegerToString((int)ticket) + " dir=" + dir + " vol=" + DoubleToString(vol, 2) + " pnl=" + DoubleToString(pnl, 2) + " retcode=" + IntegerToString((int)ret));
+      }
+      else
+      {
+         failed++;
+         int err = GetLastError();
+         string e = "ticket=" + IntegerToString((int)ticket) + " dir=" + dir + " vol=" + DoubleToString(vol, 2) + " retcode=" + IntegerToString((int)ret) + " err=" + IntegerToString(err);
+         errors += (errors == "" ? "" : "; ") + e;
+         Audit("close_only_failed", sig, e);
+      }
+   }
+   detail = "close_only_found=" + IntegerToString(found) + " closed=" + IntegerToString(closed) + " failed=" + IntegerToString(failed);
+   if(errors != "")
+      detail += " errors=" + errors;
+   if(found == 0)
+      Audit("close_only_none", sig, detail);
+   return failed == 0;
+}
 bool CloseReversePositions(const BridgeSignal &sig, string &detail)
 {
    if(!InpCloseReverse)
@@ -808,8 +1041,9 @@ void ManageHalfCloseBe()
    }
 }
 
-bool ExecuteSignal(const BridgeSignal &sig)
+bool ExecuteSignal(const BridgeSignal &sourceSig)
 {
+   BridgeSignal sig = sourceSig;
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
    {
@@ -823,6 +1057,13 @@ bool ExecuteSignal(const BridgeSignal &sig)
       return false;
    }
    double entry = sig.direction > 0 ? tick.ask : tick.bid;
+   string rebaseDetail = "";
+   if(ShouldRebaseLevels(sig))
+   {
+      RebaseLevelsToLiveEntry(sig, entry, rebaseDetail);
+      if(rebaseDetail != "")
+         Audit("levels_rebased", sig, rebaseDetail);
+   }
    if(!StopsValid(sig.direction, entry, sig.sl, sig.tp, reason))
    {
       g_lastRejectedEventId = sig.eventId;
@@ -848,6 +1089,7 @@ bool ExecuteSignal(const BridgeSignal &sig)
    double lot = ResolveLot(sig, entry, lotDetail);
    if(lot <= 0.0)
    {
+      g_lastRejectedEventId = sig.eventId;
       ReleaseEvent(sig.eventId);
       Audit("skip_lot", sig, lotDetail);
       return false;
@@ -874,7 +1116,7 @@ bool ExecuteSignal(const BridgeSignal &sig)
    if(PositionSelect(_Symbol) && (long)PositionGetInteger(POSITION_MAGIC) == InpMagic)
       posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
    StoreHalfState(posTicket, sig, entry);
-   Audit("order_sent", sig, "lot=" + DoubleToString(lot, 2) + " live_entry=" + PriceStr(entry) + " deal=" + IntegerToString((int)deal) + " order=" + IntegerToString((int)order) + " pos=" + IntegerToString((int)posTicket) + " " + lotDetail);
+   Audit("order_sent", sig, "lot=" + DoubleToString(lot, 2) + " live_entry=" + PriceStr(entry) + " deal=" + IntegerToString((int)deal) + " order=" + IntegerToString((int)order) + " pos=" + IntegerToString((int)posTicket) + (rebaseDetail != "" ? " rebase=" + rebaseDetail : "") + " " + lotDetail);
    return true;
 }
 
@@ -929,6 +1171,14 @@ void PollBridge(string caller)
    {
       g_lastSeenEventId = sig.eventId;
       Audit("skip_disabled", sig, "executor_off caller=" + caller);
+      return;
+   }
+   if(IsCloseOnlySignal(sig))
+   {
+      string closeOnlyDetail = "";
+      if(CloseSameDirectionPositions(sig, closeOnlyDetail))
+         g_lastSeenEventId = sig.eventId;
+      Audit("close_only_processed", sig, "caller=" + caller + " " + closeOnlyDetail);
       return;
    }
    if(ExecuteSignal(sig))
@@ -992,25 +1242,3 @@ void OnTick()
    }
    DrawDashboard();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

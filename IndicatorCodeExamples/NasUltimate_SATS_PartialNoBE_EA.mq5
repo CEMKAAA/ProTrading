@@ -166,7 +166,7 @@ input bool   InpDrawLastSignalsOnStart = true;
 input int    InpStartupSignalCount = 3;
 input bool   InpReconcileLiveSignalsOnBarClose = true;
 input bool   InpCloseVanishedLiveSignalPosition = true;
-input bool   InpSignalParityAudit = true;
+input bool   InpSignalParityAudit = false; // Compact audit default: disable high-volume signal parity Print logs; trade lifecycle/error logs remain.
 input bool   InpAuditNoSignalEvaluations = false;
 input bool   InpShowDashboard = true;
 
@@ -3372,7 +3372,9 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
       return;
    if(!AccountRiskRuntimeEnabled() || !InpAccountRiskAuditEnabled)
       return;
-   if(periodic && !AccountRiskAuditClaimSnapshot())
+   // Compact audit: periodic health snapshots are telemetry and can grow to GBs.
+   // Keep only lifecycle/risk decisions such as lot_selected, lot_blocked, liquidation events.
+   if(periodic)
       return;
    double closedAll, closedToday, floating;
    AccountRiskScopePerformance(closedAll, closedToday, floating);
