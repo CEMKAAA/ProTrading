@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-01.direct-sh0-validate"
+#define ATOMIC_BRIDGE_BUILD "2026-07-01.swing-sl-localized-history"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -60,8 +60,8 @@ input int    InpDirectMt4Magic = 970101;
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
 input double InpDirectMt4MaxSpreadToSlPct = 20.0; // Blocks MT4+MT5 file bridge when spread exceeds this % of entry-to-SL distance. 0=off.
-input double InpDirectMt4DailyProfitTarget = 0.0; // Account-currency realized AtomicBridge profit target for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
-input double InpDirectMt4DailyLossTarget = 0.0; // Account-currency realized AtomicBridge loss limit for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
+input double InpDirectMt4DailyProfitTarget = 0.0; // Chart-symbol realized AtomicBridge profit target for today. 0=off; blocks this chart's MT4 execution and MT5 CSV signals until next reset day.
+input double InpDirectMt4DailyLossTarget = 0.0; // Chart-symbol realized AtomicBridge loss limit for today. 0=off; blocks this chart's MT4 execution and MT5 CSV signals until next reset day.
 input string InpDirectMt4AllowedTradeWindowsGmt = "";
 input string InpDirectMt4NoTradeWindowsGmt = "21:55-22:10";
 input bool   InpDirectMt4CloseReverse = true;
@@ -86,8 +86,8 @@ input int    InpRegimeSignalProbeMaxShift = 20;
 input bool   InpShowAtomicRegimeTradeLevels = true;
 input bool   InpShowLatestAtomicRegimeSignalLevels = true;
 input int    InpAtomicRegimeTradeLevelLabelBars = 8;
-input int    InpAtomicRegimeHistoricalLevelBars = 10; // Historical Regime entry/SL/TP/HCBE segments length in chart bars.
-input int    InpAtomicRegimeHistoricalMaxSignals = 80; // Caps visual overlay cost; signal math is untouched.
+input int    InpAtomicRegimeHistoricalLevelBars = 24; // Historical Regime entry/SL/TP/HCBE segments length in chart bars.
+input int    InpAtomicRegimeHistoricalMaxSignals = 160; // Caps visual overlay cost; signal math is untouched.
 input bool   InpEnableRegimeChangePost = true;
 input bool   InpSendInitialRegimeConfirmedOnStart = false;
 input string InpRegimeSignalProfile = "atomic_regime";
@@ -105,6 +105,18 @@ input double InpRegimeSlWidenPct = 25.0;
 input double InpRegimeFinalRiskScalePct = 75.0; // 100=unchanged; dashboard accepts 1..200 for fine Regime SL/TP scaling.
 input bool   InpRegimePipSlModeEnabled = false; // If true, AtomicRegime SL distance is fixed by InpRegimePipSlPips; TP/HCBE still use R values.
 input double InpRegimePipSlPips = 100.0;
+input bool   InpRegimeStructuralSwingSlModeEnabled = false; // NAS-style local min/peak + ATR buffer SL. Signal math is unchanged.
+input int    InpRegimeSwingLookbackBars = 200;
+input int    InpRegimeSwingLeftBars = 3;
+input int    InpRegimeSwingRightBars = 2;
+input int    InpRegimeSwingAtrPeriod = 14;
+input double InpRegimeSwingMinProminenceAtr = 0.75;
+input double InpRegimeSwingMinDepartureAtr = 1.00;
+input int    InpRegimeSwingMaxAgeBars = 60; // 0=off. Prevents old major highs/lows from being treated as the local structural stop.
+input double InpRegimeSwingMaxRiskAtr = 4.00; // 0=off. Rejects pivots whose entry-to-SL risk is too large versus local ATR.
+input double InpRegimeSwingBufferAtr = 0.20;
+input bool   InpRegimeSwingPreferStrongest = false; // false=nearest local pivot; true=best nearby pivot after age/risk filters.
+input bool   InpRegimeSwingFallbackToExtreme = true; // If no strict pivot passes, use window local low/high with same buffer.
 input bool   InpRegimeUseTrendSignalBuffers = true;
 input int    InpRegimeUpTrendSignalBuffer = 2;
 input int    InpRegimeDnTrendSignalBuffer = 3;
@@ -191,6 +203,7 @@ double   g_regimeRRRuntime = 0.0;
 double   g_regimeFinalRiskScalePctRuntime = 100.0;
 bool     g_regimePipSlModeRuntime = false;
 double   g_regimePipSlPipsRuntime = 100.0;
+bool     g_regimeStructuralSwingSlModeRuntime = false;
 string   g_latestRegimeLevelDirection = "";
 double   g_latestRegimeLevelEntry = 0.0;
 double   g_latestRegimeLevelSl = 0.0;
@@ -1145,6 +1158,19 @@ bool _direct_history_order_owned_by_bridge()
    return (StringFind(comment, "AtomicBridgeMT4") >= 0 || StringFind(comment, "AtomicBridge") >= 0);
 }
 
+bool _direct_history_order_owned_by_chart()
+{
+   if(OrderSymbol() != Symbol())
+      return false;
+   if(!_direct_history_order_owned_by_bridge())
+      return false;
+   string comment = OrderComment();
+   string tfToken = "|" + _tf_to_string(Period());
+   if(StringFind(comment, "AtomicBridgeMT4|") >= 0 && StringFind(comment, "|M") >= 0)
+      return (StringFind(comment, tfToken) >= 0);
+   return true;
+}
+
 double _direct_daily_closed_profit_today()
 {
    datetime dayStartGmt = _account_risk_gmt_day_start();
@@ -1163,7 +1189,7 @@ double _direct_daily_closed_profit_today()
          continue;
       if(OrderCloseTime() < dayStartServer)
          continue;
-      if(!_direct_history_order_owned_by_bridge())
+      if(!_direct_history_order_owned_by_chart())
          continue;
       pnl += OrderProfit() + OrderSwap() + OrderCommission();
    }
@@ -1177,7 +1203,9 @@ bool _direct_daily_profit_target_reached(string &detail)
    if(target <= 0.0)
       return false;
    double pnl = _direct_daily_closed_profit_today();
-   detail = "daily_profit=" + DoubleToString(pnl, 2)
+   detail = "chart_daily_profit=" + DoubleToString(pnl, 2)
+          + " symbol=" + Symbol()
+          + " tf=" + _tf_to_string(Period())
           + " target=" + DoubleToString(target, 2)
           + " reset_hour_gmt=" + IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt)));
    return (pnl >= target - 0.0001);
@@ -1191,7 +1219,9 @@ bool _direct_daily_loss_target_reached(string &detail)
       return false;
    double pnl = _direct_daily_closed_profit_today();
    double loss = MathMax(0.0, -pnl);
-   detail = "daily_pnl=" + DoubleToString(pnl, 2)
+   detail = "chart_daily_pnl=" + DoubleToString(pnl, 2)
+          + " symbol=" + Symbol()
+          + " tf=" + _tf_to_string(Period())
           + " loss=" + DoubleToString(loss, 2)
           + " target=" + DoubleToString(target, 2)
           + " reset_hour_gmt=" + IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt)));
@@ -1971,7 +2001,9 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_duplicate_suppressed", source, eventId, 0, dir, lot, price, stopLoss, takeProfit, "terminal_global_event_lock", 0.0, lotDetail);
       return true;
    }
-   string comment = "AtomicBridgeMT4|" + source;
+   string comment = "AtomicBridgeMT4|" + source + "|" + _tf_to_string(Period());
+   if(StringLen(comment) > 31)
+      comment = StringSubstr(comment, 0, 31);
    ResetLastError();
    int ticket = OrderSend(Symbol(), type, lot, NormalizeDouble(price, Digits), InpDirectMt4Slippage, stopLoss, takeProfit, comment, _direct_magic(), 0, (type == OP_BUY ? clrLime : clrTomato));
    if(ticket > 0 && riskLockHeld)
@@ -4245,19 +4277,29 @@ bool _regime_historical_levels_for_signal(string direction, int signalShift, dat
    }
    else
    {
-      _compute_regime_levels(dir, signalTime, entry, sl, tp);
-      if(sl <= 0.0 || tp <= 0.0)
-         return false;
-
-      double atomicEntry = 0.0;
-      double atomicSl = 0.0;
-      double tp1 = 0.0, tp2 = 0.0, tp3 = 0.0, tp4 = 0.0, tp5 = 0.0;
-      int atomicIndex = -1;
-      string atomicTrend = "";
-      if(_find_atomic_levels_for_signal_time(dir, signalTime, atomicEntry, atomicIndex, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend))
+      bool structuralApplied = false;
+      if(_regime_structural_sl_enabled())
       {
-         string clampReason = "";
-         _regime_apply_atomic_sl_clamp(dir, entry, atomicEntry, atomicSl, sl, tp, clampReason);
+         string structReason = "";
+         structuralApplied = _regime_apply_structural_swing_sl(dir, signalShift, entry, sl, tp, structReason);
+      }
+
+      if(!structuralApplied)
+      {
+         _compute_regime_levels(dir, signalTime, entry, sl, tp);
+         if(sl <= 0.0 || tp <= 0.0)
+            return false;
+
+         double atomicEntry = 0.0;
+         double atomicSl = 0.0;
+         double tp1 = 0.0, tp2 = 0.0, tp3 = 0.0, tp4 = 0.0, tp5 = 0.0;
+         int atomicIndex = -1;
+         string atomicTrend = "";
+         if(_find_atomic_levels_for_signal_time(dir, signalTime, atomicEntry, atomicIndex, atomicSl, tp1, tp2, tp3, tp4, tp5, atomicTrend))
+         {
+            string clampReason = "";
+            _regime_apply_atomic_sl_clamp(dir, entry, atomicEntry, atomicSl, sl, tp, clampReason);
+         }
       }
 
       string widenReason = "";
@@ -4293,11 +4335,14 @@ void _draw_atomic_regime_historical_levels()
    int maxLookback = MathMin(Bars - 1, MathMax(baseShift, InpRegimeBufferLookbackBars));
    int maxSignals = MathMax(1, InpAtomicRegimeHistoricalMaxSignals);
    int segmentBars = MathMax(1, InpAtomicRegimeHistoricalLevelBars);
-   string hash = StringFormat("%I64d|%d|%d|%.2f|%.2f|%.2f|%d|%.2f|%d|%d|%d|%d",
+   string hash = StringFormat("%I64d|%d|%d|%.2f|%.2f|%.2f|%d|%.2f|%d|%d|%d|%d|%d|%d|%d|%d|%.2f|%.2f|%d|%.2f|%.2f|%d|%d",
       (long)Time[baseShift], maxLookback, maxSignals,
       g_regimeRRRuntime, g_regimeDirectMt4HalfBeRRuntime, g_regimeFinalRiskScalePctRuntime,
       g_regimePipSlModeRuntime ? 1 : 0, g_regimePipSlPipsRuntime,
-      InpRegimeUpTrendSignalBuffer, InpRegimeDnTrendSignalBuffer, InpRegimeUseTrendSignalBuffers ? 1 : 0, segmentBars);
+      InpRegimeUpTrendSignalBuffer, InpRegimeDnTrendSignalBuffer, InpRegimeUseTrendSignalBuffers ? 1 : 0, segmentBars,
+      g_regimeStructuralSwingSlModeRuntime ? 1 : 0, InpRegimeSwingLookbackBars, InpRegimeSwingLeftBars, InpRegimeSwingRightBars,
+      InpRegimeSwingMinProminenceAtr, InpRegimeSwingMinDepartureAtr, InpRegimeSwingMaxAgeBars, InpRegimeSwingMaxRiskAtr, InpRegimeSwingBufferAtr,
+      InpRegimeSwingPreferStrongest ? 1 : 0, InpRegimeSwingFallbackToExtreme ? 1 : 0);
    if(hash == g_regimeHistoryLevelsHash)
       return;
    g_regimeHistoryLevelsHash = hash;
@@ -4758,6 +4803,7 @@ void _draw_dashboard()
    _dash_label("L_REG_PIP_SL", 724, 374, "Reg pip SL", C'184,196,210', 8);
    _dash_edit("EDIT_REGIME_PIP_SL", 800, 368, 50, 22, DoubleToString(g_regimePipSlPipsRuntime, 1));
    _dash_button("BTN_REGIME_PIP_SL", 858, 368, 104, 24, g_regimePipSlModeRuntime ? "PIP SL ON" : "PIP SL OFF", g_regimePipSlModeRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_button("BTN_REGIME_STRUCT_SL", 858, 340, 104, 24, g_regimeStructuralSwingSlModeRuntime ? "SWING SL ON" : "SWING SL OFF", g_regimeStructuralSwingSlModeRuntime ? C'32,150,96' : C'88,96,112');
    _dash_label("L_DAILY_PROFIT", 724, 402, "Day +", C'184,196,210', 8);
    _dash_edit("EDIT_DAILY_PROFIT", 768, 396, 42, 22, DoubleToString(g_directMt4DailyProfitTargetRuntime, 0));
    _dash_label("L_DAILY_LOSS", 816, 402, "Day -", C'184,196,210', 8);
@@ -4805,7 +4851,7 @@ void _draw_dashboard()
    _dash_label("LAST_A", 38, 174, "Last Atomic: " + (g_lastObservedSignalDirection == "" ? "NONE" : g_lastObservedSignalDirection) + " | " + _fmt_time(g_lastObservedSignalTime), C'184,196,210', 8);
    _dash_label("LAST_R", 38, 192, "Last Regime: " + (g_lastRegimeObservedSignalDirection == "" ? "NONE" : g_lastRegimeObservedSignalDirection) + " | " + _fmt_time(g_lastRegimeObservedSignalTime), C'184,196,210', 8);
    _dash_label("TPHC_A", 38, 212, "Atomic: TP leg=" + IntegerToString(g_directMt4TpIndexRuntime) + " | HC/BE TP leg=" + IntegerToString(g_directMt4HalfBeTpIndexRuntime) + " | SL=" + (g_atomicDirectRiskGeometryRuntime ? DoubleToString(g_atomicDirectTargetRRuntime, 1) + "R geometry" : "indicator"), C'184,196,210', 8);
-   string regimeSlLabel = (g_regimePipSlModeRuntime ? "SL=" + DoubleToString(g_regimePipSlPipsRuntime, 1) + " pip" : "SL scale=" + DoubleToString(g_regimeFinalRiskScalePctRuntime, 0) + "%");
+   string regimeSlLabel = (g_regimePipSlModeRuntime ? "SL=" + DoubleToString(g_regimePipSlPipsRuntime, 1) + " pip" : (g_regimeStructuralSwingSlModeRuntime ? "SL=local swing+buf" : "SL scale=" + DoubleToString(g_regimeFinalRiskScalePctRuntime, 0) + "%"));
    _dash_label("TPHC_R", 38, 230, "AtomicRegime: TP R=" + DoubleToString(g_regimeRRRuntime, 1) + " | HC/BE R=" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1) + " | " + regimeSlLabel, C'184,196,210', 8);
    double pct; string label; color fill;
    if(_direct_open_progress(pct, label, fill))
@@ -5229,6 +5275,311 @@ bool _regime_pip_sl_enabled()
    return (g_regimePipSlModeRuntime && g_regimePipSlPipsRuntime > 0.0);
 }
 
+bool _regime_structural_sl_enabled()
+{
+   return g_regimeStructuralSwingSlModeRuntime;
+}
+
+double _regime_swing_atr_at_shift(int shift, int period)
+{
+   int p = MathMax(2, period);
+   int bars = Bars;
+   if(shift < 0 || bars <= shift + 1)
+      return 0.0;
+   double atr = iATR(NULL, 0, p, shift);
+   atr = _valid_price_or_zero(atr);
+   if(atr > 0.0)
+      return atr;
+
+   int last = MathMin(bars - 1, shift + p - 1);
+   int count = 0;
+   double sum = 0.0;
+   for(int i = shift; i <= last; i++)
+   {
+      double prevClose = (i + 1 < bars) ? Close[i + 1] : Close[i];
+      double tr = MathMax(High[i] - Low[i], MathMax(MathAbs(High[i] - prevClose), MathAbs(Low[i] - prevClose)));
+      if(tr > 0.0)
+      {
+         sum += tr;
+         count++;
+      }
+   }
+   return count > 0 ? sum / count : 0.0;
+}
+
+bool _regime_find_structural_swing_stop(string direction,
+                                        int signalShift,
+                                        double entryPrice,
+                                        double &swingPrice,
+                                        double &structuralSl,
+                                        double &swingAtr,
+                                        double &prominenceAtr,
+                                        int &ageBars,
+                                        string &detail)
+{
+   swingPrice = 0.0;
+   structuralSl = 0.0;
+   swingAtr = 0.0;
+   prominenceAtr = 0.0;
+   ageBars = -1;
+   detail = "";
+
+   string dir = _trim(direction);
+   double entry = _valid_price_or_zero(entryPrice);
+   if((dir != "BUY" && dir != "SELL") || entry <= 0.0)
+   {
+      detail = "invalid_direction_or_entry";
+      return false;
+   }
+
+   int bars = Bars;
+   int sig = MathMax(0, signalShift);
+   int left = MathMax(2, InpRegimeSwingLeftBars);
+   int right = MathMax(1, InpRegimeSwingRightBars);
+   int lookback = MathMax(left + right + 1, InpRegimeSwingLookbackBars);
+   int maxAge = MathMax(0, InpRegimeSwingMaxAgeBars);
+   int effectiveLookback = (maxAge > 0 ? MathMin(lookback, MathMax(left + right + 1, maxAge)) : lookback);
+   int newestCandidate = sig + right;
+   int oldestCandidate = MathMin(bars - left - 1, sig + effectiveLookback);
+   if(newestCandidate > oldestCandidate || bars <= left + right + sig + 2)
+   {
+      detail = "insufficient_bars sig=" + IntegerToString(sig) + " bars=" + IntegerToString(bars);
+      return false;
+   }
+
+   double minProminence = MathMax(0.0, InpRegimeSwingMinProminenceAtr);
+   double minDeparture = MathMax(0.0, InpRegimeSwingMinDepartureAtr);
+   double maxRiskAtr = MathMax(0.0, InpRegimeSwingMaxRiskAtr);
+   bool foundBest = false;
+   double bestSwingPrice = 0.0;
+   double bestStructuralSl = 0.0;
+   double bestSwingAtr = 0.0;
+   double bestProminence = 0.0;
+   int bestAgeBars = -1;
+   double bestScore = -DBL_MAX;
+   string bestDetail = "";
+   double fallbackExtreme = (dir == "BUY") ? DBL_MAX : -DBL_MAX;
+   int fallbackAge = -1;
+   double fallbackAtr = 0.0;
+
+   for(int candidate = newestCandidate; candidate <= oldestCandidate; candidate++)
+   {
+      if(candidate - right < sig || candidate + left >= bars)
+         continue;
+
+      double atr = _regime_swing_atr_at_shift(candidate, InpRegimeSwingAtrPeriod);
+      if(atr <= 0.0)
+         continue;
+
+      double rawExtreme = (dir == "BUY") ? Low[candidate] : High[candidate];
+      if((dir == "BUY" && rawExtreme < fallbackExtreme && rawExtreme < entry)
+         || (dir == "SELL" && rawExtreme > fallbackExtreme && rawExtreme > entry))
+      {
+         fallbackExtreme = rawExtreme;
+         fallbackAge = candidate - sig;
+         fallbackAtr = atr;
+      }
+
+      bool pivot = true;
+      bool strictLeft = false;
+      bool strictRight = false;
+      double leftExtreme = (dir == "BUY") ? -DBL_MAX : DBL_MAX;
+      double rightExtreme = (dir == "BUY") ? -DBL_MAX : DBL_MAX;
+      double pivotPrice = (dir == "BUY") ? Low[candidate] : High[candidate];
+
+      // Older side of the pivot: larger MT4 shifts.
+      for(int k = candidate + 1; k <= candidate + left; k++)
+      {
+         if(dir == "BUY")
+         {
+            if(Low[k] < pivotPrice)
+               pivot = false;
+            if(Low[k] > pivotPrice)
+               strictLeft = true;
+            leftExtreme = MathMax(leftExtreme, High[k]);
+         }
+         else
+         {
+            if(High[k] > pivotPrice)
+               pivot = false;
+            if(High[k] < pivotPrice)
+               strictLeft = true;
+            leftExtreme = MathMin(leftExtreme, Low[k]);
+         }
+      }
+
+      // Newer side of the pivot, toward the signal bar: smaller MT4 shifts.
+      for(int k = candidate - 1; k >= candidate - right; k--)
+      {
+         if(dir == "BUY")
+         {
+            if(Low[k] < pivotPrice)
+               pivot = false;
+            if(Low[k] > pivotPrice)
+               strictRight = true;
+            rightExtreme = MathMax(rightExtreme, High[k]);
+         }
+         else
+         {
+            if(High[k] > pivotPrice)
+               pivot = false;
+            if(High[k] < pivotPrice)
+               strictRight = true;
+            rightExtreme = MathMin(rightExtreme, Low[k]);
+         }
+      }
+      if(!pivot || !strictLeft || !strictRight)
+         continue;
+
+      double leftProminence = (dir == "BUY") ? leftExtreme - pivotPrice : pivotPrice - leftExtreme;
+      double rightProminence = (dir == "BUY") ? rightExtreme - pivotPrice : pivotPrice - rightExtreme;
+      double prominence = MathMin(leftProminence, rightProminence) / atr;
+      if(prominence < minProminence)
+         continue;
+
+      double postExtreme = (dir == "BUY") ? -DBL_MAX : DBL_MAX;
+      for(int k = candidate - 1; k >= sig; k--)
+      {
+         if(dir == "BUY")
+            postExtreme = MathMax(postExtreme, High[k]);
+         else
+            postExtreme = MathMin(postExtreme, Low[k]);
+      }
+      double signalClose = Close[sig];
+      double departure = (dir == "BUY") ? postExtreme - pivotPrice : pivotPrice - postExtreme;
+      double closeDeparture = (dir == "BUY") ? signalClose - pivotPrice : pivotPrice - signalClose;
+      if(departure < atr * minDeparture || closeDeparture < atr * minDeparture * 0.5)
+         continue;
+
+      double buffer = MathMax(Point * 5.0, atr * MathMax(0.0, InpRegimeSwingBufferAtr));
+      double candidateSl = (dir == "BUY") ? pivotPrice - buffer : pivotPrice + buffer;
+      double candidateRiskAtr = MathAbs(entry - candidateSl) / atr;
+      if(maxRiskAtr > 0.0 && candidateRiskAtr > maxRiskAtr)
+         continue;
+      if((dir == "BUY" && (candidateSl >= entry || pivotPrice >= entry))
+         || (dir == "SELL" && (candidateSl <= entry || pivotPrice <= entry)))
+         continue;
+
+      int candidateAge = candidate - sig;
+      double score = prominence * 100.0 - candidateAge * 3.0 - candidateRiskAtr * 50.0;
+      string candidateDetail = "structural_sl swing=" + _fmt_price(pivotPrice)
+         + " sl=" + _fmt_price(NormalizeDouble(candidateSl, Digits))
+         + " age=" + IntegerToString(candidateAge)
+         + " atr=" + DoubleToString(atr, Digits)
+         + " prominence_atr=" + DoubleToString(prominence, 2)
+         + " buffer_atr=" + DoubleToString(MathMax(0.0, InpRegimeSwingBufferAtr), 2)
+         + " risk_atr=" + DoubleToString(candidateRiskAtr, 2)
+         + " max_age=" + IntegerToString(maxAge)
+         + " max_risk_atr=" + DoubleToString(maxRiskAtr, 2)
+         + " selection=" + (InpRegimeSwingPreferStrongest ? "best_nearby" : "nearest");
+
+      if(!InpRegimeSwingPreferStrongest)
+      {
+         swingPrice = pivotPrice;
+         structuralSl = NormalizeDouble(candidateSl, Digits);
+         swingAtr = atr;
+         prominenceAtr = prominence;
+         ageBars = candidateAge;
+         detail = candidateDetail;
+         return true;
+      }
+
+      if(!foundBest || score > bestScore)
+      {
+         foundBest = true;
+         bestScore = score;
+         bestSwingPrice = pivotPrice;
+         bestStructuralSl = NormalizeDouble(candidateSl, Digits);
+         bestSwingAtr = atr;
+         bestProminence = prominence;
+         bestAgeBars = candidateAge;
+         bestDetail = candidateDetail;
+      }
+   }
+
+   if(foundBest)
+   {
+      swingPrice = bestSwingPrice;
+      structuralSl = bestStructuralSl;
+      swingAtr = bestSwingAtr;
+      prominenceAtr = bestProminence;
+      ageBars = bestAgeBars;
+      detail = bestDetail;
+      return true;
+   }
+
+   if(InpRegimeSwingFallbackToExtreme && fallbackAge >= 0 && fallbackAtr > 0.0)
+   {
+      double buffer = MathMax(Point * 5.0, fallbackAtr * MathMax(0.0, InpRegimeSwingBufferAtr));
+      double candidateSl = (dir == "BUY") ? fallbackExtreme - buffer : fallbackExtreme + buffer;
+      double fallbackRiskAtr = MathAbs(entry - candidateSl) / fallbackAtr;
+      if((maxRiskAtr <= 0.0 || fallbackRiskAtr <= maxRiskAtr) && ((dir == "BUY" && candidateSl < entry) || (dir == "SELL" && candidateSl > entry)))
+      {
+         swingPrice = fallbackExtreme;
+         structuralSl = NormalizeDouble(candidateSl, Digits);
+         swingAtr = fallbackAtr;
+         prominenceAtr = 0.0;
+         ageBars = fallbackAge;
+         detail = "structural_sl_fallback_extreme swing=" + _fmt_price(swingPrice)
+            + " sl=" + _fmt_price(structuralSl)
+            + " age=" + IntegerToString(ageBars)
+            + " atr=" + DoubleToString(swingAtr, Digits)
+            + " buffer_atr=" + DoubleToString(MathMax(0.0, InpRegimeSwingBufferAtr), 2)
+            + " lookback=" + IntegerToString(effectiveLookback)
+            + " max_age=" + IntegerToString(maxAge)
+            + " max_risk_atr=" + DoubleToString(maxRiskAtr, 2)
+            + " risk_atr=" + DoubleToString(fallbackRiskAtr, 2);
+         return true;
+      }
+   }
+
+   detail = "structural_swing_not_found sig=" + IntegerToString(sig)
+      + " lookback=" + IntegerToString(effectiveLookback)
+      + " max_age=" + IntegerToString(maxAge)
+      + " max_risk_atr=" + DoubleToString(maxRiskAtr, 2)
+      + " left=" + IntegerToString(left)
+      + " right=" + IntegerToString(right)
+      + " fallback_age=" + IntegerToString(fallbackAge);
+   return false;
+}
+
+bool _regime_apply_structural_swing_sl(string direction, int signalShift, double entryPrice, double &regimeSl, double &regimeTp, string &structReason)
+{
+   structReason = "";
+   if(!_regime_structural_sl_enabled())
+      return false;
+   string dir = _trim(direction);
+   double entry = _valid_price_or_zero(entryPrice);
+   if((dir != "BUY" && dir != "SELL") || entry <= 0.0)
+   {
+      structReason = "structural_sl_invalid_geometry";
+      return false;
+   }
+
+   double swingPrice, structuralSl, swingAtr, prominenceAtr;
+   int ageBars;
+   string detail;
+   if(!_regime_find_structural_swing_stop(dir, signalShift, entry, swingPrice, structuralSl, swingAtr, prominenceAtr, ageBars, detail))
+   {
+      structReason = detail;
+      return false;
+   }
+
+   double risk = MathAbs(entry - structuralSl);
+   double minStop = MathMax(Point * 20.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point * 1.5);
+   if(risk < minStop)
+   {
+      double oldRisk = risk;
+      risk = minStop;
+      structuralSl = NormalizeDouble((dir == "BUY") ? entry - risk : entry + risk, Digits);
+      detail = detail + " min_stop_floor old_risk=" + DoubleToString(oldRisk, Digits) + " min_stop=" + DoubleToString(minStop, Digits);
+   }
+   double rr = MathMax(0.1, g_regimeRRRuntime);
+   regimeSl = structuralSl;
+   regimeTp = NormalizeDouble((dir == "BUY") ? entry + risk * rr : entry - risk * rr, Digits);
+   structReason = "regime_structural_swing_sl " + detail + " rr=" + DoubleToString(rr, 2) + " tp=" + _fmt_price(regimeTp);
+   return (regimeSl > 0.0 && regimeTp > 0.0);
+}
 bool _regime_apply_pip_sl(string direction, double entryPrice, double &regimeSl, double &regimeTp, string &pipReason)
 {
    pipReason = "";
@@ -5584,18 +5935,33 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
    }
    else
    {
-      _compute_regime_levels(direction, signalTime, entryPrice, regimeSl, regimeTp);
-      if(regimeSl <= 0.0 || regimeTp <= 0.0)
+      bool structuralApplied = false;
+      if(_regime_structural_sl_enabled())
       {
-         Print("AtomicBridge regime warning: invalid ATR SL/TP for dir=", direction, " entry=", _fmt_price(entryPrice));
-         return;
+         string structReason = "";
+         structuralApplied = _regime_apply_structural_swing_sl(direction, signalIndex, entryPrice, regimeSl, regimeTp, structReason);
+         if(structuralApplied)
+            trendName = trendName + "|" + structReason;
+         else
+            trendName = trendName + "|structural_sl_not_found_fallback_atr " + structReason;
       }
-      if(_trim(direction) == _trim(atomicDirection))
+
+      if(!structuralApplied)
       {
-         string clampReason = "";
-         if(_regime_apply_atomic_sl_clamp(direction, entryPrice, atomicEntry, atomicSl, regimeSl, regimeTp, clampReason))
-            trendName = trendName + "|" + clampReason;
+         _compute_regime_levels(direction, signalTime, entryPrice, regimeSl, regimeTp);
+         if(regimeSl <= 0.0 || regimeTp <= 0.0)
+         {
+            Print("AtomicBridge regime warning: invalid ATR SL/TP for dir=", direction, " entry=", _fmt_price(entryPrice));
+            return;
+         }
+         if(_trim(direction) == _trim(atomicDirection))
+         {
+            string clampReason = "";
+            if(_regime_apply_atomic_sl_clamp(direction, entryPrice, atomicEntry, atomicSl, regimeSl, regimeTp, clampReason))
+               trendName = trendName + "|" + clampReason;
+         }
       }
+
       string widenReason = "";
       if(_regime_apply_sl_widen(direction, entryPrice, regimeSl, regimeTp, widenReason))
          trendName = trendName + "|" + widenReason;
@@ -5951,15 +6317,37 @@ void ScanAndLogLatest(string reason)
    int latestHalfTpIndex = MathMax(1, MathMin(5, g_directMt4HalfBeTpIndexRuntime));
    bool latestAtomicHalfEnabled = (latestHalfTpIndex < g_directMt4TpIndexRuntime);
    double latestAtomicHalf = latestAtomicHalfEnabled ? _direct_tp_by_index(latestHalfTpIndex, tp1, tp2, tp3, tp4, tp5) : 0.0;
-   if(StringLen(direction) > 0 && entryPrice > 0.0 && atomicGeometrySl > 0.0 && latestAtomicTp > 0.0)
+
+   string visualDirection = direction;
+   double visualSl = atomicGeometrySl;
+   double visualTp = latestAtomicTp;
+   double visualHalf = latestAtomicHalf;
+   string visualMode = (g_atomicDirectRiskGeometryRuntime ? "RGEOM" : "INDIC");
+   if(g_atomicInvertTradeModeRuntime && (direction == "BUY" || direction == "SELL") && entryPrice > 0.0 && atomicGeometrySl > 0.0 && latestAtomicTp > 0.0)
    {
-      g_latestAtomicLevelDirection = direction;
+      string invDir = "";
+      double invSl = 0.0;
+      double invTp = 0.0;
+      string invDetail = "";
+      if(_atomic_build_inverted_geometry(direction, entryPrice, atomicGeometrySl, latestAtomicTp, invDir, invSl, invTp, invDetail))
+      {
+         visualDirection = invDir;
+         visualSl = invSl;
+         visualTp = invTp;
+         visualHalf = _atomic_invert_hcbe_price(invDir, entryPrice, invTp);
+         visualMode = visualMode + "_INV";
+      }
+   }
+
+   if(StringLen(visualDirection) > 0 && entryPrice > 0.0 && visualSl > 0.0 && visualTp > 0.0)
+   {
+      g_latestAtomicLevelDirection = visualDirection;
       g_latestAtomicLevelEntry = entryPrice;
-      g_latestAtomicLevelSl = atomicGeometrySl;
-      g_latestAtomicLevelTp = latestAtomicTp;
-      g_latestAtomicLevelHalf = latestAtomicHalf;
+      g_latestAtomicLevelSl = visualSl;
+      g_latestAtomicLevelTp = visualTp;
+      g_latestAtomicLevelHalf = visualHalf;
       g_latestAtomicLevelSignalTime = signalTime;
-      g_latestAtomicLevelMode = (g_atomicDirectRiskGeometryRuntime ? "RGEOM" : "INDIC");
+      g_latestAtomicLevelMode = visualMode;
    }
    if(InpLogOnlyOnChange && eventId == g_lastEventId)
    {
@@ -6092,6 +6480,9 @@ int OnInit()
    g_regimeFinalRiskScalePctRuntime = MathMax(1.0, MathMin(200.0, InpRegimeFinalRiskScalePct));
    g_regimePipSlModeRuntime = InpRegimePipSlModeEnabled;
    g_regimePipSlPipsRuntime = MathMax(0.0, InpRegimePipSlPips);
+   g_regimeStructuralSwingSlModeRuntime = InpRegimeStructuralSwingSlModeEnabled;
+   if(g_regimeStructuralSwingSlModeRuntime)
+      g_regimePipSlModeRuntime = false;
    g_regimeUseClosedBarRuntime = InpRegimeUseClosedBar;
    g_regimeDelayValidationRuntime = InpRegimeDelayValidationMode;
    g_regimeCloseIfVanishesRuntime = InpRegimeCloseIfSignalVanishesAfterOpen;
@@ -6424,8 +6815,30 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       _apply_dashboard();
       g_regimePipSlModeRuntime = !g_regimePipSlModeRuntime;
+      if(g_regimePipSlModeRuntime)
+         g_regimeStructuralSwingSlModeRuntime = false;
       g_regimeHistoryLevelsHash = "";
       Print("AtomicBridge dashboard AtomicRegime pip SL mode=", (g_regimePipSlModeRuntime ? "ON" : "OFF"), " pips=", DoubleToString(g_regimePipSlPipsRuntime, 2));
+      _draw_atomic_regime_trade_levels();
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_REGIME_STRUCT_SL")
+   {
+      _apply_dashboard();
+      g_regimeStructuralSwingSlModeRuntime = !g_regimeStructuralSwingSlModeRuntime;
+      if(g_regimeStructuralSwingSlModeRuntime)
+         g_regimePipSlModeRuntime = false;
+      g_regimeHistoryLevelsHash = "";
+      Print("AtomicBridge dashboard AtomicRegime structural swing SL mode=", (g_regimeStructuralSwingSlModeRuntime ? "ON" : "OFF"),
+            " lookback=", InpRegimeSwingLookbackBars,
+            " left=", InpRegimeSwingLeftBars,
+            " right=", InpRegimeSwingRightBars,
+            " max_age=", InpRegimeSwingMaxAgeBars,
+            " max_risk_atr=", DoubleToString(InpRegimeSwingMaxRiskAtr, 2),
+            " buffer_atr=", DoubleToString(InpRegimeSwingBufferAtr, 2),
+            " prefer_strongest=", (InpRegimeSwingPreferStrongest ? "true" : "false"),
+            " fallback_extreme=", (InpRegimeSwingFallbackToExtreme ? "true" : "false"));
       _draw_atomic_regime_trade_levels();
       _draw_dashboard();
       ChartRedraw(0);
@@ -6449,3 +6862,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == DASH_PREFIX + "BTN_APPLY")
       _apply_dashboard();
 }
+
+
+
+

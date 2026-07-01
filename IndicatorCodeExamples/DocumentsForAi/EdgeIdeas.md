@@ -1,0 +1,1 @@
+UKOIL ve USOIL`de sinyal geldikten sonra neredeyse bütün sinyallerden sonra ters yönle küçük bir geri çekilim oluyor burada dar bir tp/sl yapısıyla edge aranabilir
