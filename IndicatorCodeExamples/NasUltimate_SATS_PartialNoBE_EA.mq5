@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.37"
+#property version "1.39"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -241,6 +241,7 @@ bool     g_ftmoModeRuntime = false;
 bool     g_riskLotOnlyRuntime = false;
 NAS_RISK_GEOMETRY_MODE g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_NORMAL;
 double   g_pipSlDistanceRuntime = 30.0;
+double   g_accountRiskPerTradePctRuntime = 1.0;
 double   g_lastAdvancedLot = 0.0;
 string   g_lastAdvancedLotDetail = "";
 uint     g_lastAccountRiskGuardMs = 0;
@@ -1137,10 +1138,32 @@ int OnInit()
    g_invertTargetRRuntime = ClampInvertTargetR(InpInvertTargetR);
    g_invertTradeModeRuntime = InpInvertTradeMode;
    g_tpManagementModeRuntime = InpTpManagementMode;
-   g_ftmoModeRuntime = InpDashboardFtmoMode || (InpAdvancedAccountRiskEnabled && (InpAccountRiskDailyLossLimitPct > 0.0 || InpAccountRiskMaxDrawdownPct > 0.0));
-   g_riskLotOnlyRuntime = (!g_ftmoModeRuntime && (InpDashboardRiskLotOnlyMode || (InpAdvancedAccountRiskEnabled && InpAccountRiskDailyLossLimitPct <= 0.0 && InpAccountRiskMaxDrawdownPct <= 0.0)));
+   bool explicitFtmoMode = InpDashboardFtmoMode;
+   bool explicitRiskLotOnlyMode = InpDashboardRiskLotOnlyMode;
+   if(explicitFtmoMode && !explicitRiskLotOnlyMode)
+   {
+      g_ftmoModeRuntime = true;
+      g_riskLotOnlyRuntime = false;
+   }
+   else if(explicitRiskLotOnlyMode && !explicitFtmoMode)
+   {
+      g_ftmoModeRuntime = false;
+      g_riskLotOnlyRuntime = true;
+   }
+   else if(explicitFtmoMode && explicitRiskLotOnlyMode)
+   {
+      // Presets should not enable both, but fail conservative if they do.
+      g_ftmoModeRuntime = true;
+      g_riskLotOnlyRuntime = false;
+   }
+   else
+   {
+      g_ftmoModeRuntime = InpAdvancedAccountRiskEnabled && (InpAccountRiskDailyLossLimitPct > 0.0 || InpAccountRiskMaxDrawdownPct > 0.0);
+      g_riskLotOnlyRuntime = !g_ftmoModeRuntime && InpAdvancedAccountRiskEnabled;
+   }
    g_riskGeometryModeRuntime = InpRiskGeometryMode;
    g_pipSlDistanceRuntime = MathMax(0.0, InpPipSlDistance);
+   g_accountRiskPerTradePctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
    g_runtimeMagic = 0;
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
@@ -3042,6 +3065,29 @@ double NormalizeVolume(const double volume)
    v = MathMax(minLot, MathMin(maxLot, v));
    return NormalizeDouble(v, 8);
 }
+int VolumeDigits()
+{
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      return 2;
+   int digits = 0;
+   while(digits < 8 && MathAbs(step - MathRound(step)) > 0.00000001)
+   {
+      step *= 10.0;
+      digits++;
+   }
+   return digits;
+}
+
+double NormalizeVolumeDown(const double volume)
+{
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   double v = MathFloor(MathMin(volume, maxLot) / step + 0.0000001) * step;
+   return NormalizeDouble(MathMax(0.0, v), VolumeDigits());
+}
 
 string AccountRiskKey(const string kind)
 {
@@ -3385,7 +3431,7 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
    int openCount, protectedCount, unprotectedCount;
    double totalVolume, openRisk;
    string positions = AccountRiskPositionSummary(openCount, protectedCount, unprotectedCount, totalVolume, openRisk);
-   double tradeBudget = riskCapital * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
+   double tradeBudget = riskCapital * MathMax(0.0, g_accountRiskPerTradePctRuntime) / 100.0;
    double atrBudget = riskCapital * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
    double portfolioBudget = riskCapital * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
    double margin = AccountInfoDouble(ACCOUNT_MARGIN);
@@ -3576,30 +3622,32 @@ double ResolveAdvancedVolume(const int direction, const double entry, const doub
       return 0.0;
    }
 
-   double tradeBudget = equity * MathMax(0.0, InpAccountRiskPerTradePct) / 100.0;
-   double atrBudget = equity * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
-   double portfolioBudget = equity * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
-   double availablePortfolio = MathMax(0.0, portfolioBudget - openRisk);
-   if(tradeBudget <= 0.0 || atrBudget <= 0.0 || availablePortfolio <= 0.0)
+   double tradeBudget = equity * MathMax(0.0, g_accountRiskPerTradePctRuntime) / 100.0;
+   bool strictRiskLotOnly = g_riskLotOnlyRuntime && !g_ftmoModeRuntime;
+   double atrBudget = strictRiskLotOnly ? 1.0e100 : equity * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
+   double portfolioBudget = strictRiskLotOnly ? 1.0e100 : equity * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
+   double availablePortfolio = strictRiskLotOnly ? 1.0e100 : MathMax(0.0, portfolioBudget - openRisk);
+   if(tradeBudget <= 0.0 || (!strictRiskLotOnly && (atrBudget <= 0.0 || availablePortfolio <= 0.0)))
    {
-      detail = "account_risk_block exhausted_budget open_risk=" + DoubleToString(openRisk, 2)
-         + " portfolio_budget=" + DoubleToString(portfolioBudget, 2);
+      detail = "account_risk_block exhausted_budget mode=" + (strictRiskLotOnly ? "risklot_only_strict" : "ftmo_guarded")
+         + " open_risk=" + DoubleToString(openRisk, 2)
+         + " portfolio_budget=" + (strictRiskLotOnly ? "DISABLED" : DoubleToString(portfolioBudget, 2));
       return 0.0;
    }
 
    double slVolume = tradeBudget / slMoneyPerLot;
-   double atrVolume = atrBudget / atrMoneyPerLot;
-   double portfolioVolume = availablePortfolio / slMoneyPerLot;
-   double rawVolume = advancedLotEnabled ? MathMin(slVolume, MathMin(atrVolume, portfolioVolume)) : fallback;
+   double atrVolume = strictRiskLotOnly ? slVolume : atrBudget / atrMoneyPerLot;
+   double portfolioVolume = strictRiskLotOnly ? slVolume : availablePortfolio / slMoneyPerLot;
+   double rawVolume = advancedLotEnabled ? (strictRiskLotOnly ? slVolume : MathMin(slVolume, MathMin(atrVolume, portfolioVolume))) : fallback;
    double volume = advancedLotEnabled ? NormalizeRiskVolume(rawVolume, divisor) : NormalizeRiskVolume(fallback, divisor);
    double projectedRisk = slMoneyPerLot * volume;
    double projectedAtr = atrMoneyPerLot * volume;
    if(volume <= 0.0
       || projectedRisk > tradeBudget + 0.01
-      || projectedRisk > availablePortfolio + 0.01
-      || projectedAtr > atrBudget + 0.01)
+      || (!strictRiskLotOnly && (projectedRisk > availablePortfolio + 0.01 || projectedAtr > atrBudget + 0.01)))
    {
-      detail = "account_risk_block volume_below_min_or_budget raw=" + DoubleToString(rawVolume, 4)
+      detail = "account_risk_block volume_below_min_or_budget mode=" + (strictRiskLotOnly ? "risklot_only_strict" : "ftmo_guarded")
+         + " raw=" + DoubleToString(rawVolume, 4)
          + " projected_risk=" + DoubleToString(projectedRisk, 2)
          + " projected_atr=" + DoubleToString(projectedAtr, 2);
       return 0.0;
@@ -3620,7 +3668,7 @@ double ResolveAdvancedVolume(const int direction, const double entry, const doub
       return 0.0;
    }
 
-   detail = (advancedLotEnabled ? "advanced_lot=account_risk" : "advanced_lot=off_risk_validated")
+   detail = (advancedLotEnabled ? "advanced_lot=account_risk" : "advanced_lot=off_risk_validated") + " risk_mode=" + (strictRiskLotOnly ? "risklot_only_strict" : "ftmo_guarded")
       + " equity=" + DoubleToString(equity, 2)
       + " daily_atr=" + DoubleToString(dailyAtr, _Digits)
       + " sl_money_per_lot=" + DoubleToString(slMoneyPerLot, 2)
@@ -3992,13 +4040,79 @@ void CloseOneLeg()
    }
 }
 
-void MoveRemainingToBE()
+
+double NasProjectedProfit(const int direction, const double volume, const double entry, const double exitPrice, bool &ok)
+{
+   ok = false;
+   if(volume <= 0.0 || entry <= 0.0 || exitPrice <= 0.0)
+      return 0.0;
+   double result = 0.0;
+   ENUM_ORDER_TYPE orderType = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(orderType, _Symbol, volume, entry, exitPrice, result))
+      return 0.0;
+   ok = true;
+   return result;
+}
+
+void WriteHcBeLifecycleAudit(const string eventName, const ulong ticket, const string detail)
+{
+   if(IsTesterMode() || !InpAccountRiskAuditEnabled)
+      return;
+   string fileName = "NasUltimate_HcBeLifecycle_" + NasAuditDate(TimeGMT()) + ".csv";
+   int h = FileOpen(fileName, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("NAS SATS HCBE lifecycle audit open failed err=", GetLastError(), " file=", fileName);
+      return;
+   }
+   bool empty = FileSize(h) <= 0;
+   FileSeek(h, 0, SEEK_END);
+   if(empty)
+      FileWrite(h, "ts_gmt", "ts_server", "event", "build", "account", "symbol", "timeframe", "magic", "ticket", "bid", "ask", "detail");
+   FileWrite(h,
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+      eventName,
+      "1.39",
+      (string)AccountInfoInteger(ACCOUNT_LOGIN),
+      _Symbol,
+      EnumToString(_Period),
+      (string)RuntimeMagic(),
+      (string)ticket,
+      DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits),
+      DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_ASK), _Digits),
+      detail);
+   FileFlush(h);
+   FileClose(h);
+}
+
+bool ClosePartialVolume(const ulong ticket, const int direction, const double closeVol, string &method)
+{
+   method = "PositionClosePartial";
+   ResetLastError();
+   bool ok = trade.PositionClosePartial(ticket, closeVol);
+   if(ok)
+      return true;
+
+   long marginMode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   if(marginMode == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+      return false;
+
+   method = direction > 0 ? "netting_sell_reduce" : "netting_buy_reduce";
+   ResetLastError();
+   if(direction > 0)
+      return trade.Sell(closeVol, _Symbol);
+   return trade.Buy(closeVol, _Symbol);
+}
+void MoveRemainingToBE(const bool allowPartialClose=false)
 {
    if(g_lastEntry <= 0.0)
       return;
    bool anyManaged = false;
    bool allOk = true;
    string modeText = InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL ? "partial_original" : (UseSingleOrderTpMode() ? "single_order" : "multi_order");
+   bool partialMode = allowPartialClose && UseSingleOrderTpMode();
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -4012,12 +4126,103 @@ void MoveRemainingToBE()
       double entry = NormalizeDouble(PositionGetDouble(POSITION_PRICE_OPEN), _Digits);
       double currentSl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
+      double volumeBefore = PositionGetDouble(POSITION_VOLUME);
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      if(step <= 0.0)
+         step = 0.01;
+      double triggerPx = direction > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      bool pnlOk = false;
+      double expectedHalfPnl = NasProjectedProfit(direction, NormalizeVolumeDown(volumeBefore * 0.5), entry, triggerPx, pnlOk);
+      bool partialDone = false;
+      string partialDetail = "partial_not_requested";
+
+      if(partialMode)
+      {
+         double desiredClose = volumeBefore * 0.5;
+         double closeVol = NormalizeVolumeDown(desiredClose);
+         double remainingVol = NormalizeDouble(volumeBefore - closeVol, VolumeDigits());
+         partialDetail = "desired_close=" + DoubleToString(desiredClose, 8)
+            + " close_vol=" + DoubleToString(closeVol, 8)
+            + " remaining_vol=" + DoubleToString(remainingVol, 8)
+            + " min_vol=" + DoubleToString(minLot, 8)
+            + " step=" + DoubleToString(step, 8)
+            + " projected_half_pnl=" + (pnlOk ? DoubleToString(expectedHalfPnl, 2) : "NA");
+
+         if(closeVol < minLot - 0.0000001 || remainingVol < minLot - 0.0000001)
+         {
+            WriteHcBeLifecycleAudit("halfbe_blocked_volume", ticket,
+               "mode=" + modeText + " entry=" + DoubleToString(entry, _Digits)
+               + " trigger=" + DoubleToString(triggerPx, _Digits)
+               + " volume_before=" + DoubleToString(volumeBefore, 8)
+               + " " + partialDetail);
+         }
+         else
+         {
+            string method = "";
+            bool partialOk = ClosePartialVolume(ticket, direction, closeVol, method);
+            uint partialRet = trade.ResultRetcode();
+            string retText = trade.ResultRetcodeDescription();
+            if(!partialOk)
+            {
+               allOk = false;
+               WriteHcBeLifecycleAudit("halfbe_partial_close_failed", ticket,
+                  "mode=" + modeText + " method=" + method
+                  + " entry=" + DoubleToString(entry, _Digits)
+                  + " trigger=" + DoubleToString(triggerPx, _Digits)
+                  + " volume_before=" + DoubleToString(volumeBefore, 8)
+                  + " " + partialDetail
+                  + " ret=" + IntegerToString((int)partialRet)
+                  + " ret_text=" + retText
+                  + " err=" + IntegerToString(GetLastError()));
+               Print("NAS SATS HCBE partial close failed ticket=", ticket,
+                     " method=", method,
+                     " close_vol=", DoubleToString(closeVol, 8),
+                     " ret=", partialRet, " ", retText,
+                     " err=", GetLastError());
+               continue;
+            }
+            partialDone = true;
+            WriteHcBeLifecycleAudit("halfbe_partial_close_done", ticket,
+               "mode=" + modeText + " method=" + method
+               + " entry=" + DoubleToString(entry, _Digits)
+               + " trigger=" + DoubleToString(triggerPx, _Digits)
+               + " volume_before=" + DoubleToString(volumeBefore, 8)
+               + " " + partialDetail
+               + " ret=" + IntegerToString((int)partialRet)
+               + " ret_text=" + retText);
+            Print("NAS SATS HCBE partial close done ticket=", ticket,
+                  " method=", method,
+                  " close_vol=", DoubleToString(closeVol, 8),
+                  " projected_half_pnl=", (pnlOk ? DoubleToString(expectedHalfPnl, 2) : "NA"));
+         }
+
+         if(!PositionSelectByTicket(ticket))
+         {
+            WriteHcBeLifecycleAudit("halfbe_position_closed_after_partial", ticket,
+               "mode=" + modeText + " volume_before=" + DoubleToString(volumeBefore, 8)
+               + " " + partialDetail);
+            continue;
+         }
+         currentSl = PositionGetDouble(POSITION_SL);
+         tp = PositionGetDouble(POSITION_TP);
+         entry = NormalizeDouble(PositionGetDouble(POSITION_PRICE_OPEN), _Digits);
+      }
+
       double tol = MathMax(_Point, SymbolInfoDouble(_Symbol, SYMBOL_POINT));
       bool alreadyAtBe = currentSl > 0.0 && (direction > 0 ? currentSl >= entry - tol : currentSl <= entry + tol);
       if(alreadyAtBe)
       {
+         WriteHcBeLifecycleAudit("halfbe_sl_already_be", ticket,
+            "mode=" + modeText
+            + " partial_done=" + (partialDone ? "1" : "0")
+            + " entry=" + DoubleToString(entry, _Digits)
+            + " sl=" + DoubleToString(currentSl, _Digits)
+            + " tp=" + DoubleToString(tp, _Digits)
+            + " volume_before=" + DoubleToString(volumeBefore, 8));
          Print("NAS SATS EA: SL -> BE already protected ticket=", ticket,
                " mode=", modeText,
+               " partial_done=", partialDone,
                " entry=", DoubleToString(entry, _Digits),
                " sl=", DoubleToString(currentSl, _Digits),
                " tp=", DoubleToString(tp, _Digits));
@@ -4027,8 +4232,19 @@ void MoveRemainingToBE()
       bool ok = trade.PositionModify(ticket, entry, tp);
       if(ok)
       {
+         WriteHcBeLifecycleAudit("halfbe_sl_to_be_done", ticket,
+            "mode=" + modeText
+            + " partial_done=" + (partialDone ? "1" : "0")
+            + " entry=" + DoubleToString(entry, _Digits)
+            + " old_sl=" + DoubleToString(currentSl, _Digits)
+            + " new_sl=" + DoubleToString(entry, _Digits)
+            + " tp=" + DoubleToString(tp, _Digits)
+            + " volume_before=" + DoubleToString(volumeBefore, 8)
+            + " ret=" + IntegerToString((int)trade.ResultRetcode())
+            + " ret_text=" + trade.ResultRetcodeDescription());
          Print("NAS SATS EA: SL -> BE moved ticket=", ticket,
                " mode=", modeText,
+               " partial_done=", partialDone,
                " old_sl=", DoubleToString(currentSl, _Digits),
                " new_sl=", DoubleToString(entry, _Digits),
                " tp=", DoubleToString(tp, _Digits),
@@ -4038,8 +4254,20 @@ void MoveRemainingToBE()
       else
       {
          allOk = false;
+         WriteHcBeLifecycleAudit("halfbe_sl_to_be_failed", ticket,
+            "mode=" + modeText
+            + " partial_done=" + (partialDone ? "1" : "0")
+            + " entry=" + DoubleToString(entry, _Digits)
+            + " old_sl=" + DoubleToString(currentSl, _Digits)
+            + " new_sl=" + DoubleToString(entry, _Digits)
+            + " tp=" + DoubleToString(tp, _Digits)
+            + " volume_before=" + DoubleToString(volumeBefore, 8)
+            + " ret=" + IntegerToString((int)trade.ResultRetcode())
+            + " ret_text=" + trade.ResultRetcodeDescription()
+            + " err=" + IntegerToString(GetLastError()));
          Print("NAS SATS EA: SL -> BE move failed ticket=", ticket,
                " mode=", modeText,
+               " partial_done=", partialDone,
                " old_sl=", DoubleToString(currentSl, _Digits),
                " new_sl=", DoubleToString(entry, _Digits),
                " tp=", DoubleToString(tp, _Digits),
@@ -4205,7 +4433,7 @@ void ManageOpenPositions()
       return;
    bool hcTouched = g_lastDirection > 0 ? (bid >= hcPrice) : (ask <= hcPrice);
    if(hcTouched)
-      MoveRemainingToBE();
+      MoveRemainingToBE(UseSingleOrderTpMode());
 }
 
 double ManagedOpenPnl()
@@ -4805,7 +5033,7 @@ void ClearDashboardObjects()
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
       "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_FINAL_SCALE_APPLY", "BTN_EA_TOGGLE", "BTN_AUDIT_WIN", "BTN_ACCEPT_FILTER", "BTN_TP_MODE", "BTN_TP_LEG", "BTN_HCBE", "BTN_INV_TP", "BTN_INVERT", "BTN_FTMO", "BTN_RISKLOT", "BTN_RISK_GEOM", "BTN_ATRBUF_0", "BTN_ATRBUF_20", "BTN_ATRBUF_40", "BTN_ATRBUF_60", "BTN_ATRBUF_80", "BTN_ATRBUF_100", "BTN_ATRBUF_APPLY",
-      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL"
+      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL"
    };
    for(int i = 0; i < ArraySize(names); i++)
       DeleteObjectIfExists(names[i]);
@@ -5061,6 +5289,33 @@ bool ApplyAtrBufferFromDashboard(const string source)
       pct = requested * 100.0;
    return SetAtrBufferPct(pct, source);
 }
+
+bool ApplyRiskPctFromDashboard(const string source)
+{
+   string riskObj = PREFIX + "EDIT_RISK_PCT";
+   if(ObjectFind(0, riskObj) < 0)
+   {
+      Print("NAS SATS EA risk pct apply failed missing edit object source=", source);
+      return false;
+   }
+
+   string riskText = ObjectGetString(0, riskObj, OBJPROP_TEXT);
+   StringTrimLeft(riskText);
+   StringTrimRight(riskText);
+   double requested = StringToDouble(riskText);
+   if(requested <= 0.0 || requested > 100.0)
+   {
+      Print("NAS SATS EA risk pct apply failed invalid value source=", source, " risk_pct=", riskText);
+      return false;
+   }
+
+   g_accountRiskPerTradePctRuntime = requested;
+   AccountRiskCacheInvalidate();
+   Print("NAS SATS EA risk pct applied source=", source, " risk_pct=", DoubleToString(g_accountRiskPerTradePctRuntime, 3));
+   UpdateDashboard();
+   ChartRedraw(0);
+   return true;
+}
 void ApplyDashboardSettings(const string source)
 {
    ApplyTradingWindowFromDashboard(source);
@@ -5068,6 +5323,7 @@ void ApplyDashboardSettings(const string source)
    ApplySpreadMaxFromDashboard(source);
    ApplyFinalRiskScaleFromDashboard(source);
    ApplyAtrBufferFromDashboard(source);
+   ApplyRiskPctFromDashboard(source);
 }
 
 void RefreshRuntimeMagicAfterRiskModeChange()
@@ -5295,6 +5551,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          ApplyTradingWindowFromDashboard("edit_end");
       else if(sparam == PREFIX + "EDIT_LOT")
          ApplyLotFromDashboard("edit_end");
+      else if(sparam == PREFIX + "EDIT_RISK_PCT")
+         ApplyRiskPctFromDashboard("edit_end");
       else if(sparam == PREFIX + "EDIT_SPREAD_MAX")
          ApplySpreadMaxFromDashboard("edit_end");
       else if(sparam == PREFIX + "EDIT_FINAL_SCALE")
@@ -5329,6 +5587,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       ApplyTradingWindowFromDashboard("window_apply_button");
    else if(sparam == PREFIX + "BTN_FINAL_SCALE_APPLY")
       ApplyFinalRiskScaleFromDashboard("sl_apply_button");
+   else if(sparam == PREFIX + "BTN_RISK_PCT_APPLY")
+      ApplyRiskPctFromDashboard("risk_pct_apply_button");
    else if(sparam == PREFIX + "BTN_AUDIT_WIN")
       CycleAuditWindow();
    else if(sparam == PREFIX + "BTN_ACCEPT_FILTER")
@@ -5501,7 +5761,7 @@ void UpdateDashboard()
       CreateLabel("DASH_5", 38, 181, "FTMO risk " + string(AccountRiskRuntimeEnabled() ? "ON" : "OFF")
                   + " | lot " + string(InpAdvancedLotEngineEnabled && AccountRiskRuntimeEnabled() ? "AUTO" : "MANUAL")
                   + " | last lot=" + DoubleToString(g_lastAdvancedLot, 2)
-                  + " | risk " + DoubleToString(InpAccountRiskPerTradePct, 2) + "%"
+                  + " | risk " + DoubleToString(g_accountRiskPerTradePctRuntime, 2) + "%"
                   + " | TP=" + DoubleToString(InpFixedRR, 1) + "R", accentBlue);
    else if(InpExecutionMode == NAS_EXEC_PARTIAL_BE_ORIGINAL)
       CreateLabel("DASH_5", 38, 181, "FTMO risk " + string(AccountRiskRuntimeEnabled() ? "ON" : "OFF")
@@ -5558,6 +5818,9 @@ void UpdateDashboard()
    CreateEdit("EDIT_END", 760, 158, 68, 22, g_tradeEndTimeRuntime == "" ? InpTradeEndTime : g_tradeEndTimeRuntime);
    double shownLot = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? FixedVolume() : (g_totalLotRuntime > 0.0 ? g_totalLotRuntime : InpTotalLot);
    CreateEdit("EDIT_LOT", 836, 158, 68, 22, DoubleToString(shownLot, 2));
+   CreateLabel("DASH_RISK_PCT_LBL", 912, 140, "Risk%", muted, 8);
+   CreateEdit("EDIT_RISK_PCT", 912, 158, 52, 22, DoubleToString(g_accountRiskPerTradePctRuntime, 2));
+   CreateButton("BTN_RISK_PCT_APPLY", 970, 158, 68, 22, "RISK", C'38,101,176');
    CreateLabel("DASH_SPREAD_MAX_LBL", 684, 190, "MaxSpr", muted, 8);
    CreateEdit("EDIT_SPREAD_MAX", 740, 186, 58, 22, DoubleToString(g_spreadMaxPointsRuntime, 0));
    CreateLabel("DASH_FINAL_SCALE_LBL", 806, 190, "SL%", muted, 8);
@@ -5590,3 +5853,8 @@ void UpdateDashboard()
    CreateLabel("DASH_H3", 690, 504, UiShort(g_historySummary[2], 42), muted, 7);
    UpdateDoorAnimation();
 }
+
+
+
+
+

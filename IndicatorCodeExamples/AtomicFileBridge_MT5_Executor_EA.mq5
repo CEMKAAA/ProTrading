@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-01.1305-close-only"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-02.0925-halfbe-risk-pnl-audit"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -683,6 +683,19 @@ bool SpreadAllowed(string &reason)
    return true;
 }
 
+int VolumeDigits()
+{
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   for(int d = 0; d <= 8; d++)
+   {
+      if(MathAbs(step - NormalizeDouble(step, d)) < 0.000000001)
+         return d;
+   }
+   return 2;
+}
+
 double NormalizeVolume(double lot)
 {
    double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -694,7 +707,23 @@ double NormalizeVolume(double lot)
       step = 0.01;
    double v = MathFloor(lot / step) * step;
    v = MathMax(minVol, MathMin(maxVol, v));
-   return NormalizeDouble(v, 2);
+   return NormalizeDouble(v, VolumeDigits());
+}
+
+double NormalizeVolumeDown(double lot)
+{
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(InpMaxLot > 0.0)
+      maxVol = MathMin(maxVol, InpMaxLot);
+   if(step <= 0.0)
+      step = 0.01;
+   double v = MathFloor(lot / step) * step;
+   if(v < minVol - 0.000000001)
+      return 0.0;
+   v = MathMin(maxVol, v);
+   return NormalizeDouble(v, VolumeDigits());
 }
 
 bool ProjectedMarginPctForLot(const int direction, double lot, double entry, double &projectedPct, double &orderMargin)
@@ -1014,6 +1043,32 @@ void ManageHalfCloseBe()
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
       return;
+
+   BridgeSignal auditSig;
+   auditSig.valid = true;
+   auditSig.version = "";
+   auditSig.writtenGmt = 0;
+   auditSig.sourceLogin = 0;
+   auditSig.sourceSymbol = _Symbol;
+   auditSig.sourceTf = InpSourceTimeframeFilter;
+   auditSig.eventId = "halfbe_runtime";
+   auditSig.source = "AtomicFileBridgeMT5";
+   auditSig.signalTime = 0;
+   auditSig.bridgeEntry = 0.0;
+   auditSig.sl = 0.0;
+   auditSig.tp = 0.0;
+   auditSig.halfTrigger = 0.0;
+   auditSig.halfLabel = "";
+   auditSig.sourceBuild = ATOMIC_FILE_BRIDGE_MT5_BUILD;
+   auditSig.sourceBid = tick.bid;
+   auditSig.sourceAsk = tick.ask;
+   auditSig.riskPct = InpRiskPerTradePct;
+
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -1032,12 +1087,125 @@ void ManageHalfCloseBe()
       bool hit = (type == POSITION_TYPE_BUY) ? (tick.bid >= hc) : (tick.ask <= hc);
       if(!hit)
          continue;
+
       double vol = PositionGetDouble(POSITION_VOLUME);
-      double closeVol = NormalizeVolume(vol * MathMax(0.0, MathMin(1.0, InpHalfCloseFraction)));
-      if(closeVol > 0.0 && closeVol < vol)
-         trade.PositionClosePartial(ticket, closeVol);
-      trade.PositionModify(ticket, NormalizeDouble(entry, _Digits), PositionGetDouble(POSITION_TP));
+      double desiredClose = vol * MathMax(0.0, MathMin(1.0, InpHalfCloseFraction));
+      double closeVol = NormalizeVolumeDown(desiredClose);
+      double remainingVol = NormalizeDouble(vol - closeVol, VolumeDigits());
+      if(closeVol <= 0.0 || closeVol >= vol || remainingVol < minVol - 0.000000001)
+      {
+         double maxClosable = NormalizeVolumeDown(vol - minVol);
+         if(maxClosable > 0.0 && maxClosable < vol)
+         {
+            closeVol = maxClosable;
+            remainingVol = NormalizeDouble(vol - closeVol, VolumeDigits());
+         }
+      }
+
+      auditSig.direction = (type == POSITION_TYPE_BUY ? 1 : -1);
+      auditSig.bridgeEntry = entry;
+      auditSig.halfTrigger = hc;
+      auditSig.sl = PositionGetDouble(POSITION_SL);
+      auditSig.tp = PositionGetDouble(POSITION_TP);
+
+      double triggerPx = (type == POSITION_TYPE_BUY ? tick.bid : tick.ask);
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double riskDist = MathAbs(entry - sl);
+      double hcDist = MathAbs(hc - entry);
+      double expectedFullRiskMoney = 0.0;
+      double expectedHalfPnlAtHc = 0.0;
+      double hcR = 0.0;
+      double projectedPnl = 0.0;
+      if(tickSize > 0.0 && tickValue > 0.0 && closeVol > 0.0)
+      {
+         double signedMove = (type == POSITION_TYPE_BUY ? triggerPx - entry : entry - triggerPx);
+         projectedPnl = signedMove / tickSize * tickValue * closeVol;
+         if(riskDist > 0.0)
+         {
+            hcR = hcDist / riskDist;
+            expectedFullRiskMoney = riskDist / tickSize * tickValue * vol;
+            expectedHalfPnlAtHc = hcDist / tickSize * tickValue * closeVol;
+         }
+      }
+
+      string baseDetail = "ticket=" + IntegerToString((int)ticket)
+         + " type=" + (type == POSITION_TYPE_BUY ? "BUY" : "SELL")
+         + " entry=" + PriceStr(entry)
+         + " hc=" + PriceStr(hc)
+         + " trigger_px=" + PriceStr(triggerPx)
+         + " vol=" + DoubleToString(vol, VolumeDigits())
+         + " desired_close=" + DoubleToString(desiredClose, VolumeDigits())
+         + " close_vol=" + DoubleToString(closeVol, VolumeDigits())
+         + " remaining_vol=" + DoubleToString(remainingVol, VolumeDigits())
+         + " min_vol=" + DoubleToString(minVol, VolumeDigits())
+         + " step=" + DoubleToString(step, VolumeDigits())
+         + " fraction=" + DoubleToString(InpHalfCloseFraction, 2)
+         + " sl=" + PriceStr(sl)
+         + " tp=" + PriceStr(tp)
+         + " risk_dist=" + DoubleToString(riskDist, _Digits)
+         + " hc_dist=" + DoubleToString(hcDist, _Digits)
+         + " hc_r=" + DoubleToString(hcR, 3)
+         + " tick_size=" + DoubleToString(tickSize, _Digits)
+         + " tick_value=" + DoubleToString(tickValue, 4)
+         + " expected_full_risk_money=" + DoubleToString(expectedFullRiskMoney, 2)
+         + " expected_half_pnl_at_hc=" + DoubleToString(expectedHalfPnlAtHc, 2)
+         + " projected_pnl=" + DoubleToString(projectedPnl, 2);
+
+      if(closeVol <= 0.0 || closeVol >= vol || remainingVol < minVol - 0.000000001)
+      {
+         Audit("halfbe_blocked_volume", auditSig, baseDetail + " reason=partial_close_impossible_for_broker_volume");
+         continue;
+      }
+
+      ResetLastError();
+      bool partialOk = trade.PositionClosePartial(ticket, closeVol);
+      long partialRet = trade.ResultRetcode();
+      int partialErr = GetLastError();
+      string partialDetail = baseDetail
+         + " partial_ok=" + (partialOk ? "true" : "false")
+         + " partial_retcode=" + IntegerToString((int)partialRet)
+         + " partial_err=" + IntegerToString(partialErr)
+         + " partial_deal=" + IntegerToString((int)trade.ResultDeal())
+         + " partial_order=" + IntegerToString((int)trade.ResultOrder())
+         + " partial_comment=" + trade.ResultComment();
+
+      if(!partialOk)
+      {
+         Audit("halfbe_partial_close_failed", auditSig, partialDetail);
+         continue;
+      }
+
+      bool stillOpen = PositionSelectByTicket(ticket);
+      if(!stillOpen)
+      {
+         GlobalVariableSet(PosKey(ticket, "DONE"), 1.0);
+         Audit("halfbe_partial_close_success_position_closed", auditSig, partialDetail);
+         continue;
+      }
+
+      double currentTp = PositionGetDouble(POSITION_TP);
+      ResetLastError();
+      bool modifyOk = trade.PositionModify(ticket, NormalizeDouble(entry, _Digits), currentTp);
+      long modifyRet = trade.ResultRetcode();
+      int modifyErr = GetLastError();
+      string modifyDetail = partialDetail
+         + " modify_ok=" + (modifyOk ? "true" : "false")
+         + " modify_retcode=" + IntegerToString((int)modifyRet)
+         + " modify_err=" + IntegerToString(modifyErr)
+         + " be_sl=" + PriceStr(NormalizeDouble(entry, _Digits))
+         + " remaining_after=" + DoubleToString(PositionGetDouble(POSITION_VOLUME), VolumeDigits());
+
+      if(!modifyOk)
+      {
+         Audit("halfbe_sl_to_be_failed_after_partial", auditSig, modifyDetail);
+         continue;
+      }
+
       GlobalVariableSet(PosKey(ticket, "DONE"), 1.0);
+      Audit("halfbe_done", auditSig, modifyDetail);
    }
 }
 
@@ -1242,3 +1410,6 @@ void OnTick()
    }
    DrawDashboard();
 }
+
+
+
