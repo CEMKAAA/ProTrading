@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.39"
+#property version "1.40"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -44,7 +44,8 @@ enum NAS_RISK_GEOMETRY_MODE
 {
    NAS_RISK_GEOMETRY_NORMAL = 0,
    NAS_RISK_GEOMETRY_SCALP = 1,
-   NAS_RISK_GEOMETRY_PIP = 2
+   NAS_RISK_GEOMETRY_PIP = 2,
+   NAS_RISK_GEOMETRY_SIGNAL_OPEN = 3
 };
 
 input int    InpNasSensitivity = 4;
@@ -1179,8 +1180,17 @@ int OnInit()
       EventSetMillisecondTimer(40);
       if(InpDrawLastSignalsOnStart)
       {
-         DrawRecentSignalHistory();
+         g_historyAuditRows[0] = "Audit loading...";
+         g_historyAuditRows[1] = "Historical overlay deferred after attach";
+         g_historyAuditRows[2] = "Dashboard is ready; heavy replay runs on timer";
+         g_historyAuditRows[3] = "-";
+         g_historyAuditRows[4] = "-";
+         g_historyAuditRows[5] = "-";
+         g_historyAuditSummary = "Audit loading";
+         g_historyAuditDetail = "deferred history replay";
          UpdateDashboard();
+         RequestHistoryRefresh();
+         g_historyRefreshDueMs = GetTickCount() + 1500;
       }
    }
    return INIT_SUCCEEDED;
@@ -1771,12 +1781,54 @@ bool ApplyPipRiskGeometry(const int direction,
    tp3 = NormalizeDouble(direction > 0 ? entry + risk * 3.0 : entry - risk * 3.0, _Digits);
    return true;
 }
+
+bool ApplySignalOpenRiskGeometry(const int direction,
+                                 const double signalBarOpen,
+                                 double &entry,
+                                 double &sl,
+                                 double &tp1,
+                                 double &tp2,
+                                 double &tp3,
+                                 string &detail)
+{
+   if(g_riskGeometryModeRuntime != NAS_RISK_GEOMETRY_SIGNAL_OPEN || direction == 0 || entry <= 0.0 || signalBarOpen <= 0.0)
+      return false;
+
+   double rawRisk = MathAbs(entry - signalBarOpen);
+   double minStop = NasExecutionMinStop();
+   double risk = MathMax(minStop, rawRisk);
+   if(risk <= 0.0)
+      return false;
+
+   double oldSl = sl;
+   double oldTp1 = tp1;
+   sl = NormalizeDouble(direction > 0 ? entry - risk : entry + risk, _Digits);
+   risk = MathAbs(entry - sl);
+   if(risk <= minStop * 0.25)
+      return false;
+
+   tp1 = NormalizeDouble(direction > 0 ? entry + risk * 1.0 : entry - risk * 1.0, _Digits);
+   tp2 = NormalizeDouble(direction > 0 ? entry + risk * 2.0 : entry - risk * 2.0, _Digits);
+   tp3 = NormalizeDouble(direction > 0 ? entry + risk * 3.0 : entry - risk * 3.0, _Digits);
+
+   string signalOpenDetail = "sigopen_sl entry=" + DoubleToString(entry, _Digits)
+                           + " signal_bar_open=" + DoubleToString(signalBarOpen, _Digits)
+                           + " raw_risk=" + DoubleToString(rawRisk, _Digits)
+                           + " final_risk=" + DoubleToString(risk, _Digits)
+                           + " old_sl=" + DoubleToString(oldSl, _Digits)
+                           + " old_tp1=" + DoubleToString(oldTp1, _Digits)
+                           + " new_sl=" + DoubleToString(sl, _Digits);
+   detail = (detail == "" ? signalOpenDetail : detail + "+" + signalOpenDetail);
+   return true;
+}
 string RiskGeometryModeText()
 {
    if(g_riskGeometryModeRuntime == NAS_RISK_GEOMETRY_SCALP)
       return "SCALP";
    if(g_riskGeometryModeRuntime == NAS_RISK_GEOMETRY_PIP)
       return "PIP";
+   if(g_riskGeometryModeRuntime == NAS_RISK_GEOMETRY_SIGNAL_OPEN)
+      return "SIGOPEN";
    return "NORMAL";
 }
 bool CalculateRisk(const MqlRates &rates[],
@@ -2042,6 +2094,8 @@ void ProcessSignalBar()
             " sl=", DoubleToString(g_lastSl, _Digits));
       return;
    }
+   if(!g_invertTradeModeRuntime)
+      ApplySignalOpenRiskGeometry(direction, rates[i].open, g_lastEntry, g_lastSl, g_lastTp1, g_lastTp2, g_lastTp3, execGeometryDetail);
    g_lastEntry = NormalizeDouble(g_lastEntry, _Digits);
    g_lastSl = NormalizeDouble(g_lastSl, _Digits);
    g_lastTp1 = NormalizeDouble(g_lastTp1, _Digits);
@@ -2876,11 +2930,11 @@ void DrawRecentSignalHistory()
          continue;
       int signalDirection = p[i].buy ? 1 : -1;
       int direction = g_invertTradeModeRuntime ? -signalDirection : signalDirection;
-      if(liveManagedDirection != 0 && g_lastSignalTime > 0 && rates[i].time == g_lastSignalTime)
+      if((liveManagedDirection != 0 || g_liveLevelObjectsActive) && g_lastSignalTime > 0 && rates[i].time == g_lastSignalTime)
       {
          bool sameLiveSignal = (g_invertTradeModeRuntime ? (-signalDirection == g_lastDirection) : (signalDirection == g_lastDirection));
          if(sameLiveSignal)
-            continue; // Avoid double drawing current live trade: live HLINEs own that signal.
+            continue; // Avoid double drawing current live signal: live level objects own that signal until cleanup.
       }
       double entry, sl, tp1, tp2, tp3, atr;
       if(!CalculateRisk(rates, copied, i, signalDirection, p[i], entry, sl, tp1, tp2, tp3, atr))
@@ -2924,6 +2978,7 @@ void DrawRecentSignalHistory()
          {
             if(!BuildExecutableNasGeometry(direction, executionEntry, entry, sl, tp1, tp2, tp3, geometryDetail))
                continue;
+            ApplySignalOpenRiskGeometry(direction, rates[i].open, entry, sl, tp1, tp2, tp3, geometryDetail);
             finalTp = LocalTpPriceForLeg(entry, sl, direction, finalLeg);
          }
       }
@@ -2989,23 +3044,26 @@ void DrawRecentSignalHistory()
                                     + (hcPrice > 0.0 ? " | HC " + DoubleToString(hcPrice, _Digits) : "")
                                     + " | " + outcome;
       }
-      Print("NAS SATS EA history signal#", drawn + 1,
-            " window_weeks=", g_auditWeeksRuntime,
-            " dir=", (direction > 0 ? "BUY" : "SELL"),
-            " label=", NasSignalText(p[i]),
-            " risk_engine=", EnumToString(InpRiskEngine),
-            " bar=", TimeToString(rates[i].time, TIME_DATE|TIME_MINUTES),
-            " nas_st=", DoubleToString(p[i].superTrend, _Digits),
-            " signal_entry=", DoubleToString(signalEntry, _Digits),
-            " execution_entry=", DoubleToString(entry, _Digits),
-            " execution_source=", executionSource,
-            " execution_geometry=", geometryDetail,
-            " sl=", DoubleToString(sl, _Digits),
-            " final_tp=", DoubleToString(finalTp, _Digits),
-            " hc=", DoubleToString(hcPrice, _Digits),
-            " max_tp=", maxTp,
-            " pnl_r=", DoubleToString(pnlR, 2),
-            " outcome=", outcome);
+      if(InpSignalParityAudit)
+      {
+         Print("NAS SATS EA history signal#", drawn + 1,
+               " window_weeks=", g_auditWeeksRuntime,
+               " dir=", (direction > 0 ? "BUY" : "SELL"),
+               " label=", NasSignalText(p[i]),
+               " risk_engine=", EnumToString(InpRiskEngine),
+               " bar=", TimeToString(rates[i].time, TIME_DATE|TIME_MINUTES),
+               " nas_st=", DoubleToString(p[i].superTrend, _Digits),
+               " signal_entry=", DoubleToString(signalEntry, _Digits),
+               " execution_entry=", DoubleToString(entry, _Digits),
+               " execution_source=", executionSource,
+               " execution_geometry=", geometryDetail,
+               " sl=", DoubleToString(sl, _Digits),
+               " final_tp=", DoubleToString(finalTp, _Digits),
+               " hc=", DoubleToString(hcPrice, _Digits),
+               " max_tp=", maxTp,
+               " pnl_r=", DoubleToString(pnlR, 2),
+               " outcome=", outcome);
+      }
       drawn++;
    }
 
@@ -5532,6 +5590,8 @@ void ToggleRiskGeometryMode()
       g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_SCALP;
    else if(g_riskGeometryModeRuntime == NAS_RISK_GEOMETRY_SCALP)
       g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_PIP;
+   else if(g_riskGeometryModeRuntime == NAS_RISK_GEOMETRY_PIP)
+      g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_SIGNAL_OPEN;
    else
       g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_NORMAL;
    Print("NAS SATS EA risk geometry mode changed mode=", RiskGeometryModeText(),
@@ -5853,8 +5913,3 @@ void UpdateDashboard()
    CreateLabel("DASH_H3", 690, 504, UiShort(g_historySummary[2], 42), muted, 7);
    UpdateDoorAnimation();
 }
-
-
-
-
-

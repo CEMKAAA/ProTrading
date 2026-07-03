@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-02.0925-halfbe-risk-pnl-audit"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-03.1605-suffix-map"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -163,16 +163,31 @@ string MapSymbolFromCsv(string src, string csv)
 
 string MapSymbol(string src)
 {
-   string explicitMap = MapSymbolFromCsv(src, InpSymbolMapCsv);
+   string source = Trim(src);
+   string explicitMap = MapSymbolFromCsv(source, InpSymbolMapCsv);
    if(explicitMap != "")
       return explicitMap;
    if(InpUseBuiltInOilSymbolMap)
    {
-      string oilMap = MapSymbolFromCsv(src, InpBuiltInOilSymbolMapCsv);
+      string oilMap = MapSymbolFromCsv(source, InpBuiltInOilSymbolMapCsv);
       if(oilMap != "")
          return oilMap;
    }
-   return Trim(src);
+
+   // Common broker suffix case: MT4 source XAUUSDm, MT5 chart XAUUSD.
+   // Explicit mappings still win; this only strips trailing m when it exactly matches the chart symbol.
+   int len = StringLen(source);
+   if(len > 1)
+   {
+      string last = StringSubstr(source, len - 1, 1);
+      if(last == "m" || last == "M")
+      {
+         string stripped = StringSubstr(source, 0, len - 1);
+         if(SameTextCi(stripped, _Symbol))
+            return _Symbol;
+      }
+   }
+   return source;
 }
 
 bool SameTextCi(string a, string b)

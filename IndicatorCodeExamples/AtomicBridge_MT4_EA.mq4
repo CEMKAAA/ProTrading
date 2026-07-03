@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-01.swing-sl-localized-history"
+#define ATOMIC_BRIDGE_BUILD "2026-07-03-gann-follow-htf-cache"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -35,6 +35,11 @@ input bool   InpFileBridgeMt5Enabled = false; // Writes confirmed Atomic/AtomicR
 input string InpFileBridgeLatestFile = "AtomicFileBridge_Latest.csv";
 input string InpFileBridgeAuditPrefix = "AtomicFileBridge_Audit_";
 input bool   InpFileBridgeUseCommonFiles = true;
+input bool   InpGannFollowModeEnabled = false; // If true, Atomic/Regime trades only in same direction as latest GannMadeEasy state for this symbol+selected TF.
+input string InpGannFollowStatePrefix = "GannMadeEasy_ActiveSignal_";
+input bool   InpGannFollowUseCommonFiles = true;
+input bool   InpGannFollowFailClosed = true;
+input int    InpGannFollowTimeframe = 0; // 0=current chart TF, otherwise MT4 period minutes: 1,5,15,30,60,240,1440.
 input bool   InpDirectMt4ExecutionEnabled = true;
 input string InpDirectMt4Priority = "post_first"; // direct_first | post_first
 input double InpDirectMt4Lot = 0.10; // Manual fallback when automatic risk sizing is unavailable.
@@ -57,6 +62,7 @@ input bool   InpAccountRiskFailClosed = true;
 input bool   InpAccountRiskAuditEnabled = true;
 input int    InpAccountRiskAuditIntervalSeconds = 60;
 input int    InpDirectMt4Magic = 970101;
+input string InpDirectMt4InstanceTag = ""; // Optional manual instance key. Blank=auto key from current strategy variant.
 input int    InpDirectMt4Slippage = 30;
 input int    InpDirectMt4MaxSpreadPoints = 0;
 input double InpDirectMt4MaxSpreadToSlPct = 20.0; // Blocks MT4+MT5 file bridge when spread exceeds this % of entry-to-SL distance. 0=off.
@@ -106,6 +112,7 @@ input double InpRegimeFinalRiskScalePct = 75.0; // 100=unchanged; dashboard acce
 input bool   InpRegimePipSlModeEnabled = false; // If true, AtomicRegime SL distance is fixed by InpRegimePipSlPips; TP/HCBE still use R values.
 input double InpRegimePipSlPips = 100.0;
 input bool   InpRegimeStructuralSwingSlModeEnabled = false; // NAS-style local min/peak + ATR buffer SL. Signal math is unchanged.
+input bool   InpRegimeSignalOpenSlModeEnabled = false; // If true, Regime SL distance = abs(execution entry - open of the signal bar). Signal math is unchanged.
 input int    InpRegimeSwingLookbackBars = 200;
 input int    InpRegimeSwingLeftBars = 3;
 input int    InpRegimeSwingRightBars = 2;
@@ -178,6 +185,7 @@ datetime g_pendingRegimeWindowSignalTime = 0;
 datetime g_pendingRegimeWindowFirstSeen = 0;
 double   g_pendingRegimeWindowSl = 0.0;
 double   g_pendingRegimeWindowTp = 0.0;
+double   g_pendingRegimeWindowHalfTrigger = 0.0;
 string   g_pendingRegimeWindowHalfLabel = "";
 string   g_lastDirectMt4EventId = "";
 bool     g_proTradePostEnabledRuntime = true;
@@ -204,11 +212,14 @@ double   g_regimeFinalRiskScalePctRuntime = 100.0;
 bool     g_regimePipSlModeRuntime = false;
 double   g_regimePipSlPipsRuntime = 100.0;
 bool     g_regimeStructuralSwingSlModeRuntime = false;
+bool     g_regimeSignalOpenSlModeRuntime = false;
 string   g_latestRegimeLevelDirection = "";
 double   g_latestRegimeLevelEntry = 0.0;
 double   g_latestRegimeLevelSl = 0.0;
 double   g_latestRegimeLevelTp = 0.0;
+double   g_latestRegimeLevelHalf = 0.0;
 datetime g_latestRegimeLevelSignalTime = 0;
+string   g_latestRegimeLevelEventId = "";
 string   g_latestAtomicLevelDirection = "";
 double   g_latestAtomicLevelEntry = 0.0;
 double   g_latestAtomicLevelSl = 0.0;
@@ -223,6 +234,12 @@ int      g_regimeConfirmDelaySecondsRuntime = 300;
 bool     g_regimeOpenPreWindowSignalRuntime = false;
 string   g_directMt4AllowedWindowsRuntime = "";
 string   g_directMt4NoTradeWindowsRuntime = "";
+bool     g_gannFollowModeRuntime = false;
+int      g_gannFollowTfRuntime = 0;
+string   g_gannFollowLastDirection = "";
+string   g_gannFollowLastDetail = "not_read";
+datetime g_gannFollowLastSignalTime = 0;
+datetime g_gannFollowLastReadGmt = 0;
 bool     g_ftmoModeRuntime = false;
 bool     g_riskLotOnlyRuntime = false;
 bool     g_auditEnabledRuntime = true;
@@ -422,10 +439,11 @@ void _regime_window_pending_clear()
    g_pendingRegimeWindowFirstSeen = 0;
    g_pendingRegimeWindowSl = 0.0;
    g_pendingRegimeWindowTp = 0.0;
+   g_pendingRegimeWindowHalfTrigger = 0.0;
    g_pendingRegimeWindowHalfLabel = "";
 }
 
-void _regime_window_pending_store(string eventId, string direction, datetime signalTime, double sl, double tp, string halfLabel)
+void _regime_window_pending_store(string eventId, string direction, datetime signalTime, double sl, double tp, double halfTriggerPrice, string halfLabel)
 {
    if(!g_regimeOpenPreWindowSignalRuntime || eventId == "" || signalTime <= 0)
       return;
@@ -437,6 +455,7 @@ void _regime_window_pending_store(string eventId, string direction, datetime sig
    g_pendingRegimeWindowFirstSeen = _timer_now();
    g_pendingRegimeWindowSl = sl;
    g_pendingRegimeWindowTp = tp;
+   g_pendingRegimeWindowHalfTrigger = halfTriggerPrice;
    g_pendingRegimeWindowHalfLabel = halfLabel;
    _regime_lifecycle_audit(
       "regime_deferred_until_window",
@@ -469,7 +488,10 @@ void _regime_window_pending_try(string reason)
    datetime currentTime = 0;
    double currentEntry = 0.0;
    bool stillValid = _find_current_atomic_regime_from_buffers("", currentDir, currentShift, currentTime, currentEntry, currentSource);
-   if(!stillValid || currentDir != g_pendingRegimeWindowDirection || currentTime != g_pendingRegimeWindowSignalTime)
+   string expectedCurrentDir = g_pendingRegimeWindowDirection;
+   if(g_atomicInvertTradeModeRuntime)
+      expectedCurrentDir = (g_pendingRegimeWindowDirection == "BUY" ? "SELL" : "BUY");
+   if(!stillValid || currentDir != expectedCurrentDir || currentTime != g_pendingRegimeWindowSignalTime)
    {
       _regime_lifecycle_audit(
          "regime_deferred_window_cancelled",
@@ -485,7 +507,7 @@ void _regime_window_pending_try(string reason)
          _timer_now(),
          0,
          (g_pendingRegimeWindowFirstSeen > 0 ? (int)(_timer_now() - g_pendingRegimeWindowFirstSeen) : -1),
-         "current_dir=" + currentDir + " current_time=" + _fmt_time(currentTime)
+         "current_dir=" + currentDir + " expected_dir=" + expectedCurrentDir + " current_time=" + _fmt_time(currentTime)
       );
       _regime_window_pending_clear();
       return;
@@ -495,6 +517,7 @@ void _regime_window_pending_try(string reason)
    string dir = g_pendingRegimeWindowDirection;
    double sl = g_pendingRegimeWindowSl;
    double tp = g_pendingRegimeWindowTp;
+   double halfTrigger = g_pendingRegimeWindowHalfTrigger;
    string halfLabel = g_pendingRegimeWindowHalfLabel;
    datetime signalTime = g_pendingRegimeWindowSignalTime;
    int age = (g_pendingRegimeWindowFirstSeen > 0 ? (int)(_timer_now() - g_pendingRegimeWindowFirstSeen) : -1);
@@ -515,7 +538,7 @@ void _regime_window_pending_try(string reason)
       "current_shift=" + IntegerToString(currentShift)
    );
    _regime_window_pending_clear();
-   _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, 0.0, halfLabel, signalTime);
+   _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, halfTrigger, halfLabel, signalTime);
 }
 
 string _direct_trade_window_status()
@@ -584,14 +607,81 @@ int _direct_event_hash(string text)
    return h;
 }
 
-string _direct_event_global_key(string eventId)
+string _direct_source_family(string source)
 {
-   return "AtomicBridgeMT4|EVT|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + IntegerToString(_direct_event_hash(eventId));
+   return _contains_ci(source, "AtomicRegime") ? "AtomicRegime" : "Atomic";
 }
 
-bool _direct_event_claim(string eventId)
+string _direct_instance_signature(string source)
 {
-   string key = _direct_event_global_key(eventId);
+   string family = _direct_source_family(source);
+   string tag = _trim(InpDirectMt4InstanceTag);
+   string sig = family
+      + "|acct=" + IntegerToString(AccountNumber())
+      + "|sym=" + Symbol()
+      + "|tf=" + _tf_to_string(Period())
+      + "|magic=" + IntegerToString(InpDirectMt4Magic);
+   if(tag != "")
+      sig += "|tag=" + tag;
+   if(family == "AtomicRegime")
+   {
+      string slMode = "scale";
+      if(g_regimeSignalOpenSlModeRuntime) slMode = "sigopen";
+      else if(g_regimePipSlModeRuntime) slMode = "pip";
+      else if(g_regimeStructuralSwingSlModeRuntime) slMode = "swing";
+      sig += "|rr=" + DoubleToString(g_regimeRRRuntime, 4)
+         + "|hc=" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 4)
+         + "|slmode=" + slMode
+         + "|scale=" + DoubleToString(g_regimeFinalRiskScalePctRuntime, 2)
+         + "|pips=" + DoubleToString(g_regimePipSlPipsRuntime, 2)
+         + "|swing=" + IntegerToString(InpRegimeSwingLookbackBars) + ":" + IntegerToString(InpRegimeSwingLeftBars) + ":" + IntegerToString(InpRegimeSwingRightBars)
+         + ":" + DoubleToString(InpRegimeSwingBufferAtr, 3) + ":" + DoubleToString(InpRegimeSwingMaxRiskAtr, 3)
+         + "|shift=" + (g_regimeUseClosedBarRuntime ? "1" : "0")
+         + "|delay=" + (g_regimeDelayValidationRuntime ? IntegerToString(g_regimeConfirmDelaySecondsRuntime) : "direct");
+   }
+   else
+   {
+      sig += "|tp=" + IntegerToString(g_directMt4TpIndexRuntime)
+         + "|slmode=" + (g_atomicDirectRiskGeometryRuntime ? "geom" : "indic")
+         + "|target=" + DoubleToString(g_atomicDirectTargetRRuntime, 4)
+         + "|hcleg=" + IntegerToString(g_directMt4HalfBeTpIndexRuntime)
+         + "|hcr=" + DoubleToString(g_directMt4HalfBeRRuntime, 4)
+         + "|invert=" + (g_atomicInvertTradeModeRuntime ? "1" : "0")
+         + "|invtp=" + DoubleToString(g_atomicInvertTargetRRuntime, 4)
+         + "|invhc=" + IntegerToString(g_atomicInvertHcBeProgressPctRuntime);
+   }
+   return sig;
+}
+
+int _direct_instance_hash(string source)
+{
+   return _direct_event_hash(_direct_instance_signature(source));
+}
+
+string _direct_instance_token(string source)
+{
+   return "V" + IntegerToString(_direct_instance_hash(source));
+}
+
+bool _direct_comment_has_current_variant(string comment)
+{
+   int pos = StringFind(comment, "|V");
+   if(pos < 0)
+      return false;
+   string family = _contains_ci(comment, "AtomicRegime") ? "AtomicRegime" : "Atomic";
+   string expected = "|" + _direct_instance_token(family);
+   return StringFind(comment, expected) >= 0;
+}
+
+string _direct_event_global_key(string eventId, string source)
+{
+   string variant = _direct_instance_signature(source);
+   return "AtomicBridgeMT4|EVT|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + IntegerToString(_direct_event_hash(eventId + "|" + variant));
+}
+
+bool _direct_event_claim(string eventId, string source)
+{
+   string key = _direct_event_global_key(eventId, source);
    double now = (double)TimeLocal();
    if(!GlobalVariableCheck(key))
       GlobalVariableSet(key, 0.0);
@@ -601,9 +691,9 @@ bool _direct_event_claim(string eventId)
    return GlobalVariableSetOnCondition(key, now, observed);
 }
 
-void _direct_event_release(string eventId)
+void _direct_event_release(string eventId, string source)
 {
-   GlobalVariableSet(_direct_event_global_key(eventId), 0.0);
+   GlobalVariableSet(_direct_event_global_key(eventId, source), 0.0);
 }
 
 bool _direct_close_reverse_positions(string direction)
@@ -659,7 +749,7 @@ bool _regime_close_delay_validation_positions(string eventId, string direction, 
       string openDir = (OrderType() == OP_BUY) ? "BUY" : (OrderType() == OP_SELL ? "SELL" : "");
       if(openDir == "")
          continue;
-      if(direction != "" && openDir != direction)
+      if(direction != "" && openDir != direction && !g_atomicInvertTradeModeRuntime)
          continue;
       RefreshRates();
       int ticket = OrderTicket();
@@ -884,6 +974,140 @@ bool _atomic_build_inverted_geometry(string signalDirection, double signalEntry,
    return true;
 }
 
+bool _atomic_build_inverted_geometry_for_levels(string signalDirection, double signalEntry, double originalSl, double originalFinalTp, string &tradeDirection, double &sl, double &tp, string &detail)
+{
+   detail = "";
+   string sigDir = _trim(signalDirection);
+   if(sigDir != "BUY" && sigDir != "SELL")
+   {
+      detail = "invalid_signal_direction";
+      return false;
+   }
+   if(signalEntry <= 0.0 || originalSl <= 0.0 || originalFinalTp <= 0.0)
+   {
+      detail = "missing_original_geometry entry=" + _fmt_price(signalEntry) + " sl=" + _fmt_price(originalSl) + " tp=" + _fmt_price(originalFinalTp);
+      return false;
+   }
+   tradeDirection = (sigDir == "BUY") ? "SELL" : "BUY";
+   sl = NormalizeDouble(originalFinalTp, Digits);
+   tp = NormalizeDouble(originalSl, Digits);
+   double overrideTp = _atomic_invert_target_override_price(tradeDirection, signalEntry, sl);
+   if(overrideTp > 0.0)
+      tp = overrideTp;
+   double point = MarketInfo(Symbol(), MODE_POINT);
+   if(point <= 0.0)
+      point = Point;
+   double minGap = MathMax(point * 2.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * point);
+   bool slOk = (tradeDirection == "BUY") ? (sl < signalEntry - minGap) : (sl > signalEntry + minGap);
+   bool tpOk = (tradeDirection == "BUY") ? (tp > signalEntry + minGap) : (tp < signalEntry - minGap);
+   if(!slOk || !tpOk)
+   {
+      detail = "invalid_invert_level_side signal_dir=" + sigDir
+         + " trade_dir=" + tradeDirection
+         + " signal_entry=" + _fmt_price(signalEntry)
+         + " swapped_sl=" + _fmt_price(sl)
+         + " swapped_tp=" + _fmt_price(tp)
+         + " min_gap=" + DoubleToString(minGap, Digits);
+      return false;
+   }
+   detail = "inverted_level_geometry signal_dir=" + sigDir
+      + " trade_dir=" + tradeDirection
+      + " normal_sl_as_tp=" + _fmt_price(originalSl)
+      + " normal_tp_as_sl=" + _fmt_price(originalFinalTp)
+      + " invert_target=" + _atomic_invert_target_text();
+   return true;
+}
+
+bool _atomic_apply_invert_to_geometry_for_levels(string signalDirection, double signalEntry, double &sl, double &tp, double &hc, string &direction, string &detail)
+{
+   detail = "invert_off";
+   if(!g_atomicInvertTradeModeRuntime)
+      return false;
+   string invDir = "";
+   double invSl = 0.0;
+   double invTp = 0.0;
+   string invDetail = "";
+   if(!_atomic_build_inverted_geometry_for_levels(signalDirection, signalEntry, sl, tp, invDir, invSl, invTp, invDetail))
+   {
+      detail = invDetail;
+      return false;
+   }
+   direction = invDir;
+   sl = invSl;
+   tp = invTp;
+   hc = _atomic_invert_hcbe_price(invDir, signalEntry, invTp);
+   detail = invDetail;
+   return true;
+}
+bool _regime_reanchor_pip_geometry(string tradeDirection, double liveEntry, bool invertGeometry, double &sl, double &tp, double &halfTriggerPrice, string &detail)
+{
+   detail = "";
+   if(!_regime_pip_sl_enabled())
+      return false;
+   string dir = _trim(tradeDirection);
+   double entry = _valid_price_or_zero(liveEntry);
+   if((dir != "BUY" && dir != "SELL") || entry <= 0.0)
+   {
+      detail = "regime_pip_reanchor_invalid_entry";
+      return false;
+   }
+
+   double pipSize = _symbol_pip_size();
+   double requestedRisk = MathMax(0.0, g_regimePipSlPipsRuntime) * pipSize;
+   double minStop = MathMax(Point * 20.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point * 1.5);
+   double normalRisk = MathMax(requestedRisk, minStop);
+   double rr = MathMax(0.1, g_regimeRRRuntime);
+   double slDistance = invertGeometry ? normalRisk * rr : normalRisk;
+   double tpDistance = invertGeometry ? normalRisk : normalRisk * rr;
+
+   double oldSl = sl;
+   double oldTp = tp;
+   if(dir == "BUY")
+   {
+      sl = NormalizeDouble(entry - slDistance, Digits);
+      tp = NormalizeDouble(entry + tpDistance, Digits);
+   }
+   else
+   {
+      sl = NormalizeDouble(entry + slDistance, Digits);
+      tp = NormalizeDouble(entry - tpDistance, Digits);
+   }
+
+   if(invertGeometry)
+   {
+      double overrideTp = _atomic_invert_target_override_price(dir, entry, sl);
+      if(overrideTp > 0.0)
+         tp = overrideTp;
+      halfTriggerPrice = _atomic_invert_hcbe_price(dir, entry, tp);
+   }
+
+   detail = (invertGeometry ? "regime_invert_pip_reanchored" : "regime_pip_reanchored")
+      + " live_entry=" + _fmt_price(entry)
+      + " pips=" + DoubleToString(g_regimePipSlPipsRuntime, 2)
+      + " pip_size=" + DoubleToString(pipSize, Digits + 2)
+      + " normal_risk=" + DoubleToString(normalRisk, Digits)
+      + " rr=" + DoubleToString(rr, 2)
+      + " sl_distance=" + DoubleToString(slDistance, Digits)
+      + " tp_distance=" + DoubleToString(tpDistance, Digits)
+      + " old_sl=" + _fmt_price(oldSl)
+      + " new_sl=" + _fmt_price(sl)
+      + " old_tp=" + _fmt_price(oldTp)
+      + " new_tp=" + _fmt_price(tp)
+      + " half=" + _fmt_price(halfTriggerPrice);
+   return (sl > 0.0 && tp > 0.0);
+}
+
+bool _regime_reanchor_inverted_pip_geometry(string tradeDirection, double liveEntry, double &sl, double &tp, double &halfTriggerPrice, string &detail)
+{
+   if(!g_atomicInvertTradeModeRuntime)
+      return false;
+   return _regime_reanchor_pip_geometry(tradeDirection, liveEntry, true, sl, tp, halfTriggerPrice, detail);
+}
+
+bool _regime_reanchor_normal_pip_geometry(string tradeDirection, double liveEntry, double &sl, double &tp, double &halfTriggerPrice, string &detail)
+{
+   return _regime_reanchor_pip_geometry(tradeDirection, liveEntry, false, sl, tp, halfTriggerPrice, detail);
+}
 bool _direct_trigger_price_valid(string direction, double entry, double triggerPrice)
 {
    if(triggerPrice <= 0.0 || entry <= 0.0)
@@ -1032,11 +1256,34 @@ int _direct_parent_ticket_from_comment(string source)
    return StrToInteger(digits);
 }
 
+bool _direct_legacy_comment_owned_by_chart(string source)
+{
+   if(StringFind(source, "|V") >= 0)
+      return false;
+   if(StringFind(source, "AtomicBridgeMT4|") < 0 && StringFind(source, "AtomicBridge|") < 0)
+      return false;
+   string tfToken = "|" + _tf_to_string(Period());
+   return StringFind(source, tfToken) >= 0;
+}
 bool _direct_order_owned_by_instance(int ticket, string source, bool inheritPartial)
 {
    double owner = _direct_state_get("OWNER", ticket);
+   double variantOwner = _direct_state_get("VOWN", ticket);
+   double expectedVariant = (double)_direct_instance_hash(source);
    if(owner > 0.0)
-      return (int)owner == Period();
+   {
+      if((int)owner != Period())
+         return false;
+      if(variantOwner > 0.0)
+         return (int)variantOwner == (int)expectedVariant;
+      if(_direct_comment_has_current_variant(source))
+         return true;
+      return StringFind(source, "|V") < 0;
+   }
+   if(_direct_comment_has_current_variant(source))
+      return true;
+   if(_direct_legacy_comment_owned_by_chart(source))
+      return true;
    if(!inheritPartial)
       return false;
    int parentTicket = _direct_parent_ticket_from_comment(source);
@@ -1052,8 +1299,12 @@ bool _direct_order_owned_by_instance(int ticket, string source, bool inheritPart
    _direct_state_copy("HALF", parentTicket, ticket);
    _direct_state_copy("SEEN", parentTicket, ticket);
    _direct_state_copy("MAXR", parentTicket, ticket);
+   _direct_state_copy("VOWN", parentTicket, ticket);
    _direct_state_set("OWNER", ticket, parentOwner);
-   return (int)parentOwner == Period();
+   if((int)parentOwner != Period())
+      return false;
+   double copiedVariant = _direct_state_get("VOWN", ticket);
+   return (copiedVariant <= 0.0 || (int)copiedVariant == (int)expectedVariant);
 }
 
 bool _direct_failure_log_due(string kind, int ticket, int seconds)
@@ -1155,7 +1406,7 @@ bool _direct_history_order_owned_by_bridge()
    if(_direct_magic_owned(OrderMagicNumber()))
       return true;
    string comment = OrderComment();
-   return (StringFind(comment, "AtomicBridgeMT4") >= 0 || StringFind(comment, "AtomicBridge") >= 0);
+   return (StringFind(comment, "AtomicBridgeMT4") >= 0 || StringFind(comment, "AtomicBridge") >= 0 || StringFind(comment, "AB|Atomic") >= 0);
 }
 
 bool _direct_history_order_owned_by_chart()
@@ -1165,6 +1416,16 @@ bool _direct_history_order_owned_by_chart()
    if(!_direct_history_order_owned_by_bridge())
       return false;
    string comment = OrderComment();
+   double variantOwner = _direct_state_get("VOWN", OrderTicket());
+   if(variantOwner > 0.0)
+   {
+      string family = _contains_ci(comment, "AtomicRegime") ? "AtomicRegime" : "Atomic";
+      return (int)variantOwner == _direct_instance_hash(family);
+   }
+   if(_direct_comment_has_current_variant(comment))
+      return true;
+   if(StringFind(comment, "|V") >= 0)
+      return false;
    string tfToken = "|" + _tf_to_string(Period());
    if(StringFind(comment, "AtomicBridgeMT4|") >= 0 && StringFind(comment, "|M") >= 0)
       return (StringFind(comment, tfToken) >= 0);
@@ -1695,13 +1956,17 @@ double _direct_resolve_order_lot(double entry, double sl, int orderType, bool re
       detail = "account_risk_block unprotected_positions=" + IntegerToString(unprotectedCount);
       return 0.0;
    }
+   bool pureRiskLotOnly = (g_riskLotOnlyRuntime && !g_ftmoModeRuntime);
    double tradeRiskBudget = equity * _account_risk_per_trade_pct() / 100.0;
    double dailyAtrBudget = equity * MathMax(0.0, InpAccountRiskDailyAtrExposurePct) / 100.0;
    double portfolioBudget = equity * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
    double availablePortfolioRisk = MathMax(0.0, portfolioBudget - openRiskMoney);
-   if(tradeRiskBudget <= 0.0 || dailyAtrBudget <= 0.0 || availablePortfolioRisk <= 0.0)
+   if(tradeRiskBudget <= 0.0 || (!pureRiskLotOnly && (dailyAtrBudget <= 0.0 || availablePortfolioRisk <= 0.0)))
    {
       detail = "account_risk_block exhausted_budget"
+         + " mode=" + (pureRiskLotOnly ? "RISKLOT_ONLY_PURE" : "FTMO_GOVERNED")
+         + " trade_budget=" + DoubleToString(tradeRiskBudget, 2)
+         + " atr_budget=" + DoubleToString(dailyAtrBudget, 2)
          + " open_risk=" + DoubleToString(openRiskMoney, 2)
          + " portfolio_budget=" + DoubleToString(portfolioBudget, 2);
       return 0.0;
@@ -1709,18 +1974,20 @@ double _direct_resolve_order_lot(double entry, double sl, int orderType, bool re
    double slLot = tradeRiskBudget / slMoneyPerLot;
    double atrLot = dailyAtrBudget / dailyMoneyPerLot;
    double portfolioLot = availablePortfolioRisk / slMoneyPerLot;
-   double rawLot = autoLotEnabled ? MathMin(slLot, MathMin(atrLot, portfolioLot)) : fallbackLot;
+   double rawLot = autoLotEnabled ? (pureRiskLotOnly ? slLot : MathMin(slLot, MathMin(atrLot, portfolioLot))) : fallbackLot;
    double finalLot = autoLotEnabled ? _direct_normalize_order_lot(rawLot, requireHalfSplit) : fallbackLot;
    double projectedRisk = slMoneyPerLot * finalLot;
    double projectedAtrExposure = dailyMoneyPerLot * finalLot;
    if(finalLot <= 0.0
       || projectedRisk > tradeRiskBudget + 0.01
-      || projectedRisk > availablePortfolioRisk + 0.01
-      || projectedAtrExposure > dailyAtrBudget + 0.01)
+      || (!pureRiskLotOnly && projectedRisk > availablePortfolioRisk + 0.01)
+      || (!pureRiskLotOnly && projectedAtrExposure > dailyAtrBudget + 0.01))
    {
       detail = "account_risk_block volume_below_min_or_budget"
+         + " mode=" + (pureRiskLotOnly ? "RISKLOT_ONLY_PURE" : "FTMO_GOVERNED")
          + " raw_lot=" + DoubleToString(rawLot, 4)
          + " projected_risk=" + DoubleToString(projectedRisk, 2)
+         + " trade_budget=" + DoubleToString(tradeRiskBudget, 2)
          + " available_risk=" + DoubleToString(availablePortfolioRisk, 2)
          + " projected_atr_exposure=" + DoubleToString(projectedAtrExposure, 2);
       return 0.0;
@@ -1738,6 +2005,7 @@ double _direct_resolve_order_lot(double entry, double sl, int orderType, bool re
       return 0.0;
    }
    detail = (autoLotEnabled ? "auto_lot=account_risk" : "auto_lot=off_risk_validated")
+      + " risk_mode=" + (pureRiskLotOnly ? "RISKLOT_ONLY_PURE_SL" : "FTMO_GOVERNED")
       + " equity=" + DoubleToString(equity, 2)
       + " risk_pct=" + DoubleToString(_account_risk_per_trade_pct(), 3)
       + " atr_exposure_pct=" + DoubleToString(InpAccountRiskDailyAtrExposurePct, 3)
@@ -1875,6 +2143,145 @@ void _file_bridge_write_signal(string eventId, string dir, double bridgeEntry, d
    FileClose(a);
    Print("AtomicBridge file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
 }
+string _safe_file_token(string s)
+{
+   string out = s;
+   StringReplace(out, "\\", "_");
+   StringReplace(out, "/", "_");
+   StringReplace(out, ":", "_");
+   StringReplace(out, "*", "_");
+   StringReplace(out, "?", "_");
+   StringReplace(out, "\"", "_");
+   StringReplace(out, "<", "_");
+   StringReplace(out, ">", "_");
+   StringReplace(out, "|", "_");
+   StringReplace(out, " ", "_");
+   return out;
+}
+
+int _gann_follow_effective_tf()
+{
+   return (g_gannFollowTfRuntime > 0 ? g_gannFollowTfRuntime : Period());
+}
+
+int _gann_follow_sanitize_tf(int tf)
+{
+   if(tf == 0 || tf == PERIOD_M1 || tf == PERIOD_M5 || tf == PERIOD_M15 || tf == PERIOD_M30 ||
+      tf == PERIOD_H1 || tf == PERIOD_H4 || tf == PERIOD_D1)
+      return tf;
+   return 0;
+}
+
+string _gann_follow_tf_text()
+{
+   if(g_gannFollowTfRuntime <= 0)
+      return "CUR " + _tf_to_string(Period());
+   return _tf_to_string(g_gannFollowTfRuntime);
+}
+
+void _gann_follow_cycle_tf()
+{
+   int current = _gann_follow_sanitize_tf(g_gannFollowTfRuntime);
+   if(current == 0) g_gannFollowTfRuntime = PERIOD_M1;
+   else if(current == PERIOD_M1) g_gannFollowTfRuntime = PERIOD_M5;
+   else if(current == PERIOD_M5) g_gannFollowTfRuntime = PERIOD_M15;
+   else if(current == PERIOD_M15) g_gannFollowTfRuntime = PERIOD_M30;
+   else if(current == PERIOD_M30) g_gannFollowTfRuntime = PERIOD_H1;
+   else if(current == PERIOD_H1) g_gannFollowTfRuntime = PERIOD_H4;
+   else if(current == PERIOD_H4) g_gannFollowTfRuntime = PERIOD_D1;
+   else g_gannFollowTfRuntime = 0;
+}
+
+string _gann_follow_state_file_name()
+{
+   int tf = _gann_follow_effective_tf();
+   return InpGannFollowStatePrefix + _safe_file_token(Symbol()) + "_" + IntegerToString(tf) + ".csv";
+}
+
+int _gann_follow_file_flags(int baseFlags)
+{
+   int flags = baseFlags | FILE_ANSI;
+   if(InpGannFollowUseCommonFiles)
+      flags |= FILE_COMMON;
+   return flags;
+}
+
+bool _gann_follow_read_state(string &dir, datetime &signalTime, string &detail)
+{
+   dir = "";
+   signalTime = 0;
+   string fileName = _gann_follow_state_file_name();
+   int h = FileOpen(fileName, _gann_follow_file_flags(FILE_CSV | FILE_READ | FILE_SHARE_READ | FILE_SHARE_WRITE), ',');
+   if(h == INVALID_HANDLE)
+   {
+      detail = "file_open_failed err=" + IntegerToString(GetLastError()) + " file=" + fileName;
+      return false;
+   }
+   string header[11];
+   string fields[11];
+   for(int i = 0; i < 11 && !FileIsEnding(h); i++)
+      header[i] = FileReadString(h);
+   for(int j = 0; j < 11 && !FileIsEnding(h); j++)
+      fields[j] = FileReadString(h);
+   FileClose(h);
+   string sym = fields[3];
+   int tf = (int)StringToInteger(fields[4]);
+   string d = fields[5];
+   StringToUpper(d);
+   int selectedTf = _gann_follow_effective_tf();
+   if(sym == Symbol() && tf == selectedTf && (d == "BUY" || d == "SELL"))
+   {
+      dir = d;
+      signalTime = StringToTime(fields[6]);
+      detail = "state_ok file=" + fileName + " filter_tf=" + _tf_to_string(selectedTf) + " dir=" + dir + " signal_time=" + fields[6] + " event=" + fields[7] + " build=" + fields[9];
+      return true;
+   }
+   detail = "state_not_found file=" + fileName + " filter_tf=" + _tf_to_string(selectedTf) + " sym=" + sym + " tf=" + fields[4] + " dir=" + d;
+   return false;
+}
+void _gann_follow_refresh_cache(bool force=false)
+{
+   if(!g_gannFollowModeRuntime)
+      return;
+   datetime now = TimeGMT();
+   if(!force && g_gannFollowLastReadGmt > 0 && (now - g_gannFollowLastReadGmt) < 2)
+      return;
+   string gd, det;
+   datetime gt = 0;
+   if(_gann_follow_read_state(gd, gt, det))
+   {
+      g_gannFollowLastDirection = gd;
+      g_gannFollowLastSignalTime = gt;
+   }
+   else
+      g_gannFollowLastDirection = "NONE";
+   g_gannFollowLastReadGmt = now;
+   g_gannFollowLastDetail = det;
+}
+bool _gann_follow_allows(string tradeDir, string eventId, string source, double price, double sl, double tp)
+{
+   if(!g_gannFollowModeRuntime)
+      return true;
+   string gDir, detail;
+   datetime sigTime = 0;
+   bool ok = _gann_follow_read_state(gDir, sigTime, detail);
+   g_gannFollowLastDirection = ok ? gDir : "NONE";
+   g_gannFollowLastSignalTime = sigTime;
+   g_gannFollowLastReadGmt = TimeGMT();
+   g_gannFollowLastDetail = detail;
+   if(!ok)
+   {
+      _direct_audit_write("direct_gann_follow_state_missing", source, eventId, 0, tradeDir, g_directMt4LotRuntime, price, sl, tp, "gann_follow", 0.0, detail + " fail_closed=" + (InpGannFollowFailClosed ? "true" : "false"));
+      return !InpGannFollowFailClosed;
+   }
+   if(gDir != tradeDir)
+   {
+      _direct_audit_write("direct_gann_follow_blocked", source, eventId, 0, tradeDir, g_directMt4LotRuntime, price, sl, tp, "gann_follow", 0.0, "gann_dir=" + gDir + " trade_dir=" + tradeDir + " " + detail);
+      return false;
+   }
+   _direct_audit_write("direct_gann_follow_allowed", source, eventId, 0, tradeDir, g_directMt4LotRuntime, price, sl, tp, "gann_follow", 0.0, detail);
+   return true;
+}
 bool _direct_mt4_execute(string eventId, string direction, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
    string dir = _trim(direction);
@@ -1906,7 +2313,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       string windowExtra = "outside_allowed_window_path half_trigger=" + _fmt_price(halfTriggerPrice);
       if(sourceIsRegime && g_regimeOpenPreWindowSignalRuntime && sourceSignalTime > 0)
       {
-         _regime_window_pending_store(eventId, dir, sourceSignalTime, sl, tp, halfTriggerLabel);
+         _regime_window_pending_store(eventId, dir, sourceSignalTime, sl, tp, halfTriggerPrice, halfTriggerLabel);
          windowExtra = windowExtra + " deferred_until_allowed_window=1";
          _direct_audit_write("direct_signal_received", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, "confirmed_signal", 0.0, windowExtra);
          _direct_audit_write("direct_defer_allowed_window", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, g_directMt4AllowedWindowsRuntime, 0.0, "regime_pre_window_toggle=on");
@@ -1934,6 +2341,23 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_skip_spread", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, "spread=" + IntegerToString(spread) + " max=" + IntegerToString(g_directMt4MaxSpreadRuntime), 0.0, "file_bridge_not_written=1");
       return false;
    }
+   string regimeReanchorDetail = "";
+   if(sourceIsRegime && _regime_pip_sl_enabled())
+   {
+      RefreshRates();
+      signalPx = (dir == "BUY") ? Ask : Bid;
+      bool invertReanchor = g_atomicInvertTradeModeRuntime;
+      if(_regime_reanchor_pip_geometry(dir, signalPx, invertReanchor, sl, tp, halfTriggerPrice, regimeReanchorDetail))
+      {
+         Print("AtomicBridge regime pip geometry reanchored event=", eventId, " dir=", dir, " invert=", (invertReanchor ? "true" : "false"), " ", regimeReanchorDetail);
+         _direct_audit_write(invertReanchor ? "direct_regime_invert_pip_reanchored" : "direct_regime_pip_reanchored", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, "before_file_bridge_and_order", 0.0, regimeReanchorDetail);
+      }
+      else if(regimeReanchorDetail != "")
+      {
+         Print("AtomicBridge regime pip reanchor skipped event=", eventId, " dir=", dir, " reason=", regimeReanchorDetail);
+      }
+   }
+
    string spreadSlDetail = "";
    if(!_direct_spread_to_sl_allowed(dir, signalPx, sl, spreadSlDetail))
    {
@@ -1943,6 +2367,12 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_skip_spread_sl_pct", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, spreadSlDetail, 0.0, "file_bridge_not_written=1");
       return false;
    }
+   if(!_gann_follow_allows(dir, eventId, source, signalPx, sl, tp))
+   {
+      Print("AtomicBridge direct_mt4 skipped reason=gann_follow_filter event=", eventId, " dir=", dir, " ", g_gannFollowLastDetail);
+      return false;
+   }
+
    _file_bridge_write_signal(eventId, dir, signalPx, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
    if(!g_directMt4EnabledRuntime)
    {
@@ -1957,6 +2387,13 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    int type = (dir == "BUY") ? OP_BUY : OP_SELL;
    double price = (type == OP_BUY) ? Ask : Bid;
    string atomicGeometryDetail = (!sourceIsRegime && g_atomicDirectRiskGeometryRuntime) ? "atomic_r_geometry_precomputed" : "";
+   if(sourceIsRegime && _regime_pip_sl_enabled())
+   {
+      string orderReanchorDetail = "";
+      bool invertOrderReanchor = g_atomicInvertTradeModeRuntime;
+      if(_regime_reanchor_pip_geometry(dir, price, invertOrderReanchor, sl, tp, halfTriggerPrice, orderReanchorDetail))
+         atomicGeometryDetail = orderReanchorDetail;
+   }
    double stopLoss = (sl > 0.0 ? NormalizeDouble(sl, Digits) : 0.0);
    double takeProfit = (tp > 0.0 ? NormalizeDouble(tp, Digits) : 0.0);
    bool riskLockHeld = false;
@@ -1992,7 +2429,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_skip_account_risk", source, eventId, 0, dir, 0.0, price, stopLoss, takeProfit, "account_risk_block", 0.0, lotDetail);
       return false;
    }
-   if(!_direct_event_claim(eventId))
+   if(!_direct_event_claim(eventId, source))
    {
       if(riskLockHeld)
          _account_risk_lock_release();
@@ -2001,7 +2438,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_duplicate_suppressed", source, eventId, 0, dir, lot, price, stopLoss, takeProfit, "terminal_global_event_lock", 0.0, lotDetail);
       return true;
    }
-   string comment = "AtomicBridgeMT4|" + source + "|" + _tf_to_string(Period());
+   string comment = "AB|" + _direct_source_family(source) + "|" + _direct_instance_token(source);
    if(StringLen(comment) > 31)
       comment = StringSubstr(comment, 0, 31);
    ResetLastError();
@@ -2026,10 +2463,46 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
          actualSl = OrderStopLoss();
          actualTp = OrderTakeProfit();
       }
+      if(sourceIsRegime && _regime_pip_sl_enabled() && fillPrice > 0.0)
+      {
+         double fillAnchoredSl = actualSl;
+         double fillAnchoredTp = actualTp;
+         double fillAnchoredHalf = halfTriggerPrice;
+         string fillAnchorDetail = "";
+         bool fillInvert = g_atomicInvertTradeModeRuntime;
+         if(_regime_reanchor_pip_geometry(dir, fillPrice, fillInvert, fillAnchoredSl, fillAnchoredTp, fillAnchoredHalf, fillAnchorDetail))
+         {
+            fillAnchoredSl = NormalizeDouble(fillAnchoredSl, Digits);
+            fillAnchoredTp = NormalizeDouble(fillAnchoredTp, Digits);
+            bool needsModify = (MathAbs(fillAnchoredSl - actualSl) > Point * 0.5 || MathAbs(fillAnchoredTp - actualTp) > Point * 0.5);
+            if(needsModify)
+            {
+               ResetLastError();
+               bool modOk = OrderModify(ticket, fillPrice, fillAnchoredSl, fillAnchoredTp, 0, clrNONE);
+               if(modOk && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+               {
+                  actualSl = OrderStopLoss();
+                  actualTp = OrderTakeProfit();
+                  halfTriggerPrice = fillAnchoredHalf;
+                  _direct_audit_write("direct_regime_pip_fill_reanchored", source, eventId, ticket, dir, lot, fillPrice, actualSl, actualTp, "order_modify_ok", 0.0, fillAnchorDetail);
+               }
+               else
+               {
+                  int modErr = GetLastError();
+                  _direct_audit_write("direct_regime_pip_fill_reanchor_failed", source, eventId, ticket, dir, lot, fillPrice, actualSl, actualTp, "order_modify_err=" + IntegerToString(modErr), 0.0, fillAnchorDetail);
+               }
+            }
+            else
+            {
+               halfTriggerPrice = fillAnchoredHalf;
+            }
+         }
+      }
       double initialRisk = (actualSl > 0.0 ? MathAbs(fillPrice - actualSl) : 0.0);
       if(initialRisk > Point)
          _direct_state_set("IRISK", ticket, initialRisk);
       _direct_state_set("OWNER", ticket, Period());
+      _direct_state_set("VOWN", ticket, _direct_instance_hash(source));
       double activeHalfR = (_contains_ci(source, "AtomicRegime") ? g_regimeDirectMt4HalfBeRRuntime : (g_directMt4HalfBeTpIndexRuntime < g_directMt4TpIndexRuntime ? g_directMt4HalfBeRRuntime : 0.0));
       bool triggerRebased = false;
       string triggerGeometry = "";
@@ -2057,7 +2530,7 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       return true;
    }
    int err = GetLastError();
-   _direct_event_release(eventId);
+   _direct_event_release(eventId, source);
    Print("AtomicBridge direct_mt4 order_failed err=", err, " dir=", dir, " lot=", DoubleToString(lot, 2), " price=", _fmt_price(price), " sl=", _fmt_price(stopLoss), " tp=", _fmt_price(takeProfit), " event=", eventId);
    _direct_audit_write("direct_signal_received", source, eventId, 0, dir, lot, signalPx, sl, tp, "confirmed_signal", 0.0, "written_after_order_send_to_avoid_latency half_trigger=" + _fmt_price(halfTriggerPrice));
    _direct_audit_write("direct_order_failed", source, eventId, 0, dir, lot, price, stopLoss, takeProfit, "err=" + IntegerToString(err), 0.0, comment);
@@ -2890,6 +3363,7 @@ void _direct_transfer_ticket_state(int oldTicket, int newTicket)
    _direct_state_copy("HALF", oldTicket, newTicket);
    _direct_state_copy("SEEN", oldTicket, newTicket);
    _direct_state_copy("MAXR", oldTicket, newTicket);
+   _direct_state_copy("VOWN", oldTicket, newTicket);
    _direct_state_copy("OWNER", oldTicket, newTicket);
 }
 
@@ -3111,7 +3585,8 @@ string _bridge_runtime_telemetry_json()
       "\"atomic_fallback_halfbe_r\":" + DoubleToString(g_directMt4HalfBeRRuntime, 2) + ","
       "\"regime_halfbe_r\":" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2) + ","
       "\"regime_pip_sl_mode\":" + (g_regimePipSlModeRuntime ? "true" : "false") + ","
-      "\"regime_pip_sl_pips\":" + DoubleToString(g_regimePipSlPipsRuntime, 2) + ",";
+      "\"regime_pip_sl_pips\":" + DoubleToString(g_regimePipSlPipsRuntime, 2) + ","
+      "\"regime_signal_open_sl_mode\":" + (g_regimeSignalOpenSlModeRuntime ? "true" : "false") + ",";
 }
 
 datetime _timer_now()
@@ -4275,6 +4750,12 @@ bool _regime_historical_levels_for_signal(string direction, int signalShift, dat
       if(!_regime_apply_pip_sl(dir, entry, sl, tp, pipReason))
          return false;
    }
+   else if(_regime_signal_open_sl_enabled())
+   {
+      string sigOpenReason = "";
+      if(!_regime_apply_signal_open_sl(dir, signalShift, entry, sl, tp, sigOpenReason))
+         return false;
+   }
    else
    {
       bool structuralApplied = false;
@@ -4335,10 +4816,11 @@ void _draw_atomic_regime_historical_levels()
    int maxLookback = MathMin(Bars - 1, MathMax(baseShift, InpRegimeBufferLookbackBars));
    int maxSignals = MathMax(1, InpAtomicRegimeHistoricalMaxSignals);
    int segmentBars = MathMax(1, InpAtomicRegimeHistoricalLevelBars);
-   string hash = StringFormat("%I64d|%d|%d|%.2f|%.2f|%.2f|%d|%.2f|%d|%d|%d|%d|%d|%d|%d|%d|%.2f|%.2f|%d|%.2f|%.2f|%d|%d",
+   string hash = StringFormat("%I64d|%d|%d|%.2f|%.2f|%.2f|%d|%.2f|%d|%d|%d|%d|%d|%d|%d|%d|%d|%.2f|%.2f|%d|%.2f|%.2f|%d|%d",
       (long)Time[baseShift], maxLookback, maxSignals,
       g_regimeRRRuntime, g_regimeDirectMt4HalfBeRRuntime, g_regimeFinalRiskScalePctRuntime,
       g_regimePipSlModeRuntime ? 1 : 0, g_regimePipSlPipsRuntime,
+      g_regimeSignalOpenSlModeRuntime ? 1 : 0,
       InpRegimeUpTrendSignalBuffer, InpRegimeDnTrendSignalBuffer, InpRegimeUseTrendSignalBuffers ? 1 : 0, segmentBars,
       g_regimeStructuralSwingSlModeRuntime ? 1 : 0, InpRegimeSwingLookbackBars, InpRegimeSwingLeftBars, InpRegimeSwingRightBars,
       InpRegimeSwingMinProminenceAtr, InpRegimeSwingMinDepartureAtr, InpRegimeSwingMaxAgeBars, InpRegimeSwingMaxRiskAtr, InpRegimeSwingBufferAtr,
@@ -4380,21 +4862,18 @@ void _draw_atomic_regime_historical_levels()
       double sl = 0.0, tp = 0.0, hc = 0.0;
       if(!_regime_historical_levels_for_signal(dir, sh, signalTime, entry, sl, tp, hc))
          continue;
-
+      string drawDir = dir;
+      string histInvertDetail = "";
+      _atomic_apply_invert_to_geometry_for_levels(dir, entry, sl, tp, hc, drawDir, histInvertDetail);
       datetime lineEnd = signalTime + secondsPerBar * segmentBars;
       double liveEntry = entry, liveSl = sl, liveTp = tp, liveHc = hc;
-      if(_open_regime_order_levels_for_signal(dir, signalTime, lineEnd, liveEntry, liveSl, liveTp, liveHc))
-      {
-         entry = liveEntry;
-         sl = liveSl;
-         tp = liveTp;
-         hc = liveHc;
-      }
-      string base = REGIME_HIST_LEVEL_PREFIX + IntegerToString((int)signalTime) + "_" + dir + "_";
+      if(_open_regime_order_levels_for_signal(drawDir, signalTime, lineEnd, liveEntry, liveSl, liveTp, liveHc))
+         continue; // Active trades are represented by long live HLINEs, not short historical segments.
+      string base = REGIME_HIST_LEVEL_PREFIX + IntegerToString((int)signalTime) + "_" + drawDir + "_";
       _draw_regime_historical_segment(base + "ENTRY", signalTime, lineEnd, entry, C'230,230,230', STYLE_SOLID, 1);
       _draw_regime_historical_segment(base + "SL", signalTime, lineEnd, sl, C'255,70,90', STYLE_SOLID, 2);
       _draw_regime_historical_segment(base + "TP", signalTime, lineEnd, tp, C'39,220,124', STYLE_SOLID, 2);
-      _draw_regime_historical_label(base + "LBL", lineEnd, entry, "Reg " + dir + " E " + _fmt_price(entry) + " SL " + _fmt_price(sl) + " TP " + _fmt_price(tp) + (hc > 0.0 ? " HC " + _fmt_price(hc) : ""), C'184,196,210');
+      _draw_regime_historical_label(base + "LBL", lineEnd, entry, "Reg " + drawDir + " E " + _fmt_price(entry) + " SL " + _fmt_price(sl) + " TP " + _fmt_price(tp) + (hc > 0.0 ? " HC " + _fmt_price(hc) : ""), C'184,196,210');
       if(hc > 0.0)
          _draw_regime_historical_segment(base + "HCBE", signalTime, lineEnd, hc, C'255,174,66', STYLE_DOT, 2);
       drawn++;
@@ -4427,6 +4906,7 @@ void _draw_atomic_regime_trade_levels()
       g_regimeHistoryLevelsHash = "";
       return;
    }
+   _delete_regime_trade_levels(); // Rebuild live HLINE set from current open positions only; prevents stale active direction lines.
    _draw_atomic_trade_levels_when_regime_off();
    string activeTickets = "|";
    bool hasOpenRegimeTrade = _has_open_regime_trade_for_chart();
@@ -4447,16 +4927,20 @@ void _draw_atomic_regime_trade_levels()
          _draw_regime_level_line(0, "SIGNAL_TP", g_latestRegimeLevelTp, sigDir, C'39,220,124', STYLE_DOT, 2);
          bool sigHalfRebased = false;
          string sigHalfReason = "";
-         double sigHalfTrigger = _direct_normalize_half_trigger(
-            sigDir,
-            g_latestRegimeLevelEntry,
-            g_latestRegimeLevelSl,
-            g_latestRegimeLevelTp,
-            0.0,
-            g_regimeDirectMt4HalfBeRRuntime,
-            sigHalfRebased,
-            sigHalfReason
-         );
+         double sigHalfTrigger = g_latestRegimeLevelHalf;
+         if(!_direct_trigger_price_valid(sigDir, g_latestRegimeLevelEntry, sigHalfTrigger))
+         {
+            sigHalfTrigger = _direct_normalize_half_trigger(
+               sigDir,
+               g_latestRegimeLevelEntry,
+               g_latestRegimeLevelSl,
+               g_latestRegimeLevelTp,
+               0.0,
+               g_regimeDirectMt4HalfBeRRuntime,
+               sigHalfRebased,
+               sigHalfReason
+            );
+         }
          if(_direct_trigger_price_valid(sigDir, g_latestRegimeLevelEntry, sigHalfTrigger))
             _draw_regime_level_line(0, "SIGNAL_HC_BE", sigHalfTrigger, sigDir, C'255,174,66', STYLE_DASH, 2);
          else
@@ -4772,11 +5256,11 @@ void _draw_dashboard()
       _draw_collapsed_dashboard();
       return;
    }
-   _dash_rect("BG", 10, 18, 1010, 486, C'24,30,42', C'134,158,182');
-   _dash_rect("HULL", 17, 25, 996, 472, C'40,48,62', C'90,178,255');
+   _dash_rect("BG", 10, 18, 1010, 540, C'24,30,42', C'134,158,182');
+   _dash_rect("HULL", 17, 25, 996, 526, C'40,48,62', C'90,178,255');
    _dash_rect("DOCK_STRIPE", 18, 31, 994, 4, C'90,178,255', C'90,178,255');
-   _dash_rect("CORE", 26, 56, 664, 428, C'18,24,36', C'65,116,172');
-   _dash_rect("ACTION_PANEL", 704, 56, 286, 428, C'31,38,52', C'221,55,78');
+   _dash_rect("CORE", 26, 56, 664, 482, C'18,24,36', C'65,116,172');
+   _dash_rect("ACTION_PANEL", 704, 56, 286, 482, C'31,38,52', C'221,55,78');
    _dash_button("BTN_DASH_COLLAPSE", 966, 30, 24, 22, "^", C'90,178,255');
    _dash_label("TITLE", 34, 32, "AI STARSHIP ATOMIC BRIDGE", C'216,222,230', 12);
    _dash_label("SUB", 356, 34, Symbol() + " " + _tf_to_string(Period()) + " | " + ATOMIC_BRIDGE_BUILD, C'90,178,255', 8);
@@ -4803,15 +5287,20 @@ void _draw_dashboard()
    _dash_label("L_REG_PIP_SL", 724, 374, "Reg pip SL", C'184,196,210', 8);
    _dash_edit("EDIT_REGIME_PIP_SL", 800, 368, 50, 22, DoubleToString(g_regimePipSlPipsRuntime, 1));
    _dash_button("BTN_REGIME_PIP_SL", 858, 368, 104, 24, g_regimePipSlModeRuntime ? "PIP SL ON" : "PIP SL OFF", g_regimePipSlModeRuntime ? C'32,150,96' : C'88,96,112');
-   _dash_button("BTN_REGIME_STRUCT_SL", 858, 340, 104, 24, g_regimeStructuralSwingSlModeRuntime ? "SWING SL ON" : "SWING SL OFF", g_regimeStructuralSwingSlModeRuntime ? C'32,150,96' : C'88,96,112');
-   _dash_label("L_DAILY_PROFIT", 724, 402, "Day +", C'184,196,210', 8);
-   _dash_edit("EDIT_DAILY_PROFIT", 768, 396, 42, 22, DoubleToString(g_directMt4DailyProfitTargetRuntime, 0));
-   _dash_label("L_DAILY_LOSS", 816, 402, "Day -", C'184,196,210', 8);
-   _dash_edit("EDIT_DAILY_LOSS", 858, 396, 42, 22, DoubleToString(g_directMt4DailyLossTargetRuntime, 0));
-   _dash_button("BTN_DAILY_PROFIT", 908, 396, 54, 24, "APPLY", C'38,101,176');
-   _dash_button("BTN_ATOMIC_INVERT", 718, 428, 78, 24, g_atomicInvertTradeModeRuntime ? "INV ON" : "INV OFF", g_atomicInvertTradeModeRuntime ? C'178,37,57' : C'88,96,112');
-   _dash_button("BTN_ATOMIC_INV_TP", 800, 428, 78, 24, g_atomicInvertTradeModeRuntime ? _atomic_invert_target_text() : "INV TP--", g_atomicInvertTradeModeRuntime ? C'38,101,176' : C'88,96,112');
-   _dash_button("BTN_ATOMIC_INV_HC", 884, 428, 78, 24, g_atomicInvertTradeModeRuntime ? (g_atomicInvertHcBeProgressPctRuntime > 0 ? "IHC " + IntegerToString(g_atomicInvertHcBeProgressPctRuntime) + "%" : "IHC OFF") : "IHC --", g_atomicInvertTradeModeRuntime ? C'34,136,160' : C'88,96,112');
+   _dash_button("BTN_REGIME_STRUCT_SL", 718, 396, 118, 24, g_regimeStructuralSwingSlModeRuntime ? "SWING SL ON" : "SWING SL OFF", g_regimeStructuralSwingSlModeRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_button("BTN_REGIME_SIGOPEN_SL", 844, 396, 118, 24, g_regimeSignalOpenSlModeRuntime ? "SIGOPEN ON" : "SIGOPEN OFF", g_regimeSignalOpenSlModeRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_label("L_DAILY_PROFIT", 724, 430, "Day +", C'184,196,210', 8);
+   _dash_edit("EDIT_DAILY_PROFIT", 768, 424, 42, 22, DoubleToString(g_directMt4DailyProfitTargetRuntime, 0));
+   _dash_label("L_DAILY_LOSS", 816, 430, "Day -", C'184,196,210', 8);
+   _dash_edit("EDIT_DAILY_LOSS", 858, 424, 42, 22, DoubleToString(g_directMt4DailyLossTargetRuntime, 0));
+   _dash_button("BTN_DAILY_PROFIT", 908, 424, 54, 24, "APPLY", C'38,101,176');
+   _dash_button("BTN_ATOMIC_INVERT", 718, 456, 78, 24, g_atomicInvertTradeModeRuntime ? "INV ON" : "INV OFF", g_atomicInvertTradeModeRuntime ? C'178,37,57' : C'88,96,112');
+   _dash_button("BTN_ATOMIC_INV_TP", 800, 456, 78, 24, g_atomicInvertTradeModeRuntime ? _atomic_invert_target_text() : "INV TP--", g_atomicInvertTradeModeRuntime ? C'38,101,176' : C'88,96,112');
+   _dash_button("BTN_ATOMIC_INV_HC", 884, 456, 78, 24, g_atomicInvertTradeModeRuntime ? (g_atomicInvertHcBeProgressPctRuntime > 0 ? "IHC " + IntegerToString(g_atomicInvertHcBeProgressPctRuntime) + "%" : "IHC OFF") : "IHC --", g_atomicInvertTradeModeRuntime ? C'34,136,160' : C'88,96,112');
+   _dash_button("BTN_GANN_FOLLOW", 718, 492, 94, 24, g_gannFollowModeRuntime ? "GANN ON" : "GANN OFF", g_gannFollowModeRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_button("BTN_GANN_TF", 818, 492, 64, 24, "TF " + _gann_follow_tf_text(), C'38,101,176');
+   color gannColor = (g_gannFollowLastDirection == "BUY" ? C'32,180,96' : (g_gannFollowLastDirection == "SELL" ? C'235,70,86' : C'184,196,210'));
+   _dash_label("GANN_STATE", 890, 496, "GANN " + (g_gannFollowLastDirection == "" ? "NONE" : g_gannFollowLastDirection), gannColor, 11);
    _dash_label("L_LOT", 38, 66, "Lot", C'184,196,210', 8);
    _dash_edit("EDIT_LOT", 70, 62, 70, 22, DoubleToString(g_directMt4LotRuntime, 2));
    _dash_label("L_SPREAD", 158, 66, "Max spread pts", C'184,196,210', 8);
@@ -4851,8 +5340,9 @@ void _draw_dashboard()
    _dash_label("LAST_A", 38, 174, "Last Atomic: " + (g_lastObservedSignalDirection == "" ? "NONE" : g_lastObservedSignalDirection) + " | " + _fmt_time(g_lastObservedSignalTime), C'184,196,210', 8);
    _dash_label("LAST_R", 38, 192, "Last Regime: " + (g_lastRegimeObservedSignalDirection == "" ? "NONE" : g_lastRegimeObservedSignalDirection) + " | " + _fmt_time(g_lastRegimeObservedSignalTime), C'184,196,210', 8);
    _dash_label("TPHC_A", 38, 212, "Atomic: TP leg=" + IntegerToString(g_directMt4TpIndexRuntime) + " | HC/BE TP leg=" + IntegerToString(g_directMt4HalfBeTpIndexRuntime) + " | SL=" + (g_atomicDirectRiskGeometryRuntime ? DoubleToString(g_atomicDirectTargetRRuntime, 1) + "R geometry" : "indicator"), C'184,196,210', 8);
-   string regimeSlLabel = (g_regimePipSlModeRuntime ? "SL=" + DoubleToString(g_regimePipSlPipsRuntime, 1) + " pip" : (g_regimeStructuralSwingSlModeRuntime ? "SL=local swing+buf" : "SL scale=" + DoubleToString(g_regimeFinalRiskScalePctRuntime, 0) + "%"));
+   string regimeSlLabel = (g_regimePipSlModeRuntime ? "SL=" + DoubleToString(g_regimePipSlPipsRuntime, 1) + " pip" : (g_regimeSignalOpenSlModeRuntime ? "SL=signal bar open" : (g_regimeStructuralSwingSlModeRuntime ? "SL=local swing+buf" : "SL scale=" + DoubleToString(g_regimeFinalRiskScalePctRuntime, 0) + "%")));
    _dash_label("TPHC_R", 38, 230, "AtomicRegime: TP R=" + DoubleToString(g_regimeRRRuntime, 1) + " | HC/BE R=" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1) + " | " + regimeSlLabel, C'184,196,210', 8);
+   _dash_label("GANN_FOLLOW", 38, 404, "Gann filter: " + (g_gannFollowModeRuntime ? "ON" : "OFF") + " | tf=" + _gann_follow_tf_text() + " | dir=" + (g_gannFollowLastDirection == "" ? "NONE" : g_gannFollowLastDirection) + " | " + g_gannFollowLastDetail, (g_gannFollowModeRuntime ? C'255,205,90' : C'184,196,210'), 8);
    double pct; string label; color fill;
    if(_direct_open_progress(pct, label, fill))
       _dash_progress("TRADE", 38, 318, 620, 24, pct, label, fill);
@@ -5280,6 +5770,11 @@ bool _regime_structural_sl_enabled()
    return g_regimeStructuralSwingSlModeRuntime;
 }
 
+bool _regime_signal_open_sl_enabled()
+{
+   return g_regimeSignalOpenSlModeRuntime;
+}
+
 double _regime_swing_atr_at_shift(int shift, int period)
 {
    int p = MathMax(2, period);
@@ -5580,6 +6075,55 @@ bool _regime_apply_structural_swing_sl(string direction, int signalShift, double
    structReason = "regime_structural_swing_sl " + detail + " rr=" + DoubleToString(rr, 2) + " tp=" + _fmt_price(regimeTp);
    return (regimeSl > 0.0 && regimeTp > 0.0);
 }
+bool _regime_apply_signal_open_sl(string direction, int signalShift, double entryPrice, double &regimeSl, double &regimeTp, string &sigOpenReason)
+{
+   sigOpenReason = "";
+   if(!_regime_signal_open_sl_enabled())
+      return false;
+   string dir = _trim(direction);
+   double entry = _valid_price_or_zero(entryPrice);
+   int sh = MathMax(0, signalShift);
+   if((dir != "BUY" && dir != "SELL") || entry <= 0.0 || Bars <= sh)
+   {
+      sigOpenReason = "regime_sigopen_sl_invalid_geometry shift=" + IntegerToString(signalShift) + " bars=" + IntegerToString(Bars);
+      return false;
+   }
+
+   double signalOpen = _valid_price_or_zero(Open[sh]);
+   if(signalOpen <= 0.0)
+   {
+      sigOpenReason = "regime_sigopen_sl_invalid_open shift=" + IntegerToString(sh);
+      return false;
+   }
+
+   double requestedRisk = MathAbs(entry - signalOpen);
+   double minStop = MathMax(Point * 20.0, MarketInfo(Symbol(), MODE_STOPLEVEL) * Point * 1.5);
+   double risk = MathMax(requestedRisk, minStop);
+   if(risk <= 0.0)
+   {
+      sigOpenReason = "regime_sigopen_sl_zero_risk entry=" + _fmt_price(entry) + " signal_open=" + _fmt_price(signalOpen);
+      return false;
+   }
+
+   double rr = MathMax(0.1, g_regimeRRRuntime);
+   double oldSl = regimeSl;
+   double oldTp = regimeTp;
+   regimeSl = NormalizeDouble((dir == "BUY") ? entry - risk : entry + risk, Digits);
+   regimeTp = NormalizeDouble((dir == "BUY") ? entry + risk * rr : entry - risk * rr, Digits);
+   sigOpenReason = "regime_sigopen_sl shift=" + IntegerToString(sh)
+      + " signal_bar_open=" + _fmt_price(signalOpen)
+      + " entry=" + _fmt_price(entry)
+      + " requested_risk=" + DoubleToString(requestedRisk, Digits)
+      + " applied_risk=" + DoubleToString(risk, Digits)
+      + " min_stop=" + DoubleToString(minStop, Digits)
+      + " rr=" + DoubleToString(rr, 2)
+      + " old_sl=" + _fmt_price(oldSl)
+      + " new_sl=" + _fmt_price(regimeSl)
+      + " old_tp=" + _fmt_price(oldTp)
+      + " new_tp=" + _fmt_price(regimeTp);
+   return (regimeSl > 0.0 && regimeTp > 0.0);
+}
+
 bool _regime_apply_pip_sl(string direction, double entryPrice, double &regimeSl, double &regimeTp, string &pipReason)
 {
    pipReason = "";
@@ -5800,12 +6344,34 @@ bool _post_atomic_regime_event(
       eventKind
    );
    bool directFirst = (eventKind == "confirmed_signal" && _direct_priority_direct_first());
+   double regimeHalfTrigger = 0.0;
+   string regimeHalfLabel = "r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1);
+   string regimeInvertDetail = "";
+   if(_atomic_invert_enabled_for_event(eventKind, dir))
+   {
+      string invertedDir = "";
+      double invertedSl = 0.0;
+      double invertedTp = 0.0;
+      if(!_atomic_build_inverted_geometry(dir, entryPrice, sl, tp, invertedDir, invertedSl, invertedTp, regimeInvertDetail))
+      {
+         Print("AtomicBridge regime skipped reason=regime_invert_geometry_invalid event=", eventId, " dir=", dir, " detail=", regimeInvertDetail);
+         return false;
+      }
+      dir = invertedDir;
+      sl = invertedSl;
+      tp = invertedTp;
+      regimeHalfTrigger = _atomic_invert_hcbe_price(dir, entryPrice, tp);
+      regimeHalfLabel = regimeHalfTrigger > 0.0 ? ("regime_inv_" + IntegerToString(g_atomicInvertHcBeProgressPctRuntime) + "pct") : "regime_invert_hcbe_off";
+      trendName = trendName + "|" + regimeInvertDetail;
+      if(eventKind == "confirmed_signal")
+         eventId = eventId + "|invert";
+   }
    if(directFirst)
-      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, 0.0, "r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1), signalTime);
+      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, regimeHalfTrigger, regimeHalfLabel, signalTime);
    if(!g_proTradePostEnabledRuntime)
    {
       if(eventKind == "confirmed_signal" && !directFirst)
-         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, 0.0, "r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1), signalTime);
+         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, regimeHalfTrigger, regimeHalfLabel, signalTime);
       return true;
    }
    string msg = StringFormat(
@@ -5877,6 +6443,7 @@ bool _post_atomic_regime_event(
       "\"atomic_regime_final_risk_scale_pct\":" + DoubleToString(MathMax(1.0, MathMin(200.0, g_regimeFinalRiskScalePctRuntime)), 2) + ","
       "\"atomic_regime_pip_sl_mode\":" + (g_regimePipSlModeRuntime ? "true" : "false") + ","
       "\"atomic_regime_pip_sl_pips\":" + DoubleToString(g_regimePipSlPipsRuntime, 2) + ","
+      "\"atomic_regime_signal_open_sl_mode\":" + (g_regimeSignalOpenSlModeRuntime ? "true" : "false") + ","
       "\"message\":\"" + _json_escape(msg) + "\"," 
       "\"atomic_signal_index\":" + IntegerToString(signalIndex) + "," 
       "\"atomic_trend_object\":\"" + _json_escape(trendName) + "\"," 
@@ -5906,13 +6473,13 @@ bool _post_atomic_regime_event(
          Print("AtomicBridge regime sent ", eventKind, " ", dir);
       }
       if(eventKind == "confirmed_signal" && !directFirst)
-         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, 0.0, "r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1), signalTime);
+         _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, regimeHalfTrigger, regimeHalfLabel, signalTime);
       return true;
    }
 
    Print("AtomicBridge regime POST failed code=", code, " err=", GetLastError(), " event=", eventKind, " dir=", dir, " endpoint=", endpoint, " response=", response);
    if(eventKind == "confirmed_signal" && !directFirst)
-      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, 0.0, "r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 1), signalTime);
+      _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, regimeHalfTrigger, regimeHalfLabel, signalTime);
    return false;
 }
 
@@ -5932,6 +6499,16 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
          return;
       }
       trendName = trendName + "|" + pipReason;
+   }
+   else if(_regime_signal_open_sl_enabled())
+   {
+      string sigOpenReason = "";
+      if(!_regime_apply_signal_open_sl(direction, signalIndex, entryPrice, regimeSl, regimeTp, sigOpenReason))
+      {
+         Print("AtomicBridge regime warning: invalid signal-open SL geometry for dir=", direction, " entry=", _fmt_price(entryPrice), " shift=", signalIndex, " reason=", sigOpenReason);
+         return;
+      }
+      trendName = trendName + "|" + sigOpenReason;
    }
    else
    {
@@ -5969,15 +6546,28 @@ void _handle_regime_event(string reason, string direction, int signalIndex, date
       if(_regime_apply_final_risk_scale(direction, entryPrice, regimeSl, regimeTp, scaleReason))
          trendName = trendName + "|" + scaleReason;
    }
-   g_latestRegimeLevelDirection = _trim(direction);
-   g_latestRegimeLevelEntry = entryPrice;
-   g_latestRegimeLevelSl = regimeSl;
-   g_latestRegimeLevelTp = regimeTp;
-   g_latestRegimeLevelSignalTime = signalTime;
-
    // Shift is not a stable identity during delayed confirmation: a fresh shift=1
    // signal naturally becomes shift=2/3/... while the 300s timer is running.
    string regimeEventId = _regime_event_id(direction, signalTime);
+   string displayDirection = _trim(direction);
+   double displaySl = regimeSl;
+   double displayTp = regimeTp;
+   double displayHc = 0.0;
+   string displayInvertDetail = "";
+   _atomic_apply_invert_to_geometry_for_levels(direction, entryPrice, displaySl, displayTp, displayHc, displayDirection, displayInvertDetail);
+   bool freezeLiveSignalLevels = (!g_regimeUseClosedBarRuntime && !g_regimeDelayValidationRuntime
+      && g_latestRegimeLevelEventId == regimeEventId
+      && g_latestRegimeLevelEntry > 0.0 && g_latestRegimeLevelSl > 0.0 && g_latestRegimeLevelTp > 0.0);
+   if(!freezeLiveSignalLevels)
+   {
+      g_latestRegimeLevelDirection = displayDirection;
+      g_latestRegimeLevelEntry = entryPrice;
+      g_latestRegimeLevelSl = displaySl;
+      g_latestRegimeLevelTp = displayTp;
+      g_latestRegimeLevelHalf = displayHc;
+      g_latestRegimeLevelSignalTime = signalTime;
+      g_latestRegimeLevelEventId = regimeEventId;
+   }
    bool directionChanged = (StringLen(g_lastRegimeDirection) > 0 && direction != g_lastRegimeDirection);
    bool regimeEventChanged = (StringLen(g_lastRegimeEventId) <= 0 || regimeEventId != g_lastRegimeEventId);
 
@@ -6481,7 +7071,13 @@ int OnInit()
    g_regimePipSlModeRuntime = InpRegimePipSlModeEnabled;
    g_regimePipSlPipsRuntime = MathMax(0.0, InpRegimePipSlPips);
    g_regimeStructuralSwingSlModeRuntime = InpRegimeStructuralSwingSlModeEnabled;
-   if(g_regimeStructuralSwingSlModeRuntime)
+   g_regimeSignalOpenSlModeRuntime = InpRegimeSignalOpenSlModeEnabled;
+   if(g_regimeSignalOpenSlModeRuntime)
+   {
+      g_regimePipSlModeRuntime = false;
+      g_regimeStructuralSwingSlModeRuntime = false;
+   }
+   else if(g_regimeStructuralSwingSlModeRuntime)
       g_regimePipSlModeRuntime = false;
    g_regimeUseClosedBarRuntime = InpRegimeUseClosedBar;
    g_regimeDelayValidationRuntime = InpRegimeDelayValidationMode;
@@ -6490,6 +7086,8 @@ int OnInit()
    g_regimeOpenPreWindowSignalRuntime = InpRegimeOpenPreWindowSignal;
    g_directMt4AllowedWindowsRuntime = _trim(InpDirectMt4AllowedTradeWindowsGmt);
    g_directMt4NoTradeWindowsRuntime = _trim(InpDirectMt4NoTradeWindowsGmt);
+   g_gannFollowModeRuntime = InpGannFollowModeEnabled;
+   g_gannFollowTfRuntime = _gann_follow_sanitize_tf(InpGannFollowTimeframe);
    g_ftmoModeRuntime = (InpAdvancedAccountRiskEnabled && (InpAccountRiskDailyLossLimitPct > 0.0 || InpAccountRiskMaxDrawdownPct > 0.0));
    g_riskLotOnlyRuntime = (InpAdvancedAccountRiskEnabled && !g_ftmoModeRuntime);
    g_auditEnabledRuntime = (InpDirectMt4AuditCsv || InpDirectMt4PositionProbeAudit || InpRegimeSignalProbeAudit || InpAccountRiskAuditEnabled);
@@ -6516,7 +7114,8 @@ int OnInit()
       " atomicTargetR=", DoubleToString(g_atomicDirectTargetRRuntime, 2),
       " atomicHalfTpIndex=", g_directMt4HalfBeTpIndexRuntime,
       " atomicFallbackHalfR=", DoubleToString(g_directMt4HalfBeRRuntime, 2),
-      " regimeHalfR=", DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2)
+      " regimeHalfR=", DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2),
+      " gannFollowTf=", _gann_follow_tf_text()
    );
    Print(
       "AtomicBridge BUILD riskcfg autoLot=", (InpDirectMt4AutoLotEnabled ? "true" : "false"),
@@ -6529,6 +7128,7 @@ int OnInit()
       " regimeFinalRiskScalePct=", DoubleToString(g_regimeFinalRiskScalePctRuntime, 1),
       " regimePipSlMode=", (g_regimePipSlModeRuntime ? "true" : "false"),
       " regimePipSlPips=", DoubleToString(g_regimePipSlPipsRuntime, 1),
+      " regimeSignalOpenSlMode=", (g_regimeSignalOpenSlModeRuntime ? "true" : "false"),
       " dailyProfitTarget=", DoubleToString(g_directMt4DailyProfitTargetRuntime, 2),
       " dailyLossTarget=", DoubleToString(g_directMt4DailyLossTargetRuntime, 2),
       " atomicInvert=", (g_atomicInvertTradeModeRuntime ? "true" : "false"),
@@ -6588,9 +7188,13 @@ void OnTimer()
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
    {
       ScanAndLogLatest("init_retry");
+      _gann_follow_refresh_cache(false);
+      _draw_atomic_regime_trade_levels();
+      _draw_dashboard();
       return;
    }
    ScanAndLogLatest("timer");
+   _gann_follow_refresh_cache(false);
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
 }
@@ -6601,6 +7205,7 @@ void OnTick()
    g_lastTickLocal = TimeLocal();
    _manage_direct_mt4_positions();
    _regime_window_pending_try("tick_window_open_check");
+   _gann_follow_refresh_cache(false);
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
 }
@@ -6816,7 +7421,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       _apply_dashboard();
       g_regimePipSlModeRuntime = !g_regimePipSlModeRuntime;
       if(g_regimePipSlModeRuntime)
+      {
          g_regimeStructuralSwingSlModeRuntime = false;
+         g_regimeSignalOpenSlModeRuntime = false;
+      }
       g_regimeHistoryLevelsHash = "";
       Print("AtomicBridge dashboard AtomicRegime pip SL mode=", (g_regimePipSlModeRuntime ? "ON" : "OFF"), " pips=", DoubleToString(g_regimePipSlPipsRuntime, 2));
       _draw_atomic_regime_trade_levels();
@@ -6828,7 +7436,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       _apply_dashboard();
       g_regimeStructuralSwingSlModeRuntime = !g_regimeStructuralSwingSlModeRuntime;
       if(g_regimeStructuralSwingSlModeRuntime)
+      {
          g_regimePipSlModeRuntime = false;
+         g_regimeSignalOpenSlModeRuntime = false;
+      }
       g_regimeHistoryLevelsHash = "";
       Print("AtomicBridge dashboard AtomicRegime structural swing SL mode=", (g_regimeStructuralSwingSlModeRuntime ? "ON" : "OFF"),
             " lookback=", InpRegimeSwingLookbackBars,
@@ -6840,6 +7451,57 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             " prefer_strongest=", (InpRegimeSwingPreferStrongest ? "true" : "false"),
             " fallback_extreme=", (InpRegimeSwingFallbackToExtreme ? "true" : "false"));
       _draw_atomic_regime_trade_levels();
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_REGIME_SIGOPEN_SL")
+   {
+      _apply_dashboard();
+      g_regimeSignalOpenSlModeRuntime = !g_regimeSignalOpenSlModeRuntime;
+      if(g_regimeSignalOpenSlModeRuntime)
+      {
+         g_regimePipSlModeRuntime = false;
+         g_regimeStructuralSwingSlModeRuntime = false;
+      }
+      g_regimeHistoryLevelsHash = "";
+      Print("AtomicBridge dashboard AtomicRegime signal-open SL mode=", (g_regimeSignalOpenSlModeRuntime ? "ON" : "OFF"),
+            " note=signal_math_unchanged_only_sl_tp_geometry_changes");
+      _draw_atomic_regime_trade_levels();
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_GANN_FOLLOW")
+   {
+      g_gannFollowModeRuntime = !g_gannFollowModeRuntime;
+      string gd, det;
+      datetime gt = 0;
+      if(_gann_follow_read_state(gd, gt, det))
+      {
+         g_gannFollowLastDirection = gd;
+         g_gannFollowLastSignalTime = gt;
+      }
+      else
+         g_gannFollowLastDirection = "NONE";
+      g_gannFollowLastDetail = det;
+      Print("AtomicBridge dashboard Gann follow mode=", (g_gannFollowModeRuntime ? "ON" : "OFF"), " ", det);
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_GANN_TF")
+   {
+      _gann_follow_cycle_tf();
+      string gd, det;
+      datetime gt = 0;
+      if(_gann_follow_read_state(gd, gt, det))
+      {
+         g_gannFollowLastDirection = gd;
+         g_gannFollowLastSignalTime = gt;
+      }
+      else
+         g_gannFollowLastDirection = "NONE";
+      g_gannFollowLastReadGmt = TimeGMT();
+      g_gannFollowLastDetail = det;
+      Print("AtomicBridge dashboard Gann follow TF=", _gann_follow_tf_text(), " ", det);
       _draw_dashboard();
       ChartRedraw(0);
    }
@@ -6862,6 +7524,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == DASH_PREFIX + "BTN_APPLY")
       _apply_dashboard();
 }
+
+
+
+
+
+
+
+
+
 
 
 

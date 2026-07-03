@@ -1,0 +1,13 @@
+InpDirectEnabled=false
+InpFileBridgeMt5Enabled=true
+InpFileBridgeLatestFile=GannFileBridge_Latest.csv
+InpFileBridgeAuditPrefix=GannFileBridge_Audit_
+InpFileBridgeUseCommonFiles=true
+InpInvertTradeMode=false
+InpAdvancedAccountRiskEnabled=true
+InpRiskLotOnlyModeDefault=true
+InpFtmoModeDefault=false
+InpAccountRiskPerTradePct=1.0
+InpTargetTpIndex=2
+InpHalfBeTpIndex=0
+InpEnableAudit=false
