@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-03-gann-follow-htf-cache"
+#define ATOMIC_BRIDGE_BUILD "2026-07-03-mt5-pub-toggle"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -188,6 +188,7 @@ double   g_pendingRegimeWindowTp = 0.0;
 double   g_pendingRegimeWindowHalfTrigger = 0.0;
 string   g_pendingRegimeWindowHalfLabel = "";
 string   g_lastDirectMt4EventId = "";
+bool     g_fileBridgeMt5EnabledRuntime = false;
 bool     g_proTradePostEnabledRuntime = true;
 bool     g_directMt4EnabledRuntime = false;
 bool     g_directMt4PriorityDirectFirst = true;
@@ -2074,7 +2075,7 @@ void _file_bridge_write_row(int h, string eventId, string dir, double bridgeEntr
 
 void _file_bridge_write_init_marker()
 {
-   if(!InpFileBridgeMt5Enabled)
+   if(!g_fileBridgeMt5EnabledRuntime)
       return;
    RefreshRates();
    string eventId = "bridge_init|" + Symbol() + "|" + _tf_to_string(Period()) + "|" + TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS);
@@ -2107,7 +2108,7 @@ void _file_bridge_write_init_marker()
 }
 void _file_bridge_write_signal(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
-   if(!InpFileBridgeMt5Enabled)
+   if(!g_fileBridgeMt5EnabledRuntime)
       return;
    string dailyGuardReason = "";
    string dailyGuardDetail = "";
@@ -2238,25 +2239,6 @@ bool _gann_follow_read_state(string &dir, datetime &signalTime, string &detail)
    }
    detail = "state_not_found file=" + fileName + " filter_tf=" + _tf_to_string(selectedTf) + " sym=" + sym + " tf=" + fields[4] + " dir=" + d;
    return false;
-}
-void _gann_follow_refresh_cache(bool force=false)
-{
-   if(!g_gannFollowModeRuntime)
-      return;
-   datetime now = TimeGMT();
-   if(!force && g_gannFollowLastReadGmt > 0 && (now - g_gannFollowLastReadGmt) < 2)
-      return;
-   string gd, det;
-   datetime gt = 0;
-   if(_gann_follow_read_state(gd, gt, det))
-   {
-      g_gannFollowLastDirection = gd;
-      g_gannFollowLastSignalTime = gt;
-   }
-   else
-      g_gannFollowLastDirection = "NONE";
-   g_gannFollowLastReadGmt = now;
-   g_gannFollowLastDetail = det;
 }
 bool _gann_follow_allows(string tradeDir, string eventId, string source, double price, double sl, double tp)
 {
@@ -5297,10 +5279,25 @@ void _draw_dashboard()
    _dash_button("BTN_ATOMIC_INVERT", 718, 456, 78, 24, g_atomicInvertTradeModeRuntime ? "INV ON" : "INV OFF", g_atomicInvertTradeModeRuntime ? C'178,37,57' : C'88,96,112');
    _dash_button("BTN_ATOMIC_INV_TP", 800, 456, 78, 24, g_atomicInvertTradeModeRuntime ? _atomic_invert_target_text() : "INV TP--", g_atomicInvertTradeModeRuntime ? C'38,101,176' : C'88,96,112');
    _dash_button("BTN_ATOMIC_INV_HC", 884, 456, 78, 24, g_atomicInvertTradeModeRuntime ? (g_atomicInvertHcBeProgressPctRuntime > 0 ? "IHC " + IntegerToString(g_atomicInvertHcBeProgressPctRuntime) + "%" : "IHC OFF") : "IHC --", g_atomicInvertTradeModeRuntime ? C'34,136,160' : C'88,96,112');
-   _dash_button("BTN_GANN_FOLLOW", 718, 492, 94, 24, g_gannFollowModeRuntime ? "GANN ON" : "GANN OFF", g_gannFollowModeRuntime ? C'32,150,96' : C'88,96,112');
-   _dash_button("BTN_GANN_TF", 818, 492, 64, 24, "TF " + _gann_follow_tf_text(), C'38,101,176');
+   if(g_gannFollowModeRuntime && (TimeGMT() - g_gannFollowLastReadGmt >= 2 || g_gannFollowLastDirection == ""))
+   {
+      string dashGd, dashDet;
+      datetime dashGt = 0;
+      if(_gann_follow_read_state(dashGd, dashGt, dashDet))
+      {
+         g_gannFollowLastDirection = dashGd;
+         g_gannFollowLastSignalTime = dashGt;
+      }
+      else
+         g_gannFollowLastDirection = "NONE";
+      g_gannFollowLastReadGmt = TimeGMT();
+      g_gannFollowLastDetail = dashDet;
+   }
+   _dash_button("BTN_GANN_FOLLOW", 718, 492, 78, 24, g_gannFollowModeRuntime ? "GANN ON" : "GANN OFF", g_gannFollowModeRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_button("BTN_GANN_TF", 802, 492, 62, 24, "TF " + _gann_follow_tf_text(), C'38,101,176');
+   _dash_button("BTN_MT5_PUB", 870, 492, 92, 24, g_fileBridgeMt5EnabledRuntime ? "MT5 PUB ON" : "MT5 PUB OFF", g_fileBridgeMt5EnabledRuntime ? C'32,150,96' : C'88,96,112');
    color gannColor = (g_gannFollowLastDirection == "BUY" ? C'32,180,96' : (g_gannFollowLastDirection == "SELL" ? C'235,70,86' : C'184,196,210'));
-   _dash_label("GANN_STATE", 890, 496, "GANN " + (g_gannFollowLastDirection == "" ? "NONE" : g_gannFollowLastDirection), gannColor, 11);
+   _dash_label("GANN_STATE", 724, 520, "GANN " + _gann_follow_tf_text() + " " + (g_gannFollowLastDirection == "" ? "NONE" : g_gannFollowLastDirection), gannColor, 10);
    _dash_label("L_LOT", 38, 66, "Lot", C'184,196,210', 8);
    _dash_edit("EDIT_LOT", 70, 62, 70, 22, DoubleToString(g_directMt4LotRuntime, 2));
    _dash_label("L_SPREAD", 158, 66, "Max spread pts", C'184,196,210', 8);
@@ -7046,6 +7043,7 @@ int OnInit()
    EventSetTimer(poll);
    g_lastTickLocal = TimeLocal();
    g_directMt4EnabledRuntime = InpDirectMt4ExecutionEnabled;
+   g_fileBridgeMt5EnabledRuntime = InpFileBridgeMt5Enabled;
    g_proTradePostEnabledRuntime = InpEnableProTradePost;
    g_atomicModeEnabledRuntime = InpEnableAtomicMode;
    g_atomicRegimeModeEnabledRuntime = InpEnableAtomicRegimeMode;
@@ -7188,13 +7186,9 @@ void OnTimer()
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
    {
       ScanAndLogLatest("init_retry");
-      _gann_follow_refresh_cache(false);
-      _draw_atomic_regime_trade_levels();
-      _draw_dashboard();
       return;
    }
    ScanAndLogLatest("timer");
-   _gann_follow_refresh_cache(false);
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
 }
@@ -7205,7 +7199,6 @@ void OnTick()
    g_lastTickLocal = TimeLocal();
    _manage_direct_mt4_positions();
    _regime_window_pending_try("tick_window_open_check");
-   _gann_follow_refresh_cache(false);
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
 }
@@ -7470,6 +7463,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       _draw_dashboard();
       ChartRedraw(0);
    }
+   else if(sparam == DASH_PREFIX + "BTN_MT5_PUB")
+   {
+      g_fileBridgeMt5EnabledRuntime = !g_fileBridgeMt5EnabledRuntime;
+      Print("AtomicBridge dashboard MT5 file bridge=", (g_fileBridgeMt5EnabledRuntime ? "ON" : "OFF"));
+      if(g_fileBridgeMt5EnabledRuntime)
+         _file_bridge_write_init_marker();
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
    else if(sparam == DASH_PREFIX + "BTN_GANN_FOLLOW")
    {
       g_gannFollowModeRuntime = !g_gannFollowModeRuntime;
@@ -7504,8 +7506,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       Print("AtomicBridge dashboard Gann follow TF=", _gann_follow_tf_text(), " ", det);
       _draw_dashboard();
       ChartRedraw(0);
-   }
-   else if(sparam == DASH_PREFIX + "BTN_AUDIT")
+   }   else if(sparam == DASH_PREFIX + "BTN_AUDIT")
    {
       g_auditEnabledRuntime = !g_auditEnabledRuntime;
       Print("AtomicBridge dashboard audit=", (g_auditEnabledRuntime ? "ON" : "OFF"));
@@ -7524,16 +7525,3 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == DASH_PREFIX + "BTN_APPLY")
       _apply_dashboard();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

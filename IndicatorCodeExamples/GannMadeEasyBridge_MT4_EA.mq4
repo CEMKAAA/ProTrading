@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-03.1805-visible-gann-geometry"
+#define BUILD_TAG "2026-07-03.1905-mt5-pub-toggle"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpIndicatorName = "Asiller\\Gann Made Easy\\GannMadeEasy @PaidCrackedEA"; // informational; EA trades chart objects.
@@ -119,6 +119,7 @@ double   g_finalScaleRuntime;
 int      g_targetTpRuntime;
 int      g_halfTpRuntime;
 bool     g_pendingOnDriftRuntime;
+bool     g_fileBridgeMt5Runtime;
 double   g_riskPctRuntime;
 bool     g_auditRuntime;
 bool     g_ftmoMode;
@@ -147,6 +148,7 @@ int OnInit()
    g_targetTpRuntime = MathMax(0, MathMin(3, InpTargetTpIndex));
    g_halfTpRuntime = MathMax(0, MathMin(3, InpHalfBeTpIndex));
    g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
+   g_fileBridgeMt5Runtime = InpFileBridgeMt5Enabled;
    g_riskPctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
    g_invertMode = InpInvertTradeMode;
    g_auditRuntime = InpEnableAudit;
@@ -159,7 +161,7 @@ int OnInit()
    EventSetTimer(MathMax(1, InpPollSeconds));
 
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false"), 0, "");
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false"), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
    FileBridgeWriteInitMarker();
 
@@ -239,7 +241,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       DashboardUpdate();
       return;
    }
-   if(sparam == Obj("audit"))
+   if(sparam == Obj("mt5pub"))
+   {
+      g_fileBridgeMt5Runtime = !g_fileBridgeMt5Runtime;
+      Print("GannMadeEasyBridge MT5 file bridge ", g_fileBridgeMt5Runtime ? "enabled" : "disabled");
+      if(g_fileBridgeMt5Runtime)
+         FileBridgeWriteInitMarker();
+      DashboardUpdate();
+      return;
+   }   if(sparam == Obj("audit"))
    {
       g_auditRuntime = !g_auditRuntime;
       Print("GannMadeEasyBridge audit logging ", g_auditRuntime ? "enabled" : "disabled");
@@ -1876,7 +1886,7 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
 
 void FileBridgeWriteInitMarker()
 {
-   if(!InpFileBridgeMt5Enabled)
+   if(!g_fileBridgeMt5Runtime)
       return;
    string eventId = "gann_init|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString((int)TimeGMT());
    int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -1908,7 +1918,7 @@ void FileBridgeWriteInitMarker()
 
 void FileBridgeWriteSignal(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
-   if(!InpFileBridgeMt5Enabled)
+   if(!g_fileBridgeMt5Runtime)
       return;
    int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
    int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
@@ -1941,7 +1951,7 @@ void DashboardCreate()
 {
    DeleteDashboard();
    if(!InpShowDashboard) return;
-   int x = InpDashboardX, y = InpDashboardY, w = 570, h = g_collapsed ? 34 : 330;
+   int x = InpDashboardX, y = InpDashboardY, w = 650, h = g_collapsed ? 34 : 330;
    Rect(Obj("bg"), x, y, w, h, clrDimGray, clrBlack);
    Label(Obj("title"), x+12, y+8, "GANN MADE EASY // " + BUILD_TAG, clrAliceBlue, 9);
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
@@ -1952,7 +1962,8 @@ void DashboardCreate()
    Button(Obj("risklot"), x+246, y+34, 66, 24, g_riskLotOnlyMode ? "RISK" : "RISK", g_riskLotOnlyMode ? clrDarkGreen : clrDarkSlateGray, clrWhite);
    Button(Obj("invert"), x+318, y+34, 58, 24, g_invertMode ? "INV" : "INV", g_invertMode ? clrMaroon : clrDarkSlateGray, clrWhite);
    Button(Obj("audit"), x+382, y+34, 72, 24, g_auditRuntime ? "AUDIT" : "AUDIT", g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
-   Button(Obj("apply"), x+460, y+34, 82, 24, "APPLY", clrSteelBlue, clrWhite);
+   Button(Obj("mt5pub"), x+460, y+34, 72, 24, g_fileBridgeMt5Runtime ? "MT5 ON" : "MT5 OFF", g_fileBridgeMt5Runtime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Button(Obj("apply"), x+538, y+34, 82, 24, "APPLY", clrSteelBlue, clrWhite);
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
    Label(Obj("l_scale"), x+270, y+68, "CalcSL%", clrLightSteelBlue, 8); Edit(Obj("e_scale"), x+318, y+64, 56, 20, DoubleToString(g_finalScaleRuntime, 1));
@@ -1979,6 +1990,8 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("drift"), OBJPROP_BGCOLOR, g_pendingOnDriftRuntime ? clrSaddleBrown : clrDarkSlateGray);
    ObjectSetString(0, Obj("audit"), OBJPROP_TEXT, g_auditRuntime ? "AUDIT" : "AUDIT");
    ObjectSetInteger(0, Obj("audit"), OBJPROP_BGCOLOR, g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray);
+   ObjectSetString(0, Obj("mt5pub"), OBJPROP_TEXT, g_fileBridgeMt5Runtime ? "MT5 ON" : "MT5 OFF");
+   ObjectSetInteger(0, Obj("mt5pub"), OBJPROP_BGCOLOR, g_fileBridgeMt5Runtime ? clrDarkGreen : clrDarkSlateGray);
    ObjectSetString(0, Obj("ftmo"), OBJPROP_TEXT, g_ftmoMode ? "FTMO" : "FTMO");
    ObjectSetInteger(0, Obj("ftmo"), OBJPROP_BGCOLOR, g_ftmoMode ? clrDarkGreen : clrDarkSlateGray);
    ObjectSetString(0, Obj("risklot"), OBJPROP_TEXT, g_riskLotOnlyMode ? "RISK" : "RISK");
@@ -1987,7 +2000,7 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("invert"), OBJPROP_BGCOLOR, g_invertMode ? clrMaroon : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | FB " + (InpFileBridgeMt5Enabled ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");
@@ -2026,7 +2039,7 @@ void ApplyDashboardInputs()
    g_noTradeWindowsRuntime = ObjectGetString(0, Obj("e_no"), OBJPROP_TEXT);
    g_riskPctRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_riskpct"), OBJPROP_TEXT)));
    DrawLatestSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false"), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false"), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -2222,3 +2235,4 @@ void DeleteTradeLevels()
       if(StringFind(name, "GANN_LVL_") == 0) ObjectDelete(0, name);
    }
 }
+
