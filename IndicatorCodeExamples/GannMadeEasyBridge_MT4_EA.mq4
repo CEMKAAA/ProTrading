@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-04.0010-pip-sl-close-entry"
+#define BUILD_TAG "2026-07-05.0115-critical-block-audit"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpIndicatorName = "Asiller\\Gann Made Easy\\GannMadeEasy @PaidCrackedEA"; // informational; EA trades chart objects.
@@ -88,6 +88,8 @@ input bool   InpShowLatestSignalLevels = true;
 input int    InpSignalLevelBars = 20;
 input int    InpDashboardX = 18;
 input int    InpDashboardY = 28;
+input double InpDailyProfitTargetMoney = 0.0; // Chart-symbol realized Gann profit target for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
+input double InpDailyLossTargetMoney = 0.0;   // Chart-symbol realized Gann loss limit for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
 
 input bool   InpAdvancedAccountRiskEnabled = true;
 input bool   InpFtmoModeDefault = false;
@@ -124,6 +126,8 @@ bool     g_pendingOnDriftRuntime;
 bool     g_fileBridgeMt5Runtime;
 bool     g_pipSlModeRuntime;
 double   g_pipSlPipsRuntime;
+double   g_dailyProfitTargetRuntime;
+double   g_dailyLossTargetRuntime;
 double   g_riskPctRuntime;
 bool     g_auditRuntime;
 bool     g_ftmoMode;
@@ -155,6 +159,8 @@ int OnInit()
    g_fileBridgeMt5Runtime = InpFileBridgeMt5Enabled;
    g_pipSlModeRuntime = InpPipSlModeEnabled;
    g_pipSlPipsRuntime = MathMax(0.0, InpPipSlPips);
+   g_dailyProfitTargetRuntime = MathMax(0.0, InpDailyProfitTargetMoney);
+   g_dailyLossTargetRuntime = MathMax(0.0, InpDailyLossTargetMoney);
    g_riskPctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
    g_invertMode = InpInvertTradeMode;
    g_auditRuntime = InpEnableAudit;
@@ -167,7 +173,7 @@ int OnInit()
    EventSetTimer(MathMax(1, InpPollSeconds));
 
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2), 0, "");
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " indicator=" + InpIndicatorName + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
    FileBridgeWriteInitMarker();
 
@@ -745,7 +751,15 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       return;
    }
 
-      FileBridgeWriteSignal(eventId, dir, entry, sl, target, g_invertMode ? "GannMadeEasy|invert" : "GannMadeEasy", half, g_halfTpRuntime > 0 ? ("tp" + IntegerToString(g_halfTpRuntime)) : "off", g_lastSignalTime);
+   string dailyGuardReason = "";
+   string dailyGuardDetail = "";
+   if(DailyProfitLossGuardReached(dailyGuardReason, dailyGuardDetail))
+   {
+      Audit("trade_blocked_daily_profit_loss_target", eventId, 0, dir, 0, entry, sl, target, dailyGuardDetail, 0, dailyGuardReason + " file_bridge_not_written=1");
+      return;
+   }
+
+   FileBridgeWriteSignal(eventId, dir, entry, sl, target, g_invertMode ? "GannMadeEasy|invert" : "GannMadeEasy", half, g_halfTpRuntime > 0 ? ("tp" + IntegerToString(g_halfTpRuntime)) : "off", g_lastSignalTime);
 
    string tradeState;
    if(!CanAttemptTradeNow(tradeState))
@@ -1641,6 +1655,56 @@ datetime GmtDayStart()
    return reset;
 }
 
+double ChartClosedPnlToday()
+{
+   datetime dayStart = GmtDayStart();
+   double pnl = 0.0;
+   for(int i = OrdersHistoryTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      if(OrderCloseTime() < dayStart) continue;
+      if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+      pnl += OrderProfit() + OrderSwap() + OrderCommission();
+   }
+   return pnl;
+}
+
+bool DailyProfitLossGuardReached(string &reason, string &detail)
+{
+   reason = "";
+   detail = "daily_guard_off";
+   double pnl = ChartClosedPnlToday();
+   double profitTarget = MathMax(0.0, g_dailyProfitTargetRuntime);
+   double lossTarget = MathMax(0.0, g_dailyLossTargetRuntime);
+   if(profitTarget > 0.0 && pnl >= profitTarget - 0.0001)
+   {
+      reason = "daily_profit_target_reached";
+      detail = "chart_daily_profit=" + DoubleToString(pnl, 2)
+             + " target=" + DoubleToString(profitTarget, 2)
+             + " symbol=" + Symbol()
+             + " tf=" + IntegerToString(Period())
+             + " reset_hour_gmt=" + IntegerToString(MathMax(0, MathMin(23, InpDayResetHourGmt)));
+      return true;
+   }
+   double loss = MathMax(0.0, -pnl);
+   if(lossTarget > 0.0 && loss >= lossTarget - 0.0001)
+   {
+      reason = "daily_loss_target_reached";
+      detail = "chart_daily_pnl=" + DoubleToString(pnl, 2)
+             + " loss=" + DoubleToString(loss, 2)
+             + " target=" + DoubleToString(lossTarget, 2)
+             + " symbol=" + Symbol()
+             + " tf=" + IntegerToString(Period())
+             + " reset_hour_gmt=" + IntegerToString(MathMax(0, MathMin(23, InpDayResetHourGmt)));
+      return true;
+   }
+   detail = "chart_daily_pnl=" + DoubleToString(pnl, 2)
+          + " profit_target=" + (profitTarget > 0.0 ? DoubleToString(profitTarget, 2) : "off")
+          + " loss_target=" + (lossTarget > 0.0 ? DoubleToString(lossTarget, 2) : "off");
+   return false;
+}
 void AccountRiskMetrics(double &riskCapital, double &dailyLossPct, double &totalDdPct)
 {
    double initial = MathMax(1, InitialBalance());
@@ -1858,6 +1922,11 @@ bool IsCriticalAuditEvent(string eventName)
           || StringFind(eventName, "trade_blocked_broker_stops") >= 0
           || StringFind(eventName, "trade_blocked_geometry") >= 0
           || StringFind(eventName, "trade_blocked_risk") >= 0
+          || StringFind(eventName, "trade_blocked_window") >= 0
+          || StringFind(eventName, "trade_blocked_spread") >= 0
+          || StringFind(eventName, "trade_blocked_same_direction") >= 0
+          || StringFind(eventName, "trade_blocked_disabled") >= 0
+          || StringFind(eventName, "trade_blocked_daily_profit_loss_target") >= 0
           || StringFind(eventName, "broker_stop_adjusted") >= 0
           || StringFind(eventName, "stopguard") >= 0;
 }
@@ -2046,9 +2115,9 @@ void DashboardCreate()
 {
    DeleteDashboard();
    if(!InpShowDashboard) return;
-   int x = InpDashboardX, y = InpDashboardY, w = 650, h = g_collapsed ? 34 : 330;
+   int x = InpDashboardX, y = InpDashboardY, w = 650, h = g_collapsed ? 34 : 380;
    Rect(Obj("bg"), x, y, w, h, clrDimGray, clrBlack);
-   Label(Obj("title"), x+12, y+8, "GANN MADE EASY // " + BUILD_TAG, clrAliceBlue, 9);
+   Label(Obj("title"), x+12, y+8, "Cemka System // " + BUILD_TAG, clrAliceBlue, 9);
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
    if(g_collapsed) return;
    Button(Obj("toggle"), x+12, y+34, 68, 24, g_eaEnabled ? "EA ON" : "EA OFF", g_eaEnabled ? clrDarkGreen : clrMaroon, clrWhite);
@@ -2069,12 +2138,20 @@ void DashboardCreate()
    Label(Obj("l_riskpct"), x+384, y+120, "Risk%", clrLightSteelBlue, 8); Edit(Obj("e_riskpct"), x+432, y+116, 58, 20, DoubleToString(g_riskPctRuntime, 2));
    Label(Obj("l_pips"), x+500, y+120, "Pips", clrLightSteelBlue, 8); Edit(Obj("e_pips"), x+536, y+116, 48, 20, DoubleToString(g_pipSlPipsRuntime, 1));
    Button(Obj("pipmode"), x+590, y+116, 50, 20, g_pipSlModeRuntime ? "PIP" : "OFF", g_pipSlModeRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
-   Label(Obj("status"), x+12, y+156, "status", clrWhite, 8);
-   Label(Obj("signal"), x+12, y+178, "signal", clrWhite, 8);
-   Label(Obj("risk"), x+12, y+200, "risk", clrWhite, 8);
-   Label(Obj("open"), x+12, y+222, "open", clrWhite, 8);
-   Rect(Obj("prog_bg"), x+12, y+252, 520, 16, clrBlack, clrSlateGray);
-   Rect(Obj("prog_fill"), x+13, y+253, 1, 14, clrDodgerBlue, clrDodgerBlue);
+   Label(Obj("l_dayp"), x+12, y+146, "Day Profit", clrLightSteelBlue, 8); Edit(Obj("e_dayp"), x+86, y+142, 58, 20, DoubleToString(g_dailyProfitTargetRuntime, 0));
+   Label(Obj("l_dayl"), x+152, y+146, "Day Loss", clrLightSteelBlue, 8); Edit(Obj("e_dayl"), x+210, y+142, 50, 20, DoubleToString(g_dailyLossTargetRuntime, 0));
+   Label(Obj("status"), x+12, y+174, "status", clrWhite, 8);
+   Label(Obj("signal"), x+12, y+196, "signal", clrWhite, 8);
+   Label(Obj("risk"), x+12, y+218, "risk", clrWhite, 8);
+   Label(Obj("open"), x+12, y+240, "open", clrWhite, 8);
+   Rect(Obj("prog_bg"), x+12, y+268, 520, 16, clrBlack, clrSlateGray);
+   Rect(Obj("prog_fill"), x+13, y+269, 1, 14, clrDodgerBlue, clrDodgerBlue);
+   Rect(Obj("dayp_bg"), x+12, y+296, 520, 18, clrBlack, clrSlateGray);
+   Rect(Obj("dayp_fill"), x+13, y+297, 1, 16, clrDodgerBlue, clrDodgerBlue);
+   Label(Obj("dayp_txt"), x+20, y+299, "DAY PROFIT TARGET OFF", clrWhite, 8);
+   Rect(Obj("dayl_bg"), x+12, y+322, 520, 18, clrBlack, clrSlateGray);
+   Rect(Obj("dayl_fill"), x+13, y+323, 1, 16, clrTomato, clrTomato);
+   Label(Obj("dayl_txt"), x+20, y+325, "DAY LOSS TARGET OFF", clrWhite, 8);
 }
 
 void DashboardUpdate()
@@ -2104,6 +2181,26 @@ void DashboardUpdate()
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");
    UpdateOpenLine();
+   UpdateDailyGuardBars();
+}
+
+void UpdateDailyGuardBars()
+{
+   double dayPnl = ChartClosedPnlToday();
+   double profitTarget = MathMax(0.0, g_dailyProfitTargetRuntime);
+   double lossTarget = MathMax(0.0, g_dailyLossTargetRuntime);
+   double profitValue = MathMax(0.0, dayPnl);
+   double lossValue = MathMax(0.0, -dayPnl);
+   double profitPct = (profitTarget > 0.0 ? MathMin(1.0, profitValue / profitTarget) : 0.0);
+   double lossPct = (lossTarget > 0.0 ? MathMin(1.0, lossValue / lossTarget) : 0.0);
+   ObjectSetInteger(0, Obj("dayp_fill"), OBJPROP_XSIZE, MathMax(1, (int)MathRound(518.0 * profitPct)));
+   ObjectSetInteger(0, Obj("dayl_fill"), OBJPROP_XSIZE, MathMax(1, (int)MathRound(518.0 * lossPct)));
+   ObjectSetInteger(0, Obj("dayp_fill"), OBJPROP_BGCOLOR, clrDodgerBlue);
+   ObjectSetInteger(0, Obj("dayl_fill"), OBJPROP_BGCOLOR, clrTomato);
+   string profitText = profitTarget > 0.0 ? ("DAY PROFIT " + DoubleToString(profitValue, 2) + "/" + DoubleToString(profitTarget, 2)) : "DAY PROFIT TARGET OFF";
+   string lossText = lossTarget > 0.0 ? ("DAY LOSS " + DoubleToString(lossValue, 2) + "/" + DoubleToString(lossTarget, 2)) : "DAY LOSS TARGET OFF";
+   ObjectSetString(0, Obj("dayp_txt"), OBJPROP_TEXT, profitText);
+   ObjectSetString(0, Obj("dayl_txt"), OBJPROP_TEXT, lossText);
 }
 
 void UpdateOpenLine()
@@ -2138,8 +2235,10 @@ void ApplyDashboardInputs()
    g_noTradeWindowsRuntime = ObjectGetString(0, Obj("e_no"), OBJPROP_TEXT);
    g_riskPctRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_riskpct"), OBJPROP_TEXT)));
    g_pipSlPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_pips"), OBJPROP_TEXT)));
+   g_dailyProfitTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayp"), OBJPROP_TEXT)));
+   g_dailyLossTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayl"), OBJPROP_TEXT)));
    DrawLatestSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -2335,4 +2434,5 @@ void DeleteTradeLevels()
       if(StringFind(name, "GANN_LVL_") == 0) ObjectDelete(0, name);
    }
 }
+
 

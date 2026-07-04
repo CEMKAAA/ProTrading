@@ -587,24 +587,30 @@ void RequestHistoryRefresh()
    if(IsTesterMode())
       return;
    g_historyRefreshPending = true;
-   g_historyRefreshDueMs = GetTickCount() + 250;
-   EventSetMillisecondTimer(100);
+   g_historyRefreshDueMs = GetTickCount() + 750;
+   g_dashboardForceNextUpdate = true;
+   EventSetMillisecondTimer(250);
 }
 
 void ProcessPendingHistoryRefresh()
 {
    if(!g_historyRefreshPending)
       return;
+   if(g_dashboardCollapsed)
+      return;
    if((int)(GetTickCount() - g_historyRefreshDueMs) < 0)
       return;
    g_historyRefreshPending = false;
    DrawRecentSignalHistory();
+   g_dashboardForceNextUpdate = true;
    UpdateDashboard();
    ChartRedraw(0);
 }
 bool     g_dashboardDoorFinished = false;
 bool     g_dashboardCollapsed = false;
 bool     g_dashboardOpening = false;
+uint     g_lastDashboardUpdateMs = 0;
+bool     g_dashboardForceNextUpdate = false;
 uint     g_visualMetricsCacheMs = 0;
 struct NasVisualMetrics
 {
@@ -1177,7 +1183,7 @@ int OnInit()
    if(!IsTesterMode())
    {
       DrawDashboard();
-      EventSetMillisecondTimer(40);
+      EventSetMillisecondTimer(250);
       if(InpDrawLastSignalsOnStart)
       {
          g_historyAuditRows[0] = "Audit loading...";
@@ -5117,19 +5123,19 @@ void SetDashboardCollapsed(const bool collapsed)
       g_dashboardCollapsed = true;
       g_dashboardOpening = false;
       g_dashboardDoorFinished = true;
-      EventKillTimer();
+      g_dashboardDoorStartMs = 0;
       DrawCollapsedDashboardToggle();
    }
    else
    {
       g_dashboardCollapsed = false;
-      g_dashboardOpening = true;
-      g_dashboardDoorFinished = false;
-      g_dashboardDoorStartMs = GetTickCount();
-      DeleteObjectIfExists("BTN_DASH_EXPAND");
-      DeleteObjectIfExists("DASH_DOCK_HINT");
-      EventSetMillisecondTimer(35);
+      g_dashboardOpening = false;
+      g_dashboardDoorFinished = true;
+      g_dashboardDoorStartMs = 0;
+      g_dashboardForceNextUpdate = true;
+      EventSetMillisecondTimer(250);
       DrawDashboard();
+      RequestHistoryRefresh();
    }
    ChartRedraw(0);
 }
@@ -5410,7 +5416,10 @@ void ToggleAcceptedSignalFilter()
    Print("NAS SATS EA duplicate mode changed previous=", (previous ? "DUP_OFF" : "DUP_ON"),
          " mode=", (g_historyUseAcceptedFilterRuntime ? "DUP_OFF" : "DUP_ON"),
          " note=dup_on_allows_same_direction_signals_and_execution_dup_off_alternates_buy_sell immediate_redraw=true");
-   DrawRecentSignalHistory();
+   g_historyAuditRows[0] = "Audit loading after duplicate-mode change...";
+   g_historyAuditSummary = "Audit loading";
+   g_historyAuditDetail = "deferred duplicate-mode replay";
+   RequestHistoryRefresh();
    UpdateDashboard();
    ChartRedraw(0);
 }
@@ -5698,12 +5707,10 @@ void DrawDashboard()
       DrawCollapsedDashboardToggle();
       return;
    }
-   if(!g_dashboardOpening && !g_dashboardDoorFinished)
-   {
-      g_dashboardOpening = true;
-      g_dashboardDoorStartMs = GetTickCount();
-      EventSetMillisecondTimer(35);
-   }
+   g_dashboardOpening = false;
+   g_dashboardDoorFinished = true;
+   g_dashboardDoorStartMs = 0;
+   g_dashboardForceNextUpdate = true;
    UpdateDashboard();
 }
 
@@ -5725,24 +5732,10 @@ void DrawDashboardShell(const int height)
 
 void UpdateDoorAnimation()
 {
-   if(g_dashboardCollapsed || g_dashboardDoorFinished || g_dashboardDoorStartMs == 0)
-      return;
-
-   uint elapsedMs = GetTickCount() - g_dashboardDoorStartMs;
-   double open = UiClamp((double)elapsedMs / 700.0, 0.0, 1.0);
-   double eased = 1.0 - MathPow(1.0 - open, 3.0);
-   int h = 34 + (int)MathRound(396.0 * eased);
-   DrawDashboardShell(h);
-   CreateLabel("DASH_DOOR_TEXT", 398, 38 + h / 2, "COCKPIT DEPLOY " + UiPctText(open * 100.0), C'216,222,230', 9);
-
-   if(open >= 1.0)
-   {
-      ObjectDelete(0, PREFIX + "DASH_DOOR_TEXT");
-      g_dashboardDoorFinished = true;
-      g_dashboardOpening = false;
-      EventKillTimer();
-      return;
-   }
+   // Animation intentionally disabled: it was blocking expand/collapse and could leave deploy at 0%.
+   g_dashboardDoorFinished = true;
+   g_dashboardOpening = false;
+   g_dashboardDoorStartMs = 0;
 }
 
 void UpdateDashboard()
@@ -5751,6 +5744,12 @@ void UpdateDashboard()
       return;
    if(g_dashboardCollapsed)
       return;
+
+   uint nowMs = GetTickCount();
+   if(!g_dashboardForceNextUpdate && g_lastDashboardUpdateMs > 0 && (int)(nowMs - g_lastDashboardUpdateMs) < 500)
+      return;
+   g_lastDashboardUpdateMs = nowMs;
+   g_dashboardForceNextUpdate = false; // dashboard_update_throttle
 
    if(!g_dashboardDoorFinished)
    {

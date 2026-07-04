@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-03.1700-gann-listener"
+#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-05.0035-market-closed-dedupe"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "GannFileBridge_Latest.csv";
@@ -674,6 +674,9 @@ bool PermanentOrderFailure(long retcode)
    return (retcode == 10016  // TRADE_RETCODE_INVALID_STOPS
         || retcode == 10014  // TRADE_RETCODE_INVALID_VOLUME
         || retcode == 10015  // TRADE_RETCODE_INVALID_PRICE
+        || retcode == 10018  // TRADE_RETCODE_MARKET_CLOSED; consume stale signal, do not retry spam.
+        || retcode == 10017  // TRADE_RETCODE_TRADE_DISABLED
+        || retcode == 10019  // TRADE_RETCODE_NO_MONEY
         || retcode == 10030);// TRADE_RETCODE_INVALID_FILL
 }
 
