@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-03.1605-suffix-map"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-05.2005-no-money-retry"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -18,12 +18,14 @@ input int    InpMaxSignalAgeSeconds = 900;
 input string InpSymbolMapCsv = ""; // Explicit overrides, example: BTCUSDm=BTCUSD,USTECm=USTEC
 input bool   InpUseBuiltInOilSymbolMap = true;
 input string InpBuiltInOilSymbolMapCsv = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIUSD,USOIL=XTIUSD";
-input bool   InpRebaseMappedLevelsToLiveEntry = true; // Preserve MT4 geometry distances on mapped MT5 symbols.
+input bool   InpRebaseMappedLevelsToLiveEntry = false; // OFF=use exact MT4 SL/TP/HCBE prices; ON=preserve distances from MT5 live entry.
 input bool   InpRebaseOnlyWhenSourceDiffers = true;
 input bool   InpRequireMappedSymbolEqualsChart = true;
 input string InpSourceTimeframeFilter = ""; // Empty=all, example M5
+input bool   InpDefaultSourceTfToChartPeriod = true;
 input string InpSourceFilter = ""; // Empty=all, example AtomicRegime
 input bool   InpCloseReverse = true;
+input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close/manage M5 bridge positions.
 input bool   InpFailIfReverseCloseFails = true;
 input bool   InpCloseReverseBridgeCommentPositions = true;
 input long   InpMagic = 970102;
@@ -33,12 +35,14 @@ input double InpManualLot = 0.10;
 input bool   InpUseRiskLot = true;
 input double InpRiskPerTradePct = 1.00;
 input double InpMaxLot = 0.00; // 0=broker max
+input bool   InpUseMarginShrinkGuard = true; // OFF=do not shrink risk lot for margin usage; broker may still reject if margin is insufficient.
 input double InpMaxMarginUsagePct = 40.0;
 input bool   InpFailClosedOnRiskError = true;
 input bool   InpBlockIfMinLotExceedsRisk = true;
 input bool   InpManageHalfCloseBe = true;
 input double InpHalfCloseFraction = 0.50;
 input bool   InpAuditEnabled = true;
+input int    InpPollHeartbeatSeconds = 300; // Low-value health heartbeat. Signal/order/error audit remains immediate.
 input string InpAuditFilePrefix = "AtomicFileBridge_MT5_Audit_";
 input bool   InpShowDashboard = true;
 input int    InpDashboardX = 12;
@@ -57,6 +61,7 @@ string g_lastReadDetail = "";
 string g_lastAction = "boot";
 string g_lastActionDetail = "";
 string g_lastSignalSummary = "none";
+bool g_marginShrinkGuardRuntime = false;
 string AFB_DASH_PREFIX = "AFB_MT5_DASH_";
 
 struct BridgeSignal
@@ -118,16 +123,17 @@ uint HashString(string s)
 
 string EventKey(const string eventId)
 {
-   return "AtomicFileBridgeMT5|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + IntegerToString((int)InpMagic) + "|" + IntegerToString((int)HashString(eventId));
+   // Account-wide event lock: multiple listener charts must not execute the same bridge event twice.
+   return "AtomicFileBridgeMT5|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + IntegerToString((int)HashString(eventId));
 }
 
 bool ClaimEvent(const string eventId)
 {
    string key = EventKey(eventId);
-   if(GlobalVariableCheck(key))
-      return false;
-   GlobalVariableSet(key, (double)TimeCurrent());
-   return true;
+   if(!GlobalVariableCheck(key))
+      GlobalVariableSet(key, 0.0);
+   ResetLastError();
+   return GlobalVariableSetOnCondition(key, (double)TimeCurrent(), 0.0);
 }
 
 void ReleaseEvent(const string eventId)
@@ -314,6 +320,25 @@ void DashboardSetRect(string name, int x, int y, int w, int h, color bg, color b
    ObjectSetInteger(0, obj, OBJPROP_HIDDEN, true);
 }
 
+void DashboardSetButton(string name, int x, int y, int w, int h, string text, color bg, color fg)
+{
+   string obj = AFB_DASH_PREFIX + name;
+   if(ObjectFind(0, obj) < 0)
+      ObjectCreate(0, obj, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, obj, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, obj, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, obj, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, obj, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, obj, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, obj, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, obj, OBJPROP_COLOR, fg);
+   ObjectSetInteger(0, obj, OBJPROP_BORDER_COLOR, C'90,130,170');
+   ObjectSetString(0, obj, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, obj, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, obj, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, obj, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, obj, OBJPROP_HIDDEN, true);
+}
 void DashboardDelete()
 {
    int total = ObjectsTotal(0, 0, -1);
@@ -380,7 +405,7 @@ void DrawDashboard(bool force=false)
 
    int x = InpDashboardX;
    int y = InpDashboardY;
-   DashboardSetRect("BG", x, y, 640, 216, C'17,24,34', C'80,160,220');
+   DashboardSetRect("BG", x, y, 640, 232, C'17,24,34', C'80,160,220');
    DashboardSetRect("STRIPE", x + 8, y + 8, 624, 3, C'60,180,255', C'60,180,255');
    DashboardSetLabel("TITLE", x + 14, y + 18, "ATOMIC FILE BRIDGE MT5 LISTENER", C'230,236,245', 10);
    DashboardSetLabel("BUILD", x + 300, y + 20, ATOMIC_FILE_BRIDGE_MT5_BUILD, C'90,178,255', 7);
@@ -404,6 +429,13 @@ void DrawDashboard(bool force=false)
       "Last signal=" + g_lastSignalSummary, C'190,205,220', 8);
    DashboardSetLabel("READ", x + 14, y + 132,
       "Read=" + g_lastReadDetail, C'150,165,185', 7);
+   DashboardSetLabel("RISK", x + 14, y + 146,
+      "Levels=" + (InpRebaseMappedLevelsToLiveEntry ? "REBASE" : "ABS")
+      + " | MarginGuard=" + (g_marginShrinkGuardRuntime ? ("ON max=" + DoubleToString(InpMaxMarginUsagePct, 1) + "%") : "OFF")
+      + " | RiskLot=" + (InpUseRiskLot ? "ON" : "OFF"), C'170,210,245', 7);
+   DashboardSetButton("BTN_MARGIN", x + 506, y + 140, 112, 22,
+      g_marginShrinkGuardRuntime ? "MG ON" : "MG OFF",
+      g_marginShrinkGuardRuntime ? C'28,95,72' : C'104,44,48', C'240,245,250');
 
    int posCount = 0;
    double lots = 0.0;
@@ -411,9 +443,9 @@ void DrawDashboard(bool force=false)
    string posLines = "";
    OpenPositionStats(posCount, lots, pnl, posLines);
    color pnlColor = pnl >= 0.0 ? C'80,230,150' : C'255,90,110';
-   DashboardSetLabel("POS", x + 14, y + 154,
+   DashboardSetLabel("POS", x + 14, y + 164,
       "Open AFB positions=" + IntegerToString(posCount) + " | lots=" + DoubleToString(lots, 2) + " | pnl=" + DoubleToString(pnl, 2), pnlColor, 8);
-   DashboardSetLabel("POSLINES", x + 14, y + 172, posLines, C'220,226,235', 7);
+   DashboardSetLabel("POSLINES", x + 14, y + 182, posLines, C'220,226,235', 7);
 }
 void Audit(string eventName, const BridgeSignal &sig, string detail)
 {
@@ -572,7 +604,23 @@ bool ReadLatestSignal(BridgeSignal &sig, string &detail)
    }
    return sig.valid;
 }
-bool SignalAcceptedForThisChart(const BridgeSignal &sig, string &reason)
+string ChartSourceTfString()
+{
+   switch(_Period)
+   {
+      case PERIOD_M1: return "1";
+      case PERIOD_M5: return "5";
+      case PERIOD_M15: return "15";
+      case PERIOD_M30: return "30";
+      case PERIOD_H1: return "60";
+      case PERIOD_H4: return "240";
+      case PERIOD_D1: return "1440";
+      case PERIOD_W1: return "10080";
+      case PERIOD_MN1: return "43200";
+   }
+   return IntegerToString((int)_Period);
+}
+bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
 {
    reason = "";
    if(!sig.valid)
@@ -580,9 +628,12 @@ bool SignalAcceptedForThisChart(const BridgeSignal &sig, string &reason)
       reason = "invalid_signal";
       return false;
    }
-   if(InpSourceTimeframeFilter != "" && sig.sourceTf != InpSourceTimeframeFilter)
+   string effectiveTfFilter = Trim(InpSourceTimeframeFilter);
+   if(effectiveTfFilter == "" && InpDefaultSourceTfToChartPeriod)
+      effectiveTfFilter = ChartSourceTfString();
+   if(effectiveTfFilter != "" && sig.sourceTf != effectiveTfFilter)
    {
-      reason = "tf_filter source_tf=" + sig.sourceTf;
+      reason = "tf_filter source_tf=" + sig.sourceTf + " expected=" + effectiveTfFilter;
       return false;
    }
    if(InpSourceFilter != "" && !ContainsCi(sig.source, InpSourceFilter))
@@ -596,6 +647,13 @@ bool SignalAcceptedForThisChart(const BridgeSignal &sig, string &reason)
       reason = "symbol_filter source=" + sig.sourceSymbol + " mapped=" + mapped + " chart=" + _Symbol;
       return false;
    }
+   return true;
+}
+
+bool SignalAcceptedForThisChart(const BridgeSignal &sig, string &reason)
+{
+   if(!SignalIdentityMatchesThisChart(sig, reason))
+      return false;
    if(InpMaxSignalAgeSeconds > 0 && sig.writtenGmt > 0)
    {
       int age = (int)(TimeGMT() - sig.writtenGmt);
@@ -835,6 +893,91 @@ double ShrinkLotToMarginLimit(const int direction, double requestedLot, double e
           + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
    return best;
 }
+double ShrinkLotToFreeMargin(const int direction, double requestedLot, double entry, string &detail)
+{
+   detail = "";
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   if(freeMargin <= 0.0)
+   {
+      detail = "free_margin_unavailable free_margin=" + DoubleToString(freeMargin, 2);
+      return 0.0;
+   }
+
+   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double minMargin = 0.0;
+   if(!OrderCalcMargin(type, _Symbol, minVol, entry, minMargin))
+   {
+      detail = "free_margin_calc_failed_min_lot min_lot=" + DoubleToString(minVol, 2);
+      return 0.0;
+   }
+   double safeFree = freeMargin * 0.98;
+   if(minMargin > safeFree)
+   {
+      detail = "min_lot_exceeds_free_margin min_lot=" + DoubleToString(minVol, 2)
+             + " min_margin=" + DoubleToString(minMargin, 2)
+             + " free_margin=" + DoubleToString(freeMargin, 2);
+      return 0.0;
+   }
+
+   double reqMargin = 0.0;
+   if(OrderCalcMargin(type, _Symbol, requestedLot, entry, reqMargin) && reqMargin <= safeFree)
+   {
+      detail = "free_margin_retry_no_shrink requested_lot=" + DoubleToString(requestedLot, 2)
+             + " required_margin=" + DoubleToString(reqMargin, 2)
+             + " free_margin=" + DoubleToString(freeMargin, 2);
+      return requestedLot;
+   }
+
+   double lo = minVol;
+   double hi = requestedLot;
+   double best = minVol;
+   for(int i = 0; i < 32; i++)
+   {
+      double mid = (lo + hi) * 0.5;
+      double candidate = NormalizeVolumeDown(mid);
+      if(candidate < minVol)
+         candidate = minVol;
+      double margin = 0.0;
+      if(!OrderCalcMargin(type, _Symbol, candidate, entry, margin))
+      {
+         hi = mid;
+         continue;
+      }
+      if(margin <= safeFree)
+      {
+         best = candidate;
+         lo = mid;
+      }
+      else hi = mid;
+   }
+
+   best = NormalizeVolumeDown(best);
+   double bestMargin = 0.0;
+   while(best >= minVol && OrderCalcMargin(type, _Symbol, best, entry, bestMargin) && bestMargin > safeFree)
+      best = NormalizeDouble(best - step, VolumeDigits());
+
+   if(best < minVol)
+   {
+      detail = "free_margin_retry_no_valid_lot requested_lot=" + DoubleToString(requestedLot, 2)
+             + " free_margin=" + DoubleToString(freeMargin, 2);
+      return 0.0;
+   }
+   if(!OrderCalcMargin(type, _Symbol, best, entry, bestMargin))
+   {
+      detail = "free_margin_retry_final_margin_calc_failed requested_lot=" + DoubleToString(requestedLot, 2)
+             + " shrunk_lot=" + DoubleToString(best, 2);
+      return 0.0;
+   }
+   detail = "free_margin_retry requested_lot=" + DoubleToString(requestedLot, 2)
+          + " shrunk_lot=" + DoubleToString(best, 2)
+          + " required_margin=" + DoubleToString(bestMargin, 2)
+          + " free_margin=" + DoubleToString(freeMargin, 2);
+   return best;
+}
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -885,7 +1028,7 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
              + " actual_risk=" + DoubleToString(actualRisk, 2) + (marginDetail != "" ? " " + marginDetail : "");
       return 0.0;
    }
-   if(InpMaxMarginUsagePct > 0.0)
+   if(g_marginShrinkGuardRuntime && InpMaxMarginUsagePct > 0.0)
    {
       double requestedLot = lot;
       lot = ShrinkLotToMarginLimit(sig.direction, lot, entry, InpMaxMarginUsagePct, marginDetail);
@@ -927,6 +1070,53 @@ bool IsManagedBridgePosition()
 }
 
 
+string BridgePosKey(ulong ticket, string kind)
+{
+   return "AtomicFileBridgeMT5|POS|" + IntegerToString((int)InpMagic) + "|" + IntegerToString((int)ticket) + "|" + kind;
+}
+
+int SourceTfToInt(string tf)
+{
+   string clean = Trim(tf);
+   if(clean == "")
+      return 0;
+   return (int)StringToInteger(clean);
+}
+
+int PositionSourceTfFromComment()
+{
+   string comment = PositionGetString(POSITION_COMMENT);
+   if(StringFind(comment, "AFB|T") != 0)
+      return 0;
+   int start = 5;
+   int stop = StringFind(comment, "|", start);
+   if(stop <= start)
+      return 0;
+   return SourceTfToInt(StringSubstr(comment, start, stop - start));
+}
+
+int PositionSourceTf(ulong ticket)
+{
+   string key = BridgePosKey(ticket, "STF");
+   if(GlobalVariableCheck(key))
+      return (int)MathRound(GlobalVariableGet(key));
+   return PositionSourceTfFromComment();
+}
+
+bool ReverseScopeAllows(ulong ticket, const BridgeSignal &sig, string &detail)
+{
+   if(InpCloseReverseAcrossSourceTf)
+   {
+      detail = "reverse_scope=all_source_tf";
+      return true;
+   }
+   int sigTf = SourceTfToInt(sig.sourceTf);
+   int posTf = PositionSourceTf(ticket);
+   detail = "reverse_scope=same_source_tf signal_tf=" + IntegerToString(sigTf) + " position_tf=" + IntegerToString(posTf);
+   if(sigTf <= 0 || posTf <= 0)
+      return true;
+   return sigTf == posTf;
+}
 bool IsCloseOnlySignal(const BridgeSignal &sig)
 {
    return (StringFind(sig.source, "CloseOnly") >= 0 || StringFind(sig.eventId, "invalidate_close") >= 0);
@@ -1007,6 +1197,12 @@ bool CloseReversePositions(const BridgeSignal &sig, string &detail)
       bool opposite = (sig.direction > 0 && type == POSITION_TYPE_SELL) || (sig.direction < 0 && type == POSITION_TYPE_BUY);
       if(opposite)
       {
+         string scopeDetail = "";
+         if(!ReverseScopeAllows(ticket, sig, scopeDetail))
+         {
+            Audit("reverse_close_skip_scope", sig, "ticket=" + IntegerToString((int)ticket) + " " + scopeDetail);
+            continue;
+         }
          found++;
          double vol = PositionGetDouble(POSITION_VOLUME);
          double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
@@ -1039,16 +1235,106 @@ bool CloseReversePositions(const BridgeSignal &sig, string &detail)
 
 string PosKey(ulong ticket, string kind)
 {
-   return "AtomicFileBridgeMT5|POS|" + IntegerToString((int)InpMagic) + "|" + IntegerToString((int)ticket) + "|" + kind;
+   return BridgePosKey(ticket, kind);
 }
 
+ulong FindOpenedPositionTicket(const BridgeSignal &sig, string comment)
+{
+   ulong bestTicket = 0;
+   long bestTimeMsc = -1;
+   long expectedType = (sig.direction > 0 ? POSITION_TYPE_BUY : POSITION_TYPE_SELL);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_TYPE) != expectedType)
+         continue;
+
+      string posComment = PositionGetString(POSITION_COMMENT);
+      long magic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(posComment != comment && magic != InpMagic)
+         continue;
+
+      long timeMsc = (long)PositionGetInteger(POSITION_TIME_MSC);
+      if(timeMsc >= bestTimeMsc)
+      {
+         bestTimeMsc = timeMsc;
+         bestTicket = ticket;
+      }
+   }
+   return bestTicket;
+}
+
+void RepairLegacyPositionMetadata(const BridgeSignal &sig)
+{
+   int sourceTf = SourceTfToInt(sig.sourceTf);
+   if(sourceTf <= 0)
+      return;
+
+   string eventHash = IntegerToString((int)HashString(sig.eventId));
+   string legacyComment = "AFB|" + eventHash;
+   string modernComment = "AFB|T" + sig.sourceTf + "|" + eventHash;
+   long expectedType = (sig.direction > 0 ? POSITION_TYPE_BUY : POSITION_TYPE_SELL);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_TYPE) != expectedType)
+         continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(comment != legacyComment && comment != modernComment)
+         continue;
+
+      string key = PosKey(ticket, "STF");
+      bool repaired = false;
+      if(!GlobalVariableCheck(key) || (int)MathRound(GlobalVariableGet(key)) != sourceTf)
+      {
+         GlobalVariableSet(key, sourceTf);
+         repaired = true;
+      }
+
+      string hcKey = PosKey(ticket, "HC");
+      if(InpManageHalfCloseBe && sig.halfTrigger > 0.0 && !GlobalVariableCheck(hcKey))
+      {
+         GlobalVariableSet(hcKey, sig.halfTrigger);
+         GlobalVariableSet(PosKey(ticket, "DONE"), 0.0);
+         GlobalVariableSet(PosKey(ticket, "ENTRY"), PositionGetDouble(POSITION_PRICE_OPEN));
+         repaired = true;
+      }
+
+      if(repaired)
+      {
+         Audit("position_state_repaired", sig,
+            "ticket=" + IntegerToString((int)ticket)
+            + " source_tf=" + IntegerToString(sourceTf)
+            + " hc=" + PriceStr(sig.halfTrigger)
+            + " entry=" + PriceStr(PositionGetDouble(POSITION_PRICE_OPEN))
+            + " comment=" + comment);
+      }
+   }
+}
 void StoreHalfState(ulong ticket, const BridgeSignal &sig, double fill)
 {
-   if(ticket == 0 || sig.halfTrigger <= 0.0 || !InpManageHalfCloseBe)
+   if(ticket == 0)
+      return;
+
+   int sourceTf = SourceTfToInt(sig.sourceTf);
+   if(sourceTf > 0)
+      GlobalVariableSet(PosKey(ticket, "STF"), sourceTf);
+   GlobalVariableSet(PosKey(ticket, "ENTRY"), fill);
+
+   if(sig.halfTrigger <= 0.0 || !InpManageHalfCloseBe)
       return;
    GlobalVariableSet(PosKey(ticket, "HC"), sig.halfTrigger);
    GlobalVariableSet(PosKey(ticket, "DONE"), 0.0);
-   GlobalVariableSet(PosKey(ticket, "ENTRY"), fill);
 }
 
 void ManageHalfCloseBe()
@@ -1079,6 +1365,12 @@ void ManageHalfCloseBe()
    auditSig.sourceAsk = tick.ask;
    auditSig.riskPct = InpRiskPerTradePct;
 
+   string managerTfStr = Trim(InpSourceTimeframeFilter);
+   if(managerTfStr == "" && InpDefaultSourceTfToChartPeriod)
+      managerTfStr = ChartSourceTfString();
+   int managerTf = SourceTfToInt(managerTfStr);
+   auditSig.sourceTf = managerTfStr;
+
    double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0)
@@ -1092,6 +1384,9 @@ void ManageHalfCloseBe()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+      int posTf = PositionSourceTf(ticket);
+      if(managerTf > 0 && posTf > 0 && managerTf != posTf)
          continue;
       string hcKey = PosKey(ticket, "HC");
       if(!GlobalVariableCheck(hcKey) || GlobalVariableGet(PosKey(ticket, "DONE")) > 0.5)
@@ -1175,6 +1470,12 @@ void ManageHalfCloseBe()
          continue;
       }
 
+      string doneKey = PosKey(ticket, "DONE");
+      if(!GlobalVariableSetOnCondition(doneKey, 2.0, 0.0))
+      {
+         Audit("halfbe_skip_lock_taken", auditSig, baseDetail + " done=" + (GlobalVariableCheck(doneKey) ? DoubleToString(GlobalVariableGet(doneKey), 1) : "missing"));
+         continue;
+      }
       ResetLastError();
       bool partialOk = trade.PositionClosePartial(ticket, closeVol);
       long partialRet = trade.ResultRetcode();
@@ -1189,6 +1490,7 @@ void ManageHalfCloseBe()
 
       if(!partialOk)
       {
+         GlobalVariableSet(PosKey(ticket, "DONE"), 0.0);
          Audit("halfbe_partial_close_failed", auditSig, partialDetail);
          continue;
       }
@@ -1215,7 +1517,8 @@ void ManageHalfCloseBe()
 
       if(!modifyOk)
       {
-         Audit("halfbe_sl_to_be_failed_after_partial", auditSig, modifyDetail);
+         GlobalVariableSet(PosKey(ticket, "DONE"), 1.0);
+         Audit("halfbe_sl_to_be_failed_after_partial", auditSig, modifyDetail + " half_done_locked_after_partial=1");
          continue;
       }
 
@@ -1279,25 +1582,75 @@ bool ExecuteSignal(const BridgeSignal &sourceSig)
    }
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
-   string comment = "AFB|" + IntegerToString((int)HashString(sig.eventId));
+   string comment = "AFB|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
    bool ok = sig.direction > 0
       ? trade.Buy(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment)
       : trade.Sell(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment);
    if(!ok)
    {
       long ret = trade.ResultRetcode();
+      int err = GetLastError();
+      if(ret == 10019) // TRADE_RETCODE_NO_MONEY
+      {
+         string retryDetail = "";
+         double retryLot = ShrinkLotToFreeMargin(sig.direction, lot, entry, retryDetail);
+         if(retryLot > 0.0 && retryLot < lot - 0.000000001)
+         {
+            ResetLastError();
+            bool retryOk = sig.direction > 0
+               ? trade.Buy(retryLot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment)
+               : trade.Sell(retryLot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment);
+            long retryRet = trade.ResultRetcode();
+            int retryErr = GetLastError();
+            if(retryOk)
+            {
+               ulong retryDeal = trade.ResultDeal();
+               ulong retryOrder = trade.ResultOrder();
+               ulong retryPosTicket = FindOpenedPositionTicket(sig, comment);
+               StoreHalfState(retryPosTicket, sig, entry);
+               Audit("order_sent_no_money_retry", sig,
+                     "original_retcode=" + IntegerToString((int)ret)
+                     + " original_err=" + IntegerToString(err)
+                     + " original_lot=" + DoubleToString(lot, 2)
+                     + " retry_lot=" + DoubleToString(retryLot, 2)
+                     + " live_entry=" + PriceStr(entry)
+                     + " deal=" + IntegerToString((int)retryDeal)
+                     + " order=" + IntegerToString((int)retryOrder)
+                     + " pos=" + IntegerToString((int)retryPosTicket)
+                     + (rebaseDetail != "" ? " rebase=" + rebaseDetail : "")
+                     + " " + retryDetail + " " + lotDetail);
+               return true;
+            }
+            Audit("order_failed_no_money_retry", sig,
+                  "original_retcode=" + IntegerToString((int)ret)
+                  + " original_err=" + IntegerToString(err)
+                  + " retry_retcode=" + IntegerToString((int)retryRet)
+                  + " retry_err=" + IntegerToString(retryErr)
+                  + " original_lot=" + DoubleToString(lot, 2)
+                  + " retry_lot=" + DoubleToString(retryLot, 2)
+                  + StopContext(entry, sig.sl, sig.tp)
+                  + " " + retryDetail + " " + lotDetail);
+         }
+         else
+         {
+            Audit("order_failed_no_money_no_retry_lot", sig,
+                  "retcode=" + IntegerToString((int)ret)
+                  + " err=" + IntegerToString(err)
+                  + " original_lot=" + DoubleToString(lot, 2)
+                  + StopContext(entry, sig.sl, sig.tp)
+                  + " " + retryDetail + " " + lotDetail);
+         }
+      }
       ReleaseEvent(sig.eventId);
       string permanent = PermanentOrderFailure(ret) ? " permanent_reject=1" : " permanent_reject=0";
       if(PermanentOrderFailure(ret))
          g_lastRejectedEventId = sig.eventId;
-      Audit("order_failed", sig, "retcode=" + IntegerToString((int)ret) + permanent + StopContext(entry, sig.sl, sig.tp) + " " + lotDetail);
+      Audit("order_failed", sig, "retcode=" + IntegerToString((int)ret) + " err=" + IntegerToString(err) + permanent + StopContext(entry, sig.sl, sig.tp) + " " + lotDetail);
       return false;
    }
    ulong deal = trade.ResultDeal();
    ulong order = trade.ResultOrder();
-   ulong posTicket = 0;
-   if(PositionSelect(_Symbol) && (long)PositionGetInteger(POSITION_MAGIC) == InpMagic)
-      posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+   ulong posTicket = FindOpenedPositionTicket(sig, comment);
    StoreHalfState(posTicket, sig, entry);
    Audit("order_sent", sig, "lot=" + DoubleToString(lot, 2) + " live_entry=" + PriceStr(entry) + " deal=" + IntegerToString((int)deal) + " order=" + IntegerToString((int)order) + " pos=" + IntegerToString((int)posTicket) + (rebaseDetail != "" ? " rebase=" + rebaseDetail : "") + " " + lotDetail);
    return true;
@@ -1333,11 +1686,15 @@ void PollBridge(string caller)
    g_lastReadDetail = readDetail;
 
    datetime hbNow = TimeGMT();
-   if(g_lastPollHeartbeat == 0 || hbNow - g_lastPollHeartbeat >= 60)
+   if(g_lastPollHeartbeat == 0 || hbNow - g_lastPollHeartbeat >= MathMax(30, InpPollHeartbeatSeconds))
    {
       g_lastPollHeartbeat = hbNow;
       AuditRaw("poll_heartbeat", "caller=" + caller + " " + readDetail + " last_seen=" + g_lastSeenEventId);
    }
+
+   string identityReason = "";
+   if(SignalIdentityMatchesThisChart(sig, identityReason))
+      RepairLegacyPositionMetadata(sig);
 
    if(sig.eventId == g_lastSeenEventId || sig.eventId == g_lastRejectedEventId)
       return;
@@ -1374,7 +1731,8 @@ void PollBridge()
 }
 int OnInit()
 {
-   trade.SetExpertMagicNumber(InpMagic);
+      g_marginShrinkGuardRuntime = InpUseMarginShrinkGuard;
+trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
    ResetLastError();
    g_timerActive = EventSetMillisecondTimer(MathMax(100, InpPollMilliseconds));
@@ -1408,6 +1766,19 @@ void OnDeinit(const int reason)
    DashboardDelete();
 }
 
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id != CHARTEVENT_OBJECT_CLICK)
+      return;
+   if(sparam == AFB_DASH_PREFIX + "BTN_MARGIN")
+   {
+      g_marginShrinkGuardRuntime = !g_marginShrinkGuardRuntime;
+      ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+      AuditRaw("dashboard_margin_guard_toggle", "margin_guard=" + (g_marginShrinkGuardRuntime ? "ON" : "OFF") + " max_margin_pct=" + DoubleToString(InpMaxMarginUsagePct, 1));
+      DrawDashboard(true);
+      ChartRedraw(0);
+   }
+}
 void OnTimer()
 {
    PollBridge("timer");
@@ -1425,6 +1796,8 @@ void OnTick()
    }
    DrawDashboard();
 }
+
+
 
 
 
