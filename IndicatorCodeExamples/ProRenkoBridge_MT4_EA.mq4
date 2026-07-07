@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-06.0035-risk-lot-preview"
+#define BUILD_TAG "2026-07-07.0046-robust-reverse-close"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -11,6 +11,8 @@ input int    InpSignalLookbackBars = 8;
 input bool   InpScanOnTick = true;
 input int    InpPollSeconds = 1;
 input bool   InpTradeLatestSignalOnAttach = false;
+input int    InpTrendExecutionMode = 0; // 0=SH0 instant live, 1=SH1 closed signal bar, 2=SH2 delay-or-bar-close.
+input int    InpTrendExecutionDelaySeconds = 3; // Used only by SH2. If signal bar closes first, execution happens immediately.
 input string InpBuySignalObjectName = "PRORENKO-UP";   // compatibility only; ProRenko mode reads buffers, not objects.
 input string InpSellSignalObjectName = "PRORENKO-DN";  // compatibility only; ProRenko mode reads buffers, not objects.
 input string InpSignalLevelObjectName = "PRORENKO-SIGNAL LEVEL"; // unused in ProRenko buffer mode.
@@ -67,6 +69,7 @@ input int    InpHalfBeTpIndex = 0;        // 0=off, 1..3 half close + SL->BE leg
 
 input bool   InpShowDashboard = true;
 input bool   InpShowLatestSignalLevels = true;
+input bool   InpShowHistoricalSignalLevels = true;
 input int    InpSignalLevelBars = 20;
 input int    InpDashboardX = 18;
 input int    InpDashboardY = 28;
@@ -125,6 +128,13 @@ string   g_lastSignalDir = "-";
 datetime g_lastSignalTime = 0;
 double   g_lastSignalPrice = 0.0;
 datetime g_lastScanTs = 0;
+int      g_trendExecModeRuntime;
+int      g_trendExecDelayRuntime;
+string   g_pendingTrendEventId = "";
+datetime g_pendingTrendFirstSeen = 0;
+datetime g_pendingTrendBarTime = 0;
+datetime g_trendExecutedBarTime = 0;
+string   g_trendExecutedBarEventId = "";
 datetime g_lastRiskAuditTs = 0;
 datetime g_lastProbeTs = 0;
 datetime g_lastLifecycleAuditTs = 0;
@@ -150,6 +160,8 @@ int OnInit()
    g_riskPctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
    g_invertMode = InpInvertTradeMode;
    g_trendTradeRuntime = true;
+   g_trendExecModeRuntime = MathMax(0, MathMin(2, InpTrendExecutionMode));
+   g_trendExecDelayRuntime = MathMax(0, InpTrendExecutionDelaySeconds);
    g_auditRuntime = InpEnableAudit;
    g_ftmoMode = InpFtmoModeDefault;
    g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
@@ -160,7 +172,7 @@ int OnInit()
    EventSetTimer(MathMax(1, InpPollSeconds));
 
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
    FileBridgeWriteInitMarker();
 
@@ -172,8 +184,14 @@ int OnInit()
          g_lastEventId = eid;
          g_lastTrendEventId = eid;
          Audit("startup_baseline_trend", eid, 0, dir, 0, px, 0, 0, "shift=" + IntegerToString(sh) + " buffer=" + IntegerToString(buf), 0, "old trend signal ignored on attach");
+         if(g_eaEnabled && InpCloseOppositeOnSignal && (dir == "BUY" || dir == "SELL"))
+         {
+            int baselineType = (dir == "BUY") ? OP_BUY : OP_SELL;
+            CloseOpposite(baselineType, eid + "|attach_reconcile");
+         }
       }
    }
+   DrawHistoricalSignalLevels("init");
    Print("ProRenkoBridge BUILD=", BUILD_TAG, " trend=", InpTrendIndicatorName, " trendStateBuffer=", InpTrendStateBuffer, " positiveIsBuy=", (InpTrendPositiveIsBuy ? "true" : "false"), " pendingOnDrift=", (g_pendingOnDriftRuntime ? "true" : "false"));
    return INIT_SUCCEEDED;
 }
@@ -184,6 +202,7 @@ void OnDeinit(const int reason)
    DeleteDashboard();
    DeleteTradeLevels();
    DeleteLatestSignalLevels();
+   DeleteHistoricalSignalLevels();
    Audit("deinit", "", 0, "", 0, 0, 0, 0, "reason=" + IntegerToString(reason), 0, "");
 }
 
@@ -272,6 +291,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       g_invertMode = !g_invertMode;
       Audit("dashboard_invert_toggle", "", 0, "", 0, 0, 0, 0, g_invertMode ? "INVERT_ON" : "INVERT_OFF", 0, "");
       DrawLatestSignalLevels("invert_toggle");
+      DrawHistoricalSignalLevels("invert_toggle");
       DashboardUpdate();
       return;
    }
@@ -282,12 +302,25 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       DashboardUpdate();
       return;
    }
+   if(sparam == Obj("execmode"))
+   {
+      g_trendExecModeRuntime = (MathMax(0, MathMin(2, g_trendExecModeRuntime)) + 1) % 3;
+      g_pendingTrendEventId = "";
+      g_pendingTrendFirstSeen = 0;
+      g_pendingTrendBarTime = 0;
+      g_trendExecutedBarTime = 0;
+      g_trendExecutedBarEventId = "";
+      Audit("dashboard_exec_mode_toggle", "", 0, "", 0, 0, 0, 0, "trend_exec_mode=" + TrendExecModeLabel() + " delay_sec=" + IntegerToString(g_trendExecDelayRuntime), 0, "");
+      DashboardUpdate();
+      return;
+   }
    if(sparam == Obj("pipmode"))
    {
       g_pipSlModeRuntime = !g_pipSlModeRuntime;
       if(g_pipSlModeRuntime) g_symmetricRTargetsRuntime = false;
       Print("ProRenkoBridge pip SL mode ", g_pipSlModeRuntime ? "enabled" : "disabled", " pips=", DoubleToString(g_pipSlPipsRuntime, 2));
       DrawLatestSignalLevels("pip_sl_toggle");
+      DrawHistoricalSignalLevels("pip_sl_toggle");
       DashboardUpdate();
       return;
    }
@@ -297,6 +330,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if(g_symmetricRTargetsRuntime) g_pipSlModeRuntime = false;
       Audit("dashboard_symr_toggle", "", 0, "", 0, 0, 0, 0, g_symmetricRTargetsRuntime ? "SYM_R_ON" : "SYM_R_OFF", 0, "");
       DrawLatestSignalLevels("sym_r_toggle");
+      DrawHistoricalSignalLevels("sym_r_toggle");
       DashboardUpdate();
       return;
    }
@@ -322,14 +356,32 @@ void ProcessSignals(string reason)
 
 void ProcessSignalCandidate(string source, string dir, string eid, int sh, int buf, double sigPx, datetime barTime, string &lastSourceEventId, string reason)
 {
+   if(eid == lastSourceEventId)
+      return;
+
+   string waitDetail = "";
+   if(!CanExecuteTrendSignalNow(source, eid, sh, barTime, dir, sigPx, reason, waitDetail))
+      return;
+
    g_lastSignalDir = dir;
    g_lastSignalTime = barTime;
    g_lastSignalPrice = sigPx;
    ActiveSignalStateWrite(dir, eid, sigPx, barTime, reason + "_" + source);
    DrawLatestSignalLevels(reason + "_" + source);
-   if(eid == lastSourceEventId) return;
+   DrawHistoricalSignalLevels(reason + "_" + source);
    lastSourceEventId = eid;
    g_lastEventId = eid;
+   if(source == "trend")
+   {
+      if(MathMax(0, MathMin(2, g_trendExecModeRuntime)) == 2)
+      {
+         g_trendExecutedBarTime = barTime;
+         g_trendExecutedBarEventId = eid;
+      }
+      g_pendingTrendEventId = "";
+      g_pendingTrendFirstSeen = 0;
+      g_pendingTrendBarTime = 0;
+   }
 
    RefreshRates();
    double liveBid = Bid;
@@ -338,8 +390,85 @@ void ProcessSignalCandidate(string source, string dir, string eid, int sh, int b
    Audit("signal_detected", eid, 0, dir, 0, sigPx, 0, 0,
          "source=" + source + " reason=" + reason + " shift=" + IntegerToString(sh) + " buffer=" + IntegerToString(buf) +
          " bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS) + " bid=" + PriceText(liveBid) + " ask=" + PriceText(liveAsk) +
-         " spread_points=" + IntegerToString(spreadNow), 0, "");
+         " spread_points=" + IntegerToString(spreadNow) + " exec_mode=" + TrendExecModeLabel() + waitDetail, 0, "");
    ExecuteSignal(dir, eid, sigPx, sh, buf);
+}
+
+bool CanExecuteTrendSignalNow(string source, string eid, int sh, datetime barTime, string dir, double sigPx, string reason, string &detail)
+{
+   detail = "";
+   if(source != "trend") return true;
+
+   int mode = MathMax(0, MathMin(2, g_trendExecModeRuntime));
+   if(mode == 0)
+   {
+      g_pendingTrendEventId = "";
+      g_pendingTrendFirstSeen = 0;
+      g_pendingTrendBarTime = 0;
+      detail = " exec=SH0";
+      return true;
+   }
+
+   if(sh > 0)
+   {
+      bool wasPending = (eid == g_pendingTrendEventId || barTime == g_pendingTrendBarTime);
+      detail = " exec=" + TrendExecModeLabel() + " closed_bar=1 pending=" + (wasPending ? "true" : "false") + " live_lock_bypass=1";
+      return true;
+   }
+
+   if(mode == 2 && g_trendExecutedBarTime == barTime && eid != g_trendExecutedBarEventId)
+   {
+      Audit("signal_blocked_sh2_bar_lock", eid, 0, dir, 0, sigPx, 0, 0,
+            "source=" + source + " reason=" + reason + " shift=" + IntegerToString(sh) + " bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS) +
+            " already_executed_event=" + g_trendExecutedBarEventId, 0, "one_sh2_execution_per_live_bar");
+      return false;
+   }
+
+   datetime now = TimeCurrent();
+   if(eid != g_pendingTrendEventId)
+   {
+      g_pendingTrendEventId = eid;
+      g_pendingTrendFirstSeen = now;
+      g_pendingTrendBarTime = barTime;
+      Audit(mode == 1 ? "signal_pending_sh1_close" : "signal_pending_sh2_delay", eid, 0, dir, 0, sigPx, 0, 0,
+            "source=" + source + " reason=" + reason + " shift=0 bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS) +
+            " exec_mode=" + TrendExecModeLabel() + " delay_sec=" + IntegerToString(g_trendExecDelayRuntime), 0, "live_signal_seen_no_trade_yet");
+      return false;
+   }
+
+   if(mode == 1)
+   {
+      Audit("signal_waiting_sh1_close", eid, 0, dir, 0, sigPx, 0, 0,
+            "source=" + source + " reason=" + reason + " shift=0 bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_bar_close");
+      return false;
+   }
+
+   int stableFor = (int)(now - g_pendingTrendFirstSeen);
+   if(stableFor < g_trendExecDelayRuntime)
+   {
+      Audit("signal_waiting_sh2_delay", eid, 0, dir, 0, sigPx, 0, 0,
+            "source=" + source + " stable_for=" + IntegerToString(stableFor) + " required=" + IntegerToString(g_trendExecDelayRuntime) +
+            " bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_delay_or_bar_close");
+      return false;
+   }
+
+   detail = " exec=SH2 delay_done stable_for=" + IntegerToString(stableFor);
+   return true;
+}
+
+string TrendExecModeLabel()
+{
+   int mode = MathMax(0, MathMin(2, g_trendExecModeRuntime));
+   if(mode == 1) return "SH1";
+   if(mode == 2) return "SH2";
+   return "SH0";
+}
+color TrendExecModeColor()
+{
+   int mode = MathMax(0, MathMin(2, g_trendExecModeRuntime));
+   if(mode == 1) return clrSaddleBrown;
+   if(mode == 2) return clrSteelBlue;
+   return clrDarkGreen;
 }
 
 bool TrendStateAt(int shift, string &dir, double &raw, int &buffer)
@@ -395,18 +524,26 @@ bool FindLatestTrendSignal(string &dir, int &shift, int &buffer, double &price, 
    shift = bestShift;
    buffer = bestBuffer;
    barTime = bestTime;
-   price = SignalCloseEntryPrice(bestShift, bestRaw);
+   price = SignalEntryPrice(bestDir, bestShift, bestRaw);
    eventId = Symbol() + "|" + IntegerToString(Period()) + "|prorenko_trend|" + dir + "|" + IntegerToString((int)barTime) +
              "|buf=" + IntegerToString(buffer) + "|raw=" + DoubleToString(bestRaw, Digits);
    return true;
 }
-double SignalCloseEntryPrice(int shift, double rawValue)
+double SignalEntryPrice(string dir, int shift, double rawValue)
 {
    int sh = MathMax(0, MathMin(shift, Bars - 1));
+   if(sh == 0)
+   {
+      RefreshRates();
+      double px = (dir == "BUY") ? Ask : Bid;
+      if(px > 0.0) return NormalizeDouble(px, Digits);
+   }
+
    double c = iClose(Symbol(), Period(), sh);
    if(c > 0.0) return NormalizeDouble(c, Digits);
    if(rawValue > 0.0 && rawValue < EMPTY_SENTINEL - 1.0) return NormalizeDouble(rawValue, Digits);
-   return NormalizeDouble(Bid, Digits);
+   RefreshRates();
+   return NormalizeDouble((dir == "BUY") ? Ask : Bid, Digits);
 }
 
 double ReadTrendBuffer(int buffer, int shift)
@@ -757,6 +894,32 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    }
 
    Audit("signal_received", eventId, 0, dir, g_lotRuntime, signalPx, sl, target, "source=chart_object shift=" + IntegerToString(shift) + " bid=" + PriceText(liveBid) + " ask=" + PriceText(liveAsk) + " spread_points=" + IntegerToString(spreadNow) + " market_entry=" + PriceText(marketEntry) + " planned_entry=" + PriceText(entry) + " drift_points=" + DoubleToString(driftPoints, 1) + " pending_at_signal=" + (usePending ? "true" : "false") + " " + geom + " " + brokerGuard + " half_trigger=" + PriceText(half), 0, "");
+   if(!g_eaEnabled)
+   {
+      Audit("trade_blocked_disabled", eventId, 0, dir, 0, entry, sl, target, "ea_disabled_mt4_direct_after_file_bridge", 0, "");
+      return;
+   }
+   string tradeState;
+   if(!CanAttemptTradeNow(tradeState))
+   {
+      if(TimeCurrent() >= g_nextTradeDisabledRetryTs)
+      {
+         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, target,
+               tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)), 0, "");
+         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
+      }
+      ReleaseEventForRetry(eventId);
+      return;
+   }
+
+   // Reversal systems must flatten the previous opposite leg before any new-entry guard can block the replacement.
+   if(InpCloseOppositeOnSignal && !CloseOpposite(type, eventId))
+   {
+      Audit("trade_blocked_reverse_close_failed", eventId, 0, dir, 0, entry, sl, target, "opposite_position_or_pending_could_not_be_closed", 0, "retry_signal");
+      ReleaseEventForRetry(eventId);
+      return;
+   }
+
    if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
    {
       Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, target, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "");
@@ -787,25 +950,6 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    if(SymmetricRTargetsEnabled()) bridgeSource += "|symR";
    FileBridgeWriteSignal(eventId, dir, entry, sl, target, bridgeSource, half, g_halfTpRuntime > 0 ? ("tp" + IntegerToString(g_halfTpRuntime)) : "off", g_lastSignalTime);
 
-   string tradeState;
-   if(!CanAttemptTradeNow(tradeState))
-   {
-      if(TimeCurrent() >= g_nextTradeDisabledRetryTs)
-      {
-         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, target,
-               tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)), 0, "");
-         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
-      }
-      ReleaseEventForRetry(eventId);
-      return;
-   }
-   if(!g_eaEnabled)
-   {
-      Audit("trade_blocked_disabled", eventId, 0, dir, 0, entry, sl, target, "ea_disabled_mt4_direct_after_file_bridge", 0, "");
-      return;
-   }
-
-   if(InpCloseOppositeOnSignal) CloseOpposite(type, eventId);
 
    string lotDetail;
    double lot = ResolveLot(entry, sl, type, g_halfTpRuntime > 0, lotDetail);
@@ -1360,27 +1504,82 @@ void MoveSlToBE(int ticket, int type)
    Audit(ok ? "sl_to_be_done" : "sl_to_be_failed", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), be, sl, OrderTakeProfit(), ok ? "" : "err=" + IntegerToString(err), OrderProfit(), "");
 }
 
-void CloseOpposite(int newType, string eventId)
+bool CloseOpposite(int newType, string eventId)
 {
    int opposite = (newType == OP_BUY) ? OP_SELL : OP_BUY;
+   int oppositeLimit = (newType == OP_BUY) ? OP_SELLLIMIT : OP_BUYLIMIT;
+   int oppositeStop = (newType == OP_BUY) ? OP_SELLSTOP : OP_BUYSTOP;
    string src = SignalSourceFromEvent(eventId);
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   bool allOk = true;
+
+   for(int pass = 0; pass < 3; pass++)
    {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber()) || OrderType() != opposite) continue;
-      if(!OrderMatchesSignalSource(eventId))
+      bool foundThisPass = false;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
       {
-         Audit("reverse_close_skip_source", eventId, OrderTicket(), (opposite == OP_BUY ? "BUY" : "SELL"), OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(), "event_source=" + src + " order_comment=" + OrderComment(), OrderProfit(), "");
-         continue;
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+         int ot = OrderType();
+         if(ot != opposite && ot != oppositeLimit && ot != oppositeStop) continue;
+
+         foundThisPass = true;
+         int ticket = OrderTicket();
+         double lots = OrderLots();
+         double openPrice = OrderOpenPrice();
+         double sl = OrderStopLoss();
+         double tp = OrderTakeProfit();
+         double pnlBefore = OrderProfit() + OrderSwap() + OrderCommission();
+         string dir = (ot == OP_BUY || ot == OP_BUYLIMIT || ot == OP_BUYSTOP) ? "BUY" : "SELL";
+         RefreshRates();
+
+         if(ot == OP_BUY || ot == OP_SELL)
+         {
+            double px = (ot == OP_BUY) ? Bid : Ask;
+            bool ok = OrderClose(ticket, lots, px, InpSlippage, clrSilver);
+            int err = GetLastError();
+            if(ok)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit("reverse_close_done", eventId, ticket, dir, lots, px, sl, tp, "before_new_signal source=" + src + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+            else
+            {
+               allOk = false;
+               Audit("reverse_close_failed", eventId, ticket, dir, lots, px, sl, tp, "err=" + IntegerToString(err) + " source=" + src + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+         }
+         else
+         {
+            bool delOk = OrderDelete(ticket, clrSilver);
+            int delErr = GetLastError();
+            if(delOk)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit("reverse_delete_done", eventId, ticket, dir, lots, openPrice, sl, tp, "delete_opposite_pending source=" + src + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+            else
+            {
+               allOk = false;
+               Audit("reverse_delete_failed", eventId, ticket, dir, lots, openPrice, sl, tp, "err=" + IntegerToString(delErr) + " source=" + src + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+         }
       }
-      RefreshRates();
-      double px = (opposite == OP_BUY) ? Bid : Ask;
-      int ticket = OrderTicket();
-      bool ok = OrderClose(ticket, OrderLots(), px, InpSlippage, clrSilver);
-      int err = GetLastError();
-      if(ok) TicketGVSet(ticket, "CLOSED", 1.0);
-      Audit(ok ? "reverse_close_done" : "reverse_close_failed", eventId, ticket, (opposite == OP_BUY ? "BUY" : "SELL"), OrderLots(), px, OrderStopLoss(), OrderTakeProfit(), ok ? "before_new_signal source=" + src : "err=" + IntegerToString(err) + " source=" + src, OrderProfit(), "");
+      if(!foundThisPass) break;
+      Sleep(150);
    }
+
+   for(int j = OrdersTotal() - 1; j >= 0; j--)
+   {
+      if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+      int remainingType = OrderType();
+      if(remainingType == opposite || remainingType == oppositeLimit || remainingType == oppositeStop)
+      {
+         allOk = false;
+         Audit("reverse_close_remaining", eventId, OrderTicket(), (opposite == OP_BUY ? "BUY" : "SELL"), OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(), "opposite_still_open_after_retries source=" + src, OrderProfit(), "");
+      }
+   }
+   return allOk;
 }
 bool HasOpenDirection(int type, string eventId)
 {
@@ -1907,6 +2106,9 @@ bool IsCriticalAuditEvent(string eventName)
           || StringFind(eventName, "trade_blocked_same_direction") >= 0
           || StringFind(eventName, "trade_blocked_disabled") >= 0
           || StringFind(eventName, "trade_blocked_daily_profit_loss_target") >= 0
+          || StringFind(eventName, "trade_blocked_reverse_close_failed") >= 0
+          || StringFind(eventName, "reverse_close_failed") >= 0
+          || StringFind(eventName, "reverse_delete_failed") >= 0
           || StringFind(eventName, "broker_stop_adjusted") >= 0
           || StringFind(eventName, "stopguard") >= 0;
 }
@@ -2210,6 +2412,8 @@ void DashboardCreate()
    Button(Obj("pipmode"), x+590, y+116, 50, 20, g_pipSlModeRuntime ? "PIP" : "OFF", g_pipSlModeRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
    Button(Obj("symr"), x+384, y+142, 82, 20, g_symmetricRTargetsRuntime ? "SYM R" : "SYM OFF", g_symmetricRTargetsRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
    Button(Obj("trendmode"), x+472, y+142, 92, 20, g_trendTradeRuntime ? "TREND ON" : "TREND OFF", g_trendTradeRuntime ? clrDarkGreen : clrMaroon, clrWhite);
+   Button(Obj("execmode"), x+570, y+142, 54, 20, TrendExecModeLabel(), TrendExecModeColor(), clrWhite);
+   Label(Obj("l_execdelay"), x+630, y+146, "Dly", clrLightSteelBlue, 8); Edit(Obj("e_execdelay"), x+660, y+142, 42, 20, IntegerToString(g_trendExecDelayRuntime));
    Label(Obj("l_dayp"), x+12, y+146, "Day Profit", clrLightSteelBlue, 8); Edit(Obj("e_dayp"), x+86, y+142, 58, 20, DoubleToString(g_dailyProfitTargetRuntime, 0));
    Label(Obj("l_dayl"), x+152, y+146, "Day Loss", clrLightSteelBlue, 8); Edit(Obj("e_dayl"), x+210, y+142, 50, 20, DoubleToString(g_dailyLossTargetRuntime, 0));
    Label(Obj("status"), x+12, y+174, "status", clrWhite, 8);
@@ -2253,9 +2457,11 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("symr"), OBJPROP_BGCOLOR, g_symmetricRTargetsRuntime ? clrDarkGreen : clrDarkSlateGray);
    ObjectSetString(0, Obj("trendmode"), OBJPROP_TEXT, g_trendTradeRuntime ? "TREND ON" : "TREND OFF");
    ObjectSetInteger(0, Obj("trendmode"), OBJPROP_BGCOLOR, g_trendTradeRuntime ? clrDarkGreen : clrMaroon);
+   ObjectSetString(0, Obj("execmode"), OBJPROP_TEXT, TrendExecModeLabel());
+   ObjectSetInteger(0, Obj("execmode"), OBJPROP_BGCOLOR, TrendExecModeColor());
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | EXEC " + TrendExecModeLabel() + " Dly " + IntegerToString(g_trendExecDelayRuntime) + "s | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest trade signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    ObjectSetString(0, Obj("trend_dbg"), OBJPROP_TEXT, TrendBufferDebugLine());
    ObjectSetString(0, Obj("trend_now"), OBJPROP_TEXT, TrendRawStateLine());
@@ -2400,8 +2606,11 @@ void ApplyDashboardInputs()
    g_pipSlPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_pips"), OBJPROP_TEXT)));
    g_dailyProfitTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayp"), OBJPROP_TEXT)));
    g_dailyLossTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayl"), OBJPROP_TEXT)));
+   g_trendExecDelayRuntime = MathMax(0, (int)StringToInteger(ObjectGetString(0, Obj("e_execdelay"), OBJPROP_TEXT)));
+   g_trendExecModeRuntime = MathMax(0, MathMin(2, g_trendExecModeRuntime));
    DrawLatestSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
+   DrawHistoricalSignalLevels("dashboard_apply");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -2457,6 +2666,11 @@ string SignalLevelPrefix()
    return "PRORENKO_SIGLVL_" + IntegerToString((int)ChartID()) + "_";
 }
 
+string HistoricalSignalLevelPrefix()
+{
+   return "PRORENKO_HISTSIG_" + IntegerToString((int)ChartID()) + "_";
+}
+
 void DeleteLatestSignalLevels()
 {
    string prefix = SignalLevelPrefix();
@@ -2468,17 +2682,28 @@ void DeleteLatestSignalLevels()
    }
 }
 
-void SegmentLevel(string key, datetime t0, datetime t1, double price, color clr, int style, string label)
+void DeleteHistoricalSignalLevels()
+{
+   string prefix = HistoricalSignalLevelPrefix();
+   for(int i = ObjectsTotal(0, -1, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, -1, -1);
+      if(StringFind(name, prefix) == 0)
+         ObjectDelete(0, name);
+   }
+}
+
+void SegmentLevelWithPrefix(string prefix, string key, datetime t0, datetime t1, double price, color clr, int style, string label, int width)
 {
    if(price <= 0.0 || t0 <= 0 || t1 <= t0)
       return;
-   string lineName = SignalLevelPrefix() + key;
-   string textName = SignalLevelPrefix() + key + "_TXT";
+   string lineName = prefix + key;
+   string textName = prefix + key + "_TXT";
    ObjectCreate(0, lineName, OBJ_TREND, 0, t0, price, t1, price);
    ObjectSetInteger(0, lineName, OBJPROP_RAY, false);
    ObjectSetInteger(0, lineName, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, lineName, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, lineName, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, lineName, OBJPROP_WIDTH, width);
    ObjectSetInteger(0, lineName, OBJPROP_BACK, false);
    ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
    ObjectCreate(0, textName, OBJ_TEXT, 0, t1, price);
@@ -2488,6 +2713,11 @@ void SegmentLevel(string key, datetime t0, datetime t1, double price, color clr,
    ObjectSetInteger(0, textName, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, textName, OBJPROP_BACK, false);
    ObjectSetInteger(0, textName, OBJPROP_SELECTABLE, false);
+}
+
+void SegmentLevel(string key, datetime t0, datetime t1, double price, color clr, int style, string label)
+{
+   SegmentLevelWithPrefix(SignalLevelPrefix(), key, t0, t1, price, clr, style, label, 2);
 }
 
 void DrawLatestSignalLevels(string reason)
@@ -2532,6 +2762,59 @@ void DrawLatestSignalLevels(string reason)
    SegmentLevel("TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PRORENKO" + mode + " TP" + IntegerToString(g_targetTpRuntime));
    if(g_halfTpRuntime > 0 && half > 0.0)
       SegmentLevel("HCBE", t0, t1, half, clrGold, STYLE_DASH, "PRORENKO" + mode + " HCBE TP" + IntegerToString(g_halfTpRuntime));
+}
+
+void DrawHistoricalSignalLevels(string reason)
+{
+   DeleteHistoricalSignalLevels();
+   if(!InpShowHistoricalSignalLevels || !InpShowLatestSignalLevels)
+      return;
+   int maxBars = MathMin(InpMaxSignalAgeBars, Bars - 3);
+   if(maxBars < 1) return;
+   int seconds = MathMax(60, Period() * 60);
+   int barsForward = MathMax(1, InpSignalLevelBars);
+   string prefix = HistoricalSignalLevelPrefix();
+
+   int drawn = 0;
+   for(int sh = maxBars; sh >= 1; sh--)
+   {
+      string dir, prevDir;
+      double raw = 0.0, prevRaw = 0.0;
+      int buf = -1, prevBuf = -1;
+      if(!TrendStateAt(sh, dir, raw, buf)) continue;
+      bool prevState = TrendStateAt(sh + 1, prevDir, prevRaw, prevBuf);
+      if(prevState && prevDir == dir) continue;
+
+      datetime t0 = Time[sh];
+      if(t0 <= 0) continue;
+      double entry = SignalEntryPrice(dir, sh, raw);
+      int type = (dir == "BUY") ? OP_BUY : OP_SELL;
+      string drawDir = dir;
+      double sl = 0.0, tp1 = 0.0, tp2 = 0.0, tp3 = 0.0;
+      string geom = "";
+      bool oldFallbackFlag = g_lastGeometryUsedFallback;
+      bool ok = BuildGeometry(type, entry, entry, sh, sl, tp1, tp2, tp3, geom);
+      g_lastGeometryUsedFallback = oldFallbackFlag;
+      if(!ok) continue;
+      if(g_invertMode)
+      {
+         string invDetail = "";
+         if(!ApplyInvertGeometry(dir, entry, sl, tp1, tp2, tp3, drawDir, type, sl, tp1, tp2, tp3, invDetail))
+            continue;
+      }
+
+      double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
+      double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
+      datetime t1 = t0 + barsForward * seconds;
+      string base = IntegerToString((int)t0) + "_" + IntegerToString(drawn) + "_";
+      string mode = (g_invertMode ? " INV" : "") + " " + drawDir;
+      SegmentLevelWithPrefix(prefix, base + "ENTRY", t0, t1, entry, clrWhite, STYLE_DOT, "PR" + mode + " ENTRY", 1);
+      SegmentLevelWithPrefix(prefix, base + "SL", t0, t1, sl, clrTomato, STYLE_SOLID, "PR" + mode + " SL", 1);
+      SegmentLevelWithPrefix(prefix, base + "TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PR" + mode + " TP" + IntegerToString(g_targetTpRuntime), 1);
+      if(g_halfTpRuntime > 0 && half > 0.0)
+         SegmentLevelWithPrefix(prefix, base + "HCBE", t0, t1, half, clrGold, STYLE_DASH, "PR" + mode + " HCBE TP" + IntegerToString(g_halfTpRuntime), 1);
+      drawn++;
+   }
 }
 void DrawTradeLevels()
 {
@@ -2597,7 +2880,3 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
-
-
-
-
