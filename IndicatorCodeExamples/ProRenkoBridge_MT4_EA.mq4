@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-07.0046-robust-reverse-close"
+#define BUILD_TAG "2026-07-08.1325-compact-excursion-audit"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -93,10 +93,10 @@ input double InpInitialBalanceOverride = 10000.0;
 input int    InpDayResetHourGmt = 0;
 input bool   InpRiskScopeByMagic = true;
 input bool   InpLiquidateOnBreach = false;
-input int    InpRiskAuditSeconds = 60;
+input int    InpRiskAuditSeconds = 0; // 0=off. Periodic risk snapshots are telemetry; trade events still audit when enabled.
 
 input bool   InpEnableAudit = false;
-input int    InpPositionProbeSeconds = 30;
+input int    InpPositionProbeSeconds = 0; // 0=off. Keep audit compact; closed-trade lifecycle rows carry MFE/MAE.
 input int    InpLifecycleAuditSeconds = 10;
 
 string   g_prefix;
@@ -135,6 +135,8 @@ datetime g_pendingTrendFirstSeen = 0;
 datetime g_pendingTrendBarTime = 0;
 datetime g_trendExecutedBarTime = 0;
 string   g_trendExecutedBarEventId = "";
+string   g_loggedSh1WaitEventId = "";
+string   g_loggedSh2WaitEventId = "";
 datetime g_lastRiskAuditTs = 0;
 datetime g_lastProbeTs = 0;
 datetime g_lastLifecycleAuditTs = 0;
@@ -171,6 +173,7 @@ int OnInit()
    ChartSetInteger(0, CHART_EVENT_OBJECT_DELETE, true);
    EventSetTimer(MathMax(1, InpPollSeconds));
 
+   CleanupLegacyInfiniteLevelLines();
    if(InpShowDashboard) DashboardCreate();
    Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
@@ -203,6 +206,7 @@ void OnDeinit(const int reason)
    DeleteTradeLevels();
    DeleteLatestSignalLevels();
    DeleteHistoricalSignalLevels();
+   DeleteAllCalculatedFallbackLevels();
    Audit("deinit", "", 0, "", 0, 0, 0, 0, "reason=" + IntegerToString(reason), 0, "");
 }
 
@@ -430,6 +434,8 @@ bool CanExecuteTrendSignalNow(string source, string eid, int sh, datetime barTim
       g_pendingTrendEventId = eid;
       g_pendingTrendFirstSeen = now;
       g_pendingTrendBarTime = barTime;
+      g_loggedSh1WaitEventId = "";
+      g_loggedSh2WaitEventId = "";
       Audit(mode == 1 ? "signal_pending_sh1_close" : "signal_pending_sh2_delay", eid, 0, dir, 0, sigPx, 0, 0,
             "source=" + source + " reason=" + reason + " shift=0 bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS) +
             " exec_mode=" + TrendExecModeLabel() + " delay_sec=" + IntegerToString(g_trendExecDelayRuntime), 0, "live_signal_seen_no_trade_yet");
@@ -438,17 +444,25 @@ bool CanExecuteTrendSignalNow(string source, string eid, int sh, datetime barTim
 
    if(mode == 1)
    {
-      Audit("signal_waiting_sh1_close", eid, 0, dir, 0, sigPx, 0, 0,
-            "source=" + source + " reason=" + reason + " shift=0 bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_bar_close");
+      if(g_loggedSh1WaitEventId != eid)
+      {
+         g_loggedSh1WaitEventId = eid;
+         Audit("signal_waiting_sh1_close", eid, 0, dir, 0, sigPx, 0, 0,
+               "source=" + source + " reason=" + reason + " shift=0 bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_bar_close_once");
+      }
       return false;
    }
 
    int stableFor = (int)(now - g_pendingTrendFirstSeen);
    if(stableFor < g_trendExecDelayRuntime)
    {
-      Audit("signal_waiting_sh2_delay", eid, 0, dir, 0, sigPx, 0, 0,
-            "source=" + source + " stable_for=" + IntegerToString(stableFor) + " required=" + IntegerToString(g_trendExecDelayRuntime) +
-            " bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_delay_or_bar_close");
+      if(g_loggedSh2WaitEventId != eid)
+      {
+         g_loggedSh2WaitEventId = eid;
+         Audit("signal_waiting_sh2_delay", eid, 0, dir, 0, sigPx, 0, 0,
+               "source=" + source + " stable_for=" + IntegerToString(stableFor) + " required=" + IntegerToString(g_trendExecDelayRuntime) +
+               " bar=" + TimeToString(barTime, TIME_DATE|TIME_SECONDS), 0, "wait_delay_or_bar_close_once");
+      }
       return false;
    }
 
@@ -1339,6 +1353,7 @@ void ManagePositions()
       if(!OrderSelect(ticket, SELECT_BY_TICKET)) continue;
       string dir = (type == OP_BUY) ? "BUY" : "SELL";
       double px = (type == OP_BUY) ? Bid : Ask;
+      UpdateTicketExcursion(ticket, px);
       int halfIdx = (int)TicketGV(ticket, "HIDX", 0);
       double half = TicketGV(ticket, "HTP", 0);
       bool halfDone = (TicketGV(ticket, "HDONE", 0) > 0.5);
@@ -1347,13 +1362,27 @@ void ManagePositions()
          double closeLots = NormalizeCloseLots(OrderLots() / 2.0);
          if(closeLots > 0 && closeLots < OrderLots())
          {
+            double oldOpen = OrderOpenPrice();
+            double oldLots = OrderLots();
+            double oldSl = OrderStopLoss();
+            double oldTp = OrderTakeProfit();
             bool ok = OrderClose(ticket, closeLots, px, InpSlippage, clrAqua);
             int err = GetLastError();
             if(ok)
             {
+               double expectedLots = NormalizeCloseLots(oldLots - closeLots);
+               int remainderTicket = FindPartialCloseRemainderTicket(ticket, type, oldOpen, expectedLots);
                TicketGVSet(ticket, "HDONE", 1);
-               Audit("half_close_done", TicketEvent(ticket), ticket, dir, closeLots, px, OrderStopLoss(), OrderTakeProfit(), "trigger=" + PriceText(half), OrderProfit(), "");
-               if(OrderSelect(ticket, SELECT_BY_TICKET)) MoveSlToBE(ticket, type);
+               Audit("half_close_done", TicketEvent(ticket), ticket, dir, closeLots, px, oldSl, oldTp, "trigger=" + PriceText(half) + " expected_remainder_lots=" + DoubleToString(expectedLots, 2) + " remainder_ticket=" + IntegerToString(remainderTicket), OrderProfit(), "");
+               if(remainderTicket > 0)
+               {
+                  TransferTicketState(ticket, remainderTicket, "partial_half_close");
+                  MoveSlToBE(remainderTicket, type);
+               }
+               else
+               {
+                  Audit("half_close_remainder_not_found", TicketEvent(ticket), ticket, dir, expectedLots, oldOpen, oldSl, oldTp, "partial close succeeded but new remainder ticket was not found; BE modify deferred", OrderProfit(), "");
+               }
             }
             else Audit("half_close_failed", TicketEvent(ticket), ticket, dir, closeLots, px, OrderStopLoss(), OrderTakeProfit(), "err=" + IntegerToString(err), 0, "");
          }
@@ -1994,12 +2023,82 @@ void StoreTicket(int ticket, double tp1, double tp2, double tp3, double half, in
    TicketGVSet(ticket, "FB", fallbackLevels ? 1.0 : 0.0);
    TicketGVSet(ticket, "ENRICH", 0.0);
    TicketGVSet(ticket, "OPENED", 1.0);
+   double openPx = 0.0;
+   if(OrderSelect(ticket, SELECT_BY_TICKET))
+      openPx = OrderOpenPrice();
+   TicketGVSet(ticket, "MFE", 0.0);
+   TicketGVSet(ticket, "MAE", 0.0);
+   TicketGVSet(ticket, "MFE_PX", openPx);
+   TicketGVSet(ticket, "MAE_PX", openPx);
+}
+int FindPartialCloseRemainderTicket(int oldTicket, int type, double oldOpenPrice, double expectedLots)
+{
+   RefreshRates();
+   double lotStep = MarketInfo(Symbol(), MODE_LOTSTEP);
+   if(lotStep <= 0.0) lotStep = 0.01;
+   double lotTolerance = MathMax(lotStep * 1.5, 0.0000001);
+   double priceTolerance = MathMax(TickSizePrice() * 4.0, Point * 4.0);
+
+   for(int pass = 0; pass < 8; pass++)
+   {
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(OrderTicket() == oldTicket) continue;
+         if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+         if(OrderType() != type) continue;
+         if(expectedLots > 0.0 && MathAbs(OrderLots() - expectedLots) > lotTolerance) continue;
+         if(MathAbs(OrderOpenPrice() - oldOpenPrice) > priceTolerance) continue;
+         return OrderTicket();
+      }
+      Sleep(100);
+      RefreshRates();
+   }
+   return -1;
+}
+
+void TransferTicketState(int oldTicket, int newTicket, string reason)
+{
+   if(newTicket <= 0 || newTicket == oldTicket) return;
+   string fields[13] = {"TP1", "TP2", "TP3", "HTP", "HIDX", "TIDX", "HDONE", "FB", "ENRICH", "MFE", "MAE", "MFE_PX", "MAE_PX"};
+   for(int i = 0; i < 13; i++)
+      TicketGVSet(newTicket, fields[i], TicketGV(oldTicket, fields[i], 0.0));
+   TicketGVSet(newTicket, "OPENED", 1.0);
+   TicketGVSet(oldTicket, "CLOSED", 1.0);
+   Audit("ticket_state_transferred", TicketEvent(oldTicket), newTicket, "", OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(), "old_ticket=" + IntegerToString(oldTicket) + " new_ticket=" + IntegerToString(newTicket) + " reason=" + reason, OrderProfit(), "partial_close_remainder_tracking");
 }
 
 string TicketKey(int ticket, string field) { return "ProRenkoBridge|" + IntegerToString(AccountNumber()) + "|" + IntegerToString(ticket) + "|" + field; }
 double TicketGV(int ticket, string field, double def) { string key = TicketKey(ticket, field); if(!GlobalVariableCheck(key)) return def; return GlobalVariableGet(key); }
 void TicketGVSet(int ticket, string field, double value) { GlobalVariableSet(TicketKey(ticket, field), value); }
 string TicketEvent(int ticket) { return "ticket=" + IntegerToString(ticket); }
+
+void UpdateTicketExcursion(int ticket, double px)
+{
+   if(ticket <= 0 || !OrderSelect(ticket, SELECT_BY_TICKET))
+      return;
+   double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+   double mfe = TicketGV(ticket, "MFE", 0.0);
+   double mae = TicketGV(ticket, "MAE", 0.0);
+   if(pnl > mfe)
+   {
+      TicketGVSet(ticket, "MFE", pnl);
+      TicketGVSet(ticket, "MFE_PX", px);
+   }
+   if(pnl < mae)
+   {
+      TicketGVSet(ticket, "MAE", pnl);
+      TicketGVSet(ticket, "MAE_PX", px);
+   }
+}
+
+string TicketExcursionDetail(int ticket)
+{
+   return " mfe=" + DoubleToString(TicketGV(ticket, "MFE", 0.0), 2)
+      + " mae=" + DoubleToString(TicketGV(ticket, "MAE", 0.0), 2)
+      + " mfe_px=" + PriceText(TicketGV(ticket, "MFE_PX", 0.0))
+      + " mae_px=" + PriceText(TicketGV(ticket, "MAE_PX", 0.0));
+}
 
 void MaybeRiskAudit()
 {
@@ -2058,7 +2157,8 @@ void AuditClosedHistoryTickets()
                     + " close_time=" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS)
                     + " open_price=" + PriceText(OrderOpenPrice())
                     + " close_price=" + PriceText(OrderClosePrice())
-                    + " comment='" + OrderComment() + "'";
+                    + " comment='" + OrderComment() + "'"
+                    + TicketExcursionDetail(ticket);
       Audit(eventName, TicketEvent(ticket), ticket, dir, OrderLots(), OrderClosePrice(), OrderStopLoss(), OrderTakeProfit(), detail, pnl, "history_lifecycle_tracker");
       TicketGVSet(ticket, "CLOSED", 1.0);
    }
@@ -2819,33 +2919,41 @@ void DrawHistoricalSignalLevels(string reason)
 void DrawTradeLevels()
 {
    DeleteTradeLevels();
+   int seconds = MathMax(60, Period() * 60);
+   int barsForward = MathMax(1, InpSignalLevelBars);
+   datetime nowT = Time[0] > 0 ? Time[0] : TimeCurrent();
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
       int t = OrderTicket();
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_ENTRY", OrderOpenPrice(), clrWhite, STYLE_DOT);
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_SL", OrderStopLoss(), clrTomato, STYLE_SOLID);
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_TP", OrderTakeProfit(), clrDodgerBlue, STYLE_SOLID);
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_TP1", TicketGV(t, "TP1", 0), clrDeepSkyBlue, STYLE_DOT);
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_TP2", TicketGV(t, "TP2", 0), clrRoyalBlue, STYLE_DOT);
-      HLine("PRORENKO_LVL_" + IntegerToString(t) + "_TP3", TicketGV(t, "TP3", 0), clrBlue, STYLE_DOT);
+      datetime t0 = OrderOpenTime() > 0 ? OrderOpenTime() : nowT;
+      datetime t1 = MathMax(nowT + barsForward * seconds, t0 + barsForward * seconds);
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_ENTRY", t0, t1, OrderOpenPrice(), clrWhite, STYLE_DOT, "LIVE ENTRY");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_SL", t0, t1, OrderStopLoss(), clrTomato, STYLE_SOLID, "LIVE SL");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP", t0, t1, OrderTakeProfit(), clrDodgerBlue, STYLE_SOLID, "LIVE TP");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP1", t0, t1, TicketGV(t, "TP1", 0), clrDeepSkyBlue, STYLE_DOT, "LIVE TP1");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP2", t0, t1, TicketGV(t, "TP2", 0), clrRoyalBlue, STYLE_DOT, "LIVE TP2");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP3", t0, t1, TicketGV(t, "TP3", 0), clrBlue, STYLE_DOT, "LIVE TP3");
    }
 }
 
 void DrawCalculatedFallbackLevels(int ticket, double sl, double tp1, double tp2, double tp3)
 {
    DeleteCalculatedFallbackLevels(ticket);
-   CalcHLine("PRORENKO_CALC_" + IntegerToString(ticket) + "_SL", sl, clrOrangeRed, STYLE_DASHDOT, "CALC SL");
-   CalcHLine("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP1", tp1, clrAqua, STYLE_DASHDOT, "CALC TP1");
-   CalcHLine("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP2", tp2, clrDeepSkyBlue, STYLE_DASHDOT, "CALC TP2");
-   CalcHLine("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP3", tp3, clrDodgerBlue, STYLE_DASHDOT, "CALC TP3");
+   datetime t0 = Time[0] > 0 ? Time[0] : TimeCurrent();
+   datetime t1 = t0 + MathMax(1, InpSignalLevelBars) * MathMax(60, Period() * 60);
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_SL", t0, t1, sl, clrOrangeRed, STYLE_DASHDOT, "CALC SL");
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP1", t0, t1, tp1, clrAqua, STYLE_DASHDOT, "CALC TP1");
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP2", t0, t1, tp2, clrDeepSkyBlue, STYLE_DASHDOT, "CALC TP2");
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP3", t0, t1, tp3, clrDodgerBlue, STYLE_DASHDOT, "CALC TP3");
 }
 
-void CalcHLine(string name, double price, color clr, int style, string text)
+void CalcSegment(string name, datetime t0, datetime t1, double price, color clr, int style, string text)
 {
-   if(price <= 0.0) return;
-   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+   if(price <= 0.0 || t0 <= 0 || t1 <= t0) return;
+   ObjectCreate(0, name, OBJ_TREND, 0, t0, price, t1, price);
+   ObjectSetInteger(0, name, OBJPROP_RAY, false);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_STYLE, style);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
@@ -2864,12 +2972,36 @@ void DeleteCalculatedFallbackLevels(int ticket)
    }
 }
 
-void HLine(string name, double price, color clr, int style)
+void DeleteAllCalculatedFallbackLevels()
 {
-   if(price <= 0) return;
-   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr); ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1); ObjectSetInteger(0, name, OBJPROP_BACK, true); ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   for(int i = ObjectsTotal(0, -1, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, -1, -1);
+      if(StringFind(name, "PRORENKO_CALC_") == 0) ObjectDelete(0, name);
+   }
+}
+
+void TradeLevelSegment(string name, datetime t0, datetime t1, double price, color clr, int style, string text)
+{
+   if(price <= 0.0 || t0 <= 0 || t1 <= t0) return;
+   ObjectCreate(0, name, OBJ_TREND, 0, t0, price, t1, price);
+   ObjectSetInteger(0, name, OBJPROP_RAY, false);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetString(0, name, OBJPROP_TEXT, text + " " + PriceText(price));
+}
+
+void CleanupLegacyInfiniteLevelLines()
+{
+   for(int i = ObjectsTotal(0, -1, -1) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, -1, -1);
+      if(StringFind(name, "PRORENKO_LVL_") == 0 || StringFind(name, "PRORENKO_CALC_") == 0)
+         ObjectDelete(0, name);
+   }
 }
 
 void DeleteTradeLevels()
@@ -2880,3 +3012,6 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
+
+
+

@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define PRORENKO_FILE_BRIDGE_MT5_BUILD "2026-07-05.1918-prorenko-listener"
+#define PRORENKO_FILE_BRIDGE_MT5_BUILD "2026-07-08.1515-ordercalcprofit-risk-final"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "ProRenkoFileBridge_Latest.csv";
@@ -897,6 +897,40 @@ double ShrinkLotToMarginLimit(const int direction, double requestedLot, double e
           + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
    return best;
 }
+double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, string &detail)
+{
+   detail = "";
+   double riskDist = MathAbs(entry - sl);
+   if(riskDist <= 0.0)
+   {
+      detail = "risk_dist_invalid risk_dist=" + DoubleToString(riskDist, _Digits);
+      return 0.0;
+   }
+
+   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double profit = 0.0;
+   ResetLastError();
+   if(!OrderCalcProfit(type, _Symbol, 1.0, entry, sl, profit))
+   {
+      int err = GetLastError();
+      detail = "order_calc_profit_failed err=" + IntegerToString(err)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+
+   double moneyPerLot = MathAbs(profit);
+   if(moneyPerLot <= 0.0)
+   {
+      detail = "order_calc_profit_zero profit=" + DoubleToString(profit, 2)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+   detail = "ordercalc_profit_1lot=" + DoubleToString(profit, 2);
+   return moneyPerLot;
+}
+
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -905,17 +939,18 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    double riskDist = MathAbs(entry - sig.sl);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(riskDist <= 0.0 || tickSize <= 0.0 || tickValue <= 0.0)
+   if(riskDist <= 0.0)
    {
       detail = "risk_lot_unavailable riskDist=" + DoubleToString(riskDist, _Digits);
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
    double effectiveRiskPct = (sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct);
    double budget = AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, effectiveRiskPct) / 100.0;
-   double moneyPerLot = riskDist / tickSize * tickValue;
+   string riskCalcDetail = "";
+   double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, sig.sl, riskCalcDetail);
    if(moneyPerLot <= 0.0)
    {
-      detail = "money_per_lot_invalid";
+      detail = "money_per_lot_invalid " + riskCalcDetail;
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
    double rawLot = budget / moneyPerLot;
@@ -962,6 +997,8 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 
    detail = "risk_lot symbol=" + _Symbol
           + " risk_pct=" + DoubleToString(effectiveRiskPct, 3) + (sig.riskPct > 0.0 ? " source=bridge" : " source=local") + " budget=" + DoubleToString(budget, 2)
+          + " risk_calc=ordercalcprofit"
+          + " " + riskCalcDetail
           + " tick_size=" + DoubleToString(tickSize, _Digits)
           + " tick_value=" + DoubleToString(tickValue, 4)
           + " vol_min=" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 2)

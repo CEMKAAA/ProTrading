@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-05.1935-no-money-retry"
+#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-08.1515-ordercalcprofit-risk-final"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "GannFileBridge_Latest.csv";
@@ -34,6 +34,8 @@ input int    InpMaxSpreadPoints = 0;
 input double InpManualLot = 0.10;
 input bool   InpUseRiskLot = true;
 input double InpRiskPerTradePct = 1.00;
+input bool   InpUseBridgeRiskPct = true; // ON=use MT4-sent risk %, OFF=use this MT5 listener's local risk %.
+input bool   InpUseAccountBalanceForRisk = false; // OFF=MT5 equity, ON=MT5 balance. Never uses MT4 capital.
 input double InpMaxLot = 0.00; // 0=broker max
 input bool   InpUseMarginShrinkGuard = true; // OFF=do not shrink risk lot for margin usage; broker may still reject if margin is insufficient.
 input double InpMaxMarginUsagePct = 40.0;
@@ -432,7 +434,9 @@ void DrawDashboard(bool force=false)
    DashboardSetLabel("RISK", x + 14, y + 146,
       "Levels=" + (InpRebaseMappedLevelsToLiveEntry ? "REBASE" : "ABS")
       + " | MarginGuard=" + (g_marginShrinkGuardRuntime ? ("ON max=" + DoubleToString(InpMaxMarginUsagePct, 1) + "%") : "OFF")
-      + " | RiskLot=" + (InpUseRiskLot ? "ON" : "OFF"), C'170,210,245', 7);
+      + " | RiskLot=" + (InpUseRiskLot ? "ON" : "OFF")
+      + " | RiskPct=" + (InpUseBridgeRiskPct ? "BRIDGE" : "LOCAL")
+      + " | Capital=MT5 " + (InpUseAccountBalanceForRisk ? "BAL" : "EQ"), C'170,210,245', 7);
    DashboardSetButton("BTN_MARGIN", x + 506, y + 140, 112, 22,
       g_marginShrinkGuardRuntime ? "MG ON" : "MG OFF",
       g_marginShrinkGuardRuntime ? C'28,95,72' : C'104,44,48', C'240,245,250');
@@ -983,6 +987,40 @@ double ShrinkLotToFreeMargin(const int direction, double requestedLot, double en
           + " free_margin=" + DoubleToString(freeMargin, 2);
    return best;
 }
+double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, string &detail)
+{
+   detail = "";
+   double riskDist = MathAbs(entry - sl);
+   if(riskDist <= 0.0)
+   {
+      detail = "risk_dist_invalid risk_dist=" + DoubleToString(riskDist, _Digits);
+      return 0.0;
+   }
+
+   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double profit = 0.0;
+   ResetLastError();
+   if(!OrderCalcProfit(type, _Symbol, 1.0, entry, sl, profit))
+   {
+      int err = GetLastError();
+      detail = "order_calc_profit_failed err=" + IntegerToString(err)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+
+   double moneyPerLot = MathAbs(profit);
+   if(moneyPerLot <= 0.0)
+   {
+      detail = "order_calc_profit_zero profit=" + DoubleToString(profit, 2)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+   detail = "ordercalc_profit_1lot=" + DoubleToString(profit, 2);
+   return moneyPerLot;
+}
+
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -991,17 +1029,25 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    double riskDist = MathAbs(entry - sig.sl);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(riskDist <= 0.0 || tickSize <= 0.0 || tickValue <= 0.0)
+   if(riskDist <= 0.0)
    {
       detail = "risk_lot_unavailable riskDist=" + DoubleToString(riskDist, _Digits);
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
-   double effectiveRiskPct = (sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct);
-   double budget = AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, effectiveRiskPct) / 100.0;
-   double moneyPerLot = riskDist / tickSize * tickValue;
+   double effectiveRiskPct = (InpUseBridgeRiskPct && sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct);
+   double riskCapital = InpUseAccountBalanceForRisk ? AccountInfoDouble(ACCOUNT_BALANCE) : AccountInfoDouble(ACCOUNT_EQUITY);
+   if(riskCapital <= 0.0)
+   {
+      detail = "risk_capital_unavailable source=mt5_" + (InpUseAccountBalanceForRisk ? "balance" : "equity")
+             + " value=" + DoubleToString(riskCapital, 2);
+      return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
+   }
+   double budget = riskCapital * MathMax(0.0, effectiveRiskPct) / 100.0;
+   string riskCalcDetail = "";
+   double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, sig.sl, riskCalcDetail);
    if(moneyPerLot <= 0.0)
    {
-      detail = "money_per_lot_invalid";
+      detail = "money_per_lot_invalid " + riskCalcDetail;
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
    double rawLot = budget / moneyPerLot;
@@ -1047,7 +1093,9 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    }
 
    detail = "risk_lot symbol=" + _Symbol
-          + " risk_pct=" + DoubleToString(effectiveRiskPct, 3) + (sig.riskPct > 0.0 ? " source=bridge" : " source=local") + " budget=" + DoubleToString(budget, 2)
+          + " risk_pct=" + DoubleToString(effectiveRiskPct, 3) + ((InpUseBridgeRiskPct && sig.riskPct > 0.0) ? " pct_source=bridge" : " pct_source=local") + " risk_capital_source=mt5_" + (InpUseAccountBalanceForRisk ? "balance" : "equity") + " risk_capital=" + DoubleToString(riskCapital, 2) + " budget=" + DoubleToString(budget, 2)
+          + " risk_calc=ordercalcprofit"
+          + " " + riskCalcDetail
           + " tick_size=" + DoubleToString(tickSize, _Digits)
           + " tick_value=" + DoubleToString(tickValue, 4)
           + " vol_min=" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 2)

@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-03-mt5-pub-toggle"
+#define ATOMIC_BRIDGE_BUILD "2026-07-08.1325-compact-excursion-audit"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -264,6 +264,7 @@ string   ATOMIC_LEVEL_PREFIX = "ATOMIC_SIGNAL_LEVEL_";
 uint     g_lastAccountRiskGuardMs = 0;
 double   g_accountRiskLockValue = 0.0;
 double   g_accountRiskPerTradePctRuntime = 1.0;
+uint     g_riskApplyFeedbackUntilMs = 0;
 
 bool _account_risk_enabled_runtime()
 {
@@ -1226,6 +1227,13 @@ double _direct_state_get(string kind, int ticket)
    return GlobalVariableGet(key);
 }
 
+bool _direct_state_has(string kind, int ticket)
+{
+   if(ticket <= 0)
+      return false;
+   return GlobalVariableCheck(_direct_audit_gv_key(kind, ticket));
+}
+
 void _direct_state_set(string kind, int ticket, double value)
 {
    if(ticket <= 0)
@@ -1238,6 +1246,34 @@ void _direct_state_copy(string kind, int fromTicket, int toTicket)
    double value = _direct_state_get(kind, fromTicket);
    if(value > 0.0)
       _direct_state_set(kind, toTicket, value);
+}
+
+void _direct_state_copy_any(string kind, int fromTicket, int toTicket)
+{
+   if(_direct_state_has(kind, fromTicket))
+      _direct_state_set(kind, toTicket, _direct_state_get(kind, fromTicket));
+}
+
+void _direct_update_excursion(int ticket, double px, double currentR)
+{
+   if(ticket <= 0 || !OrderSelect(ticket, SELECT_BY_TICKET))
+      return;
+   double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+   double mfe = _direct_state_get("MFE", ticket);
+   double mae = _direct_state_get("MAE", ticket);
+   if(!_direct_state_has("MFE", ticket) || pnl > mfe)
+   {
+      _direct_state_set("MFE", ticket, pnl);
+      _direct_state_set("MFE_PX", ticket, px);
+   }
+   if(!_direct_state_has("MAE", ticket) || pnl < mae)
+   {
+      _direct_state_set("MAE", ticket, pnl);
+      _direct_state_set("MAE_PX", ticket, px);
+   }
+   double minR = _direct_state_get("MINR", ticket);
+   if(!_direct_state_has("MINR", ticket) || currentR < minR)
+      _direct_state_set("MINR", ticket, currentR);
 }
 
 int _direct_parent_ticket_from_comment(string source)
@@ -1300,6 +1336,11 @@ bool _direct_order_owned_by_instance(int ticket, string source, bool inheritPart
    _direct_state_copy("HALF", parentTicket, ticket);
    _direct_state_copy("SEEN", parentTicket, ticket);
    _direct_state_copy("MAXR", parentTicket, ticket);
+   _direct_state_copy_any("MINR", parentTicket, ticket);
+   _direct_state_copy_any("MFE", parentTicket, ticket);
+   _direct_state_copy_any("MAE", parentTicket, ticket);
+   _direct_state_copy_any("MFE_PX", parentTicket, ticket);
+   _direct_state_copy_any("MAE_PX", parentTicket, ticket);
    _direct_state_copy("VOWN", parentTicket, ticket);
    _direct_state_set("OWNER", ticket, parentOwner);
    if((int)parentOwner != Period())
@@ -1374,7 +1415,9 @@ string _account_risk_key(string kind)
 
 bool _account_risk_magic_scoped(int magic)
 {
-   return magic >= 1000000000 && magic < 2000000000;
+   // Scope liquidation/risk budget to AtomicBridge-owned magic only.
+   // Other governed EAs also use 1B+ magic ranges; broad range checks can cross-close them.
+   return _direct_magic_owned(magic);
 }
 
 int _direct_magic()
@@ -2485,6 +2528,11 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
          _direct_state_set("IRISK", ticket, initialRisk);
       _direct_state_set("OWNER", ticket, Period());
       _direct_state_set("VOWN", ticket, _direct_instance_hash(source));
+      _direct_state_set("MFE", ticket, 0.0);
+      _direct_state_set("MAE", ticket, 0.0);
+      _direct_state_set("MFE_PX", ticket, fillPrice);
+      _direct_state_set("MAE_PX", ticket, fillPrice);
+      _direct_state_set("MINR", ticket, 0.0);
       double activeHalfR = (_contains_ci(source, "AtomicRegime") ? g_regimeDirectMt4HalfBeRRuntime : (g_directMt4HalfBeTpIndexRuntime < g_directMt4TpIndexRuntime ? g_directMt4HalfBeRRuntime : 0.0));
       bool triggerRebased = false;
       string triggerGeometry = "";
@@ -3249,6 +3297,9 @@ void _direct_position_probe_scan()
       bool beMarked = _direct_audit_marked("BE", ticket);
       bool triggerSeen = _direct_state_get("SEEN", ticket) > 0.0;
       double maxR = _direct_state_get("MAXR", ticket);
+      double minR = _direct_state_get("MINR", ticket);
+      double mfe = _direct_state_get("MFE", ticket);
+      double mae = _direct_state_get("MAE", ticket);
       double pnl = OrderProfit() + OrderSwap() + OrderCommission();
       count++;
       hash = hash + IntegerToString(ticket) + ":" + DoubleToString(OrderLots(), 2) + ":" + _fmt_price(sl) + ":" + _fmt_price(tp) + ":" + DoubleToString(currentR, 2) + ";";
@@ -3274,6 +3325,9 @@ void _direct_position_probe_scan()
          pnl,
          "trigger_seen=" + (triggerSeen ? "1" : "0")
          + " max_r=" + DoubleToString(maxR, 3)
+         + " min_r=" + DoubleToString(minR, 3)
+         + " mfe=" + DoubleToString(mfe, 2)
+         + " mae=" + DoubleToString(mae, 2)
          + " initial_risk=" + DoubleToString(risk, Digits)
          + " schedule_gap_sec=" + IntegerToString(scheduleGap)
          + " tick_age_sec=" + IntegerToString(g_lastTickLocal > 0 ? (int)MathMax(0, now - g_lastTickLocal) : -1)
@@ -3345,6 +3399,11 @@ void _direct_transfer_ticket_state(int oldTicket, int newTicket)
    _direct_state_copy("HALF", oldTicket, newTicket);
    _direct_state_copy("SEEN", oldTicket, newTicket);
    _direct_state_copy("MAXR", oldTicket, newTicket);
+   _direct_state_copy_any("MINR", oldTicket, newTicket);
+   _direct_state_copy_any("MFE", oldTicket, newTicket);
+   _direct_state_copy_any("MAE", oldTicket, newTicket);
+   _direct_state_copy_any("MFE_PX", oldTicket, newTicket);
+   _direct_state_copy_any("MAE_PX", oldTicket, newTicket);
    _direct_state_copy("VOWN", oldTicket, newTicket);
    _direct_state_copy("OWNER", oldTicket, newTicket);
 }
@@ -3462,6 +3521,11 @@ void _direct_history_audit_scan()
       bool triggerSeen = _direct_state_get("SEEN", tk) > 0.0;
       bool halfMarked = _direct_audit_marked("HALF", tk);
       bool beMarked = _direct_audit_marked("BE", tk);
+      double minR = _direct_state_get("MINR", tk);
+      double mfe = _direct_state_get("MFE", tk);
+      double mae = _direct_state_get("MAE", tk);
+      double mfePx = _direct_state_get("MFE_PX", tk);
+      double maePx = _direct_state_get("MAE_PX", tk);
       double barExtreme = 0.0;
       bool barTouched = _direct_history_trigger_touched(OrderType(), OrderOpenTime(), ct, triggerPrice, barExtreme);
       string lifecycle = "initial_risk=" + DoubleToString(initialRisk, Digits)
@@ -3470,6 +3534,11 @@ void _direct_history_audit_scan()
          + " bar_touch_estimate=" + (barTouched ? "1" : "0")
          + " bar_extreme=" + _fmt_price(barExtreme)
          + " max_r=" + DoubleToString(maxR, 3)
+         + " min_r=" + DoubleToString(minR, 3)
+         + " mfe=" + DoubleToString(mfe, 2)
+         + " mae=" + DoubleToString(mae, 2)
+         + " mfe_px=" + _fmt_price(mfePx)
+         + " mae_px=" + _fmt_price(maePx)
          + " be_marked=" + (beMarked ? "1" : "0")
          + " half_marked=" + (halfMarked ? "1" : "0");
       _direct_audit_write(eventName, OrderComment(), "", tk, dir, OrderLots(), closePx, sl, tp, "history_close", pnl, lifecycle);
@@ -5078,6 +5147,14 @@ void _manage_direct_mt4_positions()
          continue;
       RefreshRates();
       double px = dir > 0 ? Bid : Ask;
+      double currentR = (dir > 0) ? ((px - entry) / initialRisk) : ((entry - px) / initialRisk);
+      double maxR = _direct_state_get("MAXR", ticket);
+      if(currentR > maxR)
+      {
+         maxR = currentR;
+         _direct_state_set("MAXR", ticket, maxR);
+      }
+      _direct_update_excursion(ticket, px, currentR);
       bool isRegime = _contains_ci(source, "AtomicRegime");
       double storedTrigger = _direct_get_half_trigger_price(ticket);
       if(!isRegime && g_directMt4HalfBeTpIndexRuntime >= g_directMt4TpIndexRuntime && storedTrigger <= 0.0)
@@ -5106,13 +5183,6 @@ void _manage_direct_mt4_positions()
       }
       if(!_direct_trigger_price_valid(direction, entry, triggerPrice))
          continue;
-      double currentR = (dir > 0) ? ((px - entry) / initialRisk) : ((entry - px) / initialRisk);
-      double maxR = _direct_state_get("MAXR", ticket);
-      if(currentR > maxR)
-      {
-         maxR = currentR;
-         _direct_state_set("MAXR", ticket, maxR);
-      }
       bool reached = currentR > 0.0 && ((dir > 0) ? (px >= triggerPrice) : (px <= triggerPrice));
       bool alreadyBe = (dir > 0) ? (sl >= entry - Point) : (sl <= entry + Point);
       if(!reached)
@@ -5265,7 +5335,8 @@ void _draw_dashboard()
    _dash_button("BTN_ATOMIC_RR", 718, 312, 244, 24, "ATOMIC TARGET " + DoubleToString(g_atomicDirectTargetRRuntime, 1) + "R", C'38,101,176');
    _dash_label("L_RISK_PCT", 724, 346, "Risk %", C'184,196,210', 8);
    _dash_edit("EDIT_RISK_PCT", 778, 340, 56, 22, DoubleToString(_account_risk_per_trade_pct(), 2));
-   _dash_button("BTN_RISK_APPLY", 844, 340, 118, 24, "APPLY RISK", C'38,101,176');
+   bool riskAppliedPulse = (g_riskApplyFeedbackUntilMs > 0 && GetTickCount() < g_riskApplyFeedbackUntilMs);
+   _dash_button("BTN_RISK_APPLY", 844, 340, 118, 24, riskAppliedPulse ? "APPLIED" : "APPLY RISK", riskAppliedPulse ? C'32,150,96' : C'38,101,176');
    _dash_label("L_REG_PIP_SL", 724, 374, "Reg pip SL", C'184,196,210', 8);
    _dash_edit("EDIT_REGIME_PIP_SL", 800, 368, 50, 22, DoubleToString(g_regimePipSlPipsRuntime, 1));
    _dash_button("BTN_REGIME_PIP_SL", 858, 368, 104, 24, g_regimePipSlModeRuntime ? "PIP SL ON" : "PIP SL OFF", g_regimePipSlModeRuntime ? C'32,150,96' : C'88,96,112');
@@ -5401,6 +5472,9 @@ void _apply_dashboard()
    obj = DASH_PREFIX + "EDIT_REGIME_PIP_SL";
    if(ObjectFind(0, obj) >= 0)
       g_regimePipSlPipsRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_RISK_PCT";
+   if(ObjectFind(0, obj) >= 0)
+      g_accountRiskPerTradePctRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
    obj = DASH_PREFIX + "EDIT_DAILY_PROFIT";
    if(ObjectFind(0, obj) >= 0)
       g_directMt4DailyProfitTargetRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
@@ -7403,6 +7477,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
    else if(sparam == DASH_PREFIX + "BTN_RISK_APPLY")
    {
+      g_riskApplyFeedbackUntilMs = GetTickCount() + 1200;
       _apply_dashboard();
    }
    else if(sparam == DASH_PREFIX + "BTN_DAILY_PROFIT")

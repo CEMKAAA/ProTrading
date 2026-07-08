@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| Atomic File Bridge MT5 Executor EA                               |
 //| Reads MT4 AtomicBridge signals from Terminal Common\Files and     |
 //| executes them on MT5 with duplicate guard, risk lot and audit.    |
@@ -8,13 +8,14 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-05.2005-no-money-retry"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-08.1515-ordercalcprofit-risk-final"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
 input bool   InpUseCommonFiles = true;
 input int    InpPollMilliseconds = 250;
 input int    InpMaxSignalAgeSeconds = 900;
+input bool   InpIgnoreExistingSignalOnInit = true; // Prevent attach/restart from trading the already-published Latest.csv event.
 input string InpSymbolMapCsv = ""; // Explicit overrides, example: BTCUSDm=BTCUSD,USTECm=USTEC
 input bool   InpUseBuiltInOilSymbolMap = true;
 input string InpBuiltInOilSymbolMapCsv = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIUSD,USOIL=XTIUSD";
@@ -620,6 +621,19 @@ string ChartSourceTfString()
    }
    return IntegerToString((int)_Period);
 }
+
+int SourceTfToInt(string tf);
+
+bool SameSourceTf(string lhs, string rhs)
+{
+   string a = Trim(lhs);
+   string b = Trim(rhs);
+   int ai = SourceTfToInt(a);
+   int bi = SourceTfToInt(b);
+   if(ai > 0 && bi > 0)
+      return ai == bi;
+   return SameTextCi(a, b);
+}
 bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
 {
    reason = "";
@@ -631,9 +645,9 @@ bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
    string effectiveTfFilter = Trim(InpSourceTimeframeFilter);
    if(effectiveTfFilter == "" && InpDefaultSourceTfToChartPeriod)
       effectiveTfFilter = ChartSourceTfString();
-   if(effectiveTfFilter != "" && sig.sourceTf != effectiveTfFilter)
+   if(effectiveTfFilter != "" && !SameSourceTf(sig.sourceTf, effectiveTfFilter))
    {
-      reason = "tf_filter source_tf=" + sig.sourceTf + " expected=" + effectiveTfFilter;
+      reason = "tf_filter source_tf=" + sig.sourceTf + " expected=" + effectiveTfFilter + " source_tf_i=" + IntegerToString(SourceTfToInt(sig.sourceTf)) + " expected_i=" + IntegerToString(SourceTfToInt(effectiveTfFilter));
       return false;
    }
    if(InpSourceFilter != "" && !ContainsCi(sig.source, InpSourceFilter))
@@ -978,6 +992,39 @@ double ShrinkLotToFreeMargin(const int direction, double requestedLot, double en
           + " free_margin=" + DoubleToString(freeMargin, 2);
    return best;
 }
+double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, string &detail)
+{
+   detail = "";
+   double riskDist = MathAbs(entry - sl);
+   if(riskDist <= 0.0)
+   {
+      detail = "risk_dist_invalid risk_dist=" + DoubleToString(riskDist, _Digits);
+      return 0.0;
+   }
+
+   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double profit = 0.0;
+   ResetLastError();
+   if(!OrderCalcProfit(type, _Symbol, 1.0, entry, sl, profit))
+   {
+      int err = GetLastError();
+      detail = "order_calc_profit_failed err=" + IntegerToString(err)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+
+   double moneyPerLot = MathAbs(profit);
+   if(moneyPerLot <= 0.0)
+   {
+      detail = "order_calc_profit_zero profit=" + DoubleToString(profit, 2)
+             + " entry=" + DoubleToString(entry, _Digits)
+             + " sl=" + DoubleToString(sl, _Digits);
+      return 0.0;
+   }
+   detail = "ordercalc_profit_1lot=" + DoubleToString(profit, 2);
+   return moneyPerLot;
+}
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -986,17 +1033,18 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    double riskDist = MathAbs(entry - sig.sl);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(riskDist <= 0.0 || tickSize <= 0.0 || tickValue <= 0.0)
+   if(riskDist <= 0.0)
    {
       detail = "risk_lot_unavailable riskDist=" + DoubleToString(riskDist, _Digits);
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
    double effectiveRiskPct = (sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct);
    double budget = AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, effectiveRiskPct) / 100.0;
-   double moneyPerLot = riskDist / tickSize * tickValue;
+   string riskCalcDetail = "";
+   double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, sig.sl, riskCalcDetail);
    if(moneyPerLot <= 0.0)
    {
-      detail = "money_per_lot_invalid";
+      detail = "money_per_lot_invalid " + riskCalcDetail;
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
    double rawLot = budget / moneyPerLot;
@@ -1043,6 +1091,8 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 
    detail = "risk_lot symbol=" + _Symbol
           + " risk_pct=" + DoubleToString(effectiveRiskPct, 3) + (sig.riskPct > 0.0 ? " source=bridge" : " source=local") + " budget=" + DoubleToString(budget, 2)
+          + " risk_calc=ordercalcprofit"
+          + " " + riskCalcDetail
           + " tick_size=" + DoubleToString(tickSize, _Digits)
           + " tick_value=" + DoubleToString(tickValue, 4)
           + " vol_min=" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 2)
@@ -1080,6 +1130,35 @@ int SourceTfToInt(string tf)
    string clean = Trim(tf);
    if(clean == "")
       return 0;
+
+   string upper = clean;
+   StringToUpper(upper);
+   StringReplace(upper, "PERIOD_", "");
+   StringReplace(upper, "TIMEFRAME_", "");
+   StringReplace(upper, "MIN", "M");
+
+   if(upper == "M1" || upper == "1") return 1;
+   if(upper == "M2" || upper == "2") return 2;
+   if(upper == "M3" || upper == "3") return 3;
+   if(upper == "M4" || upper == "4") return 4;
+   if(upper == "M5" || upper == "5") return 5;
+   if(upper == "M6" || upper == "6") return 6;
+   if(upper == "M10" || upper == "10") return 10;
+   if(upper == "M12" || upper == "12") return 12;
+   if(upper == "M15" || upper == "15") return 15;
+   if(upper == "M20" || upper == "20") return 20;
+   if(upper == "M30" || upper == "30") return 30;
+   if(upper == "H1" || upper == "60") return 60;
+   if(upper == "H2" || upper == "120") return 120;
+   if(upper == "H3" || upper == "180") return 180;
+   if(upper == "H4" || upper == "240") return 240;
+   if(upper == "H6" || upper == "360") return 360;
+   if(upper == "H8" || upper == "480") return 480;
+   if(upper == "H12" || upper == "720") return 720;
+   if(upper == "D1" || upper == "1440") return 1440;
+   if(upper == "W1" || upper == "10080") return 10080;
+   if(upper == "MN1" || upper == "43200") return 43200;
+
    return (int)StringToInteger(clean);
 }
 
@@ -1729,6 +1808,31 @@ void PollBridge()
 {
    PollBridge("legacy");
 }
+void BaselineExistingSignalOnInit()
+{
+   if(!InpIgnoreExistingSignalOnInit)
+      return;
+
+   BridgeSignal sig;
+   string readDetail = "";
+   if(!ReadLatestSignal(sig, readDetail))
+   {
+      AuditRaw("init_baseline_empty", readDetail);
+      return;
+   }
+
+   string identityReason = "";
+   if(!SignalIdentityMatchesThisChart(sig, identityReason))
+   {
+      Audit("init_baseline_ignored", sig, "identity_mismatch " + identityReason + " " + readDetail);
+      return;
+   }
+
+   g_lastSeenEventId = sig.eventId;
+   g_lastReadDetail = readDetail;
+   Audit("init_baseline_existing_signal", sig, "seeded_last_seen=1 no_trade_on_attach " + readDetail);
+}
+
 int OnInit()
 {
       g_marginShrinkGuardRuntime = InpUseMarginShrinkGuard;
@@ -1753,8 +1857,8 @@ trade.SetExpertMagicNumber(InpMagic);
          " timer=", (g_timerActive ? "true" : "false"),
          " timer_err=", timerErr,
          " poll_ms=", InpPollMilliseconds);
-   AuditRaw("init", "file=" + InpBridgeLatestFile + " common=" + (InpUseCommonFiles ? "true" : "false") + " map=" + InpSymbolMapCsv + " builtin_oil_map=" + (InpUseBuiltInOilSymbolMap ? InpBuiltInOilSymbolMapCsv : "OFF") + " timer=" + (g_timerActive ? "true" : "false") + " timer_err=" + IntegerToString(timerErr) + " poll_ms=" + IntegerToString(InpPollMilliseconds));
-   PollBridge("init");
+   AuditRaw("init", "file=" + InpBridgeLatestFile + " common=" + (InpUseCommonFiles ? "true" : "false") + " map=" + InpSymbolMapCsv + " builtin_oil_map=" + (InpUseBuiltInOilSymbolMap ? InpBuiltInOilSymbolMapCsv : "OFF") + " timer=" + (g_timerActive ? "true" : "false") + " timer_err=" + IntegerToString(timerErr) + " poll_ms=" + IntegerToString(InpPollMilliseconds) + " ignore_existing_on_init=" + (InpIgnoreExistingSignalOnInit ? "true" : "false"));
+   BaselineExistingSignalOnInit();
    DrawDashboard(true);
    return INIT_SUCCEEDED;
 }
@@ -1796,8 +1900,4 @@ void OnTick()
    }
    DrawDashboard();
 }
-
-
-
-
 
