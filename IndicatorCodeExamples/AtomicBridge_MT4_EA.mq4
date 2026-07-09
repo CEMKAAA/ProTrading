@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-08.1325-compact-excursion-audit"
+#define ATOMIC_BRIDGE_BUILD "2026-07-09.utc-event-block"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -70,6 +70,8 @@ input double InpDirectMt4DailyProfitTarget = 0.0; // Chart-symbol realized Atomi
 input double InpDirectMt4DailyLossTarget = 0.0; // Chart-symbol realized AtomicBridge loss limit for today. 0=off; blocks this chart's MT4 execution and MT5 CSV signals until next reset day.
 input string InpDirectMt4AllowedTradeWindowsGmt = "";
 input string InpDirectMt4NoTradeWindowsGmt = "21:55-22:10";
+input string InpDirectMt4UtcEventBlockTimesGmt = ""; // HH:MM[,HH:MM...] UTC centers. Blocks new entries +/- InpDirectMt4UtcEventBlockRadiusMinutes; latest valid signal is retried after block.
+input int    InpDirectMt4UtcEventBlockRadiusMinutes = 5;
 input bool   InpDirectMt4CloseReverse = true;
 input int    InpDirectMt4TpIndex = 5;
 input bool   InpAtomicDirectRiskGeometryEnabled = false; // false=indicator SL; true=derive SL from selected TP leg and target R.
@@ -187,6 +189,15 @@ double   g_pendingRegimeWindowSl = 0.0;
 double   g_pendingRegimeWindowTp = 0.0;
 double   g_pendingRegimeWindowHalfTrigger = 0.0;
 string   g_pendingRegimeWindowHalfLabel = "";
+string   g_pendingDirectEventBlockEventId = "";
+string   g_pendingDirectEventBlockDirection = "";
+string   g_pendingDirectEventBlockSource = "";
+datetime g_pendingDirectEventBlockSignalTime = 0;
+datetime g_pendingDirectEventBlockFirstSeen = 0;
+double   g_pendingDirectEventBlockSl = 0.0;
+double   g_pendingDirectEventBlockTp = 0.0;
+double   g_pendingDirectEventBlockHalfTrigger = 0.0;
+string   g_pendingDirectEventBlockHalfLabel = "";
 string   g_lastDirectMt4EventId = "";
 bool     g_fileBridgeMt5EnabledRuntime = false;
 bool     g_proTradePostEnabledRuntime = true;
@@ -235,6 +246,8 @@ int      g_regimeConfirmDelaySecondsRuntime = 300;
 bool     g_regimeOpenPreWindowSignalRuntime = false;
 string   g_directMt4AllowedWindowsRuntime = "";
 string   g_directMt4NoTradeWindowsRuntime = "";
+string   g_directMt4UtcEventBlockTimesRuntime = "";
+int      g_directMt4UtcEventBlockRadiusRuntime = 5;
 bool     g_gannFollowModeRuntime = false;
 int      g_gannFollowTfRuntime = 0;
 string   g_gannFollowLastDirection = "";
@@ -413,6 +426,36 @@ bool _direct_in_allowed_trade_window_gmt()
    return false;
 }
 
+bool _direct_in_utc_event_block_gmt()
+{
+   string raw = _trim(g_directMt4UtcEventBlockTimesRuntime);
+   int radius = MathMax(0, MathMin(60, g_directMt4UtcEventBlockRadiusRuntime));
+   if(StringLen(raw) <= 0 || radius <= 0)
+      return false;
+   datetime nowGmt = TimeGMT();
+   int minute = TimeHour(nowGmt) * 60 + TimeMinute(nowGmt);
+   StringReplace(raw, ";", ",");
+   StringReplace(raw, "|", ",");
+   string parts[];
+   int n = StringSplit(raw, 44, parts);
+   for(int i = 0; i < n; i++)
+   {
+      int center = _direct_minutes_from_hhmm(parts[i]);
+      if(center < 0) continue;
+      int diff = (int)MathAbs(minute - center);
+      diff = MathMin(diff, 1440 - diff);
+      if(diff <= radius)
+         return true;
+   }
+   return false;
+}
+
+string _direct_utc_event_block_status()
+{
+   return "utc_event_block='" + g_directMt4UtcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_directMt4UtcEventBlockRadiusRuntime)
+      + " now=" + TimeToString(TimeGMT(), TIME_MINUTES);
+}
+
 int _regime_base_shift()
 {
    if(g_regimeDelayValidationRuntime)
@@ -481,7 +524,7 @@ void _regime_window_pending_try(string reason)
 {
    if(!g_regimeOpenPreWindowSignalRuntime || !_regime_window_pending_is_active())
       return;
-   if(!_direct_in_allowed_trade_window_gmt() || _direct_in_no_trade_window_gmt())
+   if(!_direct_in_allowed_trade_window_gmt() || _direct_in_no_trade_window_gmt() || _direct_in_utc_event_block_gmt())
       return;
 
    string currentDir = "";
@@ -543,12 +586,93 @@ void _regime_window_pending_try(string reason)
    _direct_mt4_execute(eventId, dir, sl, tp, InpRegimeIndicatorName, halfTrigger, halfLabel, signalTime);
 }
 
+bool _direct_event_block_pending_is_active()
+{
+   return (g_pendingDirectEventBlockEventId != "" && g_pendingDirectEventBlockDirection != "");
+}
+
+void _direct_event_block_pending_clear()
+{
+   g_pendingDirectEventBlockEventId = "";
+   g_pendingDirectEventBlockDirection = "";
+   g_pendingDirectEventBlockSource = "";
+   g_pendingDirectEventBlockSignalTime = 0;
+   g_pendingDirectEventBlockFirstSeen = 0;
+   g_pendingDirectEventBlockSl = 0.0;
+   g_pendingDirectEventBlockTp = 0.0;
+   g_pendingDirectEventBlockHalfTrigger = 0.0;
+   g_pendingDirectEventBlockHalfLabel = "";
+}
+
+void _direct_event_block_pending_store(string eventId, string direction, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   if(eventId == "" || direction == "") return;
+   if(g_pendingDirectEventBlockEventId == eventId) return;
+   g_pendingDirectEventBlockEventId = eventId;
+   g_pendingDirectEventBlockDirection = _trim(direction);
+   g_pendingDirectEventBlockSource = source;
+   g_pendingDirectEventBlockSignalTime = sourceSignalTime;
+   g_pendingDirectEventBlockFirstSeen = _timer_now();
+   g_pendingDirectEventBlockSl = sl;
+   g_pendingDirectEventBlockTp = tp;
+   g_pendingDirectEventBlockHalfTrigger = halfTriggerPrice;
+   g_pendingDirectEventBlockHalfLabel = halfTriggerLabel;
+   _direct_audit_write("direct_defer_utc_event_block", source, eventId, 0, g_pendingDirectEventBlockDirection, g_directMt4LotRuntime,
+      (g_pendingDirectEventBlockDirection == "BUY" ? Ask : Bid), sl, tp, _direct_utc_event_block_status(), 0.0,
+      "will_retry_after_event_block_if_signal_still_current");
+}
+
+void _direct_event_block_pending_try(string reason)
+{
+   if(!_direct_event_block_pending_is_active()) return;
+   if(!_direct_in_allowed_trade_window_gmt() || _direct_in_no_trade_window_gmt() || _direct_in_utc_event_block_gmt())
+      return;
+
+   bool sourceIsRegime = _contains_ci(g_pendingDirectEventBlockSource, "AtomicRegime");
+   if(sourceIsRegime)
+   {
+      string currentDir = "";
+      string currentSource = "";
+      int currentShift = -1;
+      datetime currentTime = 0;
+      double currentEntry = 0.0;
+      bool stillValid = _find_current_atomic_regime_from_buffers("", currentDir, currentShift, currentTime, currentEntry, currentSource);
+      string expectedCurrentDir = g_pendingDirectEventBlockDirection;
+      if(g_atomicInvertTradeModeRuntime)
+         expectedCurrentDir = (g_pendingDirectEventBlockDirection == "BUY" ? "SELL" : "BUY");
+      if(!stillValid || currentDir != expectedCurrentDir || (g_pendingDirectEventBlockSignalTime > 0 && currentTime != g_pendingDirectEventBlockSignalTime))
+      {
+         _direct_audit_write("direct_deferred_utc_event_block_cancelled", g_pendingDirectEventBlockSource, g_pendingDirectEventBlockEventId, 0,
+            g_pendingDirectEventBlockDirection, g_directMt4LotRuntime, currentEntry, g_pendingDirectEventBlockSl, g_pendingDirectEventBlockTp,
+            reason, 0.0, "current_dir=" + currentDir + " expected_dir=" + expectedCurrentDir + " current_time=" + _fmt_time(currentTime));
+         _direct_event_block_pending_clear();
+         return;
+      }
+   }
+
+   string eventId = g_pendingDirectEventBlockEventId;
+   string dir = g_pendingDirectEventBlockDirection;
+   string source = g_pendingDirectEventBlockSource;
+   double sl = g_pendingDirectEventBlockSl;
+   double tp = g_pendingDirectEventBlockTp;
+   double halfTrigger = g_pendingDirectEventBlockHalfTrigger;
+   string halfLabel = g_pendingDirectEventBlockHalfLabel;
+   datetime signalTime = g_pendingDirectEventBlockSignalTime;
+   int age = (g_pendingDirectEventBlockFirstSeen > 0 ? (int)(_timer_now() - g_pendingDirectEventBlockFirstSeen) : -1);
+   _direct_audit_write("direct_deferred_utc_event_block_release", source, eventId, 0, dir, g_directMt4LotRuntime,
+      (dir == "BUY" ? Ask : Bid), sl, tp, reason, 0.0, "age_sec=" + IntegerToString(age));
+   _direct_event_block_pending_clear();
+   _direct_mt4_execute(eventId, dir, sl, tp, source, halfTrigger, halfLabel, signalTime);
+}
+
 string _direct_trade_window_status()
 {
    if(!_direct_in_allowed_trade_window_gmt())
       return "BLOCK allowed_window";
    if(_direct_in_no_trade_window_gmt())
       return "BLOCK no_trade_window";
+   if(_direct_in_utc_event_block_gmt())
+      return "BLOCK utc_event";
    return "WINDOW OK";
 }
 
@@ -1080,7 +1204,9 @@ bool _regime_reanchor_pip_geometry(string tradeDirection, double liveEntry, bool
       double overrideTp = _atomic_invert_target_override_price(dir, entry, sl);
       if(overrideTp > 0.0)
          tp = overrideTp;
-      halfTriggerPrice = _atomic_invert_hcbe_price(dir, entry, tp);
+      bool halfRebased = false;
+      string halfReason = "";
+      halfTriggerPrice = _direct_normalize_half_trigger(dir, entry, sl, tp, 0.0, g_regimeDirectMt4HalfBeRRuntime, halfRebased, halfReason);
    }
 
    detail = (invertGeometry ? "regime_invert_pip_reanchored" : "regime_pip_reanchored")
@@ -2349,6 +2475,13 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _direct_audit_write("direct_skip_allowed_window", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, g_directMt4AllowedWindowsRuntime, 0.0, "");
       return false;
    }
+   if(_direct_in_utc_event_block_gmt())
+   {
+      Print("AtomicBridge direct_mt4 deferred reason=utc_event_block event=", eventId, " dir=", dir, " ", _direct_utc_event_block_status());
+      _direct_event_block_pending_store(eventId, dir, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+      _direct_audit_write("direct_signal_received", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, "confirmed_signal", 0.0, "utc_event_block_path half_trigger=" + _fmt_price(halfTriggerPrice));
+      return false;
+   }
    if(_direct_in_no_trade_window_gmt())
    {
       g_lastDirectMt4EventId = eventId;
@@ -2398,6 +2531,22 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       return false;
    }
 
+   double outboundHalfR = (sourceIsRegime ? g_regimeDirectMt4HalfBeRRuntime : (g_directMt4HalfBeTpIndexRuntime < g_directMt4TpIndexRuntime ? g_directMt4HalfBeRRuntime : 0.0));
+   if(!_direct_trigger_price_valid(dir, signalPx, halfTriggerPrice) && outboundHalfR > 0.0)
+   {
+      bool outboundHalfRebased = false;
+      string outboundHalfReason = "";
+      double outboundHalf = _direct_normalize_half_trigger(dir, signalPx, sl, tp, halfTriggerPrice, outboundHalfR, outboundHalfRebased, outboundHalfReason);
+      if(_direct_trigger_price_valid(dir, signalPx, outboundHalf))
+      {
+         halfTriggerPrice = outboundHalf;
+         if(sourceIsRegime)
+            halfTriggerLabel = "r" + DoubleToString(outboundHalfR, 2);
+         else if(_trim(halfTriggerLabel) == "" || _contains_ci(halfTriggerLabel, "off"))
+            halfTriggerLabel = "r" + DoubleToString(outboundHalfR, 2);
+         _direct_audit_write("direct_file_bridge_halfbe_rebased", source, eventId, 0, dir, g_directMt4LotRuntime, signalPx, sl, tp, outboundHalfReason, 0.0, "half_trigger=" + _fmt_price(halfTriggerPrice) + " label=" + halfTriggerLabel);
+      }
+   }
    _file_bridge_write_signal(eventId, dir, signalPx, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
    if(!g_directMt4EnabledRuntime)
    {
@@ -2435,8 +2584,8 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
       _account_risk_cache_invalidate();
    string lotDetail = "";
    bool requireHalfSplit = _contains_ci(source, "AtomicRegime")
-      ? (g_regimeDirectMt4HalfBeRRuntime > 0.0)
-      : (g_directMt4HalfBeTpIndexRuntime > 0 || g_directMt4HalfBeRRuntime > 0.0);
+      ? (g_regimeDirectMt4HalfBeRRuntime > 0.0 || _direct_trigger_price_valid(dir, price, halfTriggerPrice))
+      : (g_directMt4HalfBeTpIndexRuntime > 0 || g_directMt4HalfBeRRuntime > 0.0 || _direct_trigger_price_valid(dir, price, halfTriggerPrice));
    double lot = _direct_resolve_order_lot(price, stopLoss, type, requireHalfSplit, lotDetail);
    if(StringLen(atomicGeometryDetail) > 0)
       lotDetail = atomicGeometryDetail + " " + lotDetail;
@@ -5390,7 +5539,10 @@ void _draw_dashboard()
    _dash_label("L_ALLOWED", 38, 266, "Allowed GMT", C'184,196,210', 8);
    _dash_edit("EDIT_ALLOWED", 126, 262, 180, 22, g_directMt4AllowedWindowsRuntime);
    _dash_label("L_NOTRADE", 324, 266, "Block GMT", C'184,196,210', 8);
-   _dash_edit("EDIT_NOTRADE", 396, 262, 180, 22, g_directMt4NoTradeWindowsRuntime);
+   _dash_edit("EDIT_NOTRADE", 396, 262, 164, 22, g_directMt4NoTradeWindowsRuntime);
+   _dash_label("L_UTC_EVENT", 574, 266, "UTC Block", C'184,196,210', 8);
+   _dash_edit("EDIT_UTC_EVENT", 644, 262, 64, 22, g_directMt4UtcEventBlockTimesRuntime);
+   _dash_button("BTN_UTC_EVENT_APPLY", 716, 262, 82, 24, "APPLY E", C'38,101,176');
    int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
    RefreshRates();
    _dash_label("STATE", 38, 132, StringFormat("Live BID %s / ASK %s | %s | %s",
@@ -5451,6 +5603,9 @@ void _apply_dashboard()
    obj = DASH_PREFIX + "EDIT_NOTRADE";
    if(ObjectFind(0, obj) >= 0)
       g_directMt4NoTradeWindowsRuntime = _trim(ObjectGetString(0, obj, OBJPROP_TEXT));
+   obj = DASH_PREFIX + "EDIT_UTC_EVENT";
+   if(ObjectFind(0, obj) >= 0)
+      g_directMt4UtcEventBlockTimesRuntime = _trim(ObjectGetString(0, obj, OBJPROP_TEXT));
    obj = DASH_PREFIX + "EDIT_RR";
    if(ObjectFind(0, obj) >= 0)
       g_regimeRRRuntime = MathMax(0.1, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
@@ -5491,6 +5646,7 @@ void _apply_dashboard()
          " max_spread_sl_pct=", DoubleToString(g_directMt4MaxSpreadToSlPctRuntime, 2),
          " allowed_gmt='", g_directMt4AllowedWindowsRuntime, "'",
          " block_gmt='", g_directMt4NoTradeWindowsRuntime, "'",
+         " utc_event_block='", g_directMt4UtcEventBlockTimesRuntime, "'",
          " regime_rr=", DoubleToString(g_regimeRRRuntime, 2),
          " atomic_tp=", g_directMt4TpIndexRuntime,
          " atomic_sl_mode=", (g_atomicDirectRiskGeometryRuntime ? "r_geometry" : "indicator"),
@@ -6431,8 +6587,11 @@ bool _post_atomic_regime_event(
       dir = invertedDir;
       sl = invertedSl;
       tp = invertedTp;
-      regimeHalfTrigger = _atomic_invert_hcbe_price(dir, entryPrice, tp);
-      regimeHalfLabel = regimeHalfTrigger > 0.0 ? ("regime_inv_" + IntegerToString(g_atomicInvertHcBeProgressPctRuntime) + "pct") : "regime_invert_hcbe_off";
+      bool regimeInvertHalfRebased = false;
+      string regimeInvertHalfReason = "";
+      regimeHalfTrigger = _direct_normalize_half_trigger(dir, entryPrice, sl, tp, 0.0, g_regimeDirectMt4HalfBeRRuntime, regimeInvertHalfRebased, regimeInvertHalfReason);
+      regimeHalfLabel = regimeHalfTrigger > 0.0 ? ("r" + DoubleToString(g_regimeDirectMt4HalfBeRRuntime, 2)) : "regime_hcbe_off";
+      regimeInvertDetail = regimeInvertDetail + "|regime_hcbe=" + regimeHalfLabel + "|" + regimeInvertHalfReason;
       trendName = trendName + "|" + regimeInvertDetail;
       if(eventKind == "confirmed_signal")
          eventId = eventId + "|invert";
@@ -7158,6 +7317,8 @@ int OnInit()
    g_regimeOpenPreWindowSignalRuntime = InpRegimeOpenPreWindowSignal;
    g_directMt4AllowedWindowsRuntime = _trim(InpDirectMt4AllowedTradeWindowsGmt);
    g_directMt4NoTradeWindowsRuntime = _trim(InpDirectMt4NoTradeWindowsGmt);
+   g_directMt4UtcEventBlockTimesRuntime = _trim(InpDirectMt4UtcEventBlockTimesGmt);
+   g_directMt4UtcEventBlockRadiusRuntime = MathMax(0, MathMin(60, InpDirectMt4UtcEventBlockRadiusMinutes));
    g_gannFollowModeRuntime = InpGannFollowModeEnabled;
    g_gannFollowTfRuntime = _gann_follow_sanitize_tf(InpGannFollowTimeframe);
    g_ftmoModeRuntime = (InpAdvancedAccountRiskEnabled && (InpAccountRiskDailyLossLimitPct > 0.0 || InpAccountRiskMaxDrawdownPct > 0.0));
@@ -7255,6 +7416,7 @@ void OnTimer()
    _account_risk_enforce_breach();
    _account_risk_audit_write("snapshot", "periodic_health", true);
    _manage_direct_mt4_positions();
+   _direct_event_block_pending_try("timer_utc_event_block_open_check");
    _regime_window_pending_try("timer_window_open_check");
    MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
@@ -7272,6 +7434,7 @@ void OnTick()
    _account_risk_enforce_breach();
    g_lastTickLocal = TimeLocal();
    _manage_direct_mt4_positions();
+   _direct_event_block_pending_try("tick_utc_event_block_open_check");
    _regime_window_pending_try("tick_window_open_check");
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
@@ -7481,6 +7644,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       _apply_dashboard();
    }
    else if(sparam == DASH_PREFIX + "BTN_DAILY_PROFIT")
+   {
+      _apply_dashboard();
+   }
+   else if(sparam == DASH_PREFIX + "BTN_UTC_EVENT_APPLY")
    {
       _apply_dashboard();
    }

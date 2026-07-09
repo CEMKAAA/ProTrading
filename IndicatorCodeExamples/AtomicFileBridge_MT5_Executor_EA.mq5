@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| Atomic File Bridge MT5 Executor EA                               |
 //| Reads MT4 AtomicBridge signals from Terminal Common\Files and     |
 //| executes them on MT5 with duplicate guard, risk lot and audit.    |
@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-08.1515-ordercalcprofit-risk-final"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-08.1745-safe-scope-defaults"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -28,7 +28,7 @@ input string InpSourceFilter = ""; // Empty=all, example AtomicRegime
 input bool   InpCloseReverse = true;
 input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close/manage M5 bridge positions.
 input bool   InpFailIfReverseCloseFails = true;
-input bool   InpCloseReverseBridgeCommentPositions = true;
+input bool   InpCloseReverseBridgeCommentPositions = false;
 input long   InpMagic = 970102;
 input int    InpDeviationPoints = 30;
 input int    InpMaxSpreadPoints = 0;
@@ -1334,8 +1334,7 @@ ulong FindOpenedPositionTicket(const BridgeSignal &sig, string comment)
          continue;
 
       string posComment = PositionGetString(POSITION_COMMENT);
-      long magic = (long)PositionGetInteger(POSITION_MAGIC);
-      if(posComment != comment && magic != InpMagic)
+      if(posComment != comment)
          continue;
 
       long timeMsc = (long)PositionGetInteger(POSITION_TIME_MSC);
@@ -1367,6 +1366,8 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if(PositionGetInteger(POSITION_TYPE) != expectedType)
+         continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
          continue;
       string comment = PositionGetString(POSITION_COMMENT);
       if(comment != legacyComment && comment != modernComment)
@@ -1900,4 +1901,3 @@ void OnTick()
    }
    DrawDashboard();
 }
-

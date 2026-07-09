@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-08.1325-compact-excursion-audit"
+#define BUILD_TAG "2026-07-09.0030-utc-event-block"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -49,6 +49,8 @@ input int    InpBrokerStopSafetyPoints = 3;
 input int    InpMaxSpreadPoints = 0;      // 0=off
 input string InpAllowedWindowsGmt = "";   // empty=24/7, HH:MM-HH:MM,...
 input string InpNoTradeWindowsGmt = "21:55-22:10";
+input string InpUtcEventBlockTimesGmt = ""; // HH:MM[,HH:MM...] UTC centers. Blocks new entries +/- InpUtcEventBlockRadiusMinutes; latest valid signal is retried after block.
+input int    InpUtcEventBlockRadiusMinutes = 5;
 input int    InpTradeDisabledRetrySeconds = 30; // Recheck disabled symbols without consuming the signal event.
 input bool   InpCloseOppositeOnSignal = true;
 input bool   InpBlockSameDirectionOpen = true;
@@ -75,6 +77,15 @@ input int    InpDashboardX = 18;
 input int    InpDashboardY = 28;
 input double InpDailyProfitTargetMoney = 0.0; // Chart-symbol realized PRORENKO profit target for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
 input double InpDailyLossTargetMoney = 0.0;   // Chart-symbol realized PRORENKO loss limit for today. 0=off; blocks MT4 execution and MT5 CSV signals until next reset day.
+// === Experimental Basket Daily Target Mode ===
+input bool   InpBasketModeDefault = false; // OFF=traditional SL/TP/HCBE. ON=basket daily target mode.
+input double InpBasketTargetPips = 500.0; // Daily favorable pip target used for position sizing.
+input double InpBasketTargetAccountPct = 0.30; // Account percent equivalent of BasketTargetPips.
+input double InpBasketMaxLossPips = 1000.0; // Daily adverse pip budget. Converted to money by target ratio.
+input double InpBasketCatastrophicSlPips = 2500.0; // Broker protection SL only, not normal strategy SL.
+input bool   InpBasketCloseOnReverse = true;
+input bool   InpBasketCloseAtSessionEnd = false; // Deprecated/ignored. Use normal trade Window/NoTrade instead.
+input string InpBasketSessionEndTime = ""; // Deprecated/ignored. Basket session-end is controlled by Window/NoTrade.
 
 input bool   InpAdvancedAccountRiskEnabled = true;
 input bool   InpFtmoModeDefault = false;
@@ -119,10 +130,20 @@ bool     g_auditRuntime;
 bool     g_ftmoMode;
 bool     g_riskLotOnlyMode;
 bool     g_invertMode;
+bool     g_basketModeRuntime;
+double   g_basketTargetPipsRuntime;
+double   g_basketTargetPctRuntime;
+double   g_basketMaxLossPipsRuntime;
+double   g_basketCatastrophicSlPipsRuntime;
+bool     g_basketCloseOnReverseRuntime;
+bool     g_basketCloseAtSessionEndRuntime;
+string   g_basketSessionEndTimeRuntime;
 bool     g_trendTradeRuntime;
 string   g_lastTrendEventId = "";
 string   g_allowedWindowsRuntime;
 string   g_noTradeWindowsRuntime;
+string   g_utcEventBlockTimesRuntime;
+int      g_utcEventBlockRadiusRuntime;
 string   g_lastEventId = "";
 string   g_lastSignalDir = "-";
 datetime g_lastSignalTime = 0;
@@ -142,6 +163,15 @@ datetime g_lastProbeTs = 0;
 datetime g_lastLifecycleAuditTs = 0;
 datetime g_nextTradeDisabledRetryTs = 0;
 bool     g_lastGeometryUsedFallback = false;
+bool     g_basketWindowStateInitialized = false;
+bool     g_basketWindowEligibleLast = false;
+string   g_eventBlockPendingEventId = "";
+string   g_eventBlockPendingDir = "";
+datetime g_eventBlockPendingSignalTime = 0;
+datetime g_eventBlockPendingFirstSeen = 0;
+double   g_eventBlockPendingSignalPrice = 0.0;
+int      g_eventBlockPendingShift = -1;
+int      g_eventBlockPendingBuffer = -1;
 
 int OnInit()
 {
@@ -161,6 +191,14 @@ int OnInit()
    g_dailyLossTargetRuntime = MathMax(0.0, InpDailyLossTargetMoney);
    g_riskPctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
    g_invertMode = InpInvertTradeMode;
+   g_basketModeRuntime = InpBasketModeDefault;
+   g_basketTargetPipsRuntime = MathMax(0.0, InpBasketTargetPips);
+   g_basketTargetPctRuntime = MathMax(0.0, InpBasketTargetAccountPct);
+   g_basketMaxLossPipsRuntime = MathMax(0.0, InpBasketMaxLossPips);
+   g_basketCatastrophicSlPipsRuntime = MathMax(0.0, InpBasketCatastrophicSlPips);
+   g_basketCloseOnReverseRuntime = InpBasketCloseOnReverse;
+   g_basketCloseAtSessionEndRuntime = false;
+   g_basketSessionEndTimeRuntime = "";
    g_trendTradeRuntime = true;
    g_trendExecModeRuntime = MathMax(0, MathMin(2, InpTrendExecutionMode));
    g_trendExecDelayRuntime = MathMax(0, InpTrendExecutionDelaySeconds);
@@ -169,13 +207,17 @@ int OnInit()
    g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
    g_allowedWindowsRuntime = InpAllowedWindowsGmt;
    g_noTradeWindowsRuntime = InpNoTradeWindowsGmt;
+   g_utcEventBlockTimesRuntime = InpUtcEventBlockTimesGmt;
+   g_utcEventBlockRadiusRuntime = MathMax(0, MathMin(60, InpUtcEventBlockRadiusMinutes));
+   g_basketWindowEligibleLast = BasketWindowEligibleNow();
+   g_basketWindowStateInitialized = true;
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
    ChartSetInteger(0, CHART_EVENT_OBJECT_DELETE, true);
    EventSetTimer(MathMax(1, InpPollSeconds));
 
    CleanupLegacyInfiniteLevelLines();
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
    FileBridgeWriteInitMarker();
 
@@ -318,6 +360,30 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       DashboardUpdate();
       return;
    }
+   if(sparam == Obj("basketmode"))
+   {
+      g_basketModeRuntime = !g_basketModeRuntime;
+      // Enabling basket mode while already inside the window is an operational
+      // window entry: bootstrap the current trend on the next scan.
+      if(g_basketModeRuntime)
+      {
+         g_basketWindowEligibleLast = false;
+         g_basketWindowStateInitialized = true;
+      }
+      Audit("dashboard_basket_mode_toggle", "", 0, "", 0, 0, 0, 0, g_basketModeRuntime ? "BASKET_ON" : "BASKET_OFF", 0, "");
+      DrawLatestSignalLevels("basket_mode_toggle");
+      DrawHistoricalSignalLevels("basket_mode_toggle");
+      DrawTradeLevels();
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("basketrev"))
+   {
+      g_basketCloseOnReverseRuntime = !g_basketCloseOnReverseRuntime;
+      Audit("dashboard_basket_reverse_toggle", "", 0, "", 0, 0, 0, 0, g_basketCloseOnReverseRuntime ? "BASKET_REVERSE_ON" : "BASKET_REVERSE_OFF", 0, "");
+      DashboardUpdate();
+      return;
+   }
    if(sparam == Obj("pipmode"))
    {
       g_pipSlModeRuntime = !g_pipSlModeRuntime;
@@ -338,7 +404,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       DashboardUpdate();
       return;
    }
-   if(sparam == Obj("apply") || id == CHARTEVENT_OBJECT_ENDEDIT)
+   if(sparam == Obj("apply") || sparam == Obj("basketapply") || sparam == Obj("eventapply") || id == CHARTEVENT_OBJECT_ENDEDIT)
    {
       ApplyDashboardInputs();
       DashboardUpdate();
@@ -353,9 +419,156 @@ void ProcessSignals(string reason)
    if(reason == "timer" && now == g_lastScanTs) return;
    g_lastScanTs = now;
 
+   if(MaybeExecuteEventBlockPending(reason))
+      return;
+   MaybeBootstrapBasketWindow(reason);
+
    string dir, eid; int sh, buf; double sigPx; datetime barTime;
    if(g_trendTradeRuntime && FindLatestTrendSignal(dir, sh, buf, sigPx, barTime, eid))
       ProcessSignalCandidate("trend", dir, eid, sh, buf, sigPx, barTime, g_lastTrendEventId, reason);
+}
+
+bool BasketWindowEligibleNow()
+{
+   datetime now = TimeGMT();
+   return IsInAllowedWindow(now, g_allowedWindowsRuntime)
+       && !IsInNoTradeWindow(now, g_noTradeWindowsRuntime)
+       && !IsInUtcEventBlock(now, g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime);
+}
+
+bool EventBlockTradeWindowEligibleNow()
+{
+   datetime now = TimeGMT();
+   return IsInAllowedWindow(now, g_allowedWindowsRuntime)
+       && !IsInNoTradeWindow(now, g_noTradeWindowsRuntime)
+       && !IsInUtcEventBlock(now, g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime);
+}
+
+void StoreEventBlockPending(string eventId, string dir, double signalPx, int shift, int buffer, datetime signalTime, string reason)
+{
+   if(eventId == "" || dir == "") return;
+   if(g_eventBlockPendingEventId == eventId) return;
+   g_eventBlockPendingEventId = eventId;
+   g_eventBlockPendingDir = dir;
+   g_eventBlockPendingSignalTime = signalTime > 0 ? signalTime : g_lastSignalTime;
+   g_eventBlockPendingFirstSeen = TimeCurrent();
+   g_eventBlockPendingSignalPrice = signalPx;
+   g_eventBlockPendingShift = shift;
+   g_eventBlockPendingBuffer = buffer;
+   Audit("utc_event_block_deferred", eventId, 0, dir, 0, signalPx, 0, 0,
+         "reason=" + reason + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime),
+         0, "will_retry_after_event_block_if_signal_still_current");
+}
+
+void ClearEventBlockPending()
+{
+   g_eventBlockPendingEventId = "";
+   g_eventBlockPendingDir = "";
+   g_eventBlockPendingSignalTime = 0;
+   g_eventBlockPendingFirstSeen = 0;
+   g_eventBlockPendingSignalPrice = 0.0;
+   g_eventBlockPendingShift = -1;
+   g_eventBlockPendingBuffer = -1;
+}
+
+bool MaybeExecuteEventBlockPending(string reason)
+{
+   if(g_eventBlockPendingEventId == "") return false;
+   if(!EventBlockTradeWindowEligibleNow()) return false;
+
+   string curDir = "", curEid = "";
+   int curShift = -1, curBuffer = -1;
+   double curPrice = 0.0;
+   datetime curBarTime = 0;
+   bool stillCurrent = FindLatestTrendSignal(curDir, curShift, curBuffer, curPrice, curBarTime, curEid);
+   if(!stillCurrent || curDir != g_eventBlockPendingDir || curEid != g_eventBlockPendingEventId)
+   {
+      Audit("utc_event_block_deferred_cancelled", g_eventBlockPendingEventId, 0, g_eventBlockPendingDir, 0, g_eventBlockPendingSignalPrice, 0, 0,
+            "reason=" + reason + " current_dir=" + curDir + " current_event=" + curEid,
+            0, "signal_changed_or_missing_before_event_block_ended");
+      ClearEventBlockPending();
+      return false;
+   }
+
+   RefreshRates();
+   double liveEntry = (g_eventBlockPendingDir == "BUY") ? Ask : Bid;
+   if(liveEntry <= 0.0)
+      liveEntry = g_eventBlockPendingSignalPrice;
+   string releaseEventId = g_eventBlockPendingEventId + "|utc_release|" + IntegerToString((int)(TimeGMT() - (TimeGMT() % 60)));
+   string dir = g_eventBlockPendingDir;
+   int buffer = curBuffer;
+   datetime sigTime = g_eventBlockPendingSignalTime;
+   int age = (g_eventBlockPendingFirstSeen > 0 ? (int)(TimeCurrent() - g_eventBlockPendingFirstSeen) : -1);
+
+   g_lastSignalDir = dir;
+   g_lastSignalTime = sigTime > 0 ? sigTime : curBarTime;
+   g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
+   g_lastEventId = releaseEventId;
+   ActiveSignalStateWrite(dir, releaseEventId, g_lastSignalPrice, g_lastSignalTime, reason + "_utc_event_release");
+   Audit("utc_event_block_release_execute", releaseEventId, 0, dir, 0, g_lastSignalPrice, 0, 0,
+         "source_event=" + g_eventBlockPendingEventId + " age_sec=" + IntegerToString(age) + " reason=" + reason,
+         0, "event_block_ended_current_signal_opened_at_live_price");
+   ClearEventBlockPending();
+   ExecuteSignal(dir, releaseEventId, g_lastSignalPrice, 0, buffer);
+   return true;
+}
+
+void MaybeBootstrapBasketWindow(string reason)
+{
+   bool eligible = BasketWindowEligibleNow();
+   if(!g_basketWindowStateInitialized)
+   {
+      g_basketWindowEligibleLast = eligible;
+      g_basketWindowStateInitialized = true;
+      return;
+   }
+
+   bool entered = (eligible && !g_basketWindowEligibleLast);
+   g_basketWindowEligibleLast = eligible;
+   if(!entered || !g_basketModeRuntime || !g_trendTradeRuntime)
+      return;
+
+   string dir = "";
+   double raw = 0.0;
+   int buffer = -1;
+   if(!TrendStateAt(0, dir, raw, buffer))
+   {
+      Audit("basket_window_bootstrap_no_state", "", 0, "", 0, 0, 0, 0,
+            "reason=" + reason + " allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'",
+            0, "window_entered_but_current_trend_unavailable");
+      return;
+   }
+
+   RefreshRates();
+   double liveEntry = (dir == "BUY") ? Ask : Bid;
+   if(liveEntry <= 0.0)
+   {
+      Audit("basket_window_bootstrap_no_price", "", 0, dir, 0, 0, 0, 0,
+            "reason=" + reason + " buffer=" + IntegerToString(buffer),
+            0, "window_entered_but_live_price_unavailable");
+      return;
+   }
+
+   datetime nowGmt = TimeGMT();
+   datetime windowMinute = nowGmt - (nowGmt % 60);
+   datetime barTime = iTime(Symbol(), Period(), 0);
+   string eventId = Symbol() + "|" + IntegerToString(Period()) + "|prorenko_basket_window|" + dir + "|"
+                  + IntegerToString((int)windowMinute) + "|buf=" + IntegerToString(buffer);
+
+   g_lastSignalDir = dir;
+   g_lastSignalTime = (barTime > 0) ? barTime : TimeCurrent();
+   g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
+   g_lastEventId = eventId;
+   ActiveSignalStateWrite(dir, eventId, g_lastSignalPrice, g_lastSignalTime, reason + "_basket_window_bootstrap");
+   Audit("basket_window_bootstrap", eventId, 0, dir, 0, g_lastSignalPrice, 0, 0,
+         "reason=" + reason + " buffer=" + IntegerToString(buffer)
+         + " raw=" + DoubleToString(raw, 2)
+         + " allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'",
+         0, "current_trend_opened_without_waiting_for_new_flip");
+
+   // Use live price intentionally: an older trend state must not create a
+   // pending-at-historical-price order when the trading window opens.
+   ExecuteSignal(dir, eventId, g_lastSignalPrice, 0, buffer);
 }
 
 void ProcessSignalCandidate(string source, string dir, string eid, int sh, int buf, double sigPx, datetime barTime, string &lastSourceEventId, string reason)
@@ -846,6 +1059,463 @@ bool OrderMatchesSignalSource(string eventId)
    string c = OrderComment();
    return (StringFind(c, "ProRenkoBridge " + src + " ") == 0);
 }
+string BasketDayKey()
+{
+   return DateStamp(GmtDayStart());
+}
+
+string BasketStateKey(string field)
+{
+   return "ProRenkoBasket|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString(EffectiveMagic()) + "|" + BasketDayKey() + "|" + field;
+}
+
+bool SelectedOrderIsBasketScoped()
+{
+   if(OrderSymbol() != Symbol() || !IsCurrentInstanceMagic(OrderMagicNumber())) return false;
+   if(TicketGV(OrderTicket(), "BASKET", 0.0) > 0.5) return true;
+   return (StringFind(OrderComment(), "ProRenkoBridge basket ") == 0);
+}
+
+bool HasOpenBasketPositions()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL && type != OP_BUYLIMIT && type != OP_SELLLIMIT && type != OP_BUYSTOP && type != OP_SELLSTOP) continue;
+      if(SelectedOrderIsBasketScoped()) return true;
+   }
+   return false;
+}
+
+double BasketScopedPnlToday(bool includeFloating)
+{
+   datetime dayStart = GmtDayStart();
+   double pnl = 0.0;
+   for(int i = OrdersHistoryTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      if(OrderCloseTime() < dayStart) continue;
+      if(!SelectedOrderIsBasketScoped()) continue;
+      pnl += OrderProfit() + OrderSwap() + OrderCommission();
+   }
+   if(includeFloating)
+   {
+      for(int j = OrdersTotal() - 1; j >= 0; j--)
+      {
+         if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES)) continue;
+         int ot = OrderType();
+         if(ot != OP_BUY && ot != OP_SELL) continue;
+         if(!SelectedOrderIsBasketScoped()) continue;
+         pnl += OrderProfit() + OrderSwap() + OrderCommission();
+      }
+   }
+   return pnl;
+}
+
+void BasketSetDayDone(string reason)
+{
+   GlobalVariableSet(BasketStateKey("DONE"), 1.0);
+   GlobalVariableSet(BasketStateKey("DONE_TS"), TimeGMT());
+   GlobalVariableSet(BasketStateKey("DONE_REASON_HASH"), StableHash(reason));
+}
+
+bool BasketDayDone(string &detail)
+{
+   if(!GlobalVariableCheck(BasketStateKey("DONE")) || GlobalVariableGet(BasketStateKey("DONE")) < 0.5)
+      return false;
+   detail = "basket_day_done day=" + BasketDayKey() + " pnl=" + DoubleToString(BasketScopedPnlToday(true), 2);
+   return true;
+}
+
+
+bool BasketGuardReached(string &reason, string &detail)
+{
+   reason = "";
+   detail = "basket_guard_ok";
+   if(BasketDayDone(detail))
+   {
+      reason = "basket_blocked_day_done";
+      return true;
+   }
+
+
+   double pnl = BasketScopedPnlToday(true);
+   double targetMoney = BasketTargetMoneyPreview();
+   double maxLossMoney = BasketMaxLossMoneyPreview();
+   if(targetMoney > 0.0 && pnl >= targetMoney - 0.0001)
+   {
+      reason = "basket_target_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(targetMoney, 2) + " target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2);
+      BasketSetDayDone(reason);
+      return true;
+   }
+   if(maxLossMoney > 0.0 && pnl <= -maxLossMoney + 0.0001)
+   {
+      reason = "basket_loss_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " max_loss_money=" + DoubleToString(maxLossMoney, 2) + " max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1);
+      BasketSetDayDone(reason);
+      return true;
+   }
+   detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(targetMoney, 2) + " max_loss_money=" + DoubleToString(maxLossMoney, 2);
+   return false;
+}
+
+bool CloseBasketScopedPositions(string eventName, string reason)
+{
+   bool allOk = true;
+   for(int pass = 0; pass < 3; pass++)
+   {
+      bool found = false;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!SelectedOrderIsBasketScoped()) continue;
+         int type = OrderType();
+         if(type != OP_BUY && type != OP_SELL && type != OP_BUYLIMIT && type != OP_SELLLIMIT && type != OP_BUYSTOP && type != OP_SELLSTOP) continue;
+         found = true;
+         int ticket = OrderTicket();
+         double lots = OrderLots();
+         double sl = OrderStopLoss();
+         double tp = OrderTakeProfit();
+         double pnlBefore = OrderProfit() + OrderSwap() + OrderCommission();
+         string dir = (type == OP_BUY || type == OP_BUYLIMIT || type == OP_BUYSTOP) ? "BUY" : "SELL";
+         RefreshRates();
+         if(type == OP_BUY || type == OP_SELL)
+         {
+            double px = (type == OP_BUY) ? Bid : Ask;
+            bool ok = OrderClose(ticket, lots, px, InpSlippage, clrOrange);
+            int err = GetLastError();
+            if(ok)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit(eventName, TicketEvent(ticket), ticket, dir, lots, px, sl, tp, reason + " pass=" + IntegerToString(pass), pnlBefore, "basket_close");
+            }
+            else
+            {
+               allOk = false;
+               Audit(eventName + "_failed", TicketEvent(ticket), ticket, dir, lots, px, sl, tp, reason + " err=" + IntegerToString(err), pnlBefore, "basket_close_failed");
+            }
+         }
+         else
+         {
+            bool delOk = OrderDelete(ticket, clrOrange);
+            int delErr = GetLastError();
+            if(delOk)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit(eventName, TicketEvent(ticket), ticket, dir, lots, OrderOpenPrice(), sl, tp, reason + " delete_pending pass=" + IntegerToString(pass), pnlBefore, "basket_delete");
+            }
+            else
+            {
+               allOk = false;
+               Audit(eventName + "_failed", TicketEvent(ticket), ticket, dir, lots, OrderOpenPrice(), sl, tp, reason + " delete_err=" + IntegerToString(delErr), pnlBefore, "basket_delete_failed");
+            }
+         }
+      }
+      if(!found) break;
+      Sleep(150);
+   }
+   return allOk;
+}
+
+bool ManageBasketDailyGuards()
+{
+   bool hadOpenBasket = HasOpenBasketPositions();
+   if(!g_basketModeRuntime && !hadOpenBasket) return false;
+   string reason = "", detail = "";
+   if(!BasketGuardReached(reason, detail)) return false;
+   // A completed basket day remains blocked, but must not emit one audit row
+   // per tick after there is nothing left to close.
+   if(!hadOpenBasket) return true;
+   bool ok = CloseBasketScopedPositions(reason, detail);
+   Audit(reason, "", 0, "", 0, 0, 0, 0, detail + " close_ok=" + (ok ? "true" : "false"), BasketScopedPnlToday(true), "basket_daily_guard");
+   return ok;
+}
+
+bool CloseOppositeBasket(int newType, string eventId)
+{
+   int opposite = (newType == OP_BUY) ? OP_SELL : OP_BUY;
+   int oppositeLimit = (newType == OP_BUY) ? OP_SELLLIMIT : OP_BUYLIMIT;
+   int oppositeStop = (newType == OP_BUY) ? OP_SELLSTOP : OP_BUYSTOP;
+   bool allOk = true;
+   for(int pass = 0; pass < 3; pass++)
+   {
+      bool found = false;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!SelectedOrderIsBasketScoped()) continue;
+         int type = OrderType();
+         if(type != opposite && type != oppositeLimit && type != oppositeStop) continue;
+         found = true;
+         int ticket = OrderTicket();
+         double lots = OrderLots();
+         double sl = OrderStopLoss();
+         double tp = OrderTakeProfit();
+         double pnlBefore = OrderProfit() + OrderSwap() + OrderCommission();
+         string dir = (type == OP_BUY || type == OP_BUYLIMIT || type == OP_BUYSTOP) ? "BUY" : "SELL";
+         RefreshRates();
+         if(type == OP_BUY || type == OP_SELL)
+         {
+            double px = (type == OP_BUY) ? Bid : Ask;
+            bool ok = OrderClose(ticket, lots, px, InpSlippage, clrSilver);
+            int err = GetLastError();
+            if(ok)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit("basket_reverse_close", eventId, ticket, dir, lots, px, sl, tp, "before_new_basket_signal pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+            else
+            {
+               allOk = false;
+               Audit("basket_reverse_close_failed", eventId, ticket, dir, lots, px, sl, tp, "err=" + IntegerToString(err) + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+         }
+         else
+         {
+            bool delOk = OrderDelete(ticket, clrSilver);
+            int delErr = GetLastError();
+            if(delOk)
+            {
+               TicketGVSet(ticket, "CLOSED", 1.0);
+               Audit("basket_reverse_delete", eventId, ticket, dir, lots, OrderOpenPrice(), sl, tp, "delete_opposite_pending pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+            else
+            {
+               allOk = false;
+               Audit("basket_reverse_delete_failed", eventId, ticket, dir, lots, OrderOpenPrice(), sl, tp, "err=" + IntegerToString(delErr) + " pass=" + IntegerToString(pass), pnlBefore, "");
+            }
+         }
+      }
+      if(!found) break;
+      Sleep(150);
+   }
+   return allOk;
+}
+
+bool HasOpenBasketDirection(int type)
+{
+   int pendingLimit = (type == OP_BUY) ? OP_BUYLIMIT : OP_SELLLIMIT;
+   int pendingStop = (type == OP_BUY) ? OP_BUYSTOP : OP_SELLSTOP;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(!SelectedOrderIsBasketScoped()) continue;
+      int ot = OrderType();
+      if(ot == type || ot == pendingLimit || ot == pendingStop) return true;
+   }
+   return false;
+}
+
+bool BuildBasketGeometry(int type, double entry, double &sl, string &detail)
+{
+   double pipSize = SymbolPipSize();
+   double dist = MathMax(0.0, g_basketCatastrophicSlPipsRuntime) * pipSize;
+   double minStop = MathMax(Point * 10.0, BrokerMinStopDistance());
+   dist = MathMax(dist, minStop);
+   if(entry <= 0.0 || dist <= Point)
+   {
+      detail = "basket_geometry_invalid entry=" + PriceText(entry) + " dist=" + DoubleToString(dist, Digits);
+      return false;
+   }
+   sl = (type == OP_BUY) ? entry - dist : entry + dist;
+   sl = NormalizeDouble(sl, Digits);
+   string dirDetail = "";
+   if(!ValidateDirectionLevels(type, entry, sl, 0.0, dirDetail))
+   {
+      detail = "basket_geometry_invalid_direction " + dirDetail;
+      return false;
+   }
+   detail = "basket_cat_sl pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " pip_size=" + DoubleToString(pipSize, Digits + 2) + " dist=" + DoubleToString(dist, Digits) + " sl=" + PriceText(sl);
+   return true;
+}
+
+double ResolveBasketLot(int type, string &detail)
+{
+   double pipSize = SymbolPipSize();
+   double targetPips = MathMax(0.0, g_basketTargetPipsRuntime);
+   double targetMove = targetPips * pipSize;
+   double moneyPerLot = MoneyMovePerLot(targetMove);
+   double targetMoney = BasketTargetMoneyPreview();
+   if(targetPips <= 0.0 || targetMove <= 0.0 || moneyPerLot <= 0.0 || targetMoney <= 0.0)
+   {
+      detail = "basket_lot_block invalid target_pips=" + DoubleToString(targetPips, 1) + " target_money=" + DoubleToString(targetMoney, 2) + " money_per_lot=" + DoubleToString(moneyPerLot, 2);
+      return 0.0;
+   }
+   double rawLot = targetMoney / moneyPerLot;
+   double lot = NormalizeOrderLot(rawLot, false);
+   if(lot <= 0.0)
+   {
+      detail = "basket_lot_block lot_below_min raw=" + DoubleToString(rawLot, 4) + " target_money=" + DoubleToString(targetMoney, 2) + " money_per_lot=" + DoubleToString(moneyPerLot, 2);
+      return 0.0;
+   }
+   string marginDetail = "";
+   double clamped = ClampLotToMargin(lot, type, false, marginDetail);
+   if(clamped <= 0.0)
+   {
+      detail = "basket_lot_block margin raw=" + DoubleToString(rawLot, 4) + " lot=" + DoubleToString(lot, 3) + " " + marginDetail;
+      return 0.0;
+   }
+   double actualTargetMoney = moneyPerLot * clamped;
+   detail = "basket_lot target_pips=" + DoubleToString(targetPips, 1)
+      + " target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2)
+      + " target_money=" + DoubleToString(targetMoney, 2)
+      + " money_per_lot_at_target=" + DoubleToString(moneyPerLot, 2)
+      + " raw_lot=" + DoubleToString(rawLot, 4)
+      + " lot=" + DoubleToString(clamped, 3)
+      + " actual_target_money=" + DoubleToString(actualTargetMoney, 2)
+      + " " + marginDetail;
+   return clamped;
+}
+
+void ExecuteBasketSignal(string dir, string eventId, double signalPx, int shift, int buffer, int type, double entry, double marketEntry, double driftPoints, bool usePending, double liveBid, double liveAsk, int spreadNow)
+{
+   string originalDir = dir;
+   if(g_invertMode)
+   {
+      dir = (dir == "BUY") ? "SELL" : "BUY";
+      type = (dir == "BUY") ? OP_BUY : OP_SELL;
+      eventId = eventId + "|invert";
+   }
+
+   int sendType = type;
+   datetime expiry = 0;
+   if(usePending)
+   {
+      sendType = (type == OP_BUY) ? OP_BUYLIMIT : OP_SELLLIMIT;
+      expiry = TimeCurrent() + MathMax(1, InpPendingExpiryMinutes) * 60;
+   }
+
+   double sl = 0.0;
+   string geom = "";
+   if(!BuildBasketGeometry(type, entry, sl, geom))
+   {
+      Audit("trade_blocked_geometry", eventId, 0, dir, 0, entry, sl, 0, geom, 0, "basket");
+      return;
+   }
+
+   double target = 0.0;
+   double rawEntry = entry, rawSl = sl;
+   string brokerGuard = "";
+   if(!PrepareBrokerOrderLevels(sendType, type, entry, sl, target, brokerGuard))
+   {
+      Audit("trade_blocked_broker_stops", eventId, 0, dir, 0, rawEntry, rawSl, 0, brokerGuard + " " + geom, 0, "basket");
+      return;
+   }
+
+   Audit("basket_signal_received", eventId, 0, dir, 0, signalPx, sl, 0,
+         "original_dir=" + originalDir + " shift=" + IntegerToString(shift) + " buffer=" + IntegerToString(buffer) +
+         " bid=" + PriceText(liveBid) + " ask=" + PriceText(liveAsk) + " spread_points=" + IntegerToString(spreadNow) +
+         " market_entry=" + PriceText(marketEntry) + " planned_entry=" + PriceText(entry) + " drift_points=" + DoubleToString(driftPoints, 1) +
+         " pending_at_signal=" + (usePending ? "true" : "false") + " " + geom + " " + brokerGuard, 0, "basket_daily_target");
+
+   if(!g_eaEnabled)
+   {
+      Audit("trade_blocked_disabled", eventId, 0, dir, 0, entry, sl, 0, "ea_disabled basket_no_csv", 0, "basket");
+      return;
+   }
+
+   string tradeState = "";
+   if(!CanAttemptTradeNow(tradeState))
+   {
+      if(TimeCurrent() >= g_nextTradeDisabledRetryTs)
+      {
+         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, 0, tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)), 0, "basket");
+         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
+      }
+      ReleaseEventForRetry(eventId);
+      return;
+   }
+
+   if(g_basketCloseOnReverseRuntime && !CloseOppositeBasket(type, eventId))
+   {
+      Audit("trade_blocked_reverse_close_failed", eventId, 0, dir, 0, entry, sl, 0, "basket opposite position or pending could not be closed", 0, "retry_signal");
+      ReleaseEventForRetry(eventId);
+      return;
+   }
+
+   if(IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime))
+   {
+      StoreEventBlockPending(eventId, dir, signalPx, shift, buffer, g_lastSignalTime, "basket_entry_guard");
+      Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, 0, UtcEventBlockStatus(TimeGMT()), 0, "basket_no_new_entry_until_block_ends");
+      return;
+   }
+   if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
+   {
+      Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, 0, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "basket");
+      return;
+   }
+   int spread = CurrentSpreadPoints();
+   if(g_maxSpreadRuntime > 0 && spread > g_maxSpreadRuntime)
+   {
+      Audit("trade_blocked_spread", eventId, 0, dir, 0, entry, sl, 0, "spread=" + IntegerToString(spread) + " max=" + IntegerToString(g_maxSpreadRuntime), 0, "basket");
+      return;
+   }
+   if(InpBlockSameDirectionOpen && HasOpenBasketDirection(type))
+   {
+      Audit("trade_blocked_same_direction", eventId, 0, dir, 0, entry, sl, 0, "existing same direction basket order", 0, "basket");
+      return;
+   }
+
+   string dailyGuardReason = "", dailyGuardDetail = "";
+   if(DailyProfitLossGuardReached(dailyGuardReason, dailyGuardDetail))
+   {
+      Audit("trade_blocked_daily_profit_loss_target", eventId, 0, dir, 0, entry, sl, 0, dailyGuardDetail, 0, dailyGuardReason + " basket_file_bridge_not_written=1");
+      return;
+   }
+
+   string basketReason = "", basketDetail = "";
+   if(BasketGuardReached(basketReason, basketDetail))
+   {
+      CloseBasketScopedPositions(basketReason, basketDetail);
+      Audit("basket_blocked_day_done", eventId, 0, dir, 0, entry, sl, 0, basketDetail, BasketScopedPnlToday(true), basketReason + " file_bridge_not_written=1");
+      return;
+   }
+
+   string bridgeSource = "ProRenko|" + SignalSourceFromEvent(eventId) + "|basket";
+   if(g_invertMode) bridgeSource += "|invert";
+   FileBridgeWriteBasketSignal(eventId, dir, entry, sl, bridgeSource, g_lastSignalTime);
+
+   string lotDetail = "";
+   double lot = ResolveBasketLot(type, lotDetail);
+   if(lot <= 0.0)
+   {
+      RiskAudit("basket_lot_blocked", "event=" + eventId + " " + lotDetail);
+      Audit("trade_blocked_risk", eventId, 0, dir, 0, entry, sl, 0, lotDetail, 0, "basket");
+      return;
+   }
+
+   int ticket = OrderSend(Symbol(), sendType, lot, NormalizePriceToTick(entry), InpSlippage, NormalizePriceToTick(sl), 0,
+                          "ProRenkoBridge basket " + SignalSourceFromEvent(eventId) + " " + dir, EffectiveMagic(), expiry, (type == OP_BUY ? clrLime : clrTomato));
+   int err = GetLastError();
+   if(ticket > 0)
+   {
+      if(OrderSelect(ticket, SELECT_BY_TICKET)) entry = OrderOpenPrice();
+      StoreTicket(ticket, 0, 0, 0, 0, 0, 0, false);
+      TicketGVSet(ticket, "BASKET", 1.0);
+      TicketGVSet(ticket, "BTPIPS", g_basketTargetPipsRuntime);
+      TicketGVSet(ticket, "BTPCT", g_basketTargetPctRuntime);
+      TicketGVSet(ticket, "BLPIPS", g_basketMaxLossPipsRuntime);
+      TicketGVSet(ticket, "BCAT", g_basketCatastrophicSlPipsRuntime);
+      Audit("basket_order_sent", eventId, ticket, dir, lot, entry, sl, 0,
+            "ticket=" + IntegerToString(ticket) + " type=" + (usePending ? "limit_at_signal" : "market") + " " + lotDetail + " " + geom,
+            OrderProfit(), "basket_daily_target");
+      RiskAudit("basket_lot_selected", "event=" + eventId + " ticket=" + IntegerToString(ticket) + " lot=" + DoubleToString(lot, 3) + " " + lotDetail);
+      DrawTradeLevels();
+   }
+   else
+   {
+      if(RetryableTradeSendError(err))
+      {
+         ReleaseEventForRetry(eventId);
+         g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
+      }
+      Audit("basket_order_failed", eventId, 0, dir, lot, entry, sl, 0, "err=" + IntegerToString(err) + " " + lotDetail + " " + geom, 0, "basket_daily_target");
+   }
+}
 void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int buffer)
 {
    RefreshRates();
@@ -859,7 +1529,11 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    double driftPoints = (signalPx > 0.0) ? MathAbs(marketEntry - signalPx) / Point : 0.0;
    bool usePending = (g_pendingOnDriftRuntime && InpMaxMarketEntryDriftPoints > 0 && worseThanSignal && driftPoints > InpMaxMarketEntryDriftPoints);
    if(usePending) entry = signalPx;
-   string originalDir = dir;
+   if(g_basketModeRuntime)
+   {
+      ExecuteBasketSignal(dir, eventId, signalPx, shift, buffer, type, entry, marketEntry, driftPoints, usePending, liveBid, liveAsk, spreadNow);
+      return;
+   }   string originalDir = dir;
    string sourceEventId = eventId;
    double sl, tp1, tp2, tp3;
    string geom;
@@ -934,6 +1608,12 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       return;
    }
 
+   if(IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime))
+   {
+      StoreEventBlockPending(sourceEventId, originalDir, signalPx, shift, buffer, g_lastSignalTime, "traditional_entry_guard");
+      Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, target, UtcEventBlockStatus(TimeGMT()), 0, "no_new_entry_until_block_ends");
+      return;
+   }
    if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
    {
       Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, target, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "");
@@ -1342,6 +2022,11 @@ double TpByIndex(int idx, double tp1, double tp2, double tp3) { if(idx==1) retur
 void ManagePositions()
 {
    RefreshRates();
+   if(ManageBasketDailyGuards())
+   {
+      DrawTradeLevels();
+      return;
+   }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
@@ -1349,6 +2034,12 @@ void ManagePositions()
       int type = OrderType();
       if(type != OP_BUY && type != OP_SELL) continue;
       int ticket = OrderTicket();
+      if(SelectedOrderIsBasketScoped())
+      {
+         double basketPx = (type == OP_BUY) ? Bid : Ask;
+         UpdateTicketExcursion(ticket, basketPx);
+         continue;
+      }
       TryEnrichFallbackTrade(ticket, type);
       if(!OrderSelect(ticket, SELECT_BY_TICKET)) continue;
       string dir = (type == OP_BUY) ? "BUY" : "SELL";
@@ -1984,6 +2675,31 @@ int CurrentSpreadPoints() { RefreshRates(); return (int)MathRound((Ask - Bid) / 
 bool IsInAllowedWindow(datetime t, string windows) { string w = Trim(windows); if(w == "") return true; return IsInWindowList(t, w); }
 bool IsInNoTradeWindow(datetime t, string windows) { string w = Trim(windows); if(w == "") return false; return IsInWindowList(t, w); }
 
+bool IsInUtcEventBlock(datetime t, string times, int radiusMinutes)
+{
+   string raw = Trim(times);
+   if(raw == "" || radiusMinutes <= 0) return false;
+   StringReplace(raw, ";", ",");
+   StringReplace(raw, "|", ",");
+   int cur = TimeHour(t) * 60 + TimeMinute(t);
+   string parts[];
+   int n = StringSplit(raw, ',', parts);
+   for(int i = 0; i < n; i++)
+   {
+      int center = ParseHHMM(parts[i]);
+      if(center < 0) continue;
+      int diff = (int)MathAbs(cur - center);
+      diff = MathMin(diff, 1440 - diff);
+      if(diff <= radiusMinutes) return true;
+   }
+   return false;
+}
+
+string UtcEventBlockStatus(datetime t)
+{
+   return "utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime) + " now=" + TimeToString(t, TIME_MINUTES);
+}
+
 bool IsInWindowList(datetime t, string windows)
 {
    string parts[];
@@ -2210,7 +2926,14 @@ bool IsCriticalAuditEvent(string eventName)
           || StringFind(eventName, "reverse_close_failed") >= 0
           || StringFind(eventName, "reverse_delete_failed") >= 0
           || StringFind(eventName, "broker_stop_adjusted") >= 0
-          || StringFind(eventName, "stopguard") >= 0;
+          || StringFind(eventName, "stopguard") >= 0
+          || StringFind(eventName, "basket_order_failed") >= 0
+          || StringFind(eventName, "basket_reverse_close_failed") >= 0
+          || StringFind(eventName, "basket_reverse_delete_failed") >= 0
+          || StringFind(eventName, "basket_target_hit_close") >= 0
+          || StringFind(eventName, "basket_loss_hit_close") >= 0
+          || StringFind(eventName, "basket_session_close") >= 0
+          || StringFind(eventName, "basket_blocked_day_done") >= 0;
 }
 
 void Audit(string eventName, string eventId, int ticket, string dir, double lot, double price, double sl, double tp, string detail, double pnl, string extra)
@@ -2302,7 +3025,7 @@ void FileBridgeWriteHeader(int h)
 {
    FileWrite(h,
       "version", "written_gmt", "source_login", "source_symbol", "source_tf", "event_id", "source", "direction",
-      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct"
+      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct", "trade_mode", "basket_target_pips", "basket_target_pct", "basket_max_loss_pips", "basket_catastrophic_sl_pips", "basket_close_on_reverse", "basket_close_session_end", "basket_session_end_time", "basket_day_key"
    );
 }
 
@@ -2326,7 +3049,9 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
       BUILD_TAG,
       PriceText(Bid),
       PriceText(Ask),
-      DoubleToString(EffAccountRiskPerTradePct(), 4)
+      DoubleToString(EffAccountRiskPerTradePct(), 4),
+      "traditional",
+      "", "", "", "", "", "", "", ""
    );
 }
 
@@ -2393,6 +3118,69 @@ void FileBridgeWriteSignal(string eventId, string dir, double bridgeEntry, doubl
    Print("ProRenkoBridge file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
 }
 
+void FileBridgeWriteBasketRow(int h, string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
+{
+   FileWrite(h,
+      "1",
+      FileBridgeTime(TimeGMT()),
+      IntegerToString(AccountNumber()),
+      Symbol(),
+      IntegerToString(Period()),
+      eventId,
+      source,
+      dir,
+      FileBridgeTime(sourceSignalTime),
+      PriceText(bridgeEntry),
+      PriceText(catastrophicSl),
+      "0",
+      "0",
+      "basket_off",
+      BUILD_TAG,
+      PriceText(Bid),
+      PriceText(Ask),
+      DoubleToString(EffAccountRiskPerTradePct(), 4),
+      "basket_daily_target",
+      DoubleToString(g_basketTargetPipsRuntime, 2),
+      DoubleToString(g_basketTargetPctRuntime, 4),
+      DoubleToString(g_basketMaxLossPipsRuntime, 2),
+      DoubleToString(g_basketCatastrophicSlPipsRuntime, 2),
+      g_basketCloseOnReverseRuntime ? "true" : "false",
+      "false",
+      "",
+      BasketDayKey()
+   );
+}
+
+void FileBridgeWriteBasketSignal(string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
+{
+   if(!g_fileBridgeMt5Runtime)
+      return;
+   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("ProRenkoBridge basket file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
+      return;
+   }
+   FileBridgeWriteHeader(h);
+   FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   FileClose(h);
+
+   string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
+   int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a == INVALID_HANDLE)
+   {
+      Print("ProRenkoBridge basket file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
+      return;
+   }
+   bool header = (FileSize(a) == 0);
+   FileSeek(a, 0, SEEK_END);
+   if(header) FileBridgeWriteHeader(a);
+   FileBridgeWriteBasketRow(a, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   FileClose(a);
+   Print("ProRenkoBridge basket file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+}
 string BufferHitSummary(string dir, int sh, int buf, double raw, datetime t)
 {
    if(dir == "" || t <= 0)
@@ -2487,7 +3275,7 @@ void DashboardCreate()
 {
    DeleteDashboard();
    if(!InpShowDashboard) return;
-   int x = InpDashboardX, y = InpDashboardY, w = 760, h = g_collapsed ? 34 : 438;
+   int x = InpDashboardX, y = InpDashboardY, w = 860, h = g_collapsed ? 34 : 520;
    Rect(Obj("bg"), x, y, w, h, clrDimGray, clrBlack);
    Label(Obj("title"), x+12, y+8, "Pro Renko System // " + BUILD_TAG, clrAliceBlue, 9);
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
@@ -2510,12 +3298,23 @@ void DashboardCreate()
    Label(Obj("l_riskpct"), x+384, y+120, "Risk%", clrLightSteelBlue, 8); Edit(Obj("e_riskpct"), x+432, y+116, 58, 20, DoubleToString(g_riskPctRuntime, 2));
    Label(Obj("l_pips"), x+500, y+120, "Pips", clrLightSteelBlue, 8); Edit(Obj("e_pips"), x+536, y+116, 48, 20, DoubleToString(g_pipSlPipsRuntime, 1));
    Button(Obj("pipmode"), x+590, y+116, 50, 20, g_pipSlModeRuntime ? "PIP" : "OFF", g_pipSlModeRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Label(Obj("l_evt"), x+650, y+120, "UTCBlk", clrLightSteelBlue, 8); Edit(Obj("e_evt"), x+704, y+116, 54, 20, g_utcEventBlockTimesRuntime);
+   Button(Obj("eventapply"), x+764, y+116, 70, 20, "APPLY E", clrSteelBlue, clrWhite);
    Button(Obj("symr"), x+384, y+142, 82, 20, g_symmetricRTargetsRuntime ? "SYM R" : "SYM OFF", g_symmetricRTargetsRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
    Button(Obj("trendmode"), x+472, y+142, 92, 20, g_trendTradeRuntime ? "TREND ON" : "TREND OFF", g_trendTradeRuntime ? clrDarkGreen : clrMaroon, clrWhite);
    Button(Obj("execmode"), x+570, y+142, 54, 20, TrendExecModeLabel(), TrendExecModeColor(), clrWhite);
    Label(Obj("l_execdelay"), x+630, y+146, "Dly", clrLightSteelBlue, 8); Edit(Obj("e_execdelay"), x+660, y+142, 42, 20, IntegerToString(g_trendExecDelayRuntime));
    Label(Obj("l_dayp"), x+12, y+146, "Day Profit", clrLightSteelBlue, 8); Edit(Obj("e_dayp"), x+86, y+142, 58, 20, DoubleToString(g_dailyProfitTargetRuntime, 0));
    Label(Obj("l_dayl"), x+152, y+146, "Day Loss", clrLightSteelBlue, 8); Edit(Obj("e_dayl"), x+210, y+142, 50, 20, DoubleToString(g_dailyLossTargetRuntime, 0));
+   Label(Obj("basket_head"), x+548, y+174, "Basket Daily Target", clrOrange, 8);
+   Button(Obj("basketmode"), x+548, y+196, 74, 20, g_basketModeRuntime ? "BASKET" : "TRAD", g_basketModeRuntime ? clrDarkOrange : clrDarkSlateGray, clrWhite);
+   Button(Obj("basketrev"), x+628, y+196, 74, 20, g_basketCloseOnReverseRuntime ? "REV ON" : "REV OFF", g_basketCloseOnReverseRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Label(Obj("l_btpips"), x+548, y+222, "TgtPips", clrLightSteelBlue, 8); Edit(Obj("e_btpips"), x+604, y+218, 58, 20, DoubleToString(g_basketTargetPipsRuntime, 1));
+   Label(Obj("l_btpct"), x+668, y+222, "Tgt%", clrLightSteelBlue, 8); Edit(Obj("e_btpct"), x+710, y+218, 50, 20, DoubleToString(g_basketTargetPctRuntime, 2));
+   Label(Obj("l_blpips"), x+548, y+248, "LossP", clrLightSteelBlue, 8); Edit(Obj("e_blpips"), x+604, y+244, 58, 20, DoubleToString(g_basketMaxLossPipsRuntime, 1));
+   Label(Obj("l_bcat"), x+668, y+248, "CatSL", clrLightSteelBlue, 8); Edit(Obj("e_bcat"), x+710, y+244, 58, 20, DoubleToString(g_basketCatastrophicSlPipsRuntime, 1));
+   Button(Obj("basketapply"), x+548, y+270, 78, 20, "APPLY B", clrSteelBlue, clrWhite);
+   Label(Obj("basket_info"), x+548, y+302, "basket preview", clrMoccasin, 8);
    Label(Obj("status"), x+12, y+174, "status", clrWhite, 8);
    Label(Obj("signal"), x+12, y+196, "signal", clrWhite, 8);
    Label(Obj("trend_dbg"), x+12, y+218, "trend buffer", clrGold, 8);
@@ -2559,15 +3358,20 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("trendmode"), OBJPROP_BGCOLOR, g_trendTradeRuntime ? clrDarkGreen : clrMaroon);
    ObjectSetString(0, Obj("execmode"), OBJPROP_TEXT, TrendExecModeLabel());
    ObjectSetInteger(0, Obj("execmode"), OBJPROP_BGCOLOR, TrendExecModeColor());
+   ObjectSetString(0, Obj("basketmode"), OBJPROP_TEXT, g_basketModeRuntime ? "BASKET" : "TRAD");
+   ObjectSetInteger(0, Obj("basketmode"), OBJPROP_BGCOLOR, g_basketModeRuntime ? clrDarkOrange : clrDarkSlateGray);
+   ObjectSetString(0, Obj("basketrev"), OBJPROP_TEXT, g_basketCloseOnReverseRuntime ? "REV ON" : "REV OFF");
+   ObjectSetInteger(0, Obj("basketrev"), OBJPROP_BGCOLOR, g_basketCloseOnReverseRuntime ? clrDarkGreen : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | EXEC " + TrendExecModeLabel() + " Dly " + IntegerToString(g_trendExecDelayRuntime) + "s | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | EXEC " + TrendExecModeLabel() + " Dly " + IntegerToString(g_trendExecDelayRuntime) + "s | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MODE " + (g_basketModeRuntime ? "BASKET" : "TRAD") + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest trade signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    ObjectSetString(0, Obj("trend_dbg"), OBJPROP_TEXT, TrendBufferDebugLine());
    ObjectSetString(0, Obj("trend_now"), OBJPROP_TEXT, TrendRawStateLine());
    double cap, daily, dd; AccountRiskMetrics(cap, daily, dd);
    ObjectSetString(0, Obj("risk"), OBJPROP_TEXT, "RiskCap " + DoubleToString(cap,2) + " | OpenRisk " + DoubleToString(CurrentOpenRisk(),2) + " | D " + DoubleToString(daily,2) + "% / DD " + DoubleToString(dd,2) + "%");
    ObjectSetString(0, Obj("risk_preview"), OBJPROP_TEXT, RiskLotPreviewLine());
+   ObjectSetString(0, Obj("basket_info"), OBJPROP_TEXT, BasketPreviewLine());
    UpdateOpenLine();
    UpdateDailyGuardBars();
 }
@@ -2591,6 +3395,32 @@ void UpdateDailyGuardBars()
    ObjectSetString(0, Obj("dayl_txt"), OBJPROP_TEXT, lossText);
 }
 
+double BasketTargetMoneyPreview()
+{
+   double cap = 0.0, daily = 0.0, dd = 0.0;
+   AccountRiskMetrics(cap, daily, dd);
+   return cap * MathMax(0.0, g_basketTargetPctRuntime) / 100.0;
+}
+
+double BasketMaxLossMoneyPreview()
+{
+   double targetPips = MathMax(0.0, g_basketTargetPipsRuntime);
+   if(targetPips <= 0.0) return 0.0;
+   return BasketTargetMoneyPreview() * MathMax(0.0, g_basketMaxLossPipsRuntime) / targetPips;
+}
+
+string BasketPreviewLine()
+{
+   double targetMoney = BasketTargetMoneyPreview();
+   double maxLossMoney = BasketMaxLossMoneyPreview();
+   string mode = g_basketModeRuntime ? "ON" : "OFF";
+   return "Basket " + mode
+      + " | target " + DoubleToString(g_basketTargetPipsRuntime, 1) + "p=" + DoubleToString(g_basketTargetPctRuntime, 2) + "% ($" + DoubleToString(targetMoney, 2) + ")"
+      + " | maxLoss " + DoubleToString(g_basketMaxLossPipsRuntime, 1) + "p ($" + DoubleToString(maxLossMoney, 2) + ")"
+      + " | catSL " + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + "p"
+      + " | rev " + (g_basketCloseOnReverseRuntime ? "ON" : "OFF")
+      ;
+}
 string RiskLotPreviewLine()
 {
    RefreshRates();
@@ -2702,15 +3532,30 @@ void ApplyDashboardInputs()
    g_halfTpRuntime = MathMax(0, MathMin(3, (int)StringToInteger(ObjectGetString(0, Obj("e_half"), OBJPROP_TEXT))));
    g_allowedWindowsRuntime = ObjectGetString(0, Obj("e_allowed"), OBJPROP_TEXT);
    g_noTradeWindowsRuntime = ObjectGetString(0, Obj("e_no"), OBJPROP_TEXT);
+   // Applying a basket window while currently inside it behaves like entering
+   // that window. Existing same-direction and daily guards prevent duplicates.
+   if(g_basketModeRuntime)
+   {
+      g_basketWindowEligibleLast = false;
+      g_basketWindowStateInitialized = true;
+   }
    g_riskPctRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_riskpct"), OBJPROP_TEXT)));
    g_pipSlPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_pips"), OBJPROP_TEXT)));
    g_dailyProfitTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayp"), OBJPROP_TEXT)));
    g_dailyLossTargetRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_dayl"), OBJPROP_TEXT)));
    g_trendExecDelayRuntime = MathMax(0, (int)StringToInteger(ObjectGetString(0, Obj("e_execdelay"), OBJPROP_TEXT)));
    g_trendExecModeRuntime = MathMax(0, MathMin(2, g_trendExecModeRuntime));
+   if(ObjectFind(0, Obj("e_btpips")) >= 0) g_basketTargetPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_btpips"), OBJPROP_TEXT)));
+   if(ObjectFind(0, Obj("e_btpct")) >= 0) g_basketTargetPctRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_btpct"), OBJPROP_TEXT)));
+   if(ObjectFind(0, Obj("e_blpips")) >= 0) g_basketMaxLossPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_blpips"), OBJPROP_TEXT)));
+   if(ObjectFind(0, Obj("e_bcat")) >= 0) g_basketCatastrophicSlPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_bcat"), OBJPROP_TEXT)));
+   if(ObjectFind(0, Obj("e_evt")) >= 0) g_utcEventBlockTimesRuntime = Trim(ObjectGetString(0, Obj("e_evt"), OBJPROP_TEXT));
+   g_utcEventBlockRadiusRuntime = MathMax(0, MathMin(60, g_utcEventBlockRadiusRuntime));
+   g_basketCloseAtSessionEndRuntime = false;
+   g_basketSessionEndTimeRuntime = "";
    DrawLatestSignalLevels("dashboard_apply");
    DrawHistoricalSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -2825,6 +3670,8 @@ void DrawLatestSignalLevels(string reason)
    DeleteLatestSignalLevels();
    if(!InpShowLatestSignalLevels)
       return;
+   if(g_basketModeRuntime)
+      return;
    if(g_lastSignalTime <= 0 || (g_lastSignalDir != "BUY" && g_lastSignalDir != "SELL") || g_lastSignalPrice <= 0.0)
       return;
    int type = (g_lastSignalDir == "BUY") ? OP_BUY : OP_SELL;
@@ -2867,7 +3714,9 @@ void DrawLatestSignalLevels(string reason)
 void DrawHistoricalSignalLevels(string reason)
 {
    DeleteHistoricalSignalLevels();
-   if(!InpShowHistoricalSignalLevels || !InpShowLatestSignalLevels)
+   if(!InpShowHistoricalSignalLevels)
+      return;
+   if(g_basketModeRuntime)
       return;
    int maxBars = MathMin(InpMaxSignalAgeBars, Bars - 3);
    if(maxBars < 1) return;
@@ -2906,6 +3755,9 @@ void DrawHistoricalSignalLevels(string reason)
       double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
       double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
       datetime t1 = t0 + barsForward * seconds;
+      datetime nextT = NextHistoricalSignalTimeAfter(sh);
+      if(nextT > t0 && nextT < t1)
+         t1 = MathMax(t0 + 1, nextT - 1);
       string base = IntegerToString((int)t0) + "_" + IntegerToString(drawn) + "_";
       string mode = (g_invertMode ? " INV" : "") + " " + drawDir;
       SegmentLevelWithPrefix(prefix, base + "ENTRY", t0, t1, entry, clrWhite, STYLE_DOT, "PR" + mode + " ENTRY", 1);
@@ -2916,9 +3768,26 @@ void DrawHistoricalSignalLevels(string reason)
       drawn++;
    }
 }
+datetime NextHistoricalSignalTimeAfter(int currentShift)
+{
+   for(int sh = currentShift - 1; sh >= 1; sh--)
+   {
+      string dir, prevDir;
+      double raw = 0.0, prevRaw = 0.0;
+      int buf = -1, prevBuf = -1;
+      if(!TrendStateAt(sh, dir, raw, buf)) continue;
+      bool prevState = TrendStateAt(sh + 1, prevDir, prevRaw, prevBuf);
+      if(prevState && prevDir == dir) continue;
+      return Time[sh];
+   }
+   return 0;
+}
+
 void DrawTradeLevels()
 {
    DeleteTradeLevels();
+   if(g_basketModeRuntime)
+      return;
    int seconds = MathMax(60, Period() * 60);
    int barsForward = MathMax(1, InpSignalLevelBars);
    datetime nowT = Time[0] > 0 ? Time[0] : TimeCurrent();
@@ -2931,10 +3800,11 @@ void DrawTradeLevels()
       datetime t1 = MathMax(nowT + barsForward * seconds, t0 + barsForward * seconds);
       TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_ENTRY", t0, t1, OrderOpenPrice(), clrWhite, STYLE_DOT, "LIVE ENTRY");
       TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_SL", t0, t1, OrderStopLoss(), clrTomato, STYLE_SOLID, "LIVE SL");
-      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP", t0, t1, OrderTakeProfit(), clrDodgerBlue, STYLE_SOLID, "LIVE TP");
-      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP1", t0, t1, TicketGV(t, "TP1", 0), clrDeepSkyBlue, STYLE_DOT, "LIVE TP1");
-      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP2", t0, t1, TicketGV(t, "TP2", 0), clrRoyalBlue, STYLE_DOT, "LIVE TP2");
-      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP3", t0, t1, TicketGV(t, "TP3", 0), clrBlue, STYLE_DOT, "LIVE TP3");
+      TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_TP", t0, t1, OrderTakeProfit(), clrLimeGreen, STYLE_SOLID, "LIVE TP");
+      double half = TicketGV(t, "HTP", 0);
+      int halfIdx = (int)TicketGV(t, "HIDX", 0);
+      if(halfIdx > 0 && half > 0.0)
+         TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_HCBE", t0, t1, half, clrGold, STYLE_DASH, "LIVE HCBE TP" + IntegerToString(halfIdx));
    }
 }
 
@@ -2943,10 +3813,12 @@ void DrawCalculatedFallbackLevels(int ticket, double sl, double tp1, double tp2,
    DeleteCalculatedFallbackLevels(ticket);
    datetime t0 = Time[0] > 0 ? Time[0] : TimeCurrent();
    datetime t1 = t0 + MathMax(1, InpSignalLevelBars) * MathMax(60, Period() * 60);
+   double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
+   double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
    CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_SL", t0, t1, sl, clrOrangeRed, STYLE_DASHDOT, "CALC SL");
-   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP1", t0, t1, tp1, clrAqua, STYLE_DASHDOT, "CALC TP1");
-   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP2", t0, t1, tp2, clrDeepSkyBlue, STYLE_DASHDOT, "CALC TP2");
-   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP3", t0, t1, tp3, clrDodgerBlue, STYLE_DASHDOT, "CALC TP3");
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP", t0, t1, target, clrLimeGreen, STYLE_DASHDOT, "CALC TP" + IntegerToString(g_targetTpRuntime));
+   if(g_halfTpRuntime > 0 && half > 0.0)
+      CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_HCBE", t0, t1, half, clrGold, STYLE_DASHDOT, "CALC HCBE TP" + IntegerToString(g_halfTpRuntime));
 }
 
 void CalcSegment(string name, datetime t0, datetime t1, double price, color clr, int style, string text)
@@ -3012,6 +3884,3 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
-
-
-

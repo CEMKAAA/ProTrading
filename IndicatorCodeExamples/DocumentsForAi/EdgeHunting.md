@@ -6,3 +6,4 @@
   4. XAUUSDm / M1 / invert / pip SL 250 / RR 1.00: +97.36
   5. XAUUSDm / M5 / invert / pip SL 1000 / RR 1.00: -20.49
   6. XAUUSDm / M5 / invert / pip SL 1500 / RR 1.00: -91.27
+  7. BTCUSD /  M1 / ProRenko / pip sl 20000 / rr 2.00 / hcbe 1.00R / +102

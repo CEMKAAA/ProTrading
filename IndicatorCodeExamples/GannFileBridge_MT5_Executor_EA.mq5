@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-08.1515-ordercalcprofit-risk-final"
+#define GANN_FILE_BRIDGE_MT5_BUILD "2026-07-08.1745-safe-scope-defaults"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "GannFileBridge_Latest.csv";
@@ -27,7 +27,7 @@ input string InpSourceFilter = ""; // Empty=all, example GannMadeEasy
 input bool   InpCloseReverse = true;
 input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close M5 positions from the bridge.
 input bool   InpFailIfReverseCloseFails = true;
-input bool   InpCloseReverseBridgeCommentPositions = true;
+input bool   InpCloseReverseBridgeCommentPositions = false;
 input long   InpMagic = 42061302;
 input int    InpDeviationPoints = 30;
 input int    InpMaxSpreadPoints = 0;
@@ -1308,8 +1308,7 @@ ulong FindOpenedPositionTicket(const BridgeSignal &sig, string comment)
          continue;
 
       string posComment = PositionGetString(POSITION_COMMENT);
-      long magic = (long)PositionGetInteger(POSITION_MAGIC);
-      if(posComment != comment && magic != InpMagic)
+      if(posComment != comment)
          continue;
 
       long timeMsc = (long)PositionGetInteger(POSITION_TIME_MSC);
@@ -1340,6 +1339,8 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if(PositionGetInteger(POSITION_TYPE) != expectedType)
+         continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
          continue;
       string comment = PositionGetString(POSITION_COMMENT);
       if(comment != legacyComment && comment != modernComment)
@@ -1849,5 +1850,3 @@ void OnTick()
    }
    DrawDashboard();
 }
-
-
