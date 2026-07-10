@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-09.0030-utc-event-block"
+#define BUILD_TAG "2026-07-09.0040-risk-apply-publish"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -391,6 +391,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       Print("ProRenkoBridge pip SL mode ", g_pipSlModeRuntime ? "enabled" : "disabled", " pips=", DoubleToString(g_pipSlPipsRuntime, 2));
       DrawLatestSignalLevels("pip_sl_toggle");
       DrawHistoricalSignalLevels("pip_sl_toggle");
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("riskapply"))
+   {
+      ApplyRiskInputAndPublish();
       DashboardUpdate();
       return;
    }
@@ -3275,7 +3281,7 @@ void DashboardCreate()
 {
    DeleteDashboard();
    if(!InpShowDashboard) return;
-   int x = InpDashboardX, y = InpDashboardY, w = 860, h = g_collapsed ? 34 : 520;
+   int x = InpDashboardX, y = InpDashboardY, w = 940, h = g_collapsed ? 34 : 520;
    Rect(Obj("bg"), x, y, w, h, clrDimGray, clrBlack);
    Label(Obj("title"), x+12, y+8, "Pro Renko System // " + BUILD_TAG, clrAliceBlue, 9);
    Button(Obj("collapse"), x+w-32, y+6, 24, 20, g_collapsed ? "v" : "^", clrSlateGray, clrWhite);
@@ -3296,10 +3302,11 @@ void DashboardCreate()
    Label(Obj("l_windows"), x+12, y+120, "Window", clrLightSteelBlue, 8); Edit(Obj("e_allowed"), x+86, y+116, 132, 20, g_allowedWindowsRuntime);
    Label(Obj("l_no"), x+224, y+120, "NoTrade", clrLightSteelBlue, 8); Edit(Obj("e_no"), x+286, y+116, 88, 20, g_noTradeWindowsRuntime);
    Label(Obj("l_riskpct"), x+384, y+120, "Risk%", clrLightSteelBlue, 8); Edit(Obj("e_riskpct"), x+432, y+116, 58, 20, DoubleToString(g_riskPctRuntime, 2));
-   Label(Obj("l_pips"), x+500, y+120, "Pips", clrLightSteelBlue, 8); Edit(Obj("e_pips"), x+536, y+116, 48, 20, DoubleToString(g_pipSlPipsRuntime, 1));
-   Button(Obj("pipmode"), x+590, y+116, 50, 20, g_pipSlModeRuntime ? "PIP" : "OFF", g_pipSlModeRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
-   Label(Obj("l_evt"), x+650, y+120, "UTCBlk", clrLightSteelBlue, 8); Edit(Obj("e_evt"), x+704, y+116, 54, 20, g_utcEventBlockTimesRuntime);
-   Button(Obj("eventapply"), x+764, y+116, 70, 20, "APPLY E", clrSteelBlue, clrWhite);
+   Button(Obj("riskapply"), x+494, y+116, 64, 20, "APPLY R", clrSteelBlue, clrWhite);
+   Label(Obj("l_pips"), x+566, y+120, "Pips", clrLightSteelBlue, 8); Edit(Obj("e_pips"), x+602, y+116, 48, 20, DoubleToString(g_pipSlPipsRuntime, 1));
+   Button(Obj("pipmode"), x+656, y+116, 50, 20, g_pipSlModeRuntime ? "PIP" : "OFF", g_pipSlModeRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
+   Label(Obj("l_evt"), x+714, y+120, "UTCBlk", clrLightSteelBlue, 8); Edit(Obj("e_evt"), x+766, y+116, 54, 20, g_utcEventBlockTimesRuntime);
+   Button(Obj("eventapply"), x+826, y+116, 70, 20, "APPLY E", clrSteelBlue, clrWhite);
    Button(Obj("symr"), x+384, y+142, 82, 20, g_symmetricRTargetsRuntime ? "SYM R" : "SYM OFF", g_symmetricRTargetsRuntime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
    Button(Obj("trendmode"), x+472, y+142, 92, 20, g_trendTradeRuntime ? "TREND ON" : "TREND OFF", g_trendTradeRuntime ? clrDarkGreen : clrMaroon, clrWhite);
    Button(Obj("execmode"), x+570, y+142, 54, 20, TrendExecModeLabel(), TrendExecModeColor(), clrWhite);
@@ -3521,6 +3528,16 @@ void UpdateOpenLine()
    int fill = (int)MathRound(MathMax(0.0, MathMin(1.0, (rLast + 1.0) / 4.0)) * 518.0);
    ObjectSetInteger(0, Obj("prog_fill"), OBJPROP_XSIZE, MathMax(1, fill));
    ObjectSetInteger(0, Obj("prog_fill"), OBJPROP_BGCOLOR, rLast >= 0 ? clrDodgerBlue : clrTomato);
+}
+
+void ApplyRiskInputAndPublish()
+{
+   double newRisk = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_riskpct"), OBJPROP_TEXT)));
+   g_riskPctRuntime = newRisk;
+   ObjectSetString(0, Obj("e_riskpct"), OBJPROP_TEXT, DoubleToString(g_riskPctRuntime, 2));
+   FileBridgeWriteInitMarker();
+   Audit("dashboard_risk_apply", "", 0, "", 0, 0, 0, 0, "risk_pct=" + DoubleToString(g_riskPctRuntime, 4) + " bridge_init_republished=" + (g_fileBridgeMt5Runtime ? "true" : "false"), 0, "");
+   Print("ProRenkoBridge risk apply risk_pct=", DoubleToString(g_riskPctRuntime, 4), " bridge_init_republished=", g_fileBridgeMt5Runtime ? "true" : "false");
 }
 
 void ApplyDashboardInputs()

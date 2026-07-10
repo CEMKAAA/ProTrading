@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-09.utc-event-block"
+#define ATOMIC_BRIDGE_BUILD "2026-07-10.risk-apply-publish"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -7643,6 +7643,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       g_riskApplyFeedbackUntilMs = GetTickCount() + 1200;
       _apply_dashboard();
+      _file_bridge_write_init_marker();
+      Print("AtomicBridge risk apply republished bridge init risk_pct=", DoubleToString(_account_risk_per_trade_pct(), 3), " bridge_enabled=", g_fileBridgeMt5EnabledRuntime ? "true" : "false");
    }
    else if(sparam == DASH_PREFIX + "BTN_DAILY_PROFIT")
    {
