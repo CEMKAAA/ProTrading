@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-09.0040-risk-apply-publish"
+#define BUILD_TAG "2026-07-10.no-active-duplicate-levels"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -118,6 +118,8 @@ int      g_maxSpreadRuntime;
 double   g_finalScaleRuntime;
 int      g_targetTpRuntime;
 int      g_halfTpRuntime;
+double   g_targetRRuntime;
+double   g_halfRRuntime;
 bool     g_pendingOnDriftRuntime;
 bool     g_fileBridgeMt5Runtime;
 bool     g_pipSlModeRuntime;
@@ -182,6 +184,8 @@ int OnInit()
    g_finalScaleRuntime = MathMax(10.0, MathMin(200.0, InpFinalRiskScalePct));
    g_targetTpRuntime = MathMax(0, MathMin(3, InpTargetTpIndex));
    g_halfTpRuntime = MathMax(0, MathMin(3, InpHalfBeTpIndex));
+   g_targetRRuntime = NormalizeDouble(MathMax(0.1, InpTargetTpIndex), 1);
+   g_halfRRuntime = NormalizeDouble(MathMax(0.0, InpHalfBeTpIndex), 1);
    g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
    g_fileBridgeMt5Runtime = InpFileBridgeMt5Enabled;
    g_pipSlModeRuntime = InpPipSlModeEnabled;
@@ -1560,8 +1564,8 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       eventId = eventId + "|invert";
       geom = geom + " " + invertDetail;
    }
-   double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
-   double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
+   double target = TpByR(type, entry, sl, g_targetRRuntime);
+   double half = TpByR(type, entry, sl, g_halfRRuntime);
 
    int sendType = type;
    datetime expiry = 0;
@@ -1583,7 +1587,7 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       if(g_targetTpRuntime == 1) tp1 = target;
       if(g_targetTpRuntime == 2) tp2 = target;
       if(g_targetTpRuntime == 3) tp3 = target;
-      if(g_halfTpRuntime == g_targetTpRuntime) half = target;
+      if(g_halfRRuntime > 0.0 && MathAbs(g_halfRRuntime - g_targetRRuntime) <= 0.0001) half = target;
       Audit("broker_stop_adjusted", eventId, 0, dir, 0, entry, sl, target, brokerGuard, 0, "raw_entry=" + PriceText(rawPlannedEntry) + " raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTarget));
    }
 
@@ -1648,11 +1652,11 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    string bridgeSource = "ProRenko|" + SignalSourceFromEvent(eventId);
    if(g_invertMode) bridgeSource += "|invert";
    if(SymmetricRTargetsEnabled()) bridgeSource += "|symR";
-   FileBridgeWriteSignal(eventId, dir, entry, sl, target, bridgeSource, half, g_halfTpRuntime > 0 ? ("tp" + IntegerToString(g_halfTpRuntime)) : "off", g_lastSignalTime);
+   FileBridgeWriteSignal(eventId, dir, entry, sl, target, bridgeSource, half, g_halfRRuntime > 0.0 ? ("r" + DoubleToString(g_halfRRuntime, 1)) : "off", g_lastSignalTime);
 
 
    string lotDetail;
-   double lot = ResolveLot(entry, sl, type, g_halfTpRuntime > 0, lotDetail);
+   double lot = ResolveLot(entry, sl, type, g_halfRRuntime > 0.0, lotDetail);
    if(lot <= 0)
    {
       RiskAudit("lot_blocked", "event=" + eventId + " " + lotDetail);
@@ -1665,7 +1669,7 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    if(ticket > 0)
    {
       if(OrderSelect(ticket, SELECT_BY_TICKET)) entry = OrderOpenPrice();
-      StoreTicket(ticket, tp1, tp2, tp3, half, g_halfTpRuntime, g_targetTpRuntime, g_lastGeometryUsedFallback);
+      StoreTicket(ticket, tp1, tp2, tp3, half, (g_halfRRuntime > 0.0 ? 1 : 0), RToLegacyIndex(g_targetRRuntime), g_lastGeometryUsedFallback);
       Audit(usePending ? "pending_order_sent" : "order_sent", eventId, ticket, dir, lot, entry, sl, target, "ticket=" + IntegerToString(ticket) + " type=" + (usePending ? "limit_at_signal" : "market") + " market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail + " levels=" + (g_lastGeometryUsedFallback ? "fallback_calculated" : "object") + " tp1=" + PriceText(tp1) + " tp2=" + PriceText(tp2) + " tp3=" + PriceText(tp3), 0, "");
       RiskAudit("lot_selected", "event=" + eventId + " ticket=" + IntegerToString(ticket) + " lot=" + DoubleToString(lot, 3) + " " + lotDetail);
       if(g_lastGeometryUsedFallback) DrawCalculatedFallbackLevels(ticket, sl, tp1, tp2, tp3);
@@ -1715,7 +1719,7 @@ bool TrySecondLevelStopGuardOpen(string eventId, string dir, int sendType, int t
    }
 
    double openPrice = OrderOpenPrice();
-   StoreTicket(ticket, tp1, tp2, tp3, half, g_halfTpRuntime, g_targetTpRuntime, g_lastGeometryUsedFallback);
+   StoreTicket(ticket, tp1, tp2, tp3, half, (g_halfRRuntime > 0.0 ? 1 : 0), RToLegacyIndex(g_targetRRuntime), g_lastGeometryUsedFallback);
    Audit("order_sent_stopguard_unprotected", eventId, ticket, dir, lot, openPrice, 0, 0,
          "initial_err=130 naked_market_opened; attempting immediate protective_modify market_entry=" + PriceText(marketEntry) + " drift_points=" + DoubleToString(driftPoints, 1) + " " + lotDetail,
          OrderProfit(), "raw_sl=" + PriceText(sl) + " raw_tp=" + PriceText(target));
@@ -1733,8 +1737,8 @@ bool TrySecondLevelStopGuardOpen(string eventId, string dir, int sendType, int t
          if(g_targetTpRuntime == 1) tp1 = modTp;
          if(g_targetTpRuntime == 2) tp2 = modTp;
          if(g_targetTpRuntime == 3) tp3 = modTp;
-         if(g_halfTpRuntime == g_targetTpRuntime) half = modTp;
-         StoreTicket(ticket, tp1, tp2, tp3, half, g_halfTpRuntime, g_targetTpRuntime, g_lastGeometryUsedFallback);
+         if(g_halfRRuntime > 0.0 && MathAbs(g_halfRRuntime - g_targetRRuntime) <= 0.0001) half = modTp;
+         StoreTicket(ticket, tp1, tp2, tp3, half, (g_halfRRuntime > 0.0 ? 1 : 0), RToLegacyIndex(g_targetRRuntime), g_lastGeometryUsedFallback);
          Audit("order_stopguard_modify_done", eventId, ticket, dir, lot, openPrice, modSl, modTp,
                modifyGuard + " protective_stops_attached " + lotDetail, OrderProfit(), "initial_order_err=130");
          RiskAudit("lot_selected", "event=" + eventId + " ticket=" + IntegerToString(ticket) + " lot=" + DoubleToString(lot, 3) + " stopguard=true " + lotDetail);
@@ -2025,6 +2029,39 @@ double LowestLowOlder(int shift, int bars) { double v = Low[shift]; for(int i=1;
 double LowestLowRecent(int shift, int bars) { double v = Low[shift]; for(int i=1; i<=bars && shift-i>=0; i++) v = MathMin(v, Low[shift-i]); return v; }
 double TpByIndex(int idx, double tp1, double tp2, double tp3) { if(idx==1) return tp1; if(idx==2) return tp2; if(idx==3) return tp3; return 0; }
 
+double ParseDashboardR(string raw, double fallback, double minValue, double maxValue)
+{
+   string s = Trim(raw);
+   StringReplace(s, ",", ".");
+   double value = (StringLen(s) > 0 ? StringToDouble(s) : fallback);
+   value = MathMax(minValue, MathMin(maxValue, value));
+   return NormalizeDouble(value, 1);
+}
+
+int RToLegacyIndex(double r)
+{
+   double rounded = MathRound(r);
+   if(MathAbs(r - rounded) <= 0.0001 && rounded >= 0 && rounded <= 3)
+      return (int)rounded;
+   return 0;
+}
+
+string RLabel(double r)
+{
+   return DoubleToString(NormalizeDouble(r, 1), 1) + "R";
+}
+
+double TpByR(int type, double entry, double sl, double r)
+{
+   if(r <= 0.0 || entry <= 0.0 || sl <= 0.0)
+      return 0.0;
+   double risk = MathAbs(entry - sl);
+   if(risk <= Point * 0.5)
+      return 0.0;
+   double target = (type == OP_BUY) ? entry + risk * r : entry - risk * r;
+   return NormalizeDouble(target, Digits);
+}
+
 void ManagePositions()
 {
    RefreshRates();
@@ -2156,10 +2193,12 @@ void TryEnrichFallbackTrade(int ticket, int type)
       if(!ApplySymmetricRTargets(type, OrderOpenPrice(), sl, tp1, tp2, tp3, detail)) return;
    }
 
-   int targetIdx = (int)TicketGV(ticket, "TIDX", g_targetTpRuntime);
-   int halfIdx = (int)TicketGV(ticket, "HIDX", g_halfTpRuntime);
-   double newTarget = TpByIndex(targetIdx, tp1, tp2, tp3);
-   double newHalf = TpByIndex(halfIdx, tp1, tp2, tp3);
+   double targetR = TicketGV(ticket, "TR", g_targetRRuntime);
+   double halfR = TicketGV(ticket, "HBR", g_halfRRuntime);
+   int targetIdx = RToLegacyIndex(targetR);
+   int halfIdx = (halfR > 0.0 ? 1 : 0);
+   double newTarget = TpByR(type, OrderOpenPrice(), sl, targetR);
+   double newHalf = TpByR(type, OrderOpenPrice(), sl, halfR);
 
    double rawSl = sl, rawTarget = newTarget;
    string brokerGuard;
@@ -2173,7 +2212,7 @@ void TryEnrichFallbackTrade(int ticket, int type)
       if(targetIdx == 1) tp1 = newTarget;
       if(targetIdx == 2) tp2 = newTarget;
       if(targetIdx == 3) tp3 = newTarget;
-      if(halfIdx == targetIdx) newHalf = newTarget;
+      if(halfR > 0.0 && MathAbs(halfR - targetR) <= 0.0001) newHalf = newTarget;
       Audit("object_enrich_broker_stop_adjusted", TicketEvent(ticket), ticket, (type == OP_BUY ? "BUY" : "SELL"), OrderLots(), OrderOpenPrice(), sl, newTarget, brokerGuard, OrderProfit(), "raw_sl=" + PriceText(rawSl) + " raw_tp=" + PriceText(rawTarget));
    }
 
@@ -2742,6 +2781,8 @@ void StoreTicket(int ticket, double tp1, double tp2, double tp3, double half, in
 {
    TicketGVSet(ticket, "TP1", tp1); TicketGVSet(ticket, "TP2", tp2); TicketGVSet(ticket, "TP3", tp3);
    TicketGVSet(ticket, "HTP", half); TicketGVSet(ticket, "HIDX", halfIdx); TicketGVSet(ticket, "TIDX", targetIdx); TicketGVSet(ticket, "HDONE", 0);
+   TicketGVSet(ticket, "HBR", g_halfRRuntime);
+   TicketGVSet(ticket, "TR", g_targetRRuntime);
    TicketGVSet(ticket, "FB", fallbackLevels ? 1.0 : 0.0);
    TicketGVSet(ticket, "ENRICH", 0.0);
    TicketGVSet(ticket, "OPENED", 1.0);
@@ -2782,8 +2823,8 @@ int FindPartialCloseRemainderTicket(int oldTicket, int type, double oldOpenPrice
 void TransferTicketState(int oldTicket, int newTicket, string reason)
 {
    if(newTicket <= 0 || newTicket == oldTicket) return;
-   string fields[13] = {"TP1", "TP2", "TP3", "HTP", "HIDX", "TIDX", "HDONE", "FB", "ENRICH", "MFE", "MAE", "MFE_PX", "MAE_PX"};
-   for(int i = 0; i < 13; i++)
+   string fields[15] = {"TP1", "TP2", "TP3", "HTP", "HIDX", "TIDX", "HBR", "TR", "HDONE", "FB", "ENRICH", "MFE", "MAE", "MFE_PX", "MAE_PX"};
+   for(int i = 0; i < 15; i++)
       TicketGVSet(newTicket, fields[i], TicketGV(oldTicket, fields[i], 0.0));
    TicketGVSet(newTicket, "OPENED", 1.0);
    TicketGVSet(oldTicket, "CLOSED", 1.0);
@@ -3297,8 +3338,8 @@ void DashboardCreate()
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
    Label(Obj("l_scale"), x+270, y+68, "CalcSL%", clrLightSteelBlue, 8); Edit(Obj("e_scale"), x+318, y+64, 56, 20, DoubleToString(g_finalScaleRuntime, 1));
-   Label(Obj("l_tp"), x+12, y+94, "TP leg", clrLightSteelBlue, 8); Edit(Obj("e_tp"), x+86, y+90, 58, 20, IntegerToString(g_targetTpRuntime));
-   Label(Obj("l_half"), x+152, y+94, "HalfBE", clrLightSteelBlue, 8); Edit(Obj("e_half"), x+210, y+90, 50, 20, IntegerToString(g_halfTpRuntime));
+   Label(Obj("l_tp"), x+12, y+94, "TP R", clrLightSteelBlue, 8); Edit(Obj("e_tp"), x+86, y+90, 58, 20, DoubleToString(g_targetRRuntime, 1));
+   Label(Obj("l_half"), x+152, y+94, "HCBE R", clrLightSteelBlue, 8); Edit(Obj("e_half"), x+210, y+90, 50, 20, DoubleToString(g_halfRRuntime, 1));
    Label(Obj("l_windows"), x+12, y+120, "Window", clrLightSteelBlue, 8); Edit(Obj("e_allowed"), x+86, y+116, 132, 20, g_allowedWindowsRuntime);
    Label(Obj("l_no"), x+224, y+120, "NoTrade", clrLightSteelBlue, 8); Edit(Obj("e_no"), x+286, y+116, 88, 20, g_noTradeWindowsRuntime);
    Label(Obj("l_riskpct"), x+384, y+120, "Risk%", clrLightSteelBlue, 8); Edit(Obj("e_riskpct"), x+432, y+116, 58, 20, DoubleToString(g_riskPctRuntime, 2));
@@ -3435,7 +3476,7 @@ string RiskLotPreviewLine()
    AccountRiskMetrics(cap, daily, dd);
    double riskPct = EffAccountRiskPerTradePct();
    double riskMoney = cap * riskPct / 100.0;
-   bool requireHalf = (g_halfTpRuntime > 0);
+   bool requireHalf = (g_halfRRuntime > 0.0);
    int type = (g_lastSignalDir == "SELL") ? OP_SELL : OP_BUY;
    double entry = (type == OP_BUY) ? Ask : Bid;
    double sl = 0.0, tp1 = 0.0, tp2 = 0.0, tp3 = 0.0;
@@ -3545,8 +3586,10 @@ void ApplyDashboardInputs()
    g_lotRuntime = MathMax(0, StringToDouble(ObjectGetString(0, Obj("e_lot"), OBJPROP_TEXT)));
    g_maxSpreadRuntime = MathMax(0, (int)StringToInteger(ObjectGetString(0, Obj("e_spread"), OBJPROP_TEXT)));
    g_finalScaleRuntime = MathMax(10, MathMin(200, StringToDouble(ObjectGetString(0, Obj("e_scale"), OBJPROP_TEXT))));
-   g_targetTpRuntime = MathMax(0, MathMin(3, (int)StringToInteger(ObjectGetString(0, Obj("e_tp"), OBJPROP_TEXT))));
-   g_halfTpRuntime = MathMax(0, MathMin(3, (int)StringToInteger(ObjectGetString(0, Obj("e_half"), OBJPROP_TEXT))));
+   g_targetRRuntime = ParseDashboardR(ObjectGetString(0, Obj("e_tp"), OBJPROP_TEXT), g_targetRRuntime, 0.1, 10.0);
+   g_halfRRuntime = ParseDashboardR(ObjectGetString(0, Obj("e_half"), OBJPROP_TEXT), g_halfRRuntime, 0.0, 10.0);
+   g_targetTpRuntime = RToLegacyIndex(g_targetRRuntime);
+   g_halfTpRuntime = (g_halfRRuntime > 0.0 ? 1 : 0);
    g_allowedWindowsRuntime = ObjectGetString(0, Obj("e_allowed"), OBJPROP_TEXT);
    g_noTradeWindowsRuntime = ObjectGetString(0, Obj("e_no"), OBJPROP_TEXT);
    // Applying a basket window while currently inside it behaves like entering
@@ -3572,7 +3615,7 @@ void ApplyDashboardInputs()
    g_basketSessionEndTimeRuntime = "";
    DrawLatestSignalLevels("dashboard_apply");
    DrawHistoricalSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp=" + IntegerToString(g_targetTpRuntime) + " half=" + IntegerToString(g_halfTpRuntime) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp_r=" + DoubleToString(g_targetRRuntime,1) + " half_r=" + DoubleToString(g_halfRRuntime,1) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -3682,12 +3725,27 @@ void SegmentLevel(string key, datetime t0, datetime t1, double price, color clr,
    SegmentLevelWithPrefix(SignalLevelPrefix(), key, t0, t1, price, clr, style, label, 2);
 }
 
+bool HasOpenManagedTradeLevels()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderSymbol() != Symbol() || !IsOurMagic(OrderMagicNumber())) continue;
+      int ot = OrderType();
+      if(ot == OP_BUY || ot == OP_SELL || ot == OP_BUYLIMIT || ot == OP_SELLLIMIT || ot == OP_BUYSTOP || ot == OP_SELLSTOP)
+         return true;
+   }
+   return false;
+}
+
 void DrawLatestSignalLevels(string reason)
 {
    DeleteLatestSignalLevels();
    if(!InpShowLatestSignalLevels)
       return;
    if(g_basketModeRuntime)
+      return;
+   if(HasOpenManagedTradeLevels())
       return;
    if(g_lastSignalTime <= 0 || (g_lastSignalDir != "BUY" && g_lastSignalDir != "SELL") || g_lastSignalPrice <= 0.0)
       return;
@@ -3715,17 +3773,62 @@ void DrawLatestSignalLevels(string reason)
       }
       geom += " " + invDetail;
    }
-   double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
-   double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
+   double target = TpByR(type, entry, sl, g_targetRRuntime);
+   double half = TpByR(type, entry, sl, g_halfRRuntime);
    int seconds = MathMax(60, Period() * 60);
    datetime t0 = g_lastSignalTime;
    datetime t1 = t0 + MathMax(1, InpSignalLevelBars) * seconds;
    string mode = (g_invertMode ? " INV" : "") + " " + drawDir;
    SegmentLevel("ENTRY", t0, t1, entry, clrWhite, STYLE_DOT, "PRORENKO" + mode + " ENTRY");
    SegmentLevel("SL", t0, t1, sl, clrTomato, STYLE_SOLID, "PRORENKO" + mode + " SL");
-   SegmentLevel("TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PRORENKO" + mode + " TP" + IntegerToString(g_targetTpRuntime));
-   if(g_halfTpRuntime > 0 && half > 0.0)
-      SegmentLevel("HCBE", t0, t1, half, clrGold, STYLE_DASH, "PRORENKO" + mode + " HCBE TP" + IntegerToString(g_halfTpRuntime));
+   SegmentLevel("TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PRORENKO" + mode + " TP " + RLabel(g_targetRRuntime));
+   if(g_halfRRuntime > 0.0 && half > 0.0)
+      SegmentLevel("HCBE", t0, t1, half, clrGold, STYLE_DASH, "PRORENKO" + mode + " HCBE " + RLabel(g_halfRRuntime));
+}
+
+bool DrawHistoricalSignalLevelAtShift(int sh, int drawn, string prefix, int seconds, int barsForward)
+{
+   string dir, prevDir;
+   double raw = 0.0, prevRaw = 0.0;
+   int buf = -1, prevBuf = -1;
+   if(!TrendStateAt(sh, dir, raw, buf)) return false;
+   bool prevState = TrendStateAt(sh + 1, prevDir, prevRaw, prevBuf);
+   if(prevState && prevDir == dir) return false;
+
+   datetime t0 = Time[sh];
+   if(t0 <= 0) return false;
+   if(g_lastSignalTime > 0 && t0 == g_lastSignalTime)
+      return false;
+   double entry = SignalEntryPrice(dir, sh, raw);
+   int type = (dir == "BUY") ? OP_BUY : OP_SELL;
+   string drawDir = dir;
+   double sl = 0.0, tp1 = 0.0, tp2 = 0.0, tp3 = 0.0;
+   string geom = "";
+   bool oldFallbackFlag = g_lastGeometryUsedFallback;
+   bool ok = BuildGeometry(type, entry, entry, sh, sl, tp1, tp2, tp3, geom);
+   g_lastGeometryUsedFallback = oldFallbackFlag;
+   if(!ok) return false;
+   if(g_invertMode)
+   {
+      string invDetail = "";
+      if(!ApplyInvertGeometry(dir, entry, sl, tp1, tp2, tp3, drawDir, type, sl, tp1, tp2, tp3, invDetail))
+         return false;
+   }
+
+   double target = TpByR(type, entry, sl, g_targetRRuntime);
+   double half = TpByR(type, entry, sl, g_halfRRuntime);
+   datetime t1 = t0 + barsForward * seconds;
+   datetime nextT = NextHistoricalSignalTimeAfter(sh);
+   if(nextT > t0 && nextT < t1)
+      t1 = MathMax(t0 + 1, nextT - 1);
+   string base = IntegerToString((int)t0) + "_" + IntegerToString(drawn) + "_";
+   string mode = (g_invertMode ? " INV" : "") + " " + drawDir;
+   SegmentLevelWithPrefix(prefix, base + "ENTRY", t0, t1, entry, clrWhite, STYLE_DOT, "PR" + mode + " ENTRY", 1);
+   SegmentLevelWithPrefix(prefix, base + "SL", t0, t1, sl, clrTomato, STYLE_SOLID, "PR" + mode + " SL", 1);
+   SegmentLevelWithPrefix(prefix, base + "TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PR" + mode + " TP " + RLabel(g_targetRRuntime), 1);
+   if(g_halfRRuntime > 0.0 && half > 0.0)
+      SegmentLevelWithPrefix(prefix, base + "HCBE", t0, t1, half, clrGold, STYLE_DASH, "PR" + mode + " HCBE " + RLabel(g_halfRRuntime), 1);
+   return true;
 }
 
 void DrawHistoricalSignalLevels(string reason)
@@ -3744,47 +3847,26 @@ void DrawHistoricalSignalLevels(string reason)
    int drawn = 0;
    for(int sh = maxBars; sh >= 1; sh--)
    {
-      string dir, prevDir;
-      double raw = 0.0, prevRaw = 0.0;
-      int buf = -1, prevBuf = -1;
-      if(!TrendStateAt(sh, dir, raw, buf)) continue;
-      bool prevState = TrendStateAt(sh + 1, prevDir, prevRaw, prevBuf);
-      if(prevState && prevDir == dir) continue;
+      if(DrawHistoricalSignalLevelAtShift(sh, drawn, prefix, seconds, barsForward))
+         drawn++;
+   }
 
-      datetime t0 = Time[sh];
-      if(t0 <= 0) continue;
-      double entry = SignalEntryPrice(dir, sh, raw);
-      int type = (dir == "BUY") ? OP_BUY : OP_SELL;
-      string drawDir = dir;
-      double sl = 0.0, tp1 = 0.0, tp2 = 0.0, tp3 = 0.0;
-      string geom = "";
-      bool oldFallbackFlag = g_lastGeometryUsedFallback;
-      bool ok = BuildGeometry(type, entry, entry, sh, sl, tp1, tp2, tp3, geom);
-      g_lastGeometryUsedFallback = oldFallbackFlag;
-      if(!ok) continue;
-      if(g_invertMode)
+   // If the performance-limited recent window has no transition, draw the nearest older one.
+   // This keeps context visible without rendering the entire chart history.
+   if(drawn == 0)
+   {
+      int hardMax = Bars - 3;
+      for(int shOld = maxBars + 1; shOld <= hardMax; shOld++)
       {
-         string invDetail = "";
-         if(!ApplyInvertGeometry(dir, entry, sl, tp1, tp2, tp3, drawDir, type, sl, tp1, tp2, tp3, invDetail))
-            continue;
+         if(DrawHistoricalSignalLevelAtShift(shOld, drawn, prefix, seconds, barsForward))
+         {
+            Audit("historical_level_fallback_drawn", "", 0, "", 0, 0, 0, 0, "reason=" + reason + " shift=" + IntegerToString(shOld) + " max_recent=" + IntegerToString(maxBars), 0, "");
+            break;
+         }
       }
-
-      double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
-      double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
-      datetime t1 = t0 + barsForward * seconds;
-      datetime nextT = NextHistoricalSignalTimeAfter(sh);
-      if(nextT > t0 && nextT < t1)
-         t1 = MathMax(t0 + 1, nextT - 1);
-      string base = IntegerToString((int)t0) + "_" + IntegerToString(drawn) + "_";
-      string mode = (g_invertMode ? " INV" : "") + " " + drawDir;
-      SegmentLevelWithPrefix(prefix, base + "ENTRY", t0, t1, entry, clrWhite, STYLE_DOT, "PR" + mode + " ENTRY", 1);
-      SegmentLevelWithPrefix(prefix, base + "SL", t0, t1, sl, clrTomato, STYLE_SOLID, "PR" + mode + " SL", 1);
-      SegmentLevelWithPrefix(prefix, base + "TP", t0, t1, target, clrLimeGreen, STYLE_SOLID, "PR" + mode + " TP" + IntegerToString(g_targetTpRuntime), 1);
-      if(g_halfTpRuntime > 0 && half > 0.0)
-         SegmentLevelWithPrefix(prefix, base + "HCBE", t0, t1, half, clrGold, STYLE_DASH, "PR" + mode + " HCBE TP" + IntegerToString(g_halfTpRuntime), 1);
-      drawn++;
    }
 }
+
 datetime NextHistoricalSignalTimeAfter(int currentShift)
 {
    for(int sh = currentShift - 1; sh >= 1; sh--)
@@ -3803,6 +3885,8 @@ datetime NextHistoricalSignalTimeAfter(int currentShift)
 void DrawTradeLevels()
 {
    DeleteTradeLevels();
+   if(HasOpenManagedTradeLevels())
+      DeleteLatestSignalLevels();
    if(g_basketModeRuntime)
       return;
    int seconds = MathMax(60, Period() * 60);
@@ -3821,7 +3905,7 @@ void DrawTradeLevels()
       double half = TicketGV(t, "HTP", 0);
       int halfIdx = (int)TicketGV(t, "HIDX", 0);
       if(halfIdx > 0 && half > 0.0)
-         TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_HCBE", t0, t1, half, clrGold, STYLE_DASH, "LIVE HCBE TP" + IntegerToString(halfIdx));
+         TradeLevelSegment("PRORENKO_LVL_" + IntegerToString(t) + "_HCBE", t0, t1, half, clrGold, STYLE_DASH, "LIVE HCBE " + RLabel(TicketGV(t, "HBR", halfIdx)));
    }
 }
 
@@ -3830,12 +3914,19 @@ void DrawCalculatedFallbackLevels(int ticket, double sl, double tp1, double tp2,
    DeleteCalculatedFallbackLevels(ticket);
    datetime t0 = Time[0] > 0 ? Time[0] : TimeCurrent();
    datetime t1 = t0 + MathMax(1, InpSignalLevelBars) * MathMax(60, Period() * 60);
-   double target = TpByIndex(g_targetTpRuntime, tp1, tp2, tp3);
-   double half = TpByIndex(g_halfTpRuntime, tp1, tp2, tp3);
+   double entryForCalc = 0.0;
+   int typeForCalc = OP_BUY;
+   if(OrderSelect(ticket, SELECT_BY_TICKET))
+   {
+      entryForCalc = OrderOpenPrice();
+      typeForCalc = OrderType();
+   }
+   double target = (entryForCalc > 0.0 ? TpByR(typeForCalc, entryForCalc, sl, g_targetRRuntime) : TpByIndex(g_targetTpRuntime, tp1, tp2, tp3));
+   double half = (entryForCalc > 0.0 ? TpByR(typeForCalc, entryForCalc, sl, g_halfRRuntime) : TpByIndex(g_halfTpRuntime, tp1, tp2, tp3));
    CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_SL", t0, t1, sl, clrOrangeRed, STYLE_DASHDOT, "CALC SL");
-   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP", t0, t1, target, clrLimeGreen, STYLE_DASHDOT, "CALC TP" + IntegerToString(g_targetTpRuntime));
-   if(g_halfTpRuntime > 0 && half > 0.0)
-      CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_HCBE", t0, t1, half, clrGold, STYLE_DASHDOT, "CALC HCBE TP" + IntegerToString(g_halfTpRuntime));
+   CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_TP", t0, t1, target, clrLimeGreen, STYLE_DASHDOT, "CALC TP " + RLabel(g_targetRRuntime));
+   if(g_halfRRuntime > 0.0 && half > 0.0)
+      CalcSegment("PRORENKO_CALC_" + IntegerToString(ticket) + "_HCBE", t0, t1, half, clrGold, STYLE_DASHDOT, "CALC HCBE " + RLabel(g_halfRRuntime));
 }
 
 void CalcSegment(string name, datetime t0, datetime t1, double price, color clr, int style, string text)
@@ -3901,3 +3992,8 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
+
+
+
+
+

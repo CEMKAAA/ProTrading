@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class ProRenkoFileBridgeCTraderListener : Robot
     {
-        private const string Build = "2026-07-08.2350-de30-germany40-map";
+        private const string Build = "2026-07-10.exact-bridge-protection";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -77,6 +77,9 @@ namespace cAlgo.Robots
 
         [Parameter("Fail If Reverse Close Fails", DefaultValue = true)]
         public bool FailIfReverseCloseFails { get; set; }
+
+        [Parameter("Fail If Exact Protection Fails", DefaultValue = true)]
+        public bool FailIfExactProtectionFails { get; set; }
 
         [Parameter("Enable Close-Only Signals", DefaultValue = true)]
         public bool EnableCloseOnlySignals { get; set; }
@@ -377,6 +380,25 @@ namespace cAlgo.Robots
                 }
             }
 
+            if (result.Position != null)
+            {
+                if (!ApplyExactBridgeProtection(sig, result.Position, out var exactDetail))
+                {
+                    Audit("exact_protection_failed", sig, exactDetail);
+                    if (PermanentRejectGuard)
+                        _lastRejectedEventId = sig.EventId;
+                    if (FailIfExactProtectionFails)
+                    {
+                        var close = ClosePosition(result.Position);
+                        Audit(close.IsSuccessful ? "exact_protection_fail_closed" : "exact_protection_fail_close_failed", sig, exactDetail + $" close_error={close.Error}");
+                        return true;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(exactDetail))
+                {
+                    Audit("exact_protection_applied", sig, exactDetail);
+                }
+            }
             if (result.Position != null && ManageHalfCloseBe && sig.HalfTrigger > 0)
             {
                 var fill = result.Position.EntryPrice;
@@ -999,6 +1021,36 @@ namespace cAlgo.Robots
             if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
             return h * 60 + m;
         }
+        private bool ApplyExactBridgeProtection(BridgeSignal sig, Position position, out string detail)
+        {
+            detail = "";
+            if (position == null)
+            {
+                detail = "position_null";
+                return false;
+            }
+
+            var tick = Symbol.TickSize > 0 ? Symbol.TickSize : Symbol.PipSize;
+            var tolerance = Math.Max(tick * 0.5, 0.00000001);
+            var beforeSl = position.StopLoss;
+            var beforeTp = position.TakeProfit;
+            var slDiff = !beforeSl.HasValue || Math.Abs(beforeSl.Value - sig.Sl) > tolerance;
+            var tpDiff = !beforeTp.HasValue || Math.Abs(beforeTp.Value - sig.Tp) > tolerance;
+            if (!slDiff && !tpDiff)
+            {
+                detail = $"already_exact pos={position.Id} sl={FormatNullable(beforeSl)} tp={FormatNullable(beforeTp)} exact_sl={sig.Sl} exact_tp={sig.Tp}";
+                return true;
+            }
+
+            var mod = ModifyPosition(position, sig.Sl, sig.Tp);
+            detail = $"pos={position.Id} before_sl={FormatNullable(beforeSl)} before_tp={FormatNullable(beforeTp)} exact_sl={sig.Sl} exact_tp={sig.Tp} tick={tick} modify_error={mod.Error}";
+            return mod.IsSuccessful;
+        }
+
+        private static string FormatNullable(double? value)
+        {
+            return value.HasValue ? value.Value.ToString("G17", CultureInfo.InvariantCulture) : "null";
+        }
         private bool ValidateStops(BridgeSignal sig, double entry, out double stopLossPips, out double takeProfitPips, out string detail)
         {
             stopLossPips = 0;
@@ -1442,7 +1494,7 @@ namespace cAlgo.Robots
             if (sig.BridgeEntry <= 0 || sig.Sl <= 0 || sig.Tp <= 0) return false;
             var mapped = MapSymbol(sig.SourceSymbol);
             if (!SameText(mapped, SymbolName)) return false;
-            if (RebaseOnlyWhenSourceDiffers && SameText(sig.SourceSymbol, SymbolName)) return false;
+            if (RebaseOnlyWhenSourceDiffers && (SameText(sig.SourceSymbol, SymbolName) || SameEconomicSymbol(sig.SourceSymbol, SymbolName))) return false;
             return true;
         }
 
@@ -1724,6 +1776,16 @@ namespace cAlgo.Robots
             var v = (s ?? "").Trim().ToLowerInvariant();
             return v == "1" || v == "true" || v == "yes" || v == "on";
         }
+
+        private static string CanonicalSymbol(string value)
+        {
+            var s = new string((value ?? "").Trim().Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            if (s.EndsWith("M", StringComparison.OrdinalIgnoreCase) && s.Length > 1)
+                s = s.Substring(0, s.Length - 1);
+            return s;
+        }
+
+        private static bool SameEconomicSymbol(string a, string b) => CanonicalSymbol(a) == CanonicalSymbol(b);
 
         private static bool SameText(string a, string b) => string.Equals((a ?? "").Trim(), (b ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
         private static bool ContainsText(string haystack, string needle) => (haystack ?? "").IndexOf(needle ?? "", StringComparison.OrdinalIgnoreCase) >= 0;

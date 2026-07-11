@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#define ATOMIC_BRIDGE_BUILD "2026-07-10.risk-apply-publish"
+#define ATOMIC_BRIDGE_BUILD "2026-07-11.atomic-basket-mode"
 
 input string InpIndicatorName = "Atomic";
 input int    InpPollSeconds = 1;
@@ -68,6 +68,12 @@ input int    InpDirectMt4MaxSpreadPoints = 0;
 input double InpDirectMt4MaxSpreadToSlPct = 20.0; // Blocks MT4+MT5 file bridge when spread exceeds this % of entry-to-SL distance. 0=off.
 input double InpDirectMt4DailyProfitTarget = 0.0; // Chart-symbol realized AtomicBridge profit target for today. 0=off; blocks this chart's MT4 execution and MT5 CSV signals until next reset day.
 input double InpDirectMt4DailyLossTarget = 0.0; // Chart-symbol realized AtomicBridge loss limit for today. 0=off; blocks this chart's MT4 execution and MT5 CSV signals until next reset day.
+input bool   InpBasketModeDefault = false; // OFF=traditional SL/TP/HCBE. ON=daily basket target mode.
+input double InpBasketTargetPips = 500.0; // Daily favorable pip target used for basket position sizing.
+input double InpBasketTargetAccountPct = 0.30; // Account percent equivalent of BasketTargetPips.
+input double InpBasketMaxLossPips = 1000.0; // Daily adverse pip budget. Converted to money by target ratio.
+input double InpBasketCatastrophicSlPips = 2500.0; // Broker protection SL only, not normal strategy SL.
+input bool   InpBasketCloseOnReverse = true;
 input string InpDirectMt4AllowedTradeWindowsGmt = "";
 input string InpDirectMt4NoTradeWindowsGmt = "21:55-22:10";
 input string InpDirectMt4UtcEventBlockTimesGmt = ""; // HH:MM[,HH:MM...] UTC centers. Blocks new entries +/- InpDirectMt4UtcEventBlockRadiusMinutes; latest valid signal is retried after block.
@@ -210,6 +216,14 @@ int      g_directMt4MaxSpreadRuntime = 0;
 double   g_directMt4MaxSpreadToSlPctRuntime = 20.0;
 double   g_directMt4DailyProfitTargetRuntime = 0.0;
 double   g_directMt4DailyLossTargetRuntime = 0.0;
+bool     g_basketModeRuntime = false;
+double   g_basketTargetPipsRuntime = 0.0;
+double   g_basketTargetPctRuntime = 0.0;
+double   g_basketMaxLossPipsRuntime = 0.0;
+double   g_basketCatastrophicSlPipsRuntime = 0.0;
+bool     g_basketCloseOnReverseRuntime = true;
+bool     g_basketWindowStateInitialized = false;
+bool     g_basketWindowEligibleLast = false;
 int      g_directMt4TpIndexRuntime = 5;
 bool     g_atomicDirectRiskGeometryRuntime = false;
 double   g_atomicDirectTargetRRuntime = 2.0;
@@ -318,6 +332,16 @@ string _trim(string s)
    StringTrimLeft(s);
    StringTrimRight(s);
    return s;
+}
+
+double _parse_dashboard_double_1(string raw, double fallback)
+{
+   string s = _trim(raw);
+   StringReplace(s, ",", ".");
+   if(StringLen(s) <= 0)
+      return NormalizeDouble(fallback, 1);
+   double v = StrToDouble(s);
+   return NormalizeDouble(v, 1);
 }
 
 string _compact_bridge_response(string response)
@@ -674,6 +698,36 @@ string _direct_trade_window_status()
    if(_direct_in_utc_event_block_gmt())
       return "BLOCK utc_event";
    return "WINDOW OK";
+}
+
+bool _basket_window_eligible_now()
+{
+   return _direct_in_allowed_trade_window_gmt() && !_direct_in_no_trade_window_gmt() && !_direct_in_utc_event_block_gmt();
+}
+
+void _basket_window_bootstrap_try(string reason)
+{
+   bool eligible = _basket_window_eligible_now();
+   if(!g_basketWindowStateInitialized)
+   {
+      g_basketWindowEligibleLast = eligible;
+      g_basketWindowStateInitialized = true;
+      return;
+   }
+   bool entered = (eligible && !g_basketWindowEligibleLast);
+   g_basketWindowEligibleLast = eligible;
+   if(!entered || !g_basketModeRuntime || !g_atomicModeEnabledRuntime)
+      return;
+   string dir = g_lastObservedSignalDirection;
+   datetime st = g_lastObservedSignalTime;
+   if((dir != "BUY" && dir != "SELL") || st <= 0)
+   {
+      _direct_audit_write("basket_window_bootstrap_no_state", InpIndicatorName, "", 0, dir, 0.0, 0.0, 0.0, 0.0, reason, 0.0, "last_signal_missing");
+      return;
+   }
+   string eventId = Symbol() + "|" + _tf_to_string(Period()) + "|atomic_basket_window|" + dir + "|" + IntegerToString((int)st) + "|" + IntegerToString((int)TimeGMT());
+   _direct_audit_write("basket_window_bootstrap", InpIndicatorName, eventId, 0, dir, 0.0, g_lastObservedSignalValue, 0.0, 0.0, reason, 0.0, "last_signal_time=" + _fmt_time(st));
+   _direct_mt4_execute_basket(eventId, dir, InpIndicatorName + "|basket_window", st);
 }
 
 string _direct_spread_status(int spread)
@@ -1675,6 +1729,437 @@ bool _direct_daily_profit_loss_guard_reached(string &reason, string &detail)
    }
    return false;
 }
+
+string _basket_day_key()
+{
+   return TimeToString(_account_risk_gmt_day_start(), TIME_DATE);
+}
+
+string _basket_state_key(string field)
+{
+   return "AtomicBasket|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString(_direct_magic()) + "|" + _basket_day_key() + "|" + field;
+}
+
+bool _selected_order_is_basket_scoped()
+{
+   if(OrderSymbol() != Symbol()) return false;
+   if(!_direct_magic_owned(OrderMagicNumber())) return false;
+   int ticket = OrderTicket();
+   if(_direct_state_get("BASKET", ticket) > 0.5) return true;
+   string c = OrderComment();
+   return (StringFind(c, "AB|BASKET|") == 0 || StringFind(c, "AtomicBridge basket") == 0);
+}
+
+bool _has_open_basket_positions()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL && type != OP_BUYLIMIT && type != OP_SELLLIMIT && type != OP_BUYSTOP && type != OP_SELLSTOP) continue;
+      if(_selected_order_is_basket_scoped()) return true;
+   }
+   return false;
+}
+
+double _basket_scoped_pnl_today(bool includeFloating)
+{
+   datetime dayStartGmt = _account_risk_gmt_day_start();
+   int serverGmtOffset = (int)(TimeCurrent() - TimeGMT());
+   datetime dayStartServer = dayStartGmt + serverGmtOffset;
+   double pnl = 0.0;
+   for(int h = OrdersHistoryTotal() - 1; h >= 0; h--)
+   {
+      if(!OrderSelect(h, SELECT_BY_POS, MODE_HISTORY)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      if(OrderCloseTime() < dayStartServer) continue;
+      if(!_selected_order_is_basket_scoped()) continue;
+      pnl += OrderProfit() + OrderSwap() + OrderCommission();
+   }
+   if(includeFloating)
+   {
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         int type = OrderType();
+         if(type != OP_BUY && type != OP_SELL) continue;
+         if(!_selected_order_is_basket_scoped()) continue;
+         pnl += OrderProfit() + OrderSwap() + OrderCommission();
+      }
+   }
+   return pnl;
+}
+
+double _basket_base_capital()
+{
+   double cap = _account_risk_initial_balance();
+   if(cap <= 0.0) cap = AccountBalance();
+   if(cap <= 0.0) cap = AccountEquity();
+   return MathMax(0.0, cap);
+}
+
+double _basket_target_money_preview()
+{
+   return _basket_base_capital() * MathMax(0.0, g_basketTargetPctRuntime) / 100.0;
+}
+
+double _basket_max_loss_money_preview()
+{
+   double tpips = MathMax(0.0, g_basketTargetPipsRuntime);
+   if(tpips <= 0.0) return 0.0;
+   return _basket_target_money_preview() * MathMax(0.0, g_basketMaxLossPipsRuntime) / tpips;
+}
+
+string _basket_preview_line()
+{
+   return "Basket " + (g_basketModeRuntime ? "ON" : "OFF")
+      + " | target " + DoubleToString(g_basketTargetPipsRuntime, 1) + "p=" + DoubleToString(g_basketTargetPctRuntime, 2) + "% ($" + DoubleToString(_basket_target_money_preview(), 2) + ")"
+      + " | maxLoss " + DoubleToString(g_basketMaxLossPipsRuntime, 1) + "p ($" + DoubleToString(_basket_max_loss_money_preview(), 2) + ")"
+      + " | catSL " + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + "p"
+      + " | rev " + (g_basketCloseOnReverseRuntime ? "ON" : "OFF");
+}
+
+void _basket_set_day_done(string reason)
+{
+   GlobalVariableSet(_basket_state_key("DONE"), 1.0);
+   GlobalVariableSet(_basket_state_key("DONE_TS"), (double)TimeGMT());
+   GlobalVariableSet(_basket_state_key("DONE_REASON"), 0.0);
+}
+
+bool _basket_day_done(string &detail)
+{
+   if(!GlobalVariableCheck(_basket_state_key("DONE")) || GlobalVariableGet(_basket_state_key("DONE")) < 0.5)
+      return false;
+   detail = "basket_day_done day=" + _basket_day_key() + " pnl=" + DoubleToString(_basket_scoped_pnl_today(true), 2);
+   return true;
+}
+
+bool _basket_guard_reached(string &reason, string &detail)
+{
+   reason = "";
+   detail = "basket_guard_ok";
+   if(_basket_day_done(detail))
+   {
+      reason = "basket_blocked_day_done";
+      return true;
+   }
+   double pnl = _basket_scoped_pnl_today(true);
+   double target = _basket_target_money_preview();
+   double maxLoss = _basket_max_loss_money_preview();
+   if(target > 0.0 && pnl >= target - 0.0001)
+   {
+      reason = "basket_target_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(target, 2) + " target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2);
+      _basket_set_day_done(reason);
+      return true;
+   }
+   if(maxLoss > 0.0 && pnl <= -maxLoss + 0.0001)
+   {
+      reason = "basket_loss_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " max_loss_money=" + DoubleToString(maxLoss, 2) + " max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1);
+      _basket_set_day_done(reason);
+      return true;
+   }
+   detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(target, 2) + " max_loss_money=" + DoubleToString(maxLoss, 2);
+   return false;
+}
+
+bool _close_basket_scoped_positions(string eventName, string reason)
+{
+   bool allOk = true;
+   for(int pass = 0; pass < 3; pass++)
+   {
+      bool changed = false;
+      RefreshRates();
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!_selected_order_is_basket_scoped()) continue;
+         int type = OrderType();
+         int ticket = OrderTicket();
+         double lots = OrderLots();
+         double sl = OrderStopLoss();
+         double tp = OrderTakeProfit();
+         string dir = (type == OP_BUY ? "BUY" : (type == OP_SELL ? "SELL" : "PENDING"));
+         double pnlBefore = OrderProfit() + OrderSwap() + OrderCommission();
+         if(type == OP_BUY || type == OP_SELL)
+         {
+            double px = (type == OP_BUY) ? Bid : Ask;
+            if(OrderClose(ticket, lots, px, InpDirectMt4Slippage, clrOrange))
+            {
+               changed = true;
+               _direct_audit_write(eventName, OrderComment(), "", ticket, dir, lots, px, sl, tp, reason + " pass=" + IntegerToString(pass), pnlBefore, "basket_close");
+            }
+            else
+            {
+               allOk = false;
+               _direct_audit_write(eventName + "_failed", OrderComment(), "", ticket, dir, lots, px, sl, tp, reason + " err=" + IntegerToString(GetLastError()) + " pass=" + IntegerToString(pass), pnlBefore, "basket_close_failed");
+            }
+         }
+         else
+         {
+            if(OrderDelete(ticket))
+            {
+               changed = true;
+               _direct_audit_write(eventName, OrderComment(), "", ticket, dir, lots, OrderOpenPrice(), sl, tp, reason + " delete_pending pass=" + IntegerToString(pass), pnlBefore, "basket_delete");
+            }
+            else
+            {
+               allOk = false;
+               _direct_audit_write(eventName + "_failed", OrderComment(), "", ticket, dir, lots, OrderOpenPrice(), sl, tp, reason + " delete_err=" + IntegerToString(GetLastError()), pnlBefore, "basket_delete_failed");
+            }
+         }
+      }
+      if(!changed) break;
+   }
+   return allOk;
+}
+
+bool _manage_basket_daily_guards()
+{
+   bool hadOpen = _has_open_basket_positions();
+   if(!g_basketModeRuntime && !hadOpen) return false;
+   string reason = "", detail = "";
+   if(!_basket_guard_reached(reason, detail)) return false;
+   if(!hadOpen) return true;
+   bool ok = _close_basket_scoped_positions(reason, detail);
+   _direct_audit_write(reason, "AtomicBasket", "", 0, "", 0.0, 0.0, 0.0, 0.0, detail + " close_ok=" + (ok ? "true" : "false"), _basket_scoped_pnl_today(true), "basket_daily_guard");
+   return ok;
+}
+
+bool _close_opposite_basket(int newType, string eventId)
+{
+   bool ok = true;
+   for(int pass = 0; pass < 3; pass++)
+   {
+      bool changed = false;
+      RefreshRates();
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(!_selected_order_is_basket_scoped()) continue;
+         int type = OrderType();
+         if(type != OP_BUY && type != OP_SELL) continue;
+         if(type == newType) continue;
+         int ticket = OrderTicket();
+         double lots = OrderLots();
+         double px = (type == OP_BUY) ? Bid : Ask;
+         string dir = (type == OP_BUY) ? "BUY" : "SELL";
+         double pnlBefore = OrderProfit() + OrderSwap() + OrderCommission();
+         if(OrderClose(ticket, lots, px, InpDirectMt4Slippage, clrOrange))
+         {
+            changed = true;
+            _direct_audit_write("basket_reverse_close", OrderComment(), eventId, ticket, dir, lots, px, OrderStopLoss(), OrderTakeProfit(), "before_new_basket_signal pass=" + IntegerToString(pass), pnlBefore, "");
+         }
+         else
+         {
+            ok = false;
+            _direct_audit_write("basket_reverse_close_failed", OrderComment(), eventId, ticket, dir, lots, px, OrderStopLoss(), OrderTakeProfit(), "err=" + IntegerToString(GetLastError()) + " pass=" + IntegerToString(pass), pnlBefore, "");
+         }
+      }
+      if(!changed) break;
+   }
+   return ok;
+}
+
+bool _has_open_basket_direction(int type)
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(!_selected_order_is_basket_scoped()) continue;
+      if(OrderType() == type) return true;
+   }
+   return false;
+}
+
+bool _build_basket_geometry(int type, double entry, double &sl, string &detail)
+{
+   double pipSize = _symbol_pip_size();
+   double dist = MathMax(0.0, g_basketCatastrophicSlPipsRuntime) * pipSize;
+   if(entry <= 0.0 || dist <= 0.0)
+   {
+      detail = "basket_geometry_invalid entry=" + _fmt_price(entry) + " dist=" + DoubleToString(dist, Digits);
+      return false;
+   }
+   if(type == OP_BUY) sl = NormalizeDouble(entry - dist, Digits);
+   else if(type == OP_SELL) sl = NormalizeDouble(entry + dist, Digits);
+   else return false;
+   detail = "basket_cat_sl pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " pip_size=" + DoubleToString(pipSize, Digits + 2) + " sl=" + _fmt_price(sl);
+   return true;
+}
+
+double _resolve_basket_lot(int type, string &detail)
+{
+   double targetPips = MathMax(0.0, g_basketTargetPipsRuntime);
+   double targetMoney = _basket_target_money_preview();
+   double moneyPerLot = targetPips * _symbol_pip_size() * _value_per_price_unit_per_lot();
+   if(targetPips <= 0.0 || targetMoney <= 0.0 || moneyPerLot <= 0.0)
+   {
+      detail = "basket_lot_block invalid target_pips=" + DoubleToString(targetPips, 1) + " target_money=" + DoubleToString(targetMoney, 2) + " money_per_lot=" + DoubleToString(moneyPerLot, 2);
+      return 0.0;
+   }
+   double rawLot = targetMoney / moneyPerLot;
+   double lot = _direct_normalize_order_lot(rawLot, false);
+   double minLot = MarketInfo(Symbol(), MODE_MINLOT);
+   if(lot <= 0.0 || lot + 0.0000001 < minLot)
+   {
+      detail = "basket_lot_block lot_below_min raw=" + DoubleToString(rawLot, 4) + " min=" + DoubleToString(minLot, 4);
+      return 0.0;
+   }
+   ResetLastError();
+   double freeAfter = AccountFreeMarginCheck(Symbol(), type, lot);
+   int err = GetLastError();
+   if(freeAfter < 0.0 || err == 134)
+   {
+      detail = "basket_lot_block margin lot=" + DoubleToString(lot, 3) + " free_after=" + DoubleToString(freeAfter, 2) + " err=" + IntegerToString(err);
+      return 0.0;
+   }
+   detail = "basket_lot target_pips=" + DoubleToString(targetPips, 1)
+      + " target_pct=" + DoubleToString(g_basketTargetPctRuntime, 3)
+      + " target_money=" + DoubleToString(targetMoney, 2)
+      + " money_per_lot=" + DoubleToString(moneyPerLot, 2)
+      + " raw=" + DoubleToString(rawLot, 4)
+      + " lot=" + DoubleToString(lot, 3);
+   return lot;
+}
+
+bool _direct_mt4_execute_basket(string eventId, string direction, string source, datetime sourceSignalTime)
+{
+   string dir = _trim(direction);
+   if(dir != "BUY" && dir != "SELL") return false;
+   if(eventId == g_lastDirectMt4EventId) return true;
+   RefreshRates();
+   int type = (dir == "BUY") ? OP_BUY : OP_SELL;
+   double signalPx = (type == OP_BUY) ? Ask : Bid;
+   double sl = 0.0;
+   string geom = "";
+   if(!_build_basket_geometry(type, signalPx, sl, geom))
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_geometry", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, geom, 0.0, "basket_daily_target");
+      return false;
+   }
+   string dailyReason = "", dailyDetail = "";
+   if(_direct_daily_profit_loss_guard_reached(dailyReason, dailyDetail))
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_daily_profit_loss_target", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, dailyDetail, 0.0, dailyReason + " file_bridge_not_written=1");
+      return false;
+   }
+   if(!_direct_in_allowed_trade_window_gmt())
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_allowed_window", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, g_directMt4AllowedWindowsRuntime, 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   if(_direct_in_utc_event_block_gmt() || _direct_in_no_trade_window_gmt())
+   {
+      g_lastDirectMt4EventId = eventId;
+      string why = _direct_in_utc_event_block_gmt() ? "basket_skip_utc_event_block" : "basket_skip_no_trade_window";
+      _direct_audit_write(why, source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, _direct_utc_event_block_status(), 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
+   if(g_directMt4MaxSpreadRuntime > 0 && spread > g_directMt4MaxSpreadRuntime)
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_spread", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, "spread=" + IntegerToString(spread) + " max=" + IntegerToString(g_directMt4MaxSpreadRuntime), 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   string spreadSlDetail = "";
+   if(!_direct_spread_to_sl_allowed(dir, signalPx, sl, spreadSlDetail))
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_spread_sl_pct", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, spreadSlDetail, 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   if(!_gann_follow_allows(dir, eventId, source, signalPx, sl, 0.0))
+   {
+      g_lastDirectMt4EventId = eventId;
+      return false;
+   }
+   string guardReason = "", guardDetail = "";
+   if(_basket_guard_reached(guardReason, guardDetail))
+   {
+      _close_basket_scoped_positions(guardReason, guardDetail);
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_blocked_day_done", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, guardDetail, _basket_scoped_pnl_today(true), guardReason + " file_bridge_not_written=1");
+      return false;
+   }
+   if(g_basketCloseOnReverseRuntime && !_close_opposite_basket(type, eventId))
+   {
+      _direct_audit_write("basket_skip_reverse_close_failed", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, "opposite basket could not be closed", 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   if(_has_open_basket_direction(type))
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_same_direction", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, "existing same-direction basket position", 0.0, "file_bridge_not_written=1");
+      return false;
+   }
+   string bridgeSource = source + "|basket";
+   _file_bridge_write_basket_signal(eventId, dir, signalPx, sl, bridgeSource, sourceSignalTime);
+   if(!g_directMt4EnabledRuntime)
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_signal_received", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, "direct_disabled file_bridge_written=1 " + geom, 0.0, "basket_daily_target");
+      return true;
+   }
+   string lotDetail = "";
+   double lot = _resolve_basket_lot(type, lotDetail);
+   if(lot <= 0.0)
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_skip_lot", source, eventId, 0, dir, 0.0, signalPx, sl, 0.0, lotDetail, 0.0, "basket_daily_target");
+      return false;
+   }
+   if(!_direct_event_claim(eventId, source + "|basket"))
+   {
+      g_lastDirectMt4EventId = eventId;
+      _direct_audit_write("basket_duplicate_suppressed", source, eventId, 0, dir, lot, signalPx, sl, 0.0, "terminal_global_event_lock", 0.0, lotDetail);
+      return true;
+   }
+   RefreshRates();
+   double price = (type == OP_BUY) ? Ask : Bid;
+   if(!_build_basket_geometry(type, price, sl, geom))
+   {
+      _direct_audit_write("basket_skip_fill_geometry", source, eventId, 0, dir, lot, price, sl, 0.0, geom, 0.0, "basket_daily_target");
+      return false;
+   }
+   string comment = "AB|BASKET|" + _direct_instance_token(source);
+   if(StringLen(comment) > 31) comment = StringSubstr(comment, 0, 31);
+   ResetLastError();
+   int ticket = OrderSend(Symbol(), type, lot, NormalizeDouble(price, Digits), InpDirectMt4Slippage, NormalizeDouble(sl, Digits), 0.0, comment, _direct_magic(), 0, (type == OP_BUY ? clrLime : clrTomato));
+   g_lastDirectMt4EventId = eventId;
+   if(ticket > 0)
+   {
+      double fill = price;
+      double actualSl = sl;
+      if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         fill = OrderOpenPrice();
+         actualSl = OrderStopLoss();
+      }
+      _direct_state_set("BASKET", ticket, 1.0);
+      _direct_state_set("OWNER", ticket, Period());
+      _direct_state_set("VOWN", ticket, _direct_instance_hash(source));
+      _direct_state_set("BTPIPS", ticket, g_basketTargetPipsRuntime);
+      _direct_state_set("BTPCT", ticket, g_basketTargetPctRuntime);
+      _direct_state_set("BLPIPS", ticket, g_basketMaxLossPipsRuntime);
+      _direct_state_set("BCAT", ticket, g_basketCatastrophicSlPipsRuntime);
+      _direct_state_set("MFE", ticket, 0.0);
+      _direct_state_set("MAE", ticket, 0.0);
+      _direct_state_set("MFE_PX", ticket, fill);
+      _direct_state_set("MAE_PX", ticket, fill);
+      _direct_audit_write("basket_order_sent", source, eventId, ticket, dir, lot, fill, actualSl, 0.0, "order_send_ok " + geom + " " + lotDetail, OrderProfit(), "basket_daily_target");
+      return true;
+   }
+   int err = GetLastError();
+   _direct_audit_write("basket_order_failed", source, eventId, 0, dir, lot, price, sl, 0.0, "err=" + IntegerToString(err) + " " + geom + " " + lotDetail, 0.0, "basket_daily_target");
+   return false;
+}
 datetime _account_risk_gmt_day_start()
 {
    datetime now = TimeGMT();
@@ -2213,7 +2698,8 @@ void _file_bridge_write_header(int h)
 {
    FileWrite(h,
       "version", "written_gmt", "source_login", "source_symbol", "source_tf", "event_id", "source", "direction",
-      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct"
+      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct",
+      "trade_mode", "basket_target_pips", "basket_target_pct", "basket_max_loss_pips", "basket_catastrophic_sl_pips", "basket_close_on_reverse", "basket_close_session_end", "basket_session_end_time", "basket_day_key"
    );
 }
 
@@ -2238,7 +2724,16 @@ void _file_bridge_write_row(int h, string eventId, string dir, double bridgeEntr
       ATOMIC_BRIDGE_BUILD,
       DoubleToString(Bid, Digits),
       DoubleToString(Ask, Digits),
-      DoubleToString(_account_risk_per_trade_pct(), 3)
+      DoubleToString(_account_risk_per_trade_pct(), 3),
+      "traditional",
+      "0",
+      "0",
+      "0",
+      "0",
+      "false",
+      "false",
+      "",
+      ""
    );
 }
 
@@ -2312,6 +2807,72 @@ void _file_bridge_write_signal(string eventId, string dir, double bridgeEntry, d
    _file_bridge_write_row(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
    FileClose(a);
    Print("AtomicBridge file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+}
+
+void _file_bridge_write_basket_row(int h, string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
+{
+   RefreshRates();
+   FileWrite(h,
+      "1",
+      TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS),
+      IntegerToString(AccountNumber()),
+      Symbol(),
+      _tf_to_string(Period()),
+      eventId,
+      source,
+      dir,
+      _file_bridge_time(sourceSignalTime),
+      DoubleToString(bridgeEntry, Digits),
+      DoubleToString(catastrophicSl, Digits),
+      DoubleToString(0.0, Digits),
+      DoubleToString(0.0, Digits),
+      "basket_off",
+      ATOMIC_BRIDGE_BUILD,
+      DoubleToString(Bid, Digits),
+      DoubleToString(Ask, Digits),
+      DoubleToString(_account_risk_per_trade_pct(), 3),
+      "basket_daily_target",
+      DoubleToString(g_basketTargetPipsRuntime, 2),
+      DoubleToString(g_basketTargetPctRuntime, 4),
+      DoubleToString(g_basketMaxLossPipsRuntime, 2),
+      DoubleToString(g_basketCatastrophicSlPipsRuntime, 2),
+      g_basketCloseOnReverseRuntime ? "true" : "false",
+      "false",
+      "",
+      _basket_day_key()
+   );
+}
+
+void _file_bridge_write_basket_signal(string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
+{
+   if(!g_fileBridgeMt5EnabledRuntime)
+      return;
+   int latestFlags = _file_bridge_flags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("AtomicBridge basket file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
+      return;
+   }
+   _file_bridge_write_header(h);
+   _file_bridge_write_basket_row(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   FileClose(h);
+
+   string auditFile = InpFileBridgeAuditPrefix + _direct_audit_date(TimeGMT()) + ".csv";
+   int auditFlags = _file_bridge_flags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a == INVALID_HANDLE)
+   {
+      Print("AtomicBridge basket file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
+      return;
+   }
+   bool needHeader = (FileSize(a) == 0);
+   FileSeek(a, 0, SEEK_END);
+   if(needHeader)
+      _file_bridge_write_header(a);
+   _file_bridge_write_basket_row(a, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   FileClose(a);
+   Print("AtomicBridge basket file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
 }
 string _safe_file_token(string s)
 {
@@ -2443,6 +3004,8 @@ bool _direct_mt4_execute(string eventId, string direction, double sl, double tp,
    RefreshRates();
    double signalPx = (dir == "BUY") ? Ask : Bid;
    bool sourceIsRegime = _contains_ci(source, "AtomicRegime");
+   if(g_basketModeRuntime && !_contains_ci(source, "CloseOnly") && StringFind(eventId, "invalidate_close") < 0)
+      return _direct_mt4_execute_basket(eventId, dir, source, sourceSignalTime);
    string dailyGuardReason = "";
    string dailyGuardDetail = "";
    if(_direct_daily_profit_loss_guard_reached(dailyGuardReason, dailyGuardDetail))
@@ -5457,11 +6020,11 @@ void _draw_dashboard()
       _draw_collapsed_dashboard();
       return;
    }
-   _dash_rect("BG", 10, 18, 1010, 540, C'24,30,42', C'134,158,182');
-   _dash_rect("HULL", 17, 25, 996, 526, C'40,48,62', C'90,178,255');
+   _dash_rect("BG", 10, 18, 1010, 620, C'24,30,42', C'134,158,182');
+   _dash_rect("HULL", 17, 25, 996, 606, C'40,48,62', C'90,178,255');
    _dash_rect("DOCK_STRIPE", 18, 31, 994, 4, C'90,178,255', C'90,178,255');
-   _dash_rect("CORE", 26, 56, 664, 482, C'18,24,36', C'65,116,172');
-   _dash_rect("ACTION_PANEL", 704, 56, 286, 482, C'31,38,52', C'221,55,78');
+   _dash_rect("CORE", 26, 56, 664, 562, C'18,24,36', C'65,116,172');
+   _dash_rect("ACTION_PANEL", 704, 56, 286, 562, C'31,38,52', C'221,55,78');
    _dash_button("BTN_DASH_COLLAPSE", 966, 30, 24, 22, "^", C'90,178,255');
    _dash_label("TITLE", 34, 32, "AI STARSHIP ATOMIC BRIDGE", C'216,222,230', 12);
    _dash_label("SUB", 356, 34, Symbol() + " " + _tf_to_string(Period()) + " | " + ATOMIC_BRIDGE_BUILD, C'90,178,255', 8);
@@ -5583,6 +6146,19 @@ void _draw_dashboard()
       : "DAY LOSS TARGET OFF";
    _dash_progress("DAY_PROFIT", 38, 350, 620, 20, profitPct, profitText, C'38,101,176');
    _dash_progress("DAY_LOSS", 38, 376, 620, 20, lossPct, lossText, C'178,37,57');
+
+   _dash_label("BASKET_INFO", 38, 410, _basket_preview_line(), g_basketModeRuntime ? C'255,205,90' : C'184,196,210', 8);
+   _dash_button("BTN_BASKET_MODE", 38, 432, 82, 24, g_basketModeRuntime ? "BASKET" : "TRAD", g_basketModeRuntime ? C'221,145,45' : C'88,96,112');
+   _dash_button("BTN_BASKET_REV", 126, 432, 82, 24, g_basketCloseOnReverseRuntime ? "REV ON" : "REV OFF", g_basketCloseOnReverseRuntime ? C'32,150,96' : C'88,96,112');
+   _dash_button("BTN_BASKET_APPLY", 214, 432, 82, 24, "APPLY B", C'38,101,176');
+   _dash_label("L_BTPIPS", 38, 466, "Tgt pips", C'184,196,210', 8);
+   _dash_edit("EDIT_BASKET_TPIPS", 94, 460, 58, 22, DoubleToString(g_basketTargetPipsRuntime, 1));
+   _dash_label("L_BTPCT", 166, 466, "Tgt %", C'184,196,210', 8);
+   _dash_edit("EDIT_BASKET_TPCT", 212, 460, 46, 22, DoubleToString(g_basketTargetPctRuntime, 2));
+   _dash_label("L_BLPIPS", 274, 466, "Loss pips", C'184,196,210', 8);
+   _dash_edit("EDIT_BASKET_LPIPS", 340, 460, 58, 22, DoubleToString(g_basketMaxLossPipsRuntime, 1));
+   _dash_label("L_BCAT", 414, 466, "Cat SL", C'184,196,210', 8);
+   _dash_edit("EDIT_BASKET_CAT", 464, 460, 58, 22, DoubleToString(g_basketCatastrophicSlPipsRuntime, 1));
 }
 
 void _apply_dashboard()
@@ -5608,10 +6184,10 @@ void _apply_dashboard()
       g_directMt4UtcEventBlockTimesRuntime = _trim(ObjectGetString(0, obj, OBJPROP_TEXT));
    obj = DASH_PREFIX + "EDIT_RR";
    if(ObjectFind(0, obj) >= 0)
-      g_regimeRRRuntime = MathMax(0.1, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+      g_regimeRRRuntime = MathMax(0.1, _parse_dashboard_double_1(ObjectGetString(0, obj, OBJPROP_TEXT), g_regimeRRRuntime));
    obj = DASH_PREFIX + "EDIT_REGIME_HALFBE";
    if(ObjectFind(0, obj) >= 0)
-      g_regimeDirectMt4HalfBeRRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+      g_regimeDirectMt4HalfBeRRuntime = MathMax(0.0, _parse_dashboard_double_1(ObjectGetString(0, obj, OBJPROP_TEXT), g_regimeDirectMt4HalfBeRRuntime));
    obj = DASH_PREFIX + "EDIT_ATOMIC_HALFBE_TP";
    if(ObjectFind(0, obj) >= 0)
       g_directMt4HalfBeTpIndexRuntime = MathMax(1, MathMin(5, StrToInteger(ObjectGetString(0, obj, OBJPROP_TEXT))));
@@ -5636,6 +6212,18 @@ void _apply_dashboard()
    obj = DASH_PREFIX + "EDIT_DAILY_LOSS";
    if(ObjectFind(0, obj) >= 0)
       g_directMt4DailyLossTargetRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_BASKET_TPIPS";
+   if(ObjectFind(0, obj) >= 0)
+      g_basketTargetPipsRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_BASKET_TPCT";
+   if(ObjectFind(0, obj) >= 0)
+      g_basketTargetPctRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_BASKET_LPIPS";
+   if(ObjectFind(0, obj) >= 0)
+      g_basketMaxLossPipsRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
+   obj = DASH_PREFIX + "EDIT_BASKET_CAT";
+   if(ObjectFind(0, obj) >= 0)
+      g_basketCatastrophicSlPipsRuntime = MathMax(0.0, StrToDouble(ObjectGetString(0, obj, OBJPROP_TEXT)));
    g_regimeHistoryLevelsHash = "";
    string dashboardLog = "AtomicBridge dashboard applied direct=" + (g_directMt4EnabledRuntime ? "true" : "false")
       + " protrade_post=" + (g_proTradePostEnabledRuntime ? "true" : "false")
@@ -5661,6 +6249,11 @@ void _apply_dashboard()
       + " regime_pip_sl_pips=" + DoubleToString(g_regimePipSlPipsRuntime, 2)
       + " daily_profit_target=" + DoubleToString(g_directMt4DailyProfitTargetRuntime, 2)
       + " daily_loss_target=" + DoubleToString(g_directMt4DailyLossTargetRuntime, 2)
+      + " basket_mode=" + (g_basketModeRuntime ? "true" : "false")
+      + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1)
+      + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 3)
+      + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1)
+      + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1)
       + " atomic_invert=" + (g_atomicInvertTradeModeRuntime ? "true" : "false")
       + " atomic_invert_target=" + _atomic_invert_target_text()
       + " atomic_invert_hcbe_pct=" + IntegerToString(g_atomicInvertHcBeProgressPctRuntime)
@@ -7289,6 +7882,14 @@ int OnInit()
    g_directMt4MaxSpreadToSlPctRuntime = MathMax(0.0, InpDirectMt4MaxSpreadToSlPct);
    g_directMt4DailyProfitTargetRuntime = MathMax(0.0, InpDirectMt4DailyProfitTarget);
    g_directMt4DailyLossTargetRuntime = MathMax(0.0, InpDirectMt4DailyLossTarget);
+   g_basketModeRuntime = InpBasketModeDefault;
+   g_basketTargetPipsRuntime = MathMax(0.0, InpBasketTargetPips);
+   g_basketTargetPctRuntime = MathMax(0.0, InpBasketTargetAccountPct);
+   g_basketMaxLossPipsRuntime = MathMax(0.0, InpBasketMaxLossPips);
+   g_basketCatastrophicSlPipsRuntime = MathMax(0.0, InpBasketCatastrophicSlPips);
+   g_basketCloseOnReverseRuntime = InpBasketCloseOnReverse;
+   g_basketWindowEligibleLast = _basket_window_eligible_now();
+   g_basketWindowStateInitialized = true;
    g_directMt4TpIndexRuntime = MathMax(1, MathMin(5, InpDirectMt4TpIndex));
    g_atomicDirectRiskGeometryRuntime = InpAtomicDirectRiskGeometryEnabled;
    g_atomicDirectTargetRRuntime = _atomic_supported_target_r(InpAtomicDirectTargetR);
@@ -7365,6 +7966,11 @@ int OnInit()
       " regimeSignalOpenSlMode=", (g_regimeSignalOpenSlModeRuntime ? "true" : "false"),
       " dailyProfitTarget=", DoubleToString(g_directMt4DailyProfitTargetRuntime, 2),
       " dailyLossTarget=", DoubleToString(g_directMt4DailyLossTargetRuntime, 2),
+      " basketMode=", (g_basketModeRuntime ? "true" : "false"),
+      " basketTargetPips=", DoubleToString(g_basketTargetPipsRuntime, 1),
+      " basketTargetPct=", DoubleToString(g_basketTargetPctRuntime, 3),
+      " basketMaxLossPips=", DoubleToString(g_basketMaxLossPipsRuntime, 1),
+      " basketCatSlPips=", DoubleToString(g_basketCatastrophicSlPipsRuntime, 1),
       " atomicInvert=", (g_atomicInvertTradeModeRuntime ? "true" : "false"),
       " atomicInvertTarget=", _atomic_invert_target_text(),
       " atomicInvertHcbePct=", g_atomicInvertHcBeProgressPctRuntime,
@@ -7416,9 +8022,11 @@ void OnTimer()
 {
    _account_risk_enforce_breach();
    _account_risk_audit_write("snapshot", "periodic_health", true);
+   _manage_basket_daily_guards();
    _manage_direct_mt4_positions();
    _direct_event_block_pending_try("timer_utc_event_block_open_check");
    _regime_window_pending_try("timer_window_open_check");
+   _basket_window_bootstrap_try("timer_window_open_check");
    MaybePostRegisterHeartbeat("heartbeat");
    if(InpLogOnInit && StringLen(g_lastEventId) <= 0 && _timer_now() <= g_initialSetupRetryUntil)
    {
@@ -7434,9 +8042,11 @@ void OnTick()
 {
    _account_risk_enforce_breach();
    g_lastTickLocal = TimeLocal();
+   _manage_basket_daily_guards();
    _manage_direct_mt4_positions();
    _direct_event_block_pending_try("tick_utc_event_block_open_check");
    _regime_window_pending_try("tick_window_open_check");
+   _basket_window_bootstrap_try("tick_window_open_check");
    _draw_atomic_regime_trade_levels();
    _draw_dashboard();
 }
@@ -7646,6 +8256,27 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       _file_bridge_write_init_marker();
       Print("AtomicBridge risk apply republished bridge init risk_pct=", DoubleToString(_account_risk_per_trade_pct(), 3), " bridge_enabled=", g_fileBridgeMt5EnabledRuntime ? "true" : "false");
    }
+   else if(sparam == DASH_PREFIX + "BTN_BASKET_MODE")
+   {
+      _apply_dashboard();
+      g_basketModeRuntime = !g_basketModeRuntime;
+      Print("AtomicBridge dashboard basket mode=", (g_basketModeRuntime ? "ON" : "OFF"));
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_BASKET_REV")
+   {
+      g_basketCloseOnReverseRuntime = !g_basketCloseOnReverseRuntime;
+      Print("AtomicBridge dashboard basket reverse close=", (g_basketCloseOnReverseRuntime ? "ON" : "OFF"));
+      _draw_dashboard();
+      ChartRedraw(0);
+   }
+   else if(sparam == DASH_PREFIX + "BTN_BASKET_APPLY")
+   {
+      _apply_dashboard();
+      _file_bridge_write_init_marker();
+      Print("AtomicBridge dashboard basket apply ", _basket_preview_line());
+   }
    else if(sparam == DASH_PREFIX + "BTN_DAILY_PROFIT")
    {
       _apply_dashboard();
@@ -7770,3 +8401,4 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == DASH_PREFIX + "BTN_APPLY")
       _apply_dashboard();
 }
+

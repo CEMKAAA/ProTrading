@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-08.1745-safe-scope-defaults"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-11.atomic-basket-mode"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -22,11 +22,11 @@ input string InpBuiltInOilSymbolMapCsv = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIU
 input bool   InpRebaseMappedLevelsToLiveEntry = false; // OFF=use exact MT4 SL/TP/HCBE prices; ON=preserve distances from MT5 live entry.
 input bool   InpRebaseOnlyWhenSourceDiffers = true;
 input bool   InpRequireMappedSymbolEqualsChart = true;
-input string InpSourceTimeframeFilter = ""; // Empty=all, example M5
+input string InpSourceTimeframeFilter = ""; // Empty=chart timeframe when InpDefaultSourceTfToChartPeriod=true, otherwise all. Example: 5
 input bool   InpDefaultSourceTfToChartPeriod = true;
-input string InpSourceFilter = ""; // Empty=all, example AtomicRegime
+input string InpSourceFilter = ""; // Empty=all, example Atomic
 input bool   InpCloseReverse = true;
-input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close/manage M5 bridge positions.
+input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close M5 positions from the bridge.
 input bool   InpFailIfReverseCloseFails = true;
 input bool   InpCloseReverseBridgeCommentPositions = false;
 input long   InpMagic = 970102;
@@ -86,6 +86,15 @@ struct BridgeSignal
    double sourceBid;
    double sourceAsk;
    double riskPct;
+   string tradeMode;
+   double basketTargetPips;
+   double basketTargetPct;
+   double basketMaxLossPips;
+   double basketCatastrophicSlPips;
+   bool basketCloseOnReverse;
+   bool basketCloseSessionEnd;
+   string basketSessionEndTime;
+   string basketDayKey;
 };
 
 string Trim(string s)
@@ -566,7 +575,9 @@ bool ReadLatestSignal(BridgeSignal &sig, string &detail)
    if(fields[0] == "version")
    {
       offset = 17;
-      if(count > 17 && fields[17] == "risk_pct")
+      if(count > 18 && fields[18] == "trade_mode")
+         offset = 27;
+      else if(count > 17 && fields[17] == "risk_pct")
          offset = 18;
    }
    if(count < offset + 17)
@@ -594,10 +605,38 @@ bool ReadLatestSignal(BridgeSignal &sig, string &detail)
    sig.sourceBid = StringToDouble(Trim(fields[offset + 15]));
    sig.sourceAsk = StringToDouble(Trim(fields[offset + 16]));
    sig.riskPct = 0.0;
+   sig.tradeMode = "traditional";
+   sig.basketTargetPips = 0.0;
+   sig.basketTargetPct = 0.0;
+   sig.basketMaxLossPips = 0.0;
+   sig.basketCatastrophicSlPips = 0.0;
+   sig.basketCloseOnReverse = true;
+   sig.basketCloseSessionEnd = false;
+   sig.basketSessionEndTime = "";
+   sig.basketDayKey = "";
    if(count > offset + 17)
       sig.riskPct = StringToDouble(Trim(fields[offset + 17]));
+   if(count > offset + 18)
+      sig.tradeMode = Trim(fields[offset + 18]);
+   if(count > offset + 19)
+      sig.basketTargetPips = StringToDouble(Trim(fields[offset + 19]));
+   if(count > offset + 20)
+      sig.basketTargetPct = StringToDouble(Trim(fields[offset + 20]));
+   if(count > offset + 21)
+      sig.basketMaxLossPips = StringToDouble(Trim(fields[offset + 21]));
+   if(count > offset + 22)
+      sig.basketCatastrophicSlPips = StringToDouble(Trim(fields[offset + 22]));
+   if(count > offset + 23)
+      sig.basketCloseOnReverse = SameTextCi(Trim(fields[offset + 23]), "true") || Trim(fields[offset + 23]) == "1";
+   if(count > offset + 24)
+      sig.basketCloseSessionEnd = SameTextCi(Trim(fields[offset + 24]), "true") || Trim(fields[offset + 24]) == "1";
+   if(count > offset + 25)
+      sig.basketSessionEndTime = Trim(fields[offset + 25]);
+   if(count > offset + 26)
+      sig.basketDayKey = Trim(fields[offset + 26]);
+   if(sig.tradeMode == "") sig.tradeMode = "traditional";
    sig.valid = (sig.eventId != "" && sig.direction != 0);
-   detail = "read_ok fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3);
+   detail = "read_ok fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
    if(!sig.valid)
    {
       bool initMarker = (sig.source == "bridge_initiated" || dir == "INIT");
@@ -622,18 +661,6 @@ string ChartSourceTfString()
    return IntegerToString((int)_Period);
 }
 
-int SourceTfToInt(string tf);
-
-bool SameSourceTf(string lhs, string rhs)
-{
-   string a = Trim(lhs);
-   string b = Trim(rhs);
-   int ai = SourceTfToInt(a);
-   int bi = SourceTfToInt(b);
-   if(ai > 0 && bi > 0)
-      return ai == bi;
-   return SameTextCi(a, b);
-}
 bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
 {
    reason = "";
@@ -645,9 +672,9 @@ bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
    string effectiveTfFilter = Trim(InpSourceTimeframeFilter);
    if(effectiveTfFilter == "" && InpDefaultSourceTfToChartPeriod)
       effectiveTfFilter = ChartSourceTfString();
-   if(effectiveTfFilter != "" && !SameSourceTf(sig.sourceTf, effectiveTfFilter))
+   if(effectiveTfFilter != "" && sig.sourceTf != effectiveTfFilter)
    {
-      reason = "tf_filter source_tf=" + sig.sourceTf + " expected=" + effectiveTfFilter + " source_tf_i=" + IntegerToString(SourceTfToInt(sig.sourceTf)) + " expected_i=" + IntegerToString(SourceTfToInt(effectiveTfFilter));
+      reason = "tf_filter source_tf=" + sig.sourceTf + " expected=" + effectiveTfFilter;
       return false;
    }
    if(InpSourceFilter != "" && !ContainsCi(sig.source, InpSourceFilter))
@@ -746,6 +773,9 @@ bool PermanentOrderFailure(long retcode)
    return (retcode == 10016  // TRADE_RETCODE_INVALID_STOPS
         || retcode == 10014  // TRADE_RETCODE_INVALID_VOLUME
         || retcode == 10015  // TRADE_RETCODE_INVALID_PRICE
+        || retcode == 10018  // TRADE_RETCODE_MARKET_CLOSED; consume stale signal, do not retry spam.
+        || retcode == 10017  // TRADE_RETCODE_TRADE_DISABLED
+        || retcode == 10019  // TRADE_RETCODE_NO_MONEY
         || retcode == 10030);// TRADE_RETCODE_INVALID_FILL
 }
 
@@ -907,91 +937,6 @@ double ShrinkLotToMarginLimit(const int direction, double requestedLot, double e
           + " max_margin_pct=" + DoubleToString(maxMarginPct, 2);
    return best;
 }
-double ShrinkLotToFreeMargin(const int direction, double requestedLot, double entry, string &detail)
-{
-   detail = "";
-   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0)
-      step = 0.01;
-   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-   if(freeMargin <= 0.0)
-   {
-      detail = "free_margin_unavailable free_margin=" + DoubleToString(freeMargin, 2);
-      return 0.0;
-   }
-
-   ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double minMargin = 0.0;
-   if(!OrderCalcMargin(type, _Symbol, minVol, entry, minMargin))
-   {
-      detail = "free_margin_calc_failed_min_lot min_lot=" + DoubleToString(minVol, 2);
-      return 0.0;
-   }
-   double safeFree = freeMargin * 0.98;
-   if(minMargin > safeFree)
-   {
-      detail = "min_lot_exceeds_free_margin min_lot=" + DoubleToString(minVol, 2)
-             + " min_margin=" + DoubleToString(minMargin, 2)
-             + " free_margin=" + DoubleToString(freeMargin, 2);
-      return 0.0;
-   }
-
-   double reqMargin = 0.0;
-   if(OrderCalcMargin(type, _Symbol, requestedLot, entry, reqMargin) && reqMargin <= safeFree)
-   {
-      detail = "free_margin_retry_no_shrink requested_lot=" + DoubleToString(requestedLot, 2)
-             + " required_margin=" + DoubleToString(reqMargin, 2)
-             + " free_margin=" + DoubleToString(freeMargin, 2);
-      return requestedLot;
-   }
-
-   double lo = minVol;
-   double hi = requestedLot;
-   double best = minVol;
-   for(int i = 0; i < 32; i++)
-   {
-      double mid = (lo + hi) * 0.5;
-      double candidate = NormalizeVolumeDown(mid);
-      if(candidate < minVol)
-         candidate = minVol;
-      double margin = 0.0;
-      if(!OrderCalcMargin(type, _Symbol, candidate, entry, margin))
-      {
-         hi = mid;
-         continue;
-      }
-      if(margin <= safeFree)
-      {
-         best = candidate;
-         lo = mid;
-      }
-      else hi = mid;
-   }
-
-   best = NormalizeVolumeDown(best);
-   double bestMargin = 0.0;
-   while(best >= minVol && OrderCalcMargin(type, _Symbol, best, entry, bestMargin) && bestMargin > safeFree)
-      best = NormalizeDouble(best - step, VolumeDigits());
-
-   if(best < minVol)
-   {
-      detail = "free_margin_retry_no_valid_lot requested_lot=" + DoubleToString(requestedLot, 2)
-             + " free_margin=" + DoubleToString(freeMargin, 2);
-      return 0.0;
-   }
-   if(!OrderCalcMargin(type, _Symbol, best, entry, bestMargin))
-   {
-      detail = "free_margin_retry_final_margin_calc_failed requested_lot=" + DoubleToString(requestedLot, 2)
-             + " shrunk_lot=" + DoubleToString(best, 2);
-      return 0.0;
-   }
-   detail = "free_margin_retry requested_lot=" + DoubleToString(requestedLot, 2)
-          + " shrunk_lot=" + DoubleToString(best, 2)
-          + " required_margin=" + DoubleToString(bestMargin, 2)
-          + " free_margin=" + DoubleToString(freeMargin, 2);
-   return best;
-}
 double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, string &detail)
 {
    detail = "";
@@ -1025,6 +970,7 @@ double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, 
    detail = "ordercalc_profit_1lot=" + DoubleToString(profit, 2);
    return moneyPerLot;
 }
+
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -1130,44 +1076,24 @@ int SourceTfToInt(string tf)
    string clean = Trim(tf);
    if(clean == "")
       return 0;
-
-   string upper = clean;
-   StringToUpper(upper);
-   StringReplace(upper, "PERIOD_", "");
-   StringReplace(upper, "TIMEFRAME_", "");
-   StringReplace(upper, "MIN", "M");
-
-   if(upper == "M1" || upper == "1") return 1;
-   if(upper == "M2" || upper == "2") return 2;
-   if(upper == "M3" || upper == "3") return 3;
-   if(upper == "M4" || upper == "4") return 4;
-   if(upper == "M5" || upper == "5") return 5;
-   if(upper == "M6" || upper == "6") return 6;
-   if(upper == "M10" || upper == "10") return 10;
-   if(upper == "M12" || upper == "12") return 12;
-   if(upper == "M15" || upper == "15") return 15;
-   if(upper == "M20" || upper == "20") return 20;
-   if(upper == "M30" || upper == "30") return 30;
-   if(upper == "H1" || upper == "60") return 60;
-   if(upper == "H2" || upper == "120") return 120;
-   if(upper == "H3" || upper == "180") return 180;
-   if(upper == "H4" || upper == "240") return 240;
-   if(upper == "H6" || upper == "360") return 360;
-   if(upper == "H8" || upper == "480") return 480;
-   if(upper == "H12" || upper == "720") return 720;
-   if(upper == "D1" || upper == "1440") return 1440;
-   if(upper == "W1" || upper == "10080") return 10080;
-   if(upper == "MN1" || upper == "43200") return 43200;
-
    return (int)StringToInteger(clean);
 }
 
 int PositionSourceTfFromComment()
 {
    string comment = PositionGetString(POSITION_COMMENT);
-   if(StringFind(comment, "AFB|T") != 0)
+   long magic = (long)PositionGetInteger(POSITION_MAGIC);
+   int start = 0;
+   if(StringFind(comment, "AFB|T") == 0)
+      start = 5;
+   else if(StringFind(comment, "AFBB|T") == 0)
+      start = 6;
+   else if(magic == InpMagic && StringFind(comment, "GFB|T") == 0)   // legacy Atomic builds only
+      start = 5;
+   else if(magic == InpMagic && StringFind(comment, "GFBB|T") == 0)  // legacy Atomic basket builds only
+      start = 6;
+   else
       return 0;
-   int start = 5;
    int stop = StringFind(comment, "|", start);
    if(stop <= start)
       return 0;
@@ -1346,7 +1272,6 @@ ulong FindOpenedPositionTicket(const BridgeSignal &sig, string comment)
    }
    return bestTicket;
 }
-
 void RepairLegacyPositionMetadata(const BridgeSignal &sig)
 {
    int sourceTf = SourceTfToInt(sig.sourceTf);
@@ -1356,6 +1281,8 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
    string eventHash = IntegerToString((int)HashString(sig.eventId));
    string legacyComment = "AFB|" + eventHash;
    string modernComment = "AFB|T" + sig.sourceTf + "|" + eventHash;
+   string oldLegacyComment = "GFB|" + eventHash;
+   string oldModernComment = "GFB|T" + sig.sourceTf + "|" + eventHash;
    long expectedType = (sig.direction > 0 ? POSITION_TYPE_BUY : POSITION_TYPE_SELL);
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -1370,7 +1297,7 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
          continue;
       string comment = PositionGetString(POSITION_COMMENT);
-      if(comment != legacyComment && comment != modernComment)
+      if(comment != legacyComment && comment != modernComment && comment != oldLegacyComment && comment != oldModernComment)
          continue;
 
       string key = PosKey(ticket, "STF");
@@ -1464,6 +1391,8 @@ void ManageHalfCloseBe()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+      if(PositionIsBasketBridge())
          continue;
       int posTf = PositionSourceTf(ticket);
       if(managerTf > 0 && posTf > 0 && managerTf != posTf)
@@ -1607,9 +1536,506 @@ void ManageHalfCloseBe()
    }
 }
 
+bool IsBasketSignal(const BridgeSignal &sig)
+{
+   return SameTextCi(sig.tradeMode, "basket_daily_target");
+}
+
+double SymbolPipSize()
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   if(digits == 3 || digits == 5)
+      return point * 10.0;
+   return point;
+}
+
+bool BasketStopValid(const int direction, double entry, double sl, string &reason)
+{
+   reason = "";
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStop = MathMax(point * 2.0, (double)stopLevel * point);
+   if(entry <= 0.0 || sl <= 0.0)
+   {
+      reason = "missing_entry_or_catastrophic_sl";
+      return false;
+   }
+   if(direction > 0)
+   {
+      if(sl >= entry) { reason = "bad_buy_catastrophic_sl"; return false; }
+      if(entry - sl < minStop) { reason = "buy_cat_sl_stop_level min=" + DoubleToString(minStop, _Digits); return false; }
+   }
+   else
+   {
+      if(sl <= entry) { reason = "bad_sell_catastrophic_sl"; return false; }
+      if(sl - entry < minStop) { reason = "sell_cat_sl_stop_level min=" + DoubleToString(minStop, _Digits); return false; }
+   }
+   return true;
+}
+
+bool ShouldRebaseBasketLevels(const BridgeSignal &sig)
+{
+   if(!InpRebaseMappedLevelsToLiveEntry)
+      return false;
+   if(sig.bridgeEntry <= 0.0 || sig.sl <= 0.0)
+      return false;
+   string mapped = MapSymbol(sig.sourceSymbol);
+   if(!SameTextCi(mapped, _Symbol))
+      return false;
+   if(InpRebaseOnlyWhenSourceDiffers && SameTextCi(sig.sourceSymbol, _Symbol))
+      return false;
+   return true;
+}
+
+void RebaseBasketSlToLiveEntry(BridgeSignal &sig, double liveEntry, string &detail)
+{
+   detail = "";
+   double srcEntry = sig.bridgeEntry;
+   double oldSl = sig.sl;
+   if(srcEntry <= 0.0 || oldSl <= 0.0 || liveEntry <= 0.0)
+      return;
+   double risk = MathAbs(srcEntry - oldSl);
+   if(risk <= 0.0)
+      return;
+   sig.sl = sig.direction > 0 ? liveEntry - risk : liveEntry + risk;
+   sig.sl = NormalizeDouble(sig.sl, _Digits);
+   detail = "basket_rebase source_entry=" + DoubleToString(srcEntry, _Digits)
+          + " live_entry=" + DoubleToString(liveEntry, _Digits)
+          + " old_sl=" + DoubleToString(oldSl, _Digits)
+          + " new_sl=" + DoubleToString(sig.sl, _Digits)
+          + " risk_dist=" + DoubleToString(risk, _Digits)
+          + " mapped=" + MapSymbol(sig.sourceSymbol);
+}
+
+string BasketDayKeyNow()
+{
+   return DateKey(TimeGMT());
+}
+
+string BasketStateKey(string field)
+{
+   return "AtomicFileBridgeMT5|BASKET|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + _Symbol + "|" + IntegerToString((int)InpMagic) + "|" + BasketDayKeyNow() + "|" + field;
+}
+
+bool PositionIsBasketBridge()
+{
+   if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+      return false;
+   if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+      return false;
+   string comment = PositionGetString(POSITION_COMMENT);
+   return StringFind(comment, "AFBB|") == 0 || StringFind(comment, "GFBB|") == 0;
+}
+
+double BasketScopedPnlToday(bool includeFloating)
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeGMT(), dt);
+   dt.hour = 0; dt.min = 0; dt.sec = 0;
+   datetime dayStart = StructToTime(dt);
+   double pnl = 0.0;
+   if(HistorySelect(dayStart, TimeCurrent()))
+   {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total; i++)
+      {
+         ulong deal = HistoryDealGetTicket(i);
+         if(deal == 0) continue;
+         if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
+         if((long)HistoryDealGetInteger(deal, DEAL_MAGIC) != InpMagic) continue;
+         string comment = HistoryDealGetString(deal, DEAL_COMMENT);
+         if(StringFind(comment, "AFBB|") != 0 && StringFind(comment, "GFBB|") != 0) continue;
+         pnl += HistoryDealGetDouble(deal, DEAL_PROFIT) + HistoryDealGetDouble(deal, DEAL_SWAP) + HistoryDealGetDouble(deal, DEAL_COMMISSION);
+      }
+   }
+   if(includeFloating)
+   {
+      for(int j = PositionsTotal() - 1; j >= 0; j--)
+      {
+         ulong ticket = PositionGetTicket(j);
+         if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+         if(!PositionIsBasketBridge()) continue;
+         pnl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      }
+   }
+   return pnl;
+}
+
+double BasketTargetMoney(const BridgeSignal &sig)
+{
+   return AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, sig.basketTargetPct) / 100.0;
+}
+
+double BasketMaxLossMoney(const BridgeSignal &sig)
+{
+   if(sig.basketTargetPips <= 0.0)
+      return 0.0;
+   return BasketTargetMoney(sig) * MathMax(0.0, sig.basketMaxLossPips) / sig.basketTargetPips;
+}
+
+void BasketSetDayDone(string reason)
+{
+   GlobalVariableSet(BasketStateKey("DONE"), 1.0);
+   GlobalVariableSet(BasketStateKey("DONE_TS"), TimeGMT());
+   GlobalVariableSet(BasketStateKey("DONE_REASON_HASH"), (double)HashString(reason));
+}
+
+bool BasketDayDone(string &detail)
+{
+   if(!GlobalVariableCheck(BasketStateKey("DONE")) || GlobalVariableGet(BasketStateKey("DONE")) < 0.5)
+      return false;
+   detail = "basket_day_done day=" + BasketDayKeyNow() + " pnl=" + DoubleToString(BasketScopedPnlToday(true), 2);
+   return true;
+}
+
+int ParseHHMM(string s)
+{
+   s = Trim(s);
+   int colon = StringFind(s, ":");
+   if(colon < 0) return -1;
+   int h = (int)StringToInteger(StringSubstr(s, 0, colon));
+   int m = (int)StringToInteger(StringSubstr(s, colon + 1));
+   if(h < 0 || h > 23 || m < 0 || m > 59) return -1;
+   return h * 60 + m;
+}
+
+bool BasketSessionEndReached(const BridgeSignal &sig, string &detail)
+{
+   detail = "";
+   if(!sig.basketCloseSessionEnd) return false;
+   string raw = Trim(sig.basketSessionEndTime);
+   if(raw == "") return false;
+   int endMin = ParseHHMM(raw);
+   if(endMin < 0)
+   {
+      detail = "invalid_basket_session_end_time='" + raw + "'";
+      return false;
+   }
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int curMin = dt.hour * 60 + dt.min;
+   if(curMin >= endMin)
+   {
+      detail = "basket_session_end_reached now=" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + " end=" + raw;
+      return true;
+   }
+   return false;
+}
+
+bool BasketGuardReached(const BridgeSignal &sig, string &reason, string &detail)
+{
+   reason = "";
+   detail = "basket_guard_ok";
+   if(BasketDayDone(detail))
+   {
+      reason = "basket_blocked_day_done";
+      return true;
+   }
+   if(BasketSessionEndReached(sig, detail))
+   {
+      reason = "basket_session_close";
+      BasketSetDayDone(reason);
+      return true;
+   }
+   double pnl = BasketScopedPnlToday(true);
+   double target = BasketTargetMoney(sig);
+   double maxLoss = BasketMaxLossMoney(sig);
+   if(target > 0.0 && pnl >= target - 0.0001)
+   {
+      reason = "basket_target_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(target, 2) + " target_pips=" + DoubleToString(sig.basketTargetPips, 1) + " target_pct=" + DoubleToString(sig.basketTargetPct, 3);
+      BasketSetDayDone(reason);
+      return true;
+   }
+   if(maxLoss > 0.0 && pnl <= -maxLoss + 0.0001)
+   {
+      reason = "basket_loss_hit_close";
+      detail = "basket_pnl=" + DoubleToString(pnl, 2) + " max_loss_money=" + DoubleToString(maxLoss, 2) + " max_loss_pips=" + DoubleToString(sig.basketMaxLossPips, 1);
+      BasketSetDayDone(reason);
+      return true;
+   }
+   detail = "basket_pnl=" + DoubleToString(pnl, 2) + " target_money=" + DoubleToString(target, 2) + " max_loss_money=" + DoubleToString(maxLoss, 2);
+   return false;
+}
+
+bool CloseBasketPositions(const BridgeSignal &sig, string eventName, string reason)
+{
+   bool allOk = true;
+   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(!PositionIsBasketBridge()) continue;
+      int posTf = PositionSourceTf(ticket);
+      int sigTf = SourceTfToInt(sig.sourceTf);
+      if(!InpCloseReverseAcrossSourceTf && sigTf > 0 && posTf > 0 && sigTf != posTf) continue;
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      bool ok = trade.PositionClose(ticket);
+      long ret = trade.ResultRetcode();
+      if(ok)
+         Audit(eventName, sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret));
+      else
+      {
+         allOk = false;
+         Audit(eventName + "_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret) + " err=" + IntegerToString(GetLastError()));
+      }
+   }
+   return allOk;
+}
+
+bool CloseReverseBasketPositions(const BridgeSignal &sig, string &detail)
+{
+   if(!InpCloseReverse || !sig.basketCloseOnReverse)
+   {
+      detail = "basket_reverse_close_disabled";
+      return true;
+   }
+   int found = 0;
+   int closed = 0;
+   int failed = 0;
+   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(!PositionIsBasketBridge()) continue;
+      string scopeDetail = "";
+      if(!ReverseScopeAllows(ticket, sig, scopeDetail)) continue;
+      long type = PositionGetInteger(POSITION_TYPE);
+      bool opposite = (sig.direction > 0 && type == POSITION_TYPE_SELL) || (sig.direction < 0 && type == POSITION_TYPE_BUY);
+      if(!opposite) continue;
+      found++;
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(trade.PositionClose(ticket))
+      {
+         closed++;
+         Audit("basket_reverse_close", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2));
+      }
+      else
+      {
+         failed++;
+         Audit("basket_reverse_close_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " ret=" + IntegerToString((int)trade.ResultRetcode()) + " err=" + IntegerToString(GetLastError()));
+      }
+   }
+   detail = "basket_reverse_found=" + IntegerToString(found) + " closed=" + IntegerToString(closed) + " failed=" + IntegerToString(failed);
+   return failed == 0;
+}
+
+double ResolveBasketLot(const BridgeSignal &sig, double entry, string &detail)
+{
+   double pipSize = SymbolPipSize();
+   double targetMove = MathMax(0.0, sig.basketTargetPips) * pipSize;
+   if(targetMove <= 0.0 || sig.basketTargetPct <= 0.0)
+   {
+      detail = "basket_lot_invalid target_pips=" + DoubleToString(sig.basketTargetPips, 1) + " target_pct=" + DoubleToString(sig.basketTargetPct, 3);
+      return 0.0;
+   }
+   double targetPrice = sig.direction > 0 ? entry + targetMove : entry - targetMove;
+   string calcDetail = "";
+   double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, targetPrice, calcDetail);
+   double targetMoney = BasketTargetMoney(sig);
+   if(moneyPerLot <= 0.0 || targetMoney <= 0.0)
+   {
+      detail = "basket_lot_money_invalid target_money=" + DoubleToString(targetMoney, 2) + " money_per_lot=" + DoubleToString(moneyPerLot, 2) + " " + calcDetail;
+      return 0.0;
+   }
+   double rawLot = targetMoney / moneyPerLot;
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(InpBlockIfMinLotExceedsRisk && minVol > 0.0)
+   {
+      double minLotTargetMoney = minVol * moneyPerLot;
+      if(rawLot < minVol && minLotTargetMoney > targetMoney * 1.001)
+      {
+         detail = "basket_min_lot_exceeds_target_money target_money=" + DoubleToString(targetMoney, 2) + " money_per_lot=" + DoubleToString(moneyPerLot, 2) + " raw_lot=" + DoubleToString(rawLot, 4) + " min_lot=" + DoubleToString(minVol, VolumeDigits());
+         return 0.0;
+      }
+   }
+   double lot = NormalizeVolume(rawLot);
+   string marginDetail = "";
+   if(g_marginShrinkGuardRuntime && InpMaxMarginUsagePct > 0.0)
+   {
+      double requested = lot;
+      lot = ShrinkLotToMarginLimit(sig.direction, lot, entry, InpMaxMarginUsagePct, marginDetail);
+      if(lot <= 0.0)
+      {
+         detail = "basket_margin_block " + marginDetail;
+         return 0.0;
+      }
+      if(lot < requested - 0.0000001)
+         marginDetail = " " + marginDetail;
+   }
+   string catRiskDetail = "";
+   double catRiskPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, sig.sl, catRiskDetail);
+   double actualTarget = moneyPerLot * lot;
+   double actualCatRisk = catRiskPerLot * lot;
+   detail = "basket_lot risk_calc=ordercalcprofit target_pips=" + DoubleToString(sig.basketTargetPips, 1)
+      + " target_pct=" + DoubleToString(sig.basketTargetPct, 3)
+      + " target_money=" + DoubleToString(targetMoney, 2)
+      + " money_per_lot_at_target=" + DoubleToString(moneyPerLot, 2)
+      + " raw_lot=" + DoubleToString(rawLot, 4)
+      + " lot=" + DoubleToString(lot, VolumeDigits())
+      + " actual_target_money=" + DoubleToString(actualTarget, 2)
+      + " actual_risk_to_cat_sl=" + DoubleToString(actualCatRisk, 2)
+      + " cat_risk_per_lot=" + DoubleToString(catRiskPerLot, 2)
+      + " " + calcDetail + " " + catRiskDetail + marginDetail;
+   return lot;
+}
+
+void StoreBasketState(ulong ticket, const BridgeSignal &sig, double fill)
+{
+   if(ticket == 0) return;
+   int sourceTf = SourceTfToInt(sig.sourceTf);
+   if(sourceTf > 0)
+      GlobalVariableSet(PosKey(ticket, "STF"), sourceTf);
+   GlobalVariableSet(PosKey(ticket, "ENTRY"), fill);
+   GlobalVariableSet(PosKey(ticket, "BASKET"), 1.0);
+   GlobalVariableSet(PosKey(ticket, "BTPIPS"), sig.basketTargetPips);
+   GlobalVariableSet(PosKey(ticket, "BTPCT"), sig.basketTargetPct);
+   GlobalVariableSet(PosKey(ticket, "BLPIPS"), sig.basketMaxLossPips);
+   GlobalVariableSet(PosKey(ticket, "BCAT"), sig.basketCatastrophicSlPips);
+   GlobalVariableSet(PosKey(ticket, "BREV"), sig.basketCloseOnReverse ? 1.0 : 0.0);
+   GlobalVariableSet(PosKey(ticket, "BSESS"), sig.basketCloseSessionEnd ? 1.0 : 0.0);
+   GlobalVariableSet(PosKey(ticket, "BSESSMIN"), (double)ParseHHMM(sig.basketSessionEndTime));
+}
+
+bool BuildRuntimeBasketSignal(BridgeSignal &sig)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(!PositionIsBasketBridge()) continue;
+      sig.valid = true;
+      sig.version = "runtime";
+      sig.writtenGmt = TimeGMT();
+      sig.sourceLogin = 0;
+      sig.sourceSymbol = _Symbol;
+      sig.sourceTf = IntegerToString(PositionSourceTf(ticket));
+      sig.eventId = "basket_runtime_guard";
+      sig.source = "AtomicFileBridgeMT5|basket_runtime";
+      sig.direction = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
+      sig.signalTime = 0;
+      sig.bridgeEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+      sig.sl = PositionGetDouble(POSITION_SL);
+      sig.tp = 0.0;
+      sig.halfTrigger = 0.0;
+      sig.halfLabel = "basket_off";
+      sig.sourceBuild = ATOMIC_FILE_BRIDGE_MT5_BUILD;
+      sig.sourceBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      sig.sourceAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      sig.riskPct = InpRiskPerTradePct;
+      sig.tradeMode = "basket_daily_target";
+      sig.basketTargetPips = GlobalVariableCheck(PosKey(ticket, "BTPIPS")) ? GlobalVariableGet(PosKey(ticket, "BTPIPS")) : 0.0;
+      sig.basketTargetPct = GlobalVariableCheck(PosKey(ticket, "BTPCT")) ? GlobalVariableGet(PosKey(ticket, "BTPCT")) : InpRiskPerTradePct;
+      sig.basketMaxLossPips = GlobalVariableCheck(PosKey(ticket, "BLPIPS")) ? GlobalVariableGet(PosKey(ticket, "BLPIPS")) : 0.0;
+      sig.basketCatastrophicSlPips = GlobalVariableCheck(PosKey(ticket, "BCAT")) ? GlobalVariableGet(PosKey(ticket, "BCAT")) : 0.0;
+      sig.basketCloseOnReverse = GlobalVariableCheck(PosKey(ticket, "BREV")) ? (GlobalVariableGet(PosKey(ticket, "BREV")) > 0.5) : true;
+      sig.basketCloseSessionEnd = GlobalVariableCheck(PosKey(ticket, "BSESS")) ? (GlobalVariableGet(PosKey(ticket, "BSESS")) > 0.5) : false;
+      int sessMin = GlobalVariableCheck(PosKey(ticket, "BSESSMIN")) ? (int)MathRound(GlobalVariableGet(PosKey(ticket, "BSESSMIN"))) : -1;
+      sig.basketSessionEndTime = sessMin >= 0 ? StringFormat("%02d:%02d", sessMin / 60, sessMin % 60) : "";
+      sig.basketDayKey = BasketDayKeyNow();
+      return true;
+   }
+   return false;
+}
+
+void ManageBasketRuntimeGuards()
+{
+   BridgeSignal sig;
+   if(!BuildRuntimeBasketSignal(sig))
+      return;
+   string reason = "", detail = "";
+   if(!BasketGuardReached(sig, reason, detail))
+      return;
+   bool ok = CloseBasketPositions(sig, reason, detail);
+   Audit(reason, sig, detail + " close_ok=" + (ok ? "true" : "false") + " runtime_guard=1");
+}
+bool ExecuteBasketSignal(const BridgeSignal &sourceSig)
+{
+   BridgeSignal sig = sourceSig;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick))
+   {
+      Audit("basket_skip_no_tick", sig, "");
+      return false;
+   }
+   string reason = "";
+   if(!SpreadAllowed(reason))
+   {
+      Audit("basket_skip_spread", sig, reason);
+      return false;
+   }
+   double entry = sig.direction > 0 ? tick.ask : tick.bid;
+   string rebaseDetail = "";
+   if(ShouldRebaseBasketLevels(sig))
+   {
+      RebaseBasketSlToLiveEntry(sig, entry, rebaseDetail);
+      if(rebaseDetail != "") Audit("basket_levels_rebased", sig, rebaseDetail);
+   }
+   if(!BasketStopValid(sig.direction, entry, sig.sl, reason))
+   {
+      g_lastRejectedEventId = sig.eventId;
+      Audit("basket_skip_geometry", sig, reason + StopContext(entry, sig.sl, 0.0));
+      return false;
+   }
+   string guardReason = "", guardDetail = "";
+   if(BasketGuardReached(sig, guardReason, guardDetail))
+   {
+      CloseBasketPositions(sig, guardReason, guardDetail);
+      Audit("basket_skip_day_done", sig, guardReason + " " + guardDetail);
+      return true;
+   }
+   if(!ClaimEvent(sig.eventId))
+   {
+      Audit("basket_skip_duplicate", sig, "event_global_claim_exists");
+      return true;
+   }
+   string reverseDetail = "";
+   if(!CloseReverseBasketPositions(sig, reverseDetail))
+   {
+      ReleaseEvent(sig.eventId);
+      Audit("basket_skip_reverse_close_failed", sig, reverseDetail);
+      if(InpFailIfReverseCloseFails) return false;
+   }
+   string lotDetail = "";
+   double lot = ResolveBasketLot(sig, entry, lotDetail);
+   if(lot <= 0.0)
+   {
+      g_lastRejectedEventId = sig.eventId;
+      ReleaseEvent(sig.eventId);
+      Audit("basket_skip_lot", sig, lotDetail);
+      return false;
+   }
+   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetDeviationInPoints(InpDeviationPoints);
+   string comment = "AFBB|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
+   bool ok = sig.direction > 0
+      ? trade.Buy(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), 0.0, comment)
+      : trade.Sell(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), 0.0, comment);
+   if(!ok)
+   {
+      long ret = trade.ResultRetcode();
+      ReleaseEvent(sig.eventId);
+      if(PermanentOrderFailure(ret)) g_lastRejectedEventId = sig.eventId;
+      Audit("basket_order_failed", sig, "retcode=" + IntegerToString((int)ret) + StopContext(entry, sig.sl, 0.0) + " " + lotDetail);
+      return false;
+   }
+   ulong posTicket = FindOpenedPositionTicket(sig, comment);
+   StoreBasketState(posTicket, sig, entry);
+   Audit("basket_order_sent", sig, "lot=" + DoubleToString(lot, VolumeDigits()) + " live_entry=" + PriceStr(entry) + " pos=" + IntegerToString((int)posTicket) + (rebaseDetail != "" ? " rebase=" + rebaseDetail : "") + " " + lotDetail);
+   return true;
+}
 bool ExecuteSignal(const BridgeSignal &sourceSig)
 {
    BridgeSignal sig = sourceSig;
+   if(IsBasketSignal(sig))
+      return ExecuteBasketSignal(sig);
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick))
    {
@@ -1636,6 +2062,7 @@ bool ExecuteSignal(const BridgeSignal &sourceSig)
       Audit("skip_geometry", sig, reason + StopContext(entry, sig.sl, sig.tp));
       return false;
    }
+   RepairLegacyPositionMetadata(sig);
    if(!ClaimEvent(sig.eventId))
    {
       string duplicateReverseDetail = "";
@@ -1669,63 +2096,11 @@ bool ExecuteSignal(const BridgeSignal &sourceSig)
    if(!ok)
    {
       long ret = trade.ResultRetcode();
-      int err = GetLastError();
-      if(ret == 10019) // TRADE_RETCODE_NO_MONEY
-      {
-         string retryDetail = "";
-         double retryLot = ShrinkLotToFreeMargin(sig.direction, lot, entry, retryDetail);
-         if(retryLot > 0.0 && retryLot < lot - 0.000000001)
-         {
-            ResetLastError();
-            bool retryOk = sig.direction > 0
-               ? trade.Buy(retryLot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment)
-               : trade.Sell(retryLot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment);
-            long retryRet = trade.ResultRetcode();
-            int retryErr = GetLastError();
-            if(retryOk)
-            {
-               ulong retryDeal = trade.ResultDeal();
-               ulong retryOrder = trade.ResultOrder();
-               ulong retryPosTicket = FindOpenedPositionTicket(sig, comment);
-               StoreHalfState(retryPosTicket, sig, entry);
-               Audit("order_sent_no_money_retry", sig,
-                     "original_retcode=" + IntegerToString((int)ret)
-                     + " original_err=" + IntegerToString(err)
-                     + " original_lot=" + DoubleToString(lot, 2)
-                     + " retry_lot=" + DoubleToString(retryLot, 2)
-                     + " live_entry=" + PriceStr(entry)
-                     + " deal=" + IntegerToString((int)retryDeal)
-                     + " order=" + IntegerToString((int)retryOrder)
-                     + " pos=" + IntegerToString((int)retryPosTicket)
-                     + (rebaseDetail != "" ? " rebase=" + rebaseDetail : "")
-                     + " " + retryDetail + " " + lotDetail);
-               return true;
-            }
-            Audit("order_failed_no_money_retry", sig,
-                  "original_retcode=" + IntegerToString((int)ret)
-                  + " original_err=" + IntegerToString(err)
-                  + " retry_retcode=" + IntegerToString((int)retryRet)
-                  + " retry_err=" + IntegerToString(retryErr)
-                  + " original_lot=" + DoubleToString(lot, 2)
-                  + " retry_lot=" + DoubleToString(retryLot, 2)
-                  + StopContext(entry, sig.sl, sig.tp)
-                  + " " + retryDetail + " " + lotDetail);
-         }
-         else
-         {
-            Audit("order_failed_no_money_no_retry_lot", sig,
-                  "retcode=" + IntegerToString((int)ret)
-                  + " err=" + IntegerToString(err)
-                  + " original_lot=" + DoubleToString(lot, 2)
-                  + StopContext(entry, sig.sl, sig.tp)
-                  + " " + retryDetail + " " + lotDetail);
-         }
-      }
       ReleaseEvent(sig.eventId);
       string permanent = PermanentOrderFailure(ret) ? " permanent_reject=1" : " permanent_reject=0";
       if(PermanentOrderFailure(ret))
          g_lastRejectedEventId = sig.eventId;
-      Audit("order_failed", sig, "retcode=" + IntegerToString((int)ret) + " err=" + IntegerToString(err) + permanent + StopContext(entry, sig.sl, sig.tp) + " " + lotDetail);
+      Audit("order_failed", sig, "retcode=" + IntegerToString((int)ret) + permanent + StopContext(entry, sig.sl, sig.tp) + " " + lotDetail);
       return false;
    }
    ulong deal = trade.ResultDeal();
@@ -1809,6 +2184,7 @@ void PollBridge()
 {
    PollBridge("legacy");
 }
+
 void BaselineExistingSignalOnInit()
 {
    if(!InpIgnoreExistingSignalOnInit)
@@ -1833,7 +2209,6 @@ void BaselineExistingSignalOnInit()
    g_lastReadDetail = readDetail;
    Audit("init_baseline_existing_signal", sig, "seeded_last_seen=1 no_trade_on_attach " + readDetail);
 }
-
 int OnInit()
 {
       g_marginShrinkGuardRuntime = InpUseMarginShrinkGuard;
@@ -1886,12 +2261,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 }
 void OnTimer()
 {
+   ManageBasketRuntimeGuards();
    PollBridge("timer");
    DrawDashboard();
 }
 
 void OnTick()
 {
+   ManageBasketRuntimeGuards();
    ManageHalfCloseBe();
    uint now = GetTickCount();
    if(now - g_lastPollMs >= (uint)MathMax(100, InpPollMilliseconds))
