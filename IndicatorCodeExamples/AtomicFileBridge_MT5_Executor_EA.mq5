@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-11.atomic-basket-mode"
+#define ATOMIC_FILE_BRIDGE_MT5_BUILD "2026-07-14.ml-basket-lifecycle"
 
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = "AtomicFileBridge_Latest.csv";
@@ -1774,14 +1774,15 @@ bool CloseBasketPositions(const BridgeSignal &sig, string eventName, string reas
       if(!InpCloseReverseAcrossSourceTf && sigTf > 0 && posTf > 0 && sigTf != posTf) continue;
       double vol = PositionGetDouble(POSITION_VOLUME);
       double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      string lifecycle = BasketLifecycleDetail(ticket, eventName, pnl, false);
       bool ok = trade.PositionClose(ticket);
       long ret = trade.ResultRetcode();
       if(ok)
-         Audit(eventName, sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret));
+         Audit(eventName, sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret) + " " + lifecycle);
       else
       {
          allOk = false;
-         Audit(eventName + "_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret) + " err=" + IntegerToString(GetLastError()));
+         Audit(eventName + "_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " reason=" + reason + " ret=" + IntegerToString((int)ret) + " err=" + IntegerToString(GetLastError()) + " " + lifecycle);
       }
    }
    return allOk;
@@ -1812,15 +1813,16 @@ bool CloseReverseBasketPositions(const BridgeSignal &sig, string &detail)
       found++;
       double vol = PositionGetDouble(POSITION_VOLUME);
       double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      string lifecycle = BasketLifecycleDetail(ticket, "basket_reverse_close", pnl, true);
       if(trade.PositionClose(ticket))
       {
          closed++;
-         Audit("basket_reverse_close", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2));
+         Audit("basket_reverse_close", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " " + lifecycle);
       }
       else
       {
          failed++;
-         Audit("basket_reverse_close_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " ret=" + IntegerToString((int)trade.ResultRetcode()) + " err=" + IntegerToString(GetLastError()));
+         Audit("basket_reverse_close_failed", sig, "ticket=" + IntegerToString((int)ticket) + " vol=" + DoubleToString(vol, VolumeDigits()) + " pnl=" + DoubleToString(pnl, 2) + " ret=" + IntegerToString((int)trade.ResultRetcode()) + " err=" + IntegerToString(GetLastError()) + " " + lifecycle);
       }
    }
    detail = "basket_reverse_found=" + IntegerToString(found) + " closed=" + IntegerToString(closed) + " failed=" + IntegerToString(failed);
@@ -1902,6 +1904,150 @@ void StoreBasketState(ulong ticket, const BridgeSignal &sig, double fill)
    GlobalVariableSet(PosKey(ticket, "BREV"), sig.basketCloseOnReverse ? 1.0 : 0.0);
    GlobalVariableSet(PosKey(ticket, "BSESS"), sig.basketCloseSessionEnd ? 1.0 : 0.0);
    GlobalVariableSet(PosKey(ticket, "BSESSMIN"), (double)ParseHHMM(sig.basketSessionEndTime));
+   GlobalVariableSet(PosKey(ticket, "OPEN_TS"), (double)TimeCurrent());
+   GlobalVariableSet(PosKey(ticket, "DIR"), (double)sig.direction);
+   GlobalVariableSet(PosKey(ticket, "MFE_PIPS"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "MAE_PIPS"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "MFE_MONEY"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "MAE_MONEY"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "MFE_TS"), (double)TimeCurrent());
+   GlobalVariableSet(PosKey(ticket, "MAE_TS"), (double)TimeCurrent());
+   GlobalVariableSet(PosKey(ticket, "MFE_PX"), fill);
+   GlobalVariableSet(PosKey(ticket, "MAE_PX"), fill);
+   GlobalVariableSet(PosKey(ticket, "FTARGET_TS"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "FLOSS_TS"), 0.0);
+   GlobalVariableSet(PosKey(ticket, "REVCOUNT"), 0.0);
+   UpdateBasketLifecycleState(ticket);
+}
+
+
+string MlTimeText(datetime t)
+{
+   if(t <= 0) return "";
+   return TimeToString(t, TIME_DATE|TIME_SECONDS);
+}
+
+double BasketPosGv(ulong ticket, string kind, double fallback)
+{
+   string key = PosKey(ticket, kind);
+   return GlobalVariableCheck(key) ? GlobalVariableGet(key) : fallback;
+}
+
+void BasketPosSet(ulong ticket, string kind, double value)
+{
+   GlobalVariableSet(PosKey(ticket, kind), value);
+}
+
+void UpdateBasketLifecycleState(ulong ticket)
+{
+   if(ticket == 0 || !PositionSelectByTicket(ticket)) return;
+   if(!PositionIsBasketBridge()) return;
+   double pipSize = SymbolPipSize();
+   if(pipSize <= 0.0) return;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return;
+   long type = PositionGetInteger(POSITION_TYPE);
+   int dir = (type == POSITION_TYPE_BUY ? 1 : -1);
+   double entry = BasketPosGv(ticket, "ENTRY", PositionGetDouble(POSITION_PRICE_OPEN));
+   if(entry <= 0.0) return;
+   if(!GlobalVariableCheck(PosKey(ticket, "OPEN_TS")))
+      BasketPosSet(ticket, "OPEN_TS", (double)(datetime)PositionGetInteger(POSITION_TIME));
+   if(!GlobalVariableCheck(PosKey(ticket, "DIR")))
+      BasketPosSet(ticket, "DIR", (double)dir);
+   double closePx = dir > 0 ? tick.bid : tick.ask;
+   double signedPips = dir > 0 ? (closePx - entry) / pipSize : (entry - closePx) / pipSize;
+   double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   datetime now = TimeCurrent();
+
+   bool mfeInit = !GlobalVariableCheck(PosKey(ticket, "MFE_TS"));
+   bool maeInit = !GlobalVariableCheck(PosKey(ticket, "MAE_TS"));
+   double oldMfe = BasketPosGv(ticket, "MFE_PIPS", signedPips);
+   double oldMae = BasketPosGv(ticket, "MAE_PIPS", signedPips);
+   if(mfeInit || signedPips > oldMfe)
+   {
+      BasketPosSet(ticket, "MFE_PIPS", signedPips);
+      BasketPosSet(ticket, "MFE_MONEY", pnl);
+      BasketPosSet(ticket, "MFE_TS", (double)now);
+      BasketPosSet(ticket, "MFE_PX", closePx);
+   }
+   if(maeInit || signedPips < oldMae)
+   {
+      BasketPosSet(ticket, "MAE_PIPS", signedPips);
+      BasketPosSet(ticket, "MAE_MONEY", pnl);
+      BasketPosSet(ticket, "MAE_TS", (double)now);
+      BasketPosSet(ticket, "MAE_PX", closePx);
+   }
+   double targetPips = BasketPosGv(ticket, "BTPIPS", 0.0);
+   double lossPips = BasketPosGv(ticket, "BLPIPS", 0.0);
+   if(targetPips > 0.0 && BasketPosGv(ticket, "FTARGET_TS", 0.0) <= 0.0 && signedPips >= targetPips)
+      BasketPosSet(ticket, "FTARGET_TS", (double)now);
+   if(lossPips > 0.0 && BasketPosGv(ticket, "FLOSS_TS", 0.0) <= 0.0 && signedPips <= -lossPips)
+      BasketPosSet(ticket, "FLOSS_TS", (double)now);
+}
+
+void UpdateOpenBasketLifecycleStates()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(!PositionIsBasketBridge()) continue;
+      UpdateBasketLifecycleState(ticket);
+   }
+}
+
+string BasketLifecycleDetail(ulong ticket, string closeReason, double closePnl, bool countReverseSignal)
+{
+   if(ticket == 0) return "ml_state=missing_ticket";
+   UpdateBasketLifecycleState(ticket);
+   if(countReverseSignal)
+      BasketPosSet(ticket, "REVCOUNT", BasketPosGv(ticket, "REVCOUNT", 0.0) + 1.0);
+   double entry = BasketPosGv(ticket, "ENTRY", 0.0);
+   double dir = BasketPosGv(ticket, "DIR", 0.0);
+   double openTs = BasketPosGv(ticket, "OPEN_TS", 0.0);
+   double mfe = BasketPosGv(ticket, "MFE_PIPS", 0.0);
+   double mae = BasketPosGv(ticket, "MAE_PIPS", 0.0);
+   double mfeFav = MathMax(0.0, mfe);
+   double maeAdv = MathMax(0.0, -mae);
+   double mfeMoney = BasketPosGv(ticket, "MFE_MONEY", 0.0);
+   double maeMoney = BasketPosGv(ticket, "MAE_MONEY", 0.0);
+   double mfePx = BasketPosGv(ticket, "MFE_PX", 0.0);
+   double maePx = BasketPosGv(ticket, "MAE_PX", 0.0);
+   double targetPips = BasketPosGv(ticket, "BTPIPS", 0.0);
+   double lossPips = BasketPosGv(ticket, "BLPIPS", 0.0);
+   double catPips = BasketPosGv(ticket, "BCAT", 0.0);
+   double targetTs = BasketPosGv(ticket, "FTARGET_TS", 0.0);
+   double lossTs = BasketPosGv(ticket, "FLOSS_TS", 0.0);
+   string first = "none";
+   if(targetTs > 0.0 && lossTs > 0.0) first = (targetTs <= lossTs ? "target" : "loss");
+   else if(targetTs > 0.0) first = "target";
+   else if(lossTs > 0.0) first = "loss";
+   double duration = openTs > 0.0 ? MathMax(0.0, (double)(TimeCurrent() - (datetime)openTs)) : 0.0;
+   return "ml=1 close_reason=" + closeReason
+      + " ticket=" + IntegerToString((int)ticket)
+      + " entry=" + DoubleToString(entry, _Digits)
+      + " dir=" + DoubleToString(dir, 0)
+      + " duration_sec=" + DoubleToString(duration, 0)
+      + " close_pnl=" + DoubleToString(closePnl, 2)
+      + " target_pips=" + DoubleToString(targetPips, 2)
+      + " max_loss_pips=" + DoubleToString(lossPips, 2)
+      + " cat_sl_pips=" + DoubleToString(catPips, 2)
+      + " mfe_pips=" + DoubleToString(mfeFav, 2)
+      + " mae_pips=" + DoubleToString(maeAdv, 2)
+      + " mfe_signed_pips=" + DoubleToString(mfe, 2)
+      + " mae_signed_pips=" + DoubleToString(mae, 2)
+      + " mfe_money=" + DoubleToString(mfeMoney, 2)
+      + " mae_money=" + DoubleToString(maeMoney, 2)
+      + " mfe_price=" + DoubleToString(mfePx, _Digits)
+      + " mae_price=" + DoubleToString(maePx, _Digits)
+      + " first_target_hit=" + (targetTs > 0.0 ? "1" : "0")
+      + " first_loss_hit=" + (lossTs > 0.0 ? "1" : "0")
+      + " first_hit=" + first
+      + " target_hit_time=" + MlTimeText((datetime)targetTs)
+      + " loss_hit_time=" + MlTimeText((datetime)lossTs)
+      + " mfe_time=" + MlTimeText((datetime)BasketPosGv(ticket, "MFE_TS", 0.0))
+      + " mae_time=" + MlTimeText((datetime)BasketPosGv(ticket, "MAE_TS", 0.0))
+      + " reverse_signal_count=" + DoubleToString(BasketPosGv(ticket, "REVCOUNT", 0.0), 0);
 }
 
 bool BuildRuntimeBasketSignal(BridgeSignal &sig)
@@ -1947,6 +2093,7 @@ bool BuildRuntimeBasketSignal(BridgeSignal &sig)
 
 void ManageBasketRuntimeGuards()
 {
+   UpdateOpenBasketLifecycleStates();
    BridgeSignal sig;
    if(!BuildRuntimeBasketSignal(sig))
       return;

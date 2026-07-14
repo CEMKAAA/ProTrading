@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class AtomicFileBridgeCTraderListener : Robot
     {
-        private const string Build = "2026-07-11.atomic-basket-mode";
+        private const string Build = "2026-07-14.ml-basket-lifecycle";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -623,8 +623,25 @@ namespace cAlgo.Robots
                     MaxLossMoney = maxLossMoney,
                     CloseSessionEnd = sig.BasketCloseSessionEnd,
                     SessionEndMinutes = sessionEndMin,
-                    LastNetProfit = result.Position.NetProfit
+                    LastNetProfit = result.Position.NetProfit,
+                    OpenTime = result.Position.EntryTime,
+                    EntryPrice = result.Position.EntryPrice,
+                    Direction = result.Position.TradeType == TradeType.Buy ? 1 : -1,
+                    MfePips = 0.0,
+                    MaePips = 0.0,
+                    MfeMoney = result.Position.NetProfit,
+                    MaeMoney = result.Position.NetProfit,
+                    MfeTime = result.Position.EntryTime,
+                    MaeTime = result.Position.EntryTime,
+                    MfePrice = result.Position.EntryPrice,
+                    MaePrice = result.Position.EntryPrice,
+                    FirstTargetHitTime = DateTime.MinValue,
+                    FirstLossHitTime = DateTime.MinValue,
+                    ReverseSignalCount = 0
                 };
+                var seeded = _basketStates[result.Position.Id];
+                UpdateBasketLifecycleState(result.Position, ref seeded);
+                _basketStates[result.Position.Id] = seeded;
             }
 
             Audit("basket_order_sent", sig, orderAuditPrefix + $"position={result.Position?.Id} volume={result.Position?.VolumeInUnits ?? finalVolume} live_entry={entry} fill_entry={result.Position?.EntryPrice ?? entry} cat_sl_pips={slPips:F2} tp=0 hcbe=0 day={dayKey} target_money={targetMoney:F2} max_loss_money={maxLossMoney:F2} actual_risk_to_cat_sl={estimatedCatRisk:F2} {lotDetail}");
@@ -773,19 +790,20 @@ namespace cAlgo.Robots
             {
                 found++;
                 var pnl = p.NetProfit;
+                var lifecycle = BasketLifecycleSnapshot(p, "basket_reverse_close", pnl, true);
                 var res = ClosePosition(p);
                 if (!res.IsSuccessful)
                 {
                     failed++;
                     detail += $" close_failed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}";
-                    Audit("basket_reverse_close_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}");
+                    Audit("basket_reverse_close_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
                     continue;
                 }
                 AddBasketClosedPnl(BasketStateKeyFromPosition(p), pnl);
                 _basketStates.Remove(p.Id);
                 closed++;
-                detail += $" closed_reverse pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2}";
-                Audit("basket_reverse_close", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2}");
+                detail += $" closed_reverse pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}";
+                Audit("basket_reverse_close", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
             }
 
             detail = $"basket_reverse_found={found} closed={closed} failed={failed} scope={(CloseReverseAcrossSourceTf ? "all_source_tf" : "same_source_tf")}" + detail;
@@ -801,19 +819,20 @@ namespace cAlgo.Robots
             foreach (var p in positions)
             {
                 var pnl = p.NetProfit;
+                var lifecycle = BasketLifecycleSnapshot(p, auditEvent, pnl, false);
                 var res = ClosePosition(p);
                 if (!res.IsSuccessful)
                 {
                     failed++;
                     detail += $" close_failed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}";
-                    Audit(auditEvent + "_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}");
+                    Audit(auditEvent + "_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
                     continue;
                 }
                 AddBasketClosedPnl(BasketStateKeyFromPosition(p), pnl);
                 _basketStates.Remove(p.Id);
                 closed++;
-                detail += $" closed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2}";
-                Audit(auditEvent, sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2}");
+                detail += $" closed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}";
+                Audit(auditEvent, sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
             }
             detail = $"basket_close_found={positions.Length} closed={closed} failed={failed}" + detail;
             return failed == 0;
@@ -829,7 +848,7 @@ namespace cAlgo.Robots
             {
                 if (_basketStates.TryGetValue(p.Id, out var st))
                 {
-                    st.LastNetProfit = p.NetProfit;
+                    UpdateBasketLifecycleState(p, ref st);
                     _basketStates[p.Id] = st;
                 }
             }
@@ -876,16 +895,17 @@ namespace cAlgo.Robots
             foreach (var p in positions)
             {
                 var pnl = p.NetProfit;
+                var lifecycle = BasketLifecycleSnapshot(p, auditEvent, pnl, false);
                 var res = ClosePosition(p);
                 if (res.IsSuccessful)
                 {
                     AddBasketClosedPnl(key, pnl);
                     _basketStates.Remove(p.Id);
-                    AuditRaw(auditEvent, baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2}");
+                    AuditRaw(auditEvent, baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
                 }
                 else
                 {
-                    AuditRaw(auditEvent + "_failed", baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}");
+                    AuditRaw(auditEvent + "_failed", baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
                 }
             }
         }
@@ -909,8 +929,23 @@ namespace cAlgo.Robots
                     MaxLossMoney = ParseCommentDouble(p.Comment, "blmoney"),
                     CloseSessionEnd = ParseCommentDouble(p.Comment, "bsess") > 0,
                     SessionEndMinutes = (int)ParseCommentDouble(p.Comment, "bsessmin"),
-                    LastNetProfit = p.NetProfit
+                    LastNetProfit = p.NetProfit,
+                    OpenTime = p.EntryTime,
+                    EntryPrice = p.EntryPrice,
+                    Direction = p.TradeType == TradeType.Buy ? 1 : -1,
+                    MfePips = 0.0,
+                    MaePips = 0.0,
+                    MfeMoney = p.NetProfit,
+                    MaeMoney = p.NetProfit,
+                    MfeTime = p.EntryTime,
+                    MaeTime = p.EntryTime,
+                    MfePrice = p.EntryPrice,
+                    MaePrice = p.EntryPrice,
+                    FirstTargetHitTime = DateTime.MinValue,
+                    FirstLossHitTime = DateTime.MinValue,
+                    ReverseSignalCount = 0
                 };
+                UpdateBasketLifecycleState(p, ref st);
                 if (string.IsNullOrWhiteSpace(st.DayKey)) st.DayKey = Server.Time.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
                 _basketStates[p.Id] = st;
                 AuditRaw("basket_state_repaired", $"reason={reason} pos={p.Id} label={p.Label} key={BasketStateKeyFromPosition(p)} pnl={p.NetProfit:F2}");
@@ -925,9 +960,94 @@ namespace cAlgo.Robots
                     continue;
                 var key = BasketStateKeyFromState(kv.Value);
                 AddBasketClosedPnl(key, kv.Value.LastNetProfit);
-                AuditRaw("basket_position_disappeared", $"pos={kv.Key} key={key} last_net_profit={kv.Value.LastNetProfit:F2}");
+                AuditRaw("basket_position_disappeared", $"pos={kv.Key} key={key} last_net_profit={kv.Value.LastNetProfit:F2} {BasketLifecycleDetail(kv.Value, "position_disappeared", kv.Value.LastNetProfit)}");
                 _basketStates.Remove(kv.Key);
             }
+        }
+
+
+        private void UpdateBasketLifecycleState(Position p, ref BasketPositionState st)
+        {
+            if (p == null) return;
+            if (st.OpenTime == DateTime.MinValue) st.OpenTime = p.EntryTime;
+            if (st.EntryPrice <= 0) st.EntryPrice = p.EntryPrice;
+            if (st.Direction == 0) st.Direction = p.TradeType == TradeType.Buy ? 1 : -1;
+            var pipSize = Symbol.PipSize > 0 ? Symbol.PipSize : Symbol.TickSize;
+            if (pipSize <= 0 || st.EntryPrice <= 0) return;
+            var closePx = p.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+            var signedPips = st.Direction > 0 ? (closePx - st.EntryPrice) / pipSize : (st.EntryPrice - closePx) / pipSize;
+            var now = DateTime.UtcNow;
+            if (st.MfeTime == DateTime.MinValue || signedPips > st.MfePips)
+            {
+                st.MfePips = signedPips;
+                st.MfeMoney = p.NetProfit;
+                st.MfeTime = now;
+                st.MfePrice = closePx;
+            }
+            if (st.MaeTime == DateTime.MinValue || signedPips < st.MaePips)
+            {
+                st.MaePips = signedPips;
+                st.MaeMoney = p.NetProfit;
+                st.MaeTime = now;
+                st.MaePrice = closePx;
+            }
+            if (st.TargetPips > 0 && st.FirstTargetHitTime == DateTime.MinValue && signedPips >= st.TargetPips)
+                st.FirstTargetHitTime = now;
+            if (st.MaxLossPips > 0 && st.FirstLossHitTime == DateTime.MinValue && signedPips <= -st.MaxLossPips)
+                st.FirstLossHitTime = now;
+            st.LastNetProfit = p.NetProfit;
+        }
+
+        private string BasketLifecycleSnapshot(Position p, string closeReason, double closePnl, bool countReverseSignal)
+        {
+            if (p == null) return "ml_state=missing_position";
+            if (!_basketStates.TryGetValue(p.Id, out var st))
+            {
+                st = new BasketPositionState
+                {
+                    EventId = ParseCommentString(p.Comment, "event"),
+                    SourceTf = PositionSourceTf(p),
+                    DayKey = ParseCommentString(p.Comment, "day"),
+                    TargetPips = ParseCommentDouble(p.Comment, "btp"),
+                    TargetPct = ParseCommentDouble(p.Comment, "bpct"),
+                    MaxLossPips = ParseCommentDouble(p.Comment, "blp"),
+                    CatastrophicSlPips = ParseCommentDouble(p.Comment, "bcat"),
+                    TargetMoney = ParseCommentDouble(p.Comment, "btmoney"),
+                    MaxLossMoney = ParseCommentDouble(p.Comment, "blmoney"),
+                    OpenTime = p.EntryTime,
+                    EntryPrice = p.EntryPrice,
+                    Direction = p.TradeType == TradeType.Buy ? 1 : -1,
+                    MfeTime = DateTime.MinValue,
+                    MaeTime = DateTime.MinValue,
+                    FirstTargetHitTime = DateTime.MinValue,
+                    FirstLossHitTime = DateTime.MinValue
+                };
+            }
+            if (countReverseSignal) st.ReverseSignalCount++;
+            UpdateBasketLifecycleState(p, ref st);
+            _basketStates[p.Id] = st;
+            return BasketLifecycleDetail(st, closeReason, closePnl);
+        }
+
+        private string BasketLifecycleDetail(BasketPositionState st, string closeReason, double closePnl)
+        {
+            var now = DateTime.UtcNow;
+            var open = st.OpenTime == DateTime.MinValue ? now : st.OpenTime;
+            var duration = Math.Max(0, (now - open).TotalSeconds);
+            var mfeFav = Math.Max(0.0, st.MfePips);
+            var maeAdv = Math.Max(0.0, -st.MaePips);
+            var targetHit = st.FirstTargetHitTime != DateTime.MinValue;
+            var lossHit = st.FirstLossHitTime != DateTime.MinValue;
+            var first = "none";
+            if (targetHit && lossHit) first = st.FirstTargetHitTime <= st.FirstLossHitTime ? "target" : "loss";
+            else if (targetHit) first = "target";
+            else if (lossHit) first = "loss";
+            return $"ml=1 close_reason={closeReason} event_id={st.EventId} day={st.DayKey} entry={st.EntryPrice:F5} dir={st.Direction} duration_sec={duration:F0} close_pnl={closePnl:F2} target_pips={st.TargetPips:F2} max_loss_pips={st.MaxLossPips:F2} cat_sl_pips={st.CatastrophicSlPips:F2} target_money={st.TargetMoney:F2} max_loss_money={st.MaxLossMoney:F2} mfe_pips={mfeFav:F2} mae_pips={maeAdv:F2} mfe_signed_pips={st.MfePips:F2} mae_signed_pips={st.MaePips:F2} mfe_money={st.MfeMoney:F2} mae_money={st.MaeMoney:F2} mfe_price={st.MfePrice:F5} mae_price={st.MaePrice:F5} first_target_hit={(targetHit ? 1 : 0)} first_loss_hit={(lossHit ? 1 : 0)} first_hit={first} target_hit_time={TimeText(st.FirstTargetHitTime)} loss_hit_time={TimeText(st.FirstLossHitTime)} mfe_time={TimeText(st.MfeTime)} mae_time={TimeText(st.MaeTime)} reverse_signal_count={st.ReverseSignalCount}";
+        }
+
+        private static string TimeText(DateTime t)
+        {
+            return t == DateTime.MinValue ? "" : t.ToUniversalTime().ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
         }
 
         private bool IsBasketPosition(Position p)
@@ -1854,6 +1974,20 @@ namespace cAlgo.Robots
             public bool CloseSessionEnd;
             public int SessionEndMinutes;
             public double LastNetProfit;
+            public DateTime OpenTime;
+            public double EntryPrice;
+            public int Direction;
+            public double MfePips;
+            public double MaePips;
+            public double MfeMoney;
+            public double MaeMoney;
+            public DateTime MfeTime;
+            public DateTime MaeTime;
+            public double MfePrice;
+            public double MaePrice;
+            public DateTime FirstTargetHitTime;
+            public DateTime FirstLossHitTime;
+            public int ReverseSignalCount;
         }
 
         private struct HalfState
