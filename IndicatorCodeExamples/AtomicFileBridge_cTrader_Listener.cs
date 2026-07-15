@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class AtomicFileBridgeCTraderListener : Robot
     {
-        private const string Build = "2026-07-14.ml-basket-lifecycle";
+        private const string Build = "2026-07-15.hard-symbol-map";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -48,7 +48,7 @@ namespace cAlgo.Robots
         [Parameter("Use Built-In Index Map", DefaultValue = true)]
         public bool UseBuiltInIndexSymbolMap { get; set; }
 
-        [Parameter("Built-In Index Map", DefaultValue = "DE30m=GERMANY 40,DE30=GERMANY 40,GER30m=GERMANY 40,GER30=GERMANY 40,GER40m=GERMANY 40,GER40=GERMANY 40,DAX40m=GERMANY 40,DAX40=GERMANY 40")]
+        [Parameter("Built-In Index Map", DefaultValue = "DE30m=GERMANY 40,DE30=GERMANY 40,GER30m=GERMANY 40,GER30=GERMANY 40,GER40m=GERMANY 40,GER40=GERMANY 40,DAX40m=GERMANY 40,DAX40=GERMANY 40,US500m=US 500,US500=US 500,SPX500m=US 500,SPX500=US 500,USTECm=US Tech 100,USTEC=US Tech 100,US100m=US Tech 100,US100=US Tech 100,US30m=Wall Street 30,US30=Wall Street 30")]
         public string BuiltInIndexSymbolMapCsv { get; set; }
 
         [Parameter("Require Chart Symbol", DefaultValue = true)]
@@ -86,6 +86,9 @@ namespace cAlgo.Robots
 
         [Parameter("Permanent Reject Guard", DefaultValue = true)]
         public bool PermanentRejectGuard { get; set; }
+
+        [Parameter("Market Closed Retry Sec", DefaultValue = 900, MinValue = 30)]
+        public int MarketClosedRetrySeconds { get; set; }
 
         [Parameter("Label Prefix", DefaultValue = "AFB_CT")]
         public string LabelPrefix { get; set; }
@@ -153,6 +156,7 @@ namespace cAlgo.Robots
         private readonly Dictionary<long, BasketPositionState> _basketStates = new Dictionary<long, BasketPositionState>();
         private readonly Dictionary<string, double> _basketClosedPnlByDay = new Dictionary<string, double>();
         private readonly HashSet<string> _basketDayDone = new HashSet<string>();
+        private readonly Dictionary<string, DateTime> _orderRetryBlockedUntil = new Dictionary<string, DateTime>();
         private string _resolvedBridgePath;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
@@ -241,6 +245,12 @@ namespace cAlgo.Robots
                 return;
             }
 
+            if (OrderRetryBlocked(sig, out var retryBlockDetail))
+            {
+                SetAction("order_retry_cooldown", retryBlockDetail);
+                return;
+            }
+
             Audit("signal_received", sig, $"caller={caller} mapped_symbol={MapSymbol(sig.SourceSymbol)} {detail}");
 
             var age = (Server.Time.ToUniversalTime() - sig.WrittenGmt.ToUniversalTime()).TotalSeconds;
@@ -280,6 +290,32 @@ namespace cAlgo.Robots
 
             if (ExecuteSignal(sig))
                 _lastSeenEventId = sig.EventId;
+        }
+        private bool OrderRetryBlocked(BridgeSignal sig, out string detail)
+        {
+            detail = string.Empty;
+            if (string.IsNullOrWhiteSpace(sig.EventId))
+                return false;
+            if (!_orderRetryBlockedUntil.TryGetValue(sig.EventId, out var until))
+                return false;
+            var now = DateTime.UtcNow;
+            if (now < until)
+            {
+                detail = $"event={ShortEvent(sig.EventId)} retry_after_utc={until:O} seconds_left={(until - now).TotalSeconds:F0}";
+                return true;
+            }
+            _orderRetryBlockedUntil.Remove(sig.EventId);
+            return false;
+        }
+
+        private void BlockOrderRetry(BridgeSignal sig, object error, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(sig.EventId))
+                return;
+            var seconds = Math.Max(30, MarketClosedRetrySeconds);
+            var until = DateTime.UtcNow.AddSeconds(seconds);
+            _orderRetryBlockedUntil[sig.EventId] = until;
+            Audit("order_retry_throttled", sig, $"reason={reason} error={error} retry_after_utc={until:O} cooldown_sec={seconds}");
         }
         private bool ExecuteSignal(BridgeSignal sig)
         {
@@ -363,9 +399,12 @@ namespace cAlgo.Robots
                     else
                     {
                         ReleaseEvent(sig.EventId);
-                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error))
+                        var retryMarketClosed = IsMarketClosedError(retry.Error);
+                        if (retryMarketClosed)
+                            BlockOrderRetry(sig, retry.Error, "market_closed_retry");
+                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error) && !retryMarketClosed)
                             _lastRejectedEventId = sig.EventId;
-                        Audit("order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} original_volume={volume} retry_volume={retryVolume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {retryDetail} {lotDetail}");
+                        Audit("order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} market_closed={(retryMarketClosed ? 1 : 0)} original_volume={volume} retry_volume={retryVolume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {retryDetail} {lotDetail}");
                         return false;
                     }
                 }
@@ -373,9 +412,12 @@ namespace cAlgo.Robots
                 {
                     ReleaseEvent(sig.EventId);
                     var permanent = IsPermanentOrderFailure(originalError);
-                    if (PermanentRejectGuard && permanent)
+                    var marketClosed = IsMarketClosedError(originalError);
+                    if (marketClosed)
+                        BlockOrderRetry(sig, originalError, "market_closed");
+                    if (PermanentRejectGuard && permanent && !marketClosed)
                         _lastRejectedEventId = sig.EventId;
-                    Audit("order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} volume={volume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {StopContext(entry, sig.Sl, sig.Tp)} {retryDetail} {lotDetail}");
+                    Audit("order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} market_closed={(marketClosed ? 1 : 0)} volume={volume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {StopContext(entry, sig.Sl, sig.Tp)} {retryDetail} {lotDetail}");
                     return false;
                 }
             }
@@ -591,9 +633,12 @@ namespace cAlgo.Robots
                     else
                     {
                         ReleaseEvent(sig.EventId);
-                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error))
+                        var retryMarketClosed = IsMarketClosedError(retry.Error);
+                        if (retryMarketClosed)
+                            BlockOrderRetry(sig, retry.Error, "market_closed_basket_retry");
+                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error) && !retryMarketClosed)
                             _lastRejectedEventId = sig.EventId;
-                        Audit("basket_order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} original_volume={volume} retry_volume={retryVolume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
+                        Audit("basket_order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} market_closed={(retryMarketClosed ? 1 : 0)} original_volume={volume} retry_volume={retryVolume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
                         return false;
                     }
                 }
@@ -601,9 +646,12 @@ namespace cAlgo.Robots
                 {
                     ReleaseEvent(sig.EventId);
                     var permanent = IsPermanentOrderFailure(originalError);
-                    if (PermanentRejectGuard && permanent)
+                    var marketClosed = IsMarketClosedError(originalError);
+                    if (marketClosed)
+                        BlockOrderRetry(sig, originalError, "market_closed_basket");
+                    if (PermanentRejectGuard && permanent && !marketClosed)
                         _lastRejectedEventId = sig.EventId;
-                    Audit("basket_order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} volume={volume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
+                    Audit("basket_order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} market_closed={(marketClosed ? 1 : 0)} volume={volume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
                     return false;
                 }
             }
@@ -1327,6 +1375,12 @@ namespace cAlgo.Robots
             return e.Contains("invalid") || e.Contains("badvolume") || e.Contains("badvolume") || e.Contains("stoploss") || e.Contains("takeprofit");
         }
 
+        private bool IsMarketClosedError(object error)
+        {
+            var e = (error == null ? "" : error.ToString()).ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace(":", "");
+            return e.Contains("marketclosed") || e.Contains("marketisclosed") || e.Contains("tradingisnotavailable") || e.Contains("notavailable") || e.Contains("offquotes");
+        }
+
         private bool IsNoMoneyError(object error)
         {
             var e = (error == null ? "" : error.ToString()).ToLowerInvariant().Replace("_", "").Replace(" ", "");
@@ -1494,7 +1548,7 @@ namespace cAlgo.Robots
         {
             reason = "";
             var mapped = MapSymbol(sig.SourceSymbol);
-            if (RequireMappedSymbolEqualsChart && !SameText(mapped, SymbolName))
+            if (RequireMappedSymbolEqualsChart && !SameText(mapped, SymbolName) && !SameEconomicSymbol(mapped, SymbolName))
             {
                 reason = $"symbol_filter source={sig.SourceSymbol} mapped={mapped} chart={SymbolName}";
                 return false;
@@ -1566,11 +1620,26 @@ namespace cAlgo.Robots
                 if (!string.IsNullOrWhiteSpace(mapped))
                     return mapped;
             }
+            mapped = HardBrokerSymbolMap(source);
+            if (!string.IsNullOrWhiteSpace(mapped))
+                return mapped;
             if (source.EndsWith("m", StringComparison.OrdinalIgnoreCase) && SameText(source.Substring(0, source.Length - 1), SymbolName))
                 return SymbolName;
             return source;
         }
 
+
+        private static string HardBrokerSymbolMap(string source)
+        {
+            var s = CanonicalSymbol(source);
+            if (s == "US500" || s == "SPX500") return "US 500";
+            if (s == "USTEC" || s == "US100" || s == "NAS100") return "US Tech 100";
+            if (s == "US30" || s == "DJ30") return "Wall Street 30";
+            if (s == "DE30" || s == "GER30" || s == "GER40" || s == "DAX40") return "GERMANY 40";
+            if (s == "UKOIL") return "XBRUSD";
+            if (s == "USOIL") return "XTIUSD";
+            return "";
+        }
         private static string MapSymbolFromCsv(string source, string csv)
         {
             if (string.IsNullOrWhiteSpace(csv)) return "";
@@ -2004,3 +2073,5 @@ namespace cAlgo.Robots
         }
     }
 }
+
+

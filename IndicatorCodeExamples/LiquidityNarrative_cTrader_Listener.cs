@@ -19,13 +19,16 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiquidityNarrativeCTraderListener : Robot
     {
-        private const string Build = "2026-07-10.liq-narrative-bridge";
+        private const string Build = "2026-07-15.ustec-us100-map";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
 
-        [Parameter("Bridge Latest Path", DefaultValue = "")]
+        [Parameter("Bridge Latest Path", DefaultValue = "C:\\Users\\Cem\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\LiquidityNarrativeBridge_Latest.csv")]
         public string BridgeLatestPath { get; set; }
+
+        [Parameter("Prefer Scoped Latest", DefaultValue = true)]
+        public bool PreferScopedLatest { get; set; }
 
         [Parameter("Poll Milliseconds", DefaultValue = 500, MinValue = 100)]
         public int PollMilliseconds { get; set; }
@@ -44,6 +47,12 @@ namespace cAlgo.Robots
 
         [Parameter("Built-In Oil Map", DefaultValue = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIUSD,USOIL=XTIUSD")]
         public string BuiltInOilSymbolMapCsv { get; set; }
+
+        [Parameter("Use Built-In Index Map", DefaultValue = true)]
+        public bool UseBuiltInIndexSymbolMap { get; set; }
+
+        [Parameter("Built-In Index Map", DefaultValue = "DE30m=GERMANY 40,DE30=GERMANY 40,GER30m=GERMANY 40,GER30=GERMANY 40,GER40m=GERMANY 40,GER40=GERMANY 40,DAX40m=GERMANY 40,DAX40=GERMANY 40,US500m=US 500,US500=US 500,SPX500m=US 500,SPX500=US 500,USTECm=US Tech 100,USTEC=US Tech 100,US100m=US Tech 100,US100=US Tech 100,US30m=Wall Street 30,US30=Wall Street 30")]
+        public string BuiltInIndexSymbolMapCsv { get; set; }
 
         [Parameter("Require Chart Symbol", DefaultValue = true)]
         public bool RequireMappedSymbolEqualsChart { get; set; }
@@ -80,6 +89,9 @@ namespace cAlgo.Robots
 
         [Parameter("Permanent Reject Guard", DefaultValue = true)]
         public bool PermanentRejectGuard { get; set; }
+
+        [Parameter("Market Closed Retry Sec", DefaultValue = 900, MinValue = 30)]
+        public int MarketClosedRetrySeconds { get; set; }
 
         [Parameter("Label Prefix", DefaultValue = "LN_CT")]
         public string LabelPrefix { get; set; }
@@ -144,6 +156,7 @@ namespace cAlgo.Robots
         private string _lastDetail = string.Empty;
         private string _lastSignal = "none";
         private readonly Dictionary<long, HalfState> _halfStates = new Dictionary<long, HalfState>();
+        private readonly Dictionary<string, DateTime> _orderRetryBlockedUntil = new Dictionary<string, DateTime>();
         private string _resolvedBridgePath;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
@@ -165,8 +178,16 @@ namespace cAlgo.Robots
             {
                 if (TryReadSignal(out var sig, out var detail) && SignalIdentityMatches(sig, out _))
                 {
-                    _lastSeenEventId = sig.EventId;
-                    Audit("init_baseline_existing_signal", sig, "seeded_last_seen=1 no_trade_on_attach " + detail);
+                    var age = (Server.Time.ToUniversalTime() - sig.WrittenGmt.ToUniversalTime()).TotalSeconds;
+                    if (MaxSignalAgeSeconds > 0 && age <= MaxSignalAgeSeconds)
+                    {
+                        Audit("init_existing_fresh_signal_pending", sig, $"seeded_last_seen=0 trade_on_next_poll age_sec={age:F0} max={MaxSignalAgeSeconds} " + detail);
+                    }
+                    else
+                    {
+                        _lastSeenEventId = sig.EventId;
+                        Audit("init_baseline_existing_signal", sig, $"seeded_last_seen=1 no_trade_on_attach age_sec={age:F0} max={MaxSignalAgeSeconds} " + detail);
+                    }
                 }
                 else
                 {
@@ -230,6 +251,12 @@ namespace cAlgo.Robots
                 return;
             }
 
+            if (OrderRetryBlocked(sig, out var retryBlockDetail))
+            {
+                SetAction("order_retry_cooldown", retryBlockDetail);
+                return;
+            }
+
             Audit("signal_received", sig, $"caller={caller} mapped_symbol={MapSymbol(sig.SourceSymbol)} {detail}");
 
             var age = (Server.Time.ToUniversalTime() - sig.WrittenGmt.ToUniversalTime()).TotalSeconds;
@@ -269,6 +296,32 @@ namespace cAlgo.Robots
 
             if (ExecuteSignal(sig))
                 _lastSeenEventId = sig.EventId;
+        }
+        private bool OrderRetryBlocked(BridgeSignal sig, out string detail)
+        {
+            detail = string.Empty;
+            if (string.IsNullOrWhiteSpace(sig.EventId))
+                return false;
+            if (!_orderRetryBlockedUntil.TryGetValue(sig.EventId, out var until))
+                return false;
+            var now = DateTime.UtcNow;
+            if (now < until)
+            {
+                detail = $"event={ShortEvent(sig.EventId)} retry_after_utc={until:O} seconds_left={(until - now).TotalSeconds:F0}";
+                return true;
+            }
+            _orderRetryBlockedUntil.Remove(sig.EventId);
+            return false;
+        }
+
+        private void BlockOrderRetry(BridgeSignal sig, object error, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(sig.EventId))
+                return;
+            var seconds = Math.Max(30, MarketClosedRetrySeconds);
+            var until = DateTime.UtcNow.AddSeconds(seconds);
+            _orderRetryBlockedUntil[sig.EventId] = until;
+            Audit("order_retry_throttled", sig, $"reason={reason} error={error} retry_after_utc={until:O} cooldown_sec={seconds}");
         }
         private bool ExecuteSignal(BridgeSignal sig)
         {
@@ -349,9 +402,12 @@ namespace cAlgo.Robots
                     else
                     {
                         ReleaseEvent(sig.EventId);
-                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error))
+                        var retryMarketClosed = IsMarketClosedError(retry.Error);
+                        if (retryMarketClosed)
+                            BlockOrderRetry(sig, retry.Error, "market_closed_retry");
+                        if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error) && !retryMarketClosed)
                             _lastRejectedEventId = sig.EventId;
-                        Audit("order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} original_volume={volume} retry_volume={retryVolume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {retryDetail} {lotDetail}");
+                        Audit("order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} market_closed={(retryMarketClosed ? 1 : 0)} original_volume={volume} retry_volume={retryVolume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {retryDetail} {lotDetail}");
                         return false;
                     }
                 }
@@ -359,9 +415,12 @@ namespace cAlgo.Robots
                 {
                     ReleaseEvent(sig.EventId);
                     var permanent = IsPermanentOrderFailure(originalError);
-                    if (PermanentRejectGuard && permanent)
+                    var marketClosed = IsMarketClosedError(originalError);
+                    if (marketClosed)
+                        BlockOrderRetry(sig, originalError, "market_closed");
+                    if (PermanentRejectGuard && permanent && !marketClosed)
                         _lastRejectedEventId = sig.EventId;
-                    Audit("order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} volume={volume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {StopContext(entry, sig.Sl, sig.Tp)} {retryDetail} {lotDetail}");
+                    Audit("order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} market_closed={(marketClosed ? 1 : 0)} volume={volume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {StopContext(entry, sig.Sl, sig.Tp)} {retryDetail} {lotDetail}");
                     return false;
                 }
             }
@@ -669,6 +728,12 @@ namespace cAlgo.Robots
             return e.Contains("invalid") || e.Contains("badvolume") || e.Contains("badvolume") || e.Contains("stoploss") || e.Contains("takeprofit");
         }
 
+        private bool IsMarketClosedError(object error)
+        {
+            var e = (error == null ? "" : error.ToString()).ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace(":", "");
+            return e.Contains("marketclosed") || e.Contains("marketisclosed") || e.Contains("tradingisnotavailable") || e.Contains("notavailable") || e.Contains("offquotes");
+        }
+
         private bool IsNoMoneyError(object error)
         {
             var e = (error == null ? "" : error.ToString()).ToLowerInvariant().Replace("_", "").Replace(" ", "");
@@ -748,16 +813,17 @@ namespace cAlgo.Robots
         {
             sig = new BridgeSignal();
             detail = "";
-            if (!IoFile.Exists(_resolvedBridgePath))
+            var readPath = ResolveBridgeReadPath();
+            if (!IoFile.Exists(readPath))
             {
-                detail = "file_not_found " + _resolvedBridgePath;
+                detail = "file_not_found " + readPath;
                 return false;
             }
 
             string text;
             try
             {
-                text = IoFile.ReadAllText(_resolvedBridgePath);
+                text = IoFile.ReadAllText(readPath);
             }
             catch (Exception ex)
             {
@@ -806,7 +872,7 @@ namespace cAlgo.Robots
             var rawDir = fields[offset + 7];
             sig.Valid = !string.IsNullOrWhiteSpace(sig.EventId) && sig.Direction != 0;
 
-            detail = $"read_ok fields={fields.Count} offset={offset} event={sig.EventId} source_symbol={sig.SourceSymbol} source_tf={sig.SourceTf} dir={rawDir} risk_pct={sig.RiskPct:F3}";
+            detail = $"read_ok path={IoPath.GetFileName(readPath)} fields={fields.Count} offset={offset} event={sig.EventId} source_symbol={sig.SourceSymbol} source_tf={sig.SourceTf} dir={rawDir} risk_pct={sig.RiskPct:F3}";
             if (!sig.Valid)
             {
                 var initMarker = SameText(sig.Source, "bridge_initiated") || SameText(rawDir, "INIT");
@@ -819,7 +885,7 @@ namespace cAlgo.Robots
         {
             reason = "";
             var mapped = MapSymbol(sig.SourceSymbol);
-            if (RequireMappedSymbolEqualsChart && !SameText(mapped, SymbolName))
+            if (RequireMappedSymbolEqualsChart && !SameText(mapped, SymbolName) && !SameEconomicSymbol(mapped, SymbolName))
             {
                 reason = $"symbol_filter source={sig.SourceSymbol} mapped={mapped} chart={SymbolName}";
                 return false;
@@ -842,6 +908,50 @@ namespace cAlgo.Robots
             return true;
         }
 
+        private string ResolveBridgeReadPath()
+        {
+            if (!PreferScopedLatest || string.IsNullOrWhiteSpace(_resolvedBridgePath))
+                return _resolvedBridgePath;
+            var fileName = IoPath.GetFileName(_resolvedBridgePath) ?? "";
+            if (!SameText(fileName, "LiquidityNarrativeBridge_Latest.csv"))
+                return _resolvedBridgePath;
+            var dir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? "";
+            var tf = NormalizeTf(string.IsNullOrWhiteSpace(SourceTimeframeFilter) && DefaultSourceTfToChartPeriod ? ChartTfString() : SourceTimeframeFilter);
+            if (string.IsNullOrWhiteSpace(tf))
+                return _resolvedBridgePath;
+            foreach (var symbol in ScopedSourceSymbolCandidates())
+            {
+                var candidate = IoPath.Combine(dir, $"LiquidityNarrativeBridge_Latest_{Sanitize(symbol)}_{tf}.csv");
+                if (IoFile.Exists(candidate))
+                    return candidate;
+            }
+            return _resolvedBridgePath;
+        }
+
+        private IEnumerable<string> ScopedSourceSymbolCandidates()
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in BuildScopedSourceSymbolCandidates())
+            {
+                if (!string.IsNullOrWhiteSpace(s) && seen.Add(s))
+                    yield return s;
+            }
+        }
+
+        private IEnumerable<string> BuildScopedSourceSymbolCandidates()
+        {
+            var raw = (SymbolName ?? "").Trim();
+            var canonical = CanonicalSymbol(raw);
+            if (!string.IsNullOrWhiteSpace(raw)) yield return raw;
+            if (!string.IsNullOrWhiteSpace(canonical)) yield return canonical;
+            if (!string.IsNullOrWhiteSpace(canonical) && !canonical.EndsWith("M", StringComparison.OrdinalIgnoreCase)) yield return canonical + "m";
+            if (canonical == "US30" || canonical == "WALLSTREET30") yield return "US30m";
+            if (canonical == "US500" || canonical == "SPX500") yield return "US500m";
+            if (canonical == "USTEC" || canonical == "US100" || canonical == "NAS100") yield return "USTECm";
+            if (canonical == "DE30" || canonical == "GERMANY40" || canonical == "DAX40") yield return "DE30m";
+            if (canonical == "UKOIL" || canonical == "XBRUSD") yield return "UKOILm";
+            if (canonical == "USOIL" || canonical == "XTIUSD") yield return "USOILm";
+        }
         private string ResolveBridgePath()
         {
             if (!string.IsNullOrWhiteSpace(BridgeLatestPath))
@@ -884,11 +994,32 @@ namespace cAlgo.Robots
                 if (!string.IsNullOrWhiteSpace(mapped))
                     return mapped;
             }
+            if (UseBuiltInIndexSymbolMap)
+            {
+                mapped = MapSymbolFromCsv(source, BuiltInIndexSymbolMapCsv);
+                if (!string.IsNullOrWhiteSpace(mapped))
+                    return mapped;
+            }
+            mapped = HardBrokerSymbolMap(source);
+            if (!string.IsNullOrWhiteSpace(mapped))
+                return mapped;
             if (source.EndsWith("m", StringComparison.OrdinalIgnoreCase) && SameText(source.Substring(0, source.Length - 1), SymbolName))
                 return SymbolName;
             return source;
         }
 
+
+        private static string HardBrokerSymbolMap(string source)
+        {
+            var s = CanonicalSymbol(source);
+            if (s == "US500" || s == "SPX500") return "US 500";
+            if (s == "USTEC" || s == "US100" || s == "NAS100") return "US Tech 100";
+            if (s == "US30" || s == "DJ30") return "Wall Street 30";
+            if (s == "DE30" || s == "GER30" || s == "GER40" || s == "DAX40") return "GERMANY 40";
+            if (s == "UKOIL") return "XBRUSD";
+            if (s == "USOIL") return "XTIUSD";
+            return "";
+        }
         private static string MapSymbolFromCsv(string source, string csv)
         {
             if (string.IsNullOrWhiteSpace(csv)) return "";
@@ -1197,6 +1328,16 @@ namespace cAlgo.Robots
             var s = new string((value ?? "").Trim().Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
             if (s.EndsWith("M", StringComparison.OrdinalIgnoreCase) && s.Length > 1)
                 s = s.Substring(0, s.Length - 1);
+
+            if (s == "USTEC" || s == "US100" || s == "NAS100" || s == "USTECH100" || s == "USTECH" || s == "TECH100")
+                return "USTEC";
+            if (s == "US500" || s == "SPX500" || s == "SP500")
+                return "US500";
+            if (s == "US30" || s == "DJ30" || s == "WALLSTREET30" || s == "DOW30")
+                return "US30";
+            if (s == "DE30" || s == "GER30" || s == "GER40" || s == "DAX40" || s == "GERMANY40")
+                return "DE30";
+
             return s;
         }
 
@@ -1260,3 +1401,5 @@ namespace cAlgo.Robots
         }
     }
 }
+
+

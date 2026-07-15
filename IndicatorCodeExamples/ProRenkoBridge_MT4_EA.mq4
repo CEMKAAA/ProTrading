@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-10.no-active-duplicate-levels"
+#define BUILD_TAG "2026-07-15.ignore-nat24-shadow"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -30,6 +30,7 @@ input bool   InpSymmetricRTargetsEnabled = false; // If true, keep SL distance f
 
 input bool   InpDirectEnabled = true;
 input bool   InpFileBridgeMt5Enabled = false; // Writes confirmed PRORENKO signals to Terminal Common\\Files for MT5 execution.
+input bool   InpNativeIgnoreWindowsDefault = false; // ML shadow mode: local MT4 trades ignore Window/NoTrade/UTC event blocks. Bridge publishing still respects those guards.
 input string InpFileBridgeLatestFile = "PRORENKOFileBridge_Latest.csv";
 input string InpFileBridgeAuditPrefix = "PRORENKOFileBridge_Audit_";
 input bool   InpFileBridgeUseCommonFiles = true;
@@ -122,6 +123,7 @@ double   g_targetRRuntime;
 double   g_halfRRuntime;
 bool     g_pendingOnDriftRuntime;
 bool     g_fileBridgeMt5Runtime;
+bool     g_nativeIgnoreWindowsRuntime;
 bool     g_pipSlModeRuntime;
 double   g_pipSlPipsRuntime;
 bool     g_symmetricRTargetsRuntime;
@@ -167,6 +169,7 @@ datetime g_nextTradeDisabledRetryTs = 0;
 bool     g_lastGeometryUsedFallback = false;
 bool     g_basketWindowStateInitialized = false;
 bool     g_basketWindowEligibleLast = false;
+string   g_lastNativeShadowBootstrapEventId = "";
 string   g_eventBlockPendingEventId = "";
 string   g_eventBlockPendingDir = "";
 datetime g_eventBlockPendingSignalTime = 0;
@@ -188,6 +191,7 @@ int OnInit()
    g_halfRRuntime = NormalizeDouble(MathMax(0.0, InpHalfBeTpIndex), 1);
    g_pendingOnDriftRuntime = InpPendingOnDriftStartup;
    g_fileBridgeMt5Runtime = InpFileBridgeMt5Enabled;
+   g_nativeIgnoreWindowsRuntime = InpNativeIgnoreWindowsDefault;
    g_pipSlModeRuntime = InpPipSlModeEnabled;
    g_pipSlPipsRuntime = MathMax(0.0, InpPipSlPips);
    g_symmetricRTargetsRuntime = InpSymmetricRTargetsEnabled;
@@ -221,7 +225,7 @@ int OnInit()
 
    CleanupLegacyInfiniteLevelLines();
    if(InpShowDashboard) DashboardCreate();
-   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
+   Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " native_ignore_windows=" + (g_nativeIgnoreWindowsRuntime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
    FileBridgeWriteInitMarker();
 
@@ -313,7 +317,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          FileBridgeWriteInitMarker();
       DashboardUpdate();
       return;
-   }   if(sparam == Obj("audit"))
+   }
+   if(sparam == Obj("native24"))
+   {
+      g_nativeIgnoreWindowsRuntime = !g_nativeIgnoreWindowsRuntime;
+      Audit("dashboard_native_window_toggle", "", 0, "", 0, 0, 0, 0, g_nativeIgnoreWindowsRuntime ? "NATIVE_ML_24_7_ON" : "NATIVE_ML_24_7_OFF", 0, "");
+      DashboardUpdate();
+      return;
+   }
+   if(sparam == Obj("audit"))
    {
       g_auditRuntime = !g_auditRuntime;
       Print("ProRenkoBridge audit logging ", g_auditRuntime ? "enabled" : "disabled");
@@ -432,6 +444,7 @@ void ProcessSignals(string reason)
    if(MaybeExecuteEventBlockPending(reason))
       return;
    MaybeBootstrapBasketWindow(reason);
+   MaybeBootstrapBasketNativeShadow(reason);
 
    string dir, eid; int sh, buf; double sigPx; datetime barTime;
    if(g_trendTradeRuntime && FindLatestTrendSignal(dir, sh, buf, sigPx, barTime, eid))
@@ -581,6 +594,50 @@ void MaybeBootstrapBasketWindow(string reason)
    ExecuteSignal(dir, eventId, g_lastSignalPrice, 0, buffer);
 }
 
+void MaybeBootstrapBasketNativeShadow(string reason)
+{
+   if(!BasketNativeSignalShadowMode() || !g_trendTradeRuntime)
+      return;
+
+   string dir = "";
+   double raw = 0.0;
+   int buffer = -1;
+   if(!TrendStateAt(0, dir, raw, buffer))
+      return;
+
+   string effectiveDir = dir;
+   if(g_invertMode)
+      effectiveDir = (effectiveDir == "BUY") ? "SELL" : "BUY";
+   int effectiveType = (effectiveDir == "BUY") ? OP_BUY : OP_SELL;
+   if(HasOpenBasketDirection(effectiveType))
+      return;
+
+   datetime nowGmt = TimeGMT();
+   datetime minute = nowGmt - (nowGmt % 60);
+   string eventId = Symbol() + "|" + IntegerToString(Period()) + "|prorenko_nat24_shadow|" + dir + "|"
+                  + IntegerToString((int)minute) + "|buf=" + IntegerToString(buffer);
+   if(eventId == g_lastNativeShadowBootstrapEventId)
+      return;
+
+   RefreshRates();
+   double liveEntry = (dir == "BUY") ? Ask : Bid;
+   if(liveEntry <= 0.0)
+      return;
+
+   datetime barTime = iTime(Symbol(), Period(), 0);
+   g_lastSignalDir = dir;
+   g_lastSignalTime = (barTime > 0) ? barTime : TimeCurrent();
+   g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
+   g_lastEventId = eventId;
+   g_lastNativeShadowBootstrapEventId = eventId;
+   ActiveSignalStateWrite(dir, eventId, g_lastSignalPrice, g_lastSignalTime, reason + "_nat24_shadow_bootstrap");
+   Audit("basket_nat24_shadow_bootstrap", eventId, 0, dir, 0, g_lastSignalPrice, 0, 0,
+         "reason=" + reason + " effective_dir=" + effectiveDir + " buffer=" + IntegerToString(buffer)
+         + " raw=" + DoubleToString(raw, 2),
+         0, "current_trend_signal_to_signal_native");
+
+   ExecuteSignal(dir, eventId, g_lastSignalPrice, 0, buffer);
+}
 void ProcessSignalCandidate(string source, string dir, string eid, int sh, int buf, double sigPx, datetime barTime, string &lastSourceEventId, string reason)
 {
    if(eid == lastSourceEventId)
@@ -1141,6 +1198,12 @@ bool BasketDayDone(string &detail)
 }
 
 
+
+bool BasketNativeSignalShadowMode()
+{
+   return (g_basketModeRuntime && g_nativeIgnoreWindowsRuntime);
+}
+
 bool BasketGuardReached(string &reason, string &detail)
 {
    reason = "";
@@ -1233,6 +1296,12 @@ bool CloseBasketScopedPositions(string eventName, string reason)
 
 bool ManageBasketDailyGuards()
 {
+   // NAT24 is a local MT4 signal-shadow mode. In basket mode it must keep a
+   // naked position from signal to reverse signal; prop risk guards belong to
+   // the cTrader/listener execution side.
+   if(BasketNativeSignalShadowMode())
+      return false;
+
    bool hadOpenBasket = HasOpenBasketPositions();
    if(!g_basketModeRuntime && !hadOpenBasket) return false;
    string reason = "", detail = "";
@@ -1427,13 +1496,51 @@ void ExecuteBasketSignal(string dir, string eventId, double signalPx, int shift,
       Audit("trade_blocked_disabled", eventId, 0, dir, 0, entry, sl, 0, "ea_disabled basket_no_csv", 0, "basket");
       return;
    }
+   bool utcBlocked = IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime);
+   bool windowAllowed = IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) && !IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime);
+   bool bridgeWindowAllowed = (!utcBlocked && windowAllowed);
+   if(utcBlocked)
+   {
+      if(!g_nativeIgnoreWindowsRuntime)
+      {
+         StoreEventBlockPending(eventId, dir, signalPx, shift, buffer, g_lastSignalTime, "basket_entry_guard");
+         Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, 0, UtcEventBlockStatus(TimeGMT()), 0, "basket_no_new_entry_until_block_ends");
+         return;
+      }
+      Audit("native_window_bypass_utc_event", eventId, 0, dir, 0, entry, sl, 0, UtcEventBlockStatus(TimeGMT()), 0, "basket bridge_csv_not_written_unless_window_valid");
+   }
+   if(!windowAllowed)
+   {
+      if(!g_nativeIgnoreWindowsRuntime)
+      {
+         Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, 0, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "basket");
+         return;
+      }
+      Audit("native_window_bypass", eventId, 0, dir, 0, entry, sl, 0, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "basket bridge_csv_not_written");
+   }
+   int spread = CurrentSpreadPoints();
+   if(g_maxSpreadRuntime > 0 && spread > g_maxSpreadRuntime)
+   {
+      Audit("trade_blocked_spread", eventId, 0, dir, 0, entry, sl, 0, "spread=" + IntegerToString(spread) + " max=" + IntegerToString(g_maxSpreadRuntime), 0, "basket");
+      return;
+   }
+
+   string bridgeSource = "ProRenko|" + SignalSourceFromEvent(eventId) + "|basket";
+   if(g_invertMode) bridgeSource += "|invert";
+   bool bridgePublishAllowed = (StringFind(eventId, "prorenko_nat24_shadow") < 0);
+   if(bridgeWindowAllowed && bridgePublishAllowed)
+      FileBridgeWriteBasketSignal(eventId, dir, entry, sl, bridgeSource, g_lastSignalTime);
+   else if(bridgeWindowAllowed && !bridgePublishAllowed)
+      Audit("bridge_skipped_nat24_shadow", eventId, 0, dir, 0, entry, sl, 0, "nat24_shadow_is_mt4_native_only", 0, "bridge_csv_not_written");
+   else
+      Audit("bridge_skipped_native_window_bypass", eventId, 0, dir, 0, entry, sl, 0, "basket native_ignore_windows=true", 0, "bridge_csv_not_written");
 
    string tradeState = "";
    if(!CanAttemptTradeNow(tradeState))
    {
       if(TimeCurrent() >= g_nextTradeDisabledRetryTs)
       {
-         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, 0, tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)), 0, "basket");
+         Audit("trade_blocked_trade_disabled", eventId, 0, dir, 0, entry, sl, 0, tradeState + " retry_seconds=" + IntegerToString(MathMax(1, InpTradeDisabledRetrySeconds)) + " bridge_csv_written=1", 0, "basket");
          g_nextTradeDisabledRetryTs = TimeCurrent() + MathMax(1, InpTradeDisabledRetrySeconds);
       }
       ReleaseEventForRetry(eventId);
@@ -1442,52 +1549,38 @@ void ExecuteBasketSignal(string dir, string eventId, double signalPx, int shift,
 
    if(g_basketCloseOnReverseRuntime && !CloseOppositeBasket(type, eventId))
    {
-      Audit("trade_blocked_reverse_close_failed", eventId, 0, dir, 0, entry, sl, 0, "basket opposite position or pending could not be closed", 0, "retry_signal");
+      Audit("trade_blocked_reverse_close_failed", eventId, 0, dir, 0, entry, sl, 0, "basket opposite position or pending could not be closed bridge_csv_written=1", 0, "retry_signal");
       ReleaseEventForRetry(eventId);
       return;
    }
 
-   if(IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime))
-   {
-      StoreEventBlockPending(eventId, dir, signalPx, shift, buffer, g_lastSignalTime, "basket_entry_guard");
-      Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, 0, UtcEventBlockStatus(TimeGMT()), 0, "basket_no_new_entry_until_block_ends");
-      return;
-   }
-   if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
-   {
-      Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, 0, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "basket");
-      return;
-   }
-   int spread = CurrentSpreadPoints();
-   if(g_maxSpreadRuntime > 0 && spread > g_maxSpreadRuntime)
-   {
-      Audit("trade_blocked_spread", eventId, 0, dir, 0, entry, sl, 0, "spread=" + IntegerToString(spread) + " max=" + IntegerToString(g_maxSpreadRuntime), 0, "basket");
-      return;
-   }
    if(InpBlockSameDirectionOpen && HasOpenBasketDirection(type))
    {
-      Audit("trade_blocked_same_direction", eventId, 0, dir, 0, entry, sl, 0, "existing same direction basket order", 0, "basket");
+      Audit("trade_blocked_same_direction", eventId, 0, dir, 0, entry, sl, 0, "existing same direction basket order bridge_csv_written=1", 0, "basket");
       return;
    }
 
-   string dailyGuardReason = "", dailyGuardDetail = "";
-   if(DailyProfitLossGuardReached(dailyGuardReason, dailyGuardDetail))
+   if(!BasketNativeSignalShadowMode())
    {
-      Audit("trade_blocked_daily_profit_loss_target", eventId, 0, dir, 0, entry, sl, 0, dailyGuardDetail, 0, dailyGuardReason + " basket_file_bridge_not_written=1");
-      return;
-   }
+      string dailyGuardReason = "", dailyGuardDetail = "";
+      if(DailyProfitLossGuardReached(dailyGuardReason, dailyGuardDetail))
+      {
+         Audit("trade_blocked_daily_profit_loss_target", eventId, 0, dir, 0, entry, sl, 0, dailyGuardDetail + " bridge_csv_written=1", 0, dailyGuardReason);
+         return;
+      }
 
-   string basketReason = "", basketDetail = "";
-   if(BasketGuardReached(basketReason, basketDetail))
+      string basketReason = "", basketDetail = "";
+      if(BasketGuardReached(basketReason, basketDetail))
+      {
+         CloseBasketScopedPositions(basketReason, basketDetail);
+         Audit("basket_blocked_day_done", eventId, 0, dir, 0, entry, sl, 0, basketDetail + " bridge_csv_written=1", BasketScopedPnlToday(true), basketReason);
+         return;
+      }
+   }
+   else
    {
-      CloseBasketScopedPositions(basketReason, basketDetail);
-      Audit("basket_blocked_day_done", eventId, 0, dir, 0, entry, sl, 0, basketDetail, BasketScopedPnlToday(true), basketReason + " file_bridge_not_written=1");
-      return;
+      Audit("basket_native_shadow_guard_bypass", eventId, 0, dir, 0, entry, sl, 0, "nat24_shadow=true daily_and_basket_guards_bypassed_for_mt4_native", BasketScopedPnlToday(true), "signal_to_signal_native");
    }
-
-   string bridgeSource = "ProRenko|" + SignalSourceFromEvent(eventId) + "|basket";
-   if(g_invertMode) bridgeSource += "|invert";
-   FileBridgeWriteBasketSignal(eventId, dir, entry, sl, bridgeSource, g_lastSignalTime);
 
    string lotDetail = "";
    double lot = ResolveBasketLot(type, lotDetail);
@@ -1498,7 +1591,8 @@ void ExecuteBasketSignal(string dir, string eventId, double signalPx, int shift,
       return;
    }
 
-   int ticket = OrderSend(Symbol(), sendType, lot, NormalizePriceToTick(entry), InpSlippage, NormalizePriceToTick(sl), 0,
+   double nativeOrderSl = BasketNativeSignalShadowMode() ? 0.0 : sl;
+   int ticket = OrderSend(Symbol(), sendType, lot, NormalizePriceToTick(entry), InpSlippage, NormalizePriceToTick(nativeOrderSl), 0,
                           "ProRenkoBridge basket " + SignalSourceFromEvent(eventId) + " " + dir, EffectiveMagic(), expiry, (type == OP_BUY ? clrLime : clrTomato));
    int err = GetLastError();
    if(ticket > 0)
@@ -1510,8 +1604,9 @@ void ExecuteBasketSignal(string dir, string eventId, double signalPx, int shift,
       TicketGVSet(ticket, "BTPCT", g_basketTargetPctRuntime);
       TicketGVSet(ticket, "BLPIPS", g_basketMaxLossPipsRuntime);
       TicketGVSet(ticket, "BCAT", g_basketCatastrophicSlPipsRuntime);
+      TicketGVSet(ticket, "NATSHADOW", BasketNativeSignalShadowMode() ? 1.0 : 0.0);
       Audit("basket_order_sent", eventId, ticket, dir, lot, entry, sl, 0,
-            "ticket=" + IntegerToString(ticket) + " type=" + (usePending ? "limit_at_signal" : "market") + " " + lotDetail + " " + geom,
+            "ticket=" + IntegerToString(ticket) + " type=" + (usePending ? "limit_at_signal" : "market") + " native_sl=" + PriceText(nativeOrderSl) + " nat24_shadow=" + (BasketNativeSignalShadowMode() ? "true" : "false") + " " + lotDetail + " " + geom,
             OrderProfit(), "basket_daily_target");
       RiskAudit("basket_lot_selected", "event=" + eventId + " ticket=" + IntegerToString(ticket) + " lot=" + DoubleToString(lot, 3) + " " + lotDetail);
       DrawTradeLevels();
@@ -1618,16 +1713,27 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
       return;
    }
 
-   if(IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime))
+   bool utcBlocked = IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime);
+   bool windowAllowed = IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) && !IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime);
+   bool bridgeWindowAllowed = (!utcBlocked && windowAllowed);
+   if(utcBlocked)
    {
-      StoreEventBlockPending(sourceEventId, originalDir, signalPx, shift, buffer, g_lastSignalTime, "traditional_entry_guard");
-      Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, target, UtcEventBlockStatus(TimeGMT()), 0, "no_new_entry_until_block_ends");
-      return;
+      if(!g_nativeIgnoreWindowsRuntime)
+      {
+         StoreEventBlockPending(sourceEventId, originalDir, signalPx, shift, buffer, g_lastSignalTime, "traditional_entry_guard");
+         Audit("trade_deferred_utc_event_block", eventId, 0, dir, 0, entry, sl, target, UtcEventBlockStatus(TimeGMT()), 0, "no_new_entry_until_block_ends");
+         return;
+      }
+      Audit("native_window_bypass_utc_event", eventId, 0, dir, 0, entry, sl, target, UtcEventBlockStatus(TimeGMT()), 0, "traditional bridge_csv_not_written_unless_window_valid");
    }
-   if(!IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime) || IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime))
+   if(!windowAllowed)
    {
-      Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, target, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "");
-      return;
+      if(!g_nativeIgnoreWindowsRuntime)
+      {
+         Audit("trade_blocked_window", eventId, 0, dir, 0, entry, sl, target, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "");
+         return;
+      }
+      Audit("native_window_bypass", eventId, 0, dir, 0, entry, sl, target, "allowed='" + g_allowedWindowsRuntime + "' no_trade='" + g_noTradeWindowsRuntime + "'", 0, "traditional bridge_csv_not_written");
    }
    int spread = CurrentSpreadPoints();
    if(g_maxSpreadRuntime > 0 && spread > g_maxSpreadRuntime)
@@ -1652,7 +1758,10 @@ void ExecuteSignal(string dir, string eventId, double signalPx, int shift, int b
    string bridgeSource = "ProRenko|" + SignalSourceFromEvent(eventId);
    if(g_invertMode) bridgeSource += "|invert";
    if(SymmetricRTargetsEnabled()) bridgeSource += "|symR";
-   FileBridgeWriteSignal(eventId, dir, entry, sl, target, bridgeSource, half, g_halfRRuntime > 0.0 ? ("r" + DoubleToString(g_halfRRuntime, 1)) : "off", g_lastSignalTime);
+   if(bridgeWindowAllowed)
+      FileBridgeWriteSignal(eventId, dir, entry, sl, target, bridgeSource, half, g_halfRRuntime > 0.0 ? ("r" + DoubleToString(g_halfRRuntime, 1)) : "off", g_lastSignalTime);
+   else
+      Audit("bridge_skipped_native_window_bypass", eventId, 0, dir, 0, entry, sl, target, "traditional native_ignore_windows=true", 0, "bridge_csv_not_written");
 
 
    string lotDetail;
@@ -3019,6 +3128,10 @@ string ActiveSignalStateFileName()
    return InpActiveSignalStatePrefix + SafeFileToken(Symbol()) + "_" + IntegerToString(Period()) + ".csv";
 }
 
+string FileBridgeScopedLatestFileName()
+{
+   return "PRORENKOFileBridge_Latest_" + SafeFileToken(Symbol()) + "_" + IntegerToString(Period()) + ".csv";
+}
 int ActiveSignalStateFlags(int baseFlags)
 {
    int flags = baseFlags | FILE_ANSI;
@@ -3117,6 +3230,7 @@ void FileBridgeWriteInitMarker()
    FileBridgeWriteHeader(h);
    FileBridgeWriteRow(h, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    FileClose(h);
+   FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -3148,6 +3262,7 @@ void FileBridgeWriteSignal(string eventId, string dir, double bridgeEntry, doubl
    FileBridgeWriteHeader(h);
    FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
    FileClose(h);
+   FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -3198,6 +3313,35 @@ void FileBridgeWriteBasketRow(int h, string eventId, string dir, double bridgeEn
    );
 }
 
+bool FileBridgeWriteLatestTraditionalFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(fileName, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("ProRenkoBridge scoped latest open failed err=", GetLastError(), " file=", fileName);
+      return(false);
+   }
+   FileBridgeWriteHeader(h);
+   FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   FileClose(h);
+   return(true);
+}
+
+bool FileBridgeWriteLatestBasketFile(string fileName, string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
+{
+   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(fileName, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("ProRenkoBridge basket scoped latest open failed err=", GetLastError(), " file=", fileName);
+      return(false);
+   }
+   FileBridgeWriteHeader(h);
+   FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   FileClose(h);
+   return(true);
+}
 void FileBridgeWriteBasketSignal(string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
 {
    if(!g_fileBridgeMt5Runtime)
@@ -3212,6 +3356,7 @@ void FileBridgeWriteBasketSignal(string eventId, string dir, double bridgeEntry,
    FileBridgeWriteHeader(h);
    FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
    FileClose(h);
+   FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -3227,6 +3372,83 @@ void FileBridgeWriteBasketSignal(string eventId, string dir, double bridgeEntry,
    FileBridgeWriteBasketRow(a, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
    FileClose(a);
    Print("ProRenkoBridge basket file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+}
+
+void FileBridgeWriteBasketConfigMarker(string reason)
+{
+   if(!g_fileBridgeMt5Runtime)
+      return;
+
+   if(g_basketModeRuntime && g_lastSignalTime > 0 && (g_lastSignalDir == "BUY" || g_lastSignalDir == "SELL") && g_lastSignalPrice > 0.0)
+   {
+      if(!IsInUtcEventBlock(TimeGMT(), g_utcEventBlockTimesRuntime, g_utcEventBlockRadiusRuntime)
+         && IsInAllowedWindow(TimeGMT(), g_allowedWindowsRuntime)
+         && !IsInNoTradeWindow(TimeGMT(), g_noTradeWindowsRuntime)
+         && (g_maxSpreadRuntime <= 0 || CurrentSpreadPoints() <= g_maxSpreadRuntime))
+      {
+         string dir = g_lastSignalDir;
+         string eventId = (g_lastEventId != "") ? g_lastEventId : (Symbol() + "|" + IntegerToString(Period()) + "|prorenko_basket_config|" + dir + "|" + IntegerToString((int)g_lastSignalTime));
+         if(g_invertMode)
+         {
+            dir = (dir == "BUY") ? "SELL" : "BUY";
+            eventId = eventId + "|invert";
+         }
+         int type = (dir == "BUY") ? OP_BUY : OP_SELL;
+         double entry = g_lastSignalPrice;
+         double sl = 0.0;
+         string geom = "";
+         if(BuildBasketGeometry(type, entry, sl, geom))
+         {
+            double target = 0.0;
+            string brokerGuard = "";
+            double rawEntry = entry, rawSl = sl;
+            if(PrepareBrokerOrderLevels(type, type, entry, sl, target, brokerGuard))
+            {
+               string source = "ProRenko|" + SignalSourceFromEvent(eventId) + "|basket|" + reason;
+               if(g_invertMode) source += "|invert";
+               FileBridgeWriteBasketSignal(eventId, dir, entry, sl, source, g_lastSignalTime);
+               Print("ProRenkoBridge basket active config republished event=", eventId, " dir=", dir, " reason=", reason, " file=", InpFileBridgeLatestFile);
+               return;
+            }
+            Print("ProRenkoBridge basket active config republish broker guard failed raw_entry=", DoubleToString(rawEntry, Digits), " raw_sl=", DoubleToString(rawSl, Digits), " detail=", brokerGuard);
+         }
+         else
+         {
+            Print("ProRenkoBridge basket active config republish geometry failed dir=", dir, " entry=", DoubleToString(entry, Digits), " detail=", geom);
+         }
+      }
+   }
+
+   string eventId = "PRORENKO_config|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString((int)TimeGMT());
+   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("ProRenkoBridge basket config latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
+      return;
+   }
+   FileBridgeWriteHeader(h);
+   FileBridgeWriteBasketRow(h, eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
+   FileClose(h);
+   FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
+
+   string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
+   int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a != INVALID_HANDLE)
+   {
+      bool header = (FileSize(a) == 0);
+      FileSeek(a, 0, SEEK_END);
+      if(header) FileBridgeWriteHeader(a);
+      FileBridgeWriteBasketRow(a, eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
+      FileClose(a);
+   }
+
+   Print("ProRenkoBridge basket config marker wrote target_pips=", DoubleToString(g_basketTargetPipsRuntime, 2),
+      " target_pct=", DoubleToString(g_basketTargetPctRuntime, 4),
+      " loss_pips=", DoubleToString(g_basketMaxLossPipsRuntime, 2),
+      " cat_sl=", DoubleToString(g_basketCatastrophicSlPipsRuntime, 2),
+      " file=", InpFileBridgeLatestFile);
 }
 string BufferHitSummary(string dir, int sh, int buf, double raw, datetime t)
 {
@@ -3334,7 +3556,8 @@ void DashboardCreate()
    Button(Obj("invert"), x+318, y+34, 58, 24, g_invertMode ? "INV" : "INV", g_invertMode ? clrMaroon : clrDarkSlateGray, clrWhite);
    Button(Obj("audit"), x+382, y+34, 72, 24, g_auditRuntime ? "AUDIT" : "AUDIT", g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray, clrWhite);
    Button(Obj("mt5pub"), x+460, y+34, 72, 24, g_fileBridgeMt5Runtime ? "MT5 ON" : "MT5 OFF", g_fileBridgeMt5Runtime ? clrDarkGreen : clrDarkSlateGray, clrWhite);
-   Button(Obj("apply"), x+538, y+34, 82, 24, "APPLY", clrSteelBlue, clrWhite);
+   Button(Obj("native24"), x+538, y+34, 82, 24, g_nativeIgnoreWindowsRuntime ? "NAT 24" : "NAT WIN", g_nativeIgnoreWindowsRuntime ? clrDarkOrange : clrDarkSlateGray, clrWhite);
+   Button(Obj("apply"), x+626, y+34, 82, 24, "APPLY", clrSteelBlue, clrWhite);
    Label(Obj("l_lot"), x+12, y+68, "Lot", clrLightSteelBlue, 8); Edit(Obj("e_lot"), x+86, y+64, 58, 20, DoubleToString(g_lotRuntime, 2));
    Label(Obj("l_spread"), x+152, y+68, "MaxSpr", clrLightSteelBlue, 8); Edit(Obj("e_spread"), x+210, y+64, 50, 20, IntegerToString(g_maxSpreadRuntime));
    Label(Obj("l_scale"), x+270, y+68, "CalcSL%", clrLightSteelBlue, 8); Edit(Obj("e_scale"), x+318, y+64, 56, 20, DoubleToString(g_finalScaleRuntime, 1));
@@ -3392,6 +3615,8 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("audit"), OBJPROP_BGCOLOR, g_auditRuntime ? clrSaddleBrown : clrDarkSlateGray);
    ObjectSetString(0, Obj("mt5pub"), OBJPROP_TEXT, g_fileBridgeMt5Runtime ? "MT5 ON" : "MT5 OFF");
    ObjectSetInteger(0, Obj("mt5pub"), OBJPROP_BGCOLOR, g_fileBridgeMt5Runtime ? clrDarkGreen : clrDarkSlateGray);
+   ObjectSetString(0, Obj("native24"), OBJPROP_TEXT, g_nativeIgnoreWindowsRuntime ? "NAT 24" : "NAT WIN");
+   ObjectSetInteger(0, Obj("native24"), OBJPROP_BGCOLOR, g_nativeIgnoreWindowsRuntime ? clrDarkOrange : clrDarkSlateGray);
    ObjectSetString(0, Obj("ftmo"), OBJPROP_TEXT, g_ftmoMode ? "FTMO" : "FTMO");
    ObjectSetInteger(0, Obj("ftmo"), OBJPROP_BGCOLOR, g_ftmoMode ? clrDarkGreen : clrDarkSlateGray);
    ObjectSetString(0, Obj("risklot"), OBJPROP_TEXT, g_riskLotOnlyMode ? "RISK" : "RISK");
@@ -3412,7 +3637,7 @@ void DashboardUpdate()
    ObjectSetInteger(0, Obj("basketrev"), OBJPROP_BGCOLOR, g_basketCloseOnReverseRuntime ? clrDarkGreen : clrDarkSlateGray);
    if(g_collapsed) return;
    string sigTime = (g_lastSignalTime > 0) ? TimeToString(g_lastSignalTime, TIME_DATE|TIME_MINUTES) : "-";
-   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | EXEC " + TrendExecModeLabel() + " Dly " + IntegerToString(g_trendExecDelayRuntime) + "s | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MODE " + (g_basketModeRuntime ? "BASKET" : "TRAD") + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | Magic " + IntegerToString(EffectiveMagic()));
+   ObjectSetString(0, Obj("status"), OBJPROP_TEXT, "Spread " + IntegerToString(CurrentSpreadPoints()) + " pt | Mode " + RuntimeRiskModeLabel() + " | Risk% " + DoubleToString(EffAccountRiskPerTradePct(),2) + " | INV " + (g_invertMode ? "ON" : "OFF") + " | SYM " + (g_symmetricRTargetsRuntime ? "ON" : "OFF") + " | EXEC " + TrendExecModeLabel() + " Dly " + IntegerToString(g_trendExecDelayRuntime) + "s | TREND STATE buf" + IntegerToString(InpTrendStateBuffer) + " | MODE " + (g_basketModeRuntime ? "BASKET" : "TRAD") + " | MT5 " + (g_fileBridgeMt5Runtime ? "ON" : "OFF") + " | NAT " + (g_nativeIgnoreWindowsRuntime ? "24/7" : "WIN") + " | Magic " + IntegerToString(EffectiveMagic()));
    ObjectSetString(0, Obj("signal"), OBJPROP_TEXT, "Latest trade signal: " + g_lastSignalDir + " @ " + sigTime + " px " + PriceText(g_lastSignalPrice));
    ObjectSetString(0, Obj("trend_dbg"), OBJPROP_TEXT, TrendBufferDebugLine());
    ObjectSetString(0, Obj("trend_now"), OBJPROP_TEXT, TrendRawStateLine());
@@ -3610,12 +3835,13 @@ void ApplyDashboardInputs()
    if(ObjectFind(0, Obj("e_blpips")) >= 0) g_basketMaxLossPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_blpips"), OBJPROP_TEXT)));
    if(ObjectFind(0, Obj("e_bcat")) >= 0) g_basketCatastrophicSlPipsRuntime = MathMax(0.0, StringToDouble(ObjectGetString(0, Obj("e_bcat"), OBJPROP_TEXT)));
    if(ObjectFind(0, Obj("e_evt")) >= 0) g_utcEventBlockTimesRuntime = Trim(ObjectGetString(0, Obj("e_evt"), OBJPROP_TEXT));
+   FileBridgeWriteBasketConfigMarker("dashboard_apply");
    g_utcEventBlockRadiusRuntime = MathMax(0, MathMin(60, g_utcEventBlockRadiusRuntime));
    g_basketCloseAtSessionEndRuntime = false;
    g_basketSessionEndTimeRuntime = "";
    DrawLatestSignalLevels("dashboard_apply");
    DrawHistoricalSignalLevels("dashboard_apply");
-   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp_r=" + DoubleToString(g_targetRRuntime,1) + " half_r=" + DoubleToString(g_halfRRuntime,1) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
+   Audit("dashboard_apply", "", 0, "", g_lotRuntime, 0, 0, 0, "max_spread=" + IntegerToString(g_maxSpreadRuntime) + " scale=" + DoubleToString(g_finalScaleRuntime,1) + " tp_r=" + DoubleToString(g_targetRRuntime,1) + " half_r=" + DoubleToString(g_halfRRuntime,1) + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " native_ignore_windows=" + (g_nativeIgnoreWindowsRuntime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " trend_only=true trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " exec_mode=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
 }
 
 void Rect(string name, int x, int y, int w, int h, color bg, color border)
@@ -3992,8 +4218,4 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
-
-
-
-
 

@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| Liquidity Narrative SMT/FVG Model EA                       |
 //| Session liquidity draw -> SMT/stop-hunt -> delivery shift -> FVG tap.           |
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-11.strict-entry-sync"
+#define LN_BUILD "2026-07-15.live-solid-levels"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -77,6 +77,7 @@ input long            InpMagic                  = 31061501;
 input int             InpDeviationPoints        = 30;
 input bool            InpCloseOnReverse         = true;
 input bool            InpBlockSameDirection     = true;
+input bool            InpAllowDuplicateEntriesDefault = false;
 
 input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H4;
 input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M30;
@@ -123,6 +124,7 @@ input bool            InpDrawLiveLevels         = true;
 
 input bool            InpFileBridgeEnabled      = false;
 input bool            InpFileBridgeOnlyMode     = false;
+input bool            InpNativeTradeWithBridgeOnlyDefault = false; // ML shadow mode: when cTrader bridge-only is enabled, also open/manage native MT5 trades.
 input bool            InpFileBridgeUseCommonFiles = true;
 input string          InpFileBridgeLatestFile   = "LiquidityNarrativeBridge_Latest.csv";
 input string          InpFileBridgeAuditPrefix  = "LiquidityNarrativeBridge_Audit_";
@@ -314,6 +316,8 @@ string           g_lastSpreadStatus = "?";
 string           g_lastBridgeStatus = "BRIDGE OFF";
 bool             g_fileBridgeEnabled = false;
 bool             g_fileBridgeOnlyMode = false;
+bool             g_nativeTradeWithBridgeOnly = false;
+bool             g_allowDuplicateEntries = false;
 double           g_riskPerTradePct = 1.0;
 
 datetime         g_lastAuditProbe = 0;
@@ -359,6 +363,7 @@ string TfLabel(ENUM_TIMEFRAMES tf)
       case PERIOD_M15: return "M15";
       case PERIOD_M30: return "M30";
       case PERIOD_H1:  return "H1";
+      case PERIOD_H2:  return "H2";
       case PERIOD_H4:  return "H4";
       case PERIOD_D1:  return "D1";
       case PERIOD_W1:  return "W1";
@@ -1773,7 +1778,7 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
 {
    SimStats st;
    ZeroMemory(st);
-   FilterAlternatingSignals(signals);
+   if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    for(int i = 0; i < ArraySize(signals); ++i)
    {
       bool closed = false, won = false;
@@ -1834,7 +1839,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       ArrayFree(g_simCache);
    }
 
-   FilterAlternatingSignals(g_histSignals);
+   if(!g_allowDuplicateEntries) FilterAlternatingSignals(g_histSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
@@ -2026,6 +2031,24 @@ string FileBridgeDate(datetime t)
    return StringFormat("%04d%02d%02d", d.year, d.mon, d.day);
 }
 
+string FileBridgeSafeFileToken(string s)
+{
+   string out = s;
+   StringReplace(out, "/", "_");
+   StringReplace(out, ":", "_");
+   StringReplace(out, "*", "_");
+   StringReplace(out, "?", "_");
+   StringReplace(out, "<", "_");
+   StringReplace(out, ">", "_");
+   StringReplace(out, "|", "_");
+   StringReplace(out, " ", "_");
+   return out;
+}
+
+string FileBridgeScopedLatestFileName()
+{
+   return "LiquidityNarrativeBridge_Latest_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+}
 string FileBridgeSource()
 {
    string src = "LiquidityNarrative|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
@@ -2067,6 +2090,21 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
    );
 }
 
+bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
+   ResetLastError();
+   int h = FileOpen(fileName, latestFlags, ',');
+   if(h == INVALID_HANDLE)
+   {
+      Print("LiquidityNarrative file_bridge scoped latest open failed err=", GetLastError(), " file=", fileName);
+      return false;
+   }
+   FileBridgeWriteHeader(h);
+   FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   FileClose(h);
+   return true;
+}
 bool FileBridgeWriteInitMarker()
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
@@ -2083,6 +2121,7 @@ bool FileBridgeWriteInitMarker()
    FileBridgeWriteHeader(h);
    FileBridgeWriteRow(h, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    FileClose(h);
+   FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    g_lastBridgeStatus = "INIT WROTE";
    return true;
 }
@@ -2104,6 +2143,7 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
    FileBridgeWriteHeader(h);
    FileBridgeWriteRow(h, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
    FileClose(h);
+   FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
 
    string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2242,6 +2282,8 @@ void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string labe
 string BtBuildCoverageSummary()
 {
    string detail = "";
+   BtAppendCoverage(PERIOD_H1, InpCalcHtfBars, g_btCutoff, "htf_h1", detail);
+   BtAppendCoverage(PERIOD_H2, InpCalcHtfBars, g_btCutoff, "htf_h2", detail);
    BtAppendCoverage(PERIOD_H4, InpCalcHtfBars, g_btCutoff, "htf_h4", detail);
    BtAppendCoverage(PERIOD_D1, InpCalcHtfBars, g_btCutoff, "htf_d1", detail);
    BtAppendCoverage(PERIOD_M15, InpCalcEntryBars, g_btCutoff, "entry_m15", detail);
@@ -2355,8 +2397,11 @@ void ScanClosedHistory()
       if(why == DEAL_REASON_SL) reason = "closed_by_broker_sl";
       if(why == DEAL_REASON_TP) reason = "closed_by_broker_tp";
       if(why == DEAL_REASON_CLIENT || why == DEAL_REASON_MOBILE || why == DEAL_REASON_WEB) reason = "closed_manual";
+      ulong posId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      double profit = HistoryDealGetDouble(deal, DEAL_PROFIT) + HistoryDealGetDouble(deal, DEAL_SWAP) + HistoryDealGetDouble(deal, DEAL_COMMISSION) + HistoryDealGetDouble(deal, DEAL_FEE);
+      string lifecycle = PositionLifecycleDetail(posId, reason, profit, false);
       AuditWrite(reason, IntegerToString((int)deal), 0, HistoryDealGetDouble(deal, DEAL_PRICE), 0, 0,
-         HistoryDealGetDouble(deal, DEAL_VOLUME), "profit=" + DoubleToString(HistoryDealGetDouble(deal, DEAL_PROFIT), 2));
+         HistoryDealGetDouble(deal, DEAL_VOLUME), "profit=" + DoubleToString(profit, 2) + " " + lifecycle);
    }
 }
 
@@ -2369,6 +2414,15 @@ void DeleteByPrefix(string prefix)
    {
       string name = ObjectName(0, i, 0, -1);
       if(StringFind(name, prefix) == 0) ObjectDelete(0, name);
+   }
+}
+void DeleteAllLiqNarrativeLiveObjects()
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; --i)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      if(StringFind(name, LN_PREFIX) == 0 && StringFind(name, "_LV_") >= 0)
+         ObjectDelete(0, name);
    }
 }
 
@@ -2513,6 +2567,40 @@ void DrawHistoricalSegment(string id, datetime t1, datetime t2, double price, co
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
+datetime NextOpenOwnPositionTimeAfter(datetime t, datetime maxEnd)
+{
+   datetime best = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      datetime openedAt = (datetime)PositionGetInteger(POSITION_TIME);
+      if(openedAt <= t || openedAt >= maxEnd) continue;
+      if(best == 0 || openedAt < best) best = openedAt;
+   }
+   return best;
+}
+
+void DrawLiveLevelSegment(string id, datetime t1, datetime t2, double price, color clr, ENUM_LINE_STYLE style = STYLE_DASH, int width = 3)
+{
+   if(IsTesterMode() || price <= 0.0 || t2 <= t1) return;
+   string name = PFX + id;
+   if(ObjectFind(0, name) >= 0 && (ENUM_OBJECT)ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
+      ObjectDelete(0, name);
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
+   ObjectMove(0, name, 0, t1, price);
+   ObjectMove(0, name, 1, t2, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, DASH_Z + 1);
+}
 void DrawFvgBox(string id, datetime t1, datetime t2, double low, double high, color clr)
 {
    if(IsTesterMode()) return;
@@ -2554,6 +2642,11 @@ void DrawHistoricalSignals(bool resetObjects = true)
       double targetPrice = SelectedTarget(g_histSignals[i], g_target, g_targetModel);
       double hcPrice = HalfTrigger(g_histSignals[i], g_hc);
       datetime lineEnd = g_histSignals[i].availableTime + PeriodSeconds(g_entryTf) * 20;
+      if(i + 1 < count && g_histSignals[i + 1].availableTime > g_histSignals[i].availableTime && g_histSignals[i + 1].availableTime < lineEnd)
+         lineEnd = g_histSignals[i + 1].availableTime;
+      datetime liveCut = NextOpenOwnPositionTimeAfter(g_histSignals[i].availableTime, lineEnd);
+      if(liveCut > g_histSignals[i].availableTime && liveCut < lineEnd)
+         lineEnd = liveCut;
       DrawHistoricalSegment(id + "_ENTRY", g_histSignals[i].availableTime, lineEnd, g_histSignals[i].entry, C'230,230,230', STYLE_SOLID);
       if(g_targetModel != ERL_TARGET_OPPOSITE_SIGNAL)
       {
@@ -2617,27 +2710,86 @@ void DrawLivePositionMarker(ulong ticket, datetime t, double open, double sl, do
    ObjectSetInteger(0, txtName, OBJPROP_ZORDER, DASH_Z + 2);
 }
 
+string LiveObjectTicketToken(string name)
+{
+   string p;
+   p = PFX + "LV_ENTRY_";
+   if(StringFind(name, p) == 0) return StringSubstr(name, StringLen(p));
+   p = PFX + "LV_SL_";
+   if(StringFind(name, p) == 0) return StringSubstr(name, StringLen(p));
+   p = PFX + "LV_TP_";
+   if(StringFind(name, p) == 0) return StringSubstr(name, StringLen(p));
+   p = PFX + "LV_ARROW_";
+   if(StringFind(name, p) == 0) return StringSubstr(name, StringLen(p));
+   p = PFX + "LV_TXT_";
+   if(StringFind(name, p) == 0) return StringSubstr(name, StringLen(p));
+   return "";
+}
+
+void DeleteStaleLiveLevelObjects(string activeTicketKeys)
+{
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; --i)
+   {
+      string name = ObjectName(0, i, 0, -1);
+      if(StringFind(name, PFX + "LV_") != 0) continue;
+      string token = LiveObjectTicketToken(name);
+      if(token == "" || StringFind(activeTicketKeys, "|" + token + "|") < 0)
+         ObjectDelete(0, name);
+   }
+}
+
 void DrawLiveLevelsForPosition()
 {
-   DeleteByPrefix(PFX + "LV_");
    if(IsTesterMode()) return;
-   if(!InpDrawLiveLevels) return;
+   if(!InpDrawLiveLevels)
+   {
+      DeleteByPrefix(PFX + "LV_");
+      g_liveLevelsSignature = "";
+      return;
+   }
+
+   ulong newestTicket = 0;
+   datetime newestTime = 0;
    for(int i = PositionsTotal() - 1; i >= 0; --i)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      datetime openedAt = (datetime)PositionGetInteger(POSITION_TIME);
+      if(openedAt >= newestTime)
+      {
+         newestTime = openedAt;
+         newestTicket = ticket;
+      }
+   }
+
+   string activeTicketKeys = "|";
+   if(newestTicket > 0 && PositionSelectByTicket(newestTicket))
+   {
+      string ticketText = IntegerToString((int)newestTicket);
+      activeTicketKeys += ticketText + "|";
       double open = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
-      DrawHLine("LV_ENTRY_" + IntegerToString((int)ticket), open, C'90,178,255', STYLE_SOLID);
-      if(sl > 0) DrawHLine("LV_SL_" + IntegerToString((int)ticket), sl, C'255,80,110', STYLE_DASH);
-      if(tp > 0) DrawHLine("LV_TP_" + IntegerToString((int)ticket), tp, C'80,255,180', STYLE_DASH);
       datetime openedAt = (datetime)PositionGetInteger(POSITION_TIME);
+      int segSec = MathMax(60, PeriodSeconds(g_entryTf)) * 20;
+      datetime liveEnd = TimeCurrent() + segSec;
+      if(liveEnd <= openedAt) liveEnd = openedAt + segSec;
+      DrawLiveLevelSegment("LV_ENTRY_" + ticketText, openedAt, liveEnd, open, C'245,245,255', STYLE_SOLID, 4);
+      if(sl > 0)
+         DrawLiveLevelSegment("LV_SL_" + ticketText, openedAt, liveEnd, sl, C'255,40,70', STYLE_SOLID, 4);
+      else
+         ObjectDelete(0, PFX + "LV_SL_" + ticketText);
+      if(tp > 0)
+         DrawLiveLevelSegment("LV_TP_" + ticketText, openedAt, liveEnd, tp, C'20,255,160', STYLE_SOLID, 4);
+      else
+         ObjectDelete(0, PFX + "LV_TP_" + ticketText);
       int dir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
-      DrawLivePositionMarker(ticket, openedAt, open, sl, tp, dir);
+      DrawLivePositionMarker(newestTicket, openedAt, open, sl, tp, dir);
    }
+   DeleteStaleLiveLevelObjects(activeTicketKeys);
+   g_liveLevelsSignature = activeTicketKeys;
 }
 
 //=====================================================================
@@ -2646,6 +2798,21 @@ void DrawLiveLevelsForPosition()
 string TicketKey(ulong ticket, string field)
 {
    return "LIQNARR|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + IntegerToString((int)ticket) + "|" + field;
+}
+
+void CopyPlanField(ulong fromTicket, ulong toTicket, string field)
+{
+   string fromKey = TicketKey(fromTicket, field);
+   if(GlobalVariableCheck(fromKey))
+      GlobalVariableSet(TicketKey(toTicket, field), GlobalVariableGet(fromKey));
+}
+
+void CopyPlanState(ulong fromTicket, ulong toTicket)
+{
+   if(fromTicket == 0 || toTicket == 0 || fromTicket == toTicket) return;
+   string fields[] = {"entry","sl","tp1","tp2","tp3","tp4","tp5","tp6","hc","halfDone","openTs","dir","target","targetPips","lossPips","mfePips","maePips","mfeMoney","maeMoney","mfePx","maePx","mfeTs","maeTs","firstTargetTs","firstLossTs","reverseCount"};
+   for(int i = 0; i < ArraySize(fields); ++i)
+      CopyPlanField(fromTicket, toTicket, fields[i]);
 }
 
 void StorePositionPlan(ulong ticket, const ErlSignal &sig, ERL_HC_MODE hc)
@@ -2660,6 +2827,33 @@ void StorePositionPlan(ulong ticket, const ErlSignal &sig, ERL_HC_MODE hc)
    GlobalVariableSet(TicketKey(ticket, "tp6"), sig.tp6);
    GlobalVariableSet(TicketKey(ticket, "hc"), (double)hc);
    GlobalVariableSet(TicketKey(ticket, "halfDone"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "openTs"), (double)TimeCurrent());
+   GlobalVariableSet(TicketKey(ticket, "dir"), (double)sig.dir);
+   double selectedTp = SelectedTarget(sig, g_target);
+   double pip = PipSize();
+   double targetPips = pip > 0.0 ? MathAbs(selectedTp - sig.entry) / pip : 0.0;
+   double lossPips = pip > 0.0 ? MathAbs(sig.entry - sig.sl) / pip : 0.0;
+   GlobalVariableSet(TicketKey(ticket, "target"), selectedTp);
+   GlobalVariableSet(TicketKey(ticket, "targetPips"), targetPips);
+   GlobalVariableSet(TicketKey(ticket, "lossPips"), lossPips);
+   GlobalVariableSet(TicketKey(ticket, "mfePips"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "maePips"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "mfeMoney"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "maeMoney"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "mfePx"), sig.entry);
+   GlobalVariableSet(TicketKey(ticket, "maePx"), sig.entry);
+   GlobalVariableSet(TicketKey(ticket, "mfeTs"), (double)TimeCurrent());
+   GlobalVariableSet(TicketKey(ticket, "maeTs"), (double)TimeCurrent());
+   GlobalVariableSet(TicketKey(ticket, "firstTargetTs"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "firstLossTs"), 0.0);
+   GlobalVariableSet(TicketKey(ticket, "reverseCount"), 0.0);
+   UpdatePositionLifecycle(ticket);
+   if(PositionSelectByTicket(ticket))
+   {
+      ulong posId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(posId > 0 && posId != ticket)
+         CopyPlanState(ticket, posId);
+   }
 }
 
 double GetPlan(ulong ticket, string field, double fallback = 0.0)
@@ -2667,6 +2861,118 @@ double GetPlan(ulong ticket, string field, double fallback = 0.0)
    string key = TicketKey(ticket, field);
    if(!GlobalVariableCheck(key)) return fallback;
    return GlobalVariableGet(key);
+}
+
+
+void SetPlan(ulong ticket, string field, double value)
+{
+   GlobalVariableSet(TicketKey(ticket, field), value);
+}
+
+string MlTime(datetime t)
+{
+   if(t <= 0) return "";
+   return TimeToString(t, TIME_DATE | TIME_SECONDS);
+}
+
+void UpdatePositionLifecycle(ulong ticket)
+{
+   if(ticket == 0 || !PositionSelectByTicket(ticket)) return;
+   if(PositionGetString(POSITION_SYMBOL) != _Symbol) return;
+   if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) return;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return;
+   double pip = PipSize();
+   if(pip <= 0.0) return;
+   int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
+   double entry = GetPlan(ticket, "entry", PositionGetDouble(POSITION_PRICE_OPEN));
+   if(entry <= 0.0) entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   if(GetPlan(ticket, "openTs", 0.0) <= 0.0) SetPlan(ticket, "openTs", (double)(datetime)PositionGetInteger(POSITION_TIME));
+   if(GetPlan(ticket, "dir", 0.0) == 0.0) SetPlan(ticket, "dir", (double)dir);
+   double px = dir > 0 ? tick.bid : tick.ask;
+   double signedPips = dir > 0 ? (px - entry) / pip : (entry - px) / pip;
+   double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   datetime now = TimeCurrent();
+   bool mfeInit = GetPlan(ticket, "mfeTs", 0.0) <= 0.0;
+   bool maeInit = GetPlan(ticket, "maeTs", 0.0) <= 0.0;
+   double oldMfe = GetPlan(ticket, "mfePips", signedPips);
+   double oldMae = GetPlan(ticket, "maePips", signedPips);
+   if(mfeInit || signedPips > oldMfe)
+   {
+      SetPlan(ticket, "mfePips", signedPips);
+      SetPlan(ticket, "mfeMoney", pnl);
+      SetPlan(ticket, "mfePx", px);
+      SetPlan(ticket, "mfeTs", (double)now);
+   }
+   if(maeInit || signedPips < oldMae)
+   {
+      SetPlan(ticket, "maePips", signedPips);
+      SetPlan(ticket, "maeMoney", pnl);
+      SetPlan(ticket, "maePx", px);
+      SetPlan(ticket, "maeTs", (double)now);
+   }
+   double targetPips = GetPlan(ticket, "targetPips", 0.0);
+   double lossPips = GetPlan(ticket, "lossPips", 0.0);
+   if(targetPips > 0.0 && GetPlan(ticket, "firstTargetTs", 0.0) <= 0.0 && signedPips >= targetPips)
+      SetPlan(ticket, "firstTargetTs", (double)now);
+   if(lossPips > 0.0 && GetPlan(ticket, "firstLossTs", 0.0) <= 0.0 && signedPips <= -lossPips)
+      SetPlan(ticket, "firstLossTs", (double)now);
+   ulong posId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   if(posId > 0 && posId != ticket)
+      CopyPlanState(ticket, posId);
+}
+
+void UpdateOpenPositionLifecycleStates()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
+      UpdatePositionLifecycle(ticket);
+   }
+}
+
+string PositionLifecycleDetail(ulong ticket, string closeReason, double closePnl, bool countReverse)
+{
+   if(ticket == 0) return "ml_state=missing_ticket";
+   if(PositionSelectByTicket(ticket)) UpdatePositionLifecycle(ticket);
+   if(countReverse) SetPlan(ticket, "reverseCount", GetPlan(ticket, "reverseCount", 0.0) + 1.0);
+   double openTs = GetPlan(ticket, "openTs", 0.0);
+   double duration = openTs > 0.0 ? MathMax(0.0, (double)(TimeCurrent() - (datetime)openTs)) : 0.0;
+   double mfe = GetPlan(ticket, "mfePips", 0.0);
+   double mae = GetPlan(ticket, "maePips", 0.0);
+   double targetTs = GetPlan(ticket, "firstTargetTs", 0.0);
+   double lossTs = GetPlan(ticket, "firstLossTs", 0.0);
+   string first = "none";
+   if(targetTs > 0.0 && lossTs > 0.0) first = targetTs <= lossTs ? "target" : "loss";
+   else if(targetTs > 0.0) first = "target";
+   else if(lossTs > 0.0) first = "loss";
+   return "ml=1 close_reason=" + closeReason
+      + " position_id=" + IntegerToString((int)ticket)
+      + " entry=" + DoubleToString(GetPlan(ticket, "entry", 0.0), _Digits)
+      + " dir=" + DoubleToString(GetPlan(ticket, "dir", 0.0), 0)
+      + " duration_sec=" + DoubleToString(duration, 0)
+      + " close_pnl=" + DoubleToString(closePnl, 2)
+      + " target_pips=" + DoubleToString(GetPlan(ticket, "targetPips", 0.0), 2)
+      + " max_loss_pips=" + DoubleToString(GetPlan(ticket, "lossPips", 0.0), 2)
+      + " mfe_pips=" + DoubleToString(MathMax(0.0, mfe), 2)
+      + " mae_pips=" + DoubleToString(MathMax(0.0, -mae), 2)
+      + " mfe_signed_pips=" + DoubleToString(mfe, 2)
+      + " mae_signed_pips=" + DoubleToString(mae, 2)
+      + " mfe_money=" + DoubleToString(GetPlan(ticket, "mfeMoney", 0.0), 2)
+      + " mae_money=" + DoubleToString(GetPlan(ticket, "maeMoney", 0.0), 2)
+      + " mfe_price=" + DoubleToString(GetPlan(ticket, "mfePx", 0.0), _Digits)
+      + " mae_price=" + DoubleToString(GetPlan(ticket, "maePx", 0.0), _Digits)
+      + " first_target_hit=" + (targetTs > 0.0 ? "1" : "0")
+      + " first_loss_hit=" + (lossTs > 0.0 ? "1" : "0")
+      + " first_hit=" + first
+      + " target_hit_time=" + MlTime((datetime)targetTs)
+      + " loss_hit_time=" + MlTime((datetime)lossTs)
+      + " mfe_time=" + MlTime((datetime)GetPlan(ticket, "mfeTs", 0.0))
+      + " mae_time=" + MlTime((datetime)GetPlan(ticket, "maeTs", 0.0))
+      + " reverse_signal_count=" + DoubleToString(GetPlan(ticket, "reverseCount", 0.0), 0);
 }
 
 ulong FindNewestOwnPosition()
@@ -2719,10 +3025,11 @@ bool CloseOwnPositions(int dirFilter = 0)
       double sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
       double volume = PositionGetDouble(POSITION_VOLUME);
+      string lifecycle = PositionLifecycleDetail(ticket, "manual_or_reverse", PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP), dirFilter != 0);
       bool closed = trade.PositionClose(ticket);
       allClosed = allClosed && closed;
       AuditWrite(closed ? "close_request" : "close_failed", IntegerToString((int)ticket), dir,
-         open, sl, tp, volume, "manual_or_reverse");
+         open, sl, tp, volume, "manual_or_reverse " + lifecycle);
    }
    return allClosed;
 }
@@ -2762,6 +3069,42 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
       detail = "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits);
 }
 
+uint SignalEventHash(string value)
+{
+   uint h = 2166136261;
+   for(int i = 0; i < StringLen(value); ++i)
+   {
+      h ^= (uint)StringGetCharacter(value, i);
+      h *= 16777619;
+   }
+   return h;
+}
+
+string SignalClaimKey(const string eventId)
+{
+   return "LIQN_EVT|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))
+      + "|" + IntegerToString((int)InpMagic)
+      + "|" + _Symbol
+      + "|" + IntegerToString((int)SignalEventHash(eventId));
+}
+
+bool IsSignalEventClaimed(const string eventId)
+{
+   return GlobalVariableCheck(SignalClaimKey(eventId));
+}
+
+void MarkSignalEventClaimed(const string eventId)
+{
+   if(eventId == "") return;
+   GlobalVariableSet(SignalClaimKey(eventId), (double)TimeCurrent());
+}
+
+void RememberSignalSeen(const ErlSignal &sig)
+{
+   g_lastSignalId = sig.id;
+   g_lastSignalTime = sig.availableTime;
+   g_lastSignalDir = sig.dir;
+}
 bool OpenSignal(const ErlSignal &sig)
 {
    if(!g_eaEnabled)
@@ -2774,21 +3117,14 @@ bool OpenSignal(const ErlSignal &sig)
       g_lastBlock = "duplicate_signal";
       return false;
    }
-   if(InpBlockSameDirection && OwnPositionCount(sig.dir) > 0)
+   if(IsSignalEventClaimed(sig.id))
    {
-      g_lastBlock = "same_direction_position";
+      RememberSignalSeen(sig);
+      g_lastBlock = "claimed_signal";
+      AuditWrite("claimed_signal_skip", sig.id, sig.dir, sig.entry, sig.sl, SelectedTarget(sig, g_target), 0.0, "event_already_claimed_after_restart");
       return false;
    }
    bool reverseExitMode = (g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL);
-   if((InpCloseOnReverse || reverseExitMode) && OwnPositionCount(-sig.dir) > 0)
-   {
-      if(!CloseOwnPositions(-sig.dir) || OwnPositionCount(-sig.dir) > 0)
-      {
-         g_lastBlock = "reverse_close_failed";
-         Print("LiquidityNarrative reverse_close_failed dir=", DirLabel(sig.dir), " id=", sig.id);
-         return false;
-      }
-   }
 
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return false;
@@ -2804,26 +3140,52 @@ bool OpenSignal(const ErlSignal &sig)
    string bridgeHalfLabel = (g_hc == ERL_HC_OFF || bridgeHalf <= 0.0) ? "off" : HcLabel(g_hc);
    bool bridgeWritten = false;
    if(g_fileBridgeEnabled)
+   {
       bridgeWritten = FileBridgeWriteSignal(sig, execSig.entry, orderSl, orderTp, bridgeHalf, bridgeHalfLabel);
+      if(bridgeWritten) MarkSignalEventClaimed(sig.id);
+   }
    if(g_fileBridgeOnlyMode)
    {
-      if(!g_fileBridgeEnabled || !bridgeWritten)
+      if(!g_nativeTradeWithBridgeOnly)
       {
-         g_lastBlock = "file_bridge_write_failed";
-         AuditWrite("bridge_only_failed", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
+         if(!g_fileBridgeEnabled || !bridgeWritten)
+         {
+            g_lastBlock = "file_bridge_write_failed";
+            AuditWrite("bridge_only_failed", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
+            return false;
+         }
+         RememberSignalSeen(sig);
+         g_lastEntry = execSig.entry;
+         g_lastSl = orderSl;
+         g_lastTp = orderTp;
+         g_lastStatus = "BRIDGE_PUBLISHED";
+         g_lastBlock = "";
+         AuditWrite("bridge_published_only", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
+         return true;
+      }
+      if(!g_fileBridgeEnabled || !bridgeWritten)
+         AuditWrite("bridge_only_native_continue_bridge_failed", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
+      else
+         AuditWrite("bridge_published_native_continue", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
+   }
+
+   if(!g_allowDuplicateEntries && InpBlockSameDirection && OwnPositionCount(sig.dir) > 0)
+   {
+      g_lastBlock = "same_direction_position";
+      AuditWrite("local_same_direction_after_bridge", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
+      return false;
+   }
+   if((InpCloseOnReverse || reverseExitMode) && OwnPositionCount(-sig.dir) > 0)
+   {
+      if(!CloseOwnPositions(-sig.dir) || OwnPositionCount(-sig.dir) > 0)
+      {
+         g_lastBlock = "reverse_close_failed";
+         AuditWrite("local_reverse_close_failed_after_bridge", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
+         Print("LiquidityNarrative reverse_close_failed dir=", DirLabel(sig.dir), " id=", sig.id, " bridge_written=", (bridgeWritten ? "1" : "0"));
          return false;
       }
-      g_lastSignalId = sig.id;
-      g_lastSignalTime = sig.availableTime;
-      g_lastSignalDir = sig.dir;
-      g_lastEntry = execSig.entry;
-      g_lastSl = orderSl;
-      g_lastTp = orderTp;
-      g_lastStatus = "BRIDGE_PUBLISHED";
-      g_lastBlock = "";
-      AuditWrite("bridge_published_only", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
-      return true;
    }
+
    double lot = 0.0;
    string riskReason = "";
    if(!RiskGateAllows(execSig.entry, execSig.sl, lot, riskReason))
@@ -2854,9 +3216,8 @@ bool OpenSignal(const ErlSignal &sig)
 
    ulong posTicket = FindNewestOwnPosition();
    if(posTicket > 0) StorePositionPlan(posTicket, execSig, g_hc);
-   g_lastSignalId = sig.id;
-   g_lastSignalTime = sig.availableTime;
-   g_lastSignalDir = sig.dir;
+   MarkSignalEventClaimed(sig.id);
+   RememberSignalSeen(sig);
    g_lastEntry = execSig.entry;
    g_lastSl = orderSl;
    g_lastTp = orderTp;
@@ -2894,6 +3255,8 @@ void TryOpenLatestSignal()
    datetime cutoff = now - 7 * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
+   if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
+   count = ArraySize(signals);
    if(count <= 0)
    {
       g_lastStatus = "NO_SIGNAL";
@@ -2928,6 +3291,7 @@ void ManagePositions()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))) continue;
 
+      UpdatePositionLifecycle(ticket);
       int dir = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1;
       double open = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl = PositionGetDouble(POSITION_SL);
@@ -2973,7 +3337,7 @@ void ManagePositions()
 void BuildCombos()
 {
    ArrayFree(g_btCombos);
-   ENUM_TIMEFRAMES htfs[] = { PERIOD_H4, PERIOD_D1 };
+   ENUM_TIMEFRAMES htfs[] = { PERIOD_H1, PERIOD_H2, PERIOD_H4, PERIOD_D1 };
    ENUM_TIMEFRAMES etfs[] = { PERIOD_M15, PERIOD_M30, PERIOD_H1 };
    int swings[] = { 3, 5, 8 };
    bool biases[] = { false, true };
@@ -3204,12 +3568,14 @@ void UpdateDashboard()
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
    LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
-   ButtonObj("BTN_HTF_H4", x + 66, row, 54, bh, "H4", g_htf == PERIOD_H4 ? on : off);
-   ButtonObj("BTN_HTF_D1", x + 126, row, 54, bh, "D1", g_htf == PERIOD_D1 ? on : off);
-   LabelObj("DASH_ETF_L", x + 205, row + 4, "ENTRY:", muted, 8);
-   ButtonObj("BTN_ETF_M15", x + 266, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
-   ButtonObj("BTN_ETF_M30", x + 330, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
-   ButtonObj("BTN_ETF_H1", x + 394, row, 52, bh, "H1", g_entryTf == PERIOD_H1 ? on : off);
+   ButtonObj("BTN_HTF_H1", x + 66, row, 48, bh, "H1", g_htf == PERIOD_H1 ? on : off);
+   ButtonObj("BTN_HTF_H2", x + 118, row, 48, bh, "H2", g_htf == PERIOD_H2 ? on : off);
+   ButtonObj("BTN_HTF_H4", x + 170, row, 48, bh, "H4", g_htf == PERIOD_H4 ? on : off);
+   ButtonObj("BTN_HTF_D1", x + 222, row, 48, bh, "D1", g_htf == PERIOD_D1 ? on : off);
+   LabelObj("DASH_ETF_L", x + 282, row + 4, "ENTRY:", muted, 8);
+   ButtonObj("BTN_ETF_M15", x + 342, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
+   ButtonObj("BTN_ETF_M30", x + 406, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
+   ButtonObj("BTN_ETF_H1", x + 470, row, 52, bh, "H1", g_entryTf == PERIOD_H1 ? on : off);
    ButtonObj("BTN_EA", x + 530, row, 76, bh, g_eaEnabled ? "EA: ON" : "EA: OFF", g_eaEnabled ? on : C'170,45,62');
    ButtonObj("BTN_FTMO", x + 610, row, 62, bh, g_ftmoMode ? "FTMO" : "FTMO", g_ftmoMode ? on : off);
    ButtonObj("BTN_RISKLOT", x + 676, row, 68, bh, g_riskLotOnlyMode ? "RISK" : "RISK", g_riskLotOnlyMode ? on : off);
@@ -3238,6 +3604,7 @@ void UpdateDashboard()
    ButtonObj("BTN_HC_TP5", x + 364, row, 54, bh, "TP5", g_hc == ERL_HC_TP5 ? on : ((int)g_target + 1 > 5 ? off : C'35,37,44'));
    LabelObj("DASH_BIAS_L", x + 430, row + 4, "WEEKLY:", muted, 8);
    ButtonObj("BTN_BIAS", x + 490, row, 68, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
+   ButtonObj("BTN_DUP_ENTRY", x + 566, row, 88, bh, g_allowDuplicateEntries ? "DUP ON" : "DUP OFF", g_allowDuplicateEntries ? C'184,103,22' : off);
    ButtonObj("BTN_AUDIT", x + 660, row, 84, bh, g_auditRuntime ? "AUDIT ON" : "AUDIT OFF", g_auditRuntime ? C'120,88,25' : off);
 
    row += 28;
@@ -3309,6 +3676,7 @@ void UpdateDashboard()
    LabelObj("DASH_EX1", x + 16, sec3 + 30,
       "Status: " + g_lastStatus + " | Block: " + (g_lastBlock == "" ? "-" : g_lastBlock)
       + " | Spread " + DoubleToString(g_lastSpreadPts, 0) + " pts | Positions " + IntegerToString(OwnPositionCount())
+      + " | DUP " + (g_allowDuplicateEntries ? "ON" : "OFF")
       + " | CT " + (g_fileBridgeEnabled ? (g_fileBridgeOnlyMode ? "ONLY" : "PUB") : "OFF") + " " + g_lastBridgeStatus,
       g_lastBlock == "" ? C'80,255,180' : C'255,204,82', 8);
    LabelObj("DASH_EX2", x + 16, sec3 + 52,
@@ -3329,9 +3697,10 @@ void UpdateDashboard()
    LabelObj("DASH_CT_L", x + 16, sec3 + 126, "cTRADER:", muted, 8);
    ButtonObj("BTN_BRIDGE_PUB", x + 84, sec3 + 124, 76, bh, g_fileBridgeEnabled ? "PUB ON" : "PUB OFF", g_fileBridgeEnabled ? on : off);
    ButtonObj("BTN_BRIDGE_ONLY", x + 166, sec3 + 124, 78, bh, g_fileBridgeOnlyMode ? "ONLY ON" : "ONLY OFF", g_fileBridgeOnlyMode ? C'120,88,25' : off);
-   LabelObj("DASH_RISK_L", x + 264, sec3 + 126, "RISK%:", muted, 8);
-   EditObj("EDIT_RISK_PCT", x + 322, sec3 + 124, 58, bh, DoubleToString(g_riskPerTradePct, 2));
-   ButtonObj("BTN_RISK_APPLY", x + 386, sec3 + 124, 88, bh, "APPLY R", C'38,101,176');
+   ButtonObj("BTN_BRIDGE_NATIVE", x + 250, sec3 + 124, 68, bh, g_nativeTradeWithBridgeOnly ? "NAT ON" : "NAT OFF", g_nativeTradeWithBridgeOnly ? C'184,103,22' : off);
+   LabelObj("DASH_RISK_L", x + 326, sec3 + 126, "RISK%:", muted, 8);
+   EditObj("EDIT_RISK_PCT", x + 384, sec3 + 124, 58, bh, DoubleToString(g_riskPerTradePct, 2));
+   ButtonObj("BTN_RISK_APPLY", x + 448, sec3 + 124, 88, bh, "APPLY R", C'38,101,176');
 
    int sec4 = sec3 + 160;
    RectObj("DASH_SEC4", x + 8, sec4, 744, 148, C'24,31,45', C'60,110,170');
@@ -3460,6 +3829,7 @@ int OnInit()
 {
    ErlTesterAudit_Init();
    PFX = LN_PREFIX + IntegerToString((int)ChartID()) + "_";
+   DeleteAllLiqNarrativeLiveObjects();
    g_eaEnabled = InpEaEnabled;
    g_ftmoMode = InpFtmoModeDefault;
    g_riskLotOnlyMode = (!g_ftmoMode && InpRiskLotOnlyModeDefault);
@@ -3485,6 +3855,8 @@ int OnInit()
    g_pipSlPips = ClampPipSlPips(InpPipSlPips);
    g_fileBridgeEnabled = InpFileBridgeEnabled;
    g_fileBridgeOnlyMode = InpFileBridgeOnlyMode;
+   g_nativeTradeWithBridgeOnly = InpNativeTradeWithBridgeOnlyDefault;
+   g_allowDuplicateEntries = InpAllowDuplicateEntriesDefault;
    g_riskPerTradePct = ClampRiskPerTradePct(InpRiskPerTradePct);
    g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
@@ -3616,6 +3988,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   if(Clicked(sparam, "BTN_HTF_H1")) { g_htf = PERIOD_H1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HTF_H2")) { g_htf = PERIOD_H2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_D1")) { g_htf = PERIOD_D1; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ETF_M15")) { g_entryTf = PERIOD_M15; RefreshAfterConfigChange(); return; }
@@ -3653,7 +4027,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_PIPSL_APPLY")) { g_pipSlPips = ClampPipSlPips(StringToDouble(ObjectGetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT, DoubleToString(g_pipSlPips, 1)); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BRIDGE_PUB")) { g_fileBridgeEnabled = !g_fileBridgeEnabled; if(!g_fileBridgeEnabled) { g_fileBridgeOnlyMode = false; g_lastBridgeStatus = "BRIDGE OFF"; } else { FileBridgeWriteInitMarker(); } UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_ONLY")) { g_fileBridgeOnlyMode = !g_fileBridgeOnlyMode; if(g_fileBridgeOnlyMode && !g_fileBridgeEnabled) g_fileBridgeEnabled = true; if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_BRIDGE_NATIVE")) { g_nativeTradeWithBridgeOnly = !g_nativeTradeWithBridgeOnly; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_RISK_APPLY")) { g_riskPerTradePct = ClampRiskPerTradePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT, DoubleToString(g_riskPerTradePct, 2)); if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_DUP_ENTRY")) { g_allowDuplicateEntries = !g_allowDuplicateEntries; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_PRO")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_LEG")) { SelectLegacyEntryModel(); RefreshAfterConfigChange(); return; }
@@ -3673,7 +4049,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_FTMO")) { g_ftmoMode = !g_ftmoMode; if(g_ftmoMode) g_riskLotOnlyMode = false; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_RISKLOT")) { g_riskLotOnlyMode = !g_riskLotOnlyMode; if(g_riskLotOnlyMode) g_ftmoMode = false; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_CLOSE")) { CloseOwnPositions(0); UpdateDashboard(); ChartRedraw(0); return; }
-   if(Clicked(sparam, "BTN_AUDIT")) { g_auditRuntime = !g_auditRuntime; Print("LiquidityNarrative audit logging ", g_auditRuntime ? "enabled" : "disabled"); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_AUDIT"))
+   {
+      g_auditRuntime = !g_auditRuntime;
+      Print("LiquidityNarrative audit logging ", g_auditRuntime ? "enabled" : "disabled");
+      if(g_auditRuntime)
+         AuditWrite("audit_toggle", "dashboard", 0, 0, 0, 0, 0, "AUDIT_ON build=" + (string)LN_BUILD);
+      UpdateDashboard();
+      ChartRedraw(0);
+      return;
+   }
 
    if(Clicked(sparam, "BTN_FILL_SIGNAL")) { g_btFillMode = BT_FILL_SIGNAL_CLOSE; UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_FILL_NEXT")) { g_btFillMode = BT_FILL_NEXT_BAR_OPEN; UpdateDashboard(); return; }
