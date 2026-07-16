@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| Liquidity Narrative SMT/FVG Model EA                       |
 //| Session liquidity draw -> SMT/stop-hunt -> delivery shift -> FVG tap.           |
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-15.live-solid-levels"
+#define LN_BUILD "2026-07-16.pipsl-fixed-geometry-audit"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -1985,9 +1985,21 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 //=====================================================================
 //  AUDIT ENGINE
 //=====================================================================
+bool IsCriticalAuditEvent(string eventName)
+{
+   if(StringFind(eventName, "order_") == 0) return true;
+   if(StringFind(eventName, "risk_block") == 0) return true;
+   if(StringFind(eventName, "close_") == 0) return true;
+   if(StringFind(eventName, "half_close_") == 0) return true;
+   if(StringFind(eventName, "sl_to_be_") == 0) return true;
+   if(StringFind(eventName, "position_level_") == 0) return true;
+   if(StringFind(eventName, "bridge_") == 0) return true;
+   return false;
+}
+
 void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
 {
-   if(!g_auditRuntime) return;
+   if(!g_auditRuntime && !IsCriticalAuditEvent(eventName)) return;
    if(IsTesterMode()) return;
    string file = "LiquidityNarrative_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
@@ -3034,6 +3046,28 @@ bool CloseOwnPositions(int dirFilter = 0)
    return allClosed;
 }
 
+void AppendDetail(string &detail, string part)
+{
+   if(part == "") return;
+   if(detail != "") detail += " | ";
+   detail += part;
+}
+
+string ExecutionGeometryDetail(const ErlSignal &sig, double orderSl, double orderTp)
+{
+   double pip = PipSize();
+   double slPips = (pip > 0.0 && orderSl > 0.0) ? MathAbs(sig.entry - orderSl) / pip : 0.0;
+   double tpPips = (pip > 0.0 && orderTp > 0.0) ? MathAbs(orderTp - sig.entry) / pip : 0.0;
+   double rr = (slPips > 0.0 && tpPips > 0.0) ? tpPips / slPips : 0.0;
+   return "target_model=" + TargetModelLabel(g_targetModel)
+      + " target=" + TargetLabel(g_target)
+      + " pip_sl=" + (g_pipSlMode ? "ON" : "OFF")
+      + " pip_sl_pips=" + DoubleToString(g_pipSlPips, 2)
+      + " pip_size=" + DoubleToString(pip, _Digits)
+      + " sl_pips=" + DoubleToString(slPips, 2)
+      + " tp_pips=" + DoubleToString(tpPips, 2)
+      + " rr=" + DoubleToString(rr, 2);
+}
 void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &execSig, string &detail)
 {
    execSig = raw;
@@ -3066,7 +3100,7 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
    execSig.tp6 = NormTradePrice(execSig.entry + execSig.dir * execSig.risk * 3.0);
 
    if(MathAbs(originalSl - execSig.sl) > TickSize() * 0.5)
-      detail = "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits);
+      AppendDetail(detail, "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits));
 }
 
 uint SignalEventHash(string value)
@@ -3215,7 +3249,28 @@ bool OpenSignal(const ErlSignal &sig)
    }
 
    ulong posTicket = FindNewestOwnPosition();
-   if(posTicket > 0) StorePositionPlan(posTicket, execSig, g_hc);
+   if(posTicket > 0)
+   {
+      if(!reverseExitMode && PositionSelectByTicket(posTicket))
+      {
+         double brokerSl = PositionGetDouble(POSITION_SL);
+         double brokerTp = PositionGetDouble(POSITION_TP);
+         double tickSize = TickSize();
+         bool slMismatch = (orderSl > 0.0 && MathAbs(brokerSl - orderSl) > tickSize * 0.5);
+         bool tpMismatch = (orderTp > 0.0 && MathAbs(brokerTp - orderTp) > tickSize * 0.5);
+         if(slMismatch || tpMismatch)
+         {
+            bool modOk = trade.PositionModify(posTicket, orderSl, orderTp);
+            AuditWrite(modOk ? "position_level_sync_done" : "position_level_sync_failed", sig.id, sig.dir,
+               execSig.entry, orderSl, orderTp, lot,
+               "broker_sl=" + DoubleToString(brokerSl, _Digits) + " broker_tp=" + DoubleToString(brokerTp, _Digits)
+               + " requested_sl=" + DoubleToString(orderSl, _Digits) + " requested_tp=" + DoubleToString(orderTp, _Digits)
+               + " ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription()
+               + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp));
+         }
+      }
+      StorePositionPlan(posTicket, execSig, g_hc);
+   }
    MarkSignalEventClaimed(sig.id);
    RememberSignalSeen(sig);
    g_lastEntry = execSig.entry;
@@ -3225,7 +3280,7 @@ bool OpenSignal(const ErlSignal &sig)
    g_lastBlock = "";
    AuditWrite("order_opened", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot,
       "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket)
-      + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + execDetail);
+      + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp) + " " + execDetail);
    Print("LiquidityNarrative order_opened id=", sig.id, " dir=", DirLabel(sig.dir),
       " ticket=", IntegerToString((int)posTicket), " entry=", DoubleToString(execSig.entry, _Digits),
       " sl=", DoubleToString(orderSl, _Digits), " tp=", DoubleToString(orderTp, _Digits),
@@ -3998,12 +4053,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_SW_3")) { g_swingLookback = 3; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; g_targetModel = ERL_TARGET_FIXED_R; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
@@ -4023,8 +4078,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_ATRBUF_100")) { g_slBufferAtrPct = 100.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "100"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_APPLY")) { g_slBufferAtrPct = ClampSlBufferAtrPct(StringToDouble(ObjectGetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, DoubleToString(g_slBufferAtrPct, 0)); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_PIPSL_TOGGLE")) { g_pipSlMode = !g_pipSlMode; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_PIPSL_APPLY")) { g_pipSlPips = ClampPipSlPips(StringToDouble(ObjectGetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT, DoubleToString(g_pipSlPips, 1)); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_PIPSL_TOGGLE")) { g_pipSlMode = !g_pipSlMode; if(g_pipSlMode) g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_PIPSL_APPLY")) { g_pipSlPips = ClampPipSlPips(StringToDouble(ObjectGetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT, DoubleToString(g_pipSlPips, 1)); if(g_pipSlMode) g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BRIDGE_PUB")) { g_fileBridgeEnabled = !g_fileBridgeEnabled; if(!g_fileBridgeEnabled) { g_fileBridgeOnlyMode = false; g_lastBridgeStatus = "BRIDGE OFF"; } else { FileBridgeWriteInitMarker(); } UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_ONLY")) { g_fileBridgeOnlyMode = !g_fileBridgeOnlyMode; if(g_fileBridgeOnlyMode && !g_fileBridgeEnabled) g_fileBridgeEnabled = true; if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_NATIVE")) { g_nativeTradeWithBridgeOnly = !g_nativeTradeWithBridgeOnly; UpdateDashboard(); ChartRedraw(0); return; }

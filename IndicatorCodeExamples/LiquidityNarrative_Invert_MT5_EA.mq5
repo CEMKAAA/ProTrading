@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| Liquidity Narrative SMT/FVG Model EA - Invert Variant                       |
 //| Session liquidity draw -> SMT/stop-hunt -> delivery shift -> FVG tap.           |
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-16.invert-variant"
+#define LN_BUILD "2026-07-16.invert-custom-geometry"
 #define LN_PREFIX "LIQNARRINV_"
 
 //=====================================================================
@@ -322,6 +322,8 @@ bool             g_fileBridgeOnlyMode = false;
 bool             g_nativeTradeWithBridgeOnly = false;
 bool             g_allowDuplicateEntries = false;
 bool             g_invertMode = false;
+bool             g_invertCustomGeometry = false;
+ERL_RR_MODE      g_invertPureSwapTarget = ERL_RR_TP2;
 double           g_riskPerTradePct = 1.0;
 
 datetime         g_lastAuditProbe = 0;
@@ -1500,13 +1502,41 @@ double NormalSelectedTarget(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET
    return SelectedFixedTarget(sig, effective);
 }
 
+double InvertPureSwapStop(const ErlSignal &sig, ERL_TARGET_MODEL targetModel)
+{
+   return NormalSelectedTarget(sig, g_invertPureSwapTarget, targetModel);
+}
+
+double InvertCustomRiskDistance(const ErlSignal &sig, ERL_TARGET_MODEL targetModel)
+{
+   double risk = MathAbs(sig.entry - InvertPureSwapStop(sig, targetModel));
+   if(g_pipSlMode)
+   {
+      double pip = PipSize();
+      if(pip > 0.0) risk = MathMax(TickSize(), g_pipSlPips * pip);
+   }
+   return MathMax(TickSize(), risk);
+}
+
+double InvertStopPrice(const ErlSignal &sig, ERL_TARGET_MODEL targetModel)
+{
+   if(!g_invertMode || targetModel == ERL_TARGET_OPPOSITE_SIGNAL) return 0.0;
+   if(!g_invertCustomGeometry) return InvertPureSwapStop(sig, targetModel);
+   int dir = EffectiveTradeDir(sig.dir);
+   return NormTradePrice(sig.entry - dir * InvertCustomRiskDistance(sig, targetModel));
+}
+
 double InvertFinalTarget(const ErlSignal &sig)
 {
    if(!g_invertMode) return 0.0;
+   if(g_invertCustomGeometry)
+   {
+      int dir = EffectiveTradeDir(sig.dir);
+      return NormTradePrice(sig.entry + dir * InvertCustomRiskDistance(sig, g_targetModel) * TargetR(g_target));
+   }
    if(sig.invertGeometry && sig.invertTarget > 0.0) return sig.invertTarget;
    return sig.sl;
 }
-
 double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel)
 {
    if(g_invertMode)
@@ -1516,7 +1546,6 @@ double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL
    }
    return NormalSelectedTarget(sig, target, targetModel);
 }
-
 double SelectedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 {
    return SelectedTarget(sig, target, g_targetModel);
@@ -1608,8 +1637,18 @@ bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_
    if(normalRisk <= TickSize()) return false;
    if(g_invertMode && !reverseExitMode)
    {
-      activeSl = TargetPriceForSimulation(sig, target, targetModel, simEntry, normalRisk);
-      tp = NormTradePrice(sig.sl);
+      if(g_invertCustomGeometry)
+      {
+         double customRisk = InvertCustomRiskDistance(sig, targetModel);
+         int invDir = EffectiveTradeDir(sig.dir);
+         activeSl = NormTradePrice(simEntry - invDir * customRisk);
+         tp = NormTradePrice(simEntry + invDir * customRisk * TargetR(target));
+      }
+      else
+      {
+         activeSl = TargetPriceForSimulation(sig, g_invertPureSwapTarget, targetModel, simEntry, normalRisk);
+         tp = NormTradePrice(sig.sl);
+      }
       simRisk = MathAbs(simEntry - activeSl);
    }
    else
@@ -1643,6 +1682,15 @@ bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_
    return true;
 }
 
+
+double MirrorInvertAuditR(double normalR, bool normalClosed, bool normalWon, ERL_RR_MODE target)
+{
+   if(!normalClosed) return -normalR;
+   double targetR = MathMax(0.0001, TargetR(target));
+   if(normalWon && normalR > 0.0) return -1.0;
+   if(!normalWon && normalR < 0.0) return 1.0 / targetR;
+   return -normalR;
+}
 double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel,
    ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
 {
@@ -1650,6 +1698,22 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    if(reverseExitMode) hc = ERL_HC_OFF;
    closed = false;
    won = false;
+
+   // Invert mode is a pure post-signal geometry swap. Audit must therefore be
+   // the mathematical mirror of the non-inverted trade, not an independently
+   // re-priced inverse simulation that can drift from normal W/L counts.
+   if(g_invertMode && !reverseExitMode && !g_invertCustomGeometry)
+   {
+      bool savedInvert = g_invertMode;
+      g_invertMode = false;
+      bool normalClosed = false;
+      bool normalWon = false;
+      double normalR = SimulateSignal(sig, target, hc, targetModel, entryTf, maxTime, normalClosed, normalWon);
+      g_invertMode = savedInvert;
+      closed = normalClosed;
+      won = normalClosed ? !normalWon : false;
+      return MirrorInvertAuditR(normalR, normalClosed, normalWon, target);
+   }
    MqlRates rates[];
    int simBars = MathMax(InpCalcEntryBars, RequiredBarsForWindow(entryTf, g_btCutoff, 500));
    if(!CopySeries(entryTf, simBars, rates)) return 0.0;
@@ -1659,6 +1723,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    // evaluated from the next chronological bar onward.
    int entryIdx = setupIdx - 1;
    int simDir = EffectiveTradeDir(sig.dir);
+   int entryPricingDir = (g_invertMode && !reverseExitMode) ? sig.dir : simDir;
 
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    if(point <= 0.0) point = TickSize();
@@ -1669,10 +1734,10 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    }
    else if(g_btFillMode == BT_FILL_CONSERVATIVE)
    {
-      rawEntry = simDir > 0 ? rates[entryIdx].high : rates[entryIdx].low;
+      rawEntry = entryPricingDir > 0 ? rates[entryIdx].high : rates[entryIdx].low;
    }
    double executionCost = MathMax(0.0, g_btSpreadPts + g_btSlippagePts) * point;
-   double simEntry = NormTradePrice(rawEntry + simDir * executionCost);
+   double simEntry = NormTradePrice(rawEntry + entryPricingDir * executionCost);
    double activeSl = 0.0, tp = 0.0, half = 0.0, simRisk = 0.0, commissionR = 0.0;
    bool halfDone = false;
    if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, activeSl, tp, half, simRisk, halfDone, commissionR)) return 0.0;
@@ -1700,7 +1765,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
             if(first >= 0)
             {
                double slip = MathMax(0.0, g_btSlippagePts) * point;
-               simEntry = NormTradePrice(simDir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
+               simEntry = NormTradePrice(entryPricingDir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
                if(ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, activeSl, tp, half, simRisk, halfDone, commissionR))
                {
                   pnlR = 0.0;
@@ -2049,9 +2114,21 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
 //=====================================================================
 //  AUDIT ENGINE
 //=====================================================================
+bool IsCriticalAuditEvent(string eventName)
+{
+   if(StringFind(eventName, "order_") == 0) return true;
+   if(StringFind(eventName, "risk_block") == 0) return true;
+   if(StringFind(eventName, "close_") == 0) return true;
+   if(StringFind(eventName, "half_close_") == 0) return true;
+   if(StringFind(eventName, "sl_to_be_") == 0) return true;
+   if(StringFind(eventName, "position_level_") == 0) return true;
+   if(StringFind(eventName, "bridge_") == 0) return true;
+   return false;
+}
+
 void AuditWrite(string eventName, string id, int dir, double entry, double sl, double tp, double lot, string detail)
 {
-   if(!g_auditRuntime) return;
+   if(!g_auditRuntime && !IsCriticalAuditEvent(eventName)) return;
    if(IsTesterMode()) return;
    string file = "LiquidityNarrativeInvert_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
@@ -2705,6 +2782,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
       DrawArrow(id, g_histSignals[i].availableTime, arrowPrice, drawDir, clr);
       double pad = MathMax(MathAbs(g_histSignals[i].entry - g_histSignals[i].sl) * 0.25, TickSize() * 30.0);
       double targetPrice = SelectedTarget(g_histSignals[i], g_target, g_targetModel);
+      double displaySl = g_invertMode && g_targetModel != ERL_TARGET_OPPOSITE_SIGNAL ? InvertStopPrice(g_histSignals[i], g_targetModel) : g_histSignals[i].sl;
       double hcPrice = HalfTrigger(g_histSignals[i], g_hc);
       datetime lineEnd = g_histSignals[i].availableTime + PeriodSeconds(g_entryTf) * 20;
       if(i + 1 < count && g_histSignals[i + 1].availableTime > g_histSignals[i].availableTime && g_histSignals[i + 1].availableTime < lineEnd)
@@ -2715,7 +2793,8 @@ void DrawHistoricalSignals(bool resetObjects = true)
       DrawHistoricalSegment(id + "_ENTRY", g_histSignals[i].availableTime, lineEnd, g_histSignals[i].entry, C'230,230,230', STYLE_SOLID);
       if(g_targetModel != ERL_TARGET_OPPOSITE_SIGNAL)
       {
-         DrawHistoricalSegment(id + "_SL", g_histSignals[i].availableTime, lineEnd, g_histSignals[i].sl, C'255,80,110', STYLE_SOLID);
+         if(displaySl > 0.0)
+            DrawHistoricalSegment(id + "_SL", g_histSignals[i].availableTime, lineEnd, displaySl, C'255,80,110', STYLE_SOLID);
          if(targetPrice > 0.0)
             DrawHistoricalSegment(id + "_TP", g_histSignals[i].availableTime, lineEnd, targetPrice, C'80,255,180', STYLE_SOLID);
          if(g_hc != ERL_HC_OFF && hcPrice > 0.0)
@@ -2729,7 +2808,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
       }
       else
       {
-         txt += "\nSL " + DoubleToString(g_histSignals[i].sl, _Digits);
+         if(displaySl > 0.0) txt += "\nSL " + DoubleToString(displaySl, _Digits);
          if(targetPrice > 0.0) txt += "\n" + TargetLabel(g_target) + " " + DoubleToString(targetPrice, _Digits);
          if(g_hc != ERL_HC_OFF && hcPrice > 0.0) txt += "\n" + HcLabel(g_hc) + " " + DoubleToString(hcPrice, _Digits);
       }
@@ -3099,6 +3178,31 @@ bool CloseOwnPositions(int dirFilter = 0)
    return allClosed;
 }
 
+void AppendDetail(string &detail, string part)
+{
+   if(part == "") return;
+   if(detail != "") detail += " | ";
+   detail += part;
+}
+
+string ExecutionGeometryDetail(const ErlSignal &sig, double orderSl, double orderTp)
+{
+   double pip = PipSize();
+   double slPips = (pip > 0.0 && orderSl > 0.0) ? MathAbs(sig.entry - orderSl) / pip : 0.0;
+   double tpPips = (pip > 0.0 && orderTp > 0.0) ? MathAbs(orderTp - sig.entry) / pip : 0.0;
+   double rr = (slPips > 0.0 && tpPips > 0.0) ? tpPips / slPips : 0.0;
+   return "target_model=" + TargetModelLabel(g_targetModel)
+      + " target=" + TargetLabel(g_target)
+      + " pip_sl=" + (g_pipSlMode ? "ON" : "OFF")
+      + " pip_sl_pips=" + DoubleToString(g_pipSlPips, 2)
+      + " pip_size=" + DoubleToString(pip, _Digits)
+      + " sl_pips=" + DoubleToString(slPips, 2)
+      + " tp_pips=" + DoubleToString(tpPips, 2)
+      + " rr=" + DoubleToString(rr, 2)
+      + " invert=" + (g_invertMode ? "ON" : "OFF")
+      + " inv_custom=" + (g_invertCustomGeometry ? "ON" : "OFF")
+      + " invert_pricing=" + (g_invertMode ? "SOURCE_ENTRY_SWAP" : "NORMAL");
+}
 void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &execSig, string &detail)
 {
    execSig = raw;
@@ -3133,12 +3237,21 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
    if(g_invertMode && g_targetModel != ERL_TARGET_OPPOSITE_SIGNAL)
    {
       double normalSl = execSig.sl;
-      double normalTarget = NormalSelectedTarget(execSig, g_target, g_targetModel);
+      double pureStop = InvertPureSwapStop(execSig, g_targetModel);
       int invDir = -raw.dir;
       execSig.dir = invDir;
       execSig.invertGeometry = true;
-      execSig.invertTarget = normalSl;
-      execSig.sl = NormTradePrice(normalTarget);
+      if(g_invertCustomGeometry)
+      {
+         double customRisk = InvertCustomRiskDistance(execSig, g_targetModel);
+         execSig.sl = NormTradePrice(execSig.entry - invDir * customRisk);
+         execSig.invertTarget = NormTradePrice(execSig.entry + invDir * customRisk * TargetR(g_target));
+      }
+      else
+      {
+         execSig.invertTarget = normalSl;
+         execSig.sl = NormTradePrice(pureStop);
+      }
       if(invDir > 0)
       {
          if(execSig.sl >= execSig.entry - minStop)
@@ -3150,6 +3263,8 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
             execSig.sl = NormTradePrice(execSig.entry + minStop);
       }
       execSig.risk = MathAbs(execSig.entry - execSig.sl);
+      if(g_invertCustomGeometry)
+         execSig.invertTarget = NormTradePrice(execSig.entry + invDir * execSig.risk * TargetR(g_target));
       double finalDist = MathAbs(execSig.invertTarget - execSig.entry);
       double denom = MathMax(0.0001, TargetR(g_target));
       execSig.tp1 = NormTradePrice(execSig.entry + invDir * finalDist * MathMin(1.0, TargetR(ERL_RR_TP1) / denom));
@@ -3158,15 +3273,16 @@ void BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
       execSig.tp4 = NormTradePrice(execSig.entry + invDir * finalDist * MathMin(1.0, TargetR(ERL_RR_TP4) / denom));
       execSig.tp5 = NormTradePrice(execSig.entry + invDir * finalDist * MathMin(1.0, TargetR(ERL_RR_TP5) / denom));
       execSig.tp6 = NormTradePrice(execSig.entry + invDir * finalDist * MathMin(1.0, TargetR(ERL_RR_TP6) / denom));
-      detail = (detail == "" ? "" : detail + " ") + "invert_geometry source_dir=" + DirLabel(raw.dir)
+      AppendDetail(detail, "invert_geometry source_dir=" + DirLabel(raw.dir)
          + " exec_dir=" + DirLabel(execSig.dir)
-         + " normal_sl_as_tp=" + DoubleToString(execSig.invertTarget, _Digits)
-         + " normal_target_as_sl=" + DoubleToString(execSig.sl, _Digits);
+         + " inv_custom=" + (g_invertCustomGeometry ? "ON" : "OFF")
+         + " normal_sl_as_pure_tp=" + DoubleToString(normalSl, _Digits)
+         + " inv_tp=" + DoubleToString(execSig.invertTarget, _Digits)
+         + " inv_sl=" + DoubleToString(execSig.sl, _Digits));
       return;
    }
-
    if(MathAbs(originalSl - execSig.sl) > TickSize() * 0.5)
-      detail = "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits);
+      AppendDetail(detail, "broker_stop_adjusted original_sl=" + DoubleToString(originalSl, _Digits) + " adjusted_sl=" + DoubleToString(execSig.sl, _Digits));
 }
 
 uint SignalEventHash(string value)
@@ -3316,7 +3432,28 @@ bool OpenSignal(const ErlSignal &sig)
    }
 
    ulong posTicket = FindNewestOwnPosition();
-   if(posTicket > 0) StorePositionPlan(posTicket, execSig, g_hc);
+   if(posTicket > 0)
+   {
+      if(!reverseExitMode && PositionSelectByTicket(posTicket))
+      {
+         double brokerSl = PositionGetDouble(POSITION_SL);
+         double brokerTp = PositionGetDouble(POSITION_TP);
+         double tickSize = TickSize();
+         bool slMismatch = (orderSl > 0.0 && MathAbs(brokerSl - orderSl) > tickSize * 0.5);
+         bool tpMismatch = (orderTp > 0.0 && MathAbs(brokerTp - orderTp) > tickSize * 0.5);
+         if(slMismatch || tpMismatch)
+         {
+            bool modOk = trade.PositionModify(posTicket, orderSl, orderTp);
+            AuditWrite(modOk ? "position_level_sync_done" : "position_level_sync_failed", sig.id, execSig.dir,
+               execSig.entry, orderSl, orderTp, lot,
+               "broker_sl=" + DoubleToString(brokerSl, _Digits) + " broker_tp=" + DoubleToString(brokerTp, _Digits)
+               + " requested_sl=" + DoubleToString(orderSl, _Digits) + " requested_tp=" + DoubleToString(orderTp, _Digits)
+               + " ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription()
+               + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp));
+         }
+      }
+      StorePositionPlan(posTicket, execSig, g_hc);
+   }
    MarkSignalEventClaimed(sig.id);
    RememberSignalSeen(sig);
    g_lastEntry = execSig.entry;
@@ -3326,7 +3463,7 @@ bool OpenSignal(const ErlSignal &sig)
    g_lastBlock = "";
    AuditWrite("order_opened", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot,
       "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket)
-      + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + execDetail);
+      + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp) + " " + execDetail);
    Print("LiquidityNarrativeInvert order_opened id=", sig.id, " dir=", DirLabel(execSig.dir),
       " ticket=", IntegerToString((int)posTicket), " entry=", DoubleToString(execSig.entry, _Digits),
       " sl=", DoubleToString(orderSl, _Digits), " tp=", DoubleToString(orderTp, _Digits),
@@ -3706,7 +3843,7 @@ void UpdateDashboard()
    LabelObj("DASH_BIAS_L", x + 430, row + 4, "WEEKLY:", muted, 8);
    ButtonObj("BTN_BIAS", x + 490, row, 68, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
    ButtonObj("BTN_DUP_ENTRY", x + 566, row, 88, bh, g_allowDuplicateEntries ? "DUP ON" : "DUP OFF", g_allowDuplicateEntries ? C'184,103,22' : off);
-   ButtonObj("BTN_INV", x + 660, row, 84, bh, g_invertMode ? "INV ON" : "INV OFF", g_invertMode ? C'184,103,22' : off);
+   ButtonObj("BTN_INV", x + 660, row, 84, bh, g_invertMode ? (g_invertCustomGeometry ? "INV CUST" : "INV ON") : "INV OFF", g_invertMode ? C'184,103,22' : off);
 
    row += 28;
    LabelObj("DASH_EM_L", x + 16, row + 4, "ENTRY MODEL:", muted, 8);
@@ -4102,12 +4239,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_SW_3")) { g_swingLookback = 3; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_5")) { g_swingLookback = 5; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SW_8")) { g_swingLookback = 8; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_TP_1")) { g_target = ERL_RR_TP1; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_2")) { g_target = ERL_RR_TP2; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_3")) { g_target = ERL_RR_TP3; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_4")) { g_target = ERL_RR_TP4; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_1")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP1; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_2")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP2; g_targetModel = ERL_TARGET_FIXED_R; SanitizeHalfMode(); RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_3")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP3; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_4")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP4; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_5")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP5; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_TP_6")) { if(g_invertMode) g_invertCustomGeometry = true; g_target = ERL_RR_TP6; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP1")) { if((int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP2")) { if((int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
@@ -4127,14 +4264,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_ATRBUF_100")) { g_slBufferAtrPct = 100.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "100"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_APPLY")) { g_slBufferAtrPct = ClampSlBufferAtrPct(StringToDouble(ObjectGetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, DoubleToString(g_slBufferAtrPct, 0)); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_SL_APPLY")) { g_slDistancePct = ClampSlDistancePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_SL_PCT", OBJPROP_TEXT))); RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_PIPSL_TOGGLE")) { g_pipSlMode = !g_pipSlMode; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_PIPSL_APPLY")) { g_pipSlPips = ClampPipSlPips(StringToDouble(ObjectGetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT, DoubleToString(g_pipSlPips, 1)); RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_PIPSL_TOGGLE")) { if(g_invertMode) g_invertCustomGeometry = true; g_pipSlMode = !g_pipSlMode; if(g_pipSlMode) g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_PIPSL_APPLY")) { if(g_invertMode) g_invertCustomGeometry = true; g_pipSlPips = ClampPipSlPips(StringToDouble(ObjectGetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_PIPSL_PIPS", OBJPROP_TEXT, DoubleToString(g_pipSlPips, 1)); if(g_pipSlMode) g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BRIDGE_PUB")) { g_fileBridgeEnabled = !g_fileBridgeEnabled; if(!g_fileBridgeEnabled) { g_fileBridgeOnlyMode = false; g_lastBridgeStatus = "BRIDGE OFF"; } else { FileBridgeWriteInitMarker(); } UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_ONLY")) { g_fileBridgeOnlyMode = !g_fileBridgeOnlyMode; if(g_fileBridgeOnlyMode && !g_fileBridgeEnabled) g_fileBridgeEnabled = true; if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_NATIVE")) { g_nativeTradeWithBridgeOnly = !g_nativeTradeWithBridgeOnly; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_RISK_APPLY")) { g_riskPerTradePct = ClampRiskPerTradePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT, DoubleToString(g_riskPerTradePct, 2)); if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_DUP_ENTRY")) { g_allowDuplicateEntries = !g_allowDuplicateEntries; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_INV")) { g_invertMode = !g_invertMode; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_INV")) { g_invertMode = !g_invertMode; g_invertCustomGeometry = false; if(g_invertMode) g_invertPureSwapTarget = g_target; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_BIAS")) { g_weeklyBias = !g_weeklyBias; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_PRO")) { g_entryModel = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ENTRY_LEG")) { SelectLegacyEntryModel(); RefreshAfterConfigChange(); return; }
@@ -4175,3 +4312,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_BT_RUN")) { StartBacktest(); UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_BT_STOP")) { StopBacktest(); UpdateDashboard(); return; }
 }
+
+
+
+
