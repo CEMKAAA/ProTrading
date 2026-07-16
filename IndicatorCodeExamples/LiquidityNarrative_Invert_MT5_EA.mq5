@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-16.invert-custom-geometry"
+#define LN_BUILD "2026-07-16.invert-atomic-bridge-hardening"
 #define LN_PREFIX "LIQNARRINV_"
 
 //=====================================================================
@@ -215,6 +215,21 @@ struct ErlSignal
    string   id;
 };
 
+struct BridgePendingEvent
+{
+   string   eventId;
+   string   dir;
+   double   entry;
+   double   sl;
+   double   tp;
+   string   source;
+   double   halfTrigger;
+   string   halfLabel;
+   datetime signalTime;
+   datetime nextRetryLocal;
+   int      attempts;
+};
+
 struct SimStats
 {
    int      total;
@@ -317,6 +332,7 @@ double           g_lastTp = 0.0;
 double           g_lastSpreadPts = 0.0;
 string           g_lastSpreadStatus = "?";
 string           g_lastBridgeStatus = "BRIDGE OFF";
+BridgePendingEvent g_bridgePending[];
 bool             g_fileBridgeEnabled = false;
 bool             g_fileBridgeOnlyMode = false;
 bool             g_nativeTradeWithBridgeOnly = false;
@@ -2231,60 +2247,209 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
    );
 }
 
+int FileBridgeCommonFlag()
+{
+   return InpFileBridgeUseCommonFiles ? FILE_COMMON : 0;
+}
+
+string FileBridgeTempFileName(string fileName, int attempt)
+{
+   return fileName + ".tmp." + IntegerToString((int)ChartID()) + "." + IntegerToString((int)GetTickCount()) + "." + IntegerToString(attempt);
+}
+
+bool FileBridgePromoteTemp(string tempName, string fileName)
+{
+   int common = FileBridgeCommonFlag();
+   ResetLastError();
+   if(FileMove(tempName, common, fileName, common | FILE_REWRITE))
+      return true;
+   int err = GetLastError();
+   FileDelete(tempName, common);
+   Print("LiquidityNarrativeInvert atomic latest promote failed err=", err, " temp=", tempName, " file=", fileName);
+   return false;
+}
+
 bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
+   int tempFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_ANSI);
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      string tempName = FileBridgeTempFileName(fileName, attempt);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      ResetLastError();
+      int h = FileOpen(tempName, tempFlags, ',');
+      if(h != INVALID_HANDLE)
+      {
+         FileBridgeWriteHeader(h);
+         FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+         FileFlush(h);
+         FileClose(h);
+         if(FileBridgePromoteTemp(tempName, fileName))
+            return true;
+      }
+      else
+         Print("LiquidityNarrativeInvert atomic latest temp open failed err=", GetLastError(), " temp=", tempName);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      if(attempt < 2) Sleep(20);
+   }
+   Print("LiquidityNarrativeInvert atomic latest write failed file=", fileName);
+   return false;
+}
+
+string FileBridgeOutboxFileName()
+{
+   return "LiquidityNarrativeInvertBridge_Outbox_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+}
+
+bool BridgePersistPending()
+{
+   string fileName = FileBridgeOutboxFileName();
+   string tempName = FileBridgeTempFileName(fileName, 0);
+   int flags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_ANSI);
+   FileDelete(tempName, FileBridgeCommonFlag());
    ResetLastError();
-   int h = FileOpen(fileName, latestFlags, ',');
+   int h = FileOpen(tempName, flags, ',');
    if(h == INVALID_HANDLE)
    {
-      Print("LiquidityNarrativeInvert file_bridge scoped latest open failed err=", GetLastError(), " file=", fileName);
+      Print("LiquidityNarrativeInvert bridge outbox temp open failed err=", GetLastError(), " temp=", tempName);
       return false;
    }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   for(int i = 0; i < ArraySize(g_bridgePending); i++)
+   {
+      FileWrite(h, g_bridgePending[i].eventId, g_bridgePending[i].dir,
+         DoubleToString(g_bridgePending[i].entry, _Digits), DoubleToString(g_bridgePending[i].sl, _Digits),
+         DoubleToString(g_bridgePending[i].tp, _Digits), g_bridgePending[i].source,
+         DoubleToString(g_bridgePending[i].halfTrigger, _Digits), g_bridgePending[i].halfLabel,
+         IntegerToString((long)g_bridgePending[i].signalTime), IntegerToString(g_bridgePending[i].attempts));
+   }
+   FileFlush(h);
    FileClose(h);
-   return true;
+   if(FileBridgePromoteTemp(tempName, fileName))
+      return true;
+   return false;
 }
+
+void BridgeLoadPending()
+{
+   ArrayResize(g_bridgePending, 0);
+   int flags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
+   ResetLastError();
+   int h = FileOpen(FileBridgeOutboxFileName(), flags, ',');
+   if(h == INVALID_HANDLE) return;
+   while(!FileIsEnding(h) && ArraySize(g_bridgePending) < 128)
+   {
+      string eventId = FileReadString(h);
+      if(eventId == "" && FileIsEnding(h)) break;
+      BridgePendingEvent item;
+      item.eventId = eventId;
+      item.dir = FileReadString(h);
+      item.entry = StringToDouble(FileReadString(h));
+      item.sl = StringToDouble(FileReadString(h));
+      item.tp = StringToDouble(FileReadString(h));
+      item.source = FileReadString(h);
+      item.halfTrigger = StringToDouble(FileReadString(h));
+      item.halfLabel = FileReadString(h);
+      item.signalTime = (datetime)StringToInteger(FileReadString(h));
+      item.attempts = (int)StringToInteger(FileReadString(h));
+      item.nextRetryLocal = 0;
+      if(item.eventId == "") continue;
+      int n = ArraySize(g_bridgePending);
+      ArrayResize(g_bridgePending, n + 1);
+      g_bridgePending[n] = item;
+   }
+   FileClose(h);
+   if(ArraySize(g_bridgePending) > 0)
+      Print("LiquidityNarrativeInvert bridge outbox loaded pending=", ArraySize(g_bridgePending));
+}
+
+bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   int n = ArraySize(g_bridgePending);
+   int index = -1;
+   for(int i = 0; i < n; i++)
+      if(g_bridgePending[i].eventId == eventId) { index = i; break; }
+   if(index < 0)
+   {
+      if(n >= 128)
+      {
+         Print("LiquidityNarrativeInvert bridge outbox full; event remains unaccepted id=", eventId);
+         return false;
+      }
+      ArrayResize(g_bridgePending, n + 1);
+      index = n;
+      g_bridgePending[index].attempts = 0;
+   }
+   g_bridgePending[index].eventId = eventId;
+   g_bridgePending[index].dir = dir;
+   g_bridgePending[index].entry = bridgeEntry;
+   g_bridgePending[index].sl = sl;
+   g_bridgePending[index].tp = tp;
+   g_bridgePending[index].source = source;
+   g_bridgePending[index].halfTrigger = halfTriggerPrice;
+   g_bridgePending[index].halfLabel = halfTriggerLabel;
+   g_bridgePending[index].signalTime = sourceSignalTime;
+   g_bridgePending[index].nextRetryLocal = TimeLocal() + 2;
+   bool persisted = BridgePersistPending();
+   if(persisted)
+      Print("LiquidityNarrativeInvert bridge event durably queued id=", eventId, " pending=", ArraySize(g_bridgePending));
+   return persisted;
+}
+
+void BridgeRemovePending(int index)
+{
+   int n = ArraySize(g_bridgePending);
+   if(index < 0 || index >= n) return;
+   for(int i = index; i < n - 1; i++) g_bridgePending[i] = g_bridgePending[i + 1];
+   ArrayResize(g_bridgePending, n - 1);
+}
+
+void BridgeRetryPending()
+{
+   if(!g_fileBridgeEnabled || IsTesterMode() || ArraySize(g_bridgePending) <= 0) return;
+   int processed = 0;
+   while(ArraySize(g_bridgePending) > 0 && processed < 1)
+   {
+      if(g_bridgePending[0].nextRetryLocal > TimeLocal()) break;
+      BridgePendingEvent item = g_bridgePending[0];
+      if(!FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), item.eventId, item.dir, item.entry, item.sl, item.tp, item.source, item.halfTrigger, item.halfLabel, item.signalTime))
+      {
+         g_bridgePending[0].attempts++;
+         g_bridgePending[0].nextRetryLocal = TimeLocal() + MathMin(30, 2 + g_bridgePending[0].attempts * 2);
+         BridgePersistPending();
+         break;
+      }
+      Print("LiquidityNarrativeInvert bridge outbox delivered id=", item.eventId);
+      BridgeRemovePending(0);
+      BridgePersistPending();
+      processed++;
+   }
+}
+
 bool FileBridgeWriteInitMarker()
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
    string eventId = "liq_bridge_init|" + _Symbol + "|" + FileBridgeTfString(g_entryTf) + "|" + FileBridgeTime(TimeGMT());
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
-   ResetLastError();
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      g_lastBridgeStatus = "INIT OPEN FAIL " + IntegerToString(GetLastError());
-      Print("LiquidityNarrativeInvert file_bridge init latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return false;
-   }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-   FileClose(h);
-   FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-   g_lastBridgeStatus = "INIT WROTE";
-   return true;
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   g_lastBridgeStatus = scopedOk ? "INIT WROTE" : "INIT SCOPED FAIL";
+   if(!genericOk)
+      Print("LiquidityNarrativeInvert file_bridge init generic atomic write failed file=", InpFileBridgeLatestFile);
+   return scopedOk;
 }
 
 bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, double tp, double halfTriggerPrice, string halfTriggerLabel)
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
-   ResetLastError();
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      g_lastBridgeStatus = "LATEST OPEN FAIL " + IntegerToString(GetLastError());
-      Print("LiquidityNarrativeInvert file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return false;
-   }
    string dir = DirLabel(sig.dir);
    string source = FileBridgeSource();
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
-   FileClose(h);
-   FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   if(!genericOk)
+      Print("LiquidityNarrativeInvert file_bridge generic atomic write failed file=", InpFileBridgeLatestFile);
+
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   bool accepted = scopedOk;
+   if(!scopedOk)
+      accepted = BridgeQueuePending(sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
 
    string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2299,12 +2464,16 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
       FileClose(a);
    }
    else
-   {
       Print("LiquidityNarrativeInvert file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
-   }
-   g_lastBridgeStatus = "WROTE " + dir + " " + FileBridgeTfString(g_entryTf);
-   Print("LiquidityNarrativeInvert file_bridge wrote event=", sig.id, " dir=", dir, " file=", InpFileBridgeLatestFile, " risk_pct=", DoubleToString(RiskPerTradePct(), 4));
-   return true;
+
+   if(scopedOk)
+      g_lastBridgeStatus = "WROTE " + dir + " " + FileBridgeTfString(g_entryTf);
+   else if(accepted)
+      g_lastBridgeStatus = "QUEUED " + dir + " " + FileBridgeTfString(g_entryTf);
+   else
+      g_lastBridgeStatus = "PUBLISH FAIL " + dir;
+   Print("LiquidityNarrativeInvert file_bridge event=", sig.id, " dir=", dir, " scoped=", (scopedOk ? "1" : "0"), " queued=", ((!scopedOk && accepted) ? "1" : "0"), " generic=", (genericOk ? "1" : "0"), " risk_pct=", DoubleToString(RiskPerTradePct(), 4));
+   return accepted;
 }
 
 string ErlTesterAudit_FileStamp()
@@ -4116,7 +4285,9 @@ int OnInit()
    if(!IsTesterMode())
    {
       RecalculateHistoricalStats();
+      BridgeLoadPending();
       FileBridgeWriteInitMarker();
+      BridgeRetryPending();
       DrawDashboard();
       DrawHistoricalSignals();
       DrawLiveLevelsForPosition();
@@ -4156,6 +4327,7 @@ void OnTimer()
 {
    if(IsTesterMode()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
+   BridgeRetryPending();
    EnforceRiskBreach();
    TryOpenLatestSignal();
    ManagePositions();
@@ -4312,7 +4484,3 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_BT_RUN")) { StartBacktest(); UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_BT_STOP")) { StopBacktest(); UpdateDashboard(); return; }
 }
-
-
-
-

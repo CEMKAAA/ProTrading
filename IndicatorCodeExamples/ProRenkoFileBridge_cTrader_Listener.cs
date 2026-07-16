@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class ProRenkoFileBridgeCTraderListener : Robot
     {
-        private const string Build = "2026-07-16.ml-audit-context";
+        private const string Build = "2026-07-16.execution-hardening";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -72,6 +72,12 @@ namespace cAlgo.Robots
         [Parameter("Rebase Only Source Differs", DefaultValue = true)]
         public bool RebaseOnlyWhenSourceDiffers { get; set; }
 
+        [Parameter("Auto Rebase Oil Aliases", DefaultValue = true)]
+        public bool AutoRebaseOilAliases { get; set; }
+
+        [Parameter("Mapped Basis Guard % Risk", DefaultValue = 25.0, MinValue = 0.0)]
+        public double MappedBasisGuardPctRisk { get; set; }
+
         [Parameter("Close Reverse", DefaultValue = true)]
         public bool CloseReverse { get; set; }
 
@@ -98,6 +104,9 @@ namespace cAlgo.Robots
 
         [Parameter("Market Closed Retry Sec", DefaultValue = 900, MinValue = 30)]
         public int MarketClosedRetrySeconds { get; set; }
+
+        [Parameter("Order Failure Retry Sec", DefaultValue = 60, MinValue = 5)]
+        public int OrderFailureRetrySeconds { get; set; }
 
         [Parameter("Label Prefix", DefaultValue = "PRB_CT")]
         public string LabelPrefix { get; set; }
@@ -132,6 +141,12 @@ namespace cAlgo.Robots
         [Parameter("Block If Min Vol Exceeds Risk", DefaultValue = true)]
         public bool BlockIfMinVolumeExceedsRisk { get; set; }
 
+        [Parameter("Post-Fill Risk Guard", DefaultValue = true)]
+        public bool PostFillRiskGuard { get; set; }
+
+        [Parameter("Max Risk Overshoot %", DefaultValue = 5.0, MinValue = 0.0)]
+        public double MaxRiskOvershootPct { get; set; }
+
         [Parameter("No-Money Retry Shrink", DefaultValue = true)]
         public bool NoMoneyRetryShrink { get; set; }
 
@@ -143,6 +158,12 @@ namespace cAlgo.Robots
 
         [Parameter("Half Close Fraction", DefaultValue = 0.5, MinValue = 0.01, MaxValue = 0.99)]
         public double HalfCloseFraction { get; set; }
+
+        [Parameter("HCBE Retry Sec", DefaultValue = 5, MinValue = 1)]
+        public int HalfBeRetrySeconds { get; set; }
+
+        [Parameter("HCBE Volume Retry Sec", DefaultValue = 60, MinValue = 5)]
+        public int HalfBeVolumeRetrySeconds { get; set; }
 
         [Parameter("Audit Enabled", DefaultValue = true)]
         public bool AuditEnabled { get; set; }
@@ -166,6 +187,12 @@ namespace cAlgo.Robots
         private readonly Dictionary<string, double> _basketClosedPnlByDay = new Dictionary<string, double>();
         private readonly HashSet<string> _basketDayDone = new HashSet<string>();
         private readonly Dictionary<string, DateTime> _orderRetryBlockedUntil = new Dictionary<string, DateTime>();
+        private readonly Dictionary<long, DateTime> _emergencyCloseRetryAt = new Dictionary<long, DateTime>();
+        private readonly Dictionary<long, DateTime> _halfRetryAt = new Dictionary<long, DateTime>();
+        private readonly Dictionary<string, DateTime> _eventClaimAuditAt = new Dictionary<string, DateTime>();
+        private readonly HashSet<long> _basketAccountedPositionIds = new HashSet<long>();
+        private readonly HashSet<long> _basketInternalCloseIds = new HashSet<long>();
+        private readonly Dictionary<long, DateTime> _basketStateLastPersist = new Dictionary<long, DateTime>();
         private readonly HashSet<string> _mlRegisteredEvents = new HashSet<string>();
         private readonly Queue<DateTime> _mlFlipTimes = new Queue<DateTime>();
         private string _mlPreviousSignalDir = "";
@@ -179,6 +206,9 @@ namespace cAlgo.Robots
         private DateTime _lastReadFailAudit = DateTime.MinValue;
         private string _auditDir;
         private string _lockDir;
+        private string _stateDir;
+        private string _basketLedgerPath;
+        private DateTime _lastBasketStateSweep = DateTime.MinValue;
 
         protected override void OnStart()
         {
@@ -186,10 +216,16 @@ namespace cAlgo.Robots
             _auditDir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _lockDir = IoPath.Combine(IoPath.GetTempPath(), "ProRenkoFileBridge_cTrader_Locks");
             IoDirectory.CreateDirectory(_lockDir);
+            _stateDir = IoPath.Combine(_auditDir, "ProRenkoFileBridge_cTrader_State");
+            IoDirectory.CreateDirectory(_stateDir);
+            _basketLedgerPath = IoPath.Combine(_stateDir, $"basket_{Account.Number}_{Sanitize(SymbolName)}_{Sanitize(EffectiveSourceTf())}_{Hash32(_resolvedBridgePath):X8}.state");
+            LoadBasketLedger();
+            Positions.Closed += OnPositionClosed;
 
             Timer.Start(TimeSpan.FromMilliseconds(Math.Max(100, PollMilliseconds)));
             AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
             RepairOpenPositionStates("init");
+            RepairBasketStates("init");
 
             if (IgnoreExistingSignalOnInit)
             {
@@ -217,9 +253,11 @@ namespace cAlgo.Robots
         protected override void OnTimer()
         {
             ManageBasketRuntimeGuards();
+            PersistBasketStatesIfDue();
             PollBridge("timer");
             RepairOpenPositionStates("timer");
             ManageHalfClose();
+            ManageEmergencyCloses();
             DrawDashboard();
         }
 
@@ -227,6 +265,14 @@ namespace cAlgo.Robots
         {
             ManageBasketRuntimeGuards();
             ManageHalfClose();
+            ManageEmergencyCloses();
+        }
+
+        protected override void OnStop()
+        {
+            Positions.Closed -= OnPositionClosed;
+            PersistAllBasketStates(true);
+            SaveBasketLedger();
         }
 
         private void PollBridge(string caller)
@@ -322,6 +368,13 @@ namespace cAlgo.Robots
             if (ExecuteSignal(sig))
                 _lastSeenEventId = sig.EventId;
         }
+        private void AuditPendingEventClaim(BridgeSignal sig, string eventName)
+        {
+            if (_eventClaimAuditAt.TryGetValue(sig.EventId, out var last) && (DateTime.UtcNow - last).TotalSeconds < 10)
+                return;
+            _eventClaimAuditAt[sig.EventId] = DateTime.UtcNow;
+            Audit(eventName, sig, "pending_lock_exists_retry_later");
+        }
         private bool OrderRetryBlocked(BridgeSignal sig, out string detail)
         {
             detail = string.Empty;
@@ -339,11 +392,11 @@ namespace cAlgo.Robots
             return false;
         }
 
-        private void BlockOrderRetry(BridgeSignal sig, object error, string reason)
+        private void BlockOrderRetry(BridgeSignal sig, object error, string reason, int requestedSeconds = 0)
         {
             if (string.IsNullOrWhiteSpace(sig.EventId))
                 return;
-            var seconds = Math.Max(30, MarketClosedRetrySeconds);
+            var seconds = requestedSeconds > 0 ? Math.Max(5, requestedSeconds) : Math.Max(30, MarketClosedRetrySeconds);
             var until = DateTime.UtcNow.AddSeconds(seconds);
             _orderRetryBlockedUntil[sig.EventId] = until;
             Audit("order_retry_throttled", sig, $"reason={reason} error={error} retry_after_utc={until:O} cooldown_sec={seconds}");
@@ -356,11 +409,18 @@ namespace cAlgo.Robots
             var tradeType = sig.Direction > 0 ? TradeType.Buy : TradeType.Sell;
             var entry = sig.Direction > 0 ? Symbol.Ask : Symbol.Bid;
             var rebaseDetail = "";
-            if (ShouldRebaseLevels(sig))
+            var willRebase = ShouldRebaseLevels(sig);
+            if (willRebase)
             {
                 RebaseLevelsToLiveEntry(ref sig, entry, out rebaseDetail);
                 if (!string.IsNullOrEmpty(rebaseDetail))
                     Audit("levels_rebased", sig, rebaseDetail);
+            }
+            else if (!ValidateMappedPriceBasis(sig, entry, out var basisDetail))
+            {
+                BlockOrderRetry(sig, "mapped_price_basis", "mapped_price_basis", Math.Max(5, OrderFailureRetrySeconds));
+                Audit("skip_mapped_price_basis", sig, basisDetail);
+                return false;
             }
 
             if (!ValidateStops(sig, entry, out var stopLossPips, out var takeProfitPips, out var stopDetail))
@@ -371,13 +431,13 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            if (!ClaimEvent(sig.EventId))
+            if (!ClaimEvent(sig.EventId, out var committedDuplicate))
             {
-                var duplicateReverseDetail = "";
-                if (CloseReverse)
-                    CloseReversePositions(sig, out duplicateReverseDetail);
-                Audit("skip_duplicate_global", sig, "lock_exists " + duplicateReverseDetail);
-                return true;
+                if (committedDuplicate)
+                    Audit("skip_duplicate_global", sig, "committed_lock_exists");
+                else
+                    AuditPendingEventClaim(sig, "event_claim_pending");
+                return committedDuplicate;
             }
 
             if (CloseReverse && !CloseReversePositions(sig, out var reverseDetail))
@@ -433,6 +493,8 @@ namespace cAlgo.Robots
                         var retryMarketClosed = IsMarketClosedError(retry.Error);
                         if (retryMarketClosed)
                             BlockOrderRetry(sig, retry.Error, "market_closed_retry");
+                        else if (IsNoMoneyError(retry.Error))
+                            BlockOrderRetry(sig, retry.Error, "no_money_retry", OrderFailureRetrySeconds);
                         if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error) && !retryMarketClosed)
                             _lastRejectedEventId = sig.EventId;
                         Audit("order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} market_closed={(retryMarketClosed ? 1 : 0)} original_volume={volume} retry_volume={retryVolume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {retryDetail} {lotDetail}");
@@ -446,6 +508,8 @@ namespace cAlgo.Robots
                     var marketClosed = IsMarketClosedError(originalError);
                     if (marketClosed)
                         BlockOrderRetry(sig, originalError, "market_closed");
+                    else if (IsNoMoneyError(originalError))
+                        BlockOrderRetry(sig, originalError, "no_money", OrderFailureRetrySeconds);
                     if (PermanentRejectGuard && permanent && !marketClosed)
                         _lastRejectedEventId = sig.EventId;
                     Audit("order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} market_closed={(marketClosed ? 1 : 0)} volume={volume} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} {StopContext(entry, sig.Sl, sig.Tp)} {retryDetail} {lotDetail}");
@@ -464,6 +528,8 @@ namespace cAlgo.Robots
                     {
                         var close = ClosePosition(result.Position);
                         Audit(close.IsSuccessful ? "exact_protection_fail_closed" : "exact_protection_fail_close_failed", sig, exactDetail + $" close_error={close.Error}");
+                        if (!close.IsSuccessful) QueueEmergencyClose(result.Position, "exact_protection_failure_close_failed");
+                        CommitEvent(sig.EventId, result.Position.Id, close.IsSuccessful ? "exact_protection_failed_closed" : "exact_protection_failed_emergency_close");
                         return true;
                     }
                 }
@@ -471,6 +537,15 @@ namespace cAlgo.Robots
                 {
                     Audit("exact_protection_applied", sig, exactDetail);
                 }
+            }
+            if (result.Position != null && !ValidatePostFillRisk(sig, result.Position, out var postFillRiskDetail))
+            {
+                var close = ClosePosition(result.Position);
+                if (!close.IsSuccessful)
+                    QueueEmergencyClose(result.Position, "post_fill_risk_guard_close_failed");
+                CommitEvent(sig.EventId, result.Position.Id, close.IsSuccessful ? "post_fill_risk_guard_closed" : "post_fill_risk_guard_emergency_close");
+                Audit(close.IsSuccessful ? "post_fill_risk_guard_closed" : "post_fill_risk_guard_close_failed", sig, postFillRiskDetail + $" close_error={close.Error}");
+                return true;
             }
             if (result.Position != null && ManageHalfCloseBe && sig.HalfTrigger > 0)
             {
@@ -485,12 +560,43 @@ namespace cAlgo.Robots
                     InitialVolume = result.Position.VolumeInUnits,
                     StopLoss = sig.Sl,
                     TakeProfit = sig.Tp,
+                    PartialClosed = false,
                     Done = false
                 };
+                SaveHalfState(result.Position.Id, _halfStates[result.Position.Id]);
             }
 
+            CommitEvent(sig.EventId, result.Position?.Id ?? 0, "order_opened");
             Audit("order_sent", sig, orderAuditPrefix + $"position={result.Position?.Id} volume={result.Position?.VolumeInUnits ?? finalVolume} live_entry={entry} fill_entry={result.Position?.EntryPrice ?? entry} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} rebase={rebaseDetail} {lotDetail}");
             return true;
+        }
+        private bool ValidatePostFillRisk(BridgeSignal sig, Position position, out string detail)
+        {
+            detail = "post_fill_risk_guard_not_required";
+            if (!PostFillRiskGuard || !UseRiskLot || position == null)
+                return true;
+            if (sig.Sl <= 0 || Symbol.PipSize <= 0)
+            {
+                detail = $"invalid_post_fill_risk_geometry position={position?.Id} fill={position?.EntryPrice} sl={sig.Sl} pip_size={Symbol.PipSize}";
+                return !FailClosedOnRiskError;
+            }
+
+            try
+            {
+                var effectiveRiskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
+                var riskCapital = UseBalanceForRisk ? Account.Balance : Account.Equity;
+                var allowedRisk = riskCapital * Math.Max(0.0, effectiveRiskPct) / 100.0;
+                var actualRiskPips = Math.Abs(position.EntryPrice - sig.Sl) / Symbol.PipSize;
+                var actualRisk = Symbol.AmountRisked(position.VolumeInUnits, actualRiskPips);
+                var allowedWithTolerance = allowedRisk * (1.0 + Math.Max(0.0, MaxRiskOvershootPct) / 100.0);
+                detail = $"position={position.Id} fill={position.EntryPrice} exact_sl={sig.Sl} volume={position.VolumeInUnits} actual_risk_pips={actualRiskPips:F2} actual_risk={actualRisk:F2} allowed_risk={allowedRisk:F2} allowed_with_tolerance={allowedWithTolerance:F2} risk_pct={effectiveRiskPct:F4} capital={riskCapital:F2}";
+                return allowedRisk > 0 && actualRisk <= allowedWithTolerance;
+            }
+            catch (Exception ex)
+            {
+                detail = $"post_fill_risk_calculation_failed position={position.Id} error={ex.Message}";
+                return !FailClosedOnRiskError;
+            }
         }
         private double ResolveVolume(BridgeSignal sig, double stopLossPips, out string detail)
         {
@@ -606,19 +712,20 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            if (!ClaimEvent(sig.EventId))
+            if (!ClaimEvent(sig.EventId, out var committedDuplicate))
             {
-                if (sig.BasketCloseOnReverse)
-                    CloseReverseBasketPositions(sig, out _);
-                Audit("basket_skip_duplicate_global", sig, "lock_exists");
-                return true;
+                if (committedDuplicate)
+                    Audit("basket_skip_duplicate_global", sig, "committed_lock_exists");
+                else
+                    AuditPendingEventClaim(sig, "basket_event_claim_pending");
+                return committedDuplicate;
             }
 
             if (sig.BasketCloseOnReverse && !CloseReverseBasketPositions(sig, out var reverseDetail))
             {
-                ReleaseEvent(sig.EventId);
                 if (FailIfReverseCloseFails)
                 {
+                    ReleaseEvent(sig.EventId);
                     if (PermanentRejectGuard)
                         _lastRejectedEventId = sig.EventId;
                     Audit("basket_skip_reverse_close_failed", sig, reverseDetail);
@@ -674,6 +781,8 @@ namespace cAlgo.Robots
                         var retryMarketClosed = IsMarketClosedError(retry.Error);
                         if (retryMarketClosed)
                             BlockOrderRetry(sig, retry.Error, "market_closed_basket_retry");
+                        else if (IsNoMoneyError(retry.Error))
+                            BlockOrderRetry(sig, retry.Error, "no_money_basket_retry", OrderFailureRetrySeconds);
                         if (PermanentRejectGuard && IsPermanentOrderFailure(retry.Error) && !retryMarketClosed)
                             _lastRejectedEventId = sig.EventId;
                         Audit("basket_order_failed_no_money_retry", sig, $"original_error={originalError} retry_error={retry.Error} market_closed={(retryMarketClosed ? 1 : 0)} original_volume={volume} retry_volume={retryVolume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
@@ -687,6 +796,8 @@ namespace cAlgo.Robots
                     var marketClosed = IsMarketClosedError(originalError);
                     if (marketClosed)
                         BlockOrderRetry(sig, originalError, "market_closed_basket");
+                    else if (IsNoMoneyError(originalError))
+                        BlockOrderRetry(sig, originalError, "no_money_basket", OrderFailureRetrySeconds);
                     if (PermanentRejectGuard && permanent && !marketClosed)
                         _lastRejectedEventId = sig.EventId;
                     Audit("basket_order_failed", sig, $"error={originalError} permanent_reject={(permanent ? 1 : 0)} market_closed={(marketClosed ? 1 : 0)} volume={volume} cat_sl_pips={slPips:F2} {retryDetail} {lotDetail}");
@@ -728,8 +839,10 @@ namespace cAlgo.Robots
                 var seeded = _basketStates[result.Position.Id];
                 UpdateBasketLifecycleState(result.Position, ref seeded);
                 _basketStates[result.Position.Id] = seeded;
+                SaveBasketPositionState(result.Position.Id, seeded, true);
             }
 
+            CommitEvent(sig.EventId, result.Position?.Id ?? 0, "basket_order_opened");
             Audit("basket_order_sent", sig, orderAuditPrefix + $"position={result.Position?.Id} volume={result.Position?.VolumeInUnits ?? finalVolume} live_entry={entry} fill_entry={result.Position?.EntryPrice ?? entry} cat_sl_pips={slPips:F2} tp=0 hcbe=0 day={dayKey} target_money={targetMoney:F2} max_loss_money={maxLossMoney:F2} actual_risk_to_cat_sl={estimatedCatRisk:F2} {lotDetail}");
             return true;
         }
@@ -877,16 +990,18 @@ namespace cAlgo.Robots
                 found++;
                 var pnl = p.NetProfit;
                 var lifecycle = BasketLifecycleSnapshot(p, "basket_reverse_close", pnl, true);
+                var stateKey = BasketStateKeyFromPosition(p);
+                _basketInternalCloseIds.Add(p.Id);
                 var res = ClosePosition(p);
                 if (!res.IsSuccessful)
                 {
                     failed++;
+                    _basketInternalCloseIds.Remove(p.Id);
                     detail += $" close_failed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}";
                     Audit("basket_reverse_close_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
                     continue;
                 }
-                AddBasketClosedPnl(BasketStateKeyFromPosition(p), pnl);
-                _basketStates.Remove(p.Id);
+                AccountBasketClosedPosition(p, stateKey, res.Position?.NetProfit ?? p.NetProfit);
                 closed++;
                 detail += $" closed_reverse pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}";
                 Audit("basket_reverse_close", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
@@ -920,16 +1035,19 @@ namespace cAlgo.Robots
             {
                 var pnl = p.NetProfit;
                 var lifecycle = BasketLifecycleSnapshot(p, auditEvent, pnl, false);
+                var stateKey = BasketStateKeyFromPosition(p);
+                _basketInternalCloseIds.Add(p.Id);
                 var res = ClosePosition(p);
                 if (!res.IsSuccessful)
                 {
                     failed++;
+                    _basketInternalCloseIds.Remove(p.Id);
                     detail += $" close_failed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error}";
                     Audit(auditEvent + "_failed", sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
+                    QueueEmergencyClose(p, auditEvent + "_failed");
                     continue;
                 }
-                AddBasketClosedPnl(BasketStateKeyFromPosition(p), pnl);
-                _basketStates.Remove(p.Id);
+                AccountBasketClosedPosition(p, stateKey, res.Position?.NetProfit ?? p.NetProfit);
                 closed++;
                 detail += $" closed pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}";
                 Audit(auditEvent, sig, $"pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
@@ -943,7 +1061,7 @@ namespace cAlgo.Robots
             RepairBasketStates("guard");
             SweepClosedBasketStates();
 
-            var open = Positions.Where(p => p.SymbolName == SymbolName && IsBasketPosition(p)).ToArray();
+            var open = Positions.Where(p => PositionBelongsToThisInstance(p) && IsBasketPosition(p)).ToArray();
             foreach (var p in open)
             {
                 if (_basketStates.TryGetValue(p.Id, out var st))
@@ -996,64 +1114,73 @@ namespace cAlgo.Robots
             {
                 var pnl = p.NetProfit;
                 var lifecycle = BasketLifecycleSnapshot(p, auditEvent, pnl, false);
+                _basketInternalCloseIds.Add(p.Id);
                 var res = ClosePosition(p);
                 if (res.IsSuccessful)
                 {
-                    AddBasketClosedPnl(key, pnl);
-                    _basketStates.Remove(p.Id);
+                    AccountBasketClosedPosition(p, key, res.Position?.NetProfit ?? p.NetProfit);
                     AuditRaw(auditEvent, baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} {lifecycle}");
                 }
                 else
                 {
+                    _basketInternalCloseIds.Remove(p.Id);
                     AuditRaw(auditEvent + "_failed", baseDetail + $" pos={p.Id} dir={p.TradeType} volume={p.VolumeInUnits} pnl={pnl:F2} err={res.Error} {lifecycle}");
+                    QueueEmergencyClose(p, auditEvent + "_failed");
                 }
             }
         }
 
         private void RepairBasketStates(string reason)
         {
-            foreach (var p in Positions.Where(p => p.SymbolName == SymbolName && IsBasketPosition(p)))
+            foreach (var p in Positions.Where(p => PositionBelongsToThisInstance(p) && IsBasketPosition(p)))
             {
                 if (_basketStates.ContainsKey(p.Id))
                     continue;
-                var st = new BasketPositionState
+
+                BasketPositionState st;
+                var restored = TryLoadBasketPositionState(p.Id, out st);
+                if (!restored)
                 {
-                    EventId = ParseCommentString(p.Comment, "event"),
-                    SourceTf = PositionSourceTf(p),
-                    DayKey = ParseCommentString(p.Comment, "day"),
-                    TargetPips = ParseCommentDouble(p.Comment, "btp"),
-                    TargetPct = ParseCommentDouble(p.Comment, "bpct"),
-                    MaxLossPips = ParseCommentDouble(p.Comment, "blp"),
-                    CatastrophicSlPips = ParseCommentDouble(p.Comment, "bcat"),
-                    TargetMoney = ParseCommentDouble(p.Comment, "btmoney"),
-                    MaxLossMoney = ParseCommentDouble(p.Comment, "blmoney"),
-                    CloseSessionEnd = ParseCommentDouble(p.Comment, "bsess") > 0,
-                    SessionEndMinutes = (int)ParseCommentDouble(p.Comment, "bsessmin"),
-                    LastNetProfit = p.NetProfit,
-                    LastSignedPips = 0.0,
-                    LastPrice = p.EntryPrice,
-                    OpenTime = p.EntryTime,
-                    EntryPrice = p.EntryPrice,
-                    Direction = p.TradeType == TradeType.Buy ? 1 : -1,
-                    MfePips = 0.0,
-                    MaePips = 0.0,
-                    MfeMoney = p.NetProfit,
-                    MaeMoney = p.NetProfit,
-                    MfeTime = p.EntryTime,
-                    MaeTime = p.EntryTime,
-                    MfePrice = p.EntryPrice,
-                    MaePrice = p.EntryPrice,
-                    FirstTargetHitTime = DateTime.MinValue,
-                    FirstLossHitTime = DateTime.MinValue,
-                    ReverseSignalCount = 0
-                };
+                    st = new BasketPositionState
+                    {
+                        EventId = ParseCommentString(p.Comment, "event"),
+                        SourceTf = PositionSourceTf(p),
+                        DayKey = ParseCommentString(p.Comment, "day"),
+                        TargetPips = ParseCommentDouble(p.Comment, "btp"),
+                        TargetPct = ParseCommentDouble(p.Comment, "bpct"),
+                        MaxLossPips = ParseCommentDouble(p.Comment, "blp"),
+                        CatastrophicSlPips = ParseCommentDouble(p.Comment, "bcat"),
+                        TargetMoney = ParseCommentDouble(p.Comment, "btmoney"),
+                        MaxLossMoney = ParseCommentDouble(p.Comment, "blmoney"),
+                        CloseSessionEnd = ParseCommentDouble(p.Comment, "bsess") > 0,
+                        SessionEndMinutes = (int)ParseCommentDouble(p.Comment, "bsessmin"),
+                        LastNetProfit = p.NetProfit,
+                        LastSignedPips = 0.0,
+                        LastPrice = p.EntryPrice,
+                        OpenTime = p.EntryTime,
+                        EntryPrice = p.EntryPrice,
+                        Direction = p.TradeType == TradeType.Buy ? 1 : -1,
+                        MfePips = 0.0,
+                        MaePips = 0.0,
+                        MfeMoney = p.NetProfit,
+                        MaeMoney = p.NetProfit,
+                        MfeTime = p.EntryTime,
+                        MaeTime = p.EntryTime,
+                        MfePrice = p.EntryPrice,
+                        MaePrice = p.EntryPrice,
+                        FirstTargetHitTime = DateTime.MinValue,
+                        FirstLossHitTime = DateTime.MinValue,
+                        ReverseSignalCount = 0
+                    };
+                }
+
                 UpdateBasketLifecycleState(p, ref st);
                 if (string.IsNullOrWhiteSpace(st.DayKey)) st.DayKey = Server.Time.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
                 _basketStates[p.Id] = st;
-                AuditRaw("basket_state_repaired", $"reason={reason} pos={p.Id} label={p.Label} key={BasketStateKeyFromPosition(p)} pnl={p.NetProfit:F2}");
+                SaveBasketPositionState(p.Id, st, true);
+                AuditRaw("basket_state_repaired", $"reason={reason} restored={(restored ? 1 : 0)} pos={p.Id} label={p.Label} key={BasketStateKeyFromPosition(p)} pnl={p.NetProfit:F2} mfe_pips={st.MfePips:F2} mae_pips={st.MaePips:F2}");
             }
         }
-
         private void SweepClosedBasketStates()
         {
             foreach (var kv in _basketStates.ToArray())
@@ -1061,7 +1188,7 @@ namespace cAlgo.Robots
                 if (Positions.Any(p => p.Id == kv.Key))
                     continue;
                 var key = BasketStateKeyFromState(kv.Value);
-                AddBasketClosedPnl(key, kv.Value.LastNetProfit);
+                AccountBasketClosedState(kv.Key, key, kv.Value.LastNetProfit);
                 AuditRaw("basket_position_disappeared", $"pos={kv.Key} key={key} last_net_profit={kv.Value.LastNetProfit:F2} {BasketLifecycleDetail(kv.Value, "position_disappeared", kv.Value.LastNetProfit)}");
                 _basketStates.Remove(kv.Key);
             }
@@ -1202,10 +1329,245 @@ namespace cAlgo.Robots
             };
         }
 
+        private string EffectiveSourceTf()
+        {
+            var configured = NormalizeTf(SourceTimeframeFilter);
+            return string.IsNullOrWhiteSpace(configured) ? ChartTfString() : configured;
+        }
+
+        private void OnPositionClosed(PositionClosedEventArgs args)
+        {
+            var p = args == null ? null : args.Position;
+            if (p == null || !PositionBelongsToThisInstance(p) || !IsBasketPosition(p))
+                return;
+
+            var internalClose = _basketInternalCloseIds.Remove(p.Id);
+            var st = GetBasketState(p);
+            UpdateBasketLifecycleState(p, ref st);
+            var key = BasketStateKeyFromState(st);
+            var lifecycle = BasketLifecycleDetail(st, internalClose ? "internal_close_event" : "external_close_event", p.NetProfit);
+            var accounted = AccountBasketClosedState(p.Id, key, p.NetProfit);
+            if (!internalClose)
+                AuditRaw("basket_external_position_closed", $"pos={p.Id} label={p.Label} key={key} pnl={p.NetProfit:F2} accounted={(accounted ? 1 : 0)} {lifecycle}");
+            else
+                AuditRaw("basket_internal_close_accounted", $"pos={p.Id} label={p.Label} key={key} pnl={p.NetProfit:F2} accounted={(accounted ? 1 : 0)}");
+        }
+
+        private bool AccountBasketClosedPosition(Position p, string key, double pnl)
+        {
+            return p != null && AccountBasketClosedState(p.Id, key, pnl);
+        }
+
+        private bool AccountBasketClosedState(long positionId, string key, double pnl)
+        {
+            if (positionId <= 0 || !_basketAccountedPositionIds.Add(positionId))
+                return false;
+            AddBasketClosedPnl(key, pnl);
+            _basketStates.Remove(positionId);
+            _basketStateLastPersist.Remove(positionId);
+            DeleteBasketPositionState(positionId);
+            return true;
+        }
+
+        private void LoadBasketLedger()
+        {
+            if (string.IsNullOrWhiteSpace(_basketLedgerPath) || !IoFile.Exists(_basketLedgerPath))
+                return;
+            try
+            {
+                foreach (var line in IoFile.ReadAllLines(_basketLedgerPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("version\t", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var fields = line.Split('\t');
+                    if (fields.Length < 3) continue;
+                    var key = DecodeStateText(fields[0]);
+                    if (string.IsNullOrWhiteSpace(key)) continue;
+                    _basketClosedPnlByDay[key] = ParseDouble(fields[1]);
+                    if (fields[2] == "1") _basketDayDone.Add(key);
+                }
+                AuditRaw("basket_ledger_loaded", $"path={_basketLedgerPath} pnl_keys={_basketClosedPnlByDay.Count} done_keys={_basketDayDone.Count}");
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("basket_ledger_load_failed", $"path={_basketLedgerPath} error={ex.Message}");
+            }
+        }
+
+        private void SaveBasketLedger()
+        {
+            if (string.IsNullOrWhiteSpace(_basketLedgerPath)) return;
+            try
+            {
+                var keys = new HashSet<string>(_basketClosedPnlByDay.Keys);
+                foreach (var key in _basketDayDone) keys.Add(key);
+                var sb = new StringBuilder();
+                sb.AppendLine("version\t1");
+                foreach (var key in keys.OrderBy(x => x, StringComparer.Ordinal))
+                {
+                    sb.Append(EncodeStateText(key)).Append('\t')
+                      .Append(GetBasketClosedPnl(key).ToString("G17", CultureInfo.InvariantCulture)).Append('\t')
+                      .Append(BasketDayDone(key) ? "1" : "0").AppendLine();
+                }
+                WriteStateAtomically(_basketLedgerPath, sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("basket_ledger_save_failed", $"path={_basketLedgerPath} error={ex.Message}");
+            }
+        }
+
+        private string BasketPositionStatePath(long positionId)
+        {
+            return IoPath.Combine(_stateDir, $"basketpos_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
+        }
+
+        private void PersistBasketStatesIfDue()
+        {
+            if ((DateTime.UtcNow - _lastBasketStateSweep).TotalSeconds < 5) return;
+            _lastBasketStateSweep = DateTime.UtcNow;
+            PersistAllBasketStates(false);
+        }
+
+        private void PersistAllBasketStates(bool force)
+        {
+            foreach (var kv in _basketStates.ToArray())
+                SaveBasketPositionState(kv.Key, kv.Value, force);
+        }
+
+        private void SaveBasketPositionState(long positionId, BasketPositionState st, bool force)
+        {
+            if (positionId <= 0 || string.IsNullOrWhiteSpace(_stateDir)) return;
+            var now = DateTime.UtcNow;
+            if (!force && _basketStateLastPersist.TryGetValue(positionId, out var last) && (now - last).TotalSeconds < 10)
+                return;
+            try
+            {
+                var fields = new[]
+                {
+                    "v1",
+                    EncodeStateText(st.EventId),
+                    EncodeStateText(st.SourceTf),
+                    EncodeStateText(st.DayKey),
+                    StateDouble(st.TargetPips),
+                    StateDouble(st.TargetPct),
+                    StateDouble(st.MaxLossPips),
+                    StateDouble(st.CatastrophicSlPips),
+                    StateDouble(st.TargetMoney),
+                    StateDouble(st.MaxLossMoney),
+                    st.CloseSessionEnd ? "1" : "0",
+                    st.SessionEndMinutes.ToString(CultureInfo.InvariantCulture),
+                    StateDouble(st.LastNetProfit),
+                    StateDouble(st.LastSignedPips),
+                    StateDouble(st.LastPrice),
+                    StateTicks(st.OpenTime),
+                    StateDouble(st.EntryPrice),
+                    st.Direction.ToString(CultureInfo.InvariantCulture),
+                    StateDouble(st.MfePips),
+                    StateDouble(st.MaePips),
+                    StateDouble(st.MfeMoney),
+                    StateDouble(st.MaeMoney),
+                    StateTicks(st.MfeTime),
+                    StateTicks(st.MaeTime),
+                    StateDouble(st.MfePrice),
+                    StateDouble(st.MaePrice),
+                    StateTicks(st.FirstTargetHitTime),
+                    StateTicks(st.FirstLossHitTime),
+                    st.ReverseSignalCount.ToString(CultureInfo.InvariantCulture)
+                };
+                WriteStateAtomically(BasketPositionStatePath(positionId), string.Join("\t", fields));
+                _basketStateLastPersist[positionId] = now;
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("basket_position_state_save_failed", $"pos={positionId} error={ex.Message}");
+            }
+        }
+
+        private bool TryLoadBasketPositionState(long positionId, out BasketPositionState st)
+        {
+            st = new BasketPositionState();
+            try
+            {
+                var path = BasketPositionStatePath(positionId);
+                if (!IoFile.Exists(path)) return false;
+                var f = IoFile.ReadAllText(path).Split('\t');
+                if (f.Length < 29 || f[0] != "v1") return false;
+                st.EventId = DecodeStateText(f[1]);
+                st.SourceTf = DecodeStateText(f[2]);
+                st.DayKey = DecodeStateText(f[3]);
+                st.TargetPips = ParseDouble(f[4]);
+                st.TargetPct = ParseDouble(f[5]);
+                st.MaxLossPips = ParseDouble(f[6]);
+                st.CatastrophicSlPips = ParseDouble(f[7]);
+                st.TargetMoney = ParseDouble(f[8]);
+                st.MaxLossMoney = ParseDouble(f[9]);
+                st.CloseSessionEnd = f[10] == "1";
+                st.SessionEndMinutes = ParseStateInt(f[11]);
+                st.LastNetProfit = ParseDouble(f[12]);
+                st.LastSignedPips = ParseDouble(f[13]);
+                st.LastPrice = ParseDouble(f[14]);
+                st.OpenTime = ParseStateTime(f[15]);
+                st.EntryPrice = ParseDouble(f[16]);
+                st.Direction = ParseStateInt(f[17]);
+                st.MfePips = ParseDouble(f[18]);
+                st.MaePips = ParseDouble(f[19]);
+                st.MfeMoney = ParseDouble(f[20]);
+                st.MaeMoney = ParseDouble(f[21]);
+                st.MfeTime = ParseStateTime(f[22]);
+                st.MaeTime = ParseStateTime(f[23]);
+                st.MfePrice = ParseDouble(f[24]);
+                st.MaePrice = ParseDouble(f[25]);
+                st.FirstTargetHitTime = ParseStateTime(f[26]);
+                st.FirstLossHitTime = ParseStateTime(f[27]);
+                st.ReverseSignalCount = ParseStateInt(f[28]);
+                _basketStateLastPersist[positionId] = DateTime.UtcNow;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("basket_position_state_load_failed", $"pos={positionId} error={ex.Message}");
+                return false;
+            }
+        }
+
+        private void DeleteBasketPositionState(long positionId)
+        {
+            try
+            {
+                var path = BasketPositionStatePath(positionId);
+                if (IoFile.Exists(path)) IoFile.Delete(path);
+            }
+            catch { }
+        }
+
+        private static string StateDouble(double value) => value.ToString("G17", CultureInfo.InvariantCulture);
+        private static string StateTicks(DateTime value) => (value == DateTime.MinValue ? 0L : value.ToUniversalTime().Ticks).ToString(CultureInfo.InvariantCulture);
+        private static int ParseStateInt(string value) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+
+        private static DateTime ParseStateTime(string value)
+        {
+            if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) || ticks <= 0)
+                return DateTime.MinValue;
+            try { return new DateTime(ticks, DateTimeKind.Utc); }
+            catch { return DateTime.MinValue; }
+        }
+
+        private static string EncodeStateText(string value)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+        }
+
+        private static string DecodeStateText(string value)
+        {
+            try { return Encoding.UTF8.GetString(Convert.FromBase64String(value ?? string.Empty)); }
+            catch { return string.Empty; }
+        }
         private void AddBasketClosedPnl(string key, double pnl)
         {
             if (string.IsNullOrWhiteSpace(key)) return;
             _basketClosedPnlByDay[key] = GetBasketClosedPnl(key) + pnl;
+            SaveBasketLedger();
         }
 
         private double GetBasketClosedPnl(string key)
@@ -1214,7 +1576,11 @@ namespace cAlgo.Robots
         }
 
         private bool BasketDayDone(string key) => _basketDayDone.Contains(key);
-        private void BasketSetDayDone(string key) { if (!string.IsNullOrWhiteSpace(key)) _basketDayDone.Add(key); }
+        private void BasketSetDayDone(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            if (_basketDayDone.Add(key)) SaveBasketLedger();
+        }
 
         private double BasketTargetMoneyFromState(BasketPositionState st)
         {
@@ -1266,7 +1632,7 @@ namespace cAlgo.Robots
                 return true;
             }
 
-            var mod = ModifyPosition(position, sig.Sl, sig.Tp);
+            var mod = ModifyPosition(position, sig.Sl, sig.Tp, ProtectionType.Absolute);
             detail = $"pos={position.Id} before_sl={FormatNullable(beforeSl)} before_tp={FormatNullable(beforeTp)} exact_sl={sig.Sl} exact_tp={sig.Tp} tick={tick} modify_error={mod.Error}";
             return mod.IsSuccessful;
         }
@@ -1389,6 +1755,16 @@ namespace cAlgo.Robots
             }
         }
 
+        private bool PositionBelongsToThisInstance(Position p)
+        {
+            if (p == null || !SameText(p.SymbolName, SymbolName))
+                return false;
+            var expectedTf = EffectiveSourceTf();
+            if (string.IsNullOrWhiteSpace(expectedTf))
+                return true;
+            var positionTf = PositionSourceTf(p);
+            return !string.IsNullOrWhiteSpace(positionTf) && SameText(expectedTf, positionTf);
+        }
         private string PositionSourceTf(Position p)
         {
             var labelTf = LabelSourceTf(p.Label);
@@ -1453,12 +1829,37 @@ namespace cAlgo.Robots
                 if (pos == null)
                 {
                     _halfStates.Remove(kv.Key);
+                    _halfRetryAt.Remove(kv.Key);
+                    DeleteHalfState(kv.Key);
                     continue;
                 }
 
+                if (_halfRetryAt.TryGetValue(kv.Key, out var retryAt))
+                {
+                    if (DateTime.UtcNow < retryAt)
+                        continue;
+                    _halfRetryAt.Remove(kv.Key);
+                }
+
                 var st = kv.Value;
+                var persistedPhase = LoadHalfStatePhase(kv.Key);
+                if (persistedPhase == "done")
+                {
+                    st.PartialClosed = true;
+                    st.Done = true;
+                    _halfStates[kv.Key] = st;
+                    continue;
+                }
+                if (persistedPhase == "partial")
+                    st.PartialClosed = true;
                 if (st.Done || st.HalfTrigger <= 0)
                     continue;
+
+                if (st.PartialClosed)
+                {
+                    TryFinishBreakEven(pos, kv.Key, ref st, "halfbe_retry_after_partial");
+                    continue;
+                }
 
                 var triggerPx = st.Direction > 0 ? Symbol.Bid : Symbol.Ask;
                 var reached = st.Direction > 0 ? Symbol.Bid >= st.HalfTrigger : Symbol.Ask <= st.HalfTrigger;
@@ -1485,34 +1886,64 @@ namespace cAlgo.Robots
 
                 if (closeVolume <= 0 || closeVolume >= pos.VolumeInUnits || remainingVolume < minVolume)
                 {
-                    AuditRaw("halfbe_blocked_volume", baseDetail + " reason=partial_close_impossible_for_broker_volume");
+                    _halfRetryAt[kv.Key] = DateTime.UtcNow.AddSeconds(Math.Max(5, HalfBeVolumeRetrySeconds));
+                    AuditRaw("halfbe_blocked_volume", baseDetail + $" reason=partial_close_impossible_for_broker_volume retry_sec={Math.Max(5, HalfBeVolumeRetrySeconds)}");
                     continue;
                 }
 
                 var close = ClosePosition(pos, closeVolume);
                 if (!close.IsSuccessful)
                 {
-                    AuditRaw("halfbe_partial_close_failed", baseDetail + $" err={close.Error}");
+                    _halfRetryAt[kv.Key] = DateTime.UtcNow.AddSeconds(Math.Max(1, HalfBeRetrySeconds));
+                    AuditRaw("halfbe_partial_close_failed", baseDetail + $" err={close.Error} retry_sec={Math.Max(1, HalfBeRetrySeconds)}");
                     continue;
                 }
 
+                st.PartialClosed = true;
+                SaveHalfState(kv.Key, st);
                 var remaining = Positions.FirstOrDefault(p => p.Id == pos.Id) ?? Positions.FirstOrDefault(p => p.SymbolName == SymbolName && p.Label == pos.Label);
                 if (remaining == null)
                 {
                     st.Done = true;
+                    SaveHalfState(kv.Key, st);
                     _halfStates[kv.Key] = st;
                     AuditRaw("halfbe_partial_close_success_position_closed", baseDetail);
                     continue;
                 }
 
-                var be = remaining.EntryPrice;
-                var mod = ModifyPosition(remaining, be, remaining.TakeProfit, ProtectionType.Absolute);
-                AuditRaw(mod.IsSuccessful ? "halfbe_done" : "halfbe_sl_to_be_failed_after_partial", baseDetail + $" be_sl={be} remaining_after={remaining.VolumeInUnits} modify_err={mod.Error}");
-                st.Done = true;
-                _halfStates[kv.Key] = st;
+                if (remaining.Id != kv.Key)
+                {
+                    _halfStates.Remove(kv.Key);
+                    DeleteHalfState(kv.Key);
+                    _halfStates[remaining.Id] = st;
+                    SaveHalfState(remaining.Id, st);
+                }
+                TryFinishBreakEven(remaining, remaining.Id, ref st, baseDetail);
             }
         }
-        private bool IsBasketSignal(BridgeSignal sig)
+
+        private void TryFinishBreakEven(Position remaining, long stateId, ref HalfState st, string baseDetail)
+        {
+            var be = remaining.EntryPrice;
+            var mod = ModifyPosition(remaining, be, remaining.TakeProfit, ProtectionType.Absolute);
+            if (mod.IsSuccessful)
+            {
+                st.Done = true;
+                st.PartialClosed = true;
+                _halfRetryAt.Remove(stateId);
+                SaveHalfState(stateId, st);
+                AuditRaw("halfbe_done", baseDetail + $" be_sl={be} remaining_after={remaining.VolumeInUnits} modify_err={mod.Error}");
+            }
+            else
+            {
+                st.Done = false;
+                st.PartialClosed = true;
+                _halfRetryAt[stateId] = DateTime.UtcNow.AddSeconds(Math.Max(1, HalfBeRetrySeconds));
+                SaveHalfState(stateId, st);
+                AuditRaw("halfbe_sl_to_be_retry_pending", baseDetail + $" be_sl={be} remaining_after={remaining.VolumeInUnits} modify_err={mod.Error} retry_sec={Math.Max(1, HalfBeRetrySeconds)}");
+            }
+            _halfStates[stateId] = st;
+        }        private bool IsBasketSignal(BridgeSignal sig)
         {
             return SameText(sig.TradeMode, "basket_daily_target") || SameText(sig.TradeMode, "basket");
         }
@@ -1672,7 +2103,7 @@ namespace cAlgo.Robots
             if (!string.IsNullOrWhiteSpace(canonical) && !canonical.EndsWith("M", StringComparison.OrdinalIgnoreCase)) yield return canonical + "m";
             if (canonical == "US30" || canonical == "WALLSTREET30") yield return "US30m";
             if (canonical == "US500" || canonical == "SPX500") yield return "US500m";
-            if (canonical == "USTEC" || canonical == "US100" || canonical == "NAS100") yield return "USTECm";
+            if (canonical == "USTEC" || canonical == "US100" || canonical == "NAS100" || canonical == "USTECH100") yield return "USTECm";
             if (canonical == "DE30" || canonical == "GERMANY40" || canonical == "DAX40") yield return "DE30m";
             if (canonical == "UKOIL" || canonical == "XBRUSD") yield return "UKOILm";
             if (canonical == "USOIL" || canonical == "XTIUSD") yield return "USOILm";
@@ -1684,17 +2115,60 @@ namespace cAlgo.Robots
             return IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MetaQuotes", "Terminal", "Common", "Files", "PRORENKOFileBridge_Latest.csv");
         }
 
-        private string BuildLabel(BridgeSignal sig) => $"{LabelPrefix}|T{NormalizeTf(sig.SourceTf)}|{Hash32(sig.EventId):X8}";
-        private string BuildBasketLabel(BridgeSignal sig) => $"{LabelPrefix}B|T{NormalizeTf(sig.SourceTf)}|{Hash32(sig.EventId):X8}";
+        private string BuildLabel(BridgeSignal sig) => $"{LabelPrefix}|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
+        private string BuildBasketLabel(BridgeSignal sig) => $"{LabelPrefix}B|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
 
-        private bool ClaimEvent(string eventId)
+        private bool ClaimEvent(string eventId, out bool committedDuplicate)
         {
-            var lockPath = IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
+            committedDuplicate = false;
+            var legacyPath = LegacyEventLockPath(eventId);
+            if (IoFile.Exists(legacyPath))
+            {
+                try
+                {
+                    var legacy = IoFile.ReadAllText(legacyPath);
+                    if (legacy.IndexOf(eventId, StringComparison.Ordinal) >= 0)
+                    {
+                        committedDuplicate = true;
+                        return false;
+                    }
+                }
+                catch { }
+            }
+
+            var lockPath = EventLockPath(eventId);
+            if (IoFile.Exists(lockPath))
+            {
+                try
+                {
+                    var payload = IoFile.ReadAllText(lockPath);
+                    if (payload.StartsWith("committed\t", StringComparison.Ordinal) && payload.IndexOf("\t" + eventId, StringComparison.Ordinal) >= 0)
+                    {
+                        committedDuplicate = true;
+                        return false;
+                    }
+                    if (HasPositionForEvent(eventId))
+                    {
+                        CommitEvent(eventId, 0, "reconciled_open_position");
+                        committedDuplicate = true;
+                        return false;
+                    }
+                    var age = DateTime.UtcNow - IoFile.GetLastWriteTimeUtc(lockPath);
+                    if (age.TotalSeconds < 120)
+                        return false;
+                    IoFile.Delete(lockPath);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
             try
             {
                 using (var fs = new IoFileStream(lockPath, IoFileMode.CreateNew, IoFileAccess.Write, IoFileShare.None))
                 using (var sw = new IoStreamWriter(fs))
-                    sw.WriteLine(DateTime.UtcNow.ToString("O") + " " + eventId);
+                    sw.WriteLine("pending\t" + DateTime.UtcNow.ToString("O") + "\t" + eventId);
                 return true;
             }
             catch (IoException)
@@ -1703,12 +2177,37 @@ namespace cAlgo.Robots
             }
         }
 
-        private void ReleaseEvent(string eventId)
+        private void CommitEvent(string eventId, long positionId, string outcome)
         {
-            var lockPath = IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
-            try { if (IoFile.Exists(lockPath)) IoFile.Delete(lockPath); } catch { }
+            try
+            {
+                WriteStateAtomically(EventLockPath(eventId), "committed\t" + DateTime.UtcNow.ToString("O") + "\t" + eventId + "\t" + positionId.ToString(CultureInfo.InvariantCulture) + "\t" + (outcome ?? ""));
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("event_commit_failed", $"event={ShortEvent(eventId)} position={positionId} error={ex.Message}");
+            }
         }
 
+        private bool HasPositionForEvent(string eventId)
+        {
+            var token64 = "|" + Hash64(eventId).ToString("X16", CultureInfo.InvariantCulture);
+            var legacyToken32 = "|" + Hash32(eventId).ToString("X8", CultureInfo.InvariantCulture);
+            return Positions.Any(p => SameText(p.SymbolName, SymbolName)
+                                      && !string.IsNullOrWhiteSpace(p.Label)
+                                      && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)
+                                      && (p.Label.EndsWith(token64, StringComparison.OrdinalIgnoreCase)
+                                          || p.Label.EndsWith(legacyToken32, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash64(eventId):X16}.lock");
+        private string LegacyEventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
+
+        private void ReleaseEvent(string eventId)
+        {
+            var lockPath = EventLockPath(eventId);
+            try { if (IoFile.Exists(lockPath)) IoFile.Delete(lockPath); } catch { }
+        }
         private string MapSymbol(string source)
         {
             var mapped = MapSymbolFromCsv(source, SymbolMapCsv);
@@ -1785,12 +2284,38 @@ namespace cAlgo.Robots
 
         private bool ShouldRebaseLevels(BridgeSignal sig)
         {
-            if (!RebaseMappedLevelsToLiveEntry) return false;
+            var oilAlias = AutoRebaseOilAliases && IsMappedOilAlias(sig.SourceSymbol, SymbolName);
+            if (!RebaseMappedLevelsToLiveEntry && !oilAlias) return false;
             if (sig.BridgeEntry <= 0 || sig.Sl <= 0 || sig.Tp <= 0) return false;
             var mapped = MapSymbol(sig.SourceSymbol);
             if (!SameSymbolIdentity(mapped, SymbolName)) return false;
-            if (RebaseOnlyWhenSourceDiffers && (SameText(sig.SourceSymbol, SymbolName) || SameEconomicSymbol(sig.SourceSymbol, SymbolName))) return false;
+            if (RebaseOnlyWhenSourceDiffers && SameText(sig.SourceSymbol, SymbolName)) return false;
             return true;
+        }
+
+        private bool ValidateMappedPriceBasis(BridgeSignal sig, double liveEntry, out string detail)
+        {
+            detail = string.Empty;
+            if (MappedBasisGuardPctRisk <= 0 || SameText(sig.SourceSymbol, SymbolName) || sig.BridgeEntry <= 0 || sig.Sl <= 0 || liveEntry <= 0)
+                return true;
+            var sourceRisk = Math.Abs(sig.BridgeEntry - sig.Sl);
+            if (sourceRisk <= Math.Max(Symbol.TickSize, 0.00000001))
+                return true;
+            var basisOffset = Math.Abs(liveEntry - sig.BridgeEntry);
+            var basisPctRisk = basisOffset * 100.0 / sourceRisk;
+            detail = $"source_symbol={sig.SourceSymbol} chart_symbol={SymbolName} source_entry={sig.BridgeEntry} live_entry={liveEntry} source_sl={sig.Sl} basis_offset={basisOffset} source_risk={sourceRisk} basis_pct_risk={basisPctRisk:F2} max_pct={MappedBasisGuardPctRisk:F2}";
+            return basisPctRisk <= MappedBasisGuardPctRisk;
+        }
+
+        private static bool IsMappedOilAlias(string source, string chart)
+        {
+            var a = CanonicalSymbol(source);
+            var b = CanonicalSymbol(chart);
+            var sourceBrent = a == "UKOIL" || a == "XBRUSD" || a == "BRENT";
+            var chartBrent = b == "UKOIL" || b == "XBRUSD" || b == "BRENT";
+            var sourceWti = a == "USOIL" || a == "XTIUSD" || a == "WTI";
+            var chartWti = b == "USOIL" || b == "XTIUSD" || b == "WTI";
+            return !SameText(source, chart) && ((sourceBrent && chartBrent) || (sourceWti && chartWti));
         }
 
         private void RebaseLevelsToLiveEntry(ref BridgeSignal sig, double liveEntry, out string detail)
@@ -1901,15 +2426,131 @@ namespace cAlgo.Robots
             return 0;
         }
 
+        private string HalfStatePath(long positionId)
+        {
+            return IoPath.Combine(_stateDir, $"half_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
+        }
+
+        private void SaveHalfState(long positionId, HalfState st)
+        {
+            if (positionId <= 0 || string.IsNullOrWhiteSpace(_stateDir)) return;
+            try
+            {
+                var phase = st.Done ? "done" : st.PartialClosed ? "partial" : "armed";
+                WriteStateAtomically(HalfStatePath(positionId), string.Join("\t", phase, st.InitialVolume.ToString("G17", CultureInfo.InvariantCulture), DateTime.UtcNow.ToString("O")));
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("halfbe_state_write_failed", $"pos={positionId} error={ex.Message}");
+            }
+        }
+
+        private string LoadHalfStatePhase(long positionId)
+        {
+            try
+            {
+                var path = HalfStatePath(positionId);
+                if (!IoFile.Exists(path)) return "";
+                var fields = IoFile.ReadAllText(path).Split('\t');
+                return fields.Length > 0 ? fields[0].Trim().ToLowerInvariant() : "";
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("halfbe_state_read_failed", $"pos={positionId} error={ex.Message}");
+                return "";
+            }
+        }
+
+        private void DeleteHalfState(long positionId)
+        {
+            try
+            {
+                var path = HalfStatePath(positionId);
+                if (IoFile.Exists(path)) IoFile.Delete(path);
+            }
+            catch { }
+        }
+
+        private void WriteStateAtomically(string path, string content)
+        {
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            IoFile.WriteAllText(tmp, content, Encoding.UTF8);
+            try
+            {
+                if (IoFile.Exists(path))
+                    IoFile.Replace(tmp, path, null);
+                else
+                    IoFile.Move(tmp, path);
+            }
+            catch
+            {
+                IoFile.Copy(tmp, path, true);
+                if (IoFile.Exists(tmp)) IoFile.Delete(tmp);
+            }
+        }
+
+        private bool PositionProtectedAtOrBeyondBe(Position p)
+        {
+            if (p == null || !p.StopLoss.HasValue) return false;
+            var tolerance = Math.Max(Symbol.TickSize, Symbol.PipSize * 0.1);
+            return p.TradeType == TradeType.Buy
+                ? p.StopLoss.Value >= p.EntryPrice - tolerance
+                : p.StopLoss.Value <= p.EntryPrice + tolerance;
+        }
+
+        private void QueueEmergencyClose(Position position, string reason)
+        {
+            if (position == null) return;
+            _emergencyCloseRetryAt[position.Id] = DateTime.MinValue;
+            AuditRaw("emergency_close_queued", $"pos={position.Id} label={position.Label} reason={reason}");
+        }
+
+        private void ManageEmergencyCloses()
+        {
+            foreach (var kv in _emergencyCloseRetryAt.ToArray())
+            {
+                var pos = Positions.FirstOrDefault(p => p.Id == kv.Key);
+                if (pos == null)
+                {
+                    _emergencyCloseRetryAt.Remove(kv.Key);
+                    DeleteHalfState(kv.Key);
+                    continue;
+                }
+                if (DateTime.UtcNow < kv.Value) continue;
+                var result = ClosePosition(pos);
+                if (result.IsSuccessful)
+                {
+                    _emergencyCloseRetryAt.Remove(kv.Key);
+                    DeleteHalfState(kv.Key);
+                    AuditRaw("emergency_close_done", $"pos={pos.Id} label={pos.Label}");
+                }
+                else
+                {
+                    _emergencyCloseRetryAt[kv.Key] = DateTime.UtcNow.AddSeconds(10);
+                    AuditRaw("emergency_close_retry_failed", $"pos={pos.Id} label={pos.Label} error={result.Error} next_sec=10");
+                }
+            }
+        }
         private void RepairOpenPositionStates(string reason)
         {
-            if (!ManageHalfCloseBe) return;
-            foreach (var p in Positions.Where(p => p.SymbolName == SymbolName && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)))
+            foreach (var p in Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)))
             {
-                if (_halfStates.ContainsKey(p.Id)) continue;
+                var expectedSl = ParseCommentDouble(p.Comment, "sl");
+                var expectedTp = ParseCommentDouble(p.Comment, "tp");
+                var atBe = PositionProtectedAtOrBeyondBe(p);
+                var tolerance = Math.Max(Symbol.TickSize * 0.5, 0.00000001);
+                var slMismatch = expectedSl > 0 && (!p.StopLoss.HasValue || Math.Abs(p.StopLoss.Value - expectedSl) > tolerance) && !atBe;
+                var tpMismatch = expectedTp > 0 && (!p.TakeProfit.HasValue || Math.Abs(p.TakeProfit.Value - expectedTp) > tolerance);
+                if (FailIfExactProtectionFails && (slMismatch || tpMismatch) && !_emergencyCloseRetryAt.ContainsKey(p.Id))
+                    QueueEmergencyClose(p, $"repair_exact_mismatch reason={reason} expected_sl={expectedSl} actual_sl={FormatNullable(p.StopLoss)} expected_tp={expectedTp} actual_tp={FormatNullable(p.TakeProfit)} at_be={(atBe ? 1 : 0)}");
+
+                if (!ManageHalfCloseBe || _halfStates.ContainsKey(p.Id)) continue;
                 var half = ParseCommentDouble(p.Comment, "half");
                 if (half <= 0) continue;
-                _halfStates[p.Id] = new HalfState
+                var phase = LoadHalfStatePhase(p.Id);
+                var done = phase == "done" || atBe;
+                var partial = done || phase == "partial";
+                var state = new HalfState
                 {
                     EventId = ParseCommentString(p.Comment, "event"),
                     SourceTf = PositionSourceTf(p),
@@ -1917,14 +2558,16 @@ namespace cAlgo.Robots
                     Entry = p.EntryPrice,
                     HalfTrigger = half,
                     InitialVolume = p.VolumeInUnits,
-                    StopLoss = ParseCommentDouble(p.Comment, "sl"),
-                    TakeProfit = ParseCommentDouble(p.Comment, "tp"),
-                    Done = false
+                    StopLoss = expectedSl,
+                    TakeProfit = expectedTp,
+                    PartialClosed = partial,
+                    Done = done
                 };
-                AuditRaw("position_state_repaired", $"reason={reason} pos={p.Id} label={p.Label} source_tf={PositionSourceTf(p)} entry={p.EntryPrice} half={half} sl={ParseCommentDouble(p.Comment, "sl")} tp={ParseCommentDouble(p.Comment, "tp")}");
+                _halfStates[p.Id] = state;
+                if (done && phase != "done") SaveHalfState(p.Id, state);
+                AuditRaw("position_state_repaired", $"reason={reason} pos={p.Id} label={p.Label} source_tf={PositionSourceTf(p)} entry={p.EntryPrice} half={half} sl={expectedSl} tp={expectedTp} phase={phase} partial={(partial ? 1 : 0)} done={(done ? 1 : 0)}");
             }
         }
-
         private static double ParseCommentDouble(string comment, string key)
         {
             var raw = ParseCommentString(comment, key);
@@ -1943,7 +2586,7 @@ namespace cAlgo.Robots
         }
         private string OpenPositionSummary()
         {
-            var scoped = Positions.Where(p => p.SymbolName == SymbolName && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)).ToArray();
+            var scoped = Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)).ToArray();
             var pnl = scoped.Sum(p => p.NetProfit);
             var vol = scoped.Sum(p => p.VolumeInUnits);
             return $"{scoped.Length} vol={vol} pnl={pnl:F2}";
@@ -1958,7 +2601,7 @@ namespace cAlgo.Robots
 
         private string BasketOpenSummary()
         {
-            var open = Positions.Where(p => p.SymbolName == SymbolName && IsBasketPosition(p)).ToArray();
+            var open = Positions.Where(p => PositionBelongsToThisInstance(p) && IsBasketPosition(p)).ToArray();
             if (open.Length == 0) return "0";
             var groups = open.GroupBy(p => BasketStateKeyFromPosition(p)).Select(g =>
             {
@@ -2324,6 +2967,15 @@ namespace cAlgo.Robots
             }
         }
 
+        private static ulong Hash64(string s)
+        {
+            unchecked
+            {
+                ulong h = 14695981039346656037UL;
+                foreach (var c in s ?? string.Empty) { h ^= c; h *= 1099511628211UL; }
+                return h;
+            }
+        }
         private static string Escape(string s)
         {
             s = s ?? "";
@@ -2406,6 +3058,7 @@ namespace cAlgo.Robots
             public double InitialVolume;
             public double StopLoss;
             public double TakeProfit;
+            public bool PartialClosed;
             public bool Done;
         }
     }

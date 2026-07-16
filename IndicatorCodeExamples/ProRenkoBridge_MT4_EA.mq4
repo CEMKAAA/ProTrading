@@ -1,7 +1,7 @@
-#property strict
+﻿#property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-16.ml-audit-context"
+#define BUILD_TAG "2026-07-16.atomic-bridge-hardening"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -184,6 +184,23 @@ double   g_eventBlockPendingSignalPrice = 0.0;
 int      g_eventBlockPendingShift = -1;
 int      g_eventBlockPendingBuffer = -1;
 
+struct BridgePendingEvent
+{
+   bool     basket;
+   string   eventId;
+   string   dir;
+   double   entry;
+   double   sl;
+   double   tp;
+   string   source;
+   double   halfTrigger;
+   string   halfLabel;
+   datetime signalTime;
+   datetime nextRetryLocal;
+   int      attempts;
+};
+BridgePendingEvent g_bridgePending[];
+
 int OnInit()
 {
    g_prefix = "PRORENKO_" + IntegerToString((int)ChartID()) + "_";
@@ -233,7 +250,9 @@ int OnInit()
    if(InpShowDashboard) DashboardCreate();
    Audit("init", "", 0, "", 0, 0, 0, 0, "build=" + BUILD_TAG + " trend_indicator=" + InpTrendIndicatorName + " trend_state_buffer=" + IntegerToString(InpTrendStateBuffer) + " positive_is_buy=" + (InpTrendPositiveIsBuy ? "true" : "false") + " mt5_bridge=" + (g_fileBridgeMt5Runtime ? "true" : "false") + " native_ignore_windows=" + (g_nativeIgnoreWindowsRuntime ? "true" : "false") + " risk_pct=" + DoubleToString(g_riskPctRuntime,2) + " invert=" + (g_invertMode ? "true" : "false") + " pip_sl=" + (g_pipSlModeRuntime ? "true" : "false") + " pip_sl_pips=" + DoubleToString(g_pipSlPipsRuntime, 2) + " sym_r=" + (g_symmetricRTargetsRuntime ? "true" : "false") + " exec_mode_startup=" + TrendExecModeLabel() + " exec_delay_sec=" + IntegerToString(g_trendExecDelayRuntime) + " daily_profit_target=" + DoubleToString(g_dailyProfitTargetRuntime, 2) + " daily_loss_target=" + DoubleToString(g_dailyLossTargetRuntime, 2) + " basket_mode=" + (g_basketModeRuntime ? "true" : "false") + " basket_target_pips=" + DoubleToString(g_basketTargetPipsRuntime, 1) + " basket_target_pct=" + DoubleToString(g_basketTargetPctRuntime, 2) + " basket_max_loss_pips=" + DoubleToString(g_basketMaxLossPipsRuntime, 1) + " basket_cat_sl_pips=" + DoubleToString(g_basketCatastrophicSlPipsRuntime, 1) + " utc_event_block='" + g_utcEventBlockTimesRuntime + "' radius_min=" + IntegerToString(g_utcEventBlockRadiusRuntime), 0, "");
    RiskAudit("init", "build=" + BUILD_TAG + " pending_on_drift=" + (g_pendingOnDriftRuntime ? "true" : "false"));
+   BridgeLoadPending();
    FileBridgeWriteInitMarker();
+   BridgeRetryPending();
 
    if(!InpTradeLatestSignalOnAttach)
    {
@@ -276,6 +295,7 @@ void OnTick()
 
 void OnTimer()
 {
+   BridgeRetryPending();
    ProcessSignals("timer");
    ManagePositions();
    MaybeLifecycleAudit();
@@ -3422,67 +3442,38 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
 
 void FileBridgeWriteInitMarker()
 {
-   if(!g_fileBridgeMt5Runtime)
-      return;
+   if(!g_fileBridgeMt5Runtime) return;
    string eventId = "PRORENKO_init|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString((int)TimeGMT());
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      Print("ProRenkoBridge file_bridge init latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return;
-   }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-   FileClose(h);
-   FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-
-   string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
-   int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int a = FileOpen(auditFile, auditFlags, ',');
-   if(a == INVALID_HANDLE)
-   {
-      Print("ProRenkoBridge file_bridge init audit open failed err=", GetLastError(), " file=", auditFile);
-      return;
-   }
-   bool header = (FileSize(a) == 0);
-   FileSeek(a, 0, SEEK_END);
-   if(header) FileBridgeWriteHeader(a);
-   FileBridgeWriteRow(a, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-   FileClose(a);
-   Print("ProRenkoBridge file_bridge init marker wrote event=", eventId, " file=", InpFileBridgeLatestFile);
+   bool genericOk = FileBridgeWriteLatestTraditionalFile(InpFileBridgeLatestFile, eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   bool scopedOk = FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   Print("ProRenkoBridge init marker generic=", (genericOk ? "1" : "0"), " scoped=", (scopedOk ? "1" : "0"));
 }
 
 void FileBridgeWriteSignal(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
-   if(!g_fileBridgeMt5Runtime)
-      return;
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      Print("ProRenkoBridge file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return;
-   }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
-   FileClose(h);
-   FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   if(!g_fileBridgeMt5Runtime) return;
+   bool genericOk = FileBridgeWriteLatestTraditionalFile(InpFileBridgeLatestFile, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+
+   bool scopedOk = FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+   bool queued = false;
+   if(!scopedOk)
+      queued = BridgeQueuePending(false, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   ResetLastError();
    int a = FileOpen(auditFile, auditFlags, ',');
-   if(a == INVALID_HANDLE)
+   if(a != INVALID_HANDLE)
    {
-      Print("ProRenkoBridge file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
-      return;
+      bool header = (FileSize(a) == 0);
+      FileSeek(a, 0, SEEK_END);
+      if(header) FileBridgeWriteHeader(a);
+      FileBridgeWriteRow(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+      FileClose(a);
    }
-   bool header = (FileSize(a) == 0);
-   FileSeek(a, 0, SEEK_END);
-   if(header) FileBridgeWriteHeader(a);
-   FileBridgeWriteRow(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
-   FileClose(a);
-   Print("ProRenkoBridge file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+   else
+      Print("ProRenkoBridge file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
+   Print("ProRenkoBridge file_bridge event=", eventId, " dir=", dir, " scoped=", (scopedOk ? "1" : "0"), " queued=", (queued ? "1" : "0"), " generic=", (genericOk ? "1" : "0"));
 }
 
 void FileBridgeWriteBasketRow(int h, string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
@@ -3518,65 +3509,236 @@ void FileBridgeWriteBasketRow(int h, string eventId, string dir, double bridgeEn
    );
 }
 
+int FileBridgeCommonFlag()
+{
+   return InpFileBridgeUseCommonFiles ? FILE_COMMON : 0;
+}
+
+string FileBridgeTempFileName(string fileName, int attempt)
+{
+   return fileName + ".tmp." + IntegerToString((int)ChartID()) + "." + IntegerToString((int)GetTickCount()) + "." + IntegerToString(attempt);
+}
+
+bool FileBridgePromoteTemp(string tempName, string fileName)
+{
+   int common = FileBridgeCommonFlag();
+   ResetLastError();
+   if(FileMove(tempName, common, fileName, common | FILE_REWRITE))
+      return(true);
+   int err = GetLastError();
+   FileDelete(tempName, common);
+   Print("ProRenkoBridge atomic latest promote failed err=", err, " temp=", tempName, " file=", fileName);
+   return(false);
+}
+
 bool FileBridgeWriteLatestTraditionalFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
 {
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(fileName, latestFlags, ',');
-   if(h == INVALID_HANDLE)
+   int tempFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE);
+   for(int attempt = 0; attempt < 3; attempt++)
    {
-      Print("ProRenkoBridge scoped latest open failed err=", GetLastError(), " file=", fileName);
-      return(false);
+      string tempName = FileBridgeTempFileName(fileName, attempt);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      ResetLastError();
+      int h = FileOpen(tempName, tempFlags, ',');
+      if(h != INVALID_HANDLE)
+      {
+         FileBridgeWriteHeader(h);
+         FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+         FileFlush(h);
+         FileClose(h);
+         if(FileBridgePromoteTemp(tempName, fileName))
+            return(true);
+      }
+      else
+         Print("ProRenkoBridge atomic traditional temp open failed err=", GetLastError(), " temp=", tempName);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      if(attempt < 2) Sleep(20);
    }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
-   FileClose(h);
-   return(true);
+   Print("ProRenkoBridge atomic traditional latest write failed file=", fileName);
+   return(false);
 }
 
 bool FileBridgeWriteLatestBasketFile(string fileName, string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
 {
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(fileName, latestFlags, ',');
+   int tempFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE);
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      string tempName = FileBridgeTempFileName(fileName, attempt);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      ResetLastError();
+      int h = FileOpen(tempName, tempFlags, ',');
+      if(h != INVALID_HANDLE)
+      {
+         FileBridgeWriteHeader(h);
+         FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+         FileFlush(h);
+         FileClose(h);
+         if(FileBridgePromoteTemp(tempName, fileName))
+            return(true);
+      }
+      else
+         Print("ProRenkoBridge atomic basket temp open failed err=", GetLastError(), " temp=", tempName);
+      FileDelete(tempName, FileBridgeCommonFlag());
+      if(attempt < 2) Sleep(20);
+   }
+   Print("ProRenkoBridge atomic basket latest write failed file=", fileName);
+   return(false);
+}
+
+string FileBridgeOutboxFileName()
+{
+   return "PRORENKOBridge_Outbox_" + SafeFileToken(Symbol()) + "_" + IntegerToString(Period()) + ".csv";
+}
+
+bool BridgePersistPending()
+{
+   string fileName = FileBridgeOutboxFileName();
+   string tempName = FileBridgeTempFileName(fileName, 0);
+   int flags = FileBridgeFlags(FILE_CSV | FILE_WRITE);
+   FileDelete(tempName, FileBridgeCommonFlag());
+   ResetLastError();
+   int h = FileOpen(tempName, flags, ',');
    if(h == INVALID_HANDLE)
    {
-      Print("ProRenkoBridge basket scoped latest open failed err=", GetLastError(), " file=", fileName);
+      Print("ProRenkoBridge outbox temp open failed err=", GetLastError(), " temp=", tempName);
       return(false);
    }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   for(int i = 0; i < ArraySize(g_bridgePending); i++)
+      FileWrite(h, g_bridgePending[i].basket ? "1" : "0", g_bridgePending[i].eventId, g_bridgePending[i].dir,
+         PriceText(g_bridgePending[i].entry), PriceText(g_bridgePending[i].sl), PriceText(g_bridgePending[i].tp),
+         g_bridgePending[i].source, PriceText(g_bridgePending[i].halfTrigger), g_bridgePending[i].halfLabel,
+         IntegerToString((int)g_bridgePending[i].signalTime), IntegerToString(g_bridgePending[i].attempts));
+   FileFlush(h);
    FileClose(h);
-   return(true);
+   return FileBridgePromoteTemp(tempName, fileName);
 }
+
+void BridgeLoadPending()
+{
+   ArrayResize(g_bridgePending, 0);
+   int flags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   ResetLastError();
+   int h = FileOpen(FileBridgeOutboxFileName(), flags, ',');
+   if(h == INVALID_HANDLE) return;
+   while(!FileIsEnding(h) && ArraySize(g_bridgePending) < 128)
+   {
+      string basketText = FileReadString(h);
+      if(basketText == "" && FileIsEnding(h)) break;
+      BridgePendingEvent item;
+      item.basket = (basketText == "1");
+      item.eventId = FileReadString(h);
+      item.dir = FileReadString(h);
+      item.entry = StringToDouble(FileReadString(h));
+      item.sl = StringToDouble(FileReadString(h));
+      item.tp = StringToDouble(FileReadString(h));
+      item.source = FileReadString(h);
+      item.halfTrigger = StringToDouble(FileReadString(h));
+      item.halfLabel = FileReadString(h);
+      item.signalTime = (datetime)StringToInteger(FileReadString(h));
+      item.attempts = (int)StringToInteger(FileReadString(h));
+      item.nextRetryLocal = 0;
+      if(item.eventId == "") continue;
+      int n = ArraySize(g_bridgePending);
+      ArrayResize(g_bridgePending, n + 1);
+      g_bridgePending[n] = item;
+   }
+   FileClose(h);
+   if(ArraySize(g_bridgePending) > 0)
+      Print("ProRenkoBridge outbox loaded pending=", ArraySize(g_bridgePending));
+}
+
+bool BridgeQueuePending(bool basket, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+{
+   int n = ArraySize(g_bridgePending);
+   int index = -1;
+   for(int i = 0; i < n; i++)
+      if(g_bridgePending[i].eventId == eventId && g_bridgePending[i].basket == basket) { index = i; break; }
+   if(index < 0)
+   {
+      if(n >= 128)
+      {
+         Print("ProRenkoBridge outbox full; event remains unaccepted id=", eventId);
+         return(false);
+      }
+      ArrayResize(g_bridgePending, n + 1);
+      index = n;
+      g_bridgePending[index].attempts = 0;
+   }
+   g_bridgePending[index].basket = basket;
+   g_bridgePending[index].eventId = eventId;
+   g_bridgePending[index].dir = dir;
+   g_bridgePending[index].entry = bridgeEntry;
+   g_bridgePending[index].sl = sl;
+   g_bridgePending[index].tp = tp;
+   g_bridgePending[index].source = source;
+   g_bridgePending[index].halfTrigger = halfTriggerPrice;
+   g_bridgePending[index].halfLabel = halfTriggerLabel;
+   g_bridgePending[index].signalTime = sourceSignalTime;
+   g_bridgePending[index].nextRetryLocal = TimeLocal() + 2;
+   bool persisted = BridgePersistPending();
+   if(persisted)
+      Print("ProRenkoBridge event durably queued id=", eventId, " basket=", (basket ? "1" : "0"), " pending=", ArraySize(g_bridgePending));
+   return(persisted);
+}
+
+void BridgeRemovePending(int index)
+{
+   int n = ArraySize(g_bridgePending);
+   if(index < 0 || index >= n) return;
+   for(int i = index; i < n - 1; i++) g_bridgePending[i] = g_bridgePending[i + 1];
+   ArrayResize(g_bridgePending, n - 1);
+}
+
+void BridgeRetryPending()
+{
+   if(!g_fileBridgeMt5Runtime || ArraySize(g_bridgePending) <= 0) return;
+   int processed = 0;
+   while(ArraySize(g_bridgePending) > 0 && processed < 1)
+   {
+      if(g_bridgePending[0].nextRetryLocal > TimeLocal()) break;
+      BridgePendingEvent item = g_bridgePending[0];
+      bool ok = item.basket
+         ? FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), item.eventId, item.dir, item.entry, item.sl, item.source, item.signalTime)
+         : FileBridgeWriteLatestTraditionalFile(FileBridgeScopedLatestFileName(), item.eventId, item.dir, item.entry, item.sl, item.tp, item.source, item.halfTrigger, item.halfLabel, item.signalTime);
+      if(!ok)
+      {
+         g_bridgePending[0].attempts++;
+         g_bridgePending[0].nextRetryLocal = TimeLocal() + MathMin(30, 2 + g_bridgePending[0].attempts * 2);
+         BridgePersistPending();
+         break;
+      }
+      Print("ProRenkoBridge outbox delivered id=", item.eventId, " basket=", (item.basket ? "1" : "0"));
+      BridgeRemovePending(0);
+      BridgePersistPending();
+      processed++;
+   }
+}
+
 void FileBridgeWriteBasketSignal(string eventId, string dir, double bridgeEntry, double catastrophicSl, string source, datetime sourceSignalTime)
 {
-   if(!g_fileBridgeMt5Runtime)
-      return;
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      Print("ProRenkoBridge basket file_bridge latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return;
-   }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteBasketRow(h, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
-   FileClose(h);
-   FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   if(!g_fileBridgeMt5Runtime) return;
+   bool genericOk = FileBridgeWriteLatestBasketFile(InpFileBridgeLatestFile, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+
+   bool scopedOk = FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+   bool queued = false;
+   if(!scopedOk)
+      queued = BridgeQueuePending(true, eventId, dir, bridgeEntry, catastrophicSl, 0.0, source, 0.0, "basket_off", sourceSignalTime);
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   ResetLastError();
    int a = FileOpen(auditFile, auditFlags, ',');
-   if(a == INVALID_HANDLE)
+   if(a != INVALID_HANDLE)
    {
-      Print("ProRenkoBridge basket file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
-      return;
+      bool header = (FileSize(a) == 0);
+      FileSeek(a, 0, SEEK_END);
+      if(header) FileBridgeWriteHeader(a);
+      FileBridgeWriteBasketRow(a, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
+      FileClose(a);
    }
-   bool header = (FileSize(a) == 0);
-   FileSeek(a, 0, SEEK_END);
-   if(header) FileBridgeWriteHeader(a);
-   FileBridgeWriteBasketRow(a, eventId, dir, bridgeEntry, catastrophicSl, source, sourceSignalTime);
-   FileClose(a);
-   Print("ProRenkoBridge basket file_bridge wrote event=", eventId, " dir=", dir, " source=", source, " file=", InpFileBridgeLatestFile);
+   else
+      Print("ProRenkoBridge basket audit open failed err=", GetLastError(), " file=", auditFile);
+   Print("ProRenkoBridge basket event=", eventId, " dir=", dir, " scoped=", (scopedOk ? "1" : "0"), " queued=", (queued ? "1" : "0"), " generic=", (genericOk ? "1" : "0"));
 }
 
 void FileBridgeWriteBasketConfigMarker(string reason)
@@ -3625,17 +3787,11 @@ void FileBridgeWriteBasketConfigMarker(string reason)
    }
 
    string eventId = "PRORENKO_config|" + IntegerToString(AccountNumber()) + "|" + Symbol() + "|" + IntegerToString(Period()) + "|" + IntegerToString((int)TimeGMT());
-   int latestFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   int h = FileOpen(InpFileBridgeLatestFile, latestFlags, ',');
-   if(h == INVALID_HANDLE)
-   {
-      Print("ProRenkoBridge basket config latest open failed err=", GetLastError(), " file=", InpFileBridgeLatestFile);
-      return;
-   }
-   FileBridgeWriteHeader(h);
-   FileBridgeWriteBasketRow(h, eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
-   FileClose(h);
-   FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
+   bool genericOk = FileBridgeWriteLatestBasketFile(InpFileBridgeLatestFile, eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT());
+   if(!genericOk)
+      Print("ProRenkoBridge basket config generic atomic write failed file=", InpFileBridgeLatestFile);
+   if(!FileBridgeWriteLatestBasketFile(FileBridgeScopedLatestFileName(), eventId, "INIT", Bid, 0.0, "bridge_config|" + reason, TimeGMT()))
+      BridgeQueuePending(true, eventId, "INIT", Bid, 0.0, 0.0, "bridge_config|" + reason, 0.0, "basket_off", TimeGMT());
 
    string auditFile = InpFileBridgeAuditPrefix + DateStamp(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE);
@@ -4423,4 +4579,3 @@ void DeleteTradeLevels()
       if(StringFind(name, "PRORENKO_LVL_") == 0) ObjectDelete(0, name);
    }
 }
-
