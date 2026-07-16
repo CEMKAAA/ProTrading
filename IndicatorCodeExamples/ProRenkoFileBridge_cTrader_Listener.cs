@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class ProRenkoFileBridgeCTraderListener : Robot
     {
-        private const string Build = "2026-07-15.ignore-nat24-shadow";
+        private const string Build = "2026-07-16.ml-audit-context";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -166,6 +166,14 @@ namespace cAlgo.Robots
         private readonly Dictionary<string, double> _basketClosedPnlByDay = new Dictionary<string, double>();
         private readonly HashSet<string> _basketDayDone = new HashSet<string>();
         private readonly Dictionary<string, DateTime> _orderRetryBlockedUntil = new Dictionary<string, DateTime>();
+        private readonly HashSet<string> _mlRegisteredEvents = new HashSet<string>();
+        private readonly Queue<DateTime> _mlFlipTimes = new Queue<DateTime>();
+        private string _mlPreviousSignalDir = "";
+        private DateTime _mlPreviousSignalTime = DateTime.MinValue;
+        private string _mlLastSignalDir = "";
+        private DateTime _mlLastSignalTime = DateTime.MinValue;
+        private string _mlTradeIndexDayKey = "";
+        private int _mlTradeIndexOfDay = 0;
         private string _resolvedBridgePath;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
@@ -1022,6 +1030,8 @@ namespace cAlgo.Robots
                     CloseSessionEnd = ParseCommentDouble(p.Comment, "bsess") > 0,
                     SessionEndMinutes = (int)ParseCommentDouble(p.Comment, "bsessmin"),
                     LastNetProfit = p.NetProfit,
+                    LastSignedPips = 0.0,
+                    LastPrice = p.EntryPrice,
                     OpenTime = p.EntryTime,
                     EntryPrice = p.EntryPrice,
                     Direction = p.TradeType == TradeType.Buy ? 1 : -1,
@@ -1088,6 +1098,8 @@ namespace cAlgo.Robots
             if (st.MaxLossPips > 0 && st.FirstLossHitTime == DateTime.MinValue && signedPips <= -st.MaxLossPips)
                 st.FirstLossHitTime = now;
             st.LastNetProfit = p.NetProfit;
+            st.LastSignedPips = signedPips;
+            st.LastPrice = closePx;
         }
 
         private string BasketLifecycleSnapshot(Position p, string closeReason, double closePnl, bool countReverseSignal)
@@ -1134,7 +1146,7 @@ namespace cAlgo.Robots
             if (targetHit && lossHit) first = st.FirstTargetHitTime <= st.FirstLossHitTime ? "target" : "loss";
             else if (targetHit) first = "target";
             else if (lossHit) first = "loss";
-            return $"ml=1 close_reason={closeReason} event_id={st.EventId} day={st.DayKey} entry={st.EntryPrice:F5} dir={st.Direction} duration_sec={duration:F0} close_pnl={closePnl:F2} target_pips={st.TargetPips:F2} max_loss_pips={st.MaxLossPips:F2} cat_sl_pips={st.CatastrophicSlPips:F2} target_money={st.TargetMoney:F2} max_loss_money={st.MaxLossMoney:F2} mfe_pips={mfeFav:F2} mae_pips={maeAdv:F2} mfe_signed_pips={st.MfePips:F2} mae_signed_pips={st.MaePips:F2} mfe_money={st.MfeMoney:F2} mae_money={st.MaeMoney:F2} mfe_price={st.MfePrice:F5} mae_price={st.MaePrice:F5} first_target_hit={(targetHit ? 1 : 0)} first_loss_hit={(lossHit ? 1 : 0)} first_hit={first} target_hit_time={TimeText(st.FirstTargetHitTime)} loss_hit_time={TimeText(st.FirstLossHitTime)} mfe_time={TimeText(st.MfeTime)} mae_time={TimeText(st.MaeTime)} reverse_signal_count={st.ReverseSignalCount}";
+            return $"ml=1 close_reason={closeReason} event_id={st.EventId} day={st.DayKey} open_time={TimeText(open)} entry={st.EntryPrice:F5} dir={st.Direction} duration_sec={duration:F0} close_pnl={closePnl:F2} close_pips={st.LastSignedPips:F2} close_price={st.LastPrice:F5} target_pips={st.TargetPips:F2} max_loss_pips={st.MaxLossPips:F2} cat_sl_pips={st.CatastrophicSlPips:F2} target_money={st.TargetMoney:F2} max_loss_money={st.MaxLossMoney:F2} mfe_pips={mfeFav:F2} mae_pips={maeAdv:F2} mfe_signed_pips={st.MfePips:F2} mae_signed_pips={st.MaePips:F2} mfe_money={st.MfeMoney:F2} mae_money={st.MaeMoney:F2} mfe_price={st.MfePrice:F5} mae_price={st.MaePrice:F5} first_target_hit={(targetHit ? 1 : 0)} first_loss_hit={(lossHit ? 1 : 0)} first_hit={first} target_hit_time={TimeText(st.FirstTargetHitTime)} loss_hit_time={TimeText(st.FirstLossHitTime)} mfe_time={TimeText(st.MfeTime)} mae_time={TimeText(st.MaeTime)} reverse_signal_count={st.ReverseSignalCount}";
         }
 
         private static string TimeText(DateTime t)
@@ -1979,27 +1991,243 @@ namespace cAlgo.Robots
             _lastDetail = detail;
             _lastSignal = $"{sig.SourceSymbol} {sig.SourceTf} {(sig.Direction > 0 ? "BUY" : "SELL")} mode={sig.TradeMode} {ShortEvent(sig.EventId)}";
             if (!AuditEnabled) return;
-            WriteAudit(eventName, sig.SourceSymbol, sig.SourceTf, sig.EventId, sig.Source, sig.Direction > 0 ? "BUY" : "SELL", sig.BridgeEntry, sig.Sl, sig.Tp, sig.HalfTrigger, detail);
+            EnsureMlSignalRegistered(sig);
+            WriteAudit(eventName, sig, detail);
         }
 
         private void AuditRaw(string eventName, string detail)
         {
             SetAction(eventName, detail);
             if (!AuditEnabled) return;
-            WriteAudit(eventName, "", "", "", "", "-", 0, 0, 0, 0, detail);
+            WriteAudit(eventName, new BridgeSignal(), detail);
         }
 
-        private void WriteAudit(string eventName, string sourceSymbol, string sourceTf, string eventId, string source, string dir, double entry, double sl, double tp, double half, string detail)
+        private void EnsureMlSignalRegistered(BridgeSignal sig)
+        {
+            if (!sig.Valid || string.IsNullOrWhiteSpace(sig.EventId) || _mlRegisteredEvents.Contains(sig.EventId))
+                return;
+            var now = DateTime.UtcNow;
+            var day = sig.SignalTime != DateTime.MinValue ? sig.SignalTime.ToUniversalTime().ToString("yyyyMMdd", CultureInfo.InvariantCulture) : now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+            if (_mlTradeIndexDayKey != day)
+            {
+                _mlTradeIndexDayKey = day;
+                _mlTradeIndexOfDay = 0;
+                _mlRegisteredEvents.Clear();
+            }
+            var dir = sig.Direction > 0 ? "BUY" : sig.Direction < 0 ? "SELL" : "";
+            _mlPreviousSignalDir = _mlLastSignalDir;
+            _mlPreviousSignalTime = _mlLastSignalTime;
+            if (!string.IsNullOrEmpty(_mlLastSignalDir) && !string.IsNullOrEmpty(dir) && _mlLastSignalDir != dir)
+                _mlFlipTimes.Enqueue(now);
+            while (_mlFlipTimes.Count > 0 && (now - _mlFlipTimes.Peek()).TotalHours > 1.0)
+                _mlFlipTimes.Dequeue();
+            _mlLastSignalDir = dir;
+            _mlLastSignalTime = sig.SignalTime != DateTime.MinValue ? sig.SignalTime.ToUniversalTime() : now;
+            _mlTradeIndexOfDay++;
+            _mlRegisteredEvents.Add(sig.EventId);
+        }
+
+        private static string WeekdayName(DateTime t) => t == DateTime.MinValue ? "" : t.ToUniversalTime().ToString("dddd", CultureInfo.InvariantCulture);
+
+        private static string SessionBucket(DateTime utc)
+        {
+            if (utc == DateTime.MinValue) return "";
+            var u = utc.ToUniversalTime();
+            var m = u.Hour * 60 + u.Minute;
+            if (m >= 0 && m < 420) return "asia";
+            if (m >= 420 && m < 720) return "london";
+            if (m >= 720 && m < 900) return "london_ny_overlap";
+            if (m >= 900 && m < 1260) return "ny";
+            return "rollover";
+        }
+
+        private static string Kv(string detail, string key)
+        {
+            if (string.IsNullOrEmpty(detail) || string.IsNullOrEmpty(key)) return "";
+            var token = key + "=";
+            var start = detail.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return "";
+            start += token.Length;
+            if (start >= detail.Length) return "";
+            if (detail[start] == '\'')
+            {
+                var endq = detail.IndexOf('\'', start + 1);
+                return endq > start ? detail.Substring(start + 1, endq - start - 1) : detail.Substring(start + 1);
+            }
+            var end = start;
+            while (end < detail.Length && !char.IsWhiteSpace(detail[end]) && detail[end] != ';' && detail[end] != ',') end++;
+            return detail.Substring(start, end - start);
+        }
+
+        private static double KvDouble(string detail, string key)
+        {
+            var v = Kv(detail, key);
+            return double.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0.0;
+        }
+
+        private static DateTime KvTime(string detail, string key)
+        {
+            var v = Kv(detail, key).Replace('_', ' ');
+            return DateTime.TryParse(v, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt) ? dt : DateTime.MinValue;
+        }
+
+        private double PipsBetween(double a, double b)
+        {
+            var pip = Symbol.PipSize > 0 ? Symbol.PipSize : Symbol.TickSize;
+            return pip > 0 && a > 0 && b > 0 ? Math.Abs(a - b) / pip : 0.0;
+        }
+
+        private double CalculateAtrPips(Bars bars, int period)
         {
             try
             {
-                var file = IoPath.Combine(_auditDir, AuditFilePrefix + DateTime.UtcNow.ToString("yyyyMMdd") + ".csv");
+                var pip = Symbol.PipSize > 0 ? Symbol.PipSize : Symbol.TickSize;
+                var p = Math.Max(2, period);
+                if (bars == null || bars.Count < p + 2 || pip <= 0) return 0.0;
+                var last = bars.Count - 2; // last closed bar only; no live-bar look-ahead.
+                var first = last - p + 1;
+                if (first < 1) return 0.0;
+                var sum = 0.0;
+                for (var i = first; i <= last; i++)
+                {
+                    var high = bars.HighPrices[i];
+                    var low = bars.LowPrices[i];
+                    var prevClose = bars.ClosePrices[i - 1];
+                    var tr = Math.Max(high - low, Math.Max(Math.Abs(high - prevClose), Math.Abs(low - prevClose)));
+                    sum += tr;
+                }
+                return (sum / p) / pip;
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
+        private double ChartAtrPips(int period) => CalculateAtrPips(Bars, period);
+
+        private double DailyAtrPips(int period)
+        {
+            try
+            {
+                var dailyBars = MarketData.GetBars(TimeFrame.Daily, SymbolName);
+                return CalculateAtrPips(dailyBars, period);
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
+        private double Rsi14()
+        {
+            try
+            {
+                const int period = 14;
+                if (Bars == null || Bars.Count < period + 2) return 0.0;
+                var last = Bars.Count - 2; // closed bar only
+                var first = last - period + 1;
+                if (first < 1) return 0.0;
+                var gain = 0.0;
+                var loss = 0.0;
+                for (var i = first; i <= last; i++)
+                {
+                    var change = Bars.ClosePrices[i] - Bars.ClosePrices[i - 1];
+                    if (change >= 0) gain += change;
+                    else loss -= change;
+                }
+                if (loss <= 0.0) return gain > 0.0 ? 100.0 : 50.0;
+                var rs = gain / loss;
+                return 100.0 - (100.0 / (1.0 + rs));
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
+        private static string RejectReason(string eventName, string detail)
+        {
+            var u = ((eventName ?? "") + " " + (detail ?? "")).ToUpperInvariant();
+            if (u.Contains("MARKET") && u.Contains("CLOSED")) return "market_closed";
+            if (u.Contains("NO_MONEY") || u.Contains("NOT ENOUGH") || u.Contains("MONEY")) return "not_enough_money";
+            if (u.Contains("SPREAD")) return "spread";
+            if (u.Contains("GEOMETRY")) return "geometry";
+            if (u.Contains("RISK") || u.Contains("LOT")) return "risk_lot";
+            if (u.Contains("REVERSE_CLOSE")) return "reverse_close";
+            if (u.Contains("DUPLICATE")) return "duplicate";
+            if (eventName != null && (eventName.Contains("failed") || eventName.Contains("skip") || eventName.Contains("blocked"))) return eventName;
+            return "";
+        }
+
+        private string ExitReason(string eventName, string detail)
+        {
+            var closeReason = Kv(detail, "close_reason");
+            if (!string.IsNullOrWhiteSpace(closeReason)) return closeReason;
+            if (eventName.Contains("target")) return "target";
+            if (eventName.Contains("loss")) return "loss";
+            if (eventName.Contains("reverse")) return "reverse";
+            if (eventName.Contains("manual")) return "manual";
+            return eventName;
+        }
+
+        private int BarsFromSeconds(double sec, string sourceTf)
+        {
+            var tf = NormalizeTf(sourceTf);
+            var barSec = 60.0;
+            if (tf.StartsWith("M") && double.TryParse(tf.Substring(1), NumberStyles.Any, CultureInfo.InvariantCulture, out var m)) barSec = Math.Max(1.0, m * 60.0);
+            else if (tf.StartsWith("H") && double.TryParse(tf.Substring(1), NumberStyles.Any, CultureInfo.InvariantCulture, out var h)) barSec = Math.Max(1.0, h * 3600.0);
+            return (int)Math.Floor(Math.Max(0.0, sec) / barSec);
+        }
+
+        private void WriteAudit(string eventName, BridgeSignal sig, string detail)
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                var broker = Server.Time;
+                var file = IoPath.Combine(_auditDir, AuditFilePrefix + now.ToString("yyyyMMdd") + ".csv");
                 var header = !IoFile.Exists(file);
+                var dir = sig.Direction > 0 ? "BUY" : sig.Direction < 0 ? "SELL" : "-";
+                var slPips = PipsBetween(sig.BridgeEntry, sig.Sl);
+                var tpPips = PipsBetween(sig.BridgeEntry, sig.Tp);
+                var rr = slPips > 0 && tpPips > 0 ? tpPips / slPips : 0.0;
+                var pnlMoney = KvDouble(detail, "close_pnl");
+                if (Math.Abs(pnlMoney) < double.Epsilon) pnlMoney = KvDouble(detail, "pnl");
+                var pnlPips = KvDouble(detail, "close_pips");
+                var pnlR = 0.0;
+                var maxLossPips = KvDouble(detail, "max_loss_pips");
+                if (maxLossPips > 0.0) pnlR = pnlPips / maxLossPips;
+                else if (slPips > 0.0) pnlR = pnlPips / slPips;
+                var mfePips = KvDouble(detail, "mfe_pips");
+                var maePips = KvDouble(detail, "mae_pips");
+                var firstHit = Kv(detail, "first_hit");
+                var mfeBeforeMae = firstHit == "target" ? "1" : firstHit == "loss" ? "0" : "";
+                var durationSec = KvDouble(detail, "duration_sec");
+                var openTime = KvTime(detail, "open_time");
+                var mfeTime = KvTime(detail, "mfe_time");
+                var maeTime = KvTime(detail, "mae_time");
+                var barsToMfe = openTime != DateTime.MinValue && mfeTime != DateTime.MinValue ? BarsFromSeconds((mfeTime - openTime).TotalSeconds, sig.SourceTf) : 0;
+                var barsToMae = openTime != DateTime.MinValue && maeTime != DateTime.MinValue ? BarsFromSeconds((maeTime - openTime).TotalSeconds, sig.SourceTf) : 0;
+                var barsToExit = BarsFromSeconds(durationSec, sig.SourceTf);
+                var prevAge = _mlPreviousSignalTime == DateTime.MinValue ? 0.0 : Math.Max(0.0, (now - _mlPreviousSignalTime).TotalMinutes);
+                var nativeIgnore = sig.Source != null && sig.Source.IndexOf("nat24", StringComparison.OrdinalIgnoreCase) >= 0 ? "1" : "0";
+                var atrPips = ChartAtrPips(14);
+                var dailyAtrPips = DailyAtrPips(14);
+                var slAtrRatio = atrPips > 0.0 && slPips > 0.0 ? slPips / atrPips : 0.0;
+                var tpAtrRatio = atrPips > 0.0 && tpPips > 0.0 ? tpPips / atrPips : 0.0;
+                var basketTargetAtrRatio = atrPips > 0.0 && sig.BasketTargetPips > 0.0 ? sig.BasketTargetPips / atrPips : 0.0;
+                var spreadToSlRatio = slPips > 0.0 ? CurrentSpreadPips() / slPips : 0.0;
                 using (var sw = new IoStreamWriter(file, true, Encoding.UTF8))
                 {
                     if (header)
-                        sw.WriteLine("time_gmt,build,event,account,chart_symbol,source_symbol,source_tf,event_id,source,dir,entry,sl,tp,half,detail");
-                    sw.WriteLine(string.Join(",", Escape(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")), Escape(Build), Escape(eventName), Escape(Account.Number.ToString()), Escape(SymbolName), Escape(sourceSymbol), Escape(sourceTf), Escape(eventId), Escape(source), Escape(dir), entry.ToString(CultureInfo.InvariantCulture), sl.ToString(CultureInfo.InvariantCulture), tp.ToString(CultureInfo.InvariantCulture), half.ToString(CultureInfo.InvariantCulture), Escape(detail)));
+                        sw.WriteLine("time_gmt,build,event,account,chart_symbol,source_symbol,source_tf,event_id,source,dir,entry,sl,tp,half,detail,gmt_weekday,broker_weekday,hour_gmt,hour_broker,session_bucket,trade_index_of_day,previous_signal_dir,previous_signal_age_min,flip_count_last_1h,sl_pips,tp_pips,rr,pnl_pips,pnl_r,mfe_pips,mae_pips,mfe_before_mae,bars_to_mfe,bars_to_mae,bars_to_exit,exit_reason,invert_on,exec_mode_sh0_sh1_sh2,basket_target_pips,native_ignore_windows_on,bridge_published,listener_result,reject_reason_normalized,atr_pips,atr_period,atr_tf,daily_atr_pips,sl_atr_ratio,tp_atr_ratio,basket_target_atr_ratio,rsi14,spread_to_sl_ratio");
+                    sw.WriteLine(string.Join(",",
+                        Escape(now.ToString("yyyy-MM-dd HH:mm:ss")), Escape(Build), Escape(eventName), Escape(Account.Number.ToString()), Escape(SymbolName), Escape(sig.SourceSymbol), Escape(sig.SourceTf), Escape(sig.EventId), Escape(sig.Source), Escape(dir),
+                        sig.BridgeEntry.ToString(CultureInfo.InvariantCulture), sig.Sl.ToString(CultureInfo.InvariantCulture), sig.Tp.ToString(CultureInfo.InvariantCulture), sig.HalfTrigger.ToString(CultureInfo.InvariantCulture), Escape(detail),
+                        Escape(WeekdayName(now)), Escape(WeekdayName(broker)), now.Hour.ToString(CultureInfo.InvariantCulture), broker.Hour.ToString(CultureInfo.InvariantCulture), Escape(SessionBucket(now)), _mlTradeIndexOfDay.ToString(CultureInfo.InvariantCulture), Escape(_mlPreviousSignalDir), prevAge.ToString("F2", CultureInfo.InvariantCulture), _mlFlipTimes.Count.ToString(CultureInfo.InvariantCulture),
+                        slPips.ToString("F2", CultureInfo.InvariantCulture), tpPips.ToString("F2", CultureInfo.InvariantCulture), rr.ToString("F3", CultureInfo.InvariantCulture), pnlPips.ToString("F2", CultureInfo.InvariantCulture), pnlR.ToString("F3", CultureInfo.InvariantCulture), mfePips.ToString("F2", CultureInfo.InvariantCulture), maePips.ToString("F2", CultureInfo.InvariantCulture), Escape(mfeBeforeMae),
+                        barsToMfe.ToString(CultureInfo.InvariantCulture), barsToMae.ToString(CultureInfo.InvariantCulture), barsToExit.ToString(CultureInfo.InvariantCulture), Escape(ExitReason(eventName, detail)), "0", "", sig.BasketTargetPips.ToString("F2", CultureInfo.InvariantCulture), nativeIgnore, sig.Valid ? "1" : "0", Escape(eventName), Escape(RejectReason(eventName, detail)), atrPips.ToString("F2", CultureInfo.InvariantCulture), "14", Escape(ChartTfString()), dailyAtrPips.ToString("F2", CultureInfo.InvariantCulture), slAtrRatio.ToString("F3", CultureInfo.InvariantCulture), tpAtrRatio.ToString("F3", CultureInfo.InvariantCulture), basketTargetAtrRatio.ToString("F3", CultureInfo.InvariantCulture), Rsi14().ToString("F2", CultureInfo.InvariantCulture), spreadToSlRatio.ToString("F4", CultureInfo.InvariantCulture))));
                 }
             }
             catch (Exception ex)
@@ -2150,6 +2378,8 @@ namespace cAlgo.Robots
             public bool CloseSessionEnd;
             public int SessionEndMinutes;
             public double LastNetProfit;
+            public double LastSignedPips;
+            public double LastPrice;
             public DateTime OpenTime;
             public double EntryPrice;
             public int Direction;

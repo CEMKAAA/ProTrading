@@ -1,7 +1,7 @@
 #property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-15.ignore-nat24-shadow"
+#define BUILD_TAG "2026-07-16.ml-audit-context"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -165,6 +165,12 @@ string   g_loggedSh2WaitEventId = "";
 datetime g_lastRiskAuditTs = 0;
 datetime g_lastProbeTs = 0;
 datetime g_lastLifecycleAuditTs = 0;
+string   g_mlPreviousSignalDir = "-";
+datetime g_mlPreviousSignalTime = 0;
+string   g_mlTradeIndexDayKey = "";
+int      g_mlTradeIndexOfDay = 0;
+datetime g_mlFlipTimes[128];
+int      g_mlFlipWriteIdx = 0;
 datetime g_nextTradeDisabledRetryTs = 0;
 bool     g_lastGeometryUsedFallback = false;
 bool     g_basketWindowStateInitialized = false;
@@ -523,6 +529,7 @@ bool MaybeExecuteEventBlockPending(string reason)
    datetime sigTime = g_eventBlockPendingSignalTime;
    int age = (g_eventBlockPendingFirstSeen > 0 ? (int)(TimeCurrent() - g_eventBlockPendingFirstSeen) : -1);
 
+   MlRegisterSignal(dir, sigTime > 0 ? sigTime : curBarTime);
    g_lastSignalDir = dir;
    g_lastSignalTime = sigTime > 0 ? sigTime : curBarTime;
    g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
@@ -578,6 +585,7 @@ void MaybeBootstrapBasketWindow(string reason)
    string eventId = Symbol() + "|" + IntegerToString(Period()) + "|prorenko_basket_window|" + dir + "|"
                   + IntegerToString((int)windowMinute) + "|buf=" + IntegerToString(buffer);
 
+   MlRegisterSignal(dir, (barTime > 0) ? barTime : TimeCurrent());
    g_lastSignalDir = dir;
    g_lastSignalTime = (barTime > 0) ? barTime : TimeCurrent();
    g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
@@ -625,6 +633,7 @@ void MaybeBootstrapBasketNativeShadow(string reason)
       return;
 
    datetime barTime = iTime(Symbol(), Period(), 0);
+   MlRegisterSignal(dir, (barTime > 0) ? barTime : TimeCurrent());
    g_lastSignalDir = dir;
    g_lastSignalTime = (barTime > 0) ? barTime : TimeCurrent();
    g_lastSignalPrice = NormalizeDouble(liveEntry, Digits);
@@ -647,6 +656,7 @@ void ProcessSignalCandidate(string source, string dir, string eid, int sh, int b
    if(!CanExecuteTrendSignalNow(source, eid, sh, barTime, dir, sigPx, reason, waitDetail))
       return;
 
+   MlRegisterSignal(dir, barTime);
    g_lastSignalDir = dir;
    g_lastSignalTime = barTime;
    g_lastSignalPrice = sigPx;
@@ -2902,6 +2912,8 @@ void StoreTicket(int ticket, double tp1, double tp2, double tp3, double half, in
    TicketGVSet(ticket, "MAE", 0.0);
    TicketGVSet(ticket, "MFE_PX", openPx);
    TicketGVSet(ticket, "MAE_PX", openPx);
+   TicketGVSet(ticket, "MFE_TS", TimeCurrent());
+   TicketGVSet(ticket, "MAE_TS", TimeCurrent());
 }
 int FindPartialCloseRemainderTicket(int oldTicket, int type, double oldOpenPrice, double expectedLots)
 {
@@ -2932,8 +2944,8 @@ int FindPartialCloseRemainderTicket(int oldTicket, int type, double oldOpenPrice
 void TransferTicketState(int oldTicket, int newTicket, string reason)
 {
    if(newTicket <= 0 || newTicket == oldTicket) return;
-   string fields[15] = {"TP1", "TP2", "TP3", "HTP", "HIDX", "TIDX", "HBR", "TR", "HDONE", "FB", "ENRICH", "MFE", "MAE", "MFE_PX", "MAE_PX"};
-   for(int i = 0; i < 15; i++)
+   string fields[17] = {"TP1", "TP2", "TP3", "HTP", "HIDX", "TIDX", "HBR", "TR", "HDONE", "FB", "ENRICH", "MFE", "MAE", "MFE_PX", "MAE_PX", "MFE_TS", "MAE_TS"};
+   for(int i = 0; i < 17; i++)
       TicketGVSet(newTicket, fields[i], TicketGV(oldTicket, fields[i], 0.0));
    TicketGVSet(newTicket, "OPENED", 1.0);
    TicketGVSet(oldTicket, "CLOSED", 1.0);
@@ -2956,11 +2968,13 @@ void UpdateTicketExcursion(int ticket, double px)
    {
       TicketGVSet(ticket, "MFE", pnl);
       TicketGVSet(ticket, "MFE_PX", px);
+      TicketGVSet(ticket, "MFE_TS", TimeCurrent());
    }
    if(pnl < mae)
    {
       TicketGVSet(ticket, "MAE", pnl);
       TicketGVSet(ticket, "MAE_PX", px);
+      TicketGVSet(ticket, "MAE_TS", TimeCurrent());
    }
 }
 
@@ -2969,7 +2983,9 @@ string TicketExcursionDetail(int ticket)
    return " mfe=" + DoubleToString(TicketGV(ticket, "MFE", 0.0), 2)
       + " mae=" + DoubleToString(TicketGV(ticket, "MAE", 0.0), 2)
       + " mfe_px=" + PriceText(TicketGV(ticket, "MFE_PX", 0.0))
-      + " mae_px=" + PriceText(TicketGV(ticket, "MAE_PX", 0.0));
+      + " mae_px=" + PriceText(TicketGV(ticket, "MAE_PX", 0.0))
+      + " mfe_time=" + TimeToString((datetime)TicketGV(ticket, "MFE_TS", 0.0), TIME_DATE|TIME_SECONDS)
+      + " mae_time=" + TimeToString((datetime)TicketGV(ticket, "MAE_TS", 0.0), TIME_DATE|TIME_SECONDS);
 }
 
 void MaybeRiskAudit()
@@ -3092,15 +3108,204 @@ bool IsCriticalAuditEvent(string eventName)
           || StringFind(eventName, "basket_blocked_day_done") >= 0;
 }
 
+string WeekdayName(datetime t)
+{
+   int d = TimeDayOfWeek(t);
+   if(d == 0) return "Sunday";
+   if(d == 1) return "Monday";
+   if(d == 2) return "Tuesday";
+   if(d == 3) return "Wednesday";
+   if(d == 4) return "Thursday";
+   if(d == 5) return "Friday";
+   if(d == 6) return "Saturday";
+   return "";
+}
+
+string SessionBucket(datetime gmt)
+{
+   int m = TimeHour(gmt) * 60 + TimeMinute(gmt);
+   if(m >= 0 && m < 420) return "asia";
+   if(m >= 420 && m < 720) return "london";
+   if(m >= 720 && m < 900) return "london_ny_overlap";
+   if(m >= 900 && m < 1260) return "ny";
+   return "rollover";
+}
+
+string MlDayKey(datetime t)
+{
+   return DateStamp(t);
+}
+
+void MlRegisterSignal(string dir, datetime signalTime)
+{
+   datetime t = signalTime > 0 ? signalTime : TimeGMT();
+   string day = MlDayKey(t);
+   if(g_mlTradeIndexDayKey != day)
+   {
+      g_mlTradeIndexDayKey = day;
+      g_mlTradeIndexOfDay = 0;
+   }
+   g_mlPreviousSignalDir = g_lastSignalDir;
+   g_mlPreviousSignalTime = g_lastSignalTime;
+   if((g_lastSignalDir == "BUY" || g_lastSignalDir == "SELL") && (dir == "BUY" || dir == "SELL") && g_lastSignalDir != dir)
+   {
+      g_mlFlipTimes[g_mlFlipWriteIdx % 128] = TimeGMT();
+      g_mlFlipWriteIdx++;
+   }
+   if(dir == "BUY" || dir == "SELL")
+      g_mlTradeIndexOfDay++;
+}
+
+int MlFlipCountLastHour()
+{
+   datetime cutoff = TimeGMT() - 3600;
+   int n = 0;
+   for(int i = 0; i < 128; i++)
+      if(g_mlFlipTimes[i] > cutoff) n++;
+   return n;
+}
+
+string MlBool(bool v) { return v ? "1" : "0"; }
+
+string MlTfLabel(int tf)
+{
+   if(tf == 0) tf = Period();
+   if(tf == PERIOD_M1) return "M1";
+   if(tf == PERIOD_M5) return "M5";
+   if(tf == PERIOD_M15) return "M15";
+   if(tf == PERIOD_M30) return "M30";
+   if(tf == PERIOD_H1) return "H1";
+   if(tf == PERIOD_H4) return "H4";
+   if(tf == PERIOD_D1) return "D1";
+   if(tf == PERIOD_W1) return "W1";
+   if(tf == PERIOD_MN1) return "MN1";
+   return IntegerToString(tf);
+}
+
+double MlAtrPips(int tf, int period)
+{
+   double pip = SymbolPipSize();
+   int p = MathMax(2, period);
+   double atr = iATR(Symbol(), tf, p, 1);
+   if(!MathIsValidNumber(atr) || atr <= 0.0 || pip <= 0.0) return 0.0;
+   return atr / pip;
+}
+
+double MlRsi14()
+{
+   double rsi = iRSI(Symbol(), Period(), 14, PRICE_CLOSE, 1);
+   if(!MathIsValidNumber(rsi) || rsi < 0.0 || rsi > 100.0) return 0.0;
+   return rsi;
+}
+
+double MlPipsBetween(double a, double b)
+{
+   double pip = SymbolPipSize();
+   if(pip <= 0.0 || a <= 0.0 || b <= 0.0) return 0.0;
+   return MathAbs(a - b) / pip;
+}
+
+double MlSignedPips(string dir, double entry, double exitPx)
+{
+   double pip = SymbolPipSize();
+   if(pip <= 0.0 || entry <= 0.0 || exitPx <= 0.0) return 0.0;
+   if(dir == "BUY") return (exitPx - entry) / pip;
+   if(dir == "SELL") return (entry - exitPx) / pip;
+   return 0.0;
+}
+
+string MlRejectReason(string eventName, string detail, string extra)
+{
+   string src = eventName + " " + detail + " " + extra;
+   string u = StringUpperCopy(src);
+   if(StringFind(u, "MARKET") >= 0 && StringFind(u, "CLOSED") >= 0) return "market_closed";
+   if(StringFind(u, "NOT ENOUGH") >= 0 || StringFind(u, "NO_MONEY") >= 0 || StringFind(u, "MONEY") >= 0) return "not_enough_money";
+   if(StringFind(u, "SPREAD") >= 0) return "spread";
+   if(StringFind(u, "WINDOW") >= 0) return "time_window";
+   if(StringFind(u, "RISK") >= 0 || StringFind(u, "LOT") >= 0) return "risk_lot";
+   if(StringFind(u, "BROKER_STOPS") >= 0 || StringFind(u, "STOP") >= 0 || StringFind(u, "130") >= 0) return "broker_stops";
+   if(StringFind(u, "GEOMETRY") >= 0) return "geometry";
+   if(StringFind(u, "REVERSE_CLOSE") >= 0) return "reverse_close";
+   if(StringFind(eventName, "failed") >= 0 || StringFind(eventName, "blocked") >= 0) return eventName;
+   return "";
+}
+
+string MlExitReason(string eventName, string extra)
+{
+   if(extra != "") return extra;
+   if(StringFind(eventName, "tp") >= 0 || StringFind(eventName, "target") >= 0) return "target";
+   if(StringFind(eventName, "sl") >= 0 || StringFind(eventName, "loss") >= 0) return "loss";
+   if(StringFind(eventName, "reverse") >= 0) return "reverse";
+   if(StringFind(eventName, "manual") >= 0 || StringFind(eventName, "unknown") >= 0) return "manual_or_unknown";
+   return eventName;
+}
+
+int MlBarsBetween(datetime a, datetime b)
+{
+   if(a <= 0 || b <= 0 || b < a) return 0;
+   int sec = Period() * 60;
+   if(sec <= 0) sec = 60;
+   return (int)MathFloor((b - a) / sec);
+}
+
+void MlTicketMetrics(int ticket, string dir, double price, double sl, double tp, double &entry, double &slPips, double &tpPips, double &rr, double &pnlPips, double &pnlR, double &mfePips, double &maePips, string &mfeBeforeMae, int &barsToMfe, int &barsToMae, int &barsToExit)
+{
+   entry = price;
+   datetime openTime = 0;
+   if(ticket > 0)
+   {
+      if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES) || OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
+      {
+         entry = OrderOpenPrice();
+         openTime = OrderOpenTime();
+      }
+   }
+   slPips = MlPipsBetween(entry, sl);
+   tpPips = MlPipsBetween(entry, tp);
+   rr = slPips > 0.0 && tpPips > 0.0 ? tpPips / slPips : 0.0;
+   pnlPips = MlSignedPips(dir, entry, price);
+   pnlR = slPips > 0.0 ? pnlPips / slPips : 0.0;
+
+   double mfePx = ticket > 0 ? TicketGV(ticket, "MFE_PX", 0.0) : 0.0;
+   double maePx = ticket > 0 ? TicketGV(ticket, "MAE_PX", 0.0) : 0.0;
+   mfePips = MathMax(0.0, MlSignedPips(dir, entry, mfePx));
+   maePips = MathMax(0.0, -MlSignedPips(dir, entry, maePx));
+   datetime mfeTs = ticket > 0 ? (datetime)TicketGV(ticket, "MFE_TS", 0.0) : 0;
+   datetime maeTs = ticket > 0 ? (datetime)TicketGV(ticket, "MAE_TS", 0.0) : 0;
+   if(mfeTs > 0 && maeTs > 0) mfeBeforeMae = (mfeTs <= maeTs ? "1" : "0");
+   else mfeBeforeMae = "";
+   barsToMfe = MlBarsBetween(openTime, mfeTs);
+   barsToMae = MlBarsBetween(openTime, maeTs);
+   barsToExit = MlBarsBetween(openTime, TimeCurrent());
+}
+
 void Audit(string eventName, string eventId, int ticket, string dir, double lot, double price, double sl, double tp, string detail, double pnl, string extra)
 {
    if(!g_auditRuntime && !IsCriticalAuditEvent(eventName)) return;
-   int h = FileOpen("ProRenkoBridge_DirectAudit_" + DateStamp(TimeGMT()) + ".csv", FILE_CSV|FILE_READ|FILE_WRITE, ';');
+   datetime gmt = TimeGMT();
+   datetime broker = TimeCurrent();
+   double mlEntry, slPips, tpPips, rr, pnlPips, pnlR, mfePips, maePips;
+   string mfeBeforeMae;
+   int barsToMfe, barsToMae, barsToExit;
+   MlTicketMetrics(ticket, dir, price, sl, tp, mlEntry, slPips, tpPips, rr, pnlPips, pnlR, mfePips, maePips, mfeBeforeMae, barsToMfe, barsToMae, barsToExit);
+   double prevAgeMin = (g_mlPreviousSignalTime > 0 ? MathMax(0.0, (double)(gmt - g_mlPreviousSignalTime) / 60.0) : 0.0);
+   double atrPips = MlAtrPips(Period(), InpRiskAtrPeriod);
+   double dailyAtrPips = MlAtrPips(PERIOD_D1, InpAccountRiskDailyAtrPeriod);
+   double slAtrRatio = atrPips > 0.0 && slPips > 0.0 ? slPips / atrPips : 0.0;
+   double tpAtrRatio = atrPips > 0.0 && tpPips > 0.0 ? tpPips / atrPips : 0.0;
+   double basketTargetAtrRatio = atrPips > 0.0 && g_basketTargetPipsRuntime > 0.0 ? g_basketTargetPipsRuntime / atrPips : 0.0;
+   double spreadPips = SymbolPipSize() > 0.0 ? (CurrentSpreadPoints() * Point / SymbolPipSize()) : 0.0;
+   double spreadToSlRatio = slPips > 0.0 ? spreadPips / slPips : 0.0;
+   int h = FileOpen("ProRenkoBridge_DirectAudit_" + DateStamp(gmt) + ".csv", FILE_CSV|FILE_READ|FILE_WRITE, ';');
    if(h == INVALID_HANDLE) return;
    bool header = (FileSize(h) == 0);
    FileSeek(h, 0, SEEK_END);
-   if(header) FileWrite(h, "gmt", "broker", "account", "symbol", "tf", "event", "event_id", "ticket", "dir", "lot", "price", "sl", "tp", "spread_points", "pnl", "detail", "extra");
-   FileWrite(h, TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), AccountNumber(), Symbol(), Period(), eventName, eventId, ticket, dir, DoubleToString(lot, 3), PriceText(price), PriceText(sl), PriceText(tp), CurrentSpreadPoints(), DoubleToString(pnl, 2), detail, extra);
+   if(header) FileWrite(h, "gmt", "broker", "account", "symbol", "tf", "event", "event_id", "ticket", "dir", "lot", "price", "sl", "tp", "spread_points", "pnl", "detail", "extra", "gmt_weekday", "broker_weekday", "hour_gmt", "hour_broker", "session_bucket", "trade_index_of_day", "previous_signal_dir", "previous_signal_age_min", "flip_count_last_1h", "sl_pips", "tp_pips", "rr", "pnl_pips", "pnl_r", "mfe_pips", "mae_pips", "mfe_before_mae", "bars_to_mfe", "bars_to_mae", "bars_to_exit", "exit_reason", "invert_on", "exec_mode_sh0_sh1_sh2", "basket_target_pips", "native_ignore_windows_on", "bridge_published", "listener_result", "reject_reason_normalized", "atr_pips", "atr_period", "atr_tf", "daily_atr_pips", "sl_atr_ratio", "tp_atr_ratio", "basket_target_atr_ratio", "rsi14", "spread_to_sl_ratio");
+   FileWrite(h, TimeToString(gmt, TIME_DATE|TIME_SECONDS), TimeToString(broker, TIME_DATE|TIME_SECONDS), AccountNumber(), Symbol(), Period(), eventName, eventId, ticket, dir, DoubleToString(lot, 3), PriceText(price), PriceText(sl), PriceText(tp), CurrentSpreadPoints(), DoubleToString(pnl, 2), detail, extra,
+      WeekdayName(gmt), WeekdayName(broker), TimeHour(gmt), TimeHour(broker), SessionBucket(gmt), g_mlTradeIndexOfDay, g_mlPreviousSignalDir, DoubleToString(prevAgeMin, 2), MlFlipCountLastHour(),
+      DoubleToString(slPips, 2), DoubleToString(tpPips, 2), DoubleToString(rr, 3), DoubleToString(pnlPips, 2), DoubleToString(pnlR, 3), DoubleToString(mfePips, 2), DoubleToString(maePips, 2), mfeBeforeMae,
+      barsToMfe, barsToMae, barsToExit, MlExitReason(eventName, extra), MlBool(g_invertMode), TrendExecModeLabel(), DoubleToString(g_basketTargetPipsRuntime, 2), MlBool(g_nativeIgnoreWindowsRuntime), (StringFind(detail, "bridge_csv_written=1") >= 0 ? "1" : "0"), eventName, MlRejectReason(eventName, detail, extra),
+      DoubleToString(atrPips, 2), InpRiskAtrPeriod, MlTfLabel(Period()), DoubleToString(dailyAtrPips, 2), DoubleToString(slAtrRatio, 3), DoubleToString(tpAtrRatio, 3), DoubleToString(basketTargetAtrRatio, 3), DoubleToString(MlRsi14(), 2), DoubleToString(spreadToSlRatio, 4));
    FileClose(h);
 }
 
