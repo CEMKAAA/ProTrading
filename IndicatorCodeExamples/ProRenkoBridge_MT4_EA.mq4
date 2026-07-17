@@ -1,7 +1,7 @@
 ﻿#property strict
 #property version "1.00"
 
-#define BUILD_TAG "2026-07-16.atomic-bridge-hardening"
+#define BUILD_TAG "2026-07-17.nat24-exec-mode-guard"
 #define EMPTY_SENTINEL 2147483647.0
 
 input string InpTrendIndicatorName = "Asiller\\Pro Renko  System\\RenkoBlastTrend";
@@ -566,6 +566,13 @@ bool MaybeExecuteEventBlockPending(string reason)
 void MaybeBootstrapBasketWindow(string reason)
 {
    bool eligible = BasketWindowEligibleNow();
+   if(BasketNativeSignalShadowMode())
+   {
+      // NAT24 native execution is independent from trading-window transitions.
+      g_basketWindowEligibleLast = eligible;
+      g_basketWindowStateInitialized = true;
+      return;
+   }
    if(!g_basketWindowStateInitialized)
    {
       g_basketWindowEligibleLast = eligible;
@@ -627,10 +634,19 @@ void MaybeBootstrapBasketNativeShadow(string reason)
    if(!BasketNativeSignalShadowMode() || !g_trendTradeRuntime)
       return;
 
+   // This is startup/recovery synchronization only. Once this instance owns
+   // a basket position, all reversals must pass through the SH0/SH1/SH2
+   // signal state machine in ProcessSignalCandidate().
+   if(HasOpenBasketPositions())
+      return;
+
+   int mode = MathMax(0, MathMin(2, g_trendExecModeRuntime));
+   int stateShift = (mode == 0) ? 0 : 1;
+
    string dir = "";
    double raw = 0.0;
    int buffer = -1;
-   if(!TrendStateAt(0, dir, raw, buffer))
+   if(!TrendStateAt(stateShift, dir, raw, buffer))
       return;
 
    string effectiveDir = dir;
@@ -643,7 +659,8 @@ void MaybeBootstrapBasketNativeShadow(string reason)
    datetime nowGmt = TimeGMT();
    datetime minute = nowGmt - (nowGmt % 60);
    string eventId = Symbol() + "|" + IntegerToString(Period()) + "|prorenko_nat24_shadow|" + dir + "|"
-                  + IntegerToString((int)minute) + "|buf=" + IntegerToString(buffer);
+                   + IntegerToString((int)minute) + "|buf=" + IntegerToString(buffer)
+                   + "|exec=" + TrendExecModeLabel() + "|sh=" + IntegerToString(stateShift);
    if(eventId == g_lastNativeShadowBootstrapEventId)
       return;
 
@@ -652,7 +669,7 @@ void MaybeBootstrapBasketNativeShadow(string reason)
    if(liveEntry <= 0.0)
       return;
 
-   datetime barTime = iTime(Symbol(), Period(), 0);
+   datetime barTime = iTime(Symbol(), Period(), stateShift);
    MlRegisterSignal(dir, (barTime > 0) ? barTime : TimeCurrent());
    g_lastSignalDir = dir;
    g_lastSignalTime = (barTime > 0) ? barTime : TimeCurrent();
@@ -662,10 +679,11 @@ void MaybeBootstrapBasketNativeShadow(string reason)
    ActiveSignalStateWrite(dir, eventId, g_lastSignalPrice, g_lastSignalTime, reason + "_nat24_shadow_bootstrap");
    Audit("basket_nat24_shadow_bootstrap", eventId, 0, dir, 0, g_lastSignalPrice, 0, 0,
          "reason=" + reason + " effective_dir=" + effectiveDir + " buffer=" + IntegerToString(buffer)
-         + " raw=" + DoubleToString(raw, 2),
-         0, "current_trend_signal_to_signal_native");
+         + " raw=" + DoubleToString(raw, 2) + " exec_mode=" + TrendExecModeLabel()
+         + " state_shift=" + IntegerToString(stateShift),
+         0, "startup_recovery_sync_only");
 
-   ExecuteSignal(dir, eventId, g_lastSignalPrice, 0, buffer);
+   ExecuteSignal(dir, eventId, g_lastSignalPrice, stateShift, buffer);
 }
 void ProcessSignalCandidate(string source, string dir, string eid, int sh, int buf, double sigPx, datetime barTime, string &lastSourceEventId, string reason)
 {

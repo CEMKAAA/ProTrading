@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-16.atomic-bridge-hardening"
+#define LN_BUILD "2026-07-17.audit-full-window-closure"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -233,6 +233,7 @@ struct SimStats
    int      wins;
    int      losses;
    int      open;
+   int      invalid;
    double   wonR;
    double   lostR;
    double   netR;
@@ -245,6 +246,7 @@ struct SimCacheEntry
    double   r;
    bool     closed;
    bool     won;
+   bool     valid;
 };
 
 struct BtCombo
@@ -313,7 +315,12 @@ int              g_histRawCacheWeeks = 0;
 double           g_histSignalR[];
 bool             g_histSignalClosed[];
 bool             g_histSignalWon[];
+bool             g_histSignalValid[];
 SimCacheEntry    g_simCache[];
+MqlRates         g_simRates[];
+ENUM_TIMEFRAMES  g_simRatesTf = PERIOD_CURRENT;
+datetime         g_simRatesLatestBar = 0;
+datetime         g_simRatesOldestBar = 0;
 bool             g_configRefreshPending = false;
 bool             g_configRefreshRebuildSignals = false;
 datetime         g_configRefreshDue = 0;
@@ -614,7 +621,7 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
       + "|COMM" + DoubleToString(InpBacktestCommissionPerLot, 4);
 }
 
-bool SimCacheGet(const string key, double &r, bool &closed, bool &won)
+bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &valid)
 {
    for(int i = 0; i < ArraySize(g_simCache); ++i)
    {
@@ -623,13 +630,14 @@ bool SimCacheGet(const string key, double &r, bool &closed, bool &won)
          r = g_simCache[i].r;
          closed = g_simCache[i].closed;
          won = g_simCache[i].won;
+         valid = g_simCache[i].valid;
          return true;
       }
    }
    return false;
 }
 
-void SimCachePut(const string key, double r, bool closed, bool won)
+void SimCachePut(const string key, double r, bool closed, bool won, bool valid)
 {
    int n = ArraySize(g_simCache);
    ArrayResize(g_simCache, n + 1);
@@ -637,6 +645,7 @@ void SimCachePut(const string key, double r, bool closed, bool won)
    g_simCache[n].r = r;
    g_simCache[n].closed = closed;
    g_simCache[n].won = won;
+   g_simCache[n].valid = valid;
 }
 
 double NormPrice(double price)
@@ -727,6 +736,29 @@ bool CopySeries(ENUM_TIMEFRAMES tf, int bars, MqlRates &rates[])
    if(copied <= 20) return false;
    ArraySetAsSeries(rates, true);
    return true;
+}
+
+bool EnsureSimulationSeries(ENUM_TIMEFRAMES tf, datetime requiredCutoff)
+{
+   datetime latestBar = iTime(_Symbol, tf, 0);
+   if(latestBar <= 0 || requiredCutoff <= 0) return false;
+   int cached = ArraySize(g_simRates);
+   if(cached > 20 && g_simRatesTf == tf && g_simRatesLatestBar == latestBar
+      && g_simRatesOldestBar > 0 && g_simRatesOldestBar <= requiredCutoff)
+      return true;
+
+   int requested = MathMax(InpCalcEntryBars, RequiredBarsForWindow(tf, requiredCutoff, 500));
+   if(!CopySeries(tf, requested, g_simRates))
+   {
+      ArrayFree(g_simRates);
+      g_simRatesLatestBar = 0;
+      g_simRatesOldestBar = 0;
+      return false;
+   }
+   g_simRatesTf = tf;
+   g_simRatesLatestBar = g_simRates[0].time;
+   g_simRatesOldestBar = g_simRates[ArraySize(g_simRates) - 1].time;
+   return g_simRatesOldestBar > 0 && g_simRatesOldestBar <= requiredCutoff;
 }
 
 datetime ClosedBarAvailabilityTime(const MqlRates &rates[], int index)
@@ -1580,16 +1612,19 @@ double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TA
 }
 
 double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel,
-   ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won)
+   ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won, bool &valid)
 {
    bool reverseExitMode = (targetModel == ERL_TARGET_OPPOSITE_SIGNAL);
    if(reverseExitMode) hc = ERL_HC_OFF;
    closed = false;
    won = false;
-   MqlRates rates[];
-   int simBars = MathMax(InpCalcEntryBars, RequiredBarsForWindow(entryTf, g_btCutoff, 500));
-   if(!CopySeries(entryTf, simBars, rates)) return 0.0;
-   int setupIdx = FindEntryBarIndex(rates, sig.entryTime);
+   valid = false;
+   int tfSeconds = PeriodSeconds(entryTf);
+   if(tfSeconds <= 0) tfSeconds = 60;
+   datetime requiredCutoff = sig.entryTime - tfSeconds * 4;
+   if(g_btCutoff > 0 && g_btCutoff < requiredCutoff) requiredCutoff = g_btCutoff;
+   if(!EnsureSimulationSeries(entryTf, requiredCutoff)) return 0.0;
+   int setupIdx = FindEntryBarIndex(g_simRates, sig.entryTime);
    if(setupIdx < 2 || sig.availableTime <= 0) return 0.0;
    // The setup uses the completed setup bar. Price evolution can only be
    // evaluated from the next chronological bar onward.
@@ -1600,17 +1635,18 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double rawEntry = sig.entry;
    if(g_btFillMode == BT_FILL_NEXT_BAR_OPEN)
    {
-      rawEntry = rates[entryIdx].open;
+      rawEntry = g_simRates[entryIdx].open;
    }
    else if(g_btFillMode == BT_FILL_CONSERVATIVE)
    {
-      rawEntry = sig.dir > 0 ? rates[entryIdx].high : rates[entryIdx].low;
+      rawEntry = sig.dir > 0 ? g_simRates[entryIdx].high : g_simRates[entryIdx].low;
    }
    double executionCost = MathMax(0.0, g_btSpreadPts + g_btSlippagePts) * point;
    double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
    double activeSl = reverseExitMode ? 0.0 : sig.sl;
    double simRisk = MathAbs(simEntry - sig.sl);
    if(simRisk <= TickSize()) return 0.0;
+   valid = true;
    double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
    if(hc != ERL_HC_OFF) half = NormTradePrice(simEntry + sig.dir * simRisk * TargetR((ERL_RR_MODE)((int)hc - 1)));
@@ -1640,7 +1676,19 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                   break;
                }
             }
-            if(first >= 0)
+            int last = -1;
+            for(int k = copied - 1; k >= 0; --k)
+            {
+               if(ticks[k].bid > 0.0 && ticks[k].ask > 0.0)
+               {
+                  last = k;
+                  break;
+               }
+            }
+            bool completeTickWindow = (first >= 0 && last >= first
+               && (datetime)ticks[first].time <= tickStart + tfSeconds
+               && (maxTime <= 0 || (datetime)ticks[last].time >= maxTime));
+            if(completeTickWindow)
             {
                double slip = MathMax(0.0, g_btSlippagePts) * point;
                simEntry = NormTradePrice(sig.dir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
@@ -1701,9 +1749,10 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
 
                   if(maxTime > 0)
                   {
-                     for(int k = copied - 1; k >= first; --k)
+                     for(int k = last; k >= first; --k)
                      {
                         if(ticks[k].bid <= 0.0 || ticks[k].ask <= 0.0) continue;
+                        if((datetime)ticks[k].time < maxTime) break;
                         double exitPx = sig.dir > 0 ? ticks[k].bid : ticks[k].ask;
                         pnlR = ApplyForcedSignalExit(sig.dir, exitPx, simEntry, simRisk, halfDone, hc, pnlR, commissionR);
                         closed = true;
@@ -1711,24 +1760,28 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                         return pnlR;
                      }
                   }
+                  else
+                  {
+                     return pnlR;
+                  }
                }
             }
          }
       }
    }
 
-   for(int i = entryIdx; i >= 1; --i)
+   for(int i = entryIdx; i >= 0; --i)
    {
-      if(maxTime > 0 && rates[i].time >= maxTime)
+      if(maxTime > 0 && g_simRates[i].time >= maxTime)
       {
-         pnlR = ApplyForcedSignalExit(sig.dir, rates[i].open, simEntry, simRisk, halfDone, hc, pnlR, commissionR);
+         pnlR = ApplyForcedSignalExit(sig.dir, g_simRates[i].open, simEntry, simRisk, halfDone, hc, pnlR, commissionR);
          closed = true;
          won = pnlR > 0.0;
          return pnlR;
       }
       if(!reverseExitMode && !halfDone)
       {
-         bool hitHalf = sig.dir > 0 ? rates[i].high >= half : rates[i].low <= half;
+         bool hitHalf = sig.dir > 0 ? g_simRates[i].high >= half : g_simRates[i].low <= half;
          if(hitHalf)
          {
             double halfR = MathAbs(half - simEntry) / simRisk;
@@ -1738,8 +1791,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          }
       }
 
-      double openRef = (i == entryIdx ? simEntry : rates[i].open);
-      int res = reverseExitMode ? 0 : ResolveSameBar(rates[i], sig.dir, openRef, tp, activeSl);
+      double openRef = (i == entryIdx ? simEntry : g_simRates[i].open);
+      int res = reverseExitMode ? 0 : ResolveSameBar(g_simRates[i], sig.dir, openRef, tp, activeSl);
       if(res > 0)
       {
          double targetR = MathAbs(tp - simEntry) / simRisk;
@@ -1797,9 +1850,14 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    for(int i = 0; i < ArraySize(signals); ++i)
    {
-      bool closed = false, won = false;
-      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, NextSignalTime(signals, i), closed, won);
+      bool closed = false, won = false, valid = false;
+      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, NextSignalTime(signals, i), closed, won, valid);
       st.total++;
+      if(!valid)
+      {
+         st.invalid++;
+         continue;
+      }
       st.netR += r;
       if(!closed)
       {
@@ -1859,23 +1917,26 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalValid, ArraySize(g_histSignals));
 
    ZeroMemory(g_hist);
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
-      bool closed = false, won = false;
+      bool closed = false, won = false, valid = false;
       datetime nextSignalTime = NextSignalTime(g_histSignals, i);
       string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
-      if(!SimCacheGet(simKey, r, closed, won))
+      if(!SimCacheGet(simKey, r, closed, won, valid))
       {
-         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won);
-         SimCachePut(simKey, r, closed, won);
+         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
+         if(valid) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
+      g_histSignalValid[i] = valid;
       g_hist.total++;
+      if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
       if(!closed) { g_hist.open++; continue; }
       if(won) { g_hist.wins++; g_hist.wonR += MathMax(0.0, r); }
@@ -2815,8 +2876,9 @@ void DrawHistoricalSignals(bool resetObjects = true)
       string id = IntegerToString(i) + "_" + IntegerToString((int)g_histSignals[i].availableTime);
       bool closed = g_histSignalClosed[i];
       bool won = g_histSignalWon[i];
+      bool valid = g_histSignalValid[i];
       double r = g_histSignalR[i];
-      color clr = won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82');
+      color clr = !valid ? C'145,155,170' : (won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82'));
       double arrowPrice = SignalArrowPrice(g_histSignals[i].availableTime, g_histSignals[i].dir, g_histSignals[i].entry, g_histSignals[i].risk);
       DrawArrow(id, g_histSignals[i].availableTime, arrowPrice, g_histSignals[i].dir, clr);
       double pad = MathMax(MathAbs(g_histSignals[i].entry - g_histSignals[i].sl) * 0.25, TickSize() * 30.0);
@@ -2837,8 +2899,12 @@ void DrawHistoricalSignals(bool resetObjects = true)
          if(g_hc != ERL_HC_OFF && hcPrice > 0.0)
             DrawHistoricalSegment(id + "_HC", g_histSignals[i].availableTime, lineEnd, hcPrice, C'255,204,82', STYLE_DOT);
       }
-      string txt = DirLabel(g_histSignals[i].dir) + " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
-         + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
+      string txt = DirLabel(g_histSignals[i].dir);
+      if(!valid)
+         txt += " DATA GAP";
+      else
+         txt += " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
+            + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
       if(g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL)
       {
          txt += "\nREV EXIT: next opposite";
@@ -3620,7 +3686,7 @@ bool BtWriteHeader(int h)
 {
    return FileWrite(h, "timestamp", "symbol", "htf", "entry_tf", "swing", "entry_model", "stop_model", "target_model", "strictness", "narrative",
       "target", "hc_be", "weekly_bias", "weeks",
-      "total", "wins", "losses", "open", "win_rate", "net_r", "won_r", "lost_r", "pf", "avg_r") > 0;
+      "total", "wins", "losses", "open", "data_gaps", "win_rate", "net_r", "won_r", "lost_r", "pf", "avg_r") > 0;
 }
 
 void StartBacktest()
@@ -3706,13 +3772,13 @@ void BacktestStep()
       SimStats st = CalculateStats(signals, c.target, c.hc, c.targetModel, c.entryTf);
       double resolved = st.wins + st.losses;
       double wr = resolved > 0 ? (double)st.wins / resolved * 100.0 : 0.0;
-      double avg = st.total > 0 ? st.netR / st.total : 0.0;
+      double avg = (st.total - st.invalid) > 0 ? st.netR / (st.total - st.invalid) : 0.0;
       FileWrite(h, TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), _Symbol, TfLabel(c.htf), TfLabel(c.entryTf),
          IntegerToString(c.swing), EntryModelLabel(c.entryModel), StopModelLabel(c.stopModel), TargetModelLabel(c.targetModel),
          StrictnessLabel(c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg),
          NarrativeLabel(c.requireAsiaLiquidityDraw, c.useAsiaLiquidityTarget, c.requireSmt),
          TargetLabel(c.target), HcLabel(c.hc), c.bias ? "ON" : "OFF", IntegerToString(g_btWeeks),
-         IntegerToString(st.total), IntegerToString(st.wins), IntegerToString(st.losses), IntegerToString(st.open),
+         IntegerToString(st.total), IntegerToString(st.wins), IntegerToString(st.losses), IntegerToString(st.open), IntegerToString(st.invalid),
          DoubleToString(wr, 2), DoubleToString(st.netR, 2), DoubleToString(st.wonR, 2), DoubleToString(st.lostR, 2),
          DoubleToString(st.pf, 2), DoubleToString(avg, 3));
       g_btLastResult = TfLabel(c.htf) + " " + TfLabel(c.entryTf) + " SW" + IntegerToString(c.swing) + " "
@@ -3879,7 +3945,7 @@ void UpdateDashboard()
    LabelObj("DASH_AUD1", x + 16, sec2 + 30,
       HistWindowLabel() + ": " + IntegerToString(g_hist.total) + " sig | "
       + IntegerToString(g_hist.wins) + "W " + IntegerToString(g_hist.losses) + "L " + IntegerToString(g_hist.open)
-      + "O | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | $ "
+      + "O" + (g_hist.invalid > 0 ? " DATA " + IntegerToString(g_hist.invalid) : "") + " | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | $ "
       + (ApproxMoneyFromR(g_hist.netR) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(g_hist.netR), 2),
       g_hist.netR >= 0 ? C'80,255,180' : C'255,95,140', 9);
    ButtonObj("BTN_AUD_2W", x + 492, sec2 + 28, 40, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off);
@@ -3892,7 +3958,7 @@ void UpdateDashboard()
    if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 59, fill, 12, wr >= 50 ? C'80,220,140' : C'255,95,140', wr >= 50 ? C'80,220,140' : C'255,95,140');
    LabelObj("DASH_AUD2", x + 16, sec2 + 80,
       "Won +" + DoubleToString(g_hist.wonR, 2) + "R | Lost -" + DoubleToString(g_hist.lostR, 2) + "R | Avg "
-      + DoubleToString(g_hist.total > 0 ? g_hist.netR / g_hist.total : 0.0, 3) + "R/trade", muted, 8);
+      + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade", muted, 8);
 
    int sec3 = sec2 + 120;
    RectObj("DASH_SEC3", x + 8, sec3, 744, 152, C'24,31,45', C'60,110,170');
