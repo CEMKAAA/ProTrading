@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-17.sol-frontier-v6"
+#define LN_BUILD "2026-07-18.sol-jp225-session-regime-v14"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -114,6 +114,12 @@ input ERL_RR_MODE     InpSmallStopTarget        = ERL_RR_TP4;
 input ERL_RR_MODE     InpLargeStopTarget        = ERL_RR_TP2;
 input int             InpAsiaStartHourGmt       = 0;
 input int             InpAsiaEndHourGmt         = 6;
+input bool            InpSolSessionRouterEnabled = true;
+input int             InpSolBrokerUtcOffsetMin  = 0;
+input int             InpSolContinuationStartGmt = 14;
+input int             InpSolContinuationEndGmt  = 23;
+input double          InpSolContinuationQualityLow = 2.17;
+input double          InpSolContinuationQualityHigh = 3.14;
 input string          InpSmtSymbol              = "US500m";
 input int             InpSmtLookbackBars        = 8;
 input int             InpHistoricalDays         = 14;
@@ -154,6 +160,9 @@ input int             InpAuditHistoryScanSec    = 3;
 input bool            InpTesterTradeAuditCsv    = false;
 input int             InpTesterTradeAuditMaxRows= 50000;
 input string          InpValidationJobId        = "";
+input bool            InpValidationInternalAudit = false;
+input int             InpValidationInternalAuditWeeks = 52;
+input bool            InpValidationInternalAuditRows = false;
 
 input int             InpBacktestWeeks          = 4;
 input BT_FILL_MODE    InpBacktestFillMode       = BT_FILL_NEXT_BAR_OPEN;
@@ -572,13 +581,15 @@ int ClampHistWeeks(int weeks)
    if(weeks <= 5) return 5;
    if(weeks <= 10) return 10;
    if(weeks <= 20) return 20;
-   return 52;
+   if(weeks <= 52) return 52;
+   return MathMin(520, weeks);
 }
 
 string HistWindowLabel()
 {
    int weeks = ClampHistWeeks(g_histWeeks);
-   if(weeks >= 52) return "1Y";
+   if(weeks == 52) return "1Y";
+   if(weeks > 52 && weeks % 52 == 0) return IntegerToString(weeks / 52) + "Y";
    return IntegerToString(weeks) + "W";
 }
 
@@ -601,7 +612,8 @@ string HistRawSignature()
       + "|SLPCT" + DoubleToString(g_slDistancePct, 2)
       + "|PIPSL" + (g_pipSlMode ? "1" : "0")
       + "|PIPS" + DoubleToString(g_pipSlPips, 2)
-      + "|ATRBUF" + DoubleToString(g_slBufferAtrPct, 2);
+      + "|ATRBUF" + DoubleToString(g_slBufferAtrPct, 2)
+      + "|" + SolModelLabel();
 }
 
 string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf, datetime maxTime)
@@ -852,6 +864,14 @@ bool GetAsiaRangeFromRates(const MqlRates &rates[], datetime referenceTime, doub
       found = true;
    }
    return found && asiaHigh > asiaLow && asiaLow < DBL_MAX && asiaHigh > -DBL_MAX;
+}
+
+string SolModelLabel()
+{
+   if(!InpSolSessionRouterEnabled) return "ROUTER-OFF";
+   return "ROUTER-" + IntegerToString(InpSolContinuationStartGmt) + "-" + IntegerToString(InpSolContinuationEndGmt)
+      + "-Q" + DoubleToString(InpSolContinuationQualityLow, 2) + "-" + DoubleToString(InpSolContinuationQualityHigh, 2)
+      + "-TZ" + IntegerToString(InpSolBrokerUtcOffsetMin);
 }
 
 bool AsiaLiquidityDrawAllows(const MqlRates &rates[], int dir, datetime entryTime, double asiaHigh, double asiaLow,
@@ -1300,6 +1320,40 @@ bool EntryTapFromFvg(const MqlRates &entryRates[], const FvgZone &zone, int dir,
    return false;
 }
 
+void SolRebuildSignalDirection(ErlSignal &sig, int newDir)
+{
+   if(newDir == 0 || newDir == sig.dir) return;
+   double mirroredRawStop = 2.0 * sig.entry - sig.sl;
+   sig.dir = newDir;
+   sig.sl = ApplyRuntimeSlDistance(newDir, sig.entry, mirroredRawStop);
+   sig.risk = MathAbs(sig.entry - sig.sl);
+   sig.tp1 = NormTradePrice(sig.entry + newDir * sig.risk * 0.5);
+   sig.tp2 = NormTradePrice(sig.entry + newDir * sig.risk * 1.0);
+   sig.tp3 = NormTradePrice(sig.entry + newDir * sig.risk * 1.5);
+   sig.tp4 = NormTradePrice(sig.entry + newDir * sig.risk * 2.0);
+   sig.tp5 = NormTradePrice(sig.entry + newDir * sig.risk * 2.5);
+   sig.tp6 = NormTradePrice(sig.entry + newDir * sig.risk * 3.0);
+   sig.reason += "|sol_direction_flip";
+}
+bool SolSessionRouterFlips(datetime brokerTime, double displacementQuality)
+{
+   if(!InpSolSessionRouterEnabled) return false;
+   datetime gmtTime = brokerTime - InpSolBrokerUtcOffsetMin * 60;
+   MqlDateTime dt;
+   TimeToStruct(gmtTime, dt);
+
+   int startHour = MathMax(0, MathMin(23, InpSolContinuationStartGmt));
+   int endHour = MathMax(1, MathMin(24, InpSolContinuationEndGmt));
+   bool continuationSession = startHour < endHour
+      ? (dt.hour >= startHour && dt.hour < endHour)
+      : (dt.hour >= startHour || dt.hour < endHour);
+   bool mondayThroughThursday = dt.day_of_week >= 1 && dt.day_of_week <= 4;
+   if(continuationSession) return mondayThroughThursday;
+
+   double qualityLow = MathMax(0.0, InpSolContinuationQualityLow);
+   double qualityHigh = MathMax(qualityLow, InpSolContinuationQualityHigh);
+   return displacementQuality > qualityLow && displacementQuality <= qualityHigh;
+}
 bool FindEntrySweepReclaim(const MqlRates &entryRates[], int dir, datetime afterTime, int &reclaimIndex, double &sweepLevel)
 {
    reclaimIndex = -1;
@@ -1518,7 +1572,7 @@ string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entry
       + "|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel)
       + "|" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + "|" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
-      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
+      + "|" + SolModelLabel() + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
 }
 
 void AssignExternalTarget(ErlSignal &sig, const SwingLevel &swings[])
@@ -1562,7 +1616,7 @@ string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entry
       + "|" + EntryModelLabel(entryModel) + "|" + StopModelLabel(stopModel) + "|" + TargetModelLabel(targetModel)
       + "|" + StrictnessLabel(requireIrlTouch, requireEntrySweep, requireDisplacementFvg)
       + "|" + NarrativeLabel(requireAsiaLiquidityDraw, useAsiaLiquidityTarget, requireSmt)
-      + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
+      + "|" + SolModelLabel() + "|" + (bias ? "B1" : "B0") + "|" + DirLabel(sig.dir) + "|" + IntegerToString((int)sig.availableTime);
 }
 
 int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool useBias,
@@ -1605,6 +1659,14 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
       else
          entryOk = EntryTapFromFvg(entryRates, zone, dir, stopModel, sig);
       if(!entryOk) continue;
+      bool solRouterFlip = SolSessionRouterFlips(sig.availableTime, zone.quality);
+      if(solRouterFlip)
+      {
+         sig.reason += "|sol_session_continuation";
+         SolRebuildSignalDirection(sig, -sig.dir);
+      }
+      else
+         sig.reason += "|sol_session_reversal";
       // A valid IRL touch cannot authorize a later LTF setup after the HTF
       // narrative has already closed through its displacement origin.
       if(zone.invalidatedTime > 0 && sig.availableTime >= zone.invalidatedTime) continue;
@@ -4264,6 +4326,38 @@ bool Clicked(const string sparam, string id)
 //=====================================================================
 //  MT5 EVENT HANDLERS
 //=====================================================================
+void RunValidationInternalAudit()
+{
+   if(!InpValidationInternalAudit || !IsTesterMode()) return;
+   g_histWeeks = ClampHistWeeks(InpValidationInternalAuditWeeks);
+   RecalculateHistoricalStats(true);
+   int resolved = g_hist.wins + g_hist.losses;
+   double wr = resolved > 0 ? 100.0 * (double)g_hist.wins / (double)resolved : 0.0;
+   Print("SOL_INTERNAL_AUDIT build=", LN_BUILD,
+      " window=", HistWindowLabel(),
+      " total=", IntegerToString(g_hist.total),
+      " wins=", IntegerToString(g_hist.wins),
+      " losses=", IntegerToString(g_hist.losses),
+      " open=", IntegerToString(g_hist.open),
+      " invalid=", IntegerToString(g_hist.invalid),
+      " wr=", DoubleToString(wr, 4),
+      " netR=", DoubleToString(g_hist.netR, 6));
+   if(!InpValidationInternalAuditRows) return;
+   for(int i = 0; i < ArraySize(g_histSignals); ++i)
+   {
+      string result = !g_histSignalValid[i] ? "INVALID" : (!g_histSignalClosed[i] ? "OPEN" : (g_histSignalWon[i] ? "WIN" : "LOSS"));
+      Print("SOL_INTERNAL_AUDIT_ROW index=", IntegerToString(i),
+         " available=", TimeToString(g_histSignals[i].availableTime, TIME_DATE|TIME_MINUTES),
+         " dir=", DirLabel(g_histSignals[i].dir),
+         " result=", result,
+         " r=", DoubleToString(g_histSignalR[i], 6),
+         " entry=", DoubleToString(g_histSignals[i].entry, _Digits),
+         " sl=", DoubleToString(g_histSignals[i].sl, _Digits),
+         " reason=", g_histSignals[i].reason,
+         " id=", g_histSignals[i].id);
+   }
+}
+
 int OnInit()
 {
    ErlTesterAudit_Init();
@@ -4335,6 +4429,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   RunValidationInternalAudit();
    EventKillTimer();
    DeleteByPrefix(PFX);
 }
