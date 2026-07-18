@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiquidityNarrativeCTraderListener : Robot
     {
-        private const string Build = "2026-07-16.execution-hardening-jp225-map";
+        private const string Build = "2026-07-18.bridge-family-scoped-latest";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -1068,15 +1068,17 @@ namespace cAlgo.Robots
             if (!PreferScopedLatest || string.IsNullOrWhiteSpace(_resolvedBridgePath))
                 return _resolvedBridgePath;
             var fileName = IoPath.GetFileName(_resolvedBridgePath) ?? "";
-            if (!SameText(fileName, "LiquidityNarrativeBridge_Latest.csv"))
+            const string latestSuffix = "_Latest.csv";
+            if (!fileName.EndsWith(latestSuffix, StringComparison.OrdinalIgnoreCase))
                 return _resolvedBridgePath;
+            var scopedPrefix = fileName.Substring(0, fileName.Length - latestSuffix.Length) + "_Latest_";
             var dir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? "";
             var tf = NormalizeTf(string.IsNullOrWhiteSpace(SourceTimeframeFilter) && DefaultSourceTfToChartPeriod ? ChartTfString() : SourceTimeframeFilter);
             if (string.IsNullOrWhiteSpace(tf))
                 return _resolvedBridgePath;
             foreach (var symbol in ScopedSourceSymbolCandidates())
             {
-                var candidate = IoPath.Combine(dir, $"LiquidityNarrativeBridge_Latest_{Sanitize(symbol)}_{tf}.csv");
+                var candidate = IoPath.Combine(dir, $"{scopedPrefix}{Sanitize(symbol)}_{tf}.csv");
                 if (IoFile.Exists(candidate))
                     return candidate;
             }
