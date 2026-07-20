@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiquidityNarrativeCTraderListener : Robot
     {
-        private const string Build = "2026-07-18.bridge-family-scoped-latest";
+        private const string Build = "2026-07-20.audit-writer-isolation-v3";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -184,9 +184,12 @@ namespace cAlgo.Robots
         private string _resolvedBridgePath;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
+        private string _lastInitMarkerAuditKey = string.Empty;
+        private string _lastReadFailAuditKey = string.Empty;
         private string _auditDir;
         private string _lockDir;
         private string _stateDir;
+        private static readonly object AuditWriteSync = new object();
 
         protected override void OnStart()
         {
@@ -248,10 +251,15 @@ namespace cAlgo.Robots
                 var initMarker = detail.IndexOf("bridge_init_marker", StringComparison.OrdinalIgnoreCase) >= 0
                               || detail.IndexOf("source=bridge_initiated", StringComparison.OrdinalIgnoreCase) >= 0
                               || detail.IndexOf("dir=INIT", StringComparison.OrdinalIgnoreCase) >= 0;
-                var throttleSeconds = initMarker ? 60 : 10;
-                if ((DateTime.UtcNow - _lastReadFailAudit).TotalSeconds >= throttleSeconds)
+                var sinceLastAudit = (DateTime.UtcNow - _lastReadFailAudit).TotalSeconds;
+                var initChanged = initMarker && !string.Equals(_lastInitMarkerAuditKey, detail, StringComparison.Ordinal);
+                var readFailureChanged = !initMarker && !string.Equals(_lastReadFailAuditKey, detail, StringComparison.Ordinal);
+                var auditDue = initMarker ? (initChanged || sinceLastAudit >= 21600) : (readFailureChanged || sinceLastAudit >= 300);
+                if (auditDue)
                 {
                     _lastReadFailAudit = DateTime.UtcNow;
+                    if (initMarker) _lastInitMarkerAuditKey = detail;
+                    else _lastReadFailAuditKey = detail;
                     AuditRaw(initMarker ? "bridge_initiated_seen" : "read_failed", $"caller={caller} {detail}");
                 }
                 return;
@@ -1636,21 +1644,45 @@ namespace cAlgo.Robots
 
         private void WriteAudit(string eventName, string sourceSymbol, string sourceTf, string eventId, string source, string dir, double entry, double sl, double tp, double half, string detail)
         {
-            try
+            var scope = Account.Number.ToString(CultureInfo.InvariantCulture) + "_" + Sanitize(SymbolName)
+                      + "_TF" + Sanitize(string.IsNullOrWhiteSpace(SourceTimeframeFilter) ? "ANY" : SourceTimeframeFilter);
+            var file = IoPath.Combine(_auditDir, AuditFilePrefix + scope + "_" + DateTime.UtcNow.ToString("yyyyMMdd") + ".csv");
+            Exception lastError = null;
+
+            for (var attempt = 0; attempt < 4; attempt++)
             {
-                var file = IoPath.Combine(_auditDir, AuditFilePrefix + DateTime.UtcNow.ToString("yyyyMMdd") + ".csv");
-                var header = !IoFile.Exists(file);
-                using (var sw = new IoStreamWriter(file, true, Encoding.UTF8))
+                try
                 {
-                    if (header)
-                        sw.WriteLine("time_gmt,build,event,account,chart_symbol,source_symbol,source_tf,event_id,source,dir,entry,sl,tp,half,detail");
-                    sw.WriteLine(string.Join(",", Escape(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")), Escape(Build), Escape(eventName), Escape(Account.Number.ToString()), Escape(SymbolName), Escape(sourceSymbol), Escape(sourceTf), Escape(eventId), Escape(source), Escape(dir), entry.ToString(CultureInfo.InvariantCulture), sl.ToString(CultureInfo.InvariantCulture), tp.ToString(CultureInfo.InvariantCulture), half.ToString(CultureInfo.InvariantCulture), Escape(detail)));
+                    lock (AuditWriteSync)
+                    {
+                        using (var fs = new IoFileStream(file, IoFileMode.OpenOrCreate, IoFileAccess.Write, IoFileShare.ReadWrite))
+                        {
+                            var header = fs.Length == 0;
+                            fs.Seek(0, global::System.IO.SeekOrigin.End);
+                            using (var sw = new IoStreamWriter(fs, new UTF8Encoding(false)))
+                            {
+                                if (header)
+                                    sw.WriteLine("time_gmt,build,event,account,chart_symbol,source_symbol,source_tf,event_id,source,dir,entry,sl,tp,half,detail");
+                                sw.WriteLine(string.Join(",", Escape(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")), Escape(Build), Escape(eventName), Escape(Account.Number.ToString()), Escape(SymbolName), Escape(sourceSymbol), Escape(sourceTf), Escape(eventId), Escape(source), Escape(dir), entry.ToString(CultureInfo.InvariantCulture), sl.ToString(CultureInfo.InvariantCulture), tp.ToString(CultureInfo.InvariantCulture), half.ToString(CultureInfo.InvariantCulture), Escape(detail)));
+                            }
+                        }
+                    }
+                    return;
+                }
+                catch (IoException ex)
+                {
+                    lastError = ex;
+                    if (attempt < 3)
+                        global::System.Threading.Thread.Sleep(20 * (attempt + 1));
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    break;
                 }
             }
-            catch (Exception ex)
-            {
-                Print("Audit write failed: {0}", ex.Message);
-            }
+
+            Print("Audit write failed after retries: {0}", lastError == null ? "unknown" : lastError.Message);
         }
 
         private void SetAction(string action, string detail)

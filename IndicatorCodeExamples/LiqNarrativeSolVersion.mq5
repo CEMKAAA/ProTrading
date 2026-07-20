@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-18.sol-jp225-session-regime-v14"
+#define LN_BUILD "2026-07-20.sol-v14-audit-lifecycle"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -327,6 +327,7 @@ double           g_histSignalR[];
 bool             g_histSignalClosed[];
 bool             g_histSignalWon[];
 bool             g_histSignalValid[];
+string           g_histSignalInvalidReason[];
 SimCacheEntry    g_simCache[];
 MqlRates         g_simRates[];
 ENUM_TIMEFRAMES  g_simRatesTf = PERIOD_CURRENT;
@@ -361,6 +362,8 @@ ulong            g_lastHistoryTicket = 0;
 double           g_equityPeak = 0.0;
 datetime         g_lastLiveScanBar = 0;
 datetime         g_lastLiveScanAttempt = 0;
+datetime         g_lastHistLifecycleRefresh = 0;
+string           g_lastSimInvalidReason = "";
 
 BtCombo          g_btCombos[];
 bool             g_btRunning = false;
@@ -1781,8 +1784,14 @@ void SanitizeHalfMode()
 //=====================================================================
 int FindEntryBarIndex(const MqlRates &rates[], datetime t)
 {
-   for(int i = 0; i < ArraySize(rates); ++i)
+   int total = ArraySize(rates);
+   for(int i = 0; i < total; ++i)
       if(rates[i].time == t) return i;
+
+   // Broker timestamps can differ by a few seconds. Resolve the containing
+   // closed bar without ever moving the signal into a future bar.
+   for(int i = 1; i < total; ++i)
+      if(rates[i].time <= t && t < rates[i - 1].time) return i;
    return -1;
 }
 
@@ -1830,13 +1839,27 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    closed = false;
    won = false;
    valid = false;
+   g_lastSimInvalidReason = "";
    int tfSeconds = PeriodSeconds(entryTf);
    if(tfSeconds <= 0) tfSeconds = 60;
    datetime requiredCutoff = sig.entryTime - tfSeconds * 4;
    if(g_btCutoff > 0 && g_btCutoff < requiredCutoff) requiredCutoff = g_btCutoff;
-   if(!EnsureSimulationSeries(entryTf, requiredCutoff)) return 0.0;
+   if(!EnsureSimulationSeries(entryTf, requiredCutoff))
+   {
+      g_lastSimInvalidReason = "SERIES";
+      return 0.0;
+   }
    int setupIdx = FindEntryBarIndex(g_simRates, sig.entryTime);
-   if(setupIdx < 2 || sig.availableTime <= 0) return 0.0;
+   if(setupIdx < 1)
+   {
+      g_lastSimInvalidReason = "ENTRY_BAR";
+      return 0.0;
+   }
+   if(sig.availableTime <= 0)
+   {
+      g_lastSimInvalidReason = "AVAIL_TIME";
+      return 0.0;
+   }
    // The setup uses the completed setup bar. Price evolution can only be
    // evaluated from the next chronological bar onward.
    int entryIdx = setupIdx - 1;
@@ -1856,7 +1879,11 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
    double activeSl = reverseExitMode ? 0.0 : sig.sl;
    double simRisk = MathAbs(simEntry - sig.sl);
-   if(simRisk <= TickSize()) return 0.0;
+   if(simRisk <= TickSize())
+   {
+      g_lastSimInvalidReason = "RISK";
+      return 0.0;
+   }
    valid = true;
    double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
@@ -2129,6 +2156,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
    ArrayResize(g_histSignalValid, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalInvalidReason, ArraySize(g_histSignals));
 
    ZeroMemory(g_hist);
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
@@ -2140,12 +2168,15 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       if(!SimCacheGet(simKey, r, closed, won, valid))
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid) SimCachePut(simKey, r, closed, won, valid);
+         // OPEN is time-dependent. Caching it would freeze O forever even
+         // after a later bar reaches TP, SL, HCBE or a reverse exit.
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
       g_histSignalValid[i] = valid;
+      g_histSignalInvalidReason[i] = valid ? "" : g_lastSimInvalidReason;
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
@@ -3112,7 +3143,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
       }
       string txt = DirLabel(g_histSignals[i].dir);
       if(!valid)
-         txt += " DATA GAP";
+         txt += " DATA " + (g_histSignalInvalidReason[i] == "" ? "UNKNOWN" : g_histSignalInvalidReason[i]);
       else
          txt += " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
             + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
@@ -3585,6 +3616,48 @@ void RememberSignalSeen(const ErlSignal &sig)
    g_lastSignalTime = sig.availableTime;
    g_lastSignalDir = sig.dir;
 }
+
+void MergeLatestSignalIntoHistoricalCache(const ErlSignal &sig)
+{
+   if(!sig.valid || sig.id == "") return;
+   for(int i = 0; i < ArraySize(g_histRawCache); ++i)
+   {
+      if(g_histRawCache[i].id != sig.id) continue;
+      g_histRawCache[i] = sig;
+      return;
+   }
+
+   int n = ArraySize(g_histRawCache);
+   ArrayResize(g_histRawCache, n + 1);
+   g_histRawCache[n] = sig;
+}
+
+void RefreshHistoricalLifecycleFromLiveScan(const ErlSignal &rawSignals[])
+{
+   int count = ArraySize(rawSignals);
+   if(count > 0) MergeLatestSignalIntoHistoricalCache(rawSignals[count - 1]);
+
+   // Closed simulations remain cached; only DATA/OPEN rows are replayed.
+   // This keeps a live signal moving DATA/O -> W/L without rebuilding 1Y.
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
+void RefreshUnresolvedHistoricalLifecycle()
+{
+   int count = ArraySize(g_histSignals);
+   if(count <= 0) return;
+   int last = count - 1;
+   if(g_histSignalValid[last] && g_histSignalClosed[last]) return;
+   if(g_histSignals[last].availableTime < TimeCurrent() - 7 * 86400) return;
+   if(TimeCurrent() - g_lastHistLifecycleRefresh < 60) return;
+
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
 bool OpenSignal(const ErlSignal &sig)
 {
    if(!g_eaEnabled)
@@ -3756,6 +3829,8 @@ void TryOpenLatestSignal()
    datetime cutoff = now - 7 * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
+   if(firstAttemptForBar)
+      RefreshHistoricalLifecycleFromLiveScan(signals);
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    count = ArraySize(signals);
    if(count <= 0)
@@ -4458,6 +4533,7 @@ void OnTimer()
    ProbePositions();
    ScanClosedHistory();
    ProcessPendingConfigRefresh();
+   RefreshUnresolvedHistoricalLifecycle();
    if(!IsValidationTester())
    {
       if(g_btRunning) BacktestStep();
