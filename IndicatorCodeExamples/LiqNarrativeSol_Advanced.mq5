@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 
-#define LN_BUILD "2026-07-22.sol-advanced-regime-filter-5680-exit-only"
+#define LN_BUILD "2026-07-22.sol-advanced-isolated-bridge-v2"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -135,8 +135,8 @@ input bool            InpFileBridgeEnabled      = false;
 input bool            InpFileBridgeOnlyMode     = false;
 input bool            InpNativeTradeWithBridgeOnlyDefault = false; // ML shadow mode: when cTrader bridge-only is enabled, also open/manage native MT5 trades.
 input bool            InpFileBridgeUseCommonFiles = true;
-input string          InpFileBridgeLatestFile   = "LiqNarrativeSolBridge_Latest.csv";
-input string          InpFileBridgeAuditPrefix  = "LiqNarrativeSolBridge_Audit_";
+input string          InpFileBridgeLatestFile   = "LiqNarrativeSolAdvancedBridge_Latest.csv";
+input string          InpFileBridgeAuditPrefix  = "LiqNarrativeSolAdvancedBridge_Audit_";
 
 input bool            InpShowDashboard          = true;
 input int             InpDashboardX             = 10;
@@ -2513,13 +2513,33 @@ string FileBridgeSafeFileToken(string s)
    return out;
 }
 
+string FileBridgeGenericLatestFileName()
+{
+   string configured = InpFileBridgeLatestFile;
+   StringTrimLeft(configured);
+   StringTrimRight(configured);
+   if(configured == "" || configured == "LiqNarrativeSolBridge_Latest.csv")
+      return "LiqNarrativeSolAdvancedBridge_Latest.csv";
+   return configured;
+}
+
+string FileBridgeEffectiveAuditPrefix()
+{
+   string configured = InpFileBridgeAuditPrefix;
+   StringTrimLeft(configured);
+   StringTrimRight(configured);
+   if(configured == "" || configured == "LiqNarrativeSolBridge_Audit_")
+      return "LiqNarrativeSolAdvancedBridge_Audit_";
+   return configured;
+}
+
 string FileBridgeScopedLatestFileName()
 {
-   return "LiqNarrativeSolBridge_Latest_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+   return "LiqNarrativeSolAdvancedBridge_Latest_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
 }
 string FileBridgeSource()
 {
-   string src = "LiqNarrativeSol|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
+   string src = "LiqNarrativeSolAdvanced|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
    if(g_pipSlMode) src += "|pipSL";
    return src;
 }
@@ -2609,7 +2629,7 @@ bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, doub
 
 string FileBridgeOutboxFileName()
 {
-   return "LiqNarrativeSolBridge_Outbox_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+   return "LiqNarrativeSolAdvancedBridge_Outbox_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
 }
 
 bool BridgePersistPending()
@@ -2739,12 +2759,12 @@ void BridgeRetryPending()
 bool FileBridgeWriteInitMarker()
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
-   string eventId = "liq_bridge_init|" + _Symbol + "|" + FileBridgeTfString(g_entryTf) + "|" + FileBridgeTime(TimeGMT());
-   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   string eventId = "liq_sol_advanced_bridge_init|" + _Symbol + "|" + FileBridgeTfString(g_entryTf) + "|" + FileBridgeTime(TimeGMT());
+   bool genericOk = FileBridgeWriteLatestFile(FileBridgeGenericLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    g_lastBridgeStatus = scopedOk ? "INIT WROTE" : "INIT SCOPED FAIL";
    if(!genericOk)
-      Print("LiqNarrativeSol file_bridge init generic atomic write failed file=", InpFileBridgeLatestFile);
+      Print("LiqNarrativeSol file_bridge init generic atomic write failed file=", FileBridgeGenericLatestFileName());
    return scopedOk;
 }
 
@@ -2752,16 +2772,18 @@ bool FileBridgeWriteEvent(string eventId, string dir, datetime signalTime, doubl
    double halfTriggerPrice, string halfTriggerLabel, string source)
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
-   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
+   // Keep the strategy signal id intact while isolating cTrader event ownership from SolVersion.
+   string bridgeEventId = "SOLADVBRIDGE|" + eventId;
+   bool genericOk = FileBridgeWriteLatestFile(FileBridgeGenericLatestFileName(), bridgeEventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
    if(!genericOk)
-      Print("LiqNarrativeSol file_bridge generic atomic write failed file=", InpFileBridgeLatestFile);
+      Print("LiqNarrativeSol file_bridge generic atomic write failed file=", FileBridgeGenericLatestFileName());
 
-   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), bridgeEventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
    bool accepted = scopedOk;
    if(!scopedOk)
-      accepted = BridgeQueuePending(eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
+      accepted = BridgeQueuePending(bridgeEventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
 
-   string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
+   string auditFile = FileBridgeEffectiveAuditPrefix() + FileBridgeDate(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
    ResetLastError();
    int a = FileOpen(auditFile, auditFlags, ',');
@@ -2770,7 +2792,7 @@ bool FileBridgeWriteEvent(string eventId, string dir, datetime signalTime, doubl
       bool header = (FileSize(a) == 0);
       FileSeek(a, 0, SEEK_END);
       if(header) FileBridgeWriteHeader(a);
-      FileBridgeWriteRow(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
+      FileBridgeWriteRow(a, bridgeEventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
       FileClose(a);
    }
    else

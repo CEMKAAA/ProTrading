@@ -1,20 +1,26 @@
 Use these full paths:
 
-  US500 and US100
+US500 and US100 - Normal Liq Narrative
 
-  C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\LiquidityNarrativeBridge_Latest.csv
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\LiquidityNarrativeBridge_Latest.csv
 
-  JPN225 Sol
+JPN225 - Liq Narrative SolVersion
 
-  C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\LiqNarrativeSolBridge_Latest.csv
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\LiqNarrativeSolBridge_Latest.csv
 
-  and "source tf filter"
+JPN225 - Liq Narrative Sol Advanced
 
-  us500 and us100: 15,
-  jp225: 60
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\LiqNarrativeSolAdvancedBridge_Latest.csv
 
-  and thats it pipeline is set.
+DE30 - NAS Professional
 
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\NasUltimateBridge_Latest.csv
 
-  Evet, aradığın hat bulundu: birleşik kötü-rejim elemesi trade’lerin %61.7 sini koruyarak toplam WR’yi %56.80e, en kötü
-  yılı %55.45e taşıyor. Bu tam söylediğin %52–56 hattı. Şimdi aynı rejim ailesini birkaç adım daha sade biçimde
+and "source tf filter"
+
+us500 and us100: 15,
+jp225 sol: 60,
+jp225 advanced: 60,
+de30 nas: 5
+
+and thats it pipelines are set.
