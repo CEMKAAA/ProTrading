@@ -1,0 +1,23 @@
+﻿{
+  "jobs": [
+    {
+      "job_id": "nas_de30_regime_smoke_m1_p400",
+      "ea": "NasUltimate_SATS_PartialNoBE_EA",
+      "ea_kind": "nas",
+      "preset": "presets/nas_de30_regime_base.set",
+      "symbol": "DE30m",
+      "timeframe": "M1",
+      "from_date": "2026.01.27",
+      "to_date": "2026.01.29",
+      "terminal_exe": "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/mt5_validation_exness_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 4,
+      "execution_mode": 0,
+      "timeout_sec": 300
+    }
+  ]
+}

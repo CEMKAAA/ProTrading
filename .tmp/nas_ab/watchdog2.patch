@@ -1,0 +1,90 @@
+diff --git a/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5 b/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
+--- a/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
++++ b/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
+@@ -216,3 +216,11 @@
+ double   g_spreadMaxPointsRuntime = 0.0;
+ uint     g_lastTpTouchWatchdogMs = 0;
++
++struct NasTpWatchdogRetryState
++{
++   ulong ticket;
++   datetime nextRetry;
++   uint lastRetcode;
++};
++NasTpWatchdogRetryState g_tpWatchdogRetryStates[];
+ bool     g_lastRiskUsedStructuralStop = false;
+@@ -4445,4 +4453,42 @@
+    FileClose(h);
+ }
+ 
++int FindTpWatchdogRetryState(const ulong ticket)
++{
++   for(int i = 0; i < ArraySize(g_tpWatchdogRetryStates); ++i)
++      if(g_tpWatchdogRetryStates[i].ticket == ticket)
++         return i;
++   return -1;
++}
++
++bool TpWatchdogRetryAllowed(const ulong ticket)
++{
++   int idx = FindTpWatchdogRetryState(ticket);
++   return idx < 0 || TimeCurrent() >= g_tpWatchdogRetryStates[idx].nextRetry;
++}
++
++void ScheduleTpWatchdogRetry(const ulong ticket, const uint retcode)
++{
++   int idx = FindTpWatchdogRetryState(ticket);
++   if(idx < 0)
++   {
++      idx = ArraySize(g_tpWatchdogRetryStates);
++      ArrayResize(g_tpWatchdogRetryStates, idx + 1);
++      g_tpWatchdogRetryStates[idx].ticket = ticket;
++   }
++   int delaySec = retcode == TRADE_RETCODE_MARKET_CLOSED ? 60 : 5;
++   g_tpWatchdogRetryStates[idx].nextRetry = TimeCurrent() + delaySec;
++   g_tpWatchdogRetryStates[idx].lastRetcode = retcode;
++}
++
++void ClearTpWatchdogRetry(const ulong ticket)
++{
++   int idx = FindTpWatchdogRetryState(ticket);
++   if(idx < 0)
++      return;
++   int last = ArraySize(g_tpWatchdogRetryStates) - 1;
++   if(idx != last)
++      g_tpWatchdogRetryStates[idx] = g_tpWatchdogRetryStates[last];
++   ArrayResize(g_tpWatchdogRetryStates, last);
++}
++
+ void EnforceManagedTpTouchClose(const bool force)
+@@ -4480,5 +4526,7 @@
+       bool touched = direction > 0 ? (bid + tol >= tp) : (ask - tol <= tp);
+       if(!touched)
+          continue;
++      if(!TpWatchdogRetryAllowed(ticket))
++         continue;
+ 
+       string dirText = direction > 0 ? "BUY" : "SELL";
+@@ -4491,14 +4539,18 @@
+          ok = trade.PositionClose(ticket);
+          if(ok)
+             break;
++         uint retcode = trade.ResultRetcode();
+          Print("NAS SATS TP watchdog close attempt failed ticket=", ticket,
+                " attempt=", attempt,
+-               " ret=", trade.ResultRetcode(),
++               " ret=", retcode,
+                " ", trade.ResultRetcodeDescription());
++         if(retcode == TRADE_RETCODE_MARKET_CLOSED)
++            break;
+       }
+       if(ok)
+       {
++         ClearTpWatchdogRetry(ticket);
+          Print("NAS SATS TP watchdog closed ticket=", ticket,
+@@ -4510,5 +4562,6 @@
+       }
+       else
+       {
++         ScheduleTpWatchdogRetry(ticket, trade.ResultRetcode());
+          Print("NAS SATS TP watchdog close failed ticket=", ticket,

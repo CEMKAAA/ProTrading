@@ -1,0 +1,121 @@
+﻿diff --git a/IndicatorCodeExamples/NasUltimate_ProfessionalPipeline.mqh b/IndicatorCodeExamples/NasUltimate_ProfessionalPipeline.mqh
+--- a/IndicatorCodeExamples/NasUltimate_ProfessionalPipeline.mqh
++++ b/IndicatorCodeExamples/NasUltimate_ProfessionalPipeline.mqh
+@@ -742,6 +742,13 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
+ {
+    if(!g_nasBridgeEnabledRuntime) return true;
++   if(!UseSingleOrderTpMode())
++   {
++      g_nasBridgeStatus = "BLOCKED LEGACY MULTI-ORDER";
++      NasProAuditWrite("bridge_shape_block", "nas|" + IntegerToString((long)signalTime), direction,
++         g_lastEntry, g_lastSl, 0.0, 0.0, "reason=unsupported_legacy_multi_order single_order_required=1");
++      return false;
++   }
+    if(!IsTradingTimeOpen() || !IsTradingTimeOpenAt(signalTime))
+    {
+@@ -752,18 +759,11 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
+       return false;
+    }
+ 
+-   int finalLeg = 3;
+-   double finalTp = g_lastTp3;
+-   string executionShape = "legacy_aggregate_tp3";
+-   if(UseSingleOrderTpMode())
+-   {
+-      finalLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg()
+-         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : ClampTpLeg(g_selectedTpLegRuntime));
+-      finalTp = g_invertTradeModeRuntime && g_lastInvertedFinalTp > 0.0
+-         ? g_lastInvertedFinalTp
+-         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentFinalTpForLeg(direction, finalLeg));
+-      executionShape = "single_order";
+-   }
++   int finalLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg()
++      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : ClampTpLeg(g_selectedTpLegRuntime));
++   double finalTp = g_invertTradeModeRuntime && g_lastInvertedFinalTp > 0.0
++      ? g_lastInvertedFinalTp
++      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentFinalTpForLeg(direction, finalLeg));
+    finalTp = NormalizeDouble(finalTp, _Digits);
+@@ -780,7 +780,7 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
+       + "|" + NasProDir(direction) + "|L" + IntegerToString(finalLeg);
+-   string source = NasProBridgeSource() + "|shape=" + executionShape;
++   string source = NasProBridgeSource() + "|shape=single_order";
+    return NasProBridgeWriteEvent(eventId, direction, g_lastEntry, g_lastSl, finalTp, source,
+       half, halfLabel, signalTime, MathMax(0.0, g_accountRiskPerTradePctRuntime));
+ }
+diff --git a/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5 b/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
+--- a/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
++++ b/IndicatorCodeExamples/NasUltimate_SATS_PartialNoBE_EA.mq5
+@@ -2151,9 +2151,24 @@ void ProcessSignalBar()
+    NasProAuditWrite("signal_ready", "nas|" + IntegerToString((long)rates[i].time), direction,
+       g_lastEntry, g_lastSl, bridgeFinalTp, 0.0,
+       "window=OPEN geometry=" + RiskGeometryModeText() + " pip_sl=" + DoubleToString(g_pipSlDistanceRuntime, 2));
+-   bool bridgePublished = NasProPublishCurrentSignal(rates[i].time, direction);
++   bool bridgeShapeSupported = !g_nasBridgeEnabledRuntime || UseSingleOrderTpMode();
++   bool bridgePublished = bridgeShapeSupported && NasProPublishCurrentSignal(rates[i].time, direction);
++   if(!bridgeShapeSupported)
++      NasProAuditWrite("bridge_shape_block", "nas|" + IntegerToString((long)rates[i].time), direction,
++         g_lastEntry, g_lastSl, bridgeFinalTp, 0.0, "reason=unsupported_legacy_multi_order native_may_continue=1");
+    if(g_nasBridgeOnlyRuntime && !g_nasNativeWithBridgeOnlyRuntime)
+    {
++      if(!bridgeShapeSupported)
++      {
++         g_lastSignalTime = rates[i].time;
++         g_lastSignalKeyDirection = direction;
++         g_lastExecutionStatus = "BLOCKED";
++         g_lastExecutionBlockReason = "bridge_requires_single_order_mode";
++         MarkDirectionProcessedOnBar(rates[i].time, direction);
++         RequestHistoryRefresh();
++         return;
++      }
+       if(!bridgePublished)
+       {
+@@ -2987,6 +3002,8 @@ void DrawRecentSignalHistory()
+    int openCount = 0;
+    double totalR = 0.0;
++   double wonR = 0.0;
++   double lostR = 0.0;
+    int maxDraw = 250;
+@@ -3090,8 +3107,16 @@ void DrawRecentSignalHistory()
+       if(closed)
+       {
+-         if(pnlR > 0.0001) wins++;
+-         else if(pnlR < -0.0001) losses++;
++         if(pnlR > 0.0001)
++         {
++            wins++;
++            wonR += pnlR;
++         }
++         else if(pnlR < -0.0001)
++         {
++            losses++;
++            lostR += MathAbs(pnlR);
++         }
+          else openCount++;
+@@ -3140,6 +3165,8 @@ void DrawRecentSignalHistory()
+ 
+    double wr = (wins + losses) > 0 ? (double)wins * 100.0 / (double)(wins + losses) : 0.0;
++   double profitFactor = lostR > 0.0 ? wonR / lostR : (wonR > 0.0 ? 99.0 : 0.0);
++   double avgR = drawn > 0 ? totalR / (double)drawn : 0.0;
+    g_historyAuditSummary = IntegerToString(g_auditWeeksRuntime) + "W Audit | "
+@@ -3164,9 +3191,12 @@ void DrawRecentSignalHistory()
+                            + " x" + DoubleToString(InpScalpAtrMultiplier, 2)
+                            + " | floor ATRx" + DoubleToString(InpScalpMinAtrMultiplier, 2)
+                            + " range" + DoubleToString(InpScalpMinSignalRangePct, 0) + "%"
+                            + " | cap " + DoubleToString(InpScalpMaxOriginalRiskPct, 0) + "%";
+-   g_historyAuditRows[3] = "TOTAL PnL | " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2) + "R";
++   g_historyAuditRows[3] = "R totals | Net " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2)
++                           + "R | Won +" + DoubleToString(wonR, 2) + "R | Lost -" + DoubleToString(lostR, 2) + "R";
+    g_historyAuditRows[4] = "Closed stats | W " + IntegerToString(wins) + " / L " + IntegerToString(losses)
+-                           + " / Open " + IntegerToString(openCount) + " | WR " + DoubleToString(wr, 1) + "%";
++                           + " / Open " + IntegerToString(openCount) + " | WR " + DoubleToString(wr, 1)
++                           + "% | PF " + DoubleToString(profitFactor, 2) + " | Avg " + DoubleToString(avgR, 3) + "R/trade";
+    g_historyAuditRows[5] = string(g_historyUseAcceptedFilterRuntime ? "DUP OFF | " : "DUP ON | ") + "Exec accepted " + IntegerToString(acceptedTotal) + " / raw " + IntegerToString(rawSignals) + " | window_skip " + IntegerToString(windowSkipped) + " | same_dir_skip " + IntegerToString(sameDirectionSkipped);
+@@ -3174,6 +3204,10 @@ void DrawRecentSignalHistory()
+          " losses=", losses,
+          " open=", openCount,
+          " pnl_r=", DoubleToString(totalR, 2),
++         " won_r=", DoubleToString(wonR, 2),
++         " lost_r=", DoubleToString(lostR, 2),
++         " profit_factor=", DoubleToString(profitFactor, 2),
++         " avg_r=", DoubleToString(avgR, 3),
+          " cutoff=", TimeToString(cutoff, TIME_DATE|TIME_MINUTES),

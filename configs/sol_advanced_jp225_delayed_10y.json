@@ -1,0 +1,62 @@
+﻿{
+    "jobs":  [
+                 {
+                     "job_id":  "sol_adv_v7_delay_source_b1_10y_rows",
+                     "ea":  "LiqNarrativeSol_Advanced.ex5",
+                     "ea_kind":  "liq_sol_advanced",
+                     "preset":  "presets/sol_advanced_jp225_base.set",
+                     "symbol":  "JP225m",
+                     "timeframe":  "H1",
+                     "from_date":  "2016-07-18",
+                     "to_date":  "2026-07-18",
+                     "terminal_exe":  "C:/tmp/sol_jp225_worker_20260718/terminal64.exe",
+                     "terminal_data_dir":  "C:/tmp/sol_jp225_worker_20260718",
+                     "portable":  true,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "leverage":  "1:100",
+                     "model":  1,
+                     "execution_mode":  0,
+                     "timeout_sec":  1200,
+                     "preset_overrides":  {
+                                              "InpValidationJobId":  "sol_adv_v7_delay_source_b1_10y_rows",
+                                              "InpSolAdvancedRouterMode":  "7",
+                                              "InpSolConfirmationBars":  "1",
+                                              "InpSolConfirmationMinAtr":  "0.10",
+                                              "InpValidationInternalAudit":  "true",
+                                              "InpValidationInternalAuditWeeks":  "520",
+                                              "InpValidationInternalAuditRows":  "true",
+                                              "InpSolConfirmationTf":  "15"
+                                          }
+                 },
+                 {
+                     "job_id":  "sol_adv_v7_delay_flip_b1_10y_rows",
+                     "ea":  "LiqNarrativeSol_Advanced.ex5",
+                     "ea_kind":  "liq_sol_advanced",
+                     "preset":  "presets/sol_advanced_jp225_base.set",
+                     "symbol":  "JP225m",
+                     "timeframe":  "H1",
+                     "from_date":  "2016-07-18",
+                     "to_date":  "2026-07-18",
+                     "terminal_exe":  "C:/tmp/sol_jp225_worker_20260718/terminal64.exe",
+                     "terminal_data_dir":  "C:/tmp/sol_jp225_worker_20260718",
+                     "portable":  true,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "leverage":  "1:100",
+                     "model":  1,
+                     "execution_mode":  0,
+                     "timeout_sec":  1200,
+                     "preset_overrides":  {
+                                              "InpValidationJobId":  "sol_adv_v7_delay_flip_b1_10y_rows",
+                                              "InpSolAdvancedRouterMode":  "8",
+                                              "InpSolConfirmationBars":  "1",
+                                              "InpSolConfirmationMinAtr":  "0.10",
+                                              "InpValidationInternalAudit":  "true",
+                                              "InpValidationInternalAuditWeeks":  "520",
+                                              "InpValidationInternalAuditRows":  "true",
+                                              "InpSolConfirmationTf":  "15"
+                                          }
+                 }
+             ]
+}

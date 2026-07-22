@@ -1,0 +1,15 @@
+InpUseTradingTimeWindow=false
+InpTradeLatestSignalOnAttach=false
+InpDrawLastSignalsOnStart=false
+InpDrawTradeLevels=false
+InpDrawExecutionArrows=false
+InpShowDashboard=false
+InpHistoryBars=3000
+InpSignalCalcBars=3000
+InpSpreadGovernorEnabled=false
+InpAdvancedLotEngineEnabled=false
+InpAccountRiskAuditEnabled=false
+InpSignalParityAudit=false
+InpAuditNoSignalEvaluations=false
+InpTotalLot=0.03
+InpFixedLot=0.03

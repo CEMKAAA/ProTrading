@@ -7,9 +7,10 @@
 #property version "1.11"
 
 #include <Trade/Trade.mqh>
+#include "LiqNarrativeSol_RegimeV3.mqh"
 
-#define LN_BUILD "2026-07-18.sol-advanced-research-v2-causal"
-#define LN_PREFIX "LIQNARRSOLA_"
+#define LN_BUILD "2026-07-22.sol-advanced-regime-filter-5680-exit-only"
+#define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
 //  ENUMS
@@ -54,6 +55,7 @@ enum ERL_TARGET_MODEL
    ERL_TARGET_OPPOSITE_SIGNAL = 3
 };
 
+
 enum BT_FILL_MODE
 {
    BT_FILL_SIGNAL_CLOSE = 0,
@@ -68,37 +70,30 @@ enum BT_SAME_BAR_POLICY
    BT_SAMEBAR_TP_FIRST = 2,
    BT_SAMEBAR_SL_FIRST = 3
 };
-enum SOL_ADV_ROUTER_MODE
-{
-   SOL_ADV_ROUTER_V14 = 0,
-   SOL_ADV_ROUTER_REVERSAL = 1,
-   SOL_ADV_ROUTER_CONTINUATION = 2,
-   SOL_ADV_ROUTER_MODEL = 3
-};
 
 //=====================================================================
 //  INPUTS
 //=====================================================================
 input bool            InpEaEnabled              = true;
-input long            InpMagic                  = 31061504;
+input long            InpMagic                  = 31061503;
 input int             InpDeviationPoints        = 30;
 input bool            InpCloseOnReverse         = true;
 input bool            InpBlockSameDirection     = true;
-input bool            InpAllowDuplicateEntriesDefault = false;
+input bool            InpAllowDuplicateEntriesDefault = true;
 
-input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H4;
-input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_M30;
+input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H2;
+input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_H1;
 input int             InpDefaultSwingLookback   = 5;
 input ERL_RR_MODE     InpDefaultTarget          = ERL_RR_TP4;
 input ERL_HC_MODE     InpDefaultHalfBe          = ERL_HC_OFF;
 input bool            InpDefaultWeeklyBias      = false;
-input ERL_ENTRY_MODEL InpDefaultEntryModel      = ERL_ENTRY_PRO_SWEEP_RECLAIM_FVG;
+input ERL_ENTRY_MODEL InpDefaultEntryModel      = ERL_ENTRY_LEGACY_HTF_FVG_TAP;
 input ERL_STOP_MODEL  InpDefaultStopModel       = ERL_STOP_FIRST_FVG_CANDLE;
-input ERL_TARGET_MODEL InpDefaultTargetModel    = ERL_TARGET_NEXT_EXTERNAL;
-input bool            InpDefaultRequireIrlTouch = true;
-input bool            InpDefaultRequireEntrySweep = true;
-input bool            InpDefaultRequireDisplacementFvg = true;
-input bool            InpDefaultRequireAsiaLiquidityDraw = true;
+input ERL_TARGET_MODEL InpDefaultTargetModel    = ERL_TARGET_FIXED_R;
+input bool            InpDefaultRequireIrlTouch = false;
+input bool            InpDefaultRequireEntrySweep = false;
+input bool            InpDefaultRequireDisplacementFvg = false;
+input bool            InpDefaultRequireAsiaLiquidityDraw = false;
 input bool            InpDefaultUseAsiaLiquidityTarget = true;
 input bool            InpDefaultRequireSmt = false;
 
@@ -114,20 +109,20 @@ input int             InpAtrPeriod              = 14;
 input double          InpMinFvgAtrPct           = 8.0;
 input double          InpSlBufferAtrPct         = 10.0;
 input double          InpSlDistancePct          = 100.0;
-input bool            InpPipSlModeDefault       = false;
-input double          InpPipSlPips              = 100.0;
+input bool            InpPipSlModeDefault       = true;
+input double          InpPipSlPips              = 4000.0;
 input double          InpSmallStopThresholdPts  = 30.0;
 input ERL_RR_MODE     InpSmallStopTarget        = ERL_RR_TP4;
 input ERL_RR_MODE     InpLargeStopTarget        = ERL_RR_TP2;
 input int             InpAsiaStartHourGmt       = 0;
 input int             InpAsiaEndHourGmt         = 6;
 input bool            InpSolSessionRouterEnabled = true;
-input SOL_ADV_ROUTER_MODE InpSolAdvancedRouterMode = SOL_ADV_ROUTER_V14;
 input int             InpSolBrokerUtcOffsetMin  = 0;
 input int             InpSolContinuationStartGmt = 14;
 input int             InpSolContinuationEndGmt  = 23;
 input double          InpSolContinuationQualityLow = 2.17;
 input double          InpSolContinuationQualityHigh = 3.14;
+input bool            InpSolRegimeFilterDefault = false;
 input string          InpSmtSymbol              = "US500m";
 input int             InpSmtLookbackBars        = 8;
 input int             InpHistoricalDays         = 14;
@@ -140,8 +135,8 @@ input bool            InpFileBridgeEnabled      = false;
 input bool            InpFileBridgeOnlyMode     = false;
 input bool            InpNativeTradeWithBridgeOnlyDefault = false; // ML shadow mode: when cTrader bridge-only is enabled, also open/manage native MT5 trades.
 input bool            InpFileBridgeUseCommonFiles = true;
-input string          InpFileBridgeLatestFile   = "LiqNarrativeSolAdvancedBridge_Latest.csv";
-input string          InpFileBridgeAuditPrefix  = "LiqNarrativeSolAdvancedBridge_Audit_";
+input string          InpFileBridgeLatestFile   = "LiqNarrativeSolBridge_Latest.csv";
+input string          InpFileBridgeAuditPrefix  = "LiqNarrativeSolBridge_Audit_";
 
 input bool            InpShowDashboard          = true;
 input int             InpDashboardX             = 10;
@@ -204,40 +199,6 @@ struct FvgZone
    double   firstHigh;
    double   quality;
    datetime invalidatedTime;
-};
-
-struct SolAdvancedFeatures
-{
-   bool     valid;
-   int      sourceDir;
-   int      hourGmt;
-   int      weekdayGmt;
-   double   quality;
-   double   rangeAtr;
-   double   bodyDirAtr;
-   double   closeDir;
-   double   wickAgainst;
-   double   wickWith;
-   double   momentum3Atr;
-   double   momentum6Atr;
-   double   trend8Atr;
-   double   trend21Atr;
-   double   atrRegime;
-   double   fvgAtr;
-   double   riskAtr;
-   double   rangePos24;
-   double   rangePos48;
-   double   rangePos120;
-   double   prevDaySweepAtr;
-   double   prevDayReclaimAtr;
-   double   currentDayPos;
-   double   htfMomentum3Atr;
-   double   htfMomentum8Atr;
-   double   htfRangePos12;
-   double   htfRangePos36;
-   double   htfSweepDepthAtr;
-   double   htfReclaimAtr;
-   double   setupAgeHours;
 };
 
 struct ErlSignal
@@ -355,6 +316,9 @@ bool             g_requireDisplacementFvg = true;
 bool             g_requireAsiaLiquidityDraw = true;
 bool             g_useAsiaLiquidityTarget = true;
 bool             g_requireSmt = false;
+bool             g_solRegimeFilterEnabled = false;
+int              g_solRegimeFilterRejected = 0;
+int              g_solRegimeFilterUnclassified = 0;
 bool             g_auditRuntime = false;
 bool             g_ftmoMode = false;
 bool             g_riskLotOnlyMode = false;
@@ -369,6 +333,7 @@ double           g_histSignalR[];
 bool             g_histSignalClosed[];
 bool             g_histSignalWon[];
 bool             g_histSignalValid[];
+string           g_histSignalInvalidReason[];
 SimCacheEntry    g_simCache[];
 MqlRates         g_simRates[];
 ENUM_TIMEFRAMES  g_simRatesTf = PERIOD_CURRENT;
@@ -403,6 +368,8 @@ ulong            g_lastHistoryTicket = 0;
 double           g_equityPeak = 0.0;
 datetime         g_lastLiveScanBar = 0;
 datetime         g_lastLiveScanAttempt = 0;
+datetime         g_lastHistLifecycleRefresh = 0;
+string           g_lastSimInvalidReason = "";
 
 BtCombo          g_btCombos[];
 bool             g_btRunning = false;
@@ -855,200 +822,6 @@ double AtrFromRates(const MqlRates &rates[], int index, int period)
    return count > 0 ? sum / count : 0.0;
 }
 
-int SolFeatureBarIndex(const MqlRates &rates[], datetime barTime)
-{
-   for(int i = 1; i < ArraySize(rates); ++i)
-      if(rates[i].time == barTime) return i;
-   return -1;
-}
-
-double SolMeanClose(const MqlRates &rates[], int index, int period)
-{
-   if(index < 1 || period <= 0 || index + period > ArraySize(rates)) return 0.0;
-   double sum = 0.0;
-   for(int i = index; i < index + period; ++i) sum += rates[i].close;
-   return sum / period;
-}
-
-double SolRangePosition(const MqlRates &rates[], int index, int period)
-{
-   if(index < 1 || period <= 0 || index + period > ArraySize(rates)) return 0.5;
-   double high = rates[index].high;
-   double low = rates[index].low;
-   for(int i = index + 1; i < index + period; ++i)
-   {
-      high = MathMax(high, rates[i].high);
-      low = MathMin(low, rates[i].low);
-   }
-   double span = high - low;
-   if(span <= TickSize()) return 0.5;
-   return MathMax(0.0, MathMin(1.0, (rates[index].close - low) / span));
-}
-
-int SolClosedBarIndexAt(const MqlRates &rates[], ENUM_TIMEFRAMES tf, datetime availableTime)
-{
-   int sec = PeriodSeconds(tf);
-   if(sec <= 0) sec = 60;
-   for(int i = 1; i < ArraySize(rates); ++i)
-      if(rates[i].time + sec <= availableTime) return i;
-   return -1;
-}
-
-int SolGmtDayKey(datetime brokerTime)
-{
-   MqlDateTime dt;
-   TimeToStruct(brokerTime - InpSolBrokerUtcOffsetMin * 60, dt);
-   return dt.year * 1000 + dt.day_of_year;
-}
-
-bool SolDailyContext(const MqlRates &rates[], int index, int sourceDir, double atr,
-   double &sweepAtr, double &reclaimAtr, double &currentDayPos)
-{
-   sweepAtr = 0.0;
-   reclaimAtr = 0.0;
-   currentDayPos = 0.5;
-   if(index < 1 || atr <= TickSize()) return false;
-
-   int currentKey = SolGmtDayKey(rates[index].time);
-   double currentHigh = rates[index].high;
-   double currentLow = rates[index].low;
-   int i = index + 1;
-   for(; i < ArraySize(rates); ++i)
-   {
-      if(SolGmtDayKey(rates[i].time) != currentKey) break;
-      currentHigh = MathMax(currentHigh, rates[i].high);
-      currentLow = MathMin(currentLow, rates[i].low);
-   }
-   double currentSpan = currentHigh - currentLow;
-   if(currentSpan > TickSize())
-      currentDayPos = MathMax(0.0, MathMin(1.0, (rates[index].close - currentLow) / currentSpan));
-
-   if(i >= ArraySize(rates)) return false;
-   int previousKey = SolGmtDayKey(rates[i].time);
-   double previousHigh = rates[i].high;
-   double previousLow = rates[i].low;
-   for(; i < ArraySize(rates) && SolGmtDayKey(rates[i].time) == previousKey; ++i)
-   {
-      previousHigh = MathMax(previousHigh, rates[i].high);
-      previousLow = MathMin(previousLow, rates[i].low);
-   }
-
-   MqlRates bar = rates[index];
-   if(sourceDir > 0)
-   {
-      sweepAtr = MathMax(0.0, previousLow - bar.low) / atr;
-      reclaimAtr = (bar.close - previousLow) / atr;
-   }
-   else
-   {
-      sweepAtr = MathMax(0.0, bar.high - previousHigh) / atr;
-      reclaimAtr = (previousHigh - bar.close) / atr;
-   }
-   return true;
-}
-
-bool SolBuildAdvancedFeatures(const MqlRates &rates[], const ErlSignal &sig, int sourceDir,
-   double quality, const MqlRates &htfRates[], ENUM_TIMEFRAMES htf, int reclaimIndex,
-   double sweepLevel, SolAdvancedFeatures &f)
-{
-   ZeroMemory(f);
-   int index = SolFeatureBarIndex(rates, sig.entryTime);
-   if(index < 1 || index + 55 >= ArraySize(rates)) return false;
-   double atr14 = AtrFromRates(rates, index, 14);
-   double atr50 = AtrFromRates(rates, index, 50);
-   if(atr14 <= TickSize()) return false;
-
-   MqlRates bar = rates[index];
-   double range = MathMax(TickSize(), bar.high - bar.low);
-   double upperWick = MathMax(0.0, bar.high - MathMax(bar.open, bar.close));
-   double lowerWick = MathMax(0.0, MathMin(bar.open, bar.close) - bar.low);
-   double sma8 = SolMeanClose(rates, index, 8);
-   double sma21 = SolMeanClose(rates, index, 21);
-   datetime gmtTime = sig.availableTime - InpSolBrokerUtcOffsetMin * 60;
-   MqlDateTime dt;
-   TimeToStruct(gmtTime, dt);
-
-   f.valid = true;
-   f.sourceDir = sourceDir;
-   f.hourGmt = dt.hour;
-   f.weekdayGmt = dt.day_of_week;
-   f.quality = quality;
-   f.rangeAtr = range / atr14;
-   f.bodyDirAtr = sourceDir * (bar.close - bar.open) / atr14;
-   f.closeDir = sourceDir > 0 ? (bar.close - bar.low) / range : (bar.high - bar.close) / range;
-   f.wickAgainst = (sourceDir > 0 ? lowerWick : upperWick) / range;
-   f.wickWith = (sourceDir > 0 ? upperWick : lowerWick) / range;
-   f.momentum3Atr = sourceDir * (bar.close - rates[index + 3].close) / atr14;
-   f.momentum6Atr = sourceDir * (bar.close - rates[index + 6].close) / atr14;
-   f.trend8Atr = sourceDir * (bar.close - sma8) / atr14;
-   f.trend21Atr = sourceDir * (bar.close - sma21) / atr14;
-   f.atrRegime = atr50 > TickSize() ? atr14 / atr50 : 1.0;
-   f.fvgAtr = MathMax(0.0, sig.fvgHigh - sig.fvgLow) / atr14;
-   f.riskAtr = MathAbs(sig.entry - sig.sl) / atr14;
-   f.rangePos24 = SolRangePosition(rates, index, 24);
-   f.rangePos48 = SolRangePosition(rates, index, 48);
-   f.rangePos120 = SolRangePosition(rates, index, 120);
-   SolDailyContext(rates, index, sourceDir, atr14,
-      f.prevDaySweepAtr, f.prevDayReclaimAtr, f.currentDayPos);
-
-   int htfIndex = SolClosedBarIndexAt(htfRates, htf, sig.availableTime);
-   if(htfIndex >= 1 && htfIndex + 40 < ArraySize(htfRates))
-   {
-      double htfAtr = AtrFromRates(htfRates, htfIndex, 14);
-      if(htfAtr > TickSize())
-      {
-         f.htfMomentum3Atr = sourceDir * (htfRates[htfIndex].close - htfRates[htfIndex + 3].close) / htfAtr;
-         f.htfMomentum8Atr = sourceDir * (htfRates[htfIndex].close - htfRates[htfIndex + 8].close) / htfAtr;
-         f.htfRangePos12 = SolRangePosition(htfRates, htfIndex, 12);
-         f.htfRangePos36 = SolRangePosition(htfRates, htfIndex, 36);
-         if(reclaimIndex >= 1 && reclaimIndex < ArraySize(htfRates))
-         {
-            MqlRates reclaimBar = htfRates[reclaimIndex];
-            f.htfSweepDepthAtr = sourceDir > 0
-               ? MathMax(0.0, sweepLevel - reclaimBar.low) / htfAtr
-               : MathMax(0.0, reclaimBar.high - sweepLevel) / htfAtr;
-            f.htfReclaimAtr = sourceDir * (reclaimBar.close - sweepLevel) / htfAtr;
-            f.setupAgeHours = MathMax(0.0, (double)(sig.availableTime - reclaimBar.time) / 3600.0);
-         }
-      }
-   }
-   return true;
-}
-
-string SolAdvancedFeatureText(const SolAdvancedFeatures &f)
-{
-   if(!f.valid) return "|adv_valid=0";
-   return "|adv_valid=1"
-      + "|adv_src=" + IntegerToString(f.sourceDir)
-      + "|adv_h=" + IntegerToString(f.hourGmt)
-      + "|adv_dw=" + IntegerToString(f.weekdayGmt)
-      + "|adv_q=" + DoubleToString(f.quality, 5)
-      + "|adv_rng=" + DoubleToString(f.rangeAtr, 5)
-      + "|adv_body=" + DoubleToString(f.bodyDirAtr, 5)
-      + "|adv_cloc=" + DoubleToString(f.closeDir, 5)
-      + "|adv_wa=" + DoubleToString(f.wickAgainst, 5)
-      + "|adv_ww=" + DoubleToString(f.wickWith, 5)
-      + "|adv_m3=" + DoubleToString(f.momentum3Atr, 5)
-      + "|adv_m6=" + DoubleToString(f.momentum6Atr, 5)
-      + "|adv_t8=" + DoubleToString(f.trend8Atr, 5)
-      + "|adv_t21=" + DoubleToString(f.trend21Atr, 5)
-      + "|adv_atrr=" + DoubleToString(f.atrRegime, 5)
-      + "|adv_fvg=" + DoubleToString(f.fvgAtr, 5)
-      + "|adv_risk=" + DoubleToString(f.riskAtr, 5)
-      + "|adv_rp24=" + DoubleToString(f.rangePos24, 5)
-      + "|adv_rp48=" + DoubleToString(f.rangePos48, 5)
-      + "|adv_rp120=" + DoubleToString(f.rangePos120, 5)
-      + "|adv_pds=" + DoubleToString(f.prevDaySweepAtr, 5)
-      + "|adv_pdr=" + DoubleToString(f.prevDayReclaimAtr, 5)
-      + "|adv_cdp=" + DoubleToString(f.currentDayPos, 5)
-      + "|adv_hm3=" + DoubleToString(f.htfMomentum3Atr, 5)
-      + "|adv_hm8=" + DoubleToString(f.htfMomentum8Atr, 5)
-      + "|adv_hr12=" + DoubleToString(f.htfRangePos12, 5)
-      + "|adv_hr36=" + DoubleToString(f.htfRangePos36, 5)
-      + "|adv_hsd=" + DoubleToString(f.htfSweepDepthAtr, 5)
-      + "|adv_hrc=" + DoubleToString(f.htfReclaimAtr, 5)
-      + "|adv_age=" + DoubleToString(f.setupAgeHours, 5);
-}
 bool PreviousWeekBiasAllowsAt(int dir, datetime referenceTime)
 {
    MqlRates week[];
@@ -1104,11 +877,8 @@ bool GetAsiaRangeFromRates(const MqlRates &rates[], datetime referenceTime, doub
 
 string SolModelLabel()
 {
-   if(!InpSolSessionRouterEnabled) return "ADV-ROUTER-OFF";
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_REVERSAL) return "ADV-REVERSAL";
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_CONTINUATION) return "ADV-CONTINUATION";
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_MODEL) return "ADV-MODEL-FALLBACK-V14";
-   return "ADV-V14-" + IntegerToString(InpSolContinuationStartGmt) + "-" + IntegerToString(InpSolContinuationEndGmt)
+   if(!InpSolSessionRouterEnabled) return "ROUTER-OFF";
+   return "ROUTER-" + IntegerToString(InpSolContinuationStartGmt) + "-" + IntegerToString(InpSolContinuationEndGmt)
       + "-Q" + DoubleToString(InpSolContinuationQualityLow, 2) + "-" + DoubleToString(InpSolContinuationQualityHigh, 2)
       + "-TZ" + IntegerToString(InpSolBrokerUtcOffsetMin);
 }
@@ -1574,8 +1344,9 @@ void SolRebuildSignalDirection(ErlSignal &sig, int newDir)
    sig.tp6 = NormTradePrice(sig.entry + newDir * sig.risk * 3.0);
    sig.reason += "|sol_direction_flip";
 }
-bool SolV14RouterFlips(datetime brokerTime, double displacementQuality)
+bool SolSessionRouterFlips(datetime brokerTime, double displacementQuality)
 {
+   if(!InpSolSessionRouterEnabled) return false;
    datetime gmtTime = brokerTime - InpSolBrokerUtcOffsetMin * 60;
    MqlDateTime dt;
    TimeToStruct(gmtTime, dt);
@@ -1593,19 +1364,113 @@ bool SolV14RouterFlips(datetime brokerTime, double displacementQuality)
    return displacementQuality > qualityLow && displacementQuality <= qualityHigh;
 }
 
-bool SolAdvancedModelFlips(const SolAdvancedFeatures &f, datetime brokerTime, double displacementQuality)
+
+
+
+
+
+
+
+bool SolRegimeFilterRejects(const RegimeV3Snapshot &state, bool continuationRoute, string &rule)
 {
-   // Research-v1 fallback. Replaced only after walk-forward validation.
-   return SolV14RouterFlips(brokerTime, displacementQuality);
+   rule = "";
+   bool reversalRoute = !continuationRoute;
+
+   if(state.core == "RANGE_LOW_VOL" && state.ageBucket == "MATURE"
+      && state.transitionStatus == "STABLE" && continuationRoute)
+      rule = "RF01_RLV_MATURE_STABLE_CONT";
+   else if(state.core == "TREND_LOW_VOL" && state.h1h2Phase == "NEUTRAL_ROTATION"
+      && state.macroDirection == "UP")
+      rule = "RF02_TLV_ROTATION_UP";
+   else if(state.h1h2Phase == "ALIGNED_IMPULSE" && state.macroDirection == "DOWN"
+      && continuationRoute)
+      rule = "RF03_IMPULSE_DOWN_CONT";
+   else if(state.core == "RANGE_HIGH_VOL" && state.transitionStatus == "DEVELOPING")
+      rule = "RF04_RHV_DEVELOPING";
+   else if(state.core == "RANGE_LOW_VOL" && state.h1h2Phase == "DEEP_REBOUND"
+      && state.volatilityDepth == "NORMAL")
+      rule = "RF05_RLV_DEEP_REBOUND_NORMAL";
+   else if(state.core == "RANGE_LOW_VOL" && state.h1h2Phase == "SHALLOW_REBOUND")
+      rule = "RF06_RLV_SHALLOW_REBOUND";
+   else if(state.h1h2Phase == "ALIGNED" && state.ageBucket == "FRESH"
+      && state.transitionStatus == "STABLE")
+      rule = "RF07_ALIGNED_FRESH_STABLE";
+   else if(state.h1h2Phase == "SHALLOW_PULLBACK" && state.ageBucket == "MATURE"
+      && state.transitionStatus == "STABLE")
+      rule = "RF08_SHALLOW_PULLBACK_MATURE";
+   else if(state.core == "RANGE_HIGH_VOL" && state.h1h2Phase == "ALIGNED_IMPULSE")
+      rule = "RF09_RHV_ALIGNED_IMPULSE";
+   else if(state.core == "RANGE_LOW_VOL" && state.volatilityDepth == "COMPRESSED"
+      && state.macroDirection == "DOWN" && reversalRoute)
+      rule = "RF10_RLV_COMPRESSED_DOWN_REV";
+   else if(state.h1h2Phase == "ALIGNED_IMPULSE" && state.volatilityDepth == "NORMAL"
+      && reversalRoute)
+      rule = "RF11_IMPULSE_NORMAL_REV";
+   else if(state.h1h2Phase == "SHALLOW_PULLBACK" && state.volatilityDepth == "NORMAL")
+      rule = "RF12_SHALLOW_PULLBACK_NORMAL";
+
+   return rule != "";
 }
 
-bool SolSessionRouterFlips(datetime brokerTime, double displacementQuality, const SolAdvancedFeatures &f)
+int ApplySolRegimeFilter(ErlSignal &signals[])
 {
-   if(!InpSolSessionRouterEnabled) return false;
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_REVERSAL) return false;
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_CONTINUATION) return true;
-   if(InpSolAdvancedRouterMode == SOL_ADV_ROUTER_MODEL) return SolAdvancedModelFlips(f, brokerTime, displacementQuality);
-   return SolV14RouterFlips(brokerTime, displacementQuality);
+   g_solRegimeFilterRejected = 0;
+   g_solRegimeFilterUnclassified = 0;
+   if(!g_solRegimeFilterEnabled || ArraySize(signals) <= 0) return ArraySize(signals);
+
+   // Fail open when regime history is unavailable. The status counters expose
+   // this explicitly; execution must never pretend an unknown state was tested.
+   if(ArraySize(g_regimeV3Timeline) <= 0 && !RegimeV3EnsureTimeline(true))
+   {
+      g_solRegimeFilterUnclassified = ArraySize(signals);
+      return ArraySize(signals);
+   }
+
+   ErlSignal filtered[];
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      RegimeV3Snapshot state;
+      if(!RegimeV3SnapshotAt(signals[i].availableTime, state))
+      {
+         int keepUnknown = ArraySize(filtered);
+         ArrayResize(filtered, keepUnknown + 1);
+         filtered[keepUnknown] = signals[i];
+         g_solRegimeFilterUnclassified++;
+         continue;
+      }
+
+      bool continuationRoute = StringFind(signals[i].reason, "|sol_session_continuation") >= 0;
+      string rule = "";
+      if(SolRegimeFilterRejects(state, continuationRoute, rule))
+      {
+         g_solRegimeFilterRejected++;
+         continue;
+      }
+
+      int keep = ArraySize(filtered);
+      ArrayResize(filtered, keep + 1);
+      filtered[keep] = signals[i];
+   }
+
+   ArrayFree(signals);
+   ArrayResize(signals, ArraySize(filtered));
+   for(int i = 0; i < ArraySize(filtered); ++i) signals[i] = filtered[i];
+   return ArraySize(signals);
+}
+
+
+bool SolRegimeFilterDecision(const ErlSignal &sig, bool &rejected, string &rule)
+{
+   rejected = false;
+   rule = "";
+   if(!g_solRegimeFilterEnabled) return true;
+   if(ArraySize(g_regimeV3Timeline) <= 0 && !RegimeV3EnsureTimeline(true)) return false;
+
+   RegimeV3Snapshot state;
+   if(!RegimeV3SnapshotAt(sig.availableTime, state)) return false;
+   bool continuationRoute = StringFind(sig.reason, "|sol_session_continuation") >= 0;
+   rejected = SolRegimeFilterRejects(state, continuationRoute, rule);
+   return true;
 }
 bool FindEntrySweepReclaim(const MqlRates &entryRates[], int dir, datetime afterTime, int &reclaimIndex, double &sweepLevel)
 {
@@ -1821,7 +1686,7 @@ bool ProEntrySweepReclaimFvg(const MqlRates &entryRates[], const FvgZone &htfIrl
 
 string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback, bool bias)
 {
-   return "SOLA|" + _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
+   return "SOL|" + _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
       + "|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel)
       + "|" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + "|" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
@@ -1865,7 +1730,7 @@ string SignalId(const ErlSignal &sig, ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entry
    bool requireIrlTouch, bool requireEntrySweep, bool requireDisplacementFvg,
    bool requireAsiaLiquidityDraw, bool useAsiaLiquidityTarget, bool requireSmt)
 {
-   return "SOLA|" + _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
+   return "SOL|" + _Symbol + "|" + TfLabel(htf) + "|" + TfLabel(entryTf) + "|SW" + IntegerToString(swingLookback)
       + "|" + EntryModelLabel(entryModel) + "|" + StopModelLabel(stopModel) + "|" + TargetModelLabel(targetModel)
       + "|" + StrictnessLabel(requireIrlTouch, requireEntrySweep, requireDisplacementFvg)
       + "|" + NarrativeLabel(requireAsiaLiquidityDraw, useAsiaLiquidityTarget, requireSmt)
@@ -1912,12 +1777,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
       else
          entryOk = EntryTapFromFvg(entryRates, zone, dir, stopModel, sig);
       if(!entryOk) continue;
-      int sourceDir = sig.dir;
-      SolAdvancedFeatures advFeatures;
-      SolBuildAdvancedFeatures(entryRates, sig, sourceDir, zone.quality,
-         htfRates, htf, reclaimIndex, swings[s].price, advFeatures);
-      sig.reason += SolAdvancedFeatureText(advFeatures);
-      bool solRouterFlip = SolSessionRouterFlips(sig.availableTime, zone.quality, advFeatures);
+      bool solRouterFlip = SolSessionRouterFlips(sig.availableTime, zone.quality);
       if(solRouterFlip)
       {
          sig.reason += "|sol_session_continuation";
@@ -1948,8 +1808,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
       if(useAsiaLiquidityTarget) ApplyAsiaLiquidityTarget(sig, entryRates);
       sig.id = SignalId(sig, htf, entryTf, swingLookback, useBias, entryModel, stopModel, targetModel,
          requireIrlTouch, requireEntrySweep, requireDisplacementFvg,
-         requireAsiaLiquidityDraw, useAsiaLiquidityTarget, requireSmt)
-         + "|SRC" + DirLabel(sourceDir);
+         requireAsiaLiquidityDraw, useAsiaLiquidityTarget, requireSmt);
       bool duplicate = false;
       for(int k = 0; k < ArraySize(signals); ++k)
       {
@@ -2040,8 +1899,14 @@ void SanitizeHalfMode()
 //=====================================================================
 int FindEntryBarIndex(const MqlRates &rates[], datetime t)
 {
-   for(int i = 0; i < ArraySize(rates); ++i)
+   int total = ArraySize(rates);
+   for(int i = 0; i < total; ++i)
       if(rates[i].time == t) return i;
+
+   // Broker timestamps can differ by a few seconds. Resolve the containing
+   // closed bar without ever moving the signal into a future bar.
+   for(int i = 1; i < total; ++i)
+      if(rates[i].time <= t && t < rates[i - 1].time) return i;
    return -1;
 }
 
@@ -2089,13 +1954,27 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    closed = false;
    won = false;
    valid = false;
+   g_lastSimInvalidReason = "";
    int tfSeconds = PeriodSeconds(entryTf);
    if(tfSeconds <= 0) tfSeconds = 60;
    datetime requiredCutoff = sig.entryTime - tfSeconds * 4;
    if(g_btCutoff > 0 && g_btCutoff < requiredCutoff) requiredCutoff = g_btCutoff;
-   if(!EnsureSimulationSeries(entryTf, requiredCutoff)) return 0.0;
+   if(!EnsureSimulationSeries(entryTf, requiredCutoff))
+   {
+      g_lastSimInvalidReason = "SERIES";
+      return 0.0;
+   }
    int setupIdx = FindEntryBarIndex(g_simRates, sig.entryTime);
-   if(setupIdx < 2 || sig.availableTime <= 0) return 0.0;
+   if(setupIdx < 1)
+   {
+      g_lastSimInvalidReason = "ENTRY_BAR";
+      return 0.0;
+   }
+   if(sig.availableTime <= 0)
+   {
+      g_lastSimInvalidReason = "AVAIL_TIME";
+      return 0.0;
+   }
    // The setup uses the completed setup bar. Price evolution can only be
    // evaluated from the next chronological bar onward.
    int entryIdx = setupIdx - 1;
@@ -2115,7 +1994,11 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
    double activeSl = reverseExitMode ? 0.0 : sig.sl;
    double simRisk = MathAbs(simEntry - sig.sl);
-   if(simRisk <= TickSize()) return 0.0;
+   if(simRisk <= TickSize())
+   {
+      g_lastSimInvalidReason = "RISK";
+      return 0.0;
+   }
    valid = true;
    double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
@@ -2296,6 +2179,22 @@ datetime NextSignalTime(const ErlSignal &signals[], int index)
    return 0;
 }
 
+datetime NextOppositeSignalTime(const ErlSignal &signals[], datetime current, int dir)
+{
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      if(signals[i].availableTime > current && signals[i].dir != dir) return signals[i].availableTime;
+   }
+   return 0;
+}
+
+void CopySignalArray(const ErlSignal &source[], ErlSignal &destination[])
+{
+   ArrayFree(destination);
+   ArrayResize(destination, ArraySize(source));
+   for(int i = 0; i < ArraySize(source); ++i) destination[i] = source[i];
+}
+
 void FilterAlternatingSignals(ErlSignal &signals[])
 {
    ErlSignal filtered[];
@@ -2313,7 +2212,7 @@ void FilterAlternatingSignals(ErlSignal &signals[])
    for(int i = 0; i < ArraySize(filtered); ++i) signals[i] = filtered[i];
 }
 
-SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
+SimStats CalculateStats(ErlSignal &signals[], const ErlSignal &exitSignals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
 {
    SimStats st;
    ZeroMemory(st);
@@ -2321,7 +2220,8 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    for(int i = 0; i < ArraySize(signals); ++i)
    {
       bool closed = false, won = false, valid = false;
-      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, NextSignalTime(signals, i), closed, won, valid);
+      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signals[i].availableTime, signals[i].dir);
+      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, nextSignalTime, closed, won, valid);
       st.total++;
       if(!valid)
       {
@@ -2383,28 +2283,37 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       ArrayFree(g_simCache);
    }
 
+   // A rejected setup cannot open a new position, but its opposite direction
+   // still closes an existing position. Keep the raw causal stream for exits.
+   ErlSignal exitSignals[];
+   CopySignalArray(g_histSignals, exitSignals);
+   ApplySolRegimeFilter(g_histSignals);
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(g_histSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
    ArrayResize(g_histSignalValid, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalInvalidReason, ArraySize(g_histSignals));
 
    ZeroMemory(g_hist);
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
       bool closed = false, won = false, valid = false;
-      datetime nextSignalTime = NextSignalTime(g_histSignals, i);
+      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
       string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
       if(!SimCacheGet(simKey, r, closed, won, valid))
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid) SimCachePut(simKey, r, closed, won, valid);
+         // OPEN is time-dependent. Caching it would freeze O forever even
+         // after a later bar reaches TP, SL, HCBE or a reverse exit.
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
       g_histSignalValid[i] = valid;
+      g_histSignalInvalidReason[i] = valid ? "" : g_lastSimInvalidReason;
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
@@ -2548,7 +2457,7 @@ void AuditWrite(string eventName, string id, int dir, double entry, double sl, d
 {
    if(!g_auditRuntime && !IsCriticalAuditEvent(eventName)) return;
    if(IsTesterMode()) return;
-   string file = "LiqNarrativeSolAdvanced_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
+   string file = "LiqNarrativeSol_TradeAudit_" + FileDate(TimeCurrent()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
    if(h == INVALID_HANDLE) return;
@@ -2606,11 +2515,11 @@ string FileBridgeSafeFileToken(string s)
 
 string FileBridgeScopedLatestFileName()
 {
-   return "LiqNarrativeSolAdvancedBridge_Latest_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+   return "LiqNarrativeSolBridge_Latest_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
 }
 string FileBridgeSource()
 {
-   string src = "LiqNarrativeSolAdvanced|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
+   string src = "LiqNarrativeSol|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
    if(g_pipSlMode) src += "|pipSL";
    return src;
 }
@@ -2667,7 +2576,7 @@ bool FileBridgePromoteTemp(string tempName, string fileName)
       return true;
    int err = GetLastError();
    FileDelete(tempName, common);
-   Print("LiqNarrativeSolAdvanced atomic latest promote failed err=", err, " temp=", tempName, " file=", fileName);
+   Print("LiqNarrativeSol atomic latest promote failed err=", err, " temp=", tempName, " file=", fileName);
    return false;
 }
 
@@ -2690,17 +2599,17 @@ bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, doub
             return true;
       }
       else
-         Print("LiqNarrativeSolAdvanced atomic latest temp open failed err=", GetLastError(), " temp=", tempName);
+         Print("LiqNarrativeSol atomic latest temp open failed err=", GetLastError(), " temp=", tempName);
       FileDelete(tempName, FileBridgeCommonFlag());
       if(attempt < 2) Sleep(20);
    }
-   Print("LiqNarrativeSolAdvanced atomic latest write failed file=", fileName);
+   Print("LiqNarrativeSol atomic latest write failed file=", fileName);
    return false;
 }
 
 string FileBridgeOutboxFileName()
 {
-   return "LiqNarrativeSolAdvancedBridge_Outbox_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
+   return "LiqNarrativeSolBridge_Outbox_" + FileBridgeSafeFileToken(_Symbol) + "_" + FileBridgeTfString(g_entryTf) + ".csv";
 }
 
 bool BridgePersistPending()
@@ -2713,7 +2622,7 @@ bool BridgePersistPending()
    int h = FileOpen(tempName, flags, ',');
    if(h == INVALID_HANDLE)
    {
-      Print("LiqNarrativeSolAdvanced bridge outbox temp open failed err=", GetLastError(), " temp=", tempName);
+      Print("LiqNarrativeSol bridge outbox temp open failed err=", GetLastError(), " temp=", tempName);
       return false;
    }
    for(int i = 0; i < ArraySize(g_bridgePending); i++)
@@ -2761,7 +2670,7 @@ void BridgeLoadPending()
    }
    FileClose(h);
    if(ArraySize(g_bridgePending) > 0)
-      Print("LiqNarrativeSolAdvanced bridge outbox loaded pending=", ArraySize(g_bridgePending));
+      Print("LiqNarrativeSol bridge outbox loaded pending=", ArraySize(g_bridgePending));
 }
 
 bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
@@ -2774,7 +2683,7 @@ bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double s
    {
       if(n >= 128)
       {
-         Print("LiqNarrativeSolAdvanced bridge outbox full; event remains unaccepted id=", eventId);
+         Print("LiqNarrativeSol bridge outbox full; event remains unaccepted id=", eventId);
          return false;
       }
       ArrayResize(g_bridgePending, n + 1);
@@ -2793,7 +2702,7 @@ bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double s
    g_bridgePending[index].nextRetryLocal = TimeLocal() + 2;
    bool persisted = BridgePersistPending();
    if(persisted)
-      Print("LiqNarrativeSolAdvanced bridge event durably queued id=", eventId, " pending=", ArraySize(g_bridgePending));
+      Print("LiqNarrativeSol bridge event durably queued id=", eventId, " pending=", ArraySize(g_bridgePending));
    return persisted;
 }
 
@@ -2820,7 +2729,7 @@ void BridgeRetryPending()
          BridgePersistPending();
          break;
       }
-      Print("LiqNarrativeSolAdvanced bridge outbox delivered id=", item.eventId);
+      Print("LiqNarrativeSol bridge outbox delivered id=", item.eventId);
       BridgeRemovePending(0);
       BridgePersistPending();
       processed++;
@@ -2835,23 +2744,22 @@ bool FileBridgeWriteInitMarker()
    bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
    g_lastBridgeStatus = scopedOk ? "INIT WROTE" : "INIT SCOPED FAIL";
    if(!genericOk)
-      Print("LiqNarrativeSolAdvanced file_bridge init generic atomic write failed file=", InpFileBridgeLatestFile);
+      Print("LiqNarrativeSol file_bridge init generic atomic write failed file=", InpFileBridgeLatestFile);
    return scopedOk;
 }
 
-bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, double tp, double halfTriggerPrice, string halfTriggerLabel)
+bool FileBridgeWriteEvent(string eventId, string dir, datetime signalTime, double bridgeEntry, double sl, double tp,
+   double halfTriggerPrice, string halfTriggerLabel, string source)
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
-   string dir = DirLabel(sig.dir);
-   string source = FileBridgeSource();
-   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
    if(!genericOk)
-      Print("LiqNarrativeSolAdvanced file_bridge generic atomic write failed file=", InpFileBridgeLatestFile);
+      Print("LiqNarrativeSol file_bridge generic atomic write failed file=", InpFileBridgeLatestFile);
 
-   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
    bool accepted = scopedOk;
    if(!scopedOk)
-      accepted = BridgeQueuePending(sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+      accepted = BridgeQueuePending(eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
 
    string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2862,11 +2770,11 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
       bool header = (FileSize(a) == 0);
       FileSeek(a, 0, SEEK_END);
       if(header) FileBridgeWriteHeader(a);
-      FileBridgeWriteRow(a, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+      FileBridgeWriteRow(a, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, signalTime);
       FileClose(a);
    }
    else
-      Print("LiqNarrativeSolAdvanced file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
+      Print("LiqNarrativeSol file_bridge audit open failed err=", GetLastError(), " file=", auditFile);
 
    if(scopedOk)
       g_lastBridgeStatus = "WROTE " + dir + " " + FileBridgeTfString(g_entryTf);
@@ -2874,10 +2782,23 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
       g_lastBridgeStatus = "QUEUED " + dir + " " + FileBridgeTfString(g_entryTf);
    else
       g_lastBridgeStatus = "PUBLISH FAIL " + dir;
-   Print("LiqNarrativeSolAdvanced file_bridge event=", sig.id, " dir=", dir, " scoped=", (scopedOk ? "1" : "0"), " queued=", ((!scopedOk && accepted) ? "1" : "0"), " generic=", (genericOk ? "1" : "0"), " risk_pct=", DoubleToString(RiskPerTradePct(), 4));
+   Print("LiqNarrativeSol file_bridge event=", eventId, " dir=", dir, " scoped=", (scopedOk ? "1" : "0"), " queued=", ((!scopedOk && accepted) ? "1" : "0"), " generic=", (genericOk ? "1" : "0"), " risk_pct=", DoubleToString(RiskPerTradePct(), 4));
    return accepted;
 }
 
+bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, double tp, double halfTriggerPrice, string halfTriggerLabel)
+{
+   return FileBridgeWriteEvent(sig.id, DirLabel(sig.dir), sig.availableTime, bridgeEntry, sl, tp,
+      halfTriggerPrice, halfTriggerLabel, FileBridgeSource());
+}
+
+bool FileBridgeWriteRegimeCloseOnly(const ErlSignal &sig, string rule)
+{
+   string eventId = sig.id + "|regime_filter_close";
+   string source = FileBridgeSource() + "|RegimeFilterCloseOnly|" + rule;
+   return FileBridgeWriteEvent(eventId, DirLabel(-sig.dir), sig.availableTime, sig.entry, 0.0, 0.0,
+      0.0, "off", source);
+}
 string ErlTesterAudit_FileStamp()
 {
    MqlDateTime d; TimeToStruct(TimeGMT(), d);
@@ -2917,7 +2838,7 @@ string ErlTesterAudit_DealReasonLabel(long reason)
 void ErlTesterAudit_Init()
 {
    g_testerTradeAuditRows = 0;
-   g_testerTradeAuditFile = "LiqNarrativeSolAdvanced_TesterTradeAudit_" + ErlTesterAudit_FileStamp() + ".csv";
+   g_testerTradeAuditFile = "LiqNarrativeSol_TesterTradeAudit_" + ErlTesterAudit_FileStamp() + ".csv";
 }
 
 void ErlTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
@@ -2945,7 +2866,7 @@ void ErlTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRe
    double commission = HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
    double fee = HistoryDealGetDouble(trans.deal, DEAL_FEE);
    FileWrite(h,
-      InpValidationJobId, "mt5_strategy_tester_trade", "LiqNarrativeSolAdvanced", LN_BUILD, _Symbol, TfLabel(_Period),
+      InpValidationJobId, "mt5_strategy_tester_trade", "LiqNarrativeSolVersion", LN_BUILD, _Symbol, TfLabel(_Period),
       TimeToString((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS),
       IntegerToString((long)trans.deal),
@@ -3008,7 +2929,7 @@ void BtProcessAudit(string eventName, string detail)
 {
    if(!g_auditRuntime) return;
    if(IsTesterMode() && !IsValidationTester()) return;
-   string file = "LiqNarrativeSolAdvanced_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
+   string file = "LiqNarrativeSol_BacktestProcess_" + FileDate(TimeGMT()) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
    if(h == INVALID_HANDLE) return;
@@ -3052,7 +2973,7 @@ void ProbePositions()
    if(InpAuditProbeOnChangeOnly && hash == g_lastProbeHash) return;
    g_lastProbeHash = hash;
 
-   string file = "LiqNarrativeSolAdvanced_PositionProbe_" + FileDate(now) + ".csv";
+   string file = "LiqNarrativeSol_PositionProbe_" + FileDate(now) + ".csv";
    bool exists = FileIsExist(file);
    int h = FileOpen(file, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
    if(h == INVALID_HANDLE) return;
@@ -3371,7 +3292,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
       }
       string txt = DirLabel(g_histSignals[i].dir);
       if(!valid)
-         txt += " DATA GAP";
+         txt += " DATA " + (g_histSignalInvalidReason[i] == "" ? "UNKNOWN" : g_histSignalInvalidReason[i]);
       else
          txt += " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
             + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
@@ -3844,6 +3765,86 @@ void RememberSignalSeen(const ErlSignal &sig)
    g_lastSignalTime = sig.availableTime;
    g_lastSignalDir = sig.dir;
 }
+
+void MergeLatestSignalIntoHistoricalCache(const ErlSignal &sig)
+{
+   if(!sig.valid || sig.id == "") return;
+   for(int i = 0; i < ArraySize(g_histRawCache); ++i)
+   {
+      if(g_histRawCache[i].id != sig.id) continue;
+      g_histRawCache[i] = sig;
+      return;
+   }
+
+   int n = ArraySize(g_histRawCache);
+   ArrayResize(g_histRawCache, n + 1);
+   g_histRawCache[n] = sig;
+}
+
+void RefreshHistoricalLifecycleFromLiveScan(const ErlSignal &rawSignals[])
+{
+   int count = ArraySize(rawSignals);
+   if(count > 0) MergeLatestSignalIntoHistoricalCache(rawSignals[count - 1]);
+
+   // Closed simulations remain cached; only DATA/OPEN rows are replayed.
+   // This keeps a live signal moving DATA/O -> W/L without rebuilding 1Y.
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
+void RefreshUnresolvedHistoricalLifecycle()
+{
+   int count = ArraySize(g_histSignals);
+   if(count <= 0) return;
+   int last = count - 1;
+   if(g_histSignalValid[last] && g_histSignalClosed[last]) return;
+   if(g_histSignals[last].availableTime < TimeCurrent() - 7 * 86400) return;
+   if(TimeCurrent() - g_lastHistLifecycleRefresh < 60) return;
+
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
+bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
+{
+   if(sig.id == "") return false;
+   if(sig.id == g_lastSignalId || IsSignalEventClaimed(sig.id))
+   {
+      RememberSignalSeen(sig);
+      return true;
+   }
+
+   bool reverseExitEnabled = InpCloseOnReverse || g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL;
+   bool bridgeOk = true;
+   if(reverseExitEnabled && g_fileBridgeEnabled)
+      bridgeOk = FileBridgeWriteRegimeCloseOnly(sig, rule);
+
+   bool localOk = true;
+   if(reverseExitEnabled && OwnPositionCount(-sig.dir) > 0)
+      localOk = CloseOwnPositions(-sig.dir) && OwnPositionCount(-sig.dir) == 0;
+
+   string detail = "rule=" + rule
+      + " bridge_close=" + (bridgeOk ? "1" : "0")
+      + " local_close=" + (localOk ? "1" : "0")
+      + " reverse_exit=" + (reverseExitEnabled ? "1" : "0");
+   if(!bridgeOk || !localOk)
+   {
+      g_lastStatus = "FILTER CLOSE RETRY";
+      g_lastBlock = !bridgeOk ? "regime_close_publish_failed" : "regime_close_local_failed";
+      AuditWrite("regime_filter_close_failed", sig.id, sig.dir, sig.entry, 0.0, 0.0, 0.0, detail);
+      return false;
+   }
+
+   MarkSignalEventClaimed(sig.id);
+   RememberSignalSeen(sig);
+   g_lastStatus = "FILTERED " + rule;
+   g_lastBlock = "regime_filter";
+   AuditWrite("regime_filter_entry_rejected", sig.id, sig.dir, sig.entry, 0.0, 0.0, 0.0, detail);
+   Print("LiqNarrativeSol regime_filter rejected id=", sig.id, " dir=", DirLabel(sig.dir), " ", detail);
+   return true;
+}
 bool OpenSignal(const ErlSignal &sig)
 {
    if(!g_eaEnabled)
@@ -3920,7 +3921,7 @@ bool OpenSignal(const ErlSignal &sig)
       {
          g_lastBlock = "reverse_close_failed";
          AuditWrite("local_reverse_close_failed_after_bridge", sig.id, sig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
-         Print("LiqNarrativeSolAdvanced reverse_close_failed dir=", DirLabel(sig.dir), " id=", sig.id, " bridge_written=", (bridgeWritten ? "1" : "0"));
+         Print("LiqNarrativeSol reverse_close_failed dir=", DirLabel(sig.dir), " id=", sig.id, " bridge_written=", (bridgeWritten ? "1" : "0"));
          return false;
       }
    }
@@ -3931,7 +3932,7 @@ bool OpenSignal(const ErlSignal &sig)
    {
       g_lastBlock = riskReason;
       AuditWrite("risk_block", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot, riskReason + " " + execDetail);
-      Print("LiqNarrativeSolAdvanced risk_block id=", sig.id, " dir=", DirLabel(sig.dir),
+      Print("LiqNarrativeSol risk_block id=", sig.id, " dir=", DirLabel(sig.dir),
          " entry=", DoubleToString(execSig.entry, _Digits), " sl=", DoubleToString(execSig.sl, _Digits),
          " reason=", riskReason);
       return false;
@@ -3941,14 +3942,14 @@ bool OpenSignal(const ErlSignal &sig)
    trade.SetTypeFillingBySymbol(_Symbol);
 
    bool ok = trade.PositionOpen(_Symbol, sig.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot,
-      execSig.entry, orderSl, orderTp, "LiqNarrativeSolAdvanced " + DirLabel(sig.dir));
+      execSig.entry, orderSl, orderTp, "LiqNarrativeSol " + DirLabel(sig.dir));
    if(!ok)
    {
       string detail = "ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription();
       g_lastStatus = "ORDER_FAILED";
       g_lastBlock = detail;
       AuditWrite("order_failed", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot, detail + " " + execDetail);
-      Print("LiqNarrativeSolAdvanced order_failed id=", sig.id, " dir=", DirLabel(sig.dir),
+      Print("LiqNarrativeSol order_failed id=", sig.id, " dir=", DirLabel(sig.dir),
          " ret=", IntegerToString((int)trade.ResultRetcode()), " ", trade.ResultRetcodeDescription());
       return false;
    }
@@ -3986,7 +3987,7 @@ bool OpenSignal(const ErlSignal &sig)
    AuditWrite("order_opened", sig.id, sig.dir, execSig.entry, orderSl, orderTp, lot,
       "signal_entry=" + DoubleToString(sig.entry, _Digits) + " ticket=" + IntegerToString((int)posTicket)
       + " risk_ref_sl=" + DoubleToString(execSig.sl, _Digits) + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp) + " " + execDetail);
-   Print("LiqNarrativeSolAdvanced order_opened id=", sig.id, " dir=", DirLabel(sig.dir),
+   Print("LiqNarrativeSol order_opened id=", sig.id, " dir=", DirLabel(sig.dir),
       " ticket=", IntegerToString((int)posTicket), " entry=", DoubleToString(execSig.entry, _Digits),
       " sl=", DoubleToString(orderSl, _Digits), " tp=", DoubleToString(orderTp, _Digits),
       " lot=", DoubleToString(lot, 4));
@@ -4015,6 +4016,27 @@ void TryOpenLatestSignal()
    datetime cutoff = now - 7 * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
+   if(firstAttemptForBar)
+      RefreshHistoricalLifecycleFromLiveScan(signals);
+
+   ErlSignal rawLatest;
+   bool hasRawLatest = ArraySize(signals) > 0;
+   if(hasRawLatest) rawLatest = signals[ArraySize(signals) - 1];
+   bool latestRejected = false;
+   string latestRejectRule = "";
+   bool latestClassified = hasRawLatest && SolRegimeFilterDecision(rawLatest, latestRejected, latestRejectRule);
+
+   ApplySolRegimeFilter(signals);
+   if(latestClassified && latestRejected)
+   {
+      int freshSec = MathMax(entrySec * 2, 180);
+      if(now - rawLatest.availableTime <= freshSec)
+         HandleRegimeRejectedSignal(rawLatest, latestRejectRule);
+      else
+         RememberSignalSeen(rawLatest);
+      return;
+   }
+
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    count = ArraySize(signals);
    if(count <= 0)
@@ -4033,7 +4055,7 @@ void TryOpenLatestSignal()
       g_lastSignalId = latest.id;
       return;
    }
-   Print("LiqNarrativeSolAdvanced signal_candidate id=", latest.id, " dir=", DirLabel(latest.dir),
+   Print("LiqNarrativeSol signal_candidate id=", latest.id, " dir=", DirLabel(latest.dir),
       " setup_bar=", TimeToString(latest.entryTime, TIME_DATE | TIME_SECONDS),
       " available=", TimeToString(latest.availableTime, TIME_DATE | TIME_SECONDS),
       " detected=", TimeToString(now, TIME_DATE | TIME_SECONDS));
@@ -4185,7 +4207,7 @@ void StartBacktest()
    g_btElapsedMs = 0;
    g_btCutoff = TimeCurrent() - g_btWeeks * 7 * 86400;
    g_btLastResult = "Starting";
-   g_btFileName = "LiqNarrativeSolAdvanced_BruteBacktest_" + FileStamp(TimeCurrent()) + ".csv";
+   g_btFileName = "LiqNarrativeSol_BruteBacktest_" + FileStamp(TimeCurrent()) + ".csv";
    g_btCoverageSummary = BtBuildCoverageSummary();
    int h = FileOpen(g_btFileName, FILE_WRITE | FILE_CSV | FILE_ANSI);
    if(h != INVALID_HANDLE)
@@ -4239,7 +4261,10 @@ void BacktestStep()
       BtCombo c = g_btCombos[g_btStep];
       ErlSignal signals[];
       BuildSignals(c.htf, c.entryTf, c.swing, c.bias, c.entryModel, c.stopModel, c.targetModel, c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg, c.requireAsiaLiquidityDraw, c.useAsiaLiquidityTarget, c.requireSmt, cutoff, signals);
-      SimStats st = CalculateStats(signals, c.target, c.hc, c.targetModel, c.entryTf);
+      ErlSignal exitSignals[];
+      CopySignalArray(signals, exitSignals);
+      ApplySolRegimeFilter(signals);
+      SimStats st = CalculateStats(signals, exitSignals, c.target, c.hc, c.targetModel, c.entryTf);
       double resolved = st.wins + st.losses;
       double wr = resolved > 0 ? (double)st.wins / resolved * 100.0 : 0.0;
       double avg = (st.total - st.invalid) > 0 ? st.netR / (st.total - st.invalid) : 0.0;
@@ -4288,11 +4313,11 @@ void DrawDashboard()
       return;
    }
    int W = 760;
-   int H = 792;
+   int H = 870;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
-   LabelObj("DASH_TITLE", x + 14, y + 12, "LIQUIDITY NARRATIVE SOL ADV // " + LN_BUILD, C'225,232,242', 10);
+   LabelObj("DASH_TITLE", x + 14, y + 12, "LIQUIDITY NARRATIVE SOL // " + LN_BUILD, C'225,232,242', 10);
    ButtonObj("BTN_DASH_TOGGLE", x + 674, y + 7, 72, 20, "HIDE", C'70,72,82');
    UpdateDashboard();
 }
@@ -4323,7 +4348,44 @@ void UpdateDashboard()
       + " | " + TargetLabel(g_target) + " | " + HcLabel(g_hc),
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
-   int sec1 = y + 64;
+   int regY = y + 62;
+   RectObj("DASH_REGIME_BG", x + 8, regY, 744, 72, C'18,27,39', C'60,110,170');
+   LabelObj("DASH_REGIME_T", x + 16, regY + 7, "MARKET REGIME V3", C'90,178,255', 9);
+   ButtonObj("BTN_REG_FILTER", x + 642, regY + 5, 98, bh,
+      g_solRegimeFilterEnabled ? "FILTER ON" : "FILTER OFF",
+      g_solRegimeFilterEnabled ? C'184,103,22' : off);
+   if(!g_regimeV3.valid)
+   {
+      LabelObj("DASH_REGIME_CORE", x + 148, regY + 7,
+         InpRegimeV3Observer ? ("CALCULATING // " + g_regimeV3.detail) : "OBSERVER OFF",
+         C'255,204,82', 9);
+      LabelObj("DASH_REGIME_DETAIL", x + 16, regY + 34,
+         "Completed-bar observer only; execution and signal math are isolated.", muted, 8);
+   }
+   else
+   {
+      string transitionText = g_regimeV3.transitionStatus;
+      if(g_regimeV3.transitionCandidate != "")
+         transitionText += " -> " + g_regimeV3.transitionCandidate + " "
+            + IntegerToString(g_regimeV3.transitionPending) + "/" + IntegerToString(g_regimeV3.transitionRequired);
+      LabelObj("DASH_REGIME_CORE", x + 148, regY + 7,
+         g_regimeV3.core + "  //  " + g_regimeV3.macroDirection,
+         RegimeV3CoreColor(), 10);
+      LabelObj("DASH_REGIME_TRANS", x + 470, regY + 8, transitionText, RegimeV3TransitionColor(), 8);
+      LabelObj("DASH_REGIME_DETAIL", x + 16, regY + 33,
+         "AGE " + g_regimeV3.ageBucket + " " + IntegerToString(g_regimeV3.effectiveAge)
+         + "s | H1/H2 " + g_regimeV3.h1h2Phase
+         + " | VOL " + g_regimeV3.volatilityDepth + "/" + g_regimeV3.volatilityImpulse,
+         g_regimeV3.h1h2Phase == "REVERSAL_PRESSURE" ? C'255,95,140' : C'225,232,242', 8);
+      LabelObj("DASH_REGIME_HINT", x + 16, regY + 52,
+         "HINT " + g_regimeV3.structuralHint
+         + " | T " + DoubleToString(g_regimeV3.trendDepthScore, 2)
+         + " V " + DoubleToString(g_regimeV3.volatilityDepthScore, 2)
+         + " | " + TimeToString(g_regimeV3.availableTime, TIME_DATE),
+         RegimeV3HintColor(), 8);
+   }
+
+   int sec1 = y + 142;
    RectObj("DASH_SEC1", x + 8, sec1, 744, 228, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
@@ -4594,6 +4656,9 @@ void RunValidationInternalAudit()
    double wr = resolved > 0 ? 100.0 * (double)g_hist.wins / (double)resolved : 0.0;
    Print("SOL_INTERNAL_AUDIT build=", LN_BUILD,
       " window=", HistWindowLabel(),
+      " reg_filter=", (g_solRegimeFilterEnabled ? "ON" : "OFF"),
+      " regime_rejected=", IntegerToString(g_solRegimeFilterRejected),
+      " regime_unclassified=", IntegerToString(g_solRegimeFilterUnclassified),
       " total=", IntegerToString(g_hist.total),
       " wins=", IntegerToString(g_hist.wins),
       " losses=", IntegerToString(g_hist.losses),
@@ -4640,6 +4705,7 @@ int OnInit()
    g_requireAsiaLiquidityDraw = InpDefaultRequireAsiaLiquidityDraw;
    g_useAsiaLiquidityTarget = InpDefaultUseAsiaLiquidityTarget;
    g_requireSmt = InpDefaultRequireSmt;
+   g_solRegimeFilterEnabled = InpSolRegimeFilterDefault;
    NormalizeEntryModelStrictness();
    g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
    g_slBufferAtrPct = ClampSlBufferAtrPct(InpSlBufferAtrPct);
@@ -4666,6 +4732,7 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    if(!IsTesterMode())
    {
+      RegimeV3Update(true);
       RecalculateHistoricalStats();
       BridgeLoadPending();
       FileBridgeWriteInitMarker();
@@ -4681,8 +4748,10 @@ int OnInit()
       + " entry_model=" + EntryModelLabel(g_entryModel) + " stop_model=" + StopModelLabel(g_stopModel)
       + " target_model=" + TargetModelLabel(g_targetModel)
       + " strictness=" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
-      + " narrative=" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt));
-   Print("LiqNarrativeSolAdvanced init build=", LN_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf));
+      + " narrative=" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
+      + " regime_filter=" + (g_solRegimeFilterEnabled ? "ON" : "OFF"));
+   Print("LiqNarrativeSol init build=", LN_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf),
+      " regime_filter=", (g_solRegimeFilterEnabled ? "ON" : "OFF"));
    return INIT_SUCCEEDED;
 }
 
@@ -4700,6 +4769,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
 void OnTick()
 {
+   // Validation jobs compute the complete causal audit once in OnDeinit.
+   // Live execution scans on ticks; replaying that path in the tester only
+   // repeats the same historical build thousands of times.
+   if(IsValidationTester()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
    TryOpenLatestSignal();
    ManagePositions();
@@ -4710,6 +4783,7 @@ void OnTimer()
 {
    if(IsTesterMode()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
+   RegimeV3Update(false);
    BridgeRetryPending();
    EnforceRiskBreach();
    TryOpenLatestSignal();
@@ -4717,6 +4791,7 @@ void OnTimer()
    ProbePositions();
    ScanClosedHistory();
    ProcessPendingConfigRefresh();
+   RefreshUnresolvedHistoricalLifecycle();
    if(!IsValidationTester())
    {
       if(g_btRunning) BacktestStep();
@@ -4784,6 +4859,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   if(Clicked(sparam, "BTN_REG_FILTER"))
+   {
+      g_solRegimeFilterEnabled = !g_solRegimeFilterEnabled;
+      if(g_solRegimeFilterEnabled) RegimeV3EnsureTimeline(true);
+      RefreshAfterConfigChange();
+      return;
+   }
    if(Clicked(sparam, "BTN_HTF_H1")) { g_htf = PERIOD_H1; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H2")) { g_htf = PERIOD_H2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
@@ -4848,7 +4930,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_AUDIT"))
    {
       g_auditRuntime = !g_auditRuntime;
-      Print("LiqNarrativeSolAdvanced audit logging ", g_auditRuntime ? "enabled" : "disabled");
+      Print("LiqNarrativeSol audit logging ", g_auditRuntime ? "enabled" : "disabled");
       if(g_auditRuntime)
          AuditWrite("audit_toggle", "dashboard", 0, 0, 0, 0, 0, "AUDIT_ON build=" + (string)LN_BUILD);
       UpdateDashboard();

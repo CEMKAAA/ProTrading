@@ -1,0 +1,88 @@
+{
+    "jobs":  [
+                 {
+                     "job_id":  "sol_adv_hybrid_alpha_0_25_2019_2026",
+                     "ea":  "LiqNarrativeSol_Advanced.ex5",
+                     "ea_kind":  "liq_sol_advanced",
+                     "preset":  "presets/sol_advanced_jp225_price_normalized.set",
+                     "symbol":  "JP225m",
+                     "timeframe":  "H1",
+                     "from_date":  "2019-01-01",
+                     "to_date":  "2026-07-18",
+                     "terminal_exe":  "C:/tmp/sol_jp225_worker_20260718/terminal64.exe",
+                     "terminal_data_dir":  "C:/tmp/sol_jp225_worker_20260718",
+                     "portable":  true,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "leverage":  "1:100",
+                     "model":  1,
+                     "execution_mode":  0,
+                     "timeout_sec":  1800,
+                     "preset_overrides":  {
+                                              "InpValidationJobId":  "sol_adv_hybrid_alpha_0_25_2019_2026",
+                                              "InpSolAdvancedNormalizePipSlByPrice":  "true",
+                                              "InpSolAdvancedPipSlReferencePrice":  "66788.3",
+                                              "InpValidationInternalAudit":  "true",
+                                              "InpValidationInternalAuditWeeks":  "520",
+                                              "InpValidationInternalAuditRows":  "true",
+                                              "InpSolAdvancedPipSlPriceExponent":  "0.25"
+                                          }
+                 },
+                 {
+                     "job_id":  "sol_adv_hybrid_alpha_0_50_2019_2026",
+                     "ea":  "LiqNarrativeSol_Advanced.ex5",
+                     "ea_kind":  "liq_sol_advanced",
+                     "preset":  "presets/sol_advanced_jp225_price_normalized.set",
+                     "symbol":  "JP225m",
+                     "timeframe":  "H1",
+                     "from_date":  "2019-01-01",
+                     "to_date":  "2026-07-18",
+                     "terminal_exe":  "C:/tmp/sol_jp225_worker_20260718/terminal64.exe",
+                     "terminal_data_dir":  "C:/tmp/sol_jp225_worker_20260718",
+                     "portable":  true,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "leverage":  "1:100",
+                     "model":  1,
+                     "execution_mode":  0,
+                     "timeout_sec":  1800,
+                     "preset_overrides":  {
+                                              "InpValidationJobId":  "sol_adv_hybrid_alpha_0_50_2019_2026",
+                                              "InpSolAdvancedNormalizePipSlByPrice":  "true",
+                                              "InpSolAdvancedPipSlReferencePrice":  "66788.3",
+                                              "InpValidationInternalAudit":  "true",
+                                              "InpValidationInternalAuditWeeks":  "520",
+                                              "InpValidationInternalAuditRows":  "true",
+                                              "InpSolAdvancedPipSlPriceExponent":  "0.50"
+                                          }
+                 },
+                 {
+                     "job_id":  "sol_adv_hybrid_alpha_0_75_2019_2026",
+                     "ea":  "LiqNarrativeSol_Advanced.ex5",
+                     "ea_kind":  "liq_sol_advanced",
+                     "preset":  "presets/sol_advanced_jp225_price_normalized.set",
+                     "symbol":  "JP225m",
+                     "timeframe":  "H1",
+                     "from_date":  "2019-01-01",
+                     "to_date":  "2026-07-18",
+                     "terminal_exe":  "C:/tmp/sol_jp225_worker_20260718/terminal64.exe",
+                     "terminal_data_dir":  "C:/tmp/sol_jp225_worker_20260718",
+                     "portable":  true,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "leverage":  "1:100",
+                     "model":  1,
+                     "execution_mode":  0,
+                     "timeout_sec":  1800,
+                     "preset_overrides":  {
+                                              "InpValidationJobId":  "sol_adv_hybrid_alpha_0_75_2019_2026",
+                                              "InpSolAdvancedNormalizePipSlByPrice":  "true",
+                                              "InpSolAdvancedPipSlReferencePrice":  "66788.3",
+                                              "InpValidationInternalAudit":  "true",
+                                              "InpValidationInternalAuditWeeks":  "520",
+                                              "InpValidationInternalAuditRows":  "true",
+                                              "InpSolAdvancedPipSlPriceExponent":  "0.75"
+                                          }
+                 }
+             ]
+}

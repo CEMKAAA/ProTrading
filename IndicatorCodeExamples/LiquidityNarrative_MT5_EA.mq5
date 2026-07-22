@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-17.audit-full-window-closure"
+#define LN_BUILD "2026-07-21.live-history-handoff"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -350,6 +350,9 @@ ulong            g_lastHistoryTicket = 0;
 double           g_equityPeak = 0.0;
 datetime         g_lastLiveScanBar = 0;
 datetime         g_lastLiveScanAttempt = 0;
+bool             g_historyRefreshPending = false;
+datetime         g_historyRefreshDue = 0;
+string           g_lastOverlaySignalId = "";
 
 BtCombo          g_btCombos[];
 bool             g_btRunning = false;
@@ -1929,7 +1932,9 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       if(!SimCacheGet(simKey, r, closed, won, valid))
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid) SimCachePut(simKey, r, closed, won, valid);
+         // Open outcomes are time-dependent and must be re-evaluated as new
+         // ticks arrive; only terminal outcomes are safe to cache.
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
@@ -3567,6 +3572,12 @@ void TryOpenLatestSignal()
       " setup_bar=", TimeToString(latest.entryTime, TIME_DATE | TIME_SECONDS),
       " available=", TimeToString(latest.availableTime, TIME_DATE | TIME_SECONDS),
       " detected=", TimeToString(now, TIME_DATE | TIME_SECONDS));
+   if(latest.id != g_lastOverlaySignalId)
+   {
+      g_lastOverlaySignalId = latest.id;
+      UpsertHistoricalRawSignal(latest);
+      ScheduleHistoricalOverlayRefresh(1);
+   }
    OpenSignal(latest);
 }
 
@@ -4107,6 +4118,43 @@ void ProcessPendingConfigRefresh()
    ChartRedraw(0);
 }
 
+void UpsertHistoricalRawSignal(const ErlSignal &sig)
+{
+   for(int i = 0; i < ArraySize(g_histRawCache); ++i)
+   {
+      if(g_histRawCache[i].id != sig.id) continue;
+      g_histRawCache[i] = sig;
+      return;
+   }
+   int n = ArraySize(g_histRawCache);
+   ArrayResize(g_histRawCache, n + 1);
+   g_histRawCache[n] = sig;
+}
+
+void ScheduleHistoricalOverlayRefresh(int delaySeconds = 1)
+{
+   if(IsTesterMode()) return;
+   datetime due = TimeLocal() + MathMax(1, delaySeconds);
+   g_historyRefreshPending = true;
+   if(g_historyRefreshDue <= 0 || due < g_historyRefreshDue)
+      g_historyRefreshDue = due;
+}
+
+void ProcessPendingHistoricalOverlayRefresh()
+{
+   if(!g_historyRefreshPending || TimeLocal() < g_historyRefreshDue) return;
+   g_historyRefreshPending = false;
+   g_historyRefreshDue = 0;
+
+   // Rebuild only after a real live signal/lifecycle transition. This hands
+   // closed live objects back to the causal historical overlay without doing
+   // the expensive full-window scan on every tick.
+   RecalculateHistoricalStats(false);
+   DrawHistoricalSignals(true);
+   DrawLiveLevelsForPosition();
+   ChartRedraw(0);
+}
+
 bool Clicked(const string sparam, string id)
 {
    return sparam == PFX + id;
@@ -4193,6 +4241,13 @@ void OnDeinit(const int reason)
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    ErlTesterAudit_WriteDeal(trans, request, result);
+   if(IsTesterMode() || trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   if(!IsOwnMagic((long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC))) return;
+   long entryType = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_INOUT || entryType == DEAL_ENTRY_OUT_BY)
+      ScheduleHistoricalOverlayRefresh(2);
 }
 
 void OnTick()
@@ -4214,6 +4269,7 @@ void OnTimer()
    ProbePositions();
    ScanClosedHistory();
    ProcessPendingConfigRefresh();
+   ProcessPendingHistoricalOverlayRefresh();
    if(!IsValidationTester())
    {
       if(g_btRunning) BacktestStep();

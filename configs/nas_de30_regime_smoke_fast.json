@@ -1,0 +1,27 @@
+﻿{
+    "jobs":  [
+                 {
+                     "job_id":  "nas_de30_regime_smoke_fast_m1_p400",
+                     "preset":  "presets/nas_de30_regime_base.set",
+                     "execution_mode":  0,
+                     "to_date":  "2026.01.29",
+                     "deposit":  10000,
+                     "ea":  "NasUltimate_SATS_PartialNoBE_EA",
+                     "model":  1,
+                     "currency":  "USD",
+                     "preset_overrides":  {
+                                              "InpSignalCalcBars":  "300",
+                                              "InpPipSlDistance":  "400"
+                                          },
+                     "from_date":  "2026.01.27",
+                     "timeframe":  "M1",
+                     "ea_kind":  "nas",
+                     "symbol":  "DE30m",
+                     "leverage":  "1:100",
+                     "terminal_data_dir":  "../.tmp/mt5_validation_exness_worker",
+                     "portable":  true,
+                     "terminal_exe":  "../.tmp/mt5_validation_exness_worker/terminal64.exe",
+                     "timeout_sec":  300
+                 }
+             ]
+}

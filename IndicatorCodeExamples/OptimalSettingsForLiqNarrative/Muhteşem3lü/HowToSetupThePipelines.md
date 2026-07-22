@@ -14,3 +14,7 @@ Use these full paths:
   jp225: 60
 
   and thats it pipeline is set.
+
+
+  Evet, aradığın hat bulundu: birleşik kötü-rejim elemesi trade’lerin %61.7 sini koruyarak toplam WR’yi %56.80e, en kötü
+  yılı %55.45e taşıyor. Bu tam söylediğin %52–56 hattı. Şimdi aynı rejim ailesini birkaç adım daha sade biçimde

@@ -1,0 +1,42 @@
+﻿{
+    "jobs":  [
+                 {
+                     "timeout_sec":  600,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "ea":  "NasUltimate_PreProfessional",
+                     "symbol":  "USTECm",
+                     "from_date":  "2026.01.27",
+                     "ea_kind":  "nas",
+                     "to_date":  "2026.01.29",
+                     "model":  4,
+                     "execution_mode":  0,
+                     "leverage":  "1:100",
+                     "portable":  true,
+                     "job_id":  "nas_ab_old",
+                     "terminal_data_dir":  "C:\\tmp\\sol_jp225_worker_20260718",
+                     "timeframe":  "M5",
+                     "terminal_exe":  "C:\\tmp\\sol_jp225_worker_20260718\\terminal64.exe",
+                     "preset":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\nas_ab\\old.set"
+                 },
+                 {
+                     "timeout_sec":  600,
+                     "deposit":  10000,
+                     "currency":  "USD",
+                     "ea":  "NasUltimate_Professional",
+                     "symbol":  "USTECm",
+                     "from_date":  "2026.01.27",
+                     "ea_kind":  "nas",
+                     "to_date":  "2026.01.29",
+                     "model":  4,
+                     "execution_mode":  0,
+                     "leverage":  "1:100",
+                     "portable":  true,
+                     "job_id":  "nas_ab_new",
+                     "terminal_data_dir":  "C:\\tmp\\sol_jp225_worker_20260718",
+                     "timeframe":  "M5",
+                     "terminal_exe":  "C:\\tmp\\sol_jp225_worker_20260718\\terminal64.exe",
+                     "preset":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\nas_ab\\new.set"
+                 }
+             ]
+}

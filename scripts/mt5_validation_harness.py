@@ -449,7 +449,10 @@ def sniff_csv_tail(path: Path, limit: int = 200, max_bytes: int = MAX_TAIL_BYTES
         dialect = csv.Sniffer().sniff(sample, delimiters=",;")
     except csv.Error:
         dialect = csv.excel
-    return list(csv.DictReader(io.StringIO("\n".join(usable), newline=""), dialect=dialect))[-limit:]
+    try:
+        return list(csv.DictReader(io.StringIO("\n".join(usable), newline=""), dialect=dialect))[-limit:]
+    except csv.Error:
+        return []
 
 
 def f(row: Dict[str, str], key: str, default: float = 0.0) -> float:
@@ -539,6 +542,8 @@ def normalize_tester_trade_audit(job: ValidationJob) -> Optional[Dict[str, Any]]
 
 def tester_audit_prefix(job: ValidationJob) -> str:
     if job.ea_kind == "nas":
+        if "NasUltimate_SATS_PartialNoBE" in job.ea:
+            return "NasUltimate_TesterTradeAudit_"
         return "NasV3Lab_TesterTradeAudit_"
     if job.ea_kind == "orb":
         return "ORB15_TesterTradeAudit_"
