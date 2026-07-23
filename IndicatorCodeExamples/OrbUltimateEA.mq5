@@ -5,9 +5,10 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.21"
+#property version "3.30"
 #include <Trade/Trade.mqh>
-#define ORB15_BUILD "2026-06-27.v5.0-fixed-tp-controls"
+#include "LiqNarrativeSol_RegimeV3.mqh"
+#define ORB15_BUILD "2026-07-23.v6.4-history-coverage"
 
 enum ORB_SESSION_PROFILE
 {
@@ -35,6 +36,8 @@ input bool            InpUseClosedBarBreakout = true;
 input double          InpMinBreakoutPoints  = 0.0;
 input double          InpSlBufferPoints     = 0.0;
 input double          InpSlDistancePct      = 100.0; // 100 = raw ORB SL distance, 80 = tighter, 120 = wider.
+input bool            InpPipSlModeDefault   = false;
+input double          InpPipSlPips          = 500.0;
 input bool            InpOneTradePerNyDay   = true;
 input int             InpDeviationPoints    = 30;
 input int             InpMaxSpreadPoints    = 0;
@@ -143,13 +146,31 @@ input bool InpShowDashboard          = true;
 input int  InpDashboardX             = 10;
 input int  InpDashboardY             = 18;
 input bool InpDrawHistoricalSignals  = true;
+input bool InpDrawTradeLevelSegments = true;
+input bool InpAuditHistoryAutoRetry  = true;
+input int  InpAuditHistoryRetrySec   = 10;
 input int  InpHistoricalDays         = 35;
 input int  InpHistoricalWeeks        = 5;
 input bool InpAuditCsv               = false;
+input bool InpAuditHistoricalSimulationCsv = false;
 input bool InpLogOnInit              = false;
 input bool InpTesterTradeAuditCsv    = false;
 input int  InpTesterTradeAuditMaxRows= 50000;
 input string InpValidationJobId      = "";
+input bool   InpFileBridgeEnabled       = false;
+input bool   InpFileBridgeOnlyMode      = false;
+input bool   InpFileBridgeUseCommonFiles= true;
+input string InpFileBridgeLatestFile    = "OrbUltimateBridge_Latest.csv";
+input string InpFileBridgeAuditPrefix   = "OrbUltimateBridge_Audit_";
+input bool InpRegimeTrendLowVolAllowed       = true;
+input bool InpRegimeTrendHighVolAllowed      = true;
+input bool InpRegimeRangeLowVolAllowed       = true;
+input bool InpRegimeRangeHighVolAllowed      = true;
+input bool InpRegimeTransitionPendingAllowed = true;
+input bool InpRegimeTransitionFreshAllowed   = true;
+input bool   InpTesterRegimeMatrix        = false; // Tester-only regime allow-list matrix export.
+input int    InpTesterRegimeMatrixWeeks   = 82;
+input datetime InpTesterRegimeMatrixAnchorTime = 0; // Tester-only: wait until this timestamp before exporting.
 input BT_FILL_MODE InpBacktestFillMode = BT_FILL_NEXT_BAR_OPEN;
 input BT_SAME_BAR_POLICY InpBacktestSameBarPolicy = BT_SAMEBAR_CONSERVATIVE;
 input bool   InpBacktestUseTickReplay    = true;
@@ -184,6 +205,16 @@ datetime g_lastSignalBarTime = 0;
 datetime g_lastCheckedSignalBarTime = 0;
 datetime g_lastHistBuild = 0;
 bool     g_histNeedsRedraw = true;
+bool     g_histAuditRunning = false;
+int      g_histAuditTotalDays = 0;
+int      g_histAuditProcessedDays = 0;
+double   g_histAuditProgressPct = 0.0;
+bool     g_histCoveragePending = false;
+bool     g_histCoverageHardBlocked = false;
+datetime g_histCoverageNextRetry = 0;
+int      g_histCoverageAttempts = 0;
+string   g_histCoverageStatus = "";
+string   g_histCoverageDetail = "";
 
 //--- Runtime toggles (mutable from dashboard) ---------------------------
 bool            g_rtFilterAtr     = true;
@@ -210,6 +241,15 @@ int             g_rtExitEmaPeriod = 50;
 double          g_rtExitAtrMultiplier = 2.0;
 int             g_rtHistoricalWeeks = 5;
 double          g_rtSlDistancePct = 100.0;
+bool            g_rtPipSlMode = false;
+double          g_rtPipSlPips = 500.0;
+
+#define ORB_REGIME_COUNT 6
+bool   g_regimeAllowed[ORB_REGIME_COUNT];
+int    g_regimeWins[ORB_REGIME_COUNT];
+int    g_regimeLosses[ORB_REGIME_COUNT];
+int    g_lastSignalRegime = -1;
+string g_lastSignalRegimeName = "UNKNOWN";
 
 //--- Trade management state ---------------------------------------------
 int      g_tradeDir = 0;
@@ -290,13 +330,13 @@ bool     g_btNativeParity = true;
 double   g_btSpreadPts = 0.0;
 double   g_btSlippagePts = 0.0;
 double   g_btCommissionPerLot = 0.0;
+bool     g_testerRegimeMatrixDone = false;
 
 OrbBtCombo g_btCombos[];
 #define OBT_TF_COUNT    3
 #define OBT_DELAY_COUNT 4
 #define OBT_ENTRY_COUNT 3
 #define OBT_TARGET_COUNT 4
-#define OBT_MAX_DAYS    60
 ENUM_TIMEFRAMES g_btTFs[]  = {PERIOD_M1,PERIOD_M5,PERIOD_M15};
 int             g_btDelays[]= {0,3,5,10};
 OrbBtDayCache   g_btDays[];
@@ -304,6 +344,8 @@ int             g_btDayCount = 0;
 // Flat [dayIdx * (tfCount*delayCount) + comboIdx] cache; MQL5 does not
 // reliably support resizeable jagged arrays of structs.
 OrbBtBreakout   g_btBreakouts[];
+
+#include "OrbUltimate_ProfessionalPipeline.mqh"
 
 //=========================================================================
 //  UTILITY FUNCTIONS
@@ -507,12 +549,33 @@ void SetTargetLeg(int leg){g_rtTargetLeg=ClampTargetLeg(leg);g_rtHalfBeLeg=Clamp
 void ForceFixedRLegTarget(){g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtTargetMode=ORB_TARGET_R_LEG;}
 void CycleTargetLeg(){ForceFixedRLegTarget();SetTargetLeg(RuntimeTargetLeg()>=6?1:RuntimeTargetLeg()+1);}
 void CycleHalfBeLeg(){ForceFixedRLegTarget();int target=RuntimeTargetLeg();if(target<=1){g_rtHalfBeLeg=0;return;}int h=RuntimeHalfBeLeg()+1;if(h>=target)h=0;g_rtHalfBeLeg=h;}
-int ClampHistWeeks(int weeks){if(weeks<=2)return 2;if(weeks<=5)return 5;if(weeks<=10)return 10;return 20;}
+int ClampHistWeeks(int weeks)
+{
+   int options[]={2,5,10,20,52,104,156,208,260};
+   int best=options[0],bestDistance=MathAbs(weeks-options[0]);
+   for(int i=1;i<ArraySize(options);i++)
+   {
+      int distance=MathAbs(weeks-options[i]);
+      if(distance<bestDistance){best=options[i];bestDistance=distance;}
+   }
+   return best;
+}
+string HistoricalWindowLabel()
+{
+   if(g_rtHistoricalWeeks>=52&&g_rtHistoricalWeeks%52==0)return IntegerToString(g_rtHistoricalWeeks/52)+"Y";
+   return IntegerToString(g_rtHistoricalWeeks)+"W";
+}
 void SetHistoricalWeeks(int weeks)
 {
    g_rtHistoricalWeeks=ClampHistWeeks(weeks);
    g_lastHistBuild=0;
    g_histNeedsRedraw=true;
+   g_histCoveragePending=false;
+   g_histCoverageHardBlocked=false;
+   g_histCoverageNextRetry=0;
+   g_histCoverageAttempts=0;
+   g_histCoverageStatus="";
+   g_histCoverageDetail="";
 }
 int RuntimeHistoricalDays(){return MathMax(1,ClampHistWeeks(g_rtHistoricalWeeks)*7);}
 double ClampSlDistancePct(double pct){return MathMax(10.0,MathMin(300.0,pct));}
@@ -522,6 +585,81 @@ double ScaleSlFromEntry(bool isBuy,double entry,double rawSl)
    double dist=MathAbs(entry-rawSl)*ClampSlDistancePct(g_rtSlDistancePct)/100.0;
    if(dist<=0)return rawSl;
    return NormalizeTradePrice(isBuy?entry-dist:entry+dist);
+}
+
+double ClampPipSlPips(double pips){return MathMax(0.1,MathMin(1000000.0,pips));}
+void SetPipSlPips(double pips){g_rtPipSlPips=ClampPipSlPips(pips);}
+double OrbPipSize()
+{
+   double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   if(point<=0.0)point=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
+   return (digits==3||digits==5)?point*10.0:point;
+}
+double ApplyRuntimeSlFromEntry(bool isBuy,double entry,double rawSl)
+{
+   if(g_rtPipSlMode)
+   {
+      double dist=ClampPipSlPips(g_rtPipSlPips)*OrbPipSize();
+      if(dist>0.0)return NormalizeTradePrice(isBuy?entry-dist:entry+dist);
+   }
+   return ScaleSlFromEntry(isBuy,entry,rawSl);
+}
+string RuntimeSlModeLabel(){return g_rtPipSlMode?("PIP "+DoubleToString(g_rtPipSlPips,1)):("SL% "+DoubleToString(g_rtSlDistancePct,0));}
+
+string OrbRegimeName(int bucket)
+{
+   if(bucket==0)return "TREND LOW VOL";
+   if(bucket==1)return "TREND HIGH VOL";
+   if(bucket==2)return "RANGE LOW VOL";
+   if(bucket==3)return "RANGE HIGH VOL";
+   if(bucket==4)return "TRANSITION PENDING";
+   if(bucket==5)return "TRANSITION FRESH";
+   return "UNKNOWN";
+}
+string OrbRegimeShortName(int bucket)
+{
+   if(bucket==0)return "TLV";
+   if(bucket==1)return "THV";
+   if(bucket==2)return "RLV";
+   if(bucket==3)return "RHV";
+   if(bucket==4)return "TR PEND";
+   if(bucket==5)return "TR FRESH";
+   return "UNK";
+}
+int OrbRegimeBucket(const RegimeV3Snapshot &snapshot)
+{
+   if(!snapshot.valid)return -1;
+   if(snapshot.transitionStatus=="WATCH"||snapshot.transitionStatus=="DEVELOPING")return 4;
+   if(snapshot.transitionStatus=="FRESH_CONFIRMED")return 5;
+   if(snapshot.core=="TREND_LOW_VOL")return 0;
+   if(snapshot.core=="TREND_HIGH_VOL")return 1;
+   if(snapshot.core=="RANGE_LOW_VOL")return 2;
+   if(snapshot.core=="RANGE_HIGH_VOL")return 3;
+   return -1;
+}
+int OrbRegimeBucketAt(datetime signalAvailable,RegimeV3Snapshot &snapshot)
+{
+   snapshot.valid=false;
+   if(!InpRegimeV3Observer)return -1;
+   RegimeV3EnsureTimeline(false);
+   if(!RegimeV3SnapshotAt(signalAvailable,snapshot))return -1;
+   return OrbRegimeBucket(snapshot);
+}
+bool OrbRegimeAllowed(int bucket){return bucket<0||bucket>=ORB_REGIME_COUNT?true:g_regimeAllowed[bucket];}
+string OrbRegimeStatsText(int bucket)
+{
+   int w=g_regimeWins[bucket],l=g_regimeLosses[bucket],n=w+l;
+   double wr=n>0?(double)w/(double)n*100.0:0.0;
+   return OrbRegimeShortName(bucket)+" "+IntegerToString(w)+"W/"+IntegerToString(l)+"L "+DoubleToString(wr,1)+"%";
+}
+string OrbRegimeDetail(const RegimeV3Snapshot &snapshot,int bucket)
+{
+   if(bucket<0)return "regime=UNKNOWN";
+   return "regime="+OrbRegimeName(bucket)
+      +" core="+snapshot.core+" transition="+snapshot.transitionStatus
+      +" age="+IntegerToString(snapshot.effectiveAge)+" macro="+snapshot.macroDirection
+      +" h1h2="+snapshot.h1h2Phase+" vol="+snapshot.volatilityDepth+"/"+snapshot.volatilityImpulse;
 }
 
 long RuntimeMagic()
@@ -575,7 +713,7 @@ bool BuildSimGeometry(bool isBuy,double fillEntry,double plannedSl,
       double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
       rawSl=isBuy?(g_orbLow-buffer):(g_orbHigh+buffer);
    }
-   simSl=ScaleSlFromEntry(isBuy,fillEntry,rawSl);
+   simSl=ApplyRuntimeSlFromEntry(isBuy,fillEntry,rawSl);
    risk=MathAbs(fillEntry-simSl);
    if(risk<=pt)return false;
    tp1=NormalizePrice(PriceAtLeg(isBuy,fillEntry,risk,1));
@@ -788,10 +926,18 @@ void OBT_ProcessAudit(string ev,string detail)
    FileClose(h);
 }
 
+bool OrbAuditCritical(string ev)
+{
+   return StringFind(ev,"fail")>=0||StringFind(ev,"error")>=0||StringFind(ev,"block")>=0||
+      StringFind(ev,"risk")>=0||StringFind(ev,"breach")>=0||StringFind(ev,"opened")>=0||
+      StringFind(ev,"close")>=0||StringFind(ev,"half")>=0||StringFind(ev,"sl_to_be")>=0||
+      StringFind(ev,"bridge")>=0||StringFind(ev,"order")>=0||StringFind(ev,"position_")>=0;
+}
+
 void Audit(string ev,string dir,double lot,double entry,double sl,double tp,string detail)
 {
    if(IsTesterMode()) return;
-   if(!g_auditRuntime)return;
+   if(!g_auditRuntime&&!OrbAuditCritical(ev))return;
    string fileName=AuditFileName();
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
    if(h==INVALID_HANDLE)return;
@@ -800,7 +946,7 @@ void Audit(string ev,string dir,double lot,double entry,double sl,double tp,stri
    if(empty)
       FileWrite(h,"ts_gmt","ts_server","ts_local","ms","event","build","symbol","timeframe",
          "signal_tf","delay","atr_f","vol_f","day_f","be","direction",
-         "lot","entry","sl","tp","orb_h","orb_l","bid","ask","spread","detail");
+         "lot","entry","sl","tp","orb_h","orb_l","bid","ask","spread","sl_mode","pip_sl_pips","regime_id","regime_name","regime_allowed","detail");
    int ms=(int)(GetTickCount()%1000);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
@@ -814,7 +960,8 @@ void Audit(string ev,string dir,double lot,double entry,double sl,double tp,stri
       (g_rtFilterAtr?"1":"0"),(g_rtFilterVol?"1":"0"),(g_rtFilterDay?"1":"0"),(g_rtBEOnTp1?"1":"0"),
       dir, DoubleToString(lot,2), AuditPx(entry), AuditPx(sl), AuditPx(tp),
       AuditPx(g_orbHigh), AuditPx(g_orbLow), AuditPx(bid), AuditPx(ask),
-      IntegerToString(CurrentSpreadPoints()), detail);
+      IntegerToString(CurrentSpreadPoints()),g_rtPipSlMode?"PIP":"PERCENT",DoubleToString(g_rtPipSlPips,1),
+      IntegerToString(g_lastSignalRegime),g_lastSignalRegimeName,OrbRegimeAllowed(g_lastSignalRegime)?"1":"0",detail);
    FileClose(h);
 }
 
@@ -911,7 +1058,19 @@ void OrbTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRe
 bool IsOwnPosition(){return PositionGetString(POSITION_SYMBOL)==_Symbol&&MagicOwned((long)PositionGetInteger(POSITION_MAGIC));}
 bool OwnPositionExists(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsOwnPosition())return true;}return false;}
 int OwnPositionCount(){int c=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsOwnPosition())c++;}return c;}
-void CloseAllOwn(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(!IsOwnPosition())continue;bool ok=trade.PositionClose(t);Audit(ok?"close":"close_failed","",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());}}
+void CloseAllOwn(string reason="close_all")
+{
+   int publishDir=g_tradeDir;
+   if(publishDir==0)
+      for(int p=PositionsTotal()-1;p>=0;p--){ulong pt=PositionGetTicket(p);if(pt>0&&PositionSelectByTicket(pt)&&IsOwnPosition()){publishDir=(long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;break;}}
+   if(publishDir!=0)OrbProPublishCloseOnly(publishDir,reason);
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;
+      bool ok=trade.PositionClose(t);
+      Audit(ok?"close":"close_failed","",PositionGetDouble(POSITION_VOLUME),PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),"reason="+reason+" ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+   }
+}
 
 string RiskKey(const string keyName)
 {
@@ -1030,6 +1189,7 @@ void EnforceRiskBreach()
    bool breach=(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf);
    if(!breach)return;
    Audit("risk_liquidate","",0,0,0,0,"cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2));
+   if(g_tradeDir!=0)OrbProPublishCloseOnly(g_tradeDir,"risk_liquidate");
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;
@@ -1046,6 +1206,129 @@ void DeleteLevels(){ObjectDelete(0,PREFIX+"ORB_HIGH");ObjectDelete(0,PREFIX+"ORB
 void DeleteHist(){DeleteByPrefix(PREFIX+"HIST_");}
 void DeleteLive(){DeleteByPrefix(PREFIX+"LIVE_");}
 void DeleteDash(){DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
+
+void DrawOrbHistoricalSegment(string id,datetime t1,datetime t2,double price,color clr,ENUM_LINE_STYLE style=STYLE_SOLID)
+{
+   if(IsTesterMode()||!InpDrawTradeLevelSegments||price<=0.0||t2<=t1)return;
+   string name=PREFIX+"HIST_LVL_"+id;
+   if(ObjectFind(0,name)>=0&&(ENUM_OBJECT)ObjectGetInteger(0,name,OBJPROP_TYPE)!=OBJ_TREND)
+      ObjectDelete(0,name);
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_TREND,0,t1,price,t2,price);
+   ObjectMove(0,name,0,t1,price);
+   ObjectMove(0,name,1,t2,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,style);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,2);
+   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+}
+
+datetime NextOrbOpenOwnPositionTimeAfter(datetime t,datetime maxEnd)
+{
+   datetime best=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;
+      datetime openedAt=(datetime)PositionGetInteger(POSITION_TIME);
+      if(openedAt<=t||openedAt>=maxEnd)continue;
+      if(best==0||openedAt<best)best=openedAt;
+   }
+   return best;
+}
+
+void DrawOrbLiveSegment(string id,datetime t1,datetime t2,double price,color clr,ENUM_LINE_STYLE style=STYLE_SOLID,int width=4)
+{
+   if(IsTesterMode()||!InpDrawTradeLevelSegments||price<=0.0||t2<=t1)return;
+   string name=PREFIX+"LIVE_LVL_"+id;
+   if(ObjectFind(0,name)>=0&&(ENUM_OBJECT)ObjectGetInteger(0,name,OBJPROP_TYPE)!=OBJ_TREND)
+      ObjectDelete(0,name);
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_TREND,0,t1,price,t2,price);
+   ObjectMove(0,name,0,t1,price);
+   ObjectMove(0,name,1,t2,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,style);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,width);
+   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,false);
+   ObjectSetInteger(0,name,OBJPROP_ZORDER,DASH_Z+1);
+}
+
+string OrbLiveLevelTicketToken(string name)
+{
+   string kinds[]={"ENTRY_","SL_","TP_","HC_"};
+   for(int i=0;i<ArraySize(kinds);i++)
+   {
+      string p=PREFIX+"LIVE_LVL_"+kinds[i];
+      if(StringFind(name,p)==0)return StringSubstr(name,StringLen(p));
+   }
+   return "";
+}
+
+void DeleteStaleOrbLiveLevelObjects(string activeTicketKeys)
+{
+   string pfx=PREFIX+"LIVE_LVL_";
+   for(int i=ObjectsTotal(0,0,-1)-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i,0,-1);
+      if(StringFind(name,pfx)!=0)continue;
+      string token=OrbLiveLevelTicketToken(name);
+      if(token==""||StringFind(activeTicketKeys,"|"+token+"|")<0)
+         ObjectDelete(0,name);
+   }
+}
+
+void DrawOrbLiveTradeLevels()
+{
+   if(IsTesterMode())return;
+   if(!InpDrawTradeLevelSegments)
+   {
+      DeleteByPrefix(PREFIX+"LIVE_LVL_");
+      return;
+   }
+
+   ulong newestTicket=0;
+   datetime newestTime=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;
+      datetime openedAt=(datetime)PositionGetInteger(POSITION_TIME);
+      if(openedAt>=newestTime){newestTime=openedAt;newestTicket=ticket;}
+   }
+
+   string activeTicketKeys="|";
+   if(newestTicket>0&&PositionSelectByTicket(newestTicket))
+   {
+      string token=StringFormat("%I64u",newestTicket);
+      activeTicketKeys+=token+"|";
+      ulong positionId=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(positionId==0)positionId=newestTicket;
+      datetime openedAt=(datetime)PositionGetInteger(POSITION_TIME);
+      double entry=OrbProGet(positionId,"entry",PositionGetDouble(POSITION_PRICE_OPEN));
+      double sl=PositionGetDouble(POSITION_SL);
+      if(sl<=0.0)sl=OrbProGet(positionId,"sl",0.0);
+      double tp=PositionGetDouble(POSITION_TP);
+      if(tp<=0.0)tp=OrbProGet(positionId,"tp",0.0);
+      double hc=OrbProGet(positionId,"half",0.0);
+      int segSec=MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
+      datetime liveEnd=TimeCurrent()+segSec;
+      if(liveEnd<=openedAt)liveEnd=openedAt+segSec;
+
+      DrawOrbLiveSegment("ENTRY_"+token,openedAt,liveEnd,entry,C'245,245,255',STYLE_SOLID,4);
+      if(sl>0.0)DrawOrbLiveSegment("SL_"+token,openedAt,liveEnd,sl,C'255,40,70',STYLE_SOLID,4);
+      else ObjectDelete(0,PREFIX+"LIVE_LVL_SL_"+token);
+      if(tp>0.0)DrawOrbLiveSegment("TP_"+token,openedAt,liveEnd,tp,C'20,255,160',STYLE_SOLID,4);
+      else ObjectDelete(0,PREFIX+"LIVE_LVL_TP_"+token);
+      if(hc>0.0)DrawOrbLiveSegment("HC_"+token,openedAt,liveEnd,hc,C'255,204,82',STYLE_SOLID,4);
+      else ObjectDelete(0,PREFIX+"LIVE_LVL_HC_"+token);
+   }
+   DeleteStaleOrbLiveLevelObjects(activeTicketKeys);
+}
 
 void ClearRetestState(string reason="")
 {
@@ -1562,7 +1845,7 @@ struct HistResult
 
 void WriteInternalSimAudit(string source,datetime sigTime,datetime simEnd,string dir,double plannedEntry,double plannedSl,const HistResult &sim,string detail)
 {
-   if(!g_auditRuntime) return;
+   if(!g_auditRuntime||!InpAuditHistoricalSimulationCsv) return;
    string fileName="ORB15_InternalSimAudit_"+AuditDateStr()+".csv";
    bool exists=FileIsExist(fileName);
    int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
@@ -2002,21 +2285,132 @@ bool FindNextHistoricalSignalAfter(datetime afterTime,datetime limitTime,datetim
 //=========================================================================
 //  HISTORICAL SIGNAL DRAWING WITH SIMULATION
 //=========================================================================
+int OrbAuditWarmupBars(ENUM_TIMEFRAMES tf)
+{
+   if(tf==PERIOD_D1)return MathMax(80,InpAtrPeriod+20);
+   if(tf==PERIOD_H1||tf==PERIOD_H2||tf==PERIOD_H4)return 2500;
+   if(tf==PERIOD_M1)return 200;
+   return 500;
+}
+
+bool OrbAuditProbeSeries(ENUM_TIMEFRAMES tf,datetime cutoff,int warmupBars,string label,
+                         string &detail,bool &maxBarsBlocked)
+{
+   int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
+   datetime now=TimeCurrent();
+   datetime requiredFrom=cutoff-(datetime)((long)MathMax(0,warmupBars)*(long)sec);
+   if(requiredFrom<1)requiredFrom=1;
+   long span=(long)now-(long)requiredFrom;
+   long requested=(span+(long)sec-1)/(long)sec+1;
+   long maxBars=TerminalInfoInteger(TERMINAL_MAXBARS);
+
+   // These calls intentionally request the old edge so MT5 starts history download/build.
+   int available=Bars(_Symbol,tf,requiredFrom,now);
+   MqlRates probe[];
+   datetime probeEnd=requiredFrom+(datetime)MathMax(7*86400,sec*10);
+   int copied=CopyRates(_Symbol,tf,requiredFrom,probeEnd,probe);
+   datetime oldest=0;
+   for(int i=0;i<copied;i++)if(oldest==0||probe[i].time<oldest)oldest=probe[i].time;
+   long tolerance=(long)MathMax(7*86400,sec*10);
+   bool ready=(copied>0&&oldest>0&&(long)oldest<=(long)requiredFrom+tolerance);
+
+   if(!ready)
+   {
+      if(detail!="")detail+=" | ";
+      detail+=label+" need~"+StringFormat("%I64d",requested)
+         +" max="+StringFormat("%I64d",maxBars)
+         +" bars="+IntegerToString(MathMax(0,available))
+         +" oldest="+(oldest>0?TimeToString(oldest,TIME_DATE):"syncing");
+      long nearCap=(long)MathMax(1.0,(double)maxBars*0.90);
+      if(maxBars>0&&requested>maxBars&&g_histCoverageAttempts>=3&&available>=nearCap)
+         maxBarsBlocked=true;
+   }
+   return ready;
+}
+
+bool EnsureOrbAuditHistoryCoverage(int days,string &detail,bool &hardBlocked)
+{
+   detail="";hardBlocked=false;
+   datetime cutoff=TimeCurrent()-(datetime)((long)MathMax(1,days)*(long)86400);
+   ENUM_TIMEFRAMES frames[7];
+   string labels[7];
+   frames[0]=PERIOD_M1;labels[0]="M1";
+   frames[1]=g_rtSignalTf;labels[1]="SIG";
+   frames[2]=RuntimeEntryTf();labels[2]="ENTRY";
+   frames[3]=PERIOD_D1;labels[3]="D1";
+   frames[4]=PERIOD_H1;labels[4]="H1";
+   frames[5]=PERIOD_H2;labels[5]="H2";
+   frames[6]=PERIOD_H4;labels[6]="H4";
+
+   bool ready=true;
+   for(int i=0;i<ArraySize(frames);i++)
+   {
+      bool duplicate=false;
+      for(int j=0;j<i;j++)if(frames[j]==frames[i]){duplicate=true;break;}
+      if(duplicate)continue;
+      bool maxBarsBlocked=false;
+      if(!OrbAuditProbeSeries(frames[i],cutoff,OrbAuditWarmupBars(frames[i]),labels[i],detail,maxBarsBlocked))
+      {
+         ready=false;
+         if(maxBarsBlocked)hardBlocked=true;
+      }
+   }
+   if(!ready&&!hardBlocked&&g_histCoverageAttempts>=6)
+   {
+      hardBlocked=true;
+      detail="Broker/terminal history did not reach the requested cutoff after "
+         +IntegerToString(g_histCoverageAttempts)+" attempts | "+detail;
+   }
+   return ready;
+}
+
+void OrbResetHistoricalStats()
+{
+   g_histAuditRunning=false;
+   g_histAuditTotalDays=RuntimeHistoricalDays();
+   g_histAuditProcessedDays=0;
+   g_histAuditProgressPct=0.0;
+   g_histTotal=0;g_histWins=0;g_histLosses=0;g_histNetR=0.0;g_histNetMoney=0.0;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
+}
+
 void DrawHistoricalSignals()
 {
-   if(IsTesterMode()){DeleteHist();g_histStatLine="tester_skip";return;}
-   if(!InpDrawHistoricalSignals){DeleteHist();g_histStatLine="off";return;}
+   if(IsTesterMode()){g_histAuditRunning=false;DeleteHist();g_histStatLine="tester_skip";return;}
+   if(!InpDrawHistoricalSignals){g_histAuditRunning=false;DeleteHist();g_histStatLine="off";return;}
    datetime now=TimeCurrent();
    if(!g_histNeedsRedraw&&g_lastHistBuild>0&&now-g_lastHistBuild<300)return;
+   int days=RuntimeHistoricalDays();
+   string coverageDetail="";bool hardBlocked=false;
+   g_histCoverageAttempts++;
+   if(!EnsureOrbAuditHistoryCoverage(days,coverageDetail,hardBlocked))
+   {
+      DeleteHist();
+      OrbResetHistoricalStats();
+      g_histCoveragePending=true;
+      g_histCoverageHardBlocked=hardBlocked;
+      g_histCoverageStatus=HistoricalWindowLabel()+(hardBlocked?" HISTORY BLOCKED":" HISTORY SYNC");
+      g_histCoverageDetail=coverageDetail;
+      g_histStatLine=g_histCoverageStatus+" | "+coverageDetail;
+      g_histNeedsRedraw=!hardBlocked&&InpAuditHistoryAutoRetry;
+      g_histCoverageNextRetry=TimeLocal()+MathMax(2,InpAuditHistoryRetrySec);
+      Print("ORB15v3 ",g_histStatLine);
+      UpdateDashboard();ChartRedraw(0);
+      return;
+   }
+   g_histCoveragePending=false;g_histCoverageHardBlocked=false;g_histCoverageNextRetry=0;
+   g_histCoverageAttempts=0;g_histCoverageStatus="";g_histCoverageDetail="";
    g_lastHistBuild=now;g_histNeedsRedraw=false;
    DeleteHist();
 
    datetime nyNow=ServerToSessionLocal(now);MqlDateTime nySt;TimeToStruct(nyNow,nySt);
    datetime nyMid=MakeDateTime(nySt.year,nySt.mon,nySt.day,0,0,0);
-   int days=RuntimeHistoricalDays();
+   g_histAuditRunning=true;g_histAuditTotalDays=days;g_histAuditProcessedDays=0;g_histAuditProgressPct=0.0;
+   UpdateDashboard();ChartRedraw(0);
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=0.0001;
 
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histNetR=0;g_histNetMoney=0;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
    int checked=0,drawn=0,filtered=0;
 
    Print("ORB15v3 ======= HIST REDRAW START ======= TF=",TfLabel(g_rtSignalTf),
@@ -2028,6 +2422,9 @@ void DrawHistoricalSignals()
    for(int back=days-1;back>=0;back--)
    {
       datetime nyDay=nyMid-back*86400;MqlDateTime daySt;TimeToStruct(nyDay,daySt);
+      g_histAuditProcessedDays=days-back;
+      g_histAuditProgressPct=100.0*(double)g_histAuditProcessedDays/(double)MathMax(1,g_histAuditTotalDays);
+      if((g_histAuditProcessedDays%20)==0){UpdateDashboard();ChartRedraw(0);}
       if(daySt.day_of_week==0||daySt.day_of_week==6)continue;
 
       double hi,lo,avgV;datetime os,oe,te;int used;
@@ -2072,14 +2469,16 @@ void DrawHistoricalSignals()
          continue;
       }
 
-      g_histTotal++;
+      RegimeV3Snapshot regimeSnapshot;
+      int regimeBucket=OrbRegimeBucketAt(sigT,regimeSnapshot);
+      string regimeDetail=OrbRegimeDetail(regimeSnapshot,regimeBucket);
 
       // Simulate trade
       bool isBuy=(dir=="BUY");
       double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
       double entry=entryPrice;
       double rawSl=isBuy?(lo-buffer):(hi+buffer);
-      double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
+      double sl=ApplyRuntimeSlFromEntry(isBuy,entry,rawSl);
       double risk=MathAbs(entry-sl);if(risk<=pt)continue;
       double r1v=MathMax(0.1,InpTp1R),r2v=MathMax(0.1,InpTp2R),r3v=MathMax(0.1,InpTp3R);
       double tp1=NormalizePrice(isBuy?entry+risk*r1v:entry-risk*r1v);
@@ -2098,8 +2497,20 @@ void DrawHistoricalSignals()
       g_orbHigh=hi;g_orbLow=lo;g_orbStartServer=os;g_orbEndServer=oe;g_tradeEndServer=te;
       HistResult sim=SimulateTrade(entryT,simEnd,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg());
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
-      WriteInternalSimAudit("dashboard_hist",entryT,simEnd,dir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail);
+      WriteInternalSimAudit("dashboard_hist",entryT,simEnd,dir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail+" "+regimeDetail+" regime_allowed="+(OrbRegimeAllowed(regimeBucket)?"1":"0"));
       bool finalOutcome=(sim.outcome!="open");
+      if(finalOutcome&&regimeBucket>=0&&regimeBucket<ORB_REGIME_COUNT)
+      {
+         if(sim.netR>0)g_regimeWins[regimeBucket]++;
+         else if(sim.netR<0)g_regimeLosses[regimeBucket]++;
+      }
+      if(!OrbRegimeAllowed(regimeBucket))
+      {
+         filtered++;
+         Print("ORB15v3 HIST regime blocked ",regimeDetail," signal=",FmtTime(sigT));
+         continue;
+      }
+      g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
       if(finalOutcome&&sim.netR>0)g_histWins++;
       else if(finalOutcome&&sim.netR<0)g_histLosses++;
@@ -2141,6 +2552,18 @@ void DrawHistoricalSignals()
       double arwP=isBuy?(entry-pad):(entry+pad);
       string dateKey=IntegerToString(daySt.year)+StringFormat("%02d%02d",daySt.mon,daySt.day);
       string base=PREFIX+"HIST_"+dateKey+"_"+dir+"_";
+      double simRisk=MathAbs(sim.simEntry-sim.simSl);
+      datetime levelEnd=entryT+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
+      if(nextSig>entryT&&nextSig<levelEnd)levelEnd=nextSig;
+      datetime liveCut=NextOrbOpenOwnPositionTimeAfter(entryT,levelEnd);
+      if(liveCut>entryT&&liveCut<levelEnd)levelEnd=liveCut;
+      string levelId=dateKey+"_"+dir;
+      DrawOrbHistoricalSegment(levelId+"_ENTRY",entryT,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
+      DrawOrbHistoricalSegment(levelId+"_SL",entryT,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
+      if(sim.simTarget>0.0)
+         DrawOrbHistoricalSegment(levelId+"_TP",entryT,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
+      if(sim.hcLeg>0&&simRisk>0.0)
+         DrawOrbHistoricalSegment(levelId+"_HC",entryT,levelEnd,PriceAtLeg(isBuy,sim.simEntry,simRisk,sim.hcLeg),C'255,204,82',STYLE_DOT);
 
       color arwClr=sim.isWin?clrLime:(sim.outcome=="SL"?clrTomato:clrGold);
       int arwCode=isBuy?233:234;
@@ -2167,7 +2590,6 @@ void DrawHistoricalSignals()
       double txtP=isBuy?arwP-pad*0.6:arwP+pad*0.6;
       DrawSignalText(base+"TXT",entryT,txtP,txt,txtClr);
 
-      double simRisk=MathAbs(sim.simEntry-sim.simSl);
       string hcTxt=sim.hcLeg>0?DoubleToString(PriceAtLeg(isBuy,sim.simEntry,simRisk,sim.hcLeg),_Digits):"OFF";
       string lvlTxt="SL="+DoubleToString(sim.simSl,_Digits)
          +" TP="+DoubleToString(sim.simTarget,_Digits)
@@ -2177,11 +2599,13 @@ void DrawHistoricalSignals()
       drawn++;
    }
 
+   g_histAuditProcessedDays=days;g_histAuditProgressPct=100.0;g_histAuditRunning=false;
    double wr=g_histTotal>0?(double)g_histWins/(double)g_histTotal*100.0:0;
    g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2);
    if(filtered>0)g_histStatLine+=" | "+IntegerToString(filtered)+" filt";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",checked," drawn=",drawn," =======");
    Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(days));
+   UpdateDashboard();ChartRedraw(0);
 }
 
 //=========================================================================
@@ -2189,76 +2613,14 @@ void DrawHistoricalSignals()
 //=========================================================================
 void OrbAudit_PositionProbe()
 {
-   if(!g_auditRuntime) return;
-   datetime now=TimeCurrent();
-   if(g_auditLastProbeTime>0 && now-g_auditLastProbeTime<30) return;
-   g_auditLastProbeTime=now;
-   string fileName="ORB15_PositionProbe_"+AuditDateStr()+".csv";
-   string hash="";
-   int count=0;
-   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID),ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-   for(int i=PositionsTotal()-1;i>=0;i--)
-   {
-      ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;
-      if(!IsOwnPosition())continue;
-      int d=(long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;
-      double entry=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP);
-      double lots=PositionGetDouble(POSITION_VOLUME),px=d>0?bid:ask;
-      double risk=MathAbs(entry-sl),currentR=risk>_Point?(d>0?(px-entry)/risk:(entry-px)/risk):0;
-      double pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
-      count++;
-      hash+=IntegerToString((int)t)+":"+DoubleToString(currentR,2)+";";
-      int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
-      if(h==INVALID_HANDLE) continue;
-      bool empty=(FileSize(h)<=0);FileSeek(h,0,SEEK_END);
-      if(empty)FileWrite(h,"ts_gmt","ts_server","ms","event","build","symbol","ticket","direction","lots","entry","sl","tp","px","risk","current_r","pnl");
-      FileWrite(h,TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
-         IntegerToString((int)(GetTickCount()%1000)),"position_probe",ORB15_BUILD,_Symbol,
-         IntegerToString((int)t),d>0?"BUY":"SELL",DoubleToString(lots,4),AuditPx(entry),AuditPx(sl),AuditPx(tp),AuditPx(px),
-         DoubleToString(risk,_Digits),DoubleToString(currentR,3),DoubleToString(pnl,2));
-      FileClose(h);
-   }
-   if(count<=0 && hash!= g_auditLastProbeHash)
-   {
-      int h=FileOpen(fileName,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE,',');
-      if(h!=INVALID_HANDLE){bool empty=(FileSize(h)<=0);FileSeek(h,0,SEEK_END);
-         if(empty)FileWrite(h,"ts_gmt","ts_server","ms","event","build","symbol","ticket","direction","lots","entry","sl","tp","px","risk","current_r","pnl");
-         FileWrite(h,TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS),TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
-            IntegerToString((int)(GetTickCount()%1000)),"position_probe_flat",ORB15_BUILD,_Symbol,"0","","0","0","0","0","0","0","0","0");
-         FileClose(h);}
-      hash="flat";
-   }
-   g_auditLastProbeHash=hash;
+   // Professional lifecycle keeps excursions in persistent state and writes only on lifecycle events.
+   OrbProUpdateOpenPositions();
 }
 
 void OrbAudit_HistoryScan()
 {
-   if(!g_auditRuntime) return;
-   datetime now=TimeCurrent();
-   if(g_auditLastHistScan>0 && now-g_auditLastHistScan<2) return;
-   g_auditLastHistScan=now;
-   datetime newestTime=g_auditLastHistTime;ulong newestTicket=g_auditLastHistTicket;
-   if(!HistorySelect(now-86400*3,now)) return;
-   for(int i=HistoryDealsTotal()-1;i>=0;i--)
-   {
-      ulong dt=HistoryDealGetTicket(i);if(dt==0)continue;
-      ENUM_DEAL_TYPE dtp=(ENUM_DEAL_TYPE)HistoryDealGetInteger(dt,DEAL_TYPE);
-      if(dtp!=DEAL_TYPE_BUY&&dtp!=DEAL_TYPE_SELL)continue;
-      ENUM_DEAL_ENTRY de=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(dt,DEAL_ENTRY);
-      if(de!=DEAL_ENTRY_OUT&&de!=DEAL_ENTRY_INOUT)continue;
-      if(HistoryDealGetString(dt,DEAL_SYMBOL)!=_Symbol)continue;
-      if(!MagicOwned((long)HistoryDealGetInteger(dt,DEAL_MAGIC)))continue;
-      datetime ct=(datetime)HistoryDealGetInteger(dt,DEAL_TIME);
-      if(ct<g_auditLastHistTime||(ct==g_auditLastHistTime&&dt<=g_auditLastHistTicket))continue;
-      double pnl=HistoryDealGetDouble(dt,DEAL_PROFIT)+HistoryDealGetDouble(dt,DEAL_SWAP)+HistoryDealGetDouble(dt,DEAL_COMMISSION)+HistoryDealGetDouble(dt,DEAL_FEE);
-      string dir=dtp==DEAL_TYPE_BUY?"SELL":"BUY";
-      Audit("history_close",dir,HistoryDealGetDouble(dt,DEAL_VOLUME),HistoryDealGetDouble(dt,DEAL_PRICE),0,0,
-         "pnl="+DoubleToString(pnl,2)+" deal="+IntegerToString((int)dt));
-      if(ct>newestTime||(ct==newestTime&&dt>newestTicket)){newestTime=ct;newestTicket=dt;}
-   }
-   g_auditLastHistTime=newestTime;g_auditLastHistTicket=newestTicket;
+   OrbProRecoverClosedPlans(false);
 }
-
 //=========================================================================
 //  BRUTE-FORCE BACKTEST ENGINE (async state machine)
 //=========================================================================
@@ -2334,6 +2696,16 @@ void OBT_Start()
 {
    if(g_btRunning) return;
    g_btWeeks=MathMax(1,g_btWeeks);g_btStartMs=GetTickCount();g_btElapsedMs=0;
+   string coverageDetail="";bool hardBlocked=false;
+   g_histCoverageAttempts++;
+   if(!EnsureOrbAuditHistoryCoverage(g_btWeeks*7,coverageDetail,hardBlocked))
+   {
+      g_btLastResult=(hardBlocked?"HISTORY BLOCKED: ":"HISTORY SYNC: ")+coverageDetail;
+      Print("OBT: ",g_btLastResult);
+      UpdateDashboard();ChartRedraw(0);
+      return;
+   }
+   g_histCoverageAttempts=0;
    OBT_GenerateCombos();
    OBT_PrecomputeDays();
    MqlDateTime d;TimeToStruct(TimeGMT(),d);
@@ -2394,7 +2766,7 @@ void OBT_Tick()
       if(!entryOk) continue;
       double buffer=MathMax(0,InpSlBufferPoints)*pt;
       double rawSl=isBuy?(g_btDays[di].orbLo-buffer):(g_btDays[di].orbHi+buffer);
-      double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
+      double sl=ApplyRuntimeSlFromEntry(isBuy,entry,rawSl);
       double risk=MathAbs(entry-sl);if(risk<=pt) continue;
       double r1v=MathMax(0.1,InpTp1R),r2v=MathMax(0.1,InpTp2R),r3v=MathMax(0.1,InpTp3R);
       double tp1=NormalizePrice(isBuy?entry+risk*r1v:entry-risk*r1v);
@@ -2478,6 +2850,8 @@ void OBT_Stop()
    Print("OBT: stopped at step ",g_btStep);
 }
 
+#include "OrbUltimate_RegimeMatrix.mqh"
+
 //=========================================================================
 //  DASHBOARD (Nas-inspired design with toggle buttons + TF selector)
 //=========================================================================
@@ -2485,7 +2859,7 @@ void DrawDashboard()
 {
    if(!InpShowDashboard){DeleteDash();return;}
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=500;
+   int W=620,H=592;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
@@ -2504,6 +2878,22 @@ void UpdateDashboard()
    int x=InpDashboardX,y=InpDashboardY;
    int W=620;
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
+
+   int rootY=y;
+   RegimeV3Update(false);
+   int currentRegime=OrbRegimeBucket(g_regimeV3);
+   string regimeNow=currentRegime>=0?OrbRegimeName(currentRegime):"WAITING DATA";
+   CreateLabel("DASH_REG_TITLE",x+12,rootY+34,"JP225 REGIME // NOW: "+regimeNow,
+      currentRegime>=0?RegimeV3CoreColor():C'145,160,180',8);
+   int regW=194,regH=18,regGap=5;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++)
+   {
+      int col=ri%3,row=ri/3;
+      string txt=(ri==currentRegime?"> ":"")+OrbRegimeStatsText(ri)+(g_regimeAllowed[ri]?"":" BLOCK");
+      color bg=g_regimeAllowed[ri]?C'58,126,178':C'42,47,57';
+      CreateButton("BTN_REG_"+IntegerToString(ri),x+12+col*(regW+regGap),rootY+48+row*22,regW,regH,txt,bg);
+   }
+   y=rootY+92;
 
    // Status line
    string state=g_rtEaEnabled?"EA ON":"EA OFF";
@@ -2554,6 +2944,9 @@ void UpdateDashboard()
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_EXIT",x+326,y+452,94,18,RuntimeExitLabel(),g_rtExitMode==ORB_EXIT_FIXED_TARGET?C'80,80,80':C'38,101,176');
    CreateButton("BTN_CLOSEALL",x+326,y+475,86,18,"CLOSE ALL",C'178,37,57');
+   CreateButton("BTN_BRIDGE_PUB",x+424,y+452,82,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_BRIDGE_ONLY",x+512,y+452,92,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
+   CreateLabel("DASH_BRIDGE",x+424,y+478,"CT "+g_orbBridgeStatus,C'134,158,182',7);
 
    // Separator
    CreateRect("DASH_SEP2",x+8,y+132,W-16,1,C'65,116,172',C'65,116,172');
@@ -2562,37 +2955,57 @@ void UpdateDashboard()
    double wr=g_histTotal>0?(double)g_histWins/(double)g_histTotal*100.0:0;
    color wrClr=wr>=50?C'80,255,180':C'255,95,140';
 
-   CreateLabel("DASH_STITLE",x+12,y+138,IntegerToString(g_rtHistoricalWeeks)+"W AUDIT+CHART ("+TfLabel(g_rtSignalTf)+")",acB,9);
-   CreateButton("BTN_AUD_2W",x+310,y+138,44,18,"2W",g_rtHistoricalWeeks==2?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_AUD_5W",x+358,y+138,44,18,"5W",g_rtHistoricalWeeks==5?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_AUD_10W",x+406,y+138,48,18,"10W",g_rtHistoricalWeeks==10?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_AUD_20W",x+458,y+138,50,18,"20W",g_rtHistoricalWeeks==20?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_ENTRY",x+512,y+138,96,18,RuntimeEntryLabel(),g_rtEntryMode==ORB_ENTRY_BREAKOUT?C'80,80,80':(g_rtEntryMode==ORB_ENTRY_IMBALANCE_M1?C'38,101,176':C'178,92,37'));
+   CreateLabel("DASH_STITLE",x+12,y+138,HistoricalWindowLabel()+" AUDIT+CHART ("+TfLabel(g_rtSignalTf)+")",acB,9);
+   int awx=x+240,awy=y+138,awg=3;
+   CreateButton("BTN_AUD_2W",awx,awy,34,18,"2W",g_rtHistoricalWeeks==2?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_5W",awx,awy,34,18,"5W",g_rtHistoricalWeeks==5?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_10W",awx,awy,38,18,"10W",g_rtHistoricalWeeks==10?C'38,101,176':C'80,80,80');awx+=38+awg;
+   CreateButton("BTN_AUD_20W",awx,awy,38,18,"20W",g_rtHistoricalWeeks==20?C'38,101,176':C'80,80,80');awx+=38+awg;
+   CreateButton("BTN_AUD_1Y",awx,awy,34,18,"1Y",g_rtHistoricalWeeks==52?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_2Y",awx,awy,34,18,"2Y",g_rtHistoricalWeeks==104?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_3Y",awx,awy,34,18,"3Y",g_rtHistoricalWeeks==156?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_4Y",awx,awy,34,18,"4Y",g_rtHistoricalWeeks==208?C'38,101,176':C'80,80,80');awx+=34+awg;
+   CreateButton("BTN_AUD_5Y",awx,awy,34,18,"5Y",g_rtHistoricalWeeks==260?C'38,101,176':C'80,80,80');
+   CreateButton("BTN_ENTRY",x+412,y+160,102,18,RuntimeEntryLabel(),g_rtEntryMode==ORB_ENTRY_BREAKOUT?C'80,80,80':(g_rtEntryMode==ORB_ENTRY_IMBALANCE_M1?C'38,101,176':C'178,92,37'));
    CreateButton("BTN_AUDIT",x+522,y+160,86,18,g_auditRuntime?"AUDIT":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'80,80,80');
-   CreateLabel("DASH_STAT1",x+12,y+156,
-      IntegerToString(g_histTotal)+" signals | "+IntegerToString(g_histWins)+" W  "+IntegerToString(g_histLosses)+" L | WR "+DoubleToString(wr,1)+"%",
-      wrClr,9);
-   CreateLabel("DASH_STAT2",x+12,y+174,
-      "Net R: "+DoubleToString(g_histNetR,1)+"R"
+   string auditStat1=IntegerToString(g_histTotal)+" signals | "+IntegerToString(g_histWins)+" W  "+IntegerToString(g_histLosses)+" L | WR "+DoubleToString(wr,1)+"%";
+   string auditStat2="Net R: "+DoubleToString(g_histNetR,1)+"R"
       +" | Net $: "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)
       +" | Avg W: "+DoubleToString(g_histWins>0?g_histNetR/(double)g_histWins:0,1)+"R"
-      +" | "+IntegerToString(g_histTotal-g_histWins-g_histLosses)+" open/timeout",
-      muted,8);
+      +" | "+IntegerToString(g_histTotal-g_histWins-g_histLosses)+" open/timeout";
+   color auditStatColor=wrClr;
+   if(g_histCoveragePending)
+   {
+      auditStat1=g_histCoverageStatus;
+      auditStat2=g_histCoverageHardBlocked
+         ?"Set Tools > Options > Charts > Max bars, restart MT5, then reselect audit window."
+         :"Downloading/building history; automatic retry is active.";
+      auditStatColor=g_histCoverageHardBlocked?C'255,80,110':C'255,204,82';
+   }
+   CreateLabel("DASH_STAT1",x+12,y+156,auditStat1,auditStatColor,9);
+   CreateLabel("DASH_STAT2",x+12,y+174,auditStat2,muted,8);
 
    // TP config line
    string tpInfo=InpExecutionMode==ORB_EXEC_PARTIAL_3LEG
       ?"TP1="+DoubleToString(InpTp1R,1)+"R TP2="+DoubleToString(InpTp2R,1)+"R TP3="+DoubleToString(InpTp3R,1)+"R"
       :TargetLabel()+" "+HalfBeLabel();
-   CreateLabel("DASH_STAT3",x+12,y+190,tpInfo+" | "+RuntimeTargetModeLabel()+" | "+ExitDebugConfig()+" | SL% "+DoubleToString(g_rtSlDistancePct,0)+" | AutoLot "+BoolText(InpUseAutoRiskLot),C'134,158,182',7);
-   CreateLabel("DASH_SL_L",x+330,y+190,"SL%:",C'134,158,182',7);
-   CreateEdit("EDIT_SL_PCT",x+362,y+188,48,18,DoubleToString(g_rtSlDistancePct,0));
-   CreateButton("BTN_SL_APPLY",x+416,y+188,58,18,"APPLY",C'38,101,176');
+   CreateLabel("DASH_STAT3",x+12,y+190,tpInfo+" | "+RuntimeTargetModeLabel()+" | "+ExitDebugConfig()+" | "+RuntimeSlModeLabel()+" | AutoLot "+BoolText(InpUseAutoRiskLot),C'134,158,182',7);
+   CreateButton("BTN_SL_MODE",x+330,y+188,66,18,g_rtPipSlMode?"PIP ON":"SL% MODE",g_rtPipSlMode?C'30,120,70':C'80,80,80');
+   CreateEdit("EDIT_SL_VALUE",x+402,y+188,72,18,g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
+   CreateButton("BTN_SL_APPLY",x+480,y+188,58,18,"APPLY",C'38,101,176');
 
-   // Win rate bar
+   // Win-rate bar doubles as an audit progress bar while a long rebuild is running.
    int barW=496,barH=14;
+   double barPct=g_histAuditRunning?g_histAuditProgressPct:wr;
+   color barClr=g_histAuditRunning?C'38,140,220':wrClr;
    CreateRect("DASH_WRBAR_BG",x+12,y+206,barW,barH,C'42,51,68',C'134,158,182');
-   int fillW=(int)MathRound((double)barW*MathMax(0,MathMin(100,wr))/100.0);
-   if(fillW>2)CreateRect("DASH_WRBAR_FILL",x+13,y+207,fillW-2,barH-2,wrClr,wrClr);
+   int fillW=(int)MathRound((double)barW*MathMax(0,MathMin(100,barPct))/100.0);
+   if(fillW>2)CreateRect("DASH_WRBAR_FILL",x+13,y+207,fillW-2,barH-2,barClr,barClr);
+   else ObjectDelete(0,PREFIX+"DASH_WRBAR_FILL");
+   string progressText=g_histAuditRunning?("AUD "+DoubleToString(g_histAuditProgressPct,1)+"%"):
+      (g_histCoveragePending?(g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT"):"");
+   CreateLabel("DASH_AUD_PROGRESS",x+514,y+206,progressText,
+      g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
 
    // Separator
    CreateRect("DASH_SEP3",x+8,y+226,W-16,1,C'65,116,172',C'65,116,172');
@@ -2864,6 +3277,7 @@ bool CloseHalfOfPosition(ulong ticket)
 {
    if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())return false;
    double vol=PositionGetDouble(POSITION_VOLUME);
+   ulong positionId=(ulong)PositionGetInteger(POSITION_IDENTIFIER);if(positionId==0)positionId=ticket;
    double minv=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
    double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    double closeVol=NormalizeVolume(vol*0.5);
@@ -2875,6 +3289,7 @@ bool CloseHalfOfPosition(ulong ticket)
       return false;
    }
    bool ok=trade.PositionClosePartial(ticket,closeVol);
+   if(ok)OrbProSet(positionId,"halfDone",1);
    Audit(ok?"half_close":"half_close_failed",
       (long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL",
       closeVol,PositionGetDouble(POSITION_PRICE_OPEN),PositionGetDouble(POSITION_SL),PositionGetDouble(POSITION_TP),
@@ -2914,24 +3329,20 @@ double SessionVwap(datetime from,datetime to,ENUM_TIMEFRAMES tf)
 
 bool CloseOwnForExit(string eventName,string detail)
 {
+   if(g_tradeDir!=0)OrbProPublishCloseOnly(g_tradeDir,eventName);
    bool any=false,allOk=true;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0||!PositionSelectByTicket(t)||!IsOwnPosition())continue;
       string dir=(long)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL";
-      double vol=PositionGetDouble(POSITION_VOLUME);
-      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl=PositionGetDouble(POSITION_SL);
-      double tp=PositionGetDouble(POSITION_TP);
-      bool ok=trade.PositionClose(t);
-      any=true;if(!ok)allOk=false;
+      double vol=PositionGetDouble(POSITION_VOLUME),entry=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP);
+      bool ok=trade.PositionClose(t);any=true;if(!ok)allOk=false;
       Audit(ok?eventName:eventName+"_failed",dir,vol,entry,sl,tp,detail+" ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
    }
    if(any&&allOk){g_tradeDir=0;g_tradeOpenTime=0;g_beMoved=false;g_halfClosed=false;g_lastExecStatus=eventName;}
    return any&&allOk;
 }
-
 void ApplyAtrTrail(double bid,double ask)
 {
    if(g_rtExitMode!=ORB_EXIT_ATR_TRAIL||!ExitTrailStartReached())return;
@@ -3074,7 +3485,7 @@ void ManagePositions()
             }
             attempts++;
             bool mk=trade.PositionModify(t,be,PositionGetDouble(POSITION_TP));
-            if(mk)moved++;
+            if(mk){moved++;OrbProMarkBeDone(t);}
             Audit(mk?"sl_to_be":"sl_to_be_failed",g_tradeDir>0?"BUY":"SELL",PositionGetDouble(POSITION_VOLUME),g_tradeEntry,be,PositionGetDouble(POSITION_TP),"ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
          }
          if(moved>0)
@@ -3098,7 +3509,7 @@ void ManagePositions()
       {
          double px=g_tradeDir>0?bid:ask;double prog=g_tradeDir>0?(px-g_tradeEntry):(g_tradeEntry-px);
          double progR=g_tradeRisk>0?prog/g_tradeRisk:0;
-         if(progR<InpTimeExitMinProgress){Audit("time_exit",g_tradeDir>0?"BUY":"SELL",0,g_tradeEntry,0,0,"R="+DoubleToString(progR,2));CloseAllOwn();g_tradeDir=0;g_tradeOpenTime=0;g_lastExecStatus="TIME_EXIT";}
+         if(progR<InpTimeExitMinProgress){Audit("time_exit",g_tradeDir>0?"BUY":"SELL",0,g_tradeEntry,0,0,"R="+DoubleToString(progR,2));CloseAllOwn("time_exit");g_tradeDir=0;g_tradeOpenTime=0;g_lastExecStatus="TIME_EXIT";}
       }
    }
 }
@@ -3196,7 +3607,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double buf=MathMax(0,InpSlBufferPoints)*pt;
    double entry=NormalizeTradePrice(isBuy?tick.ask:tick.bid);
    double rawSl=NormalizeTradePrice(isBuy?(g_orbLow-buf):(g_orbHigh+buf));
-   double sl=ScaleSlFromEntry(isBuy,entry,rawSl);
+   double sl=ApplyRuntimeSlFromEntry(isBuy,entry,rawSl);
    double risk=MathAbs(entry-sl);if(risk<=pt)return false;
    double tp1=PriceAtLeg(isBuy,entry,risk,1);
    double tp2=PriceAtLeg(isBuy,entry,risk,2);
@@ -3204,7 +3615,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    double tp4=PriceAtLeg(isBuy,entry,risk,4);
    double tp5=PriceAtLeg(isBuy,entry,risk,5);
    double tp6=PriceAtLeg(isBuy,entry,risk,6);
+   if(g_orbBridgeOnly&&!ExitModeUsesFixedTp(g_rtExitMode))
+   {
+      g_lastExecStatus="BRIDGE_ONLY_UNSUPPORTED_EXIT";
+      Audit("bridge_only_shape_block",dir,0,entry,sl,0,"bridge-only requires a fixed TP because no native position exists to drive dynamic/time exits "+ExitDebugConfig());
+      return false;
+   }
    bool opened=false;
+   double planTp=0.0,planHalf=0.0;
    string lotDetail="";
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
    {
@@ -3220,6 +3638,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
          Audit("exit_mode_block",dir,0,entry,sl,0,"partial_3leg_incompatible "+ExitDebugConfig()+" "+entryDetail);
          return false;
       }
+      planTp=tp3;
+      planHalf=g_rtBEOnTp1?tp1:0.0;
+      bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(dir,signalBar,entry,sl,planTp,planHalf,planHalf>0?"TP1":"OFF",entryDetail+" bridge_mode=3leg_collapsed");
+      if(g_orbBridgeOnly)
+      {
+         if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
+         g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
+      }
       double lot=ResolveLot(dir,entry,sl,lotDetail);
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",dir,0,entry,sl,tp3,lotDetail+" "+entryDetail);return false;}
       opened=ExecThreeLegs(dir,entry,sl,tp1,tp2,tp3,lot);
@@ -3230,6 +3656,15 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       double targetPrice=0.0,targetR=0.0;string targetDetail="";
       if(!ResolveTargetPriceAndR(isBuy,entry,risk,targetPrice,targetR,targetDetail)){g_lastExecStatus="FILTERED";Audit("target_resolve_fail",dir,0,entry,sl,0,entryDetail);return false;}
       double tp=ExitModeUsesFixedTp(g_rtExitMode)?targetPrice:0.0;
+      planTp=tp;
+      int bridgeHcLeg=RuntimeHalfBeLeg();
+      if(bridgeHcLeg>0)planHalf=PriceAtLeg(isBuy,entry,risk,bridgeHcLeg);
+      bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(dir,signalBar,entry,sl,tp,planHalf,bridgeHcLeg>0?("TP"+IntegerToString(bridgeHcLeg)):"OFF",entryDetail+" "+targetDetail);
+      if(g_orbBridgeOnly)
+      {
+         if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
+         g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
+      }
       double lot=ResolveLot(dir,entry,sl,lotDetail);
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",dir,0,entry,sl,tp,lotDetail+" "+entryDetail);return false;}
       opened=ExecSingle(dir,entry,sl,tp,lot);
@@ -3238,6 +3673,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    if(opened)
    {
       g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";
+      OrbProStoreOpenPositions(g_tradeDir,entry,sl,planTp,planHalf,signalBar,g_lastSignalRegime);
       ClearRetestState("");
       ClearImbalanceState("");
       return true;
@@ -3271,6 +3707,19 @@ void TryOpenSignal()
    {
       g_lastFilterReason=fr;g_lastExecStatus="FILTERED";Audit("filtered",dir,0,sc,0,0,fr+" "+modernDetail);return;
    }
+   RegimeV3Snapshot liveRegimeSnapshot;
+   int liveRegimeBucket=OrbRegimeBucketAt(bt,liveRegimeSnapshot);
+   g_lastSignalRegime=liveRegimeBucket;
+   g_lastSignalRegimeName=OrbRegimeName(liveRegimeBucket);
+   string liveRegimeDetail=OrbRegimeDetail(liveRegimeSnapshot,liveRegimeBucket);
+   if(!OrbRegimeAllowed(liveRegimeBucket))
+   {
+      g_lastFilterReason="REGIME BLOCK "+g_lastSignalRegimeName;
+      g_lastExecStatus="REGIME_BLOCKED";
+      Audit("regime_block",dir,0,sc,0,0,liveRegimeDetail);
+      return;
+   }
+   modernDetail+=(modernDetail==""?"":" ")+liveRegimeDetail;
    g_lastFilterReason="";
    // Draw arrows
    int sh=InpUseClosedBarBreakout?1:0;double sH=iHigh(_Symbol,g_rtSignalTf,sh),sL=iLow(_Symbol,g_rtSignalTf,sh);
@@ -3318,6 +3767,15 @@ int OnInit()
    g_rtHalfBeLeg=ClampHalfBeLeg((int)InpHalfBeMode,g_rtTargetLeg);
    g_rtHistoricalWeeks=ClampHistWeeks(InpHistoricalWeeks>0?InpHistoricalWeeks:(int)MathCeil((double)MathMax(1,InpHistoricalDays)/7.0));
    g_rtSlDistancePct=ClampSlDistancePct(InpSlDistancePct);
+   g_rtPipSlMode=InpPipSlModeDefault;
+   g_rtPipSlPips=ClampPipSlPips(InpPipSlPips);
+   g_regimeAllowed[0]=InpRegimeTrendLowVolAllowed;
+   g_regimeAllowed[1]=InpRegimeTrendHighVolAllowed;
+   g_regimeAllowed[2]=InpRegimeRangeLowVolAllowed;
+   g_regimeAllowed[3]=InpRegimeRangeHighVolAllowed;
+   g_regimeAllowed[4]=InpRegimeTransitionPendingAllowed;
+   g_regimeAllowed[5]=InpRegimeTransitionFreshAllowed;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
    g_rtSignalTf=InpSignalTimeframe;
    g_rtDelayMin=InpBreakoutDelayMinutes;
    g_rtUseDelay=InpBreakoutDelayMinutes>0;
@@ -3327,8 +3785,10 @@ int OnInit()
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    g_lastHistBuild=0;g_histNeedsRedraw=true;
    ResetForNewNyDay();
+   RegimeV3Update(true);
+   OrbProInit();
    if(!IsTesterMode())EventSetTimer(5);
-   if(!IsTesterMode()){DrawDashboard();DrawHistoricalSignals();}
+   if(!IsTesterMode()){DrawDashboard();DrawHistoricalSignals();DrawOrbLiveTradeLevels();}
    if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),"/",DoubleToString(InpTp4R,1),"/",DoubleToString(InpTp5R,1),"/",DoubleToString(InpTp6R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars");
@@ -3344,28 +3804,41 @@ void OnDeinit(const int reason)
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    OrbTesterAudit_WriteDeal(trans, request, result);
+   OrbProOnTradeTransaction(trans);
 }
 
 void OnTimer()
 {
    EnforceRiskBreach();
    bool dc=ResetForNewNyDay();BuildOrb();
+   RegimeV3Update(false);
    if(dc&&!IsTesterMode())DrawHistoricalSignals();
+   else if(!IsTesterMode()&&g_histCoveragePending&&!g_histCoverageHardBlocked
+           &&InpAuditHistoryAutoRetry&&TimeLocal()>=g_histCoverageNextRetry)
+      DrawHistoricalSignals();
    TryOpenSignal();ManagePositions();
    if(!IsTesterMode())
    {
-      OrbAudit_PositionProbe();
+      OrbProTimer();
       OrbAudit_HistoryScan();
       OBT_Tick();
+      DrawOrbLiveTradeLevels();
       UpdateDashboard();
    }
 }
 
 void OnTick()
 {
+   if(IsTesterMode()&&InpTesterRegimeMatrix)
+   {
+      if(InpTesterRegimeMatrixAnchorTime>0 && TimeCurrent()<InpTesterRegimeMatrixAnchorTime)
+         return;
+      OBT_RunRegimeMatrix();
+      return;
+   }
    EnforceRiskBreach();
    ResetForNewNyDay();TryOpenSignal();ManagePositions();
-   if(!IsTesterMode())UpdateDashboard();
+   if(!IsTesterMode()){OrbProUpdateOpenPositions();DrawOrbLiveTradeLevels();UpdateDashboard();}
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
@@ -3373,6 +3846,17 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
 
    bool needRedraw=false;
+
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++)
+   {
+      if(sparam==PREFIX+"BTN_REG_"+IntegerToString(ri))
+      {
+         g_regimeAllowed[ri]=!g_regimeAllowed[ri];
+         g_lastExecStatus=g_regimeAllowed[ri]?("REGIME_ALLOWED "+OrbRegimeShortName(ri)):("REGIME_BLOCKED "+OrbRegimeShortName(ri));
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
+      }
+   }
 
    if(sparam==PREFIX+"BTN_ATR"){g_rtFilterAtr=!g_rtFilterAtr;needRedraw=true;}
    else if(sparam==PREFIX+"BTN_VOL"){g_rtFilterVol=!g_rtFilterVol;needRedraw=true;}
@@ -3392,11 +3876,25 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_AUD_5W"){SetHistoricalWeeks(5);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_10W"){SetHistoricalWeeks(10);needRedraw=true;}
    else if(sparam==PREFIX+"BTN_AUD_20W"){SetHistoricalWeeks(20);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUD_1Y"){SetHistoricalWeeks(52);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUD_2Y"){SetHistoricalWeeks(104);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUD_3Y"){SetHistoricalWeeks(156);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUD_4Y"){SetHistoricalWeeks(208);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_AUD_5Y"){SetHistoricalWeeks(260);needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_SL_MODE")
+   {
+      g_rtPipSlMode=!g_rtPipSlMode;
+      ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
+      g_lastExecStatus=g_rtPipSlMode?"PIP_SL_ON":"PERCENT_SL_ON";
+      needRedraw=true;
+   }
    else if(sparam==PREFIX+"BTN_SL_APPLY")
    {
-      string pctTxt=ObjectGetString(0,PREFIX+"EDIT_SL_PCT",OBJPROP_TEXT);
-      SetSlDistancePct(StringToDouble(pctTxt));
-      ObjectSetString(0,PREFIX+"EDIT_SL_PCT",OBJPROP_TEXT,DoubleToString(g_rtSlDistancePct,0));
+      string valueTxt=ObjectGetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT);
+      if(g_rtPipSlMode)SetPipSlPips(StringToDouble(valueTxt));
+      else SetSlDistancePct(StringToDouble(valueTxt));
+      ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
+      g_lastExecStatus=g_rtPipSlMode?("PIP_SL_"+DoubleToString(g_rtPipSlPips,1)):("SL_PCT_"+DoubleToString(g_rtSlDistancePct,0));
       needRedraw=true;
    }
    else if(sparam==PREFIX+"BTN_AUDIT")
@@ -3439,7 +3937,19 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    else if(sparam==PREFIX+"BTN_CLOSEALL")
    {
-      CloseAllOwn();g_tradeDir=0;g_tradeOpenTime=0;
+      CloseAllOwn("manual_close");g_tradeDir=0;g_tradeOpenTime=0;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_BRIDGE_PUB")
+   {
+      g_orbBridgeEnabled=!g_orbBridgeEnabled;
+      if(!g_orbBridgeEnabled){g_orbBridgeOnly=false;g_orbBridgeStatus="BRIDGE OFF";}else OrbProWriteInitMarker();
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_BRIDGE_ONLY")
+   {
+      g_orbBridgeOnly=!g_orbBridgeOnly;if(g_orbBridgeOnly)g_orbBridgeEnabled=true;
+      if(g_orbBridgeEnabled)OrbProWriteInitMarker();
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_BTF_SIGNAL"){g_btFillMode=BT_FILL_SIGNAL_CLOSE;needRedraw=true;}
