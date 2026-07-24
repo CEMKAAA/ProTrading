@@ -7,8 +7,10 @@
 #property version "1.11"
 
 #include <Trade/Trade.mqh>
+#include "LiqNarrativeSol_RegimeV3.mqh"
+#include "LiqNarrativeMacroRegime.mqh"
 
-#define LN_BUILD "2026-07-24.sol-v14-claim-isolation-v2"
+#define LN_BUILD "2026-07-24.sol-v14-dashboard-rebuild-v7"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -386,6 +388,10 @@ double           g_slBufferAtrPct = 10.0;
 bool             g_pipSlMode = false;
 double           g_pipSlPips = 100.0;
 int              g_histWeeks = 2;
+bool             g_histAuditRunning = false;
+double           g_histAuditProgressPct = 0.0;
+string           g_histAuditStage = "READY";
+uint             g_histAuditLastUiMs = 0;
 long             DASH_Z = 1000000;
 
 //=====================================================================
@@ -599,6 +605,67 @@ string HistWindowLabel()
 int HistDays()
 {
    return ClampHistWeeks(g_histWeeks) * 7;
+}
+
+void UpdateHistoricalAuditProgressUi()
+{
+   if(IsTesterMode() || !InpShowDashboard || g_dashboardCollapsed) return;
+   if(ObjectFind(0, PFX + "DASH_BG") < 0) return;
+
+   int x = InpDashboardX;
+   int y = InpDashboardY;
+   int sec1 = y + 164;
+   int sec2 = sec1 + 236;
+   double pct = MathMax(0.0, MathMin(100.0, g_histAuditProgressPct));
+   int fill = (int)MathRound(638.0 * pct / 100.0);
+
+   RectObj("DASH_WR_BG", x + 16, sec2 + 82, 640, 14, C'38,46,60', C'60,80,110');
+   if(fill > 2)
+      RectObj("DASH_WR_FG", x + 17, sec2 + 83, fill, 12, C'38,140,220', C'38,140,220');
+   else
+      ObjectDelete(0, PFX + "DASH_WR_FG");
+   LabelObj("DASH_AUD_PROGRESS", x + 664, sec2 + 82,
+      g_histAuditStage + " " + DoubleToString(pct, 1) + "%", C'90,178,255', 7);
+}
+
+void SetHistoricalAuditProgress(string stage, double pct, bool force = false)
+{
+   if(!g_histAuditRunning || IsTesterMode()) return;
+   g_histAuditStage = stage;
+   g_histAuditProgressPct = MathMax(0.0, MathMin(100.0, pct));
+   uint now = GetTickCount();
+   if(!force && now - g_histAuditLastUiMs < 125) return;
+   g_histAuditLastUiMs = now;
+   if(ObjectFind(0, PFX + "DASH_BG") >= 0)
+   {
+      // Historical scans can emit thousands of progress updates. Updating only
+      // the three progress objects keeps MT5's chart-object queue responsive.
+      UpdateHistoricalAuditProgressUi();
+      ChartRedraw(0);
+   }
+}
+
+void BeginHistoricalAuditProgress()
+{
+   g_histAuditRunning = !IsTesterMode();
+   g_histAuditProgressPct = 0.0;
+   g_histAuditStage = "LOAD";
+   g_histAuditLastUiMs = 0;
+   SetHistoricalAuditProgress("LOAD", 1.0, true);
+}
+
+void EndHistoricalAuditProgress()
+{
+   SetHistoricalAuditProgress("DONE", 100.0, true);
+   g_histAuditRunning = false;
+   g_histAuditStage = "READY";
+   if(!IsTesterMode() && InpShowDashboard)
+   {
+      // Rebuild once after the synchronous audit so every control is restored
+      // even if the terminal deferred object paints while the scan was running.
+      DrawDashboard();
+      ChartRedraw(0);
+   }
 }
 
 string HistRawSignature()
@@ -1011,7 +1078,7 @@ int CollectSwings(const MqlRates &rates[], int lookback, SwingLevel &swings[], i
    int total = ArraySize(rates);
    int found = 0;
    int cap = maxLevels > 0 ? maxLevels : InpMaxSwings * 2;
-   cap = MathMax(1, MathMin(2000, cap));
+   cap = MathMax(1, MathMin(50000, cap));
    for(int i = lookback + 2; i < total - lookback && found < cap; ++i)
    {
       if(IsSwingHigh(rates, i, lookback))
@@ -1637,12 +1704,14 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
 
    SwingLevel swings[];
    int dynamicSwingCap = MathMax(InpMaxSwings * 2, RequiredBarsForWindow(htf, cutoff, 250));
-   dynamicSwingCap = MathMin(2000, MathMax(1, dynamicSwingCap));
+   dynamicSwingCap = MathMin(50000, MathMax(1, dynamicSwingCap));
    int swCount = CollectSwings(htfRates, swingLookback, swings, dynamicSwingCap);
    if(swCount <= 0) return 0;
 
    for(int s = 0; s < swCount; ++s)
    {
+      if(g_histAuditRunning)
+         SetHistoricalAuditProgress("SIGNALS", 5.0 + 50.0 * (double)(s + 1) / (double)MathMax(1, swCount));
       int dir = swings[s].dir < 0 ? 1 : -1; // sweep low -> buy, sweep high -> sell
       int reclaimIndex = -1;
       if(!DetectSweepReclaim(htfRates, swings[s], reclaimIndex)) continue;
@@ -2064,6 +2133,22 @@ datetime NextSignalTime(const ErlSignal &signals[], int index)
    return 0;
 }
 
+datetime NextOppositeSignalTime(const ErlSignal &signals[], datetime current, int dir)
+{
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      if(signals[i].availableTime > current && signals[i].dir != dir) return signals[i].availableTime;
+   }
+   return 0;
+}
+
+void CopySignalArray(const ErlSignal &source[], ErlSignal &destination[])
+{
+   ArrayFree(destination);
+   ArrayResize(destination, ArraySize(source));
+   for(int i = 0; i < ArraySize(source); ++i) destination[i] = source[i];
+}
+
 void FilterAlternatingSignals(ErlSignal &signals[])
 {
    ErlSignal filtered[];
@@ -2081,7 +2166,7 @@ void FilterAlternatingSignals(ErlSignal &signals[])
    for(int i = 0; i < ArraySize(filtered); ++i) signals[i] = filtered[i];
 }
 
-SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
+SimStats CalculateStats(ErlSignal &signals[], const ErlSignal &exitSignals[], ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf)
 {
    SimStats st;
    ZeroMemory(st);
@@ -2089,7 +2174,8 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    for(int i = 0; i < ArraySize(signals); ++i)
    {
       bool closed = false, won = false, valid = false;
-      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, NextSignalTime(signals, i), closed, won, valid);
+      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signals[i].availableTime, signals[i].dir);
+      double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, nextSignalTime, closed, won, valid);
       st.total++;
       if(!valid)
       {
@@ -2117,8 +2203,11 @@ SimStats CalculateStats(ErlSignal &signals[], ERL_RR_MODE target, ERL_HC_MODE hc
    return st;
 }
 
+#include "LiqNarrativeMacroRegimeFilter.mqh"
+
 void RecalculateHistoricalStats(bool rebuildSignals = true)
 {
+   BeginHistoricalAuditProgress();
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
    string rawSig = HistRawSignature();
    int weeks = ClampHistWeeks(g_histWeeks);
@@ -2151,6 +2240,13 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       ArrayFree(g_simCache);
    }
 
+   ErlSignal exitSignals[];
+   CopySignalArray(g_histSignals, exitSignals);
+   ErlSignal macroRegimeStatsSignals[];
+   CopySignalArray(g_histSignals, macroRegimeStatsSignals);
+   SetHistoricalAuditProgress("REGIMES", 56.0, true);
+   CalculateLiqMacroRegimeStats(macroRegimeStatsSignals, exitSignals);
+   ApplyLiqMacroRegimeFilter(g_histSignals);
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(g_histSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
@@ -2161,8 +2257,10 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ZeroMemory(g_hist);
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
+      if(g_histAuditRunning)
+         SetHistoricalAuditProgress("OUTCOMES", 78.0 + 21.0 * (double)(i + 1) / (double)MathMax(1, ArraySize(g_histSignals)));
       bool closed = false, won = false, valid = false;
-      datetime nextSignalTime = NextSignalTime(g_histSignals, i);
+      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
       string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
       if(!SimCacheGet(simKey, r, closed, won, valid))
@@ -2185,6 +2283,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       else { g_hist.losses++; g_hist.lostR += MathAbs(MathMin(0.0, r)); }
    }
    g_hist.pf = g_hist.lostR > 0.0 ? g_hist.wonR / g_hist.lostR : (g_hist.wonR > 0.0 ? 99.0 : 0.0);
+   EndHistoricalAuditProgress();
 }
 
 //=====================================================================
@@ -2650,6 +2749,41 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
    return accepted;
 }
 
+bool FileBridgeWriteMacroCloseOnly(const ErlSignal &sig, string rule)
+{
+   if(!g_fileBridgeEnabled || IsTesterMode()) return false;
+   string eventId = sig.id + "|macro_regime_close";
+   string dir = DirLabel(-sig.dir);
+   string source = FileBridgeSource() + "|RegimeFilterCloseOnly|" + rule;
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, dir, sig.entry, 0.0, 0.0,
+      source, 0.0, "off", sig.availableTime);
+   if(!genericOk)
+      Print("LiqNarrativeSol macro close generic write failed file=", InpFileBridgeLatestFile);
+
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, dir, sig.entry, 0.0, 0.0,
+      source, 0.0, "off", sig.availableTime);
+   bool accepted = scopedOk;
+   if(!scopedOk)
+      accepted = BridgeQueuePending(eventId, dir, sig.entry, 0.0, 0.0, source, 0.0, "off", sig.availableTime);
+
+   string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
+   int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
+   int a = FileOpen(auditFile, auditFlags, ',');
+   if(a != INVALID_HANDLE)
+   {
+      bool header = FileSize(a) == 0;
+      FileSeek(a, 0, SEEK_END);
+      if(header) FileBridgeWriteHeader(a);
+      FileBridgeWriteRow(a, eventId, dir, sig.entry, 0.0, 0.0, source, 0.0, "off", sig.availableTime);
+      FileClose(a);
+   }
+
+   if(scopedOk) g_lastBridgeStatus = "WROTE CLOSE " + FileBridgeTfString(g_entryTf);
+   else if(accepted) g_lastBridgeStatus = "QUEUED CLOSE " + FileBridgeTfString(g_entryTf);
+   else g_lastBridgeStatus = "CLOSE PUBLISH FAIL";
+   return accepted;
+}
+
 string ErlTesterAudit_FileStamp()
 {
    MqlDateTime d; TimeToStruct(TimeGMT(), d);
@@ -2900,6 +3034,15 @@ void DeleteByPrefix(string prefix)
       if(StringFind(name, prefix) == 0) ObjectDelete(0, name);
    }
 }
+void DeleteDashboardObjects()
+{
+   // A visual rebuild must recreate every dashboard object in drawing order.
+   // Keeping old buttons/edits lets newly-created rectangle backgrounds cover them.
+   DeleteByPrefix(PFX + "DASH_");
+   DeleteByPrefix(PFX + "BTN_");
+   DeleteByPrefix(PFX + "EDIT_");
+}
+
 void DeleteAllLiqNarrativeLiveObjects()
 {
    for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; --i)
@@ -3619,6 +3762,45 @@ void RememberSignalSeen(const ErlSignal &sig)
    g_lastSignalDir = sig.dir;
 }
 
+bool HandleMacroRegimeRejectedSignal(const ErlSignal &sig, string rule)
+{
+   if(sig.id == "") return false;
+   if(sig.id == g_lastSignalId || IsSignalEventClaimed(sig.id))
+   {
+      RememberSignalSeen(sig);
+      return true;
+   }
+
+   bool reverseExitEnabled = InpCloseOnReverse || g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL;
+   bool bridgeOk = true;
+   if(reverseExitEnabled && g_fileBridgeEnabled)
+      bridgeOk = FileBridgeWriteMacroCloseOnly(sig, rule);
+
+   bool localOk = true;
+   if(reverseExitEnabled && OwnPositionCount(-sig.dir) > 0)
+      localOk = CloseOwnPositions(-sig.dir) && OwnPositionCount(-sig.dir) == 0;
+
+   string detail = "rule=" + rule
+      + " bridge_close=" + (bridgeOk ? "1" : "0")
+      + " local_close=" + (localOk ? "1" : "0")
+      + " reverse_exit=" + (reverseExitEnabled ? "1" : "0");
+   if(!bridgeOk || !localOk)
+   {
+      g_lastStatus = "MACRO CLOSE RETRY";
+      g_lastBlock = !bridgeOk ? "macro_close_publish_failed" : "macro_close_local_failed";
+      AuditWrite("macro_regime_close_failed", sig.id, sig.dir, sig.entry, 0.0, 0.0, 0.0, detail);
+      return false;
+   }
+
+   MarkSignalEventClaimed(sig.id);
+   RememberSignalSeen(sig);
+   g_lastStatus = "FILTERED " + rule;
+   g_lastBlock = "macro_regime_filter";
+   AuditWrite("macro_regime_entry_rejected", sig.id, sig.dir, sig.entry, 0.0, 0.0, 0.0, detail);
+   Print("LiqNarrativeSol macro_regime rejected id=", sig.id, " dir=", DirLabel(sig.dir), " ", detail);
+   return true;
+}
+
 void MergeLatestSignalIntoHistoricalCache(const ErlSignal &sig)
 {
    if(!sig.valid || sig.id == "") return;
@@ -3833,6 +4015,25 @@ void TryOpenLatestSignal()
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
    if(firstAttemptForBar)
       RefreshHistoricalLifecycleFromLiveScan(signals);
+
+   ErlSignal rawLatest;
+   bool hasRawLatest = ArraySize(signals) > 0;
+   if(hasRawLatest) rawLatest = signals[ArraySize(signals) - 1];
+   bool macroRejected = false;
+   string macroRule = "";
+   bool macroClassified = hasRawLatest && LiqMacroRegimeDecision(rawLatest, macroRejected, macroRule);
+
+   ApplyLiqMacroRegimeFilter(signals);
+   if(macroClassified && macroRejected)
+   {
+      int freshSec = MathMax(entrySec * 2, 180);
+      if(now - rawLatest.availableTime <= freshSec)
+         HandleMacroRegimeRejectedSignal(rawLatest, macroRule);
+      else
+         RememberSignalSeen(rawLatest);
+      return;
+   }
+
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    count = ArraySize(signals);
    if(count <= 0)
@@ -4057,7 +4258,10 @@ void BacktestStep()
       BtCombo c = g_btCombos[g_btStep];
       ErlSignal signals[];
       BuildSignals(c.htf, c.entryTf, c.swing, c.bias, c.entryModel, c.stopModel, c.targetModel, c.requireIrlTouch, c.requireEntrySweep, c.requireDisplacementFvg, c.requireAsiaLiquidityDraw, c.useAsiaLiquidityTarget, c.requireSmt, cutoff, signals);
-      SimStats st = CalculateStats(signals, c.target, c.hc, c.targetModel, c.entryTf);
+      ErlSignal exitSignals[];
+      CopySignalArray(signals, exitSignals);
+      ApplyLiqMacroRegimeFilter(signals);
+      SimStats st = CalculateStats(signals, exitSignals, c.target, c.hc, c.targetModel, c.entryTf);
       double resolved = st.wins + st.losses;
       double wr = resolved > 0 ? (double)st.wins / resolved * 100.0 : 0.0;
       double avg = (st.total - st.invalid) > 0 ? st.netR / (st.total - st.invalid) : 0.0;
@@ -4087,10 +4291,10 @@ void DrawDashboard()
    if(IsTesterMode()) return;
    if(!InpShowDashboard)
    {
-      DeleteByPrefix(PFX + "DASH_");
+      DeleteDashboardObjects();
       return;
    }
-   DeleteByPrefix(PFX + "DASH_");
+   DeleteDashboardObjects();
    int x = InpDashboardX;
    int y = InpDashboardY;
    if(g_dashboardCollapsed)
@@ -4106,7 +4310,7 @@ void DrawDashboard()
       return;
    }
    int W = 760;
-   int H = 792;
+   int H = 930;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
@@ -4141,7 +4345,27 @@ void UpdateDashboard()
       + " | " + TargetLabel(g_target) + " | " + HcLabel(g_hc),
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
-   int sec1 = y + 64;
+   int regY = y + 62;
+   RectObj("DASH_REGIME_BG", x + 8, regY, 744, 94, C'18,27,39', C'60,110,170');
+   int currentRegime = LiqMacroRegimeBucket(g_regimeV3);
+   LabelObj("DASH_REGIME_T", x + 16, regY + 7,
+      "JP225 MACRO REGIME // NOW: " + (currentRegime >= 0 ? LiqMacroRegimeName(currentRegime) : "WAITING DATA"),
+      currentRegime >= 0 ? RegimeV3CoreColor() : muted, 9);
+   LabelObj("DASH_REGIME_HINT", x + 430, regY + 8,
+      "bright = ALLOW, dark = BLOCK", C'255,204,82', 8);
+   int macroW = 236;
+   for(int ri = 0; ri < LIQ_MACRO_REGIME_COUNT; ++ri)
+   {
+      int col = ri % 3;
+      int macroRow = ri / 3;
+      string text = (ri == currentRegime ? "> " : "") + LiqMacroRegimeStatsText(ri)
+         + (g_macroRegimeAllowed[ri] ? " ALLOW" : " BLOCK");
+      color bg = g_macroRegimeAllowed[ri] ? C'58,126,178' : C'42,47,57';
+      ButtonObj("BTN_MACRO_REG_" + IntegerToString(ri), x + 16 + col * 242, regY + 34 + macroRow * 24,
+         macroW, bh, text, bg);
+   }
+
+   int sec1 = y + 164;
    RectObj("DASH_SEC1", x + 8, sec1, 744, 228, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
@@ -4226,7 +4450,7 @@ void UpdateDashboard()
    LabelObj("DASH_ATRBUF_HINT", x + 592, row + 4, "0 = no ATR buffer", C'255,204,82', 8);
 
    int sec2 = sec1 + 236;
-   RectObj("DASH_SEC2", x + 8, sec2, 744, 112, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC2", x + 8, sec2, 744, 132, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
    double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
@@ -4236,19 +4460,32 @@ void UpdateDashboard()
       + "O" + (g_hist.invalid > 0 ? " DATA " + IntegerToString(g_hist.invalid) : "") + " | WR " + DoubleToString(wr, 1) + "% | Net " + DoubleToString(g_hist.netR, 2) + "R | $ "
       + (ApproxMoneyFromR(g_hist.netR) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(g_hist.netR), 2),
       g_hist.netR >= 0 ? C'80,255,180' : C'255,95,140', 9);
-   ButtonObj("BTN_AUD_2W", x + 492, sec2 + 28, 40, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_5W", x + 536, sec2 + 28, 40, bh, "5W", g_histWeeks == 5 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_10W", x + 580, sec2 + 28, 48, bh, "10W", g_histWeeks == 10 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_20W", x + 632, sec2 + 28, 48, bh, "20W", g_histWeeks == 20 ? C'38,101,176' : off);
-   ButtonObj("BTN_AUD_1Y", x + 684, sec2 + 28, 48, bh, "1Y", g_histWeeks == 52 ? C'38,101,176' : off);
-   RectObj("DASH_WR_BG", x + 16, sec2 + 58, 420, 14, C'38,46,60', C'60,80,110');
-   int fill = (int)MathRound(418.0 * MathMax(0.0, MathMin(100.0, wr)) / 100.0);
-   if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 59, fill, 12, wr >= 50 ? C'80,220,140' : C'255,95,140', wr >= 50 ? C'80,220,140' : C'255,95,140');
-   LabelObj("DASH_AUD2", x + 16, sec2 + 80,
+   int awx = x + 16;
+   int awy = sec2 + 54;
+   ButtonObj("BTN_AUD_2W", awx, awy, 40, bh, "2W", g_histWeeks == 2 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_5W", awx, awy, 40, bh, "5W", g_histWeeks == 5 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_10W", awx, awy, 44, bh, "10W", g_histWeeks == 10 ? C'38,101,176' : off); awx += 48;
+   ButtonObj("BTN_AUD_20W", awx, awy, 44, bh, "20W", g_histWeeks == 20 ? C'38,101,176' : off); awx += 48;
+   ButtonObj("BTN_AUD_1Y", awx, awy, 40, bh, "1Y", g_histWeeks == 52 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_2Y", awx, awy, 40, bh, "2Y", g_histWeeks == 104 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_3Y", awx, awy, 40, bh, "3Y", g_histWeeks == 156 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_4Y", awx, awy, 40, bh, "4Y", g_histWeeks == 208 ? C'38,101,176' : off); awx += 44;
+   ButtonObj("BTN_AUD_5Y", awx, awy, 40, bh, "5Y", g_histWeeks == 260 ? C'38,101,176' : off);
+
+   double auditBarPct = g_histAuditRunning ? g_histAuditProgressPct : wr;
+   color auditBarColor = g_histAuditRunning ? C'38,140,220' : (wr >= 50 ? C'80,220,140' : C'255,95,140');
+   RectObj("DASH_WR_BG", x + 16, sec2 + 82, 640, 14, C'38,46,60', C'60,80,110');
+   int fill = (int)MathRound(638.0 * MathMax(0.0, MathMin(100.0, auditBarPct)) / 100.0);
+   if(fill > 2) RectObj("DASH_WR_FG", x + 17, sec2 + 83, fill, 12, auditBarColor, auditBarColor);
+   else ObjectDelete(0, PFX + "DASH_WR_FG");
+   LabelObj("DASH_AUD_PROGRESS", x + 664, sec2 + 82,
+      g_histAuditRunning ? (g_histAuditStage + " " + DoubleToString(g_histAuditProgressPct, 1) + "%") : "",
+      C'90,178,255', 7);
+   LabelObj("DASH_AUD2", x + 16, sec2 + 106,
       "Won +" + DoubleToString(g_hist.wonR, 2) + "R | Lost -" + DoubleToString(g_hist.lostR, 2) + "R | Avg "
       + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade", muted, 8);
 
-   int sec3 = sec2 + 120;
+   int sec3 = sec2 + 140;
    RectObj("DASH_SEC3", x + 8, sec3, 744, 152, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC3_T", x + 16, sec3 + 7, "EXECUTION", ac, 9);
    LabelObj("DASH_EX1", x + 16, sec3 + 30,
@@ -4388,7 +4625,8 @@ void ProcessPendingConfigRefresh()
    bool rebuildSignals = g_configRefreshRebuildSignals;
    g_configRefreshRebuildSignals = false;
    RecalculateHistoricalStats(rebuildSignals);
-   if(!IsTesterMode()) DrawHistoricalSignals(rebuildSignals);
+   // A filter/config change can remove signals. Full reset prevents stale arrows from contradicting execution.
+   if(!IsTesterMode()) DrawHistoricalSignals(true);
    g_lastStatus = "CONFIG " + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " " + EntryModelLabel(g_entryModel) + " SIG=" + IntegerToString(g_hist.total);
    UpdateDashboard();
@@ -4458,6 +4696,7 @@ int OnInit()
    g_requireAsiaLiquidityDraw = InpDefaultRequireAsiaLiquidityDraw;
    g_useAsiaLiquidityTarget = InpDefaultUseAsiaLiquidityTarget;
    g_requireSmt = InpDefaultRequireSmt;
+   LiqMacroRegimeInit();
    NormalizeEntryModelStrictness();
    g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
    g_slBufferAtrPct = ClampSlBufferAtrPct(InpSlBufferAtrPct);
@@ -4484,6 +4723,8 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    if(!IsTesterMode())
    {
+      RegimeV3Update(true);
+      DrawDashboard();
       RecalculateHistoricalStats();
       BridgeLoadPending();
       FileBridgeWriteInitMarker();
@@ -4500,7 +4741,8 @@ int OnInit()
       + " target_model=" + TargetModelLabel(g_targetModel)
       + " strictness=" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " narrative=" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt));
-   Print("LiqNarrativeSol init build=", LN_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf));
+   Print("LiqNarrativeSol init build=", LN_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf),
+      " macro_mask=", LiqMacroRegimeMask());
    return INIT_SUCCEEDED;
 }
 
@@ -4528,6 +4770,7 @@ void OnTimer()
 {
    if(IsTesterMode()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
+   RegimeV3Update(false);
    BridgeRetryPending();
    EnforceRiskBreach();
    TryOpenLatestSignal();
@@ -4603,6 +4846,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   for(int mi = 0; mi < LIQ_MACRO_REGIME_COUNT; ++mi)
+   {
+      if(Clicked(sparam, "BTN_MACRO_REG_" + IntegerToString(mi)))
+      {
+         g_macroRegimeAllowed[mi] = !g_macroRegimeAllowed[mi];
+         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+         g_lastStatus = LiqMacroRegimeShortName(mi) + (g_macroRegimeAllowed[mi] ? " ALLOWED" : " BLOCKED");
+         RefreshAfterConfigChange(false);
+         return;
+      }
+   }
+
    if(Clicked(sparam, "BTN_HTF_H1")) { g_htf = PERIOD_H1; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H2")) { g_htf = PERIOD_H2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
@@ -4630,6 +4885,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_AUD_1Y")) { g_histWeeks = 52; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_2Y")) { g_histWeeks = 104; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_3Y")) { g_histWeeks = 156; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_4Y")) { g_histWeeks = 208; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_5Y")) { g_histWeeks = 260; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_0")) { g_slBufferAtrPct = 0.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "0"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_20")) { g_slBufferAtrPct = 20.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "20"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_40")) { g_slBufferAtrPct = 40.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "40"); RefreshAfterConfigChange(); return; }

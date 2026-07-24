@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiqNarrativeSolAdvancedCTraderListener : Robot
     {
-        private const string Build = "2026-07-24.liq-sol-advanced-isolated-v4";
+        private const string Build = "2026-07-24.liq-sol-advanced-scope-isolation-v5";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -173,6 +173,7 @@ namespace cAlgo.Robots
 
         private string _lastSeenEventId = string.Empty;
         private string _lastRejectedEventId = string.Empty;
+        private string _lastIdentityRejectedKey = string.Empty;
         private string _lastAction = "boot";
         private string _lastDetail = string.Empty;
         private string _lastSignal = "none";
@@ -182,6 +183,7 @@ namespace cAlgo.Robots
         private readonly Dictionary<long, DateTime> _halfRetryAt = new Dictionary<long, DateTime>();
         private readonly Dictionary<string, DateTime> _eventClaimAuditAt = new Dictionary<string, DateTime>();
         private string _resolvedBridgePath;
+        private string _instanceScopeToken = string.Empty;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
         private string _lastInitMarkerAuditKey = string.Empty;
@@ -220,6 +222,7 @@ namespace cAlgo.Robots
         {
             EnforceAdvancedIsolationDefaults();
             _resolvedBridgePath = ResolveBridgePath();
+            _instanceScopeToken = BuildInstanceScopeToken();
             _auditDir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _lockDir = IoPath.Combine(IoPath.GetTempPath(), "LiqNarrativeSolAdvanced_cTrader_Locks");
             IoDirectory.CreateDirectory(_lockDir);
@@ -227,7 +230,7 @@ namespace cAlgo.Robots
             IoDirectory.CreateDirectory(_stateDir);
 
             Timer.Start(TimeSpan.FromMilliseconds(Math.Max(100, PollMilliseconds)));
-            AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
+            AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} scope={_instanceScopeToken} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
             RepairOpenPositionStates("init");
 
             if (IgnoreExistingSignalOnInit)
@@ -308,11 +311,21 @@ namespace cAlgo.Robots
 
             if (!SignalIdentityMatches(sig, out var identityReason))
             {
-                if (PermanentRejectGuard)
-                    _lastRejectedEventId = sig.EventId;
-                Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                // Never poison the permanent event-id guard with another pipeline's
+                // generic-file event. The same event id can be valid in this scope.
+                var identityRejectKey = $"{sig.EventId}|{sig.Source}|{sig.SourceSymbol}|{NormalizeTf(sig.SourceTf)}";
+                if (!string.Equals(_lastIdentityRejectedKey, identityRejectKey, StringComparison.Ordinal))
+                {
+                    _lastIdentityRejectedKey = identityRejectKey;
+                    Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                }
+                else
+                {
+                    SetAction("idle_identity_mismatch", identityReason);
+                }
                 return;
             }
+            _lastIdentityRejectedKey = string.Empty;
 
             if (OrderRetryBlocked(sig, out var retryBlockDetail))
             {
@@ -797,7 +810,7 @@ namespace cAlgo.Robots
             {
                 if (!SameText(p.SymbolName, SymbolName))
                     continue;
-                if (string.IsNullOrWhiteSpace(p.Label) || !p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal))
+                if (!PositionOwnedByThisBridge(p))
                     continue;
                 if (!CloseReverseAcrossSourceTf)
                 {
@@ -811,7 +824,7 @@ namespace cAlgo.Robots
 
         private bool PositionBelongsToThisInstance(Position p)
         {
-            if (p == null || !SameText(p.SymbolName, SymbolName))
+            if (p == null || !SameText(p.SymbolName, SymbolName) || !PositionOwnedByThisBridge(p))
                 return false;
             var expectedTf = EffectiveSourceTf();
             if (string.IsNullOrWhiteSpace(expectedTf))
@@ -819,6 +832,54 @@ namespace cAlgo.Robots
             var positionTf = PositionSourceTf(p);
             return !string.IsNullOrWhiteSpace(positionTf) && SameText(expectedTf, positionTf);
         }
+        private string BuildInstanceScopeToken()
+        {
+            var path = string.IsNullOrWhiteSpace(_resolvedBridgePath) ? ResolveBridgePath() : _resolvedBridgePath;
+            string fullPath;
+            try { fullPath = IoPath.GetFullPath(path ?? string.Empty); }
+            catch { fullPath = path ?? string.Empty; }
+            var identity = fullPath.Trim().ToUpperInvariant() + "|" + ExpectedSourceNamespace().ToUpperInvariant();
+            return Hash64(identity).ToString("X16", CultureInfo.InvariantCulture);
+        }
+
+        private string EffectiveLabelPrefix()
+        {
+            var prefix = string.IsNullOrWhiteSpace(LabelPrefix) ? "LN_CT" : LabelPrefix.Trim();
+            return prefix + "|S" + _instanceScopeToken;
+        }
+
+        private string ExpectedSourceNamespace()
+        {
+            if (!string.IsNullOrWhiteSpace(SourceFilter))
+            {
+                var configured = SourceFilter.Trim();
+                return configured.Contains("|") ? configured : configured + "|";
+            }
+            var name = (IoPath.GetFileName(_resolvedBridgePath) ?? string.Empty).ToLowerInvariant();
+            if (name.Contains("liqnarrativesoladvancedbridge")) return "LiqNarrativeSolAdvanced|";
+            if (name.Contains("liqnarrativesolbridge")) return "LiqNarrativeSol|";
+            if (name.Contains("liquiditynarrativebridge")) return "LiquidityNarrative|";
+            return string.Empty;
+        }
+
+        private string ExpectedLegacySourceNamespace() => ExpectedSourceNamespace();
+
+        private bool PositionOwnedByThisBridge(Position p)
+        {
+            if (p == null || string.IsNullOrWhiteSpace(p.Label)) return false;
+            if (p.Label.StartsWith(EffectiveLabelPrefix() + "|", StringComparison.Ordinal)) return true;
+
+            var basePrefix = string.IsNullOrWhiteSpace(LabelPrefix) ? "LN_CT" : LabelPrefix.Trim();
+            if (p.Label.StartsWith(basePrefix + "|S", StringComparison.Ordinal)) return false;
+            var legacyPrefix = basePrefix + "|";
+            if (!p.Label.StartsWith(legacyPrefix, StringComparison.Ordinal)) return false;
+            var expectedSource = ExpectedLegacySourceNamespace();
+            if (string.IsNullOrWhiteSpace(expectedSource)) return false;
+            var positionSource = ParseCommentString(p.Comment, "src");
+            return !string.IsNullOrWhiteSpace(positionSource)
+                && positionSource.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase);
+        }
+
         private string PositionSourceTf(Position p)
         {
             var labelTf = LabelSourceTf(p.Label);
@@ -1089,10 +1150,9 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            var expectedSource = string.IsNullOrWhiteSpace(SourceFilter)
-                ? "LiqNarrativeSolAdvanced|"
-                : (SourceFilter.Trim().Contains("|") ? SourceFilter.Trim() : SourceFilter.Trim() + "|");
-            if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
+            var expectedSource = ExpectedSourceNamespace();
+            if (!string.IsNullOrWhiteSpace(expectedSource)
+                && (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase)))
             {
                 reason = $"source_filter source={sig.Source} expected_namespace={expectedSource}";
                 return false;
@@ -1164,25 +1224,11 @@ namespace cAlgo.Robots
             return IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MetaQuotes", "Terminal", "Common", "Files", "LiqNarrativeSolAdvancedBridge_Latest.csv");
         }
 
-        private string BuildLabel(BridgeSignal sig) => $"{LabelPrefix}|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
+        private string BuildLabel(BridgeSignal sig) => $"{EffectiveLabelPrefix()}|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
 
         private bool ClaimEvent(string eventId, out bool committedDuplicate)
         {
             committedDuplicate = false;
-            var legacyPath = LegacyEventLockPath(eventId);
-            if (IoFile.Exists(legacyPath))
-            {
-                try
-                {
-                    var legacy = IoFile.ReadAllText(legacyPath);
-                    if (legacy.IndexOf(eventId, StringComparison.Ordinal) >= 0)
-                    {
-                        committedDuplicate = true;
-                        return false;
-                    }
-                }
-                catch { }
-            }
 
             if (HasPositionForEvent(eventId))
             {
@@ -1249,14 +1295,12 @@ namespace cAlgo.Robots
             var token64 = "|" + Hash64(eventId).ToString("X16", CultureInfo.InvariantCulture);
             var legacyToken32 = "|" + Hash32(eventId).ToString("X8", CultureInfo.InvariantCulture);
             return Positions.Any(p => SameText(p.SymbolName, SymbolName)
-                                      && !string.IsNullOrWhiteSpace(p.Label)
-                                      && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)
+                                      && PositionOwnedByThisBridge(p)
                                       && (p.Label.EndsWith(token64, StringComparison.OrdinalIgnoreCase)
                                           || p.Label.EndsWith(legacyToken32, StringComparison.OrdinalIgnoreCase)));
         }
 
-        private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash64(eventId):X16}.lock");
-        private string LegacyEventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
+        private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_{Hash64(eventId):X16}.lock");
 
         private void ReleaseEvent(string eventId)
         {
@@ -1594,7 +1638,7 @@ namespace cAlgo.Robots
         }
         private void RepairOpenPositionStates(string reason)
         {
-            foreach (var p in Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)))
+            foreach (var p in Positions.Where(PositionBelongsToThisInstance))
             {
                 var expectedSl = ParseCommentDouble(p.Comment, "sl");
                 var expectedTp = ParseCommentDouble(p.Comment, "tp");
@@ -1647,7 +1691,7 @@ namespace cAlgo.Robots
         }
         private string OpenPositionSummary()
         {
-            var scoped = Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)).ToArray();
+            var scoped = Positions.Where(PositionBelongsToThisInstance).ToArray();
             var pnl = scoped.Sum(p => p.NetProfit);
             var vol = scoped.Sum(p => p.VolumeInUnits);
             return $"{scoped.Length} vol={vol} pnl={pnl:F2}";

@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiquidityNarrativeCTraderListener : Robot
     {
-        private const string Build = "2026-07-24.bridge-scope-isolation-v6";
+        private const string Build = "2026-07-24.bridge-scope-isolation-v7";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -173,6 +173,7 @@ namespace cAlgo.Robots
 
         private string _lastSeenEventId = string.Empty;
         private string _lastRejectedEventId = string.Empty;
+        private string _lastIdentityRejectedKey = string.Empty;
         private string _lastAction = "boot";
         private string _lastDetail = string.Empty;
         private string _lastSignal = "none";
@@ -284,11 +285,21 @@ namespace cAlgo.Robots
 
             if (!SignalIdentityMatches(sig, out var identityReason))
             {
-                if (PermanentRejectGuard)
-                    _lastRejectedEventId = sig.EventId;
-                Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                // Never poison the permanent event-id guard with another pipeline's
+                // generic-file event. The same event id can be valid in this scope.
+                var identityRejectKey = $"{sig.EventId}|{sig.Source}|{sig.SourceSymbol}|{NormalizeTf(sig.SourceTf)}";
+                if (!string.Equals(_lastIdentityRejectedKey, identityRejectKey, StringComparison.Ordinal))
+                {
+                    _lastIdentityRejectedKey = identityRejectKey;
+                    Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                }
+                else
+                {
+                    SetAction("idle_identity_mismatch", identityReason);
+                }
                 return;
             }
+            _lastIdentityRejectedKey = string.Empty;
 
             if (OrderRetryBlocked(sig, out var retryBlockDetail))
             {
@@ -1192,20 +1203,6 @@ namespace cAlgo.Robots
         private bool ClaimEvent(string eventId, out bool committedDuplicate)
         {
             committedDuplicate = false;
-            foreach (var legacyPath in LegacyEventLockPaths(eventId))
-            {
-                if (!IoFile.Exists(legacyPath)) continue;
-                try
-                {
-                    var legacy = IoFile.ReadAllText(legacyPath);
-                    if (legacy.IndexOf(eventId, StringComparison.Ordinal) >= 0)
-                    {
-                        committedDuplicate = true;
-                        return false;
-                    }
-                }
-                catch { }
-            }
 
             if (HasPositionForEvent(eventId))
             {
@@ -1278,11 +1275,6 @@ namespace cAlgo.Robots
         }
 
         private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_{Hash64(eventId):X16}.lock");
-        private IEnumerable<string> LegacyEventLockPaths(string eventId)
-        {
-            yield return IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash64(eventId):X16}.lock");
-            yield return IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
-        }
 
         private void ReleaseEvent(string eventId)
         {
