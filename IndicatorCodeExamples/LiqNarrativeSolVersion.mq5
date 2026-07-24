@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-20.sol-v14-audit-lifecycle"
+#define LN_BUILD "2026-07-24.sol-v14-claim-isolation-v2"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -3593,7 +3593,9 @@ uint SignalEventHash(string value)
 
 string SignalClaimKey(const string eventId)
 {
-   return "LIQN_EVT|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))
+   // SolVersion and Sol Advanced may intentionally process the same setup
+   // differently. Keep their restart-safe claims isolated.
+   return "LIQN_SOL_V14_EVT|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))
       + "|" + IntegerToString((int)InpMagic)
       + "|" + _Symbol
       + "|" + IntegerToString((int)SignalEventHash(eventId));

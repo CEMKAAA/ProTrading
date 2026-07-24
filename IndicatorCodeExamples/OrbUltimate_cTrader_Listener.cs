@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class OrbUltimateCTraderListener : Robot
     {
-        private const string Build = "2026-07-23.orb-production-v1";
+        private const string Build = "2026-07-24.orb-protection-recovery-v4";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -189,6 +189,7 @@ namespace cAlgo.Robots
         private string _auditDir;
         private string _lockDir;
         private string _stateDir;
+        private DateTime _lastProtectionCleanup = DateTime.MinValue;
         private static readonly object AuditWriteSync = new object();
 
         protected override void OnStart()
@@ -202,7 +203,7 @@ namespace cAlgo.Robots
 
             Timer.Start(TimeSpan.FromMilliseconds(Math.Max(100, PollMilliseconds)));
             AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
-            RepairOpenPositionStates("init");
+            RepairOpenPositionStates("init", null);
 
             if (IgnoreExistingSignalOnInit)
             {
@@ -231,9 +232,10 @@ namespace cAlgo.Robots
         protected override void OnTimer()
         {
             PollBridge("timer");
-            RepairOpenPositionStates("timer");
+            RepairOpenPositionStates("timer", null);
             ManageHalfClose();
             ManageEmergencyCloses();
+            CleanupProtectionStates();
             DrawDashboard();
         }
 
@@ -272,7 +274,7 @@ namespace cAlgo.Robots
             }
 
             if (SignalIdentityMatches(sig, out _))
-                RepairOpenPositionStates("poll_identity_match");
+                RepairOpenPositionStates("poll_identity_match", sig);
 
             if (sig.EventId == _lastSeenEventId || (PermanentRejectGuard && sig.EventId == _lastRejectedEventId))
             {
@@ -510,6 +512,8 @@ namespace cAlgo.Robots
                 Audit(close.IsSuccessful ? "post_fill_risk_guard_closed" : "post_fill_risk_guard_close_failed", sig, postFillRiskDetail + $" close_error={close.Error}");
                 return true;
             }
+            if (result.Position != null)
+                SaveProtectionState(result.Position.Id, sig.EventId, sig.SourceTf, sig.Sl, sig.Tp);
             if (result.Position != null && ManageHalfCloseBe && sig.HalfTrigger > 0)
             {
                 var fill = result.Position.EntryPrice;
@@ -816,7 +820,8 @@ namespace cAlgo.Robots
 
         private string BuildComment(BridgeSignal sig)
         {
-            return $"event={ShortEvent(sig.EventId)};src={sig.Source};tf={NormalizeTf(sig.SourceTf)};half={sig.HalfTrigger.ToString(CultureInfo.InvariantCulture)};sl={sig.Sl.ToString(CultureInfo.InvariantCulture)};tp={sig.Tp.ToString(CultureInfo.InvariantCulture)}";
+            // Protection fields come first because brokers can truncate comments.
+            return $"sl={sig.Sl.ToString(CultureInfo.InvariantCulture)};tp={sig.Tp.ToString(CultureInfo.InvariantCulture)};half={sig.HalfTrigger.ToString(CultureInfo.InvariantCulture)};tf={NormalizeTf(sig.SourceTf)};event={ShortEvent(sig.EventId)};src={sig.Source}";
         }
 
         private string StopContext(double entry, double sl, double tp)
@@ -1063,9 +1068,12 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(SourceFilter) && !ContainsText(sig.Source, SourceFilter))
+            var expectedSource = string.IsNullOrWhiteSpace(SourceFilter)
+                ? "OrbUltimate|"
+                : (SourceFilter.Trim().Contains("|") ? SourceFilter.Trim() : SourceFilter.Trim() + "|");
+            if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
             {
-                reason = $"source_filter source={sig.Source} expected={SourceFilter}";
+                reason = $"source_filter source={sig.Source} expected_namespace={expectedSource}";
                 return false;
             }
             return true;
@@ -1084,13 +1092,23 @@ namespace cAlgo.Robots
             var tf = NormalizeTf(string.IsNullOrWhiteSpace(SourceTimeframeFilter) && DefaultSourceTfToChartPeriod ? ChartTfString() : SourceTimeframeFilter);
             if (string.IsNullOrWhiteSpace(tf))
                 return _resolvedBridgePath;
+            string newestCandidate = null;
+            var newestWrite = DateTime.MinValue;
             foreach (var symbol in ScopedSourceSymbolCandidates())
             {
                 var candidate = IoPath.Combine(dir, $"{scopedPrefix}{Sanitize(symbol)}_{tf}.csv");
-                if (IoFile.Exists(candidate))
-                    return candidate;
+                if (!IoFile.Exists(candidate))
+                    continue;
+                DateTime writeTime;
+                try { writeTime = IoFile.GetLastWriteTimeUtc(candidate); }
+                catch { continue; }
+                if (newestCandidate == null || writeTime > newestWrite)
+                {
+                    newestCandidate = candidate;
+                    newestWrite = writeTime;
+                }
             }
-            return _resolvedBridgePath;
+            return newestCandidate ?? _resolvedBridgePath;
         }
 
         private IEnumerable<string> ScopedSourceSymbolCandidates()
@@ -1143,6 +1161,13 @@ namespace cAlgo.Robots
                     }
                 }
                 catch { }
+            }
+
+            if (HasPositionForEvent(eventId))
+            {
+                CommitEvent(eventId, 0, "reconciled_open_position_without_lock");
+                committedDuplicate = true;
+                return false;
             }
 
             var lockPath = EventLockPath(eventId);
@@ -1446,6 +1471,83 @@ namespace cAlgo.Robots
             return IoPath.Combine(_stateDir, $"half_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
         }
 
+        private string ProtectionStatePath(long positionId)
+        {
+            return IoPath.Combine(_stateDir, $"protect_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
+        }
+
+        private void SaveProtectionState(long positionId, string eventId, string sourceTf, double sl, double tp)
+        {
+            if (positionId <= 0 || string.IsNullOrWhiteSpace(_stateDir) || sl <= 0 || tp <= 0) return;
+            try
+            {
+                WriteStateAtomically(ProtectionStatePath(positionId), string.Join("\t",
+                    sl.ToString("G17", CultureInfo.InvariantCulture),
+                    tp.ToString("G17", CultureInfo.InvariantCulture),
+                    NormalizeTf(sourceTf),
+                    eventId ?? string.Empty,
+                    DateTime.UtcNow.ToString("O")));
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("protection_state_write_failed", $"pos={positionId} error={ex.Message}");
+            }
+        }
+
+        private bool TryLoadProtectionState(long positionId, out ProtectionState state)
+        {
+            state = new ProtectionState();
+            try
+            {
+                var path = ProtectionStatePath(positionId);
+                if (!IoFile.Exists(path)) return false;
+                var fields = IoFile.ReadAllText(path).Split('\t');
+                if (fields.Length < 2) return false;
+                state.StopLoss = ParseDouble(fields[0]);
+                state.TakeProfit = ParseDouble(fields[1]);
+                state.SourceTf = fields.Length > 2 ? NormalizeTf(fields[2]) : string.Empty;
+                state.EventId = fields.Length > 3 ? fields[3] : string.Empty;
+                return state.StopLoss > 0 && state.TakeProfit > 0;
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("protection_state_read_failed", $"pos={positionId} error={ex.Message}");
+                return false;
+            }
+        }
+
+        private void DeleteProtectionState(long positionId)
+        {
+            try
+            {
+                var path = ProtectionStatePath(positionId);
+                if (IoFile.Exists(path)) IoFile.Delete(path);
+            }
+            catch { }
+        }
+
+        private void CleanupProtectionStates()
+        {
+            if (string.IsNullOrWhiteSpace(_stateDir) || (DateTime.UtcNow - _lastProtectionCleanup).TotalMinutes < 10) return;
+            _lastProtectionCleanup = DateTime.UtcNow;
+            try
+            {
+                var prefix = $"protect_{Account.Number}_{Sanitize(SymbolName)}_";
+                var liveIds = new HashSet<long>(Positions.Where(PositionBelongsToThisInstance).Select(p => (long)p.Id));
+                foreach (var path in IoDirectory.GetFiles(_stateDir, prefix + "*.state"))
+                {
+                    var name = IoPath.GetFileNameWithoutExtension(path) ?? string.Empty;
+                    var rawId = name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? name.Substring(prefix.Length) : string.Empty;
+                    if (long.TryParse(rawId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && !liveIds.Contains(id))
+                        IoFile.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("protection_state_cleanup_failed", ex.Message);
+            }
+        }
+
         private void SaveHalfState(long positionId, HalfState st)
         {
             if (positionId <= 0 || string.IsNullOrWhiteSpace(_stateDir)) return;
@@ -1529,6 +1631,7 @@ namespace cAlgo.Robots
                 {
                     _emergencyCloseRetryAt.Remove(kv.Key);
                     DeleteHalfState(kv.Key);
+                    DeleteProtectionState(kv.Key);
                     continue;
                 }
                 if (DateTime.UtcNow < kv.Value) continue;
@@ -1537,6 +1640,7 @@ namespace cAlgo.Robots
                 {
                     _emergencyCloseRetryAt.Remove(kv.Key);
                     DeleteHalfState(kv.Key);
+                    DeleteProtectionState(kv.Key);
                     AuditRaw("emergency_close_done", $"pos={pos.Id} label={pos.Label}");
                 }
                 else
@@ -1546,18 +1650,49 @@ namespace cAlgo.Robots
                 }
             }
         }
-        private void RepairOpenPositionStates(string reason)
+        private void RepairOpenPositionStates(string reason, BridgeSignal? latestSignal)
         {
             foreach (var p in Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)))
             {
-                var expectedSl = ParseCommentDouble(p.Comment, "sl");
-                var expectedTp = ParseCommentDouble(p.Comment, "tp");
+                ProtectionState persisted;
+                var hasPersisted = TryLoadProtectionState(p.Id, out persisted);
+                var expectedSl = hasPersisted ? persisted.StopLoss : ParseCommentDouble(p.Comment, "sl");
+                var expectedTp = hasPersisted ? persisted.TakeProfit : ParseCommentDouble(p.Comment, "tp");
+                var expectedEvent = hasPersisted ? persisted.EventId : ParseCommentString(p.Comment, "event");
+                var expectedTf = hasPersisted ? persisted.SourceTf : PositionSourceTf(p);
+                if ((expectedSl <= 0 || expectedTp <= 0) && latestSignal.HasValue)
+                {
+                    var latest = latestSignal.Value;
+                    if (latest.Valid && SameText(p.Label, BuildLabel(latest)))
+                    {
+                        expectedSl = latest.Sl;
+                        expectedTp = latest.Tp;
+                        expectedEvent = latest.EventId;
+                        expectedTf = latest.SourceTf;
+                    }
+                }
+                if (!hasPersisted && expectedSl > 0 && expectedTp > 0)
+                    SaveProtectionState(p.Id, expectedEvent, expectedTf, expectedSl, expectedTp);
+
                 var atBe = PositionProtectedAtOrBeyondBe(p);
                 var tolerance = Math.Max(Symbol.TickSize * 0.5, 0.00000001);
                 var slMismatch = expectedSl > 0 && (!p.StopLoss.HasValue || Math.Abs(p.StopLoss.Value - expectedSl) > tolerance) && !atBe;
                 var tpMismatch = expectedTp > 0 && (!p.TakeProfit.HasValue || Math.Abs(p.TakeProfit.Value - expectedTp) > tolerance);
-                if (FailIfExactProtectionFails && (slMismatch || tpMismatch) && !_emergencyCloseRetryAt.ContainsKey(p.Id))
-                    QueueEmergencyClose(p, $"repair_exact_mismatch reason={reason} expected_sl={expectedSl} actual_sl={FormatNullable(p.StopLoss)} expected_tp={expectedTp} actual_tp={FormatNullable(p.TakeProfit)} at_be={(atBe ? 1 : 0)}");
+                if (slMismatch || tpMismatch)
+                {
+                    var desiredSl = atBe && p.StopLoss.HasValue ? p.StopLoss.Value : expectedSl;
+                    var repair = expectedSl > 0 && expectedTp > 0
+                        ? ModifyPosition(p, desiredSl, expectedTp, ProtectionType.Absolute)
+                        : null;
+                    if (repair != null && repair.IsSuccessful)
+                    {
+                        AuditRaw("exact_protection_repaired", $"reason={reason} pos={p.Id} sl={desiredSl} tp={expectedTp} at_be={(atBe ? 1 : 0)}");
+                    }
+                    else if (FailIfExactProtectionFails && !_emergencyCloseRetryAt.ContainsKey(p.Id))
+                    {
+                        QueueEmergencyClose(p, $"repair_exact_mismatch reason={reason} expected_sl={expectedSl} actual_sl={FormatNullable(p.StopLoss)} expected_tp={expectedTp} actual_tp={FormatNullable(p.TakeProfit)} at_be={(atBe ? 1 : 0)} repair_error={repair?.Error}");
+                    }
+                }
 
                 if (!ManageHalfCloseBe || _halfStates.ContainsKey(p.Id)) continue;
                 var half = ParseCommentDouble(p.Comment, "half");
@@ -1804,6 +1939,14 @@ namespace cAlgo.Robots
             public double SourceBid;
             public double SourceAsk;
             public double RiskPct;
+        }
+
+        private struct ProtectionState
+        {
+            public string EventId;
+            public string SourceTf;
+            public double StopLoss;
+            public double TakeProfit;
         }
 
         private struct HalfState

@@ -8,7 +8,7 @@
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-07-21.live-history-handoff"
+#define LN_BUILD "2026-07-24.normal-audit-lifecycle-v2"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -316,6 +316,7 @@ double           g_histSignalR[];
 bool             g_histSignalClosed[];
 bool             g_histSignalWon[];
 bool             g_histSignalValid[];
+string           g_histSignalInvalidReason[];
 SimCacheEntry    g_simCache[];
 MqlRates         g_simRates[];
 ENUM_TIMEFRAMES  g_simRatesTf = PERIOD_CURRENT;
@@ -350,9 +351,8 @@ ulong            g_lastHistoryTicket = 0;
 double           g_equityPeak = 0.0;
 datetime         g_lastLiveScanBar = 0;
 datetime         g_lastLiveScanAttempt = 0;
-bool             g_historyRefreshPending = false;
-datetime         g_historyRefreshDue = 0;
-string           g_lastOverlaySignalId = "";
+datetime         g_lastHistLifecycleRefresh = 0;
+string           g_lastSimInvalidReason = "";
 
 BtCombo          g_btCombos[];
 bool             g_btRunning = false;
@@ -1573,8 +1573,14 @@ void SanitizeHalfMode()
 //=====================================================================
 int FindEntryBarIndex(const MqlRates &rates[], datetime t)
 {
-   for(int i = 0; i < ArraySize(rates); ++i)
+   int total = ArraySize(rates);
+   for(int i = 0; i < total; ++i)
       if(rates[i].time == t) return i;
+
+   // Resolve a broker timestamp inside the containing closed bar without
+   // ever moving the setup into a future bar.
+   for(int i = 1; i < total; ++i)
+      if(rates[i].time <= t && t < rates[i - 1].time) return i;
    return -1;
 }
 
@@ -1622,13 +1628,27 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    closed = false;
    won = false;
    valid = false;
+   g_lastSimInvalidReason = "";
    int tfSeconds = PeriodSeconds(entryTf);
    if(tfSeconds <= 0) tfSeconds = 60;
    datetime requiredCutoff = sig.entryTime - tfSeconds * 4;
    if(g_btCutoff > 0 && g_btCutoff < requiredCutoff) requiredCutoff = g_btCutoff;
-   if(!EnsureSimulationSeries(entryTf, requiredCutoff)) return 0.0;
+   if(!EnsureSimulationSeries(entryTf, requiredCutoff))
+   {
+      g_lastSimInvalidReason = "SERIES";
+      return 0.0;
+   }
    int setupIdx = FindEntryBarIndex(g_simRates, sig.entryTime);
-   if(setupIdx < 2 || sig.availableTime <= 0) return 0.0;
+   if(setupIdx < 1)
+   {
+      g_lastSimInvalidReason = "ENTRY_BAR";
+      return 0.0;
+   }
+   if(sig.availableTime <= 0)
+   {
+      g_lastSimInvalidReason = "AVAIL_TIME";
+      return 0.0;
+   }
    // The setup uses the completed setup bar. Price evolution can only be
    // evaluated from the next chronological bar onward.
    int entryIdx = setupIdx - 1;
@@ -1648,7 +1668,11 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    double simEntry = NormTradePrice(rawEntry + sig.dir * executionCost);
    double activeSl = reverseExitMode ? 0.0 : sig.sl;
    double simRisk = MathAbs(simEntry - sig.sl);
-   if(simRisk <= TickSize()) return 0.0;
+   if(simRisk <= TickSize())
+   {
+      g_lastSimInvalidReason = "RISK";
+      return 0.0;
+   }
    valid = true;
    double tp = TargetPriceForSimulation(sig, target, targetModel, simEntry, simRisk);
    double half = 0.0;
@@ -1921,6 +1945,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
    ArrayResize(g_histSignalValid, ArraySize(g_histSignals));
+   ArrayResize(g_histSignalInvalidReason, ArraySize(g_histSignals));
 
    ZeroMemory(g_hist);
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
@@ -1940,6 +1965,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
       g_histSignalValid[i] = valid;
+      g_histSignalInvalidReason[i] = valid ? "" : g_lastSimInvalidReason;
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
@@ -2906,7 +2932,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
       }
       string txt = DirLabel(g_histSignals[i].dir);
       if(!valid)
-         txt += " DATA GAP";
+         txt += " DATA " + (g_histSignalInvalidReason[i] == "" ? "UNKNOWN" : g_histSignalInvalidReason[i]);
       else
          txt += " " + (r >= 0 ? "+" : "") + DoubleToString(r, 2) + "R $"
             + (ApproxMoneyFromR(r) >= 0 ? "+" : "") + DoubleToString(ApproxMoneyFromR(r), 2);
@@ -3379,6 +3405,48 @@ void RememberSignalSeen(const ErlSignal &sig)
    g_lastSignalTime = sig.availableTime;
    g_lastSignalDir = sig.dir;
 }
+
+void MergeLatestSignalIntoHistoricalCache(const ErlSignal &sig)
+{
+   if(!sig.valid || sig.id == "") return;
+   for(int i = 0; i < ArraySize(g_histRawCache); ++i)
+   {
+      if(g_histRawCache[i].id != sig.id) continue;
+      g_histRawCache[i] = sig;
+      return;
+   }
+
+   int n = ArraySize(g_histRawCache);
+   ArrayResize(g_histRawCache, n + 1);
+   g_histRawCache[n] = sig;
+}
+
+void RefreshHistoricalLifecycleFromLiveScan(const ErlSignal &rawSignals[])
+{
+   int count = ArraySize(rawSignals);
+   if(count > 0) MergeLatestSignalIntoHistoricalCache(rawSignals[count - 1]);
+
+   // Terminal outcomes stay cached. DATA/OPEN rows are replayed so a live
+   // setup transitions to W/L without rebuilding the complete audit window.
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
+void RefreshUnresolvedHistoricalLifecycle()
+{
+   int count = ArraySize(g_histSignals);
+   if(count <= 0) return;
+   int last = count - 1;
+   if(g_histSignalValid[last] && g_histSignalClosed[last]) return;
+   if(g_histSignals[last].availableTime < TimeCurrent() - 7 * 86400) return;
+   if(TimeCurrent() - g_lastHistLifecycleRefresh < 60) return;
+
+   RecalculateHistoricalStats(false);
+   g_lastHistLifecycleRefresh = TimeCurrent();
+   if(!IsTesterMode()) DrawHistoricalSignals(false);
+}
+
 bool OpenSignal(const ErlSignal &sig)
 {
    if(!g_eaEnabled)
@@ -3550,6 +3618,8 @@ void TryOpenLatestSignal()
    datetime cutoff = now - 7 * 86400;
    ErlSignal signals[];
    int count = BuildSignals(g_htf, g_entryTf, g_swingLookback, g_weeklyBias, g_entryModel, g_stopModel, g_targetModel, g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg, g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt, cutoff, signals);
+   if(firstAttemptForBar)
+      RefreshHistoricalLifecycleFromLiveScan(signals);
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
    count = ArraySize(signals);
    if(count <= 0)
@@ -3572,12 +3642,6 @@ void TryOpenLatestSignal()
       " setup_bar=", TimeToString(latest.entryTime, TIME_DATE | TIME_SECONDS),
       " available=", TimeToString(latest.availableTime, TIME_DATE | TIME_SECONDS),
       " detected=", TimeToString(now, TIME_DATE | TIME_SECONDS));
-   if(latest.id != g_lastOverlaySignalId)
-   {
-      g_lastOverlaySignalId = latest.id;
-      UpsertHistoricalRawSignal(latest);
-      ScheduleHistoricalOverlayRefresh(1);
-   }
    OpenSignal(latest);
 }
 
@@ -4118,43 +4182,6 @@ void ProcessPendingConfigRefresh()
    ChartRedraw(0);
 }
 
-void UpsertHistoricalRawSignal(const ErlSignal &sig)
-{
-   for(int i = 0; i < ArraySize(g_histRawCache); ++i)
-   {
-      if(g_histRawCache[i].id != sig.id) continue;
-      g_histRawCache[i] = sig;
-      return;
-   }
-   int n = ArraySize(g_histRawCache);
-   ArrayResize(g_histRawCache, n + 1);
-   g_histRawCache[n] = sig;
-}
-
-void ScheduleHistoricalOverlayRefresh(int delaySeconds = 1)
-{
-   if(IsTesterMode()) return;
-   datetime due = TimeLocal() + MathMax(1, delaySeconds);
-   g_historyRefreshPending = true;
-   if(g_historyRefreshDue <= 0 || due < g_historyRefreshDue)
-      g_historyRefreshDue = due;
-}
-
-void ProcessPendingHistoricalOverlayRefresh()
-{
-   if(!g_historyRefreshPending || TimeLocal() < g_historyRefreshDue) return;
-   g_historyRefreshPending = false;
-   g_historyRefreshDue = 0;
-
-   // Rebuild only after a real live signal/lifecycle transition. This hands
-   // closed live objects back to the causal historical overlay without doing
-   // the expensive full-window scan on every tick.
-   RecalculateHistoricalStats(false);
-   DrawHistoricalSignals(true);
-   DrawLiveLevelsForPosition();
-   ChartRedraw(0);
-}
-
 bool Clicked(const string sparam, string id)
 {
    return sparam == PFX + id;
@@ -4241,13 +4268,6 @@ void OnDeinit(const int reason)
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    ErlTesterAudit_WriteDeal(trans, request, result);
-   if(IsTesterMode() || trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
-   if(!HistoryDealSelect(trans.deal)) return;
-   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
-   if(!IsOwnMagic((long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC))) return;
-   long entryType = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
-   if(entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_INOUT || entryType == DEAL_ENTRY_OUT_BY)
-      ScheduleHistoricalOverlayRefresh(2);
 }
 
 void OnTick()
@@ -4269,7 +4289,7 @@ void OnTimer()
    ProbePositions();
    ScanClosedHistory();
    ProcessPendingConfigRefresh();
-   ProcessPendingHistoricalOverlayRefresh();
+   RefreshUnresolvedHistoricalLifecycle();
    if(!IsValidationTester())
    {
       if(g_btRunning) BacktestStep();

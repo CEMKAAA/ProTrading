@@ -8,7 +8,7 @@
 #property version "3.30"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
-#define ORB15_BUILD "2026-07-23.v6.4-history-coverage"
+#define ORB15_BUILD "2026-07-24.v6.6-sacred-level-visuals"
 
 enum ORB_SESSION_PROFILE
 {
@@ -159,6 +159,7 @@ input int  InpTesterTradeAuditMaxRows= 50000;
 input string InpValidationJobId      = "";
 input bool   InpFileBridgeEnabled       = false;
 input bool   InpFileBridgeOnlyMode      = false;
+input bool   InpNativeTradeWithBridgeOnlyDefault = false;
 input bool   InpFileBridgeUseCommonFiles= true;
 input string InpFileBridgeLatestFile    = "OrbUltimateBridge_Latest.csv";
 input string InpFileBridgeAuditPrefix   = "OrbUltimateBridge_Audit_";
@@ -261,6 +262,13 @@ bool     g_halfClosed = false;
 double   g_tradeBestHigh = 0.0;
 double   g_tradeBestLow = 0.0;
 datetime g_tradeLastDynamicExitBar = 0;
+bool     g_orbBridgePlanActive = false;
+int      g_orbBridgePlanDir = 0;
+datetime g_orbBridgePlanTime = 0;
+double   g_orbBridgePlanEntry = 0.0;
+double   g_orbBridgePlanSl = 0.0;
+double   g_orbBridgePlanTp = 0.0;
+double   g_orbBridgePlanHalf = 0.0;
 string   g_lastFilterReason = "";
 string   g_lastExecStatus = "READY";
 long     g_runtimeMagic = 0;
@@ -1282,9 +1290,66 @@ void DeleteStaleOrbLiveLevelObjects(string activeTicketKeys)
    }
 }
 
+string OrbBridgePlanKey(string field)
+{
+   return "OBP."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."+
+      OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+"."+field;
+}
+
+void StoreOrbBridgePlan(int dir,datetime signalTime,double entry,double sl,double tp,double halfTrigger)
+{
+   g_orbBridgePlanActive=true;
+   g_orbBridgePlanDir=dir;
+   g_orbBridgePlanTime=signalTime>0?signalTime:TimeCurrent();
+   g_orbBridgePlanEntry=entry;
+   g_orbBridgePlanSl=sl;
+   g_orbBridgePlanTp=tp;
+   g_orbBridgePlanHalf=halfTrigger;
+   GlobalVariableSet(OrbBridgePlanKey("active"),1.0);
+   GlobalVariableSet(OrbBridgePlanKey("dir"),(double)dir);
+   GlobalVariableSet(OrbBridgePlanKey("time"),(double)g_orbBridgePlanTime);
+   GlobalVariableSet(OrbBridgePlanKey("entry"),entry);
+   GlobalVariableSet(OrbBridgePlanKey("sl"),sl);
+   GlobalVariableSet(OrbBridgePlanKey("tp"),tp);
+   GlobalVariableSet(OrbBridgePlanKey("half"),halfTrigger);
+}
+
+void ClearOrbBridgePlan()
+{
+   g_orbBridgePlanActive=false;
+   g_orbBridgePlanDir=0;
+   g_orbBridgePlanTime=0;
+   g_orbBridgePlanEntry=0.0;
+   g_orbBridgePlanSl=0.0;
+   g_orbBridgePlanTp=0.0;
+   g_orbBridgePlanHalf=0.0;
+   string fields[]={"active","dir","time","entry","sl","tp","half"};
+   for(int i=0;i<ArraySize(fields);i++)GlobalVariableDel(OrbBridgePlanKey(fields[i]));
+}
+
+void RestoreOrbBridgePlan()
+{
+   if(!GlobalVariableCheck(OrbBridgePlanKey("active")))return;
+   datetime signalTime=(datetime)GlobalVariableGet(OrbBridgePlanKey("time"));
+   MqlDateTime planDay;TimeToStruct(ServerToSessionLocal(signalTime),planDay);
+   int y,m,d;int currentKey=CurrentSessionDayKey(y,m,d);
+   int planKey=planDay.year*10000+planDay.mon*100+planDay.day;
+   if(signalTime<=0||planKey!=currentKey){ClearOrbBridgePlan();return;}
+   g_orbBridgePlanActive=true;
+   g_orbBridgePlanDir=(int)GlobalVariableGet(OrbBridgePlanKey("dir"));
+   g_orbBridgePlanTime=signalTime;
+   g_orbBridgePlanEntry=GlobalVariableGet(OrbBridgePlanKey("entry"));
+   g_orbBridgePlanSl=GlobalVariableGet(OrbBridgePlanKey("sl"));
+   g_orbBridgePlanTp=GlobalVariableGet(OrbBridgePlanKey("tp"));
+   g_orbBridgePlanHalf=GlobalVariableGet(OrbBridgePlanKey("half"));
+   if(g_orbBridgePlanEntry<=0.0)ClearOrbBridgePlan();
+}
+
 void DrawOrbLiveTradeLevels()
 {
    if(IsTesterMode())return;
+   // Keep one fixed ENTRY/SL/TP set; HC and ORB-range lines are intentionally hidden.
+   DeleteByPrefix(PREFIX+"LIVE_LVL_HC_");
    if(!InpDrawTradeLevelSegments)
    {
       DeleteByPrefix(PREFIX+"LIVE_LVL_");
@@ -1314,18 +1379,27 @@ void DrawOrbLiveTradeLevels()
       if(sl<=0.0)sl=OrbProGet(positionId,"sl",0.0);
       double tp=PositionGetDouble(POSITION_TP);
       if(tp<=0.0)tp=OrbProGet(positionId,"tp",0.0);
-      double hc=OrbProGet(positionId,"half",0.0);
       int segSec=MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
-      datetime liveEnd=TimeCurrent()+segSec;
-      if(liveEnd<=openedAt)liveEnd=openedAt+segSec;
+      datetime liveEnd=openedAt+segSec;
 
       DrawOrbLiveSegment("ENTRY_"+token,openedAt,liveEnd,entry,C'245,245,255',STYLE_SOLID,4);
       if(sl>0.0)DrawOrbLiveSegment("SL_"+token,openedAt,liveEnd,sl,C'255,40,70',STYLE_SOLID,4);
       else ObjectDelete(0,PREFIX+"LIVE_LVL_SL_"+token);
       if(tp>0.0)DrawOrbLiveSegment("TP_"+token,openedAt,liveEnd,tp,C'20,255,160',STYLE_SOLID,4);
       else ObjectDelete(0,PREFIX+"LIVE_LVL_TP_"+token);
-      if(hc>0.0)DrawOrbLiveSegment("HC_"+token,openedAt,liveEnd,hc,C'255,204,82',STYLE_SOLID,4);
-      else ObjectDelete(0,PREFIX+"LIVE_LVL_HC_"+token);
+   }
+   else if(g_orbBridgePlanActive&&g_orbBridgePlanEntry>0.0)
+   {
+      string token="BRIDGE_PLAN";
+      activeTicketKeys+=token+"|";
+      datetime openedAt=g_orbBridgePlanTime>0?g_orbBridgePlanTime:TimeCurrent();
+      int segSec=MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
+      datetime liveEnd=openedAt+segSec;
+      DrawOrbLiveSegment("ENTRY_"+token,openedAt,liveEnd,g_orbBridgePlanEntry,C'245,245,255',STYLE_SOLID,4);
+      if(g_orbBridgePlanSl>0.0)DrawOrbLiveSegment("SL_"+token,openedAt,liveEnd,g_orbBridgePlanSl,C'255,40,70',STYLE_SOLID,4);
+      else ObjectDelete(0,PREFIX+"LIVE_LVL_SL_"+token);
+      if(g_orbBridgePlanTp>0.0)DrawOrbLiveSegment("TP_"+token,openedAt,liveEnd,g_orbBridgePlanTp,C'20,255,160',STYLE_SOLID,4);
+      else ObjectDelete(0,PREFIX+"LIVE_LVL_TP_"+token);
    }
    DeleteStaleOrbLiveLevelObjects(activeTicketKeys);
 }
@@ -1444,13 +1518,8 @@ void DrawSignalText(const string name,datetime t,double price,string text,color 
 void DrawLevels()
 {
    if(IsTesterMode()) return;
-   if(!g_orbReady)return;
-   if(ObjectFind(0,PREFIX+"ORB_HIGH")<0)ObjectCreate(0,PREFIX+"ORB_HIGH",OBJ_HLINE,0,0,g_orbHigh);
-   ObjectSetDouble(0,PREFIX+"ORB_HIGH",OBJPROP_PRICE,NormalizePrice(g_orbHigh));
-   ObjectSetInteger(0,PREFIX+"ORB_HIGH",OBJPROP_COLOR,clrDodgerBlue);ObjectSetInteger(0,PREFIX+"ORB_HIGH",OBJPROP_WIDTH,2);
-   if(ObjectFind(0,PREFIX+"ORB_LOW")<0)ObjectCreate(0,PREFIX+"ORB_LOW",OBJ_HLINE,0,0,g_orbLow);
-   ObjectSetDouble(0,PREFIX+"ORB_LOW",OBJPROP_PRICE,NormalizePrice(g_orbLow));
-   ObjectSetInteger(0,PREFIX+"ORB_LOW",OBJPROP_COLOR,clrTomato);ObjectSetInteger(0,PREFIX+"ORB_LOW",OBJPROP_WIDTH,2);
+   // ORB range boundaries are execution internals, not trade levels.
+   DeleteLevels();
 }
 
 //=========================================================================
@@ -2562,8 +2631,6 @@ void DrawHistoricalSignals()
       DrawOrbHistoricalSegment(levelId+"_SL",entryT,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
       if(sim.simTarget>0.0)
          DrawOrbHistoricalSegment(levelId+"_TP",entryT,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
-      if(sim.hcLeg>0&&simRisk>0.0)
-         DrawOrbHistoricalSegment(levelId+"_HC",entryT,levelEnd,PriceAtLeg(isBuy,sim.simEntry,simRisk,sim.hcLeg),C'255,204,82',STYLE_DOT);
 
       color arwClr=sim.isWin?clrLime:(sim.outcome=="SL"?clrTomato:clrGold);
       int arwCode=isBuy?233:234;
@@ -2944,8 +3011,9 @@ void UpdateDashboard()
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_EXIT",x+326,y+452,94,18,RuntimeExitLabel(),g_rtExitMode==ORB_EXIT_FIXED_TARGET?C'80,80,80':C'38,101,176');
    CreateButton("BTN_CLOSEALL",x+326,y+475,86,18,"CLOSE ALL",C'178,37,57');
-   CreateButton("BTN_BRIDGE_PUB",x+424,y+452,82,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
-   CreateButton("BTN_BRIDGE_ONLY",x+512,y+452,92,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
+   CreateButton("BTN_BRIDGE_PUB",x+424,y+452,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_BRIDGE_ONLY",x+486,y+452,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
+   CreateButton("BTN_BRIDGE_NATIVE",x+552,y+452,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
    CreateLabel("DASH_BRIDGE",x+424,y+478,"CT "+g_orbBridgeStatus,C'134,158,182',7);
 
    // Separator
@@ -3118,10 +3186,12 @@ void UpdateDashboard()
 bool ResetForNewNyDay()
 {
    int y,m,d;int key=CurrentSessionDayKey(y,m,d);if(key==g_nyDayKey)return false;
+   bool firstInit=(g_nyDayKey==0);
    g_nyDayKey=key;g_orbReady=false;g_tradeTaken=false;g_orbHigh=0;g_orbLow=0;g_orbAvgVolume=0;
    g_lastSignalBarTime=0;g_lastCheckedSignalBarTime=0;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;g_beMoved=false;
    g_tradeRisk=0;g_lastFilterReason="";g_lastExecStatus="READY";
    g_tradeBestHigh=0;g_tradeBestLow=0;g_tradeLastDynamicExitBar=0;
+   if(!firstInit)ClearOrbBridgePlan();
    ClearRetestState("new_day");
    ClearImbalanceState("new_day");
    int sm,em,tem;SessionClockMinutes(sm,em,tem);
@@ -3641,11 +3711,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       planTp=tp3;
       planHalf=g_rtBEOnTp1?tp1:0.0;
       bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(dir,signalBar,entry,sl,planTp,planHalf,planHalf>0?"TP1":"OFF",entryDetail+" bridge_mode=3leg_collapsed");
-      if(g_orbBridgeOnly)
+      if(g_orbBridgeEnabled&&bridgeAccepted)StoreOrbBridgePlan(isBuy?1:-1,signalBar,entry,sl,planTp,planHalf);
+      if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
          g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
+      if(g_orbBridgeOnly)
+         Audit(bridgeAccepted?"bridge_published_native_continue":"bridge_native_continue_publish_failed",dir,0,entry,sl,planTp,entryDetail);
       double lot=ResolveLot(dir,entry,sl,lotDetail);
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",dir,0,entry,sl,tp3,lotDetail+" "+entryDetail);return false;}
       opened=ExecThreeLegs(dir,entry,sl,tp1,tp2,tp3,lot);
@@ -3660,11 +3733,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       int bridgeHcLeg=RuntimeHalfBeLeg();
       if(bridgeHcLeg>0)planHalf=PriceAtLeg(isBuy,entry,risk,bridgeHcLeg);
       bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(dir,signalBar,entry,sl,tp,planHalf,bridgeHcLeg>0?("TP"+IntegerToString(bridgeHcLeg)):"OFF",entryDetail+" "+targetDetail);
-      if(g_orbBridgeOnly)
+      if(g_orbBridgeEnabled&&bridgeAccepted)StoreOrbBridgePlan(isBuy?1:-1,signalBar,entry,sl,tp,planHalf);
+      if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
          g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
+      if(g_orbBridgeOnly)
+         Audit(bridgeAccepted?"bridge_published_native_continue":"bridge_native_continue_publish_failed",dir,0,entry,sl,tp,entryDetail+" "+targetDetail);
       double lot=ResolveLot(dir,entry,sl,lotDetail);
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",dir,0,entry,sl,tp,lotDetail+" "+entryDetail);return false;}
       opened=ExecSingle(dir,entry,sl,tp,lot);
@@ -3672,7 +3748,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    }
    if(opened)
    {
-      g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";
+      g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";ClearOrbBridgePlan();
       OrbProStoreOpenPositions(g_tradeDir,entry,sl,planTp,planHalf,signalBar,g_lastSignalRegime);
       ClearRetestState("");
       ClearImbalanceState("");
@@ -3787,6 +3863,7 @@ int OnInit()
    ResetForNewNyDay();
    RegimeV3Update(true);
    OrbProInit();
+   RestoreOrbBridgePlan();
    if(!IsTesterMode())EventSetTimer(5);
    if(!IsTesterMode()){DrawDashboard();DrawHistoricalSignals();DrawOrbLiveTradeLevels();}
    if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
@@ -3950,6 +4027,11 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    {
       g_orbBridgeOnly=!g_orbBridgeOnly;if(g_orbBridgeOnly)g_orbBridgeEnabled=true;
       if(g_orbBridgeEnabled)OrbProWriteInitMarker();
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_BRIDGE_NATIVE")
+   {
+      g_orbNativeWithBridgeOnly=!g_orbNativeWithBridgeOnly;
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_BTF_SIGNAL"){g_btFillMode=BT_FILL_SIGNAL_CLOSE;needRedraw=true;}

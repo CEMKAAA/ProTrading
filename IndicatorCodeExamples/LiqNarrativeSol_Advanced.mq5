@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 
-#define LN_BUILD "2026-07-22.sol-advanced-isolated-bridge-v2"
+#define LN_BUILD "2026-07-24.sol-advanced-rf-toggles-v6"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -123,6 +123,18 @@ input int             InpSolContinuationEndGmt  = 23;
 input double          InpSolContinuationQualityLow = 2.17;
 input double          InpSolContinuationQualityHigh = 3.14;
 input bool            InpSolRegimeFilterDefault = false;
+input bool            InpSolRegimeRf01Blocked = true; // RLV mature stable continuation
+input bool            InpSolRegimeRf02Blocked = true; // TLV neutral rotation up
+input bool            InpSolRegimeRf03Blocked = true; // aligned impulse down continuation
+input bool            InpSolRegimeRf04Blocked = true; // RHV developing
+input bool            InpSolRegimeRf05Blocked = true; // RLV deep rebound normal
+input bool            InpSolRegimeRf06Blocked = true; // RLV shallow rebound
+input bool            InpSolRegimeRf07Blocked = true; // aligned fresh stable
+input bool            InpSolRegimeRf08Blocked = true; // shallow pullback mature
+input bool            InpSolRegimeRf09Blocked = true; // RHV aligned impulse
+input bool            InpSolRegimeRf10Blocked = true; // RLV compressed down reversal
+input bool            InpSolRegimeRf11Blocked = true; // impulse normal reversal
+input bool            InpSolRegimeRf12Blocked = true; // shallow pullback normal
 input string          InpSmtSymbol              = "US500m";
 input int             InpSmtLookbackBars        = 8;
 input int             InpHistoricalDays         = 14;
@@ -319,6 +331,10 @@ bool             g_requireSmt = false;
 bool             g_solRegimeFilterEnabled = false;
 int              g_solRegimeFilterRejected = 0;
 int              g_solRegimeFilterUnclassified = 0;
+#define SOL_ADV_RF_COUNT 12
+bool             g_solRegimeRuleBlocked[SOL_ADV_RF_COUNT];
+int              g_solRegimeRuleWins[SOL_ADV_RF_COUNT];
+int              g_solRegimeRuleLosses[SOL_ADV_RF_COUNT];
 bool             g_auditRuntime = false;
 bool             g_ftmoMode = false;
 bool             g_riskLotOnlyMode = false;
@@ -1412,6 +1428,42 @@ bool SolRegimeFilterRejects(const RegimeV3Snapshot &state, bool continuationRout
    return rule != "";
 }
 
+int SolRegimeRuleIndex(const string rule)
+{
+   if(StringLen(rule) < 4 || StringSubstr(rule, 0, 2) != "RF") return -1;
+   int number = (int)StringToInteger(StringSubstr(rule, 2, 2));
+   return number >= 1 && number <= SOL_ADV_RF_COUNT ? number - 1 : -1;
+}
+
+string SolRegimeRuleCode(int index)
+{
+   return index >= 0 && index < SOL_ADV_RF_COUNT ? StringFormat("RF%02d", index + 1) : "RF??";
+}
+
+bool SolRegimeRuleBlocks(const string rule)
+{
+   int index = SolRegimeRuleIndex(rule);
+   return index >= 0 && index < SOL_ADV_RF_COUNT ? g_solRegimeRuleBlocked[index] : true;
+}
+
+string SolRegimeRuleStatsText(int index)
+{
+   int wins = g_solRegimeRuleWins[index];
+   int losses = g_solRegimeRuleLosses[index];
+   int resolved = wins + losses;
+   double wr = resolved > 0 ? (double)wins / (double)resolved * 100.0 : 0.0;
+   return SolRegimeRuleCode(index) + " " + IntegerToString(wins) + "W/"
+      + IntegerToString(losses) + "L " + DoubleToString(wr, 1) + "%";
+}
+
+string SolRegimeRuleMask()
+{
+   string mask = "";
+   for(int i = 0; i < SOL_ADV_RF_COUNT; ++i)
+      mask += (i > 0 ? "," : "") + SolRegimeRuleCode(i) + "=" + (g_solRegimeRuleBlocked[i] ? "BLOCK" : "ALLOW");
+   return mask;
+}
+
 int ApplySolRegimeFilter(ErlSignal &signals[])
 {
    g_solRegimeFilterRejected = 0;
@@ -1441,7 +1493,7 @@ int ApplySolRegimeFilter(ErlSignal &signals[])
 
       bool continuationRoute = StringFind(signals[i].reason, "|sol_session_continuation") >= 0;
       string rule = "";
-      if(SolRegimeFilterRejects(state, continuationRoute, rule))
+      if(SolRegimeFilterRejects(state, continuationRoute, rule) && SolRegimeRuleBlocks(rule))
       {
          g_solRegimeFilterRejected++;
          continue;
@@ -1469,7 +1521,8 @@ bool SolRegimeFilterDecision(const ErlSignal &sig, bool &rejected, string &rule)
    RegimeV3Snapshot state;
    if(!RegimeV3SnapshotAt(sig.availableTime, state)) return false;
    bool continuationRoute = StringFind(sig.reason, "|sol_session_continuation") >= 0;
-   rejected = SolRegimeFilterRejects(state, continuationRoute, rule);
+   bool matched = SolRegimeFilterRejects(state, continuationRoute, rule);
+   rejected = matched && SolRegimeRuleBlocks(rule);
    return true;
 }
 bool FindEntrySweepReclaim(const MqlRates &entryRates[], int dir, datetime afterTime, int &reclaimIndex, double &sweepLevel)
@@ -2249,6 +2302,42 @@ SimStats CalculateStats(ErlSignal &signals[], const ErlSignal &exitSignals[], ER
    return st;
 }
 
+void CalculateSolRegimeRuleStats(ErlSignal &signals[], const ErlSignal &exitSignals[])
+{
+   for(int i = 0; i < SOL_ADV_RF_COUNT; ++i)
+   {
+      g_solRegimeRuleWins[i] = 0;
+      g_solRegimeRuleLosses[i] = 0;
+   }
+   if(ArraySize(signals) <= 0) return;
+   if(ArraySize(g_regimeV3Timeline) <= 0 && !RegimeV3EnsureTimeline(true)) return;
+   if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
+
+   for(int i = 0; i < ArraySize(signals); ++i)
+   {
+      RegimeV3Snapshot state;
+      if(!RegimeV3SnapshotAt(signals[i].availableTime, state)) continue;
+      bool continuationRoute = StringFind(signals[i].reason, "|sol_session_continuation") >= 0;
+      string rule = "";
+      if(!SolRegimeFilterRejects(state, continuationRoute, rule)) continue;
+      int ruleIndex = SolRegimeRuleIndex(rule);
+      if(ruleIndex < 0 || ruleIndex >= SOL_ADV_RF_COUNT) continue;
+
+      bool closed = false, won = false, valid = false;
+      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signals[i].availableTime, signals[i].dir);
+      string simKey = SimCacheKey(signals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
+      double r = 0.0;
+      if(!SimCacheGet(simKey, r, closed, won, valid))
+      {
+         r = SimulateSignal(signals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
+      }
+      if(!valid || !closed) continue;
+      if(won) g_solRegimeRuleWins[ruleIndex]++;
+      else g_solRegimeRuleLosses[ruleIndex]++;
+   }
+}
+
 void RecalculateHistoricalStats(bool rebuildSignals = true)
 {
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
@@ -2287,6 +2376,9 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    // still closes an existing position. Keep the raw causal stream for exits.
    ErlSignal exitSignals[];
    CopySignalArray(g_histSignals, exitSignals);
+   ErlSignal regimeRuleStatsSignals[];
+   CopySignalArray(g_histSignals, regimeRuleStatsSignals);
+   CalculateSolRegimeRuleStats(regimeRuleStatsSignals, exitSignals);
    ApplySolRegimeFilter(g_histSignals);
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(g_histSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
@@ -3764,7 +3856,8 @@ uint SignalEventHash(string value)
 
 string SignalClaimKey(const string eventId)
 {
-   return "LIQN_EVT|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))
+   // Advanced regime decisions must not claim the base SolVersion event.
+   return "LIQN_SOL_ADV_EVT|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))
       + "|" + IntegerToString((int)InpMagic)
       + "|" + _Symbol
       + "|" + IntegerToString((int)SignalEventHash(eventId));
@@ -3847,7 +3940,13 @@ bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
    if(reverseExitEnabled && OwnPositionCount(-sig.dir) > 0)
       localOk = CloseOwnPositions(-sig.dir) && OwnPositionCount(-sig.dir) == 0;
 
-   string detail = "rule=" + rule
+   string regimeDecisionDetail = "state=UNAVAILABLE";
+   RegimeV3Snapshot decisionState;
+   if(RegimeV3SnapshotAt(sig.availableTime, decisionState))
+      regimeDecisionDetail = "state=" + decisionState.core + "/" + decisionState.h1h2Phase + "/"
+         + decisionState.macroDirection + "/" + decisionState.transitionStatus
+         + " state_available=" + TimeToString(decisionState.availableTime, TIME_DATE|TIME_MINUTES);
+   string detail = "rule=" + rule + " " + regimeDecisionDetail
       + " bridge_close=" + (bridgeOk ? "1" : "0")
       + " local_close=" + (localOk ? "1" : "0")
       + " reverse_exit=" + (reverseExitEnabled ? "1" : "0");
@@ -4335,7 +4434,7 @@ void DrawDashboard()
       return;
    }
    int W = 760;
-   int H = 870;
+   int H = 980;
    RectObj("DASH_BG", x, y, W, H, C'15,20,31', C'90,178,255');
    RectObj("DASH_TOP", x, y, W, 32, C'10,15,26', C'90,178,255');
    RectObj("DASH_STRIPE", x + 8, y + 7, W - 16, 3, C'90,178,255', C'90,178,255');
@@ -4371,7 +4470,7 @@ void UpdateDashboard()
       g_eaEnabled ? C'80,255,180' : C'255,95,140', 8);
 
    int regY = y + 62;
-   RectObj("DASH_REGIME_BG", x + 8, regY, 744, 72, C'18,27,39', C'60,110,170');
+   RectObj("DASH_REGIME_BG", x + 8, regY, 744, 180, C'18,27,39', C'60,110,170');
    LabelObj("DASH_REGIME_T", x + 16, regY + 7, "MARKET REGIME V3", C'90,178,255', 9);
    ButtonObj("BTN_REG_FILTER", x + 642, regY + 5, 98, bh,
       g_solRegimeFilterEnabled ? "FILTER ON" : "FILTER OFF",
@@ -4407,7 +4506,21 @@ void UpdateDashboard()
          RegimeV3HintColor(), 8);
    }
 
-   int sec1 = y + 142;
+   LabelObj("DASH_REGIME_RF_HINT", x + 16, regY + 70,
+      "RF RULES // bright = ALLOW, dark = BLOCK // W/L/WR uses the selected audit window and ignores toggle state",
+      C'255,204,82', 8);
+   int rfW = 236;
+   for(int ri = 0; ri < SOL_ADV_RF_COUNT; ++ri)
+   {
+      int col = ri % 3;
+      int rfRow = ri / 3;
+      string text = SolRegimeRuleStatsText(ri) + (g_solRegimeRuleBlocked[ri] ? " BLOCK" : " ALLOW");
+      color bg = g_solRegimeRuleBlocked[ri] ? C'42,47,57' : C'58,126,178';
+      ButtonObj("BTN_REG_RF_" + IntegerToString(ri), x + 16 + col * 242, regY + 86 + rfRow * 22,
+         rfW, bh, text, bg);
+   }
+
+   int sec1 = y + 250;
    RectObj("DASH_SEC1", x + 8, sec1, 744, 228, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
@@ -4681,6 +4794,7 @@ void RunValidationInternalAudit()
       " reg_filter=", (g_solRegimeFilterEnabled ? "ON" : "OFF"),
       " regime_rejected=", IntegerToString(g_solRegimeFilterRejected),
       " regime_unclassified=", IntegerToString(g_solRegimeFilterUnclassified),
+      " rf_mask=", SolRegimeRuleMask(),
       " total=", IntegerToString(g_hist.total),
       " wins=", IntegerToString(g_hist.wins),
       " losses=", IntegerToString(g_hist.losses),
@@ -4728,6 +4842,23 @@ int OnInit()
    g_useAsiaLiquidityTarget = InpDefaultUseAsiaLiquidityTarget;
    g_requireSmt = InpDefaultRequireSmt;
    g_solRegimeFilterEnabled = InpSolRegimeFilterDefault;
+   g_solRegimeRuleBlocked[0] = InpSolRegimeRf01Blocked;
+   g_solRegimeRuleBlocked[1] = InpSolRegimeRf02Blocked;
+   g_solRegimeRuleBlocked[2] = InpSolRegimeRf03Blocked;
+   g_solRegimeRuleBlocked[3] = InpSolRegimeRf04Blocked;
+   g_solRegimeRuleBlocked[4] = InpSolRegimeRf05Blocked;
+   g_solRegimeRuleBlocked[5] = InpSolRegimeRf06Blocked;
+   g_solRegimeRuleBlocked[6] = InpSolRegimeRf07Blocked;
+   g_solRegimeRuleBlocked[7] = InpSolRegimeRf08Blocked;
+   g_solRegimeRuleBlocked[8] = InpSolRegimeRf09Blocked;
+   g_solRegimeRuleBlocked[9] = InpSolRegimeRf10Blocked;
+   g_solRegimeRuleBlocked[10] = InpSolRegimeRf11Blocked;
+   g_solRegimeRuleBlocked[11] = InpSolRegimeRf12Blocked;
+   for(int ri = 0; ri < SOL_ADV_RF_COUNT; ++ri)
+   {
+      g_solRegimeRuleWins[ri] = 0;
+      g_solRegimeRuleLosses[ri] = 0;
+   }
    NormalizeEntryModelStrictness();
    g_slDistancePct = ClampSlDistancePct(InpSlDistancePct);
    g_slBufferAtrPct = ClampSlBufferAtrPct(InpSlBufferAtrPct);
@@ -4773,7 +4904,8 @@ int OnInit()
       + " narrative=" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
       + " regime_filter=" + (g_solRegimeFilterEnabled ? "ON" : "OFF"));
    Print("LiqNarrativeSol init build=", LN_BUILD, " symbol=", _Symbol, " htf=", TfLabel(g_htf), " entry=", TfLabel(g_entryTf),
-      " regime_filter=", (g_solRegimeFilterEnabled ? "ON" : "OFF"));
+      " regime_filter=", (g_solRegimeFilterEnabled ? "ON" : "OFF"),
+      " rf_mask=", SolRegimeRuleMask());
    return INIT_SUCCEEDED;
 }
 
@@ -4879,6 +5011,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       DrawDashboard();
       ChartRedraw(0);
       return;
+   }
+
+   for(int ri = 0; ri < SOL_ADV_RF_COUNT; ++ri)
+   {
+      if(Clicked(sparam, "BTN_REG_RF_" + IntegerToString(ri)))
+      {
+         g_solRegimeRuleBlocked[ri] = !g_solRegimeRuleBlocked[ri];
+         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+         g_lastStatus = SolRegimeRuleCode(ri) + (g_solRegimeRuleBlocked[ri] ? " BLOCKED" : " ALLOWED");
+         RefreshAfterConfigChange(false);
+         return;
+      }
    }
 
    if(Clicked(sparam, "BTN_REG_FILTER"))

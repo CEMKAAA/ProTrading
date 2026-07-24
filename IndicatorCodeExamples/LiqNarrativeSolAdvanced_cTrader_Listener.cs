@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class LiqNarrativeSolAdvancedCTraderListener : Robot
     {
-        private const string Build = "2026-07-22.liq-sol-advanced-isolated-v2";
+        private const string Build = "2026-07-24.liq-sol-advanced-isolated-v4";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -1089,9 +1089,12 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(SourceFilter) && !ContainsText(sig.Source, SourceFilter))
+            var expectedSource = string.IsNullOrWhiteSpace(SourceFilter)
+                ? "LiqNarrativeSolAdvanced|"
+                : (SourceFilter.Trim().Contains("|") ? SourceFilter.Trim() : SourceFilter.Trim() + "|");
+            if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
             {
-                reason = $"source_filter source={sig.Source} expected={SourceFilter}";
+                reason = $"source_filter source={sig.Source} expected_namespace={expectedSource}";
                 return false;
             }
             return true;
@@ -1110,13 +1113,23 @@ namespace cAlgo.Robots
             var tf = NormalizeTf(string.IsNullOrWhiteSpace(SourceTimeframeFilter) && DefaultSourceTfToChartPeriod ? ChartTfString() : SourceTimeframeFilter);
             if (string.IsNullOrWhiteSpace(tf))
                 return _resolvedBridgePath;
+            string newestCandidate = null;
+            var newestWrite = DateTime.MinValue;
             foreach (var symbol in ScopedSourceSymbolCandidates())
             {
                 var candidate = IoPath.Combine(dir, $"{scopedPrefix}{Sanitize(symbol)}_{tf}.csv");
-                if (IoFile.Exists(candidate))
-                    return candidate;
+                if (!IoFile.Exists(candidate))
+                    continue;
+                DateTime writeTime;
+                try { writeTime = IoFile.GetLastWriteTimeUtc(candidate); }
+                catch { continue; }
+                if (newestCandidate == null || writeTime > newestWrite)
+                {
+                    newestCandidate = candidate;
+                    newestWrite = writeTime;
+                }
             }
-            return _resolvedBridgePath;
+            return newestCandidate ?? _resolvedBridgePath;
         }
 
         private IEnumerable<string> ScopedSourceSymbolCandidates()
@@ -1169,6 +1182,13 @@ namespace cAlgo.Robots
                     }
                 }
                 catch { }
+            }
+
+            if (HasPositionForEvent(eventId))
+            {
+                CommitEvent(eventId, 0, "reconciled_open_position_without_lock");
+                committedDuplicate = true;
+                return false;
             }
 
             var lockPath = EventLockPath(eventId);
