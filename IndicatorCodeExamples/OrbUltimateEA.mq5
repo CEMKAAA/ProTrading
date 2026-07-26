@@ -8,7 +8,7 @@
 #property version "3.30"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
-#define ORB15_BUILD "2026-07-26.v6.9-rf-experimental-filter"
+#define ORB15_BUILD "2026-07-26.v6.11-pnl-colored-audit"
 
 enum ORB_SESSION_PROFILE
 {
@@ -108,7 +108,7 @@ input int    InpFvgForwardBars      = 1;
 input double InpMinFvgGapPoints     = 0.0;
 input bool   InpRequireUnfilledFvg  = false;
 input bool   InpFvgRequireDisplacement = false;
-input bool   InpUseTimeExit         = true;
+input bool   InpUseTimeExit         = false;
 input int    InpTimeExitMinutes     = 120;
 input double InpTimeExitMinProgress = 0.5;
 input bool   InpUseDayFilter        = false;
@@ -236,7 +236,7 @@ string   g_histCoverageDetail = "";
 bool            g_rtFilterAtr     = true;
 bool            g_rtFilterVol     = true;
 bool            g_rtFilterDay     = false;
-bool            g_rtTimeExit      = true;
+bool            g_rtTimeExit      = false;
 bool            g_rtDisplacement  = false;
 ORB_FVG_MODE    g_rtFvgMode       = ORB_FVG_OFF;
 ORB_EXIT_ENGINE_MODE g_rtExitMode = ORB_EXIT_FIXED_TARGET;
@@ -2470,16 +2470,18 @@ HistResult SimulateHistoricalLifecycle(datetime entryTime,datetime sessionEnd,da
    return sim;
 }
 
-double OrbHistoricalArrowPrice(datetime signalTime,double fallbackHigh,double fallbackLow)
+datetime OrbSignalAvailableTime(datetime signalTime)
 {
-   int shift=iBarShift(_Symbol,g_rtSignalTf,signalTime,false);
-   double hi=shift>=0?iHigh(_Symbol,g_rtSignalTf,shift):fallbackHigh;
-   double lo=shift>=0?iLow(_Symbol,g_rtSignalTf,shift):fallbackLow;
-   if(hi<=0.0)hi=fallbackHigh;
-   if(lo<=0.0||lo>hi)lo=fallbackLow;
+   if(!InpUseClosedBarBreakout)return signalTime;
+   datetime available=BarCloseTime(g_rtSignalTf,signalTime);
+   return available>0?available:signalTime;
+}
+
+double OrbHistoricalArrowPrice(bool isBuy,double entry,double risk)
+{
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
-   double pad=MathMax(MathMax(hi-lo,pt)*0.20,pt*40.0);
-   return NormalizePrice(hi+pad);
+   double pad=MathMax(MathMax(risk,pt)*0.18,pt*40.0);
+   return NormalizePrice(isBuy?entry-pad:entry+pad);
 }
 
 //=========================================================================
@@ -2834,27 +2836,29 @@ void DrawHistoricalSignals()
             " statR=",DoubleToString(statR,2));
 
       // Draw arrow with outcome
-      double pad=MathMax(MathMax(sigH-sigL,pt)*0.20,pt*40.0);
-      double arwP=OrbHistoricalArrowPrice(sigT,sigH,sigL);
+      datetime visualT=OrbSignalAvailableTime(sigT);
+      double simRisk=MathAbs(sim.simEntry-sim.simSl);
+      double pad=MathMax(MathMax(simRisk,pt)*0.20,pt*40.0);
+      double arwP=OrbHistoricalArrowPrice(isBuy,sim.simEntry,simRisk);
       string dateKey=IntegerToString(daySt.year)+StringFormat("%02d%02d",daySt.mon,daySt.day);
       string base=PREFIX+"HIST_"+dateKey+"_"+dir+"_";
-      double simRisk=MathAbs(sim.simEntry-sim.simSl);
-      datetime levelEnd=entryT+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
+      datetime levelStart=MathMax(entryT,visualT);
+      datetime levelEnd=levelStart+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
       datetime nextSig=0;
       FindNextHistoricalSignalAfter(sigT,levelEnd,nextSig);
-      if(nextSig>entryT&&nextSig<levelEnd)levelEnd=nextSig;
-      datetime liveCut=NextOrbOpenOwnPositionTimeAfter(entryT,levelEnd);
-      if(liveCut>entryT&&liveCut<levelEnd)levelEnd=liveCut;
+      if(nextSig>levelStart&&nextSig<levelEnd)levelEnd=nextSig;
+      datetime liveCut=NextOrbOpenOwnPositionTimeAfter(levelStart,levelEnd);
+      if(liveCut>levelStart&&liveCut<levelEnd)levelEnd=liveCut;
       string levelId=dateKey+"_"+dir;
-      DrawOrbHistoricalSegment(levelId+"_ENTRY",entryT,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
-      DrawOrbHistoricalSegment(levelId+"_SL",entryT,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
+      DrawOrbHistoricalSegment(levelId+"_ENTRY",levelStart,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
+      DrawOrbHistoricalSegment(levelId+"_SL",levelStart,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
       if(sim.simTarget>0.0)
-         DrawOrbHistoricalSegment(levelId+"_TP",entryT,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
+         DrawOrbHistoricalSegment(levelId+"_TP",levelStart,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
 
       color arwClr=!sim.valid?C'145,155,170':(!finalOutcome?clrGold:(sim.netR>1e-8?clrLime:(sim.netR<-1e-8?clrTomato:clrLightSteelBlue)));
       int arwCode=isBuy?233:234;
-      if(ObjectFind(0,base+"ARW")<0)ObjectCreate(0,base+"ARW",OBJ_ARROW,0,sigT,arwP);
-      else ObjectMove(0,base+"ARW",0,sigT,arwP);
+      if(ObjectFind(0,base+"ARW")<0)ObjectCreate(0,base+"ARW",OBJ_ARROW,0,visualT,arwP);
+      else ObjectMove(0,base+"ARW",0,visualT,arwP);
       ObjectSetInteger(0,base+"ARW",OBJPROP_ARROWCODE,arwCode);
       ObjectSetInteger(0,base+"ARW",OBJPROP_COLOR,arwClr);
       ObjectSetInteger(0,base+"ARW",OBJPROP_WIDTH,2);
@@ -2874,15 +2878,15 @@ void DrawHistoricalSignals()
       txt+=" "+EntryModeLabel(g_rtEntryMode);
       if(!sim.valid&&sim.invalidReason!="")txt+=" "+sim.invalidReason;
       color txtClr=!sim.valid?C'170,180,195':(!finalOutcome?clrKhaki:(sim.netR>1e-8?clrPaleGreen:(sim.netR<-1e-8?clrLightSalmon:clrLightSteelBlue)));
-      double txtP=arwP+pad*0.65;
-      DrawSignalText(base+"TXT",sigT,txtP,txt,txtClr);
+      double txtP=isBuy?arwP-pad*0.65:arwP+pad*0.65;
+      DrawSignalText(base+"TXT",visualT,txtP,txt,txtClr);
 
       string hcTxt=sim.hcLeg>0?DoubleToString(PriceAtLeg(isBuy,sim.simEntry,simRisk,sim.hcLeg),_Digits):"OFF";
       string lvlTxt="SL="+DoubleToString(sim.simSl,_Digits)
          +" TP="+DoubleToString(sim.simTarget,_Digits)
          +" HC="+hcTxt;
-      double lvlP=txtP+pad*0.55;
-      DrawSignalText(base+"LVLTXT",sigT,lvlP,lvlTxt,txtClr);
+      double lvlP=isBuy?txtP-pad*0.55:txtP+pad*0.55;
+      DrawSignalText(base+"LVLTXT",visualT,lvlP,lvlTxt,txtClr);
       drawn++;
    }
 
@@ -3255,7 +3259,7 @@ void UpdateDashboard()
    // Stats section
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
-   color wrClr=wr>=50?C'80,255,180':C'255,95,140';
+   color pnlClr=g_histNetMoney>1e-8?C'80,255,180':(g_histNetMoney<-1e-8?C'255,95,140':C'184,196,210');
 
    CreateLabel("DASH_STITLE",x+12,y+138,HistoricalWindowLabel()+" AUDIT+CHART ("+TfLabel(g_rtSignalTf)+")",acB,9);
    int awx=x+240,awy=y+138,awg=3;
@@ -3276,7 +3280,7 @@ void UpdateDashboard()
       +" | Net $: "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)
       +" | Avg W/L: +"+DoubleToString(g_histWins>0?g_histWonR/(double)g_histWins:0,2)+"/-"+DoubleToString(g_histLosses>0?g_histLostR/(double)g_histLosses:0,2)+"R"
       +" | PF "+DoubleToString(pf,2)+(g_histInvalid>0?" | DATA "+IntegerToString(g_histInvalid):"")+(g_histFlat>0?" | FLAT "+IntegerToString(g_histFlat):"");
-   color auditStatColor=wrClr;
+   color auditStatColor=pnlClr;
    if(g_histCoveragePending)
    {
       auditStat1=g_histCoverageStatus;
@@ -3300,7 +3304,7 @@ void UpdateDashboard()
    // Win-rate bar doubles as an audit progress bar while a long rebuild is running.
    int barW=496,barH=14;
    double barPct=g_histAuditRunning?g_histAuditProgressPct:wr;
-   color barClr=g_histAuditRunning?C'38,140,220':wrClr;
+   color barClr=g_histAuditRunning?C'38,140,220':pnlClr;
    CreateRect("DASH_WRBAR_BG",x+12,y+206,barW,barH,C'42,51,68',C'134,158,182');
    int fillW=(int)MathRound((double)barW*MathMax(0,MathMin(100,barPct))/100.0);
    if(fillW>2)CreateRect("DASH_WRBAR_FILL",x+13,y+207,fillW-2,barH-2,barClr,barClr);
@@ -4058,8 +4062,9 @@ void TryOpenSignal()
    int sh=InpUseClosedBarBreakout?1:0;double sH=iHigh(_Symbol,g_rtSignalTf,sh),sL=iLow(_Symbol,g_rtSignalTf,sh);
    double pad=MathMax(MathAbs(g_orbHigh-g_orbLow)*0.12,SymbolInfoDouble(_Symbol,SYMBOL_POINT)*40.0);
    bool isBuy=dir=="BUY";double arwP=isBuy?(sL-pad):(sH+pad);
-   DrawSignalArrow(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+dir+"_ARW",bt,arwP,isBuy,false);
-   DrawSignalText(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+dir+"_TXT",bt,isBuy?arwP-pad*0.6:arwP+pad*0.6,"ORB LIVE "+dir+" "+modernDetail,isBuy?clrLime:clrTomato);
+   datetime visualT=OrbSignalAvailableTime(bt);
+   DrawSignalArrow(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+dir+"_ARW",visualT,arwP,isBuy,false);
+   DrawSignalText(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+dir+"_TXT",visualT,isBuy?arwP-pad*0.6:arwP+pad*0.6,"ORB LIVE "+dir+" "+modernDetail,isBuy?clrLime:clrTomato);
    Audit("signal",dir,0,sc,0,0,"bar="+FmtTime(bt)+" "+RuntimeEntryLabel()+" "+modernDetail);
    if(g_rtEntryMode==ORB_ENTRY_PULLBACK_RETEST)
    {

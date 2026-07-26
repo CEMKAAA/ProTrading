@@ -1,0 +1,17 @@
+# Source times supplied in Europe/Istanbul (UTC+3); converted to UTC/GMT.
+event_gmt,scope,label
+2026-07-27 05:00:00,NKD,JP_LOW_Leading Economic Index Final
+2026-07-27 05:00:00,NKD,JP_LOW_Coincident Index Final
+2026-07-29 03:35:00,NKD,JP_LOW_BoJ JGB Purchase
+2026-07-29 23:50:00,NKD,JP_LOW_Foreign Bond Investment
+2026-07-29 23:50:00,NKD,JP_LOW_Stock Investment by Foreigners
+2026-07-30 03:35:00,NKD,JP_LOW_3-Month Bill Auction
+2026-07-30 03:35:00,NKD,JP_LOW_2-Year JGB Auction
+2026-07-30 05:00:00,NKD,JP_HIGH_Consumer Confidence
+2026-07-30 23:30:00,NKD,JP_LOW_Jobs-applications ratio
+2026-07-30 23:30:00,NKD,JP_MEDIUM_Unemployment Rate
+2026-07-30 23:30:00,NKD,JP_LOW_Tokyo CPI Ex Food and Energy YoY
+2026-07-30 23:30:00,NKD,JP_LOW_Tokyo CPI YoY
+2026-07-30 23:30:00,NKD,JP_LOW_Tokyo Core CPI YoY
+2026-07-30 23:50:00,NKD,JP_MEDIUM_Industrial Production MoM Prel
+2026-07-30 23:50:00,NKD,JP_LOW_Industrial Production YoY Prel

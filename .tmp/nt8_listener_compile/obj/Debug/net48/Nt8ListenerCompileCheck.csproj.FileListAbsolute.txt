@@ -1,0 +1,10 @@
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\bin\Debug\net48\Nt8ListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\bin\Debug\net48\Nt8ListenerCompileCheck.pdb
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.csproj.AssemblyReference.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.AssemblyInfoInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.AssemblyInfo.cs
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.csproj.CoreCompileInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.sourcelink.json
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\nt8_listener_compile\obj\Debug\net48\Nt8ListenerCompileCheck.pdb

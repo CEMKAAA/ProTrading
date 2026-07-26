@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>13.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputType>Library</OutputType>
+    <PlatformTarget>x64</PlatformTarget>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\ProductionFileBridgeNinjaCore.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\TradeDayComplianceNinjaCore.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\LiqNarrativeSolAdvanced_NinjaTrader_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\OrbUltimate_NinjaTrader_Listener.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="NinjaTrader.Core"><HintPath>C:\Program Files\NinjaTrader 8\bin\NinjaTrader.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="NinjaTrader.Gui"><HintPath>C:\Program Files\NinjaTrader 8\bin\NinjaTrader.Gui.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="NinjaTrader.Custom"><HintPath>C:\Users\Cem\Documents\NinjaTrader 8\bin\Custom\NinjaTrader.Custom.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.ComponentModel.DataAnnotations" />
+  </ItemGroup>
+</Project>

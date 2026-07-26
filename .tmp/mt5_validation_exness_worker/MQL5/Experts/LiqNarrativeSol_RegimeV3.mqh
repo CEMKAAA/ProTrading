@@ -97,10 +97,13 @@ int RegimeV3UpperBoundTime(const MqlRates &rates[], datetime value)
    return left;
 }
 
-bool RegimeV3TfReturn(const MqlRates &rates[], datetime available, datetime anchorTime, double &value)
+bool RegimeV3TfReturn(const MqlRates &rates[], datetime available, datetime anchorTime, int barSeconds, double &value)
 {
    value = 0.0;
-   int currentIndex = RegimeV3UpperBoundTime(rates, available) - 2;
+   // Select the newest bar guaranteed closed at available. The old index
+   // depended on whether MT5 had synchronized the newly opened bar.
+   int safeBarSeconds = MathMax(1, barSeconds);
+   int currentIndex = RegimeV3UpperBoundTime(rates, available - safeBarSeconds) - 1;
    int anchorIndex = RegimeV3UpperBoundTime(rates, anchorTime) - 1;
    if(currentIndex < 0 || anchorIndex < 0 || currentIndex >= ArraySize(rates) || anchorIndex >= ArraySize(rates))
       return false;
@@ -305,18 +308,18 @@ bool RegimeV3Rebuild(RegimeV3Snapshot &snapshot, RegimeV3Snapshot &timeline[])
       datetime anchor20 = d1[index - 20].time;
       datetime anchor100 = d1[index - 100].time;
       bool ok = true;
-      ok = ok && RegimeV3TfReturn(h1, available, anchor5, ret5[0]);
-      ok = ok && RegimeV3TfReturn(h2, available, anchor5, ret5[1]);
-      ok = ok && RegimeV3TfReturn(h4, available, anchor5, ret5[2]);
-      ok = ok && RegimeV3TfReturn(d1, available, anchor5, ret5[3]);
-      ok = ok && RegimeV3TfReturn(h1, available, anchor20, ret20[0]);
-      ok = ok && RegimeV3TfReturn(h2, available, anchor20, ret20[1]);
-      ok = ok && RegimeV3TfReturn(h4, available, anchor20, ret20[2]);
-      ok = ok && RegimeV3TfReturn(d1, available, anchor20, ret20[3]);
-      ok = ok && RegimeV3TfReturn(h1, available, anchor100, ret100[0]);
-      ok = ok && RegimeV3TfReturn(h2, available, anchor100, ret100[1]);
-      ok = ok && RegimeV3TfReturn(h4, available, anchor100, ret100[2]);
-      ok = ok && RegimeV3TfReturn(d1, available, anchor100, ret100[3]);
+      ok = ok && RegimeV3TfReturn(h1, available, anchor5, PeriodSeconds(PERIOD_H1), ret5[0]);
+      ok = ok && RegimeV3TfReturn(h2, available, anchor5, PeriodSeconds(PERIOD_H2), ret5[1]);
+      ok = ok && RegimeV3TfReturn(h4, available, anchor5, PeriodSeconds(PERIOD_H4), ret5[2]);
+      ok = ok && RegimeV3TfReturn(d1, available, anchor5, PeriodSeconds(PERIOD_D1), ret5[3]);
+      ok = ok && RegimeV3TfReturn(h1, available, anchor20, PeriodSeconds(PERIOD_H1), ret20[0]);
+      ok = ok && RegimeV3TfReturn(h2, available, anchor20, PeriodSeconds(PERIOD_H2), ret20[1]);
+      ok = ok && RegimeV3TfReturn(h4, available, anchor20, PeriodSeconds(PERIOD_H4), ret20[2]);
+      ok = ok && RegimeV3TfReturn(d1, available, anchor20, PeriodSeconds(PERIOD_D1), ret20[3]);
+      ok = ok && RegimeV3TfReturn(h1, available, anchor100, PeriodSeconds(PERIOD_H1), ret100[0]);
+      ok = ok && RegimeV3TfReturn(h2, available, anchor100, PeriodSeconds(PERIOD_H2), ret100[1]);
+      ok = ok && RegimeV3TfReturn(h4, available, anchor100, PeriodSeconds(PERIOD_H4), ret100[2]);
+      ok = ok && RegimeV3TfReturn(d1, available, anchor100, PeriodSeconds(PERIOD_D1), ret100[3]);
       if(!ok) continue;
 
       double rv20 = RegimeV3RealizedVol(d1, index, 20);

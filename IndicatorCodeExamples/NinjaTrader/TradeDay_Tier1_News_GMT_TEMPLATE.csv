@@ -1,0 +1,4 @@
+﻿# Exact TradeDay calendar dates must be maintained from the official TradeDay calendar.
+# event_gmt must be UTC/GMT. scope: ALL, OIL, GAS, AGS, or a Ninja master symbol such as ES/NQ/CL.
+event_gmt,scope,label
+# 2026-08-01 12:30:00,ALL,EXAMPLE_ONLY_REMOVE_ME

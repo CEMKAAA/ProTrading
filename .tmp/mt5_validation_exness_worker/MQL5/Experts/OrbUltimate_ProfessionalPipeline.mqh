@@ -18,6 +18,7 @@ struct OrbBridgePendingEvent
 
 bool   g_orbBridgeEnabled=false;
 bool   g_orbBridgeOnly=false;
+bool   g_orbNativeWithBridgeOnly=false;
 string g_orbBridgeStatus="BRIDGE OFF";
 OrbBridgePendingEvent g_orbBridgePending[];
 
@@ -414,6 +415,7 @@ void OrbProRecoverClosedPlans(bool force)
 void OrbProInit()
 {
    g_orbBridgeEnabled=InpFileBridgeEnabled;g_orbBridgeOnly=InpFileBridgeOnlyMode;
+   g_orbNativeWithBridgeOnly=InpNativeTradeWithBridgeOnlyDefault;
    if(g_orbBridgeOnly)g_orbBridgeEnabled=true;
    OrbProLoadPending();OrbProRestoreRuntimeState();OrbProRecoverClosedPlans(true);
    if(g_orbBridgeEnabled)OrbProWriteInitMarker();
