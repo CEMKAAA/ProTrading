@@ -112,7 +112,8 @@ void OBT_RunRegimeMatrix()
       datetime entryT=ob.sigTime;double entry=ob.sigClose;string entryDetail="";
       if(!ResolveHistoricalEntry(g_rtEntryMode,ob.dir,ob.sigTime,ob.sigClose,g_btDays[di].orbHi,g_btDays[di].orbLo,
          g_btDays[di].tradeEnd,entryT,entry,entryDetail))continue;
-      bool isBuy=ob.dir=="BUY";
+      string execDir=EffectiveOrbDirection(ob.dir);
+      bool isBuy=execDir=="BUY";
       double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
       double rawSl=isBuy?(g_btDays[di].orbLo-buffer):(g_btDays[di].orbHi+buffer);
       double sl=ApplyRuntimeSlFromEntry(isBuy,entry,rawSl);
@@ -162,7 +163,7 @@ void OBT_RunRegimeMatrix()
       {
          MqlDateTime sd;TimeToStruct(ob.sigTime,sd);
          FileWrite(eh,InpValidationJobId,ORB15_BUILD,_Symbol,EnumToString(_Period),TfLabel(g_rtSignalTf),
-            TimeToString(ob.sigTime,TIME_DATE|TIME_SECONDS),IntegerToString(sd.year),ob.dir,
+            TimeToString(ob.sigTime,TIME_DATE|TIME_SECONDS),IntegerToString(sd.year),execDir,
             IntegerToString(regimeBucket),OrbRegimeName(regimeBucket),
             DoubleToString(sim.simEntry,_Digits),DoubleToString(sim.simSl,_Digits),DoubleToString(sim.simTarget,_Digits),
             sim.outcome,DoubleToString(sim.netR,6),(sim.netR>0.0?"1":"0"),

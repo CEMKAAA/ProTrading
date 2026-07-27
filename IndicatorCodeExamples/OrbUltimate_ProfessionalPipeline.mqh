@@ -41,7 +41,7 @@ int OrbProBridgeFlags(int flags){return InpFileBridgeUseCommonFiles?(flags|FILE_
 int OrbProCommonFlag(){return InpFileBridgeUseCommonFiles?FILE_COMMON:0;}
 string OrbProScopedLatestFile(){return "OrbUltimateBridge_Latest_"+OrbProSafeToken(_Symbol)+"_"+OrbProTf(g_rtSignalTf)+".csv";}
 string OrbProOutboxFile(){return "OrbUltimateBridge_Outbox_"+OrbProSafeToken(_Symbol)+"_"+OrbProTf(g_rtSignalTf)+".csv";}
-string OrbProBridgeSource(){return "OrbUltimate|"+RuntimeEntryLabel()+"|"+RuntimeTargetModeLabel()+"|"+RuntimeSlModeLabel();}
+string OrbProBridgeSource(){return "OrbUltimate|"+RuntimeEntryLabel()+"|"+RuntimeTargetModeLabel()+"|"+RuntimeSlModeLabel()+"|"+(g_rtInvertMode?"INV1":"INV0");}
 string OrbProTempFile(string fileName,int attempt){return fileName+".tmp."+StringFormat("%I64d",ChartID())+"."+IntegerToString((int)GetTickCount())+"."+IntegerToString(attempt);}
 
 void OrbProBridgeHeader(int handle)
@@ -56,7 +56,7 @@ void OrbProBridgeRow(int handle,string eventId,string dir,double entry,double sl
    FileWrite(handle,"1",OrbProTime(TimeGMT()),StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN)),_Symbol,
       OrbProTf(g_rtSignalTf),eventId,source,dir,OrbProTime(signalTime),DoubleToString(entry,_Digits),
       DoubleToString(sl,_Digits),DoubleToString(tp,_Digits),DoubleToString(halfTrigger,_Digits),halfLabel,
-      ORB15_BUILD,DoubleToString(tick.bid,_Digits),DoubleToString(tick.ask,_Digits),DoubleToString(MathMax(0.0,InpRiskPerTradePct),4));
+      ORB15_BUILD,DoubleToString(tick.bid,_Digits),DoubleToString(tick.ask,_Digits),DoubleToString(EffRiskPerTradePct(),4));
 }
 bool OrbProPromoteTemp(string tempName,string fileName)
 {
