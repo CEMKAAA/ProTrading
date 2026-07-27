@@ -9,8 +9,9 @@
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "LiqNarrativeMacroRegime.mqh"
+#include "TradeDayCalendarPublisher.mqh"
 
-#define LN_BUILD "2026-07-24.sol-v14-dashboard-rebuild-v7"
+#define LN_BUILD "2026-07-27.sol-v14-tradeday-calendar-v1"
 #define LN_PREFIX "LIQNARRSOL_"
 
 //=====================================================================
@@ -4769,6 +4770,7 @@ void OnTick()
 void OnTimer()
 {
    if(IsTesterMode()) return;
+   TradeDayCalendarPublisherTick();
    g_lastSpreadPts = CurrentSpreadPoints();
    RegimeV3Update(false);
    BridgeRetryPending();

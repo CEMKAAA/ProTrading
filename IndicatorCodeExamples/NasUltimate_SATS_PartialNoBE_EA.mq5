@@ -5,12 +5,13 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.42"
+#property version "1.44"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
 #include "SuperTrend_SATS_Core.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
+#include "LiqNarrativeMacroRegime.mqh"
 
 #ifndef SATS_CORE_HAS_SIGNAL_RISK_HELPER
    #error "NasUltimate_SATS_EA requires the updated SuperTrend_SATS_Core.mqh from IndicatorCodeExamples. Copy/compile the matching .mqh next to this EA."
@@ -78,11 +79,12 @@ input double InpSpreadGoodPoints = 0.0;    // 0 = auto by symbol
 input double InpSpreadNormalPoints = 0.0;  // 0 = auto by symbol
 input double InpSpreadWidePoints = 0.0;    // 0 = auto by symbol, red/blocked above this
 input bool   InpEaEnabled = true;
-input int    InpDashboardAuditWeeks = 2; // 2,5,10,20. Also controls historical signal overlay window.
+input int    InpDashboardAuditWeeks = 2; // 2,5,10,20,52,104,156,208,260. Also controls historical signal overlay window.
 input bool   InpDashboardUseAcceptedSignalFilter = false; // false=DUP ON, true=DUP OFF accepted alternating signals.
 input bool   InpNasRegimeFilterDefault = false; // Default-off: block only causal H1/H2 NEUTRAL_ROTATION after NAS signal generation.
 input NAS_TP_MANAGEMENT_MODE InpTpManagementMode = NAS_TP_FIXED_SELECTED_LEG;
 input int    InpSelectedTpLeg = 6; // 1..6, where TP6 = 3R. Used by FIXED_SELECTED_LEG mode.
+input double InpSelectedTargetR = 0.0; // 0=legacy InpSelectedTpLeg; presets include 0.5/0.6/0.7/0.8/0.9/1/1.5/2/2.5/3R.
 input int    InpHcBeTpLeg = 0; // 0=off, otherwise move SL->BE when selected leg is touched before final TP.
 input bool   InpInvertTradeMode = false; // Reverse execution: BUY<->SELL, original TP becomes SL, original SL becomes TP.
 input int    InpInvertHcBeProgressPct = 0; // 0/25/50/75. Invert-only SL->BE trigger as pct of final TP path.
@@ -215,6 +217,7 @@ double   g_fixedLotRuntime = 0.0;
 bool     g_eaEnabledRuntime = true;
 string   g_lastExecutionStatus = "READY";
 string   g_lastExecutionBlockReason = "";
+bool     g_lastSignalBridgePublished = false;
 double   g_lastSpreadPoints = 0.0;
 string   g_lastSpreadStatus = "UNKNOWN";
 double   g_spreadMaxPointsRuntime = 0.0;
@@ -246,6 +249,12 @@ int      g_nasRegimeRejectedLive = 0;
 int      g_nasRegimeUnclassifiedLive = 0;
 string   g_nasRegimeLastRule = "-";
 string   g_nasRegimeLastDetail = "-";
+int      g_nasMacroLastBucket = -1;
+string   g_nasMacroLastDetail = "-";
+bool     g_historyAuditRunning = false;
+double   g_historyAuditProgressPct = 0.0;
+bool     g_historyCoverageBlocked = false;
+string   g_historyCoverageDetail = "";
 
 struct NasRegimeCloseRetryState
 {
@@ -261,6 +270,7 @@ struct NasRegimeCloseRetryState
 NasRegimeCloseRetryState g_nasRegimeCloseRetry;
 
 int      g_selectedTpLegRuntime = 6;
+double   g_selectedTargetRRuntime = 3.0;
 int      g_hcBeTpLegRuntime = 0;
 int      g_invertHcBeProgressPctRuntime = 0;
 int      g_invertReferenceTpLegRuntime = 0;
@@ -273,6 +283,7 @@ bool     g_riskLotOnlyRuntime = false;
 NAS_RISK_GEOMETRY_MODE g_riskGeometryModeRuntime = NAS_RISK_GEOMETRY_NORMAL;
 double   g_pipSlDistanceRuntime = 30.0;
 double   g_accountRiskPerTradePctRuntime = 1.0;
+uint     g_riskPctApplyFeedbackUntilMs = 0;
 double   g_lastAdvancedLot = 0.0;
 string   g_lastAdvancedLotDetail = "";
 uint     g_lastAccountRiskGuardMs = 0;
@@ -286,6 +297,35 @@ uint     g_dashboardDoorStartMs = 0;
 bool IsTesterMode()
 {
    return (bool)MQLInfoInteger(MQL_TESTER);
+}
+
+string NasRiskPctRuntimeKey()
+{
+   string symbolToken = _Symbol;
+   StringReplace(symbolToken, ".", "_");
+   StringReplace(symbolToken, " ", "_");
+   StringReplace(symbolToken, "|", "_");
+   return "NAS_RISK_PCT_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      + "_" + IntegerToString(InpMagic) + "_" + symbolToken + "_" + IntegerToString((int)_Period);
+}
+
+double LoadNasRiskPctRuntime()
+{
+   double configured = MathMax(0.0, InpAccountRiskPerTradePct);
+   if(IsTesterMode())
+      return configured;
+   string key = NasRiskPctRuntimeKey();
+   if(!GlobalVariableCheck(key))
+      return configured;
+   double saved = GlobalVariableGet(key);
+   return (saved > 0.0 && saved <= 100.0) ? saved : configured;
+}
+
+bool PersistNasRiskPctRuntime()
+{
+   if(IsTesterMode())
+      return true;
+   return GlobalVariableSet(NasRiskPctRuntimeKey(), g_accountRiskPerTradePctRuntime) > 0;
 }
 bool AccountRiskRuntimeEnabled()
 {
@@ -322,6 +362,74 @@ double RMultipleForLeg(const int leg)
    return 0.5 * (double)ClampTpLeg(leg);
 }
 
+double NormalizeTargetPresetR(const double value)
+{
+   double options[] = {0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5, 2.0, 2.5, 3.0};
+   double requested = MathMax(0.5, MathMin(3.0, value));
+   double best = options[0];
+   double distance = MathAbs(requested - best);
+   for(int i = 1; i < ArraySize(options); ++i)
+   {
+      double candidateDistance = MathAbs(requested - options[i]);
+      if(candidateDistance < distance)
+      {
+         best = options[i];
+         distance = candidateDistance;
+      }
+   }
+   return NormalizeDouble(best, 1);
+}
+
+double NextTargetPresetR(const double current)
+{
+   double options[] = {0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5, 2.0, 2.5, 3.0};
+   double normalized = NormalizeTargetPresetR(current);
+   for(int i = 0; i < ArraySize(options); ++i)
+      if(MathAbs(normalized - options[i]) < 0.001)
+         return options[(i + 1) % ArraySize(options)];
+   return options[0];
+}
+
+int LegacyLegForTargetR(const double targetR)
+{
+   return ClampTpLeg((int)MathFloor(MathMax(0.5, targetR) * 2.0 + 0.0001));
+}
+
+double SelectedTargetR()
+{
+   return NormalizeTargetPresetR(g_selectedTargetRRuntime);
+}
+
+double EffectiveInversionReferenceR()
+{
+   if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
+      return 3.0;
+   if(g_invertReferenceTpLegRuntime > 0)
+      return RMultipleForLeg(g_invertReferenceTpLegRuntime);
+   return SelectedTargetR();
+}
+
+double LocalTargetPriceForR(const double entry, const double sl, const int direction, const double targetR)
+{
+   double risk = MathAbs(entry - sl);
+   if(risk <= 0.0 || direction == 0 || targetR <= 0.0)
+      return 0.0;
+   return NormalizeDouble(direction > 0 ? entry + risk * targetR : entry - risk * targetR, _Digits);
+}
+
+double CurrentSelectedFinalTp(const int direction)
+{
+   if(g_invertTradeModeRuntime && g_lastInvertedFinalTp > 0.0)
+      return NormalizeDouble(g_lastInvertedFinalTp, _Digits);
+   double targetR = g_invertTradeModeRuntime ? EffectiveInversionReferenceR() : SelectedTargetR();
+   return LocalTargetPriceForR(g_lastEntry, g_lastSl, direction, targetR);
+}
+
+string TargetRText(const double targetR)
+{
+   return DoubleToString(targetR, 1) + "R";
+}
+
 double TpPriceForLeg(const int direction, const int leg)
 {
    double risk = MathAbs(g_lastEntry - g_lastSl);
@@ -343,7 +451,7 @@ int EffectiveInversionReferenceLeg()
 {
    if(InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R)
       return 6;
-   int refLeg = g_invertReferenceTpLegRuntime > 0 ? g_invertReferenceTpLegRuntime : g_selectedTpLegRuntime;
+   int refLeg = g_invertReferenceTpLegRuntime > 0 ? g_invertReferenceTpLegRuntime : LegacyLegForTargetR(SelectedTargetR());
    return ClampTpLeg(refLeg);
 }
 bool InvertReferenceSwapEnabled()
@@ -395,7 +503,7 @@ string EffectiveTpSelectorText()
 {
    if(g_invertTradeModeRuntime)
       return EffectiveInversionReferenceText();
-   return "TP" + IntegerToString(g_selectedTpLegRuntime) + " " + DoubleToString(RMultipleForLeg(g_selectedTpLegRuntime), 1) + "R";
+   return "TP " + TargetRText(SelectedTargetR());
 }
 
 bool InvertTargetOverrideEnabled()
@@ -431,7 +539,7 @@ double HistoricalHcBePrice(const double entry, const double sl, const int direct
 {
    if(g_invertTradeModeRuntime)
       return InvertHcBePrice(direction, entry, finalTp);
-   if(g_hcBeTpLegRuntime > 0 && g_hcBeTpLegRuntime < finalLeg)
+   if(g_hcBeTpLegRuntime > 0 && RMultipleForLeg(g_hcBeTpLegRuntime) < (MathAbs(finalTp - entry) / MathMax(MathAbs(entry - sl), _Point)) - 0.0001)
       return LocalTpPriceForLeg(entry, sl, direction, g_hcBeTpLegRuntime);
    return 0.0;
 }
@@ -534,14 +642,41 @@ string TpModeText()
 
 int EffectiveAuditTpLeg()
 {
-   return g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg() : ClampTpLeg(g_selectedTpLegRuntime);
+   double targetR = g_invertTradeModeRuntime ? EffectiveInversionReferenceR() : SelectedTargetR();
+   return LegacyLegForTargetR(targetR);
 }
+int ClampNasAuditWeeks(const int requested)
+{
+   int options[] = {2, 5, 10, 20, 52, 104, 156, 208, 260};
+   int best = options[0];
+   int distance = MathAbs(requested - best);
+   for(int i = 1; i < ArraySize(options); ++i)
+   {
+      int candidateDistance = MathAbs(requested - options[i]);
+      if(candidateDistance < distance)
+      {
+         best = options[i];
+         distance = candidateDistance;
+      }
+   }
+   return best;
+}
+
+string NasAuditWindowLabel()
+{
+   if(g_auditWeeksRuntime >= 52 && g_auditWeeksRuntime % 52 == 0)
+      return IntegerToString(g_auditWeeksRuntime / 52) + "Y";
+   return IntegerToString(g_auditWeeksRuntime) + "W";
+}
+
 int NextAuditWeeks(const int cur)
 {
-   if(cur < 5) return 5;
-   if(cur < 10) return 10;
-   if(cur < 20) return 20;
-   return 2;
+   int options[] = {2, 5, 10, 20, 52, 104, 156, 208, 260};
+   int normalized = ClampNasAuditWeeks(cur);
+   for(int i = 0; i < ArraySize(options); ++i)
+      if(options[i] == normalized)
+         return options[(i + 1) % ArraySize(options)];
+   return options[0];
 }
 uint     g_historyRefreshDueMs = 0;
 bool     g_historyRefreshPending = false;
@@ -1168,10 +1303,12 @@ int OnInit()
    g_eaEnabledRuntime = InpEaEnabled;
    g_finalRiskScalePctRuntime = MathMax(10.0, MathMin(500.0, InpFinalRiskScalePct));
    g_swingBufferAtrRuntime = MathMax(0.0, InpSwingBufferAtr);
-   g_auditWeeksRuntime = (InpDashboardAuditWeeks <= 2 ? 2 : (InpDashboardAuditWeeks <= 5 ? 5 : (InpDashboardAuditWeeks <= 10 ? 10 : 20)));
+   g_auditWeeksRuntime = ClampNasAuditWeeks(InpDashboardAuditWeeks);
    g_historyUseAcceptedFilterRuntime = InpDashboardUseAcceptedSignalFilter;
    g_nasRegimeFilterRuntime = InpNasRegimeFilterDefault;
+   LiqMacroRegimeInit();
    g_selectedTpLegRuntime = ClampTpLeg(InpSelectedTpLeg);
+   g_selectedTargetRRuntime = NormalizeTargetPresetR(InpSelectedTargetR > 0.0 ? InpSelectedTargetR : RMultipleForLeg(g_selectedTpLegRuntime));
    g_hcBeTpLegRuntime = ClampHcBeLeg(InpHcBeTpLeg);
    g_invertHcBeProgressPctRuntime = (InpInvertHcBeProgressPct == 25 || InpInvertHcBeProgressPct == 50 || InpInvertHcBeProgressPct == 75) ? InpInvertHcBeProgressPct : 0;
    g_invertReferenceTpLegRuntime = InpInvertReferenceTpLeg > 0 ? ClampTpLeg(InpInvertReferenceTpLeg) : 0;
@@ -1203,7 +1340,7 @@ int OnInit()
    }
    g_riskGeometryModeRuntime = InpRiskGeometryMode;
    g_pipSlDistanceRuntime = MathMax(0.0, InpPipSlDistance);
-   g_accountRiskPerTradePctRuntime = MathMax(0.0, InpAccountRiskPerTradePct);
+   g_accountRiskPerTradePctRuntime = LoadNasRiskPctRuntime();
    g_runtimeMagic = 0;
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
@@ -1963,6 +2100,29 @@ bool CalculateRisk(const MqlRates &rates[],
    return true;
 }
 
+bool NasMacroRegimeRejectsAt(const datetime availableTime, string &rule, string &detail, int &bucket)
+{
+   rule = "";
+   detail = "";
+   bucket = -1;
+   RegimeV3Snapshot state;
+   bucket = LiqMacroRegimeBucketAt(availableTime, state);
+   if(bucket < 0)
+   {
+      g_macroRegimeUnclassified++;
+      detail = "macro_regime=UNKNOWN fail_open=1";
+      return false;
+   }
+   rule = "MACRO_" + LiqMacroRegimeShortName(bucket);
+   detail = "macro_regime=" + LiqMacroRegimeName(bucket)
+      + " core=" + state.core
+      + " transition=" + state.transitionStatus
+      + " age=" + IntegerToString(state.effectiveAge)
+      + " h1h2=" + state.h1h2Phase
+      + " vol=" + state.volatilityDepth + "/" + state.volatilityImpulse
+      + " allowed=" + (LiqMacroRegimeAllowed(bucket) ? "1" : "0");
+   return !LiqMacroRegimeAllowed(bucket);
+}
 bool NasRegimeRejectsAt(const datetime availableTime, string &rule, string &detail)
 {
    rule = "";
@@ -2220,6 +2380,19 @@ void ProcessSignalBar()
       : rates[i].time + MathMax(60, PeriodSeconds(_Period));
    string regimeRule = "";
    string regimeDetail = "";
+   int macroBucket = -1;
+   string macroRule = "";
+   string macroDetail = "";
+   if(NasMacroRegimeRejectsAt(regimeAvailableTime, macroRule, macroDetail, macroBucket))
+   {
+      g_nasMacroLastBucket = macroBucket;
+      g_nasMacroLastDetail = macroDetail;
+      g_macroRegimeRejected++;
+      HandleNasRegimeRejectedSignal(rates[i], direction, NasSignalText(p[i]), macroRule, macroDetail);
+      return;
+   }
+   g_nasMacroLastBucket = macroBucket;
+   g_nasMacroLastDetail = macroDetail;
    if(g_nasRegimeFilterRuntime && NasRegimeRejectsAt(regimeAvailableTime, regimeRule, regimeDetail))
    {
       HandleNasRegimeRejectedSignal(rates[i], direction, NasSignalText(p[i]), regimeRule, regimeDetail);
@@ -2277,11 +2450,11 @@ void ProcessSignalBar()
       double originalSl = g_lastSl;
       double normalSwapEntry = signalEntryBeforeExecution;
       double normalSwapSl = originalSl;
-      double originalFinalTp = LocalTpPriceForLeg(signalEntryBeforeExecution, originalSl, signalDirection, inverseLeg);
+      double originalFinalTp = LocalTargetPriceForR(signalEntryBeforeExecution, originalSl, signalDirection, EffectiveInversionReferenceR());
       string normalSwapDetail = "";
       double normalExecutionEntry = NasMarketExecutionEntry(signalDirection);
       double normalSwapFinalTp = 0.0;
-      if(BuildNormalExecutableSwapReference(signalDirection, normalExecutionEntry, signalEntryBeforeExecution, originalSl, inverseLeg, normalSwapEntry, normalSwapSl, normalSwapFinalTp, normalSwapDetail))
+      if(BuildNormalExecutableSwapReference(signalDirection, normalExecutionEntry, signalEntryBeforeExecution, originalSl, EffectiveInversionReferenceR(), normalSwapEntry, normalSwapSl, normalSwapFinalTp, normalSwapDetail))
       {
          originalSl = normalSwapSl;
          originalFinalTp = normalSwapFinalTp;
@@ -2343,13 +2516,15 @@ void ProcessSignalBar()
    double bridgeFinalTp = UseSingleOrderTpMode()
       ? (g_invertTradeModeRuntime && g_lastInvertedFinalTp > 0.0
          ? g_lastInvertedFinalTp
-         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentFinalTpForLeg(direction, ClampTpLeg(g_selectedTpLegRuntime))))
+         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentSelectedFinalTp(direction)))
       : g_lastTp3;
    NasProAuditWrite("signal_ready", "nas|" + IntegerToString((long)rates[i].time), direction,
       g_lastEntry, g_lastSl, bridgeFinalTp, 0.0,
       "window=OPEN geometry=" + RiskGeometryModeText() + " pip_sl=" + DoubleToString(g_pipSlDistanceRuntime, 2));
    bool bridgeShapeSupported = !g_nasBridgeEnabledRuntime || UseSingleOrderTpMode();
-   bool bridgePublished = bridgeShapeSupported && NasProPublishCurrentSignal(rates[i].time, direction);
+   bool bridgePublishOk = bridgeShapeSupported && NasProPublishCurrentSignal(rates[i].time, direction);
+   bool bridgePublished = g_nasBridgeEnabledRuntime && bridgePublishOk;
+   g_lastSignalBridgePublished = bridgePublished;
    if(!bridgeShapeSupported)
       NasProAuditWrite("bridge_shape_block", "nas|" + IntegerToString((long)rates[i].time), direction,
          g_lastEntry, g_lastSl, bridgeFinalTp, 0.0, "reason=unsupported_legacy_multi_order native_may_continue=1");
@@ -2365,7 +2540,7 @@ void ProcessSignalBar()
          RequestHistoryRefresh();
          return;
       }
-      if(!bridgePublished)
+      if(!bridgePublishOk)
       {
          g_lastExecutionStatus = "BLOCKED";
          g_lastExecutionBlockReason = "bridge_only_publish_failed";
@@ -2432,7 +2607,7 @@ void ProcessSignalBar()
          g_liveSignalDirection = direction;
       }
       int planLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg()
-         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : ClampTpLeg(g_selectedTpLegRuntime));
+         : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : LegacyLegForTargetR(SelectedTargetR()));
       double planTp = UseSingleOrderTpMode() ? bridgeFinalTp : g_lastTp3;
       double planHalf = UseSingleOrderTpMode() ? NasProBridgeHalfTrigger(direction, planLeg, planTp) : 0.0;
       NasProRegisterUntrackedPositions(rates[i].time, direction, g_lastEntry, g_lastSl, planTp, planHalf);
@@ -2687,7 +2862,7 @@ bool BuildNormalExecutableSwapReference(const int signalDirection,
                                         const double normalExecutionEntry,
                                         const double rawEntry,
                                         const double rawSl,
-                                        const int finalLeg,
+                                        const double finalTargetR,
                                         double &normalEntry,
                                         double &normalSl,
                                         double &normalFinalTp,
@@ -2702,7 +2877,7 @@ bool BuildNormalExecutableSwapReference(const int signalDirection,
    detail = "";
    if(!BuildExecutableNasGeometry(signalDirection, normalExecutionEntry, normalEntry, normalSl, normalTp1, normalTp2, normalTp3, detail))
       return false;
-   normalFinalTp = LocalTpPriceForLeg(normalEntry, normalSl, signalDirection, finalLeg);
+   normalFinalTp = LocalTargetPriceForR(normalEntry, normalSl, signalDirection, finalTargetR);
    return normalFinalTp > 0.0;
 }
 bool ResolveHistoricalExecutionEntry(const MqlRates &rates[],
@@ -2780,6 +2955,7 @@ int NasM1GuardResolveBefore(const datetime fromTime,
 bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
                                      const NasPoint &p[],
                                      const bool &closeSignal[],
+                                     const bool useTicks,
                                      const int signalIndex,
                                      const int direction,
                                      const int lastIndex,
@@ -2830,13 +3006,17 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
    if(endTime <= startTime)
       return false;
 
-   bool halfEnabled = (hcPrice > 0.0 && (g_invertTradeModeRuntime || (g_hcBeTpLegRuntime > 0 && g_hcBeTpLegRuntime < finalLeg)));
+   double finalTargetR = NasTargetR(direction, entry, sl, finalTp);
+   bool halfEnabled = (hcPrice > 0.0 && (g_invertTradeModeRuntime
+      || (g_hcBeTpLegRuntime > 0 && RMultipleForLeg(g_hcBeTpLegRuntime) < finalTargetR - 0.0001)));
    bool halfDone = false;
    double activeSl = sl;
    double halfR = halfEnabled ? NasTargetR(direction, entry, sl, hcPrice) : 0.0;
 
    MqlTick ticks[];
-   int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, (ulong)startTime * 1000, (ulong)endTime * 1000);
+   int copied = useTicks
+      ? CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, (ulong)startTime * 1000, (ulong)endTime * 1000)
+      : 0;
    bool anyTick = false;
    if(copied > 0)
    {
@@ -2871,9 +3051,9 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
          bool finalHit = direction > 0 ? closePx >= finalTp : closePx <= finalTp;
          if(finalHit)
          {
-            double finalR = NasTargetR(direction, entry, sl, finalTp);
+            double finalR = finalTargetR;
             pnlR += halfDone ? finalR * 0.5 : finalR;
-            outcome = "TP" + IntegerToString(finalLeg) + " tick";
+            outcome = "TP " + TargetRText(finalR) + " tick";
             maxTp = MathMax(maxTp, finalLeg);
             closed = true;
             won = pnlR > 0.0;
@@ -2888,9 +3068,9 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
             int guardRes = NasM1GuardResolveBefore(startTime, guardEnd, direction, entry, finalTp, activeSl);
             if(guardRes > 0)
             {
-               double finalR = NasTargetR(direction, entry, sl, finalTp);
+               double finalR = finalTargetR;
                pnlR += halfDone ? finalR * 0.5 : finalR;
-               outcome = "TP" + IntegerToString(finalLeg) + " m1_guard";
+               outcome = "TP " + TargetRText(finalR) + " m1_guard";
                maxTp = MathMax(maxTp, finalLeg);
                closed = true;
                won = pnlR > 0.0;
@@ -2957,9 +3137,9 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
       int res = NasResolveSameBar(m1[i], direction, (i == 0 ? entry : m1[i].open), finalTp, activeSl);
       if(res > 0)
       {
-         double finalR = NasTargetR(direction, entry, sl, finalTp);
+         double finalR = finalTargetR;
          pnlR += halfDone ? finalR * 0.5 : finalR;
-         outcome = "TP" + IntegerToString(finalLeg) + " m1";
+         outcome = "TP " + TargetRText(finalR) + " m1";
          maxTp = MathMax(maxTp, finalLeg);
          closed = true;
          won = pnlR > 0.0;
@@ -3041,7 +3221,9 @@ bool SimulateHistoricalSignal(const MqlRates &rates[],
       return false;
    }
 
-   bool halfEnabled = (hcPrice > 0.0 && (g_invertTradeModeRuntime || (g_hcBeTpLegRuntime > 0 && g_hcBeTpLegRuntime < finalLeg)));
+   double finalTargetR = NasTargetR(direction, entry, sl, finalTp);
+   bool halfEnabled = (hcPrice > 0.0 && (g_invertTradeModeRuntime
+      || (g_hcBeTpLegRuntime > 0 && RMultipleForLeg(g_hcBeTpLegRuntime) < finalTargetR - 0.0001)));
    bool halfDone = false;
    double halfR = halfEnabled ? NasTargetR(direction, entry, sl, hcPrice) : 0.0;
    int end = MathMin(lastIndex, ArraySize(rates) - 1);
@@ -3089,9 +3271,9 @@ bool SimulateHistoricalSignal(const MqlRates &rates[],
 
       if(finalHit)
       {
-         double finalR = NasTargetR(direction, entry, sl, finalTp);
+         double finalR = finalTargetR;
          pnlR += halfDone ? finalR * 0.5 : finalR;
-         outcome = "TP" + IntegerToString(finalLeg);
+         outcome = "TP " + TargetRText(finalR);
          maxTp = MathMax(maxTp, finalLeg);
          closed = true;
          won = (pnlR > 0.0);
@@ -3124,11 +3306,24 @@ bool SimulateHistoricalSignal(const MqlRates &rates[],
    won = (pnlR > 0.0);
    return true;
 }
+void SetNasHistoryAuditProgress(const string stage, const double pct)
+{
+   g_historyAuditRunning = pct < 100.0;
+   g_historyAuditProgressPct = MathMax(0.0, MathMin(100.0, pct));
+   g_historyAuditSummary = NasAuditWindowLabel() + " Audit | " + stage + " " + DoubleToString(g_historyAuditProgressPct, 1) + "%";
+   g_historyAuditRows[0] = g_historyAuditSummary;
+   g_dashboardForceNextUpdate = true;
+   UpdateDashboard();
+   ChartRedraw(0);
+}
 void DrawRecentSignalHistory()
 {
    if(IsTesterMode())
       return;
    ObjectsDeleteAll(0, PREFIX + "HIST_");
+   g_historyCoverageBlocked = false;
+   g_historyCoverageDetail = "";
+   SetNasHistoryAuditProgress("PREPARE", 1.0);
 
    int periodSec = MathMax(60, PeriodSeconds(_Period));
    int windowSeconds = MathMax(2, g_auditWeeksRuntime) * 7 * 86400;
@@ -3140,19 +3335,58 @@ void DrawRecentSignalHistory()
    int copied = LoadNasRates(rates, barsToCopy, false);
    if(copied < 200)
    {
+      g_historyAuditRunning = false;
+      g_historyCoverageBlocked = true;
+      g_historyAuditProgressPct = 0.0;
+      g_historyCoverageDetail = "insufficient bars copied=" + IntegerToString(copied) + " need>=200";
+      g_historyAuditSummary = NasAuditWindowLabel() + " HISTORY BLOCKED";
+      g_historyAuditDetail = g_historyCoverageDetail;
+      g_historyAuditRows[0] = g_historyAuditSummary;
+      g_historyAuditRows[1] = g_historyCoverageDetail;
       Print("NAS SATS EA history overlay skipped: insufficient bars copied=", copied);
+      g_dashboardForceNextUpdate = true;
+      UpdateDashboard();
+      ChartRedraw(0);
       return;
    }
 
+   datetime requiredOldest = cutoff - periodSec * 300;
+   if(rates[0].time > requiredOldest + periodSec * 2)
+   {
+      g_historyAuditRunning = false;
+      g_historyCoverageBlocked = true;
+      g_historyCoverageDetail = "need " + TimeToString(requiredOldest, TIME_DATE)
+         + " got " + TimeToString(rates[0].time, TIME_DATE)
+         + " | increase Tools>Options>Charts Max bars and reload history";
+      g_historyAuditSummary = NasAuditWindowLabel() + " HISTORY BLOCKED";
+      g_historyAuditDetail = g_historyCoverageDetail;
+      g_historyAuditRows[0] = g_historyAuditSummary;
+      g_historyAuditRows[1] = g_historyCoverageDetail;
+      Print("NAS SATS EA history coverage blocked window=", NasAuditWindowLabel(),
+            " requested_bars=", barsToCopy, " copied=", copied, " ", g_historyCoverageDetail);
+      g_dashboardForceNextUpdate = true;
+      UpdateDashboard();
+      ChartRedraw(0);
+      return;
+   }
+   SetNasHistoryAuditProgress("SIGNALS", 18.0);
+
    NasPoint p[];
    NAS_Calculate(rates, copied, BuildNasSettings(), p);
+   SetNasHistoryAuditProgress("CLASSIFY", 32.0);
 
    bool acceptedSignal[];
+   bool candidateSignal[];
    bool closeSignal[];
+   int macroBucketByIndex[];
    ArrayResize(acceptedSignal, copied);
+   ArrayResize(candidateSignal, copied);
    ArrayResize(closeSignal, copied);
+   ArrayResize(macroBucketByIndex, copied);
    ArrayInitialize(acceptedSignal, false);
+   ArrayInitialize(candidateSignal, false);
    ArrayInitialize(closeSignal, false);
+   ArrayInitialize(macroBucketByIndex, -1);
    int historicalExecutedDirection = 0;
 
    datetime historicalWindowSessionKey = 0;
@@ -3160,12 +3394,14 @@ void DrawRecentSignalHistory()
    int windowSkipped = 0;
    int sameDirectionSkipped = 0;
    int regimeSkipped = 0;
+   int macroRegimeSkipped = 0;
    int regimeUnclassified = 0;
    int acceptedTotal = 0;
-   if(g_nasRegimeFilterRuntime)
-      RegimeV3EnsureTimeline(false);
+   RegimeV3EnsureTimeline(false);
    for(int ai = 0; ai <= copied - 2; ai++)
    {
+      if(ai > 0 && ai % MathMax(1, copied / 8) == 0)
+         SetNasHistoryAuditProgress("CLASSIFY", 32.0 + 16.0 * (double)ai / (double)MathMax(1, copied - 1));
       if(!p[ai].buy && !p[ai].sell)
          continue;
       bool inAuditWindow = (rates[ai].time >= cutoff);
@@ -3192,6 +3428,20 @@ void DrawRecentSignalHistory()
          continue;
       }
 
+      candidateSignal[ai] = true;
+      RegimeV3Snapshot macroSnapshot;
+      int macroBucket = LiqMacroRegimeBucketAt(rates[ai].time + periodSec, macroSnapshot);
+      macroBucketByIndex[ai] = macroBucket;
+      if(macroBucket < 0)
+      {
+         if(inAuditWindow) regimeUnclassified++;
+      }
+      else if(!LiqMacroRegimeAllowed(macroBucket))
+      {
+         if(inAuditWindow) macroRegimeSkipped++;
+         continue;
+      }
+
       string regimeRule = "";
       string regimeDetail = "";
       datetime regimeAvailableTime = rates[ai].time + periodSec;
@@ -3214,6 +3464,11 @@ void DrawRecentSignalHistory()
       g_historySummary[h] = "-";
    for(int r = 0; r < 6; r++)
       g_historyAuditRows[r] = "-";
+   for(int mr = 0; mr < LIQ_MACRO_REGIME_COUNT; ++mr)
+   {
+      g_macroRegimeWins[mr] = 0;
+      g_macroRegimeLosses[mr] = 0;
+   }
 
    int drawn = 0;
    int wins = 0;
@@ -3224,16 +3479,24 @@ void DrawRecentSignalHistory()
    double lostR = 0.0;
    int maxDraw = 250;
    int liveManagedDirection = ManagedPositionDirection();
-   for(int i = copied - 2; i >= 0 && drawn < maxDraw; i--)
+   int progressCheckpoint = 0;
+   for(int i = copied - 2; i >= 0; i--)
    {
+      int processedPct = (int)MathFloor(100.0 * (double)(copied - 2 - i) / (double)MathMax(1, copied - 1));
+      if(processedPct >= progressCheckpoint + 5)
+      {
+         progressCheckpoint = processedPct;
+         SetNasHistoryAuditProgress("SIMULATE", 50.0 + 48.0 * (double)processedPct / 100.0);
+      }
       if(rates[i].time < cutoff)
          break;
       if(!p[i].buy && !p[i].sell)
          continue;
       if(!IsTradingTimeOpenAt(rates[i].time))
          continue;
-      if((g_historyUseAcceptedFilterRuntime || g_nasRegimeFilterRuntime) && (i >= ArraySize(acceptedSignal) || !acceptedSignal[i]))
+      if(i >= ArraySize(candidateSignal) || !candidateSignal[i])
          continue;
+      bool executionAccepted = (i < ArraySize(acceptedSignal) && acceptedSignal[i]);
       int signalDirection = p[i].buy ? 1 : -1;
       int direction = g_invertTradeModeRuntime ? -signalDirection : signalDirection;
       if((liveManagedDirection != 0 || g_liveLevelObjectsActive) && g_lastSignalTime > 0 && rates[i].time == g_lastSignalTime)
@@ -3249,7 +3512,7 @@ void DrawRecentSignalHistory()
       int finalLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg() : EffectiveAuditTpLeg();
       double signalEntry = entry;
       double originalSl = sl;
-      double originalFinalTp = LocalTpPriceForLeg(signalEntry, originalSl, signalDirection, finalLeg);
+      double originalFinalTp = LocalTargetPriceForR(signalEntry, originalSl, signalDirection, EffectiveInversionReferenceR());
       double normalSwapEntryHist = signalEntry;
       double normalSwapSlHist = originalSl;
       double normalSwapFinalTpHist = originalFinalTp;
@@ -3264,7 +3527,7 @@ void DrawRecentSignalHistory()
          string normalExecutionSourceHist = "";
          if(ResolveHistoricalExecutionEntry(rates, i, copied - 2, signalDirection, normalExecutionEntryHist, normalExecutionSourceHist))
          {
-            if(BuildNormalExecutableSwapReference(signalDirection, normalExecutionEntryHist, signalEntry, originalSl, finalLeg, normalSwapEntryHist, normalSwapSlHist, normalSwapFinalTpHist, normalSwapDetailHist))
+            if(BuildNormalExecutableSwapReference(signalDirection, normalExecutionEntryHist, signalEntry, originalSl, EffectiveInversionReferenceR(), normalSwapEntryHist, normalSwapSlHist, normalSwapFinalTpHist, normalSwapDetailHist))
             {
                originalSl = normalSwapSlHist;
                originalFinalTp = normalSwapFinalTpHist;
@@ -3285,7 +3548,7 @@ void DrawRecentSignalHistory()
             if(!BuildExecutableNasGeometry(direction, executionEntry, entry, sl, tp1, tp2, tp3, geometryDetail))
                continue;
             ApplySignalOpenRiskGeometry(direction, rates[i].open, entry, sl, tp1, tp2, tp3, geometryDetail);
-            finalTp = LocalTpPriceForLeg(entry, sl, direction, finalLeg);
+            finalTp = LocalTargetPriceForR(entry, sl, direction, SelectedTargetR());
          }
       }
       else
@@ -3297,7 +3560,7 @@ void DrawRecentSignalHistory()
             tp1 = tp2 = tp3 = finalTp;
          }
          else
-            finalTp = LocalTpPriceForLeg(entry, sl, direction, finalLeg);
+            finalTp = LocalTargetPriceForR(entry, sl, direction, SelectedTargetR());
       }
 
       double hcPrice = HistoricalHcBePrice(entry, sl, direction, finalTp, finalLeg);
@@ -3308,10 +3571,12 @@ void DrawRecentSignalHistory()
       bool closed = false;
       bool won = false;
       datetime cacheEndTime = rates[MathMin(copied - 2, ArraySize(rates) - 1)].time;
-      string simKey = NasHistorySimKey(rates[i].time, direction, entry, sl, finalTp, hcPrice, finalLeg, cacheEndTime);
+      bool useTickReplay = g_auditWeeksRuntime <= 20;
+      string simKey = NasHistorySimKey(rates[i].time, direction, entry, sl, finalTp, hcPrice, finalLeg, cacheEndTime)
+         + "|fill=" + (useTickReplay ? "tick_m1" : "m1");
       if(!NasHistorySimCacheGet(simKey, maxTp, outcome, pnlR, closed, won))
       {
-         bool simulated = SimulateHistoricalSignalByTicks(rates, p, closeSignal, i, direction, copied - 2, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed, won);
+         bool simulated = SimulateHistoricalSignalByTicks(rates, p, closeSignal, useTickReplay, i, direction, copied - 2, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed, won);
          if(!simulated)
          {
             if(!SimulateHistoricalSignal(rates, p, closeSignal, i, direction, copied - 2, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed, won))
@@ -3320,6 +3585,15 @@ void DrawRecentSignalHistory()
          }
          NasHistorySimCachePut(simKey, maxTp, outcome, pnlR, closed, won);
       }
+
+      int signalMacroBucket = i < ArraySize(macroBucketByIndex) ? macroBucketByIndex[i] : -1;
+      if(closed && signalMacroBucket >= 0 && signalMacroBucket < LIQ_MACRO_REGIME_COUNT)
+      {
+         if(pnlR > 0.0001) g_macroRegimeWins[signalMacroBucket]++;
+         else if(pnlR < -0.0001) g_macroRegimeLosses[signalMacroBucket]++;
+      }
+      if(!executionAccepted)
+         continue;
 
       if(closed)
       {
@@ -3339,7 +3613,8 @@ void DrawRecentSignalHistory()
          openCount++;
       totalR += pnlR;
 
-      DrawHistoricalSignal(drawn + 1, direction, rates[i].time, rates[i].high, rates[i].low, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed);
+      if(drawn < maxDraw)
+         DrawHistoricalSignal(drawn + 1, direction, rates[i].time, rates[i].high, rates[i].low, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed);
       if(drawn < 4)
       {
          if(drawn < 3)
@@ -3353,8 +3628,8 @@ void DrawRecentSignalHistory()
                                     + " | SigE " + DoubleToString(signalEntry, _Digits)
                                     + " | ExecE " + DoubleToString(entry, _Digits)
                                     + " | SL " + DoubleToString(sl, _Digits)
-                                    + (g_invertTradeModeRuntime ? (" | " + EffectiveInvertTargetText() + " REF TP" + IntegerToString(finalLeg) + " " + DoubleToString(finalTp, _Digits))
-                                                                : (" | TP" + IntegerToString(finalLeg) + " " + DoubleToString(finalTp, _Digits)))
+                                    + (g_invertTradeModeRuntime ? (" | " + EffectiveInvertTargetText() + " REF " + TargetRText(EffectiveInversionReferenceR()) + " " + DoubleToString(finalTp, _Digits))
+                                                                : (" | TP " + TargetRText(NasTargetR(direction, entry, sl, finalTp)) + " " + DoubleToString(finalTp, _Digits)))
                                     + (hcPrice > 0.0 ? " | HC " + DoubleToString(hcPrice, _Digits) : "")
                                     + " | " + outcome;
       }
@@ -3384,18 +3659,18 @@ void DrawRecentSignalHistory()
    double wr = (wins + losses) > 0 ? (double)wins * 100.0 / (double)(wins + losses) : 0.0;
    double profitFactor = lostR > 0.0 ? wonR / lostR : (wonR > 0.0 ? 99.0 : 0.0);
    double avgR = drawn > 0 ? totalR / (double)drawn : 0.0;
-   g_historyAuditSummary = IntegerToString(g_auditWeeksRuntime) + "W Audit | "
+   g_historyAuditSummary = NasAuditWindowLabel() + " Audit | "
                            + IntegerToString(drawn) + " sig | W " + IntegerToString(wins)
                            + " L " + IntegerToString(losses)
                            + " O " + IntegerToString(openCount)
                            + " | WR " + DoubleToString(wr, 1) + "% | PnL "
                            + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2) + "R";
    int auditTpLeg = EffectiveAuditTpLeg();
-   double auditLegR = RMultipleForLeg(auditTpLeg);
+   double auditLegR = g_invertTradeModeRuntime ? EffectiveInversionReferenceR() : SelectedTargetR();
    double auditTargetR = g_invertTradeModeRuntime ? (InvertTargetOverrideEnabled() ? g_invertTargetRRuntime : 0.0) : auditLegR;
    string auditTpDescriptor = g_invertTradeModeRuntime ? (EffectiveInversionReferenceText() + " | " + EffectiveInvertTargetText()
                                                        + (InvertTargetOverrideEnabled() ? (" " + NasRiskRewardText(auditTargetR)) : " normal_SL_as_TP"))
-                                                       : ("TP" + IntegerToString(auditTpLeg) + " +" + DoubleToString(auditTargetR, 2) + "R " + NasRiskRewardText(auditTargetR));
+                                                       : ("TP " + TargetRText(auditTargetR) + " " + NasRiskRewardText(auditTargetR));
    g_historyAuditDetail = auditTpDescriptor
                           + " | HCBE " + EffectiveHcBeText()
                           + " | ATRbuf " + DoubleToString(g_swingBufferAtrRuntime * 100.0, 0) + "%"
@@ -3419,9 +3694,12 @@ void DrawRecentSignalHistory()
                            + " | accepted " + IntegerToString(acceptedTotal) + "/" + IntegerToString(rawSignals)
                            + " | win " + IntegerToString(windowSkipped)
                            + " dup " + IntegerToString(sameDirectionSkipped)
-                           + " regime " + IntegerToString(regimeSkipped)
-                           + " unclassified " + IntegerToString(regimeUnclassified);
+                           + " macro " + IntegerToString(macroRegimeSkipped)
+                           + " v3 " + IntegerToString(regimeSkipped)
+                           + " unknown " + IntegerToString(regimeUnclassified);
 
+   g_historyAuditRunning = false;
+   g_historyAuditProgressPct = 100.0;
    Print("NAS SATS EA history overlay drawn=", drawn,
          " window_weeks=", g_auditWeeksRuntime,
          " wins=", wins,
@@ -3438,7 +3716,9 @@ void DrawRecentSignalHistory()
          " raw_signals=", rawSignals,
          " accepted_signals=", acceptedTotal,
          " window_skipped=", windowSkipped,
-         " same_direction_skipped=", sameDirectionSkipped);
+         " same_direction_skipped=", sameDirectionSkipped,
+         " macro_regime_skipped=", macroRegimeSkipped,
+         " v3_regime_skipped=", regimeSkipped);
 }
 double NormalizeVolume(const double volume)
 {
@@ -4246,8 +4526,8 @@ bool OpenSelectedTpOrder(const int direction)
 {
    ENUM_ORDER_TYPE type = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double price = direction > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   int tpLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg() : ClampTpLeg(g_selectedTpLegRuntime);
-   double finalTp = CurrentFinalTpForLeg(direction, tpLeg);
+   int tpLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg() : LegacyLegForTargetR(SelectedTargetR());
+   double finalTp = CurrentSelectedFinalTp(direction);
    if(finalTp <= 0.0)
    {
       g_lastExecutionBlockReason = "selected_tp_invalid";
@@ -4549,8 +4829,31 @@ void MoveRemainingToBE(const bool allowPartialClose=false)
       double expectedHalfPnl = NasProjectedProfit(direction, NormalizeVolumeDown(volumeBefore * 0.5), entry, triggerPx, pnlOk);
       bool partialDone = false;
       string partialDetail = "partial_not_requested";
+      ulong positionId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(positionId == 0) positionId = ticket;
+      bool halfDonePersisted = NasProGetPlan(positionId, "halfDone", 0.0) > 0.5;
+      double tol = MathMax(_Point, SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+      bool alreadyAtBe = currentSl > 0.0 && (direction > 0 ? currentSl >= entry - tol : currentSl <= entry + tol);
+      if(alreadyAtBe)
+      {
+         if(partialMode) NasProSetPlan(positionId, "halfDone", 1.0);
+         WriteHcBeLifecycleAudit("halfbe_sl_already_be", ticket,
+            "mode=" + modeText
+            + " partial_done=" + (halfDonePersisted ? "1" : "0")
+            + " entry=" + DoubleToString(entry, _Digits)
+            + " sl=" + DoubleToString(currentSl, _Digits)
+            + " tp=" + DoubleToString(tp, _Digits)
+            + " volume_before=" + DoubleToString(volumeBefore, 8));
+         Print("NAS SATS EA: SL -> BE already protected ticket=", ticket,
+               " mode=", modeText,
+               " partial_done=", halfDonePersisted,
+               " entry=", DoubleToString(entry, _Digits),
+               " sl=", DoubleToString(currentSl, _Digits),
+               " tp=", DoubleToString(tp, _Digits));
+         continue;
+      }
 
-      if(partialMode)
+      if(partialMode && !halfDonePersisted)
       {
          double desiredClose = volumeBefore * 0.5;
          double closeVol = NormalizeVolumeDown(desiredClose);
@@ -4596,6 +4899,8 @@ void MoveRemainingToBE(const bool allowPartialClose=false)
                continue;
             }
             partialDone = true;
+            halfDonePersisted = true;
+            NasProSetPlan(positionId, "halfDone", 1.0);
             WriteHcBeLifecycleAudit("halfbe_partial_close_done", ticket,
                "mode=" + modeText + " method=" + method
                + " entry=" + DoubleToString(entry, _Digits)
@@ -4622,25 +4927,7 @@ void MoveRemainingToBE(const bool allowPartialClose=false)
          entry = NormalizeDouble(PositionGetDouble(POSITION_PRICE_OPEN), _Digits);
       }
 
-      double tol = MathMax(_Point, SymbolInfoDouble(_Symbol, SYMBOL_POINT));
-      bool alreadyAtBe = currentSl > 0.0 && (direction > 0 ? currentSl >= entry - tol : currentSl <= entry + tol);
-      if(alreadyAtBe)
-      {
-         WriteHcBeLifecycleAudit("halfbe_sl_already_be", ticket,
-            "mode=" + modeText
-            + " partial_done=" + (partialDone ? "1" : "0")
-            + " entry=" + DoubleToString(entry, _Digits)
-            + " sl=" + DoubleToString(currentSl, _Digits)
-            + " tp=" + DoubleToString(tp, _Digits)
-            + " volume_before=" + DoubleToString(volumeBefore, 8));
-         Print("NAS SATS EA: SL -> BE already protected ticket=", ticket,
-               " mode=", modeText,
-               " partial_done=", partialDone,
-               " entry=", DoubleToString(entry, _Digits),
-               " sl=", DoubleToString(currentSl, _Digits),
-               " tp=", DoubleToString(tp, _Digits));
-         continue;
-      }
+
       ResetLastError();
       bool ok = trade.PositionModify(ticket, entry, tp);
       if(ok)
@@ -4879,12 +5166,16 @@ void ManageOpenPositions()
    if(g_invertTradeModeRuntime)
    {
       int finalLeg = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : EffectiveInversionReferenceLeg();
-      double finalTp = CurrentFinalTpForLeg(g_lastDirection, finalLeg);
+      double finalTp = CurrentSelectedFinalTp(g_lastDirection);
       hcPrice = InvertHcBePrice(g_lastDirection, g_lastEntry, finalTp);
    }
    else
    {
-      if(EffectiveHcBeLeg() <= 0 || EffectiveHcBeLeg() >= g_selectedTpLegRuntime)
+      double activeFinalTp = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R
+         ? g_lastTp3
+         : CurrentSelectedFinalTp(g_lastDirection);
+      double activeTargetR = NasTargetR(g_lastDirection, g_lastEntry, g_lastSl, activeFinalTp);
+      if(EffectiveHcBeLeg() <= 0 || RMultipleForLeg(EffectiveHcBeLeg()) >= activeTargetR - 0.0001)
          return;
       hcPrice = CurrentFinalTpForLeg(g_lastDirection, EffectiveHcBeLeg());
    }
@@ -5069,7 +5360,7 @@ void DrawHistoricalSignal(const int idx,
    string maxText = maxTp > 0 ? "TP" + IntegerToString(maxTp) : "none";
    string tpText = g_invertTradeModeRuntime
                    ? (EffectiveInvertTargetText() + " " + EffectiveInversionReferenceText() + " " + DoubleToString(finalTp, _Digits))
-                   : ("TP" + IntegerToString(finalLeg) + " " + DoubleToString(finalTp, _Digits));
+                   : ("TP " + TargetRText(NasTargetR(direction, entry, sl, finalTp)) + " " + DoubleToString(finalTp, _Digits));
    string txt = (direction > 0 ? "BUY" : "SELL") + " #" + IntegerToString(idx)
                 + " " + (pnlR >= 0.0 ? "+" : "") + DoubleToString(pnlR, 2) + "R"
                 + "\nE " + DoubleToString(entry, _Digits)
@@ -5115,15 +5406,15 @@ void DrawTradeLevels(const int direction)
 
    if(UseSingleOrderTpMode())
    {
-      int finalLeg = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : (g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg() : ClampTpLeg(g_selectedTpLegRuntime));
-      double finalTp = g_invertTradeModeRuntime ? CurrentFinalTpForLeg(direction, finalLeg) : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentFinalTpForLeg(direction, finalLeg));
+      int finalLeg = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : LegacyLegForTargetR(g_invertTradeModeRuntime ? EffectiveInversionReferenceR() : SelectedTargetR());
+      double finalTp = InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentSelectedFinalTp(direction);
       DrawHLine("TP_SELECTED", finalTp, clrLime, STYLE_DASH, 2);
       double actualTargetR = NasTargetR(direction, g_lastEntry, g_lastSl, finalTp);
       string tpLabel = g_invertTradeModeRuntime
                        ? (EffectiveInvertTargetText() + " " + EffectiveInversionReferenceText()
                           + " +" + DoubleToString(actualTargetR, 2) + "R " + NasRiskRewardText(actualTargetR)
                           + " " + DoubleToString(finalTp, _Digits))
-                       : ("TP" + IntegerToString(finalLeg)
+                       : ("TP " + TargetRText(actualTargetR)
                           + " +" + DoubleToString(actualTargetR, 2) + "R " + NasRiskRewardText(actualTargetR)
                           + " " + DoubleToString(finalTp, _Digits));
       DrawTextLabel("TP_SELECTED_TXT", tpLabel, finalTp, clrLime);
@@ -5135,7 +5426,7 @@ void DrawTradeLevels(const int direction)
          if(hc > 0.0)
             hcLabel = "INV HC->BE " + IntegerToString(g_invertHcBeProgressPctRuntime) + "% " + DoubleToString(hc, _Digits);
       }
-      else if(EffectiveHcBeLeg() > 0 && EffectiveHcBeLeg() < finalLeg)
+      else if(EffectiveHcBeLeg() > 0 && RMultipleForLeg(EffectiveHcBeLeg()) < actualTargetR - 0.0001)
       {
          hc = CurrentFinalTpForLeg(direction, EffectiveHcBeLeg());
          hcLabel = "HC->BE TP" + IntegerToString(EffectiveHcBeLeg()) + " " + DoubleToString(hc, _Digits);
@@ -5491,6 +5782,7 @@ void ClearDashboardObjects()
       "DASH_DOCK_BG", "DASH_DOCK_STRIPE", "DASH_DOCK_TEXT", "DASH_DOCK_HINT",
       "DASH_COLLAPSED_HINT",
       "BTN_DASH_EXPAND", "BTN_DASH_COLLAPSE", "BTN_NAS_REGIME_FILTER",
+      "BTN_MACRO_REG_0", "BTN_MACRO_REG_1", "BTN_MACRO_REG_2", "BTN_MACRO_REG_3", "BTN_MACRO_REG_4", "BTN_MACRO_REG_5",
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
@@ -5503,6 +5795,7 @@ void ClearDashboardObjects()
    DeleteProgressBar("TRADE_VECTOR");
    DeleteProgressBar("BUY_FUEL");
    DeleteProgressBar("SELL_FUEL");
+   DeleteProgressBar("AUDIT_SCAN");
 }
 
 void DrawCollapsedDashboardToggle()
@@ -5556,7 +5849,7 @@ void CreateButtons()
                 g_nasRegimeWarmupPending ? C'184,103,22' : (g_nasRegimeFilterRuntime ? C'30,150,95' : C'90,90,110'));
    CreateButton("BTN_APPLY_WINDOW", 836, 220, 92, 24, "APPLY WIN", C'38,101,176');
    CreateButton("BTN_FINAL_SCALE_APPLY", 936, 220, 70, 24, "APPLY", C'38,101,176');
-   CreateButton("BTN_AUDIT_WIN", 684, 250, 118, 24, IntegerToString(g_auditWeeksRuntime) + "W WINDOW", C'38,101,176');
+   CreateButton("BTN_AUDIT_WIN", 684, 250, 118, 24, NasAuditWindowLabel() + " WINDOW", C'38,101,176');
    CreateButton("BTN_ACCEPT_FILTER", 936, 250, 102, 24, g_historyUseAcceptedFilterRuntime ? "DUP OFF" : "DUP ON", g_historyUseAcceptedFilterRuntime ? C'90,90,110' : C'30,150,95');
    CreateButton("BTN_TP_MODE", 810, 250, 118, 24, TpModeText(), g_tpManagementModeRuntime == NAS_TP_FIXED_SELECTED_LEG ? C'30,150,95' : C'90,90,110');
    CreateButton("BTN_TP_LEG", 684, 278, 118, 24, EffectiveTpSelectorText(), C'38,101,176');
@@ -5576,6 +5869,15 @@ void CreateButtons()
    CreateButton("BTN_NAS_BRIDGE_ONLY", 772, 360, 82, 22, g_nasBridgeOnlyRuntime ? "ONLY ON" : "ONLY OFF", g_nasBridgeOnlyRuntime ? C'120,88,25' : C'90,90,110');
    CreateButton("BTN_NAS_BRIDGE_NATIVE", 860, 360, 82, 22, g_nasNativeWithBridgeOnlyRuntime ? "NAT ON" : "NAT OFF", g_nasNativeWithBridgeOnlyRuntime ? C'184,103,22' : C'90,90,110');
    CreateButton("BTN_NAS_PRO_AUDIT", 948, 360, 90, 22, g_nasProAuditRuntime ? "AUDIT ON" : "AUDIT OFF", g_nasProAuditRuntime ? C'30,150,95' : C'90,90,110');
+   int currentMacro = LiqMacroRegimeBucket(g_regimeV3);
+   for(int ri = 0; ri < LIQ_MACRO_REGIME_COUNT; ++ri)
+   {
+      int col = ri % 3;
+      int row = ri / 3;
+      color bg = !g_macroRegimeAllowed[ri] ? C'58,62,72' : (ri == currentMacro ? C'38,101,176' : C'30,130,85');
+      CreateButton("BTN_MACRO_REG_" + IntegerToString(ri), 38 + col * 200, 316 + row * 24, 190, 21,
+                   LiqMacroRegimeStatsText(ri) + (g_macroRegimeAllowed[ri] ? "" : " BLOCK"), bg);
+   }
 }
 
 bool ApplyTradingWindowFromDashboard(const string source)
@@ -5780,7 +6082,18 @@ bool ApplyRiskPctFromDashboard(const string source)
    }
 
    g_accountRiskPerTradePctRuntime = requested;
+   if(!PersistNasRiskPctRuntime())
+   {
+      Print("NAS SATS EA risk pct apply failed persistence error source=", source,
+            " risk_pct=", DoubleToString(g_accountRiskPerTradePctRuntime, 3),
+            " err=", GetLastError());
+      return false;
+   }
    AccountRiskCacheInvalidate();
+   if(g_nasBridgeEnabledRuntime)
+      NasProBridgeWriteInitMarker();
+   g_riskPctApplyFeedbackUntilMs = GetTickCount() + 1200;
+   g_dashboardForceNextUpdate = true;
    Print("NAS SATS EA risk pct applied source=", source, " risk_pct=", DoubleToString(g_accountRiskPerTradePctRuntime, 3));
    UpdateDashboard();
    ChartRedraw(0);
@@ -5826,6 +6139,26 @@ void ToggleAcceptedSignalFilter()
    g_historyAuditSummary = "Audit loading";
    g_historyAuditDetail = "deferred duplicate-mode replay";
    RequestHistoryRefresh();
+   UpdateDashboard();
+   ChartRedraw(0);
+}
+void ToggleNasMacroRegime(const int bucket)
+{
+   if(bucket < 0 || bucket >= LIQ_MACRO_REGIME_COUNT)
+      return;
+   g_macroRegimeAllowed[bucket] = !g_macroRegimeAllowed[bucket];
+   g_lastExecutionStatus = g_macroRegimeAllowed[bucket]
+      ? "REGIME ALLOWED " + LiqMacroRegimeShortName(bucket)
+      : "REGIME BLOCKED " + LiqMacroRegimeShortName(bucket);
+   ArrayFree(g_historySimCache);
+   g_historyRefreshPending = false;
+   g_historyRefreshDueMs = 0;
+   Print("NAS SATS EA macro regime toggled bucket=", LiqMacroRegimeName(bucket),
+         " allowed=", (g_macroRegimeAllowed[bucket] ? "true" : "false"),
+         " mask=", LiqMacroRegimeMask(),
+         " note=signal_math_unchanged_macro_allow_list_precedes_v3_rule");
+   RequestHistoryRefresh();
+   g_dashboardForceNextUpdate = true;
    UpdateDashboard();
    ChartRedraw(0);
 }
@@ -5893,16 +6226,15 @@ void CycleSelectedTpLeg()
    }
    else
    {
-      g_selectedTpLegRuntime++;
-      if(g_selectedTpLegRuntime > 6)
-         g_selectedTpLegRuntime = 1;
-      if(g_hcBeTpLegRuntime >= g_selectedTpLegRuntime)
+      g_selectedTargetRRuntime = NextTargetPresetR(SelectedTargetR());
+      g_selectedTpLegRuntime = LegacyLegForTargetR(SelectedTargetR());
+      if(g_hcBeTpLegRuntime > 0 && RMultipleForLeg(g_hcBeTpLegRuntime) >= SelectedTargetR() - 0.0001)
          g_hcBeTpLegRuntime = 0;
       g_tpManagementModeRuntime = NAS_TP_FIXED_SELECTED_LEG;
-      Print("NAS SATS EA selected TP leg changed tp_leg=", g_selectedTpLegRuntime,
-            " rr=", DoubleToString(RMultipleForLeg(g_selectedTpLegRuntime), 1),
+      Print("NAS SATS EA selected target changed target_r=", DoubleToString(SelectedTargetR(), 1),
+            " legacy_ladder_leg=", g_selectedTpLegRuntime,
             " mode=", TpModeText(),
-            " note=audit_and_live_geometry_now_use_selected_tp_leg");
+            " note=audit_native_bridge_and_live_geometry_use_exact_target_r");
    }
    RequestHistoryRefresh();
    UpdateDashboard();
@@ -5923,12 +6255,12 @@ void CycleHcBeLeg()
          g_invertHcBeProgressPctRuntime = 0;
       Print("NAS SATS EA invert HCBE progress changed pct=", g_invertHcBeProgressPctRuntime);
    }
-   else if(g_selectedTpLegRuntime <= 1)
+   else if(SelectedTargetR() <= 0.5 + 0.0001)
       g_hcBeTpLegRuntime = 0;
    else
    {
       g_hcBeTpLegRuntime++;
-      if(g_hcBeTpLegRuntime >= g_selectedTpLegRuntime)
+      if(RMultipleForLeg(g_hcBeTpLegRuntime) >= SelectedTargetR() - 0.0001)
          g_hcBeTpLegRuntime = 0;
       Print("NAS SATS EA HCBE leg changed hcbe_leg=", g_hcBeTpLegRuntime);
    }
@@ -6076,6 +6408,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   for(int ri = 0; ri < LIQ_MACRO_REGIME_COUNT; ++ri)
+   {
+      if(sparam == PREFIX + "BTN_MACRO_REG_" + IntegerToString(ri))
+      {
+         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+         ToggleNasMacroRegime(ri);
+         return;
+      }
+   }
    if(sparam == PREFIX + "BTN_DASH_COLLAPSE")
       SetDashboardCollapsed(true);
    else if(sparam == PREFIX + "BTN_DASH_EXPAND")
@@ -6181,7 +6522,7 @@ void DrawDashboard()
 
 void DrawDashboardShell(const int height)
 {
-   int h = UiClampInt(height, 34, 570);
+   int h = UiClampInt(height, 34, 680);
    CreateRect("DASH_BG", 10, 18, 1080, h, C'24,30,42', C'134,158,182');
    CreateRect("DASH_HULL", 17, 25, 1066, MathMax(22, h - 14), C'40,48,62', C'90,178,255');
    CreateRect("DASH_DOCK_STRIPE", 18, 31, 1064, 4, C'90,178,255', C'90,178,255');
@@ -6191,8 +6532,8 @@ void DrawDashboardShell(const int height)
       CreateRect("DASH_ACTION_PANEL", 676, 56, 382, 306, C'31,38,52', C'221,55,78');
    if(h >= 455)
       CreateRect("DASH_LOG_PANEL", 676, 390, 382, 158, C'31,38,52', C'90,178,255');
-   if(h >= 500)
-      CreateRect("DASH_AUDIT_PANEL", 38, 366, 606, 134, C'22,29,42', C'80,255,180');
+   if(h >= 590)
+      CreateRect("DASH_AUDIT_PANEL", 38, 410, 606, 166, C'22,29,42', C'80,255,180');
 }
 
 void UpdateDoorAnimation()
@@ -6226,7 +6567,7 @@ void UpdateDashboard()
       }
    }
 
-   DrawDashboardShell(570);
+   DrawDashboardShell(680);
    CreateButtons();
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -6344,15 +6685,20 @@ void UpdateDashboard()
       regimeDash += " | rejected " + IntegerToString(g_nasRegimeRejectedLive);
    }
    CreateLabel("DASH_REGIME", 38, 299, UiShort(regimeDash, 94), regimeColor, 8);
-   CreateLabel("DASH_WIN", 38, 315, "Trading window", titleColor, 9);
-   CreateLabel("DASH_WIN_STATE", 38, 339, TradingTimeStateText(), IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
-   CreateLabel("DASH_AUDIT_TITLE", 52, 374, "AUDIT RESULTS - selected window / current combo", C'80,255,180', 9);
-   CreateLabel("DASH_AUDIT_R0", 52, 396, UiShort(g_historyAuditRows[0], 82), C'216,222,230', 8);
-   CreateLabel("DASH_AUDIT_R1", 52, 414, UiShort(g_historyAuditRows[1], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R2", 52, 432, UiShort(g_historyAuditRows[2], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R3", 52, 450, UiShort(g_historyAuditRows[3], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R4", 52, 468, UiShort(g_historyAuditRows[4], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R5", 52, 486, UiShort(g_historyAuditRows[5], 82), muted, 7);
+   CreateLabel("DASH_WIN", 38, 368, "Trading window", titleColor, 9);
+   CreateLabel("DASH_WIN_STATE", 38, 386, TradingTimeStateText(), IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
+   CreateLabel("DASH_AUDIT_TITLE", 52, 418, "AUDIT RESULTS - selected window / current combo", C'80,255,180', 9);
+   CreateLabel("DASH_AUDIT_R0", 52, 440, UiShort(g_historyAuditRows[0], 82), C'216,222,230', 8);
+   CreateLabel("DASH_AUDIT_R1", 52, 458, UiShort(g_historyAuditRows[1], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R2", 52, 476, UiShort(g_historyAuditRows[2], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R3", 52, 494, UiShort(g_historyAuditRows[3], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R4", 52, 512, UiShort(g_historyAuditRows[4], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R5", 52, 530, UiShort(g_historyAuditRows[5], 82), muted, 7);
+   color auditBarColor = g_historyCoverageBlocked ? C'255,80,110' : (g_historyAuditRunning ? C'38,140,220' : C'30,150,95');
+   string auditBarText = g_historyCoverageBlocked ? "HISTORY BLOCKED"
+      : (g_historyAuditRunning ? ("AUDIT " + DoubleToString(g_historyAuditProgressPct, 1) + "%") : (NasAuditWindowLabel() + " AUDIT READY"));
+   CreateProgressBar("AUDIT_SCAN", 52, 550, 580, 16, g_historyCoverageBlocked ? 100.0 : g_historyAuditProgressPct,
+                     auditBarText, auditBarColor, C'42,51,68', C'134,158,182');
    CreateLabel("DASH_ACTIONS", 696, 34, "AIRLOCK / CONFIG", steel, 9);
    CreateLabel("DASH_ACTION_HINT", 684, 116, "Manual", muted, 7);
    CreateLabel("DASH_START_LBL", 684, 140, "Start", muted, 8);
@@ -6364,7 +6710,10 @@ void UpdateDashboard()
    CreateEdit("EDIT_LOT", 836, 158, 68, 22, DoubleToString(shownLot, 2));
    CreateLabel("DASH_RISK_PCT_LBL", 912, 140, "Risk%", muted, 8);
    CreateEdit("EDIT_RISK_PCT", 912, 158, 52, 22, DoubleToString(g_accountRiskPerTradePctRuntime, 2));
-   CreateButton("BTN_RISK_PCT_APPLY", 970, 158, 68, 22, "RISK", C'38,101,176');
+   bool riskAppliedFeedback = (int)(g_riskPctApplyFeedbackUntilMs - GetTickCount()) > 0;
+   CreateButton("BTN_RISK_PCT_APPLY", 970, 158, 68, 22,
+      riskAppliedFeedback ? "APPLIED" : "APPLY",
+      riskAppliedFeedback ? C'30,150,95' : C'38,101,176');
    CreateLabel("DASH_SPREAD_MAX_LBL", 684, 190, "MaxSpr", muted, 8);
    CreateEdit("EDIT_SPREAD_MAX", 740, 186, 58, 22, DoubleToString(g_spreadMaxPointsRuntime, 0));
    CreateLabel("DASH_FINAL_SCALE_LBL", 806, 190, "SL%", muted, 8);
@@ -6378,13 +6727,13 @@ void UpdateDashboard()
       CreateEdit("EDIT_PIP_SL", 740, 214, 58, 22, DoubleToString(g_pipSlDistanceRuntime, 1));
       CreateButton("BTN_PIP_APPLY", 806, 214, 86, 22, "PIP APPLY", C'38,101,176');
    }
-   double dashLegR = RMultipleForLeg(g_selectedTpLegRuntime);
+   double dashLegR = SelectedTargetR();
    double dashTargetR = g_invertTradeModeRuntime ? (InvertTargetOverrideEnabled() ? g_invertTargetRRuntime : 0.0) : dashLegR;
    string dashTpText = g_invertTradeModeRuntime ? (EffectiveInversionReferenceText() + " | " + EffectiveInvertTargetText()
                                                 + (InvertTargetOverrideEnabled() ? (" " + NasRiskRewardText(dashTargetR)) : " exact_SL_swap"))
-                                                : ("final TP" + IntegerToString(g_selectedTpLegRuntime) + " " + DoubleToString(dashTargetR, 1) + "R");
+                                                : ("final TP " + TargetRText(dashTargetR));
    CreateLabel("DASH_TP_CFG", 690, 398, "TP " + TpModeText() + " | " + dashTpText + " | " + EffectiveHcBeText()
-               + " | Audit " + IntegerToString(g_auditWeeksRuntime) + "W"
+               + " | Audit " + NasAuditWindowLabel()
                + " | Dup " + string(g_historyUseAcceptedFilterRuntime ? "OFF" : "ON") + " | Inv " + string(g_invertTradeModeRuntime ? "ON" : "OFF"), steel, 7);
    CreateLabel("DASH_RISK_MODE", 690, 418, "Risk mode " + string(g_ftmoModeRuntime ? "FTMO" : (g_riskLotOnlyRuntime ? "RiskLotOnly" : "OFF"))
                + " | AutoLot " + string(InpAdvancedLotEngineEnabled && AccountRiskRuntimeEnabled() ? "ON" : "OFF"), muted, 7);

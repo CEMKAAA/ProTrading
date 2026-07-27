@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-07-26.nt8-production-file-bridge-v4-listener-default-presets";
+        private const string CoreBuild = "2026-07-27.nt8-production-file-bridge-v5-tradeday-dashboard";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -333,6 +333,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 terminating = true;
                 StopTimer();
+                RemoveTradeDayDashboardControls();
                 ShutdownTradeDayCompliance();
             }
         }
@@ -361,6 +362,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             LoadTradeStates();
             ReconcileRestartState("init");
             initialized = true;
+            InstallTradeDayDashboardControls();
             AuditRaw("init", "build=" + CoreBuild + " bridge=" + resolvedBridgePath + " instrument=" + Instrument.FullName + " account=" + SafeAccountName() + " scope=" + instanceToken + " active_states=" + trades.Count);
 
             if (IgnoreExistingSignalOnInit)

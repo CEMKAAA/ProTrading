@@ -1,4 +1,4 @@
-// TradeDay account-compliance extension. Execution only; no signal generation.
+﻿// TradeDay account-compliance extension. Execution only; no signal generation.
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -7,6 +7,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Windows;
+using System.Windows.Controls;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 #endregion
@@ -18,7 +20,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
     public abstract partial class ProductionFileBridgeNinjaCore
     {
-        private const string TradeDayComplianceBuild = "2026-07-26.tradeday-compliance-v1";
+        private const string TradeDayComplianceBuild = "2026-07-27.tradeday-calendar-freshness-v2";
         private static readonly object TradeDaySync = new object();
         private static readonly Dictionary<string, TradeDayLedger> TradeDayLedgers = new Dictionary<string, TradeDayLedger>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, int> TradeDayActiveInstances = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -124,7 +126,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool TradeDayFailClosedNewsCalendar { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Compliance Reset Token", GroupName = "12 TradeDay Time", Order = 7)]
+        [Range(1, 168)]
+        [Display(Name = "Calendar Max Age Hours", GroupName = "12 TradeDay Time", Order = 7)]
+        public int TradeDayNewsCalendarMaxAgeHours { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Compliance Reset Token", GroupName = "12 TradeDay Time", Order = 8)]
         public string TradeDayComplianceResetToken { get; set; }
         #endregion
 
@@ -139,15 +146,25 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime tradeDayLastInstrumentFlattenUtc = DateTime.MinValue;
         private DateTime tradeDayNewsFileWriteUtc = DateTime.MinValue;
         private DateTime tradeDayNewsLoadedUtc = DateTime.MinValue;
+        private DateTime tradeDayNewsGeneratedUtc = DateTime.MinValue;
         private List<TradeDayNewsEvent> tradeDayNewsEvents = new List<TradeDayNewsEvent>();
+        private string tradeDayProfilePath = string.Empty;
+        private Border tradeDayInputPanel;
+        private TextBox tradeDayStartInput;
+        private TextBox tradeDayDrawdownInput;
+        private TextBox tradeDayProfitTargetInput;
+        private TextBox tradeDayPositionLimitInput;
+        private TextBox tradeDayFloorInput;
+        private TextBox tradeDaySafetyBufferInput;
+        private TextBlock tradeDayApplyStatus;
 
         private void SetTradeDayComplianceDefaults()
         {
             TradeDayComplianceEnabled = true;
             TradeDayProgram = TradeDayProgramType.QuickPay;
-            TradeDayDrawdownType = TradeDayDrawdownMode.EndOfDay;
-            TradeDayStartingBalance = 0;
-            TradeDayMaximumDrawdown = 0;
+            TradeDayDrawdownType = TradeDayDrawdownMode.Intraday;
+            TradeDayStartingBalance = 50000;
+            TradeDayMaximumDrawdown = 2000;
             TradeDayCurrentFloorOverride = 0;
             TradeDayDrawdownSafetyBuffer = 100;
             TradeDayUseBrokerTrailingFloor = true;
@@ -155,7 +172,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             TradeDayMicrosPerFull = 10;
             TradeDayMaxTradesPerDay = 200;
             TradeDayConsistencyGuardEnabled = true;
-            TradeDayProfitTarget = 0;
+            TradeDayProfitTarget = 3000;
             TradeDayConsistencyBuffer = 0;
             TradeDaySessionCloseGuardEnabled = true;
             TradeDayMinutesBeforeProductClose = 10;
@@ -164,6 +181,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             TradeDayNewsMinutesBefore = 2;
             TradeDayNewsMinutesAfter = 2;
             TradeDayFailClosedNewsCalendar = true;
+            TradeDayNewsCalendarMaxAgeHours = 36;
             TradeDayComplianceResetToken = "CHANGE_FOR_NEW_CHALLENGE";
         }
 
@@ -176,6 +194,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             var root = Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "NinjaBridgeState", "TradeDayCompliance");
             Directory.CreateDirectory(root);
             tradeDayLedgerPath = Path.Combine(root, Sanitize(SafeAccountName()) + ".state");
+            tradeDayProfilePath = Path.Combine(root, Sanitize(SafeAccountName()) + ".profile");
+            LoadTradeDayDashboardProfile();
             tradeDayConfigFingerprint = BuildTradeDayConfigFingerprint();
             lock (TradeDaySync)
             {
@@ -197,9 +217,323 @@ namespace NinjaTrader.NinjaScript.Strategies
             ReloadTradeDayNewsCalendar(true);
             Account.ExecutionUpdate += TradeDayOnExecutionUpdate;
             HydrateTradeDayEntryCount();
+            RefreshTradeDayConfigurationStatus();
             AuditRaw("tradeday_compliance_init", "build=" + TradeDayComplianceBuild + " " + TradeDayDashboardText());
         }
 
+        private void RefreshTradeDayConfigurationStatus()
+        {
+            if (!TradeDayComplianceEnabled || tradeDayLedger == null)
+                return;
+
+            lock (TradeDaySync)
+            {
+                string reason;
+                if (!ValidTradeDayConfiguration(out reason))
+                    tradeDayBlockReason = reason;
+            }
+        }
+
+        private void InstallTradeDayDashboardControls()
+        {
+            if (!ShowDashboard || ChartControl == null || tradeDayInputPanel != null)
+                return;
+
+            ChartControl.Dispatcher.InvokeAsync(() =>
+            {
+                if (tradeDayInputPanel != null || ChartControl == null)
+                    return;
+
+                var root = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+                root.Children.Add(new TextBlock
+                {
+                    Text = "TRADEDAY CHALLENGE PROFILE",
+                    Foreground = System.Windows.Media.Brushes.White,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 5)
+                });
+
+                tradeDayStartInput = AddTradeDayInputRow(root, "Starting Balance", TradeDayStartingBalance);
+                tradeDayDrawdownInput = AddTradeDayInputRow(root, "Max Drawdown", TradeDayMaximumDrawdown);
+                tradeDayProfitTargetInput = AddTradeDayInputRow(root, "Profit Target", TradeDayProfitTarget);
+                tradeDayPositionLimitInput = AddTradeDayInputRow(root, "Full Contract Limit", TradeDayPositionLimitFullContracts);
+                tradeDayFloorInput = AddTradeDayInputRow(root, "Current Floor (0=new)", TradeDayCurrentFloorOverride);
+                tradeDaySafetyBufferInput = AddTradeDayInputRow(root, "Safety Buffer", TradeDayDrawdownSafetyBuffer);
+
+                root.Children.Add(new TextBlock
+                {
+                    Text = "Intraday trailing | QuickPay 30% | 10 micros/full",
+                    Foreground = System.Windows.Media.Brushes.LightGray,
+                    FontSize = 11,
+                    Margin = new Thickness(0, 3, 0, 4)
+                });
+
+                var apply = new Button
+                {
+                    Content = "APPLY TRADEDAY",
+                    Background = System.Windows.Media.Brushes.DodgerBlue,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    FontWeight = FontWeights.Bold,
+                    Padding = new Thickness(8, 3, 8, 3),
+                    Margin = new Thickness(0, 2, 0, 2)
+                };
+                apply.Click += TradeDayApplyClicked;
+                root.Children.Add(apply);
+
+                tradeDayApplyStatus = new TextBlock
+                {
+                    Text = "Profile: loaded",
+                    Foreground = System.Windows.Media.Brushes.LightGreen,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 260,
+                    FontSize = 11
+                };
+                root.Children.Add(tradeDayApplyStatus);
+
+                tradeDayInputPanel = new Border
+                {
+                    Child = root,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 12, 12, 0),
+                    Padding = new Thickness(2),
+                    Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(220, 18, 24, 32)),
+                    BorderBrush = System.Windows.Media.Brushes.SteelBlue,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4)
+                };
+                UserControlCollection.Add(tradeDayInputPanel);
+            });
+        }
+
+        private TextBox AddTradeDayInputRow(Panel root, string label, double value)
+        {
+            var row = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 1, 0, 1) };
+            var caption = new TextBlock
+            {
+                Text = label,
+                Foreground = System.Windows.Media.Brushes.White,
+                Width = 138,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var input = new TextBox
+            {
+                Text = value.ToString("0.##", CultureInfo.InvariantCulture),
+                Width = 92,
+                HorizontalContentAlignment = HorizontalAlignment.Right,
+                Background = System.Windows.Media.Brushes.White,
+                Foreground = System.Windows.Media.Brushes.Black
+            };
+            row.Children.Add(caption);
+            row.Children.Add(input);
+            root.Children.Add(row);
+            return input;
+        }
+
+        private void RemoveTradeDayDashboardControls()
+        {
+            var panel = tradeDayInputPanel;
+            tradeDayInputPanel = null;
+            if (panel == null || ChartControl == null)
+                return;
+            ChartControl.Dispatcher.InvokeAsync(() =>
+            {
+                if (UserControlCollection.Contains(panel))
+                    UserControlCollection.Remove(panel);
+            });
+        }
+
+        private void TradeDayApplyClicked(object sender, RoutedEventArgs e)
+        {
+            double starting;
+            double drawdown;
+            double target;
+            double positionLimit;
+            double floor;
+            double safety;
+            if (!TryParseTradeDayInput(tradeDayStartInput, out starting)
+                || !TryParseTradeDayInput(tradeDayDrawdownInput, out drawdown)
+                || !TryParseTradeDayInput(tradeDayProfitTargetInput, out target)
+                || !TryParseTradeDayInput(tradeDayPositionLimitInput, out positionLimit)
+                || !TryParseTradeDayInput(tradeDayFloorInput, out floor)
+                || !TryParseTradeDayInput(tradeDaySafetyBufferInput, out safety))
+            {
+                SetTradeDayApplyStatus(false, "Invalid number. Use 50000 or 50000.0 format.");
+                return;
+            }
+
+            try
+            {
+                TriggerCustomEvent(_ =>
+                {
+                    try
+                    {
+                        string detail;
+                        var ok = ApplyTradeDayDashboardProfile(starting, drawdown, target, positionLimit, floor, safety, out detail);
+                        SetTradeDayApplyStatus(ok, detail);
+                    }
+                    catch (Exception ex)
+                    {
+                        SetTradeDayApplyStatus(false, "Apply failed: " + ex.Message);
+                        AuditRaw("tradeday_profile_apply_failed", ex.Message);
+                    }
+                }, null);
+            }
+            catch (Exception ex)
+            {
+                SetTradeDayApplyStatus(false, "Apply failed: " + ex.Message);
+            }
+        }
+
+        private bool TryParseTradeDayInput(TextBox input, out double value)
+        {
+            value = 0;
+            if (input == null)
+                return false;
+            var raw = (input.Text ?? string.Empty).Trim().Replace(',', '.');
+            return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        private void SetTradeDayApplyStatus(bool ok, string detail)
+        {
+            var status = tradeDayApplyStatus;
+            if (status == null)
+                return;
+            status.Dispatcher.InvokeAsync(() =>
+            {
+                status.Text = (ok ? "APPLIED: " : "BLOCKED: ") + detail;
+                status.Foreground = ok ? System.Windows.Media.Brushes.LightGreen : System.Windows.Media.Brushes.OrangeRed;
+            });
+        }
+
+        private bool ApplyTradeDayDashboardProfile(double starting, double drawdown, double target, double positionLimit, double floor, double safety, out string detail)
+        {
+            detail = string.Empty;
+            if (!IsFinitePositive(starting) || !IsFinitePositive(drawdown) || !IsFinitePositive(target)
+                || !IsFinitePositive(positionLimit) || floor < 0 || safety < 0)
+            {
+                detail = "Starting balance, drawdown, target and position limit must be positive.";
+                return false;
+            }
+            if (floor > starting)
+            {
+                detail = "Current floor cannot exceed starting balance.";
+                return false;
+            }
+
+            lock (TradeDaySync)
+            {
+                int activeCount;
+                TradeDayActiveInstances.TryGetValue(SafeAccountName(), out activeCount);
+                if (activeCount > 1)
+                {
+                    detail = "Disable other listeners on this account before applying the shared profile.";
+                    return false;
+                }
+
+                TradeDayProgram = TradeDayProgramType.QuickPay;
+                TradeDayDrawdownType = TradeDayDrawdownMode.Intraday;
+                TradeDayStartingBalance = starting;
+                TradeDayMaximumDrawdown = drawdown;
+                TradeDayProfitTarget = target;
+                TradeDayPositionLimitFullContracts = positionLimit;
+                TradeDayCurrentFloorOverride = floor;
+                TradeDayDrawdownSafetyBuffer = safety;
+                TradeDayMicrosPerFull = 10;
+                TradeDayConsistencyGuardEnabled = true;
+                MaxContracts = Math.Max(1, (int)Math.Floor(positionLimit * TradeDayMicrosPerFull + 1e-9));
+
+                tradeDayConfigFingerprint = BuildTradeDayConfigFingerprint();
+                if (tradeDayLedger != null)
+                {
+                    var configuredFloor = Math.Max(starting - drawdown, floor);
+                    tradeDayLedger.StartingBalance = starting;
+                    tradeDayLedger.ActiveFloor = Math.Min(starting, Math.Max(tradeDayLedger.ActiveFloor, configuredFloor));
+                    tradeDayLedger.ConfigFingerprint = tradeDayConfigFingerprint;
+                    tradeDayLedger.ConfigConflict = false;
+                    tradeDayLedger.ConfigConflictDetail = string.Empty;
+                    if (!IsFinitePositive(tradeDayLedger.SessionStartEquity))
+                    {
+                        var sod = SafeAccountValue(AccountItem.SodLiquidatingValue);
+                        if (IsFinitePositive(sod))
+                            tradeDayLedger.SessionStartEquity = sod;
+                    }
+                    SaveTradeDayLedgerLocked();
+                }
+                SaveTradeDayDashboardProfile();
+            }
+
+            string blockReason;
+            if (!ValidTradeDayConfiguration(out blockReason))
+                tradeDayBlockReason = blockReason;
+            else
+                tradeDayBlockReason = string.Empty;
+
+            detail = "start=" + F2(starting) + " dd=" + F2(drawdown) + " target=" + F2(target)
+                   + " cap=" + positionLimit.ToString("F1", CultureInfo.InvariantCulture) + "F floor=" + F2(floor);
+            AuditRaw("tradeday_profile_applied", detail);
+            return true;
+        }
+
+        private void SaveTradeDayDashboardProfile()
+        {
+            if (string.IsNullOrWhiteSpace(tradeDayProfilePath))
+                return;
+            var lines = new[]
+            {
+                "version=1",
+                "program=" + TradeDayProgram,
+                "drawdown_mode=" + TradeDayDrawdownType,
+                "starting=" + G17(TradeDayStartingBalance),
+                "max_drawdown=" + G17(TradeDayMaximumDrawdown),
+                "current_floor=" + G17(TradeDayCurrentFloorOverride),
+                "safety_buffer=" + G17(TradeDayDrawdownSafetyBuffer),
+                "position_full=" + G17(TradeDayPositionLimitFullContracts),
+                "micros_per_full=" + TradeDayMicrosPerFull.ToString(CultureInfo.InvariantCulture),
+                "profit_target=" + G17(TradeDayProfitTarget),
+                "consistency_enabled=" + (TradeDayConsistencyGuardEnabled ? "1" : "0")
+            };
+            WriteAtomically(tradeDayProfilePath, string.Join("\n", lines));
+        }
+
+        private void LoadTradeDayDashboardProfile()
+        {
+            if (string.IsNullOrWhiteSpace(tradeDayProfilePath) || !File.Exists(tradeDayProfilePath))
+                return;
+            try
+            {
+                var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in File.ReadAllLines(tradeDayProfilePath))
+                {
+                    var index = line.IndexOf('=');
+                    if (index > 0)
+                        map[line.Substring(0, index)] = line.Substring(index + 1);
+                }
+
+                var starting = ParseTdDouble(GetTd(map, "starting"));
+                var drawdown = ParseTdDouble(GetTd(map, "max_drawdown"));
+                var target = ParseTdDouble(GetTd(map, "profit_target"));
+                var position = ParseTdDouble(GetTd(map, "position_full"));
+                var floor = ParseTdDouble(GetTd(map, "current_floor"));
+                var safety = ParseTdDouble(GetTd(map, "safety_buffer"));
+                var micros = ParseTdInt(GetTd(map, "micros_per_full"));
+                if (IsFinitePositive(starting)) TradeDayStartingBalance = starting;
+                if (IsFinitePositive(drawdown)) TradeDayMaximumDrawdown = drawdown;
+                if (IsFinitePositive(target)) TradeDayProfitTarget = target;
+                if (IsFinitePositive(position)) TradeDayPositionLimitFullContracts = position;
+                if (floor >= 0) TradeDayCurrentFloorOverride = floor;
+                if (safety >= 0) TradeDayDrawdownSafetyBuffer = safety;
+                if (micros > 0) TradeDayMicrosPerFull = micros;
+                TradeDayProgram = TradeDayProgramType.QuickPay;
+                TradeDayDrawdownType = TradeDayDrawdownMode.Intraday;
+                TradeDayConsistencyGuardEnabled = true;
+                MaxContracts = Math.Max(1, (int)Math.Floor(TradeDayPositionLimitFullContracts * TradeDayMicrosPerFull + 1e-9));
+            }
+            catch (Exception ex)
+            {
+                AuditRaw("tradeday_profile_load_failed", ex.Message);
+            }
+        }
         private void ShutdownTradeDayCompliance()
         {
             if (!TradeDayComplianceEnabled || tradeDayLedger == null) return;
@@ -247,8 +581,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (!string.Equals(tradeDayLedger.ConfigFingerprint, tradeDayConfigFingerprint, StringComparison.Ordinal))
             {
-                tradeDayLedger.ConfigConflict = true;
-                tradeDayLedger.ConfigConflictDetail = "TradeDay settings differ across listeners or changed without a new Compliance Reset Token";
+                var invalidBootstrap = !IsFinitePositive(tradeDayLedger.StartingBalance)
+                                    && tradeDayLedger.TradeCount == 0
+                                    && !tradeDayLedger.HardStopped;
+                if (invalidBootstrap)
+                {
+                    var configuredFloor = Math.Max(TradeDayStartingBalance - TradeDayMaximumDrawdown, TradeDayCurrentFloorOverride);
+                    tradeDayLedger.StartingBalance = TradeDayStartingBalance;
+                    tradeDayLedger.ActiveFloor = Math.Min(TradeDayStartingBalance, Math.Max(tradeDayLedger.ActiveFloor, configuredFloor));
+                    tradeDayLedger.ConfigFingerprint = tradeDayConfigFingerprint;
+                    tradeDayLedger.ConfigConflict = false;
+                    tradeDayLedger.ConfigConflictDetail = string.Empty;
+                    SaveTradeDayLedgerLocked();
+                }
+                else
+                {
+                    tradeDayLedger.ConfigConflict = true;
+                    tradeDayLedger.ConfigConflictDetail = "TradeDay settings differ across listeners or changed without a new Compliance Reset Token";
+                }
             }
         }
 
@@ -505,13 +855,26 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             reason = string.Empty; scopeAll = false;
             if (!TradeDayNewsGuardEnabled) { tradeDayNewsStatus = "CLEAR"; return false; }
+            var now = DateTime.UtcNow;
+            var maxAge = TimeSpan.FromHours(Math.Max(1, TradeDayNewsCalendarMaxAgeHours));
+            if (tradeDayNewsGeneratedUtc == DateTime.MinValue || now - tradeDayNewsGeneratedUtc > maxAge)
+            {
+                tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_stale" : "CLEAR";
+                if (TradeDayFailClosedNewsCalendar) { reason = "tier1_news_calendar_stale"; scopeAll = true; return true; }
+                return false;
+            }
             if (tradeDayNewsEvents.Count == 0)
             {
                 tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_missing_or_empty" : "CLEAR";
                 if (TradeDayFailClosedNewsCalendar) { reason = "tier1_news_calendar_unavailable"; scopeAll = true; return true; }
                 return false;
             }
-            var now = DateTime.UtcNow;
+            if (!tradeDayNewsEvents.Any(x => x.EventGmt >= now.AddMinutes(-Math.Max(1, TradeDayNewsMinutesAfter))))
+            {
+                tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:no_future_events" : "CLEAR";
+                if (TradeDayFailClosedNewsCalendar) { reason = "tier1_news_calendar_has_no_future_events"; scopeAll = true; return true; }
+                return false;
+            }
             foreach (var item in tradeDayNewsEvents)
             {
                 if (!NewsScopeMatches(item.Scope)) continue;
@@ -536,16 +899,34 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     tradeDayNewsEvents.Clear();
+                    tradeDayNewsGeneratedUtc = DateTime.MinValue;
                     tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_missing" : "CLEAR";
                     return;
                 }
                 var write = File.GetLastWriteTimeUtc(path);
                 if (!force && write == tradeDayNewsFileWriteUtc && (DateTime.UtcNow - tradeDayNewsLoadedUtc).TotalMinutes < 5) return;
                 var loaded = new List<TradeDayNewsEvent>();
+                var generatedUtc = DateTime.MinValue;
                 foreach (var raw in File.ReadAllLines(path))
                 {
                     var line = (raw ?? string.Empty).Trim();
-                    if (line.Length == 0 || line.StartsWith("#") || line.StartsWith("event_gmt", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (line.Length == 0) continue;
+                    if (line.StartsWith("#", StringComparison.Ordinal))
+                    {
+                        const string marker = "generated_gmt=";
+                        var markerIndex = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                        if (markerIndex >= 0)
+                        {
+                            var begin = markerIndex + marker.Length;
+                            var end = line.IndexOf(';', begin);
+                            var text = (end >= 0 ? line.Substring(begin, end - begin) : line.Substring(begin)).Trim();
+                            DateTime parsed;
+                            if (DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsed))
+                                generatedUtc = parsed;
+                        }
+                        continue;
+                    }
+                    if (line.StartsWith("event_gmt", StringComparison.OrdinalIgnoreCase)) continue;
                     var parts = ParseSimpleCsv(line);
                     if (parts.Count < 3) continue;
                     DateTime time;
@@ -555,12 +936,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 tradeDayNewsEvents = loaded.OrderBy(x => x.EventGmt).ToList();
                 tradeDayNewsFileWriteUtc = write;
                 tradeDayNewsLoadedUtc = DateTime.UtcNow;
-                tradeDayNewsStatus = loaded.Count > 0 ? "CLEAR" : (TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_empty" : "CLEAR");
+                // Manual fallback files remain supported; their write time is
+                // used as generation time when publisher metadata is absent.
+                tradeDayNewsGeneratedUtc = generatedUtc != DateTime.MinValue ? generatedUtc : write;
+                var stale = DateTime.UtcNow - tradeDayNewsGeneratedUtc > TimeSpan.FromHours(Math.Max(1, TradeDayNewsCalendarMaxAgeHours));
+                var hasUpcoming = loaded.Any(x => x.EventGmt >= DateTime.UtcNow.AddMinutes(-Math.Max(1, TradeDayNewsMinutesAfter)));
+                if (stale)
+                    tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_stale" : "CLEAR";
+                else if (loaded.Count == 0)
+                    tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:calendar_empty" : "CLEAR";
+                else if (!hasUpcoming)
+                    tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:no_future_events" : "CLEAR";
+                else
+                    tradeDayNewsStatus = "CLEAR";
             }
             catch (Exception ex)
-            { tradeDayNewsEvents.Clear(); tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:" + ex.Message : "CLEAR"; }
+            {
+                tradeDayNewsEvents.Clear();
+                tradeDayNewsGeneratedUtc = DateTime.MinValue;
+                tradeDayNewsStatus = TradeDayFailClosedNewsCalendar ? "FAIL_CLOSED:" + ex.Message : "CLEAR";
+            }
         }
-
         private bool NewsScopeMatches(string scope)
         {
             var value = (scope ?? string.Empty).Trim().ToUpperInvariant();
@@ -683,7 +1079,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TradeDayDrawdownSafetyBuffer.ToString("R", CultureInfo.InvariantCulture), TradeDayUseBrokerTrailingFloor,
                 TradeDayMicrosPerFull, TradeDayMaxTradesPerDay, TradeDayConsistencyGuardEnabled, TradeDayProfitTarget.ToString("R", CultureInfo.InvariantCulture),
                 TradeDayConsistencyBuffer.ToString("R", CultureInfo.InvariantCulture), TradeDaySessionCloseGuardEnabled, TradeDayMinutesBeforeProductClose,
-                TradeDayNewsGuardEnabled, TradeDayNewsMinutesBefore, TradeDayNewsMinutesAfter, TradeDayFailClosedNewsCalendar);
+                TradeDayNewsGuardEnabled, TradeDayNewsMinutesBefore, TradeDayNewsMinutesAfter, TradeDayFailClosedNewsCalendar, TradeDayNewsCalendarMaxAgeHours);
             return Hash64(raw).ToString("X16", CultureInfo.InvariantCulture);
         }
 

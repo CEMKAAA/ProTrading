@@ -40,7 +40,7 @@ input int    InpPollMilliseconds = 250;
 input int    InpMaxSignalAgeSeconds = 900;
 input bool   InpIgnoreExistingSignalOnInit = true; // Prevent attach/restart from trading the already-published Latest.csv event.
 input long   InpSourceLoginFilter = 260460316; // DEMOMT5 source account. 0 disables this fail-closed identity guard.
-input string InpSymbolMapCsv = "JP225m=JPN225,JP225=JPN225,JPN225m=JPN225,JPN225=JPN225";
+input string InpSymbolMapCsv = "JP225m=JPN225,JP225=JPN225,JPN225m=JPN225,JPN225=JPN225,DE30m=GER40,DE30=GER40,GER30m=GER40,GER30=GER40,GER40m=GER40,GER40=GER40,DAX40m=GER40,DAX40=GER40";
 input bool   InpUseBuiltInOilSymbolMap = false;
 input string InpBuiltInOilSymbolMapCsv = "UKOILm=XBRUSD,UKOIL=XBRUSD,USOILm=XTIUSD,USOIL=XTIUSD";
 input bool   InpRebaseMappedLevelsToLiveEntry = true; // Preserve source distances around the IQ Capital fill.

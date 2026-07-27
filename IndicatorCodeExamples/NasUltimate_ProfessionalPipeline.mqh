@@ -1,7 +1,7 @@
 #ifndef NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 #define NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 
-#define NAS_PRO_PIPELINE_BUILD "2026-07-22.nas-professional-pipeline-v3-regime-filter"
+#define NAS_PRO_PIPELINE_BUILD "2026-07-27.nas-professional-pipeline-v6-risk-apply-scope"
 
 input group "NAS Professional Audit / cTrader Bridge"
 input bool   InpNasProAuditEnabled = false;
@@ -448,6 +448,23 @@ void NasProStoreSelectedPositionPlan(const ulong ticket,
    NasProSetPlan(positionId, "maeTs", 0.0);
    NasProSetPlan(positionId, "firstTargetTs", 0.0);
    NasProSetPlan(positionId, "firstLossTs", 0.0);
+   NasProSetPlan(positionId, "halfDone", 0.0);
+   NasProSetPlan(positionId, "riskPct", g_accountRiskPerTradePctRuntime);
+   NasProSetPlan(positionId, "spreadPts", g_lastSpreadPoints);
+   double riskPips = pip > 0 ? MathAbs(entry - sl) / pip : 0.0;
+   double targetPips = pip > 0 ? MathAbs(tp - entry) / pip : 0.0;
+   NasProSetPlan(positionId, "targetR", riskPips > 0.0 ? targetPips / riskPips : 0.0);
+   NasProSetPlan(positionId, "invert", g_invertTradeModeRuntime ? 1.0 : 0.0);
+   NasProSetPlan(positionId, "execMode", (double)InpExecutionMode);
+   NasProSetPlan(positionId, "regimeBucket", (double)g_nasMacroLastBucket);
+   NasProSetPlan(positionId, "bridgePublished", g_lastSignalBridgePublished ? 1.0 : 0.0);
+   double initialRiskMoney = 0.0;
+   ENUM_ORDER_TYPE riskOrderType = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double positionVolume = PositionGetDouble(POSITION_VOLUME);
+   if(entry > 0.0 && sl > 0.0 && positionVolume > 0.0
+      && OrderCalcProfit(riskOrderType, _Symbol, positionVolume, entry, sl, initialRiskMoney))
+      initialRiskMoney = MathAbs(initialRiskMoney);
+   NasProSetPlan(positionId, "initialRiskMoney", initialRiskMoney);
 }
 
 void NasProRegisterUntrackedPositions(const datetime signalTime,
@@ -492,16 +509,16 @@ void NasProUpdatePositionLifecycle(const ulong ticket)
    datetime now = TimeCurrent();
    double mfeTs = NasProGetPlan(positionId, "mfeTs", 0.0);
    double maeTs = NasProGetPlan(positionId, "maeTs", 0.0);
-   double oldMfe = NasProGetPlan(positionId, "mfePips", signedPips);
-   double oldMae = NasProGetPlan(positionId, "maePips", signedPips);
-   if(mfeTs <= 0.0 || signedPips > oldMfe)
+   double oldMfe = NasProGetPlan(positionId, "mfePips", 0.0);
+   double oldMae = NasProGetPlan(positionId, "maePips", 0.0);
+   if(signedPips > 0.0 && (mfeTs <= 0.0 || signedPips > oldMfe))
    {
       NasProSetPlan(positionId, "mfePips", signedPips);
       NasProSetPlan(positionId, "mfeMoney", pnl);
       NasProSetPlan(positionId, "mfePx", px);
       NasProSetPlan(positionId, "mfeTs", (double)now);
    }
-   if(maeTs <= 0.0 || signedPips < oldMae)
+   if(signedPips < 0.0 && (maeTs <= 0.0 || signedPips < oldMae))
    {
       NasProSetPlan(positionId, "maePips", signedPips);
       NasProSetPlan(positionId, "maeMoney", pnl);
@@ -553,9 +570,168 @@ string NasProLifecycleDetail(const ulong positionId, const string closeReason, c
       + " target_hit_time=" + NasProTime((datetime)targetTs)
       + " loss_hit_time=" + NasProTime((datetime)lossTs)
       + " mfe_time=" + NasProTime((datetime)NasProGetPlan(positionId, "mfeTs", 0.0))
-      + " mae_time=" + NasProTime((datetime)NasProGetPlan(positionId, "maeTs", 0.0));
+      + " mae_time=" + NasProTime((datetime)NasProGetPlan(positionId, "maeTs", 0.0))
+      + " target_r=" + DoubleToString(NasProGetPlan(positionId, "targetR", 0.0), 3)
+      + " regime_bucket=" + IntegerToString((int)NasProGetPlan(positionId, "regimeBucket", -1.0))
+      + " bridge_published=" + IntegerToString((int)NasProGetPlan(positionId, "bridgePublished", 0.0));
 }
 
+bool NasProPositionIdentifierOpen(const ulong positionId)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) == positionId) return true;
+   }
+   return false;
+}
+
+string NasProMlWrittenKey(const ulong positionId)
+{
+   return "NASPRO_ML_WRITTEN|" + NasProI64(AccountInfoInteger(ACCOUNT_LOGIN)) + "|"
+      + NasProI64(RuntimeMagic()) + "|" + NasProU64(positionId);
+}
+
+string NasProSessionBucket(const datetime gmtTime)
+{
+   MqlDateTime d;
+   TimeToStruct(gmtTime, d);
+   if(d.hour < 7) return "ASIA";
+   if(d.hour < 13) return "LONDON";
+   if(d.hour < 22) return "NEW_YORK";
+   return "ROLLOVER";
+}
+
+bool NasProWriteFinalLifecycle(const ulong positionId, const string exitReason)
+{
+   if(positionId == 0 || NasProPositionIdentifierOpen(positionId)) return false;
+   string writtenKey = NasProMlWrittenKey(positionId);
+   if(GlobalVariableCheck(writtenKey)) return true;
+   if(!HistorySelectByPosition(positionId)) return false;
+
+   double totalPnl = 0.0;
+   double totalOutVolume = 0.0;
+   double weightedClose = 0.0;
+   datetime closeTs = 0;
+   ulong finalDeal = 0;
+   int deals = HistoryDealsTotal();
+   for(int i = 0; i < deals; ++i)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0 || HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
+      if(!RuntimeMagicOwned((long)HistoryDealGetInteger(deal, DEAL_MAGIC))) continue;
+      long entryType = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      totalPnl += HistoryDealGetDouble(deal, DEAL_PROFIT)
+         + HistoryDealGetDouble(deal, DEAL_SWAP)
+         + HistoryDealGetDouble(deal, DEAL_COMMISSION)
+         + HistoryDealGetDouble(deal, DEAL_FEE);
+      if(entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_INOUT || entryType == DEAL_ENTRY_OUT_BY)
+      {
+         double volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         totalOutVolume += volume;
+         weightedClose += HistoryDealGetDouble(deal, DEAL_PRICE) * volume;
+         datetime dealTs = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+         if(dealTs >= closeTs)
+         {
+            closeTs = dealTs;
+            finalDeal = deal;
+         }
+      }
+   }
+   if(finalDeal == 0 || closeTs <= 0) return false;
+
+   double entry = NasProGetPlan(positionId, "entry", 0.0);
+   double sl = NasProGetPlan(positionId, "sl", 0.0);
+   double tp = NasProGetPlan(positionId, "tp", 0.0);
+   double closePrice = totalOutVolume > 0.0 ? weightedClose / totalOutVolume : HistoryDealGetDouble(finalDeal, DEAL_PRICE);
+   int direction = (int)NasProGetPlan(positionId, "dir", 0.0);
+   double pip = NasPipSize();
+   double slPips = NasProGetPlan(positionId, "lossPips", pip > 0.0 ? MathAbs(entry - sl) / pip : 0.0);
+   double tpPips = NasProGetPlan(positionId, "targetPips", pip > 0.0 ? MathAbs(tp - entry) / pip : 0.0);
+   double pnlPips = pip > 0.0 && direction != 0 ? (direction > 0 ? closePrice - entry : entry - closePrice) / pip : 0.0;
+   double initialRiskMoney = NasProGetPlan(positionId, "initialRiskMoney", 0.0);
+   double pnlR = initialRiskMoney > 0.0 ? totalPnl / initialRiskMoney : (slPips > 0.0 ? pnlPips / slPips : 0.0);
+   double mfePips = MathMax(0.0, NasProGetPlan(positionId, "mfePips", 0.0));
+   double maePips = MathMax(0.0, -NasProGetPlan(positionId, "maePips", 0.0));
+   datetime openTs = (datetime)NasProGetPlan(positionId, "openTs", 0.0);
+   datetime signalTs = (datetime)NasProGetPlan(positionId, "signalTs", openTs);
+   datetime mfeTs = (datetime)NasProGetPlan(positionId, "mfeTs", 0.0);
+   datetime maeTs = (datetime)NasProGetPlan(positionId, "maeTs", 0.0);
+   int periodSec = MathMax(60, PeriodSeconds(_Period));
+   int barsToMfe = openTs > 0 && mfeTs >= openTs ? (int)((mfeTs - openTs) / periodSec) : -1;
+   int barsToMae = openTs > 0 && maeTs >= openTs ? (int)((maeTs - openTs) / periodSec) : -1;
+   int barsToExit = openTs > 0 && closeTs >= openTs ? (int)((closeTs - openTs) / periodSec) : -1;
+   string firstExcursion = "NONE";
+   if(mfeTs > 0 && maeTs > 0) firstExcursion = mfeTs <= maeTs ? "MFE" : "MAE";
+   else if(mfeTs > 0) firstExcursion = "MFE";
+   else if(maeTs > 0) firstExcursion = "MAE";
+   datetime firstTargetTs = (datetime)NasProGetPlan(positionId, "firstTargetTs", 0.0);
+   datetime firstLossTs = (datetime)NasProGetPlan(positionId, "firstLossTs", 0.0);
+   if(firstTargetTs <= 0 && exitReason == "closed_by_broker_tp") firstTargetTs = closeTs;
+   if(firstLossTs <= 0 && exitReason == "closed_by_broker_sl") firstLossTs = closeTs;
+   string firstBoundaryHit = "NONE";
+   if(firstTargetTs > 0 && firstLossTs > 0) firstBoundaryHit = firstTargetTs <= firstLossTs ? "TARGET" : "LOSS";
+   else if(firstTargetTs > 0) firstBoundaryHit = "TARGET";
+   else if(firstLossTs > 0) firstBoundaryHit = "LOSS";
+
+   long serverGmtOffset = (long)(TimeCurrent() - TimeGMT());
+   datetime signalGmt = signalTs > 0 ? (datetime)((long)signalTs - serverGmtOffset) : (datetime)0;
+   MqlDateTime brokerParts, gmtParts;
+   ZeroMemory(brokerParts);
+   ZeroMemory(gmtParts);
+   if(signalTs > 0) TimeToStruct(signalTs, brokerParts);
+   if(signalGmt > 0) TimeToStruct(signalGmt, gmtParts);
+   int regimeBucket = (int)NasProGetPlan(positionId, "regimeBucket", -1.0);
+   string fileName = "NasUltimate_MLTradeAudit_v2_" + StringSubstr(NasProDate(TimeGMT()), 0, 6) + ".csv";
+   int h = INVALID_HANDLE;
+   for(int attempt = 0; attempt < 3 && h == INVALID_HANDLE; ++attempt)
+   {
+      ResetLastError();
+      h = FileOpen(fileName, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+      if(h == INVALID_HANDLE && attempt < 2) Sleep(10);
+   }
+   if(h == INVALID_HANDLE)
+   {
+      Print("NAS ML lifecycle write deferred err=", GetLastError(), " position_id=", positionId);
+      return false;
+   }
+   bool header = FileSize(h) == 0;
+   FileSeek(h, 0, SEEK_END);
+   if(header)
+      FileWrite(h, "position_id", "symbol", "tf", "signal_server", "signal_gmt", "open_server", "close_server",
+         "gmt_weekday", "broker_weekday", "hour_gmt", "hour_broker", "session_bucket", "dir",
+         "entry", "sl", "tp", "close", "sl_pips", "tp_pips", "rr", "pnl_money", "pnl_pips", "pnl_r",
+         "mfe_pips", "mae_pips", "mfe_before_mae", "bars_to_mfe", "bars_to_mae", "bars_to_exit", "exit_reason",
+         "invert_on", "exec_mode", "regime_bucket", "regime_name", "bridge_published", "risk_pct", "entry_spread_points",
+         "half_trigger", "half_done", "first_target_hit", "first_loss_hit", "first_boundary_hit",
+         "target_hit_time", "loss_hit_time", "mfe_money", "mae_money", "mfe_price", "mae_price", "source_build");
+   FileWrite(h, NasProU64(positionId), _Symbol, NasProTf(_Period), NasProTime(signalTs), NasProTime(signalGmt),
+      NasProTime(openTs), NasProTime(closeTs), IntegerToString(gmtParts.day_of_week), IntegerToString(brokerParts.day_of_week),
+      IntegerToString(gmtParts.hour), IntegerToString(brokerParts.hour), NasProSessionBucket(signalGmt), NasProDir(direction),
+      DoubleToString(entry, _Digits), DoubleToString(sl, _Digits), DoubleToString(tp, _Digits), DoubleToString(closePrice, _Digits),
+      DoubleToString(slPips, 2), DoubleToString(tpPips, 2), DoubleToString(slPips > 0.0 ? tpPips / slPips : 0.0, 3),
+      DoubleToString(totalPnl, 2), DoubleToString(pnlPips, 2), DoubleToString(pnlR, 4), DoubleToString(mfePips, 2),
+      DoubleToString(maePips, 2), firstExcursion, IntegerToString(barsToMfe), IntegerToString(barsToMae), IntegerToString(barsToExit),
+      exitReason, IntegerToString((int)NasProGetPlan(positionId, "invert", 0.0)),
+      IntegerToString((int)NasProGetPlan(positionId, "execMode", 0.0)), IntegerToString(regimeBucket),
+      regimeBucket >= 0 && regimeBucket < LIQ_MACRO_REGIME_COUNT ? LiqMacroRegimeName(regimeBucket) : "UNKNOWN",
+      IntegerToString((int)NasProGetPlan(positionId, "bridgePublished", 0.0)),
+      DoubleToString(NasProGetPlan(positionId, "riskPct", 0.0), 4),
+      DoubleToString(NasProGetPlan(positionId, "spreadPts", 0.0), 1),
+      DoubleToString(NasProGetPlan(positionId, "half", 0.0), _Digits),
+      IntegerToString((int)NasProGetPlan(positionId, "halfDone", 0.0)),
+      firstTargetTs > 0 ? "1" : "0", firstLossTs > 0 ? "1" : "0", firstBoundaryHit,
+      NasProTime(firstTargetTs), NasProTime(firstLossTs),
+      DoubleToString(NasProGetPlan(positionId, "mfeMoney", 0.0), 2),
+      DoubleToString(NasProGetPlan(positionId, "maeMoney", 0.0), 2),
+      DoubleToString(NasProGetPlan(positionId, "mfePx", 0.0), _Digits),
+      DoubleToString(NasProGetPlan(positionId, "maePx", 0.0), _Digits), NAS_PRO_PIPELINE_BUILD);
+   FileFlush(h);
+   FileClose(h);
+   GlobalVariableSet(writtenKey, (double)finalDeal);
+   return true;
+}
 void NasProProbePositions()
 {
    if(!g_nasProAuditRuntime || !InpNasAuditPositionProbe || IsTesterMode()) return;
@@ -640,6 +816,31 @@ void NasProScanClosedHistory()
          + HistoryDealGetDouble(deal, DEAL_COMMISSION) + HistoryDealGetDouble(deal, DEAL_FEE);
       NasProAuditWrite(reason, NasProU64(deal), 0, HistoryDealGetDouble(deal, DEAL_PRICE), 0, 0,
          HistoryDealGetDouble(deal, DEAL_VOLUME), "profit=" + DoubleToString(pnl, 2) + " " + NasProLifecycleDetail(positionId, reason, pnl));
+      NasProWriteFinalLifecycle(positionId, reason);
+      HistorySelect(now - 86400 * 14, now);
+   }
+   // Retry final lifecycle rows independently of the deal cursor. A temporary
+   // file lock must not permanently consume the only final-close notification.
+   if(HistorySelect(now - 86400 * 14, now))
+   {
+      int retryTotal = HistoryDealsTotal();
+      for(int ri = MathMax(0, retryTotal - 160); ri < retryTotal; ++ri)
+      {
+         ulong retryDeal = HistoryDealGetTicket(ri);
+         if(retryDeal == 0 || HistoryDealGetString(retryDeal, DEAL_SYMBOL) != _Symbol) continue;
+         if(!RuntimeMagicOwned((long)HistoryDealGetInteger(retryDeal, DEAL_MAGIC))) continue;
+         long retryEntry = HistoryDealGetInteger(retryDeal, DEAL_ENTRY);
+         if(retryEntry != DEAL_ENTRY_OUT && retryEntry != DEAL_ENTRY_INOUT && retryEntry != DEAL_ENTRY_OUT_BY) continue;
+         ulong retryPositionId = (ulong)HistoryDealGetInteger(retryDeal, DEAL_POSITION_ID);
+         long retryWhy = HistoryDealGetInteger(retryDeal, DEAL_REASON);
+         string retryReason = "closed_by_unknown";
+         if(retryWhy == DEAL_REASON_SL) retryReason = "closed_by_broker_sl";
+         else if(retryWhy == DEAL_REASON_TP) retryReason = "closed_by_broker_tp";
+         else if(retryWhy == DEAL_REASON_EXPERT) retryReason = "closed_by_expert";
+         else if(retryWhy == DEAL_REASON_CLIENT || retryWhy == DEAL_REASON_MOBILE || retryWhy == DEAL_REASON_WEB) retryReason = "closed_manual";
+         NasProWriteFinalLifecycle(retryPositionId, retryReason);
+         HistorySelect(now - 86400 * 14, now);
+      }
    }
 }
 
@@ -731,7 +932,8 @@ string NasProBridgeSource()
       + "|" + TpModeText()
       + "|" + EnumToString(InpExecutionMode)
       + "|invert=" + (g_invertTradeModeRuntime ? "1" : "0")
-      + "|pip=" + DoubleToString(g_pipSlDistanceRuntime, 2);
+      + "|pip=" + DoubleToString(g_pipSlDistanceRuntime, 2)
+      + "|target_r=" + DoubleToString(SelectedTargetR(), 1);
 }
 
 double NasProBridgeHalfTrigger(const int direction, const int finalLeg, const double finalTp)
@@ -739,7 +941,8 @@ double NasProBridgeHalfTrigger(const int direction, const int finalLeg, const do
    if(g_invertTradeModeRuntime)
       return InvertHcBeEnabled() ? InvertHcBePrice(direction, g_lastEntry, finalTp) : 0.0;
    int hcLeg = EffectiveHcBeLeg();
-   if(hcLeg > 0 && hcLeg < finalLeg)
+   double activeTargetR = NasTargetR(direction, g_lastEntry, g_lastSl, finalTp);
+   if(hcLeg > 0 && RMultipleForLeg(hcLeg) < activeTargetR - 0.0001)
       return TpPriceForLeg(direction, hcLeg);
    return 0.0;
 }
@@ -762,10 +965,10 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
    }
 
    int finalLeg = g_invertTradeModeRuntime ? EffectiveInversionReferenceLeg()
-      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : ClampTpLeg(g_selectedTpLegRuntime));
+      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? 6 : LegacyLegForTargetR(SelectedTargetR()));
    double finalTp = g_invertTradeModeRuntime && g_lastInvertedFinalTp > 0.0
       ? g_lastInvertedFinalTp
-      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentFinalTpForLeg(direction, finalLeg));
+      : (InpExecutionMode == NAS_EXEC_FIXED_1_TO_3R ? g_lastTp3 : CurrentSelectedFinalTp(direction));
    finalTp = NormalizeDouble(finalTp, _Digits);
    if(finalTp <= 0.0)
    {
@@ -776,9 +979,10 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
 
    double half = UseSingleOrderTpMode() ? NasProBridgeHalfTrigger(direction, finalLeg, finalTp) : 0.0;
    string halfLabel = half > 0.0 ? EffectiveHcBeText() : "off";
+   double effectiveTargetR = NasTargetR(direction, g_lastEntry, g_lastSl, finalTp);
    string eventId = "nas|" + _Symbol + "|" + NasProTf(_Period) + "|" + IntegerToString((long)signalTime)
-      + "|" + NasProDir(direction) + "|L" + IntegerToString(finalLeg);
-   string source = NasProBridgeSource() + "|shape=single_order";
+      + "|" + NasProDir(direction) + "|R" + DoubleToString(effectiveTargetR, 1);
+   string source = NasProBridgeSource() + "|shape=single_order|effective_target_r=" + DoubleToString(effectiveTargetR, 3);
    return NasProBridgeWriteEvent(eventId, direction, g_lastEntry, g_lastSl, finalTp, source,
       half, halfLabel, signalTime, MathMax(0.0, g_accountRiskPerTradePctRuntime));
 }

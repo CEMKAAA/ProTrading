@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <LangVersion>13.0</LangVersion>
@@ -11,6 +11,7 @@
     <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\ProductionFileBridgeNinjaCore.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\TradeDayComplianceNinjaCore.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\LiqNarrativeSolAdvanced_NinjaTrader_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\LiqNarrativeSolVersion_NinjaTrader_Listener.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\NinjaTrader\OrbUltimate_NinjaTrader_Listener.cs" />
   </ItemGroup>
   <ItemGroup>

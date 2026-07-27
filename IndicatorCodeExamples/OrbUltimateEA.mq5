@@ -5,10 +5,10 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.30"
+#property version "3.31"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
-#define ORB15_BUILD "2026-07-27.v6.13-production-invert"
+#define ORB15_BUILD "2026-07-27.v6.14-production-target-075r"
 
 enum ORB_SESSION_PROFILE
 {
@@ -48,7 +48,7 @@ input int    InpConfirmBars          = 1;    // Breakout bar must hold N closed 
 
 //=== EXECUTION MODE =====================================================
 enum ORB_EXEC_MODE { ORB_EXEC_SINGLE=0, ORB_EXEC_PARTIAL_3LEG=1 };
-enum ORB_TARGET_LEG { ORB_TARGET_TP1=1, ORB_TARGET_TP2=2, ORB_TARGET_TP3=3, ORB_TARGET_TP4=4, ORB_TARGET_TP5=5, ORB_TARGET_TP6=6 };
+enum ORB_TARGET_LEG { ORB_TARGET_TP1=1, ORB_TARGET_TP2=2, ORB_TARGET_TP3=3, ORB_TARGET_TP4=4, ORB_TARGET_TP5=5, ORB_TARGET_TP6=6, ORB_TARGET_TP075=7 };
 enum ORB_HC_BE_MODE { ORB_HC_BE_OFF=0, ORB_HC_BE_TP1=1, ORB_HC_BE_TP2=2, ORB_HC_BE_TP3=3, ORB_HC_BE_TP4=4, ORB_HC_BE_TP5=5 };
 enum ORB_FVG_MODE { ORB_FVG_OFF=0, ORB_FVG_OPTIONAL=1, ORB_FVG_REQUIRE=2 };
 enum ORB_EXIT_ENGINE_MODE { ORB_EXIT_FIXED_TARGET=0, ORB_EXIT_EOD_ONLY=1, ORB_EXIT_ORB_MID_INVALIDATION=2, ORB_EXIT_ATR_TRAIL=3, ORB_EXIT_EMA_STOP=4, ORB_EXIT_VWAP_STOP=5, ORB_EXIT_BROKER_TIME=6 };
@@ -81,6 +81,7 @@ input double InpExitAtrMultiplier = 2.0;
 input int    InpExitEmaPeriod = 50;
 input int    InpExitGraceBars = 1;
 input double InpTp1R      = 0.5;
+input double InpTp075R    = 0.75; // Backward-compatible target choice between TP1 (0.5R) and TP2 (1R).
 input double InpTp2R      = 1.0;
 input double InpTp3R      = 1.5;
 input double InpTp4R      = 2.0;
@@ -532,12 +533,14 @@ bool SpreadAllowed(){if(InpMaxSpreadPoints<=0)return true;return CurrentSpreadPo
 double NormalizeLegVolume(double total,int legs){double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);if(st<=0)st=0.01;if(mn<=0)mn=0.01;double leg=MathFloor(total/(double)legs/st+1e-7)*st;return NormalizeDouble(leg,8)<mn?0:NormalizeDouble(leg,8);}
 string TfLabel(ENUM_TIMEFRAMES tf){if(tf==PERIOD_M1)return "M1";if(tf==PERIOD_M5)return "M5";if(tf==PERIOD_M15)return "M15";return EnumToString(tf);}
 ENUM_TIMEFRAMES CycleTf(ENUM_TIMEFRAMES current){if(current==PERIOD_M1)return PERIOD_M5;if(current==PERIOD_M5)return PERIOD_M15;return PERIOD_M1;}
-int ClampTargetLeg(int leg){return MathMax(1,MathMin(6,leg));}
-int ClampHalfBeLeg(int leg,int target){if(target<=1)return 0;return MathMax(0,MathMin(target-1,leg));}
-int RuntimeTargetLeg(){return ClampTargetLeg(g_rtTargetLeg);}
-int RuntimeHalfBeLeg(){return ClampHalfBeLeg(g_rtHalfBeLeg,RuntimeTargetLeg());}
+int ClampTargetLeg(int leg)
+{
+   if(leg==(int)ORB_TARGET_TP075)return leg;
+   return MathMax(1,MathMin(6,leg));
+}
 double LegR(int leg)
 {
+   if(leg==(int)ORB_TARGET_TP075)return MathMax(0.1,InpTp075R);
    if(leg<=1)return MathMax(0.1,InpTp1R);
    if(leg==2)return MathMax(0.1,InpTp2R);
    if(leg==3)return MathMax(0.1,InpTp3R);
@@ -545,14 +548,24 @@ double LegR(int leg)
    if(leg==5)return MathMax(0.1,InpTp5R);
    return MathMax(0.1,InpTp6R);
 }
+int ClampHalfBeLeg(int leg,int target)
+{
+   int candidate=MathMax(0,MathMin(5,leg));
+   if(candidate<=0)return 0;
+   return LegR(candidate)<LegR(ClampTargetLeg(target))-1e-8?candidate:0;
+}
+int RuntimeTargetLeg(){return ClampTargetLeg(g_rtTargetLeg);}
+int RuntimeHalfBeLeg(){return ClampHalfBeLeg(g_rtHalfBeLeg,RuntimeTargetLeg());}
 double RuntimeTargetR(){return LegR(RuntimeTargetLeg());}
 double PriceAtLeg(bool isBuy,double entry,double risk,int leg){return NormalizeTradePrice(isBuy?entry+risk*LegR(leg):entry-risk*LegR(leg));}
+string TargetCode(int leg){return leg==(int)ORB_TARGET_TP075?"R0.75":("TP"+IntegerToString(leg));}
+string TargetOutcomeLabel(int leg){return leg==(int)ORB_TARGET_TP075?"TP075":("TP"+IntegerToString(leg));}
 double SimMoneyPnl(double netR)
 {
    double base=InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE));
    return netR*base*MathMax(0,EffRiskPerTradePct())/100.0;
 }
-string TargetLabel(){return "TP"+IntegerToString(RuntimeTargetLeg())+"="+DoubleToString(RuntimeTargetR(),1)+"R";}
+string TargetLabel(){int leg=RuntimeTargetLeg();return leg==(int)ORB_TARGET_TP075?("R"+DoubleToString(RuntimeTargetR(),2)):("TP"+IntegerToString(leg)+"="+DoubleToString(RuntimeTargetR(),1)+"R");}
 string HalfBeLabel(){int h=RuntimeHalfBeLeg();return h<=0?"HC:OFF":"HC:TP"+IntegerToString(h);}
 string FvgModeLabel()
 {
@@ -630,8 +643,9 @@ string ExitDebugConfig()
 }
 void SetTargetLeg(int leg){g_rtTargetLeg=ClampTargetLeg(leg);g_rtHalfBeLeg=ClampHalfBeLeg(g_rtHalfBeLeg,g_rtTargetLeg);}
 void ForceFixedRLegTarget(){g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtTargetMode=ORB_TARGET_R_LEG;}
-void CycleTargetLeg(){ForceFixedRLegTarget();SetTargetLeg(RuntimeTargetLeg()>=6?1:RuntimeTargetLeg()+1);}
-void CycleHalfBeLeg(){ForceFixedRLegTarget();int target=RuntimeTargetLeg();if(target<=1){g_rtHalfBeLeg=0;return;}int h=RuntimeHalfBeLeg()+1;if(h>=target)h=0;g_rtHalfBeLeg=h;}
+int NextTargetLeg(int current){if(current==1)return (int)ORB_TARGET_TP075;if(current==(int)ORB_TARGET_TP075)return 2;if(current>=2&&current<6)return current+1;return 1;}
+void CycleTargetLeg(){ForceFixedRLegTarget();SetTargetLeg(NextTargetLeg(RuntimeTargetLeg()));}
+void CycleHalfBeLeg(){ForceFixedRLegTarget();double targetR=RuntimeTargetR();int current=RuntimeHalfBeLeg();for(int h=current+1;h<=5;h++){if(LegR(h)<targetR-1e-8){g_rtHalfBeLeg=h;return;}}g_rtHalfBeLeg=0;}
 int ClampHistWeeks(int weeks)
 {
    int options[]={2,5,10,20,52,104,156,208,260};
@@ -944,9 +958,10 @@ bool ResolveTargetPriceAndR(bool isBuy,double entry,double risk,double &targetPr
       detail+=" stopPts="+DoubleToString(stopPts,1)+" r="+DoubleToString(targetR,2);
       return true;
    }
-   targetR=LegR(RuntimeTargetLeg());
-   targetPrice=PriceAtLeg(isBuy,entry,risk,RuntimeTargetLeg());
-   detail+=" leg=TP"+IntegerToString(RuntimeTargetLeg())+" r="+DoubleToString(targetR,2);
+   int targetLeg=RuntimeTargetLeg();
+   targetR=LegR(targetLeg);
+   targetPrice=PriceAtLeg(isBuy,entry,risk,targetLeg);
+   detail+=" target="+TargetCode(targetLeg)+" r="+DoubleToString(targetR,2);
    return true;
 }
 
@@ -2234,7 +2249,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       bool targetHit=fixedTarget&&(isBuy?(closePx>=targetPrice):(closePx<=targetPrice));
       if(targetHit)
       {
-         res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?"TP"+IntegerToString(targetLeg):"TARGET");
+         res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?TargetOutcomeLabel(targetLeg):"TARGET");
          res.exitPrice=targetPrice;
          res.exitTime=(datetime)ticks[i].time;
          break;
@@ -2338,20 +2353,26 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
             if(hit)hitLeg=k+1;
          }
          bool customTargetHit=isBuy?(r[i].high>=targetPrice):(r[i].low<=targetPrice);
-         if(customTargetHit&&g_rtTargetMode!=ORB_TARGET_R_LEG)hitLeg=MathMax(hitLeg,targetLeg);
+         if(customTargetHit&&g_rtTargetMode!=ORB_TARGET_R_LEG)hitLeg=MathMax(hitLeg,MathMin(6,targetLeg));
       }
 
-      // Same-bar first-touch approximation only matters before any profit leg has been reached.
-      if(slHit&&hitLeg>0&&res.maxTp==0)
+      // Resolve a same-bar SL/profit collision against the actual configured target.
+      // The special 0.75R target is not a numbered TP milestone and must never index tps[].
+      bool targetTouched=fixedTarget&&(isBuy?(r[i].high>=targetPrice):(r[i].low<=targetPrice));
+      if(slHit&&(hitLeg>0||targetTouched)&&res.maxTp==0)
       {
-         int compareLeg=MathMax(1,MathMin(targetLeg,hitLeg));
-         if(BtTpFirst(isBuy,r[i].open,effSl,tps[compareLeg-1]))
+         int compareLeg=MathMax(1,MathMin(6,hitLeg));
+         double profitTouchPrice=targetTouched?targetPrice:tps[compareLeg-1];
+         if(BtTpFirst(isBuy,r[i].open,effSl,profitTouchPrice))
          {
             res.maxTp=hitLeg;
             if(hcLeg>0 && res.maxTp>=hcLeg && !beApplied){effSl=entry;beApplied=true;}
-            bool targetTouched=fixedTarget&&(isBuy?(r[i].high>=targetPrice):(r[i].low<=targetPrice));
-            bool targetDone=fixedTarget&&(g_rtTargetMode!=ORB_TARGET_R_LEG?targetTouched:(res.maxTp>=targetLeg));
-            if(targetDone){res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?"TP"+IntegerToString(targetLeg):"TARGET");res.exitPrice=targetPrice;res.exitTime=r[i].time;break;}
+            if(targetTouched){res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?TargetOutcomeLabel(targetLeg):"TARGET");res.exitPrice=targetPrice;res.exitTime=r[i].time;break;}
+            // Profit milestone came first, then the same bar also crossed protection.
+            res.outcome=beApplied?"BE":"SL";
+            res.exitPrice=effSl;
+            res.exitTime=r[i].time;
+            break;
          }
          else{res.outcome="SL";res.exitPrice=effSl;res.exitTime=r[i].time;break;}
       }
@@ -2365,7 +2386,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
       if(fixedTarget)
       {
          bool targetHit=isBuy?(r[i].high>=targetPrice):(r[i].low<=targetPrice);
-         if(targetHit){res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?"TP"+IntegerToString(targetLeg):"TARGET");res.exitPrice=targetPrice;res.exitTime=r[i].time;break;}
+         if(targetHit){res.outcome=(g_rtTargetMode==ORB_TARGET_R_LEG?TargetOutcomeLabel(targetLeg):"TARGET");res.exitPrice=targetPrice;res.exitTime=r[i].time;break;}
       }
 
       if(g_rtTimeExit && InpTimeExitMinutes>0 && r[i].time>=sigTime+InpTimeExitMinutes*60)
@@ -2457,7 +2478,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    else
    {
-      if((g_rtTargetMode==ORB_TARGET_R_LEG&&res.maxTp>=targetLeg)||(g_rtTargetMode!=ORB_TARGET_R_LEG&&res.outcome=="TARGET"))
+      if((g_rtTargetMode==ORB_TARGET_R_LEG&&res.outcome==TargetOutcomeLabel(targetLeg))||(g_rtTargetMode!=ORB_TARGET_R_LEG&&res.outcome=="TARGET"))
       {
          if(hcLeg>0)res.netR=0.5*LegR(hcLeg)+0.5*targetR;
          else res.netR=targetR;
