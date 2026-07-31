@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-07-27.nt8-production-file-bridge-v5-tradeday-dashboard";
+        private const string CoreBuild = "2026-07-30.nt8-production-file-bridge-v7-chart-identity";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -525,6 +525,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             string complianceReason;
             if (!TradeDayCanOpenNewTrade(out complianceReason))
             {
+                if (TradeDayComplianceBlockShouldRetry(complianceReason))
+                {
+                    BlockRetry(sig.EventId, OrderFailureRetrySeconds, "tradeday_compliance_transient");
+                    AuditSignalThrottled("skip_tradeday_compliance_retry", sig, complianceReason, Math.Max(10, OrderFailureRetrySeconds));
+                    return;
+                }
                 lastSeenEventId = sig.EventId;
                 CommitEvent(sig.EventId, "tradeday_compliance_block");
                 Audit("skip_tradeday_compliance", sig, complianceReason);
@@ -1780,9 +1786,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool SourceSymbolMatches(string source)
         {
             var sourceCanonical = CanonicalSymbol(source);
-            if (SameText(sourceCanonical, CanonicalChartSymbol()))
-                return true;
-            return SourceAliases().Any(a => SameText(CanonicalSymbol(a), sourceCanonical));
+            var chartCanonical = CanonicalChartSymbol();
+
+            // Source aliases locate scoped MT files; they must not turn off the
+            // chart guard. Economic-family canonicalization performs the actual
+            // execution identity check (for example JP225 -> NKD/MNK/NIY).
+            return !string.IsNullOrWhiteSpace(sourceCanonical)
+                && !string.IsNullOrWhiteSpace(chartCanonical)
+                && SameText(sourceCanonical, chartCanonical);
         }
 
         private IEnumerable<string> SourceAliases()

@@ -217,3 +217,94 @@ us500 and us100: 15, jp225 sol: 60, jp225 advanced: 60, de30 nas: 5
 
 and thats it pipelines are set.
 ----------------------------------------------------------------------------------------------------------------------------
+
+## JP225 ORB Ultimate - Tek Instance Kurulumu
+
+Bu kurulum bir adet `JP225m`, `M15` ORB instance'i icindir.
+
+### 1. DEMOMT5 publisher
+
+1. DEMOMT5'te `JP225m` chartini ac.
+2. Chart timeframe'ini `M15` yap.
+3. `Experts\orb\OrbUltimateEA` EA'sini charta ekle.
+4. Strateji ayarlarini ve `Risk %` degerini ayarla, sonra `APPLY RISK` butonuna bas.
+5. Dashboard'da `PUB ON` yap.
+6. Sadece listener hesaplari trade acacaksa `ONLY ON`, `NAT OFF` kullan.
+7. Su dosyanin olustugunu kontrol et:
+
+```text
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest_JP225m_15.csv
+```
+
+EA takilinca dosyaya once `INIT` yazilmasi normaldir. `INIT` bir trade sinyali degildir.
+
+### 2. cTrader listener
+
+1. cTrader `Automate` bolumunde `OrbUltimate_cTrader_Listener` robotunu Build et.
+2. cTrader'da brokerin Nikkei sembol chartini ac. Mevcut mapping icin chart adi `JPN225` olmali.
+3. Robotu bu charta ekle.
+4. Yalnizca su degerleri kontrol et:
+
+```text
+Executor Enabled               = true
+Bridge Latest Path             = C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest.csv
+Prefer Scoped Latest           = true
+Source TF Filter               = 15
+Default TF To Chart            = false
+Source Filter                  = OrbUltimate|
+Use Built-In Index Map         = true
+Require Chart Symbol           = true
+Rebase Levels To Live          = true
+Rebase Only Source Differs     = true
+Use Risk Lot                   = true
+Use Bridge Risk %              = true
+Fail If Exact Protection Fails = true
+Post-Fill Risk Guard           = true
+Ignore Existing On Init        = true
+```
+
+5. Robotu `Start` et.
+
+`Ignore Existing On Init=true` guvenli varsayilandir: listener acilirken dosyada duran eski sinyali tekrar acmaz; bir sonraki yeni `BUY/SELL` olayini bekler. cTrader lotu MT5 bakiyesinden kopyalamaz, cTrader hesabinin kendi equity'si ve bridge'den gelen risk yuzdesiyle hesaplar.
+
+### 3. Hedef MT5 listener
+
+1. MetaEditor 5'te `Experts\orb\OrbUltimate_IQCapital_MT5_Listener_EA.mq5` dosyasini derle.
+2. Hedef MT5'te `JPN225` chartini ac.
+3. `OrbUltimate_IQCapital_MT5_Listener_EA` EA'sini charta ekle.
+4. Su degerleri kontrol et:
+
+```text
+InpExecutorEnabled             = true
+InpBridgeLatestFile            = OrbUltimateBridge_Latest_JP225m_15.csv
+InpUseCommonFiles              = true
+InpSourceLoginFilter           = 260460316
+InpSourceTimeframeFilter       = 15
+InpSourceFilter                = OrbUltimate|
+InpRequireMappedSymbolEqualsChart = true
+InpRebaseMappedLevelsToLiveEntry  = true
+InpUseRiskLot                  = true
+InpPostFillRiskGuard           = true
+InpFailIfExactProtectionFails  = true
+InpIgnoreExistingSignalOnInit  = true
+```
+
+5. Hedef broker server adi `BeyondIQCapital` degilse `InpDestinationServerFilter` alanini brokerin gercek server adina cevir. Bilincli olarak kapatmak istersen bos birak.
+6. MT5 `Algo Trading` dugmesini ac.
+
+Hedef MT5 lotu de DEMOMT5 bakiyesini kullanmaz; hedef MT5 hesabinin kendi equity'si ve bridge risk yuzdesiyle hesaplanir.
+
+### 4. Saglik kontrolu
+
+```text
+Publisher CSV updated          = yes
+CSV symbol / TF                = JP225m / 15
+cTrader mapped chart           = JPN225
+MT5 mapped chart               = JPN225
+Ayni event ikinci kez aciliyor = no
+SL ve TP fill sonrasinda var   = yes
+```
+
+Publisheri ve listenerlari yeni sinyal gelmeden once baslat. Yeni sinyal geldiginde her hedef hesapta yalnizca bir kez acilmasi gerekir.
+
+Notlar: TLV`de orb çalışıyor ama rlv`de bırakıp sadece Liq Narrativeye geçmek gerekebilir.

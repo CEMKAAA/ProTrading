@@ -1,4 +1,4 @@
-﻿// TradeDay account-compliance extension. Execution only; no signal generation.
+// TradeDay account-compliance extension. Execution only; no signal generation.
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -9,6 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 #endregion
@@ -20,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
     public abstract partial class ProductionFileBridgeNinjaCore
     {
-        private const string TradeDayComplianceBuild = "2026-07-27.tradeday-calendar-freshness-v2";
+        private const string TradeDayComplianceBuild = "2026-07-30.tradeday-dashboard-input-v4";
         private static readonly object TradeDaySync = new object();
         private static readonly Dictionary<string, TradeDayLedger> TradeDayLedgers = new Dictionary<string, TradeDayLedger>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, int> TradeDayActiveInstances = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -209,6 +210,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
                 tradeDayLedger = existing;
                 ApplyTradeDayConfigurationLocked(firstActiveInstance);
+                EnsureTradeDaySessionStartEquityLocked(TradeDayCurrentEquity(), "initialize");
+                SaveTradeDayLedgerLocked();
                 int activeCount;
                 TradeDayActiveInstances.TryGetValue(accountKey, out activeCount);
                 TradeDayActiveInstances[accountKey] = activeCount + 1;
@@ -320,14 +323,161 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 Text = value.ToString("0.##", CultureInfo.InvariantCulture),
                 Width = 92,
+                Focusable = true,
                 HorizontalContentAlignment = HorizontalAlignment.Right,
                 Background = System.Windows.Media.Brushes.White,
                 Foreground = System.Windows.Media.Brushes.Black
             };
+            input.PreviewMouseLeftButtonDown += TradeDayInputPreviewMouseLeftButtonDown;
+            input.PreviewKeyDown += TradeDayInputPreviewKeyDown;
             row.Children.Add(caption);
             row.Children.Add(input);
             root.Children.Add(row);
             return input;
+        }
+
+        private void TradeDayInputPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            var input = sender as TextBox;
+            if (input == null || input.IsKeyboardFocusWithin)
+                return;
+
+            e.Handled = true;
+            input.Focus();
+            Keyboard.Focus(input);
+            input.CaretIndex = Math.Max(0, Math.Min(input.Text.Length, input.GetCharacterIndexFromPoint(e.GetPosition(input), true)));
+        }
+
+        private void TradeDayInputPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            var input = sender as TextBox;
+            if (input == null)
+                return;
+
+            // ChartControl consumes unhandled keys for its instrument selector, so numeric
+            // dashboard inputs own their complete editing lifecycle while focused.
+            e.Handled = true;
+            var ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+            if (ctrl && e.Key == Key.A)
+            {
+                input.SelectAll();
+                return;
+            }
+            if (ctrl && e.Key == Key.C)
+            {
+                if (input.SelectionLength > 0)
+                    Clipboard.SetText(input.SelectedText);
+                return;
+            }
+            if (ctrl && e.Key == Key.V)
+            {
+                if (Clipboard.ContainsText())
+                    ReplaceTradeDayInputSelection(input, Clipboard.GetText().Trim().Replace(',', '.'));
+                return;
+            }
+
+            string digit = null;
+            if (e.Key >= Key.D0 && e.Key <= Key.D9)
+                digit = ((int)e.Key - (int)Key.D0).ToString(CultureInfo.InvariantCulture);
+            else if (e.Key >= Key.NumPad0 && e.Key <= Key.NumPad9)
+                digit = ((int)e.Key - (int)Key.NumPad0).ToString(CultureInfo.InvariantCulture);
+
+            if (digit != null)
+            {
+                ReplaceTradeDayInputSelection(input, digit);
+                return;
+            }
+            if (e.Key == Key.Decimal || e.Key == Key.OemPeriod || e.Key == Key.OemComma)
+            {
+                ReplaceTradeDayInputSelection(input, ".");
+                return;
+            }
+            if (e.Key == Key.Back)
+            {
+                if (input.SelectionLength > 0)
+                    ReplaceTradeDayInputSelection(input, string.Empty);
+                else if (input.CaretIndex > 0)
+                {
+                    input.Select(input.CaretIndex - 1, 1);
+                    ReplaceTradeDayInputSelection(input, string.Empty);
+                }
+                return;
+            }
+            if (e.Key == Key.Delete)
+            {
+                if (input.SelectionLength > 0)
+                    ReplaceTradeDayInputSelection(input, string.Empty);
+                else if (input.CaretIndex < input.Text.Length)
+                {
+                    input.Select(input.CaretIndex, 1);
+                    ReplaceTradeDayInputSelection(input, string.Empty);
+                }
+                return;
+            }
+            if (e.Key == Key.Left)
+            {
+                input.CaretIndex = Math.Max(0, input.CaretIndex - 1);
+                input.SelectionLength = 0;
+                return;
+            }
+            if (e.Key == Key.Right)
+            {
+                input.CaretIndex = Math.Min(input.Text.Length, input.CaretIndex + 1);
+                input.SelectionLength = 0;
+                return;
+            }
+            if (e.Key == Key.Home)
+            {
+                input.CaretIndex = 0;
+                input.SelectionLength = 0;
+                return;
+            }
+            if (e.Key == Key.End)
+            {
+                input.CaretIndex = input.Text.Length;
+                input.SelectionLength = 0;
+                return;
+            }
+            if (e.Key == Key.Tab)
+            {
+                input.MoveFocus(new TraversalRequest(
+                    (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift
+                        ? FocusNavigationDirection.Previous
+                        : FocusNavigationDirection.Next));
+                return;
+            }
+            if (e.Key == Key.Enter)
+                TradeDayApplyClicked(input, new RoutedEventArgs());
+        }
+
+        private void ReplaceTradeDayInputSelection(TextBox input, string replacement)
+        {
+            var start = input.SelectionStart;
+            var length = input.SelectionLength;
+            var current = input.Text ?? string.Empty;
+            var candidate = current.Remove(start, length).Insert(start, replacement ?? string.Empty);
+            if (!IsValidTradeDayInputText(candidate))
+                return;
+
+            input.Text = candidate;
+            input.CaretIndex = start + (replacement ?? string.Empty).Length;
+            input.SelectionLength = 0;
+        }
+
+        private bool IsValidTradeDayInputText(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return true;
+            var decimalCount = 0;
+            for (var i = 0; i < value.Length; i++)
+            {
+                if (value[i] >= '0' && value[i] <= '9')
+                    continue;
+                if (value[i] == '.' && ++decimalCount <= 1)
+                    continue;
+                return false;
+            }
+            return true;
         }
 
         private void RemoveTradeDayDashboardControls()
@@ -452,12 +602,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     tradeDayLedger.ConfigFingerprint = tradeDayConfigFingerprint;
                     tradeDayLedger.ConfigConflict = false;
                     tradeDayLedger.ConfigConflictDetail = string.Empty;
-                    if (!IsFinitePositive(tradeDayLedger.SessionStartEquity))
-                    {
-                        var sod = SafeAccountValue(AccountItem.SodLiquidatingValue);
-                        if (IsFinitePositive(sod))
-                            tradeDayLedger.SessionStartEquity = sod;
-                    }
+                    EnsureTradeDaySessionStartEquityLocked(TradeDayCurrentEquity(), "profile_apply");
                     SaveTradeDayLedgerLocked();
                 }
                 SaveTradeDayDashboardProfile();
@@ -606,6 +751,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             var equity = TradeDayCurrentEquity();
             var sod = SafeAccountValue(AccountItem.SodLiquidatingValue);
+            var sessionStart = IsFinitePositive(sod) ? sod : (IsFinitePositive(equity) ? equity : 0);
+            var sessionStartSource = IsFinitePositive(sod) ? "SOD_LIQUIDATING_VALUE" : (IsFinitePositive(equity) ? "NET_LIQUIDATION_FALLBACK" : "UNAVAILABLE");
             var floor = TradeDayStartingBalance > 0 && TradeDayMaximumDrawdown > 0 ? TradeDayStartingBalance - TradeDayMaximumDrawdown : 0;
             if (TradeDayCurrentFloorOverride > 0) floor = Math.Max(floor, TradeDayCurrentFloorOverride);
             if (TradeDayStartingBalance > 0) floor = Math.Min(TradeDayStartingBalance, floor);
@@ -618,9 +765,43 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ActiveFloor = floor,
                 HighestIntradayEquity = equity,
                 HighestEodEquity = Math.Max(TradeDayStartingBalance, IsFinitePositive(sod) ? sod : TradeDayStartingBalance),
-                SessionStartEquity = IsFinitePositive(sod) ? sod : 0,
+                SessionStartEquity = sessionStart,
+                SessionStartSource = sessionStartSource,
                 LastEquity = equity
             };
+        }
+
+        private bool EnsureTradeDaySessionStartEquityLocked(double equity, string context)
+        {
+            if (tradeDayLedger == null) return false;
+
+            var sod = SafeAccountValue(AccountItem.SodLiquidatingValue);
+            if (IsFinitePositive(sod))
+            {
+                // Upgrade a temporary snapshot when the provider publishes the authoritative SOD value later.
+                tradeDayLedger.SessionStartEquity = sod;
+                tradeDayLedger.SessionStartSource = "SOD_LIQUIDATING_VALUE";
+                return true;
+            }
+
+            if (IsFinitePositive(tradeDayLedger.SessionStartEquity))
+            {
+                if (string.IsNullOrWhiteSpace(tradeDayLedger.SessionStartSource))
+                    tradeDayLedger.SessionStartSource = "PERSISTED";
+                return true;
+            }
+
+            if (IsFinitePositive(equity))
+            {
+                // Some SIM/prop connections do not expose SodLiquidatingValue. Persist the first valid
+                // net-liquidation snapshot for this trading day instead of disabling all execution.
+                tradeDayLedger.SessionStartEquity = equity;
+                tradeDayLedger.SessionStartSource = "NET_LIQUIDATION_FALLBACK:" + context;
+                return true;
+            }
+
+            tradeDayLedger.SessionStartSource = "UNAVAILABLE:" + context;
+            return false;
         }
 
         private void EvaluateAndEnforceTradeDayCompliance()
@@ -636,6 +817,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             lock (TradeDaySync)
             {
                 RollTradeDayLedgerLocked(DateTime.UtcNow, equity);
+                EnsureTradeDaySessionStartEquityLocked(equity, "compliance_poll");
                 if (!ValidTradeDayConfiguration(out tradeDayBlockReason))
                     SaveTradeDayLedgerLocked();
                 else
@@ -724,6 +906,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (TradeDayNewsGuardEnabled && tradeDayNewsStatus != "CLEAR")
             { reason = "news_guard " + tradeDayNewsStatus; return false; }
             return true;
+        }
+
+        private static bool TradeDayComplianceBlockShouldRetry(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return false;
+            return reason.StartsWith("FAIL_CLOSED:", StringComparison.OrdinalIgnoreCase)
+                || reason.StartsWith("compliance_not_initialized", StringComparison.OrdinalIgnoreCase)
+                || reason.StartsWith("net_liquidation_unavailable", StringComparison.OrdinalIgnoreCase)
+                || reason.IndexOf("Config", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private int TradeDayApplyContractCap(int requested, out string detail)
@@ -1018,12 +1209,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             var key = TradeDayTradingDayKey(nowUtc);
             if (tradeDayLedger.TradingDayKey == key) return;
-            var priorPnl = tradeDayLedger.LastEquity - tradeDayLedger.SessionStartEquity;
-            tradeDayLedger.BestDayProfit = Math.Max(tradeDayLedger.BestDayProfit, priorPnl);
+            if (IsFinitePositive(tradeDayLedger.LastEquity) && IsFinitePositive(tradeDayLedger.SessionStartEquity))
+            {
+                var priorPnl = tradeDayLedger.LastEquity - tradeDayLedger.SessionStartEquity;
+                tradeDayLedger.BestDayProfit = Math.Max(tradeDayLedger.BestDayProfit, priorPnl);
+            }
             tradeDayLedger.HighestEodEquity = Math.Max(tradeDayLedger.HighestEodEquity, tradeDayLedger.LastEquity);
             tradeDayLedger.TradingDayKey = key;
-            var sod = SafeAccountValue(AccountItem.SodLiquidatingValue);
-            tradeDayLedger.SessionStartEquity = IsFinitePositive(sod) ? sod : 0;
+            tradeDayLedger.SessionStartEquity = 0;
+            tradeDayLedger.SessionStartSource = string.Empty;
+            EnsureTradeDaySessionStartEquityLocked(equity, "day_roll");
             tradeDayLedger.HighestIntradayEquity = equity;
             tradeDayLedger.LastEquity = equity;
             tradeDayLedger.TradeCount = 0;
@@ -1056,6 +1251,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return "TradeDay=" + (string.IsNullOrWhiteSpace(tradeDayBlockReason) ? "READY" : "BLOCK")
                  + " DD=" + F2(equity) + "/" + F2(tradeDayLedger.ActiveFloor)
                  + " DayPnL=" + F2(dayPnl) + " Cons=" + consistency + "%"
+                 + " SOD=" + Truncate(tradeDayLedger.SessionStartSource, 36)
                  + " Trades=" + tradeDayLedger.TradeCount + "/" + Math.Min(200, Math.Max(1, TradeDayMaxTradesPerDay))
                  + " PosCap=" + TradeDayPositionLimitFullContracts.ToString("F1", CultureInfo.InvariantCulture) + "F\n"
                  + "TD Session=" + tradeDaySessionStatus + " News=" + tradeDayNewsStatus
@@ -1102,10 +1298,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 var lines = new[]
                 {
-                    "version=1", "reset_token=" + EncodeTd(tradeDayLedger.ResetToken), "config=" + EncodeTd(tradeDayLedger.ConfigFingerprint),
+                    "version=2", "reset_token=" + EncodeTd(tradeDayLedger.ResetToken), "config=" + EncodeTd(tradeDayLedger.ConfigFingerprint),
                     "day=" + EncodeTd(tradeDayLedger.TradingDayKey), "starting=" + G17(tradeDayLedger.StartingBalance), "floor=" + G17(tradeDayLedger.ActiveFloor),
                     "high_intraday=" + G17(tradeDayLedger.HighestIntradayEquity), "high_eod=" + G17(tradeDayLedger.HighestEodEquity),
-                    "session_start=" + G17(tradeDayLedger.SessionStartEquity), "last_equity=" + G17(tradeDayLedger.LastEquity), "best_day=" + G17(tradeDayLedger.BestDayProfit),
+                    "session_start=" + G17(tradeDayLedger.SessionStartEquity), "session_start_source=" + EncodeTd(tradeDayLedger.SessionStartSource),
+                    "last_equity=" + G17(tradeDayLedger.LastEquity), "best_day=" + G17(tradeDayLedger.BestDayProfit),
                     "trade_count=" + tradeDayLedger.TradeCount.ToString(CultureInfo.InvariantCulture), "daily_stopped=" + (tradeDayLedger.DailyStopped ? "1" : "0"),
                     "daily_reason=" + EncodeTd(tradeDayLedger.DailyStopReason), "hard_stopped=" + (tradeDayLedger.HardStopped ? "1" : "0"),
                     "hard_reason=" + EncodeTd(tradeDayLedger.HardStopReason), "counted_events=" + EncodeTd(string.Join("\t", tradeDayLedger.CountedEntryEvents)),
@@ -1132,7 +1329,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     ResetToken = DecodeTd(GetTd(map, "reset_token")), ConfigFingerprint = DecodeTd(GetTd(map, "config")), TradingDayKey = DecodeTd(GetTd(map, "day")),
                     StartingBalance = ParseTdDouble(GetTd(map, "starting")), ActiveFloor = ParseTdDouble(GetTd(map, "floor")),
                     HighestIntradayEquity = ParseTdDouble(GetTd(map, "high_intraday")), HighestEodEquity = ParseTdDouble(GetTd(map, "high_eod")),
-                    SessionStartEquity = ParseTdDouble(GetTd(map, "session_start")), LastEquity = ParseTdDouble(GetTd(map, "last_equity")), BestDayProfit = ParseTdDouble(GetTd(map, "best_day")),
+                    SessionStartEquity = ParseTdDouble(GetTd(map, "session_start")), SessionStartSource = DecodeTd(GetTd(map, "session_start_source")),
+                    LastEquity = ParseTdDouble(GetTd(map, "last_equity")), BestDayProfit = ParseTdDouble(GetTd(map, "best_day")),
                     TradeCount = ParseTdInt(GetTd(map, "trade_count")), DailyStopped = GetTd(map, "daily_stopped") == "1", DailyStopReason = DecodeTd(GetTd(map, "daily_reason")),
                     HardStopped = GetTd(map, "hard_stopped") == "1", HardStopReason = DecodeTd(GetTd(map, "hard_reason")), LastAccountFlattenUtc = ParseTdDate(GetTd(map, "last_flatten"))
                 };
@@ -1169,7 +1367,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private sealed class TradeDayLedger
         {
-            public string ResetToken = string.Empty, ConfigFingerprint = string.Empty, TradingDayKey = string.Empty;
+            public string ResetToken = string.Empty, ConfigFingerprint = string.Empty, TradingDayKey = string.Empty, SessionStartSource = string.Empty;
             public double StartingBalance, ActiveFloor, HighestIntradayEquity, HighestEodEquity, SessionStartEquity, LastEquity, BestDayProfit;
             public int TradeCount;
             public bool DailyStopped, HardStopped, ConfigConflict;
