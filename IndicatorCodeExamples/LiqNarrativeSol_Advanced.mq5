@@ -4,15 +4,17 @@
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.11"
+#property version "1.12"
 
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "LiqNarrativeMacroRegime.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 
-#define LN_BUILD "2026-07-27.sol-advanced-tradeday-calendar-v1"
+#define LN_BUILD "2026-08-08.sol-advanced-h90-v1"
 #define LN_PREFIX "LIQNARRSOL_"
+#define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
+#define LN_H90_SECONDS 5400
 
 //=====================================================================
 //  ENUMS
@@ -421,6 +423,7 @@ long             DASH_Z = 1000000;
 //=====================================================================
 string TfLabel(ENUM_TIMEFRAMES tf)
 {
+   if(tf == LN_PERIOD_H90) return "H1.5";
    switch(tf)
    {
       case PERIOD_M1:  return "M1";
@@ -835,8 +838,63 @@ string FileStamp(datetime t)
    return StringFormat("%04d%02d%02d_%02d%02d%02d", dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
 }
 
+int LiqPeriodSeconds(ENUM_TIMEFRAMES tf)
+{
+   if(tf == LN_PERIOD_H90) return LN_H90_SECONDS;
+   return PeriodSeconds(tf);
+}
+
+bool CopySyntheticH90(int bars, MqlRates &rates[])
+{
+   ArrayFree(rates);
+   int requested = MathMax(21, bars);
+   int sourceBars = requested * 3 + 12;
+   MqlRates source[];
+   int copied = CopyRates(_Symbol, PERIOD_M30, 0, sourceBars, source);
+   if(copied <= 20) return false;
+   ArraySetAsSeries(source, false);
+
+   MqlRates aggregated[];
+   ArrayResize(aggregated, copied);
+   int count = 0;
+   datetime activeBucket = 0;
+   for(int i = 0; i < copied; ++i)
+   {
+      if(source[i].time <= 0) continue;
+      datetime bucket = (datetime)(((long)source[i].time / LN_H90_SECONDS) * LN_H90_SECONDS);
+      if(count == 0 || bucket != activeBucket)
+      {
+         activeBucket = bucket;
+         aggregated[count] = source[i];
+         aggregated[count].time = bucket;
+         count++;
+         continue;
+      }
+
+      int j = count - 1;
+      aggregated[j].high = MathMax(aggregated[j].high, source[i].high);
+      aggregated[j].low = MathMin(aggregated[j].low, source[i].low);
+      aggregated[j].close = source[i].close;
+      aggregated[j].tick_volume += source[i].tick_volume;
+      aggregated[j].real_volume += source[i].real_volume;
+      if(source[i].spread > aggregated[j].spread)
+         aggregated[j].spread = source[i].spread;
+   }
+
+   int take = MathMin(requested, count);
+   if(take <= 20) return false;
+   ArrayResize(rates, take);
+   int first = count - take;
+   for(int i = 0; i < take; ++i)
+      rates[i] = aggregated[first + i];
+   ArraySetAsSeries(rates, true);
+   return true;
+}
+
 bool CopySeries(ENUM_TIMEFRAMES tf, int bars, MqlRates &rates[])
 {
+   if(tf == LN_PERIOD_H90)
+      return CopySyntheticH90(bars, rates);
    ArrayFree(rates);
    int copied = CopyRates(_Symbol, tf, 0, bars, rates);
    if(copied <= 20) return false;
@@ -879,7 +937,7 @@ datetime ClosedBarAvailabilityTime(const MqlRates &rates[], int index)
 int RequiredBarsForWindow(ENUM_TIMEFRAMES tf, datetime cutoff, int warmupBars)
 {
    if(cutoff <= 0) return 0;
-   int sec = PeriodSeconds(tf);
+   int sec = LiqPeriodSeconds(tf);
    if(sec <= 0) sec = 60;
    double windowSec = MathMax(1.0, (double)(TimeCurrent() - cutoff));
    return (int)MathCeil(windowSec / (double)sec) + MathMax(0, warmupBars);
@@ -2661,7 +2719,7 @@ int FileBridgeFlags(int baseFlags)
 
 string FileBridgeTfString(ENUM_TIMEFRAMES tf)
 {
-   int sec = PeriodSeconds(tf);
+   int sec = LiqPeriodSeconds(tf);
    if(sec > 0) return IntegerToString(sec / 60);
    return TfLabel(tf);
 }
@@ -3086,7 +3144,7 @@ void BtAppendCoverage(ENUM_TIMEFRAMES tf, int bars, datetime cutoff, string labe
 {
    MqlRates rates[];
    int requestedBars = MathMax(bars, RequiredBarsForWindow(tf, cutoff, 500));
-   int copied = CopyRates(_Symbol, tf, 0, requestedBars, rates);
+   int copied = CopySeries(tf, requestedBars, rates) ? ArraySize(rates) : 0;
    datetime oldest = 0;
    datetime newest = 0;
    for(int i = 0; i < copied; ++i)
@@ -3112,6 +3170,7 @@ string BtBuildCoverageSummary()
 {
    string detail = "";
    BtAppendCoverage(PERIOD_H1, InpCalcHtfBars, g_btCutoff, "htf_h1", detail);
+   BtAppendCoverage(LN_PERIOD_H90, InpCalcHtfBars, g_btCutoff, "htf_h1_5", detail);
    BtAppendCoverage(PERIOD_H2, InpCalcHtfBars, g_btCutoff, "htf_h2", detail);
    BtAppendCoverage(PERIOD_H4, InpCalcHtfBars, g_btCutoff, "htf_h4", detail);
    BtAppendCoverage(PERIOD_D1, InpCalcHtfBars, g_btCutoff, "htf_d1", detail);
@@ -4345,7 +4404,7 @@ void ManagePositions()
 void BuildCombos()
 {
    ArrayFree(g_btCombos);
-   ENUM_TIMEFRAMES htfs[] = { PERIOD_H1, PERIOD_H2, PERIOD_H4, PERIOD_D1 };
+   ENUM_TIMEFRAMES htfs[] = { PERIOD_H1, LN_PERIOD_H90, PERIOD_H2, PERIOD_H4, PERIOD_D1 };
    ENUM_TIMEFRAMES etfs[] = { PERIOD_M15, PERIOD_M30, PERIOD_H1 };
    int swings[] = { 3, 5, 8 };
    bool biases[] = { false, true };
@@ -4646,10 +4705,11 @@ void UpdateDashboard()
    LabelObj("DASH_SEC1_T", x + 16, sec1 + 7, "CONTROLS", ac, 9);
    int row = sec1 + 30;
    LabelObj("DASH_HTF_L", x + 16, row + 4, "HTF:", muted, 8);
-   ButtonObj("BTN_HTF_H1", x + 66, row, 48, bh, "H1", g_htf == PERIOD_H1 ? on : off);
-   ButtonObj("BTN_HTF_H2", x + 118, row, 48, bh, "H2", g_htf == PERIOD_H2 ? on : off);
-   ButtonObj("BTN_HTF_H4", x + 170, row, 48, bh, "H4", g_htf == PERIOD_H4 ? on : off);
-   ButtonObj("BTN_HTF_D1", x + 222, row, 48, bh, "D1", g_htf == PERIOD_D1 ? on : off);
+   ButtonObj("BTN_HTF_H1", x + 58, row, 40, bh, "H1", g_htf == PERIOD_H1 ? on : off);
+   ButtonObj("BTN_HTF_H90", x + 102, row, 48, bh, "H1.5", g_htf == LN_PERIOD_H90 ? on : off);
+   ButtonObj("BTN_HTF_H2", x + 154, row, 40, bh, "H2", g_htf == PERIOD_H2 ? on : off);
+   ButtonObj("BTN_HTF_H4", x + 198, row, 40, bh, "H4", g_htf == PERIOD_H4 ? on : off);
+   ButtonObj("BTN_HTF_D1", x + 242, row, 40, bh, "D1", g_htf == PERIOD_D1 ? on : off);
    LabelObj("DASH_ETF_L", x + 282, row + 4, "ENTRY:", muted, 8);
    ButtonObj("BTN_ETF_M15", x + 342, row, 58, bh, "M15", g_entryTf == PERIOD_M15 ? on : off);
    ButtonObj("BTN_ETF_M30", x + 406, row, 58, bh, "M30", g_entryTf == PERIOD_M30 ? on : off);
@@ -5184,6 +5244,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
 
    if(Clicked(sparam, "BTN_HTF_H1")) { g_htf = PERIOD_H1; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_HTF_H90")) { g_htf = LN_PERIOD_H90; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H2")) { g_htf = PERIOD_H2; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_H4")) { g_htf = PERIOD_H4; RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_HTF_D1")) { g_htf = PERIOD_D1; RefreshAfterConfigChange(); return; }
