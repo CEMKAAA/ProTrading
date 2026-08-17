@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-07-30.nt8-production-file-bridge-v7-chart-identity";
+        private const string CoreBuild = "2026-08-18.nt8-production-file-bridge-v9-futures-contract-root";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -34,6 +34,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected virtual bool DefaultSourceTfToChartPeriodSetting { get { return true; } }
         protected virtual string DefaultSourceSymbolAliasesCsv { get { return string.Empty; } }
         protected virtual bool DefaultRebaseMappedLevelsToLiveEntry { get { return false; } }
+        protected virtual bool DefaultRebaseOnlyWhenSourceDiffersSetting { get { return true; } }
 
         #region User inputs
         [NinjaScriptProperty]
@@ -273,8 +274,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RealtimeErrorHandling = RealtimeErrorHandling.IgnoreAllErrors;
                 ConnectionLossHandling = ConnectionLossHandling.KeepRunning;
                 DisconnectDelaySeconds = 60;
-                NumberRestartAttempts = 10;
-                RestartsWithinMinutes = 10;
+                // NinjaTrader has no unlimited sentinel. A deliberately high
+                // one-minute threshold prevents transient feed flapping from
+                // permanently disabling a production listener.
+                NumberRestartAttempts = 9999;
+                RestartsWithinMinutes = 1;
                 IsAdoptAccountPositionAware = true;
                 IsInstantiatedOnEachOptimizationIteration = false;
 
@@ -290,7 +294,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SourceSymbolAliasesCsv = DefaultSourceSymbolAliasesCsv;
                 RequireSourceMatchesChart = true;
                 RebaseMappedLevelsToLiveEntry = DefaultRebaseMappedLevelsToLiveEntry;
-                RebaseOnlyWhenSourceDiffers = true;
+                RebaseOnlyWhenSourceDiffers = DefaultRebaseOnlyWhenSourceDiffersSetting;
                 MappedBasisGuardPctRisk = 25.0;
                 FailIfExactProtectionFails = true;
                 CloseReverse = true;
@@ -363,7 +367,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             ReconcileRestartState("init");
             initialized = true;
             InstallTradeDayDashboardControls();
-            AuditRaw("init", "build=" + CoreBuild + " bridge=" + resolvedBridgePath + " instrument=" + Instrument.FullName + " account=" + SafeAccountName() + " scope=" + instanceToken + " active_states=" + trades.Count);
+            AuditRaw("init", "build=" + CoreBuild + " bridge=" + resolvedBridgePath + " instrument=" + Instrument.FullName
+                + " canonical_chart=" + CanonicalChartSymbol() + " account=" + SafeAccountName() + " scope=" + instanceToken + " active_states=" + trades.Count);
 
             if (IgnoreExistingSignalOnInit)
                 SeedExistingSignal();
@@ -2374,9 +2379,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             return Math.Abs(a - b) <= Math.Max(TickSize * 0.25, 0.000000001);
         }
 
+        private static bool IsKnownExecutionFamily(string value)
+        {
+            return new[] { "US500", "USTEC", "US30", "DE30", "JP225", "USOIL", "UKOIL", "BTCUSD" }.Contains(value);
+        }
+
+        private static string CanonicalInstrumentSymbol(string value)
+        {
+            var raw = (value ?? string.Empty).Trim();
+            if (raw.Length == 0)
+                return string.Empty;
+
+            // Ninja futures FullName values include the expiry (for example
+            // "MBT AUG26" or "MNK SEP26"). Resolve the contract root before
+            // canonical family matching; source CFD symbols remain unchanged.
+            var firstToken = raw.Split(new[] { ' ', '\t', '-', '_' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            var tokenCanonical = CanonicalSymbol(firstToken);
+            if (IsKnownExecutionFamily(tokenCanonical))
+                return tokenCanonical;
+            return CanonicalSymbol(raw);
+        }
+
         private string CanonicalChartSymbol()
         {
-            var master = CanonicalSymbol(Instrument.MasterInstrument.Name);
+            var master = CanonicalInstrumentSymbol(Instrument.MasterInstrument.Name);
             if (master == "ES" || master == "MES") return "US500";
             if (master == "NQ" || master == "MNQ") return "USTEC";
             if (master == "YM" || master == "MYM") return "US30";
@@ -2384,7 +2410,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (master == "NKD" || master == "MNK" || master == "NIY") return "JP225";
             if (master == "CL" || master == "MCL") return "USOIL";
             if (master == "BZ" || master == "BRN") return "UKOIL";
-            return CanonicalSymbol(Instrument.FullName);
+            if (master == "BTC" || master == "MBT") return "BTCUSD";
+            return CanonicalInstrumentSymbol(Instrument.FullName);
         }
 
         private static string CanonicalSymbol(string value)
@@ -2401,6 +2428,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (source == "JP225" || source == "JPN225" || source == "NIKKEI225") return "JP225";
             if (source == "UKOIL" || source == "XBRUSD" || source == "BRENT") return "UKOIL";
             if (source == "USOIL" || source == "XTIUSD" || source == "WTI") return "USOIL";
+            if (source == "BTCUSD" || source == "BTCUSDT" || source == "XBTUSD" || source == "BTC" || source == "MBT") return "BTCUSD";
             return source;
         }
 

@@ -5,11 +5,11 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.33"
+#property version "3.34"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
-#define ORB15_BUILD "2026-07-30.v6.18-calendar-before-audit"
+#define ORB15_BUILD "2026-08-17.v6.19-live-history-candidate-parity"
 
 enum ORB_SESSION_PROFILE
 {
@@ -1887,9 +1887,9 @@ double HistDailyAtr(datetime beforeDate,int period)
 //  HISTORICAL BREAKOUT FINDER — uses g_rtSignalTf, respects delay
 //  Returns pre-breakout rolling avg volume for fair volume comparison
 //=========================================================================
-bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
-                      string &dir,datetime &sigT,double &sigC,double &sigH,double &sigL,
-                      double &sigVol,double &preBreakoutAvgVol)
+bool FindHistBreakoutAfter(datetime from,datetime to,double hi,double lo,datetime afterSignalTime,
+                           string &dir,datetime &sigT,double &sigC,double &sigH,double &sigL,
+                           double &sigVol,double &preBreakoutAvgVol)
 {
    dir="";sigT=0;sigC=0;sigH=0;sigL=0;sigVol=0;preBreakoutAvgVol=0;
    // Apply confirmation delay
@@ -1929,6 +1929,10 @@ bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
          }
          if(!confirmed) continue;
       }
+      // A filtered live breakout does not consume the whole session. The live
+      // scanner evaluates the next closed bar, so historical parity must be
+      // able to continue strictly after the rejected confirmation bar.
+      if(afterSignalTime>0 && r[confirmIdx].time<=afterSignalTime)continue;
       bi=confirmIdx;bd=d;break; // first valid confirmed breakout
    }
    if(bi<0)return false;
@@ -1937,6 +1941,13 @@ bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
    int lookback=MathMin(20,bi);
    if(lookback>0){double vs=0;for(int j=bi-lookback;j<bi;j++)vs+=(double)r[j].tick_volume;preBreakoutAvgVol=vs/(double)lookback;}
    return true;
+}
+
+bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
+                      string &dir,datetime &sigT,double &sigC,double &sigH,double &sigL,
+                      double &sigVol,double &preBreakoutAvgVol)
+{
+   return FindHistBreakoutAfter(from,to,hi,lo,0,dir,sigT,sigC,sigH,sigL,sigVol,preBreakoutAvgVol);
 }
 
 bool HasM1Displacement(const MqlRates &rates[],int idx,string dir)
@@ -2710,6 +2721,50 @@ bool HistCheckVol(double sigVol,double avgVol,string &reason)
    if(sigVol<avgVol*g_rtVolumeMultiplier){reason="VOL_LOW";return false;}
    return true;
 }
+
+// Return the first breakout that the live operational filters could accept.
+// A raw breakout rejected by volume/displacement/FVG does not end the live
+// session; the next closed bar is evaluated. Historical drawing must follow
+// that same progression instead of discarding the entire day.
+bool FindHistOperationalBreakout(datetime from,datetime to,double hi,double lo,
+                                 string &dir,datetime &sigT,double &sigC,double &sigH,double &sigL,
+                                 double &sigVol,double &preBreakoutAvgVol,
+                                 bool &hadRawCandidate,string &lastReject,string &modernDetail,
+                                 datetime initialAfterSignalTime=0)
+{
+   hadRawCandidate=false;lastReject="";modernDetail="";
+   datetime afterSignalTime=initialAfterSignalTime;
+   int sec=PeriodSeconds(g_rtSignalTf);if(sec<=0)sec=60;
+   int maxAttempts=MathMax(1,(int)MathCeil((double)MathMax(0,to-from)/(double)sec)+2);
+   for(int attempt=0;attempt<maxAttempts;attempt++)
+   {
+      if(!FindHistBreakoutAfter(from,to,hi,lo,afterSignalTime,
+                                dir,sigT,sigC,sigH,sigL,sigVol,preBreakoutAvgVol))
+         return false;
+      hadRawCandidate=true;
+      afterSignalTime=sigT;
+
+      string reason="";
+      if(!HistCheckVol(sigVol,preBreakoutAvgVol,reason))
+      {
+         lastReject=reason+" signal="+FmtTime(sigT)
+            +" sigVol="+DoubleToString(sigVol,0)
+            +" preAvg="+DoubleToString(preBreakoutAvgVol,0);
+         continue;
+      }
+
+      string candidateModern="";
+      if(!ModernFilterAllows(from,to,g_rtSignalTf,sigT,dir,g_rtDisplacement,g_rtFvgMode,reason,candidateModern))
+      {
+         lastReject=reason+" "+candidateModern+" signal="+FmtTime(sigT);
+         continue;
+      }
+      modernDetail=candidateModern;
+      return true;
+   }
+   lastReject="candidate_guard_exhausted";
+   return false;
+}
 bool HistCheckDay(int dow,string &reason)
 {
    if(!g_rtFilterDay)return true;
@@ -2743,12 +2798,9 @@ bool FindNextHistoricalSignalAfter(datetime afterTime,datetime limitTime,datetim
       if(!HistCheckAtr(hi-lo,os,fr))continue;
 
       string dir;datetime sigT;double sigC,sigH,sigL,sigVol,preAvgVol;
-      if(!FindHistBreakout(oe,te,hi,lo,dir,sigT,sigC,sigH,sigL,sigVol,preAvgVol))continue;
-      if(sigT<=afterTime)continue;
-      if(!HistCheckVol(sigVol,preAvgVol,fr))continue;
-
-      string modernDetail="";
-      if(!ModernFilterAllows(oe,te,g_rtSignalTf,sigT,dir,g_rtDisplacement,g_rtFvgMode,fr,modernDetail))continue;
+      bool hadRawCandidate=false;string operationalReject="",modernDetail="";
+      if(!FindHistOperationalBreakout(oe,te,hi,lo,dir,sigT,sigC,sigH,sigL,sigVol,preAvgVol,
+                                      hadRawCandidate,operationalReject,modernDetail,afterTime))continue;
 
       nextSig=sigT;
       return true;
@@ -2921,21 +2973,21 @@ void DrawHistoricalSignals()
       // ATR filter
       if(!HistCheckAtr(hi-lo,os,fr)){filtered++;Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," FILTERED ",fr," orbRange=",DoubleToString(hi-lo,_Digits));continue;}
 
-      // Find breakout (uses g_rtSignalTf + delay)
+      // Find the first breakout that live processing could actually accept.
+      // Rejected raw candidates do not consume the whole trading session.
       string dir;datetime sigT;double sigC,sigH,sigL,sigVol,preAvgVol;
-      if(!FindHistBreakout(oe,te,hi,lo,dir,sigT,sigC,sigH,sigL,sigVol,preAvgVol))
+      bool hadRawCandidate=false;string operationalReject="",modernDetail="";
+      if(!FindHistOperationalBreakout(oe,te,hi,lo,dir,sigT,sigC,sigH,sigL,sigVol,preAvgVol,
+                                      hadRawCandidate,operationalReject,modernDetail))
       {
-         Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," NO_BREAKOUT orbH=",DoubleToString(hi,_Digits)," orbL=",DoubleToString(lo,_Digits));
-         continue;
-      }
-
-      // Volume filter: compare breakout bar to pre-breakout local average
-      if(!HistCheckVol(sigVol,preAvgVol,fr)){filtered++;Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," FILTERED ",fr," sigVol=",DoubleToString(sigVol,0)," preAvg=",DoubleToString(preAvgVol,0));continue;}
-      string modernDetail="";
-      if(!ModernFilterAllows(oe,te,g_rtSignalTf,sigT,dir,g_rtDisplacement,g_rtFvgMode,fr,modernDetail))
-      {
-         filtered++;
-         Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," FILTERED ",fr," ",modernDetail);
+         if(hadRawCandidate)
+         {
+            filtered++;
+            Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day,
+                  " FILTERED_ALL_CANDIDATES ",operationalReject);
+         }
+         else
+            Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," NO_BREAKOUT orbH=",DoubleToString(hi,_Digits)," orbL=",DoubleToString(lo,_Digits));
          continue;
       }
 

@@ -1,16 +1,17 @@
 ﻿# TradeDay NinjaTrader Pipeline Setup
 
-Bu rehber uc production listener icindir:
+Bu rehber dort production listener icindir:
 
 - `Liq Narrative Sol Version Ninja Listener`
 - `Liq Narrative Sol Advanced Ninja Listener`
 - `ORB Ultimate Ninja Listener`
+- `NAS Ultimate Ninja Listener`
 
 Listenerlar sinyal uretmez. MT5 tarafinin `Common\Files` altina yazdigi latest CSV eventini okur, riski NinjaTrader/TradeDay hesabinin kendi bakiyesine gore hesaplar ve NinjaTrader hesabinda emir acar.
 
 ## 1. Dosyalari NinjaTrader'a Kur
 
-NinjaTrader'i kapat veya NinjaScript Editor acik degilken asagidaki bes dosyayi:
+NinjaTrader'i kapat veya NinjaScript Editor acik degilken asagidaki alti dosyayi:
 
 ```text
 C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCodeExamples\NinjaTrader\ProductionFileBridgeNinjaCore.cs
@@ -18,6 +19,7 @@ C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCo
 C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCodeExamples\NinjaTrader\LiqNarrativeSolVersion_NinjaTrader_Listener.cs
 C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCodeExamples\NinjaTrader\LiqNarrativeSolAdvanced_NinjaTrader_Listener.cs
 C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCodeExamples\NinjaTrader\OrbUltimate_NinjaTrader_Listener.cs
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\IndicatorCodeExamples\NinjaTrader\NasUltimate_NinjaTrader_Listener.cs
 ```
 
 su klasore koy:
@@ -125,7 +127,34 @@ Require Chart Symbol = true
 
 `Source TF Filter`, Ninja chart TF'si degil MT5 bridge eventinin `tf` kimligidir. ORB JPN225 publisher su an `15`, Sol Version ve Sol Advanced ise `60` kullanir.
 
-## 7. Geometry Ayarlari
+## 7. NAS Ultimate SATS PartialNoBE Preseti
+
+Strategy:
+
+```text
+NAS Ultimate Ninja Listener
+```
+
+Bridge ve identity varsayilanlari:
+
+```text
+Bridge Latest Path = C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\NasUltimateBridge_Latest.csv
+Prefer Scoped Latest = true
+Source TF Filter = 5
+Default TF To Chart = false
+Source Filter = NasUltimate
+Source Symbol Aliases CSV = BTCUSDm,BTCUSD,BTCUSDT,XBTUSD
+Require Chart Symbol = true
+Rebase Levels To Live = true
+Rebase Only Source Differs = false
+Fail If Exact Protection Fails = true
+```
+
+`Source TF Filter`, NAS publisher'in MT5 chart timeframe'idir. NAS M1'de calisiyorsa `1`, M5'te calisiyorsa `5` gir.
+
+BTC CFD sinyalini NinjaTrader BTC futures kontratinda yuruturken mutlak MT5 fiyat seviyeleri kopyalanmaz. Rebase, MT5 entry-SL/TP/HCBE mesafelerini Ninja fill fiyatina tasir; kontrat adedi Ninja hesabinin kendi NetLiquidation ve futures PointValue bilgisiyle hesaplanir. Minimum bir kontrat secilen riski asarsa emir fail-closed engellenir.
+
+## 8. Geometry Ayarlari
 
 Ayni fiyat bazina sahip sembollerde:
 
@@ -146,7 +175,7 @@ Bu mod MT5 lotunu veya mutlak entry fiyatini kopyalamaz. MT5 tarafindaki SL, TP 
 
 `Mapped Basis Guard % Risk`, rebase kapaliyken kaynak entry ile Ninja live fiyat arasindaki fark SL riskinin belirlenen yuzdesinden buyukse emri fail-closed bloklar.
 
-## 8. Risk Ayarlari
+## 9. Risk Ayarlari
 
 Onerilen production tabani:
 
@@ -183,7 +212,7 @@ Fail If Margin Estimate Missing = true
 
 Margin degerini bilmiyorsan `Estimated Margin / Contract=0` ve `Fail If Margin Estimate Missing=false` kullanabilirsin; bu durumda account/order-size capleri ile broker reddi halen korunur fakat yerel margin tahmini yapilmaz.
 
-## 9. Lifecycle ve HCBE
+## 10. Lifecycle ve HCBE
 
 Onerilen ayarlar:
 
@@ -210,7 +239,7 @@ Listener su durumlari kalici state ile yonetir:
 
 Listener kapatilinca mevcut broker-side koruyucu emirler bilerek iptal edilmez. Yeniden baslatilan ayni listener ayni account, instrument, bridge path, source ve TF ile state'i sahiplenir.
 
-## 10. Kritik Izolasyon Kurali
+## 11. Kritik Izolasyon Kurali
 
 Ayni TradeDay hesabi ve ayni futures kontrati uzerinde Sol Version, Sol Advanced veya ORB listenerlarindan birden fazlasini ayni anda calistirma.
 
@@ -223,7 +252,7 @@ Ikisini ayni anda calistirmak icin:
 
 Ayni account+instrument icin tek aktif listener production kuralidir.
 
-## 11. State ve Audit Dosyalari
+## 12. State ve Audit Dosyalari
 
 State klasoru bridge CSV'nin bulundugu dizinin altinda olusur:
 
@@ -243,7 +272,7 @@ Audit her tick yazmaz. Sadece lifecycle eventleri ve ayarlanabilir, throttle edi
 
 State klasorunu acik trade varken silme. Futures kontrat rollover'inda instrument scope degisir; eski kontrattaki pozisyonu ve emirleri manuel olarak reconcile etmeden yeni kontrata gecme.
 
-## 12. Gercek TradeDay Hesabina Gecis
+## 13. Gercek TradeDay Hesabina Gecis
 
 1. TradeDay/CQG baglantisini NinjaTrader'da kur ve dogru hesaba baglan.
 2. Sim101 testinde entry, SL, TP, OCO, reverse ve varsa HCBE davranisini dogrula.
@@ -258,7 +287,7 @@ State klasorunu acik trade varken silme. Futures kontrat rollover'inda instrumen
 
 TradeDay otomasyon kurallari zamanla degisebilir. Kendi yazdigin botun mevcut challenge kurallariyla uyumunu TradeDay destek ekibinden teyit et. TradeDay NinjaTrader'i desteklenen platform olarak listeler, fakat hesap/otomasyon kurallari program ve tarihe gore degisebilir.
 
-## 13. Production Health Checklist
+## 14. Production Health Checklist
 
 Her baslatmada:
 
@@ -288,7 +317,7 @@ Her baslatmada:
 - TradeDay desteklenen platformlar: https://tradeday.freshdesk.com/en/support/solutions/articles/103000008813-which-trading-platforms-does-tradeday-use-
 - TradeDay algo/bot kurali: https://tradeday.freshdesk.com/en/support/solutions/articles/103000085101-automated-algo-and-bot-trading
 
-## 14. TradeDay Compliance Guardlari (Zorunlu Production Ayari)
+## 15. TradeDay Compliance Guardlari (Zorunlu Production Ayari)
 
 Her iki listener ayni ortak compliance core'unu kullanir. Bu katman MT5 sinyal matematigini degistirmez; Ninja/TradeDay hesabini hesap seviyesinde korur.
 
