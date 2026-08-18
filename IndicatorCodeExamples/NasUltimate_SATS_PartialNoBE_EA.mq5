@@ -213,6 +213,8 @@ string   g_historySummary[3];
 string   g_historyAuditSummary = "Audit: -";
 string   g_historyAuditDetail = "W/L/WR/PnL waiting";
 string   g_historyAuditRows[6];
+int      g_nasWeekdayWins[7];
+int      g_nasWeekdayLosses[7];
 string   g_tradeStartTimeRuntime = "";
 string   g_tradeEndTimeRuntime = "";
 double   g_totalLotRuntime = 0.0;
@@ -745,6 +747,42 @@ string NasAuditWindowLabel()
    if(g_auditWeeksRuntime >= 52 && g_auditWeeksRuntime % 52 == 0)
       return IntegerToString(g_auditWeeksRuntime / 52) + "Y";
    return IntegerToString(g_auditWeeksRuntime) + "W";
+}
+
+void ResetNasWeekdayAuditStats()
+{
+   for(int dow = 0; dow < 7; ++dow)
+   {
+      g_nasWeekdayWins[dow] = 0;
+      g_nasWeekdayLosses[dow] = 0;
+   }
+}
+
+string NasWeekdayAuditText(const int dow, const string name)
+{
+   if(dow < 1 || dow > 5)
+      return name + " 0W 0L WR 0.0%";
+   int wins = g_nasWeekdayWins[dow];
+   int losses = g_nasWeekdayLosses[dow];
+   int resolved = wins + losses;
+   double wr = resolved > 0 ? (double)wins * 100.0 / (double)resolved : 0.0;
+   return name + " " + IntegerToString(wins) + "W " + IntegerToString(losses)
+      + "L WR " + DoubleToString(wr, 1) + "%";
+}
+
+color NasWeekdayAuditColor(const int dow)
+{
+   if(dow < 1 || dow > 5)
+      return C'184,196,210';
+   int wins = g_nasWeekdayWins[dow];
+   int losses = g_nasWeekdayLosses[dow];
+   if(wins + losses <= 0)
+      return C'145,160,180';
+   if(wins > losses)
+      return C'80,255,180';
+   if(wins < losses)
+      return C'255,95,140';
+   return C'255,204,82';
 }
 
 int NextAuditWeeks(const int cur)
@@ -3769,6 +3807,7 @@ void DrawRecentSignalHistory()
       g_macroRegimeWins[mr] = 0;
       g_macroRegimeLosses[mr] = 0;
    }
+   ResetNasWeekdayAuditStats();
 
    int drawn = 0;
    int windowDrawn = 0;
@@ -3776,9 +3815,15 @@ void DrawRecentSignalHistory()
    int losses = 0;
    int breakevens = 0;
    int openCount = 0;
+   int otherWins = 0;
+   int otherLosses = 0;
+   int otherFlats = 0;
+   int stillOpen = 0;
    double totalR = 0.0;
    double openFloatingR = 0.0;
    double otherClosedR = 0.0;
+   double otherWonR = 0.0;
+   double otherLostR = 0.0;
    double wonR = 0.0;
    double lostR = 0.0;
    int maxDraw = 250;
@@ -3908,17 +3953,25 @@ void DrawRecentSignalHistory()
       if(!executionAccepted)
          continue;
 
+       MqlDateTime executionDay;
+       ZeroMemory(executionDay);
+       TimeToStruct(signalAvailableTime, executionDay);
+
        if(NasOutcomeHitTarget(outcome))
        {
           wins++;
           wonR += pnlR;
           totalR += pnlR;
+          if(executionDay.day_of_week >= 1 && executionDay.day_of_week <= 5)
+             g_nasWeekdayWins[executionDay.day_of_week]++;
        }
        else if(NasOutcomeHitStop(outcome))
        {
           losses++;
           lostR += MathAbs(pnlR);
           totalR += pnlR;
+          if(executionDay.day_of_week >= 1 && executionDay.day_of_week <= 5)
+             g_nasWeekdayLosses[executionDay.day_of_week]++;
        }
        else if(NasOutcomeHitBreakeven(outcome))
        {
@@ -3932,9 +3985,24 @@ void DrawRecentSignalHistory()
           {
              otherClosedR += pnlR;
              totalR += pnlR;
+             if(pnlR > 0.00000001)
+             {
+                otherWins++;
+                otherWonR += pnlR;
+             }
+             else if(pnlR < -0.00000001)
+             {
+                otherLosses++;
+                otherLostR += MathAbs(pnlR);
+             }
+             else
+                otherFlats++;
           }
           else
+          {
+             stillOpen++;
              openFloatingR += pnlR;
+          }
        }
 
       if(drawn < maxDraw)
@@ -3982,15 +4050,19 @@ void DrawRecentSignalHistory()
 
    double wr = (wins + losses) > 0 ? (double)wins * 100.0 / (double)(wins + losses) : 0.0;
    double profitFactor = lostR > 0.0 ? wonR / lostR : (wonR > 0.0 ? 99.0 : 0.0);
-   int closedCount = wins + losses + breakevens;
+   int closedCount = wins + losses + breakevens + otherWins + otherLosses + otherFlats;
    double avgR = closedCount > 0 ? totalR / (double)closedCount : 0.0;
    g_historyAuditSummary = NasAuditWindowLabel() + " | Net R "
                            + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2) + "R | "
                            + IntegerToString(drawn) + " sig | W " + IntegerToString(wins)
-                           + " L " + IntegerToString(losses)
-                           + " B " + IntegerToString(breakevens)
-                           + " O " + IntegerToString(openCount)
-                           + " | WR " + DoubleToString(wr, 1) + "%";
+                            + " L " + IntegerToString(losses)
+                            + " B " + IntegerToString(breakevens)
+                            + " O " + IntegerToString(openCount)
+                            + " [OW " + IntegerToString(otherWins)
+                            + " OL " + IntegerToString(otherLosses)
+                            + " OF " + IntegerToString(otherFlats)
+                            + " OPEN " + IntegerToString(stillOpen) + "]"
+                            + " | WR " + DoubleToString(wr, 1) + "%";
    int auditTpLeg = EffectiveAuditTpLeg();
    double auditLegR = g_invertTradeModeRuntime ? EffectiveInversionReferenceR() : EffectiveAuditNormalTargetR();
    double auditTargetR = g_invertTradeModeRuntime ? (InvertTargetOverrideEnabled() ? g_invertTargetRRuntime : 0.0) : auditLegR;
@@ -4011,11 +4083,14 @@ void DrawRecentSignalHistory()
                            + " range" + DoubleToString(InpScalpMinSignalRangePct, 0) + "%"
                            + " | cap " + DoubleToString(InpScalpMaxOriginalRiskPct, 0) + "%";
    g_historyAuditRows[3] = "R totals | Net R " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2)
-                            + "R | Won R +" + DoubleToString(wonR, 2) + "R | Lost R -" + DoubleToString(lostR, 2)
-                            + "R | O-closed R " + (otherClosedR >= 0.0 ? "+" : "") + DoubleToString(otherClosedR, 2)
-                            + "R | O-open R " + (openFloatingR >= 0.0 ? "+" : "") + DoubleToString(openFloatingR, 2) + "R";
+                             + "R | Won R +" + DoubleToString(wonR, 2) + "R | Lost R -" + DoubleToString(lostR, 2)
+                             + "R | O-closed R " + (otherClosedR >= 0.0 ? "+" : "") + DoubleToString(otherClosedR, 2)
+                             + "R (OW +" + DoubleToString(otherWonR, 2) + " / OL -" + DoubleToString(otherLostR, 2) + ")"
+                             + " | O-open R " + (openFloatingR >= 0.0 ? "+" : "") + DoubleToString(openFloatingR, 2) + "R";
    g_historyAuditRows[4] = "Target stats | W " + IntegerToString(wins) + " / L " + IntegerToString(losses)
-                            + " / B " + IntegerToString(breakevens) + " / O " + IntegerToString(openCount) + " | WR " + DoubleToString(wr, 1)
+                             + " / B " + IntegerToString(breakevens) + " / O " + IntegerToString(openCount)
+                             + " [OW " + IntegerToString(otherWins) + " OL " + IntegerToString(otherLosses)
+                             + " OF " + IntegerToString(otherFlats) + " OPEN " + IntegerToString(stillOpen) + "] | WR " + DoubleToString(wr, 1)
                            + "% | PF " + DoubleToString(profitFactor, 2) + " | Avg R " + DoubleToString(avgR, 3) + "R/trade";
    g_historyAuditRows[5] = string(g_historyUseAcceptedFilterRuntime ? "DUP OFF | " : "DUP ON | ")
                            + "Regime " + string(g_nasRegimeFilterRuntime ? "ON" : "OFF")
@@ -4041,6 +4116,10 @@ void DrawRecentSignalHistory()
           " pnl_r=", DoubleToString(totalR, 2),
           " open_floating_r=", DoubleToString(openFloatingR, 2),
           " other_closed_r=", DoubleToString(otherClosedR, 2),
+          " other_wins=", otherWins,
+          " other_losses=", otherLosses,
+          " other_flats=", otherFlats,
+          " still_open=", stillOpen,
          " won_r=", DoubleToString(wonR, 2),
          " lost_r=", DoubleToString(lostR, 2),
          " profit_factor=", DoubleToString(profitFactor, 2),
@@ -6371,7 +6450,7 @@ void ClearDashboardObjects()
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
-      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_FINAL_SCALE_APPLY", "BTN_EA_TOGGLE", "BTN_AUDIT_WIN", "BTN_NAS_BRIDGE_PUB", "BTN_NAS_BRIDGE_ONLY", "BTN_NAS_BRIDGE_NATIVE", "BTN_NAS_PRO_AUDIT", "BTN_ACCEPT_FILTER", "BTN_TP_MODE", "BTN_TP_LEG", "BTN_HCBE", "BTN_INV_TP", "BTN_INVERT", "BTN_FTMO", "BTN_RISKLOT", "BTN_RISK_GEOM", "BTN_ATRBUF_0", "BTN_ATRBUF_20", "BTN_ATRBUF_40", "BTN_ATRBUF_60", "BTN_ATRBUF_80", "BTN_ATRBUF_100", "BTN_ATRBUF_APPLY",
       "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "BTN_DAY_GUARD_APPLY"
    };
@@ -7219,7 +7298,7 @@ void DrawDashboardShell(const int height)
    if(h >= 455)
       CreateRect("DASH_LOG_PANEL", 676, 390, 382, 158, C'31,38,52', C'90,178,255');
    if(h >= 590)
-      CreateRect("DASH_AUDIT_PANEL", 38, 410, 606, 166, C'22,29,42', C'80,255,180');
+      CreateRect("DASH_AUDIT_PANEL", 38, 410, 606, 204, C'22,29,42', C'80,255,180');
 }
 
 void UpdateDoorAnimation()
@@ -7376,16 +7455,21 @@ void UpdateDashboard()
                TradingTimeStateText() + " | reverse exit " + (g_windowReverseExitRuntime ? "ON" : "OFF"),
                IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
    CreateLabel("DASH_AUDIT_TITLE", 52, 418, "AUDIT RESULTS - selected window / current combo", C'80,255,180', 9);
-   CreateLabel("DASH_AUDIT_R0", 52, 440, UiShort(g_historyAuditRows[0], 82), C'216,222,230', 8);
-   CreateLabel("DASH_AUDIT_R1", 52, 458, UiShort(g_historyAuditRows[1], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R2", 52, 476, UiShort(g_historyAuditRows[2], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R3", 52, 494, UiShort(g_historyAuditRows[3], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R4", 52, 512, UiShort(g_historyAuditRows[4], 82), muted, 7);
-   CreateLabel("DASH_AUDIT_R5", 52, 530, UiShort(g_historyAuditRows[5], 82), muted, 7);
+   CreateLabel("DASH_WD_MON", 52, 440, NasWeekdayAuditText(1, "MON"), NasWeekdayAuditColor(1), 7);
+   CreateLabel("DASH_WD_TUE", 245, 440, NasWeekdayAuditText(2, "TUE"), NasWeekdayAuditColor(2), 7);
+   CreateLabel("DASH_WD_WED", 438, 440, NasWeekdayAuditText(3, "WED"), NasWeekdayAuditColor(3), 7);
+   CreateLabel("DASH_WD_THU", 150, 458, NasWeekdayAuditText(4, "THU"), NasWeekdayAuditColor(4), 7);
+   CreateLabel("DASH_WD_FRI", 345, 458, NasWeekdayAuditText(5, "FRI"), NasWeekdayAuditColor(5), 7);
+   CreateLabel("DASH_AUDIT_R0", 52, 478, UiShort(g_historyAuditRows[0], 82), C'216,222,230', 8);
+   CreateLabel("DASH_AUDIT_R1", 52, 496, UiShort(g_historyAuditRows[1], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R2", 52, 514, UiShort(g_historyAuditRows[2], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R3", 52, 532, UiShort(g_historyAuditRows[3], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R4", 52, 550, UiShort(g_historyAuditRows[4], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R5", 52, 568, UiShort(g_historyAuditRows[5], 82), muted, 7);
    color auditBarColor = g_historyCoverageBlocked ? C'255,80,110' : (g_historyAuditRunning ? C'38,140,220' : C'30,150,95');
    string auditBarText = g_historyCoverageBlocked ? "HISTORY BLOCKED"
       : (g_historyAuditRunning ? ("AUDIT " + DoubleToString(g_historyAuditProgressPct, 1) + "%") : (NasAuditWindowLabel() + " AUDIT READY"));
-   CreateProgressBar("AUDIT_SCAN", 52, 550, 580, 16, g_historyCoverageBlocked ? 100.0 : g_historyAuditProgressPct,
+   CreateProgressBar("AUDIT_SCAN", 52, 590, 580, 16, g_historyCoverageBlocked ? 100.0 : g_historyAuditProgressPct,
                      auditBarText, auditBarColor, C'42,51,68', C'134,158,182');
    CreateLabel("DASH_ACTIONS", 696, 34, "AIRLOCK / CONFIG", steel, 9);
    CreateLabel("DASH_ACTION_HINT", 684, 116, "Manual", muted, 7);
