@@ -2,6 +2,7 @@
 // This file contains execution/lifecycle logic only; it does not generate signals.
 #region Using declarations
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
@@ -21,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-08-18.nt8-production-file-bridge-v9-futures-contract-root";
+        private const string CoreBuild = "2026-08-18.nt8-production-file-bridge-v10-permanent-reject-throttle";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -237,6 +238,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly Dictionary<string, TradeState> trades = new Dictionary<string, TradeState>(StringComparer.Ordinal);
         private readonly Dictionary<string, DateTime> retryBlockedUntil = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         private readonly Dictionary<string, DateTime> auditThrottle = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> accountOrderFailures = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private System.Timers.Timer pollTimer;
         private int pollQueued;
         private bool initialized;
@@ -257,6 +259,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime lastHeartbeat = DateTime.MinValue;
         private DateTime lastReadAudit = DateTime.MinValue;
         private BridgeSignal? deferredSignal;
+        private bool accountOrderUpdateSubscribed;
         private static readonly object AuditWriteSync = new object();
 
         protected override void OnStateChange()
@@ -337,6 +340,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 terminating = true;
                 StopTimer();
+                UnsubscribeAccountOrderUpdates();
                 RemoveTradeDayDashboardControls();
                 ShutdownTradeDayCompliance();
             }
@@ -362,6 +366,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Directory.CreateDirectory(stateDir);
             Directory.CreateDirectory(lockDir);
 
+            SubscribeAccountOrderUpdates();
             InitializeTradeDayCompliance();
             LoadTradeStates();
             ReconcileRestartState("init");
@@ -400,6 +405,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 timer.Dispose();
             }
             catch { }
+        }
+
+        private void SubscribeAccountOrderUpdates()
+        {
+            if (accountOrderUpdateSubscribed || Account == null)
+                return;
+            Account.OrderUpdate += OnAccountOrderUpdate;
+            accountOrderUpdateSubscribed = true;
+        }
+
+        private void UnsubscribeAccountOrderUpdates()
+        {
+            if (!accountOrderUpdateSubscribed || Account == null)
+                return;
+            try { Account.OrderUpdate -= OnAccountOrderUpdate; }
+            catch { }
+            accountOrderUpdateSubscribed = false;
+            accountOrderFailures.Clear();
+        }
+
+        private void OnAccountOrderUpdate(object sender, OrderEventArgs args)
+        {
+            if (args == null || args.Order == null || string.IsNullOrWhiteSpace(orderScopePrefix))
+                return;
+            var order = args.Order;
+            if (string.IsNullOrWhiteSpace(order.Name) || !order.Name.StartsWith(orderScopePrefix, StringComparison.OrdinalIgnoreCase))
+                return;
+            if (args.OrderState != OrderState.Rejected && args.OrderState != OrderState.Cancelled)
+                return;
+
+            var detail = "state=" + args.OrderState
+                + " error=" + args.Error
+                + " comment=" + (args.Comment ?? string.Empty)
+                + " text=" + (order.Text ?? string.Empty)
+                + " id=" + (order.OrderId ?? string.Empty);
+            accountOrderFailures[order.Name] = detail;
+            if (!string.IsNullOrWhiteSpace(order.OrderId))
+                accountOrderFailures[order.OrderId] = detail;
         }
 
         private void PollTimerElapsed(object sender, System.Timers.ElapsedEventArgs args)
@@ -811,13 +854,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
+            var permanent = PermanentRejectGuard && IsPermanentFailure(detail) && !marketClosed;
             trades.Remove(trade.EventId);
             DeleteTradeState(trade.EventId);
+            if (permanent)
+            {
+                lastRejectedEventId = trade.EventId;
+                CommitEvent(trade.EventId, "entry_permanent_reject");
+                retryBlockedUntil.Remove(trade.EventId);
+                AuditState("entry_failed_permanent", trade, "retry=disabled market_closed=0 " + detail);
+                return;
+            }
+
             ReleaseEvent(trade.EventId);
             BlockRetry(trade.EventId, marketClosed ? MarketClosedRetrySeconds : OrderFailureRetrySeconds, marketClosed ? "market_closed" : "order_failed");
-            if (PermanentRejectGuard && IsPermanentFailure(detail) && !marketClosed)
-                lastRejectedEventId = trade.EventId;
-            AuditState("entry_failed", trade, "market_closed=" + (marketClosed ? 1 : 0) + " " + detail);
+            AuditState("entry_failed", trade, "retry=scheduled market_closed=" + (marketClosed ? 1 : 0) + " " + detail);
         }
 
         private void ProcessProtectedTrade(TradeState trade)
@@ -2339,9 +2390,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         private static bool IsRejected(Order order) { return order != null && order.OrderState == OrderState.Rejected; }
         private static bool IsTerminalWithoutFill(Order order) { return order != null && (order.OrderState == OrderState.Cancelled || order.OrderState == OrderState.Rejected) && order.Filled <= 0; }
 
-        private static string OrderFailureText(Order order)
+        private string OrderFailureText(Order order)
         {
-            return order == null ? "order_null" : "state=" + order.OrderState + " text=" + (order.Text ?? string.Empty) + " id=" + (order.OrderId ?? string.Empty);
+            if (order == null)
+                return "order_null";
+            string captured;
+            if (!string.IsNullOrWhiteSpace(order.OrderId) && accountOrderFailures.TryGetValue(order.OrderId, out captured))
+                return captured;
+            if (!string.IsNullOrWhiteSpace(order.Name) && accountOrderFailures.TryGetValue(order.Name, out captured))
+                return captured;
+            return "state=" + order.OrderState + " text=" + (order.Text ?? string.Empty) + " id=" + (order.OrderId ?? string.Empty);
         }
 
         private static bool IsMarketClosed(string detail)
@@ -2359,7 +2417,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private static bool IsPermanentFailure(string detail)
         {
             var value = (detail ?? string.Empty).ToLowerInvariant();
-            return value.Contains("invalid") || value.Contains("quantity") || value.Contains("price") || value.Contains("stop") || value.Contains("instrument");
+            return value.Contains("invalid") || value.Contains("quantity") || value.Contains("price") || value.Contains("stop") || value.Contains("instrument")
+                || value.Contains("not subscribed") || value.Contains("data subscription") || value.Contains("data feed associated")
+                || value.Contains("no market data") || value.Contains("not authorized") || value.Contains("unauthorized")
+                || value.Contains("permission denied") || value.Contains("account is not enabled") || value.Contains("contract is not enabled")
+                || value.Contains("unsupported contract") || value.Contains("unknown contract");
         }
 
         private double CurrentSpreadTicks()

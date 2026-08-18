@@ -74,6 +74,7 @@ input bool   InpBlockSameDirectionUntilReverse = true;
 input bool   InpUseTradingTimeWindow = true;
 input string InpTradeStartTime = "09:00";
 input string InpTradeEndTime = "14:00";
+input bool   InpWindowReverseExit = false; // Close only the opposite managed position on an out-of-window signal.
 input bool   InpSpreadGovernorEnabled = true;
 input double InpSpreadGoodPoints = 0.0;    // 0 = auto by symbol
 input double InpSpreadNormalPoints = 0.0;  // 0 = auto by symbol
@@ -84,7 +85,7 @@ input bool   InpDashboardUseAcceptedSignalFilter = false; // false=DUP ON, true=
 input bool   InpNasRegimeFilterDefault = false; // Default-off: block only causal H1/H2 NEUTRAL_ROTATION after NAS signal generation.
 input NAS_TP_MANAGEMENT_MODE InpTpManagementMode = NAS_TP_FIXED_SELECTED_LEG;
 input int    InpSelectedTpLeg = 6; // 1..6, where TP6 = 3R. Used by FIXED_SELECTED_LEG mode.
-input double InpSelectedTargetR = 0.0; // 0=legacy InpSelectedTpLeg; presets include 0.5/0.6/0.7/0.8/0.9/1/1.5/2/2.5/3R.
+input double InpSelectedTargetR = 0.0; // 0=legacy InpSelectedTpLeg; 0.05R steps through 1R, then 1.5/2/2.5/3R.
 input int    InpHcBeTpLeg = 0; // 0=off, otherwise move SL->BE when selected leg is touched before final TP.
 input bool   InpInvertTradeMode = false; // Reverse execution: BUY<->SELL, original TP becomes SL, original SL becomes TP.
 input int    InpInvertHcBeProgressPct = 0; // 0/25/50/75. Invert-only SL->BE trigger as pct of final TP path.
@@ -146,7 +147,7 @@ input double InpAccountRiskMaxPortfolioPct = 4.00;
 input double InpAccountRiskDailyLossLimitPct = 0.00;
 input double InpAccountRiskMaxDrawdownPct = 0.00;
 input double InpDailyProfitTargetPct = 0.00; // 0=off. Locks native execution and bridge publishing for the GMT trading day.
-input double InpDailyMaxLossPct = 0.00;      // 0=off. Uses closed + floating NAS scope PnL.
+input double InpDailyMaxLossPct = 0.00;      // 0=off. Uses this instance's closed + floating PnL.
 input double InpAccountRiskMaxMarginUsagePct = 40.00;
 input double InpAccountRiskInitialBalanceOverride = 0.00;
 input int    InpAccountRiskDayResetHourGmt = 0;
@@ -278,6 +279,7 @@ int      g_invertHcBeProgressPctRuntime = 0;
 int      g_invertReferenceTpLegRuntime = 0;
 double   g_invertTargetRRuntime = 0.0;
 bool     g_invertTradeModeRuntime = false;
+bool     g_windowReverseExitRuntime = false;
 double   g_lastInvertedFinalTp = 0.0;
 NAS_TP_MANAGEMENT_MODE g_tpManagementModeRuntime = NAS_TP_FIXED_SELECTED_LEG;
 bool     g_ftmoModeRuntime = false;
@@ -295,6 +297,12 @@ uint     g_lastAccountRiskGuardMs = 0;
 uint     g_lastDailyPnlGuardMs = 0;
 double   g_accountRiskLockValue = 0.0;
 double   g_accountRiskDailyPnlPct = 0.0;
+double   g_dailyGuardPnlMoney = 0.0;
+double   g_dailyGuardPnlPct = 0.0;
+double   g_dailyGuardClosedToday = 0.0;
+double   g_dailyGuardFloating = 0.0;
+uint     g_dailyGuardScopeCacheMs = 0;
+datetime g_dailyGuardScopeCacheDay = 0;
 
 string PREFIX = "NAS_SATS_NO_BE_EA_";
 uint     g_dashboardDoorStartMs = 0;
@@ -420,8 +428,10 @@ double RMultipleForLeg(const int leg)
 
 double NormalizeTargetPresetR(const double value)
 {
-   double options[] = {0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5, 2.0, 2.5, 3.0};
-   double requested = MathMax(0.5, MathMin(3.0, value));
+   double options[] = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+                       0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00,
+                       1.50, 2.00, 2.50, 3.00};
+   double requested = MathMax(0.05, MathMin(3.0, value));
    double best = options[0];
    double distance = MathAbs(requested - best);
    for(int i = 1; i < ArraySize(options); ++i)
@@ -433,12 +443,14 @@ double NormalizeTargetPresetR(const double value)
          distance = candidateDistance;
       }
    }
-   return NormalizeDouble(best, 1);
+   return NormalizeDouble(best, 2);
 }
 
 double NextTargetPresetR(const double current)
 {
-   double options[] = {0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5, 2.0, 2.5, 3.0};
+   double options[] = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+                       0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00,
+                       1.50, 2.00, 2.50, 3.00};
    double normalized = NormalizeTargetPresetR(current);
    for(int i = 0; i < ArraySize(options); ++i)
       if(MathAbs(normalized - options[i]) < 0.001)
@@ -448,7 +460,7 @@ double NextTargetPresetR(const double current)
 
 int LegacyLegForTargetR(const double targetR)
 {
-   return ClampTpLeg((int)MathFloor(MathMax(0.5, targetR) * 2.0 + 0.0001));
+   return ClampTpLeg((int)MathFloor(MathMax(0.05, targetR) * 2.0 + 0.0001));
 }
 
 double SelectedTargetR()
@@ -483,7 +495,8 @@ double CurrentSelectedFinalTp(const int direction)
 
 string TargetRText(const double targetR)
 {
-   return DoubleToString(targetR, 1) + "R";
+   double oneDecimal = NormalizeDouble(targetR, 1);
+   return DoubleToString(targetR, MathAbs(targetR - oneDecimal) < 0.0001 ? 1 : 2) + "R";
 }
 
 double TpPriceForLeg(const int direction, const int leg)
@@ -783,6 +796,7 @@ string NasHistorySimKey(const datetime signalTime,
           + "|tpm=" + IntegerToString((int)g_tpManagementModeRuntime)
           + "|sigmode=" + IntegerToString((int)InpSignalBarMode)
           + "|reverse=" + IntegerToString(InpCloseExistingOnNewSignal ? 1 : 0)
+          + "|winrev=" + IntegerToString(g_windowReverseExitRuntime ? 1 : 0)
           + "|spread=" + IntegerToString(InpSpreadGovernorEnabled ? 1 : 0)
           + ":" + DoubleToString(g_spreadMaxPointsRuntime, 1);
 }
@@ -1368,6 +1382,7 @@ int OnInit()
    }
    g_tradeStartTimeRuntime = InpTradeStartTime;
    g_tradeEndTimeRuntime = InpTradeEndTime;
+   g_windowReverseExitRuntime = InpWindowReverseExit;
    g_totalLotRuntime = InpTotalLot;
    g_fixedLotRuntime = InpFixedLot;
    g_spreadMaxPointsRuntime = MathMax(0.0, InpSpreadWidePoints);
@@ -2417,7 +2432,9 @@ void ProcessSignalBar()
             NasSignalText(p[i]), dailyGuardReason == "daily_profit_target_hit" ? "DAY PROFIT" : "DAY LOSS");
       NasProAuditWrite("daily_pnl_guard_signal_block", "nas|" + IntegerToString((long)rates[i].time), direction,
          0.0, 0.0, 0.0, 0.0,
-         "reason=" + dailyGuardReason + " daily_pnl_pct=" + DoubleToString(g_accountRiskDailyPnlPct, 3));
+         "reason=" + dailyGuardReason
+         + " instance_pnl=" + DoubleToString(g_dailyGuardPnlMoney, 2)
+         + " daily_pnl_pct=" + DoubleToString(g_dailyGuardPnlPct, 3));
       RequestHistoryRefresh();
       UpdateDashboard();
       return;
@@ -2430,24 +2447,37 @@ void ProcessSignalBar()
       g_lastSignalKeyDirection = direction;
       if(InpDrawExecutionArrows)
          DrawBlockedSignal(direction, rates[i].time, rates[i].high, rates[i].low, NasSignalText(p[i]), "WINDOW");
-      int openDir = ManagedPositionDirection();
-      if(InpCloseExistingOnNewSignal && openDir != 0 && openDir != direction)
+      if(g_windowReverseExitRuntime)
       {
-         CloseManagedPositions();
-         Print("NAS SATS EA reverse signal closed existing position outside trading window dir=",
-               (direction > 0 ? "BUY" : "SELL"),
-               " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
-               " trading_window=", TradingTimeStateText(),
-               " no_new_entry=true",
-               " same_direction_lock_retained=", (g_lastExecutedDirection > 0 ? "BUY" : (g_lastExecutedDirection < 0 ? "SELL" : "NONE")));
+         int closeDirection = -direction;
+         string closeRule = "window_reverse_exit";
+         bool bridgeDone = NasProPublishRegimeCloseOnly(rates[i].time, closeDirection, closeRule);
+         bool localDone = CloseManagedPositionsDirection(closeDirection);
+         if(!bridgeDone || !localDone)
+            NasRegimeScheduleCloseRetry(rates[i].time, closeDirection, closeRule, bridgeDone, localDone);
+         NasProAuditWrite("window_reverse_exit", "nas|" + IntegerToString((long)rates[i].time), direction,
+            0.0, 0.0, 0.0, 0.0,
+            "close_direction=" + (closeDirection > 0 ? "BUY" : "SELL")
+            + " bridge_close=" + (bridgeDone ? "1" : "0")
+            + " local_close=" + (localDone ? "1" : "0"));
+         Print("NAS SATS EA out-of-window reverse exit processed signal_dir=",
+                (direction > 0 ? "BUY" : "SELL"),
+                " close_dir=", (closeDirection > 0 ? "BUY" : "SELL"),
+                " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+                " trading_window=", TradingTimeStateText(),
+                " bridge_close=", bridgeDone,
+                " local_close=", localDone,
+                " retry=", ((!bridgeDone || !localDone) ? "scheduled" : "none"),
+                " no_new_entry=true");
       }
       else
       {
          Print("NAS SATS EA signal ignored outside trading window dir=",
                (direction > 0 ? "BUY" : "SELL"),
-               " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
-               " trading_window=", TradingTimeStateText(),
-               " audit=window_before_same_direction_guard");
+                " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+                " trading_window=", TradingTimeStateText(),
+                " window_reverse_exit=OFF",
+                " audit=window_before_same_direction_guard");
       }
       g_lastExecutionStatus = "BLOCKED";
       g_lastExecutionBlockReason = "trading_window_closed";
@@ -3659,7 +3689,7 @@ void DrawRecentSignalHistory()
       datetime signalAvailableTime = rates[ai + 1].time;
       if(!IsTradingTimeOpenAt(signalAvailableTime))
       {
-         if(InpCloseExistingOnNewSignal)
+         if(g_windowReverseExitRuntime)
             closeSignal[ai] = 1; // Outside the window, production closes reverse direction only.
          if(inAuditWindow)
             windowSkipped++;
@@ -3741,6 +3771,7 @@ void DrawRecentSignalHistory()
    }
 
    int drawn = 0;
+   int windowDrawn = 0;
    int wins = 0;
    int losses = 0;
    int breakevens = 0;
@@ -3766,13 +3797,18 @@ void DrawRecentSignalHistory()
       if(!p[i].buy && !p[i].sell)
          continue;
       datetime signalAvailableTime = rates[i + 1].time;
+      int signalDirection = p[i].buy ? 1 : -1;
+      int direction = g_invertTradeModeRuntime ? -signalDirection : signalDirection;
       if(!IsTradingTimeOpenAt(signalAvailableTime))
+      {
+         if(windowDrawn < maxDraw)
+            DrawHistoricalWindowSignal(direction, rates[i].time, rates[i].high, rates[i].low);
+         windowDrawn++;
          continue;
+      }
       if(i >= ArraySize(candidateSignal) || !candidateSignal[i])
          continue;
       bool executionAccepted = (i < ArraySize(acceptedSignal) && acceptedSignal[i]);
-      int signalDirection = p[i].buy ? 1 : -1;
-      int direction = g_invertTradeModeRuntime ? -signalDirection : signalDirection;
       if((liveManagedDirection != 0 || g_liveLevelObjectsActive) && g_lastSignalTime > 0 && rates[i].time == g_lastSignalTime)
       {
          bool sameLiveSignal = (g_invertTradeModeRuntime ? (-signalDirection == g_lastDirection) : (signalDirection == g_lastDirection));
@@ -4088,6 +4124,12 @@ void AccountRiskCacheInvalidate()
    GlobalVariableSet(AccountRiskKey("METRICS_TS_H" + IntegerToString(resetHour)), 0.0);
 }
 
+void DailyPnlGuardCacheInvalidate()
+{
+   g_dailyGuardScopeCacheMs = 0;
+   g_dailyGuardScopeCacheDay = 0;
+}
+
 double AccountRiskInitialBalance()
 {
    if(InpAccountRiskInitialBalanceOverride > 0.0)
@@ -4166,12 +4208,11 @@ void AccountRiskScopePerformance(double &closedAll, double &closedToday, double 
    GlobalVariableSet(cacheTsKey, nowLocal);
 }
 
-void AccountRiskMetrics(double &riskCapital, double &dailyLossPct, double &totalDdPct)
+double AccountRiskDayStartScope(const double initial,
+                                const double closedAll,
+                                const double closedToday,
+                                const double scopeEquity)
 {
-   double initial = AccountRiskInitialBalance();
-   double closedAll, closedToday, floating;
-   AccountRiskScopePerformance(closedAll, closedToday, floating);
-   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
    int resetHour = MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt));
    datetime dayStartGmt = AccountRiskGmtDayStart();
    string suffix = "_H" + IntegerToString(resetHour);
@@ -4192,24 +4233,115 @@ void AccountRiskMetrics(double &riskCapital, double &dailyLossPct, double &total
    double dayStartScope = MathMax(0.01, GlobalVariableGet(dayKey));
    GlobalVariableSet(lastEquityKey, scopeEquity);
    GlobalVariableSet(lastEquityTimeKey, (double)TimeGMT());
+   return dayStartScope;
+}
+
+void AccountRiskMetrics(double &riskCapital, double &dailyLossPct, double &totalDdPct)
+{
+   double initial = AccountRiskInitialBalance();
+   double closedAll, closedToday, floating;
+   AccountRiskScopePerformance(closedAll, closedToday, floating);
+   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
+   double dayStartScope = AccountRiskDayStartScope(initial, closedAll, closedToday, scopeEquity);
    riskCapital = MathMax(0.01, MathMin(AccountInfoDouble(ACCOUNT_EQUITY), scopeEquity));
    g_accountRiskDailyPnlPct = (scopeEquity - dayStartScope) / dayStartScope * 100.0;
    dailyLossPct = MathMax(0.0, -g_accountRiskDailyPnlPct);
    totalDdPct = MathMax(0.0, -(closedAll + floating) / initial * 100.0);
 }
 
+bool DailyPnlGuardMagicOwned(const long magic)
+{
+   return RuntimeMagicOwned(magic);
+}
+
+void DailyPnlGuardInstancePerformance(double &closedToday, double &floating)
+{
+   datetime dayStartGmt = AccountRiskGmtDayStart();
+   uint nowMs = GetTickCount();
+   if(g_dailyGuardScopeCacheDay == dayStartGmt
+      && (uint)(nowMs - g_dailyGuardScopeCacheMs) < 1000)
+   {
+      closedToday = g_dailyGuardClosedToday;
+      floating = g_dailyGuardFloating;
+      return;
+   }
+
+   closedToday = 0.0;
+   floating = 0.0;
+   datetime startGmt = AccountRiskStartGmt();
+   datetime serverNow = TimeTradeServer();
+   datetime gmtNow = TimeGMT();
+   datetime dayStartServer = dayStartGmt + (serverNow - gmtNow);
+   datetime startServer = startGmt + (serverNow - gmtNow);
+   datetime historyStartServer = MathMax(dayStartServer, startServer);
+   if(HistorySelect(historyStartServer, serverNow))
+   {
+      int deals = HistoryDealsTotal();
+      for(int i = 0; i < deals; i++)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0)
+            continue;
+         ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+         if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+            continue;
+         if(!DailyPnlGuardMagicOwned((long)HistoryDealGetInteger(ticket, DEAL_MAGIC))
+            || HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+            continue;
+         closedToday += HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                      + HistoryDealGetDouble(ticket, DEAL_SWAP)
+                      + HistoryDealGetDouble(ticket, DEAL_COMMISSION)
+                      + HistoryDealGetDouble(ticket, DEAL_FEE);
+      }
+   }
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!DailyPnlGuardMagicOwned((long)PositionGetInteger(POSITION_MAGIC))
+         || PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      floating += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   }
+
+   g_dailyGuardClosedToday = closedToday;
+   g_dailyGuardFloating = floating;
+   g_dailyGuardScopeCacheDay = dayStartGmt;
+   g_dailyGuardScopeCacheMs = nowMs;
+}
+
+void DailyPnlGuardInstanceMetrics()
+{
+   double instanceClosedToday, instanceFloating;
+   DailyPnlGuardInstancePerformance(instanceClosedToday, instanceFloating);
+
+   // Preserve the existing day-start capital policy; only the PnL numerator is instance-scoped.
+   double initial = AccountRiskInitialBalance();
+   double closedAll, closedToday, floating;
+   AccountRiskScopePerformance(closedAll, closedToday, floating);
+   double scopeEquity = MathMax(0.01, initial + closedAll + floating);
+   double dayStartScope = AccountRiskDayStartScope(initial, closedAll, closedToday, scopeEquity);
+   g_dailyGuardPnlMoney = instanceClosedToday + instanceFloating;
+   g_dailyGuardPnlPct = g_dailyGuardPnlMoney / MathMax(0.01, dayStartScope) * 100.0;
+}
+
+string DailyPnlGuardInstanceKey(const string kind)
+{
+   // Keep the terminal global-variable key below MT5's 63-character limit.
+   return "PTS_NDG_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      + "_" + IntegerToString(RuntimeMagic()) + "_" + kind;
+}
+
 string DailyPnlGuardDayKey()
 {
-   // MT5 terminal global-variable names are limited to 63 characters.
-   return AccountRiskKey("DPG_" + IntegerToString((long)AccountRiskGmtDayStart())
-      + "_H" + IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt))));
+   return DailyPnlGuardInstanceKey("L" + IntegerToString((long)AccountRiskGmtDayStart())
+      + "H" + IntegerToString(MathMax(0, MathMin(23, InpAccountRiskDayResetHourGmt))));
 }
 
 string DailyPnlGuardPublishKey()
 {
-   // The account lock is shared, but every publisher instance must deliver its own close event.
-   return AccountRiskKey("DPGC_" + IntegerToString((long)AccountRiskGmtDayStart())
-      + "_" + IntegerToString(RuntimeMagic()));
+   return DailyPnlGuardInstanceKey("P" + IntegerToString((long)AccountRiskGmtDayStart()));
 }
 
 bool DailyPnlGuardLocked(string &reason)
@@ -4235,12 +4367,11 @@ bool DailyPnlGuardAllowsNewEntry(string &reason)
    if(DailyPnlGuardLocked(reason))
       return false;
 
-   double riskCapital, dailyLossPct, totalDdPct;
-   AccountRiskMetrics(riskCapital, dailyLossPct, totalDdPct);
+   DailyPnlGuardInstanceMetrics();
    bool profitHit = EffectiveDailyProfitTargetPct() > 0.0
-      && g_accountRiskDailyPnlPct >= EffectiveDailyProfitTargetPct();
+      && g_dailyGuardPnlPct >= EffectiveDailyProfitTargetPct();
    bool lossHit = EffectiveDailyMaxLossPct() > 0.0
-      && g_accountRiskDailyPnlPct <= -EffectiveDailyMaxLossPct();
+      && g_dailyGuardPnlPct <= -EffectiveDailyMaxLossPct();
    if(!profitHit && !lossHit)
    {
       reason = "";
@@ -4252,7 +4383,8 @@ bool DailyPnlGuardAllowsNewEntry(string &reason)
    reason = profitHit ? "daily_profit_target_hit" : "daily_max_loss_hit";
    WriteAccountRiskAudit("daily_pnl_guard_locked",
       "reason=" + reason
-      + " daily_pnl_pct=" + DoubleToString(g_accountRiskDailyPnlPct, 3)
+      + " instance_pnl=" + DoubleToString(g_dailyGuardPnlMoney, 2)
+      + " daily_pnl_pct=" + DoubleToString(g_dailyGuardPnlPct, 3)
       + " profit_target_pct=" + DoubleToString(EffectiveDailyProfitTargetPct(), 3)
       + " max_loss_pct=" + DoubleToString(EffectiveDailyMaxLossPct(), 3), false);
    return false;
@@ -4284,8 +4416,7 @@ void EnforceDailyPnlGuard()
       return;
 
    // Keep diagnostics current after a restart even when the persistent day lock already exists.
-   double riskCapital, dailyLossPct, totalDdPct;
-   AccountRiskMetrics(riskCapital, dailyLossPct, totalDdPct);
+   DailyPnlGuardInstanceMetrics();
 
    g_lastExecutionStatus = "DAY LOCK";
    g_lastExecutionBlockReason = reason;
@@ -4294,7 +4425,8 @@ void EnforceDailyPnlGuard()
    if(g_nasBridgeEnabledRuntime && closeDirection != 0 && !GlobalVariableCheck(DailyPnlGuardPublishKey()))
    {
       bool bridgeOk = NasProPublishRegimeCloseOnly(TimeCurrent(), closeDirection,
-         reason + "|daily_pnl_pct=" + DoubleToString(g_accountRiskDailyPnlPct, 3));
+         reason + "|instance_pnl=" + DoubleToString(g_dailyGuardPnlMoney, 2)
+         + "|daily_pnl_pct=" + DoubleToString(g_dailyGuardPnlPct, 3));
       if(bridgeOk)
       {
          GlobalVariableSet(DailyPnlGuardPublishKey(), 1.0);
@@ -4306,7 +4438,8 @@ void EnforceDailyPnlGuard()
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket)
-         || !AccountRiskMagicScoped((long)PositionGetInteger(POSITION_MAGIC)))
+         || !DailyPnlGuardMagicOwned((long)PositionGetInteger(POSITION_MAGIC))
+         || PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if(!trade.PositionClose(ticket))
          Print("NAS SATS daily PnL guard close failed ticket=", ticket,
@@ -4316,13 +4449,15 @@ void EnforceDailyPnlGuard()
    {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0 || !OrderSelect(ticket)
-         || !AccountRiskMagicScoped((long)OrderGetInteger(ORDER_MAGIC)))
+         || !DailyPnlGuardMagicOwned((long)OrderGetInteger(ORDER_MAGIC))
+         || OrderGetString(ORDER_SYMBOL) != _Symbol)
          continue;
       if(!trade.OrderDelete(ticket))
          Print("NAS SATS daily PnL guard order delete failed ticket=", ticket,
                " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
    }
    AccountRiskCacheInvalidate();
+   DailyPnlGuardCacheInvalidate();
 }
 
 double ClosedDailyAtr(const string symbol, const int period)
@@ -4551,7 +4686,7 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
          "protected_positions", "unprotected_positions", "total_volume", "open_sl_risk", "trade_budget", "atr_budget",
          "portfolio_budget", "available_portfolio_risk", "safety_pct", "day_reset_gmt", "positions", "detail");
    FileWrite(h, TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
-      eventName, "1.26", "MT5", (string)AccountInfoInteger(ACCOUNT_LOGIN), "NasUltimate", _Symbol, EnumToString(_Period),
+      eventName, "1.27", "MT5", (string)AccountInfoInteger(ACCOUNT_LOGIN), "NasUltimate", _Symbol, EnumToString(_Period),
       DoubleToString(initial, 2), DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
       DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), DoubleToString(closedAll, 2),
       DoubleToString(closedToday, 2), DoubleToString(floating, 2), DoubleToString(scopeEquity, 2),
@@ -5768,6 +5903,24 @@ void DrawHistoricalSegment(const string name, const datetime t1, const datetime 
    ObjectSetInteger(0, obj, OBJPROP_HIDDEN, true);
 }
 
+void DrawHistoricalWindowSignal(const int direction,
+                                const datetime signalTime,
+                                const double signalHigh,
+                                const double signalLow)
+{
+   string side = direction > 0 ? "BUY" : "SELL";
+   string base = "HIST_WINDOW_" + IntegerToString((long)signalTime) + "_" + side + "_";
+   double pad = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 20.0,
+                        MathAbs(signalHigh - signalLow) * 0.35);
+   double arrowPrice = direction > 0 ? signalLow - pad : signalHigh + pad;
+   double labelPrice = direction > 0 ? arrowPrice - pad * 0.70 : arrowPrice + pad * 0.70;
+   color windowColor = C'255,176,64';
+   int arrowCode = direction > 0 ? 241 : 242;
+   DrawHistoricalArrow(base + "ARW", signalTime, arrowPrice, arrowCode, windowColor);
+   DrawHistoricalText(base + "TXT", "WINDOW " + side,
+                      signalTime + PeriodSeconds(_Period), labelPrice, windowColor);
+}
+
 void DrawHistoricalSignal(const int idx,
                           const int direction,
                           const datetime signalTime,
@@ -6213,7 +6366,7 @@ void ClearDashboardObjects()
       "DASH_DOOR_L", "DASH_DOOR_R", "DASH_DOOR_TEXT",
       "DASH_DOCK_BG", "DASH_DOCK_STRIPE", "DASH_DOCK_TEXT", "DASH_DOCK_HINT",
       "DASH_COLLAPSED_HINT",
-      "BTN_DASH_EXPAND", "BTN_DASH_COLLAPSE", "BTN_NAS_REGIME_FILTER",
+      "BTN_DASH_EXPAND", "BTN_DASH_COLLAPSE", "BTN_NAS_REGIME_FILTER", "BTN_WINDOW_REVERSE",
       "BTN_MACRO_REG_0", "BTN_MACRO_REG_1", "BTN_MACRO_REG_2", "BTN_MACRO_REG_3", "BTN_MACRO_REG_4", "BTN_MACRO_REG_5",
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
@@ -6279,6 +6432,9 @@ void CreateButtons()
    CreateButton("BTN_NAS_REGIME_FILTER", 810, 112, 118, 25,
                 g_nasRegimeWarmupPending ? "REGIME LOAD" : (g_nasRegimeFilterRuntime ? "REGIME ON" : "REGIME OFF"),
                 g_nasRegimeWarmupPending ? C'184,103,22' : (g_nasRegimeFilterRuntime ? C'30,150,95' : C'90,90,110'));
+   CreateButton("BTN_WINDOW_REVERSE", 936, 112, 102, 25,
+                g_windowReverseExitRuntime ? "WIN REV ON" : "WIN REV OFF",
+                g_windowReverseExitRuntime ? C'178,78,42' : C'90,90,110');
    CreateButton("BTN_APPLY_WINDOW", 836, 220, 92, 24, "APPLY WIN", C'38,101,176');
    CreateButton("BTN_FINAL_SCALE_APPLY", 936, 220, 70, 24, "APPLY", C'38,101,176');
    CreateButton("BTN_AUDIT_WIN", 684, 250, 118, 24, NasAuditWindowLabel() + " WINDOW", C'38,101,176');
@@ -6747,7 +6903,7 @@ void CycleSelectedTpLeg()
       if(g_hcBeTpLegRuntime > 0 && RMultipleForLeg(g_hcBeTpLegRuntime) >= SelectedTargetR() - 0.0001)
          g_hcBeTpLegRuntime = 0;
       g_tpManagementModeRuntime = NAS_TP_FIXED_SELECTED_LEG;
-      Print("NAS SATS EA selected target changed target_r=", DoubleToString(SelectedTargetR(), 1),
+      Print("NAS SATS EA selected target changed target_r=", DoubleToString(SelectedTargetR(), 2),
             " legacy_ladder_leg=", g_selectedTpLegRuntime,
             " mode=", TpModeText(),
             " note=audit_native_bridge_and_live_geometry_use_exact_target_r");
@@ -6952,6 +7108,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       MoveRemainingToBE();
    else if(sparam == PREFIX + "BTN_CLOSE_1_3")
       CloseOneLeg();
+   else if(sparam == PREFIX + "BTN_WINDOW_REVERSE")
+   {
+      g_windowReverseExitRuntime = !g_windowReverseExitRuntime;
+      ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+      ArrayFree(g_historySimCache);
+      Print("NAS SATS EA window reverse exit toggled state=",
+            (g_windowReverseExitRuntime ? "ON" : "OFF"),
+            " behavior=out_of_window_opposite_positions_close_native_and_bridge");
+      RequestHistoryRefresh();
+      UpdateDashboard();
+      ChartRedraw(0);
+   }
    else if(sparam == PREFIX + "BTN_APPLY_WINDOW")
       ApplyTradingWindowFromDashboard("window_apply_button");
    else if(sparam == PREFIX + "BTN_FINAL_SCALE_APPLY")
@@ -7204,7 +7372,9 @@ void UpdateDashboard()
    }
    CreateLabel("DASH_REGIME", 38, 299, UiShort(regimeDash, 94), regimeColor, 8);
    CreateLabel("DASH_WIN", 38, 368, "Trading window", titleColor, 9);
-   CreateLabel("DASH_WIN_STATE", 38, 386, TradingTimeStateText(), IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
+   CreateLabel("DASH_WIN_STATE", 38, 386,
+               TradingTimeStateText() + " | reverse exit " + (g_windowReverseExitRuntime ? "ON" : "OFF"),
+               IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
    CreateLabel("DASH_AUDIT_TITLE", 52, 418, "AUDIT RESULTS - selected window / current combo", C'80,255,180', 9);
    CreateLabel("DASH_AUDIT_R0", 52, 440, UiShort(g_historyAuditRows[0], 82), C'216,222,230', 8);
    CreateLabel("DASH_AUDIT_R1", 52, 458, UiShort(g_historyAuditRows[1], 82), muted, 7);
@@ -7261,11 +7431,10 @@ void UpdateDashboard()
    color dayGuardColor = muted;
    if(DailyPnlGuardConfigured())
    {
-      double guardRiskCapital, guardDailyLossPct, guardTotalDdPct;
-      AccountRiskMetrics(guardRiskCapital, guardDailyLossPct, guardTotalDdPct);
+      DailyPnlGuardInstanceMetrics();
       string guardReason = "";
       bool guardLocked = DailyPnlGuardLocked(guardReason);
-      dayGuardText = "Day " + DoubleToString(g_accountRiskDailyPnlPct, 2) + "%"
+      dayGuardText = "Day " + DoubleToString(g_dailyGuardPnlPct, 2) + "%"
          + " T+" + DoubleToString(EffectiveDailyProfitTargetPct(), 2)
          + " L-" + DoubleToString(EffectiveDailyMaxLossPct(), 2)
          + " " + (guardLocked ? (guardReason == "daily_profit_target_hit" ? "PROFIT LOCK" : "LOSS LOCK") : "OPEN");

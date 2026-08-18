@@ -933,7 +933,7 @@ string NasProBridgeSource()
       + "|" + EnumToString(InpExecutionMode)
       + "|invert=" + (g_invertTradeModeRuntime ? "1" : "0")
       + "|pip=" + DoubleToString(g_pipSlDistanceRuntime, 2)
-      + "|target_r=" + DoubleToString(SelectedTargetR(), 1);
+      + "|target_r=" + DoubleToString(SelectedTargetR(), 2);
 }
 
 double NasProBridgeHalfTrigger(const int direction, const int finalLeg, const double finalTp)
@@ -981,7 +981,7 @@ bool NasProPublishCurrentSignal(const datetime signalTime, const int direction)
    string halfLabel = half > 0.0 ? EffectiveHcBeText() : "off";
    double effectiveTargetR = NasTargetR(direction, g_lastEntry, g_lastSl, finalTp);
    string eventId = "nas|" + _Symbol + "|" + NasProTf(_Period) + "|" + IntegerToString((long)signalTime)
-      + "|" + NasProDir(direction) + "|R" + DoubleToString(effectiveTargetR, 1);
+      + "|" + NasProDir(direction) + "|R" + DoubleToString(effectiveTargetR, 2);
    string source = NasProBridgeSource() + "|shape=single_order|effective_target_r=" + DoubleToString(effectiveTargetR, 3);
    return NasProBridgeWriteEvent(eventId, direction, g_lastEntry, g_lastSl, finalTp, source,
       half, halfLabel, signalTime, MathMax(0.0, g_accountRiskPerTradePctRuntime));

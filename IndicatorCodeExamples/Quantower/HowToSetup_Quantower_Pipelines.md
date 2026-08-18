@@ -140,6 +140,8 @@ Block If Min Qty Exceeds Risk = true
 
 BTC CFD ile futures fiyatlari birebir ayni olmak zorunda degildir. Listener mutlak seviyeleri kopyalamak yerine MT5 entry-SL, entry-TP ve entry-HCBE mesafelerini Quantower fill fiyatina rebase eder. Risk hesabi Quantower kontratinin kendi tick size ve tick cost degerleriyle yapilir. Minimum bir kontrat izin verilen riski asiyorsa emir fail-closed engellenir; bu durumda varsa micro kontrati sec.
 
+`2026-08-18.quantower-production-v2-futures-contract-root` build'i Quantower kontrat adini vade ekinden once ekonomik kokune indirger. Ornegin `BTCUSDm -> MBT AUG26/MBTU26`, `JP225m -> MNK SEP26`, `US500 -> MESU26` ve `USTEC -> MNQU26` eslesmeleri hem giris hem de close-only olaylarinda ayni kimlik kontrolunden gecer. Farkli ekonomik aileler fail-closed reddedilir; `Source Symbol Aliases CSV` yalniz scoped MT5 dosyasini bulmak icindir ve sembol guvenlik kontrolunu devre disi birakmaz.
+
 Ornek: MT5 ve Quantower ayni CFD fiyat tabanini kullaniyorsa `Rebase Levels To Live` yine acik kalabilir. Rebase yalniz ham sembol adlari farkliysa uygulanir.
 
 ## 7. Risk ve Koruma
@@ -201,6 +203,13 @@ Listener kaynaklarinin tamami `TradingPlatform.BusinessLayer.dll` surum `1.145.1
 Build succeeded
 0 warnings
 0 errors
+```
+
+Kurulu production build:
+
+```text
+2026-08-18.quantower-production-v2-futures-contract-root
+SHA-256: 9CEE5B4522B6F4520730BA83817983421106B274A656F6F8083B9F7A7B5F2B93
 ```
 
 Bu makine icin production assembly su konuma yuklenmistir:

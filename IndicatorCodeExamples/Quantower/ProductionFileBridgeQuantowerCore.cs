@@ -15,7 +15,7 @@ namespace ProTradingSystem.Quantower
 {
     public abstract class ProductionFileBridgeQuantowerCore : Strategy, ICurrentSymbol, ICurrentAccount
     {
-        private const string CoreBuild = "2026-08-15.quantower-production-v1";
+        private const string CoreBuild = "2026-08-18.quantower-production-v2-futures-contract-root";
         private static readonly object GlobalEntrySync = new object();
         private static readonly Dictionary<string, string> GlobalEntryOwners = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly object sync = new object();
@@ -267,7 +267,8 @@ namespace ProTradingSystem.Quantower
                 }
 
                 pollTimer = new Timer(PollTimerCallback, null, 0, Timeout.Infinite);
-                LogStatus("running", "scope=" + scopeToken + " file=" + ResolveBridgeReadPath() + " channel=" + BridgeChannel);
+                LogStatus("running", "scope=" + scopeToken + " file=" + ResolveBridgeReadPath() + " channel=" + BridgeChannel
+                    + " target=" + CurrentSymbol.Name + " canonical_target=" + CanonicalTargetSymbol());
             }
         }
 
@@ -1349,9 +1350,14 @@ namespace ProTradingSystem.Quantower
                 reason = "tf=" + signal.SourceTf + " expected=" + SourceTimeframeFilter;
                 return false;
             }
-            if (RequireSourceMatchesTarget && !SameText(CanonicalSymbol(signal.SourceSymbol), CanonicalSymbol(CurrentSymbol.Name)))
+            var sourceCanonical = CanonicalSymbol(signal.SourceSymbol);
+            var targetCanonical = CanonicalTargetSymbol();
+            if (RequireSourceMatchesTarget && (string.IsNullOrWhiteSpace(sourceCanonical)
+                || string.IsNullOrWhiteSpace(targetCanonical)
+                || !SameText(sourceCanonical, targetCanonical)))
             {
-                reason = "symbol=" + signal.SourceSymbol + " target=" + CurrentSymbol.Name;
+                reason = "symbol_filter source=" + signal.SourceSymbol + " canonical_source=" + sourceCanonical
+                    + " target=" + CurrentSymbol.Name + " canonical_target=" + targetCanonical;
                 return false;
             }
             reason = string.Empty;
@@ -1402,7 +1408,7 @@ namespace ProTradingSystem.Quantower
                 var value = part.Trim();
                 if (value.Length > 0 && seen.Add(value)) yield return value;
             }
-            var canonical = CanonicalSymbol(CurrentSymbol == null ? string.Empty : CurrentSymbol.Name);
+            var canonical = CanonicalTargetSymbol();
             foreach (var value in InferredAliases(canonical))
                 if (seen.Add(value)) yield return value;
         }
@@ -1500,17 +1506,68 @@ namespace ProTradingSystem.Quantower
             return ContainsText(message, "market is closed") || ContainsText(message, "market closed") || ContainsText(message, "trading is not available") || ContainsText(message, "not trading");
         }
 
+        private string CanonicalTargetSymbol()
+        {
+            return CanonicalSymbol(CurrentSymbol == null ? string.Empty : CurrentSymbol.Name);
+        }
+
         private static string CanonicalSymbol(string value)
         {
             var s = Sanitize(value).ToUpperInvariant();
-            if (s.Contains("BTCUSD") || s.Contains("BTCUSDT") || s.Contains("XBTUSD") || s.StartsWith("MBT") || s.StartsWith("BTC")) return "BTCUSD";
-            if (s.Contains("JP225") || s.Contains("JPN225") || s.StartsWith("NKD") || s.StartsWith("MNK") || s.StartsWith("NIY")) return "JP225";
-            if (s.Contains("US500") || s.Contains("SPX500") || s.StartsWith("ES") || s.StartsWith("MES")) return "US500";
-            if (s.Contains("USTEC") || s.Contains("US100") || s.Contains("NAS100") || s.StartsWith("NQ") || s.StartsWith("MNQ")) return "USTEC";
-            if (s.Contains("US30") || s.Contains("DJ30") || s.StartsWith("YM") || s.StartsWith("MYM")) return "US30";
-            if (s.Contains("DE30") || s.Contains("GER30") || s.Contains("GER40") || s.Contains("DAX40") || s.StartsWith("FDAX") || s.StartsWith("FDXM")) return "DE30";
-            if (s.Contains("HK50") || s.StartsWith("HSI") || s.StartsWith("MHI")) return "HK50";
+            if (s.Contains("BTCUSD") || s.Contains("BTCUSDT") || s.Contains("XBTUSD")) return "BTCUSD";
+            if (s.Contains("JP225") || s.Contains("JPN225")) return "JP225";
+            if (s.Contains("US500") || s.Contains("SPX500") || s.Contains("SP500")) return "US500";
+            if (s.Contains("USTEC") || s.Contains("US100") || s.Contains("NAS100")) return "USTEC";
+            if (s.Contains("US30") || s.Contains("DJ30")) return "US30";
+            if (s.Contains("DE30") || s.Contains("GER30") || s.Contains("GER40") || s.Contains("DAX40")) return "DE30";
+            if (s.Contains("HK50")) return "HK50";
+            if (s.Contains("USOIL") || s.Contains("WTI")) return "USOIL";
+            if (s.Contains("UKOIL") || s.Contains("BRENT")) return "UKOIL";
+
+            var root = FuturesContractRoot(value);
+            if (root == "BTC" || root == "MBT") return "BTCUSD";
+            if (root == "NKD" || root == "MNK" || root == "NIY") return "JP225";
+            if (root == "ES" || root == "MES") return "US500";
+            if (root == "NQ" || root == "MNQ") return "USTEC";
+            if (root == "YM" || root == "MYM") return "US30";
+            if (root == "FDAX" || root == "FDXM" || root == "DAX") return "DE30";
+            if (root == "HSI" || root == "MHI") return "HK50";
+            if (root == "CL" || root == "MCL") return "USOIL";
+            if (root == "BZ" || root == "BRN") return "UKOIL";
             return s.EndsWith("M") && s.Length > 1 ? s.Substring(0, s.Length - 1) : s;
+        }
+
+        private static string FuturesContractRoot(string value)
+        {
+            var raw = (value ?? string.Empty).Trim().ToUpperInvariant();
+            if (raw.Length == 0)
+                return string.Empty;
+
+            var tokens = raw.Split(new[] { ' ', '\t', '-', '_', '.', '/', '@', ':', '|' }, StringSplitOptions.RemoveEmptyEntries);
+            var token = Sanitize(tokens.Length > 0 ? tokens[0] : raw).ToUpperInvariant();
+            var roots = new[] { "FDXM", "FDAX", "MES", "MNQ", "MYM", "MCL", "MBT", "MNK", "MHI", "NKD", "NIY", "BRN", "BTC", "HSI", "DAX", "NQ", "ES", "YM", "CL", "BZ" };
+            foreach (var root in roots)
+            {
+                if (!token.StartsWith(root, StringComparison.Ordinal))
+                    continue;
+                var suffix = token.Substring(root.Length);
+                if (IsContractSuffix(suffix))
+                    return root;
+            }
+            return string.Empty;
+        }
+
+        private static bool IsContractSuffix(string suffix)
+        {
+            if (string.IsNullOrEmpty(suffix))
+                return true;
+            if (suffix.All(char.IsDigit))
+                return true;
+            if ("FGHJKMNQUVXZ".IndexOf(suffix[0]) >= 0 && suffix.Substring(1).All(char.IsDigit))
+                return true;
+            var months = new[] { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" };
+            return months.Any(month => suffix.StartsWith(month, StringComparison.Ordinal)
+                && suffix.Substring(month.Length).All(char.IsDigit));
         }
 
         private static string NormalizeTf(string value)
