@@ -1,7 +1,7 @@
 #ifndef NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 #define NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 
-#define NAS_PRO_PIPELINE_BUILD "2026-07-27.nas-professional-pipeline-v6-risk-apply-scope"
+#define NAS_PRO_PIPELINE_BUILD "2026-08-19.nas-professional-pipeline-v9-elapsed-max-hold"
 
 input group "NAS Professional Audit / cTrader Bridge"
 input bool   InpNasProAuditEnabled = false;

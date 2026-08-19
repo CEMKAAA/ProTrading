@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class OrbUltimateCTraderListener : Robot
     {
-        private const string Build = "2026-07-24.orb-protection-recovery-v4";
+        private const string Build = "2026-08-19.orb-channel-isolation-v2";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -59,6 +59,9 @@ namespace cAlgo.Robots
 
         [Parameter("Source TF Filter", DefaultValue = "")]
         public string SourceTimeframeFilter { get; set; }
+
+        [Parameter("Bridge Channel", DefaultValue = 1, MinValue = 1, MaxValue = 9999)]
+        public int BridgeChannel { get; set; }
 
         [Parameter("Default TF To Chart", DefaultValue = true)]
         public bool DefaultSourceTfToChartPeriod { get; set; }
@@ -173,6 +176,7 @@ namespace cAlgo.Robots
 
         private string _lastSeenEventId = string.Empty;
         private string _lastRejectedEventId = string.Empty;
+        private string _lastIdentityRejectedKey = string.Empty;
         private string _lastAction = "boot";
         private string _lastDetail = string.Empty;
         private string _lastSignal = "none";
@@ -182,6 +186,7 @@ namespace cAlgo.Robots
         private readonly Dictionary<long, DateTime> _halfRetryAt = new Dictionary<long, DateTime>();
         private readonly Dictionary<string, DateTime> _eventClaimAuditAt = new Dictionary<string, DateTime>();
         private string _resolvedBridgePath;
+        private string _instanceScopeToken = string.Empty;
         private DateTime _lastPollHeartbeat = DateTime.MinValue;
         private DateTime _lastReadFailAudit = DateTime.MinValue;
         private string _lastInitMarkerAuditKey = string.Empty;
@@ -195,6 +200,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             _resolvedBridgePath = ResolveBridgePath();
+            _instanceScopeToken = BuildInstanceScopeToken();
             _auditDir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _lockDir = IoPath.Combine(IoPath.GetTempPath(), "OrbUltimate_cTrader_Locks");
             IoDirectory.CreateDirectory(_lockDir);
@@ -202,7 +208,7 @@ namespace cAlgo.Robots
             IoDirectory.CreateDirectory(_stateDir);
 
             Timer.Start(TimeSpan.FromMilliseconds(Math.Max(100, PollMilliseconds)));
-            AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
+            AuditRaw("init", $"build={Build} bridge={_resolvedBridgePath} channel={BridgeChannel} scope={_instanceScopeToken} symbol={SymbolName} risk_capital_source={(UseBalanceForRisk ? "ctrader_balance" : "ctrader_equity")} use_bridge_risk_pct={UseBridgeRiskPct} margin_guard={UseMarginShrinkGuard} max_margin_pct={MaxMarginUsagePct:F1}");
             RepairOpenPositionStates("init", null);
 
             if (IgnoreExistingSignalOnInit)
@@ -284,11 +290,17 @@ namespace cAlgo.Robots
 
             if (!SignalIdentityMatches(sig, out var identityReason))
             {
-                if (PermanentRejectGuard)
-                    _lastRejectedEventId = sig.EventId;
-                Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                var identityRejectKey = $"{sig.EventId}|{sig.Channel}|{sig.Source}|{sig.SourceSymbol}|{NormalizeTf(sig.SourceTf)}";
+                if (!string.Equals(_lastIdentityRejectedKey, identityRejectKey, StringComparison.Ordinal))
+                {
+                    _lastIdentityRejectedKey = identityRejectKey;
+                    Audit("skip_filter", sig, $"caller={caller} {identityReason} {detail}");
+                }
+                else
+                    SetAction("idle_identity_mismatch", identityReason);
                 return;
             }
+            _lastIdentityRejectedKey = string.Empty;
 
             if (OrderRetryBlocked(sig, out var retryBlockDetail))
             {
@@ -775,7 +787,7 @@ namespace cAlgo.Robots
             {
                 if (!SameText(p.SymbolName, SymbolName))
                     continue;
-                if (string.IsNullOrWhiteSpace(p.Label) || !p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal))
+                if (!PositionOwnedByThisBridge(p))
                     continue;
                 if (!CloseReverseAcrossSourceTf)
                 {
@@ -789,13 +801,33 @@ namespace cAlgo.Robots
 
         private bool PositionBelongsToThisInstance(Position p)
         {
-            if (p == null || !SameText(p.SymbolName, SymbolName))
+            if (p == null || !SameText(p.SymbolName, SymbolName) || !PositionOwnedByThisBridge(p))
                 return false;
             var expectedTf = EffectiveSourceTf();
             if (string.IsNullOrWhiteSpace(expectedTf))
                 return true;
             var positionTf = PositionSourceTf(p);
             return !string.IsNullOrWhiteSpace(positionTf) && SameText(expectedTf, positionTf);
+        }
+        private string BuildInstanceScopeToken()
+        {
+            var path = string.IsNullOrWhiteSpace(_resolvedBridgePath) ? ResolveBridgePath() : _resolvedBridgePath;
+            string fullPath;
+            try { fullPath = IoPath.GetFullPath(path ?? string.Empty); }
+            catch { fullPath = path ?? string.Empty; }
+            var source = string.IsNullOrWhiteSpace(SourceFilter) ? "OrbUltimate|" : SourceFilter.Trim();
+            var identity = fullPath.Trim().ToUpperInvariant() + "|" + source.ToUpperInvariant() + "|CH" + BridgeChannel.ToString(CultureInfo.InvariantCulture);
+            return Hash64(identity).ToString("X16", CultureInfo.InvariantCulture);
+        }
+        private string EffectiveLabelPrefix()
+        {
+            var prefix = string.IsNullOrWhiteSpace(LabelPrefix) ? "ORB_CT" : LabelPrefix.Trim();
+            return prefix + "|C" + BridgeChannel.ToString(CultureInfo.InvariantCulture) + "|S" + _instanceScopeToken;
+        }
+        private bool PositionOwnedByThisBridge(Position p)
+        {
+            return p != null && !string.IsNullOrWhiteSpace(p.Label)
+                && p.Label.StartsWith(EffectiveLabelPrefix() + "|", StringComparison.Ordinal);
         }
         private string PositionSourceTf(Position p)
         {
@@ -821,7 +853,7 @@ namespace cAlgo.Robots
         private string BuildComment(BridgeSignal sig)
         {
             // Protection fields come first because brokers can truncate comments.
-            return $"sl={sig.Sl.ToString(CultureInfo.InvariantCulture)};tp={sig.Tp.ToString(CultureInfo.InvariantCulture)};half={sig.HalfTrigger.ToString(CultureInfo.InvariantCulture)};tf={NormalizeTf(sig.SourceTf)};event={ShortEvent(sig.EventId)};src={sig.Source}";
+            return $"sl={sig.Sl.ToString(CultureInfo.InvariantCulture)};tp={sig.Tp.ToString(CultureInfo.InvariantCulture)};half={sig.HalfTrigger.ToString(CultureInfo.InvariantCulture)};tf={NormalizeTf(sig.SourceTf)};ch={sig.Channel};event={ShortEvent(sig.EventId)};src={sig.Source}";
         }
 
         private string StopContext(double entry, double sl, double tp)
@@ -1012,6 +1044,8 @@ namespace cAlgo.Robots
                 offset = 17;
                 if (fields.Count > 17 && fields[17] == "risk_pct")
                     offset = 18;
+                if (fields.Count > 18 && fields[18] == "bridge_channel")
+                    offset = 19;
             }
             if (fields.Count < offset + 17)
             {
@@ -1037,10 +1071,11 @@ namespace cAlgo.Robots
             sig.SourceBid = ParseDouble(fields[offset + 15]);
             sig.SourceAsk = ParseDouble(fields[offset + 16]);
             sig.RiskPct = fields.Count > offset + 17 ? ParseDouble(fields[offset + 17]) : 0;
+            sig.Channel = fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
             var rawDir = fields[offset + 7];
             sig.Valid = !string.IsNullOrWhiteSpace(sig.EventId) && sig.Direction != 0;
 
-            detail = $"read_ok path={IoPath.GetFileName(readPath)} fields={fields.Count} offset={offset} event={sig.EventId} source_symbol={sig.SourceSymbol} source_tf={sig.SourceTf} dir={rawDir} risk_pct={sig.RiskPct:F3}";
+            detail = $"read_ok path={IoPath.GetFileName(readPath)} fields={fields.Count} offset={offset} event={sig.EventId} channel={sig.Channel} source_symbol={sig.SourceSymbol} source_tf={sig.SourceTf} dir={rawDir} risk_pct={sig.RiskPct:F3}";
             if (!sig.Valid)
             {
                 var initMarker = SameText(sig.Source, "bridge_initiated") || SameText(rawDir, "INIT");
@@ -1052,6 +1087,11 @@ namespace cAlgo.Robots
         private bool SignalIdentityMatches(BridgeSignal sig, out string reason)
         {
             reason = "";
+            if (sig.Channel <= 0 || sig.Channel != BridgeChannel)
+            {
+                reason = $"channel_filter source={sig.Channel} expected={BridgeChannel}";
+                return false;
+            }
             var mapped = MapSymbol(sig.SourceSymbol);
             if (RequireMappedSymbolEqualsChart && !SameText(mapped, SymbolName) && !SameEconomicSymbol(mapped, SymbolName))
             {
@@ -1081,22 +1121,24 @@ namespace cAlgo.Robots
 
         private string ResolveBridgeReadPath()
         {
-            if (!PreferScopedLatest || string.IsNullOrWhiteSpace(_resolvedBridgePath))
+            if (string.IsNullOrWhiteSpace(_resolvedBridgePath))
                 return _resolvedBridgePath;
             var fileName = IoPath.GetFileName(_resolvedBridgePath) ?? "";
             const string latestSuffix = "_Latest.csv";
             if (!fileName.EndsWith(latestSuffix, StringComparison.OrdinalIgnoreCase))
                 return _resolvedBridgePath;
-            var scopedPrefix = fileName.Substring(0, fileName.Length - latestSuffix.Length) + "_Latest_";
+            var channelStem = fileName.Substring(0, fileName.Length - latestSuffix.Length) + "_Latest_C" + BridgeChannel.ToString(CultureInfo.InvariantCulture);
             var dir = IoPath.GetDirectoryName(_resolvedBridgePath) ?? "";
+            var channelGeneric = IoPath.Combine(dir, channelStem + ".csv");
+            if (!PreferScopedLatest) return channelGeneric;
             var tf = NormalizeTf(string.IsNullOrWhiteSpace(SourceTimeframeFilter) && DefaultSourceTfToChartPeriod ? ChartTfString() : SourceTimeframeFilter);
             if (string.IsNullOrWhiteSpace(tf))
-                return _resolvedBridgePath;
+                return channelGeneric;
             string newestCandidate = null;
             var newestWrite = DateTime.MinValue;
             foreach (var symbol in ScopedSourceSymbolCandidates())
             {
-                var candidate = IoPath.Combine(dir, $"{scopedPrefix}{Sanitize(symbol)}_{tf}.csv");
+                var candidate = IoPath.Combine(dir, $"{channelStem}_{Sanitize(symbol)}_{tf}.csv");
                 if (!IoFile.Exists(candidate))
                     continue;
                 DateTime writeTime;
@@ -1108,7 +1150,7 @@ namespace cAlgo.Robots
                     newestWrite = writeTime;
                 }
             }
-            return newestCandidate ?? _resolvedBridgePath;
+            return newestCandidate ?? channelGeneric;
         }
 
         private IEnumerable<string> ScopedSourceSymbolCandidates()
@@ -1143,7 +1185,7 @@ namespace cAlgo.Robots
             return IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MetaQuotes", "Terminal", "Common", "Files", "OrbUltimateBridge_Latest.csv");
         }
 
-        private string BuildLabel(BridgeSignal sig) => $"{LabelPrefix}|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
+        private string BuildLabel(BridgeSignal sig) => $"{EffectiveLabelPrefix()}|T{NormalizeTf(sig.SourceTf)}|{Hash64(sig.EventId):X16}";
 
         private bool ClaimEvent(string eventId, out bool committedDuplicate)
         {
@@ -1228,14 +1270,13 @@ namespace cAlgo.Robots
             var token64 = "|" + Hash64(eventId).ToString("X16", CultureInfo.InvariantCulture);
             var legacyToken32 = "|" + Hash32(eventId).ToString("X8", CultureInfo.InvariantCulture);
             return Positions.Any(p => SameText(p.SymbolName, SymbolName)
-                                      && !string.IsNullOrWhiteSpace(p.Label)
-                                      && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)
+                                      && PositionOwnedByThisBridge(p)
                                       && (p.Label.EndsWith(token64, StringComparison.OrdinalIgnoreCase)
                                           || p.Label.EndsWith(legacyToken32, StringComparison.OrdinalIgnoreCase)));
         }
 
-        private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash64(eventId):X16}.lock");
-        private string LegacyEventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{Hash32(eventId):X8}.lock");
+        private string EventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_{Hash64(eventId):X16}.lock");
+        private string LegacyEventLockPath(string eventId) => IoPath.Combine(_lockDir, $"{Account.Number}_{Sanitize(SymbolName)}_C{BridgeChannel}_{Hash32(eventId):X8}.lock");
 
         private void ReleaseEvent(string eventId)
         {
@@ -1468,12 +1509,12 @@ namespace cAlgo.Robots
 
         private string HalfStatePath(long positionId)
         {
-            return IoPath.Combine(_stateDir, $"half_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
+            return IoPath.Combine(_stateDir, $"half_{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_{positionId}.state");
         }
 
         private string ProtectionStatePath(long positionId)
         {
-            return IoPath.Combine(_stateDir, $"protect_{Account.Number}_{Sanitize(SymbolName)}_{positionId}.state");
+            return IoPath.Combine(_stateDir, $"protect_{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_{positionId}.state");
         }
 
         private void SaveProtectionState(long positionId, string eventId, string sourceTf, double sl, double tp)
@@ -1532,7 +1573,7 @@ namespace cAlgo.Robots
             _lastProtectionCleanup = DateTime.UtcNow;
             try
             {
-                var prefix = $"protect_{Account.Number}_{Sanitize(SymbolName)}_";
+                var prefix = $"protect_{Account.Number}_{Sanitize(SymbolName)}_{_instanceScopeToken}_";
                 var liveIds = new HashSet<long>(Positions.Where(PositionBelongsToThisInstance).Select(p => (long)p.Id));
                 foreach (var path in IoDirectory.GetFiles(_stateDir, prefix + "*.state"))
                 {
@@ -1652,7 +1693,7 @@ namespace cAlgo.Robots
         }
         private void RepairOpenPositionStates(string reason, BridgeSignal? latestSignal)
         {
-            foreach (var p in Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)))
+            foreach (var p in Positions.Where(PositionBelongsToThisInstance))
             {
                 ProtectionState persisted;
                 var hasPersisted = TryLoadProtectionState(p.Id, out persisted);
@@ -1736,7 +1777,7 @@ namespace cAlgo.Robots
         }
         private string OpenPositionSummary()
         {
-            var scoped = Positions.Where(p => PositionBelongsToThisInstance(p) && !string.IsNullOrWhiteSpace(p.Label) && p.Label.StartsWith(LabelPrefix, StringComparison.Ordinal)).ToArray();
+            var scoped = Positions.Where(PositionBelongsToThisInstance).ToArray();
             var pnl = scoped.Sum(p => p.NetProfit);
             var vol = scoped.Sum(p => p.VolumeInUnits);
             return $"{scoped.Length} vol={vol} pnl={pnl:F2}";
@@ -1753,7 +1794,7 @@ namespace cAlgo.Robots
         {
             if (!ShowDashboard) return;
             var text = $"OrbUltimate cTrader Listener {Build}\n"
-                     + $"Executor={(ExecutorEnabled ? "ON" : "OFF")} Symbol={SymbolName} File={IoPath.GetFileName(_resolvedBridgePath)}\n"
+                     + $"Executor={(ExecutorEnabled ? "ON" : "OFF")} Symbol={SymbolName} Channel={BridgeChannel} File={IoPath.GetFileName(ResolveBridgeReadPath())}\n"
                      + $"RiskPct={(UseBridgeRiskPct ? "BRIDGE" : "LOCAL")} Capital={(UseBalanceForRisk ? "cTrader BAL" : "cTrader EQ")} Equity={Account.Equity:F2} Balance={Account.Balance:F2}\n"
                      + $"Positions={OpenPositionSummary()}\n"
                      + $"Seen={ShortEvent(_lastSeenEventId)} Rej={ShortEvent(_lastRejectedEventId)}\n"
@@ -1779,7 +1820,7 @@ namespace cAlgo.Robots
 
         private void WriteAudit(string eventName, string sourceSymbol, string sourceTf, string eventId, string source, string dir, double entry, double sl, double tp, double half, string detail)
         {
-            var scope = Account.Number.ToString(CultureInfo.InvariantCulture) + "_" + Sanitize(SymbolName)
+            var scope = Account.Number.ToString(CultureInfo.InvariantCulture) + "_" + Sanitize(SymbolName) + "_C" + BridgeChannel.ToString(CultureInfo.InvariantCulture)
                       + "_TF" + Sanitize(string.IsNullOrWhiteSpace(SourceTimeframeFilter) ? "ANY" : SourceTimeframeFilter);
             var file = IoPath.Combine(_auditDir, AuditFilePrefix + scope + "_" + DateTime.UtcNow.ToString("yyyyMMdd") + ".csv");
             Exception lastError = null;
@@ -1858,6 +1899,11 @@ namespace cAlgo.Robots
             if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt))
                 return dt;
             return DateTime.MinValue;
+        }
+
+        private static int ParseInt(string s)
+        {
+            return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
         }
 
         private static double ParseDouble(string s)
@@ -1939,6 +1985,7 @@ namespace cAlgo.Robots
             public double SourceBid;
             public double SourceAsk;
             public double RiskPct;
+            public int Channel;
         }
 
         private struct ProtectionState

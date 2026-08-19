@@ -5,11 +5,11 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.34"
+#property version "3.35"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
-#define ORB15_BUILD "2026-08-17.v6.19-live-history-candidate-parity"
+#define ORB15_BUILD "2026-08-19.v6.20-channel-entry-window"
 
 enum ORB_SESSION_PROFILE
 {
@@ -33,6 +33,9 @@ input bool            InpAutoNewYorkDst     = true;
 input string          InpOrbStartNy         = "09:30";
 input string          InpOrbEndNy           = "09:45";
 input string          InpTradeEndNy         = "16:00";
+input bool            InpUseEntryTimeWindow = false; // Additional GMT entry gate; does not alter ORB construction.
+input string          InpEntryWindowStartGmt= "00:00";
+input string          InpEntryWindowEndGmt  = "00:00"; // Equal start/end means full day when enabled.
 input bool            InpUseClosedBarBreakout = true;
 input double          InpMinBreakoutPoints  = 0.0;
 input double          InpSlBufferPoints     = 0.0;
@@ -166,6 +169,7 @@ input bool   InpNativeTradeWithBridgeOnlyDefault = false;
 input bool   InpFileBridgeUseCommonFiles= true;
 input string InpFileBridgeLatestFile    = "OrbUltimateBridge_Latest.csv";
 input string InpFileBridgeAuditPrefix   = "OrbUltimateBridge_Audit_";
+input int    InpBridgeChannel           = 1; // 1..9999; publisher/listener channels are fully isolated.
 input bool InpRegimeTrendLowVolAllowed       = true;
 input bool InpRegimeTrendHighVolAllowed      = true;
 input bool InpRegimeRangeLowVolAllowed       = true;
@@ -239,6 +243,9 @@ string   g_histCoverageDetail = "";
 bool            g_rtFilterAtr     = true;
 bool            g_rtFilterVol     = true;
 bool            g_rtFilterDay     = false;
+bool            g_rtEntryWindow   = false;
+int             g_rtEntryWindowStartMin = 0;
+int             g_rtEntryWindowEndMin = 0;
 bool            g_rtTimeExit      = false;
 bool            g_rtDisplacement  = false;
 ORB_FVG_MODE    g_rtFvgMode       = ORB_FVG_OFF;
@@ -254,6 +261,7 @@ double          g_rtRiskPerTradePct = 1.0;
 double          g_rtVolumeMultiplier = 1.0;
 datetime        g_riskApplyFlashUntil = 0;
 datetime        g_volApplyFlashUntil = 0;
+datetime        g_entryWindowApplyFlashUntil = 0;
 bool            g_auditRuntime    = false;
 ENUM_TIMEFRAMES g_rtSignalTf      = PERIOD_M15;  // runtime signal timeframe
 int             g_rtDelayMin      = 5;            // runtime confirmation delay
@@ -390,6 +398,83 @@ OrbBtBreakout   g_btBreakouts[];
 //  UTILITY FUNCTIONS
 //=========================================================================
 int ParseClockMinutes(string v,int fb){StringTrimLeft(v);StringTrimRight(v);int p=StringFind(v,":");if(p<0)return fb;int h=(int)StringToInteger(StringSubstr(v,0,p));int m=(int)StringToInteger(StringSubstr(v,p+1));if(h<0||h>23||m<0||m>59)return fb;return h*60+m;}
+bool ParseStrictClockMinutes(string value,int &minutes)
+{
+   StringTrimLeft(value);StringTrimRight(value);minutes=-1;
+   if(StringLen(value)!=5||StringSubstr(value,2,1)!=":")return false;
+   int positions[]={0,1,3,4};
+   for(int i=0;i<ArraySize(positions);i++)
+   {
+      ushort ch=StringGetCharacter(value,positions[i]);
+      if(ch<'0'||ch>'9')return false;
+   }
+   int hour=(int)StringToInteger(StringSubstr(value,0,2));
+   int minute=(int)StringToInteger(StringSubstr(value,3,2));
+   if(hour<0||hour>23||minute<0||minute>59)return false;
+   minutes=hour*60+minute;return true;
+}
+string ClockMinutesText(int minutes)
+{
+   int normalized=((minutes%1440)+1440)%1440;
+   return StringFormat("%02d:%02d",normalized/60,normalized%60);
+}
+string RuntimeEntryWindowKey(string field)
+{
+   int inputStart=ParseClockMinutes(InpEntryWindowStartGmt,0);
+   int inputEnd=ParseClockMinutes(InpEntryWindowEndGmt,0);
+   return "ORB_EWIN."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."
+      +StringFormat("%I64d",ChartID())+".D"+(InpUseEntryTimeWindow?"1":"0")+"."
+      +IntegerToString(inputStart)+"."+IntegerToString(inputEnd)+"."+field;
+}
+bool PersistRuntimeEntryWindow()
+{
+   bool a=GlobalVariableSet(RuntimeEntryWindowKey("ON"),g_rtEntryWindow?1.0:0.0)>0;
+   bool b=GlobalVariableSet(RuntimeEntryWindowKey("START"),(double)g_rtEntryWindowStartMin)>0;
+   bool c=GlobalVariableSet(RuntimeEntryWindowKey("END"),(double)g_rtEntryWindowEndMin)>0;
+   if(a&&b&&c)GlobalVariablesFlush();
+   return a&&b&&c;
+}
+bool LoadRuntimeEntryWindow()
+{
+   int startMin=-1,endMin=-1;
+   if(!ParseStrictClockMinutes(InpEntryWindowStartGmt,startMin)||!ParseStrictClockMinutes(InpEntryWindowEndGmt,endMin))
+      return false;
+   g_rtEntryWindow=InpUseEntryTimeWindow;
+   g_rtEntryWindowStartMin=startMin;g_rtEntryWindowEndMin=endMin;
+   if(GlobalVariableCheck(RuntimeEntryWindowKey("ON")))g_rtEntryWindow=GlobalVariableGet(RuntimeEntryWindowKey("ON"))>0.5;
+   if(GlobalVariableCheck(RuntimeEntryWindowKey("START")))g_rtEntryWindowStartMin=(int)MathRound(GlobalVariableGet(RuntimeEntryWindowKey("START")));
+   if(GlobalVariableCheck(RuntimeEntryWindowKey("END")))g_rtEntryWindowEndMin=(int)MathRound(GlobalVariableGet(RuntimeEntryWindowKey("END")));
+   g_rtEntryWindowStartMin=MathMax(0,MathMin(1439,g_rtEntryWindowStartMin));
+   g_rtEntryWindowEndMin=MathMax(0,MathMin(1439,g_rtEntryWindowEndMin));
+   return true;
+}
+bool SetRuntimeEntryWindow(bool enabled,int startMin,int endMin)
+{
+   if(startMin<0||startMin>1439||endMin<0||endMin>1439)return false;
+   bool oldEnabled=g_rtEntryWindow;int oldStart=g_rtEntryWindowStartMin,oldEnd=g_rtEntryWindowEndMin;
+   g_rtEntryWindow=enabled;g_rtEntryWindowStartMin=startMin;g_rtEntryWindowEndMin=endMin;
+   if(PersistRuntimeEntryWindow())return true;
+   g_rtEntryWindow=oldEnabled;g_rtEntryWindowStartMin=oldStart;g_rtEntryWindowEndMin=oldEnd;
+   return false;
+}
+int GmtMinuteOfDay(datetime serverTime)
+{
+   datetime utc=serverTime-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+   MqlDateTime st;TimeToStruct(utc,st);return st.hour*60+st.min;
+}
+bool EntryWindowAllowsAt(datetime serverTime)
+{
+   if(!g_rtEntryWindow)return true;
+   int minute=GmtMinuteOfDay(serverTime);
+   if(g_rtEntryWindowStartMin==g_rtEntryWindowEndMin)return true;
+   if(g_rtEntryWindowStartMin<g_rtEntryWindowEndMin)
+      return minute>=g_rtEntryWindowStartMin&&minute<g_rtEntryWindowEndMin;
+   return minute>=g_rtEntryWindowStartMin||minute<g_rtEntryWindowEndMin;
+}
+string EntryWindowLabel()
+{
+   return g_rtEntryWindow?("GMT "+ClockMinutesText(g_rtEntryWindowStartMin)+"-"+ClockMinutesText(g_rtEntryWindowEndMin)):"WIN OFF";
+}
 datetime MakeDateTime(int y,int mo,int d,int h,int mi,int s=0){MqlDateTime st;ZeroMemory(st);st.year=y;st.mon=mo;st.day=d;st.hour=h;st.min=mi;st.sec=s;return StructToTime(st);}
 int DayOfWeekForDate(int y,int mo,int d){MqlDateTime st;TimeToStruct(MakeDateTime(y,mo,d,12,0,0),st);return st.day_of_week;}
 int NthSunday(int y,int mo,int nth){int fd=DayOfWeekForDate(y,mo,1);int fs=1+((7-fd)%7);return fs+(nth-1)*7;}
@@ -1596,7 +1681,7 @@ void DeleteStaleOrbLiveLevelObjects(string activeTicketKeys)
 string OrbBridgePlanKey(string field)
 {
    return "OBP."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."+
-      OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+"."+field;
+      OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+".C"+IntegerToString(g_orbBridgeChannel)+"."+field;
 }
 
 void StoreOrbBridgePlan(int dir,datetime signalTime,double entry,double sl,double tp,double halfTrigger)
@@ -1905,6 +1990,7 @@ bool FindHistBreakoutAfter(datetime from,datetime to,double hi,double lo,datetim
    {
       datetime closeTime = BarCloseTime(g_rtSignalTf, r[i].time);
       if(closeTime<effectiveFrom||closeTime>to)continue;
+      if(!EntryWindowAllowsAt(closeTime))continue;
       string d="";
       if(r[i].close>hi+mb)d="BUY";
       else if(r[i].close<lo-mb)d="SELL";
@@ -3436,7 +3522,7 @@ void DrawDashboard()
 {
    if(!InpShowDashboard){DeleteDash();return;}
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=740;
+   int W=620,H=752;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
@@ -3495,7 +3581,7 @@ void UpdateDashboard()
    string delayTxt=g_rtUseDelay?IntegerToString(g_rtDelayMin)+"m delay":"no delay";
    CreateLabel("DASH_L2",x+12,y+50,
       SessionClockLabel()+" | GMT+"+DoubleToString(InpBrokerGmtOffsetHours,1)
-      +" | "+delayTxt+" | Spread "+IntegerToString(CurrentSpreadPoints())+"pt",
+      +" | "+delayTxt+" | "+EntryWindowLabel()+" | Spread "+IntegerToString(CurrentSpreadPoints())+"pt",
       muted,8);
    CreateLabel("DASH_L3",x+12,y+66,
       "ORB H "+DoubleToString(g_orbHigh,_Digits)+" L "+DoubleToString(g_orbLow,_Digits)
@@ -3546,7 +3632,15 @@ void UpdateDashboard()
    CreateButton("BTN_BRIDGE_PUB",x+424,y+490,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
    CreateButton("BTN_BRIDGE_ONLY",x+486,y+490,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
    CreateButton("BTN_BRIDGE_NATIVE",x+552,y+490,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
-   CreateLabel("DASH_BRIDGE",x+424,y+516,"CT "+g_orbBridgeStatus,C'134,158,182',7);
+   CreateLabel("DASH_BRIDGE",x+424,y+516,"BRIDGE "+g_orbBridgeStatus+" C"+IntegerToString(g_orbBridgeChannel),C'134,158,182',7);
+   bool winApplied=(g_entryWindowApplyFlashUntil>TimeLocal());
+   CreateButton("BTN_ENTRY_WINDOW",x+12,y+536,74,18,g_rtEntryWindow?"WIN ON":"WIN OFF",g_rtEntryWindow?C'30,150,95':C'80,80,80');
+   CreateEdit("EDIT_ENTRY_WIN_START",x+92,y+536,52,18,ClockMinutesText(g_rtEntryWindowStartMin));
+   CreateEdit("EDIT_ENTRY_WIN_END",x+150,y+536,52,18,ClockMinutesText(g_rtEntryWindowEndMin));
+   CreateButton("BTN_ENTRY_WIN_APPLY",x+208,y+536,90,18,winApplied?"APPLIED":"APPLY GMT",winApplied?C'30,150,95':C'38,101,176');
+   CreateLabel("DASH_BRIDGE_CH",x+424,y+540,"CH",C'134,158,182',8);
+   CreateEdit("EDIT_BRIDGE_CH",x+448,y+536,42,18,IntegerToString(g_orbBridgeChannel));
+   CreateButton("BTN_BRIDGE_CH_APPLY",x+494,y+536,88,18,"APPLY CH",C'38,101,176');
 
    // Separator
    CreateRect("DASH_SEP2",x+8,y+132,W-16,1,C'65,116,172',C'65,116,172');
@@ -3787,7 +3881,13 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    bt=iTime(_Symbol,g_rtSignalTf,sh);
    if(bt<=0||bt==g_lastSignalBarTime)return false;
    if(InpUseClosedBarBreakout&&bt==g_lastCheckedSignalBarTime)return false;
-   if(BarCloseTime(g_rtSignalTf, bt)<effectiveStart)return false; // signal is only known after bar close
+   datetime availableTime=OrbSignalAvailableTime(bt);
+   if(availableTime<effectiveStart)return false; // signal is only known after bar close
+   if(!EntryWindowAllowsAt(availableTime))
+   {
+      if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
+      return false;
+   }
    sc=iClose(_Symbol,g_rtSignalTf,sh);if(sc<=0)return false;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
    if(sc>g_orbHigh+mb)dir="BUY";else if(sc<g_orbLow-mb)dir="SELL";
@@ -4213,6 +4313,13 @@ bool ImbalanceReady(string &detail)
 
 bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string entryDetail)
 {
+   if(!EntryWindowAllowsAt(TimeCurrent()))
+   {
+      g_lastFilterReason="ENTRY WINDOW";g_lastExecStatus="WINDOW_BLOCKED";
+      Audit("entry_window_block",dir,0,signalClose,0,0,"window="+EntryWindowLabel()+" "+entryDetail);
+      ClearRetestState("entry_window_closed");ClearImbalanceState("entry_window_closed");
+      return false;
+   }
    string rawDir=dir;
    string execDir=EffectiveOrbDirection(rawDir);
    // Re-check at the final execution boundary so a retest/imbalance pending
@@ -4329,6 +4436,18 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
 void TryOpenSignal()
 {
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
+   if(!EntryWindowAllowsAt(TimeCurrent()))
+   {
+      if(InpUseClosedBarBreakout)
+      {
+         datetime blockedBar=iTime(_Symbol,g_rtSignalTf,1);
+         if(blockedBar>0)g_lastCheckedSignalBarTime=blockedBar;
+      }
+      if(g_retestPending)ClearRetestState("entry_window_closed");
+      if(g_imbPending)ClearImbalanceState("entry_window_closed");
+      g_lastExecStatus="WINDOW_CLOSED";
+      return;
+   }
    if(InpOneTradePerNyDay&&g_tradeTaken)return;if(OwnPositionExists())return;
    if(g_imbPending)
    {
@@ -4415,6 +4534,11 @@ int OnInit()
    LoadRuntimeRiskPct();
    LoadRuntimeInvertMode();
    LoadRuntimeVolumeMultiplier();
+   if(!LoadRuntimeEntryWindow())
+   {
+      Print("ORB15v3 invalid entry window; required HH:MM start/end GMT");
+      return INIT_PARAMETERS_INCORRECT;
+   }
    g_rtTimeExit=InpUseTimeExit;g_rtDisplacement=InpUseDisplacementFilter;g_rtFvgMode=InpFvgMode;g_rtBEOnTp1=InpMoveToBEOnTp1;g_rtEaEnabled=InpEaEnabled;
    g_rtExitMode=InpExitEngineMode;
    g_rtTargetMode=InpTargetMode;
@@ -4468,7 +4592,8 @@ int OnInit()
    if(!IsTesterMode()){DrawDashboard();DrawHistoricalSignals();DrawOrbLiveTradeLevels();}
    if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),"/",DoubleToString(InpTp4R,1),"/",DoubleToString(InpTp5R,1),"/",DoubleToString(InpTp6R,1),
-                         " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF");
+                         " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF",
+                         " channel=",g_orbBridgeChannel," entry_window=",EntryWindowLabel());
    return INIT_SUCCEEDED;
 }
 
@@ -4589,6 +4714,39 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_DAY"){g_rtFilterDay=!g_rtFilterDay;needRedraw=true;}
+   else if(sparam==PREFIX+"BTN_ENTRY_WINDOW")
+   {
+      if(SetRuntimeEntryWindow(!g_rtEntryWindow,g_rtEntryWindowStartMin,g_rtEntryWindowEndMin))
+      {
+         g_lastExecStatus=g_rtEntryWindow?"ENTRY_WINDOW_ON":"ENTRY_WINDOW_OFF";
+         ClearRetestState("entry_window_toggled");ClearImbalanceState("entry_window_toggled");
+      }
+      else g_lastExecStatus="ENTRY_WINDOW_SAVE_FAIL";
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_ENTRY_WIN_APPLY")
+   {
+      int startMin=-1,endMin=-1;
+      string startText=ObjectGetString(0,PREFIX+"EDIT_ENTRY_WIN_START",OBJPROP_TEXT);
+      string endText=ObjectGetString(0,PREFIX+"EDIT_ENTRY_WIN_END",OBJPROP_TEXT);
+      if(!ParseStrictClockMinutes(startText,startMin)||!ParseStrictClockMinutes(endText,endMin)
+         ||!SetRuntimeEntryWindow(g_rtEntryWindow,startMin,endMin))
+      {
+         g_lastExecStatus="ENTRY_WINDOW_INVALID_HH_MM";
+      }
+      else
+      {
+         g_entryWindowApplyFlashUntil=TimeLocal()+2;
+         g_lastExecStatus="ENTRY_WINDOW_APPLIED";
+         ClearRetestState("entry_window_changed");ClearImbalanceState("entry_window_changed");
+         Audit("entry_window_applied","",0,0,0,0,"window="+EntryWindowLabel());
+      }
+      ObjectSetString(0,PREFIX+"EDIT_ENTRY_WIN_START",OBJPROP_TEXT,ClockMinutesText(g_rtEntryWindowStartMin));
+      ObjectSetString(0,PREFIX+"EDIT_ENTRY_WIN_END",OBJPROP_TEXT,ClockMinutesText(g_rtEntryWindowEndMin));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
+   }
    else if(sparam==PREFIX+"BTN_TIME"){g_rtTimeExit=!g_rtTimeExit;needRedraw=true;}
    else if(sparam==PREFIX+"BTN_DISP"){g_rtDisplacement=!g_rtDisplacement;needRedraw=true;}
    else if(sparam==PREFIX+"BTN_FVG"){CycleFvgMode();needRedraw=true;}
@@ -4733,6 +4891,20 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_BRIDGE_NATIVE")
    {
       g_orbNativeWithBridgeOnly=!g_orbNativeWithBridgeOnly;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_BRIDGE_CH_APPLY")
+   {
+      int requested=(int)StringToInteger(ObjectGetString(0,PREFIX+"EDIT_BRIDGE_CH",OBJPROP_TEXT));
+      requested=OrbProClampChannel(requested);
+      if(requested!=g_orbBridgeChannel&&(OwnPositionExists()||g_orbBridgePlanActive||g_retestPending||g_imbPending))
+         g_lastExecStatus="CHANNEL_BLOCKED_ACTIVE_LIFECYCLE";
+      else
+      {
+         OrbProApplyChannel(requested);
+         g_lastExecStatus="CHANNEL_APPLIED_C"+IntegerToString(g_orbBridgeChannel);
+      }
+      ObjectSetString(0,PREFIX+"EDIT_BRIDGE_CH",OBJPROP_TEXT,IntegerToString(g_orbBridgeChannel));
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_BTF_SIGNAL"){g_btFillMode=BT_FILL_SIGNAL_CLOSE;needRedraw=true;}

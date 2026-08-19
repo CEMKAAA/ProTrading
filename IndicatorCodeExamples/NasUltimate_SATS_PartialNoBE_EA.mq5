@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.51"
+#property version "1.54"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -75,6 +75,9 @@ input bool   InpUseTradingTimeWindow = true;
 input string InpTradeStartTime = "09:00";
 input string InpTradeEndTime = "14:00";
 input bool   InpWindowReverseExit = false; // Close only the opposite managed position on an out-of-window signal.
+input bool   InpUseVolumeFilter = false;   // ORB parity: signal tick volume must meet the previous-20-bar average threshold.
+input double InpVolumeMultiplier = 1.00;   // Required signal volume = previous-20-bar average x this multiplier.
+input string InpTimedExitTime = "";        // Maximum holding duration HH:MM after entry. Empty disables it; 04:00 means four hours.
 input bool   InpSpreadGovernorEnabled = true;
 input double InpSpreadGoodPoints = 0.0;    // 0 = auto by symbol
 input double InpSpreadNormalPoints = 0.0;  // 0 = auto by symbol
@@ -274,6 +277,18 @@ struct NasRegimeCloseRetryState
 };
 NasRegimeCloseRetryState g_nasRegimeCloseRetry;
 
+struct NasTimedExitCloseState
+{
+   bool     active;
+   datetime deadline;
+   int      closeDirection;
+   bool     bridgeDone;
+   bool     localDone;
+   datetime nextRetryLocal;
+   int      attempts;
+};
+NasTimedExitCloseState g_nasTimedExitClose;
+
 int      g_selectedTpLegRuntime = 6;
 double   g_selectedTargetRRuntime = 3.0;
 int      g_hcBeTpLegRuntime = 0;
@@ -282,6 +297,14 @@ int      g_invertReferenceTpLegRuntime = 0;
 double   g_invertTargetRRuntime = 0.0;
 bool     g_invertTradeModeRuntime = false;
 bool     g_windowReverseExitRuntime = false;
+bool     g_volumeFilterRuntime = false;
+double   g_volumeMultiplierRuntime = 1.0;
+string   g_timedExitTimeRuntime = "";
+uint     g_volumeApplyFeedbackUntilMs = 0;
+uint     g_timedExitApplyFeedbackUntilMs = 0;
+uint     g_lastTimedExitGuardMs = 0;
+int      g_timedExitBridgePlanDirection = 0;
+datetime g_timedExitBridgePlanSignalTime = 0;
 double   g_lastInvertedFinalTp = 0.0;
 NAS_TP_MANAGEMENT_MODE g_tpManagementModeRuntime = NAS_TP_FIXED_SELECTED_LEG;
 bool     g_ftmoModeRuntime = false;
@@ -378,6 +401,151 @@ bool PersistNasDailyGuardRuntime()
       GlobalVariablesFlush();
    return profitOk && lossOk;
 }
+
+string NasInstanceRuntimeKey(const string kind)
+{
+   long chartPart = (long)(ChartID() % 1000000);
+   return "NAS_CFG_" + kind + "_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      + "_" + IntegerToString(InpMagic) + "_" + IntegerToString(chartPart);
+}
+
+bool NormalizeOptionalDuration(const string value, string &normalized, int &minutes)
+{
+   string text = value;
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   normalized = "";
+   minutes = -1;
+   if(text == "")
+      return true;
+   if(StringLen(text) != 5 || StringSubstr(text, 2, 1) != ":")
+      return false;
+   int digitPositions[] = {0, 1, 3, 4};
+   for(int i = 0; i < ArraySize(digitPositions); ++i)
+   {
+      ushort ch = StringGetCharacter(text, digitPositions[i]);
+      if(ch < '0' || ch > '9')
+         return false;
+   }
+   int hour = (int)StringToInteger(StringSubstr(text, 0, 2));
+   int minute = (int)StringToInteger(StringSubstr(text, 3, 2));
+   if(hour < 0 || hour > 99 || minute < 0 || minute > 59)
+      return false;
+   minutes = hour * 60 + minute;
+   if(minutes <= 0)
+      return false;
+   normalized = StringFormat("%02d:%02d", hour, minute);
+   return true;
+}
+
+double ClampNasVolumeMultiplier(const double value)
+{
+   return NormalizeDouble(MathMax(0.05, MathMin(20.0, value)), 4);
+}
+
+void LoadNasOperationalRuntime()
+{
+   g_volumeFilterRuntime = InpUseVolumeFilter;
+   g_volumeMultiplierRuntime = ClampNasVolumeMultiplier(InpVolumeMultiplier);
+   string normalized = "";
+   int minutes = -1;
+   if(NormalizeOptionalDuration(InpTimedExitTime, normalized, minutes))
+      g_timedExitTimeRuntime = normalized;
+   else
+      g_timedExitTimeRuntime = "";
+   if(IsTesterMode())
+      return;
+
+   string volEnabledKey = NasInstanceRuntimeKey("VE");
+   string volMultiplierKey = NasInstanceRuntimeKey("VM");
+   string timedExitKey = NasInstanceRuntimeKey("TE");
+   if(GlobalVariableCheck(volEnabledKey))
+      g_volumeFilterRuntime = GlobalVariableGet(volEnabledKey) > 0.5;
+   if(GlobalVariableCheck(volMultiplierKey))
+      g_volumeMultiplierRuntime = ClampNasVolumeMultiplier(GlobalVariableGet(volMultiplierKey));
+   if(GlobalVariableCheck(timedExitKey))
+   {
+      int encoded = (int)MathRound(GlobalVariableGet(timedExitKey));
+      if(encoded <= 0)
+         g_timedExitTimeRuntime = "";
+      else
+      {
+         int savedMinutes = MathMax(1, MathMin(5999, encoded - 1));
+         g_timedExitTimeRuntime = StringFormat("%02d:%02d", savedMinutes / 60, savedMinutes % 60);
+      }
+   }
+}
+
+bool PersistNasVolumeRuntime()
+{
+   if(IsTesterMode())
+      return true;
+   bool enabledOk = GlobalVariableSet(NasInstanceRuntimeKey("VE"), g_volumeFilterRuntime ? 1.0 : 0.0) > 0;
+   bool multiplierOk = GlobalVariableSet(NasInstanceRuntimeKey("VM"), g_volumeMultiplierRuntime) > 0;
+   if(enabledOk && multiplierOk)
+      GlobalVariablesFlush();
+   return enabledOk && multiplierOk;
+}
+
+bool PersistNasTimedExitRuntime()
+{
+   if(IsTesterMode())
+      return true;
+   string normalized = "";
+   int minutes = -1;
+   if(!NormalizeOptionalDuration(g_timedExitTimeRuntime, normalized, minutes))
+      return false;
+   double encoded = minutes < 0 ? 0.0 : (double)(minutes + 1);
+   bool ok = GlobalVariableSet(NasInstanceRuntimeKey("TE"), encoded) > 0;
+   if(ok)
+      GlobalVariablesFlush();
+   return ok;
+}
+
+void LoadNasTimedExitBridgePlan()
+{
+   g_timedExitBridgePlanDirection = 0;
+   g_timedExitBridgePlanSignalTime = 0;
+   if(IsTesterMode())
+      return;
+   string directionKey = NasInstanceRuntimeKey("BD");
+   string timeKey = NasInstanceRuntimeKey("BT");
+   if(GlobalVariableCheck(directionKey))
+      g_timedExitBridgePlanDirection = (int)MathRound(GlobalVariableGet(directionKey));
+   if(GlobalVariableCheck(timeKey))
+      g_timedExitBridgePlanSignalTime = (datetime)MathRound(GlobalVariableGet(timeKey));
+   if(MathAbs(g_timedExitBridgePlanDirection) != 1 || g_timedExitBridgePlanSignalTime <= 0)
+   {
+      g_timedExitBridgePlanDirection = 0;
+      g_timedExitBridgePlanSignalTime = 0;
+   }
+}
+
+void RememberNasTimedExitBridgePlan(const int direction, const datetime signalTime)
+{
+   if(MathAbs(direction) != 1 || signalTime <= 0)
+      return;
+   g_timedExitBridgePlanDirection = direction;
+   g_timedExitBridgePlanSignalTime = signalTime;
+   if(IsTesterMode())
+      return;
+   bool directionOk = GlobalVariableSet(NasInstanceRuntimeKey("BD"), direction) > 0;
+   bool timeOk = GlobalVariableSet(NasInstanceRuntimeKey("BT"), (double)signalTime) > 0;
+   if(directionOk && timeOk)
+      GlobalVariablesFlush();
+}
+
+void ClearNasTimedExitBridgePlan()
+{
+   g_timedExitBridgePlanDirection = 0;
+   g_timedExitBridgePlanSignalTime = 0;
+   if(IsTesterMode())
+      return;
+   GlobalVariableDel(NasInstanceRuntimeKey("BD"));
+   GlobalVariableDel(NasInstanceRuntimeKey("BT"));
+   GlobalVariablesFlush();
+}
+
 bool AccountRiskRuntimeEnabled()
 {
    return (g_ftmoModeRuntime || g_riskLotOnlyRuntime);
@@ -1098,6 +1266,64 @@ int ParseClockMinutes(const string value, const int fallbackMinutes)
    return hour * 60 + minute;
 }
 
+bool NasTimedExitConfigured()
+{
+   string normalized = "";
+   int minutes = -1;
+   return NormalizeOptionalDuration(g_timedExitTimeRuntime, normalized, minutes) && minutes > 0;
+}
+
+int NasTimedExitMinutes()
+{
+   string normalized = "";
+   int minutes = -1;
+   return NormalizeOptionalDuration(g_timedExitTimeRuntime, normalized, minutes) ? minutes : -1;
+}
+
+datetime NasTimedExitDeadlineForEntry(const datetime entryServerTime)
+{
+   int holdMinutes = NasTimedExitMinutes();
+   if(holdMinutes <= 0 || entryServerTime <= 0)
+      return 0;
+   return entryServerTime + (datetime)(holdMinutes * 60);
+}
+
+bool NasVolumeFilterAllows(const MqlRates &rates[], const int signalIndex,
+                           string &reason, double &signalVolume, double &averageVolume)
+{
+   reason = "";
+   signalVolume = 0.0;
+   averageVolume = 0.0;
+   if(!g_volumeFilterRuntime)
+      return true;
+   const int lookback = 20;
+   if(signalIndex < lookback || signalIndex >= ArraySize(rates))
+   {
+      reason = "VOL_DATA_FAIL_OPEN";
+      return true;
+   }
+   signalVolume = (double)rates[signalIndex].tick_volume;
+   double sum = 0.0;
+   for(int i = signalIndex - 1; i >= signalIndex - lookback; --i)
+   {
+      if(rates[i].tick_volume > 0)
+         sum += (double)rates[i].tick_volume;
+   }
+   averageVolume = sum / (double)lookback;
+   if(averageVolume <= 0.0)
+   {
+      reason = "VOL_DATA_FAIL_OPEN";
+      return true;
+   }
+   double threshold = averageVolume * g_volumeMultiplierRuntime;
+   if(signalVolume < threshold)
+   {
+      reason = "VOL_LOW " + DoubleToString(signalVolume, 0) + "<" + DoubleToString(threshold, 0);
+      return false;
+   }
+   return true;
+}
+
 int ServerClockMinutes()
 {
    MqlDateTime dt;
@@ -1421,6 +1647,8 @@ int OnInit()
    g_tradeStartTimeRuntime = InpTradeStartTime;
    g_tradeEndTimeRuntime = InpTradeEndTime;
    g_windowReverseExitRuntime = InpWindowReverseExit;
+   LoadNasOperationalRuntime();
+   LoadNasTimedExitBridgePlan();
    g_totalLotRuntime = InpTotalLot;
    g_fixedLotRuntime = InpFixedLot;
    g_spreadMaxPointsRuntime = MathMax(0.0, InpSpreadWidePoints);
@@ -1528,6 +1756,7 @@ void OnTimer()
       return;
    NasProTimer();
    NasRegimeRetryPendingClose();
+   EnforceNasTimedExit();
    if(g_nasRegimeFilterRuntime)
    {
       bool wasWarmupPending = g_nasRegimeWarmupPending;
@@ -1555,6 +1784,7 @@ void OnTimer()
 
 void OnTick()
 {
+   EnforceNasTimedExit();
    EnforceDailyPnlGuard();
    EnforceAccountRiskBreach();
    ManageOpenPositions();
@@ -1647,6 +1877,15 @@ void PrintStartupDiagnostics()
          " volume_min=", DoubleToString(minLot, 8),
          " volume_max=", DoubleToString(maxLot, 8),
          " volume_step=", DoubleToString(step, 8));
+   Print("NAS SATS operational filters volume_filter=", (g_volumeFilterRuntime ? "ON" : "OFF"),
+         " volume_multiplier=", DoubleToString(g_volumeMultiplierRuntime, 4),
+         " volume_rule=signal_tick_volume_vs_previous_20_bar_average",
+         " max_hold=", (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF"),
+         " max_hold_minutes=", NasTimedExitMinutes(),
+         " max_hold_mode=elapsed_from_position_open",
+         " timed_exit_bridge_plan=", (g_timedExitBridgePlanDirection > 0 ? "BUY" : (g_timedExitBridgePlanDirection < 0 ? "SELL" : "NONE")),
+         " timed_exit_bridge_signal=", (g_timedExitBridgePlanSignalTime > 0
+            ? TimeToString(g_timedExitBridgePlanSignalTime, TIME_DATE|TIME_SECONDS) : "NONE"));
    Print("NAS SATS account risk enabled=", AccountRiskRuntimeEnabled(),
          " advanced_lot=", InpAdvancedLotEngineEnabled,
          " scoped_magic=", RuntimeMagic(),
@@ -2524,7 +2763,7 @@ void ProcessSignalBar()
       return;
    }
 
-      RefreshTradingWindowSessionLock(TimeCurrent(), true);
+   RefreshTradingWindowSessionLock(TimeCurrent(), true);
 
    if(g_historyUseAcceptedFilterRuntime && direction == g_lastExecutedDirection)
    {
@@ -2540,6 +2779,37 @@ void ProcessSignalBar()
       g_lastExecutionStatus = "BLOCKED";
       g_lastExecutionBlockReason = "same_direction_waiting_for_opposite";
       RequestHistoryRefresh();
+      return;
+   }
+
+   string volumeReason = "";
+   double signalVolume = 0.0;
+   double averageVolume = 0.0;
+   if(!NasVolumeFilterAllows(rates, i, volumeReason, signalVolume, averageVolume))
+   {
+      g_lastSignalTime = rates[i].time;
+      g_lastSignalKeyDirection = direction;
+      g_lastExecutionStatus = "VOL FILTERED";
+      g_lastExecutionBlockReason = volumeReason;
+      MarkDirectionProcessedOnBar(rates[i].time, direction);
+      if(InpDrawExecutionArrows)
+         DrawBlockedSignal(direction, rates[i].time, rates[i].high, rates[i].low,
+            NasSignalText(p[i]), "VOL");
+      NasProAuditWrite("volume_filter_entry_rejected",
+         "nas|" + IntegerToString((long)rates[i].time), direction,
+         0.0, 0.0, 0.0, 0.0,
+         "reason=" + volumeReason
+         + " signal_volume=" + DoubleToString(signalVolume, 0)
+         + " average20=" + DoubleToString(averageVolume, 2)
+         + " multiplier=" + DoubleToString(g_volumeMultiplierRuntime, 4));
+      Print("NAS SATS EA volume filter blocked signal dir=", (direction > 0 ? "BUY" : "SELL"),
+            " signal_bar=", TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+            " signal_volume=", DoubleToString(signalVolume, 0),
+            " average20=", DoubleToString(averageVolume, 2),
+            " multiplier=", DoubleToString(g_volumeMultiplierRuntime, 4),
+            " reason=", volumeReason);
+      RequestHistoryRefresh();
+      UpdateDashboard();
       return;
    }
 
@@ -2692,6 +2962,8 @@ void ProcessSignalBar()
    bool bridgeShapeSupported = !g_nasBridgeEnabledRuntime || UseSingleOrderTpMode();
    bool bridgePublishOk = bridgeShapeSupported && NasProPublishCurrentSignal(rates[i].time, direction);
    bool bridgePublished = g_nasBridgeEnabledRuntime && bridgePublishOk;
+   if(bridgePublished)
+      RememberNasTimedExitBridgePlan(direction, TimeCurrent());
    g_lastSignalBridgePublished = bridgePublished;
    if(!bridgeShapeSupported)
       NasProAuditWrite("bridge_shape_block", "nas|" + IntegerToString((long)rates[i].time), direction,
@@ -3181,6 +3453,13 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
          break;
       }
    }
+   bool timedExitBoundary = false;
+   datetime timedExitTime = NasTimedExitDeadlineForEntry(startTime);
+   if(timedExitTime > 0 && timedExitTime <= endTime)
+   {
+      endTime = MathMax(startTime, timedExitTime);
+      timedExitBoundary = true;
+   }
    if(endTime <= startTime)
       return false;
 
@@ -3197,7 +3476,7 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
    MqlTick ticks[];
    datetime replayEndTime = MathMin(endTime, TimeCurrent());
    ulong tickEndMs = (ulong)replayEndTime * 1000;
-   if(reverseTime > 0)
+   if(reverseTime > 0 || timedExitBoundary)
       tickEndMs += 60000; // Include the first executable quote at/after the replacement boundary.
    int copied = useTicks
       ? CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, (ulong)startTime * 1000, tickEndMs)
@@ -3218,9 +3497,11 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
    {
       ulong firstMs = ticks[firstValidTick].time_msc > 0 ? (ulong)ticks[firstValidTick].time_msc : (ulong)ticks[firstValidTick].time * 1000;
       ulong lastMs = ticks[lastValidTick].time_msc > 0 ? (ulong)ticks[lastValidTick].time_msc : (ulong)ticks[lastValidTick].time * 1000;
-      bool endCovered = reverseTime > 0
+      bool endCovered = (reverseTime > 0 || timedExitBoundary)
          ? lastMs >= (ulong)reverseTime * 1000
          : lastMs + 60000 >= (ulong)replayEndTime * 1000;
+      if(timedExitBoundary)
+         endCovered = lastMs >= (ulong)endTime * 1000;
       tickCoverageComplete = firstMs <= (ulong)(startTime + 60) * 1000 && endCovered;
    }
    if(copied > 0 && tickCoverageComplete)
@@ -3233,11 +3514,13 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
          double closePx = direction > 0 ? ticks[k].bid : ticks[k].ask;
          ulong tickMs = ticks[k].time_msc > 0 ? (ulong)ticks[k].time_msc : (ulong)ticks[k].time * 1000;
 
-         if(reverseTime > 0 && tickMs >= (ulong)reverseTime * 1000)
+         if((reverseTime > 0 || timedExitBoundary) && tickMs >= (ulong)endTime * 1000)
          {
             double exitR = NasExitR(direction, entry, sl, closePx);
             pnlR += (halfDone && halfCloseEnabled) ? exitR * 0.5 : exitR;
-            outcome = (closeEventDirection == direction ? "replace tick" : "reverse tick");
+            outcome = timedExitBoundary
+               ? "TIME_EXIT tick"
+               : (closeEventDirection == direction ? "replace tick" : "reverse tick");
             closed = true;
             won = pnlR > 0.0;
             return true;
@@ -3306,7 +3589,7 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
    }
 
    MqlRates m1[];
-   datetime m1RequestEnd = reverseTime > 0 ? reverseTime + 300 : replayEndTime;
+   datetime m1RequestEnd = (reverseTime > 0 || timedExitBoundary) ? endTime + 300 : replayEndTime;
    int m1Copied = CopyRates(_Symbol, PERIOD_M1, startTime, m1RequestEnd, m1);
    if(m1Copied > 0)
    {
@@ -3321,13 +3604,15 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
       {
       if(m1[i].time < startTime)
          continue;
-      if(reverseTime > 0 && m1[i].time >= reverseTime)
+      if((reverseTime > 0 || timedExitBoundary) && m1[i].time >= endTime)
       {
          double reverseSpread = MathMax(0.0, (double)m1[i].spread) * _Point;
          double exitPx = m1[i].open + (direction < 0 ? reverseSpread : 0.0);
          double exitR = NasExitR(direction, entry, sl, exitPx);
          pnlR += (halfDone && halfCloseEnabled) ? exitR * 0.5 : exitR;
-         outcome = (closeEventDirection == direction ? "replace m1" : "reverse m1");
+         outcome = timedExitBoundary
+            ? "TIME_EXIT m1"
+            : (closeEventDirection == direction ? "replace m1" : "reverse m1");
          closed = true;
          won = pnlR > 0.0;
          return true;
@@ -3392,7 +3677,7 @@ bool SimulateHistoricalSignalByTicks(const MqlRates &rates[],
       }
       }
 
-      if(reverseTime > 0)
+      if(reverseTime > 0 || timedExitBoundary)
          return false;
 
       int lastM1 = m1Copied - 1;
@@ -3479,9 +3764,24 @@ bool SimulateHistoricalSignal(const MqlRates &rates[],
    double activeSl = sl;
    double halfR = halfEnabled ? NasTargetR(direction, entry, sl, hcPrice) : 0.0;
    int end = MathMin(lastIndex, ArraySize(rates) - 1);
+   int executionIndex = signalIndex + 1;
+   datetime timedExitDeadline = executionIndex <= end
+      ? NasTimedExitDeadlineForEntry(rates[executionIndex].time)
+      : 0;
 
    for(int j = signalIndex + 1; j <= end; j++)
    {
+      if(timedExitDeadline > 0 && rates[j].time >= timedExitDeadline)
+      {
+         double timedExitSpread = MathMax(0.0, (double)rates[j].spread) * _Point;
+         double timedExitPrice = rates[j].open + (direction < 0 ? timedExitSpread : 0.0);
+         double exitR = NasExitR(direction, entry, sl, timedExitPrice);
+         pnlR += (halfDone && halfCloseEnabled) ? exitR * 0.5 : exitR;
+         outcome = "TIME_EXIT bar";
+         closed = true;
+         won = pnlR > 0.0;
+         return true;
+      }
       bool closeAtNextOpen = false;
       int closeEventDirection = 0;
       if(p[j].buy || p[j].sell)
@@ -3710,6 +4010,7 @@ void DrawRecentSignalHistory()
    int regimeUnclassified = 0;
    int spreadSkipped = 0;
    int spreadUnknown = 0;
+   int volumeSkipped = 0;
    int acceptedTotal = 0;
    RegimeV3EnsureTimeline(false);
    for(int ai = 0; ai <= copied - 2; ai++)
@@ -3747,6 +4048,16 @@ void DrawRecentSignalHistory()
       }
 
       candidateSignal[ai] = true;
+      string historicalVolumeReason = "";
+      double historicalSignalVolume = 0.0;
+      double historicalAverageVolume = 0.0;
+      if(!NasVolumeFilterAllows(rates, ai, historicalVolumeReason,
+                                historicalSignalVolume, historicalAverageVolume))
+      {
+         if(inAuditWindow)
+            volumeSkipped++;
+         continue;
+      }
       int executionIndex = ai + 1;
       if(InpSpreadGovernorEnabled && g_spreadMaxPointsRuntime > 0.0 && executionIndex < copied)
       {
@@ -3928,7 +4239,8 @@ void DrawRecentSignalHistory()
       datetime cacheEndTime = rates[MathMin(copied - 2, ArraySize(rates) - 1)].time;
       bool useTickReplay = g_auditWeeksRuntime <= 20;
        string simKey = NasHistorySimKey(rates[i].time, direction, entry, sl, finalTp, hcPrice, finalLeg, cacheEndTime)
-          + "|fill=" + (useTickReplay ? "tick_m1_bar" : "m1_bar");
+          + "|fill=" + (useTickReplay ? "tick_m1_bar" : "m1_bar")
+          + "|max_hold=" + (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF");
       if(!NasHistorySimCacheGet(simKey, maxTp, outcome, pnlR, closed, won))
       {
          bool simulated = SimulateHistoricalSignalByTicks(rates, p, closeSignal, useTickReplay, i, direction, copied - 2, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed, won);
@@ -4071,6 +4383,8 @@ void DrawRecentSignalHistory()
                                                        : ("TP " + TargetRText(auditTargetR) + " " + NasRiskRewardText(auditTargetR));
    g_historyAuditDetail = auditTpDescriptor
                           + " | HCBE " + EffectiveHcBeText()
+                          + " | VOL " + string(g_volumeFilterRuntime ? "ON x" + DoubleToString(g_volumeMultiplierRuntime, 2) : "OFF")
+                          + " | HOLD " + (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF")
                           + " | ATRbuf " + DoubleToString(g_swingBufferAtrRuntime * 100.0, 0) + "%"
                           + " | SL% " + DoubleToString(g_finalRiskScalePctRuntime, 0)
                           + " | PipSL " + DoubleToString(g_pipSlDistanceRuntime, 1);
@@ -4097,6 +4411,7 @@ void DrawRecentSignalHistory()
                            + " | accepted " + IntegerToString(acceptedTotal) + "/" + IntegerToString(rawSignals)
                            + " | win " + IntegerToString(windowSkipped)
                            + " dup " + IntegerToString(sameDirectionSkipped)
+                           + " vol " + IntegerToString(volumeSkipped)
                            + " macro " + IntegerToString(macroRegimeSkipped)
                            + " v3 " + IntegerToString(regimeSkipped)
                            + " spr " + IntegerToString(spreadSkipped)
@@ -4131,6 +4446,7 @@ void DrawRecentSignalHistory()
          " accepted_signals=", acceptedTotal,
          " window_skipped=", windowSkipped,
          " same_direction_skipped=", sameDirectionSkipped,
+         " volume_skipped=", volumeSkipped,
          " macro_regime_skipped=", macroRegimeSkipped,
          " spread_skipped=", spreadSkipped,
          " spread_unknown=", spreadUnknown,
@@ -5364,6 +5680,142 @@ void CloseManagedPositions()
    CloseManagedPositionsDirection(0);
 }
 
+bool NasTimedExitNativePlan(int &direction, datetime &entryTime)
+{
+   direction = 0;
+   entryTime = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsManagedPosition())
+         continue;
+      long type = PositionGetInteger(POSITION_TYPE);
+      int candidateDirection = type == POSITION_TYPE_BUY ? 1 : -1;
+      datetime candidateTime = (datetime)PositionGetInteger(POSITION_TIME);
+      if(entryTime == 0 || candidateTime < entryTime)
+      {
+         direction = candidateDirection;
+         entryTime = candidateTime;
+      }
+   }
+   return direction != 0 && entryTime > 0;
+}
+
+bool DeleteManagedPendingOrders()
+{
+   bool submitted = true;
+   for(int i = OrdersTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !OrderSelect(ticket))
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol
+         || !RuntimeMagicOwned((long)OrderGetInteger(ORDER_MAGIC)))
+         continue;
+      if(!trade.OrderDelete(ticket))
+         submitted = false;
+   }
+   return submitted;
+}
+
+void ResetNasTimedExitCloseState()
+{
+   g_nasTimedExitClose.active = false;
+   g_nasTimedExitClose.deadline = 0;
+   g_nasTimedExitClose.closeDirection = 0;
+   g_nasTimedExitClose.bridgeDone = false;
+   g_nasTimedExitClose.localDone = false;
+   g_nasTimedExitClose.nextRetryLocal = 0;
+   g_nasTimedExitClose.attempts = 0;
+}
+
+void EnforceNasTimedExit()
+{
+   if(!NasTimedExitConfigured())
+      return;
+   uint nowMs = GetTickCount();
+   if((uint)(nowMs - g_lastTimedExitGuardMs) < 200)
+      return;
+   g_lastTimedExitGuardMs = nowMs;
+
+   datetime serverNow = TimeTradeServer();
+   if(serverNow <= 0)
+      serverNow = TimeCurrent();
+
+   if(!g_nasTimedExitClose.active)
+   {
+      int nativeDirection = 0;
+      datetime nativeEntryTime = 0;
+      bool hasNative = NasTimedExitNativePlan(nativeDirection, nativeEntryTime);
+      int closeDirection = hasNative ? nativeDirection : g_timedExitBridgePlanDirection;
+      datetime referenceTime = hasNative ? nativeEntryTime : g_timedExitBridgePlanSignalTime;
+      if(MathAbs(closeDirection) != 1 || referenceTime <= 0)
+         return;
+      datetime deadline = NasTimedExitDeadlineForEntry(referenceTime);
+      if(deadline <= 0 || serverNow < deadline)
+         return;
+
+      g_nasTimedExitClose.active = true;
+      g_nasTimedExitClose.deadline = deadline;
+      g_nasTimedExitClose.closeDirection = closeDirection;
+      g_nasTimedExitClose.bridgeDone = !g_nasBridgeEnabledRuntime || g_timedExitBridgePlanDirection == 0;
+      g_nasTimedExitClose.localDone = !hasNative;
+      g_nasTimedExitClose.nextRetryLocal = 0;
+      g_nasTimedExitClose.attempts = 0;
+   }
+
+   if(g_nasTimedExitClose.nextRetryLocal > 0 && TimeLocal() < g_nasTimedExitClose.nextRetryLocal)
+      return;
+   g_nasTimedExitClose.attempts++;
+
+   if(!g_nasTimedExitClose.bridgeDone)
+      g_nasTimedExitClose.bridgeDone = NasProPublishRegimeCloseOnly(
+         g_nasTimedExitClose.deadline,
+         g_nasTimedExitClose.closeDirection,
+         "max_hold_exit|duration=" + g_timedExitTimeRuntime);
+   if(!g_nasTimedExitClose.localDone)
+   {
+      bool positionsDone = CloseManagedPositionsDirection(g_nasTimedExitClose.closeDirection);
+      bool ordersDone = DeleteManagedPendingOrders();
+      g_nasTimedExitClose.localDone = positionsDone && ordersDone;
+   }
+
+   if(g_nasTimedExitClose.bridgeDone && g_nasTimedExitClose.localDone)
+   {
+      g_lastExecutionStatus = "TIME EXIT";
+      g_lastExecutionBlockReason = "max_hold_reached_" + g_timedExitTimeRuntime;
+      NasProAuditWrite("timed_exit_closed",
+         "nas|" + IntegerToString((long)g_nasTimedExitClose.deadline),
+         -g_nasTimedExitClose.closeDirection, 0.0, 0.0, 0.0, 0.0,
+         "duration=" + g_timedExitTimeRuntime
+         + " close_direction=" + (g_nasTimedExitClose.closeDirection > 0 ? "BUY" : "SELL")
+         + " attempts=" + IntegerToString(g_nasTimedExitClose.attempts));
+      Print("NAS SATS EA max hold exit completed duration=", g_timedExitTimeRuntime,
+            " deadline=", TimeToString(g_nasTimedExitClose.deadline, TIME_DATE|TIME_MINUTES),
+            " close_direction=", (g_nasTimedExitClose.closeDirection > 0 ? "BUY" : "SELL"),
+            " attempts=", g_nasTimedExitClose.attempts,
+            " bridge_done=", g_nasTimedExitClose.bridgeDone,
+            " local_done=", g_nasTimedExitClose.localDone);
+      g_lastExecutedDirection = 0;
+      ClearNasTimedExitBridgePlan();
+      ResetNasTimedExitCloseState();
+      AccountRiskCacheInvalidate();
+      DailyPnlGuardCacheInvalidate();
+      RequestHistoryRefresh();
+      return;
+   }
+
+   g_lastExecutionStatus = "TIME EXIT RETRY";
+   g_lastExecutionBlockReason = "timed_exit_close_retry";
+   g_nasTimedExitClose.nextRetryLocal = TimeLocal() + MathMin(30, 2 + g_nasTimedExitClose.attempts * 2);
+   Print("NAS SATS EA max hold exit retry duration=", g_timedExitTimeRuntime,
+         " direction=", (g_nasTimedExitClose.closeDirection > 0 ? "BUY" : "SELL"),
+         " attempts=", g_nasTimedExitClose.attempts,
+         " bridge_done=", g_nasTimedExitClose.bridgeDone,
+         " local_done=", g_nasTimedExitClose.localDone,
+         " next_retry=", TimeToString(g_nasTimedExitClose.nextRetryLocal, TIME_SECONDS));
+}
+
 void CloseOneLeg()
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -6446,13 +6898,14 @@ void ClearDashboardObjects()
       "DASH_DOCK_BG", "DASH_DOCK_STRIPE", "DASH_DOCK_TEXT", "DASH_DOCK_HINT",
       "DASH_COLLAPSED_HINT",
       "BTN_DASH_EXPAND", "BTN_DASH_COLLAPSE", "BTN_NAS_REGIME_FILTER", "BTN_WINDOW_REVERSE",
+      "BTN_VOLUME_FILTER", "BTN_VOLUME_APPLY", "BTN_TIMED_EXIT_APPLY",
       "BTN_MACRO_REG_0", "BTN_MACRO_REG_1", "BTN_MACRO_REG_2", "BTN_MACRO_REG_3", "BTN_MACRO_REG_4", "BTN_MACRO_REG_5",
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
-      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_VOL_MULT_LBL", "DASH_TIMED_EXIT_LBL", "DASH_TIMED_EXIT_STATE", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_FINAL_SCALE_APPLY", "BTN_EA_TOGGLE", "BTN_AUDIT_WIN", "BTN_NAS_BRIDGE_PUB", "BTN_NAS_BRIDGE_ONLY", "BTN_NAS_BRIDGE_NATIVE", "BTN_NAS_PRO_AUDIT", "BTN_ACCEPT_FILTER", "BTN_TP_MODE", "BTN_TP_LEG", "BTN_HCBE", "BTN_INV_TP", "BTN_INVERT", "BTN_FTMO", "BTN_RISKLOT", "BTN_RISK_GEOM", "BTN_ATRBUF_0", "BTN_ATRBUF_20", "BTN_ATRBUF_40", "BTN_ATRBUF_60", "BTN_ATRBUF_80", "BTN_ATRBUF_100", "BTN_ATRBUF_APPLY",
-      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "BTN_DAY_GUARD_APPLY"
+      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "BTN_DAY_GUARD_APPLY", "EDIT_VOL_MULT", "EDIT_TIMED_EXIT"
    };
    for(int i = 0; i < ArraySize(names); i++)
       DeleteObjectIfExists(names[i]);
@@ -6540,6 +6993,17 @@ void CreateButtons()
    CreateButton("BTN_DAY_GUARD_APPLY", 846, 402, 92, 22,
                 dayAppliedFeedback ? "APPLIED" : "APPLY DAY",
                 dayAppliedFeedback ? C'30,150,95' : C'38,101,176');
+   bool volumeAppliedFeedback = (int)(g_volumeApplyFeedbackUntilMs - GetTickCount()) > 0;
+   CreateButton("BTN_VOLUME_FILTER", 684, 430, 82, 22,
+                g_volumeFilterRuntime ? "VOL ON" : "VOL OFF",
+                g_volumeFilterRuntime ? C'30,150,95' : C'90,90,110');
+   CreateButton("BTN_VOLUME_APPLY", 870, 430, 84, 22,
+                volumeAppliedFeedback ? "APPLIED" : "APPLY VOL",
+                volumeAppliedFeedback ? C'30,150,95' : C'38,101,176');
+   bool timedExitAppliedFeedback = (int)(g_timedExitApplyFeedbackUntilMs - GetTickCount()) > 0;
+   CreateButton("BTN_TIMED_EXIT_APPLY", 826, 458, 92, 22,
+                timedExitAppliedFeedback ? "APPLIED" : "APPLY HOLD",
+                timedExitAppliedFeedback ? C'30,150,95' : C'38,101,176');
    int currentMacro = LiqMacroRegimeBucket(g_regimeV3);
    for(int ri = 0; ri < LIQ_MACRO_REGIME_COUNT; ++ri)
    {
@@ -6848,6 +7312,150 @@ bool ApplyDailyGuardFromDashboard(const string source)
    ChartRedraw(0);
    return true;
 }
+
+bool ApplyNasVolumeFromDashboard(const string source)
+{
+   string volumeObj = PREFIX + "EDIT_VOL_MULT";
+   if(ObjectFind(0, volumeObj) < 0)
+   {
+      Print("NAS SATS EA volume multiplier apply failed missing edit object source=", source);
+      return false;
+   }
+
+   string volumeText = ObjectGetString(0, volumeObj, OBJPROP_TEXT);
+   StringTrimLeft(volumeText);
+   StringTrimRight(volumeText);
+   StringReplace(volumeText, ",", ".");
+   double requested = StringToDouble(volumeText);
+   if(!MathIsValidNumber(requested) || requested < 0.05 || requested > 20.0)
+   {
+      ObjectSetString(0, volumeObj, OBJPROP_TEXT, DoubleToString(g_volumeMultiplierRuntime, 2));
+      g_lastExecutionStatus = "VOL INVALID";
+      g_lastExecutionBlockReason = "volume_multiplier_allowed_0.05_to_20";
+      Print("NAS SATS EA volume multiplier apply failed source=", source,
+            " value=", volumeText, " allowed=0.05..20");
+      UpdateDashboard();
+      ChartRedraw(0);
+      return false;
+   }
+
+   double oldMultiplier = g_volumeMultiplierRuntime;
+   g_volumeMultiplierRuntime = ClampNasVolumeMultiplier(requested);
+   if(!PersistNasVolumeRuntime())
+   {
+      int persistError = GetLastError();
+      g_volumeMultiplierRuntime = oldMultiplier;
+      PersistNasVolumeRuntime();
+      ObjectSetString(0, volumeObj, OBJPROP_TEXT, DoubleToString(g_volumeMultiplierRuntime, 2));
+      Print("NAS SATS EA volume multiplier apply failed persistence source=", source,
+            " err=", persistError);
+      return false;
+   }
+
+   ObjectSetString(0, volumeObj, OBJPROP_TEXT, DoubleToString(g_volumeMultiplierRuntime, 2));
+   g_volumeApplyFeedbackUntilMs = GetTickCount() + 1200;
+   g_lastExecutionStatus = "VOL APPLIED";
+   g_lastExecutionBlockReason = "";
+   ArrayFree(g_historySimCache);
+   NasProAuditWrite("volume_multiplier_applied", "config", 0, 0.0, 0.0, 0.0, 0.0,
+      "source=" + source + " multiplier=" + DoubleToString(g_volumeMultiplierRuntime, 4)
+      + " enabled=" + (g_volumeFilterRuntime ? "1" : "0"));
+   Print("NAS SATS EA volume multiplier applied source=", source,
+         " multiplier=", DoubleToString(g_volumeMultiplierRuntime, 4),
+         " filter=", (g_volumeFilterRuntime ? "ON" : "OFF"));
+   RequestHistoryRefresh();
+   g_dashboardForceNextUpdate = true;
+   UpdateDashboard();
+   ChartRedraw(0);
+   return true;
+}
+
+void ToggleNasVolumeFilter()
+{
+   bool oldEnabled = g_volumeFilterRuntime;
+   g_volumeFilterRuntime = !g_volumeFilterRuntime;
+   if(!PersistNasVolumeRuntime())
+   {
+      int persistError = GetLastError();
+      g_volumeFilterRuntime = oldEnabled;
+      PersistNasVolumeRuntime();
+      Print("NAS SATS EA volume filter toggle failed persistence err=", persistError);
+      return;
+   }
+
+   g_lastExecutionStatus = g_volumeFilterRuntime ? "VOL FILTER ON" : "VOL FILTER OFF";
+   g_lastExecutionBlockReason = "";
+   ArrayFree(g_historySimCache);
+   NasProAuditWrite("volume_filter_toggled", "config", 0, 0.0, 0.0, 0.0, 0.0,
+      "enabled=" + (g_volumeFilterRuntime ? "1" : "0")
+      + " multiplier=" + DoubleToString(g_volumeMultiplierRuntime, 4));
+   Print("NAS SATS EA volume filter toggled state=", (g_volumeFilterRuntime ? "ON" : "OFF"),
+         " multiplier=", DoubleToString(g_volumeMultiplierRuntime, 4),
+         " parity=signal_tick_volume_vs_previous_20_bar_average");
+   RequestHistoryRefresh();
+   g_dashboardForceNextUpdate = true;
+   UpdateDashboard();
+   ChartRedraw(0);
+}
+
+bool ApplyNasTimedExitFromDashboard(const string source)
+{
+   string exitObj = PREFIX + "EDIT_TIMED_EXIT";
+   if(ObjectFind(0, exitObj) < 0)
+   {
+      Print("NAS SATS EA timed exit apply failed missing edit object source=", source);
+      return false;
+   }
+
+   string requestedText = ObjectGetString(0, exitObj, OBJPROP_TEXT);
+   string normalized = "";
+   int minutes = -1;
+   if(!NormalizeOptionalDuration(requestedText, normalized, minutes))
+   {
+      ObjectSetString(0, exitObj, OBJPROP_TEXT, g_timedExitTimeRuntime);
+      g_lastExecutionStatus = "EXIT INVALID";
+      g_lastExecutionBlockReason = "max_hold_requires_HH_MM_or_empty";
+      Print("NAS SATS EA timed exit apply failed source=", source,
+            " value=", requestedText, " required=HH:MM_duration_or_empty 00:00_is_invalid");
+      UpdateDashboard();
+      ChartRedraw(0);
+      return false;
+   }
+
+   string oldExit = g_timedExitTimeRuntime;
+   g_timedExitTimeRuntime = normalized;
+   if(!PersistNasTimedExitRuntime())
+   {
+      int persistError = GetLastError();
+      g_timedExitTimeRuntime = oldExit;
+      PersistNasTimedExitRuntime();
+      ObjectSetString(0, exitObj, OBJPROP_TEXT, g_timedExitTimeRuntime);
+      Print("NAS SATS EA timed exit apply failed persistence source=", source,
+            " err=", persistError);
+      return false;
+   }
+
+   ObjectSetString(0, exitObj, OBJPROP_TEXT, g_timedExitTimeRuntime);
+   ResetNasTimedExitCloseState();
+   g_timedExitApplyFeedbackUntilMs = GetTickCount() + 1200;
+   g_lastExecutionStatus = NasTimedExitConfigured() ? "HOLD APPLIED" : "HOLD OFF";
+   g_lastExecutionBlockReason = "";
+   ArrayFree(g_historySimCache);
+   NasProAuditWrite("timed_exit_applied", "config", 0, 0.0, 0.0, 0.0, 0.0,
+      "source=" + source + " duration=" + (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF")
+      + " mode=elapsed_from_position_open");
+   Print("NAS SATS EA timed exit applied source=", source,
+         " duration=", (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF"),
+         " minutes=", NasTimedExitMinutes(),
+         " empty_disables=true mode=elapsed_from_position_open");
+   RequestHistoryRefresh();
+   g_dashboardForceNextUpdate = true;
+   EnforceNasTimedExit();
+   UpdateDashboard();
+   ChartRedraw(0);
+   return true;
+}
+
 void ApplyDashboardSettings(const string source)
 {
    ApplyTradingWindowFromDashboard(source);
@@ -6857,6 +7465,8 @@ void ApplyDashboardSettings(const string source)
    ApplyAtrBufferFromDashboard(source);
    ApplyRiskPctFromDashboard(source);
    ApplyDailyGuardFromDashboard(source);
+   ApplyNasVolumeFromDashboard(source);
+   ApplyNasTimedExitFromDashboard(source);
 }
 
 void RefreshRuntimeMagicAfterRiskModeChange()
@@ -7207,6 +7817,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       ApplyRiskPctFromDashboard("risk_pct_apply_button");
    else if(sparam == PREFIX + "BTN_DAY_GUARD_APPLY")
       ApplyDailyGuardFromDashboard("daily_guard_apply_button");
+   else if(sparam == PREFIX + "BTN_VOLUME_FILTER")
+      ToggleNasVolumeFilter();
+   else if(sparam == PREFIX + "BTN_VOLUME_APPLY")
+      ApplyNasVolumeFromDashboard("volume_apply_button");
+   else if(sparam == PREFIX + "BTN_TIMED_EXIT_APPLY")
+      ApplyNasTimedExitFromDashboard("timed_exit_apply_button");
    else if(sparam == PREFIX + "BTN_AUDIT_WIN")
       CycleAuditWindow();
    else if(sparam == PREFIX + "BTN_NAS_BRIDGE_PUB")
@@ -7296,7 +7912,7 @@ void DrawDashboardShell(const int height)
    if(h >= 330)
       CreateRect("DASH_ACTION_PANEL", 676, 56, 382, 306, C'31,38,52', C'221,55,78');
    if(h >= 455)
-      CreateRect("DASH_LOG_PANEL", 676, 390, 382, 158, C'31,38,52', C'90,178,255');
+      CreateRect("DASH_LOG_PANEL", 676, 390, 382, 260, C'31,38,52', C'90,178,255');
    if(h >= 590)
       CreateRect("DASH_AUDIT_PANEL", 38, 410, 606, 204, C'22,29,42', C'80,255,180');
 }
@@ -7452,7 +8068,10 @@ void UpdateDashboard()
    CreateLabel("DASH_REGIME", 38, 299, UiShort(regimeDash, 94), regimeColor, 8);
    CreateLabel("DASH_WIN", 38, 368, "Trading window", titleColor, 9);
    CreateLabel("DASH_WIN_STATE", 38, 386,
-               TradingTimeStateText() + " | reverse exit " + (g_windowReverseExitRuntime ? "ON" : "OFF"),
+               TradingTimeStateText()
+               + " | reverse exit " + (g_windowReverseExitRuntime ? "ON" : "OFF")
+               + " | volume " + (g_volumeFilterRuntime ? ("ON x" + DoubleToString(g_volumeMultiplierRuntime, 2)) : "OFF")
+               + " | max hold " + (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF"),
                IsTradingTimeOpen() ? C'80,255,180' : C'255,95,140', 8);
    CreateLabel("DASH_AUDIT_TITLE", 52, 418, "AUDIT RESULTS - selected window / current combo", C'80,255,180', 9);
    CreateLabel("DASH_WD_MON", 52, 440, NasWeekdayAuditText(1, "MON"), NasWeekdayAuditColor(1), 7);
@@ -7503,12 +8122,19 @@ void UpdateDashboard()
    CreateLabel("DASH_DAY_LOSS_LBL", 764, 388, "Day Loss %", muted, 8);
    CreateEdit("EDIT_DAY_PROFIT", 684, 402, 72, 22, DoubleToString(g_dailyProfitTargetPctRuntime, 2));
    CreateEdit("EDIT_DAY_LOSS", 764, 402, 72, 22, DoubleToString(g_dailyMaxLossPctRuntime, 2));
+   CreateLabel("DASH_VOL_MULT_LBL", 772, 434, "VOL X", muted, 8);
+   CreateEdit("EDIT_VOL_MULT", 812, 430, 52, 22, DoubleToString(g_volumeMultiplierRuntime, 2));
+   CreateLabel("DASH_TIMED_EXIT_LBL", 684, 462, "Hold HH:MM", muted, 8);
+   CreateEdit("EDIT_TIMED_EXIT", 758, 458, 62, 22, g_timedExitTimeRuntime);
+   CreateLabel("DASH_TIMED_EXIT_STATE", 924, 462,
+               NasTimedExitConfigured() ? "DURATION" : "OFF",
+               NasTimedExitConfigured() ? C'255,204,82' : muted, 7);
    double dashLegR = SelectedTargetR();
    double dashTargetR = g_invertTradeModeRuntime ? (InvertTargetOverrideEnabled() ? g_invertTargetRRuntime : 0.0) : dashLegR;
    string dashTpText = g_invertTradeModeRuntime ? (EffectiveInversionReferenceText() + " | " + EffectiveInvertTargetText()
                                                 + (InvertTargetOverrideEnabled() ? (" " + NasRiskRewardText(dashTargetR)) : " exact_SL_swap"))
                                                 : ("final TP " + TargetRText(dashTargetR));
-   CreateLabel("DASH_TP_CFG", 690, 438, "TP " + TpModeText() + " | " + dashTpText + " | " + EffectiveHcBeText()
+   CreateLabel("DASH_TP_CFG", 690, 490, "TP " + TpModeText() + " | " + dashTpText + " | " + EffectiveHcBeText()
                + " | Audit " + NasAuditWindowLabel()
                + " | Dup " + string(g_historyUseAcceptedFilterRuntime ? "OFF" : "ON") + " | Inv " + string(g_invertTradeModeRuntime ? "ON" : "OFF"), steel, 7);
    string dayGuardText = "DayGuard OFF";
@@ -7526,15 +8152,15 @@ void UpdateDashboard()
          dayGuardText += " MT5-PROXY";
       dayGuardColor = guardLocked ? C'221,55,78' : C'80,255,180';
    }
-   CreateLabel("DASH_RISK_MODE", 690, 458, UiShort("Risk "
+   CreateLabel("DASH_RISK_MODE", 690, 510, UiShort("Risk "
                + string(g_ftmoModeRuntime ? "FTMO" : (g_riskLotOnlyRuntime ? "RiskLotOnly" : "OFF"))
                + " | " + dayGuardText, 58), dayGuardColor, 7);
 
-   CreateLabel("DASH_AUDIT_SUMMARY", 690, 480, UiShort(g_historyAuditSummary, 42), C'80,255,180', 8);
-   CreateLabel("DASH_AUDIT_DETAIL", 690, 500, UiShort(g_historyAuditDetail, 42), muted, 7);
-   CreateLabel("DASH_H0", 690, 522, "Recent NAS signals", titleColor, 8);
-   CreateLabel("DASH_H1", 690, 540, UiShort(g_historySummary[0], 42), muted, 7);
-   CreateLabel("DASH_H2", 690, 558, UiShort(g_historySummary[1], 42), muted, 7);
-   CreateLabel("DASH_H3", 690, 576, UiShort(g_historySummary[2], 42), muted, 7);
+   CreateLabel("DASH_AUDIT_SUMMARY", 690, 532, UiShort(g_historyAuditSummary, 42), C'80,255,180', 8);
+   CreateLabel("DASH_AUDIT_DETAIL", 690, 552, UiShort(g_historyAuditDetail, 42), muted, 7);
+   CreateLabel("DASH_H0", 690, 574, "Recent NAS signals", titleColor, 8);
+   CreateLabel("DASH_H1", 690, 592, UiShort(g_historySummary[0], 42), muted, 7);
+   CreateLabel("DASH_H2", 690, 610, UiShort(g_historySummary[1], 42), muted, 7);
+   CreateLabel("DASH_H3", 690, 628, UiShort(g_historySummary[2], 42), muted, 7);
    UpdateDoorAnimation();
 }

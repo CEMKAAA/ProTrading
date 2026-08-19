@@ -14,6 +14,7 @@ namespace ProTradingSystem.Quantower
                 "15",
                 "JP225m,JP225,JPN225m,JPN225",
                 "ORBQW");
+            BridgeChannel = 1;
         }
     }
 }

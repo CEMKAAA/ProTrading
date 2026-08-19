@@ -22,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-08-18.nt8-production-file-bridge-v10-permanent-reject-throttle";
+        private const string CoreBuild = "2026-08-19.nt8-production-file-bridge-v11-channel-isolation";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -32,6 +32,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected abstract string DefaultOrderPrefix { get; }
         protected abstract string DefaultAuditPrefix { get; }
         protected virtual string DefaultSourceTimeframeFilter { get { return string.Empty; } }
+        protected virtual int DefaultBridgeChannel { get { return 0; } }
         protected virtual bool DefaultSourceTfToChartPeriodSetting { get { return true; } }
         protected virtual string DefaultSourceSymbolAliasesCsv { get { return string.Empty; } }
         protected virtual bool DefaultRebaseMappedLevelsToLiveEntry { get { return false; } }
@@ -49,6 +50,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Prefer Scoped Latest", GroupName = "02 Bridge", Order = 1)]
         public bool PreferScopedLatest { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 9999)]
+        [Display(Name = "Bridge Channel", GroupName = "02 Bridge", Order = 2)]
+        public int BridgeChannel { get; set; }
 
         [NinjaScriptProperty]
         [Range(100, 60000)]
@@ -288,6 +294,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ExecutorEnabled = true;
                 BridgeLatestPath = DefaultBridgeLatestPath;
                 PreferScopedLatest = true;
+                BridgeChannel = DefaultBridgeChannel;
                 PollMilliseconds = 500;
                 MaxSignalAgeSeconds = 900;
                 IgnoreExistingSignalOnInit = true;
@@ -359,7 +366,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             resolvedBridgePath = ResolveBridgePath();
             auditDir = Path.GetDirectoryName(resolvedBridgePath) ?? NinjaTrader.Core.Globals.UserDataDir;
-            instanceToken = Hash64(NormalizePath(resolvedBridgePath) + "|" + ExpectedSourceNamespace() + "|" + EffectiveSourceTf() + "|" + SafeAccountName() + "|" + Instrument.FullName).ToString("X16", CultureInfo.InvariantCulture);
+            instanceToken = Hash64(NormalizePath(resolvedBridgePath) + "|" + ExpectedSourceNamespace() + "|" + EffectiveSourceTf() + "|C" + BridgeChannel + "|" + SafeAccountName() + "|" + Instrument.FullName).ToString("X16", CultureInfo.InvariantCulture);
             orderScopePrefix = BuildOrderScopePrefix();
             stateDir = Path.Combine(auditDir, "NinjaBridgeState", Sanitize(DefaultOrderPrefix), Sanitize(SafeAccountName()), instanceToken);
             lockDir = Path.Combine(stateDir, "locks");
@@ -373,7 +380,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             initialized = true;
             InstallTradeDayDashboardControls();
             AuditRaw("init", "build=" + CoreBuild + " bridge=" + resolvedBridgePath + " instrument=" + Instrument.FullName
-                + " canonical_chart=" + CanonicalChartSymbol() + " account=" + SafeAccountName() + " scope=" + instanceToken + " active_states=" + trades.Count);
+                + " canonical_chart=" + CanonicalChartSymbol() + " channel=" + BridgeChannel + " account=" + SafeAccountName() + " scope=" + instanceToken + " active_states=" + trades.Count);
 
             if (IgnoreExistingSignalOnInit)
                 SeedExistingSignal();
@@ -1781,6 +1788,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 offset = 17;
                 if (fields.Count > 17 && SameText(fields[17], "risk_pct"))
                     offset = 18;
+                if (fields.Count > 18 && SameText(fields[18], "bridge_channel"))
+                    offset = 19;
             }
             if (fields.Count < offset + 17)
             {
@@ -1806,8 +1815,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             sig.SourceBid = ParseDouble(fields[offset + 15]);
             sig.SourceAsk = ParseDouble(fields[offset + 16]);
             sig.RiskPct = fields.Count > offset + 17 ? ParseDouble(fields[offset + 17]) : 0;
+            sig.Channel = fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
             sig.Valid = !string.IsNullOrWhiteSpace(sig.EventId) && sig.Direction != 0 && sig.WrittenGmt != DateTime.MinValue;
-            detail = "read_ok file=" + Path.GetFileName(path) + " fields=" + fields.Count + " offset=" + offset + " event=" + ShortEvent(sig.EventId) + " source=" + sig.Source + " risk_pct=" + sig.RiskPct.ToString("F3", CultureInfo.InvariantCulture);
+            detail = "read_ok file=" + Path.GetFileName(path) + " fields=" + fields.Count + " offset=" + offset + " event=" + ShortEvent(sig.EventId) + " channel=" + sig.Channel + " source=" + sig.Source + " risk_pct=" + sig.RiskPct.ToString("F3", CultureInfo.InvariantCulture);
             if (!sig.Valid)
             {
                 var init = SameText(sig.Source, "bridge_initiated") || SameText(fields[offset + 7], "INIT");
@@ -1819,6 +1829,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool SignalIdentityMatches(BridgeSignal sig, out string reason)
         {
             reason = string.Empty;
+            if(sig.Channel != BridgeChannel)
+            {
+                reason = "channel_filter source=" + sig.Channel + " expected=" + BridgeChannel;
+                return false;
+            }
             if (RequireSourceMatchesChart && !SourceSymbolMatches(sig.SourceSymbol))
             {
                 reason = "symbol_filter source=" + sig.SourceSymbol + " chart=" + Instrument.FullName + " aliases=" + SourceSymbolAliasesCsv;
@@ -1885,17 +1900,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private string ResolveBridgeReadPath()
         {
-            if (!PreferScopedLatest || string.IsNullOrWhiteSpace(resolvedBridgePath))
+            if (string.IsNullOrWhiteSpace(resolvedBridgePath))
                 return resolvedBridgePath;
             var name = Path.GetFileName(resolvedBridgePath) ?? string.Empty;
             const string suffix = "_Latest.csv";
             if (!name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
                 return resolvedBridgePath;
+            var dir = Path.GetDirectoryName(resolvedBridgePath) ?? string.Empty;
+            var baseStem = name.Substring(0, name.Length - suffix.Length) + "_Latest";
+            var channelStem = baseStem + (BridgeChannel > 0 ? "_C" + BridgeChannel.ToString(CultureInfo.InvariantCulture) : string.Empty);
+            var channelGeneric = Path.Combine(dir, channelStem + ".csv");
+            if (!PreferScopedLatest)
+                return channelGeneric;
             var tf = EffectiveSourceTf();
             if (string.IsNullOrWhiteSpace(tf))
-                return resolvedBridgePath;
-            var prefix = name.Substring(0, name.Length - suffix.Length) + "_Latest_";
-            var dir = Path.GetDirectoryName(resolvedBridgePath) ?? string.Empty;
+                return channelGeneric;
+            var prefix = channelStem + "_";
             string newest = null;
             var newestTime = DateTime.MinValue;
             foreach (var alias in SourceAliases())
@@ -1912,7 +1932,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     newestTime = write;
                 }
             }
-            return newest ?? resolvedBridgePath;
+            return newest ?? channelGeneric;
         }
 
         private string ResolveBridgePath()
@@ -2568,6 +2588,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         private static bool ParseBool(string value) { return value == "1" || SameText(value, "true"); }
+        private static int ParseInt(string value) { int parsed; return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) ? parsed : 0; }
         private static bool SameText(string a, string b) { return string.Equals((a ?? string.Empty).Trim(), (b ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase); }
         private static bool ContainsText(string value, string needle) { return (value ?? string.Empty).IndexOf(needle ?? string.Empty, StringComparison.OrdinalIgnoreCase) >= 0; }
         private static bool IsFinitePositive(double value) { return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0; }
@@ -2609,6 +2630,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double SourceBid;
             public double SourceAsk;
             public double RiskPct;
+            public int Channel;
         }
 
         private struct TradeState

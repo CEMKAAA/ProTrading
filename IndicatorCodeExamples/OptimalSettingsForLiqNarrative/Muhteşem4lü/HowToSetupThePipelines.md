@@ -218,7 +218,7 @@ us500 and us100: 15, jp225 sol: 60, jp225 advanced: 60, de30 nas: 5
 and thats it pipelines are set.
 ----------------------------------------------------------------------------------------------------------------------------
 
-## JP225 ORB Ultimate - Tek Instance Kurulumu
+## JP225 ORB Ultimate - Kanal Bazli Production Kurulumu
 
 Bu kurulum bir adet `JP225m`, `M15` ORB instance'i icindir.
 
@@ -230,10 +230,12 @@ Bu kurulum bir adet `JP225m`, `M15` ORB instance'i icindir.
 4. Strateji ayarlarini ve `Risk %` degerini ayarla, sonra `APPLY RISK` butonuna bas.
 5. Dashboard'da `PUB ON` yap.
 6. Sadece listener hesaplari trade acacaksa `ONLY ON`, `NAT OFF` kullan.
-7. Su dosyanin olustugunu kontrol et:
+7. Dashboard `CH` alanina kanal numarasini yaz ve `APPLY CH` butonuna bas. Ilk instance icin `1` kullan.
+8. Istersen ek GMT giris filtresini kullan: `WIN ON`, baslangic/bitis saatlerini `HH:MM` yaz ve `APPLY GMT` butonuna bas.
+9. Su dosyanin olustugunu kontrol et:
 
 ```text
-C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest_JP225m_15.csv
+C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest_C1_JP225m_15.csv
 ```
 
 EA takilinca dosyaya once `INIT` yazilmasi normaldir. `INIT` bir trade sinyali degildir.
@@ -250,6 +252,7 @@ Executor Enabled               = true
 Bridge Latest Path             = C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest.csv
 Prefer Scoped Latest           = true
 Source TF Filter               = 15
+Bridge Channel                = 1
 Default TF To Chart            = false
 Source Filter                  = OrbUltimate|
 Use Built-In Index Map         = true
@@ -276,7 +279,7 @@ Ignore Existing On Init        = true
 
 ```text
 InpExecutorEnabled             = true
-InpBridgeLatestFile            = OrbUltimateBridge_Latest_JP225m_15.csv
+InpBridgeLatestFile            = OrbUltimateBridge_Latest_C1_JP225m_15.csv
 InpUseCommonFiles              = true
 InpSourceLoginFilter           = 260460316
 InpSourceTimeframeFilter       = 15
@@ -309,9 +312,50 @@ Publisheri ve listenerlari yeni sinyal gelmeden once baslat. Yeni sinyal geldigi
 
 Notlar: TLV`de orb çalışıyor ama rlv`de bırakıp sadece Liq Narrativeye geçmek gerekebilir.
 
-## Channel Experimental - Bir EA'nin Birden Fazla Kombinasyonu
+## Production Channel - Bir ORB EA'nin Birden Fazla Kombinasyonu
 
-Bu kurulum sadece `_Channel` isimli deneysel dosyalar icindir. Orijinal production EA ve listener dosyalari degistirilmedi.
+ORB kanal destegi artik ana production dosyalarindadir. ORB icin `_Channel` isimli deneysel dosyalari kullanma.
+
+Kullanilacak ana dosyalar:
+
+```text
+OrbUltimateEA.mq5
+OrbUltimate_ProfessionalPipeline.mqh
+OrbUltimate_cTrader_Listener.cs
+NinjaTrader/OrbUltimate_NinjaTrader_Listener.cs
+Quantower/OrbUltimate_Quantower_Listener.cs
+```
+
+Kanal numarasi MT5 publisher ve hedef listener instance'inde ayni olmalidir. Kanal eslesmezse listener fail-closed davranir; emri acmaz, kapatmaz veya sahiplenmez.
+
+### Iki ayri challenge hesabi ornegi
+
+```text
+TradersLaunch ORB publisher   = CH 1
+TradersLaunch listener        = Bridge Channel 1
+
+TradeDay ORB publisher        = CH 2
+TradeDay listener             = Bridge Channel 2
+```
+
+Her kombinasyon icin ayri MT5 ORB chart instance'i ac. Her listener kendi hesap/chart instance'inde calisir. Ayni sembol ve TF kullanilsa bile kanal farkliysa event, label, lock, HCBE/protection state, audit ve reverse-close kapsamlarinin tamami ayridir.
+
+### GMT entry window
+
+`WIN ON/OFF`, ORB session matematigini degistirmez; yalnizca yeni trade acilabilecek saatleri ek olarak daraltir.
+
+```text
+WIN OFF       = eski davranis; ek saat filtresi yok
+08:00-12:00   = GMT 08:00 dahil, 12:00 haric
+22:00-03:00   = geceyi asan pencere
+00:00-00:00   = tam gun
+```
+
+Pencere disinda olusan sinyal daha sonra pencere acilinca gecikmeli olarak acilmaz. Pending retest/imbalance lifecycle da pencere kapaninca temizlenir.
+
+### Diger EA'larin deneysel channel dosyalari
+
+Asagidaki `_Channel` dosyalari ORB disindaki deneysel calismalardir:
 
 Kullanilacak MT5 EA dosyalari:
 
@@ -319,7 +363,6 @@ Kullanilacak MT5 EA dosyalari:
 LiqNarrativeSolVersion_Channel.mq5
 LiqNarrativeSol_Advanced_Channel.mq5
 LiquidityNarrative_MT5_EA_Channel.mq5
-OrbUltimateEA_Channel.mq5
 ```
 
 Kullanilacak cTrader robotlari:
@@ -327,7 +370,6 @@ Kullanilacak cTrader robotlari:
 ```text
 LiquidityNarrative_cTrader_Listener_Channel.cs
 LiqNarrativeSolAdvanced_cTrader_Listener_Channel.cs
-OrbUltimate_cTrader_Listener_Channel.cs
 ```
 
 EA ve listener eslesmesi:
@@ -348,10 +390,6 @@ LiquidityNarrative_MT5_EA_Channel.mq5
   Bridge Latest Path: ...\LiquidityNarrativeBridge_Latest.csv
   Source Filter: LiquidityNarrative
 
-OrbUltimateEA_Channel.mq5
-  Listener: OrbUltimate_cTrader_Listener_Channel.cs
-  Bridge Latest Path: ...\OrbUltimateBridge_Latest.csv
-  Source Filter: OrbUltimate
 ```
 
 SolVersion ve normal Liq ayni generic listener kodunu kullanir; cTrader'da iki ayri robot instance'i acilir. Base CSV, `Source Filter`, sembol, TF ve kanal birlikte eslesmeden event kabul edilmez.
@@ -365,7 +403,7 @@ Kurulum:
 5. `Source TF Filter` altindaki `Bridge Channel` alanina MT5 ile ayni sayiyi gir.
 6. `Prefer Scoped Latest=true` kullan ve robotu baslat.
 
-Ornek ORB kanal 2:
+ORB kanal 2 ornegi:
 
 ```text
 MT5 dashboard CH              = 2
