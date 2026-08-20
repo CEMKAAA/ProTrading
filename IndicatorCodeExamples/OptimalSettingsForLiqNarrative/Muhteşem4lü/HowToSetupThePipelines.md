@@ -429,3 +429,38 @@ Guvenlik kurallari:
 - Bir kanal diger kanalin pozisyonunu kapatamaz, HCBE yapamaz veya restart sonrasi sahiplenemez.
 - `APPLY CH` eski kanali `INIT/detached` olarak emekliye ayirir ve yeni kanala init marker yazar.
 - Kanal secimi MT5 restart sonrasinda ayni chart instance'i icin korunur.
+
+### cTrader, NinjaTrader ve Quantower kanal eslemesi
+
+Her hedef platformda base CSV yolu ayni kalir. Listener dosya adina `_C1`, `_C2` yazmak yerine kendi `Bridge Channel` ayarina gore dogru channel-scoped dosyayi otomatik secer.
+
+```text
+JP225 ORB 0.5R publisher       = CH 1
+JP225 ORB 0.5R listener        = Bridge Channel 1
+JP225 Source Symbol Aliases    = JP225m,JP225,JPN225m,JPN225
+
+JP225 ORB 1R publisher         = CH 2
+JP225 ORB 1R listener          = Bridge Channel 2
+JP225 Source Symbol Aliases    = JP225m,JP225,JPN225m,JPN225
+
+USTEC ORB publisher            = CH 3
+USTEC ORB listener             = Bridge Channel 3
+USTEC Source Symbol Aliases    = USTECm,USTEC,US100m,US100,NAS100
+
+Bridge Latest Path             = C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\OrbUltimateBridge_Latest.csv
+Prefer Scoped Latest           = true
+Source TF Filter               = ORB chart/signal TF dakika degeri
+```
+
+Bu esleme cTrader, NinjaTrader ve Quantower ORB listener instance'larinda aynidir. Her listenerda hesap, hedef sembol, source TF ve channel birlikte dogru secilmelidir.
+
+`Bridge Channel` source sembolunu tek basina belirlemez. Listener hedef chart/kontrat sembolunu ekonomik aileye normalize eder ve alias listesinden scoped CSV adaylarini arar. Ornek: NinjaTrader/Quantower `MNK` veya `NKD` hedefi `JP225`; `NQ` veya `MNQ` hedefi `USTEC` ailesine donusur. Listener daha sonra CSV icindeki `source_symbol`, TF, source namespace ve channel alanlarini yeniden dogrular. Eslesmeyen dosya fail-closed reddedilir.
+
+Production kurulumunda her pipeline icin farkli channel kullanmak en guvenli ve en basit kuraldir. Bu sayede ayni channel altinda birden fazla sembolun generic latest dosyasi icin yarismasi da engellenir.
+
+Futures hesaplari icin kritik netting siniri:
+
+- Iki JP225 kombinasyonunu iki ayri challenge hesabinda `CH1` ve `CH2` ile calistirmak tam izole kurulumdur.
+- Ayni futures hesabi ve ayni kontrat uzerinde iki bagimsiz channel listener calistirma. Futures hesabi net pozisyon tuttugu icin broker pozisyonu kanal bazinda fiziksel olarak ayiramaz.
+- Listenerlar yabanci exposure gordugunde fail-closed davranacak sekilde tasarlanmistir; fakat ayni hesap/kontrat uzerinde iki stratejiyi bagimsiz yonetmenin guvenli bir yolu degildir.
+- `CH3` USTEC gibi farkli bir hedef sembolde veya ayri hesapta kullanilabilir.

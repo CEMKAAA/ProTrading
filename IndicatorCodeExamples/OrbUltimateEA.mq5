@@ -5,11 +5,11 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.35"
+#property version "3.36"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
-#define ORB15_BUILD "2026-08-19.v6.20-channel-entry-window"
+#define ORB15_BUILD "2026-08-20.v6.21-audit-max-negative"
 
 enum ORB_SESSION_PROFILE
 {
@@ -339,6 +339,8 @@ int    g_histTotal = 0, g_histWins = 0, g_histLosses = 0;
 int    g_histOpen = 0, g_histFlat = 0, g_histInvalid = 0;
 double g_histNetR = 0.0, g_histWonR = 0.0, g_histLostR = 0.0;
 double g_histNetMoney = 0.0;
+double g_histMinCumulativeR = 0.0;
+double g_histMinCumulativeMoney = 0.0;
 string g_histStatLine = "-";
 int    g_weekdayWins[7];
 int    g_weekdayLosses[7];
@@ -2984,6 +2986,7 @@ void OrbResetHistoricalStats()
    g_histAuditProgressPct=0.0;
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histOpen=0;g_histFlat=0;g_histInvalid=0;
    g_histNetR=0.0;g_histWonR=0.0;g_histLostR=0.0;g_histNetMoney=0.0;
+   g_histMinCumulativeR=0.0;g_histMinCumulativeMoney=0.0;
    for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
    for(int rf=0;rf<ORB_RF_COUNT;rf++){g_orbRfWins[rf]=0;g_orbRfLosses[rf]=0;}
    ResetWeekdayAuditStats();
@@ -3026,6 +3029,7 @@ void DrawHistoricalSignals()
 
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histOpen=0;g_histFlat=0;g_histInvalid=0;
    g_histNetR=0;g_histWonR=0;g_histLostR=0;g_histNetMoney=0;
+   g_histMinCumulativeR=0.0;g_histMinCumulativeMoney=0.0;
    for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
    for(int rf=0;rf<ORB_RF_COUNT;rf++){g_orbRfWins[rf]=0;g_orbRfLosses[rf]=0;}
    ResetWeekdayAuditStats();
@@ -3167,6 +3171,11 @@ void DrawHistoricalSignals()
       else g_histFlat++;
       g_histNetR+=statR;
       g_histNetMoney+=SimMoneyPnl(statR);
+      if(g_histNetR<g_histMinCumulativeR)
+      {
+         g_histMinCumulativeR=g_histNetR;
+         g_histMinCumulativeMoney=SimMoneyPnl(g_histNetR);
+      }
 
       // Debug audit
       Print("ORB15v3 HIST #"+IntegerToString(g_histTotal)+" "+execDir+" raw="+dir,
@@ -3257,7 +3266,7 @@ void DrawHistoricalSignals()
    g_histAuditProcessedDays=days;g_histAuditProgressPct=100.0;g_histAuditRunning=false;
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
-   g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2);
+   g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MaxNegCum "+DoubleToString(g_histMinCumulativeR,2)+"R / $"+DoubleToString(g_histMinCumulativeMoney,2);
    if(filtered>0)g_histStatLine+=" | "+IntegerToString(filtered)+" filt";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",checked," drawn=",drawn," =======");
    Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(days));
@@ -3667,6 +3676,7 @@ void UpdateDashboard()
    double pf=g_histLostR>0.0?g_histWonR/g_histLostR:(g_histWonR>0.0?99.0:0.0);
    string auditStat2="Net R: "+DoubleToString(g_histNetR,1)+"R"
       +" | Net $: "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)
+      +" | MaxNegCum: "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)
       +" | Avg W/L: +"+DoubleToString(g_histWins>0?g_histWonR/(double)g_histWins:0,2)+"/-"+DoubleToString(g_histLosses>0?g_histLostR/(double)g_histLosses:0,2)+"R"
       +" | PF "+DoubleToString(pf,2)+(g_histInvalid>0?" | DATA "+IntegerToString(g_histInvalid):"")+(g_histFlat>0?" | FLAT "+IntegerToString(g_histFlat):"");
    color auditStatColor=pnlClr;

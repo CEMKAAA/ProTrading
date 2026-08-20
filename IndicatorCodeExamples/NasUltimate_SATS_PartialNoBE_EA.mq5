@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.54"
+#property version "1.55"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -215,7 +215,7 @@ double   g_maxDd = 0.0;
 string   g_historySummary[3];
 string   g_historyAuditSummary = "Audit: -";
 string   g_historyAuditDetail = "W/L/WR/PnL waiting";
-string   g_historyAuditRows[6];
+string   g_historyAuditRows[7];
 int      g_nasWeekdayWins[7];
 int      g_nasWeekdayLosses[7];
 string   g_tradeStartTimeRuntime = "";
@@ -1734,6 +1734,7 @@ int OnInit()
          g_historyAuditRows[3] = "-";
          g_historyAuditRows[4] = "-";
          g_historyAuditRows[5] = "-";
+         g_historyAuditRows[6] = "-";
          g_historyAuditSummary = "Audit loading";
          g_historyAuditDetail = "deferred history replay";
          UpdateDashboard();
@@ -4111,7 +4112,7 @@ void DrawRecentSignalHistory()
    }
    for(int h = 0; h < 3; h++)
       g_historySummary[h] = "-";
-   for(int r = 0; r < 6; r++)
+   for(int r = 0; r < 7; r++)
       g_historyAuditRows[r] = "-";
    for(int mr = 0; mr < LIQ_MACRO_REGIME_COUNT; ++mr)
    {
@@ -4137,6 +4138,8 @@ void DrawRecentSignalHistory()
    double otherLostR = 0.0;
    double wonR = 0.0;
    double lostR = 0.0;
+   double closedPnlNewestFirst[];
+   ArrayResize(closedPnlNewestFirst, 0);
    int maxDraw = 250;
    int liveManagedDirection = ManagedPositionDirection();
    int progressCheckpoint = 0;
@@ -4265,6 +4268,13 @@ void DrawRecentSignalHistory()
       if(!executionAccepted)
          continue;
 
+       if(closed)
+       {
+          int closedPnlCount = ArraySize(closedPnlNewestFirst);
+          ArrayResize(closedPnlNewestFirst, closedPnlCount + 1);
+          closedPnlNewestFirst[closedPnlCount] = pnlR;
+       }
+
        MqlDateTime executionDay;
        ZeroMemory(executionDay);
        TimeToStruct(signalAvailableTime, executionDay);
@@ -4364,6 +4374,20 @@ void DrawRecentSignalHistory()
    double profitFactor = lostR > 0.0 ? wonR / lostR : (wonR > 0.0 ? 99.0 : 0.0);
    int closedCount = wins + losses + breakevens + otherWins + otherLosses + otherFlats;
    double avgR = closedCount > 0 ? totalR / (double)closedCount : 0.0;
+   double cumulativeClosedR = 0.0;
+   double minCumulativeClosedR = 0.0;
+   for(int curveIndex = ArraySize(closedPnlNewestFirst) - 1; curveIndex >= 0; --curveIndex)
+   {
+      cumulativeClosedR += closedPnlNewestFirst[curveIndex];
+      if(cumulativeClosedR < minCumulativeClosedR)
+         minCumulativeClosedR = cumulativeClosedR;
+   }
+   bool auditMoneyAvailable = AccountRiskRuntimeEnabled()
+      && AccountRiskInitialBalance() > 0.0
+      && g_accountRiskPerTradePctRuntime > 0.0;
+   double minCumulativeClosedMoney = auditMoneyAvailable
+      ? minCumulativeClosedR * AccountRiskInitialBalance() * g_accountRiskPerTradePctRuntime / 100.0
+      : 0.0;
    g_historyAuditSummary = NasAuditWindowLabel() + " | Net R "
                            + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2) + "R | "
                            + IntegerToString(drawn) + " sig | W " + IntegerToString(wins)
@@ -4417,8 +4441,11 @@ void DrawRecentSignalHistory()
                            + " spr " + IntegerToString(spreadSkipped)
                             + " spr? " + IntegerToString(spreadUnknown)
                             + " unknown " + IntegerToString(regimeUnclassified)
-                           + ((EffectiveDailyProfitTargetPct() > 0.0 || EffectiveDailyMaxLossPct() > 0.0)
-                              ? " | DayGuard NOT_SIM" : "");
+                             + ((EffectiveDailyProfitTargetPct() > 0.0 || EffectiveDailyMaxLossPct() > 0.0)
+                               ? " | DayGuard NOT_SIM" : "");
+   g_historyAuditRows[6] = "Max negative cumulative PnL | " + DoubleToString(minCumulativeClosedR, 2) + "R"
+                           + (auditMoneyAvailable ? (" | est $" + DoubleToString(minCumulativeClosedMoney, 2)) : " | $ N/A (fixed/manual lot)")
+                           + " | selected window " + NasAuditWindowLabel();
 
    g_historyAuditRunning = false;
    g_historyAuditProgressPct = 100.0;
@@ -6903,7 +6930,7 @@ void ClearDashboardObjects()
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
-      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_VOL_MULT_LBL", "DASH_TIMED_EXIT_LBL", "DASH_TIMED_EXIT_STATE", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_VOL_MULT_LBL", "DASH_TIMED_EXIT_LBL", "DASH_TIMED_EXIT_STATE", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_AUDIT_R6", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_FINAL_SCALE_APPLY", "BTN_EA_TOGGLE", "BTN_AUDIT_WIN", "BTN_NAS_BRIDGE_PUB", "BTN_NAS_BRIDGE_ONLY", "BTN_NAS_BRIDGE_NATIVE", "BTN_NAS_PRO_AUDIT", "BTN_ACCEPT_FILTER", "BTN_TP_MODE", "BTN_TP_LEG", "BTN_HCBE", "BTN_INV_TP", "BTN_INVERT", "BTN_FTMO", "BTN_RISKLOT", "BTN_RISK_GEOM", "BTN_ATRBUF_0", "BTN_ATRBUF_20", "BTN_ATRBUF_40", "BTN_ATRBUF_60", "BTN_ATRBUF_80", "BTN_ATRBUF_100", "BTN_ATRBUF_APPLY",
       "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "BTN_DAY_GUARD_APPLY", "EDIT_VOL_MULT", "EDIT_TIMED_EXIT"
    };
@@ -8085,10 +8112,11 @@ void UpdateDashboard()
    CreateLabel("DASH_AUDIT_R3", 52, 532, UiShort(g_historyAuditRows[3], 82), muted, 7);
    CreateLabel("DASH_AUDIT_R4", 52, 550, UiShort(g_historyAuditRows[4], 82), muted, 7);
    CreateLabel("DASH_AUDIT_R5", 52, 568, UiShort(g_historyAuditRows[5], 82), muted, 7);
+   CreateLabel("DASH_AUDIT_R6", 52, 586, UiShort(g_historyAuditRows[6], 82), C'255,145,160', 7);
    color auditBarColor = g_historyCoverageBlocked ? C'255,80,110' : (g_historyAuditRunning ? C'38,140,220' : C'30,150,95');
    string auditBarText = g_historyCoverageBlocked ? "HISTORY BLOCKED"
       : (g_historyAuditRunning ? ("AUDIT " + DoubleToString(g_historyAuditProgressPct, 1) + "%") : (NasAuditWindowLabel() + " AUDIT READY"));
-   CreateProgressBar("AUDIT_SCAN", 52, 590, 580, 16, g_historyCoverageBlocked ? 100.0 : g_historyAuditProgressPct,
+   CreateProgressBar("AUDIT_SCAN", 52, 608, 580, 16, g_historyCoverageBlocked ? 100.0 : g_historyAuditProgressPct,
                      auditBarText, auditBarColor, C'42,51,68', C'134,158,182');
    CreateLabel("DASH_ACTIONS", 696, 34, "AIRLOCK / CONFIG", steel, 9);
    CreateLabel("DASH_ACTION_HINT", 684, 116, "Manual", muted, 7);
