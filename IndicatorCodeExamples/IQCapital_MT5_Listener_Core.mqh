@@ -27,6 +27,15 @@
 #ifndef IQC_DASH_PREFIX
    #error "IQC_DASH_PREFIX must be defined by the wrapper EA"
 #endif
+#ifndef IQC_DEFAULT_PREFER_SCOPED_LATEST
+   #define IQC_DEFAULT_PREFER_SCOPED_LATEST false
+#endif
+#ifndef IQC_DEFAULT_FAIL_IF_SCOPED_MISSING
+   #define IQC_DEFAULT_FAIL_IF_SCOPED_MISSING false
+#endif
+#ifndef IQC_DEFAULT_SOURCE_SYMBOL_ALIASES
+   #define IQC_DEFAULT_SOURCE_SYMBOL_ALIASES ""
+#endif
 
 
 #include <Trade/Trade.mqh>
@@ -36,6 +45,9 @@
 input bool   InpExecutorEnabled = true;
 input string InpBridgeLatestFile = IQC_DEFAULT_FILE;
 input bool   InpUseCommonFiles = true;
+input bool   InpPreferScopedLatest = IQC_DEFAULT_PREFER_SCOPED_LATEST;
+input bool   InpFailIfScopedLatestMissing = IQC_DEFAULT_FAIL_IF_SCOPED_MISSING;
+input string InpSourceSymbolAliasesCsv = IQC_DEFAULT_SOURCE_SYMBOL_ALIASES; // Optional source-side aliases; auto aliases are also derived from the chart and symbol map.
 input int    InpPollMilliseconds = 250;
 input int    InpMaxSignalAgeSeconds = 900;
 input bool   InpIgnoreExistingSignalOnInit = true; // Prevent attach/restart from trading the already-published Latest.csv event.
@@ -88,6 +100,7 @@ bool g_timerActive = false;
 datetime g_lastDashboardDraw = 0;
 datetime g_lastPollTime = 0;
 string g_lastReadDetail = "";
+string g_lastBridgeReadFile = "";
 string g_lastAction = "boot";
 string g_lastActionDetail = "";
 string g_lastSignalSummary = "none";
@@ -446,7 +459,7 @@ void DrawDashboard(bool force=false)
    int y = InpDashboardY;
    DashboardSetRect("BG", x, y, 640, 232, C'17,24,34', C'80,160,220');
    DashboardSetRect("STRIPE", x + 8, y + 8, 624, 3, C'60,180,255', C'60,180,255');
-   DashboardSetLabel("TITLE", x + 14, y + 18, "ATOMIC FILE BRIDGE MT5 LISTENER", C'230,236,245', 10);
+   DashboardSetLabel("TITLE", x + 14, y + 18, IQC_PIPELINE_ID + " MT5 LISTENER", C'230,236,245', 10);
    DashboardSetLabel("BUILD", x + 300, y + 20, ATOMIC_FILE_BRIDGE_MT5_BUILD, C'90,178,255', 7);
 
    color statusColor = InpExecutorEnabled ? C'80,230,150' : C'255,90,110';
@@ -457,7 +470,7 @@ void DrawDashboard(bool force=false)
       + " | Audit=" + (InpAuditEnabled ? "ON" : "OFF"), statusColor, 8);
 
    DashboardSetLabel("FILE", x + 14, y + 60,
-      "File=" + InpBridgeLatestFile + " | Common=" + (InpUseCommonFiles ? "YES" : "NO")
+      "File=" + (g_lastBridgeReadFile != "" ? g_lastBridgeReadFile : InpBridgeLatestFile) + " | Common=" + (InpUseCommonFiles ? "YES" : "NO")
       + " | Chart=" + _Symbol + " | Magic=" + IntegerToString((int)InpMagic), C'190,205,220', 8);
    DashboardSetLabel("MAP", x + 14, y + 78,
       "Map=" + (InpUseBuiltInOilSymbolMap ? "builtin-oil ON" : "builtin-oil OFF") + " | " + InpBuiltInOilSymbolMapCsv, C'150,190,230', 7);
@@ -560,7 +573,7 @@ void AuditRaw(string eventName, string detail)
    );
    FileClose(h);
 }
-bool ReadLatestSignal(BridgeSignal &sig, string &detail)
+bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
 {
    sig.valid = false;
    detail = "";
@@ -568,10 +581,10 @@ bool ReadLatestSignal(BridgeSignal &sig, string &detail)
    if(InpUseCommonFiles)
       flags |= FILE_COMMON;
    ResetLastError();
-   int h = FileOpen(InpBridgeLatestFile, flags, ',');
+   int h = FileOpen(fileName, flags, ',');
    if(h == INVALID_HANDLE)
    {
-      detail = "file_open_failed err=" + IntegerToString(GetLastError()) + " file=" + InpBridgeLatestFile + " common=" + (InpUseCommonFiles ? "true" : "false");
+      detail = "file_open_failed err=" + IntegerToString(GetLastError()) + " file=" + fileName + " common=" + (InpUseCommonFiles ? "true" : "false");
       return false;
    }
 
@@ -665,13 +678,189 @@ bool ReadLatestSignal(BridgeSignal &sig, string &detail)
       sig.basketDayKey = Trim(fields[offset + 26]);
    if(sig.tradeMode == "") sig.tradeMode = "traditional";
    sig.valid = (sig.eventId != "" && sig.direction != 0);
-   detail = "read_ok fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
+   detail = "read_ok file=" + fileName + " fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
    if(!sig.valid)
    {
       bool initMarker = (sig.source == "bridge_initiated" || dir == "INIT");
       detail = (initMarker ? "bridge_init_marker " : "invalid_parsed_signal ") + detail;
    }
    return sig.valid;
+}
+
+void AddUniqueToken(string &items[], string value)
+{
+   value = Trim(value);
+   if(value == "") return;
+   for(int i = 0; i < ArraySize(items); i++)
+      if(SameTextCi(items[i], value)) return;
+   int n = ArraySize(items);
+   ArrayResize(items, n + 1);
+   items[n] = value;
+}
+
+string SafeFileToken(string value)
+{
+   value = Trim(value);
+   StringReplace(value, "\\", "_");
+   StringReplace(value, "/", "_");
+   StringReplace(value, ":", "_");
+   StringReplace(value, "*", "_");
+   StringReplace(value, "?", "_");
+   StringReplace(value, "\"", "_");
+   StringReplace(value, "<", "_");
+   StringReplace(value, ">", "_");
+   StringReplace(value, "|", "_");
+   StringReplace(value, " ", "_");
+   return value;
+}
+
+void AddCsvTokens(const string csvValue, string &items[])
+{
+   string csv = csvValue;
+   StringReplace(csv, ";", ",");
+   string parts[];
+   int count = StringSplit(csv, ',', parts);
+   for(int i = 0; i < count; i++) AddUniqueToken(items, parts[i]);
+}
+
+void AddReverseMappedAliases(string csv, const string destinationSymbol, string &items[])
+{
+   StringReplace(csv, ";", ",");
+   string parts[];
+   int count = StringSplit(csv, ',', parts);
+   for(int i = 0; i < count; i++)
+   {
+      string kv[];
+      if(StringSplit(Trim(parts[i]), '=', kv) != 2) continue;
+      if(SameTextCi(Trim(kv[1]), destinationSymbol)) AddUniqueToken(items, Trim(kv[0]));
+   }
+}
+
+bool IsGenericLatestFile(const string fileName)
+{
+   string lower = fileName;
+   StringToLower(lower);
+   string suffix = "_latest.csv";
+   int start = StringLen(lower) - StringLen(suffix);
+   return start >= 0 && StringSubstr(lower, start) == suffix;
+}
+
+string ScopedLatestName(const string genericFile, const string sourceAlias, const string sourceTf)
+{
+   int len = StringLen(genericFile);
+   string stem = genericFile;
+   if(len >= 4)
+   {
+      string extension = StringSubstr(genericFile, len - 4);
+      StringToLower(extension);
+      if(extension == ".csv") stem = StringSubstr(genericFile, 0, len - 4);
+   }
+   return stem + "_" + SafeFileToken(sourceAlias) + "_" + SafeFileToken(sourceTf) + ".csv";
+}
+
+void CollectScopedSourceAliases(string &aliases[])
+{
+   ArrayResize(aliases, 0);
+   AddCsvTokens(InpSourceSymbolAliasesCsv, aliases);
+   AddUniqueToken(aliases, _Symbol);
+
+   int symbolLen = StringLen(_Symbol);
+   if(symbolLen > 1)
+   {
+      string tail = StringSubstr(_Symbol, symbolLen - 1, 1);
+      if(tail == "m" || tail == "M") AddUniqueToken(aliases, StringSubstr(_Symbol, 0, symbolLen - 1));
+      else AddUniqueToken(aliases, _Symbol + "m");
+   }
+   AddReverseMappedAliases(InpSymbolMapCsv, _Symbol, aliases);
+   if(InpUseBuiltInOilSymbolMap) AddReverseMappedAliases(InpBuiltInOilSymbolMapCsv, _Symbol, aliases);
+}
+
+bool ReadLatestSignal(BridgeSignal &sig, string &detail)
+{
+   g_lastBridgeReadFile = "";
+   if(!InpPreferScopedLatest || !IsGenericLatestFile(InpBridgeLatestFile))
+   {
+      bool directOk = ReadSignalFile(InpBridgeLatestFile, sig, detail);
+      if(directOk) g_lastBridgeReadFile = InpBridgeLatestFile;
+      return directOk;
+   }
+
+   string sourceTf = Trim(InpSourceTimeframeFilter);
+   if(sourceTf == "" && InpDefaultSourceTfToChartPeriod) sourceTf = ChartSourceTfString();
+   if(sourceTf == "")
+   {
+      detail = "scoped_latest_requires_source_tf file=" + InpBridgeLatestFile;
+      return false;
+   }
+
+   string aliases[];
+   CollectScopedSourceAliases(aliases);
+   bool found = false;
+   bool markerFound = false;
+   datetime newestWritten = 0;
+   datetime newestMarkerWritten = 0;
+   BridgeSignal markerSig;
+   string markerDetail = "";
+   string markerFile = "";
+   string attempts = "";
+   for(int i = 0; i < ArraySize(aliases); i++)
+   {
+      string candidate = ScopedLatestName(InpBridgeLatestFile, aliases[i], sourceTf);
+      BridgeSignal candidateSig;
+      string candidateDetail = "";
+      if(!ReadSignalFile(candidate, candidateSig, candidateDetail))
+      {
+         bool initMarker = StringFind(candidateDetail, "bridge_init_marker") >= 0;
+         string markerIdentityReason = "";
+         if(initMarker && SignalMetadataMatchesThisChart(candidateSig, markerIdentityReason))
+         {
+            if(!markerFound || candidateSig.writtenGmt > newestMarkerWritten)
+            {
+               markerFound = true;
+               newestMarkerWritten = candidateSig.writtenGmt;
+               markerSig = candidateSig;
+               markerDetail = candidateDetail;
+               markerFile = candidate;
+            }
+            continue;
+         }
+         if(StringLen(attempts) < 260) attempts += (attempts == "" ? "" : ";") + candidate;
+         continue;
+      }
+      string identityReason = "";
+      if(!SignalIdentityMatchesThisChart(candidateSig, identityReason))
+      {
+         if(StringLen(attempts) < 260) attempts += (attempts == "" ? "" : ";") + candidate + "[" + identityReason + "]";
+         continue;
+      }
+      if(!found || candidateSig.writtenGmt > newestWritten)
+      {
+         found = true;
+         newestWritten = candidateSig.writtenGmt;
+         sig = candidateSig;
+         detail = candidateDetail + " scoped=true";
+         g_lastBridgeReadFile = candidate;
+      }
+   }
+   if(found) return true;
+   if(markerFound)
+   {
+      sig = markerSig;
+      detail = markerDetail + " scoped=true";
+      g_lastBridgeReadFile = markerFile;
+      return false;
+   }
+
+   if(InpFailIfScopedLatestMissing)
+   {
+      detail = "scoped_latest_not_found base=" + InpBridgeLatestFile + " tf=" + sourceTf + " tried=" + attempts;
+      return false;
+   }
+
+   bool fallbackOk = ReadSignalFile(InpBridgeLatestFile, sig, detail);
+   detail += " scoped_fallback=true";
+   if(fallbackOk) g_lastBridgeReadFile = InpBridgeLatestFile;
+   return fallbackOk;
 }
 string ChartSourceTfString()
 {
@@ -690,14 +879,9 @@ string ChartSourceTfString()
    return IntegerToString((int)_Period);
 }
 
-bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
+bool SignalMetadataMatchesThisChart(const BridgeSignal &sig, string &reason)
 {
    reason = "";
-   if(!sig.valid)
-   {
-      reason = "invalid_signal";
-      return false;
-   }
    if(InpSourceLoginFilter > 0 && sig.sourceLogin != InpSourceLoginFilter)
    {
       reason = "source_login_filter source=" + IntegerToString((int)sig.sourceLogin) + " expected=" + IntegerToString((int)InpSourceLoginFilter);
@@ -723,6 +907,16 @@ bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
       return false;
    }
    return true;
+}
+
+bool SignalIdentityMatchesThisChart(const BridgeSignal &sig, string &reason)
+{
+   if(!sig.valid)
+   {
+      reason = "invalid_signal";
+      return false;
+   }
+   return SignalMetadataMatchesThisChart(sig, reason);
 }
 
 bool SignalAcceptedForThisChart(const BridgeSignal &sig, string &reason)
@@ -2765,7 +2959,7 @@ trade.SetExpertMagicNumber(InpMagic);
       g_timerActive = EventSetTimer(1);
       timerErr = GetLastError();
    }
-   Print("AtomicFileBridge MT5 Executor BUILD=", ATOMIC_FILE_BRIDGE_MT5_BUILD,
+   Print(IQC_PIPELINE_ID, " MT5 Listener BUILD=", ATOMIC_FILE_BRIDGE_MT5_BUILD,
          " file=", InpBridgeLatestFile,
          " common=", (InpUseCommonFiles ? "true" : "false"),
          " chart=", _Symbol,

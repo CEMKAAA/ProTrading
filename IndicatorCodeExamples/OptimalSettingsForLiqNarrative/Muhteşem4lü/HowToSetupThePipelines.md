@@ -218,6 +218,48 @@ us500 and us100: 15, jp225 sol: 60, jp225 advanced: 60, de30 nas: 5
 and thats it pipelines are set.
 ----------------------------------------------------------------------------------------------------------------------------
 
+## NAS Professional - MT5 to MT5 Production Kurulumu
+
+Publisher tarafinda `NasUltimate_SATS_PartialNoBE_EA` calisir. Hedef MT5 tarafinda `NasUltimate_IQCapital_MT5_Listener_EA` kullanilir.
+
+Hedef listener ayarlari:
+
+```text
+InpExecutorEnabled                 = true
+InpBridgeLatestFile                = NasUltimateBridge_Latest.csv
+InpUseCommonFiles                  = true
+InpPreferScopedLatest              = true
+InpFailIfScopedLatestMissing       = true
+InpSourceSymbolAliasesCsv          = bos (otomatik) veya kaynak broker sembolleri
+InpSourceLoginFilter               = publisher MT5 login numarasi
+InpSourceTimeframeFilter           = publisher chart TF dakika cinsinden (M5 = 5)
+InpSourceFilter                    = NasUltimate|
+InpRequireMappedSymbolEqualsChart  = true
+InpRebaseMappedLevelsToLiveEntry   = true
+InpUseRiskLot                      = true
+InpPostFillRiskGuard               = true
+InpFailIfExactProtectionFails      = true
+InpIgnoreExistingSignalOnInit      = true
+```
+
+Listener generic dosyayi execution icin kullanmaz. Hedef chart ve source TF'ye gore scoped dosyayi otomatik bulur. Ornek:
+
+```text
+BTCUSD hedef chart + source M5 -> NasUltimateBridge_Latest_BTCUSDm_5.csv
+GER40 hedef chart + source M5  -> NasUltimateBridge_Latest_DE30m_5.csv veya eslesen diger DE30 alias'i
+```
+
+Dashboard `File=` satirinda gercek secilen scoped dosya gorunmelidir. `scoped_latest_not_found` gorulurse trade acilmaz; `InpSourceSymbolAliasesCsv` alanina publisher sembolunu ekle veya symbol map'i duzelt. Hedef broker server adi `BeyondIQCapital` degilse `InpDestinationServerFilter` alanini hedef broker server adina cevir.
+
+Risk, publisher hesap bakiyesinden kopyalanmaz. Bridge yalniz risk yuzdesini tasir; lot hedef MT5 hesabinin kendi equity'si, fill fiyati ve hedef broker kontrat ozellikleriyle hesaplanir.
+
+Audit dashboardlarinda:
+
+```text
+MinCum = audit baslangicindan itibaren gorulen en dusuk kumulatif sonuc
+PeakDD = onceki equity zirvesinden sonraki en buyuk kumulatif dusus (EOD trailing DD icin kritik)
+```
+
 ## JP225 ORB Ultimate - Kanal Bazli Production Kurulumu
 
 Bu kurulum bir adet `JP225m`, `M15` ORB instance'i icindir.

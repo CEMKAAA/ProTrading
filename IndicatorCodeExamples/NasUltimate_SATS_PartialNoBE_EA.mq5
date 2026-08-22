@@ -5,7 +5,7 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.55"
+#property version "1.58"
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -151,6 +151,7 @@ input double InpAccountRiskDailyLossLimitPct = 0.00;
 input double InpAccountRiskMaxDrawdownPct = 0.00;
 input double InpDailyProfitTargetPct = 0.00; // 0=off. Locks native execution and bridge publishing for the GMT trading day.
 input double InpDailyMaxLossPct = 0.00;      // 0=off. Uses this instance's closed + floating PnL.
+input double InpDailyMaxDrawdownMoney = 0.00; // 0=off. Hard USD/account-currency loss limit using this instance's closed + floating PnL.
 input double InpAccountRiskMaxMarginUsagePct = 40.00;
 input double InpAccountRiskInitialBalanceOverride = 0.00;
 input int    InpAccountRiskDayResetHourGmt = 0;
@@ -161,6 +162,8 @@ input bool   InpAccountRiskBlockUnprotectedPositions = true;
 input bool   InpAccountRiskFailClosed = true;
 input bool   InpAccountRiskAuditEnabled = true;
 input int    InpAccountRiskAuditIntervalSeconds = 60;
+input bool   InpAuditCommissionEnabled = true;
+input double InpAuditRoundTurnCommissionPct = 0.08; // Total entry+exit commission; 0.08 means 0.08% of entry notional.
 input int    InpDeviationPoints = 30;
 input bool   InpEnforceTpTouchClose = true; // Safety watchdog: close managed positions if live price touches broker TP.
 input double InpTpTouchCloseTolerancePoints = 2.0;
@@ -315,6 +318,7 @@ double   g_accountRiskPerTradePctRuntime = 1.0;
 uint     g_riskPctApplyFeedbackUntilMs = 0;
 double   g_dailyProfitTargetPctRuntime = 0.0;
 double   g_dailyMaxLossPctRuntime = 0.0;
+double   g_dailyMaxDrawdownMoneyRuntime = 0.0;
 uint     g_dailyGuardApplyFeedbackUntilMs = 0;
 double   g_lastAdvancedLot = 0.0;
 string   g_lastAdvancedLotDetail = "";
@@ -391,15 +395,28 @@ double LoadNasDailyGuardRuntime(const string kind, const double configured)
    return saved >= 0.0 && saved <= 100.0 ? saved : fallback;
 }
 
+double LoadNasDailyGuardMoneyRuntime(const string kind, const double configured)
+{
+   double fallback = MathMax(0.0, MathMin(1000000000.0, configured));
+   if(IsTesterMode())
+      return fallback;
+   string key = NasDailyGuardRuntimeKey(kind);
+   if(!GlobalVariableCheck(key))
+      return fallback;
+   double saved = GlobalVariableGet(key);
+   return saved >= 0.0 && saved <= 1000000000.0 ? saved : fallback;
+}
+
 bool PersistNasDailyGuardRuntime()
 {
    if(IsTesterMode())
       return true;
    bool profitOk = GlobalVariableSet(NasDailyGuardRuntimeKey("P"), g_dailyProfitTargetPctRuntime) > 0;
    bool lossOk = GlobalVariableSet(NasDailyGuardRuntimeKey("L"), g_dailyMaxLossPctRuntime) > 0;
-   if(profitOk && lossOk)
+   bool moneyOk = GlobalVariableSet(NasDailyGuardRuntimeKey("D"), g_dailyMaxDrawdownMoneyRuntime) > 0;
+   if(profitOk && lossOk && moneyOk)
       GlobalVariablesFlush();
-   return profitOk && lossOk;
+   return profitOk && lossOk && moneyOk;
 }
 
 string NasInstanceRuntimeKey(const string kind)
@@ -571,9 +588,16 @@ double EffectiveDailyMaxLossPct()
    return MathMax(0.0, g_dailyMaxLossPctRuntime);
 }
 
+double EffectiveDailyMaxDrawdownMoney()
+{
+   return MathMax(0.0, g_dailyMaxDrawdownMoneyRuntime);
+}
+
 bool DailyPnlGuardConfigured()
 {
-   return EffectiveDailyProfitTargetPct() > 0.0 || EffectiveDailyMaxLossPct() > 0.0;
+   return EffectiveDailyProfitTargetPct() > 0.0
+      || EffectiveDailyMaxLossPct() > 0.0
+      || EffectiveDailyMaxDrawdownMoney() > 0.0;
 }
 
 bool UseSingleOrderTpMode()
@@ -1695,6 +1719,7 @@ int OnInit()
    g_accountRiskPerTradePctRuntime = LoadNasRiskPctRuntime();
    g_dailyProfitTargetPctRuntime = LoadNasDailyGuardRuntime("P", InpDailyProfitTargetPct);
    g_dailyMaxLossPctRuntime = LoadNasDailyGuardRuntime("L", InpDailyMaxLossPct);
+   g_dailyMaxDrawdownMoneyRuntime = LoadNasDailyGuardMoneyRuntime("D", InpDailyMaxDrawdownMoney);
    g_runtimeMagic = 0;
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
@@ -1873,6 +1898,7 @@ void PrintStartupDiagnostics()
          " tp_touch_retries=", InpTpTouchCloseRetryCount,
          " daily_profit_target_pct=", DoubleToString(EffectiveDailyProfitTargetPct(), 3),
          " daily_max_loss_pct=", DoubleToString(EffectiveDailyMaxLossPct(), 3),
+         " daily_max_drawdown_money=", DoubleToString(EffectiveDailyMaxDrawdownMoney(), 2),
          " daily_reset_gmt=", InpAccountRiskDayResetHourGmt,
          " leg_lot=", DoubleToString(leg, 8),
          " volume_min=", DoubleToString(minLot, 8),
@@ -2707,7 +2733,8 @@ void ProcessSignalBar()
       MarkDirectionProcessedOnBar(rates[i].time, direction);
       if(InpDrawExecutionArrows)
          DrawBlockedSignal(direction, rates[i].time, rates[i].high, rates[i].low,
-            NasSignalText(p[i]), dailyGuardReason == "daily_profit_target_hit" ? "DAY PROFIT" : "DAY LOSS");
+            NasSignalText(p[i]), dailyGuardReason == "daily_profit_target_hit" ? "DAY PROFIT"
+               : (dailyGuardReason == "daily_max_drawdown_money_hit" ? "DAY DD $" : "DAY LOSS"));
       NasProAuditWrite("daily_pnl_guard_signal_block", "nas|" + IntegerToString((long)rates[i].time), direction,
          0.0, 0.0, 0.0, 0.0,
          "reason=" + dailyGuardReason
@@ -3915,6 +3942,94 @@ void BlockNasHistoryAudit(const string reason)
    ChartRedraw(0);
 }
 
+bool NasAuditClosedTradeMoney(const int direction,
+                              const double entry,
+                              const double sl,
+                              const double pnlR,
+                              double &volume,
+                              double &grossMoney,
+                              double &commissionMoney,
+                              double &commissionR,
+                              string &detail)
+{
+   volume = 0.0;
+   grossMoney = 0.0;
+   commissionMoney = 0.0;
+   commissionR = 0.0;
+   detail = "";
+   if(MathAbs(direction) != 1 || entry <= 0.0 || sl <= 0.0 || MathAbs(entry - sl) <= 0.0)
+   {
+      detail = "invalid_geometry";
+      return false;
+   }
+
+   ENUM_ORDER_TYPE orderType = direction > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double slMoneyPerLot = 0.0;
+   if(!OrderCalcProfit(orderType, _Symbol, 1.0, entry, sl, slMoneyPerLot)
+      || !MathIsValidNumber(slMoneyPerLot)
+      || MathAbs(slMoneyPerLot) <= 0.0)
+   {
+      detail = "sl_money_calc_failed err=" + IntegerToString(GetLastError());
+      return false;
+   }
+   slMoneyPerLot = MathAbs(slMoneyPerLot);
+
+   int divisor = UseSingleOrderTpMode() ? 1 : 3;
+   double manualVolume = UseSingleOrderTpMode()
+      ? FixedVolume()
+      : NormalizeVolume(g_totalLotRuntime > 0.0 ? g_totalLotRuntime : InpTotalLot);
+   if(AccountRiskRuntimeEnabled() && InpAdvancedLotEngineEnabled)
+   {
+      double fixedRiskBudget = AccountRiskInitialBalance()
+         * MathMax(0.0, g_accountRiskPerTradePctRuntime) / 100.0;
+      if(fixedRiskBudget <= 0.0)
+      {
+         detail = "risk_budget_invalid";
+         return false;
+      }
+      volume = NormalizeRiskVolume(fixedRiskBudget / slMoneyPerLot, divisor);
+   }
+   else
+      volume = NormalizeRiskVolume(manualVolume, divisor);
+
+   if(volume <= 0.0)
+   {
+      detail = "volume_below_broker_min";
+      return false;
+   }
+
+   double actualRiskMoney = slMoneyPerLot * volume;
+   if(!MathIsValidNumber(actualRiskMoney) || actualRiskMoney <= 0.0)
+   {
+      detail = "actual_risk_invalid";
+      return false;
+   }
+   grossMoney = pnlR * actualRiskMoney;
+
+   if(!InpAuditCommissionEnabled || InpAuditRoundTurnCommissionPct <= 0.0)
+      return true;
+
+   // A price move equal to entry returns the linear entry notional in the
+   // account currency, including MT5's symbol-specific contract conversion.
+   double entryNotional = 0.0;
+   if(!OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, volume, entry, entry * 2.0, entryNotional)
+      || !MathIsValidNumber(entryNotional)
+      || MathAbs(entryNotional) <= 0.0)
+   {
+      detail = "entry_notional_calc_failed err=" + IntegerToString(GetLastError());
+      return false;
+   }
+   commissionMoney = MathAbs(entryNotional) * InpAuditRoundTurnCommissionPct / 100.0;
+   commissionR = commissionMoney / actualRiskMoney;
+   if(!MathIsValidNumber(commissionMoney) || commissionMoney < 0.0
+      || !MathIsValidNumber(commissionR) || commissionR < 0.0)
+   {
+      detail = "commission_invalid";
+      return false;
+   }
+   return true;
+}
+
 void DrawRecentSignalHistory()
 {
    if(IsTesterMode())
@@ -4138,6 +4253,11 @@ void DrawRecentSignalHistory()
    double otherLostR = 0.0;
    double wonR = 0.0;
    double lostR = 0.0;
+   double auditGrossMoney = 0.0;
+   double auditCommissionMoney = 0.0;
+   double auditCommissionR = 0.0;
+   int auditCommissionTrades = 0;
+   int auditCommissionFailures = 0;
    double closedPnlNewestFirst[];
    ArrayResize(closedPnlNewestFirst, 0);
    int maxDraw = 250;
@@ -4273,6 +4393,30 @@ void DrawRecentSignalHistory()
           int closedPnlCount = ArraySize(closedPnlNewestFirst);
           ArrayResize(closedPnlNewestFirst, closedPnlCount + 1);
           closedPnlNewestFirst[closedPnlCount] = pnlR;
+
+          double auditVolume = 0.0;
+          double tradeGrossMoney = 0.0;
+          double tradeCommissionMoney = 0.0;
+          double tradeCommissionR = 0.0;
+          string auditMoneyDetail = "";
+          if(NasAuditClosedTradeMoney(direction, entry, sl, pnlR,
+                                      auditVolume, tradeGrossMoney,
+                                      tradeCommissionMoney, tradeCommissionR,
+                                      auditMoneyDetail))
+          {
+             auditGrossMoney += tradeGrossMoney;
+             auditCommissionMoney += tradeCommissionMoney;
+             auditCommissionR += tradeCommissionR;
+             auditCommissionTrades++;
+          }
+          else
+          {
+             auditCommissionFailures++;
+             if(InpSignalParityAudit)
+                Print("NAS SATS EA audit commission skipped signal_time=",
+                      TimeToString(rates[i].time, TIME_DATE|TIME_MINUTES),
+                      " reason=", auditMoneyDetail);
+          }
        }
 
        MqlDateTime executionDay;
@@ -4376,20 +4520,43 @@ void DrawRecentSignalHistory()
    double avgR = closedCount > 0 ? totalR / (double)closedCount : 0.0;
    double cumulativeClosedR = 0.0;
    double minCumulativeClosedR = 0.0;
+   double peakCumulativeClosedR = 0.0;
+   double maxPeakDrawdownClosedR = 0.0;
    for(int curveIndex = ArraySize(closedPnlNewestFirst) - 1; curveIndex >= 0; --curveIndex)
    {
       cumulativeClosedR += closedPnlNewestFirst[curveIndex];
       if(cumulativeClosedR < minCumulativeClosedR)
          minCumulativeClosedR = cumulativeClosedR;
+      if(cumulativeClosedR > peakCumulativeClosedR)
+         peakCumulativeClosedR = cumulativeClosedR;
+      double peakDrawdownR = cumulativeClosedR - peakCumulativeClosedR;
+      if(peakDrawdownR < maxPeakDrawdownClosedR)
+         maxPeakDrawdownClosedR = peakDrawdownR;
    }
    bool auditMoneyAvailable = AccountRiskRuntimeEnabled()
       && AccountRiskInitialBalance() > 0.0
       && g_accountRiskPerTradePctRuntime > 0.0;
+   bool auditCommissionRequested = InpAuditCommissionEnabled && InpAuditRoundTurnCommissionPct > 0.0;
+   bool auditNetMoneyAvailable = closedCount > 0
+      && auditCommissionFailures == 0
+      && auditCommissionTrades == closedCount;
+   double auditNetR = totalR - auditCommissionR;
+   double auditNetMoney = auditGrossMoney - auditCommissionMoney;
    double minCumulativeClosedMoney = auditMoneyAvailable
       ? minCumulativeClosedR * AccountRiskInitialBalance() * g_accountRiskPerTradePctRuntime / 100.0
       : 0.0;
-   g_historyAuditSummary = NasAuditWindowLabel() + " | Net R "
-                           + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2) + "R | "
+   double maxPeakDrawdownClosedMoney = auditMoneyAvailable
+      ? maxPeakDrawdownClosedR * AccountRiskInitialBalance() * g_accountRiskPerTradePctRuntime / 100.0
+      : 0.0;
+   g_historyAuditSummary = NasAuditWindowLabel() + " | "
+                           + (auditNetMoneyAvailable ? "Net " : "Gross ")
+                           + ((auditNetMoneyAvailable ? auditNetR : totalR) >= 0.0 ? "+" : "")
+                           + DoubleToString(auditNetMoneyAvailable ? auditNetR : totalR, 2) + "R"
+                           + (auditNetMoneyAvailable
+                              ? "/" + AccountInfoString(ACCOUNT_CURRENCY)
+                                + (auditNetMoney >= 0.0 ? "+" : "") + DoubleToString(auditNetMoney, 2)
+                                + " fee -" + DoubleToString(auditCommissionMoney, 2)
+                              : "") + " | "
                            + IntegerToString(drawn) + " sig | W " + IntegerToString(wins)
                             + " L " + IntegerToString(losses)
                             + " B " + IntegerToString(breakevens)
@@ -4420,11 +4587,20 @@ void DrawRecentSignalHistory()
                            + " | floor ATRx" + DoubleToString(InpScalpMinAtrMultiplier, 2)
                            + " range" + DoubleToString(InpScalpMinSignalRangePct, 0) + "%"
                            + " | cap " + DoubleToString(InpScalpMaxOriginalRiskPct, 0) + "%";
-   g_historyAuditRows[3] = "R totals | Net R " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2)
-                             + "R | Won R +" + DoubleToString(wonR, 2) + "R | Lost R -" + DoubleToString(lostR, 2)
-                             + "R | O-closed R " + (otherClosedR >= 0.0 ? "+" : "") + DoubleToString(otherClosedR, 2)
-                             + "R (OW +" + DoubleToString(otherWonR, 2) + " / OL -" + DoubleToString(otherLostR, 2) + ")"
-                             + " | O-open R " + (openFloatingR >= 0.0 ? "+" : "") + DoubleToString(openFloatingR, 2) + "R";
+   if(auditNetMoneyAvailable)
+      g_historyAuditRows[3] = "PnL | Gross " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2)
+                              + "R/" + AccountInfoString(ACCOUNT_CURRENCY)
+                              + (auditGrossMoney >= 0.0 ? "+" : "") + DoubleToString(auditGrossMoney, 2)
+                              + " | Fees -" + DoubleToString(auditCommissionR, 2) + "R/-"
+                              + DoubleToString(auditCommissionMoney, 2)
+                              + " | NET " + (auditNetR >= 0.0 ? "+" : "") + DoubleToString(auditNetR, 2)
+                              + "R/" + (auditNetMoney >= 0.0 ? "+" : "") + DoubleToString(auditNetMoney, 2);
+   else
+      g_historyAuditRows[3] = "PnL | Gross " + (totalR >= 0.0 ? "+" : "") + DoubleToString(totalR, 2)
+                              + "R | Fees " + (auditCommissionRequested ? "N/A" : "OFF")
+                              + " | priced " + IntegerToString(auditCommissionTrades)
+                              + "/" + IntegerToString(closedCount)
+                              + (auditCommissionFailures > 0 ? " fail " + IntegerToString(auditCommissionFailures) : "");
    g_historyAuditRows[4] = "Target stats | W " + IntegerToString(wins) + " / L " + IntegerToString(losses)
                              + " / B " + IntegerToString(breakevens) + " / O " + IntegerToString(openCount)
                              + " [OW " + IntegerToString(otherWins) + " OL " + IntegerToString(otherLosses)
@@ -4441,10 +4617,13 @@ void DrawRecentSignalHistory()
                            + " spr " + IntegerToString(spreadSkipped)
                             + " spr? " + IntegerToString(spreadUnknown)
                             + " unknown " + IntegerToString(regimeUnclassified)
-                             + ((EffectiveDailyProfitTargetPct() > 0.0 || EffectiveDailyMaxLossPct() > 0.0)
+                             + ((EffectiveDailyProfitTargetPct() > 0.0 || EffectiveDailyMaxLossPct() > 0.0
+                                  || EffectiveDailyMaxDrawdownMoney() > 0.0)
                                ? " | DayGuard NOT_SIM" : "");
-   g_historyAuditRows[6] = "Max negative cumulative PnL | " + DoubleToString(minCumulativeClosedR, 2) + "R"
-                           + (auditMoneyAvailable ? (" | est $" + DoubleToString(minCumulativeClosedMoney, 2)) : " | $ N/A (fixed/manual lot)")
+   g_historyAuditRows[6] = "Min cumulative | " + DoubleToString(minCumulativeClosedR, 2) + "R"
+                           + (auditMoneyAvailable ? ("/$" + DoubleToString(minCumulativeClosedMoney, 2)) : "/$N/A")
+                           + " | PeakDD " + DoubleToString(maxPeakDrawdownClosedR, 2) + "R"
+                           + (auditMoneyAvailable ? ("/$" + DoubleToString(maxPeakDrawdownClosedMoney, 2)) : "/$N/A")
                            + " | selected window " + NasAuditWindowLabel();
 
    g_historyAuditRunning = false;
@@ -4456,6 +4635,14 @@ void DrawRecentSignalHistory()
          " breakevens=", breakevens,
           " open=", openCount,
           " pnl_r=", DoubleToString(totalR, 2),
+          " audit_gross_money=", (auditNetMoneyAvailable ? DoubleToString(auditGrossMoney, 2) : "N/A"),
+          " audit_commission_pct=", DoubleToString(InpAuditRoundTurnCommissionPct, 4),
+          " audit_commission_money=", (auditNetMoneyAvailable ? DoubleToString(auditCommissionMoney, 2) : "N/A"),
+          " audit_commission_r=", (auditNetMoneyAvailable ? DoubleToString(auditCommissionR, 4) : "N/A"),
+          " audit_net_money=", (auditNetMoneyAvailable ? DoubleToString(auditNetMoney, 2) : "N/A"),
+          " audit_net_r=", (auditNetMoneyAvailable ? DoubleToString(auditNetR, 4) : "N/A"),
+          " audit_commission_trades=", auditCommissionTrades,
+          " audit_commission_failures=", auditCommissionFailures,
           " open_floating_r=", DoubleToString(openFloatingR, 2),
           " other_closed_r=", DoubleToString(otherClosedR, 2),
           " other_wins=", otherWins,
@@ -4775,7 +4962,8 @@ bool DailyPnlGuardLocked(string &reason)
    if(!GlobalVariableCheck(key))
       return false;
    double code = GlobalVariableGet(key);
-   reason = code > 0.0 ? "daily_profit_target_hit" : "daily_max_loss_hit";
+   reason = code > 0.0 ? "daily_profit_target_hit"
+      : (code < -1.5 ? "daily_max_drawdown_money_hit" : "daily_max_loss_hit");
    return true;
 }
 
@@ -4794,21 +4982,25 @@ bool DailyPnlGuardAllowsNewEntry(string &reason)
       && g_dailyGuardPnlPct >= EffectiveDailyProfitTargetPct();
    bool lossHit = EffectiveDailyMaxLossPct() > 0.0
       && g_dailyGuardPnlPct <= -EffectiveDailyMaxLossPct();
-   if(!profitHit && !lossHit)
+   bool moneyDrawdownHit = EffectiveDailyMaxDrawdownMoney() > 0.0
+      && g_dailyGuardPnlMoney <= -EffectiveDailyMaxDrawdownMoney();
+   if(!profitHit && !lossHit && !moneyDrawdownHit)
    {
       reason = "";
       return true;
    }
 
-   GlobalVariableSet(DailyPnlGuardDayKey(), profitHit ? 1.0 : -1.0);
+   GlobalVariableSet(DailyPnlGuardDayKey(), profitHit ? 1.0 : (moneyDrawdownHit ? -2.0 : -1.0));
    GlobalVariablesFlush();
-   reason = profitHit ? "daily_profit_target_hit" : "daily_max_loss_hit";
+   reason = profitHit ? "daily_profit_target_hit"
+      : (moneyDrawdownHit ? "daily_max_drawdown_money_hit" : "daily_max_loss_hit");
    WriteAccountRiskAudit("daily_pnl_guard_locked",
       "reason=" + reason
       + " instance_pnl=" + DoubleToString(g_dailyGuardPnlMoney, 2)
       + " daily_pnl_pct=" + DoubleToString(g_dailyGuardPnlPct, 3)
       + " profit_target_pct=" + DoubleToString(EffectiveDailyProfitTargetPct(), 3)
-      + " max_loss_pct=" + DoubleToString(EffectiveDailyMaxLossPct(), 3), false);
+      + " max_loss_pct=" + DoubleToString(EffectiveDailyMaxLossPct(), 3)
+      + " max_drawdown_money=" + DoubleToString(EffectiveDailyMaxDrawdownMoney(), 2), false);
    return false;
 }
 
@@ -5074,6 +5266,8 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
    // Keep only lifecycle/risk decisions such as lot_selected, lot_blocked, liquidation events.
    if(periodic)
       return;
+   if(DailyPnlGuardConfigured())
+      DailyPnlGuardInstanceMetrics();
    double closedAll, closedToday, floating;
    AccountRiskScopePerformance(closedAll, closedToday, floating);
    double riskCapital, dailyLossPct, totalDdPct;
@@ -5088,7 +5282,7 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
    double portfolioBudget = riskCapital * MathMax(0.0, InpAccountRiskMaxPortfolioPct) / 100.0;
    double margin = AccountInfoDouble(ACCOUNT_MARGIN);
    double marginUsagePct = riskCapital > 0.0 ? margin / riskCapital * 100.0 : 100.0;
-   string fileName = "AccountRiskAudit_MT5_v2_" + NasAuditDate(TimeGMT()) + ".csv";
+   string fileName = "AccountRiskAudit_MT5_v3_" + NasAuditDate(TimeGMT()) + ".csv";
    double auditLock = 0.0;
    if(!AccountRiskAuditFileLock(auditLock))
       return;
@@ -5103,17 +5297,17 @@ void WriteAccountRiskAudit(const string eventName, const string detail, const bo
    if(empty)
       FileWrite(h, "ts_gmt", "ts_server", "event", "build", "terminal", "account", "reporter", "symbol", "timeframe",
          "initial_balance", "account_balance", "account_equity", "scope_closed_all", "scope_closed_today", "scope_floating",
-         "scope_equity", "risk_capital", "daily_pnl_pct", "daily_loss_pct", "daily_profit_target_pct", "daily_max_loss_pct",
+         "scope_equity", "risk_capital", "daily_pnl_pct", "daily_loss_pct", "instance_daily_pnl_money", "daily_profit_target_pct", "daily_max_loss_pct", "daily_max_drawdown_money",
          "daily_guard_locked", "total_dd_pct", "margin", "margin_usage_pct", "open_positions",
          "protected_positions", "unprotected_positions", "total_volume", "open_sl_risk", "trade_budget", "atr_budget",
          "portfolio_budget", "available_portfolio_risk", "safety_pct", "day_reset_gmt", "positions", "detail");
    FileWrite(h, TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS), TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
-      eventName, "1.27", "MT5", (string)AccountInfoInteger(ACCOUNT_LOGIN), "NasUltimate", _Symbol, EnumToString(_Period),
+      eventName, "1.28", "MT5", (string)AccountInfoInteger(ACCOUNT_LOGIN), "NasUltimate", _Symbol, EnumToString(_Period),
       DoubleToString(initial, 2), DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
       DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), DoubleToString(closedAll, 2),
       DoubleToString(closedToday, 2), DoubleToString(floating, 2), DoubleToString(scopeEquity, 2),
       DoubleToString(riskCapital, 2), DoubleToString(g_accountRiskDailyPnlPct, 3), DoubleToString(dailyLossPct, 3),
-      DoubleToString(EffectiveDailyProfitTargetPct(), 3), DoubleToString(EffectiveDailyMaxLossPct(), 3),
+      DoubleToString(g_dailyGuardPnlMoney, 2), DoubleToString(EffectiveDailyProfitTargetPct(), 3), DoubleToString(EffectiveDailyMaxLossPct(), 3), DoubleToString(EffectiveDailyMaxDrawdownMoney(), 2),
       GlobalVariableCheck(DailyPnlGuardDayKey()) ? "1" : "0", DoubleToString(totalDdPct, 3),
       DoubleToString(margin, 2), DoubleToString(marginUsagePct, 3), IntegerToString(openCount),
       IntegerToString(protectedCount), IntegerToString(unprotectedCount), DoubleToString(totalVolume, 4),
@@ -6930,9 +7124,9 @@ void ClearDashboardObjects()
       "DASH_TITLE", "DASH_SUB", "DASH_1", "DASH_PRICE", "DASH_2", "DASH_3", "DASH_4", "DASH_5",
       "DASH_SENSOR", "DASH_SENSOR_HELP", "DASH_REGIME", "DASH_WIN", "DASH_WIN_STATE",
       "DASH_ACTIONS", "DASH_ACTION_HINT", "DASH_START_LBL", "DASH_END_LBL", "DASH_LOT_LBL",
-      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_VOL_MULT_LBL", "DASH_TIMED_EXIT_LBL", "DASH_TIMED_EXIT_STATE", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_AUDIT_R6", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
+      "DASH_SPREAD_MAX_LBL", "DASH_FINAL_SCALE_LBL", "DASH_ATR_BUFFER_LBL", "DASH_DAY_PROFIT_LBL", "DASH_DAY_LOSS_LBL", "DASH_DAY_DD_MONEY_LBL", "DASH_VOL_MULT_LBL", "DASH_TIMED_EXIT_LBL", "DASH_TIMED_EXIT_STATE", "DASH_CFG_NOTE", "DASH_TP_CFG", "DASH_RISK_MODE", "DASH_AUDIT_PANEL", "DASH_AUDIT_TITLE", "DASH_AUDIT_SUMMARY", "DASH_AUDIT_DETAIL", "DASH_WD_MON", "DASH_WD_TUE", "DASH_WD_WED", "DASH_WD_THU", "DASH_WD_FRI", "DASH_AUDIT_R0", "DASH_AUDIT_R1", "DASH_AUDIT_R2", "DASH_AUDIT_R3", "DASH_AUDIT_R4", "DASH_AUDIT_R5", "DASH_AUDIT_R6", "DASH_H0", "DASH_H1", "DASH_H2", "DASH_H3",
       "BTN_CLOSE_ALL", "BTN_CLOSE_1_3", "BTN_BE", "BTN_APPLY_WINDOW", "BTN_FINAL_SCALE_APPLY", "BTN_EA_TOGGLE", "BTN_AUDIT_WIN", "BTN_NAS_BRIDGE_PUB", "BTN_NAS_BRIDGE_ONLY", "BTN_NAS_BRIDGE_NATIVE", "BTN_NAS_PRO_AUDIT", "BTN_ACCEPT_FILTER", "BTN_TP_MODE", "BTN_TP_LEG", "BTN_HCBE", "BTN_INV_TP", "BTN_INVERT", "BTN_FTMO", "BTN_RISKLOT", "BTN_RISK_GEOM", "BTN_ATRBUF_0", "BTN_ATRBUF_20", "BTN_ATRBUF_40", "BTN_ATRBUF_60", "BTN_ATRBUF_80", "BTN_ATRBUF_100", "BTN_ATRBUF_APPLY",
-      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "BTN_DAY_GUARD_APPLY", "EDIT_VOL_MULT", "EDIT_TIMED_EXIT"
+      "EDIT_START", "EDIT_END", "EDIT_LOT", "EDIT_RISK_PCT", "BTN_RISK_PCT_APPLY", "DASH_RISK_PCT_LBL", "EDIT_SPREAD_MAX", "EDIT_FINAL_SCALE", "EDIT_ATR_BUFFER", "EDIT_PIP_SL", "BTN_PIP_APPLY", "DASH_PIP_SL_LBL", "EDIT_DAY_PROFIT", "EDIT_DAY_LOSS", "EDIT_DAY_DD_MONEY", "BTN_DAY_GUARD_APPLY", "EDIT_VOL_MULT", "EDIT_TIMED_EXIT"
    };
    for(int i = 0; i < ArraySize(names); i++)
       DeleteObjectIfExists(names[i]);
@@ -7017,7 +7211,7 @@ void CreateButtons()
    CreateButton("BTN_NAS_BRIDGE_NATIVE", 860, 360, 82, 22, g_nasNativeWithBridgeOnlyRuntime ? "NAT ON" : "NAT OFF", g_nasNativeWithBridgeOnlyRuntime ? C'184,103,22' : C'90,90,110');
    CreateButton("BTN_NAS_PRO_AUDIT", 948, 360, 90, 22, g_nasProAuditRuntime ? "AUDIT ON" : "AUDIT OFF", g_nasProAuditRuntime ? C'30,150,95' : C'90,90,110');
    bool dayAppliedFeedback = (int)(g_dailyGuardApplyFeedbackUntilMs - GetTickCount()) > 0;
-   CreateButton("BTN_DAY_GUARD_APPLY", 846, 402, 92, 22,
+   CreateButton("BTN_DAY_GUARD_APPLY", 920, 402, 98, 22,
                 dayAppliedFeedback ? "APPLIED" : "APPLY DAY",
                 dayAppliedFeedback ? C'30,150,95' : C'38,101,176');
    bool volumeAppliedFeedback = (int)(g_volumeApplyFeedbackUntilMs - GetTickCount()) > 0;
@@ -7288,11 +7482,35 @@ bool ParseDashboardPercent(string text, double &value)
    return MathIsValidNumber(value) && value >= 0.0 && value <= 100.0;
 }
 
+bool ParseDashboardMoney(string text, double &value)
+{
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   StringReplace(text, ",", ".");
+   if(text == "")
+      return false;
+   int dots = 0;
+   for(int i = 0; i < StringLen(text); ++i)
+   {
+      ushort ch = StringGetCharacter(text, i);
+      if(ch == '.')
+      {
+         dots++;
+         if(dots > 1) return false;
+      }
+      else if(ch < '0' || ch > '9')
+         return false;
+   }
+   value = StringToDouble(text);
+   return MathIsValidNumber(value) && value >= 0.0 && value <= 1000000000.0;
+}
+
 bool ApplyDailyGuardFromDashboard(const string source)
 {
    string profitObj = PREFIX + "EDIT_DAY_PROFIT";
    string lossObj = PREFIX + "EDIT_DAY_LOSS";
-   if(ObjectFind(0, profitObj) < 0 || ObjectFind(0, lossObj) < 0)
+   string moneyObj = PREFIX + "EDIT_DAY_DD_MONEY";
+   if(ObjectFind(0, profitObj) < 0 || ObjectFind(0, lossObj) < 0 || ObjectFind(0, moneyObj) < 0)
    {
       Print("NAS SATS EA daily guard apply failed missing edit objects source=", source);
       return false;
@@ -7300,25 +7518,32 @@ bool ApplyDailyGuardFromDashboard(const string source)
 
    double requestedProfit = 0.0;
    double requestedLoss = 0.0;
+   double requestedMoney = 0.0;
    string profitText = ObjectGetString(0, profitObj, OBJPROP_TEXT);
    string lossText = ObjectGetString(0, lossObj, OBJPROP_TEXT);
+   string moneyText = ObjectGetString(0, moneyObj, OBJPROP_TEXT);
    if(!ParseDashboardPercent(profitText, requestedProfit)
-      || !ParseDashboardPercent(lossText, requestedLoss))
+      || !ParseDashboardPercent(lossText, requestedLoss)
+      || !ParseDashboardMoney(moneyText, requestedMoney))
    {
-      Print("NAS SATS EA daily guard apply failed invalid percentage source=", source,
-            " profit_pct=", profitText, " loss_pct=", lossText, " allowed=0..100");
+      Print("NAS SATS EA daily guard apply failed invalid value source=", source,
+            " profit_pct=", profitText, " loss_pct=", lossText,
+            " hard_dd_money=", moneyText, " pct_allowed=0..100 money_allowed=0..1000000000");
       return false;
    }
 
    double oldProfit = g_dailyProfitTargetPctRuntime;
    double oldLoss = g_dailyMaxLossPctRuntime;
+   double oldMoney = g_dailyMaxDrawdownMoneyRuntime;
    g_dailyProfitTargetPctRuntime = requestedProfit;
    g_dailyMaxLossPctRuntime = requestedLoss;
+   g_dailyMaxDrawdownMoneyRuntime = requestedMoney;
    if(!PersistNasDailyGuardRuntime())
    {
       int persistError = GetLastError();
       g_dailyProfitTargetPctRuntime = oldProfit;
       g_dailyMaxLossPctRuntime = oldLoss;
+      g_dailyMaxDrawdownMoneyRuntime = oldMoney;
       PersistNasDailyGuardRuntime();
       Print("NAS SATS EA daily guard apply failed persistence error source=", source,
             " err=", persistError);
@@ -7327,12 +7552,14 @@ bool ApplyDailyGuardFromDashboard(const string source)
 
    ObjectSetString(0, profitObj, OBJPROP_TEXT, DoubleToString(g_dailyProfitTargetPctRuntime, 2));
    ObjectSetString(0, lossObj, OBJPROP_TEXT, DoubleToString(g_dailyMaxLossPctRuntime, 2));
+   ObjectSetString(0, moneyObj, OBJPROP_TEXT, DoubleToString(g_dailyMaxDrawdownMoneyRuntime, 2));
    g_dailyGuardApplyFeedbackUntilMs = GetTickCount() + 1200;
    g_dashboardForceNextUpdate = true;
    RequestHistoryRefresh();
    Print("NAS SATS EA daily guard applied source=", source,
          " profit_target_pct=", DoubleToString(g_dailyProfitTargetPctRuntime, 3),
          " max_loss_pct=", DoubleToString(g_dailyMaxLossPctRuntime, 3),
+         " hard_dd_money=", DoubleToString(g_dailyMaxDrawdownMoneyRuntime, 2),
          " zero_means_off=true scope=account_magic_symbol_tf");
    EnforceDailyPnlGuard();
    UpdateDashboard();
@@ -8146,10 +8373,12 @@ void UpdateDashboard()
       CreateEdit("EDIT_PIP_SL", 740, 214, 58, 22, DoubleToString(g_pipSlDistanceRuntime, 1));
       CreateButton("BTN_PIP_APPLY", 806, 214, 86, 22, "PIP APPLY", C'38,101,176');
    }
-   CreateLabel("DASH_DAY_PROFIT_LBL", 684, 388, "Day Profit %", muted, 8);
-   CreateLabel("DASH_DAY_LOSS_LBL", 764, 388, "Day Loss %", muted, 8);
-   CreateEdit("EDIT_DAY_PROFIT", 684, 402, 72, 22, DoubleToString(g_dailyProfitTargetPctRuntime, 2));
-   CreateEdit("EDIT_DAY_LOSS", 764, 402, 72, 22, DoubleToString(g_dailyMaxLossPctRuntime, 2));
+   CreateLabel("DASH_DAY_PROFIT_LBL", 684, 388, "Profit %", muted, 8);
+   CreateLabel("DASH_DAY_LOSS_LBL", 758, 388, "Loss %", muted, 8);
+   CreateLabel("DASH_DAY_DD_MONEY_LBL", 826, 388, "Hard DD $", muted, 8);
+   CreateEdit("EDIT_DAY_PROFIT", 684, 402, 66, 22, DoubleToString(g_dailyProfitTargetPctRuntime, 2));
+   CreateEdit("EDIT_DAY_LOSS", 758, 402, 60, 22, DoubleToString(g_dailyMaxLossPctRuntime, 2));
+   CreateEdit("EDIT_DAY_DD_MONEY", 826, 402, 86, 22, DoubleToString(g_dailyMaxDrawdownMoneyRuntime, 2));
    CreateLabel("DASH_VOL_MULT_LBL", 772, 434, "VOL X", muted, 8);
    CreateEdit("EDIT_VOL_MULT", 812, 430, 52, 22, DoubleToString(g_volumeMultiplierRuntime, 2));
    CreateLabel("DASH_TIMED_EXIT_LBL", 684, 462, "Hold HH:MM", muted, 8);
@@ -8172,7 +8401,9 @@ void UpdateDashboard()
       DailyPnlGuardInstanceMetrics();
       string guardReason = "";
       bool guardLocked = DailyPnlGuardLocked(guardReason);
-      dayGuardText = "Day " + DoubleToString(g_dailyGuardPnlPct, 2) + "%"
+      dayGuardText = "Day $" + DoubleToString(g_dailyGuardPnlMoney, 2)
+         + " DD$-" + DoubleToString(EffectiveDailyMaxDrawdownMoney(), 2)
+         + " " + DoubleToString(g_dailyGuardPnlPct, 2) + "%"
          + " T+" + DoubleToString(EffectiveDailyProfitTargetPct(), 2)
          + " L-" + DoubleToString(EffectiveDailyMaxLossPct(), 2)
          + " " + (guardLocked ? (guardReason == "daily_profit_target_hit" ? "PROFIT LOCK" : "LOSS LOCK") : "OPEN");
@@ -8182,7 +8413,7 @@ void UpdateDashboard()
    }
    CreateLabel("DASH_RISK_MODE", 690, 510, UiShort("Risk "
                + string(g_ftmoModeRuntime ? "FTMO" : (g_riskLotOnlyRuntime ? "RiskLotOnly" : "OFF"))
-               + " | " + dayGuardText, 58), dayGuardColor, 7);
+               + " | " + dayGuardText, 70), dayGuardColor, 7);
 
    CreateLabel("DASH_AUDIT_SUMMARY", 690, 532, UiShort(g_historyAuditSummary, 42), C'80,255,180', 8);
    CreateLabel("DASH_AUDIT_DETAIL", 690, 552, UiShort(g_historyAuditDetail, 42), muted, 7);
