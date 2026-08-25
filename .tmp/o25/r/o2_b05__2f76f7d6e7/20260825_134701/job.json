@@ -1,0 +1,18 @@
+{
+  "job_id": "o2_b05",
+  "ea": "OrbUltimateEA",
+  "ea_kind": "orb",
+  "symbol": "JP225m",
+  "timeframe": "M5",
+  "from_date": "2026.07.17",
+  "to_date": "2026.07.20",
+  "run_dir": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\o25\\r\\o2_b05__2f76f7d6e7\\20260825_134701",
+  "tester_ini": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\o25\\r\\o2_b05__2f76f7d6e7\\20260825_134701\\tester_configs\\o2_b05__2f76f7d6e7.ini",
+  "tester_report": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\o25\\r\\o2_b05__2f76f7d6e7\\20260825_134701\\reports\\o2_b05__2f76f7d6e7.xml",
+  "command": [
+    "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\terminal64.exe",
+    "/portable",
+    "/config:C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\o25\\r\\o2_b05__2f76f7d6e7\\20260825_134701\\tester_configs\\o2_b05__2f76f7d6e7.ini"
+  ],
+  "dry_run": false
+}

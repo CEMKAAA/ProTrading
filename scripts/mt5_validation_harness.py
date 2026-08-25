@@ -366,7 +366,10 @@ def run_job(job: ValidationJob, out_root: Path, dry_run: bool = False) -> Dict[s
             copied_artifacts.append(str(target))
         except OSError:
             copied_artifacts.append(str(extra_path))
-    if status == "no_report_generated" and any("InternalTradeEvents" in Path(p).name for p in copied_artifacts):
+    if status == "no_report_generated" and any(
+        "InternalTradeEvents" in Path(p).name or "ORB_RegimeMatrix_Events" in Path(p).name
+        for p in copied_artifacts
+    ):
         status = "ok_internal_event_export"
     return {
         **meta,
@@ -414,7 +417,11 @@ def sniff_csv_tail(path: Path, limit: int = 200, max_bytes: int = MAX_TAIL_BYTES
             head = f.read(128)
             encoding = detect_text_encoding(head)
             f.seek(0)
-            if size <= max_bytes:
+            # MT5 writes FILE_CSV as UTF-16. Seeking to an arbitrary byte tail
+            # and using the binary readline() delimiter can split UTF-16 code
+            # units/lines, producing one malformed mega-row. Validation
+            # artifacts are bounded, so decode UTF-16 files from the start.
+            if size <= max_bytes or encoding == "utf-16":
                 data = f.read()
                 text = data.decode(encoding, errors="replace")
                 header = ""
@@ -602,6 +609,12 @@ def validation_artifact_patterns(job: ValidationJob) -> List[str]:
     patterns = [tester_audit_prefix(job) + "*.csv"]
     if job.ea_kind == "nas":
         patterns.append("NasV3Lab_InternalTradeEvents_*.csv")
+    if job.ea_kind == "orb":
+        patterns.extend([
+            "ORB_RegimeMatrix_Events_*.csv",
+            "ORB_RegimeMatrix_Summary_*.csv",
+            "ORB_RFMatrix_Summary_*.csv",
+        ])
     return patterns
 
 
