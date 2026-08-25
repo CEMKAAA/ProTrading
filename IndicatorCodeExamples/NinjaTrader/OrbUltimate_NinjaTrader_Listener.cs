@@ -19,6 +19,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override string DefaultSourceTimeframeFilter { get { return "15"; } }
         protected override int DefaultBridgeChannel { get { return 1; } }
         protected override bool DefaultSourceTfToChartPeriodSetting { get { return false; } }
+        protected override bool RequireAcceptedSignalSealSetting { get { return true; } }
         protected override string DefaultSourceSymbolAliasesCsv { get { return "JP225m,JP225,JPN225m,JPN225"; } }
         protected override bool DefaultRebaseMappedLevelsToLiveEntry { get { return true; } }
         protected override string DefaultOrderPrefix { get { return "ORBNT"; } }

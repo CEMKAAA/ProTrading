@@ -22,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-08-19.nt8-production-file-bridge-v11-channel-isolation";
+        private const string CoreBuild = "2026-08-24.nt8-production-file-bridge-v12-accepted-signal-seal";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -34,6 +34,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected virtual string DefaultSourceTimeframeFilter { get { return string.Empty; } }
         protected virtual int DefaultBridgeChannel { get { return 0; } }
         protected virtual bool DefaultSourceTfToChartPeriodSetting { get { return true; } }
+        protected virtual bool RequireAcceptedSignalSealSetting { get { return false; } }
         protected virtual string DefaultSourceSymbolAliasesCsv { get { return string.Empty; } }
         protected virtual bool DefaultRebaseMappedLevelsToLiveEntry { get { return false; } }
         protected virtual bool DefaultRebaseOnlyWhenSourceDiffersSetting { get { return true; } }
@@ -1849,6 +1850,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expected, StringComparison.OrdinalIgnoreCase))
             {
                 reason = "source_filter source=" + sig.Source + " expected=" + expected;
+                return false;
+            }
+            if (RequireAcceptedSignalSealSetting && !IsCloseOnlySignal(sig) && !ContainsText(sig.Source, "|ACCEPTED1"))
+            {
+                reason = "acceptance_seal_missing source=" + sig.Source;
                 return false;
             }
             return true;

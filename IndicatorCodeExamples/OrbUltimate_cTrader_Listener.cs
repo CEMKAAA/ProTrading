@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class OrbUltimateCTraderListener : Robot
     {
-        private const string Build = "2026-08-19.orb-channel-isolation-v2";
+        private const string Build = "2026-08-24.orb-accepted-signal-seal-v3";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -1114,6 +1114,11 @@ namespace cAlgo.Robots
             if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
             {
                 reason = $"source_filter source={sig.Source} expected_namespace={expectedSource}";
+                return false;
+            }
+            if (!IsCloseOnlySignal(sig) && !ContainsText(sig.Source, "|ACCEPTED1"))
+            {
+                reason = $"acceptance_seal_missing source={sig.Source}";
                 return false;
             }
             return true;

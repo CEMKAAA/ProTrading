@@ -4,6 +4,8 @@ namespace ProTradingSystem.Quantower
 {
     public sealed class OrbUltimateQuantowerListener : ProductionFileBridgeQuantowerCore
     {
+        protected override bool RequireAcceptedSignalSeal { get { return true; } }
+
         public OrbUltimateQuantowerListener()
         {
             Name = "ORB Ultimate - MT5 Bridge";

@@ -66,7 +66,7 @@ int OrbProBridgeFlags(int flags){return InpFileBridgeUseCommonFiles?(flags|FILE_
 int OrbProCommonFlag(){return InpFileBridgeUseCommonFiles?FILE_COMMON:0;}
 string OrbProScopedLatestFile(){return "OrbUltimateBridge_Latest_"+OrbProChannelTag()+"_"+OrbProSafeToken(_Symbol)+"_"+OrbProTf(g_rtSignalTf)+".csv";}
 string OrbProOutboxFile(){return "OrbUltimateBridge_Outbox_"+OrbProChannelTag()+"_"+OrbProSafeToken(_Symbol)+"_"+OrbProTf(g_rtSignalTf)+".csv";}
-string OrbProBridgeSource(){return "OrbUltimate|"+RuntimeEntryLabel()+"|"+RuntimeTargetModeLabel()+"|"+RuntimeSlModeLabel()+"|"+(g_rtInvertMode?"INV1":"INV0")+"|CH"+IntegerToString(g_orbBridgeChannel);}
+string OrbProBridgeSource(){return "OrbUltimate|"+RuntimeEntryLabel()+"|"+RuntimeTargetModeLabel()+"|"+RuntimeSlModeLabel()+"|"+(g_rtInvertMode?"INV1":"INV0")+"|CH"+IntegerToString(g_orbBridgeChannel)+"|ACCEPTED1";}
 string OrbProTempFile(string fileName,int attempt){return fileName+".tmp."+StringFormat("%I64d",ChartID())+"."+IntegerToString((int)GetTickCount())+"."+IntegerToString(attempt);}
 
 void OrbProBridgeHeader(int handle)
@@ -190,6 +190,12 @@ bool OrbProWriteInitMarker()
 bool OrbProPublishSignal(string dir,datetime signalTime,double entry,double sl,double tp,double halfTrigger,string halfLabel,string detail)
 {
    if(!g_orbBridgeEnabled||IsTesterMode())return false;
+   if(StringFind(detail,"accepted_signal=1")<0)
+   {
+      g_orbBridgeStatus="BLOCKED UNSEALED";
+      Audit("bridge_publish_unsealed_block",dir,0,entry,sl,tp,"missing accepted_signal=1 "+detail);
+      return false;
+   }
    string eventId="ORB|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+dir+"|"+StringFormat("%I64d",signalTime);
    string source=OrbProBridgeSource();
    bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);

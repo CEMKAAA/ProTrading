@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
-#define ORB15_BUILD "2026-08-22.v6.25-toggle-aware-window-visuals"
+#define ORB15_BUILD "2026-08-24.v6.27-accepted-signal-seal"
 
 enum ORB_SESSION_PROFILE
 {
@@ -1612,7 +1612,9 @@ void DeleteByPrefix(const string pfx){for(int i=ObjectsTotal(0,0,-1)-1;i>=0;i--)
 void DeleteLevels(){ObjectDelete(0,PREFIX+"ORB_HIGH");ObjectDelete(0,PREFIX+"ORB_LOW");ObjectDelete(0,PREFIX+"ORB_TXT");}
 void DeleteHist(){DeleteByPrefix(PREFIX+"HIST_");}
 void DeleteLive(){DeleteByPrefix(PREFIX+"LIVE_");}
+void DeleteExecutionVisuals(){DeleteByPrefix(PREFIX+"EXEC_");}
 void DeleteDash(){DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
+void MarkOrbExecutionVisualResolved(datetime executedAt,int dir,bool won);
 
 void DrawOrbHistoricalSegment(string id,datetime t1,datetime t2,double price,color clr,ENUM_LINE_STYLE style=STYLE_SOLID)
 {
@@ -1752,6 +1754,7 @@ bool FinalizeOrbBridgePlanVisualIfResolved()
    bool tpHit=g_orbBridgePlanTp>0.0&&(g_orbBridgePlanDir>0?closePx>=g_orbBridgePlanTp:closePx<=g_orbBridgePlanTp);
    bool slHit=g_orbBridgePlanSl>0.0&&(g_orbBridgePlanDir>0?closePx<=g_orbBridgePlanSl:closePx>=g_orbBridgePlanSl);
    if(!tpHit&&!slHit)return false;
+   MarkOrbExecutionVisualResolved(g_orbBridgePlanTime,g_orbBridgePlanDir,tpHit);
    DeleteLive();
    ClearOrbBridgePlan();
    g_lastHistBuild=0;
@@ -2038,6 +2041,47 @@ bool FindHistBreakoutAfter(datetime from,datetime to,double hi,double lo,datetim
    int lookback=MathMin(20,bi);
    if(lookback>0){double vs=0;for(int j=bi-lookback;j<bi;j++)vs+=(double)r[j].tick_volume;preBreakoutAvgVol=vs/(double)lookback;}
    return true;
+}
+
+string OrbExecutionVisualBase(datetime executedAt,int dir)
+{
+   return PREFIX+"EXEC_"+StringFormat("%I64d",(long)executedAt)+"_"+(dir>0?"BUY_":"SELL_");
+}
+
+void DrawOrbExecutionVisual(string execDir,datetime executedAt,double entry,string entryDetail)
+{
+   if(IsTesterMode()||executedAt<=0||entry<=0.0)return;
+   bool isBuy=(execDir=="BUY");
+   int dir=isBuy?1:-1;
+   double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
+   int shift=iBarShift(_Symbol,g_rtSignalTf,executedAt,false);
+   double high=shift>=0?iHigh(_Symbol,g_rtSignalTf,shift):entry;
+   double low=shift>=0?iLow(_Symbol,g_rtSignalTf,shift):entry;
+   double pad=MathMax(MathMax(pt,high-low)*0.45,pt*55.0);
+   double arrowPrice=NormalizePrice(isBuy?MathMin(low,entry)-pad:MathMax(high,entry)+pad);
+   double textPrice=NormalizePrice(isBuy?arrowPrice-pad*0.55:arrowPrice+pad*0.55);
+   string base=OrbExecutionVisualBase(executedAt,dir);
+   DrawSignalArrow(base+"ARW",executedAt,arrowPrice,isBuy,false);
+   ObjectSetInteger(0,base+"ARW",OBJPROP_WIDTH,4);
+   string mode=(StringFind(entryDetail,"entry=imb1m")>=0)?"IMB1M":
+      ((StringFind(entryDetail,"entry=retest")>=0)?"RETEST":"BREAK");
+   DrawSignalText(base+"TXT",executedAt,textPrice,
+      "EXECUTED "+execDir+" ["+mode+"] C"+IntegerToString(g_orbBridgeChannel),C'255,215,70');
+}
+
+void MarkOrbExecutionVisualResolved(datetime executedAt,int dir,bool won)
+{
+   if(IsTesterMode()||executedAt<=0||dir==0)return;
+   string base=OrbExecutionVisualBase(executedAt,dir);
+   color resultColor=won?clrLime:clrTomato;
+   if(ObjectFind(0,base+"ARW")>=0)ObjectSetInteger(0,base+"ARW",OBJPROP_COLOR,resultColor);
+   if(ObjectFind(0,base+"TXT")>=0)
+   {
+      string text=ObjectGetString(0,base+"TXT",OBJPROP_TEXT);
+      if(StringFind(text," [TP]")<0&&StringFind(text," [SL]")<0)
+         ObjectSetString(0,base+"TXT",OBJPROP_TEXT,text+(won?" [TP]":" [SL]"));
+      ObjectSetInteger(0,base+"TXT",OBJPROP_COLOR,resultColor);
+   }
 }
 
 bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
@@ -4074,7 +4118,7 @@ bool ResetForNewNyDay()
    g_lastSignalBarTime=0;g_lastCheckedSignalBarTime=0;g_lastLiveWindowKey="";g_liveWindowDrawnDayKey=0;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;g_beMoved=false;
    g_tradeRisk=0;g_lastFilterReason="";g_lastExecStatus="READY";
    g_tradeBestHigh=0;g_tradeBestLow=0;g_tradeLastDynamicExitBar=0;
-   if(!firstInit){ClearOrbBridgePlan();DeleteLive();}
+   if(!firstInit){ClearOrbBridgePlan();DeleteLive();DeleteExecutionVisuals();}
    ClearRetestState("new_day");
    ClearImbalanceState("new_day");
    int sm,em,tem;SessionClockMinutes(sm,em,tem);
@@ -4560,6 +4604,13 @@ bool ImbalanceReady(string &detail)
 
 bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string entryDetail)
 {
+   if(StringFind(entryDetail,"accepted_signal=1")<0)
+   {
+      g_lastFilterReason="ACCEPTANCE SEAL";g_lastExecStatus="EXECUTION_CONTEXT_BLOCKED";
+      Audit("execution_context_block",dir,0,signalClose,0,0,"missing accepted_signal=1 "+entryDetail);
+      ClearRetestState("missing_acceptance_seal");ClearImbalanceState("missing_acceptance_seal");
+      return false;
+   }
    if(!EntryWindowAllowsAt(TimeCurrent()))
    {
       g_lastFilterReason="ENTRY WINDOW";g_lastExecStatus="WINDOW_BLOCKED";
@@ -4631,12 +4682,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       planTp=tp3;
       planHalf=g_rtBEOnTp1?tp1:0.0;
       // Live chart geometry belongs to the accepted signal, not to a later I/O or order result.
-      StoreOrbBridgePlan(isBuy?1:-1,signalBar,entry,sl,planTp,planHalf);
-      bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(execDir,signalBar,entry,sl,planTp,planHalf,planHalf>0?"TP1":"OFF",entryDetail+" bridge_mode=3leg_collapsed");
+       datetime executedAt=TimeCurrent();
+       StoreOrbBridgePlan(isBuy?1:-1,executedAt,entry,sl,planTp,planHalf);
+       bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(execDir,signalBar,entry,sl,planTp,planHalf,planHalf>0?"TP1":"OFF",entryDetail+" bridge_mode=3leg_collapsed");
       if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
-         g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
+          DrawOrbExecutionVisual(execDir,executedAt,entry,entryDetail);
+          g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
       if(g_orbBridgeOnly)
          Audit(bridgeAccepted?"bridge_published_native_continue":"bridge_native_continue_publish_failed",execDir,0,entry,sl,planTp,entryDetail);
@@ -4654,12 +4707,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       int bridgeHcLeg=RuntimeHalfBeLeg();
       if(bridgeHcLeg>0)planHalf=PriceAtLeg(isBuy,entry,risk,bridgeHcLeg);
       // Live chart geometry belongs to the accepted signal, not to a later I/O or order result.
-      StoreOrbBridgePlan(isBuy?1:-1,signalBar,entry,sl,tp,planHalf);
-      bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(execDir,signalBar,entry,sl,tp,planHalf,bridgeHcLeg>0?("TP"+IntegerToString(bridgeHcLeg)):"OFF",entryDetail+" "+targetDetail);
+       datetime executedAt=TimeCurrent();
+       StoreOrbBridgePlan(isBuy?1:-1,executedAt,entry,sl,tp,planHalf);
+       bool bridgeAccepted=!g_orbBridgeEnabled||OrbProPublishSignal(execDir,signalBar,entry,sl,tp,planHalf,bridgeHcLeg>0?("TP"+IntegerToString(bridgeHcLeg)):"OFF",entryDetail+" "+targetDetail);
       if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
-         g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
+          DrawOrbExecutionVisual(execDir,executedAt,entry,entryDetail);
+          g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
       if(g_orbBridgeOnly)
          Audit(bridgeAccepted?"bridge_published_native_continue":"bridge_native_continue_publish_failed",execDir,0,entry,sl,tp,entryDetail+" "+targetDetail);
@@ -4670,7 +4725,8 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    }
    if(opened)
    {
-      g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";ClearOrbBridgePlan();
+       DrawOrbExecutionVisual(execDir,TimeCurrent(),entry,entryDetail);
+       g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";ClearOrbBridgePlan();
       OrbProStoreOpenPositions(g_tradeDir,entry,sl,planTp,planHalf,signalBar,g_lastSignalRegime);
       ClearRetestState("");
       ClearImbalanceState("");
@@ -4853,6 +4909,7 @@ void TryOpenSignal()
       return;
    }
    modernDetail+=(modernDetail==""?"":" ")+liveRegimeDetail+" "+liveRfDetail;
+   modernDetail+=(modernDetail==""?"":" ")+"accepted_signal=1 accepted_bar="+StringFormat("%I64d",(long)bt);
    string execDir=EffectiveOrbDirection(dir);
    string invertDetail="raw_dir="+dir+" exec_dir="+execDir+" invert="+(g_rtInvertMode?"1":"0");
    modernDetail+=(modernDetail==""?"":" ")+invertDetail;
@@ -4975,7 +5032,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();}
+   if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();}
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)

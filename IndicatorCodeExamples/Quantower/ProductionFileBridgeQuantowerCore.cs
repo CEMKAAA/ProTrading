@@ -15,7 +15,9 @@ namespace ProTradingSystem.Quantower
 {
     public abstract class ProductionFileBridgeQuantowerCore : Strategy, ICurrentSymbol, ICurrentAccount
     {
-        private const string CoreBuild = "2026-08-18.quantower-production-v2-futures-contract-root";
+        private const string CoreBuild = "2026-08-24.quantower-production-v3-accepted-signal-seal";
+
+        protected virtual bool RequireAcceptedSignalSeal { get { return false; } }
         private static readonly object GlobalEntrySync = new object();
         private static readonly Dictionary<string, string> GlobalEntryOwners = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly object sync = new object();
@@ -1343,6 +1345,11 @@ namespace ProTradingSystem.Quantower
             if (string.IsNullOrWhiteSpace(signal.Source) || !signal.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
             {
                 reason = "source=" + signal.Source + " expected=" + expectedSource;
+                return false;
+            }
+            if (RequireAcceptedSignalSeal && !IsCloseOnlySignal(signal) && !ContainsText(signal.Source, "|ACCEPTED1"))
+            {
+                reason = "acceptance_seal_missing source=" + signal.Source;
                 return false;
             }
             if (!string.IsNullOrWhiteSpace(SourceTimeframeFilter) && !SameText(NormalizeTf(signal.SourceTf), NormalizeTf(SourceTimeframeFilter)))
