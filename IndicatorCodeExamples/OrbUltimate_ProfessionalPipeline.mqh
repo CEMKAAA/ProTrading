@@ -12,6 +12,10 @@ struct OrbBridgePendingEvent
    double halfTrigger;
    string halfLabel;
    datetime signalTime;
+   double riskPct;
+   string riskBasis;
+   double riskReferenceCapital;
+   double riskBudgetMoney;
    datetime nextRetryLocal;
    int attempts;
 };
@@ -72,16 +76,19 @@ string OrbProTempFile(string fileName,int attempt){return fileName+".tmp."+Strin
 void OrbProBridgeHeader(int handle)
 {
    FileWrite(handle,"version","written_gmt","source_login","symbol","tf","event_id","source","dir",
-      "signal_time","bridge_entry","sl","tp","half_trigger","half_label","source_build","source_bid","source_ask","risk_pct","bridge_channel");
+      "signal_time","bridge_entry","sl","tp","half_trigger","half_label","source_build","source_bid","source_ask","risk_pct","bridge_channel",
+      "risk_basis","risk_reference_capital","risk_budget_money");
 }
 void OrbProBridgeRow(int handle,string eventId,string dir,double entry,double sl,double tp,string source,
-                     double halfTrigger,string halfLabel,datetime signalTime)
+                     double halfTrigger,string halfLabel,datetime signalTime,double riskPct,string riskBasis,
+                     double riskReferenceCapital,double riskBudgetMoney)
 {
    MqlTick tick;ZeroMemory(tick);SymbolInfoTick(_Symbol,tick);
    FileWrite(handle,"1",OrbProTime(TimeGMT()),StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN)),_Symbol,
       OrbProTf(g_rtSignalTf),OrbProChannelEvent(eventId),source,dir,OrbProTime(signalTime),DoubleToString(entry,_Digits),
       DoubleToString(sl,_Digits),DoubleToString(tp,_Digits),DoubleToString(halfTrigger,_Digits),halfLabel,
-      ORB15_BUILD,DoubleToString(tick.bid,_Digits),DoubleToString(tick.ask,_Digits),DoubleToString(EffRiskPerTradePct(),4),IntegerToString(g_orbBridgeChannel));
+      ORB15_BUILD,DoubleToString(tick.bid,_Digits),DoubleToString(tick.ask,_Digits),DoubleToString(riskPct,4),IntegerToString(g_orbBridgeChannel),
+      riskBasis,DoubleToString(riskReferenceCapital,2),DoubleToString(riskBudgetMoney,2));
 }
 bool OrbProPromoteTemp(string tempName,string fileName)
 {
@@ -92,7 +99,8 @@ bool OrbProPromoteTemp(string tempName,string fileName)
    return false;
 }
 bool OrbProWriteLatest(string fileName,string eventId,string dir,double entry,double sl,double tp,string source,
-                       double halfTrigger,string halfLabel,datetime signalTime)
+                       double halfTrigger,string halfLabel,datetime signalTime,double riskPct,string riskBasis,
+                       double riskReferenceCapital,double riskBudgetMoney)
 {
    int flags=OrbProBridgeFlags(FILE_CSV|FILE_WRITE|FILE_ANSI);
    for(int attempt=0;attempt<3;attempt++)
@@ -101,7 +109,8 @@ bool OrbProWriteLatest(string fileName,string eventId,string dir,double entry,do
       int handle=FileOpen(temp,flags,',');
       if(handle!=INVALID_HANDLE)
       {
-         OrbProBridgeHeader(handle);OrbProBridgeRow(handle,eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);
+         OrbProBridgeHeader(handle);OrbProBridgeRow(handle,eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,
+            riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
          FileFlush(handle);FileClose(handle);
          if(OrbProPromoteTemp(temp,fileName))return true;
       }
@@ -122,7 +131,9 @@ bool OrbProPersistPending()
          DoubleToString(g_orbBridgePending[i].entry,_Digits),DoubleToString(g_orbBridgePending[i].sl,_Digits),
          DoubleToString(g_orbBridgePending[i].tp,_Digits),g_orbBridgePending[i].source,
          DoubleToString(g_orbBridgePending[i].halfTrigger,_Digits),g_orbBridgePending[i].halfLabel,
-         StringFormat("%I64d",g_orbBridgePending[i].signalTime),IntegerToString(g_orbBridgePending[i].attempts));
+         StringFormat("%I64d",g_orbBridgePending[i].signalTime),DoubleToString(g_orbBridgePending[i].riskPct,4),
+         g_orbBridgePending[i].riskBasis,DoubleToString(g_orbBridgePending[i].riskReferenceCapital,2),
+         DoubleToString(g_orbBridgePending[i].riskBudgetMoney,2),IntegerToString(g_orbBridgePending[i].attempts));
    FileFlush(handle);FileClose(handle);
    return OrbProPromoteTemp(temp,fileName);
 }
@@ -138,13 +149,16 @@ void OrbProLoadPending()
       item.dir=FileReadString(handle);item.entry=StringToDouble(FileReadString(handle));item.sl=StringToDouble(FileReadString(handle));
       item.tp=StringToDouble(FileReadString(handle));item.source=FileReadString(handle);item.halfTrigger=StringToDouble(FileReadString(handle));
       item.halfLabel=FileReadString(handle);item.signalTime=(datetime)StringToInteger(FileReadString(handle));
+      item.riskPct=StringToDouble(FileReadString(handle));item.riskBasis=FileReadString(handle);
+      item.riskReferenceCapital=StringToDouble(FileReadString(handle));item.riskBudgetMoney=StringToDouble(FileReadString(handle));
       item.attempts=(int)StringToInteger(FileReadString(handle));item.nextRetryLocal=0;
       if(item.eventId=="")continue;
       int n=ArraySize(g_orbBridgePending);ArrayResize(g_orbBridgePending,n+1);g_orbBridgePending[n]=item;
    }
    FileClose(handle);
 }
-bool OrbProQueuePending(string eventId,string dir,double entry,double sl,double tp,string source,double halfTrigger,string halfLabel,datetime signalTime)
+bool OrbProQueuePending(string eventId,string dir,double entry,double sl,double tp,string source,double halfTrigger,string halfLabel,datetime signalTime,
+                        double riskPct,string riskBasis,double riskReferenceCapital,double riskBudgetMoney)
 {
    int index=-1,n=ArraySize(g_orbBridgePending);
    for(int i=0;i<n;i++)if(g_orbBridgePending[i].eventId==eventId){index=i;break;}
@@ -156,6 +170,8 @@ bool OrbProQueuePending(string eventId,string dir,double entry,double sl,double 
    g_orbBridgePending[index].eventId=eventId;g_orbBridgePending[index].dir=dir;g_orbBridgePending[index].entry=entry;
    g_orbBridgePending[index].sl=sl;g_orbBridgePending[index].tp=tp;g_orbBridgePending[index].source=source;
    g_orbBridgePending[index].halfTrigger=halfTrigger;g_orbBridgePending[index].halfLabel=halfLabel;
+   g_orbBridgePending[index].riskPct=riskPct;g_orbBridgePending[index].riskBasis=riskBasis;
+   g_orbBridgePending[index].riskReferenceCapital=riskReferenceCapital;g_orbBridgePending[index].riskBudgetMoney=riskBudgetMoney;
    g_orbBridgePending[index].signalTime=signalTime;g_orbBridgePending[index].nextRetryLocal=TimeLocal()+2;
    return OrbProPersistPending();
 }
@@ -170,7 +186,8 @@ void OrbProRetryPending()
    if(!g_orbBridgeEnabled||IsTesterMode()||ArraySize(g_orbBridgePending)<=0)return;
    if(g_orbBridgePending[0].nextRetryLocal>TimeLocal())return;
    OrbBridgePendingEvent item=g_orbBridgePending[0];
-   if(!OrbProWriteLatest(OrbProScopedLatestFile(),item.eventId,item.dir,item.entry,item.sl,item.tp,item.source,item.halfTrigger,item.halfLabel,item.signalTime))
+   if(!OrbProWriteLatest(OrbProScopedLatestFile(),item.eventId,item.dir,item.entry,item.sl,item.tp,item.source,item.halfTrigger,item.halfLabel,item.signalTime,
+      item.riskPct,item.riskBasis,item.riskReferenceCapital,item.riskBudgetMoney))
    {
       g_orbBridgePending[0].attempts++;g_orbBridgePending[0].nextRetryLocal=TimeLocal()+MathMin(30,2+g_orbBridgePending[0].attempts*2);
       OrbProPersistPending();return;
@@ -181,8 +198,10 @@ bool OrbProWriteInitMarker()
 {
    if(!g_orbBridgeEnabled||IsTesterMode())return false;
    string eventId="orb_bridge_init|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+OrbProTime(TimeGMT());
-   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated|CH"+IntegerToString(g_orbBridgeChannel),0,"init",TimeGMT());
-   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated",0,"init",TimeGMT());
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   string riskBasis=RiskCapitalBasisCode();
+   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated|CH"+IntegerToString(g_orbBridgeChannel),0,"init",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated",0,"init",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    g_orbBridgeStatus=scopedOk?"INIT WROTE":"INIT FAIL";
    if(!genericOk)Print("OrbUltimate generic init marker failed file=",OrbProGenericLatestFile());
    return scopedOk;
@@ -198,14 +217,16 @@ bool OrbProPublishSignal(string dir,datetime signalTime,double entry,double sl,d
    }
    string eventId="ORB|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+dir+"|"+StringFormat("%I64d",signalTime);
    string source=OrbProBridgeSource();
-   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);
-   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);
-   bool accepted=scopedOk||OrbProQueuePending(eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   string riskBasis=RiskCapitalBasisCode();
+   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+   bool accepted=scopedOk||OrbProQueuePending(eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    int handle=FileOpen(OrbProAuditPrefix()+OrbProDate(TimeGMT())+".csv",OrbProBridgeFlags(FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_ANSI),',');
    if(handle!=INVALID_HANDLE)
    {
       bool header=FileSize(handle)<=0;FileSeek(handle,0,SEEK_END);if(header)OrbProBridgeHeader(handle);
-      OrbProBridgeRow(handle,eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime);FileClose(handle);
+      OrbProBridgeRow(handle,eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);FileClose(handle);
    }
    g_orbBridgeStatus=scopedOk?("WROTE "+dir):(accepted?("QUEUED "+dir):("PUBLISH FAIL "+dir));
    Audit(accepted?"bridge_published":"bridge_publish_failed",dir,0,entry,sl,tp,
@@ -223,14 +244,16 @@ bool OrbProPublishCloseOnly(int dir,string reason)
    string source="OrbUltimate|CloseOnly|"+reason+"|CH"+IntegerToString(g_orbBridgeChannel);
    MqlTick tick;ZeroMemory(tick);SymbolInfoTick(_Symbol,tick);
    double entry=g_tradeEntry>0?g_tradeEntry:(dir>0?tick.bid:tick.ask);
-   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime);
-   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime);
-   bool accepted=scopedOk||OrbProQueuePending(eventId,direction,entry,0,0,source,0,"OFF",signalTime);
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   string riskBasis=RiskCapitalBasisCode();
+   bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+   bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+   bool accepted=scopedOk||OrbProQueuePending(eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    int handle=FileOpen(OrbProAuditPrefix()+OrbProDate(TimeGMT())+".csv",OrbProBridgeFlags(FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_ANSI),',');
    if(handle!=INVALID_HANDLE)
    {
       bool header=FileSize(handle)<=0;FileSeek(handle,0,SEEK_END);if(header)OrbProBridgeHeader(handle);
-      OrbProBridgeRow(handle,eventId,direction,entry,0,0,source,0,"OFF",signalTime);FileClose(handle);
+      OrbProBridgeRow(handle,eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);FileClose(handle);
    }
    g_orbBridgeStatus=scopedOk?("CLOSE "+direction):(accepted?("CLOSE QUEUED "+direction):("CLOSE FAIL "+direction));
    Audit(accepted?"bridge_close_published":"bridge_close_failed",direction,0,entry,0,0,
@@ -462,8 +485,10 @@ void OrbProApplyChannel(int value)
    if(g_orbBridgeEnabled)
    {
       string detached="channel_detached|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+OrbProTime(TimeGMT());
-      OrbProWriteLatest(OrbProGenericLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT());
-      OrbProWriteLatest(OrbProScopedLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT());
+      double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+      string riskBasis=RiskCapitalBasisCode();
+      OrbProWriteLatest(OrbProGenericLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
+      OrbProWriteLatest(OrbProScopedLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    }
    g_orbBridgeChannel=next;
    GlobalVariableSet(OrbProChannelStateKey(),g_orbBridgeChannel);

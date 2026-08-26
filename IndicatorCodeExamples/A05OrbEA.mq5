@@ -9,7 +9,7 @@
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
-#define ORB15_BUILD "2026-08-25.A05-M5-IMB1M-05R-C3"
+#define ORB15_BUILD "2026-08-25.A05-M5-IMB1M-05R-C3-fixed-ref-risk-v1"
 
 enum ORB_SESSION_PROFILE
 {
@@ -20,6 +20,12 @@ enum ORB_SESSION_PROFILE
    ORB_SESSION_HK=4,
    ORB_SESSION_JP=5,
    ORB_SESSION_MANUAL_NY=6
+};
+
+enum ORB_RISK_CAPITAL_MODE
+{
+   ORB_RISK_CURRENT_EQUITY=0,
+   ORB_RISK_FIXED_REFERENCE=1
 };
 
 //=== CORE INPUTS ========================================================
@@ -129,6 +135,9 @@ input double InpTpTouchTolerancePts = 2.0;
 
 //=== LOT SIZING =========================================================
 input bool   InpUseAutoRiskLot   = true;
+input ORB_RISK_CAPITAL_MODE InpRiskCapitalMode = ORB_RISK_CURRENT_EQUITY;
+input double InpFixedRiskReferenceCapital = 0.0; // Required when fixed-reference mode is selected.
+input double InpFixedRiskMaxOvershootMoney = 1.0; // Post-fill absolute account-currency ceiling.
 input double InpRiskPerTradePct  = 0.30;
 input double InpFixedLot         = 0.10;
 input double InpMaxLot           = 0.0;
@@ -636,8 +645,12 @@ double NormalizeTradePrice(double p){double ts=TickSize();return NormalizePrice(
 double MinStopDistance(){double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=TickSize();long st=SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);long fr=SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL);return MathMax((double)MathMax(st,fr)*pt,TickSize());}
 double ValuePerPriceUnitPerLot(){double ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);double tv=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);if(ts<=0)ts=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(ts<=0||tv<=0)return 0;return tv/ts;}
 bool ManagedRiskMode(){return g_ftmoMode||g_riskLotOnlyMode;}
-string RuntimeRiskModeLabel(){if(g_ftmoMode)return "FTMO";if(g_riskLotOnlyMode)return "RISKLOT";return "NORMAL";}
-bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode();}
+string RuntimeRiskModeLabel(){if(FixedReferenceRiskMode())return "FIXED_REF";if(g_ftmoMode)return "FTMO";if(g_riskLotOnlyMode)return "RISKLOT";return "NORMAL";}
+bool FixedReferenceRiskMode(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE;}
+double RiskSizingCapital(){return FixedReferenceRiskMode()?(InpFixedRiskReferenceCapital>0.0?InpFixedRiskReferenceCapital:0.0):MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));}
+double RiskReferenceCapitalForBridge(){return FixedReferenceRiskMode()?MathMax(0.0,InpFixedRiskReferenceCapital):0.0;}
+string RiskCapitalBasisCode(){return FixedReferenceRiskMode()?"FIXED_REFERENCE":"CURRENT_EQUITY";}
+bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
 double ClampRiskPerTradePct(double value){return NormalizeDouble(MathMax(0.01,MathMin(100.0,value)),4);}
 string RuntimeRiskPctKey()
 {
@@ -663,12 +676,13 @@ bool SetRuntimeRiskPct(double value)
    return GlobalVariableSet(RuntimeRiskPctKey(),g_rtRiskPerTradePct)>0;
 }
 double EffRiskPerTradePct(){return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
+double RiskBudgetMoney(){double capital=RiskSizingCapital();return capital>0.0?capital*MathMax(0.01,EffRiskPerTradePct())/100.0:0.0;}
 double EffAtrExposurePct(){return ManagedRiskMode()?2.0:InpAtrExposurePct;}
 double EffMaxPortfolioPct(){return g_ftmoMode?4.0:InpMaxPortfolioPct;}
 double EffDailyLossLimitPct(){return g_ftmoMode?5.0:InpDailyLossLimitPct;}
 double EffMaxDrawdownPct(){return g_ftmoMode?10.0:InpMaxDrawdownPct;}
 double EffMaxMarginUsagePct(){return g_ftmoMode?40.0:InpMaxMarginUsagePct;}
-double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double eq=AccountInfoDouble(ACCOUNT_EQUITY);double rm=eq*MathMax(0.01,EffRiskPerTradePct())/100.0;if(rd<=0||vpu<=0||rm<=0)return NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
+double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode()&&!FixedReferenceRiskMode())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double rm=RiskBudgetMoney();if(rd<=0||vpu<=0||rm<=0)return FixedReferenceRiskMode()?0.0:NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
 int CurrentSpreadPoints(){MqlTick t;if(!SymbolInfoTick(_Symbol,t))return 0;double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)return 0;return(int)MathRound((t.ask-t.bid)/pt);}
 bool SpreadAllowed(){if(InpMaxSpreadPoints<=0)return true;return CurrentSpreadPoints()<=InpMaxSpreadPoints;}
 double NormalizeLegVolume(double total,int legs){double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);if(st<=0)st=0.01;if(mn<=0)mn=0.01;double leg=MathFloor(total/(double)legs/st+1e-7)*st;return NormalizeDouble(leg,8)<mn?0:NormalizeDouble(leg,8);}
@@ -716,7 +730,7 @@ string TargetCode(int leg){return leg==(int)ORB_TARGET_TP075?"R0.75":("TP"+Integ
 string TargetOutcomeLabel(int leg){return leg==(int)ORB_TARGET_TP075?"TP075":("TP"+IntegerToString(leg));}
 double SimMoneyPnl(double netR)
 {
-   double base=InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE));
+   double base=FixedReferenceRiskMode()?MathMax(0.01,InpFixedRiskReferenceCapital):(InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE)));
    return netR*base*MathMax(0,EffRiskPerTradePct())/100.0;
 }
 string TargetLabel()
@@ -1554,6 +1568,30 @@ double OpenScopeRisk()
    return openRisk;
 }
 
+double OwnFixedRiskMoney()
+{
+   double risk=0.0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN),sl=PositionGetDouble(POSITION_SL),volume=PositionGetDouble(POSITION_VOLUME),result=0.0;
+      if(sl<=0.0||volume<=0.0)return -1.0;
+      ENUM_ORDER_TYPE side=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+      if(!OrderCalcProfit(side,_Symbol,volume,entry,sl,result))return -1.0;
+      risk+=MathAbs(result);
+   }
+   return risk;
+}
+bool ValidateFixedReferencePostFill(string &detail)
+{
+   if(!FixedReferenceRiskMode())return true;
+   double budget=RiskBudgetMoney(),actual=OwnFixedRiskMoney(),maximum=budget+MathMax(0.0,InpFixedRiskMaxOvershootMoney);
+   detail="fixed_reference_post_fill actual="+DoubleToString(actual,2)+" budget="+DoubleToString(budget,2)+" maximum="+DoubleToString(maximum,2);
+   if(budget>0.0&&actual>=0.0&&actual<=maximum)return true;
+   for(int i=PositionsTotal()-1;i>=0;i--){ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;trade.PositionClose(ticket);}
+   return false;
+}
+
 double ClosedDailyAtr(){int h=iATR(_Symbol,PERIOD_D1,MathMax(2,InpAtrPeriod));if(h==INVALID_HANDLE)return 0;double v[];ArraySetAsSeries(v,true);int c=CopyBuffer(h,0,1,1,v);IndicatorRelease(h);return(c==1&&v[0]>0)?v[0]:0;}
 
 double ResolveLot(string dir,double entry,double sl,string &detail)
@@ -1566,19 +1604,26 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    if(cap<=0||(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf)||(EffMaxMarginUsagePct()>0&&mu>=EffMaxMarginUsagePct()))
    {detail="risk_block cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2);return InpFailClosed?0:fallback;}
    ENUM_ORDER_TYPE ot=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   bool fixedReference=FixedReferenceRiskMode();
    double slRes=0,atrRes=0,atr=ClosedDailyAtr();
    double atrExit=dir=="BUY"?entry-atr:entry+atr;
-   if(atr<=0||!OrderCalcProfit(ot,_Symbol,1.0,entry,sl,slRes)||!OrderCalcProfit(ot,_Symbol,1.0,entry,atrExit,atrRes))
+   bool slCalcOk=OrderCalcProfit(ot,_Symbol,1.0,entry,sl,slRes);
+   bool atrCalcOk=fixedReference||((atr>0.0)&&OrderCalcProfit(ot,_Symbol,1.0,entry,atrExit,atrRes));
+   if(!slCalcOk||!atrCalcOk)
    {detail="risk_calc_fail";return InpFailClosed?0:fallback;}
-   double slMpl=MathAbs(slRes),atrMpl=MathAbs(atrRes);
-   if(slMpl<=0||atrMpl<=0){detail="risk_zero_mpl";return InpFailClosed?0:fallback;}
-   double tradeBudget=cap*MathMax(0,EffRiskPerTradePct())/100.0;
+   double slMpl=MathAbs(slRes),atrMpl=fixedReference?MathAbs(slRes):MathAbs(atrRes);
+   if(slMpl<=0||(!fixedReference&&atrMpl<=0)){detail="risk_zero_mpl";return InpFailClosed?0:fallback;}
+   double tradeBudget=RiskBudgetMoney();
+   if(FixedReferenceRiskMode()&&tradeBudget<=0.0){detail="fixed_reference_capital_invalid";return 0;}
    double atrBudget=cap*MathMax(0,EffAtrExposurePct())/100.0;
    double portfolioBudget=cap*MathMax(0,EffMaxPortfolioPct())/100.0;
    double avail=MathMax(0,portfolioBudget-OpenScopeRisk());
-   if(tradeBudget<=0||atrBudget<=0||avail<=0){detail="budget_exhausted";return 0;}
-   double raw=MathMin(tradeBudget/slMpl,MathMin(atrBudget/atrMpl,avail/slMpl));
+   if(tradeBudget<=0||(!FixedReferenceRiskMode()&&(atrBudget<=0||avail<=0))){detail="budget_exhausted";return 0;}
+   double raw=FixedReferenceRiskMode()?tradeBudget/slMpl:MathMin(tradeBudget/slMpl,MathMin(atrBudget/atrMpl,avail/slMpl));
    double vol=NormalizeVolume(raw);
+   double projectedRisk=slMpl*vol;
+   if(FixedReferenceRiskMode()&&projectedRisk>tradeBudget+MathMax(0.0,InpFixedRiskMaxOvershootMoney))
+   {detail="fixed_reference_min_volume_exceeds_budget projected="+DoubleToString(projectedRisk,2)+" budget="+DoubleToString(tradeBudget,2);return 0;}
    double margin=0;bool mc=OrderCalcMargin(ot,_Symbol,vol,entry,margin);
    double proj=cap>0?(AccountInfoDouble(ACCOUNT_MARGIN)+margin)/cap*100.0:100.0;
    if(vol<=0||!mc||margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)||(EffMaxMarginUsagePct()>0&&proj>EffMaxMarginUsagePct())){detail="margin_block";return 0;}
@@ -4722,6 +4767,16 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       if(lot<=0){g_lastExecStatus="FILTERED";Audit("risk_block",execDir,0,entry,sl,tp,lotDetail+" "+entryDetail);return false;}
       opened=ExecSingle(execDir,entry,sl,tp,lot);
       if(opened){g_tradeTp1=tp1;g_tradeTp2=tp2;g_tradeTp3=tp3;g_tradeTp4=tp4;g_tradeTp5=tp5;g_tradeTp6=tp6;Audit("opened",execDir,lot,entry,sl,tp,lotDetail+" "+targetDetail+" "+HalfBeLabel()+" "+ExitDebugConfig()+" "+entryDetail);}
+   }
+   if(opened&&FixedReferenceRiskMode())
+   {
+      string fixedRiskDetail="";
+      if(!ValidateFixedReferencePostFill(fixedRiskDetail))
+      {
+         opened=false;g_lastExecStatus="FIXED_RISK_POST_FILL_BLOCK";
+         Audit("fixed_risk_post_fill_block",execDir,0,entry,sl,planTp,fixedRiskDetail);
+      }
+      else Audit("fixed_risk_post_fill_ok",execDir,0,entry,sl,planTp,fixedRiskDetail);
    }
    if(opened)
    {

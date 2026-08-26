@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\ProductionFileBridgeQuantowerCore.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\OrbUltimate_Quantower_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\NasUltimate_Quantower_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\LiqNarrativeSolVersion_Quantower_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\LiqNarrativeSolAdvanced_Quantower_Listener.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="TradingPlatform.BusinessLayer"><HintPath>C:\Quantower\TradingPlatform\v1.145.17\bin\TradingPlatform.BusinessLayer.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

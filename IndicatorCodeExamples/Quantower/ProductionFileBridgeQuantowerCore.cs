@@ -15,7 +15,7 @@ namespace ProTradingSystem.Quantower
 {
     public abstract class ProductionFileBridgeQuantowerCore : Strategy, ICurrentSymbol, ICurrentAccount
     {
-        private const string CoreBuild = "2026-08-24.quantower-production-v3-accepted-signal-seal";
+        private const string CoreBuild = "2026-08-26.quantower-production-v4-fixed-reference-risk";
 
         protected virtual bool RequireAcceptedSignalSeal { get { return false; } }
         private static readonly object GlobalEntrySync = new object();
@@ -90,6 +90,10 @@ namespace ProTradingSystem.Quantower
 
         [InputParameter("Fixed Risk Capital (0=Balance)", 33, 0, 1000000000, 100, 2)]
         public double FixedRiskCapital { get; set; }
+
+        [InputParameter("Use Bridge Risk Basis", 133)] public bool UseBridgeRiskBasis { get; set; }
+        [InputParameter("Force Fixed Reference Risk", 134)] public bool ForceFixedReferenceRisk { get; set; }
+        [InputParameter("Fixed Risk Max Overshoot", 135, 0, 1000000, 0.25, 2)] public double FixedRiskMaxOvershootMoney { get; set; }
 
         [InputParameter("Manual Quantity", 34, 0.000001, 1000000, 1, 6)]
         public double ManualQuantity { get; set; }
@@ -181,6 +185,9 @@ namespace ProTradingSystem.Quantower
             UseBridgeRiskPercent = true;
             LocalRiskPercent = 0.30;
             FixedRiskCapital = 0;
+            UseBridgeRiskBasis = true;
+            ForceFixedReferenceRisk = false;
+            FixedRiskMaxOvershootMoney = 1.0;
             ManualQuantity = 1;
             MaxQuantity = 0;
             BlockIfMinimumExceedsRisk = true;
@@ -678,7 +685,7 @@ namespace ProTradingSystem.Quantower
                 Audit("position_adopted", signal, "reason=" + reason + " position=" + position.Id + " fill=" + position.OpenPrice + " " + protectionDetail);
             }
 
-            if (PostFillRiskGuard && !PostFillRiskValid(position, state, signal.RiskPct, out protectionDetail))
+            if (PostFillRiskGuard && !PostFillRiskValid(position, state, signal, out protectionDetail))
             {
                 state.EmergencyClose = true;
                 state.EmergencyReason = "post_fill_risk";
@@ -1031,6 +1038,19 @@ namespace ProTradingSystem.Quantower
             }
         }
 
+        private bool ResolveRiskBudget(BridgeSignal signal, out double riskPercent, out double capital, out double riskMoney, out bool fixedReference, out string detail)
+        {
+            riskPercent = UseBridgeRiskPercent && signal.RiskPct > 0 ? signal.RiskPct : LocalRiskPercent;
+            fixedReference = FixedRiskCapital > 0 || ForceFixedReferenceRisk || (UseBridgeRiskBasis && SameText(signal.RiskBasis, "FIXED_REFERENCE"));
+            capital = fixedReference ? (FixedRiskCapital > 0 ? FixedRiskCapital : signal.RiskReferenceCapital) : CurrentAccount.Balance;
+            riskMoney = capital * Math.Max(0, riskPercent) / 100.0;
+            if (fixedReference && FixedRiskCapital <= 0 && signal.RiskBudgetMoney > 0 && Math.Abs(signal.RiskBudgetMoney - riskMoney) > Math.Max(1.0, FixedRiskMaxOvershootMoney))
+            { detail = "fixed_reference_contract_mismatch calculated=" + riskMoney + " bridge=" + signal.RiskBudgetMoney; return false; }
+            if (capital <= 0 || riskMoney <= 0) { detail = "risk_budget_invalid fixed=" + fixedReference + " capital=" + capital + " pct=" + riskPercent; return false; }
+            detail = "risk_basis=" + (fixedReference ? "FIXED_REFERENCE" : "CURRENT_BALANCE");
+            return true;
+        }
+
         private double ResolveQuantity(BridgeSignal signal, double entry, out double estimatedRisk, out string detail)
         {
             estimatedRisk = 0;
@@ -1041,9 +1061,8 @@ namespace ProTradingSystem.Quantower
                 return manual;
             }
 
-            var riskPercent = UseBridgeRiskPercent && signal.RiskPct > 0 ? signal.RiskPct : LocalRiskPercent;
-            var capital = FixedRiskCapital > 0 ? FixedRiskCapital : CurrentAccount.Balance;
-            var riskMoney = capital * Math.Max(0, riskPercent) / 100.0;
+            double riskPercent, capital, riskMoney; bool fixedReference; string budgetDetail;
+            if (!ResolveRiskBudget(signal, out riskPercent, out capital, out riskMoney, out fixedReference, out budgetDetail)) { detail = budgetDetail; return 0; }
             var riskPerUnit = RiskForQuantity(entry, signal.Sl, 1.0);
             if (riskMoney <= 0 || riskPerUnit <= 0 || double.IsNaN(riskPerUnit) || double.IsInfinity(riskPerUnit))
             {
@@ -1058,23 +1077,24 @@ namespace ProTradingSystem.Quantower
                 quantity = Math.Min(quantity, CurrentSymbol.MaxLot);
 
             var minimumRisk = RiskForQuantity(entry, signal.Sl, CurrentSymbol.MinLot);
-            if (quantity < CurrentSymbol.MinLot || (BlockIfMinimumExceedsRisk && minimumRisk > riskMoney * 1.001))
+            var sizingTolerance = fixedReference ? Math.Max(0, FixedRiskMaxOvershootMoney) : riskMoney * 0.001;
+            if (quantity < CurrentSymbol.MinLot || (BlockIfMinimumExceedsRisk && minimumRisk > riskMoney + sizingTolerance))
             {
                 detail = "minimum_exceeds_risk raw=" + raw + " min=" + CurrentSymbol.MinLot + " min_risk=" + minimumRisk + " allowed=" + riskMoney;
                 return 0;
             }
             estimatedRisk = RiskForQuantity(entry, signal.Sl, quantity);
-            detail = "capital=" + capital + " risk_pct=" + riskPercent + " allowed=" + riskMoney + " qty=" + quantity + " estimated=" + estimatedRisk;
+            if (BlockIfMinimumExceedsRisk && estimatedRisk > riskMoney + sizingTolerance) { detail = "normalized_quantity_exceeds_risk allowed=" + riskMoney + " estimated=" + estimatedRisk; return 0; }
+            detail = "capital=" + capital + " risk_pct=" + riskPercent + " allowed=" + riskMoney + " qty=" + quantity + " estimated=" + estimatedRisk + " fixed=" + fixedReference + " " + budgetDetail;
             return quantity;
         }
 
-        private bool PostFillRiskValid(Position position, PositionState state, double bridgeRiskPercent, out string detail)
+        private bool PostFillRiskValid(Position position, PositionState state, BridgeSignal signal, out string detail)
         {
-            var riskPercent = UseBridgeRiskPercent && bridgeRiskPercent > 0 ? bridgeRiskPercent : LocalRiskPercent;
-            var capital = FixedRiskCapital > 0 ? FixedRiskCapital : CurrentAccount.Balance;
-            var allowed = capital * Math.Max(0, riskPercent) / 100.0;
+            double riskPercent, capital, allowed; bool fixedReference; string budgetDetail;
+            if (!ResolveRiskBudget(signal, out riskPercent, out capital, out allowed, out fixedReference, out budgetDetail)) { detail = budgetDetail; return false; }
             var actual = RiskForQuantity(position.OpenPrice, state.Sl, position.Quantity);
-            var maximum = allowed * (1.0 + Math.Max(0, MaxRiskOvershootPercent) / 100.0);
+            var maximum = fixedReference ? allowed + Math.Max(0, FixedRiskMaxOvershootMoney) : allowed * (1.0 + Math.Max(0, MaxRiskOvershootPercent) / 100.0);
             detail = "allowed=" + allowed.ToString("F2", CultureInfo.InvariantCulture) + " actual=" + actual.ToString("F2", CultureInfo.InvariantCulture) + " max=" + maximum.ToString("F2", CultureInfo.InvariantCulture);
             return allowed > 0 && actual > 0 && actual <= maximum;
         }
@@ -1291,11 +1311,14 @@ namespace ProTradingSystem.Quantower
             }
 
             var offset = 0;
+            var headerHasChannel = false;
             if (SameText(fields[0], "version"))
             {
                 offset = 17;
                 if (fields.Count > 17 && SameText(fields[17], "risk_pct")) offset = 18;
-                if (fields.Count > 18 && SameText(fields[18], "bridge_channel")) offset = 19;
+                if (fields.Count > 18 && SameText(fields[18], "bridge_channel")) { headerHasChannel = true; offset = 19; }
+                if (headerHasChannel && fields.Count > 19 && SameText(fields[19], "risk_basis")) offset = 22;
+                else if (!headerHasChannel && fields.Count > 18 && SameText(fields[18], "risk_basis")) offset = 21;
             }
             if (fields.Count < offset + 17)
             {
@@ -1322,7 +1345,11 @@ namespace ProTradingSystem.Quantower
             signal.SourceBid = ParseDouble(fields[offset + 15]);
             signal.SourceAsk = ParseDouble(fields[offset + 16]);
             signal.RiskPct = fields.Count > offset + 17 ? ParseDouble(fields[offset + 17]) : 0;
-            signal.Channel = fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            signal.Channel = headerHasChannel && fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            var riskMetaIndex = offset + (headerHasChannel ? 19 : 18);
+            signal.RiskBasis = fields.Count > riskMetaIndex ? fields[riskMetaIndex] : string.Empty;
+            signal.RiskReferenceCapital = fields.Count > riskMetaIndex + 1 ? ParseDouble(fields[riskMetaIndex + 1]) : 0;
+            signal.RiskBudgetMoney = fields.Count > riskMetaIndex + 2 ? ParseDouble(fields[riskMetaIndex + 2]) : 0;
             signal.ReadPath = path;
 
             if (signal.WrittenGmt == DateTime.MinValue || string.IsNullOrWhiteSpace(signal.EventId) || signal.Direction == 0)
@@ -1816,6 +1843,9 @@ namespace ProTradingSystem.Quantower
             public double SourceAsk;
             public double RiskPct;
             public int Channel;
+            public string RiskBasis;
+            public double RiskReferenceCapital;
+            public double RiskBudgetMoney;
             public string ReadPath;
         }
 

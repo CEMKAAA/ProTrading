@@ -1,7 +1,7 @@
 #ifndef NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 #define NAS_ULTIMATE_PROFESSIONAL_PIPELINE_MQH
 
-#define NAS_PRO_PIPELINE_BUILD "2026-08-19.nas-professional-pipeline-v9-elapsed-max-hold"
+#define NAS_PRO_PIPELINE_BUILD "2026-08-26.nas-professional-pipeline-v10-fixed-reference-risk"
 
 input group "NAS Professional Audit / cTrader Bridge"
 input bool   InpNasProAuditEnabled = false;
@@ -30,6 +30,9 @@ struct NasProBridgePendingEvent
    string halfLabel;
    datetime signalTime;
    double riskPct;
+   string riskBasis;
+   double riskReferenceCapital;
+   double riskBudgetMoney;
    int attempts;
    datetime nextRetryLocal;
 };
@@ -169,7 +172,8 @@ string NasProBridgeTempFile(const string target, const int attempt)
 void NasProBridgeWriteHeader(const int h)
 {
    FileWrite(h, "version", "written_gmt", "source_login", "symbol", "tf", "event_id", "source", "dir",
-      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct");
+      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct",
+      "risk_basis", "risk_reference_capital", "risk_budget_money");
 }
 
 void NasProBridgeWriteRow(const int h,
@@ -182,7 +186,10 @@ void NasProBridgeWriteRow(const int h,
                           const double halfTrigger,
                           const string halfLabel,
                           const datetime signalTime,
-                          const double riskPct)
+                           const double riskPct,
+                           const string riskBasis,
+                           const double riskReferenceCapital,
+                           const double riskBudgetMoney)
 {
    MqlTick tick;
    ZeroMemory(tick);
@@ -190,7 +197,8 @@ void NasProBridgeWriteRow(const int h,
    FileWrite(h, "1", NasProTime(TimeGMT()), NasProI64(AccountInfoInteger(ACCOUNT_LOGIN)), _Symbol,
       NasProTf(_Period), eventId, source, dir, NasProTime(signalTime), DoubleToString(entry, _Digits),
       DoubleToString(sl, _Digits), DoubleToString(tp, _Digits), DoubleToString(halfTrigger, _Digits), halfLabel,
-      NAS_PRO_PIPELINE_BUILD, DoubleToString(tick.bid, _Digits), DoubleToString(tick.ask, _Digits), DoubleToString(riskPct, 4));
+       NAS_PRO_PIPELINE_BUILD, DoubleToString(tick.bid, _Digits), DoubleToString(tick.ask, _Digits), DoubleToString(riskPct, 4),
+       riskBasis, DoubleToString(riskReferenceCapital, 2), DoubleToString(riskBudgetMoney, 2));
 }
 
 bool NasProBridgePromote(const string tempName, const string target)
@@ -214,7 +222,10 @@ bool NasProBridgeWriteLatest(const string target,
                              const double halfTrigger,
                              const string halfLabel,
                              const datetime signalTime,
-                             const double riskPct)
+                              const double riskPct,
+                              const string riskBasis,
+                              const double riskReferenceCapital,
+                              const double riskBudgetMoney)
 {
    for(int attempt = 0; attempt < 3; ++attempt)
    {
@@ -225,7 +236,8 @@ bool NasProBridgeWriteLatest(const string target,
       if(h != INVALID_HANDLE)
       {
          NasProBridgeWriteHeader(h);
-         NasProBridgeWriteRow(h, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct);
+         NasProBridgeWriteRow(h, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct,
+            riskBasis, riskReferenceCapital, riskBudgetMoney);
          FileFlush(h);
          FileClose(h);
          if(NasProBridgePromote(tempName, target)) return true;
@@ -250,8 +262,10 @@ bool NasProBridgePersistPending()
          DoubleToString(g_nasProBridgePending[i].entry, _Digits), DoubleToString(g_nasProBridgePending[i].sl, _Digits),
          DoubleToString(g_nasProBridgePending[i].tp, _Digits), g_nasProBridgePending[i].source,
          DoubleToString(g_nasProBridgePending[i].halfTrigger, _Digits), g_nasProBridgePending[i].halfLabel,
-         IntegerToString((long)g_nasProBridgePending[i].signalTime), DoubleToString(g_nasProBridgePending[i].riskPct, 4),
-         IntegerToString(g_nasProBridgePending[i].attempts));
+          IntegerToString((long)g_nasProBridgePending[i].signalTime), DoubleToString(g_nasProBridgePending[i].riskPct, 4),
+          g_nasProBridgePending[i].riskBasis, DoubleToString(g_nasProBridgePending[i].riskReferenceCapital, 2),
+          DoubleToString(g_nasProBridgePending[i].riskBudgetMoney, 2),
+          IntegerToString(g_nasProBridgePending[i].attempts));
    FileFlush(h);
    FileClose(h);
    return NasProBridgePromote(tempName, target);
@@ -276,6 +290,9 @@ void NasProBridgeLoadPending()
       item.halfLabel = FileReadString(h);
       item.signalTime = (datetime)StringToInteger(FileReadString(h));
       item.riskPct = StringToDouble(FileReadString(h));
+      item.riskBasis = FileReadString(h);
+      item.riskReferenceCapital = StringToDouble(FileReadString(h));
+      item.riskBudgetMoney = StringToDouble(FileReadString(h));
       item.attempts = (int)StringToInteger(FileReadString(h));
       item.nextRetryLocal = 0;
       if(item.eventId == "") continue;
@@ -295,7 +312,10 @@ bool NasProBridgeQueue(const string eventId,
                        const double halfTrigger,
                        const string halfLabel,
                        const datetime signalTime,
-                       const double riskPct)
+                        const double riskPct,
+                        const string riskBasis,
+                        const double riskReferenceCapital,
+                        const double riskBudgetMoney)
 {
    int index = -1;
    for(int i = 0; i < ArraySize(g_nasProBridgePending); ++i)
@@ -318,6 +338,9 @@ bool NasProBridgeQueue(const string eventId,
    g_nasProBridgePending[index].halfLabel = halfLabel;
    g_nasProBridgePending[index].signalTime = signalTime;
    g_nasProBridgePending[index].riskPct = riskPct;
+   g_nasProBridgePending[index].riskBasis = riskBasis;
+   g_nasProBridgePending[index].riskReferenceCapital = riskReferenceCapital;
+   g_nasProBridgePending[index].riskBudgetMoney = riskBudgetMoney;
    g_nasProBridgePending[index].nextRetryLocal = TimeLocal() + 2;
    return NasProBridgePersistPending();
 }
@@ -336,7 +359,8 @@ void NasProBridgeRetryPending()
    if(g_nasProBridgePending[0].nextRetryLocal > TimeLocal()) return;
    NasProBridgePendingEvent item = g_nasProBridgePending[0];
    if(!NasProBridgeWriteLatest(NasProBridgeScopedLatestFile(), item.eventId, item.dir, item.entry, item.sl, item.tp,
-      item.source, item.halfTrigger, item.halfLabel, item.signalTime, item.riskPct))
+      item.source, item.halfTrigger, item.halfLabel, item.signalTime, item.riskPct, item.riskBasis,
+      item.riskReferenceCapital, item.riskBudgetMoney))
    {
       g_nasProBridgePending[0].attempts++;
       g_nasProBridgePending[0].nextRetryLocal = TimeLocal() + MathMin(30, 2 + g_nasProBridgePending[0].attempts * 2);
@@ -352,8 +376,10 @@ bool NasProBridgeWriteInitMarker()
 {
    if(!g_nasBridgeEnabledRuntime || IsTesterMode()) return false;
    string eventId = "nas_bridge_init|" + _Symbol + "|" + NasProTf(_Period) + "|" + NasProTime(TimeGMT());
-   bool genericOk = NasProBridgeWriteLatest(InpNasBridgeLatestFile, eventId, "INIT", 0, 0, 0, "bridge_initiated", 0, "init", TimeGMT(), g_accountRiskPerTradePctRuntime);
-   bool scopedOk = NasProBridgeWriteLatest(NasProBridgeScopedLatestFile(), eventId, "INIT", 0, 0, 0, "bridge_initiated", 0, "init", TimeGMT(), g_accountRiskPerTradePctRuntime);
+   double riskPct=g_accountRiskPerTradePctRuntime,riskReferenceCapital=NasRiskReferenceCapitalForBridge(),riskBudgetMoney=NasRiskBudgetMoney();
+   string riskBasis=NasRiskCapitalBasisCode();
+   bool genericOk = NasProBridgeWriteLatest(InpNasBridgeLatestFile, eventId, "INIT", 0, 0, 0, "bridge_initiated", 0, "init", TimeGMT(), riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
+   bool scopedOk = NasProBridgeWriteLatest(NasProBridgeScopedLatestFile(), eventId, "INIT", 0, 0, 0, "bridge_initiated", 0, "init", TimeGMT(), riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
    g_nasBridgeStatus = scopedOk ? "INIT WROTE" : "INIT FAIL";
    if(!genericOk) Print("NAS bridge generic init write failed file=", InpNasBridgeLatestFile);
    return scopedOk;
@@ -372,11 +398,13 @@ bool NasProBridgeWriteEvent(const string eventId,
 {
    if(!g_nasBridgeEnabledRuntime || IsTesterMode()) return false;
    string dir = NasProDir(direction);
-   bool genericOk = NasProBridgeWriteLatest(InpNasBridgeLatestFile, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct);
-   bool scopedOk = NasProBridgeWriteLatest(NasProBridgeScopedLatestFile(), eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct);
+   double riskReferenceCapital=NasRiskReferenceCapitalForBridge(),riskBudgetMoney=NasRiskBudgetMoney();
+   string riskBasis=NasRiskCapitalBasisCode();
+   bool genericOk = NasProBridgeWriteLatest(InpNasBridgeLatestFile, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
+   bool scopedOk = NasProBridgeWriteLatest(NasProBridgeScopedLatestFile(), eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
    bool accepted = scopedOk;
    if(!scopedOk)
-      accepted = NasProBridgeQueue(eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct);
+      accepted = NasProBridgeQueue(eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
 
    string auditFile = InpNasBridgeAuditPrefix + NasProDate(TimeGMT()) + ".csv";
    int h = FileOpen(auditFile, NasProBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI), ',');
@@ -385,7 +413,7 @@ bool NasProBridgeWriteEvent(const string eventId,
       bool header = FileSize(h) == 0;
       FileSeek(h, 0, SEEK_END);
       if(header) NasProBridgeWriteHeader(h);
-      NasProBridgeWriteRow(h, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct);
+       NasProBridgeWriteRow(h, eventId, dir, entry, sl, tp, source, halfTrigger, halfLabel, signalTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
       FileFlush(h);
       FileClose(h);
    }

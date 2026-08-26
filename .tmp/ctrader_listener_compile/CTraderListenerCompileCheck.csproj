@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\IndicatorCodeExamples\OrbUltimate_cTrader_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\OrbUltimate_cTrader_Listener_Channel.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\NasUltimate_cTrader_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\LiquidityNarrative_cTrader_Listener.cs" />
+    <Compile Include="..\..\IndicatorCodeExamples\LiquidityNarrative_cTrader_Listener_Channel.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="cAlgo.API"><HintPath>C:\Users\Cem\AppData\Local\Spotware\cTrader\abb70432efbee65d18af69e79fe8efe1\app_5.9.10.52700\algohost.netcore\cAlgo.API.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

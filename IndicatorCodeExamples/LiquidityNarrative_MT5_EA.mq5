@@ -4,11 +4,11 @@
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.12"
+#property version "1.13"
 
 #include <Trade/Trade.mqh>
 
-#define LN_BUILD "2026-08-09.normal-full-invert-v1"
+#define LN_BUILD "2026-08-26.normal-fixed-reference-risk-v1"
 #define LN_PREFIX "LIQNARR_"
 
 //=====================================================================
@@ -67,6 +67,12 @@ enum BT_SAME_BAR_POLICY
    BT_SAMEBAR_NEAREST_OPEN = 1,
    BT_SAMEBAR_TP_FIRST = 2,
    BT_SAMEBAR_SL_FIRST = 3
+};
+
+enum LN_RISK_CAPITAL_MODE
+{
+   LN_RISK_CURRENT_EQUITY = 0,
+   LN_RISK_FIXED_REFERENCE = 1
 };
 
 //=====================================================================
@@ -138,6 +144,9 @@ input bool            InpAccountRiskEnabled     = true;
 input bool            InpFtmoModeDefault        = false;
 input bool            InpRiskLotOnlyModeDefault = false;
 input double          InpRiskPerTradePct        = 1.0;
+input LN_RISK_CAPITAL_MODE InpRiskCapitalMode   = LN_RISK_CURRENT_EQUITY;
+input double          InpFixedRiskReferenceCapital = 0.0;
+input double          InpFixedRiskMaxOvershootMoney = 1.0;
 input double          InpMaxPortfolioRiskPct    = 4.0;
 input double          InpDailyLossLimitPct      = 0.0;
 input double          InpMaxDrawdownPct         = 0.0;
@@ -226,6 +235,10 @@ struct BridgePendingEvent
    double   halfTrigger;
    string   halfLabel;
    datetime signalTime;
+   double   riskPct;
+   string   riskBasis;
+   double   riskReferenceCapital;
+   double   riskBudgetMoney;
    datetime nextRetryLocal;
    int      attempts;
 };
@@ -587,19 +600,27 @@ double DirectionalStopGuard(int dir, double entry, double rawSl, double fallback
    return NormTradePrice(sl);
 }
 
-double ClampRiskPerTradePct(double pct) { return MathMax(0.0, MathMin(10.0, pct)); }
+double ClampRiskPerTradePct(double pct) { return MathMax(0.0, MathMin(100.0, pct)); }
 bool ManagedRiskMode() { return g_ftmoMode || g_riskLotOnlyMode; }
-string RuntimeRiskModeLabel() { if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
-bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode(); }
+string RuntimeRiskModeLabel() { if(FixedReferenceRiskMode()) return "FIXED_REF"; if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
+bool FixedReferenceRiskMode() { return InpRiskCapitalMode == LN_RISK_FIXED_REFERENCE; }
+bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode() || FixedReferenceRiskMode(); }
 double RiskPerTradePct()
 {
    double pct = ClampRiskPerTradePct(g_riskPerTradePct);
-   if(g_ftmoMode) return MathMin(1.0, pct);
+   if(g_ftmoMode && !FixedReferenceRiskMode()) return MathMin(1.0, pct);
    return pct;
 }
 double MaxPortfolioRiskPct() { return g_ftmoMode ? 4.0 : InpMaxPortfolioRiskPct; }
 double DailyLossLimitPct() { return g_ftmoMode ? 5.0 : InpDailyLossLimitPct; }
 double MaxDrawdownPct() { return g_ftmoMode ? 10.0 : InpMaxDrawdownPct; }
+string RiskCapitalBasisCode() { return FixedReferenceRiskMode() ? "FIXED_REFERENCE" : "CURRENT_EQUITY"; }
+double RiskReferenceCapitalForBridge() { return FixedReferenceRiskMode() ? MathMax(0.0, InpFixedRiskReferenceCapital) : 0.0; }
+double RiskBudgetMoney()
+{
+   double capital = FixedReferenceRiskMode() ? MathMax(0.0, InpFixedRiskReferenceCapital) : MathMax(0.0, AccountInfoDouble(ACCOUNT_EQUITY));
+   return capital * MathMax(0.0, RiskPerTradePct()) / 100.0;
+}
 
 double ApproxMoneyFromR(double r)
 {
@@ -993,8 +1014,8 @@ double RiskMoneyForLot(double lot, int dir, double entry, double sl)
 {
    if(lot <= 0.0 || sl <= 0.0) return 0.0;
    double profit = 0.0;
-   ENUM_ORDER_TYPE closeSide = dir > 0 ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-   if(!OrderCalcProfit(closeSide, _Symbol, lot, entry, sl, profit)) return 0.0;
+   ENUM_ORDER_TYPE positionSide = dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(positionSide, _Symbol, lot, entry, sl, profit)) return 0.0;
    return MathAbs(profit);
 }
 
@@ -2226,7 +2247,14 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
          return false;
       }
 
-      double riskMoney = equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
+      double riskMoney = FixedReferenceRiskMode()
+         ? MathMax(0.0, InpFixedRiskReferenceCapital) * MathMax(0.0, RiskPerTradePct()) / 100.0
+         : equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
+      if(riskMoney <= 0.0)
+      {
+         reason = "fixed_reference_invalid";
+         return false;
+      }
       lot = NormalizeVolume(riskMoney / (riskDistance * valuePerUnit));
       double actualRiskMoney = RiskMoneyForLot(lot, sl < entry ? 1 : -1, entry, sl);
       double portfolioCap = equity * MathMax(0.01, MaxPortfolioRiskPct()) / 100.0;
@@ -2235,7 +2263,12 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
          reason = "risk_calc_failed";
          return false;
       }
-      if(OwnOpenRiskMoney() + actualRiskMoney > portfolioCap)
+      if(FixedReferenceRiskMode() && actualRiskMoney > riskMoney + MathMax(0.0, InpFixedRiskMaxOvershootMoney))
+      {
+         reason = "fixed_reference_volume_exceeds_budget";
+         return false;
+      }
+      if(!FixedReferenceRiskMode() && OwnOpenRiskMoney() + actualRiskMoney > portfolioCap)
       {
          reason = "portfolio_risk_limit";
          return false;
@@ -2248,6 +2281,30 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
       return false;
    }
    return true;
+}
+
+bool ValidateFixedReferencePostFill(const ulong ticket, const int direction, const double requestedSl, string &reason)
+{
+   if(!FixedReferenceRiskMode()) return true;
+   reason = "";
+   if(ticket == 0 || !PositionSelectByTicket(ticket))
+      reason = "fixed_reference_position_unresolved";
+   else
+   {
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double vol = PositionGetDouble(POSITION_VOLUME);
+      if(sl <= 0.0 && requestedSl > 0.0) sl = requestedSl;
+      double actual = RiskMoneyForLot(vol, direction, open, sl);
+      double budget = RiskBudgetMoney();
+      if(actual > 0.0 && budget > 0.0 && actual <= budget + MathMax(0.0, InpFixedRiskMaxOvershootMoney))
+         return true;
+      reason = "fixed_reference_postfill_risk budget=" + DoubleToString(budget, 2) + " actual=" + DoubleToString(actual, 2);
+   }
+   if(ticket > 0 && PositionSelectByTicket(ticket) && !trade.PositionClose(ticket))
+      Print("LiquidityNarrative fixed-risk emergency close failed ticket=", ticket,
+            " ret=", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+   return false;
 }
 
 //=====================================================================
@@ -2342,11 +2399,13 @@ void FileBridgeWriteHeader(int h)
 {
    FileWrite(h,
       "version", "written_gmt", "source_login", "symbol", "tf", "event_id", "source", "dir",
-      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct"
+      "signal_time", "bridge_entry", "sl", "tp", "half_trigger", "half_label", "source_build", "source_bid", "source_ask", "risk_pct",
+      "risk_basis", "risk_reference_capital", "risk_budget_money"
    );
 }
 
-void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime,
+   double riskPct, string riskBasis, double riskReferenceCapital, double riskBudgetMoney)
 {
    MqlTick tick;
    SymbolInfoTick(_Symbol, tick);
@@ -2368,7 +2427,7 @@ void FileBridgeWriteRow(int h, string eventId, string dir, double bridgeEntry, d
       LN_BUILD,
       DoubleToString(tick.bid, _Digits),
       DoubleToString(tick.ask, _Digits),
-      DoubleToString(RiskPerTradePct(), 4)
+      DoubleToString(riskPct, 4), riskBasis, DoubleToString(riskReferenceCapital, 2), DoubleToString(riskBudgetMoney, 2)
    );
 }
 
@@ -2394,7 +2453,8 @@ bool FileBridgePromoteTemp(string tempName, string fileName)
    return false;
 }
 
-bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime,
+   double riskPct, string riskBasis, double riskReferenceCapital, double riskBudgetMoney)
 {
    int tempFlags = FileBridgeFlags(FILE_CSV | FILE_WRITE | FILE_ANSI);
    for(int attempt = 0; attempt < 3; attempt++)
@@ -2406,7 +2466,8 @@ bool FileBridgeWriteLatestFile(string fileName, string eventId, string dir, doub
       if(h != INVALID_HANDLE)
       {
          FileBridgeWriteHeader(h);
-         FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime);
+         FileBridgeWriteRow(h, eventId, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sourceSignalTime,
+            riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
          FileFlush(h);
          FileClose(h);
          if(FileBridgePromoteTemp(tempName, fileName))
@@ -2445,7 +2506,9 @@ bool BridgePersistPending()
          DoubleToString(g_bridgePending[i].entry, _Digits), DoubleToString(g_bridgePending[i].sl, _Digits),
          DoubleToString(g_bridgePending[i].tp, _Digits), g_bridgePending[i].source,
          DoubleToString(g_bridgePending[i].halfTrigger, _Digits), g_bridgePending[i].halfLabel,
-         IntegerToString((long)g_bridgePending[i].signalTime), IntegerToString(g_bridgePending[i].attempts));
+         IntegerToString((long)g_bridgePending[i].signalTime), IntegerToString(g_bridgePending[i].attempts),
+         DoubleToString(g_bridgePending[i].riskPct, 4), g_bridgePending[i].riskBasis,
+         DoubleToString(g_bridgePending[i].riskReferenceCapital, 2), DoubleToString(g_bridgePending[i].riskBudgetMoney, 2));
    }
    FileFlush(h);
    FileClose(h);
@@ -2476,6 +2539,10 @@ void BridgeLoadPending()
       item.halfLabel = FileReadString(h);
       item.signalTime = (datetime)StringToInteger(FileReadString(h));
       item.attempts = (int)StringToInteger(FileReadString(h));
+      item.riskPct = FileIsEnding(h) ? RiskPerTradePct() : StringToDouble(FileReadString(h));
+      item.riskBasis = FileIsEnding(h) ? RiskCapitalBasisCode() : FileReadString(h);
+      item.riskReferenceCapital = FileIsEnding(h) ? RiskReferenceCapitalForBridge() : StringToDouble(FileReadString(h));
+      item.riskBudgetMoney = FileIsEnding(h) ? RiskBudgetMoney() : StringToDouble(FileReadString(h));
       item.nextRetryLocal = 0;
       if(item.eventId == "") continue;
       int n = ArraySize(g_bridgePending);
@@ -2487,7 +2554,8 @@ void BridgeLoadPending()
       Print("LiquidityNarrative bridge outbox loaded pending=", ArraySize(g_bridgePending));
 }
 
-bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime)
+bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double sl, double tp, string source, double halfTriggerPrice, string halfTriggerLabel, datetime sourceSignalTime,
+   double riskPct, string riskBasis, double riskReferenceCapital, double riskBudgetMoney)
 {
    int n = ArraySize(g_bridgePending);
    int index = -1;
@@ -2513,6 +2581,10 @@ bool BridgeQueuePending(string eventId, string dir, double bridgeEntry, double s
    g_bridgePending[index].halfTrigger = halfTriggerPrice;
    g_bridgePending[index].halfLabel = halfTriggerLabel;
    g_bridgePending[index].signalTime = sourceSignalTime;
+   g_bridgePending[index].riskPct = riskPct;
+   g_bridgePending[index].riskBasis = riskBasis;
+   g_bridgePending[index].riskReferenceCapital = riskReferenceCapital;
+   g_bridgePending[index].riskBudgetMoney = riskBudgetMoney;
    g_bridgePending[index].nextRetryLocal = TimeLocal() + 2;
    bool persisted = BridgePersistPending();
    if(persisted)
@@ -2536,7 +2608,8 @@ void BridgeRetryPending()
    {
       if(g_bridgePending[0].nextRetryLocal > TimeLocal()) break;
       BridgePendingEvent item = g_bridgePending[0];
-      if(!FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), item.eventId, item.dir, item.entry, item.sl, item.tp, item.source, item.halfTrigger, item.halfLabel, item.signalTime))
+      if(!FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), item.eventId, item.dir, item.entry, item.sl, item.tp, item.source, item.halfTrigger, item.halfLabel, item.signalTime,
+         item.riskPct, item.riskBasis, item.riskReferenceCapital, item.riskBudgetMoney))
       {
          g_bridgePending[0].attempts++;
          g_bridgePending[0].nextRetryLocal = TimeLocal() + MathMin(30, 2 + g_bridgePending[0].attempts * 2);
@@ -2554,8 +2627,10 @@ bool FileBridgeWriteInitMarker()
 {
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
    string eventId = "liq_bridge_init|" + _Symbol + "|" + FileBridgeTfString(g_entryTf) + "|" + FileBridgeTime(TimeGMT());
-   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
-   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT());
+   double riskPct = RiskPerTradePct(), riskReferenceCapital = RiskReferenceCapitalForBridge(), riskBudgetMoney = RiskBudgetMoney();
+   string riskBasis = RiskCapitalBasisCode();
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT(), riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), eventId, "INIT", 0.0, 0.0, 0.0, "bridge_initiated", 0.0, "init", TimeGMT(), riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
    g_lastBridgeStatus = scopedOk ? "INIT WROTE" : "INIT SCOPED FAIL";
    if(!genericOk)
       Print("LiquidityNarrative file_bridge init generic atomic write failed file=", InpFileBridgeLatestFile);
@@ -2567,14 +2642,16 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
    if(!g_fileBridgeEnabled || IsTesterMode()) return false;
    string dir = DirLabel(sig.dir);
    string source = FileBridgeSource();
-   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   double riskPct = RiskPerTradePct(), riskReferenceCapital = RiskReferenceCapitalForBridge(), riskBudgetMoney = RiskBudgetMoney();
+   string riskBasis = RiskCapitalBasisCode();
+   bool genericOk = FileBridgeWriteLatestFile(InpFileBridgeLatestFile, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
    if(!genericOk)
       Print("LiquidityNarrative file_bridge generic atomic write failed file=", InpFileBridgeLatestFile);
 
-   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+   bool scopedOk = FileBridgeWriteLatestFile(FileBridgeScopedLatestFileName(), sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
    bool accepted = scopedOk;
    if(!scopedOk)
-      accepted = BridgeQueuePending(sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+      accepted = BridgeQueuePending(sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime, riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
 
    string auditFile = InpFileBridgeAuditPrefix + FileBridgeDate(TimeGMT()) + ".csv";
    int auditFlags = FileBridgeFlags(FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2585,7 +2662,8 @@ bool FileBridgeWriteSignal(const ErlSignal &sig, double bridgeEntry, double sl, 
       bool header = (FileSize(a) == 0);
       FileSeek(a, 0, SEEK_END);
       if(header) FileBridgeWriteHeader(a);
-      FileBridgeWriteRow(a, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime);
+      FileBridgeWriteRow(a, sig.id, dir, bridgeEntry, sl, tp, source, halfTriggerPrice, halfTriggerLabel, sig.availableTime,
+         riskPct, riskBasis, riskReferenceCapital, riskBudgetMoney);
       FileClose(a);
    }
    else
@@ -3787,7 +3865,23 @@ bool OpenSignal(const ErlSignal &sig)
                + " " + ExecutionGeometryDetail(execSig, orderSl, orderTp));
          }
       }
+      string fixedRiskReason = "";
+      if(!ValidateFixedReferencePostFill(posTicket, execSig.dir, orderSl, fixedRiskReason))
+      {
+         g_lastStatus = "RISK_FAIL_CLOSED";
+         g_lastBlock = fixedRiskReason;
+         AuditWrite("fixed_risk_postfill_fail_close", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot, fixedRiskReason);
+         return false;
+      }
       StorePositionPlan(posTicket, execSig, effectiveHc);
+   }
+   else if(FixedReferenceRiskMode())
+   {
+      g_lastStatus = "RISK_FAIL_CLOSED";
+      g_lastBlock = "fixed_reference_position_unresolved";
+      AuditWrite("fixed_risk_postfill_fail_close", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot, g_lastBlock);
+      CloseOwnPositions(execSig.dir);
+      return false;
    }
    MarkSignalEventClaimed(sig.id);
    RememberSignalSeen(sig);

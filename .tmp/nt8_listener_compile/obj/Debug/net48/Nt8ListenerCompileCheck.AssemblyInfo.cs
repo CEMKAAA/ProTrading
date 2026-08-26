@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Nt8ListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+78fd64fc8ebd02b93cca6ed9374ca7c7bf99b71c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+479ad5de2c1ebf7423db94d25740dcb3e76e727e")]
 [assembly: System.Reflection.AssemblyProductAttribute("Nt8ListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Nt8ListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

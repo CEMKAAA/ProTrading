@@ -1,0 +1,13 @@
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\bin\Debug\net8.0-windows\QuantowerListenerCompileCheck.deps.json
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\bin\Debug\net8.0-windows\QuantowerListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\bin\Debug\net8.0-windows\QuantowerListenerCompileCheck.pdb
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.csproj.AssemblyReference.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.AssemblyInfoInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.AssemblyInfo.cs
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.csproj.CoreCompileInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.sourcelink.json
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\refint\QuantowerListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\QuantowerListenerCompileCheck.pdb
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\quantower_listener_compile\obj\Debug\net8.0-windows\ref\QuantowerListenerCompileCheck.dll

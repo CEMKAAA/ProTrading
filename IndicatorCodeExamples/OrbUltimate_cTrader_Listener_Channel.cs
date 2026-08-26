@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class OrbUltimateCTraderListenerChannel : Robot
     {
-        private const string Build = "2026-08-13.channel-isolation-v1";
+        private const string Build = "2026-08-26.orb-channel-fixed-reference-risk-v1";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -116,6 +116,10 @@ namespace cAlgo.Robots
 
         [Parameter("Use Bridge Risk %", DefaultValue = true)]
         public bool UseBridgeRiskPct { get; set; }
+        [Parameter("Use Bridge Risk Basis", DefaultValue = true)] public bool UseBridgeRiskBasis { get; set; }
+        [Parameter("Force Fixed Reference Risk", DefaultValue = false)] public bool ForceFixedReferenceRisk { get; set; }
+        [Parameter("Fixed Reference Capital", DefaultValue = 0.0, MinValue = 0.0)] public double FixedReferenceCapital { get; set; }
+        [Parameter("Fixed Risk Max Overshoot", DefaultValue = 1.0, MinValue = 0.0)] public double FixedRiskMaxOvershootMoney { get; set; }
 
         [Parameter("Use Balance For Risk", DefaultValue = false)]
         public bool UseBalanceForRisk { get; set; }
@@ -549,6 +553,18 @@ namespace cAlgo.Robots
             Audit("order_sent", sig, orderAuditPrefix + $"position={result.Position?.Id} volume={result.Position?.VolumeInUnits ?? finalVolume} live_entry={entry} fill_entry={result.Position?.EntryPrice ?? entry} sl_pips={stopLossPips:F2} tp_pips={takeProfitPips:F2} rebase={rebaseDetail} {lotDetail}");
             return true;
         }
+        private bool TryResolveRiskBudget(BridgeSignal sig, out double riskPct, out double riskCapital, out double riskMoney, out bool fixedReference, out string detail)
+        {
+            riskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
+            fixedReference = ForceFixedReferenceRisk || (UseBridgeRiskBasis && SameText(sig.RiskBasis, "FIXED_REFERENCE"));
+            riskCapital = fixedReference ? (FixedReferenceCapital > 0 ? FixedReferenceCapital : sig.RiskReferenceCapital) : (UseBalanceForRisk ? Account.Balance : Account.Equity);
+            riskMoney = riskCapital * Math.Max(0.0, riskPct) / 100.0;
+            if (fixedReference && FixedReferenceCapital <= 0 && sig.RiskBudgetMoney > 0 && Math.Abs(sig.RiskBudgetMoney - riskMoney) > Math.Max(1.0, FixedRiskMaxOvershootMoney)) { detail = $"fixed_reference_contract_mismatch calculated={riskMoney:F2} bridge_budget={sig.RiskBudgetMoney:F2}"; return false; }
+            if (riskPct <= 0 || riskCapital <= 0 || riskMoney <= 0) { detail = $"risk_budget_invalid fixed={fixedReference} capital={riskCapital:F2} pct={riskPct:F4} money={riskMoney:F2}"; return false; }
+            detail = $"risk_basis={(fixedReference ? "FIXED_REFERENCE" : (UseBalanceForRisk ? "CURRENT_BALANCE" : "CURRENT_EQUITY"))} capital={riskCapital:F2} pct={riskPct:F4} money={riskMoney:F2}";
+            return true;
+        }
+
         private bool ValidatePostFillRisk(BridgeSignal sig, Position position, out string detail)
         {
             detail = "post_fill_risk_guard_not_required";
@@ -562,13 +578,11 @@ namespace cAlgo.Robots
 
             try
             {
-                var effectiveRiskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
-                var riskCapital = UseBalanceForRisk ? Account.Balance : Account.Equity;
-                var allowedRisk = riskCapital * Math.Max(0.0, effectiveRiskPct) / 100.0;
+                if (!TryResolveRiskBudget(sig, out var effectiveRiskPct, out var riskCapital, out var allowedRisk, out var fixedReference, out var budgetDetail)) { detail = budgetDetail; return false; }
                 var actualRiskPips = Math.Abs(position.EntryPrice - sig.Sl) / Symbol.PipSize;
                 var actualRisk = Symbol.AmountRisked(position.VolumeInUnits, actualRiskPips);
-                var allowedWithTolerance = allowedRisk * (1.0 + Math.Max(0.0, MaxRiskOvershootPct) / 100.0);
-                detail = $"position={position.Id} fill={position.EntryPrice} exact_sl={sig.Sl} volume={position.VolumeInUnits} actual_risk_pips={actualRiskPips:F2} actual_risk={actualRisk:F2} allowed_risk={allowedRisk:F2} allowed_with_tolerance={allowedWithTolerance:F2} risk_pct={effectiveRiskPct:F4} capital={riskCapital:F2}";
+                var allowedWithTolerance = fixedReference ? allowedRisk + Math.Max(0.0, FixedRiskMaxOvershootMoney) : allowedRisk * (1.0 + Math.Max(0.0, MaxRiskOvershootPct) / 100.0);
+                detail = $"position={position.Id} fill={position.EntryPrice} exact_sl={sig.Sl} volume={position.VolumeInUnits} actual_risk_pips={actualRiskPips:F2} actual_risk={actualRisk:F2} allowed_risk={allowedRisk:F2} allowed_with_tolerance={allowedWithTolerance:F2} risk_pct={effectiveRiskPct:F4} capital={riskCapital:F2} fixed={fixedReference} {budgetDetail}";
                 return allowedRisk > 0 && actualRisk <= allowedWithTolerance;
             }
             catch (Exception ex)
@@ -586,9 +600,7 @@ namespace cAlgo.Robots
                 return manual;
             }
 
-            var effectiveRiskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
-            var riskCapital = UseBalanceForRisk ? Account.Balance : Account.Equity;
-            var riskMoney = riskCapital * Math.Max(0, effectiveRiskPct) / 100.0;
+            if (!TryResolveRiskBudget(sig, out var effectiveRiskPct, out var riskCapital, out var riskMoney, out var fixedReference, out var budgetDetail)) { detail = budgetDetail; return 0; }
 
             if (riskMoney <= 0 || stopLossPips <= 0)
             {
@@ -611,7 +623,8 @@ namespace cAlgo.Robots
                 volume = Math.Min(volume, MaxVolumeInUnits);
 
             var minRisk = Symbol.AmountRisked(Symbol.VolumeInUnitsMin, stopLossPips);
-            if (BlockIfMinVolumeExceedsRisk && volume < Symbol.VolumeInUnitsMin && minRisk > riskMoney * 1.001)
+            var sizingTolerance = fixedReference ? Math.Max(0.0, FixedRiskMaxOvershootMoney) : riskMoney * 0.001;
+            if (BlockIfMinVolumeExceedsRisk && volume < Symbol.VolumeInUnitsMin && minRisk > riskMoney + sizingTolerance)
             {
                 detail = $"min_volume_exceeds_risk risk_money={riskMoney:F2} stop_loss_pips={stopLossPips:F2} raw_volume={volume} min_volume={Symbol.VolumeInUnitsMin} min_volume_risk={minRisk:F2}";
                 return 0;
@@ -625,7 +638,7 @@ namespace cAlgo.Robots
             }
 
             var estimatedRisk = Symbol.AmountRisked(volume, stopLossPips);
-            if (BlockIfMinVolumeExceedsRisk && estimatedRisk > riskMoney * 1.001)
+            if (BlockIfMinVolumeExceedsRisk && estimatedRisk > riskMoney + sizingTolerance)
             {
                 detail = $"normalized_volume_exceeds_risk risk_money={riskMoney:F2} stop_loss_pips={stopLossPips:F2} volume={volume} estimated_risk={estimatedRisk:F2}";
                 return 0;
@@ -653,6 +666,7 @@ namespace cAlgo.Robots
                 + $" stop_loss_pips={stopLossPips:F2}"
                 + $" volume={volume}"
                 + $" estimated_risk={estimatedRisk:F2}"
+                + $" fixed_reference={fixedReference} {budgetDetail}"
                 + (string.IsNullOrEmpty(marginDetail) ? "" : " " + marginDetail);
             return volume;
         }
@@ -1039,13 +1053,19 @@ namespace cAlgo.Robots
             }
 
             var offset = 0;
+            var headerHasChannel = false;
             if (fields[0] == "version")
             {
                 offset = 17;
                 if (fields.Count > 17 && fields[17] == "risk_pct")
                     offset = 18;
                 if (fields.Count > 18 && fields[18] == "bridge_channel")
+                {
+                    headerHasChannel = true;
                     offset = 19;
+                }
+                if (headerHasChannel && fields.Count > 19 && fields[19] == "risk_basis") offset = 22;
+                else if (!headerHasChannel && fields.Count > 18 && fields[18] == "risk_basis") offset = 21;
             }
             if (fields.Count < offset + 17)
             {
@@ -1071,7 +1091,11 @@ namespace cAlgo.Robots
             sig.SourceBid = ParseDouble(fields[offset + 15]);
             sig.SourceAsk = ParseDouble(fields[offset + 16]);
             sig.RiskPct = fields.Count > offset + 17 ? ParseDouble(fields[offset + 17]) : 0;
-            sig.Channel = fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            sig.Channel = headerHasChannel && fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            var riskMetaIndex = offset + (headerHasChannel ? 19 : 18);
+            sig.RiskBasis = fields.Count > riskMetaIndex ? fields[riskMetaIndex] : "";
+            sig.RiskReferenceCapital = fields.Count > riskMetaIndex + 1 ? ParseDouble(fields[riskMetaIndex + 1]) : 0;
+            sig.RiskBudgetMoney = fields.Count > riskMetaIndex + 2 ? ParseDouble(fields[riskMetaIndex + 2]) : 0;
             var rawDir = fields[offset + 7];
             sig.Valid = !string.IsNullOrWhiteSpace(sig.EventId) && sig.Direction != 0;
 
@@ -1986,6 +2010,9 @@ namespace cAlgo.Robots
             public double SourceAsk;
             public double RiskPct;
             public int Channel;
+            public string RiskBasis;
+            public double RiskReferenceCapital;
+            public double RiskBudgetMoney;
         }
 
         private struct ProtectionState

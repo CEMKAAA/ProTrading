@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "CTraderListenerCompileCheck/1.0.0": {
+        "runtime": {
+          "CTraderListenerCompileCheck.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "CTraderListenerCompileCheck/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

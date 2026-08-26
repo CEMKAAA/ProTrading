@@ -73,6 +73,10 @@ input int    InpMaxSpreadPoints = 0;
 input double InpManualLot = 0.10;
 input bool   InpUseRiskLot = true;
 input double InpRiskPerTradePct = IQC_DEFAULT_RISK_PCT;
+input bool   InpUseBridgeRiskBasis = true;
+input bool   InpForceFixedReferenceRisk = false;
+input double InpFixedRiskReferenceCapital = 0.0;
+input double InpFixedRiskMaxOvershootMoney = 1.0;
 input double InpMaxLot = 0.00; // 0=broker max
 input bool   InpUseMarginShrinkGuard = true; // OFF=do not shrink risk lot for margin usage; broker may still reject if margin is insufficient.
 input double InpMaxMarginUsagePct = 40.0;
@@ -128,6 +132,9 @@ struct BridgeSignal
    double sourceBid;
    double sourceAsk;
    double riskPct;
+   string riskBasis;
+   double riskReferenceCapital;
+   double riskBudgetMoney;
    string tradeMode;
    double basketTargetPips;
    double basketTargetPct;
@@ -614,13 +621,25 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
       return false;
    }
    int offset = 0;
+   bool headerHasTradeMode = false;
+   bool headerHasChannel = false;
    if(fields[0] == "version")
    {
       offset = 17;
       if(count > 18 && fields[18] == "trade_mode")
+      {
+         headerHasTradeMode = true;
          offset = 27;
+      }
       else if(count > 17 && fields[17] == "risk_pct")
          offset = 18;
+      if(!headerHasTradeMode && count > 18 && fields[18] == "bridge_channel")
+      {
+         headerHasChannel = true;
+         offset = 19;
+      }
+      if(headerHasChannel && count > 19 && fields[19] == "risk_basis") offset = 22;
+      else if(!headerHasTradeMode && !headerHasChannel && count > 18 && fields[18] == "risk_basis") offset = 21;
    }
    if(count < offset + 17)
    {
@@ -647,6 +666,9 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
    sig.sourceBid = StringToDouble(Trim(fields[offset + 15]));
    sig.sourceAsk = StringToDouble(Trim(fields[offset + 16]));
    sig.riskPct = 0.0;
+   sig.riskBasis = "";
+   sig.riskReferenceCapital = 0.0;
+   sig.riskBudgetMoney = 0.0;
    sig.tradeMode = "traditional";
    sig.basketTargetPips = 0.0;
    sig.basketTargetPct = 0.0;
@@ -658,24 +680,31 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
    sig.basketDayKey = "";
    if(count > offset + 17)
       sig.riskPct = StringToDouble(Trim(fields[offset + 17]));
-   if(count > offset + 18)
+   if(headerHasTradeMode && count > offset + 18)
       sig.tradeMode = Trim(fields[offset + 18]);
-   if(count > offset + 19)
+   if(headerHasTradeMode && count > offset + 19)
       sig.basketTargetPips = StringToDouble(Trim(fields[offset + 19]));
-   if(count > offset + 20)
+   if(headerHasTradeMode && count > offset + 20)
       sig.basketTargetPct = StringToDouble(Trim(fields[offset + 20]));
-   if(count > offset + 21)
+   if(headerHasTradeMode && count > offset + 21)
       sig.basketMaxLossPips = StringToDouble(Trim(fields[offset + 21]));
-   if(count > offset + 22)
+   if(headerHasTradeMode && count > offset + 22)
       sig.basketCatastrophicSlPips = StringToDouble(Trim(fields[offset + 22]));
-   if(count > offset + 23)
+   if(headerHasTradeMode && count > offset + 23)
       sig.basketCloseOnReverse = SameTextCi(Trim(fields[offset + 23]), "true") || Trim(fields[offset + 23]) == "1";
-   if(count > offset + 24)
+   if(headerHasTradeMode && count > offset + 24)
       sig.basketCloseSessionEnd = SameTextCi(Trim(fields[offset + 24]), "true") || Trim(fields[offset + 24]) == "1";
-   if(count > offset + 25)
+   if(headerHasTradeMode && count > offset + 25)
       sig.basketSessionEndTime = Trim(fields[offset + 25]);
-   if(count > offset + 26)
+   if(headerHasTradeMode && count > offset + 26)
       sig.basketDayKey = Trim(fields[offset + 26]);
+   if(!headerHasTradeMode)
+   {
+      int riskMetaIndex = offset + (headerHasChannel ? 19 : 18);
+      if(count > riskMetaIndex) sig.riskBasis = Trim(fields[riskMetaIndex]);
+      if(count > riskMetaIndex + 1) sig.riskReferenceCapital = StringToDouble(Trim(fields[riskMetaIndex + 1]));
+      if(count > riskMetaIndex + 2) sig.riskBudgetMoney = StringToDouble(Trim(fields[riskMetaIndex + 2]));
+   }
    if(sig.tradeMode == "") sig.tradeMode = "traditional";
    sig.valid = (sig.eventId != "" && sig.direction != 0);
    detail = "read_ok file=" + fileName + " fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
@@ -1336,6 +1365,29 @@ double MoneyRiskPerLotByOrderCalc(const int direction, double entry, double sl, 
    return moneyPerLot;
 }
 
+bool ResolveRiskBudget(const BridgeSignal &sig, double &riskPct, double &capital, double &budget, bool &fixedReference, string &detail)
+{
+   riskPct = sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct;
+   fixedReference = InpForceFixedReferenceRisk || (InpUseBridgeRiskBasis && sig.riskBasis == "FIXED_REFERENCE");
+   capital = fixedReference
+      ? (InpFixedRiskReferenceCapital > 0.0 ? InpFixedRiskReferenceCapital : sig.riskReferenceCapital)
+      : AccountInfoDouble(ACCOUNT_EQUITY);
+   budget = capital * MathMax(0.0, riskPct) / 100.0;
+   if(fixedReference && InpFixedRiskReferenceCapital <= 0.0 && sig.riskBudgetMoney > 0.0
+      && MathAbs(sig.riskBudgetMoney - budget) > MathMax(1.0, InpFixedRiskMaxOvershootMoney))
+   {
+      detail = "fixed_reference_contract_mismatch calculated=" + DoubleToString(budget, 2) + " bridge=" + DoubleToString(sig.riskBudgetMoney, 2);
+      return false;
+   }
+   if(riskPct <= 0.0 || capital <= 0.0 || budget <= 0.0)
+   {
+      detail = "risk_budget_invalid fixed=" + (fixedReference ? "1" : "0") + " capital=" + DoubleToString(capital, 2) + " pct=" + DoubleToString(riskPct, 4);
+      return false;
+   }
+   detail = "risk_basis=" + (fixedReference ? "FIXED_REFERENCE" : "CURRENT_EQUITY");
+   return true;
+}
+
 double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
 {
    detail = "manual_lot";
@@ -1349,8 +1401,8 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
       detail = "risk_lot_unavailable riskDist=" + DoubleToString(riskDist, _Digits);
       return InpFailClosedOnRiskError ? 0.0 : NormalizeVolume(InpManualLot);
    }
-   double effectiveRiskPct = (sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct);
-   double budget = AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, effectiveRiskPct) / 100.0;
+   double effectiveRiskPct=0.0,capital=0.0,budget=0.0; bool fixedReference=false; string budgetDetail="";
+   if(!ResolveRiskBudget(sig,effectiveRiskPct,capital,budget,fixedReference,budgetDetail)) { detail=budgetDetail; return 0.0; }
    string riskCalcDetail = "";
    double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, entry, sig.sl, riskCalcDetail);
    if(moneyPerLot <= 0.0)
@@ -1363,7 +1415,8 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    if(InpBlockIfMinLotExceedsRisk && minVol > 0.0)
    {
       double minLotRisk = minVol * moneyPerLot;
-      if(rawLot < minVol && minLotRisk > budget * 1.001)
+      double sizingTolerance = fixedReference ? MathMax(0.0, InpFixedRiskMaxOvershootMoney) : budget * 0.001;
+      if(rawLot < minVol && minLotRisk > budget + sizingTolerance)
       {
          detail = "min_lot_exceeds_risk budget=" + DoubleToString(budget, 2)
                 + " risk_dist=" + DoubleToString(riskDist, _Digits)
@@ -1377,7 +1430,8 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
    double lot = NormalizeVolume(rawLot);
    string marginDetail = "";
    double actualRisk = lot * moneyPerLot;
-   if(InpBlockIfMinLotExceedsRisk && actualRisk > budget * 1.001)
+   double sizingTolerance = fixedReference ? MathMax(0.0, InpFixedRiskMaxOvershootMoney) : budget * 0.001;
+   if(InpBlockIfMinLotExceedsRisk && actualRisk > budget + sizingTolerance)
    {
       detail = "normalized_lot_exceeds_risk budget=" + DoubleToString(budget, 2)
              + " risk_dist=" + DoubleToString(riskDist, _Digits)
@@ -1413,6 +1467,7 @@ double ResolveLot(const BridgeSignal &sig, double entry, string &detail)
           + " raw_lot=" + DoubleToString(rawLot, 4)
           + " lot=" + DoubleToString(lot, 2)
           + " actual_risk=" + DoubleToString(actualRisk, 2) + (marginDetail != "" ? " " + marginDetail : "");
+   detail += " fixed_reference=" + (fixedReference ? "1" : "0") + " " + budgetDetail;
    return lot;
 }
 
@@ -1427,8 +1482,8 @@ bool EnforcePostFillRisk(ulong ticket, const BridgeSignal &sig, string &detail)
    }
    double fill = PositionGetDouble(POSITION_PRICE_OPEN);
    double volume = PositionGetDouble(POSITION_VOLUME);
-   double effectiveRiskPct = sig.riskPct > 0.0 ? sig.riskPct : InpRiskPerTradePct;
-   double budget = AccountInfoDouble(ACCOUNT_EQUITY) * MathMax(0.0, effectiveRiskPct) / 100.0;
+   double effectiveRiskPct=0.0,capital=0.0,budget=0.0; bool fixedReference=false; string budgetDetail="";
+   if(!ResolveRiskBudget(sig,effectiveRiskPct,capital,budget,fixedReference,budgetDetail)) { detail=budgetDetail; return false; }
    string calcDetail = "";
    double moneyPerLot = MoneyRiskPerLotByOrderCalc(sig.direction, fill, sig.sl, calcDetail);
    if(moneyPerLot <= 0.0 || budget <= 0.0)
@@ -1442,12 +1497,24 @@ bool EnforcePostFillRisk(ulong ticket, const BridgeSignal &sig, string &detail)
       return false;
    }
    double actualRisk = volume * moneyPerLot;
-   if(actualRisk <= budget * 1.001)
+   double toleratedBudget = fixedReference ? budget + MathMax(0.0, InpFixedRiskMaxOvershootMoney) : budget * 1.001;
+   if(actualRisk <= toleratedBudget)
    {
       detail = "post_fill_risk_ok budget=" + DoubleToString(budget, 2)
          + " actual=" + DoubleToString(actualRisk, 2)
          + " volume=" + DoubleToString(volume, VolumeDigits());
       return true;
+   }
+
+   if(fixedReference)
+   {
+      ResetLastError();
+      bool closeCall = trade.PositionClose(ticket);
+      bool closeOk = TradeCallAccepted(closeCall);
+      detail = "fixed_reference_post_fill_exceeded budget=" + DoubleToString(budget, 2)
+         + " actual=" + DoubleToString(actualRisk, 2) + " max=" + DoubleToString(toleratedBudget, 2)
+         + " emergency_close=" + (closeOk ? "true" : "false") + " ret=" + IntegerToString((int)trade.ResultRetcode());
+      return false;
    }
 
    double allowedVolume = NormalizeVolumeDown(budget / moneyPerLot);

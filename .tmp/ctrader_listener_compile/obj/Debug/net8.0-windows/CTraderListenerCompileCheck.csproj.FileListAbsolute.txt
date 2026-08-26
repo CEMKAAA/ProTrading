@@ -1,0 +1,13 @@
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\bin\Debug\net8.0-windows\CTraderListenerCompileCheck.deps.json
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\bin\Debug\net8.0-windows\CTraderListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\bin\Debug\net8.0-windows\CTraderListenerCompileCheck.pdb
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.csproj.AssemblyReference.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.AssemblyInfoInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.AssemblyInfo.cs
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.csproj.CoreCompileInputs.cache
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.sourcelink.json
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\refint\CTraderListenerCompileCheck.dll
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\CTraderListenerCompileCheck.pdb
+C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\.tmp\ctrader_listener_compile\obj\Debug\net8.0-windows\ref\CTraderListenerCompileCheck.dll

@@ -22,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-08-24.nt8-production-file-bridge-v12-accepted-signal-seal";
+        private const string CoreBuild = "2026-08-26.nt8-production-file-bridge-v13-fixed-reference-risk";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -146,6 +146,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Use Bridge Risk %", GroupName = "06 Risk", Order = 2)]
         public bool UseBridgeRiskPct { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Bridge Risk Basis", GroupName = "06 Risk", Order = 3)]
+        public bool UseBridgeRiskBasis { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Force Fixed Reference Risk", GroupName = "06 Risk", Order = 4)]
+        public bool ForceFixedReferenceRisk { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, double.MaxValue)]
+        [Display(Name = "Fixed Reference Capital", GroupName = "06 Risk", Order = 5)]
+        public double FixedReferenceCapital { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, double.MaxValue)]
+        [Display(Name = "Fixed Risk Max Overshoot", GroupName = "06 Risk", Order = 6)]
+        public double FixedRiskMaxOvershootMoney { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Use Cash Value For Risk", GroupName = "06 Risk", Order = 3)]
@@ -317,6 +335,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseRiskContracts = true;
                 LocalRiskPct = 1.0;
                 UseBridgeRiskPct = true;
+                UseBridgeRiskBasis = true;
+                ForceFixedReferenceRisk = false;
+                FixedReferenceCapital = 0;
+                FixedRiskMaxOvershootMoney = 1.0;
                 UseCashValueForRisk = false;
                 ManualContracts = 1;
                 MaxContracts = 50;
@@ -1472,6 +1494,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             catch (Exception ex) { AuditRaw("cancel_failed", "order=" + order.Name + " error=" + ex.Message); }
         }
 
+        private bool ResolveRiskBudget(BridgeSignal sig, out double riskPct, out double capital, out double riskBudget, out bool fixedReference, out string detail)
+        {
+            riskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
+            fixedReference = ForceFixedReferenceRisk || (UseBridgeRiskBasis && SameText(sig.RiskBasis, "FIXED_REFERENCE"));
+            capital = fixedReference ? (FixedReferenceCapital > 0 ? FixedReferenceCapital : sig.RiskReferenceCapital) : RiskCapital();
+            riskBudget = capital * Math.Max(0, riskPct) / 100.0;
+            if (fixedReference && FixedReferenceCapital <= 0 && sig.RiskBudgetMoney > 0 && Math.Abs(sig.RiskBudgetMoney - riskBudget) > Math.Max(1.0, FixedRiskMaxOvershootMoney))
+            { detail = "fixed_reference_contract_mismatch calculated=" + riskBudget.ToString("F2", CultureInfo.InvariantCulture) + " bridge=" + sig.RiskBudgetMoney.ToString("F2", CultureInfo.InvariantCulture); return false; }
+            if (!IsFinitePositive(capital) || !IsFinitePositive(riskBudget))
+            { detail = "risk_budget_invalid fixed=" + fixedReference + " capital=" + capital + " pct=" + riskPct; return false; }
+            detail = "risk_basis=" + (fixedReference ? "FIXED_REFERENCE" : (UseCashValueForRisk ? "CURRENT_CASH" : "CURRENT_NET_LIQ"));
+            return true;
+        }
+
         private int ResolveContracts(BridgeSignal sig, double liveEntry, out string detail)
         {
             if (!UseRiskContracts)
@@ -1483,9 +1519,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return Math.Max(0, manual);
             }
 
-            var riskPct = UseBridgeRiskPct && sig.RiskPct > 0 ? sig.RiskPct : LocalRiskPct;
-            var capital = RiskCapital();
-            var riskBudget = capital * Math.Max(0, riskPct) / 100.0;
+            double riskPct, capital, riskBudget; bool fixedReference; string budgetDetail;
+            if (!ResolveRiskBudget(sig, out riskPct, out capital, out riskBudget, out fixedReference, out budgetDetail))
+            { detail = budgetDetail; return FailClosedOnRiskError ? 0 : Math.Max(1, ManualContracts); }
             var pointValue = Instrument.MasterInstrument.PointValue;
             var riskPerContract = Math.Abs(liveEntry - sig.Sl) * pointValue;
             if (!IsFinitePositive(capital) || !IsFinitePositive(riskBudget) || !IsFinitePositive(riskPerContract))
@@ -1521,6 +1557,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                    + " budget=" + riskBudget.ToString("F2", CultureInfo.InvariantCulture)
                    + " risk_per_contract=" + riskPerContract.ToString("F2", CultureInfo.InvariantCulture)
                    + " contracts=" + contracts + " " + marginDetail + " " + complianceDetail;
+            detail += " fixed_reference=" + fixedReference + " " + budgetDetail;
             return contracts;
         }
 
@@ -1550,11 +1587,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             detail = "post_fill_guard_off";
             if (!PostFillRiskGuard || !UseRiskContracts)
                 return true;
-            var riskPct = UseBridgeRiskPct && trade.RiskPct > 0 ? trade.RiskPct : LocalRiskPct;
-            var capital = RiskCapital();
-            var allowed = capital * Math.Max(0, riskPct) / 100.0;
+            var budgetSignal = trade.ToRiskSignal();
+            double riskPct, capital, allowed; bool fixedReference; string budgetDetail;
+            if (!ResolveRiskBudget(budgetSignal, out riskPct, out capital, out allowed, out fixedReference, out budgetDetail)) { detail = budgetDetail; return false; }
             var actual = Math.Abs(trade.FillEntry - trade.StopLoss) * Instrument.MasterInstrument.PointValue * trade.Quantity;
-            var tolerated = allowed * (1.0 + Math.Max(0, MaxRiskOvershootPct) / 100.0);
+            var tolerated = fixedReference ? allowed + Math.Max(0, FixedRiskMaxOvershootMoney) : allowed * (1.0 + Math.Max(0, MaxRiskOvershootPct) / 100.0);
             detail = "fill=" + trade.FillEntry + " sl=" + trade.StopLoss + " qty=" + trade.Quantity + " actual_risk=" + actual.ToString("F2", CultureInfo.InvariantCulture) + " allowed=" + allowed.ToString("F2", CultureInfo.InvariantCulture) + " tolerated=" + tolerated.ToString("F2", CultureInfo.InvariantCulture);
             if (!IsFinitePositive(actual) || !IsFinitePositive(allowed))
                 return !FailClosedOnRiskError;
@@ -1784,13 +1821,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
             var offset = 0;
+            var headerHasChannel = false;
             if (SameText(fields[0], "version"))
             {
                 offset = 17;
                 if (fields.Count > 17 && SameText(fields[17], "risk_pct"))
                     offset = 18;
                 if (fields.Count > 18 && SameText(fields[18], "bridge_channel"))
+                {
+                    headerHasChannel = true;
                     offset = 19;
+                }
+                if (headerHasChannel && fields.Count > 19 && SameText(fields[19], "risk_basis")) offset = 22;
+                else if (!headerHasChannel && fields.Count > 18 && SameText(fields[18], "risk_basis")) offset = 21;
             }
             if (fields.Count < offset + 17)
             {
@@ -1816,7 +1859,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             sig.SourceBid = ParseDouble(fields[offset + 15]);
             sig.SourceAsk = ParseDouble(fields[offset + 16]);
             sig.RiskPct = fields.Count > offset + 17 ? ParseDouble(fields[offset + 17]) : 0;
-            sig.Channel = fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            sig.Channel = headerHasChannel && fields.Count > offset + 18 ? ParseInt(fields[offset + 18]) : 0;
+            var riskMetaIndex = offset + (headerHasChannel ? 19 : 18);
+            sig.RiskBasis = fields.Count > riskMetaIndex ? fields[riskMetaIndex] : string.Empty;
+            sig.RiskReferenceCapital = fields.Count > riskMetaIndex + 1 ? ParseDouble(fields[riskMetaIndex + 1]) : 0;
+            sig.RiskBudgetMoney = fields.Count > riskMetaIndex + 2 ? ParseDouble(fields[riskMetaIndex + 2]) : 0;
             sig.Valid = !string.IsNullOrWhiteSpace(sig.EventId) && sig.Direction != 0 && sig.WrittenGmt != DateTime.MinValue;
             detail = "read_ok file=" + Path.GetFileName(path) + " fields=" + fields.Count + " offset=" + offset + " event=" + ShortEvent(sig.EventId) + " channel=" + sig.Channel + " source=" + sig.Source + " risk_pct=" + sig.RiskPct.ToString("F3", CultureInfo.InvariantCulture);
             if (!sig.Valid)
@@ -2184,7 +2231,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 { "dir", trade.Direction.ToString(CultureInfo.InvariantCulture) }, { "signal_time", trade.SignalTime.ToString("O") },
                 { "written", trade.WrittenGmt.ToString("O") }, { "bridge_entry", G17(trade.BridgeEntry) }, { "fill_entry", G17(trade.FillEntry) },
                 { "sl", G17(trade.StopLoss) }, { "tp", G17(trade.TakeProfit) }, { "half", G17(trade.HalfTrigger) },
-                { "risk_pct", G17(trade.RiskPct) }, { "requested_qty", trade.RequestedQuantity.ToString(CultureInfo.InvariantCulture) },
+                { "risk_pct", G17(trade.RiskPct) }, { "risk_basis", trade.RiskBasis ?? string.Empty },
+                { "risk_reference_capital", G17(trade.RiskReferenceCapital) }, { "risk_budget_money", G17(trade.RiskBudgetMoney) },
+                { "requested_qty", trade.RequestedQuantity.ToString(CultureInfo.InvariantCulture) },
                 { "qty", trade.Quantity.ToString(CultureInfo.InvariantCulture) }, { "status", trade.Status ?? string.Empty },
                 { "entry_name", trade.EntryOrderName ?? string.Empty }, { "entry_id", trade.EntryOrderId ?? string.Empty },
                 { "stop_name", trade.StopOrderName ?? string.Empty }, { "stop_id", trade.StopOrderId ?? string.Empty },
@@ -2594,7 +2643,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         private static bool ParseBool(string value) { return value == "1" || SameText(value, "true"); }
-        private static int ParseInt(string value) { int parsed; return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) ? parsed : 0; }
         private static bool SameText(string a, string b) { return string.Equals((a ?? string.Empty).Trim(), (b ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase); }
         private static bool ContainsText(string value, string needle) { return (value ?? string.Empty).IndexOf(needle ?? string.Empty, StringComparison.OrdinalIgnoreCase) >= 0; }
         private static bool IsFinitePositive(double value) { return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0; }
@@ -2637,6 +2685,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double SourceAsk;
             public double RiskPct;
             public int Channel;
+            public string RiskBasis;
+            public double RiskReferenceCapital;
+            public double RiskBudgetMoney;
         }
 
         private struct TradeState
@@ -2654,6 +2705,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double TakeProfit;
             public double HalfTrigger;
             public double RiskPct;
+            public string RiskBasis;
+            public double RiskReferenceCapital;
+            public double RiskBudgetMoney;
             public int RequestedQuantity;
             public int Quantity;
             public string Status;
@@ -2687,6 +2741,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     EventId = sig.EventId, Source = sig.Source, SourceSymbol = sig.SourceSymbol, SourceTf = NormalizeTf(sig.SourceTf),
                     Direction = sig.Direction, SignalTime = sig.SignalTime, WrittenGmt = sig.WrittenGmt, BridgeEntry = sig.BridgeEntry,
                     StopLoss = sig.Sl, TakeProfit = sig.Tp, HalfTrigger = sig.HalfTrigger, RiskPct = sig.RiskPct,
+                    RiskBasis = sig.RiskBasis, RiskReferenceCapital = sig.RiskReferenceCapital, RiskBudgetMoney = sig.RiskBudgetMoney,
                     RequestedQuantity = quantity, Quantity = quantity, LastActionUtc = DateTime.UtcNow
                 };
             }
@@ -2700,6 +2755,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Direction = ParseInt(get("dir")), SignalTime = ParseDate(get("signal_time")), WrittenGmt = ParseDate(get("written")),
                     BridgeEntry = ParseDouble(get("bridge_entry")), FillEntry = ParseDouble(get("fill_entry")), StopLoss = ParseDouble(get("sl")),
                     TakeProfit = ParseDouble(get("tp")), HalfTrigger = ParseDouble(get("half")), RiskPct = ParseDouble(get("risk_pct")),
+                    RiskBasis = get("risk_basis"), RiskReferenceCapital = ParseDouble(get("risk_reference_capital")), RiskBudgetMoney = ParseDouble(get("risk_budget_money")),
                     RequestedQuantity = ParseInt(get("requested_qty")), Quantity = ParseInt(get("qty")), Status = get("status"),
                     EntryOrderName = get("entry_name"), EntryOrderId = get("entry_id"), StopOrderName = get("stop_name"), StopOrderId = get("stop_id"),
                     TargetOrderName = get("target_name"), TargetOrderId = get("target_id"), HalfOrderName = get("half_name"), HalfCloseQuantity = ParseInt(get("half_qty")), HalfFilledAccounted = ParseInt(get("half_filled_accounted")),
@@ -2707,6 +2763,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     HalfPartialClosed = ParseBool(get("half_partial")), HalfDone = ParseBool(get("half_done")), StopFilledAccounted = ParseInt(get("stop_filled_accounted")), TargetFilledAccounted = ParseInt(get("target_filled_accounted")), ProtectionFailures = ParseInt(get("protection_failures")),
                     LastActionUtc = ParseDate(get("last_action")), NextRetryUtc = ParseDate(get("next_retry")), LastProtectionChangeUtc = ParseDate(get("last_protection_change"))
                 };
+            }
+
+            public BridgeSignal ToRiskSignal()
+            {
+                return new BridgeSignal { RiskPct = RiskPct, RiskBasis = RiskBasis, RiskReferenceCapital = RiskReferenceCapital, RiskBudgetMoney = RiskBudgetMoney };
             }
         }
     }
