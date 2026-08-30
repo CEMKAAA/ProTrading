@@ -5,12 +5,12 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.46"
+#property version "3.48"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-08-30.Q10-M15-BREAK-1R-ATR-C4-nas-exact-stream-parity-v2"
+#define ORB15_BUILD "2026-08-30.Q10-M15-BREAK-1R-ATR-C4-nas-grace-latch-v1"
 
 enum ORB_SESSION_PROFILE
 {
@@ -66,7 +66,6 @@ input int    InpConfirmBars          = 1;    // Breakout bar must hold N closed 
 // deliberately not imported into ORB. ENTRY GATE and OPP EXIT are independent:
 // gate OFF + exit ON is the exit-only mode.
 input bool            InpNasConfirmationDefault = false;
-input ENUM_TIMEFRAMES InpNasConfirmationTimeframe = PERIOD_CURRENT; // CURRENT = ORB Signal TF.
 input int             InpNasSensitivity = 4;
 input int             InpNasRsiLength   = 14;
 input int             InpNasAtrRisk     = 1;
@@ -75,8 +74,7 @@ input int             InpNasSignalCalcBars = 5000; // Main NAS EA parity: identi
 input int             InpNasHistoryBars = 60000; // Main NAS history parity: identical raw-overlay calculation depth.
 input int             InpNasActiveSignalLookbackMinutes = 120; // Accept the latest still-active NAS direction before ORB.
 input bool            InpNasExitOnOppositeSignalDefault = false; // Explicit opt-in: close this instance's trade on opposite NAS.
-input string          InpNasOppositeExitWait = "00:00"; // Holding grace duration HH:MM; only later opposite NAS events may exit.
-input int             InpNasOverlayMaxBars = 50000; // Visual-only cap; never changes NAS entry/exit decisions.
+input string          InpNasOppositeExitWait = "00:00"; // Holding grace HH:MM; an opposite NAS state during grace exits when grace expires.
 
 //=== EXECUTION MODE =====================================================
 enum ORB_EXEC_MODE { ORB_EXEC_SINGLE=0, ORB_EXEC_PARTIAL_3LEG=1 };
@@ -318,8 +316,6 @@ bool            g_rtNasConfirmation = false;
 bool            g_rtNasExitOnOppositeSignal = true;
 int             g_rtNasActiveSignalLookbackMinutes = 120;
 int             g_rtNasOppositeExitWaitMinutes = 0;
-ENUM_TIMEFRAMES g_rtNasTimeframe = PERIOD_M15;
-int             g_rtNasSensitivity = 4;
 datetime        g_lastNasOverlayClosedBar = 0;
 int             g_lastNasOverlaySignalCount = 0;
 int             g_lastNasOverlayCopiedBars = 0;
@@ -757,46 +753,11 @@ string RuntimeNasLookbackKey()
    long login=AccountInfoInteger(ACCOUNT_LOGIN);
    return "ORB_NASLB."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(MathMax(0,InpNasActiveSignalLookbackMinutes));
 }
-string RuntimeNasTfKey()
-{
-   long login=AccountInfoInteger(ACCOUNT_LOGIN);
-   // V2 preserves PERIOD_CURRENT as AUTO instead of restoring the old init-time concrete TF.
-   return "ORB_NASTF2."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString((int)InpNasConfirmationTimeframe);
-}
-string RuntimeNasSensitivityKey()
-{
-   long login=AccountInfoInteger(ACCOUNT_LOGIN);
-   return "ORB_NASSENS."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(MathMax(1,InpNasSensitivity));
-}
 string RuntimeNasExitWaitKey()
 {
    long login=AccountInfoInteger(ACCOUNT_LOGIN);
    int inputMinutes=0;ParseStrictDurationMinutes(InpNasOppositeExitWait,inputMinutes);
    return "ORB_NASEXWAIT."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(MathMax(0,inputMinutes));
-}
-ENUM_TIMEFRAMES ClampNasTimeframe(ENUM_TIMEFRAMES tf)
-{
-   if(tf==PERIOD_M1||tf==PERIOD_M5||tf==PERIOD_M15||tf==PERIOD_H1)return tf;
-   if(tf==PERIOD_CURRENT)
-   {
-      if(g_rtSignalTf==PERIOD_M1||g_rtSignalTf==PERIOD_M5||g_rtSignalTf==PERIOD_M15||g_rtSignalTf==PERIOD_H1)
-         return g_rtSignalTf;
-   }
-   return PERIOD_M15;
-}
-ENUM_TIMEFRAMES NormalizeNasTimeframeSetting(ENUM_TIMEFRAMES tf)
-{
-   if(tf==PERIOD_CURRENT||tf==PERIOD_M1||tf==PERIOD_M5||tf==PERIOD_M15||tf==PERIOD_H1)return tf;
-   return PERIOD_CURRENT;
-}
-ENUM_TIMEFRAMES CycleNasTimeframe(ENUM_TIMEFRAMES tf)
-{
-   tf=NormalizeNasTimeframeSetting(tf);
-   if(tf==PERIOD_CURRENT)return PERIOD_M1;
-   if(tf==PERIOD_M1)return PERIOD_M5;
-   if(tf==PERIOD_M5)return PERIOD_M15;
-   if(tf==PERIOD_M15)return PERIOD_H1;
-   return PERIOD_CURRENT;
 }
 void LoadRuntimeNasControls()
 {
@@ -805,21 +766,14 @@ void LoadRuntimeNasControls()
    g_rtNasExitOnOppositeSignal=InpNasExitOnOppositeSignalDefault;
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,InpNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,inputWaitMinutes));
-   g_rtNasTimeframe=NormalizeNasTimeframeSetting(InpNasConfirmationTimeframe);
-   g_rtNasSensitivity=MathMax(1,MathMin(50,InpNasSensitivity));
    if(GlobalVariableCheck(RuntimeNasExitKey()))
       g_rtNasExitOnOppositeSignal=(GlobalVariableGet(RuntimeNasExitKey())>0.5);
    if(GlobalVariableCheck(RuntimeNasLookbackKey()))
       g_rtNasActiveSignalLookbackMinutes=(int)MathRound(GlobalVariableGet(RuntimeNasLookbackKey()));
-   if(GlobalVariableCheck(RuntimeNasTfKey()))
-      g_rtNasTimeframe=NormalizeNasTimeframeSetting((ENUM_TIMEFRAMES)(int)MathRound(GlobalVariableGet(RuntimeNasTfKey())));
-   if(GlobalVariableCheck(RuntimeNasSensitivityKey()))
-      g_rtNasSensitivity=(int)MathRound(GlobalVariableGet(RuntimeNasSensitivityKey()));
    if(GlobalVariableCheck(RuntimeNasExitWaitKey()))
       g_rtNasOppositeExitWaitMinutes=(int)MathRound(GlobalVariableGet(RuntimeNasExitWaitKey()));
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,g_rtNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,g_rtNasOppositeExitWaitMinutes));
-   g_rtNasSensitivity=MathMax(1,MathMin(50,g_rtNasSensitivity));
 }
 bool SetRuntimeNasExit(bool enabled)
 {
@@ -832,20 +786,6 @@ bool SetRuntimeNasLookback(int minutes)
    if(minutes<0||minutes>1440)return false;
    if(GlobalVariableSet(RuntimeNasLookbackKey(),(double)minutes)<=0)return false;
    g_rtNasActiveSignalLookbackMinutes=minutes;
-   return true;
-}
-bool SetRuntimeNasTimeframe(ENUM_TIMEFRAMES tf)
-{
-   tf=NormalizeNasTimeframeSetting(tf);
-   if(GlobalVariableSet(RuntimeNasTfKey(),(double)(int)tf)<=0)return false;
-   g_rtNasTimeframe=tf;
-   return true;
-}
-bool SetRuntimeNasSensitivity(int sensitivity)
-{
-   if(sensitivity<1||sensitivity>50)return false;
-   if(GlobalVariableSet(RuntimeNasSensitivityKey(),(double)sensitivity)<=0)return false;
-   g_rtNasSensitivity=sensitivity;
    return true;
 }
 bool SetRuntimeNasExitWait(int minutes)
@@ -884,7 +824,7 @@ long NasPendingConfigSignature()
    h=(h*131+(long)RuntimeTargetLeg())%9000000000000000;
    h=(h*131+(long)g_orbBridgeChannel)%9000000000000000;
    h=(h*131+(long)MathRound(g_rtVolumeMultiplier*10000.0))%9000000000000000;
-   h=(h*131+(long)MathMax(1,g_rtNasSensitivity))%9000000000000000;
+   h=(h*131+(long)MathMax(1,InpNasSensitivity))%9000000000000000;
    h=(h*131+(long)MathMax(1,InpNasAtrRisk))%9000000000000000;
    h=(h*131+(long)MathMax(2,InpNasAtrLen))%9000000000000000;
    h=(h*131+(long)MathMax(0,g_rtNasActiveSignalLookbackMinutes))%9000000000000000;
@@ -946,23 +886,23 @@ bool RestoreNasPending()
 }
 ENUM_TIMEFRAMES NasConfirmationTf()
 {
-   return g_rtNasTimeframe==PERIOD_CURRENT?ClampNasTimeframe(g_rtSignalTf):ClampNasTimeframe(g_rtNasTimeframe);
+   return (ENUM_TIMEFRAMES)_Period;
 }
 string NasTimeframeButtonLabel()
 {
-   return g_rtNasTimeframe==PERIOD_CURRENT?("TF AUTO>"+TfLabel(NasConfirmationTf())):("TF "+TfLabel(NasConfirmationTf()));
+   return "TF CHART "+TfLabel(NasConfirmationTf());
 }
 NasSettings BuildOrbNasSettings()
 {
    NasSettings s;
-   s.sensitivity=MathMax(1,g_rtNasSensitivity);
+   s.sensitivity=MathMax(1,InpNasSensitivity);
    s.rsiLength=MathMax(2,InpNasRsiLength);
    s.atrRisk=MathMax(1,InpNasAtrRisk);
    s.atrLen=MathMax(2,InpNasAtrLen);
    return s;
 }
 int NasCalcWarmupBars(){return MathMax(300,MathMin(200000,InpNasSignalCalcBars));}
-int NasHistoryBars(){return MathMax(300,MathMin(200000,InpNasHistoryBars));}
+int NasHistoryBars(){return MathMax(300,InpNasHistoryBars);}
 void NormalizeOrbNasRates(MqlRates &rates[],const int copied)
 {
    if(copied>1&&rates[0].time>rates[copied-1].time)
@@ -970,14 +910,14 @@ void NormalizeOrbNasRates(MqlRates &rates[],const int copied)
 }
 int LoadOrbNasRates(MqlRates &rates[],ENUM_TIMEFRAMES tf,const int barsToCopy)
 {
-   int copied=CopyRates(_Symbol,tf,0,MathMax(20,MathMin(200000,barsToCopy)),rates);
+   int copied=CopyRates(_Symbol,tf,0,MathMax(20,barsToCopy),rates);
    if(copied>0)NormalizeOrbNasRates(rates,copied);
    return copied;
 }
 int LoadOrbNasRatesThrough(MqlRates &rates[],ENUM_TIMEFRAMES tf,datetime throughTime,const int barsToCopy)
 {
    if(throughTime<=0)return -1;
-   int copied=CopyRates(_Symbol,tf,throughTime,MathMax(20,MathMin(200000,barsToCopy)),rates);
+   int copied=CopyRates(_Symbol,tf,throughTime,MathMax(20,barsToCopy),rates);
    if(copied>0)NormalizeOrbNasRates(rates,copied);
    return copied;
 }
@@ -998,8 +938,7 @@ bool FindNasConfirmation(string dir,datetime orbAcceptedAt,datetime latestAvaila
    int lookbackMinutes=MathMax(0,g_rtNasActiveSignalLookbackMinutes);
    datetime activeStart=orbAcceptedAt-(datetime)(lookbackMinutes*60);
    MqlRates rates[];
-   int spanBars=(int)MathCeil((double)MathMax(0,latestAvailable-activeStart)/(double)sec)+4;
-   int copied=LoadOrbNasRatesThrough(rates,tf,latestAvailable,NasCalcWarmupBars()+spanBars);
+   int copied=LoadOrbNasRatesThrough(rates,tf,latestAvailable,NasCalcWarmupBars());
    if(copied<20){detail="NAS_NO_DATA tf="+TfLabel(tf)+" bars="+IntegerToString(copied);return false;}
    NasPoint points[];
    if(NAS_Calculate(rates,copied,BuildOrbNasSettings(),points)!=copied)
@@ -1122,8 +1061,7 @@ bool FindNasTransitionAfter(string wantedDir,datetime afterExclusive,datetime la
    eventBar=0;eventAt=0;eventClose=0.0;detail="";
    if((wantedDir!="BUY"&&wantedDir!="SELL")||afterExclusive<=0||latestAvailable<=afterExclusive)return false;
    ENUM_TIMEFRAMES tf=NasConfirmationTf();int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
-   int spanBars=(int)MathCeil((double)MathMax(0,latestAvailable-afterExclusive)/(double)sec)+4;
-   MqlRates rates[];int copied=LoadOrbNasRatesThrough(rates,tf,latestAvailable,NasCalcWarmupBars()+spanBars);
+   MqlRates rates[];int copied=LoadOrbNasRatesThrough(rates,tf,latestAvailable,NasCalcWarmupBars());
    if(copied<20){detail="NAS_EXIT_NO_DATA bars="+IntegerToString(copied);return false;}
    NasPoint points[];
    if(NAS_Calculate(rates,copied,BuildOrbNasSettings(),points)!=copied){detail="NAS_EXIT_CALC_FAIL";return false;}
@@ -1960,6 +1898,28 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
    detail=firstFail+" naked_opened_but_ticket_not_found";
    return false;
 }
+bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,
+                              string &eventDir,datetime &eventBar,datetime &eventAt,double &eventClose,string &detail)
+{
+   eventDir="";eventBar=0;eventAt=0;eventClose=0.0;detail="";
+   if(afterExclusive<=0||latestAvailable<=afterExclusive)return false;
+   ENUM_TIMEFRAMES tf=NasConfirmationTf();
+   MqlRates rates[];int copied=LoadOrbNasRatesThrough(rates,tf,latestAvailable,NasCalcWarmupBars());
+   if(copied<20){detail="NAS_STATE_NO_DATA bars="+IntegerToString(copied);return false;}
+   NasPoint points[];
+   if(NAS_Calculate(rates,copied,BuildOrbNasSettings(),points)!=copied){detail="NAS_STATE_CALC_FAIL";return false;}
+   for(int i=1;i<=copied-2;i++)
+   {
+      datetime available=OrbNasSignalAvailableTime(rates,copied,i);
+      if(available<=afterExclusive||available>latestAvailable)continue;
+      bool buy=(points[i].buy&&!points[i].sell),sell=(points[i].sell&&!points[i].buy);
+      if(!buy&&!sell)continue;
+      eventDir=buy?"BUY":"SELL";eventBar=rates[i].time;eventAt=available;eventClose=rates[i].close;
+   }
+   if(eventAt<=0)return false;
+   detail="NAS_STATE tf="+TfLabel(tf)+" dir="+eventDir+" bar="+FmtTime(eventBar)+" at="+FmtTime(eventAt);
+   return true;
+}
 
 bool CanModifySlTo(double sl,int dir,string &reason)
 {
@@ -2654,7 +2614,7 @@ void DrawNasSignalMarker(const MqlRates &bar,const NasPoint &point,ENUM_TIMEFRAM
    ObjectSetInteger(0,base+"ARW",OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,base+"ARW",OBJPROP_HIDDEN,false);
    double textPrice=NormalizePrice(buy?arrowPrice-pad*0.55:arrowPrice+pad*0.55);
-   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+TfLabel(tf)+" S"+IntegerToString(g_rtNasSensitivity)+"]",clr);
+   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+TfLabel(tf)+" S"+IntegerToString(InpNasSensitivity)+"]",clr);
 }
 
 int DrawNasSignalOverlay(int days,datetime now)
@@ -2662,20 +2622,16 @@ int DrawNasSignalOverlay(int days,datetime now)
    g_lastNasOverlaySignalCount=0;g_lastNasOverlayCopiedBars=0;
    if(!NasOverlayEnabled())return 0;
    ENUM_TIMEFRAMES tf=NasConfirmationTf();int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
-   int visualCap=MathMax(1000,MathMin(200000,InpNasOverlayMaxBars));
-   long requestedWindow=(long)MathCeil((double)MathMax(1,days)*86400.0/(double)sec)+2;
-   int drawBars=(int)MathMin((long)visualCap,requestedWindow);
-   int neededBars=(int)MathMin((long)200000,requestedWindow+300);
+   long requestedWindow=(long)MathCeil((double)MathMax(1,days)*86400.0/(double)sec);
+   int neededBars=(int)MathMin((long)2147480000,requestedWindow+300);
    int requested=MathMax(NasHistoryBars(),neededBars);
    MqlRates rates[];int copied=LoadOrbNasRates(rates,tf,requested);
    if(copied<20)return 0;
    g_lastNasOverlayCopiedBars=copied;
    NasPoint points[];if(NAS_Calculate(rates,copied,BuildOrbNasSettings(),points)!=copied)return 0;
    datetime cutoff=now-(datetime)((long)MathMax(1,days)*86400);
-   datetime visualCutoff=now-(datetime)((long)drawBars*sec);
-   if(visualCutoff>cutoff)cutoff=visualCutoff;
    int drawn=0;
-   for(int i=1;i<=copied-2;i++)
+   for(int i=0;i<=copied-2;i++)
    {
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(rates[i].time<cutoff||available<=0||available>now)continue;
@@ -4211,7 +4167,7 @@ void DrawHistoricalSignals()
          " DAY=",g_rtFilterDay?"ON":"OFF"," ",HalfBeLabel(),
          " ",TargetLabel()," ",RuntimeInvertLabel()," audit_weeks=",IntegerToString(g_rtHistoricalWeeks),
          " nas_overlay=",IntegerToString(drawnNasSignals)," nas_history_bars=",g_lastNasOverlayCopiedBars,
-         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity);
+         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",InpNasSensitivity);
 
    for(int back=days-1;back>=0;back--)
    {
@@ -4322,7 +4278,7 @@ void DrawHistoricalSignals()
             filteredWindowExitAt,filteredWindowExitReason,filteredWindowExitOutcome);
       datetime nasOppositeExitAt=0,nasOppositeBar=0;double nasOppositeClose=0.0;string nasOppositeDetail="";
       if(g_rtNasExitOnOppositeSignal)
-         FindNasTransitionAfter(execDir=="BUY"?"SELL":"BUY",NasOppositeExitScanExclusive(entryT),te,
+         FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,entryT,te,
             nasOppositeBar,nasOppositeExitAt,nasOppositeClose,nasOppositeDetail);
       datetime forcedExitAt=filteredWindowExitAt;string forcedExitOutcome=filteredWindowExitOutcome;
       if(nasOppositeExitAt>0&&(forcedExitAt<=0||nasOppositeExitAt<forcedExitAt))
@@ -4681,7 +4637,7 @@ void OBT_Tick()
       double tp3=NormalizePrice(isBuy?entry+risk*r3v:entry-risk*r3v);
       datetime nasExitBar=0,nasExitAt=0;double nasExitClose=0.0;string nasExitDetail="";
       if(g_rtNasExitOnOppositeSignal)
-         FindNasTransitionAfter(execDir=="BUY"?"SELL":"BUY",NasOppositeExitScanExclusive(entryT),g_btDays[di].tradeEnd,
+         FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,entryT,g_btDays[di].tradeEnd,
             nasExitBar,nasExitAt,nasExitClose,nasExitDetail);
       HistResult sim=SimulateTrade(entryT,g_btDays[di].tradeEnd,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,combo.be?1:0,true,
          nasExitAt,nasExitAt>0?"NAS_OPPOSITE_EXIT":"");
@@ -4817,17 +4773,24 @@ void UpdateDashboard()
       g_rtNasConfirmation?C'30,150,95':C'80,80,80');
    CreateButton("BTN_NAS_EXIT",x+252,rootY+179,104,18,g_rtNasExitOnOppositeSignal?"OPP EXIT ON":"OPP EXIT OFF",
       g_rtNasExitOnOppositeSignal?C'184,103,22':C'80,80,80');
-   CreateButton("BTN_NAS_TF",x+360,rootY+179,76,18,NasTimeframeButtonLabel(),C'38,101,176');
-   CreateLabel("DASH_NAS_SENS",x+442,rootY+183,"SENS",C'134,158,182',7);
-   CreateEdit("EDIT_NAS_SENS",x+476,rootY+179,38,18,IntegerToString(g_rtNasSensitivity));
+   CreateLabel("DASH_NAS_TF",x+360,rootY+183,NasTimeframeButtonLabel(),C'90,178,255',7);
+   CreateLabel("DASH_NAS_SENS",x+456,rootY+183,"SENS "+IntegerToString(InpNasSensitivity)+" LOCK",C'134,158,182',7);
    CreateLabel("DASH_NAS_LB",x+12,rootY+205,"ACTIVE LOOKBACK MIN",C'134,158,182',7);
    CreateEdit("EDIT_NAS_LOOKBACK",x+130,rootY+201,52,18,IntegerToString(g_rtNasActiveSignalLookbackMinutes));
+   CreateLabel("DASH_NAS_WAIT",x+188,rootY+205,"EXIT WAIT",C'134,158,182',7);
+   CreateEdit("EDIT_NAS_EXIT_WAIT",x+252,rootY+201,52,18,DurationMinutesText(g_rtNasOppositeExitWaitMinutes));
    bool nasApplied=(g_nasApplyFlashUntil>TimeLocal());
-   CreateButton("BTN_NAS_APPLY",x+188,rootY+201,86,18,nasApplied?"APPLIED":"APPLY NAS",
+   CreateButton("BTN_NAS_APPLY",x+310,rootY+201,86,18,nasApplied?"APPLIED":"APPLY NAS",
       nasApplied?C'30,150,95':C'38,101,176');
-   string nasState=g_nasManagedClosePending?"CLOSE PENDING":(g_nasManagedLifecycle?("LIVE "+g_nasManagedRawDir):
-      (g_nasPending?("WAIT "+g_nasPendingDir):"IDLE"));
-   CreateLabel("DASH_NAS_STATE",x+284,rootY+205,nasState+" | RAW "+IntegerToString(g_lastNasOverlaySignalCount)+" | LOW SENS = MORE SIGNALS",
+   datetime nasEligibleAt=NasOppositeExitEligibleAt(g_nasManagedStartAt);
+   string nasState="IDLE";
+   if(g_nasManagedClosePending)nasState="CLOSE PENDING";
+   else if(g_nasManagedLifecycle&&nasEligibleAt>TimeCurrent())
+      nasState="GRACE "+DurationMinutesText((int)MathCeil((double)(nasEligibleAt-TimeCurrent())/60.0));
+   else if(g_nasManagedLifecycle)nasState="LIVE "+g_nasManagedRawDir;
+   else if(g_nasPending)nasState="WAIT "+g_nasPendingDir;
+   nasState+=" | RAW "+IntegerToString(g_lastNasOverlaySignalCount);
+   CreateLabel("DASH_NAS_STATE",x+402,rootY+205,nasState,
       g_nasManagedClosePending?C'255,95,140':(g_nasManagedLifecycle?C'80,255,180':C'184,196,210'),7);
    y=rootY+224;
 
@@ -5833,7 +5796,7 @@ void EnsureNasExitLifecycle()
    if((execDirection!=1&&execDirection!=-1)||openedAt<=0)return;
    StartNasManagedLifecycle(execDirection>0?"BUY":"SELL",execDirection,openedAt,g_orbBridgePlanActive);
    Audit("nas_exit_lifecycle_adopted",execDirection>0?"BUY":"SELL",0,g_tradeEntry,g_tradeSl,0,
-      "mode="+RuntimeNasModeLabel()+" tf="+TfLabel(NasConfirmationTf())+" sensitivity="+IntegerToString(g_rtNasSensitivity));
+      "mode="+RuntimeNasModeLabel()+" tf="+TfLabel(NasConfirmationTf())+" sensitivity="+IntegerToString(InpNasSensitivity));
 }
 
 datetime NasOppositeExitEligibleAt(datetime openedAt)
@@ -5847,6 +5810,32 @@ datetime NasOppositeExitScanExclusive(datetime openedAt)
    datetime eligible=NasOppositeExitEligibleAt(openedAt);
    if(eligible<=openedAt)return openedAt;
    return eligible-1; // Include a closed NAS event exactly at the grace boundary.
+}
+
+bool FindNasOppositeExitWithGrace(int execDir,datetime openedAt,datetime latestAvailable,
+                                  datetime &eventBar,datetime &eventAt,double &eventClose,string &detail)
+{
+   eventBar=0;eventAt=0;eventClose=0.0;detail="";
+   if((execDir!=1&&execDir!=-1)||openedAt<=0||latestAvailable<=openedAt)return false;
+   string tradeDir=execDir>0?"BUY":"SELL",opposite=execDir>0?"SELL":"BUY";
+   datetime eligibleAt=NasOppositeExitEligibleAt(openedAt);
+   if(eligibleAt<=openedAt)
+      return FindNasTransitionAfter(opposite,openedAt,latestAvailable,eventBar,eventAt,eventClose,detail);
+
+   // A NAS state reached during grace remains active until another NAS signal changes it.
+   // If that state is opposite when grace expires, exit exactly at the grace boundary.
+   datetime stateUntil=MathMin(eligibleAt,latestAvailable);
+   string stateDir="",stateDetail="";datetime stateBar=0,stateAt=0;double stateClose=0.0;
+   if(FindLatestNasSignalAfter(openedAt,stateUntil,stateDir,stateBar,stateAt,stateClose,stateDetail)
+      &&stateDir==opposite&&eligibleAt<=latestAvailable)
+   {
+      eventBar=stateBar;eventAt=eligibleAt;eventClose=stateClose;
+      detail="NAS_OPPOSITE_LATCHED trade_dir="+tradeDir+" signal_at="+FmtTime(stateAt)
+         +" eligible_at="+FmtTime(eligibleAt)+" "+stateDetail;
+      return true;
+   }
+   if(latestAvailable<eligibleAt)return false;
+   return FindNasTransitionAfter(opposite,eligibleAt-1,latestAvailable,eventBar,eventAt,eventClose,detail);
 }
 
 bool CloseNasManagedLifecycle()
@@ -5897,24 +5886,34 @@ bool ProcessNasOppositeExit()
    if(closedBar<=0)return false;
    datetime latestClosedAt=BarCloseTime(tf,closedBar);
    datetime eligibleAt=NasOppositeExitEligibleAt(g_nasManagedStartAt);
-   if(eligibleAt>0&&latestClosedAt<eligibleAt)return false;
-   datetime scanAfter=MathMax(NasOppositeExitScanExclusive(g_nasManagedStartAt),g_nasManagedLastScanAt);
-   if(latestClosedAt<=scanAfter)return false;
+   datetime scanAfter=MathMax(g_nasManagedStartAt,g_nasManagedLastScanAt);
    string opposite=g_nasManagedRawDir=="BUY"?"SELL":"BUY";
-   datetime eventBar=0,eventAt=0;double eventClose=0.0;string detail="";
-   if(!FindNasTransitionAfter(opposite,scanAfter,latestClosedAt,eventBar,eventAt,eventClose,detail))
+   if(latestClosedAt>scanAfter)
    {
+      string stateDir="",detail="";datetime eventBar=0,eventAt=0;double eventClose=0.0;
+      if(FindLatestNasSignalAfter(scanAfter,latestClosedAt,stateDir,eventBar,eventAt,eventClose,detail))
+      {
+         datetime previousOppositeAt=g_nasManagedOppositeAt;
+         g_nasManagedOppositeAt=(stateDir==opposite?eventAt:0);
+         if(stateDir==opposite&&previousOppositeAt!=g_nasManagedOppositeAt)
+            Audit("nas_opposite_latched",opposite,0,eventClose,0,0,
+               detail+" wait="+DurationMinutesText(g_rtNasOppositeExitWaitMinutes)+" eligible_at="+FmtTime(eligibleAt));
+         else if(stateDir!=opposite&&previousOppositeAt>0)
+            Audit("nas_opposite_latch_cleared",stateDir,0,eventClose,0,0,
+               detail+" previous_opposite_at="+FmtTime(previousOppositeAt));
+      }
       g_nasManagedLastScanAt=latestClosedAt;
       PersistNasManagedLifecycle();
-      return false;
    }
+   if(eligibleAt>0&&TimeCurrent()<eligibleAt)return false;
+   if(g_nasManagedOppositeAt<=0)return false;
    // Persist the close intent before touching native or listener positions.
    // A terminal restart therefore resumes the exact same scoped close.
-   g_nasManagedClosePending=true;g_nasManagedOppositeAt=eventAt;g_nasManagedLastScanAt=eventAt;
+   g_nasManagedClosePending=true;
    PersistNasManagedLifecycle();
    g_lastExecStatus="NAS_OPPOSITE_EXIT_PENDING";
-   Audit("nas_opposite_detected",opposite,0,eventClose,0,0,
-      detail+" managed_basis_dir="+g_nasManagedRawDir+" exec_dir="+(g_nasManagedExecDir>0?"BUY":"SELL")
+   Audit("nas_opposite_detected",opposite,0,0,0,0,
+      "latched_at="+FmtTime(g_nasManagedOppositeAt)+" managed_basis_dir="+g_nasManagedRawDir+" exec_dir="+(g_nasManagedExecDir>0?"BUY":"SELL")
       +" wait="+DurationMinutesText(g_rtNasOppositeExitWaitMinutes)+" eligible_at="+FmtTime(eligibleAt));
    return CloseNasManagedLifecycle();
 }
@@ -6194,7 +6193,7 @@ int OnInit()
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF",
                          " utc00=",g_rtUtcMidnightSession?"ON":"OFF"," nas_confirm=",g_rtNasConfirmation?"ON":"OFF",
                          " nas_opp_exit=",g_rtNasExitOnOppositeSignal?"ON":"OFF"," nas_mode=",RuntimeNasModeLabel(),
-                         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity,
+                         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",InpNasSensitivity,
                          " nas_calc_bars=",NasCalcWarmupBars()," nas_lookback_min=",g_rtNasActiveSignalLookbackMinutes,
                          " nas_exit_wait=",DurationMinutesText(g_rtNasOppositeExitWaitMinutes),
                          " channel=",g_orbBridgeChannel," entry_window=",EntryWindowLabel());
@@ -6415,7 +6414,6 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ClearNasPending("signal_tf_changed");
       // Cycle through M1 → M5 → M15 → M1...
       g_rtSignalTf=CycleTf(g_rtSignalTf);
-      if(g_rtNasTimeframe==PERIOD_CURRENT)g_lastNasOverlayClosedBar=0;
       needRedraw=true;
       Print("ORB15v3 Signal TF changed to ",TfLabel(g_rtSignalTf));
    }
@@ -6555,58 +6553,37 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
    }
-   else if(sparam==PREFIX+"BTN_NAS_TF")
-   {
-      if(g_nasManagedLifecycle||g_nasPending||OwnPositionExists()||g_orbBridgePlanActive)
-         g_lastExecStatus="NAS_TF_BLOCKED_ACTIVE_LIFECYCLE";
-      else
-      {
-         ENUM_TIMEFRAMES requested=CycleNasTimeframe(g_rtNasTimeframe);
-         if(!SetRuntimeNasTimeframe(requested))g_lastExecStatus="NAS_TF_SAVE_FAIL";
-         else
-         {
-            ClearNasPending("tf_changed");
-            g_lastExecStatus="NAS_TF_"+TfLabel(NasConfirmationTf());
-            Audit("nas_tf_changed","",0,0,0,0,"tf="+TfLabel(NasConfirmationTf()));
-         }
-      }
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
-   }
    else if(sparam==PREFIX+"BTN_NAS_APPLY")
    {
       int requested=(int)StringToInteger(ObjectGetString(0,PREFIX+"EDIT_NAS_LOOKBACK",OBJPROP_TEXT));
-      int requestedSensitivity=(int)StringToInteger(ObjectGetString(0,PREFIX+"EDIT_NAS_SENS",OBJPROP_TEXT));
       int requestedWait=-1;
       bool waitValid=ParseStrictDurationMinutes(ObjectGetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT),requestedWait);
       if(g_nasManagedLifecycle||g_nasPending||OwnPositionExists()||g_orbBridgePlanActive)
          g_lastExecStatus="NAS_APPLY_BLOCKED_ACTIVE_LIFECYCLE";
-      else if(requested<0||requested>1440||requestedSensitivity<1||requestedSensitivity>50||!waitValid)
-         g_lastExecStatus="NAS_INVALID_SENS_1_50_LB_0_1440_WAIT_HH_MM";
+      else if(requested<0||requested>1440||!waitValid)
+         g_lastExecStatus="NAS_INVALID_LB_0_1440_WAIT_HH_MM";
       else
       {
-         int oldSensitivity=g_rtNasSensitivity,oldLookback=g_rtNasActiveSignalLookbackMinutes,oldWait=g_rtNasOppositeExitWaitMinutes;
-         bool saved=SetRuntimeNasSensitivity(requestedSensitivity)
-            &&SetRuntimeNasLookback(requested)
+         int oldLookback=g_rtNasActiveSignalLookbackMinutes,oldWait=g_rtNasOppositeExitWaitMinutes;
+         bool saved=SetRuntimeNasLookback(requested)
             &&SetRuntimeNasExitWait(requestedWait);
          if(!saved)
          {
-            SetRuntimeNasSensitivity(oldSensitivity);SetRuntimeNasLookback(oldLookback);SetRuntimeNasExitWait(oldWait);
+            SetRuntimeNasLookback(oldLookback);SetRuntimeNasExitWait(oldWait);
             g_lastExecStatus="NAS_RUNTIME_SAVE_FAIL_ROLLED_BACK";
          }
          else
          {
             g_nasApplyFlashUntil=TimeLocal()+2;
-            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(g_rtNasSensitivity)+"_LB"+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
+            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(InpNasSensitivity)+"_LB"+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
                +"_WAIT"+DurationMinutesText(g_rtNasOppositeExitWaitMinutes);
             ClearNasPending("nas_runtime_changed");g_lastNasOverlayClosedBar=0;
-            Audit("nas_runtime_applied","",0,0,0,0,"sensitivity="+IntegerToString(g_rtNasSensitivity)
+            Audit("nas_runtime_applied","",0,0,0,0,"sensitivity="+IntegerToString(InpNasSensitivity)
                +" lookback_minutes="+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
                +" exit_wait="+DurationMinutesText(g_rtNasOppositeExitWaitMinutes)+" tf="+TfLabel(NasConfirmationTf()));
          }
       }
       ObjectSetString(0,PREFIX+"EDIT_NAS_LOOKBACK",OBJPROP_TEXT,IntegerToString(g_rtNasActiveSignalLookbackMinutes));
-      ObjectSetString(0,PREFIX+"EDIT_NAS_SENS",OBJPROP_TEXT,IntegerToString(g_rtNasSensitivity));
       ObjectSetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT,DurationMinutesText(g_rtNasOppositeExitWaitMinutes));
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;

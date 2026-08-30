@@ -35,7 +35,9 @@ Assert-Contains "IndicatorCodeExamples/IQCapital_MT5_Listener_Core.mqh" @(
     'GlobalVariableSet(PosKey(ticket, "BCH"), sig.bridgeChannel)',
     '"AFB|C" + IntegerToString(sig.bridgeChannel)',
     '"AFBB|C" + IntegerToString(sig.bridgeChannel)',
-    'StringFind(lower, "_latest_c")'
+    'StringFind(lower, "_latest_c")',
+    'bool IsCloseOnlySignal(const BridgeSignal &sig)',
+    'CloseSameDirectionPositions(sig, closeOnlyDetail)'
 )
 
 Assert-Contains "IndicatorCodeExamples/OrbUltimate_IQCapital_MT5_Listener_EA.mq5" @(
@@ -53,7 +55,8 @@ foreach ($file in @(
         '[Parameter("Bridge Channel"',
         'sig.Channel <= 0 || sig.Channel != BridgeChannel',
         'private IEnumerable<Position> ScopedPositions',
-        'ContainsText(sig.EventId, "invalidate_close")'
+        'ContainsText(sig.EventId, "invalidate_close")',
+        'CloseSameDirectionPositions(sig, out var closeOnlyDetail)'
     )
 }
 
@@ -61,7 +64,9 @@ Assert-Contains "IndicatorCodeExamples/NinjaTrader/ProductionFileBridgeNinjaCore
     'public int BridgeChannel { get; set; }',
     'if(sig.Channel != BridgeChannel)',
     '|C" + BridgeChannel',
-    'ContainsText(sig.EventId, "invalidate_close")'
+    'ContainsText(sig.EventId, "invalidate_close")',
+    'ProcessCloseOnly(sig);',
+    'ScopedTrades(sig.SourceTf).Where(t => t.Direction == sig.Direction)'
 )
 Assert-Contains "IndicatorCodeExamples/NinjaTrader/OrbUltimate_NinjaTrader_Listener.cs" @(
     'DefaultBridgeChannel'
@@ -71,7 +76,9 @@ Assert-Contains "IndicatorCodeExamples/Quantower/ProductionFileBridgeQuantowerCo
     'public int BridgeChannel { get; set; }',
     'if (signal.Channel != BridgeChannel)',
     '|C" + BridgeChannel',
-    'ContainsText(signal.EventId, "invalidate_close")'
+    'ContainsText(signal.EventId, "invalidate_close")',
+    'ProcessCloseOnly(signal, out detail)',
+    'states.Values.Where(x => x.Direction == signal.Direction && SameText(x.SourceTf, NormalizeTf(signal.SourceTf)))'
 )
 
 Write-Output "ORB channel isolation checks passed across MT5 publisher, MT5/cTrader/NinjaTrader/Quantower listeners."
