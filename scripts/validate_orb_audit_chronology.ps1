@@ -36,7 +36,7 @@ foreach ($name in $files) {
 
     Assert-True ($source.Contains('InpNasExitOnOppositeSignalDefault = false')) "$name enables the new NAS exit-only behavior by default"
     Assert-True ($source.Contains('return (ENUM_TIMEFRAMES)_Period;')) "$name embedded NAS is not locked to the standalone chart timeframe"
-    Assert-True ($source.Contains('s.sensitivity=MathMax(1,InpNasSensitivity);')) "$name embedded NAS does not use the standalone sensitivity input"
+    Assert-True ($source.Contains('s.sensitivity=ClampNasSensitivity(g_rtNasSensitivity);')) "$name embedded NAS does not use the standalone-compatible runtime sensitivity"
     Assert-True ($source.Contains('bool nasExitLifecycle=g_rtNasExitOnOppositeSignal;')) "$name does not admit ordinary ORB trades into exit-only lifecycle"
     Assert-True ($source.Contains('StartNasManagedLifecycle(execDir,isBuy?1:-1')) "$name NAS lifecycle is not based on actual execution direction"
     Assert-True ($source.Contains('if(g_rtNasExitOnOppositeSignal)') -and $source.Contains('FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,entryT')) "$name historical grace-latched NAS exit-only parity is missing"

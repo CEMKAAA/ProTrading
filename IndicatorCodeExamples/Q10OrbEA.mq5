@@ -5,12 +5,12 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.48"
+#property version "3.49"
 #include <Trade/Trade.mqh>
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-08-30.Q10-M15-BREAK-1R-ATR-C4-nas-grace-latch-v1"
+#define ORB15_BUILD "2026-08-31.Q10-M15-BREAK-1R-ATR-C4-nas-runtime-sens-vol-v1"
 
 enum ORB_SESSION_PROFILE
 {
@@ -67,6 +67,8 @@ input int    InpConfirmBars          = 1;    // Breakout bar must hold N closed 
 // gate OFF + exit ON is the exit-only mode.
 input bool            InpNasConfirmationDefault = false;
 input int             InpNasSensitivity = 4;
+input bool            InpNasUseVolumeFilter = false; // Main NAS parity: filter signal tick volume against previous-20 average.
+input double          InpNasVolumeMultiplier = 1.00; // Main NAS parity: required volume = previous-20 average x multiplier.
 input int             InpNasRsiLength   = 14;
 input int             InpNasAtrRisk     = 1;
 input int             InpNasAtrLen      = 14;
@@ -314,6 +316,9 @@ bool            g_rtInvertMode    = false;
 bool            g_rtUtcMidnightSession = false;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasExitOnOppositeSignal = true;
+int             g_rtNasSensitivity = 4;
+bool            g_rtNasVolumeFilter = false;
+double          g_rtNasVolumeMultiplier = 1.0;
 int             g_rtNasActiveSignalLookbackMinutes = 120;
 int             g_rtNasOppositeExitWaitMinutes = 0;
 datetime        g_lastNasOverlayClosedBar = 0;
@@ -759,11 +764,32 @@ string RuntimeNasExitWaitKey()
    int inputMinutes=0;ParseStrictDurationMinutes(InpNasOppositeExitWait,inputMinutes);
    return "ORB_NASEXWAIT."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(MathMax(0,inputMinutes));
 }
+int ClampNasSensitivity(int value){return MathMax(1,MathMin(100,value));}
+double ClampNasVolumeMultiplier(double value){return NormalizeDouble(MathMax(0.05,MathMin(20.0,value)),4);}
+string RuntimeNasSensitivityKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   return "ORB_NASSENS."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(ClampNasSensitivity(InpNasSensitivity));
+}
+string RuntimeNasVolumeEnabledKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   return "ORB_NASVE."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+(InpNasUseVolumeFilter?"1":"0");
+}
+string RuntimeNasVolumeMultiplierKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   int basis=(int)MathRound(ClampNasVolumeMultiplier(InpNasVolumeMultiplier)*10000.0);
+   return "ORB_NASVM."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(basis);
+}
 void LoadRuntimeNasControls()
 {
    int inputWaitMinutes=0;
    ParseStrictDurationMinutes(InpNasOppositeExitWait,inputWaitMinutes);
    g_rtNasExitOnOppositeSignal=InpNasExitOnOppositeSignalDefault;
+   g_rtNasSensitivity=ClampNasSensitivity(InpNasSensitivity);
+   g_rtNasVolumeFilter=InpNasUseVolumeFilter;
+   g_rtNasVolumeMultiplier=ClampNasVolumeMultiplier(InpNasVolumeMultiplier);
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,InpNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,inputWaitMinutes));
    if(GlobalVariableCheck(RuntimeNasExitKey()))
@@ -772,6 +798,12 @@ void LoadRuntimeNasControls()
       g_rtNasActiveSignalLookbackMinutes=(int)MathRound(GlobalVariableGet(RuntimeNasLookbackKey()));
    if(GlobalVariableCheck(RuntimeNasExitWaitKey()))
       g_rtNasOppositeExitWaitMinutes=(int)MathRound(GlobalVariableGet(RuntimeNasExitWaitKey()));
+   if(GlobalVariableCheck(RuntimeNasSensitivityKey()))
+      g_rtNasSensitivity=ClampNasSensitivity((int)MathRound(GlobalVariableGet(RuntimeNasSensitivityKey())));
+   if(GlobalVariableCheck(RuntimeNasVolumeEnabledKey()))
+      g_rtNasVolumeFilter=(GlobalVariableGet(RuntimeNasVolumeEnabledKey())>0.5);
+   if(GlobalVariableCheck(RuntimeNasVolumeMultiplierKey()))
+      g_rtNasVolumeMultiplier=ClampNasVolumeMultiplier(GlobalVariableGet(RuntimeNasVolumeMultiplierKey()));
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,g_rtNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,g_rtNasOppositeExitWaitMinutes));
 }
@@ -793,6 +825,27 @@ bool SetRuntimeNasExitWait(int minutes)
    if(minutes<0||minutes>5999)return false;
    if(GlobalVariableSet(RuntimeNasExitWaitKey(),(double)minutes)<=0)return false;
    g_rtNasOppositeExitWaitMinutes=minutes;
+   return true;
+}
+bool SetRuntimeNasSensitivity(int value)
+{
+   if(value<1||value>100)return false;
+   if(GlobalVariableSet(RuntimeNasSensitivityKey(),(double)value)<=0)return false;
+   g_rtNasSensitivity=value;
+   return true;
+}
+bool SetRuntimeNasVolumeFilter(bool enabled)
+{
+   if(GlobalVariableSet(RuntimeNasVolumeEnabledKey(),enabled?1.0:0.0)<=0)return false;
+   g_rtNasVolumeFilter=enabled;
+   return true;
+}
+bool SetRuntimeNasVolumeMultiplier(double value)
+{
+   if(!MathIsValidNumber(value)||value<0.05||value>20.0)return false;
+   double normalized=ClampNasVolumeMultiplier(value);
+   if(GlobalVariableSet(RuntimeNasVolumeMultiplierKey(),normalized)<=0)return false;
+   g_rtNasVolumeMultiplier=normalized;
    return true;
 }
 string RuntimeNasModeLabel()
@@ -824,7 +877,9 @@ long NasPendingConfigSignature()
    h=(h*131+(long)RuntimeTargetLeg())%9000000000000000;
    h=(h*131+(long)g_orbBridgeChannel)%9000000000000000;
    h=(h*131+(long)MathRound(g_rtVolumeMultiplier*10000.0))%9000000000000000;
-   h=(h*131+(long)MathMax(1,InpNasSensitivity))%9000000000000000;
+   h=(h*131+(long)g_rtNasSensitivity)%9000000000000000;
+   h=(h*131+(g_rtNasVolumeFilter?1:0))%9000000000000000;
+   h=(h*131+(long)MathRound(g_rtNasVolumeMultiplier*10000.0))%9000000000000000;
    h=(h*131+(long)MathMax(1,InpNasAtrRisk))%9000000000000000;
    h=(h*131+(long)MathMax(2,InpNasAtrLen))%9000000000000000;
    h=(h*131+(long)MathMax(0,g_rtNasActiveSignalLookbackMinutes))%9000000000000000;
@@ -895,11 +950,33 @@ string NasTimeframeButtonLabel()
 NasSettings BuildOrbNasSettings()
 {
    NasSettings s;
-   s.sensitivity=MathMax(1,InpNasSensitivity);
+   s.sensitivity=ClampNasSensitivity(g_rtNasSensitivity);
    s.rsiLength=MathMax(2,InpNasRsiLength);
    s.atrRisk=MathMax(1,InpNasAtrRisk);
    s.atrLen=MathMax(2,InpNasAtrLen);
    return s;
+}
+bool OrbNasVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
+                              string &reason,double &signalVolume,double &averageVolume)
+{
+   reason="";signalVolume=0.0;averageVolume=0.0;
+   if(!g_rtNasVolumeFilter)return true;
+   const int lookback=20;
+   if(signalIndex<lookback||signalIndex>=ArraySize(rates))
+   {reason="VOL_DATA_FAIL_OPEN";return true;}
+   signalVolume=(double)rates[signalIndex].tick_volume;
+   double sum=0.0;
+   for(int i=signalIndex-1;i>=signalIndex-lookback;i++)
+      if(rates[i].tick_volume>0)sum+=(double)rates[i].tick_volume;
+   averageVolume=sum/(double)lookback;
+   if(averageVolume<=0.0){reason="VOL_DATA_FAIL_OPEN";return true;}
+   double threshold=averageVolume*g_rtNasVolumeMultiplier;
+   if(signalVolume<threshold)
+   {
+      reason="VOL_LOW "+DoubleToString(signalVolume,0)+"<"+DoubleToString(threshold,0);
+      return false;
+   }
+   return true;
 }
 int NasCalcWarmupBars(){return MathMax(300,MathMin(200000,InpNasSignalCalcBars));}
 int NasHistoryBars(){return MathMax(300,InpNasHistoryBars);}
@@ -953,6 +1030,8 @@ bool FindNasConfirmation(string dir,datetime orbAcceptedAt,datetime latestAvaila
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(available<activeStart||available>orbAcceptedAt)continue;
       if(points[i].buy==points[i].sell)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       activeDir=points[i].buy?"BUY":"SELL";
       activeBar=rates[i].time;activeAt=available;activeClose=rates[i].close;
    }
@@ -974,6 +1053,8 @@ bool FindNasConfirmation(string dir,datetime orbAcceptedAt,datetime latestAvaila
       if(available<orbAcceptedAt||available>latestAvailable)continue;
       bool match=(dir=="BUY"?(points[i].buy&&!points[i].sell):(points[i].sell&&!points[i].buy));
       if(!match)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       confirmBar=rates[i].time;confirmAt=available;confirmClose=rates[i].close;
       detail="NAS_OK tf="+TfLabel(tf)+" bar="+FmtTime(confirmBar)+" at="+FmtTime(confirmAt);
       return true;
@@ -1071,6 +1152,8 @@ bool FindNasTransitionAfter(string wantedDir,datetime afterExclusive,datetime la
       if(available<=afterExclusive||available>latestAvailable)continue;
       bool match=wantedDir=="BUY"?(points[i].buy&&!points[i].sell):(points[i].sell&&!points[i].buy);
       if(!match)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       eventBar=rates[i].time;eventAt=available;eventClose=rates[i].close;
       detail="NAS_OPPOSITE tf="+TfLabel(tf)+" dir="+wantedDir+" bar="+FmtTime(eventBar)+" at="+FmtTime(eventAt);
       return true;
@@ -1914,6 +1997,8 @@ bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,
       if(available<=afterExclusive||available>latestAvailable)continue;
       bool buy=(points[i].buy&&!points[i].sell),sell=(points[i].sell&&!points[i].buy);
       if(!buy&&!sell)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       eventDir=buy?"BUY":"SELL";eventBar=rates[i].time;eventAt=available;eventClose=rates[i].close;
    }
    if(eventAt<=0)return false;
@@ -2614,7 +2699,7 @@ void DrawNasSignalMarker(const MqlRates &bar,const NasPoint &point,ENUM_TIMEFRAM
    ObjectSetInteger(0,base+"ARW",OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,base+"ARW",OBJPROP_HIDDEN,false);
    double textPrice=NormalizePrice(buy?arrowPrice-pad*0.55:arrowPrice+pad*0.55);
-   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+TfLabel(tf)+" S"+IntegerToString(InpNasSensitivity)+"]",clr);
+   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+TfLabel(tf)+" S"+IntegerToString(g_rtNasSensitivity)+"]",clr);
 }
 
 int DrawNasSignalOverlay(int days,datetime now)
@@ -2636,6 +2721,8 @@ int DrawNasSignalOverlay(int days,datetime now)
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(rates[i].time<cutoff||available<=0||available>now)continue;
       if(points[i].buy==points[i].sell)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       DrawNasSignalMarker(rates[i],points[i],tf);drawn++;
    }
    g_lastNasOverlaySignalCount=drawn;
@@ -2658,7 +2745,10 @@ void RefreshNasSignalOverlay()
    {
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(rates[i].time<from||available<=0||available>now)continue;
-      if(points[i].buy||points[i].sell)DrawNasSignalMarker(rates[i],points[i],tf);
+      if(points[i].buy==points[i].sell)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      DrawNasSignalMarker(rates[i],points[i],tf);
    }
    g_lastNasOverlayClosedBar=closedBar;
 }
@@ -4167,7 +4257,8 @@ void DrawHistoricalSignals()
          " DAY=",g_rtFilterDay?"ON":"OFF"," ",HalfBeLabel(),
          " ",TargetLabel()," ",RuntimeInvertLabel()," audit_weeks=",IntegerToString(g_rtHistoricalWeeks),
          " nas_overlay=",IntegerToString(drawnNasSignals)," nas_history_bars=",g_lastNasOverlayCopiedBars,
-         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",InpNasSensitivity);
+         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity,
+         " nas_vol=",g_rtNasVolumeFilter?"ON":"OFF"," nas_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2));
 
    for(int back=days-1;back>=0;back--)
    {
@@ -4774,7 +4865,8 @@ void UpdateDashboard()
    CreateButton("BTN_NAS_EXIT",x+252,rootY+179,104,18,g_rtNasExitOnOppositeSignal?"OPP EXIT ON":"OPP EXIT OFF",
       g_rtNasExitOnOppositeSignal?C'184,103,22':C'80,80,80');
    CreateLabel("DASH_NAS_TF",x+360,rootY+183,NasTimeframeButtonLabel(),C'90,178,255',7);
-   CreateLabel("DASH_NAS_SENS",x+456,rootY+183,"SENS "+IntegerToString(InpNasSensitivity)+" LOCK",C'134,158,182',7);
+   CreateLabel("DASH_NAS_SENS",x+456,rootY+183,"SENS",C'134,158,182',7);
+   CreateEdit("EDIT_NAS_SENS",x+496,rootY+179,46,18,IntegerToString(g_rtNasSensitivity));
    CreateLabel("DASH_NAS_LB",x+12,rootY+205,"ACTIVE LOOKBACK MIN",C'134,158,182',7);
    CreateEdit("EDIT_NAS_LOOKBACK",x+130,rootY+201,52,18,IntegerToString(g_rtNasActiveSignalLookbackMinutes));
    CreateLabel("DASH_NAS_WAIT",x+188,rootY+205,"EXIT WAIT",C'134,158,182',7);
@@ -4789,10 +4881,16 @@ void UpdateDashboard()
       nasState="GRACE "+DurationMinutesText((int)MathCeil((double)(nasEligibleAt-TimeCurrent())/60.0));
    else if(g_nasManagedLifecycle)nasState="LIVE "+g_nasManagedRawDir;
    else if(g_nasPending)nasState="WAIT "+g_nasPendingDir;
-   nasState+=" | RAW "+IntegerToString(g_lastNasOverlaySignalCount);
+   nasState+=" | S"+IntegerToString(g_rtNasSensitivity)+" | NV "+(g_rtNasVolumeFilter?("ONx"+DoubleToString(g_rtNasVolumeMultiplier,2)):"OFF")
+      +" | NAS "+IntegerToString(g_lastNasOverlaySignalCount);
    CreateLabel("DASH_NAS_STATE",x+402,rootY+205,nasState,
       g_nasManagedClosePending?C'255,95,140':(g_nasManagedLifecycle?C'80,255,180':C'184,196,210'),7);
-   y=rootY+224;
+   CreateButton("BTN_NAS_VOL",x+12,rootY+223,106,18,g_rtNasVolumeFilter?"NAS VOL ON":"NAS VOL OFF",
+      g_rtNasVolumeFilter?C'30,150,95':C'80,80,80');
+   CreateLabel("DASH_NAS_VOL_X",x+126,rootY+227,"VOL X",C'134,158,182',7);
+   CreateEdit("EDIT_NAS_VOL_X",x+170,rootY+223,52,18,DoubleToString(g_rtNasVolumeMultiplier,2));
+   CreateLabel("DASH_NAS_VOL_RULE",x+230,rootY+227,"SIGNAL VOL vs PREV20 AVG",C'134,158,182',7);
+   y=rootY+246;
 
    // Status line
    string state=g_rtEaEnabled?"EA ON":"EA OFF";
@@ -5796,7 +5894,8 @@ void EnsureNasExitLifecycle()
    if((execDirection!=1&&execDirection!=-1)||openedAt<=0)return;
    StartNasManagedLifecycle(execDirection>0?"BUY":"SELL",execDirection,openedAt,g_orbBridgePlanActive);
    Audit("nas_exit_lifecycle_adopted",execDirection>0?"BUY":"SELL",0,g_tradeEntry,g_tradeSl,0,
-      "mode="+RuntimeNasModeLabel()+" tf="+TfLabel(NasConfirmationTf())+" sensitivity="+IntegerToString(InpNasSensitivity));
+      "mode="+RuntimeNasModeLabel()+" tf="+TfLabel(NasConfirmationTf())+" sensitivity="+IntegerToString(g_rtNasSensitivity)
+      +" nas_vol="+(g_rtNasVolumeFilter?"ON":"OFF")+" nas_vol_x="+DoubleToString(g_rtNasVolumeMultiplier,2));
 }
 
 datetime NasOppositeExitEligibleAt(datetime openedAt)
@@ -6193,7 +6292,8 @@ int OnInit()
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF",
                          " utc00=",g_rtUtcMidnightSession?"ON":"OFF"," nas_confirm=",g_rtNasConfirmation?"ON":"OFF",
                          " nas_opp_exit=",g_rtNasExitOnOppositeSignal?"ON":"OFF"," nas_mode=",RuntimeNasModeLabel(),
-                         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",InpNasSensitivity,
+                         " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity,
+                         " nas_vol=",g_rtNasVolumeFilter?"ON":"OFF"," nas_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2),
                          " nas_calc_bars=",NasCalcWarmupBars()," nas_lookback_min=",g_rtNasActiveSignalLookbackMinutes,
                          " nas_exit_wait=",DurationMinutesText(g_rtNasOppositeExitWaitMinutes),
                          " channel=",g_orbBridgeChannel," entry_window=",EntryWindowLabel());
@@ -6553,36 +6653,64 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
    }
+   else if(sparam==PREFIX+"BTN_NAS_VOL")
+   {
+      if(g_nasManagedLifecycle||g_nasPending||OwnPositionExists()||g_orbBridgePlanActive)
+         g_lastExecStatus="NAS_VOL_BLOCKED_ACTIVE_LIFECYCLE";
+      else if(!SetRuntimeNasVolumeFilter(!g_rtNasVolumeFilter))
+         g_lastExecStatus="NAS_VOL_SAVE_FAIL";
+      else
+      {
+         g_lastExecStatus=g_rtNasVolumeFilter?"NAS_VOL_ON":"NAS_VOL_OFF";
+         g_lastNasOverlayClosedBar=0;
+         Audit("nas_volume_filter_toggled","",0,0,0,0,"enabled="+(g_rtNasVolumeFilter?"1":"0")
+            +" multiplier="+DoubleToString(g_rtNasVolumeMultiplier,4));
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      g_histNeedsRedraw=true;DrawHistoricalSignals();UpdateDashboard();ChartRedraw(0);return;
+   }
    else if(sparam==PREFIX+"BTN_NAS_APPLY")
    {
       int requested=(int)StringToInteger(ObjectGetString(0,PREFIX+"EDIT_NAS_LOOKBACK",OBJPROP_TEXT));
+      int requestedSensitivity=(int)StringToInteger(ObjectGetString(0,PREFIX+"EDIT_NAS_SENS",OBJPROP_TEXT));
+      string requestedVolText=ObjectGetString(0,PREFIX+"EDIT_NAS_VOL_X",OBJPROP_TEXT);
+      StringTrimLeft(requestedVolText);StringTrimRight(requestedVolText);StringReplace(requestedVolText,",",".");
+      double requestedNasVolX=StringToDouble(requestedVolText);
       int requestedWait=-1;
       bool waitValid=ParseStrictDurationMinutes(ObjectGetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT),requestedWait);
       if(g_nasManagedLifecycle||g_nasPending||OwnPositionExists()||g_orbBridgePlanActive)
          g_lastExecStatus="NAS_APPLY_BLOCKED_ACTIVE_LIFECYCLE";
-      else if(requested<0||requested>1440||!waitValid)
-         g_lastExecStatus="NAS_INVALID_LB_0_1440_WAIT_HH_MM";
+      else if(requested<0||requested>1440||requestedSensitivity<1||requestedSensitivity>100
+              ||!MathIsValidNumber(requestedNasVolX)||requestedNasVolX<0.05||requestedNasVolX>20.0||!waitValid)
+         g_lastExecStatus="NAS_INVALID_S1_100_LB0_1440_VOLX0.05_20_WAIT";
       else
       {
          int oldLookback=g_rtNasActiveSignalLookbackMinutes,oldWait=g_rtNasOppositeExitWaitMinutes;
-         bool saved=SetRuntimeNasLookback(requested)
+         int oldSensitivity=g_rtNasSensitivity;double oldNasVolX=g_rtNasVolumeMultiplier;
+         bool saved=SetRuntimeNasSensitivity(requestedSensitivity)
+            &&SetRuntimeNasVolumeMultiplier(requestedNasVolX)
+            &&SetRuntimeNasLookback(requested)
             &&SetRuntimeNasExitWait(requestedWait);
          if(!saved)
          {
+            SetRuntimeNasSensitivity(oldSensitivity);SetRuntimeNasVolumeMultiplier(oldNasVolX);
             SetRuntimeNasLookback(oldLookback);SetRuntimeNasExitWait(oldWait);
             g_lastExecStatus="NAS_RUNTIME_SAVE_FAIL_ROLLED_BACK";
          }
          else
          {
             g_nasApplyFlashUntil=TimeLocal()+2;
-            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(InpNasSensitivity)+"_LB"+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
-               +"_WAIT"+DurationMinutesText(g_rtNasOppositeExitWaitMinutes);
+            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(g_rtNasSensitivity)+"_VOLX"+DoubleToString(g_rtNasVolumeMultiplier,2)
+               +"_LB"+IntegerToString(g_rtNasActiveSignalLookbackMinutes)+"_WAIT"+DurationMinutesText(g_rtNasOppositeExitWaitMinutes);
             ClearNasPending("nas_runtime_changed");g_lastNasOverlayClosedBar=0;
-            Audit("nas_runtime_applied","",0,0,0,0,"sensitivity="+IntegerToString(InpNasSensitivity)
+            Audit("nas_runtime_applied","",0,0,0,0,"sensitivity="+IntegerToString(g_rtNasSensitivity)
+               +" nas_vol="+(g_rtNasVolumeFilter?"1":"0")+" nas_vol_x="+DoubleToString(g_rtNasVolumeMultiplier,4)
                +" lookback_minutes="+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
                +" exit_wait="+DurationMinutesText(g_rtNasOppositeExitWaitMinutes)+" tf="+TfLabel(NasConfirmationTf()));
          }
       }
+      ObjectSetString(0,PREFIX+"EDIT_NAS_SENS",OBJPROP_TEXT,IntegerToString(g_rtNasSensitivity));
+      ObjectSetString(0,PREFIX+"EDIT_NAS_VOL_X",OBJPROP_TEXT,DoubleToString(g_rtNasVolumeMultiplier,2));
       ObjectSetString(0,PREFIX+"EDIT_NAS_LOOKBACK",OBJPROP_TEXT,IntegerToString(g_rtNasActiveSignalLookbackMinutes));
       ObjectSetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT,DurationMinutesText(g_rtNasOppositeExitWaitMinutes));
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
