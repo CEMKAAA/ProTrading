@@ -1,7 +1,7 @@
 #property strict
-#property version "1.00"
+#property version "1.01"
 
-#define IQC_LISTENER_BUILD "2026-07-26.iq-sol-mt5-listener-v1"
+#define IQC_LISTENER_BUILD "2026-08-30.iq-sol-mt5-listener-v2-channel-metadata"
 #define IQC_PIPELINE_ID "IQSolVersionMT5"
 #define IQC_DEFAULT_FILE "LiqNarrativeSolBridge_Latest_JP225m_60.csv"
 #define IQC_DEFAULT_SOURCE_FILTER "LiqNarrativeSol|"

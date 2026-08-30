@@ -1,7 +1,7 @@
 #property strict
-#property version "1.10"
+#property version "1.11"
 
-#define IQC_LISTENER_BUILD "2026-08-21.iq-nas-mt5-listener-v2-scoped"
+#define IQC_LISTENER_BUILD "2026-08-30.iq-nas-mt5-listener-v3-scoped-channel-metadata"
 #define IQC_PIPELINE_ID "IQNasUltimateMT5"
 #define IQC_DEFAULT_FILE "NasUltimateBridge_Latest.csv"
 #define IQC_DEFAULT_SOURCE_FILTER "NasUltimate|"

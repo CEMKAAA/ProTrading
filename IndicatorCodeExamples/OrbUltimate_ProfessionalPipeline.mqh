@@ -234,9 +234,9 @@ bool OrbProPublishSignal(string dir,datetime signalTime,double entry,double sl,d
    return accepted;
 }
 
-bool OrbProPublishCloseOnly(int dir,string reason)
+bool OrbProPublishCloseOnly(int dir,string reason,bool forcePublish=false)
 {
-   if(!g_orbBridgeEnabled||IsTesterMode()||dir==0)return false;
+   if((!g_orbBridgeEnabled&&!forcePublish)||IsTesterMode()||dir==0)return false;
    datetime signalTime=TimeCurrent();
    string direction=dir>0?"BUY":"SELL";
    string safeReason=OrbProSafeToken(reason);

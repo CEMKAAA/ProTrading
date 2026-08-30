@@ -36,6 +36,9 @@
 #ifndef IQC_DEFAULT_SOURCE_SYMBOL_ALIASES
    #define IQC_DEFAULT_SOURCE_SYMBOL_ALIASES ""
 #endif
+#ifndef IQC_DEFAULT_BRIDGE_CHANNEL
+   #define IQC_DEFAULT_BRIDGE_CHANNEL 0
+#endif
 
 
 #include <Trade/Trade.mqh>
@@ -60,6 +63,7 @@ input bool   InpRebaseOnlyWhenSourceDiffers = true;
 input bool   InpRequireMappedSymbolEqualsChart = true;
 input string InpSourceTimeframeFilter = IQC_DEFAULT_SOURCE_TF;
 input bool   InpDefaultSourceTfToChartPeriod = false;
+input int    InpBridgeChannel = IQC_DEFAULT_BRIDGE_CHANNEL; // 0=legacy/all; positive values are isolated and fail closed.
 input string InpSourceFilter = IQC_DEFAULT_SOURCE_FILTER;
 input bool   InpCloseReverse = true;
 input bool   InpCloseReverseAcrossSourceTf = false; // OFF=M1 signals cannot close M5 positions from the bridge.
@@ -132,6 +136,7 @@ struct BridgeSignal
    double sourceBid;
    double sourceAsk;
    double riskPct;
+   int bridgeChannel;
    string riskBasis;
    double riskReferenceCapital;
    double riskBudgetMoney;
@@ -145,6 +150,11 @@ struct BridgeSignal
    string basketSessionEndTime;
    string basketDayKey;
 };
+
+int EffectiveBridgeChannel()
+{
+   return MathMax(0, MathMin(9999, InpBridgeChannel));
+}
 
 string Trim(string s)
 {
@@ -431,6 +441,8 @@ void OpenPositionStats(int &count, double &lots, double &pnl, string &lines)
          continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
          continue;
+      if(!PositionChannelMatches(ticket))
+         continue;
       count++;
       double vol = PositionGetDouble(POSITION_VOLUME);
       double posPnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
@@ -478,7 +490,7 @@ void DrawDashboard(bool force=false)
 
    DashboardSetLabel("FILE", x + 14, y + 60,
       "File=" + (g_lastBridgeReadFile != "" ? g_lastBridgeReadFile : InpBridgeLatestFile) + " | Common=" + (InpUseCommonFiles ? "YES" : "NO")
-      + " | Chart=" + _Symbol + " | Magic=" + IntegerToString((int)InpMagic), C'190,205,220', 8);
+      + " | Chart=" + _Symbol + " | CH=" + IntegerToString(EffectiveBridgeChannel()) + " | Magic=" + IntegerToString((int)InpMagic), C'190,205,220', 8);
    DashboardSetLabel("MAP", x + 14, y + 78,
       "Map=" + (InpUseBuiltInOilSymbolMap ? "builtin-oil ON" : "builtin-oil OFF") + " | " + InpBuiltInOilSymbolMapCsv, C'150,190,230', 7);
 
@@ -511,6 +523,7 @@ void Audit(string eventName, const BridgeSignal &sig, string detail)
    g_lastAction = eventName;
    g_lastActionDetail = detail;
    g_lastSignalSummary = sig.sourceSymbol + " " + sig.sourceTf + " "
+      + "C" + IntegerToString(sig.bridgeChannel) + " "
       + (sig.direction > 0 ? "BUY" : (sig.direction < 0 ? "SELL" : "-"))
       + " " + ShortEvent(sig.eventId);
    if(!InpAuditEnabled)
@@ -666,6 +679,7 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
    sig.sourceBid = StringToDouble(Trim(fields[offset + 15]));
    sig.sourceAsk = StringToDouble(Trim(fields[offset + 16]));
    sig.riskPct = 0.0;
+   sig.bridgeChannel = 0;
    sig.riskBasis = "";
    sig.riskReferenceCapital = 0.0;
    sig.riskBudgetMoney = 0.0;
@@ -680,6 +694,8 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
    sig.basketDayKey = "";
    if(count > offset + 17)
       sig.riskPct = StringToDouble(Trim(fields[offset + 17]));
+   if(!headerHasTradeMode && headerHasChannel && count > offset + 18)
+      sig.bridgeChannel = (int)StringToInteger(Trim(fields[offset + 18]));
    if(headerHasTradeMode && count > offset + 18)
       sig.tradeMode = Trim(fields[offset + 18]);
    if(headerHasTradeMode && count > offset + 19)
@@ -707,7 +723,7 @@ bool ReadSignalFile(const string fileName, BridgeSignal &sig, string &detail)
    }
    if(sig.tradeMode == "") sig.tradeMode = "traditional";
    sig.valid = (sig.eventId != "" && sig.direction != 0);
-   detail = "read_ok file=" + fileName + " fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
+   detail = "read_ok file=" + fileName + " fields=" + IntegerToString(count) + " offset=" + IntegerToString(offset) + " event=" + sig.eventId + " source_symbol=" + sig.sourceSymbol + " source_tf=" + sig.sourceTf + " channel=" + IntegerToString(sig.bridgeChannel) + " dir=" + dir + " risk_pct=" + DoubleToString(sig.riskPct, 3) + " trade_mode=" + sig.tradeMode;
    if(!sig.valid)
    {
       bool initMarker = (sig.source == "bridge_initiated" || dir == "INIT");
@@ -771,7 +787,25 @@ bool IsGenericLatestFile(const string fileName)
    StringToLower(lower);
    string suffix = "_latest.csv";
    int start = StringLen(lower) - StringLen(suffix);
-   return start >= 0 && StringSubstr(lower, start) == suffix;
+   if(start >= 0 && StringSubstr(lower, start) == suffix)
+      return true;
+   int len = StringLen(lower);
+   if(len < 14 || StringSubstr(lower, len - 4) != ".csv")
+      return false;
+   int marker = StringFind(lower, "_latest_c");
+   if(marker < 0)
+      return false;
+   int channelStart = marker + StringLen("_latest_c");
+   int channelEnd = len - 4;
+   if(channelStart >= channelEnd)
+      return false;
+   for(int i = channelStart; i < channelEnd; i++)
+   {
+      ushort ch = StringGetCharacter(lower, i);
+      if(ch < '0' || ch > '9')
+         return false;
+   }
+   return true;
 }
 
 string ScopedLatestName(const string genericFile, const string sourceAlias, const string sourceTf)
@@ -911,6 +945,12 @@ string ChartSourceTfString()
 bool SignalMetadataMatchesThisChart(const BridgeSignal &sig, string &reason)
 {
    reason = "";
+   int expectedChannel = EffectiveBridgeChannel();
+   if(expectedChannel > 0 && sig.bridgeChannel != expectedChannel)
+   {
+      reason = "channel_filter source_channel=" + IntegerToString(sig.bridgeChannel) + " expected=" + IntegerToString(expectedChannel);
+      return false;
+   }
    if(InpSourceLoginFilter > 0 && sig.sourceLogin != InpSourceLoginFilter)
    {
       reason = "source_login_filter source=" + IntegerToString((int)sig.sourceLogin) + " expected=" + IntegerToString((int)InpSourceLoginFilter);
@@ -1128,6 +1168,7 @@ void ManageProtectionFailures()
       if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      if(!PositionChannelMatches(ticket)) continue;
       if(!GlobalVariableCheck(PosKey(ticket, "PFAIL"))) continue;
       datetime nextTry = (datetime)GlobalVariableGet(PosKey(ticket, "PNEXT"));
       if(nextTry > now) continue;
@@ -1576,15 +1617,18 @@ bool EnforcePostFillRisk(ulong ticket, const BridgeSignal &sig, string &detail)
       + " close_ret=" + IntegerToString((int)trade.ResultRetcode());
    return false;
 }
+bool PositionChannelMatches(ulong ticket);
+
 bool IsManagedBridgePosition()
 {
    long magic = (long)PositionGetInteger(POSITION_MAGIC);
-   if(magic == InpMagic)
+   ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+   if(magic == InpMagic && PositionChannelMatches(ticket))
       return true;
    if(InpCloseReverseBridgeCommentPositions)
    {
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, "AFB|") == 0)
+      if(StringFind(comment, "AFB|") == 0 && PositionChannelMatches(ticket))
          return true;
    }
    return false;
@@ -1604,12 +1648,53 @@ int SourceTfToInt(string tf)
    return (int)StringToInteger(clean);
 }
 
+int BridgeChannelFromComment(string comment)
+{
+   int marker = StringFind(comment, "|C");
+   if(marker < 0)
+      return 0;
+   int start = marker + 2;
+   int stop = StringFind(comment, "|", start);
+   if(stop <= start)
+      return 0;
+   return (int)StringToInteger(StringSubstr(comment, start, stop - start));
+}
+
+int StoredBridgeChannel(ulong ticket)
+{
+   string key = BridgePosKey(ticket, "BCH");
+   if(GlobalVariableCheck(key))
+      return (int)MathRound(GlobalVariableGet(key));
+   return 0;
+}
+
+int PositionBridgeChannel(ulong ticket)
+{
+   int stored = StoredBridgeChannel(ticket);
+   if(stored > 0)
+      return stored;
+   return BridgeChannelFromComment(PositionGetString(POSITION_COMMENT));
+}
+
+bool PositionChannelMatches(ulong ticket)
+{
+   int expected = EffectiveBridgeChannel();
+   if(expected <= 0)
+      return true;
+   int actual = PositionBridgeChannel(ticket);
+   // Pre-channel positions can only be adopted by the backward-compatible channel 1.
+   return actual > 0 ? actual == expected : expected == 1;
+}
+
 int PositionSourceTfFromComment()
 {
    string comment = PositionGetString(POSITION_COMMENT);
    long magic = (long)PositionGetInteger(POSITION_MAGIC);
    int start = 0;
-   if(StringFind(comment, "AFB|T") == 0)
+   int tfMarker = StringFind(comment, "|T");
+   if((StringFind(comment, "AFB|") == 0 || StringFind(comment, "AFBB|") == 0) && tfMarker >= 0)
+      start = tfMarker + 2;
+   else if(StringFind(comment, "AFB|T") == 0)
       start = 5;
    else if(StringFind(comment, "AFBB|T") == 0)
       start = 6;
@@ -1822,6 +1907,7 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
    string eventHash = IntegerToString((int)HashString(sig.eventId));
    string legacyComment = "AFB|" + eventHash;
    string modernComment = "AFB|T" + sig.sourceTf + "|" + eventHash;
+   string channelComment = "AFB|C" + IntegerToString(sig.bridgeChannel) + "|T" + sig.sourceTf + "|" + eventHash;
    string oldLegacyComment = "GFB|" + eventHash;
    string oldModernComment = "GFB|T" + sig.sourceTf + "|" + eventHash;
    long expectedType = (sig.direction > 0 ? POSITION_TYPE_BUY : POSITION_TYPE_SELL);
@@ -1838,7 +1924,7 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
          continue;
       string comment = PositionGetString(POSITION_COMMENT);
-      if(comment != legacyComment && comment != modernComment && comment != oldLegacyComment && comment != oldModernComment)
+      if(comment != legacyComment && comment != modernComment && comment != channelComment && comment != oldLegacyComment && comment != oldModernComment)
          continue;
 
       string key = PosKey(ticket, "STF");
@@ -1846,6 +1932,12 @@ void RepairLegacyPositionMetadata(const BridgeSignal &sig)
       if(!GlobalVariableCheck(key) || (int)MathRound(GlobalVariableGet(key)) != sourceTf)
       {
          GlobalVariableSet(key, sourceTf);
+         repaired = true;
+      }
+      string channelKey = PosKey(ticket, "BCH");
+      if(sig.bridgeChannel > 0 && (!GlobalVariableCheck(channelKey) || (int)MathRound(GlobalVariableGet(channelKey)) != sig.bridgeChannel))
+      {
+         GlobalVariableSet(channelKey, sig.bridgeChannel);
          repaired = true;
       }
 
@@ -1884,6 +1976,8 @@ void StoreHalfState(ulong ticket, const BridgeSignal &sig, double fill)
    int sourceTf = SourceTfToInt(sig.sourceTf);
    if(sourceTf > 0)
       GlobalVariableSet(PosKey(ticket, "STF"), sourceTf);
+   if(sig.bridgeChannel > 0)
+      GlobalVariableSet(PosKey(ticket, "BCH"), sig.bridgeChannel);
    GlobalVariableSet(PosKey(ticket, "ENTRY"), fill);
    if(PositionSelectByTicket(ticket))
       GlobalVariableSet(PosKey(ticket, "INITVOL"), PositionGetDouble(POSITION_VOLUME));
@@ -1941,6 +2035,8 @@ void ManageHalfCloseBe()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+      if(!PositionChannelMatches(ticket))
          continue;
       if(PositionIsBasketBridge())
          continue;
@@ -2212,7 +2308,7 @@ string BasketDayKeyNow()
 
 string BasketStateKey(string field)
 {
-   return IQC_PIPELINE_ID + "|BASKET|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + _Symbol + "|" + IntegerToString((int)InpMagic) + "|" + BasketDayKeyNow() + "|" + field;
+   return IQC_PIPELINE_ID + "|BASKET|" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "|" + _Symbol + "|" + IntegerToString((int)InpMagic) + "|C" + IntegerToString(EffectiveBridgeChannel()) + "|" + BasketDayKeyNow() + "|" + field;
 }
 
 bool PositionIsBasketBridge()
@@ -2220,6 +2316,9 @@ bool PositionIsBasketBridge()
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return false;
    if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+      return false;
+   ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+   if(!PositionChannelMatches(ticket))
       return false;
    string comment = PositionGetString(POSITION_COMMENT);
    return StringFind(comment, "AFBB|") == 0 || StringFind(comment, "GFBB|") == 0;
@@ -2243,6 +2342,11 @@ double BasketScopedPnlToday(bool includeFloating)
          if((long)HistoryDealGetInteger(deal, DEAL_MAGIC) != InpMagic) continue;
          string comment = HistoryDealGetString(deal, DEAL_COMMENT);
          if(StringFind(comment, "AFBB|") != 0 && StringFind(comment, "GFBB|") != 0) continue;
+         ulong positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+         int dealChannel = StoredBridgeChannel(positionId);
+         if(dealChannel <= 0) dealChannel = BridgeChannelFromComment(comment);
+         int expectedChannel = EffectiveBridgeChannel();
+         if(expectedChannel > 0 && (dealChannel > 0 ? dealChannel != expectedChannel : expectedChannel != 1)) continue;
          pnl += HistoryDealGetDouble(deal, DEAL_PROFIT) + HistoryDealGetDouble(deal, DEAL_SWAP) + HistoryDealGetDouble(deal, DEAL_COMMISSION);
       }
    }
@@ -2493,6 +2597,8 @@ void StoreBasketState(ulong ticket, const BridgeSignal &sig, double fill)
    int sourceTf = SourceTfToInt(sig.sourceTf);
    if(sourceTf > 0)
       GlobalVariableSet(PosKey(ticket, "STF"), sourceTf);
+   if(sig.bridgeChannel > 0)
+      GlobalVariableSet(PosKey(ticket, "BCH"), sig.bridgeChannel);
    GlobalVariableSet(PosKey(ticket, "ENTRY"), fill);
    if(PositionSelectByTicket(ticket))
       GlobalVariableSet(PosKey(ticket, "INITVOL"), PositionGetDouble(POSITION_VOLUME));
@@ -2676,6 +2782,7 @@ bool BuildRuntimeBasketSignal(BridgeSignal &sig)
       sig.sourceBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       sig.sourceAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       sig.riskPct = InpRiskPerTradePct;
+      sig.bridgeChannel = PositionBridgeChannel(ticket);
       sig.tradeMode = "basket_daily_target";
       sig.basketTargetPips = GlobalVariableCheck(PosKey(ticket, "BTPIPS")) ? GlobalVariableGet(PosKey(ticket, "BTPIPS")) : 0.0;
       sig.basketTargetPct = GlobalVariableCheck(PosKey(ticket, "BTPCT")) ? GlobalVariableGet(PosKey(ticket, "BTPCT")) : InpRiskPerTradePct;
@@ -2761,7 +2868,7 @@ bool ExecuteBasketSignal(const BridgeSignal &sourceSig)
    }
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
-   string comment = "AFBB|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
+   string comment = "AFBB|C" + IntegerToString(sig.bridgeChannel) + "|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
    bool ok = sig.direction > 0
       ? trade.Buy(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), 0.0, comment)
       : trade.Sell(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), 0.0, comment);
@@ -2859,7 +2966,7 @@ bool ExecuteSignal(const BridgeSignal &sourceSig)
    }
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
-   string comment = "AFB|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
+   string comment = "AFB|C" + IntegerToString(sig.bridgeChannel) + "|T" + sig.sourceTf + "|" + IntegerToString((int)HashString(sig.eventId));
    bool ok = sig.direction > 0
       ? trade.Buy(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment)
       : trade.Sell(lot, _Symbol, 0.0, NormalizeDouble(sig.sl, _Digits), NormalizeDouble(sig.tp, _Digits), comment);
