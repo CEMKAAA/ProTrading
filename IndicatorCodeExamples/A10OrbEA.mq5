@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-08-31.A10-M5-IMB1M-1R-C1-v6.49-incremental-audit-ui-v1"
+#define ORB15_BUILD "2026-08-31.A10-M5-IMB1M-1R-C1-v6.50-responsive-audit-cache-v2"
 
 enum ORB_SESSION_PROFILE
 {
@@ -292,6 +292,12 @@ int      g_histAuditTotalDays = 0;
 int      g_histAuditProcessedDays = 0;
 double   g_histAuditProgressPct = 0.0;
 string   g_histAuditStage = "";
+int      g_histAuditStageDone = 0;
+int      g_histAuditStageTotal = 0;
+ulong    g_histAuditStartedMs = 0;
+double   g_histAuditLastElapsedSec = 0.0;
+ulong    g_histAuditLastUiMs = 0;
+ulong    g_histTimerCoreLastMs = 0;
 bool     g_histCoveragePending = false;
 bool     g_histCoverageHardBlocked = false;
 datetime g_histCoverageNextRetry = 0;
@@ -471,10 +477,20 @@ struct OrbNasHistoricalEvent
    double closePrice;
    double highPrice;
    double lowPrice;
+   double signalVolume;
+   double averageVolume;
 };
 OrbNasHistoricalEvent g_histNasEvents[];
 bool g_histNasCacheActive=false;
 int g_histNasCacheCopiedBars=0;
+bool g_histNasCacheReady=false;
+datetime g_histNasCacheFrom=0;
+datetime g_histNasCacheClosedBar=0;
+ENUM_TIMEFRAMES g_histNasCacheTf=PERIOD_CURRENT;
+int g_histNasCacheSensitivity=0;
+int g_histNasCacheRsiLength=0;
+int g_histNasCacheAtrRisk=0;
+int g_histNasCacheAtrLen=0;
 
 bool     g_btRunning     = false;
 int      g_btStep        = 0;
@@ -975,19 +991,32 @@ NasSettings BuildOrbNasSettings()
    s.atrLen=MathMax(2,InpNasAtrLen);
    return s;
 }
+void OrbNasVolumeStats(const MqlRates &rates[],const int signalIndex,
+                       double &signalVolume,double &averageVolume)
+{
+   signalVolume=0.0;averageVolume=0.0;
+   const int lookback=20;
+   int count=ArraySize(rates);
+   if(signalIndex<lookback||signalIndex<0||signalIndex>=count)return;
+   signalVolume=(double)rates[signalIndex].tick_volume;
+   double sum=0.0;
+   int first=MathMax(0,signalIndex-lookback);
+   int last=MathMin(count-1,signalIndex-1);
+   int samples=0;
+   for(int i=last;i>=first;i--)
+   {
+      if(i<0||i>=count)continue;
+      if(rates[i].tick_volume>0)sum+=(double)rates[i].tick_volume;
+      samples++;
+   }
+   if(samples>0)averageVolume=sum/(double)samples;
+}
 bool OrbNasVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
                               string &reason,double &signalVolume,double &averageVolume)
 {
-   reason="";signalVolume=0.0;averageVolume=0.0;
+   reason="";
+   OrbNasVolumeStats(rates,signalIndex,signalVolume,averageVolume);
    if(!g_rtNasVolumeFilter)return true;
-   const int lookback=20;
-   if(signalIndex<lookback||signalIndex>=ArraySize(rates))
-   {reason="VOL_DATA_FAIL_OPEN";return true;}
-   signalVolume=(double)rates[signalIndex].tick_volume;
-   double sum=0.0;
-   for(int i=signalIndex-1;i>=signalIndex-lookback;i++)
-      if(rates[i].tick_volume>0)sum+=(double)rates[i].tick_volume;
-   averageVolume=sum/(double)lookback;
    if(averageVolume<=0.0){reason="VOL_DATA_FAIL_OPEN";return true;}
    double threshold=averageVolume*g_rtNasVolumeMultiplier;
    if(signalVolume<threshold)
@@ -996,6 +1025,14 @@ bool OrbNasVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
       return false;
    }
    return true;
+}
+bool HistoricalNasEventAllowed(const int index)
+{
+   if(index<0||index>=ArraySize(g_histNasEvents))return false;
+   if(!g_rtNasVolumeFilter)return true;
+   double averageVolume=g_histNasEvents[index].averageVolume;
+   if(averageVolume<=0.0)return true;
+   return g_histNasEvents[index].signalVolume>=averageVolume*g_rtNasVolumeMultiplier;
 }
 int NasCalcWarmupBars(){return MathMax(300,MathMin(200000,InpNasSignalCalcBars));}
 int NasHistoryBars(){return MathMax(300,InpNasHistoryBars);}
@@ -1025,8 +1062,6 @@ datetime OrbNasSignalAvailableTime(const MqlRates &rates[],const int copied,cons
 }
 bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
 {
-   ArrayResize(g_histNasEvents,0);
-   g_histNasCacheCopiedBars=0;
    detail="NAS_CACHE_OFF";
    if(!g_rtNasConfirmation&&!g_rtNasExitOnOppositeSignal)
    {
@@ -1036,6 +1071,27 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
    ENUM_TIMEFRAMES tf=NasConfirmationTf();int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
    datetime cutoff=now-(datetime)((long)MathMax(1,days)*86400)
       -(datetime)(MathMax(0,g_rtNasActiveSignalLookbackMinutes)*60)-sec*2;
+   datetime closedBar=iTime(_Symbol,tf,1);
+   NasSettings settings=BuildOrbNasSettings();
+   bool reusable=g_histNasCacheReady
+      &&g_histNasCacheTf==tf
+      &&g_histNasCacheSensitivity==settings.sensitivity
+      &&g_histNasCacheRsiLength==settings.rsiLength
+      &&g_histNasCacheAtrRisk==settings.atrRisk
+      &&g_histNasCacheAtrLen==settings.atrLen
+      &&g_histNasCacheFrom>0&&g_histNasCacheFrom<=cutoff
+      &&g_histNasCacheClosedBar>0&&g_histNasCacheClosedBar==closedBar;
+   if(reusable)
+   {
+      g_histNasCacheActive=true;
+      detail="NAS_CACHE_REUSE bars="+IntegerToString(g_histNasCacheCopiedBars)
+         +" raw_events="+IntegerToString(ArraySize(g_histNasEvents));
+      return true;
+   }
+   g_histNasCacheReady=false;
+   g_histNasCacheActive=false;
+   ArrayResize(g_histNasEvents,0);
+   g_histNasCacheCopiedBars=0;
    long windowBars=(long)MathCeil((double)MathMax(1,days)*86400.0/(double)sec);
    int requested=(int)MathMin((long)2147480000,
       MathMax((long)NasHistoryBars(),windowBars+(long)NasCalcWarmupBars()+300));
@@ -1053,7 +1109,7 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
       return false;
    }
    NasPoint points[];
-   if(NAS_Calculate(rates,copied,BuildOrbNasSettings(),points)!=copied)
+   if(NAS_Calculate(rates,copied,settings,points)!=copied)
    {
       detail="NAS_CACHE_CALC_FAIL";
       g_histNasCacheActive=false;
@@ -1066,19 +1122,29 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
       if(!buy&&!sell)continue;
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(available<=0||available<cutoff||available>now)continue;
-      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
-      int n=ArraySize(g_histNasEvents);ArrayResize(g_histNasEvents,n+1);
+      double signalVolume=0.0,averageVolume=0.0;
+      OrbNasVolumeStats(rates,i,signalVolume,averageVolume);
+      int n=ArraySize(g_histNasEvents);ArrayResize(g_histNasEvents,n+1,1024);
       g_histNasEvents[n].dir=buy?"BUY":"SELL";
       g_histNasEvents[n].barTime=rates[i].time;
       g_histNasEvents[n].availableTime=available;
       g_histNasEvents[n].closePrice=rates[i].close;
       g_histNasEvents[n].highPrice=rates[i].high;
       g_histNasEvents[n].lowPrice=rates[i].low;
+      g_histNasEvents[n].signalVolume=signalVolume;
+      g_histNasEvents[n].averageVolume=averageVolume;
    }
    g_histNasCacheCopiedBars=copied;
+   g_histNasCacheFrom=rates[0].time;
+   g_histNasCacheClosedBar=closedBar;
+   g_histNasCacheTf=tf;
+   g_histNasCacheSensitivity=settings.sensitivity;
+   g_histNasCacheRsiLength=settings.rsiLength;
+   g_histNasCacheAtrRisk=settings.atrRisk;
+   g_histNasCacheAtrLen=settings.atrLen;
+   g_histNasCacheReady=true;
    g_histNasCacheActive=true;
-   detail="NAS_CACHE_OK bars="+IntegerToString(copied)+" events="+IntegerToString(ArraySize(g_histNasEvents));
+   detail="NAS_CACHE_OK bars="+IntegerToString(copied)+" raw_events="+IntegerToString(ArraySize(g_histNasEvents));
    return true;
 }
 bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latestAvailable,
@@ -1091,6 +1157,7 @@ bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latest
    int latestState=-1;
    for(int i=0;i<ArraySize(g_histNasEvents);i++)
    {
+      if(!HistoricalNasEventAllowed(i))continue;
       datetime at=g_histNasEvents[i].availableTime;
       if(at<activeStart)continue;
       if(at>orbAcceptedAt)break;
@@ -1106,6 +1173,7 @@ bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latest
    }
    for(int i=0;i<ArraySize(g_histNasEvents);i++)
    {
+      if(!HistoricalNasEventAllowed(i))continue;
       datetime at=g_histNasEvents[i].availableTime;
       if(at<orbAcceptedAt)continue;
       if(at>latestAvailable)break;
@@ -1261,6 +1329,7 @@ bool FindNasTransitionAfter(string wantedDir,datetime afterExclusive,datetime la
    {
       for(int i=0;i<ArraySize(g_histNasEvents);i++)
       {
+         if(!HistoricalNasEventAllowed(i))continue;
          datetime at=g_histNasEvents[i].availableTime;
          if(at<=afterExclusive)continue;
          if(at>latestAvailable)break;
@@ -1300,6 +1369,7 @@ bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,
       int latest=-1;
       for(int i=0;i<ArraySize(g_histNasEvents);i++)
       {
+         if(!HistoricalNasEventAllowed(i))continue;
          datetime at=g_histNasEvents[i].availableTime;
          if(at<=afterExclusive)continue;
          if(at>latestAvailable)break;
@@ -1621,25 +1691,28 @@ void SetHistoricalWeeks(int weeks)
    g_histCoverageStatus="";
    g_histCoverageDetail="";
 }
-void QueueHistoricalRedraw(const uint debounceMs=1200)
+void QueueHistoricalRedraw(const uint debounceMs=120)
 {
    g_lastHistBuild=0;
    g_histNeedsRedraw=true;
    g_histRedrawQueued=true;
    g_histRedrawNotBeforeMs=GetTickCount64()+(ulong)debounceMs;
    if(g_histAuditRunning)g_histAuditCancelRequested=true;
+   g_histAuditStage="QUEUED";
+   g_histAuditStageDone=0;
+   g_histAuditStageTotal=0;
+   g_histAuditProgressPct=0.0;
    if(!IsTesterMode())
    {
       EventKillTimer();
-      EventSetMillisecondTimer(200);
+      EventSetMillisecondTimer(40);
    }
 }
 void ProcessQueuedHistoricalRedraw()
 {
    if(g_histAuditRunning)
    {
-      if(g_histAuditCancelRequested&&GetTickCount64()>=g_histRedrawNotBeforeMs)
-         CancelHistoricalAuditBuild();
+      if(g_histAuditCancelRequested)CancelHistoricalAuditBuild();
       return;
    }
    if(!g_histRedrawQueued)return;
@@ -2602,9 +2675,42 @@ void DeleteHist()
    g_histActiveGeneration=0;
    g_histBuildGeneration=0;
 }
-void RenderHistoricalAuditProgress()
+void SetHistoricalAuditProgress(const string stage,const double startPct,const double spanPct,
+                                const int completed,const int total)
 {
-   UpdateDashboard();
+   g_histAuditStage=stage;
+   g_histAuditStageDone=MathMax(0,completed);
+   g_histAuditStageTotal=MathMax(0,total);
+   double fraction=total>0?(double)MathMax(0,MathMin(total,completed))/(double)total:0.0;
+   g_histAuditProgressPct=MathMax(0.0,MathMin(100.0,startPct+spanPct*fraction));
+}
+void RenderHistoricalAuditProgress(const bool force=false)
+{
+   if(IsTesterMode()||!InpShowDashboard)return;
+   ulong nowMs=GetTickCount64();
+   if(!force&&g_histAuditLastUiMs>0&&nowMs-g_histAuditLastUiMs<120)return;
+   g_histAuditLastUiMs=nowMs;
+   int x=InpDashboardX;
+   int y=InpDashboardY+246;
+   int barW=496,barH=14;
+   double barPct=g_histAuditRunning?g_histAuditProgressPct:0.0;
+   color barClr=C'38,140,220';
+   CreateRect("DASH_WRBAR_BG",x+12,y+238,barW,barH,C'42,51,68',C'134,158,182');
+   int fillW=(int)MathRound((double)barW*MathMax(0.0,MathMin(100.0,barPct))/100.0);
+   if(fillW>2)CreateRect("DASH_WRBAR_FILL",x+13,y+239,fillW-2,barH-2,barClr,barClr);
+   else ObjectDelete(0,PREFIX+"DASH_WRBAR_FILL");
+   string progressText="";
+   if(g_histAuditRunning)
+   {
+      progressText="AUD "+g_histAuditStage;
+      if(g_histAuditStageTotal>0)
+         progressText+=" "+IntegerToString(g_histAuditStageDone)+"/"+IntegerToString(g_histAuditStageTotal);
+      progressText+=" "+DoubleToString(g_histAuditProgressPct,1)+"%";
+   }
+   else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
+   else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
+   CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
+      g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
    ChartRedraw(0);
 }
 void DeleteLive(){DeleteByPrefix(PREFIX+"LIVE_");}
@@ -2963,6 +3069,7 @@ int DrawNasSignalOverlay(int days,datetime now)
       ENUM_TIMEFRAMES tf=NasConfirmationTf();int drawn=0;
       for(int i=0;i<ArraySize(g_histNasEvents);i++)
       {
+         if(!HistoricalNasEventAllowed(i))continue;
          if(g_histNasEvents[i].availableTime<cutoff||g_histNasEvents[i].availableTime>now)continue;
          MqlRates bar;ZeroMemory(bar);
          bar.time=g_histNasEvents[i].barTime;bar.close=g_histNasEvents[i].closePrice;
@@ -2997,6 +3104,24 @@ int DrawNasSignalOverlay(int days,datetime now)
    g_lastNasOverlaySignalCount=drawn;
    g_lastNasOverlayClosedBar=iTime(_Symbol,tf,1);
    return drawn;
+}
+
+bool DrawCachedNasSignalOverlayEvent(const int index,const int days,const datetime now)
+{
+   if(!NasOverlayEnabled()||!g_histNasCacheActive)return false;
+   if(index<0||index>=ArraySize(g_histNasEvents)||!HistoricalNasEventAllowed(index))return false;
+   datetime cutoff=now-(datetime)((long)MathMax(1,days)*86400);
+   if(g_histNasEvents[index].availableTime<cutoff||g_histNasEvents[index].availableTime>now)return false;
+   MqlRates bar;ZeroMemory(bar);
+   bar.time=g_histNasEvents[index].barTime;
+   bar.close=g_histNasEvents[index].closePrice;
+   bar.high=g_histNasEvents[index].highPrice;
+   bar.low=g_histNasEvents[index].lowPrice;
+   NasPoint point;ZeroMemory(point);
+   point.buy=(g_histNasEvents[index].dir=="BUY");
+   point.sell=(g_histNasEvents[index].dir=="SELL");
+   DrawNasSignalMarker(bar,point,NasConfirmationTf());
+   return true;
 }
 
 void RefreshNasSignalOverlay()
@@ -3551,6 +3676,7 @@ datetime g_histRunNyMid=0;
 int g_histRunDays=0;
 int g_histPrepBack=-1;
 int g_histCalcBack=-1;
+int g_histNasOverlayIndex=0;
 int g_histOverlayIndex=0;
 int g_histRejectedWindowRaw=0;
 int g_histDrawnWindowCount=0;
@@ -4159,7 +4285,7 @@ void AppendOrbWindowSignal(OrbWindowSignal &signals[],datetime sigT,string rawDi
                            double sigC,double sigH,double sigL)
 {
    int n=ArraySize(signals);
-   ArrayResize(signals,n+1);
+   ArrayResize(signals,n+1,256);
    signals[n].signalTime=sigT;signals[n].availableTime=OrbSignalAvailableTime(sigT);
    signals[n].rawDirection=rawDir;signals[n].executionDirection=EffectiveOrbDirection(rawDir);
    signals[n].reason=reason;signals[n].signalClose=sigC;signals[n].signalHigh=sigH;signals[n].signalLow=sigL;
@@ -4170,7 +4296,7 @@ void AppendOrbAcceptedSignal(OrbWindowSignal &signals[],datetime sigT,datetime e
                              double sigC,double sigH,double sigL)
 {
    int n=ArraySize(signals);
-   ArrayResize(signals,n+1);
+   ArrayResize(signals,n+1,256);
    signals[n].signalTime=sigT;
    signals[n].availableTime=MathMax(OrbSignalAvailableTime(sigT),entryT);
    signals[n].rawDirection=rawDir;
@@ -4425,19 +4551,34 @@ int ProcessHistoricalPrepDay(const int back)
             hasAccepted=true;acceptedTime=OrbSignalAvailableTime(sigT);acceptedDir=execDir;
             AppendOrbAcceptedSignal(g_histAcceptedSignals,sigT,entryT,dir,sigC,sigH,sigL);
          }
+         // ORB owns at most one entry per day. Once the accepted entry exists,
+         // later accepted candidates cannot alter either execution or audit.
+         // Continue only when a filtered post-entry event is actually needed
+         // by one of the optional exit engines.
+         if(!g_rtFilteredWindowReverseExit&&!g_rtPostTradeDispBlockExit)break;
          lastWindowKey="";
          continue;
       }
       rejectedRaw++;
-      string windowKey=execDir+"|"+reason;
-      if(windowKey==lastWindowKey)continue;
-      AppendOrbWindowSignal(g_histWindowSignals,sigT,dir,reason,sigC,sigH,sigL);
-      int windowIndex=ArraySize(g_histWindowSignals)-1;
-      if(firstWindowIndex<0)firstWindowIndex=windowIndex;
       bool afterAccepted=(hasAccepted&&OrbSignalAvailableTime(sigT)>acceptedTime);
-      if(afterAccepted&&execDir!=acceptedDir&&firstPostTradeReverseIndex<0)firstPostTradeReverseIndex=windowIndex;
-      if(afterAccepted&&execDir==acceptedDir&&reason=="DISP_BLOCK"&&firstPostTradeDispIndex<0)firstPostTradeDispIndex=windowIndex;
-      lastWindowKey=windowKey;
+      bool reverseCandidate=(afterAccepted&&g_rtFilteredWindowReverseExit
+         &&execDir!=acceptedDir&&firstPostTradeReverseIndex<0);
+      bool dispCandidate=(afterAccepted&&g_rtPostTradeDispBlockExit
+         &&execDir==acceptedDir&&reason=="DISP_BLOCK"&&firstPostTradeDispIndex<0);
+      bool visualCandidate=(!hasAccepted&&firstWindowIndex<0);
+      if(visualCandidate||reverseCandidate||dispCandidate)
+      {
+         AppendOrbWindowSignal(g_histWindowSignals,sigT,dir,reason,sigC,sigH,sigL);
+         int windowIndex=ArraySize(g_histWindowSignals)-1;
+         if(visualCandidate)firstWindowIndex=windowIndex;
+         if(reverseCandidate)firstPostTradeReverseIndex=windowIndex;
+         if(dispCandidate)firstPostTradeDispIndex=windowIndex;
+      }
+      // After entry, stop as soon as every enabled filtered-exit engine has
+      // found its first causal event. No later bar can win that race.
+      if(hasAccepted
+         &&(!g_rtFilteredWindowReverseExit||firstPostTradeReverseIndex>=0)
+         &&(!g_rtPostTradeDispBlockExit||firstPostTradeDispIndex>=0))break;
    }
    int drawIndex=firstWindowIndex;
    int reverseExitIndex=g_rtFilteredWindowReverseExit?firstPostTradeReverseIndex:-1;
@@ -4909,7 +5050,6 @@ void CancelHistoricalAuditBuild()
       DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
    g_histBuildGeneration=0;
    g_histNasCacheActive=false;
-   ArrayResize(g_histNasEvents,0);
    ArrayResize(g_histWindowSignals,0);
    ArrayResize(g_histAcceptedSignals,0);
    ArrayResize(g_histDaySnapshots,0);
@@ -4917,25 +5057,31 @@ void CancelHistoricalAuditBuild()
    g_histAuditCancelRequested=false;
    g_histAuditPhase=0;
    g_histAuditStage="QUEUED";
+   g_histAuditStageDone=0;
+   g_histAuditStageTotal=0;
    g_histAuditProcessedDays=0;
    g_histAuditProgressPct=0.0;
 }
 
 void FinalizeHistoricalAudit()
 {
-   g_histAuditProcessedDays=g_histRunDays;g_histAuditProgressPct=100.0;
+   g_histAuditProcessedDays=g_histRunDays;
+   SetHistoricalAuditProgress("COMPLETE",100.0,0.0,1,1);
+   g_histAuditLastElapsedSec=g_histAuditStartedMs>0?(double)(GetTickCount64()-g_histAuditStartedMs)/1000.0:0.0;
    CommitHistoricalSnapshot();
    g_histNasCacheActive=false;
-   ArrayResize(g_histNasEvents,0);
    g_histAuditRunning=false;g_histAuditCancelRequested=false;g_histAuditPhase=0;g_histAuditStage="";
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
    g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" DAY-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
    if(g_histFiltered>0)g_histStatLine+=" | "+IntegerToString(g_histFiltered)+" filt";
    if(g_histDrawnWindowCount>0)g_histStatLine+=" | "+IntegerToString(g_histDrawnWindowCount)+" window ("+IntegerToString(g_histRejectedWindowRaw)+" raw)";
-   Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn," =======");
-   Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(g_histRunDays));
-   RenderHistoricalAuditProgress();
+   Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn,
+      " elapsed_sec=",DoubleToString(g_histAuditLastElapsedSec,3)," =======");
+   Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(g_histRunDays)
+      +" elapsed_sec="+DoubleToString(g_histAuditLastElapsedSec,3));
+   UpdateDashboard();
+   ChartRedraw(0);
    if(!IsTesterMode())EventSetTimer(5);
 }
 
@@ -4943,7 +5089,9 @@ void ProcessHistoricalAuditStep()
 {
    if(!g_histAuditRunning)return;
    if(g_histAuditCancelRequested)return;
-   const ulong budgetMs=30;
+   // Keep callbacks short enough for MT5 to dispatch chart clicks between
+   // chunks. A single day remains the smallest indivisible simulation unit.
+   const ulong budgetMs=14;
    ulong started=GetTickCount64();
    int workUnits=0;
    while(g_histAuditRunning&&!g_histAuditCancelRequested)
@@ -4956,31 +5104,49 @@ void ProcessHistoricalAuditStep()
             g_histPrepBack--;
             int done=g_histRunDays-1-g_histPrepBack;
             g_histAuditProcessedDays=done;
-            g_histAuditProgressPct=35.0*(double)done/(double)MathMax(1,g_histRunDays);
+            SetHistoricalAuditProgress("PREP",5.0,40.0,done,g_histRunDays);
             workUnits++;
          }
          else
          {
-            g_histAuditPhase=2;g_histAuditStage="DRAW";g_histAuditProgressPct=35.0;
-            g_histDrawnNasSignals=DrawNasSignalOverlay(g_histRunDays,g_histRunNow);
+            g_histAuditPhase=2;
+            g_histNasOverlayIndex=0;
             g_histOverlayIndex=0;
+            int drawTotal=(g_histNasCacheActive&&NasOverlayEnabled()?ArraySize(g_histNasEvents):0)
+               +ArraySize(g_histWindowSignals);
+            SetHistoricalAuditProgress("DRAW",45.0,10.0,0,MathMax(1,drawTotal));
          }
       }
       else if(g_histAuditPhase==2)
       {
-         int total=ArraySize(g_histWindowSignals);
-         if(g_histOverlayIndex<total)
+         int nasTotal=(g_histNasCacheActive&&NasOverlayEnabled()?ArraySize(g_histNasEvents):0);
+         int windowTotal=ArraySize(g_histWindowSignals);
+         int total=nasTotal+windowTotal;
+         if(g_histNasOverlayIndex<nasTotal)
+         {
+            if(DrawCachedNasSignalOverlayEvent(g_histNasOverlayIndex,g_histRunDays,g_histRunNow))
+               g_histDrawnNasSignals++;
+            g_histNasOverlayIndex++;
+            SetHistoricalAuditProgress("DRAW",45.0,10.0,
+               g_histNasOverlayIndex+g_histOverlayIndex,MathMax(1,total));
+            workUnits++;
+         }
+         else if(g_histOverlayIndex<windowTotal)
          {
             if(g_histWindowSignals[g_histOverlayIndex].drawOnChart)g_histDrawnWindowCount++;
             DrawOrbWindowSignal(g_histWindowSignals[g_histOverlayIndex],g_histOverlayIndex);
             g_histOverlayIndex++;
-            g_histAuditProgressPct=35.0+5.0*(double)g_histOverlayIndex/(double)MathMax(1,total);
+            SetHistoricalAuditProgress("DRAW",45.0,10.0,
+               g_histNasOverlayIndex+g_histOverlayIndex,MathMax(1,total));
             workUnits++;
          }
          else
          {
             g_histAuditPhase=3;g_histAuditStage="CALC";g_histCalcBack=g_histRunDays-1;
-            g_histAuditProgressPct=40.0;
+            g_lastNasOverlaySignalCount=g_histDrawnNasSignals;
+            g_lastNasOverlayCopiedBars=g_histNasCacheCopiedBars;
+            g_lastNasOverlayClosedBar=iTime(_Symbol,NasConfirmationTf(),1);
+            SetHistoricalAuditProgress("CALC",55.0,45.0,0,g_histRunDays);
             Print("ORB15v3 ======= HIST REDRAW START ======= TF=",TfLabel(g_rtSignalTf),
                   " Delay=",g_rtUseDelay?IntegerToString(g_rtDelayMin)+"min":"OFF",
                   " ATR=",g_rtFilterAtr?"ON":"OFF"," VOL=",g_rtFilterVol?"ON":"OFF",
@@ -4999,7 +5165,7 @@ void ProcessHistoricalAuditStep()
             g_histCalcBack--;
             int done=g_histRunDays-1-g_histCalcBack;
             g_histAuditProcessedDays=done;
-            g_histAuditProgressPct=40.0+60.0*(double)done/(double)MathMax(1,g_histRunDays);
+            SetHistoricalAuditProgress("CALC",55.0,45.0,done,g_histRunDays);
             workUnits++;
          }
          else
@@ -5043,7 +5209,8 @@ void DrawHistoricalSignals()
       g_histNeedsRedraw=!hardBlocked&&InpAuditHistoryAutoRetry;
       g_histCoverageNextRetry=TimeLocal()+MathMax(2,InpAuditHistoryRetrySec);
       Print("ORB15v3 ",g_histStatLine);
-      RenderHistoricalAuditProgress();
+      UpdateDashboard();
+      ChartRedraw(0);
       if(!IsTesterMode()){EventKillTimer();EventSetTimer(5);}
       return;
    }
@@ -5057,12 +5224,14 @@ void DrawHistoricalSignals()
    g_histRunNow=currentTime;g_histRunDays=days;
    g_histRunPoint=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(g_histRunPoint<=0.0)g_histRunPoint=0.0001;
    g_histAuditRunning=true;g_histAuditCancelRequested=false;g_histAuditPhase=1;
-   g_histAuditTotalDays=days;g_histAuditProcessedDays=0;g_histAuditProgressPct=0.0;g_histAuditStage="NAS";
-   g_histPrepBack=days-1;g_histCalcBack=-1;g_histOverlayIndex=0;
+   g_histAuditStartedMs=GetTickCount64();
+   g_histAuditTotalDays=days;g_histAuditProcessedDays=0;
+   SetHistoricalAuditProgress("NAS",0.0,5.0,0,1);
+   g_histPrepBack=days-1;g_histCalcBack=-1;g_histNasOverlayIndex=0;g_histOverlayIndex=0;
    g_histRejectedWindowRaw=0;g_histDrawnWindowCount=0;g_histDrawnNasSignals=0;
    g_histChecked=0;g_histDrawn=0;g_histFiltered=0;
    OrbResetHistoricalStats();
-   g_histAuditRunning=true;g_histAuditPhase=1;g_histAuditStage="NAS";
+   g_histAuditRunning=true;g_histAuditPhase=1;
    ArrayResize(g_histWindowSignals,0);ArrayResize(g_histAcceptedSignals,0);
    ArrayResize(g_histDaySnapshots,MathMax(0,days));
    for(int ci=0;ci<ArraySize(g_histDaySnapshots);ci++)
@@ -5073,10 +5242,25 @@ void DrawHistoricalSignals()
       g_histDaySnapshots[ci].tradeEnd=0;g_histDaySnapshots[ci].usedBars=0;
    }
    string nasCacheDetail="";
-   BuildHistoricalNasEventCache(days,currentTime,nasCacheDetail);
+   RenderHistoricalAuditProgress(true);
+   bool nasCacheOk=BuildHistoricalNasEventCache(days,currentTime,nasCacheDetail);
    Print("ORB15v3 ",nasCacheDetail);
-   g_histAuditStage="PREP";g_histAuditProgressPct=0.0;
-   RenderHistoricalAuditProgress();
+   if(!nasCacheOk)
+   {
+      if(g_histBuildGeneration>0)DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
+      g_histBuildGeneration=0;
+      g_histAuditRunning=false;g_histAuditPhase=0;g_histNasCacheActive=false;
+      g_histCoveragePending=true;g_histCoverageHardBlocked=false;
+      g_histCoverageStatus="NAS HISTORY WAIT";g_histCoverageDetail=nasCacheDetail;
+      g_histStatLine=g_histCoverageStatus+" | "+nasCacheDetail;
+      g_histNeedsRedraw=InpAuditHistoryAutoRetry;
+      g_histCoverageNextRetry=TimeLocal()+MathMax(2,InpAuditHistoryRetrySec);
+      UpdateDashboard();ChartRedraw(0);
+      if(!IsTesterMode()){EventKillTimer();EventSetTimer(5);}
+      return;
+   }
+   SetHistoricalAuditProgress("PREP",5.0,40.0,0,days);
+   RenderHistoricalAuditProgress(true);
 }
 
 //=========================================================================
@@ -5567,8 +5751,16 @@ void UpdateDashboard()
    int fillW=(int)MathRound((double)barW*MathMax(0,MathMin(100,barPct))/100.0);
    if(fillW>2)CreateRect("DASH_WRBAR_FILL",x+13,y+239,fillW-2,barH-2,barClr,barClr);
    else ObjectDelete(0,PREFIX+"DASH_WRBAR_FILL");
-   string progressText=g_histAuditRunning?("AUD "+g_histAuditStage+" "+DoubleToString(g_histAuditProgressPct,1)+"%"):
-      (g_histRedrawQueued?"AUD QUEUED":(g_histCoveragePending?(g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT"):""));
+   string progressText="";
+   if(g_histAuditRunning)
+   {
+      progressText="AUD "+g_histAuditStage;
+      if(g_histAuditStageTotal>0)
+         progressText+=" "+IntegerToString(g_histAuditStageDone)+"/"+IntegerToString(g_histAuditStageTotal);
+      progressText+=" "+DoubleToString(g_histAuditProgressPct,1)+"%";
+   }
+   else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
+   else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
    CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
 
@@ -6856,25 +7048,37 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
 void OnTimer()
 {
-   TradeDayCalendarPublisherTick();
-   EnforceRiskBreach();
-   bool dc=ResetForNewNyDay();BuildOrb();
-   RegimeV3Update(false);
-   if(dc&&!IsTesterMode())QueueHistoricalRedraw(0);
-   else if(!IsTesterMode()&&g_histCoveragePending&&!g_histCoverageHardBlocked
-           &&InpAuditHistoryAutoRetry&&TimeLocal()>=g_histCoverageNextRetry)
-      QueueHistoricalRedraw(0);
-   TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
+   ulong nowMs=GetTickCount64();
+   bool auditBusy=(g_histAuditRunning||g_histRedrawQueued);
+   bool coreDue=(!auditBusy||g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
+   bool dc=false;
+   if(coreDue)
+   {
+      g_histTimerCoreLastMs=nowMs;
+      TradeDayCalendarPublisherTick();
+      EnforceRiskBreach();
+      dc=ResetForNewNyDay();BuildOrb();
+      RegimeV3Update(false);
+      if(dc&&!IsTesterMode())QueueHistoricalRedraw(0);
+      else if(!IsTesterMode()&&g_histCoveragePending&&!g_histCoverageHardBlocked
+              &&InpAuditHistoryAutoRetry&&TimeLocal()>=g_histCoverageNextRetry)
+         QueueHistoricalRedraw(0);
+      TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
+   }
    if(!IsTesterMode())
    {
-      OrbProTimer();
-      OrbAudit_HistoryScan();
-      OBT_Tick();
-      RefreshNasSignalOverlay();
-      DrawOrbLiveTradeLevels();
+      if(coreDue)
+      {
+         OrbProTimer();
+         OrbAudit_HistoryScan();
+         OBT_Tick();
+         if(!g_histAuditRunning&&!g_histRedrawQueued)RefreshNasSignalOverlay();
+         DrawOrbLiveTradeLevels();
+      }
       ProcessQueuedHistoricalRedraw();
       ProcessHistoricalAuditStep();
-      UpdateDashboard();
+      if(g_histAuditRunning||g_histRedrawQueued)RenderHistoricalAuditProgress();
+      else if(coreDue)UpdateDashboard();
    }
 }
 
@@ -6889,7 +7093,12 @@ void OnTick()
    }
    EnforceRiskBreach();
    ResetForNewNyDay();TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
-   if(!IsTesterMode()){OrbProUpdateOpenPositions();DrawOrbLiveTradeLevels();UpdateDashboard();}
+   if(!IsTesterMode())
+   {
+      OrbProUpdateOpenPositions();DrawOrbLiveTradeLevels();
+      if(g_histAuditRunning||g_histRedrawQueued)RenderHistoricalAuditProgress();
+      else UpdateDashboard();
+   }
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)

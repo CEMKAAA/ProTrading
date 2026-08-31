@@ -1,0 +1,50 @@
+{
+  "jobs": [
+    {
+      "job_id": "orb_runtime_probe_jp225_m5_5y_v650",
+      "ea": "OrbAuditRuntimeProbe",
+      "ea_kind": "orb",
+      "preset": "../.tmp/orb_jp225_full_worker/MQL5/Profiles/Tester/OrbUltimateEA.set",
+      "symbol": "JP225m",
+      "timeframe": "M5",
+      "from_date": "2021.01.01",
+      "to_date": "2026.06.10",
+      "terminal_exe": "../.tmp/orb_jp225_full_worker/terminal64.exe",
+      "terminal_data_dir": "../.tmp/orb_jp225_full_worker",
+      "portable": true,
+      "deposit": 10000,
+      "currency": "USD",
+      "leverage": "1:100",
+      "model": 1,
+      "execution_mode": 0,
+      "timeout_sec": 600,
+      "preset_overrides": {
+        "InpEaEnabled": "false",
+        "InpSignalTimeframe": "PERIOD_M5",
+        "InpUseAtrRangeFilter": "false",
+        "InpUseVolumeFilter": "false",
+        "InpUseDayFilter": "false",
+        "InpUseDisplacementFilter": "false",
+        "InpFvgMode": "ORB_FVG_OFF",
+        "InpDrawHistoricalSignals": "true",
+        "InpHistoricalWeeks": "260",
+        "InpRegimeV3Observer": "false",
+        "InpFileBridgeEnabled": "false",
+        "InpFileBridgeOnlyMode": "false",
+        "InpNativeTradeWithBridgeOnlyDefault": "false",
+        "InpAuditCsv": "false",
+        "InpLogOnInit": "false",
+        "InpNasConfirmationDefault": "false",
+        "InpNasUseVolumeFilter": "false",
+        "InpNasExitOnOppositeSignalDefault": "true",
+        "InpOrbRfFilterDefault": "false",
+        "InpRegimeTrendLowVolAllowed": "true",
+        "InpRegimeTrendHighVolAllowed": "true",
+        "InpRegimeRangeLowVolAllowed": "true",
+        "InpRegimeRangeHighVolAllowed": "true",
+        "InpRegimeTransitionPendingAllowed": "true",
+        "InpRegimeTransitionFreshAllowed": "true"
+      }
+    }
+  ]
+}
