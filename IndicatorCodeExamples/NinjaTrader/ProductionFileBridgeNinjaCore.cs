@@ -22,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public abstract partial class ProductionFileBridgeNinjaCore : Strategy
     {
-        private const string CoreBuild = "2026-08-26.nt8-production-file-bridge-v13-fixed-reference-risk";
+        private const string CoreBuild = "2026-08-31.nt8-production-file-bridge-v14-usdjpy-inverse";
         private const int PendingLockSeconds = 120;
         private const int EmergencyRetrySeconds = 10;
 
@@ -100,12 +100,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool RebaseOnlyWhenSourceDiffers { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Auto USDJPY -> JPY Futures", GroupName = "04 Geometry", Order = 2)]
+        public bool AutoInverseJpyQuoteMapping { get; set; }
+
+        [NinjaScriptProperty]
         [Range(0.0, 10000.0)]
-        [Display(Name = "Mapped Basis Guard % Risk", GroupName = "04 Geometry", Order = 2)]
+        [Display(Name = "Mapped Basis Guard % Risk", GroupName = "04 Geometry", Order = 3)]
         public double MappedBasisGuardPctRisk { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fail If Exact Protection Fails", GroupName = "04 Geometry", Order = 3)]
+        [Display(Name = "Fail If Exact Protection Fails", GroupName = "04 Geometry", Order = 4)]
         public bool FailIfExactProtectionFails { get; set; }
 
         [NinjaScriptProperty]
@@ -324,6 +328,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RequireSourceMatchesChart = true;
                 RebaseMappedLevelsToLiveEntry = DefaultRebaseMappedLevelsToLiveEntry;
                 RebaseOnlyWhenSourceDiffers = DefaultRebaseOnlyWhenSourceDiffersSetting;
+                AutoInverseJpyQuoteMapping = true;
                 MappedBasisGuardPctRisk = 25.0;
                 FailIfExactProtectionFails = true;
                 CloseReverse = true;
@@ -568,6 +573,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            string quoteConventionDetail;
+            if (!NormalizeQuoteConvention(ref sig, out quoteConventionDetail))
+            {
+                if (PermanentRejectGuard)
+                    lastRejectedEventId = sig.EventId;
+                Audit("skip_quote_convention", sig, quoteConventionDetail);
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(quoteConventionDetail))
+                Audit("quote_convention_normalized", sig, quoteConventionDetail);
+
             DateTime blockedUntil;
             if (retryBlockedUntil.TryGetValue(sig.EventId, out blockedUntil) && DateTime.UtcNow < blockedUntil)
             {
@@ -643,7 +659,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             string geometryDetail;
-            if (ShouldRebaseLevels(sig))
+            if (sig.InverseQuote)
+            {
+                if (!RebaseMappedLevelsToLiveEntry)
+                {
+                    if (PermanentRejectGuard)
+                        lastRejectedEventId = sig.EventId;
+                    Audit("skip_inverse_quote_requires_rebase", sig, "Rebase Levels To Live must be enabled for USDJPY -> 6J/MJY/J7");
+                    return;
+                }
+                if (!TryRebaseInverseQuoteLevels(sig, liveEntry, out sig, out geometryDetail))
+                {
+                    if (PermanentRejectGuard)
+                        lastRejectedEventId = sig.EventId;
+                    Audit("skip_inverse_quote_geometry", sig, geometryDetail);
+                    return;
+                }
+                Audit("inverse_quote_levels_rebased", sig, geometryDetail);
+            }
+            else if (ShouldRebaseLevels(sig))
             {
                 sig = RebaseLevels(sig, liveEntry, out geometryDetail);
                 Audit("levels_rebased", sig, geometryDetail);
@@ -1920,6 +1954,34 @@ namespace NinjaTrader.NinjaScript.Strategies
                 && SameText(sourceCanonical, chartCanonical);
         }
 
+        private bool NormalizeQuoteConvention(ref BridgeSignal sig, out string detail)
+        {
+            detail = string.Empty;
+            if (!IsUsdJpySource(sig.SourceSymbol) || !IsJpyUsdFuturesTarget())
+                return true;
+            if (!AutoInverseJpyQuoteMapping)
+            {
+                detail = "inverse_quote_mapping_disabled source=" + sig.SourceSymbol + " target=" + Instrument.FullName;
+                return false;
+            }
+            sig.Direction = -sig.Direction;
+            sig.InverseQuote = true;
+            detail = "USDJPY_TO_JPYUSD direction_flipped=1 source=" + sig.SourceSymbol + " target=" + Instrument.FullName;
+            return true;
+        }
+
+        private bool IsJpyUsdFuturesTarget()
+        {
+            var master = new string((Instrument.MasterInstrument.Name ?? string.Empty).Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            return master == "6J" || master == "MJY" || master == "J7";
+        }
+
+        private static bool IsUsdJpySource(string value)
+        {
+            var source = new string((value ?? string.Empty).Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            return source == "USDJPY" || source == "USDJPYM";
+        }
+
         private IEnumerable<string> SourceAliases()
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1947,6 +2009,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (canonical == "US30") { yield return "DJ30"; yield return "US30m"; }
             if (canonical == "DE30") { yield return "GER30"; yield return "GER40"; yield return "DAX40"; yield return "DE30m"; }
             if (canonical == "JP225") { yield return "JP225m"; yield return "JPN225"; yield return "JPN225m"; }
+            if (canonical == "JPYFX") { yield return "USDJPY"; yield return "USDJPYm"; yield return "JPYUSD"; yield return "JPYUSDm"; }
             if (canonical == "UKOIL") { yield return "UKOILm"; yield return "XBRUSD"; }
             if (canonical == "USOIL") { yield return "USOILm"; yield return "XTIUSD"; }
         }
@@ -2045,6 +2108,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             detail = "source_entry=" + oldEntry + " live_entry=" + liveEntry + " old_sl=" + oldSl + " old_tp=" + oldTp + " old_half=" + oldHalf + " new_sl=" + sig.Sl + " new_tp=" + sig.Tp + " new_half=" + sig.HalfTrigger;
             return sig;
+        }
+
+        private static bool TryRebaseInverseQuoteLevels(BridgeSignal source, double liveEntry,
+                                                        out BridgeSignal mapped, out string detail)
+        {
+            mapped = source;
+            detail = string.Empty;
+            var oldEntry = source.BridgeEntry;
+            var oldSl = source.Sl;
+            var oldTp = source.Tp;
+            var oldHalf = source.HalfTrigger;
+            if (liveEntry <= 0 || oldEntry <= 0 || oldSl <= 0 || oldTp <= 0)
+            {
+                detail = "inverse_quote_missing_levels source_entry=" + oldEntry + " source_sl=" + oldSl + " source_tp=" + oldTp + " live_entry=" + liveEntry;
+                return false;
+            }
+
+            // JPY/USD is reciprocal to USD/JPY. Apply reciprocal level ratios
+            // to the live futures entry so the current futures basis is retained.
+            mapped.BridgeEntry = liveEntry;
+            mapped.Sl = liveEntry * oldEntry / oldSl;
+            mapped.Tp = liveEntry * oldEntry / oldTp;
+            mapped.HalfTrigger = oldHalf > 0 ? liveEntry * oldEntry / oldHalf : 0;
+            detail = "USDJPY_TO_JPYUSD source_entry=" + oldEntry + " source_sl=" + oldSl + " source_tp=" + oldTp
+                + " source_half=" + oldHalf + " live_entry=" + liveEntry + " mapped_sl=" + mapped.Sl
+                + " mapped_tp=" + mapped.Tp + " mapped_half=" + mapped.HalfTrigger;
+            return !double.IsNaN(mapped.Sl) && !double.IsInfinity(mapped.Sl)
+                && !double.IsNaN(mapped.Tp) && !double.IsInfinity(mapped.Tp)
+                && (mapped.HalfTrigger <= 0 || (!double.IsNaN(mapped.HalfTrigger) && !double.IsInfinity(mapped.HalfTrigger)));
         }
 
         private bool ValidateMappedPriceBasis(BridgeSignal sig, double liveEntry, out string detail)
@@ -2518,7 +2610,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private static bool IsKnownExecutionFamily(string value)
         {
-            return new[] { "US500", "USTEC", "US30", "DE30", "JP225", "USOIL", "UKOIL", "BTCUSD" }.Contains(value);
+            return new[] { "US500", "USTEC", "US30", "DE30", "JP225", "USOIL", "UKOIL", "BTCUSD", "JPYFX" }.Contains(value);
         }
 
         private static string CanonicalInstrumentSymbol(string value)
@@ -2548,12 +2640,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (master == "CL" || master == "MCL") return "USOIL";
             if (master == "BZ" || master == "BRN") return "UKOIL";
             if (master == "BTC" || master == "MBT") return "BTCUSD";
+            if (master == "6J" || master == "MJY" || master == "J7") return "JPYFX";
             return CanonicalInstrumentSymbol(Instrument.FullName);
         }
 
         private static string CanonicalSymbol(string value)
         {
             var source = new string((value ?? string.Empty).Trim().Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            // J7 is a product root, not a contract-year suffix.
+            if (source == "J7") return "JPYFX";
             while (source.Length > 0 && char.IsDigit(source[source.Length - 1]))
                 source = source.Substring(0, source.Length - 1);
             if (source.EndsWith("M", StringComparison.Ordinal) && source.Length > 1 && !new[] { "MES", "MNQ", "MYM", "MCL", "MNK", "FDXM" }.Contains(source))
@@ -2566,6 +2661,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (source == "UKOIL" || source == "XBRUSD" || source == "BRENT") return "UKOIL";
             if (source == "USOIL" || source == "XTIUSD" || source == "WTI") return "USOIL";
             if (source == "BTCUSD" || source == "BTCUSDT" || source == "XBTUSD" || source == "BTC" || source == "MBT") return "BTCUSD";
+            if (source == "USDJPY" || source == "JPYUSD" || source == "6J" || source == "MJY" || source == "J7") return "JPYFX";
             return source;
         }
 
@@ -2688,6 +2784,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             public string RiskBasis;
             public double RiskReferenceCapital;
             public double RiskBudgetMoney;
+            public bool InverseQuote;
         }
 
         private struct TradeState

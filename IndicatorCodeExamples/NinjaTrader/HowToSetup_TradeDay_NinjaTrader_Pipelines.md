@@ -429,6 +429,19 @@ C:\Users\Cem\Documents\NinjaTrader 8\NinjaBridgeState\TradeDayCompliance\<ACCOUN
 
 Dosyada yalnizca birkac scalar alan ve o gun en fazla 200 order kimligi vardir. Tick loglamaz ve diski sisirmez.
 
+## USDJPY -> 6J/MJY/J7 inverse quote kurulumu
+
+CME'nin guncel Japon yeni futures urunleri `USD/JPY` degil `JPY/USD` olarak fiyatlanir. USDJPY kaynagini standart `6J`, mikro `MJY` veya E-mini `J7` kontratina baglarken:
+
+```text
+Source Symbol Aliases CSV = USDJPYm,USDJPY
+Require Chart Symbol = true
+Rebase Levels To Live = true
+Auto USDJPY -> JPY Futures = true
+```
+
+Listener USDJPY `BUY` sinyalini futures `SELL`, USDJPY `SELL` sinyalini futures `BUY` olarak uygular. SL, TP ve HCBE seviyeleri reciprocal oranla hedef kontratin canli girisine tasinir. `Auto USDJPY -> JPY Futures=false` veya `Rebase Levels To Live=false` ise inverse sinyal fail-closed reddedilir. Eski USD/JPY kotasyonlu `M6J` Mart 2024'te delist edilmistir ve bu inverse mapping'e dahil degildir.
+
 ## TradeDay Resmi Compliance Kaynaklari
 
 - Maximum drawdown: https://tradeday.freshdesk.com/en/support/solutions/articles/103000008855-what-is-the-maximum-drawdown-rule-

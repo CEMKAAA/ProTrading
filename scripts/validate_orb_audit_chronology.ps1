@@ -51,7 +51,7 @@ foreach ($name in $files) {
     Assert-True ($source.Contains('if(signals[i].executionDirection!=opposite)continue;')) "$name does not require an opposite execution direction"
     Assert-True ($source.Contains('forcedExitOutcome="NEW_DAY_REVERSE_EXIT"')) "$name does not route the next-day reverse into simulation"
     Assert-True ($source.Contains('||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NEW_DAY_REVERSE_EXIT";')) "$name does not value a next-day reverse at its market exit price"
-    Assert-True ($source.Contains('FindNewDayAcceptedReverseExit(acceptedSignals,entryT,execDir,now')) "$name does not resolve next-day reversal from the accepted signal stream"
+    Assert-True ($source.Contains('FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow')) "$name does not resolve next-day reversal from the accepted signal stream"
 
     $sameBar = [regex]::Match($source, "(?s)bool BtTpFirst\(.*?\n\}").Value
     Assert-True ($sameBar.Length -gt 0) "$name has no same-bar resolver"

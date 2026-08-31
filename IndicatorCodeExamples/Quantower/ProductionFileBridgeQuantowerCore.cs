@@ -15,7 +15,7 @@ namespace ProTradingSystem.Quantower
 {
     public abstract class ProductionFileBridgeQuantowerCore : Strategy, ICurrentSymbol, ICurrentAccount
     {
-        private const string CoreBuild = "2026-08-26.quantower-production-v4-fixed-reference-risk";
+        private const string CoreBuild = "2026-08-31.quantower-production-v5-usdjpy-inverse";
 
         protected virtual bool RequireAcceptedSignalSeal { get { return false; } }
         private static readonly object GlobalEntrySync = new object();
@@ -116,16 +116,19 @@ namespace ProTradingSystem.Quantower
         [InputParameter("Rebase Only If Symbol Differs", 41)]
         public bool RebaseOnlyIfSymbolDiffers { get; set; }
 
-        [InputParameter("Fail If Exact Protection Fails", 42)]
+        [InputParameter("Auto USDJPY -> JPY Futures", 42)]
+        public bool AutoInverseJpyQuoteMapping { get; set; }
+
+        [InputParameter("Fail If Exact Protection Fails", 43)]
         public bool FailIfExactProtectionFails { get; set; }
 
-        [InputParameter("Use Reduce Only Protection", 43)]
+        [InputParameter("Use Reduce Only Protection", 44)]
         public bool UseReduceOnlyProtection { get; set; }
 
-        [InputParameter("Allow Reduce Only Fallback", 44)]
+        [InputParameter("Allow Reduce Only Fallback", 45)]
         public bool AllowReduceOnlyFallback { get; set; }
 
-        [InputParameter("Protection Verify Seconds", 45, 2, 60, 1, 0)]
+        [InputParameter("Protection Verify Seconds", 46, 2, 60, 1, 0)]
         public int ProtectionVerifySeconds { get; set; }
 
         [InputParameter("Close Reverse", 50)]
@@ -195,6 +198,7 @@ namespace ProTradingSystem.Quantower
             MaxRiskOvershootPercent = 3.0;
             RebaseLevelsToLive = true;
             RebaseOnlyIfSymbolDiffers = true;
+            AutoInverseJpyQuoteMapping = true;
             FailIfExactProtectionFails = true;
             UseReduceOnlyProtection = true;
             AllowReduceOnlyFallback = true;
@@ -410,7 +414,19 @@ namespace ProTradingSystem.Quantower
                 }
                 return;
             }
+            string quoteConventionDetail;
+            if (!NormalizeQuoteConvention(signal, out quoteConventionDetail))
+            {
+                var key = signal.EventId + "|" + quoteConventionDetail;
+                if (!SameText(key, lastRejectedIdentity))
+                    Audit("quote_convention_rejected", signal, quoteConventionDetail);
+                lastRejectedIdentity = key;
+                SetAction("quote_convention_rejected", quoteConventionDetail);
+                return;
+            }
             lastRejectedIdentity = string.Empty;
+            if (signal.InverseQuote)
+                Audit("quote_convention_normalized", signal, quoteConventionDetail);
 
             DateTime blockedUntil;
             if (retryAfter.TryGetValue(signal.EventId, out blockedUntil) && DateTime.UtcNow < blockedUntil)
@@ -471,7 +487,26 @@ namespace ProTradingSystem.Quantower
                 return false;
             }
 
-            if (ShouldRebase(signal))
+            if (signal.InverseQuote)
+            {
+                if (!RebaseLevelsToLive)
+                {
+                    lastSeenEventId = signal.EventId;
+                    detail = "Rebase Levels To Live must be enabled for USDJPY -> 6J/MJY/J7";
+                    Audit("inverse_quote_requires_rebase", signal, detail);
+                    return true;
+                }
+                BridgeSignal mapped;
+                if (!TryRebaseInverseQuoteLevels(signal, liveEntry, out mapped, out detail))
+                {
+                    lastSeenEventId = signal.EventId;
+                    Audit("inverse_quote_geometry_rejected", signal, detail);
+                    return true;
+                }
+                signal = mapped;
+                Audit("inverse_quote_levels_rebased", signal, detail);
+            }
+            else if (ShouldRebase(signal))
             {
                 var oldEntry = signal.BridgeEntry;
                 signal = Rebase(signal, liveEntry);
@@ -1398,6 +1433,34 @@ namespace ProTradingSystem.Quantower
             return true;
         }
 
+        private bool NormalizeQuoteConvention(BridgeSignal signal, out string detail)
+        {
+            detail = string.Empty;
+            if (!IsUsdJpySource(signal.SourceSymbol) || !IsJpyUsdFuturesTarget())
+                return true;
+            if (!AutoInverseJpyQuoteMapping)
+            {
+                detail = "inverse_quote_mapping_disabled source=" + signal.SourceSymbol + " target=" + CurrentSymbol.Name;
+                return false;
+            }
+            signal.Direction = -signal.Direction;
+            signal.InverseQuote = true;
+            detail = "USDJPY_TO_JPYUSD direction_flipped=1 source=" + signal.SourceSymbol + " target=" + CurrentSymbol.Name;
+            return true;
+        }
+
+        private bool IsJpyUsdFuturesTarget()
+        {
+            var root = FuturesContractRoot(CurrentSymbol == null ? string.Empty : CurrentSymbol.Name);
+            return root == "6J" || root == "MJY" || root == "J7";
+        }
+
+        private static bool IsUsdJpySource(string value)
+        {
+            var source = Sanitize(value).ToUpperInvariant();
+            return source == "USDJPY" || source == "USDJPYM";
+        }
+
         private string ResolveBridgeReadPath()
         {
             var configured = resolvedBridgePath ?? ExpandPath(BridgeLatestPath);
@@ -1451,6 +1514,7 @@ namespace ProTradingSystem.Quantower
         {
             if (canonical == "BTCUSD") return new[] { "BTCUSDm", "BTCUSD", "BTCUSDT", "XBTUSD" };
             if (canonical == "JP225") return new[] { "JP225m", "JP225", "JPN225m", "JPN225" };
+            if (canonical == "JPYFX") return new[] { "USDJPYm", "USDJPY", "JPYUSDm", "JPYUSD" };
             if (canonical == "US500") return new[] { "US500m", "US500", "SPX500m", "SPX500" };
             if (canonical == "USTEC") return new[] { "USTECm", "USTEC", "US100m", "US100", "NAS100" };
             if (canonical == "US30") return new[] { "US30m", "US30", "DJ30" };
@@ -1485,6 +1549,33 @@ namespace ProTradingSystem.Quantower
             }
             signal.BridgeEntry = liveEntry;
             return signal;
+        }
+
+        private static bool TryRebaseInverseQuoteLevels(BridgeSignal source, double liveEntry,
+                                                        out BridgeSignal mapped, out string detail)
+        {
+            mapped = source;
+            detail = string.Empty;
+            var oldEntry = source.BridgeEntry;
+            var oldSl = source.Sl;
+            var oldTp = source.Tp;
+            var oldHalf = source.HalfTrigger;
+            if (liveEntry <= 0 || oldEntry <= 0 || oldSl <= 0 || oldTp <= 0)
+            {
+                detail = "inverse_quote_missing_levels source_entry=" + oldEntry + " source_sl=" + oldSl + " source_tp=" + oldTp + " live_entry=" + liveEntry;
+                return false;
+            }
+
+            mapped.BridgeEntry = liveEntry;
+            mapped.Sl = liveEntry * oldEntry / oldSl;
+            mapped.Tp = liveEntry * oldEntry / oldTp;
+            mapped.HalfTrigger = oldHalf > 0 ? liveEntry * oldEntry / oldHalf : 0;
+            detail = "USDJPY_TO_JPYUSD source_entry=" + oldEntry + " source_sl=" + oldSl + " source_tp=" + oldTp
+                + " source_half=" + oldHalf + " live_entry=" + liveEntry + " mapped_sl=" + mapped.Sl
+                + " mapped_tp=" + mapped.Tp + " mapped_half=" + mapped.HalfTrigger;
+            return !double.IsNaN(mapped.Sl) && !double.IsInfinity(mapped.Sl)
+                && !double.IsNaN(mapped.Tp) && !double.IsInfinity(mapped.Tp)
+                && (mapped.HalfTrigger <= 0 || (!double.IsNaN(mapped.HalfTrigger) && !double.IsInfinity(mapped.HalfTrigger)));
         }
 
         private static bool ValidGeometry(int direction, double entry, double sl, double tp)
@@ -1557,6 +1648,7 @@ namespace ProTradingSystem.Quantower
             if (s.Contains("HK50")) return "HK50";
             if (s.Contains("USOIL") || s.Contains("WTI")) return "USOIL";
             if (s.Contains("UKOIL") || s.Contains("BRENT")) return "UKOIL";
+            if (s == "USDJPY" || s == "USDJPYM" || s == "JPYUSD" || s == "JPYUSDM") return "JPYFX";
 
             var root = FuturesContractRoot(value);
             if (root == "BTC" || root == "MBT") return "BTCUSD";
@@ -1568,6 +1660,7 @@ namespace ProTradingSystem.Quantower
             if (root == "HSI" || root == "MHI") return "HK50";
             if (root == "CL" || root == "MCL") return "USOIL";
             if (root == "BZ" || root == "BRN") return "UKOIL";
+            if (root == "6J" || root == "MJY" || root == "J7") return "JPYFX";
             return s.EndsWith("M") && s.Length > 1 ? s.Substring(0, s.Length - 1) : s;
         }
 
@@ -1579,7 +1672,7 @@ namespace ProTradingSystem.Quantower
 
             var tokens = raw.Split(new[] { ' ', '\t', '-', '_', '.', '/', '@', ':', '|' }, StringSplitOptions.RemoveEmptyEntries);
             var token = Sanitize(tokens.Length > 0 ? tokens[0] : raw).ToUpperInvariant();
-            var roots = new[] { "FDXM", "FDAX", "MES", "MNQ", "MYM", "MCL", "MBT", "MNK", "MHI", "NKD", "NIY", "BRN", "BTC", "HSI", "DAX", "NQ", "ES", "YM", "CL", "BZ" };
+            var roots = new[] { "FDXM", "FDAX", "MES", "MNQ", "MYM", "MCL", "MBT", "MNK", "MHI", "NKD", "NIY", "BRN", "BTC", "HSI", "DAX", "MJY", "6J", "J7", "NQ", "ES", "YM", "CL", "BZ" };
             foreach (var root in roots)
             {
                 if (!token.StartsWith(root, StringComparison.Ordinal))
@@ -1846,6 +1939,7 @@ namespace ProTradingSystem.Quantower
             public string RiskBasis;
             public double RiskReferenceCapital;
             public double RiskBudgetMoney;
+            public bool InverseQuote;
             public string ReadPath;
         }
 

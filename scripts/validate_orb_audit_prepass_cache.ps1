@@ -24,7 +24,9 @@ foreach ($name in $files) {
     Assert-True ($source.Contains("FindHistBreakoutAfterRates(daySignalRates,daySignalCount")) "$name prepass still uses the repeated I/O scanner"
     Assert-True ($source.Contains('g_histAuditStage="PREP";')) "$name has no preparation progress stage"
     Assert-True ($source.Contains('g_histAuditStage="CALC";')) "$name has no calculation progress stage"
-    Assert-True ($source.Contains('20.0+80.0*(double)g_histAuditProcessedDays')) "$name does not reserve progress range for prepass"
+    Assert-True ($source.Contains('35.0*(double)done/(double)MathMax(1,g_histRunDays)')) "$name does not expose real prepass progress"
+    Assert-True ($source.Contains('40.0+60.0*(double)done/(double)MathMax(1,g_histRunDays)')) "$name does not expose real calculation progress"
+    Assert-True ($source.Contains('g_histRejectedWindowRaw+=ProcessHistoricalPrepDay(g_histPrepBack);')) "$name prepass is not incrementally scheduled"
 
     $buildStart = $source.IndexOf("int BuildHistoricalWindowSignals(")
     $buildEnd = $source.IndexOf("bool FindNewDayAcceptedReverseExit(", $buildStart)
