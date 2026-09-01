@@ -24,9 +24,39 @@ foreach ($name in $files) {
     Assert-True ($source.Contains("FindHistBreakoutAfterRates(daySignalRates,daySignalCount")) "$name prepass still uses the repeated I/O scanner"
     Assert-True ($source.Contains('g_histAuditStage="PREP";')) "$name has no preparation progress stage"
     Assert-True ($source.Contains('g_histAuditStage="CALC";')) "$name has no calculation progress stage"
-    Assert-True ($source.Contains('35.0*(double)done/(double)MathMax(1,g_histRunDays)')) "$name does not expose real prepass progress"
-    Assert-True ($source.Contains('40.0+60.0*(double)done/(double)MathMax(1,g_histRunDays)')) "$name does not expose real calculation progress"
+    Assert-True ($source.Contains('SetHistoricalAuditProgress("PREP",5.0,40.0,done,g_histRunDays);')) "$name does not expose real prepass work progress"
+    Assert-True ($source.Contains('SetHistoricalAuditProgress("CALC",55.0,45.0,done,g_histRunDays);')) "$name does not expose real calculation work progress"
     Assert-True ($source.Contains('g_histRejectedWindowRaw+=ProcessHistoricalPrepDay(g_histPrepBack);')) "$name prepass is not incrementally scheduled"
+    Assert-True ($source.Contains('if(!g_rtFilteredWindowReverseExit&&!g_rtPostTradeDispBlockExit)break;')) "$name scans unnecessary post-entry candidates"
+    Assert-True ($source.Contains('bool visualCandidate=(!hasAccepted&&firstWindowIndex<0);')) "$name does not compact visual rejects"
+    Assert-True ($source.Contains('AppendOrbOperationalSignal(g_histOperationalSignals')) "$name does not cache operational line boundaries"
+    Assert-True ($source.Contains('bool operationalKnown;')) "$name day snapshot does not cache PREP completion"
+    Assert-True ($source.Contains('g_histDaySnapshots[back].operationalFound=true;')) "$name does not persist PREP's first operational breakout"
+    Assert-True ($source.Contains('g_histDaySnapshots[back].operationalModernDetail=detail;')) "$name loses the cached modern-filter detail"
+    Assert-True ($source.Contains('g_histDaySnapshots[back].operationalKnown=true;')) "$name does not finalize the daily operational snapshot"
+    Assert-True ($source.Contains('g_histDaySnapshots[back].operationalKnown)')) "$name CALC does not consume the PREP snapshot"
+    Assert-True ($source.Contains('operationalFound=FindHistOperationalBreakout(')) "$name lost the safe uncached fallback scanner"
+    Assert-True ($source.Contains('FirstOrbSignalAfter(signals,afterTime)')) "$name does not binary-seek chronological exit streams"
+    Assert-True ($source.Contains('PrepareHistoricalTickReplayRange(fromMs,toMs,scanFirst,scanAfter)')) "$name does not use the direct indexed tick-cache view"
+    Assert-True ($source.Contains('CopyTicksRange(_Symbol,g_histTickReplayCache,COPY_TICKS_INFO')) "$name tick cache is not built from the exact bid/ask-change stream"
+    Assert-True ($source.Contains('HistoricalTickLowerBound(fromMs)')) "$name tick cache lacks exact lower-bound slicing"
+    Assert-True ($source.Contains('HistoricalTickUpperBound(toMs)')) "$name tick cache lacks exact upper-bound slicing"
+    Assert-True ($source.Contains('BuildHistoricalTickReplayBlocks();')) "$name does not build exact tick-block extrema"
+    Assert-True ($source.Contains('void InitializeHistoricalTickReplayCoverage()')) "$name does not probe tick coverage once per audit"
+    Assert-True ($source.Contains('CopyTicks(_Symbol,firstQuote,COPY_TICKS_INFO')) "$name does not locate the first available quote tick"
+    Assert-True ($source.Contains('if(g_histTickCoverageKnown&&fromMs<g_histTickFirstAvailableMs)return false;')) "$name still retries unavailable old tick history per trade"
+    Assert-True ($source.Contains('#define ORB_HIST_TICK_PREFETCH_HOURS 1')) "$name exact replay starts with an unnecessarily wide tick window"
+    Assert-True ($source.Contains('HistoricalTickBlockCanSkip(block,isBuy,entry,risk,effSl,tps,res.maxTp')) "$name does not use conservative block pruning"
+    Assert-True ($source.Contains('block.validQuotes<=0')) "$name tick blocks do not preserve invalid-quote semantics"
+    Assert-True ($source.Contains('if(forcedExitTime>fillTime&&lastTime>=forcedExitTime)return false;')) "$name could skip a forced-exit boundary"
+    Assert-True ($source.Contains('if(isBuy?(minClose<=effSl):(maxClose>=effSl))return false;')) "$name could skip a stop-loss event"
+    Assert-True ($source.Contains('copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,fromMs,toMs);')) "$name lost the exact bid/ask direct-I/O fallback"
+
+    $tickStart = $source.IndexOf('bool SimulateTradeTicks(datetime sigTime')
+    $tickEnd = $source.IndexOf('HistResult SimulateTrade(datetime sigTime', $tickStart)
+    Assert-True ($tickStart -ge 0 -and $tickEnd -gt $tickStart) "$name tick simulator boundaries not found"
+    $tickBody = $source.Substring($tickStart, $tickEnd - $tickStart)
+    Assert-True (-not $tickBody.Contains('CopyHistoricalTickReplaySlice(')) "$name still allocates and copies the tick slice per trade"
 
     $buildStart = $source.IndexOf("int BuildHistoricalWindowSignals(")
     $buildEnd = $source.IndexOf("bool FindNewDayAcceptedReverseExit(", $buildStart)

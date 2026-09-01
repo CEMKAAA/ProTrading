@@ -42,8 +42,8 @@ foreach ($name in $files) {
     foreach ($required in @(
         'g_histRedrawQueued',
         'g_histAuditCancelRequested',
-        'const ulong budgetMs=30;',
-        'EventSetMillisecondTimer(200);',
+        'ulong budgetMs=(g_histAuditPhase==2?22:30);',
+        'EventSetMillisecondTimer(40);',
         'ProcessHistoricalPrepDay(g_histPrepBack)',
         'ProcessHistoricalCalcDay(g_histCalcBack)',
         'QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;',
@@ -56,8 +56,16 @@ foreach ($name in $files) {
         'ClearNasPending("nas_volume_toggled")',
         'NAS-X',
         'DAY-REV'
-        'BuildHistoricalNasEventCache(days,currentTime,nasCacheDetail);'
+        'bool nasCacheOk=BuildHistoricalNasEventCache(days,currentTime,nasCacheDetail);'
         'NAS_CACHE_OK'
+        'NAS_CACHE_REUSE'
+        'HistoricalNasEventAllowed'
+        'FirstNasEventAfter'
+        'DrawCachedNasSignalOverlayEvent'
+        'SetHistoricalAuditProgress("PREP",5.0,40.0'
+        'SetHistoricalAuditProgress("DRAW",45.0,10.0'
+        'SetHistoricalAuditProgress("CALC",55.0,45.0'
+        'IsFreshHistoricalBuildObject'
         'g_histActiveGeneration'
         'BeginHistoricalSnapshot();'
         'CommitHistoricalSnapshot();'
@@ -65,6 +73,16 @@ foreach ($name in $files) {
         'CopyTicksRange(_Symbol,ticks,COPY_TICKS_ALL'
         'CopyRates(_Symbol,PERIOD_M1,eventTime-60,eventTime+120,m1)'
         'RenderHistoricalAuditProgress();'
+        'g_histAuditPrepSec='
+        'g_histAuditDrawSec='
+        'g_histAuditCalcSec='
+        'g_histAuditCommitSec='
+        'g_histAuditRequestedMs=queuedAtMs;'
+        'wall_sec='
+        'COMMIT='
+        'SERIES_SYNCHRONIZED'
+        'SERIES_FIRSTDATE'
+        'stages[COVERAGE='
     )) {
         if (-not $text.Contains($required)) { throw "$name missing lifecycle invariant: $required" }
     }
@@ -91,11 +109,29 @@ foreach ($name in $files) {
     }
     $finalize = Get-FunctionBody $text 'void FinalizeHistoricalAudit()'
     if (-not $finalize.Contains('CommitHistoricalSnapshot();')) { throw "$name does not atomically commit the completed generation" }
+    if ($finalize.IndexOf('g_histAuditCalcSec=') -gt $finalize.IndexOf('CommitHistoricalSnapshot();')) {
+        throw "$name no longer separates CALC and COMMIT timing"
+    }
+    if (-not $finalize.Contains('g_histAuditLastWallSec=') -or -not $finalize.Contains('g_histAuditRequestedMs=0;')) {
+        throw "$name does not report and reset end-to-end audit wall time"
+    }
+
+    $progress = Get-FunctionBody $text 'void RenderHistoricalAuditProgress('
+    if ($progress.Contains('UpdateDashboard();')) { throw "$name lightweight progress renderer still rebuilds the full dashboard" }
+    if (-not $progress.Contains('g_histAuditStageDone') -or -not $progress.Contains('g_histAuditStageTotal')) {
+        throw "$name progress renderer does not expose completed/total work"
+    }
+    if (-not $progress.Contains('elapsedBase') -or -not $progress.Contains('/1000.0')) {
+        throw "$name progress renderer does not expose elapsed wall time"
+    }
 
     $timer = Get-FunctionBody $text 'void OnTimer()'
     $tradeAt = $timer.IndexOf('TryOpenSignal();ManagePositions();ProcessNasOppositeExit();')
     $auditAt = $timer.IndexOf('ProcessHistoricalAuditStep();')
     if ($tradeAt -lt 0 -or $auditAt -le $tradeAt) { throw "$name lets history work run before live execution management" }
+    if (-not $timer.Contains('if(!g_histAuditRunning&&!g_histRedrawQueued)RefreshNasSignalOverlay();')) {
+        throw "$name refreshes the NAS overlay while an audit generation is being built"
+    }
 
     $forcedResolver = Get-FunctionBody $text 'bool ResolveHistoricalForcedExitPrice('
     if (-not $forcedResolver.Contains('COPY_TICKS_ALL') -or -not $forcedResolver.Contains('PERIOD_M1')) {

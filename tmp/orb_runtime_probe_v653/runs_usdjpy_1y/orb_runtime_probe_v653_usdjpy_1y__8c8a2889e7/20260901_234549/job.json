@@ -1,0 +1,18 @@
+{
+  "job_id": "orb_runtime_probe_v653_usdjpy_1y",
+  "ea": "OrbAuditRuntimeProbe",
+  "ea_kind": "orb",
+  "symbol": "USDJPYm",
+  "timeframe": "M5",
+  "from_date": "2026.06.25",
+  "to_date": "2026.06.26",
+  "run_dir": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_runtime_probe_v653\\runs_usdjpy_1y\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7\\20260901_234549",
+  "tester_ini": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_runtime_probe_v653\\runs_usdjpy_1y\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7\\20260901_234549\\tester_configs\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7.ini",
+  "tester_report": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_runtime_probe_v653\\runs_usdjpy_1y\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7\\20260901_234549\\reports\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7.xml",
+  "command": [
+    "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\terminal64.exe",
+    "/portable",
+    "/config:C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_runtime_probe_v653\\runs_usdjpy_1y\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7\\20260901_234549\\tester_configs\\orb_runtime_probe_v653_usdjpy_1y__8c8a2889e7.ini"
+  ],
+  "dry_run": false
+}

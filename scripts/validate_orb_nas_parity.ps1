@@ -55,7 +55,8 @@ foreach ($name in $orbFiles) {
     Assert-True ($source.Contains('CreateEdit("EDIT_NAS_VOL_X"')) "$name does not expose the NAS volume multiplier"
     Assert-True ($source.Contains('bool OrbNasVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,')) "$name has no standalone-parity NAS volume filter"
     Assert-True ($source.Contains('const int lookback=20;')) "$name NAS volume lookback differs from standalone"
-    Assert-True ($source.Contains('averageVolume=sum/(double)lookback;')) "$name NAS volume average differs from standalone"
+    Assert-True ($source.Contains('if(signalIndex<lookback||signalIndex<0||signalIndex>=count)return;')) "$name NAS volume lookback is not bounds-safe"
+    Assert-True ($source.Contains('averageVolume=sum/(double)samples;')) "$name NAS volume average differs from standalone"
     Assert-True ($source.Contains('double threshold=averageVolume*g_rtNasVolumeMultiplier;')) "$name NAS volume threshold differs from standalone"
     Assert-True ($source.Contains('if(signalVolume<threshold)')) "$name NAS volume comparison differs from standalone"
     Assert-True (([regex]::Matches($source, 'OrbNasVolumeFilterAllows\(rates,i,volumeReason,signalVolume,averageVolume\)')).Count -ge 6) "$name does not apply NAS volume filtering to confirmation, exit, state, and overlay paths"
@@ -94,6 +95,24 @@ foreach ($name in $orbFiles) {
     Assert-True ($source.Contains('publishOk=OrbProPublishCloseOnly(g_nasManagedExecDir,reason,true);')) "$name does not publish the latched exit to listeners"
     Assert-True ($source.Contains('RuntimeNasExitWaitKey()')) "$name does not persist the exit grace per chart instance"
     Assert-True ($source.Contains('EDIT_NAS_EXIT_WAIT')) "$name does not expose the exit grace on the dashboard"
+    Assert-True ($source.Contains('bool coreSignalSettingsChanged=(requested!=g_rtNasActiveSignalLookbackMinutes')) "$name APPLY NAS does not track core field changes"
+    Assert-True ($source.Contains('bool volumeSettingsChanged=(MathAbs(requestedNasVolX-g_rtNasVolumeMultiplier)>0.00005);')) "$name APPLY NAS does not track the volume field"
+    Assert-True (-not $source.Contains('else if(lifecycleActive&&signalSettingsChanged)')) "$name still silently blocks APPLY NAS while a lifecycle is active"
+    Assert-True (-not $source.Contains('NAS_APPLY_BLOCKED_ACTIVE_LIFECYCLE')) "$name still contains the legacy all-or-nothing lifecycle guard"
+    Assert-True ($source.Contains('SetRuntimeNasExitWait(requestedWait)')) "$name APPLY NAS does not persist EXIT WAIT"
+    Assert-True ($source.Contains('QueueHistoricalRedraw(0);UpdateDashboard();ChartRedraw(0);return;')) "$name APPLY NAS does not immediately invalidate and requeue the audit"
+    Assert-True ($source.Contains('if(waitChanged&&g_nasManagedLifecycle)')) "$name does not re-evaluate an active managed lifecycle after EXIT WAIT changes"
+    Assert-True ($source.Contains('void RefreshHistoricalNasFilterStats()')) "$name does not expose NAS filter effectiveness"
+    Assert-True ($source.Contains('g_lastNasAllowedEventCount') -and $source.Contains('g_lastNasRawEventCount')) "$name dashboard cannot verify allowed/raw NAS counts"
+}
+
+$volumes = @(50.0, 100.0, 150.0, 250.0)
+$average = 100.0
+$previousAllowed = [int]::MaxValue
+foreach ($multiplier in @(0.5, 1.0, 2.0, 20.0, 200.0)) {
+    $allowed = @($volumes | Where-Object { $_ -ge $average * $multiplier }).Count
+    Assert-True ($allowed -le $previousAllowed) "NAS volume threshold is not monotonic at multiplier $multiplier"
+    $previousAllowed = $allowed
 }
 
 $entry = [datetime]"2026-08-30T10:00:00"

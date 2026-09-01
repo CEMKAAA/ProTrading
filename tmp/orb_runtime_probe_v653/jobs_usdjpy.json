@@ -1,0 +1,44 @@
+{
+  "jobs": [
+    {
+      "job_id": "orb_runtime_probe_v653_usdjpy_1y",
+      "execution_mode": 0,
+      "to_date": "2026.06.26",
+      "deposit": 10000,
+      "ea": "OrbAuditRuntimeProbe",
+      "model": 4,
+      "symbol": "USDJPYm",
+      "currency": "USD",
+      "timeframe": "M5",
+      "preset": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/tmp/orb_runtime_probe_v653/probe_52w.set",
+      "shutdown_terminal": true,
+      "leverage": "1:100",
+      "from_date": "2026.06.25",
+      "terminal_data_dir": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker",
+      "portable": true,
+      "ea_kind": "orb",
+      "terminal_exe": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker/terminal64.exe",
+      "timeout_sec": 600
+    },
+    {
+      "job_id": "orb_runtime_probe_v653_usdjpy_5y",
+      "execution_mode": 0,
+      "to_date": "2026.06.26",
+      "deposit": 10000,
+      "ea": "OrbAuditRuntimeProbe",
+      "model": 4,
+      "symbol": "USDJPYm",
+      "currency": "USD",
+      "timeframe": "M5",
+      "preset": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/tmp/orb_runtime_probe_v653/probe_260w.set",
+      "shutdown_terminal": true,
+      "leverage": "1:100",
+      "from_date": "2026.06.25",
+      "terminal_data_dir": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker",
+      "portable": true,
+      "ea_kind": "orb",
+      "terminal_exe": "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker/terminal64.exe",
+      "timeout_sec": 600
+    }
+  ]
+}

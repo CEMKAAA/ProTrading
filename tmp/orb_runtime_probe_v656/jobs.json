@@ -1,0 +1,44 @@
+﻿{
+    "jobs":  [
+                 {
+                     "job_id":  "orb_runtime_probe_v656_usdjpy_1y",
+                     "preset":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/tmp/orb_runtime_probe_v656/probe_52w.set",
+                     "execution_mode":  0,
+                     "from_date":  "2026.06.25",
+                     "deposit":  10000,
+                     "terminal_exe":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker/terminal64.exe",
+                     "ea":  "OrbAuditRuntimeProbe",
+                     "model":  4,
+                     "currency":  "USD",
+                     "timeframe":  "M5",
+                     "to_date":  "2026.06.26",
+                     "symbol":  "USDJPYm",
+                     "leverage":  "1:100",
+                     "terminal_data_dir":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker",
+                     "portable":  true,
+                     "ea_kind":  "orb",
+                     "shutdown_terminal":  true,
+                     "timeout_sec":  600
+                 },
+                 {
+                     "job_id":  "orb_runtime_probe_v656_usdjpy_5y",
+                     "preset":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/tmp/orb_runtime_probe_v656/probe_260w.set",
+                     "execution_mode":  0,
+                     "from_date":  "2026.06.25",
+                     "deposit":  10000,
+                     "terminal_exe":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker/terminal64.exe",
+                     "ea":  "OrbAuditRuntimeProbe",
+                     "model":  4,
+                     "currency":  "USD",
+                     "timeframe":  "M5",
+                     "to_date":  "2026.06.26",
+                     "symbol":  "USDJPYm",
+                     "leverage":  "1:100",
+                     "terminal_data_dir":  "C:/Users/Cem/Desktop/projeler/YapayZekaUygulamalari/ProTradingSystem/.tmp/orb_jp225_full_worker",
+                     "portable":  true,
+                     "ea_kind":  "orb",
+                     "shutdown_terminal":  true,
+                     "timeout_sec":  600
+                 }
+             ]
+}
