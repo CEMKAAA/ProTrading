@@ -108,7 +108,10 @@ foreach ($name in $orbFiles) {
     Assert-True ($source.Contains('forcedExitOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";')) "$name does not distinguish ADD EXIT audit outcomes"
     Assert-True ($source.Contains('datetime NasLegacyExitWindowEnd(datetime openedAt)')) "$name cannot reproduce the legacy OPP session boundary in live execution"
     Assert-True ($source.Contains('latestClosedAt=MathMin(latestClosedAt,legacyWindowEnd);')) "$name live OPP EXIT is not bounded like its historical audit"
-    Assert-True ($source.Contains('if(g_rtNasAdditionalExit)') -and $source.Contains('sim=SimulateHistoricalLifecycle(')) "$name optimizer does not extend only the ADD EXIT lifecycle"
+    $optimizerExtended = $source.Contains('if(g_rtNasAdditionalExit)') -and
+        $source.Contains('?SimulateHistoricalLifecycleAdvanced(entryT,g_btDays[di].tradeEnd') -and
+        $source.Contains(':SimulateHistoricalLifecycle(entryT,g_btDays[di].tradeEnd')
+    Assert-True $optimizerExtended "$name optimizer does not extend only the ADD EXIT lifecycle"
     Assert-True ($source.Contains('else') -and $source.Contains('sim=SimulateTrade(entryT,g_btDays[di].tradeEnd')) "$name optimizer no longer preserves legacy OPP simulation"
     Assert-True ($source.Contains('||outcome=="NAS_ADDITIONAL_EXIT"||')) "$name does not price ADD EXIT at the actual market exit"
     Assert-True ($source.Contains('RuntimeNasExitWaitKey()')) "$name does not persist the exit grace per chart instance"

@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-02.N10-M15-BREAK-1R-C2-v6.60-additional-nas-exit"
+#define ORB15_BUILD "2026-09-02.N10-M15-BREAK-1R-C2-v6.61-advanced-exact-audit"
 
 enum ORB_SESSION_PROFILE
 {
@@ -215,6 +215,9 @@ input int  InpHistoricalWeeks        = 5;
 input bool InpAuditCsv               = false;
 input bool InpAuditHistoricalSimulationCsv = false;
 input bool InpHistoricalAuditVerboseLog = false; // Detailed per-day/trade Journal output; OFF is materially faster on long windows.
+input bool InpAdvancedAuditEngineDefault = false; // OFF preserves the former exact audit engine byte-for-byte.
+input bool InpAdvancedAuditPersistIndex = true;   // Persist broker+symbol isolated exact bid/ask minute shards.
+input bool InpAdvancedAuditShadowParity = false;  // Diagnostic: compare ADV with legacy and fail back on any mismatch.
 input bool InpLogOnInit              = false;
 input bool InpTesterTradeAuditCsv    = false;
 input int  InpTesterTradeAuditMaxRows= 50000;
@@ -346,6 +349,7 @@ bool            g_rtUtcMidnightSession = false;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasExitOnOppositeSignal = false;
 bool            g_rtNasAdditionalExit = false;
+bool            g_rtAdvancedAuditEngine = false;
 int             g_rtNasSensitivity = 4;
 bool            g_rtNasVolumeFilter = false;
 double          g_rtNasVolumeMultiplier = 1.0;
@@ -3947,6 +3951,8 @@ int g_histDrawn=0;
 int g_histFiltered=0;
 double g_histRunPoint=0.0;
 
+#include "OrbAdvancedAuditEngine.mqh"
+
 void WriteInternalSimAudit(string source,datetime sigTime,datetime simEnd,string dir,double plannedEntry,double plannedSl,const HistResult &sim,string detail)
 {
    if(!g_auditRuntime||!InpAuditHistoricalSimulationCsv) return;
@@ -4467,6 +4473,35 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.exitMode=RuntimeExitLabel();res.exitPrice=0;res.exitTime=0;
    res.valid=false;res.invalidReason="NO_MARKET_DATA";
    res.targetLeg=RuntimeTargetLeg();res.hcLeg=ClampHalfBeLeg(halfBeLeg,res.targetLeg);
+   if(g_rtAdvancedAuditEngine)
+   {
+      HistResult advanced=res;
+      if(SimulateTradeTicksAdvanced(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,advanced,forcedExitTime,forcedExitOutcome))
+      {
+         if(InpAdvancedAuditShadowParity)
+         {
+            HistResult legacy=res;
+            bool savedResumeAllowed=g_histTickResumeAllowed;
+            g_histTickResumeAllowed=false;
+            ClearHistoricalTickResume();
+            bool legacyAvailable=SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,legacy,forcedExitTime,forcedExitOutcome);
+            g_histTickResumeAllowed=savedResumeAllowed;
+            ClearHistoricalTickResume();
+            if(legacyAvailable)
+            {
+               g_orbAdvParityChecks++;
+               string parityDetail="";
+               if(!OrbAdvancedAuditEquivalent(advanced,legacy,parityDetail))
+               {
+                  g_orbAdvParityMismatches++;
+                  Print("ORB15v3 ADV PARITY MISMATCH; legacy selected | ",parityDetail);
+                  return legacy;
+               }
+            }
+         }
+         return advanced;
+      }
+   }
    if(SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,res,forcedExitTime,forcedExitOutcome))
       return res;
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
@@ -5528,7 +5563,10 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
       if(newDayReverseExitAt>0&&(forcedExitAt<=0||newDayReverseExitAt<forcedExitAt))
       {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="NEW_DAY_REVERSE_EXIT";}
-      HistResult sim=SimulateHistoricalLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
+      HistResult sim=g_rtAdvancedAuditEngine
+         ?SimulateHistoricalLifecycleAdvanced(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
+            forcedExitAt,forcedExitOutcome)
+         :SimulateHistoricalLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
          forcedExitAt,forcedExitOutcome);
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
       WriteInternalSimAudit("dashboard_hist",entryT,simEnd,execDir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail+" regime_allowed="+(OrbRegimeAllowed(regimeBucket)?"1":"0")
@@ -5751,6 +5789,13 @@ void FinalizeHistoricalAudit()
    Print("ORB15v3 HIST_TICK_INDEX visited=",g_histTickTicksVisited,
       " skipped_ticks=",g_histTickTicksSkipped,
       " skipped_blocks=",g_histTickBlocksSkipped);
+   if(g_rtAdvancedAuditEngine)
+      Print("ORB15v3 ADV_EXACT_INDEX disk_hits=",g_orbAdvIndexDiskHits,
+         " cold_builds=",g_orbAdvIndexColdBuilds," invalid=",g_orbAdvIndexInvalid,
+         " tree_queries=",g_orbAdvTreeQueries," skipped_minutes=",g_orbAdvTreeNodesSkipped,
+         " exact_minutes=",g_orbAdvExactMinutes," exact_ticks=",g_orbAdvExactTicks,
+         " parity=",g_orbAdvParityChecks,"/",g_orbAdvParityMismatches,
+         " index_io_sec=",DoubleToString(g_orbAdvIndexIoSec,3));
    Audit("hist_redraw","",0,0,0,0,g_histStatLine+" days="+IntegerToString(g_histRunDays)
       +" elapsed_sec="+DoubleToString(g_histAuditLastElapsedSec,3)
       +" wall_sec="+DoubleToString(g_histAuditLastWallSec,3));
@@ -5916,6 +5961,7 @@ void DrawHistoricalSignals()
    g_histAuditStartedMs=GetTickCount64();
    g_histAuditNasSec=0.0;g_histAuditPrepSec=0.0;g_histAuditDrawSec=0.0;g_histAuditCalcSec=0.0;g_histAuditCommitSec=0.0;
    g_histTickBlocksSkipped=0;g_histTickTicksSkipped=0;g_histTickTicksVisited=0;
+   OrbAdvancedAuditResetRunStats();
    g_histAuditStageStartedMs=g_histAuditStartedMs;
    g_histAuditTotalDays=days;g_histAuditProcessedDays=0;
    SetHistoricalAuditProgress("NAS",0.0,1.0,0,1);
@@ -6151,8 +6197,11 @@ void OBT_Tick()
       string nasExitOutcome=nasExitAt>0?(g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT"):"";
       HistResult sim;
       if(g_rtNasAdditionalExit)
-         sim=SimulateHistoricalLifecycle(entryT,g_btDays[di].tradeEnd,TimeCurrent(),entry,NormalizePrice(sl),isBuy,
-            tp1,tp2,tp3,combo.be?1:0,simEnd,nasExitAt,nasExitOutcome);
+         sim=g_rtAdvancedAuditEngine
+            ?SimulateHistoricalLifecycleAdvanced(entryT,g_btDays[di].tradeEnd,TimeCurrent(),entry,NormalizePrice(sl),isBuy,
+               tp1,tp2,tp3,combo.be?1:0,simEnd,nasExitAt,nasExitOutcome)
+            :SimulateHistoricalLifecycle(entryT,g_btDays[di].tradeEnd,TimeCurrent(),entry,NormalizePrice(sl),isBuy,
+               tp1,tp2,tp3,combo.be?1:0,simEnd,nasExitAt,nasExitOutcome);
       else
          sim=SimulateTrade(entryT,g_btDays[di].tradeEnd,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,
             combo.be?1:0,true,nasExitAt,nasExitOutcome);
@@ -6455,6 +6504,8 @@ void UpdateDashboard()
    CreateButton("BTN_SL_MODE",x+330,y+220,66,18,g_rtPipSlMode?"PIP ON":"SL% MODE",g_rtPipSlMode?C'30,120,70':C'80,80,80');
    CreateEdit("EDIT_SL_VALUE",x+402,y+220,72,18,g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
    CreateButton("BTN_SL_APPLY",x+480,y+220,58,18,"APPLY",C'38,101,176');
+   CreateButton("BTN_ADV_AUD",x+542,y+220,66,18,g_rtAdvancedAuditEngine?"ADV AUD":"LEGACY",
+      g_rtAdvancedAuditEngine?C'30,150,95':C'80,80,80');
 
    // Win-rate bar doubles as an audit progress bar while a long rebuild is running.
    int barW=496,barH=14;
@@ -6473,6 +6524,7 @@ void UpdateDashboard()
       progressText+=" "+DoubleToString(g_histAuditProgressPct,1)+"%";
       ulong elapsedBase=g_histAuditRequestedMs>0?g_histAuditRequestedMs:g_histAuditStartedMs;
       if(elapsedBase>0)progressText+=" | "+DoubleToString((double)(GetTickCount64()-elapsedBase)/1000.0,1)+"s";
+      if(g_rtAdvancedAuditEngine)progressText+=" | "+g_orbAdvLastStatus;
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
@@ -7698,6 +7750,7 @@ int OnInit()
    }
    LoadRuntimeNasConfirmation();
    LoadRuntimeNasControls();
+   OrbAdvancedAuditLoadRuntime();
    if(g_rtUtcMidnightSession&&!ValidateUtcSessionInputs())
    {
       Print("ORB15v3 invalid UTC00 session; require HH:MM and start < ORB end <= trade end");
@@ -8001,6 +8054,17 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    {
       g_auditRuntime=!g_auditRuntime;
       Print("ORB15v3 audit logging ",g_auditRuntime?"enabled":"disabled");
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_ADV_AUD")
+   {
+      bool requested=!g_rtAdvancedAuditEngine;
+      if(!OrbAdvancedAuditSetRuntime(requested))g_lastExecStatus="ADV_AUD_SAVE_FAILED";
+      else
+      {
+         g_lastExecStatus=requested?"ADV_AUD_ON":"LEGACY_AUD_ON";
+         QueueHistoricalRedraw(0);
+      }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_TF")
@@ -8347,5 +8411,3 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
 }
 //+------------------------------------------------------------------+
-
-
