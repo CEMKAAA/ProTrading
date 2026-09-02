@@ -89,6 +89,8 @@ foreach ($name in $orbFiles) {
     Assert-True ($source.Contains('addSaved=GlobalVariableSet(RuntimeNasAdditionalExitKey(),0.0)>0;')) "$name does not disable ADD before enabling OPP"
     Assert-True ($source.Contains('opSaved=GlobalVariableSet(RuntimeNasExitKey(),0.0)>0;')) "$name does not disable OPP before enabling ADD"
     Assert-True ($source.Contains('bool RuntimeNasExitEnabled(){return g_rtNasExitOnOppositeSignal||g_rtNasAdditionalExit;}')) "$name does not share lifecycle ownership across both exit modes"
+    Assert-True ($source.Contains('bool anyNasExit=RuntimeNasExitEnabled();') -and $source.Contains('if(anyNasExit)')) "$name historical audit does not bypass NAS exits when both exit modes are OFF"
+    Assert-True ($source.Contains('if(!RuntimeNasExitEnabled())return false;')) "$name live lifecycle can still execute a NAS close with OPP/ADD both OFF"
     Assert-True ($source.Contains('CreateButton("BTN_NAS_ADD_EXIT"')) "$name has no ADD EXIT dashboard toggle"
     Assert-True ($source.Contains('else if(sparam==PREFIX+"BTN_NAS_ADD_EXIT")')) "$name does not handle ADD EXIT dashboard clicks"
     Assert-True ($source.Contains('if(g_nasManagedClosePending)')) "$name can change exit mode while a persisted close is pending"

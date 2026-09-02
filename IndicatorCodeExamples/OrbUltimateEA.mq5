@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-02.v6.61-advanced-exact-audit"
+#define ORB15_BUILD "2026-09-02.v6.64-nas-history-coverage"
 
 enum ORB_SESSION_PROFILE
 {
@@ -44,7 +44,7 @@ input bool            InpAutoNewYorkDst     = true;
 input string          InpOrbStartNy         = "09:30";
 input string          InpOrbEndNy           = "09:45";
 input string          InpTradeEndNy         = "16:00";
-input bool            InpUtcMidnightSessionDefault = false; // Opt-in FX session; existing NY/auto profile remains default.
+input bool            InpUtcMidnightSessionDefault = false; // Explicit override; AUTO USDJPY defaults to the UTC00 lifecycle.
 input string          InpUtcOrbStartGmt     = "00:00";
 input string          InpUtcOrbEndGmt       = "00:15";
 input string          InpUtcTradeEndGmt     = "23:59";
@@ -285,6 +285,12 @@ double   g_orbHigh = 0, g_orbLow = 0, g_orbAvgVolume = 0;
 datetime g_orbStartServer = 0, g_orbEndServer = 0, g_tradeEndServer = 0;
 datetime g_lastSignalBarTime = 0;
 datetime g_lastCheckedSignalBarTime = 0;
+bool     g_newDayReverseRetryPending = false;
+string   g_newDayReverseRetryRawDir = "";
+int      g_newDayReverseRetryExecDir = 0;
+datetime g_newDayReverseRetrySignalBar = 0;
+datetime g_newDayReverseRetryAvailable = 0;
+double   g_newDayReverseRetrySignalClose = 0.0;
 string   g_lastLiveWindowKey = "";
 int      g_liveWindowDrawnDayKey = 0;
 datetime g_lastHistBuild = 0;
@@ -510,6 +516,7 @@ bool g_histNasCacheActive=false;
 int g_histNasCacheCopiedBars=0;
 bool g_histNasCacheReady=false;
 datetime g_histNasCacheFrom=0;
+datetime g_histNasCacheEventFrom=0;
 datetime g_histNasCacheClosedBar=0;
 ENUM_TIMEFRAMES g_histNasCacheTf=PERIOD_CURRENT;
 int g_histNasCacheSensitivity=0;
@@ -816,14 +823,28 @@ string EffectiveOrbDirection(string rawDir)
    return rawDir;
 }
 string RuntimeInvertLabel(){return g_rtInvertMode?"INV ON":"INV OFF";}
+bool IsAutoUsdJpyUtcSession()
+{
+   if(!InpAutoSessionBySymbol||InpSessionProfile!=ORB_SESSION_AUTO)return false;
+   string base="",quote="";
+   return ExtractForexPair(_Symbol,base,quote)&&base=="USD"&&quote=="JPY";
+}
+bool RuntimeUtcSessionDefaultValue()
+{
+   return InpUtcMidnightSessionDefault||IsAutoUsdJpyUtcSession();
+}
 string RuntimeUtcSessionKey()
 {
    long login=AccountInfoInteger(ACCOUNT_LOGIN);
-   return "ORB_UTC00."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+(InpUtcMidnightSessionDefault?"1":"0");
+   // USDJPY gets a fresh, symbol-specific namespace so an old generic OFF
+   // value cannot silently override its new AUTO UTC00 default.
+   string scope=IsAutoUsdJpyUtcSession()?"ORB_UJUTC1.":"ORB_UTC00.";
+   return scope+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."
+      +(RuntimeUtcSessionDefaultValue()?"1":"0");
 }
 void LoadRuntimeUtcSession()
 {
-   g_rtUtcMidnightSession=InpUtcMidnightSessionDefault;
+   g_rtUtcMidnightSession=RuntimeUtcSessionDefaultValue();
    string key=RuntimeUtcSessionKey();
    if(GlobalVariableCheck(key))g_rtUtcMidnightSession=(GlobalVariableGet(key)>0.5);
 }
@@ -1225,12 +1246,14 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
       &&g_histNasCacheAtrRisk==settings.atrRisk
       &&g_histNasCacheAtrLen==settings.atrLen
       &&g_histNasCacheFrom>0&&g_histNasCacheFrom<=cutoff
+      &&g_histNasCacheEventFrom>0&&g_histNasCacheEventFrom<=cutoff
       &&g_histNasCacheClosedBar>0&&g_histNasCacheClosedBar==closedBar;
    if(reusable)
    {
       g_histNasCacheActive=true;
       RefreshHistoricalNasFilterStats();
       detail="NAS_CACHE_REUSE bars="+IntegerToString(g_histNasCacheCopiedBars)
+         +" event_from="+FmtTime(g_histNasCacheEventFrom)
          +" allowed_events="+IntegerToString(g_lastNasAllowedEventCount)
          +" raw_events="+IntegerToString(g_lastNasRawEventCount)
          +" vol_missing="+IntegerToString(g_lastNasVolumeMissingCount);
@@ -1238,6 +1261,7 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
    }
    g_histNasCacheReady=false;
    g_histNasCacheActive=false;
+   g_histNasCacheEventFrom=0;
    ArrayResize(g_histNasEvents,0);
    g_histNasCacheCopiedBars=0;
    long windowBars=(long)MathCeil((double)MathMax(1,days)*86400.0/(double)sec);
@@ -1284,6 +1308,7 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
    }
    g_histNasCacheCopiedBars=copied;
    g_histNasCacheFrom=rates[0].time;
+   g_histNasCacheEventFrom=cutoff;
    g_histNasCacheClosedBar=closedBar;
    g_histNasCacheTf=tf;
    g_histNasCacheSensitivity=settings.sensitivity;
@@ -1294,6 +1319,7 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
    g_histNasCacheActive=true;
    RefreshHistoricalNasFilterStats();
    detail="NAS_CACHE_OK bars="+IntegerToString(copied)
+      +" event_from="+FmtTime(g_histNasCacheEventFrom)
       +" allowed_events="+IntegerToString(g_lastNasAllowedEventCount)
       +" raw_events="+IntegerToString(g_lastNasRawEventCount)
       +" vol_missing="+IntegerToString(g_lastNasVolumeMissingCount);
@@ -7177,8 +7203,13 @@ bool ProcessNasPending()
    }
    if(OwnPositionExists()||g_orbBridgePlanActive)
    {
-      ClearNasPending("position_or_bridge_active");
-      return false;
+      string reverseDetail="";
+      string pendingExecDir=EffectiveOrbDirection(g_nasPendingDir);
+      if(!IsAcceptedNewDayReverseCandidate(pendingExecDir,TimeCurrent(),reverseDetail))
+      {
+         ClearNasPending("position_or_bridge_active");
+         return false;
+      }
    }
    datetime nasBar=0,nasAt=0;double nasClose=0.0;bool nasWasActive=false;string nasDetail="";
    if(!FindNasConfirmation(g_nasPendingDir,g_nasPendingAcceptedAt,TimeCurrent(),nasBar,nasAt,nasClose,nasWasActive,nasDetail))
@@ -7258,6 +7289,28 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       g_lastExecStatus="BRIDGE_ONLY_UNSUPPORTED_EXIT";
       Audit("bridge_only_shape_block",execDir,0,entry,sl,0,"bridge-only requires a fixed TP because no native position exists to drive dynamic/time exits "+ExitDebugConfig());
       return false;
+   }
+   bool hasActiveLifecycle=(OwnPositionExists()||g_orbBridgePlanActive);
+   if(hasActiveLifecycle)
+   {
+      datetime candidateAvailable=MathMax(OrbSignalAvailableTime(signalBar),TimeCurrent());
+      string reverseDetail="";
+      if(!IsAcceptedNewDayReverseCandidate(execDir,candidateAvailable,reverseDetail))
+      {
+         g_lastExecStatus="ACCEPTED_ALREADY_ACTIVE";
+         Audit("accepted_signal_while_active",execDir,0,entry,sl,0,entryDetail);
+         ClearRetestState("active_lifecycle");ClearImbalanceState("active_lifecycle");
+         return false;
+      }
+      if(!CloseAcceptedNewDayReverseLifecycle(execDir,candidateAvailable,reverseDetail))
+      {
+         SetNewDayReverseRetry(rawDir,execDir,signalBar,candidateAvailable,signalClose);
+         g_lastExecStatus="NEW_DAY_REVERSE_CLOSE_RETRY";
+         Audit("new_day_reverse_close_retry",execDir,0,entry,sl,0,reverseDetail+" "+entryDetail);
+         return false;
+      }
+      ClearNewDayReverseRetry("close_complete");
+      entryDetail+=(entryDetail==""?"":" ")+"new_day_reverse=1 "+reverseDetail;
    }
    bool opened=false;
    double planTp=0.0,planHalf=0.0;
@@ -7375,6 +7428,173 @@ datetime CurrentOrbLifecycleStartTime()
    if(g_orbBridgePlanActive&&g_orbBridgePlanTime>0)
       return OrbSignalAvailableTime(g_orbBridgePlanTime);
    return 0;
+}
+
+int OrbSessionDayKeyAt(datetime value)
+{
+   if(value<=0)return 0;
+   MqlDateTime st;TimeToStruct(ServerToSessionLocal(value),st);
+   return st.year*10000+st.mon*100+st.day;
+}
+
+bool IsAcceptedNewDayReverseCandidate(string execDir,datetime candidateAvailable,string &detail)
+{
+   detail="";
+   int candidateDir=(execDir=="BUY"?1:(execDir=="SELL"?-1:0));
+   int activeDir=CurrentOrbLifecycleDirection();
+   datetime activeSince=CurrentOrbLifecycleStartTime();
+   int activeDay=OrbSessionDayKeyAt(activeSince);
+   int candidateDay=OrbSessionDayKeyAt(candidateAvailable);
+   if(candidateDir==0||activeDir==0||activeSince<=0||activeDay<=0||candidateDay<=activeDay||candidateDir==activeDir)
+      return false;
+   detail="active_dir="+(activeDir>0?"BUY":"SELL")
+      +" active_since="+FmtTime(activeSince)
+      +" active_day="+IntegerToString(activeDay)
+      +" candidate_dir="+execDir
+      +" candidate_at="+FmtTime(candidateAvailable)
+      +" candidate_day="+IntegerToString(candidateDay);
+   return true;
+}
+
+bool CloseAcceptedNewDayReverseLifecycle(string execDir,datetime candidateAvailable,string &detail)
+{
+   string candidateDetail="";
+   if(!IsAcceptedNewDayReverseCandidate(execDir,candidateAvailable,candidateDetail))
+   {
+      detail="not_new_day_reverse "+candidateDetail;
+      return false;
+   }
+   int activeDir=CurrentOrbLifecycleDirection();
+   bool bridgePublished=true;
+   if(g_orbBridgeEnabled)
+      bridgePublished=OrbProPublishCloseOnly(activeDir,"new_day_reverse_orb",true);
+
+   bool nativeOk=true;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;
+      double volume=PositionGetDouble(POSITION_VOLUME);
+      double opened=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl=PositionGetDouble(POSITION_SL);
+      double tp=PositionGetDouble(POSITION_TP);
+      bool closed=trade.PositionClose(ticket);
+      if(!closed)nativeOk=false;
+      Audit(closed?"new_day_reverse_native_close":"new_day_reverse_native_close_failed",
+         activeDir>0?"BUY":"SELL",volume,opened,sl,tp,
+         candidateDetail+" ret="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+   }
+   if(OwnPositionExists())nativeOk=false;
+   if(!nativeOk)
+   {
+      detail=candidateDetail+" native_close=FAILED bridge_close="+(bridgePublished?"PUBLISHED":"FAILED");
+      return false;
+   }
+
+   // A subsequent accepted OPEN also performs a scoped reverse close in every
+   // production listener. The close-only event is an additional idempotent guard.
+   ClearOrbBridgePlan();
+   ClearNasManagedLifecycle("new_day_reverse_orb");
+   g_tradeTaken=false;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;
+   g_beMoved=false;g_halfClosed=false;g_tradeRisk=0;
+   detail=candidateDetail+" native_close=OK bridge_close="+(bridgePublished?"PUBLISHED":"OPEN_REVERSE_FALLBACK");
+   Audit("new_day_reverse_closed",execDir,0,0,0,0,detail);
+   return true;
+}
+
+string NewDayReverseRetryKey(string field)
+{
+   return "ORB_NDR."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."
+      +OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+".C"+IntegerToString(g_orbBridgeChannel)
+      +".M"+StringFormat("%I64d",RuntimeMagic())+"."+field;
+}
+
+void PersistNewDayReverseRetry()
+{
+   if(!g_newDayReverseRetryPending)return;
+   GlobalVariableSet(NewDayReverseRetryKey("PENDING"),1.0);
+   GlobalVariableSet(NewDayReverseRetryKey("RAW"),g_newDayReverseRetryRawDir=="BUY"?1.0:-1.0);
+   GlobalVariableSet(NewDayReverseRetryKey("EXEC"),(double)g_newDayReverseRetryExecDir);
+   GlobalVariableSet(NewDayReverseRetryKey("BAR"),(double)g_newDayReverseRetrySignalBar);
+   GlobalVariableSet(NewDayReverseRetryKey("AVAILABLE"),(double)g_newDayReverseRetryAvailable);
+   GlobalVariableSet(NewDayReverseRetryKey("CLOSE"),g_newDayReverseRetrySignalClose);
+}
+
+void ClearNewDayReverseRetry(string reason="")
+{
+   if(g_newDayReverseRetryPending&&reason!="")
+      Audit("new_day_reverse_retry_clear",g_newDayReverseRetryExecDir>0?"BUY":"SELL",0,
+         g_newDayReverseRetrySignalClose,0,0,"reason="+reason);
+   string fields[6]={"PENDING","RAW","EXEC","BAR","AVAILABLE","CLOSE"};
+   for(int i=0;i<6;i++)GlobalVariableDel(NewDayReverseRetryKey(fields[i]));
+   g_newDayReverseRetryPending=false;g_newDayReverseRetryRawDir="";g_newDayReverseRetryExecDir=0;
+   g_newDayReverseRetrySignalBar=0;g_newDayReverseRetryAvailable=0;g_newDayReverseRetrySignalClose=0.0;
+}
+
+void SetNewDayReverseRetry(string rawDir,string execDir,datetime signalBar,datetime available,double signalClose)
+{
+   g_newDayReverseRetryPending=true;
+   g_newDayReverseRetryRawDir=rawDir;
+   g_newDayReverseRetryExecDir=(execDir=="BUY"?1:-1);
+   g_newDayReverseRetrySignalBar=signalBar;
+   g_newDayReverseRetryAvailable=available;
+   g_newDayReverseRetrySignalClose=signalClose;
+   PersistNewDayReverseRetry();
+}
+
+void RestoreNewDayReverseRetry()
+{
+   if(!GlobalVariableCheck(NewDayReverseRetryKey("PENDING"))
+      ||GlobalVariableGet(NewDayReverseRetryKey("PENDING"))<0.5)return;
+   g_newDayReverseRetryRawDir=GlobalVariableGet(NewDayReverseRetryKey("RAW"))>0?"BUY":"SELL";
+   g_newDayReverseRetryExecDir=(int)MathRound(GlobalVariableGet(NewDayReverseRetryKey("EXEC")));
+   g_newDayReverseRetrySignalBar=(datetime)GlobalVariableGet(NewDayReverseRetryKey("BAR"));
+   g_newDayReverseRetryAvailable=(datetime)GlobalVariableGet(NewDayReverseRetryKey("AVAILABLE"));
+   g_newDayReverseRetrySignalClose=GlobalVariableGet(NewDayReverseRetryKey("CLOSE"));
+   g_newDayReverseRetryPending=(g_newDayReverseRetrySignalBar>0
+      &&g_newDayReverseRetryAvailable>0
+      &&(g_newDayReverseRetryExecDir==1||g_newDayReverseRetryExecDir==-1));
+   if(!g_newDayReverseRetryPending)ClearNewDayReverseRetry("restore_invalid");
+}
+
+bool ProcessNewDayReverseRetry()
+{
+   if(!g_newDayReverseRetryPending)return false;
+   string execDir=g_newDayReverseRetryExecDir>0?"BUY":"SELL";
+   string reverseDetail="";
+   if(!IsAcceptedNewDayReverseCandidate(execDir,g_newDayReverseRetryAvailable,reverseDetail))
+   {
+      if(!OwnPositionExists()&&!g_orbBridgePlanActive)ClearNewDayReverseRetry("exposure_resolved");
+      else g_lastExecStatus="NEW_DAY_REVERSE_CLOSE_RETRY";
+      return true;
+   }
+   if(!CloseAcceptedNewDayReverseLifecycle(execDir,g_newDayReverseRetryAvailable,reverseDetail))
+   {
+      g_lastExecStatus="NEW_DAY_REVERSE_CLOSE_RETRY";
+      PersistNewDayReverseRetry();
+      return true;
+   }
+
+   string rawDir=g_newDayReverseRetryRawDir;
+   datetime signalBar=g_newDayReverseRetrySignalBar;
+   double signalClose=g_newDayReverseRetrySignalClose;
+   int frozenExecDir=g_newDayReverseRetryExecDir;
+   ClearNewDayReverseRetry("close_complete");
+   if(!EntryWindowAllowsAt(TimeCurrent()))
+   {
+      g_lastExecStatus="NEW_DAY_REVERSE_CLOSED_WINDOW_EXPIRED";
+      Audit("new_day_reverse_reentry_window_expired",execDir,0,signalClose,0,0,reverseDetail);
+      return true;
+   }
+   if((EffectiveOrbDirection(rawDir)=="BUY"?1:-1)!=frozenExecDir)
+   {
+      g_lastExecStatus="NEW_DAY_REVERSE_CLOSED_CONFIG_CHANGED";
+      Audit("new_day_reverse_reentry_config_changed",execDir,0,signalClose,0,0,reverseDetail);
+      return true;
+   }
+   ExecuteOrbEntry(rawDir,signalBar,signalClose,
+      "entry=retry accepted_signal=1 accepted_bar="+StringFormat("%I64d",(long)signalBar)+" "+reverseDetail);
+   return true;
 }
 
 void EnsureNasExitLifecycle()
@@ -7634,6 +7854,7 @@ void HandleFilteredWindowSignal(string rawDir,datetime signalTime,double signalC
 void TryOpenSignal()
 {
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
+   if(ProcessNewDayReverseRetry())return;
    if(!EntryWindowAllowsAt(TimeCurrent()))
    {
       if(InpUseClosedBarBreakout)
@@ -7702,12 +7923,18 @@ void TryOpenSignal()
    string invertDetail="raw_dir="+dir+" exec_dir="+execDir+" invert="+(g_rtInvertMode?"1":"0");
    modernDetail+=(modernDetail==""?"":" ")+invertDetail;
    g_lastFilterReason="";
-   if((InpOneTradePerNyDay&&g_tradeTaken)||OwnPositionExists()||g_orbBridgePlanActive)
+   bool hasActiveLifecycle=(OwnPositionExists()||g_orbBridgePlanActive);
+   string newDayReverseDetail="";
+   bool newDayReverse=hasActiveLifecycle
+      &&IsAcceptedNewDayReverseCandidate(execDir,OrbSignalAvailableTime(bt),newDayReverseDetail);
+   if((InpOneTradePerNyDay&&g_tradeTaken&&!newDayReverse)||(hasActiveLifecycle&&!newDayReverse))
    {
       g_lastExecStatus="ACCEPTED_ALREADY_ACTIVE";
       Audit("accepted_signal_while_active",execDir,0,sc,0,0,modernDetail);
       return;
    }
+   if(newDayReverse)
+      modernDetail+=(modernDetail==""?"":" ")+"new_day_reverse_candidate=1 "+newDayReverseDetail;
    // A later accepted trade supersedes any earlier rejected candidate from
    // the same ORB day. Keep at most one live WINDOW visual per day, while
    // allowing its first later opposite filtered signal to become that visual.
@@ -7812,6 +8039,7 @@ int OnInit()
    RestoreOrbBridgePlan();
    RestoreNasManagedLifecycle();
    RestoreNasPending();
+   RestoreNewDayReverseRetry();
    EnsureNasExitLifecycle();
    // Refresh compliance news before a multi-year history scan can occupy OnInit.
    if(!IsTesterMode())TradeDayCalendarPublisherTick();
@@ -8157,13 +8385,20 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       bool requested=!g_rtUtcMidnightSession;
       if(requested&&!ValidateUtcSessionInputs())
          g_lastExecStatus="UTC00_INVALID_HH_MM_ORDER";
-      else if(OwnPositionExists()||g_orbBridgePlanActive||g_retestPending||g_imbPending)
-         g_lastExecStatus="UTC00_BLOCKED_ACTIVE_LIFECYCLE";
+      else if(OwnPositionExists())
+         g_lastExecStatus="UTC00_BLOCKED_NATIVE_POSITION";
+      else if(g_orbBridgePlanActive)
+         g_lastExecStatus="UTC00_BLOCKED_BRIDGE_POSITION";
       else if(!SetRuntimeUtcSession(requested))
          g_lastExecStatus="UTC00_SAVE_FAIL";
       else
       {
+         // Pending candidates carry geometry from the old session and are safe
+         // to discard. Only actual native/bridge exposure blocks a mode switch.
+         ClearRetestState("session_changed");
+         ClearImbalanceState("session_changed");
          ClearNasPending("session_changed");
+         ClearNasManagedLifecycle("session_changed");
          DeleteLive();DeleteExecutionVisuals();
          g_nyDayKey=0;
          ResetForNewNyDay();
@@ -8412,5 +8647,3 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
 }
 //+------------------------------------------------------------------+
-
-

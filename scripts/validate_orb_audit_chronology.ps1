@@ -40,6 +40,9 @@ foreach ($name in $files) {
     Assert-True ($source.Contains('bool nasExitLifecycle=RuntimeNasExitEnabled();')) "$name does not admit ordinary ORB trades into either NAS exit lifecycle"
     Assert-True ($source.Contains('StartNasManagedLifecycle(execDir,isBuy?1:-1')) "$name NAS lifecycle is not based on actual execution direction"
     Assert-True ($source.Contains('if(anyNasExit)') -and $source.Contains('FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,OrbSignalAvailableTime(entryT)')) "$name historical NAS exit scan is not bounded by accepted ORB time"
+    Assert-True ($source.Contains('datetime g_histNasCacheEventFrom=0;')) "$name does not track NAS event-cache coverage separately from raw-rate coverage"
+    Assert-True ($source.Contains('g_histNasCacheEventFrom>0&&g_histNasCacheEventFrom<=cutoff')) "$name can incorrectly reuse a short NAS event cache for a longer audit window"
+    Assert-True ($source.Contains('g_histNasCacheEventFrom=cutoff;')) "$name does not persist the actual NAS event cutoff after rebuilding history"
     Assert-True ($source.Contains('OrbProPublishCloseOnly(g_nasManagedExecDir,reason,true)')) "$name NAS exit does not publish a scoped close-only event"
     Assert-True ($source.Contains('OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+".C"+IntegerToString(g_orbBridgeChannel)')) "$name NAS lifecycle key is not symbol/TF/channel scoped"
     Assert-True ($source.Contains('"ENTRY GATE ON":"ENTRY GATE OFF"')) "$name NAS entry-gate control is not explicit"
@@ -52,6 +55,21 @@ foreach ($name in $files) {
     Assert-True ($source.Contains('forcedExitOutcome="NEW_DAY_REVERSE_EXIT"')) "$name does not route the next-day reverse into simulation"
     Assert-True ($source.Contains('||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NAS_ADDITIONAL_EXIT"||outcome=="NEW_DAY_REVERSE_EXIT";')) "$name does not value NAS/next-day exits at their market exit price"
     Assert-True ($source.Contains('FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow')) "$name does not resolve next-day reversal from the accepted signal stream"
+
+    Assert-True ($source.Contains('bool IsAcceptedNewDayReverseCandidate(')) "$name has no live next-day accepted reverse resolver"
+    Assert-True ($source.Contains('candidateDay<=activeDay||candidateDir==activeDir')) "$name live reverse resolver does not reject same-day or same-direction candidates"
+    Assert-True ($source.Contains('bool CloseAcceptedNewDayReverseLifecycle(')) "$name has no live next-day reverse close lifecycle"
+    Assert-True ($source.Contains('OrbProPublishCloseOnly(activeDir,"new_day_reverse_orb",true)')) "$name does not publish a scoped listener close for the previous ORB lifecycle"
+    Assert-True ($source.Contains('if(OwnPositionExists())nativeOk=false;')) "$name does not verify that scoped native exposure is actually closed"
+    Assert-True ($source.Contains('g_lastExecStatus="NEW_DAY_REVERSE_CLOSE_RETRY"')) "$name does not fail closed when the previous native lifecycle cannot close"
+    Assert-True ($source.Contains('new_day_reverse_candidate=1')) "$name does not preserve the accepted reverse candidate through live dispatch"
+    Assert-True ($source.Contains('SetNewDayReverseRetry(rawDir,execDir,signalBar,candidateAvailable,signalClose)')) "$name consumes a direct breakout after a failed reverse close instead of persisting retry intent"
+    Assert-True ($source.Contains('RestoreNewDayReverseRetry();')) "$name does not restore an unfinished next-day reverse close after restart"
+    Assert-True ($source.Contains('if(ProcessNewDayReverseRetry())return;')) "$name does not process reverse-close retry before the entry-window gate"
+    Assert-True ($source.Contains('OrbProTf(g_rtSignalTf)+".C"+IntegerToString(g_orbBridgeChannel)')) "$name reverse-close retry state is not source-TF/channel scoped"
+    $liveReverse = [regex]::Match($source, '(?s)bool CloseAcceptedNewDayReverseLifecycle\(.*?(?=void EnsureNasExitLifecycle\(\))').Value
+    Assert-True ($liveReverse.Length -gt 0) "$name live next-day reverse lifecycle block is missing"
+    Assert-True (-not $liveReverse.Contains('RuntimeNasExitEnabled')) "$name incorrectly makes next-day ORB reversal depend on NAS OPP/ADD exit modes"
 
     $sameBar = [regex]::Match($source, "(?s)bool BtTpFirst\(.*?\n\}").Value
     Assert-True ($sameBar.Length -gt 0) "$name has no same-bar resolver"
