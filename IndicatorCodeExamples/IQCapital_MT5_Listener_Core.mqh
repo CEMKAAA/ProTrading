@@ -1754,6 +1754,9 @@ bool CloseSameDirectionPositions(const BridgeSignal &sig, string &detail)
          continue;
       if(!IsManagedBridgePosition())
          continue;
+      string scopeDetail = "";
+      if(!ReverseScopeAllows(ticket, sig, scopeDetail))
+         continue;
       long type = PositionGetInteger(POSITION_TYPE);
       bool sameDirection = (sig.direction > 0 && type == POSITION_TYPE_BUY) || (sig.direction < 0 && type == POSITION_TYPE_SELL);
       if(!sameDirection)

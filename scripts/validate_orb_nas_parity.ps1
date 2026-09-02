@@ -83,6 +83,15 @@ foreach ($name in $orbFiles) {
     Assert-True (-not $overlay.Contains('BarCloseTime(tf,rates[i].time)')) "$name NAS overlay still uses theoretical bar-close timestamps"
 
     Assert-True ($source.Contains('input string          InpNasOppositeExitWait = "00:00";')) "$name has no default-safe OPP EXIT grace input"
+    Assert-True ($source.Contains('input bool            InpNasAdditionalExitDefault = false;')) "$name ADD EXIT is missing or not default-safe"
+    Assert-True ($source.Contains('bool SetRuntimeNasExitModes(bool opEnabled,bool addEnabled)')) "$name has no shared OPP/ADD radio-state setter"
+    Assert-True ($source.Contains('if(opEnabled&&addEnabled)return false;')) "$name can enable OPP EXIT and ADD EXIT together"
+    Assert-True ($source.Contains('addSaved=GlobalVariableSet(RuntimeNasAdditionalExitKey(),0.0)>0;')) "$name does not disable ADD before enabling OPP"
+    Assert-True ($source.Contains('opSaved=GlobalVariableSet(RuntimeNasExitKey(),0.0)>0;')) "$name does not disable OPP before enabling ADD"
+    Assert-True ($source.Contains('bool RuntimeNasExitEnabled(){return g_rtNasExitOnOppositeSignal||g_rtNasAdditionalExit;}')) "$name does not share lifecycle ownership across both exit modes"
+    Assert-True ($source.Contains('CreateButton("BTN_NAS_ADD_EXIT"')) "$name has no ADD EXIT dashboard toggle"
+    Assert-True ($source.Contains('else if(sparam==PREFIX+"BTN_NAS_ADD_EXIT")')) "$name does not handle ADD EXIT dashboard clicks"
+    Assert-True ($source.Contains('if(g_nasManagedClosePending)')) "$name can change exit mode while a persisted close is pending"
     Assert-True ($source.Contains('datetime NasOppositeExitScanExclusive(datetime openedAt)')) "$name has no exit-grace boundary resolver"
     Assert-True ($source.Contains('bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,')) "$name cannot persist the latest NAS state during grace"
     Assert-True ($source.Contains('bool FindNasOppositeExitWithGrace(int execDir,datetime openedAt,datetime latestAvailable,')) "$name has no grace-latched historical exit resolver"
@@ -90,9 +99,18 @@ foreach ($name in $orbFiles) {
     Assert-True ($source.Contains('g_nasManagedOppositeAt=(stateDir==opposite?eventAt:0);')) "$name does not latch/cancel the active opposite NAS state"
     Assert-True ($source.Contains('if(eligibleAt>0&&TimeCurrent()<eligibleAt)return false;')) "$name can close before the configured grace expires"
     Assert-True ($source.Contains('if(g_nasManagedOppositeAt<=0)return false;')) "$name can close without a currently latched opposite NAS state"
-    Assert-True (([regex]::Matches($source, 'FindNasOppositeExitWithGrace\(execDir=="BUY"\?1:-1,entryT')).Count -ge 2) "$name historical/optimizer NAS exits do not use grace-latched parity"
+    Assert-True (([regex]::Matches($source, 'FindNasOppositeExitWithGrace\(execDir=="BUY"\?1:-1,OrbSignalAvailableTime\(entryT\)')).Count -ge 2) "$name historical/optimizer NAS exits do not start at the accepted ORB time"
+    Assert-True ($source.Contains('if(g_nasManagedOppositeAt>0&&g_nasManagedOppositeAt<=g_nasManagedStartAt)')) "$name can restore or execute a pre-entry NAS latch"
+    Assert-True (([regex]::Matches($source, 'nas_pre_entry_latch_discarded')).Count -ge 2) "$name does not discard invalid pre-entry latches in restore and runtime paths"
     Assert-True ($source.Contains('GlobalVariableSet(NasLifecycleKey("opposite_at"),(double)g_nasManagedOppositeAt);')) "$name does not persist the grace latch across restart"
     Assert-True ($source.Contains('publishOk=OrbProPublishCloseOnly(g_nasManagedExecDir,reason,true);')) "$name does not publish the latched exit to listeners"
+    Assert-True ($source.Contains('datetime nasSearchEnd=g_rtNasAdditionalExit?g_histRunNow:te;')) "$name does not preserve legacy OPP horizon while extending ADD EXIT"
+    Assert-True ($source.Contains('forcedExitOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";')) "$name does not distinguish ADD EXIT audit outcomes"
+    Assert-True ($source.Contains('datetime NasLegacyExitWindowEnd(datetime openedAt)')) "$name cannot reproduce the legacy OPP session boundary in live execution"
+    Assert-True ($source.Contains('latestClosedAt=MathMin(latestClosedAt,legacyWindowEnd);')) "$name live OPP EXIT is not bounded like its historical audit"
+    Assert-True ($source.Contains('if(g_rtNasAdditionalExit)') -and $source.Contains('sim=SimulateHistoricalLifecycle(')) "$name optimizer does not extend only the ADD EXIT lifecycle"
+    Assert-True ($source.Contains('else') -and $source.Contains('sim=SimulateTrade(entryT,g_btDays[di].tradeEnd')) "$name optimizer no longer preserves legacy OPP simulation"
+    Assert-True ($source.Contains('||outcome=="NAS_ADDITIONAL_EXIT"||')) "$name does not price ADD EXIT at the actual market exit"
     Assert-True ($source.Contains('RuntimeNasExitWaitKey()')) "$name does not persist the exit grace per chart instance"
     Assert-True ($source.Contains('EDIT_NAS_EXIT_WAIT')) "$name does not expose the exit grace on the dashboard"
     Assert-True ($source.Contains('bool coreSignalSettingsChanged=(requested!=g_rtNasActiveSignalLookbackMinutes')) "$name APPLY NAS does not track core field changes"
@@ -117,9 +135,46 @@ foreach ($multiplier in @(0.5, 1.0, 2.0, 20.0, 200.0)) {
 
 $entry = [datetime]"2026-08-30T10:00:00"
 $eligible = $entry.AddMinutes(30)
+$preEntryOpposite = $entry.AddMinutes(-5)
 $oppositeAt = [datetime]"2026-08-30T10:25:00"
+Assert-True (-not ($preEntryOpposite -gt $entry)) "A pre-entry NAS event became eligible for exit"
 Assert-True ($oppositeAt -lt $eligible) "Test fixture is not inside grace"
 Assert-True ([datetime]"2026-08-30T10:29:59" -lt $eligible) "A latched signal could close before grace"
 Assert-True ($oppositeAt -gt $entry -and [datetime]"2026-08-30T10:30:00" -ge $eligible) "A 10:25 opposite state was not actionable at 10:30"
 
-Write-Output "ORB/NAS parity, overlay isolation, and OPP EXIT grace checks passed for $($orbFiles.Count) files."
+$legacyWindowEnd = [datetime]"2026-08-30T16:00:00"
+$postWindowOpposite = [datetime]"2026-08-30T18:00:00"
+Assert-True (-not ($postWindowOpposite -le $legacyWindowEnd)) "Legacy OPP fixture did not remain session-bounded"
+Assert-True ($postWindowOpposite -gt $entry) "ADD EXIT fixture did not remain strictly post-entry"
+
+$listenerChecks = @(
+    @{ Path = Join-Path $SourceRoot 'OrbUltimate_cTrader_Listener.cs'; Required = @(
+        'sig.Channel <= 0 || sig.Channel != BridgeChannel',
+        'var positions = ScopedPositions(sig).Where(p => p.TradeType == target).ToArray()',
+        'return ContainsText(sig.Source, "CloseOnly") || ContainsText(sig.EventId, "invalidate_close")'
+    )},
+    @{ Path = Join-Path $SourceRoot 'NinjaTrader\ProductionFileBridgeNinjaCore.cs'; Required = @(
+        'if(sig.Channel != BridgeChannel)',
+        'var sameDirection = ScopedTrades(sig.SourceTf).Where(t => t.Direction == sig.Direction).ToArray()',
+        'return ContainsText(sig.Source, "CloseOnly") || ContainsText(sig.EventId, "invalidate_close")'
+    )},
+    @{ Path = Join-Path $SourceRoot 'Quantower\ProductionFileBridgeQuantowerCore.cs'; Required = @(
+        'if (signal.Channel != BridgeChannel)',
+        'states.Values.Where(x => x.Direction == signal.Direction && SameText(x.SourceTf, NormalizeTf(signal.SourceTf))).ToArray()',
+        'ContainsText(signal.Source, "CloseOnly")'
+    )},
+    @{ Path = Join-Path $SourceRoot 'IQCapital_MT5_Listener_Core.mqh'; Required = @(
+        'sig.bridgeChannel != expectedChannel',
+        'bool CloseSameDirectionPositions(const BridgeSignal &sig, string &detail)',
+        'if(!ReverseScopeAllows(ticket, sig, scopeDetail))',
+        'if(IsCloseOnlySignal(sig))'
+    )}
+)
+foreach ($listener in $listenerChecks) {
+    $listenerSource = [IO.File]::ReadAllText((Resolve-Path $listener.Path))
+    foreach ($required in $listener.Required) {
+        Assert-True ($listenerSource.Contains($required)) "$($listener.Path) missing scoped close invariant: $required"
+    }
+}
+
+Write-Output "ORB/NAS parity, mutually-exclusive OPP/ADD lifecycle, and scoped listener-close checks passed for $($orbFiles.Count) files."

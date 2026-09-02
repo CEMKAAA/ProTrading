@@ -37,9 +37,9 @@ foreach ($name in $files) {
     Assert-True ($source.Contains('InpNasExitOnOppositeSignalDefault = false')) "$name enables the new NAS exit-only behavior by default"
     Assert-True ($source.Contains('return (ENUM_TIMEFRAMES)_Period;')) "$name embedded NAS is not locked to the standalone chart timeframe"
     Assert-True ($source.Contains('s.sensitivity=ClampNasSensitivity(g_rtNasSensitivity);')) "$name embedded NAS does not use the standalone-compatible runtime sensitivity"
-    Assert-True ($source.Contains('bool nasExitLifecycle=g_rtNasExitOnOppositeSignal;')) "$name does not admit ordinary ORB trades into exit-only lifecycle"
+    Assert-True ($source.Contains('bool nasExitLifecycle=RuntimeNasExitEnabled();')) "$name does not admit ordinary ORB trades into either NAS exit lifecycle"
     Assert-True ($source.Contains('StartNasManagedLifecycle(execDir,isBuy?1:-1')) "$name NAS lifecycle is not based on actual execution direction"
-    Assert-True ($source.Contains('if(g_rtNasExitOnOppositeSignal)') -and $source.Contains('FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,entryT')) "$name historical grace-latched NAS exit-only parity is missing"
+    Assert-True ($source.Contains('if(anyNasExit)') -and $source.Contains('FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,OrbSignalAvailableTime(entryT)')) "$name historical NAS exit scan is not bounded by accepted ORB time"
     Assert-True ($source.Contains('OrbProPublishCloseOnly(g_nasManagedExecDir,reason,true)')) "$name NAS exit does not publish a scoped close-only event"
     Assert-True ($source.Contains('OrbProSafeToken(_Symbol)+"."+OrbProTf(g_rtSignalTf)+".C"+IntegerToString(g_orbBridgeChannel)')) "$name NAS lifecycle key is not symbol/TF/channel scoped"
     Assert-True ($source.Contains('"ENTRY GATE ON":"ENTRY GATE OFF"')) "$name NAS entry-gate control is not explicit"
@@ -50,7 +50,7 @@ foreach ($name in $files) {
     Assert-True ($source.Contains('if(candidateDay<=entryDay)continue;')) "$name allows a same-day signal to trigger the next-day reverse lifecycle"
     Assert-True ($source.Contains('if(signals[i].executionDirection!=opposite)continue;')) "$name does not require an opposite execution direction"
     Assert-True ($source.Contains('forcedExitOutcome="NEW_DAY_REVERSE_EXIT"')) "$name does not route the next-day reverse into simulation"
-    Assert-True ($source.Contains('||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NEW_DAY_REVERSE_EXIT";')) "$name does not value a next-day reverse at its market exit price"
+    Assert-True ($source.Contains('||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NAS_ADDITIONAL_EXIT"||outcome=="NEW_DAY_REVERSE_EXIT";')) "$name does not value NAS/next-day exits at their market exit price"
     Assert-True ($source.Contains('FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow')) "$name does not resolve next-day reversal from the accepted signal stream"
 
     $sameBar = [regex]::Match($source, "(?s)bool BtTpFirst\(.*?\n\}").Value
