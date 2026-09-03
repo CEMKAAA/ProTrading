@@ -52,14 +52,14 @@ foreach ($name in $files) {
         'sim.outcome=="NAS_OPPOSITE_EXIT"',
         'sim.outcome=="NEW_DAY_REVERSE_EXIT"',
         'AUD QUEUED',
-        'NAS_VOL_BLOCKED_CLOSE_PENDING',
-        'ClearNasPending("nas_volume_toggled")',
+        'NAS_FLOW_VOL_BLOCKED_CLOSE_PENDING',
+        'ClearNasPending("nas_flow_volume_toggled")',
         'NAS-X',
         'DAY-REV'
         'bool nasCacheOk=BuildHistoricalNasEventCache(days,currentTime,nasCacheDetail);'
         'NAS_CACHE_OK'
         'NAS_CACHE_REUSE'
-        'HistoricalNasEventAllowed'
+        'HistoricalNasOverlayEventAllowed'
         'FirstNasEventAfter'
         'DrawCachedNasSignalOverlayEvent'
         'SetHistoricalAuditProgress("PREP",1.0,6.0'

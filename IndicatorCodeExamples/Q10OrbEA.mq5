@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//| 15 Minute ORB MT5 EA â€“ v3.1 (production)                         |
+//| 15 Minute ORB MT5 EA – v3.1 (production)                         |
 //| Interactive dashboard with toggleable filters + live sim stats.   |
 //| All filters, signal TF, and confirmation delay dashboard-driven.  |
-//| Session clock: NY â†’ broker server via GMT offset.                 |
+//| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
 #property version "3.50"
@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-02.Q10-M15-BREAK-1R-ATR-C4-v6.64-nas-history-coverage"
+#define ORB15_BUILD "2026-09-03.Q10-M15-BREAK-1R-ATR-C4-v6.67-nas-policy-colors"
 
 enum ORB_SESSION_PROFILE
 {
@@ -67,12 +67,23 @@ input int    InpConfirmBars          = 1;    // Breakout bar must hold N closed 
 
 //=== OPTIONAL NAS SIGNAL CONFIRMATION ===================================
 // Uses the exact NasUltimate_Core signal formula. NAS risk/SL/TP geometry is
-// deliberately not imported into ORB. ENTRY GATE and OPP EXIT are independent:
-// gate OFF + exit ON is the exit-only mode.
+// deliberately not imported into ORB. ENTRY GATE keeps its bounded/future-wait
+// behavior; STATE GATE is a separate latest-causal-state admission mode.
+// Entry gates and NAS exit controls remain independent.
+enum ORB_NAS_VISUAL_POLICY
+{
+   ORB_NAS_VIS_NONE=0,
+   ORB_NAS_VIS_STATE=1,
+   ORB_NAS_VIS_FLOW=2,
+   ORB_NAS_VIS_BOTH=3
+};
 input bool            InpNasConfirmationDefault = false;
+input bool            InpNasStateGateDefault = false; // Entry-only: latest causal NAS direction must match ORB; no age limit or future wait.
 input int             InpNasSensitivity = 4;
 input bool            InpNasUseVolumeFilter = false; // Main NAS parity: filter signal tick volume against previous-20 average.
 input double          InpNasVolumeMultiplier = 1.00; // Main NAS parity: required volume = previous-20 average x multiplier.
+input bool            InpNasFlowUseVolumeFilter = false; // ENTRY GATE + OPP EXIT + ADD EXIT volume policy.
+input double          InpNasFlowVolumeMultiplier = 1.00; // ENTRY/EXIT events: previous-20 average x multiplier.
 input int             InpNasRsiLength   = 14;
 input int             InpNasAtrRisk     = 1;
 input int             InpNasAtrLen      = 14;
@@ -143,7 +154,7 @@ input double InpTp45R     = 4.5;
 input double InpTp50R     = 5.0;
 input double InpSingleTpR = 2.0;    // Legacy fallback; target leg is preferred.
 
-//=== FILTERS (initial state â€“ toggleable from dashboard) ================
+//=== FILTERS (initial state – toggleable from dashboard) ================
 input bool   InpMoveToBEOnTp1       = false; // Legacy; use InpHalfBeMode for new presets.
 input double InpBEOffsetPoints      = 2.0;
 input bool   InpUseAtrRangeFilter   = true;
@@ -353,18 +364,23 @@ bool            g_riskLotOnlyMode = false;
 bool            g_rtInvertMode    = false;
 bool            g_rtUtcMidnightSession = false;
 bool            g_rtNasConfirmation = false;
+bool            g_rtNasStateGate = false;
 bool            g_rtNasExitOnOppositeSignal = false;
 bool            g_rtNasAdditionalExit = false;
 bool            g_rtAdvancedAuditEngine = false;
 int             g_rtNasSensitivity = 4;
 bool            g_rtNasVolumeFilter = false;
 double          g_rtNasVolumeMultiplier = 1.0;
+bool            g_rtNasFlowVolumeFilter = false;
+double          g_rtNasFlowVolumeMultiplier = 1.0;
 int             g_rtNasActiveSignalLookbackMinutes = 120;
 int             g_rtNasOppositeExitWaitMinutes = 0;
 datetime        g_lastNasOverlayClosedBar = 0;
 int             g_lastNasOverlaySignalCount = 0;
 int             g_lastNasRawEventCount = 0;
 int             g_lastNasAllowedEventCount = 0;
+int             g_lastNasStateAllowedEventCount = 0;
+int             g_lastNasFlowAllowedEventCount = 0;
 int             g_lastNasVolumeMissingCount = 0;
 int             g_lastNasOverlayCopiedBars = 0;
 double          g_rtRiskPerTradePct = 1.0;
@@ -876,18 +892,60 @@ string RuntimeNasConfirmationKey()
    long login=AccountInfoInteger(ACCOUNT_LOGIN);
    return "ORB_NASCF."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+(InpNasConfirmationDefault?"1":"0");
 }
+string RuntimeNasStateGateKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   return "ORB_NASSTATE."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+(InpNasStateGateDefault?"1":"0");
+}
 void LoadRuntimeNasConfirmation()
 {
    g_rtNasConfirmation=InpNasConfirmationDefault;
+   g_rtNasStateGate=InpNasStateGateDefault;
    string key=RuntimeNasConfirmationKey();
    if(GlobalVariableCheck(key))g_rtNasConfirmation=(GlobalVariableGet(key)>0.5);
+   string stateKey=RuntimeNasStateGateKey();
+   if(GlobalVariableCheck(stateKey))g_rtNasStateGate=(GlobalVariableGet(stateKey)>0.5);
+   // Preserve the established ENTRY GATE if stale/corrupt persisted state
+   // ever enables both mutually exclusive entry admission engines.
+   if(g_rtNasConfirmation&&g_rtNasStateGate)
+   {
+      g_rtNasStateGate=false;
+      GlobalVariableSet(stateKey,0.0);
+   }
 }
-bool SetRuntimeNasConfirmation(bool enabled)
+bool SetRuntimeNasEntryModes(bool confirmationEnabled,bool stateGateEnabled)
 {
-   if(GlobalVariableSet(RuntimeNasConfirmationKey(),enabled?1.0:0.0)<=0)return false;
-   g_rtNasConfirmation=enabled;
+   if(confirmationEnabled&&stateGateEnabled)return false;
+   bool confirmationSaved=false,stateSaved=false;
+   if(confirmationEnabled)
+   {
+      stateSaved=GlobalVariableSet(RuntimeNasStateGateKey(),0.0)>0;
+      confirmationSaved=stateSaved&&GlobalVariableSet(RuntimeNasConfirmationKey(),1.0)>0;
+   }
+   else if(stateGateEnabled)
+   {
+      confirmationSaved=GlobalVariableSet(RuntimeNasConfirmationKey(),0.0)>0;
+      stateSaved=confirmationSaved&&GlobalVariableSet(RuntimeNasStateGateKey(),1.0)>0;
+   }
+   else
+   {
+      confirmationSaved=GlobalVariableSet(RuntimeNasConfirmationKey(),0.0)>0;
+      stateSaved=GlobalVariableSet(RuntimeNasStateGateKey(),0.0)>0;
+   }
+   if(!confirmationSaved||!stateSaved)
+   {
+      g_rtNasConfirmation=GlobalVariableCheck(RuntimeNasConfirmationKey())&&GlobalVariableGet(RuntimeNasConfirmationKey())>0.5;
+      g_rtNasStateGate=GlobalVariableCheck(RuntimeNasStateGateKey())&&GlobalVariableGet(RuntimeNasStateGateKey())>0.5;
+      if(g_rtNasConfirmation&&g_rtNasStateGate)
+      {g_rtNasStateGate=false;GlobalVariableSet(RuntimeNasStateGateKey(),0.0);}
+      return false;
+   }
+   g_rtNasConfirmation=confirmationEnabled;
+   g_rtNasStateGate=stateGateEnabled;
    return true;
 }
+bool SetRuntimeNasConfirmation(bool enabled){return SetRuntimeNasEntryModes(enabled,false);}
+bool SetRuntimeNasStateGate(bool enabled){return SetRuntimeNasEntryModes(false,enabled);}
 string RuntimeNasExitKey()
 {
    long login=AccountInfoInteger(ACCOUNT_LOGIN);
@@ -927,6 +985,17 @@ string RuntimeNasVolumeMultiplierKey()
    int basis=(int)MathRound(ClampNasVolumeMultiplier(InpNasVolumeMultiplier)*10000.0);
    return "ORB_NASVM."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(basis);
 }
+string RuntimeNasFlowVolumeEnabledKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   return "ORB_NASFVE."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+(InpNasFlowUseVolumeFilter?"1":"0");
+}
+string RuntimeNasFlowVolumeMultiplierKey()
+{
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   int basis=(int)MathRound(ClampNasVolumeMultiplier(InpNasFlowVolumeMultiplier)*10000.0);
+   return "ORB_NASFVM."+StringFormat("%I64d",login)+"."+StringFormat("%I64d",ChartID())+"."+IntegerToString(basis);
+}
 void LoadRuntimeNasControls()
 {
    int inputWaitMinutes=0;
@@ -936,6 +1005,8 @@ void LoadRuntimeNasControls()
    g_rtNasSensitivity=ClampNasSensitivity(InpNasSensitivity);
    g_rtNasVolumeFilter=InpNasUseVolumeFilter;
    g_rtNasVolumeMultiplier=ClampNasVolumeMultiplier(InpNasVolumeMultiplier);
+   g_rtNasFlowVolumeFilter=InpNasFlowUseVolumeFilter;
+   g_rtNasFlowVolumeMultiplier=ClampNasVolumeMultiplier(InpNasFlowVolumeMultiplier);
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,InpNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,inputWaitMinutes));
    if(GlobalVariableCheck(RuntimeNasExitKey()))
@@ -959,6 +1030,24 @@ void LoadRuntimeNasControls()
       g_rtNasVolumeFilter=(GlobalVariableGet(RuntimeNasVolumeEnabledKey())>0.5);
    if(GlobalVariableCheck(RuntimeNasVolumeMultiplierKey()))
       g_rtNasVolumeMultiplier=ClampNasVolumeMultiplier(GlobalVariableGet(RuntimeNasVolumeMultiplierKey()));
+   bool flowEnabledStored=GlobalVariableCheck(RuntimeNasFlowVolumeEnabledKey());
+   bool flowMultiplierStored=GlobalVariableCheck(RuntimeNasFlowVolumeMultiplierKey());
+   if(flowEnabledStored)
+      g_rtNasFlowVolumeFilter=(GlobalVariableGet(RuntimeNasFlowVolumeEnabledKey())>0.5);
+   if(flowMultiplierStored)
+      g_rtNasFlowVolumeMultiplier=ClampNasVolumeMultiplier(GlobalVariableGet(RuntimeNasFlowVolumeMultiplierKey()));
+   // Backward-compatible, field-wise migration: before the split, the single
+   // NAS volume policy controlled entry and exit events as well as state.
+   if(!flowEnabledStored)
+   {
+      g_rtNasFlowVolumeFilter=g_rtNasVolumeFilter;
+      GlobalVariableSet(RuntimeNasFlowVolumeEnabledKey(),g_rtNasFlowVolumeFilter?1.0:0.0);
+   }
+   if(!flowMultiplierStored)
+   {
+      g_rtNasFlowVolumeMultiplier=g_rtNasVolumeMultiplier;
+      GlobalVariableSet(RuntimeNasFlowVolumeMultiplierKey(),g_rtNasFlowVolumeMultiplier);
+   }
    g_rtNasActiveSignalLookbackMinutes=MathMax(0,MathMin(1440,g_rtNasActiveSignalLookbackMinutes));
    g_rtNasOppositeExitWaitMinutes=MathMax(0,MathMin(5999,g_rtNasOppositeExitWaitMinutes));
 }
@@ -1030,14 +1119,30 @@ bool SetRuntimeNasVolumeFilter(bool enabled)
 }
 bool SetRuntimeNasVolumeMultiplier(double value)
 {
-   if(!MathIsValidNumber(value)||value<0.05||value>20.0)return false;
+   if(!MathIsValidNumber(value)||value<0.05||value>200.0)return false;
    double normalized=ClampNasVolumeMultiplier(value);
    if(GlobalVariableSet(RuntimeNasVolumeMultiplierKey(),normalized)<=0)return false;
    g_rtNasVolumeMultiplier=normalized;
    return true;
 }
+bool SetRuntimeNasFlowVolumeFilter(bool enabled)
+{
+   if(GlobalVariableSet(RuntimeNasFlowVolumeEnabledKey(),enabled?1.0:0.0)<=0)return false;
+   g_rtNasFlowVolumeFilter=enabled;
+   return true;
+}
+bool SetRuntimeNasFlowVolumeMultiplier(double value)
+{
+   if(!MathIsValidNumber(value)||value<0.05||value>200.0)return false;
+   double normalized=ClampNasVolumeMultiplier(value);
+   if(GlobalVariableSet(RuntimeNasFlowVolumeMultiplierKey(),normalized)<=0)return false;
+   g_rtNasFlowVolumeMultiplier=normalized;
+   return true;
+}
 string RuntimeNasModeLabel()
 {
+   if(g_rtNasStateGate&&RuntimeNasExitEnabled())return g_rtNasAdditionalExit?"STATE+ADD":"STATE+EXIT";
+   if(g_rtNasStateGate)return "STATE GATE";
    if(g_rtNasConfirmation&&RuntimeNasExitEnabled())return g_rtNasAdditionalExit?"ENTRY+ADD":"ENTRY+EXIT";
    if(g_rtNasConfirmation)return "ENTRY ONLY";
    if(g_rtNasAdditionalExit)return "ADD EXIT";
@@ -1067,8 +1172,8 @@ long NasPendingConfigSignature()
    h=(h*131+(long)g_orbBridgeChannel)%9000000000000000;
    h=(h*131+(long)MathRound(g_rtVolumeMultiplier*10000.0))%9000000000000000;
    h=(h*131+(long)g_rtNasSensitivity)%9000000000000000;
-   h=(h*131+(g_rtNasVolumeFilter?1:0))%9000000000000000;
-   h=(h*131+(long)MathRound(g_rtNasVolumeMultiplier*10000.0))%9000000000000000;
+   h=(h*131+(g_rtNasFlowVolumeFilter?1:0))%9000000000000000;
+   h=(h*131+(long)MathRound(g_rtNasFlowVolumeMultiplier*10000.0))%9000000000000000;
    h=(h*131+(long)MathMax(1,InpNasAtrRisk))%9000000000000000;
    h=(h*131+(long)MathMax(2,InpNasAtrLen))%9000000000000000;
    h=(h*131+(long)MathMax(0,g_rtNasActiveSignalLookbackMinutes))%9000000000000000;
@@ -1165,39 +1270,104 @@ void OrbNasVolumeStats(const MqlRates &rates[],const int signalIndex,
    }
    if(samples>0)averageVolume=sum/(double)samples;
 }
-bool OrbNasVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
+bool OrbNasVolumePolicyAllows(const MqlRates &rates[],const int signalIndex,
+                              const bool enabled,const double multiplier,const string policy,
                               string &reason,double &signalVolume,double &averageVolume)
 {
    reason="";
    OrbNasVolumeStats(rates,signalIndex,signalVolume,averageVolume);
-   if(!g_rtNasVolumeFilter)return true;
-   if(averageVolume<=0.0){reason="VOL_DATA_FAIL_OPEN";return true;}
-   double threshold=averageVolume*g_rtNasVolumeMultiplier;
+   if(!enabled)return true;
+   if(averageVolume<=0.0){reason=policy+"_VOL_DATA_FAIL_OPEN";return true;}
+   double threshold=averageVolume*multiplier;
    if(signalVolume<threshold)
    {
-      reason="VOL_LOW "+DoubleToString(signalVolume,0)+"<"+DoubleToString(threshold,0);
+      reason=policy+"_VOL_LOW "+DoubleToString(signalVolume,0)+"<"+DoubleToString(threshold,0);
       return false;
    }
    return true;
 }
-bool HistoricalNasEventAllowed(const int index)
+bool OrbNasStateVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
+                                   string &reason,double &signalVolume,double &averageVolume)
+{
+   return OrbNasVolumePolicyAllows(rates,signalIndex,g_rtNasVolumeFilter,g_rtNasVolumeMultiplier,"STATE",
+      reason,signalVolume,averageVolume);
+}
+bool OrbNasFlowVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
+                                  string &reason,double &signalVolume,double &averageVolume)
+{
+   return OrbNasVolumePolicyAllows(rates,signalIndex,g_rtNasFlowVolumeFilter,g_rtNasFlowVolumeMultiplier,"FLOW",
+      reason,signalVolume,averageVolume);
+}
+ORB_NAS_VISUAL_POLICY OrbNasVisualPolicy(const MqlRates &rates[],const int signalIndex,
+                                         double &signalVolume,double &averageVolume)
+{
+   signalVolume=0.0;averageVolume=0.0;
+   OrbNasVolumeStats(rates,signalIndex,signalVolume,averageVolume);
+   bool stateActive=g_rtNasStateGate;
+   bool flowActive=(g_rtNasConfirmation||RuntimeNasExitEnabled());
+   if(!stateActive&&!flowActive)return ORB_NAS_VIS_NONE;
+   bool statePass=stateActive&&(!g_rtNasVolumeFilter||averageVolume<=0.0
+      ||signalVolume>=averageVolume*g_rtNasVolumeMultiplier);
+   bool flowPass=flowActive&&(!g_rtNasFlowVolumeFilter||averageVolume<=0.0
+      ||signalVolume>=averageVolume*g_rtNasFlowVolumeMultiplier);
+   if(statePass&&flowPass)return ORB_NAS_VIS_BOTH;
+   if(statePass)return ORB_NAS_VIS_STATE;
+   if(flowPass)return ORB_NAS_VIS_FLOW;
+   return ORB_NAS_VIS_NONE;
+}
+bool OrbNasOverlayVolumeFilterAllows(const MqlRates &rates[],const int signalIndex,
+                                     string &reason,double &signalVolume,double &averageVolume)
+{
+   ORB_NAS_VISUAL_POLICY visual=OrbNasVisualPolicy(rates,signalIndex,signalVolume,averageVolume);
+   reason=visual==ORB_NAS_VIS_BOTH?"BOTH":(visual==ORB_NAS_VIS_STATE?"STATE":(visual==ORB_NAS_VIS_FLOW?"FLOW":"BLOCKED"));
+   return visual!=ORB_NAS_VIS_NONE;
+}
+bool HistoricalNasVolumePolicyAllows(const int index,const bool enabled,const double multiplier)
 {
    if(index<0||index>=ArraySize(g_histNasEvents))return false;
-   if(!g_rtNasVolumeFilter)return true;
+   if(!enabled)return true;
    double averageVolume=g_histNasEvents[index].averageVolume;
    if(averageVolume<=0.0)return true;
-   return g_histNasEvents[index].signalVolume>=averageVolume*g_rtNasVolumeMultiplier;
+   return g_histNasEvents[index].signalVolume>=averageVolume*multiplier;
+}
+bool HistoricalNasStateEventAllowed(const int index)
+{
+   return HistoricalNasVolumePolicyAllows(index,g_rtNasVolumeFilter,g_rtNasVolumeMultiplier);
+}
+bool HistoricalNasFlowEventAllowed(const int index)
+{
+   return HistoricalNasVolumePolicyAllows(index,g_rtNasFlowVolumeFilter,g_rtNasFlowVolumeMultiplier);
+}
+ORB_NAS_VISUAL_POLICY HistoricalNasVisualPolicy(const int index)
+{
+   if(index<0||index>=ArraySize(g_histNasEvents))return ORB_NAS_VIS_NONE;
+   bool stateActive=g_rtNasStateGate;
+   bool flowActive=(g_rtNasConfirmation||RuntimeNasExitEnabled());
+   bool statePass=stateActive&&HistoricalNasStateEventAllowed(index);
+   bool flowPass=flowActive&&HistoricalNasFlowEventAllowed(index);
+   if(statePass&&flowPass)return ORB_NAS_VIS_BOTH;
+   if(statePass)return ORB_NAS_VIS_STATE;
+   if(flowPass)return ORB_NAS_VIS_FLOW;
+   return ORB_NAS_VIS_NONE;
+}
+bool HistoricalNasOverlayEventAllowed(const int index)
+{
+   return HistoricalNasVisualPolicy(index)!=ORB_NAS_VIS_NONE;
 }
 void RefreshHistoricalNasFilterStats()
 {
    g_lastNasRawEventCount=ArraySize(g_histNasEvents);
    g_lastNasAllowedEventCount=0;
+   g_lastNasStateAllowedEventCount=0;
+   g_lastNasFlowAllowedEventCount=0;
    g_lastNasVolumeMissingCount=0;
    for(int i=0;i<g_lastNasRawEventCount;i++)
    {
-      if(g_rtNasVolumeFilter&&g_histNasEvents[i].averageVolume<=0.0)
+      if((g_rtNasVolumeFilter||g_rtNasFlowVolumeFilter)&&g_histNasEvents[i].averageVolume<=0.0)
          g_lastNasVolumeMissingCount++;
-      if(HistoricalNasEventAllowed(i))g_lastNasAllowedEventCount++;
+      if(HistoricalNasStateEventAllowed(i))g_lastNasStateAllowedEventCount++;
+      if(HistoricalNasFlowEventAllowed(i))g_lastNasFlowAllowedEventCount++;
+      if(HistoricalNasOverlayEventAllowed(i))g_lastNasAllowedEventCount++;
    }
 }
 int NasCalcWarmupBars(){return MathMax(300,MathMin(200000,InpNasSignalCalcBars));}
@@ -1229,14 +1399,18 @@ datetime OrbNasSignalAvailableTime(const MqlRates &rates[],const int copied,cons
 bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
 {
    detail="NAS_CACHE_OFF";
-   if(!g_rtNasConfirmation&&!RuntimeNasExitEnabled())
+   if(!g_rtNasConfirmation&&!g_rtNasStateGate&&!RuntimeNasExitEnabled())
    {
       g_histNasCacheActive=true;
       return true;
    }
    ENUM_TIMEFRAMES tf=NasConfirmationTf();int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
-   datetime cutoff=now-(datetime)((long)MathMax(1,days)*86400)
-      -(datetime)(MathMax(0,g_rtNasActiveSignalLookbackMinutes)*60)-sec*2;
+   datetime auditStart=now-(datetime)((long)MathMax(1,days)*86400);
+   // STATE GATE has no age limit. Retain a causal seed window before the
+   // oldest audited ORB so its latest prior NAS transition is not truncated.
+   long seedSeconds=g_rtNasStateGate?(long)NasCalcWarmupBars()*sec:
+      (long)MathMax(0,g_rtNasActiveSignalLookbackMinutes)*60;
+   datetime cutoff=auditStart-(datetime)seedSeconds-sec*2;
    datetime closedBar=iTime(_Symbol,tf,1);
    NasSettings settings=BuildOrbNasSettings();
    bool reusable=g_histNasCacheReady
@@ -1255,6 +1429,8 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
       detail="NAS_CACHE_REUSE bars="+IntegerToString(g_histNasCacheCopiedBars)
          +" event_from="+FmtTime(g_histNasCacheEventFrom)
          +" allowed_events="+IntegerToString(g_lastNasAllowedEventCount)
+         +" state_allowed="+IntegerToString(g_lastNasStateAllowedEventCount)
+         +" flow_allowed="+IntegerToString(g_lastNasFlowAllowedEventCount)
          +" raw_events="+IntegerToString(g_lastNasRawEventCount)
          +" vol_missing="+IntegerToString(g_lastNasVolumeMissingCount);
       return true;
@@ -1321,6 +1497,8 @@ bool BuildHistoricalNasEventCache(int days,datetime now,string &detail)
    detail="NAS_CACHE_OK bars="+IntegerToString(copied)
       +" event_from="+FmtTime(g_histNasCacheEventFrom)
       +" allowed_events="+IntegerToString(g_lastNasAllowedEventCount)
+      +" state_allowed="+IntegerToString(g_lastNasStateAllowedEventCount)
+      +" flow_allowed="+IntegerToString(g_lastNasFlowAllowedEventCount)
       +" raw_events="+IntegerToString(g_lastNasRawEventCount)
       +" vol_missing="+IntegerToString(g_lastNasVolumeMissingCount);
    return true;
@@ -1347,6 +1525,80 @@ int FirstNasEventAfter(const datetime at)
    }
    return lo;
 }
+int LastAllowedNasEventAtOrBefore(const datetime at)
+{
+   for(int i=FirstNasEventAfter(at)-1;i>=0;i--)
+      if(HistoricalNasStateEventAllowed(i))return i;
+   return -1;
+}
+bool FindNasStateGateCached(string dir,datetime orbAcceptedAt,
+                            datetime &stateBar,datetime &stateAt,double &stateClose,
+                            string &detail)
+{
+   stateBar=0;stateAt=0;stateClose=0.0;detail="";
+   int index=LastAllowedNasEventAtOrBefore(orbAcceptedAt);
+   if(index<0)
+   {
+      detail="NAS_STATE_NONE orb_at="+FmtTime(orbAcceptedAt);
+      return false;
+   }
+   stateBar=g_histNasEvents[index].barTime;
+   stateAt=g_histNasEvents[index].availableTime;
+   stateClose=g_histNasEvents[index].closePrice;
+   string stateDir=g_histNasEvents[index].dir;
+   int ageMinutes=(int)MathMax(0,(orbAcceptedAt-stateAt)/60);
+   detail="NAS_STATE_CACHE state="+stateDir+" required="+dir
+      +" age_min="+IntegerToString(ageMinutes)+" event="+FmtTime(stateAt)
+      +" orb_at="+FmtTime(orbAcceptedAt);
+   return stateDir==dir;
+}
+bool FindNasStateGate(string dir,datetime orbAcceptedAt,
+                      datetime &stateBar,datetime &stateAt,double &stateClose,
+                      string &detail)
+{
+   stateBar=0;stateAt=0;stateClose=0.0;detail="";
+   if((dir!="BUY"&&dir!="SELL")||orbAcceptedAt<=0)return false;
+   ENUM_TIMEFRAMES tf=NasConfirmationTf();
+   datetime closedBar=iTime(_Symbol,tf,1);
+   int sec=PeriodSeconds(tf);if(sec<=0)sec=60;
+   datetime requiredStateFrom=orbAcceptedAt-(datetime)((long)NasCalcWarmupBars()*sec);
+   NasSettings settings=BuildOrbNasSettings();
+   if((g_histNasCacheActive||g_histNasCacheReady)
+      &&g_histNasCacheTf==tf
+      &&g_histNasCacheSensitivity==settings.sensitivity
+      &&g_histNasCacheRsiLength==settings.rsiLength
+      &&g_histNasCacheAtrRisk==settings.atrRisk
+      &&g_histNasCacheAtrLen==settings.atrLen
+      &&g_histNasCacheEventFrom>0&&g_histNasCacheEventFrom<=requiredStateFrom
+      &&g_histNasCacheClosedBar>0&&g_histNasCacheClosedBar==closedBar)
+      return FindNasStateGateCached(dir,orbAcceptedAt,stateBar,stateAt,stateClose,detail);
+
+   MqlRates rates[];
+   int copied=LoadOrbNasRatesThrough(rates,tf,orbAcceptedAt,NasHistoryBars());
+   if(copied<20)
+   {detail="NAS_STATE_NO_DATA tf="+TfLabel(tf)+" bars="+IntegerToString(copied);return false;}
+   NasPoint points[];
+   if(NAS_Calculate(rates,copied,settings,points)!=copied)
+   {detail="NAS_STATE_CALC_FAIL";return false;}
+   string stateDir="";
+   for(int i=1;i<=copied-2;i++)
+   {
+      datetime available=OrbNasSignalAvailableTime(rates,copied,i);
+      if(available<=0||available>orbAcceptedAt)continue;
+      if(points[i].buy==points[i].sell)continue;
+      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
+      if(!OrbNasStateVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      stateDir=points[i].buy?"BUY":"SELL";
+      stateBar=rates[i].time;stateAt=available;stateClose=rates[i].close;
+   }
+   if(stateDir=="")
+   {detail="NAS_STATE_NONE tf="+TfLabel(tf)+" orb_at="+FmtTime(orbAcceptedAt);return false;}
+   int ageMinutes=(int)MathMax(0,(orbAcceptedAt-stateAt)/60);
+   detail="NAS_STATE state="+stateDir+" required="+dir
+      +" age_min="+IntegerToString(ageMinutes)+" event="+FmtTime(stateAt)
+      +" orb_at="+FmtTime(orbAcceptedAt);
+   return stateDir==dir;
+}
 bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latestAvailable,
                                datetime &confirmBar,datetime &confirmAt,double &confirmClose,
                                bool &usedActiveSignal,string &detail)
@@ -1357,7 +1609,7 @@ bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latest
    int latestState=-1;
    for(int i=FirstNasEventAtOrAfter(activeStart);i<ArraySize(g_histNasEvents);i++)
    {
-      if(!HistoricalNasEventAllowed(i))continue;
+      if(!HistoricalNasFlowEventAllowed(i))continue;
       datetime at=g_histNasEvents[i].availableTime;
       if(at<activeStart)continue;
       if(at>orbAcceptedAt)break;
@@ -1373,7 +1625,7 @@ bool FindNasConfirmationCached(string dir,datetime orbAcceptedAt,datetime latest
    }
    for(int i=FirstNasEventAtOrAfter(orbAcceptedAt);i<ArraySize(g_histNasEvents);i++)
    {
-      if(!HistoricalNasEventAllowed(i))continue;
+      if(!HistoricalNasFlowEventAllowed(i))continue;
       datetime at=g_histNasEvents[i].availableTime;
       if(at<orbAcceptedAt)continue;
       if(at>latestAvailable)break;
@@ -1415,7 +1667,7 @@ bool FindNasConfirmation(string dir,datetime orbAcceptedAt,datetime latestAvaila
       if(available<activeStart||available>orbAcceptedAt)continue;
       if(points[i].buy==points[i].sell)continue;
       string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      if(!OrbNasFlowVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       activeDir=points[i].buy?"BUY":"SELL";
       activeBar=rates[i].time;activeAt=available;activeClose=rates[i].close;
    }
@@ -1438,7 +1690,7 @@ bool FindNasConfirmation(string dir,datetime orbAcceptedAt,datetime latestAvaila
       bool match=(dir=="BUY"?(points[i].buy&&!points[i].sell):(points[i].sell&&!points[i].buy));
       if(!match)continue;
       string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      if(!OrbNasFlowVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       confirmBar=rates[i].time;confirmAt=available;confirmClose=rates[i].close;
       detail="NAS_OK tf="+TfLabel(tf)+" bar="+FmtTime(confirmBar)+" at="+FmtTime(confirmAt);
       return true;
@@ -1538,7 +1790,7 @@ bool FindNasTransitionAfter(string wantedDir,datetime afterExclusive,datetime la
    {
       for(int i=FirstNasEventAfter(afterExclusive);i<ArraySize(g_histNasEvents);i++)
       {
-         if(!HistoricalNasEventAllowed(i))continue;
+         if(!HistoricalNasFlowEventAllowed(i))continue;
          datetime at=g_histNasEvents[i].availableTime;
          if(at>latestAvailable)break;
          if(g_histNasEvents[i].dir!=wantedDir)continue;
@@ -1560,7 +1812,7 @@ bool FindNasTransitionAfter(string wantedDir,datetime afterExclusive,datetime la
       bool match=wantedDir=="BUY"?(points[i].buy&&!points[i].sell):(points[i].sell&&!points[i].buy);
       if(!match)continue;
       string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      if(!OrbNasFlowVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       eventBar=rates[i].time;eventAt=available;eventClose=rates[i].close;
       detail="NAS_OPPOSITE tf="+TfLabel(tf)+" dir="+wantedDir+" bar="+FmtTime(eventBar)+" at="+FmtTime(eventAt);
       return true;
@@ -1577,7 +1829,7 @@ bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,
       int latest=-1;
       for(int i=FirstNasEventAfter(afterExclusive);i<ArraySize(g_histNasEvents);i++)
       {
-         if(!HistoricalNasEventAllowed(i))continue;
+         if(!HistoricalNasFlowEventAllowed(i))continue;
          datetime at=g_histNasEvents[i].availableTime;
          if(at>latestAvailable)break;
          latest=i;
@@ -1600,7 +1852,7 @@ bool FindLatestNasSignalAfter(datetime afterExclusive,datetime latestAvailable,
       bool buy=(points[i].buy&&!points[i].sell),sell=(points[i].sell&&!points[i].buy);
       if(!buy&&!sell)continue;
       string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
+      if(!OrbNasFlowVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
       eventDir=buy?"BUY":"SELL";eventBar=rates[i].time;eventAt=available;eventClose=rates[i].close;
    }
    if(eventAt<=0)return false;
@@ -2512,7 +2764,7 @@ bool CanModifySlTo(double sl,int dir,string &reason)
 }
 
 //=========================================================================
-//  AUDIT â€” Advanced Trade Lifecycle CSV (Signatics pattern)
+//  AUDIT — Advanced Trade Lifecycle CSV (Signatics pattern)
 //=========================================================================
 string AuditDateStr(){MqlDateTime d;TimeToStruct(TimeGMT(),d);return StringFormat("%04d%02d%02d",d.year,d.mon,d.day);}
 string AuditFileName(){return "ORB15_TradeAudit_"+AuditDateStr()+".csv";}
@@ -2903,7 +3155,8 @@ void RenderHistoricalAuditProgress(const bool force=false)
    if(IsTesterMode()||!InpShowDashboard)return;
    ulong nowMs=GetTickCount64();
    // Repainting a chart containing thousands of history objects is expensive.
-   // Four real updates per second remains visibly smooth without starving audit work.
+   // Two real updates per second keeps progress readable while making UI cost
+   // independent of the number of simulated days/ticks.
    if(!force&&g_histAuditLastUiMs>0&&nowMs-g_histAuditLastUiMs<500)return;
    g_histAuditLastUiMs=nowMs;
    int x=InpDashboardX;
@@ -3259,31 +3512,47 @@ void DrawSignalText(const string name,datetime t,double price,string text,color 
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,name,OBJPROP_HIDDEN,false);
 }
 
-bool NasOverlayEnabled(){return !IsTesterMode()&&(g_rtNasConfirmation||RuntimeNasExitEnabled());}
+bool NasOverlayEnabled(){return !IsTesterMode()&&(g_rtNasConfirmation||g_rtNasStateGate||RuntimeNasExitEnabled());}
 
-void DrawNasSignalMarker(const MqlRates &bar,const NasPoint &point,ENUM_TIMEFRAMES tf)
+string NasVisualPolicyLabel(const ORB_NAS_VISUAL_POLICY policy)
+{
+   if(policy==ORB_NAS_VIS_STATE)return "STATE";
+   if(policy==ORB_NAS_VIS_FLOW)return "FLOW";
+   if(policy==ORB_NAS_VIS_BOTH)return "BOTH S+F";
+   return "NONE";
+}
+color NasVisualPolicyColor(const ORB_NAS_VISUAL_POLICY policy)
+{
+   if(policy==ORB_NAS_VIS_STATE)return C'35,170,255';
+   if(policy==ORB_NAS_VIS_FLOW)return C'255,158,46';
+   if(policy==ORB_NAS_VIS_BOTH)return C'210,100,255';
+   return C'145,160,180';
+}
+void DrawNasSignalMarker(const MqlRates &bar,const NasPoint &point,ENUM_TIMEFRAMES tf,
+                         const ORB_NAS_VISUAL_POLICY policy)
 {
    bool buy=point.buy&&!point.sell;
    bool sell=point.sell&&!point.buy;
-   if(!buy&&!sell)return;
+   if((!buy&&!sell)||policy==ORB_NAS_VIS_NONE)return;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
    double pad=MathMax(MathMax(pt,bar.high-bar.low)*0.22,pt*24.0);
    double arrowPrice=NormalizePrice(buy?bar.low-pad:bar.high+pad);
    string dir=buy?"BUY":"SELL";
    string token=StringFormat("%I64d",(long)bar.time)+"_"+TfLabel(tf)+"_"+dir;
    string base=HistoricalObjectRoot()+"NAS_"+token+"_";
-   color clr=buy?C'35,170,255':C'255,90,190';
+   color clr=NasVisualPolicyColor(policy);
    string arrowName=base+"ARW";
    if(IsFreshHistoricalBuildObject(arrowName))ObjectCreate(0,arrowName,OBJ_ARROW,0,bar.time,arrowPrice);
    else if(ObjectFind(0,arrowName)<0)ObjectCreate(0,arrowName,OBJ_ARROW,0,bar.time,arrowPrice);
    else ObjectMove(0,arrowName,0,bar.time,arrowPrice);
    ObjectSetInteger(0,arrowName,OBJPROP_ARROWCODE,buy?241:242);
    ObjectSetInteger(0,arrowName,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,arrowName,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,arrowName,OBJPROP_WIDTH,policy==ORB_NAS_VIS_BOTH?3:2);
    ObjectSetInteger(0,arrowName,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,arrowName,OBJPROP_HIDDEN,false);
    double textPrice=NormalizePrice(buy?arrowPrice-pad*0.55:arrowPrice+pad*0.55);
-   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+TfLabel(tf)+" S"+IntegerToString(g_rtNasSensitivity)+"]",clr);
+   DrawSignalText(base+"TXT",bar.time,textPrice,"WINDOW NAS "+dir+" ["+NasVisualPolicyLabel(policy)
+      +" | "+TfLabel(tf)+" S"+IntegerToString(g_rtNasSensitivity)+"]",clr);
 }
 
 int DrawNasSignalOverlay(int days,datetime now)
@@ -3296,14 +3565,15 @@ int DrawNasSignalOverlay(int days,datetime now)
       ENUM_TIMEFRAMES tf=NasConfirmationTf();int drawn=0;
       for(int i=0;i<ArraySize(g_histNasEvents);i++)
       {
-         if(!HistoricalNasEventAllowed(i))continue;
+         ORB_NAS_VISUAL_POLICY visual=HistoricalNasVisualPolicy(i);
+         if(visual==ORB_NAS_VIS_NONE)continue;
          if(g_histNasEvents[i].availableTime<cutoff||g_histNasEvents[i].availableTime>now)continue;
          MqlRates bar;ZeroMemory(bar);
          bar.time=g_histNasEvents[i].barTime;bar.close=g_histNasEvents[i].closePrice;
          bar.high=g_histNasEvents[i].highPrice;bar.low=g_histNasEvents[i].lowPrice;
          NasPoint point;ZeroMemory(point);
          point.buy=(g_histNasEvents[i].dir=="BUY");point.sell=(g_histNasEvents[i].dir=="SELL");
-         DrawNasSignalMarker(bar,point,tf);drawn++;
+         DrawNasSignalMarker(bar,point,tf,visual);drawn++;
       }
       g_lastNasOverlaySignalCount=drawn;g_lastNasOverlayCopiedBars=g_histNasCacheCopiedBars;
       g_lastNasOverlayClosedBar=iTime(_Symbol,tf,1);
@@ -3324,9 +3594,10 @@ int DrawNasSignalOverlay(int days,datetime now)
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(rates[i].time<cutoff||available<=0||available>now)continue;
       if(points[i].buy==points[i].sell)continue;
-      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
-      DrawNasSignalMarker(rates[i],points[i],tf);drawn++;
+      double signalVolume=0.0,averageVolume=0.0;
+      ORB_NAS_VISUAL_POLICY visual=OrbNasVisualPolicy(rates,i,signalVolume,averageVolume);
+      if(visual==ORB_NAS_VIS_NONE)continue;
+      DrawNasSignalMarker(rates[i],points[i],tf,visual);drawn++;
    }
    g_lastNasOverlaySignalCount=drawn;
    g_lastNasOverlayClosedBar=iTime(_Symbol,tf,1);
@@ -3336,7 +3607,9 @@ int DrawNasSignalOverlay(int days,datetime now)
 bool DrawCachedNasSignalOverlayEvent(const int index,const int days,const datetime now)
 {
    if(!NasOverlayEnabled()||!g_histNasCacheActive)return false;
-   if(index<0||index>=ArraySize(g_histNasEvents)||!HistoricalNasEventAllowed(index))return false;
+   if(index<0||index>=ArraySize(g_histNasEvents))return false;
+   ORB_NAS_VISUAL_POLICY visual=HistoricalNasVisualPolicy(index);
+   if(visual==ORB_NAS_VIS_NONE)return false;
    datetime cutoff=now-(datetime)((long)MathMax(1,days)*86400);
    if(g_histNasEvents[index].availableTime<cutoff||g_histNasEvents[index].availableTime>now)return false;
    MqlRates bar;ZeroMemory(bar);
@@ -3347,7 +3620,7 @@ bool DrawCachedNasSignalOverlayEvent(const int index,const int days,const dateti
    NasPoint point;ZeroMemory(point);
    point.buy=(g_histNasEvents[index].dir=="BUY");
    point.sell=(g_histNasEvents[index].dir=="SELL");
-   DrawNasSignalMarker(bar,point,NasConfirmationTf());
+   DrawNasSignalMarker(bar,point,NasConfirmationTf(),visual);
    return true;
 }
 
@@ -3367,9 +3640,10 @@ void RefreshNasSignalOverlay()
       datetime available=OrbNasSignalAvailableTime(rates,copied,i);
       if(rates[i].time<from||available<=0||available>now)continue;
       if(points[i].buy==points[i].sell)continue;
-      string volumeReason="";double signalVolume=0.0,averageVolume=0.0;
-      if(!OrbNasVolumeFilterAllows(rates,i,volumeReason,signalVolume,averageVolume))continue;
-      DrawNasSignalMarker(rates[i],points[i],tf);
+      double signalVolume=0.0,averageVolume=0.0;
+      ORB_NAS_VISUAL_POLICY visual=OrbNasVisualPolicy(rates,i,signalVolume,averageVolume);
+      if(visual==ORB_NAS_VIS_NONE)continue;
+      DrawNasSignalMarker(rates[i],points[i],tf,visual);
    }
    g_lastNasOverlayClosedBar=closedBar;
 }
@@ -3385,7 +3659,7 @@ void DrawLevels()
 }
 
 //=========================================================================
-//  ORB BUILDING â€” uses g_rtSignalTf (runtime TF)
+//  ORB BUILDING — uses g_rtSignalTf (runtime TF)
 //=========================================================================
 bool BuildOrbForNyDate(int y,int m,int d,double &hi,double &lo,datetime &os,datetime &oe,datetime &te,int &used,double &avgV)
 {
@@ -3425,7 +3699,7 @@ double HistDailyAtr(datetime beforeDate,int period)
 }
 
 //=========================================================================
-//  HISTORICAL BREAKOUT FINDER â€” uses g_rtSignalTf, respects delay
+//  HISTORICAL BREAKOUT FINDER — uses g_rtSignalTf, respects delay
 //  Returns pre-breakout rolling avg volume for fair volume comparison
 //=========================================================================
 bool FindHistBreakoutAfterRates(const MqlRates &r[],int c,datetime from,datetime to,double hi,double lo,
@@ -3633,7 +3907,17 @@ bool ResolveHistoricalEntry(ORB_ENTRY_MODE mode,string dir,datetime breakoutT,do
    entryPrice=breakoutClose;
    detail=EntryModeLabel(mode);
    datetime gateAvailable=OrbSignalAvailableTime(breakoutT);
-   if(g_rtNasConfirmation)
+   if(g_rtNasStateGate)
+   {
+      datetime nasBar=0,nasAt=0;double nasClose=0.0;string nasDetail="";
+      if(!FindNasStateGate(dir,gateAvailable,nasBar,nasAt,nasClose,nasDetail))
+      {
+         detail="NAS_STATE_REJECTED "+nasDetail;
+         return false;
+      }
+      detail+=" "+nasDetail;
+   }
+   else if(g_rtNasConfirmation)
    {
       datetime nasBar=0,nasAt=0;double nasClose=0.0;bool nasWasActive=false;string nasDetail="";
       if(!FindNasConfirmation(dir,gateAvailable,tradeEnd,nasBar,nasAt,nasClose,nasWasActive,nasDetail))
@@ -5909,7 +6193,8 @@ void ProcessHistoricalAuditStep()
                   " ",TargetLabel()," ",RuntimeInvertLabel()," audit_weeks=",IntegerToString(g_rtHistoricalWeeks),
                   " nas_overlay=",IntegerToString(g_histDrawnNasSignals)," nas_history_bars=",g_lastNasOverlayCopiedBars,
                   " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity,
-                  " nas_vol=",g_rtNasVolumeFilter?"ON":"OFF"," nas_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2));
+                  " state_vol=",g_rtNasVolumeFilter?"ON":"OFF"," state_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2),
+                  " flow_vol=",g_rtNasFlowVolumeFilter?"ON":"OFF"," flow_vol_x=",DoubleToString(g_rtNasFlowVolumeMultiplier,2));
          }
       }
       else if(g_histAuditPhase==3)
@@ -6037,7 +6322,7 @@ void DrawHistoricalSignals()
 }
 
 //=========================================================================
-//  AUDIT ENGINE â€” Position Probe + History Scan
+//  AUDIT ENGINE — Position Probe + History Scan
 //=========================================================================
 void OrbAudit_PositionProbe()
 {
@@ -6093,7 +6378,7 @@ void OBT_PrecomputeDays()
       dc.dailyAtr=HistDailyAtr(os,InpAtrPeriod);
       g_btDays[g_btDayCount]=dc;g_btDayCount++;
    }
-   // Precompute breakouts for each (day, tf, delay) â€” Layer 2
+   // Precompute breakouts for each (day, tf, delay) — Layer 2
    int slots=OBT_TF_COUNT*OBT_DELAY_COUNT;
    ArrayResize(g_btBreakouts,g_btDayCount*slots);
    for(int di=0;di<g_btDayCount;di++)
@@ -6310,7 +6595,7 @@ void DrawDashboard()
 {
    if(!InpShowDashboard){DeleteDash();return;}
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=824;
+   int W=620,H=846;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
@@ -6382,18 +6667,28 @@ void UpdateDashboard()
       nasState="GRACE "+DurationMinutesText((int)MathCeil((double)(nasEligibleAt-TimeCurrent())/60.0));
    else if(g_nasManagedLifecycle)nasState="LIVE "+g_nasManagedRawDir;
    else if(g_nasPending)nasState="WAIT "+g_nasPendingDir;
-   nasState+=" | S"+IntegerToString(g_rtNasSensitivity)+" | NV "+(g_rtNasVolumeFilter?("ONx"+DoubleToString(g_rtNasVolumeMultiplier,2)):"OFF")
+   nasState+=" | S"+IntegerToString(g_rtNasSensitivity)
+      +" | SV "+(g_rtNasVolumeFilter?("ONx"+DoubleToString(g_rtNasVolumeMultiplier,2)):"OFF")
+      +" FV "+(g_rtNasFlowVolumeFilter?("ONx"+DoubleToString(g_rtNasFlowVolumeMultiplier,2)):"OFF")
       +" | EXIT "+(g_rtNasAdditionalExit?"ADD":(g_rtNasExitOnOppositeSignal?"OPP":"OFF"))
-      +" | NAS "+IntegerToString(g_lastNasAllowedEventCount)+"/"+IntegerToString(g_lastNasRawEventCount)
+      +" | NAS S"+IntegerToString(g_lastNasStateAllowedEventCount)+" F"+IntegerToString(g_lastNasFlowAllowedEventCount)
+      +"/"+IntegerToString(g_lastNasRawEventCount)
       +(g_lastNasVolumeMissingCount>0?(" M"+IntegerToString(g_lastNasVolumeMissingCount)):"");
    CreateLabel("DASH_NAS_STATE",x+402,rootY+205,nasState,
       g_nasManagedClosePending?C'255,95,140':(g_nasManagedLifecycle?C'80,255,180':C'184,196,210'),7);
-   CreateButton("BTN_NAS_VOL",x+12,rootY+223,106,18,g_rtNasVolumeFilter?"NAS VOL ON":"NAS VOL OFF",
+   CreateButton("BTN_NAS_VOL",x+12,rootY+223,106,18,g_rtNasVolumeFilter?"STATE VOL ON":"STATE VOL OFF",
       g_rtNasVolumeFilter?C'30,150,95':C'80,80,80');
-   CreateLabel("DASH_NAS_VOL_X",x+126,rootY+227,"VOL X",C'134,158,182',7);
+   CreateLabel("DASH_NAS_VOL_X",x+126,rootY+227,"STATE X",C'134,158,182',7);
    CreateEdit("EDIT_NAS_VOL_X",x+170,rootY+223,52,18,DoubleToString(g_rtNasVolumeMultiplier,2));
-   CreateLabel("DASH_NAS_VOL_RULE",x+230,rootY+227,"SIGNAL VOL vs PREV20 AVG",C'134,158,182',7);
-   y=rootY+246;
+   CreateButton("BTN_NAS_STATE_GATE",x+230,rootY+223,116,18,g_rtNasStateGate?"STATE GATE ON":"STATE GATE OFF",
+      g_rtNasStateGate?C'30,150,95':C'80,80,80');
+   CreateLabel("DASH_NAS_VOL_RULE",x+354,rootY+227,"LATEST CAUSAL NAS; NO AGE LIMIT",C'134,158,182',7);
+   CreateButton("BTN_NAS_FLOW_VOL",x+12,rootY+245,106,18,g_rtNasFlowVolumeFilter?"FLOW VOL ON":"FLOW VOL OFF",
+      g_rtNasFlowVolumeFilter?C'30,150,95':C'80,80,80');
+   CreateLabel("DASH_NAS_FLOW_VOL_X",x+126,rootY+249,"FLOW X",C'134,158,182',7);
+   CreateEdit("EDIT_NAS_FLOW_VOL_X",x+170,rootY+245,52,18,DoubleToString(g_rtNasFlowVolumeMultiplier,2));
+   CreateLabel("DASH_NAS_FLOW_RULE",x+230,rootY+249,"ENTRY GATE + OPP EXIT + ADD EXIT",C'134,158,182',7);
+   y=rootY+268;
 
    // Status line
    string state=g_rtEaEnabled?"EA ON":"EA OFF";
@@ -6578,7 +6873,7 @@ void UpdateDashboard()
    string atrCtx=atr>0?"ORB/ATR "+DoubleToString(g_orbReady?((g_orbHigh-g_orbLow)/atr)*100.0:0,1)+"%":"ATR --";
    CreateLabel("DASH_L7",x+12,y+312,atrCtx+" | Range "+DoubleToString(g_orbReady?g_orbHigh-g_orbLow:0,_Digits)+" | "+ExitDebugConfig(),C'134,158,182',7);
 
-   // â”€â”€â”€ SECTION: BACKTEST ENGINE â”€â”€â”€
+   // ─── SECTION: BACKTEST ENGINE ───
    CreateRect("DASH_SEP4",x+8,y+328,W-16,1,C'65,116,172',C'65,116,172');
    CreateLabel("DASH_BTITLE",x+12,y+334,"BACKTEST ENGINE",acB,9);
 
@@ -6684,7 +6979,7 @@ bool ResetForNewNyDay()
 }
 
 //=========================================================================
-//  LIVE FILTERS â€” use g_rtSignalTf for all timeframe operations
+//  LIVE FILTERS — use g_rtSignalTf for all timeframe operations
 //=========================================================================
 bool CheckAtrFilter(string &r)
 {
@@ -6714,7 +7009,7 @@ bool CheckVolFilter(string &r)
 bool CheckDayFilter(string &r){if(!g_rtFilterDay)return true;int y,m,d;CurrentSessionDayKey(y,m,d);int dow=DayOfWeekForDate(y,m,d);bool ok=false;if(dow==1&&InpTradeMonday)ok=true;if(dow==2&&InpTradeTuesday)ok=true;if(dow==3&&InpTradeWednesday)ok=true;if(dow==4&&InpTradeThursday)ok=true;if(dow==5&&InpTradeFriday)ok=true;if(!ok){r="DAY_BLOCKED";return false;}return true;}
 
 //=========================================================================
-//  SIGNAL COMPUTE â€” uses g_rtSignalTf + confirmation delay
+//  SIGNAL COMPUTE — uses g_rtSignalTf + confirmation delay
 //=========================================================================
 bool ComputeSignal(string &dir,datetime &bt,double &sc)
 {
@@ -7074,7 +7369,7 @@ void ManagePositions()
 }
 
 //=========================================================================
-//  MAIN SIGNAL PIPELINE â€” uses g_rtSignalTf
+//  MAIN SIGNAL PIPELINE — uses g_rtSignalTf
 //=========================================================================
 void SetRetestPending(string dir,datetime bt,double breakoutClose,string context,datetime gateAvailable=0)
 {
@@ -7605,7 +7900,8 @@ void EnsureNasExitLifecycle()
    StartNasManagedLifecycle(execDirection>0?"BUY":"SELL",execDirection,openedAt,g_orbBridgePlanActive);
    Audit("nas_exit_lifecycle_adopted",execDirection>0?"BUY":"SELL",0,g_tradeEntry,g_tradeSl,0,
       "mode="+RuntimeNasModeLabel()+" tf="+TfLabel(NasConfirmationTf())+" sensitivity="+IntegerToString(g_rtNasSensitivity)
-      +" nas_vol="+(g_rtNasVolumeFilter?"ON":"OFF")+" nas_vol_x="+DoubleToString(g_rtNasVolumeMultiplier,2));
+      +" flow_vol="+(g_rtNasFlowVolumeFilter?"ON":"OFF")
+      +" flow_vol_x="+DoubleToString(g_rtNasFlowVolumeMultiplier,2));
 }
 
 datetime NasOppositeExitEligibleAt(datetime openedAt)
@@ -7850,6 +8146,17 @@ void HandleFilteredWindowSignal(string rawDir,datetime signalTime,double signalC
       "closed_dir="+(activeDir>0?"BUY":"SELL")+" "+closeReason);
 }
 
+void HandleNasStateGateRejection(string rawDir,datetime signalTime,double signalClose,string detail)
+{
+   // STATE GATE is deliberately entry-only. A mismatch can be visualized and
+   // audited, but must never enter the filtered-window close lifecycle.
+   DrawLiveOrbWindowSignal(rawDir,signalTime,"NAS STATE");
+   g_lastFilterReason="NAS STATE";
+   g_lastExecStatus="NAS_STATE_REJECTED";
+   Audit("nas_state_gate_rejected",EffectiveOrbDirection(rawDir),0,signalClose,0,0,
+      "raw_dir="+rawDir+" "+detail);
+}
+
 void TryOpenSignal()
 {
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
@@ -7934,6 +8241,19 @@ void TryOpenSignal()
    }
    if(newDayReverse)
       modernDetail+=(modernDetail==""?"":" ")+"new_day_reverse_candidate=1 "+newDayReverseDetail;
+   if(g_rtNasStateGate)
+   {
+      datetime nasBar=0,nasAt=0;double nasClose=0.0;string nasDetail="";
+      datetime acceptedAt=OrbSignalAvailableTime(bt);
+      if(!FindNasStateGate(dir,acceptedAt,nasBar,nasAt,nasClose,nasDetail))
+      {
+         HandleNasStateGateRejection(dir,bt,sc,nasDetail);
+         return;
+      }
+      modernDetail+=(modernDetail==""?"":" ")+"nas_state_gate=1 "+nasDetail;
+      g_lastExecStatus="NAS_STATE_MATCHED_"+dir;
+      Audit("nas_state_gate_matched",dir,0,nasClose,0,0,nasDetail);
+   }
    // A later accepted trade supersedes any earlier rejected candidate from
    // the same ORB day. Keep at most one live WINDOW visual per day, while
    // allowing its first later opposite filtered signal to become that visual.
@@ -8048,10 +8368,12 @@ int OnInit()
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),"/",DoubleToString(InpTp4R,1),"/",DoubleToString(InpTp5R,1),"/",DoubleToString(InpTp6R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF",
                          " utc00=",g_rtUtcMidnightSession?"ON":"OFF"," nas_confirm=",g_rtNasConfirmation?"ON":"OFF",
+                         " nas_state_gate=",g_rtNasStateGate?"ON":"OFF",
                          " nas_opp_exit=",g_rtNasExitOnOppositeSignal?"ON":"OFF",
                          " nas_add_exit=",g_rtNasAdditionalExit?"ON":"OFF"," nas_mode=",RuntimeNasModeLabel(),
                          " nas_tf=",TfLabel(NasConfirmationTf())," nas_sensitivity=",g_rtNasSensitivity,
-                         " nas_vol=",g_rtNasVolumeFilter?"ON":"OFF"," nas_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2),
+                         " state_vol=",g_rtNasVolumeFilter?"ON":"OFF"," state_vol_x=",DoubleToString(g_rtNasVolumeMultiplier,2),
+                         " flow_vol=",g_rtNasFlowVolumeFilter?"ON":"OFF"," flow_vol_x=",DoubleToString(g_rtNasFlowVolumeMultiplier,2),
                          " nas_calc_bars=",NasCalcWarmupBars()," nas_lookback_min=",g_rtNasActiveSignalLookbackMinutes,
                          " nas_exit_wait=",DurationMinutesText(g_rtNasOppositeExitWaitMinutes),
                          " channel=",g_orbBridgeChannel," entry_window=",EntryWindowLabel());
@@ -8298,14 +8620,14 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    else if(sparam==PREFIX+"BTN_TF")
    {
       ClearNasPending("signal_tf_changed");
-      // Cycle through M1 â†’ M5 â†’ M15 â†’ M1...
+      // Cycle through M1 → M5 → M15 → M1...
       g_rtSignalTf=CycleTf(g_rtSignalTf);
       needRedraw=true;
       Print("ORB15v3 Signal TF changed to ",TfLabel(g_rtSignalTf));
    }
    else if(sparam==PREFIX+"BTN_DELAY")
    {
-      // Cycle: OFF â†’ 3m â†’ 5m â†’ 10m â†’ OFF
+      // Cycle: OFF → 3m → 5m → 10m → OFF
       if(!g_rtUseDelay){g_rtUseDelay=true;g_rtDelayMin=3;}
       else if(g_rtDelayMin<=3){g_rtDelayMin=5;}
       else if(g_rtDelayMin<=5){g_rtDelayMin=10;}
@@ -8422,6 +8744,22 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;
    }
+   else if(sparam==PREFIX+"BTN_NAS_STATE_GATE")
+   {
+      if(!SetRuntimeNasStateGate(!g_rtNasStateGate))
+         g_lastExecStatus="NAS_STATE_SAVE_FAIL";
+      else
+      {
+         ClearNasPending("state_gate_toggled");
+         ClearRetestState("nas_state_gate_toggled");ClearImbalanceState("nas_state_gate_toggled");
+         g_lastExecStatus=g_rtNasStateGate?"NAS_STATE_GATE_ON":"NAS_STATE_GATE_OFF";
+         Audit("nas_state_gate_toggle","",0,0,0,0,
+            "enabled="+(g_rtNasStateGate?"1":"0")+" tf="+TfLabel(NasConfirmationTf())
+            +" no_age_limit=1 future_wait=0");
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;
+   }
    else if(sparam==PREFIX+"BTN_NAS_EXIT")
    {
       if(g_nasManagedClosePending)
@@ -8479,26 +8817,39 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    else if(sparam==PREFIX+"BTN_NAS_VOL")
    {
-      if(g_nasManagedClosePending)
-         g_lastExecStatus="NAS_VOL_BLOCKED_CLOSE_PENDING";
-      else if(!SetRuntimeNasVolumeFilter(!g_rtNasVolumeFilter))
-         g_lastExecStatus="NAS_VOL_SAVE_FAIL";
+      if(!SetRuntimeNasVolumeFilter(!g_rtNasVolumeFilter))
+         g_lastExecStatus="NAS_STATE_VOL_SAVE_FAIL";
       else
       {
-         // A pending entry was evaluated under the old volume policy. An
-         // active exit lifecycle remains owned, but starts a fresh forward-
-         // only scan so an old latch cannot leak across the policy change.
-         ClearNasPending("nas_volume_toggled");
+         g_lastExecStatus=g_rtNasVolumeFilter?"NAS_STATE_VOL_ON":"NAS_STATE_VOL_OFF";
+         g_lastNasOverlayClosedBar=0;
+         Audit("nas_state_volume_filter_toggled","",0,0,0,0,"enabled="+(g_rtNasVolumeFilter?"1":"0")
+            +" multiplier="+DoubleToString(g_rtNasVolumeMultiplier,4));
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_NAS_FLOW_VOL")
+   {
+      if(g_nasManagedClosePending)
+         g_lastExecStatus="NAS_FLOW_VOL_BLOCKED_CLOSE_PENDING";
+      else if(!SetRuntimeNasFlowVolumeFilter(!g_rtNasFlowVolumeFilter))
+         g_lastExecStatus="NAS_FLOW_VOL_SAVE_FAIL";
+      else
+      {
+         // Pending ENTRY GATE and managed exit scans must adopt one coherent
+         // flow policy from this point forward.
+         ClearNasPending("nas_flow_volume_toggled");
          if(g_nasManagedLifecycle)
          {
             g_nasManagedOppositeAt=0;
             g_nasManagedLastScanAt=TimeCurrent();
             PersistNasManagedLifecycle();
          }
-         g_lastExecStatus=g_rtNasVolumeFilter?"NAS_VOL_ON":"NAS_VOL_OFF";
+         g_lastExecStatus=g_rtNasFlowVolumeFilter?"NAS_FLOW_VOL_ON":"NAS_FLOW_VOL_OFF";
          g_lastNasOverlayClosedBar=0;
-         Audit("nas_volume_filter_toggled","",0,0,0,0,"enabled="+(g_rtNasVolumeFilter?"1":"0")
-            +" multiplier="+DoubleToString(g_rtNasVolumeMultiplier,4));
+         Audit("nas_flow_volume_filter_toggled","",0,0,0,0,"enabled="+(g_rtNasFlowVolumeFilter?"1":"0")
+            +" multiplier="+DoubleToString(g_rtNasFlowVolumeMultiplier,4));
       }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;
@@ -8510,39 +8861,47 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       string requestedVolText=ObjectGetString(0,PREFIX+"EDIT_NAS_VOL_X",OBJPROP_TEXT);
       StringTrimLeft(requestedVolText);StringTrimRight(requestedVolText);StringReplace(requestedVolText,",",".");
       double requestedNasVolX=StringToDouble(requestedVolText);
+      string requestedFlowVolText=ObjectGetString(0,PREFIX+"EDIT_NAS_FLOW_VOL_X",OBJPROP_TEXT);
+      StringTrimLeft(requestedFlowVolText);StringTrimRight(requestedFlowVolText);StringReplace(requestedFlowVolText,",",".");
+      double requestedNasFlowVolX=StringToDouble(requestedFlowVolText);
       int requestedWait=-1;
       bool waitValid=ParseStrictDurationMinutes(ObjectGetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT),requestedWait);
       bool coreSignalSettingsChanged=(requested!=g_rtNasActiveSignalLookbackMinutes
          ||requestedSensitivity!=g_rtNasSensitivity);
-      bool volumeSettingsChanged=(MathAbs(requestedNasVolX-g_rtNasVolumeMultiplier)>0.00005);
-      bool signalSettingsChanged=(coreSignalSettingsChanged||volumeSettingsChanged);
+      bool stateVolumeSettingsChanged=(MathAbs(requestedNasVolX-g_rtNasVolumeMultiplier)>0.00005);
+      bool flowVolumeSettingsChanged=(MathAbs(requestedNasFlowVolX-g_rtNasFlowVolumeMultiplier)>0.00005);
+      bool signalSettingsChanged=(coreSignalSettingsChanged||stateVolumeSettingsChanged||flowVolumeSettingsChanged);
       bool waitChanged=(waitValid&&requestedWait!=g_rtNasOppositeExitWaitMinutes);
       if(requested<0||requested>1440||requestedSensitivity<1||requestedSensitivity>100
-              ||!MathIsValidNumber(requestedNasVolX)||requestedNasVolX<0.05||requestedNasVolX>200.0||!waitValid)
-         g_lastExecStatus="NAS_INVALID_S1_100_LB0_1440_VOLX0.05_200_WAIT";
+              ||!MathIsValidNumber(requestedNasVolX)||requestedNasVolX<0.05||requestedNasVolX>200.0
+              ||!MathIsValidNumber(requestedNasFlowVolX)||requestedNasFlowVolX<0.05||requestedNasFlowVolX>200.0||!waitValid)
+         g_lastExecStatus="NAS_INVALID_S1_100_LB0_1440_STATE_FLOW_X0.05_200_WAIT";
       else
       {
          int oldLookback=g_rtNasActiveSignalLookbackMinutes,oldWait=g_rtNasOppositeExitWaitMinutes;
          int oldSensitivity=g_rtNasSensitivity;double oldNasVolX=g_rtNasVolumeMultiplier;
+         double oldNasFlowVolX=g_rtNasFlowVolumeMultiplier;
          bool saved=SetRuntimeNasSensitivity(requestedSensitivity)
             &&SetRuntimeNasVolumeMultiplier(requestedNasVolX)
+            &&SetRuntimeNasFlowVolumeMultiplier(requestedNasFlowVolX)
             &&SetRuntimeNasLookback(requested)
             &&SetRuntimeNasExitWait(requestedWait);
          if(!saved)
          {
             SetRuntimeNasSensitivity(oldSensitivity);SetRuntimeNasVolumeMultiplier(oldNasVolX);
+            SetRuntimeNasFlowVolumeMultiplier(oldNasFlowVolX);
             SetRuntimeNasLookback(oldLookback);SetRuntimeNasExitWait(oldWait);
             g_lastExecStatus="NAS_RUNTIME_SAVE_FAIL_ROLLED_BACK";
          }
          else
          {
             g_nasApplyFlashUntil=TimeLocal()+2;
-            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(g_rtNasSensitivity)+"_VOLX"+DoubleToString(g_rtNasVolumeMultiplier,2)
+            g_lastExecStatus="NAS_APPLIED_S"+IntegerToString(g_rtNasSensitivity)
+               +"_SVX"+DoubleToString(g_rtNasVolumeMultiplier,2)+"_FVX"+DoubleToString(g_rtNasFlowVolumeMultiplier,2)
                +"_LB"+IntegerToString(g_rtNasActiveSignalLookbackMinutes)+"_WAIT"+DurationMinutesText(g_rtNasOppositeExitWaitMinutes);
-            if(signalSettingsChanged)
+            if(coreSignalSettingsChanged||flowVolumeSettingsChanged)
             {
                ClearNasPending("nas_runtime_changed");
-               g_lastNasOverlayClosedBar=0;
                if(g_nasManagedLifecycle)
                {
                   // A live lifecycle adopts the new NAS policy from this
@@ -8553,8 +8912,10 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
                   PersistNasManagedLifecycle();
                }
             }
+            if(signalSettingsChanged)g_lastNasOverlayClosedBar=0;
             Audit("nas_runtime_applied","",0,0,0,0,"sensitivity="+IntegerToString(g_rtNasSensitivity)
-               +" nas_vol="+(g_rtNasVolumeFilter?"1":"0")+" nas_vol_x="+DoubleToString(g_rtNasVolumeMultiplier,4)
+               +" state_vol="+(g_rtNasVolumeFilter?"1":"0")+" state_vol_x="+DoubleToString(g_rtNasVolumeMultiplier,4)
+               +" flow_vol="+(g_rtNasFlowVolumeFilter?"1":"0")+" flow_vol_x="+DoubleToString(g_rtNasFlowVolumeMultiplier,4)
                +" lookback_minutes="+IntegerToString(g_rtNasActiveSignalLookbackMinutes)
                +" exit_wait="+DurationMinutesText(g_rtNasOppositeExitWaitMinutes)+" tf="+TfLabel(NasConfirmationTf()));
             if(waitChanged&&g_nasManagedLifecycle)
@@ -8568,6 +8929,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       }
       ObjectSetString(0,PREFIX+"EDIT_NAS_SENS",OBJPROP_TEXT,IntegerToString(g_rtNasSensitivity));
       ObjectSetString(0,PREFIX+"EDIT_NAS_VOL_X",OBJPROP_TEXT,DoubleToString(g_rtNasVolumeMultiplier,2));
+      ObjectSetString(0,PREFIX+"EDIT_NAS_FLOW_VOL_X",OBJPROP_TEXT,DoubleToString(g_rtNasFlowVolumeMultiplier,2));
       ObjectSetString(0,PREFIX+"EDIT_NAS_LOOKBACK",OBJPROP_TEXT,IntegerToString(g_rtNasActiveSignalLookbackMinutes));
       ObjectSetString(0,PREFIX+"EDIT_NAS_EXIT_WAIT",OBJPROP_TEXT,DurationMinutesText(g_rtNasOppositeExitWaitMinutes));
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
