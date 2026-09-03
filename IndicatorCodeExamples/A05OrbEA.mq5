@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-03.A05-M5-IMB1M-05R-C3-v6.67-nas-policy-colors"
+#define ORB15_BUILD "2026-09-04.A05-M5-IMB1M-05R-C3-v6.68-startup-orb-replay-guard"
 
 enum ORB_SESSION_PROFILE
 {
@@ -294,6 +294,11 @@ bool     g_orbReady = false;
 bool     g_tradeTaken = false;
 double   g_orbHigh = 0, g_orbLow = 0, g_orbAvgVolume = 0;
 datetime g_orbStartServer = 0, g_orbEndServer = 0, g_tradeEndServer = 0;
+datetime g_instanceStartedAt = 0;
+bool     g_startupOrbGuardPending = false;
+bool     g_startupOrbDayLocked = false;
+datetime g_startupOrbPriorSignalBar = 0;
+string   g_startupOrbPriorSignalDir = "";
 datetime g_lastSignalBarTime = 0;
 datetime g_lastCheckedSignalBarTime = 0;
 bool     g_newDayReverseRetryPending = false;
@@ -6965,6 +6970,13 @@ bool ResetForNewNyDay()
    int y,m,d;int key=CurrentSessionDayKey(y,m,d);if(key==g_nyDayKey)return false;
    bool firstInit=(g_nyDayKey==0);
    g_nyDayKey=key;g_orbReady=false;g_tradeTaken=false;g_orbHigh=0;g_orbLow=0;g_orbAvgVolume=0;
+   // A continuously running EA is armed for the new ORB day. Only OnInit
+   // needs the replay guard because it may start after today's setup fired.
+   if(!firstInit)
+   {
+      g_startupOrbGuardPending=false;g_startupOrbDayLocked=false;
+      g_startupOrbPriorSignalBar=0;g_startupOrbPriorSignalDir="";
+   }
    g_lastSignalBarTime=0;g_lastCheckedSignalBarTime=0;g_lastLiveWindowKey="";g_liveWindowDrawnDayKey=0;g_tradeDir=0;g_tradeEntry=0;g_tradeSl=0;g_tradeOpenTime=0;g_beMoved=false;
    g_tradeRisk=0;g_lastFilterReason="";g_lastExecStatus="READY";
    g_tradeBestHigh=0;g_tradeBestLow=0;g_tradeLastDynamicExitBar=0;
@@ -7064,6 +7076,70 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    }
    if(InpUseClosedBarBreakout)g_lastCheckedSignalBarTime=bt;
    return true;
+}
+
+bool StartupOrbReplayGuardAllows()
+{
+   if(IsTesterMode())return true;
+   if(g_startupOrbDayLocked)
+   {
+      g_lastExecStatus="STALE_ORB_DAY_LOCKED";
+      return false;
+   }
+   if(!g_startupOrbGuardPending)return true;
+
+   datetime effectiveStart=g_orbEndServer;
+   if(g_rtUseDelay&&g_rtDelayMin>0)effectiveStart+=g_rtDelayMin*60;
+   datetime startupCutoff=MathMin(g_instanceStartedAt,g_tradeEndServer);
+   if(g_instanceStartedAt<=effectiveStart||startupCutoff<=effectiveStart)
+   {
+      g_startupOrbGuardPending=false;
+      return true;
+   }
+
+   // Existing exposure must remain manageable after restart. It already owns
+   // the setup, so the guard only blocks creation of a new late lifecycle.
+   if(OwnPositionExists()||g_orbBridgePlanActive)
+   {
+      g_startupOrbGuardPending=false;
+      return true;
+   }
+
+   MqlRates probe[];
+   int copied=CopyRates(_Symbol,g_rtSignalTf,g_orbEndServer,startupCutoff,probe);
+   if(copied<=0)
+   {
+      g_lastExecStatus="STARTUP_ORB_GUARD_WAIT_DATA";
+      return false; // Fail closed until today's source bars are available.
+   }
+
+   string priorDir="";datetime priorBar=0;double priorClose=0.0,priorHigh=0.0,priorLow=0.0;
+   double priorVolume=0.0,priorAverage=0.0;int scanFromIndex=0;
+   bool savedEntryWindow=g_rtEntryWindow;
+   g_rtEntryWindow=false; // A pre-start breakout is stale even if it occurred outside a later entry window.
+   bool priorSignal=FindHistBreakoutAfterRates(probe,copied,g_orbEndServer,startupCutoff,
+      g_orbHigh,g_orbLow,0,scanFromIndex,priorDir,priorBar,priorClose,priorHigh,priorLow,
+      priorVolume,priorAverage);
+   g_rtEntryWindow=savedEntryWindow;
+   g_startupOrbGuardPending=false;
+   if(!priorSignal)return true;
+
+   g_startupOrbDayLocked=true;
+   g_startupOrbPriorSignalBar=priorBar;
+   g_startupOrbPriorSignalDir=priorDir;
+   g_lastSignalBarTime=priorBar;
+   datetime latestClosed=iTime(_Symbol,g_rtSignalTf,1);
+   if(latestClosed>0)g_lastCheckedSignalBarTime=latestClosed;
+   ClearNasPending("startup_stale_orb_day");
+   ClearRetestState("startup_stale_orb_day");
+   ClearImbalanceState("startup_stale_orb_day");
+   ClearNewDayReverseRetry("startup_stale_orb_day");
+   g_lastFilterReason="STALE ORB "+priorDir+" "+FmtTime(priorBar);
+   g_lastExecStatus="STALE_ORB_DAY_LOCKED";
+   Audit("startup_stale_orb_locked",priorDir,0,priorClose,0,0,
+      "started="+FmtTime(g_instanceStartedAt)+" prior_signal="+FmtTime(priorBar)
+      +" next_orb_day_required=1");
+   return false;
 }
 
 //=========================================================================
@@ -8160,6 +8236,7 @@ void HandleNasStateGateRejection(string rawDir,datetime signalTime,double signal
 void TryOpenSignal()
 {
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
+   if(!StartupOrbReplayGuardAllows())return;
    if(ProcessNewDayReverseRetry())return;
    if(!EntryWindowAllowsAt(TimeCurrent()))
    {
@@ -8274,6 +8351,9 @@ void TryOpenSignal()
 int OnInit()
 {
    OrbTesterAudit_Init();
+   g_instanceStartedAt=TimeCurrent();
+   g_startupOrbGuardPending=!IsTesterMode();
+   g_startupOrbDayLocked=false;g_startupOrbPriorSignalBar=0;g_startupOrbPriorSignalDir="";
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
    {
       ENUM_ACCOUNT_MARGIN_MODE mm=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);

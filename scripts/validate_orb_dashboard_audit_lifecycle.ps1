@@ -83,6 +83,10 @@ foreach ($name in $files) {
         'SERIES_SYNCHRONIZED'
         'SERIES_FIRSTDATE'
         'stages[COVERAGE='
+        'STARTUP_ORB_GUARD_WAIT_DATA'
+        'STALE_ORB_DAY_LOCKED'
+        'startup_stale_orb_locked'
+        'next_orb_day_required=1'
     )) {
         if (-not $text.Contains($required)) { throw "$name missing lifecycle invariant: $required" }
     }
@@ -131,6 +135,32 @@ foreach ($name in $files) {
     if ($tradeAt -lt 0 -or $auditAt -le $tradeAt) { throw "$name lets history work run before live execution management" }
     if (-not $timer.Contains('if(!g_histAuditRunning&&!g_histRedrawQueued)RefreshNasSignalOverlay();')) {
         throw "$name refreshes the NAS overlay while an audit generation is being built"
+    }
+
+    $startupGuard = Get-FunctionBody $text 'bool StartupOrbReplayGuardAllows()'
+    foreach ($requiredGuard in @(
+        'if(g_startupOrbDayLocked)',
+        'return false; // Fail closed until today''s source bars are available.',
+        'g_rtEntryWindow=false;',
+        'FindHistBreakoutAfterRates(',
+        'ClearNasPending("startup_stale_orb_day")',
+        'ClearNewDayReverseRetry("startup_stale_orb_day")'
+    )) {
+        if (-not $startupGuard.Contains($requiredGuard)) { throw "$name startup ORB replay guard missing invariant: $requiredGuard" }
+    }
+    if ($startupGuard.Contains('OrbProPublish') -or $startupGuard.Contains('ExecuteOrbEntry(') -or $startupGuard.Contains('SendOrbOrder(')) {
+        throw "$name startup ORB replay guard can create an execution lifecycle"
+    }
+    $tryOpen = Get-FunctionBody $text 'void TryOpenSignal()'
+    $startupAt = $tryOpen.IndexOf('if(!StartupOrbReplayGuardAllows())return;')
+    $retryAt = $tryOpen.IndexOf('if(ProcessNewDayReverseRetry())return;')
+    $pendingAt = $tryOpen.IndexOf('if(g_nasPending)')
+    if ($startupAt -lt 0 -or $retryAt -le $startupAt -or $pendingAt -le $startupAt) {
+        throw "$name can process stale retry/pending state before the startup ORB replay guard"
+    }
+    $dayReset = Get-FunctionBody $text 'bool ResetForNewNyDay()'
+    if (-not $dayReset.Contains('g_startupOrbDayLocked=false;')) {
+        throw "$name does not re-arm entries on the next ORB day"
     }
 
     $forcedResolver = Get-FunctionBody $text 'bool ResolveHistoricalForcedExitPrice('
