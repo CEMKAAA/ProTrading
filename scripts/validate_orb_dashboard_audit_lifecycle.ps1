@@ -141,12 +141,15 @@ foreach ($name in $files) {
     foreach ($requiredGuard in @(
         'if(g_startupOrbDayLocked)',
         'return false; // Fail closed until today''s source bars are available.',
-        'g_rtEntryWindow=false;',
-        'FindHistBreakoutAfterRates(',
+        'FindHistOperationalBreakout(g_orbEndServer,startupCutoff',
+        'g_orbOperationalCandidateConsumed=true;',
         'ClearNasPending("startup_stale_orb_day")',
         'ClearNewDayReverseRetry("startup_stale_orb_day")'
     )) {
         if (-not $startupGuard.Contains($requiredGuard)) { throw "$name startup ORB replay guard missing invariant: $requiredGuard" }
+    }
+    if ($startupGuard.Contains('g_rtEntryWindow=false;')) {
+        throw "$name startup ORB replay guard bypasses the sacred entry-window candidate universe"
     }
     if ($startupGuard.Contains('OrbProPublish') -or $startupGuard.Contains('ExecuteOrbEntry(') -or $startupGuard.Contains('SendOrbOrder(')) {
         throw "$name startup ORB replay guard can create an execution lifecycle"

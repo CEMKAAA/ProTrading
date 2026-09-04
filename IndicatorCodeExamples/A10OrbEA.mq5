@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-04.A10-M5-IMB1M-1R-C1-v6.68-startup-orb-replay-guard"
+#define ORB15_BUILD "2026-09-04.A10-M5-IMB1M-1R-C1-v6.75-sacred-exact-arrow-parity"
 
 enum ORB_SESSION_PROFILE
 {
@@ -299,6 +299,12 @@ bool     g_startupOrbGuardPending = false;
 bool     g_startupOrbDayLocked = false;
 datetime g_startupOrbPriorSignalBar = 0;
 string   g_startupOrbPriorSignalDir = "";
+// The sacred audit consumes the first candidate that passes the operational
+// DAY/ATR/VOL/modern chain. Later entry/regime/RF/geometry rejection does not
+// promote another same-day breakout. Live execution must own the same event.
+bool     g_orbOperationalCandidateConsumed = false;
+datetime g_orbOperationalCandidateBar = 0;
+string   g_orbOperationalCandidateDir = "";
 datetime g_lastSignalBarTime = 0;
 datetime g_lastCheckedSignalBarTime = 0;
 bool     g_newDayReverseRetryPending = false;
@@ -3785,24 +3791,25 @@ string OrbExecutionVisualBase(datetime executedAt,int dir)
    return PREFIX+"EXEC_"+StringFormat("%I64d",(long)executedAt)+"_"+(dir>0?"BUY_":"SELL_");
 }
 
-void DrawOrbExecutionVisual(string execDir,datetime executedAt,double entry,string entryDetail)
+void DrawOrbExecutionVisual(string execDir,datetime executedAt,datetime signalBar,double entry,double sl,string entryDetail)
 {
-   if(IsTesterMode()||executedAt<=0||entry<=0.0)return;
+   if(IsTesterMode()||executedAt<=0||entry<=0.0||sl<=0.0)return;
    bool isBuy=(execDir=="BUY");
    int dir=isBuy?1:-1;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
-   int shift=iBarShift(_Symbol,g_rtSignalTf,executedAt,false);
-   double high=shift>=0?iHigh(_Symbol,g_rtSignalTf,shift):entry;
-   double low=shift>=0?iLow(_Symbol,g_rtSignalTf,shift):entry;
-   double pad=MathMax(MathMax(pt,high-low)*0.45,pt*55.0);
-   double arrowPrice=NormalizePrice(isBuy?MathMin(low,entry)-pad:MathMax(high,entry)+pad);
-   double textPrice=NormalizePrice(isBuy?arrowPrice-pad*0.55:arrowPrice+pad*0.55);
+   // Sacred history owns both chart coordinates. Use its availability time
+   // and entry-risk price formula even when retest/IMB/NAS delays execution.
+   datetime visualAt=signalBar>0?OrbSignalAvailableTime(signalBar):executedAt;
+   double risk=MathAbs(entry-sl);
+   double arrowPrice=OrbHistoricalArrowPrice(isBuy,entry,risk);
+   double pad=MathMax(MathMax(risk,pt)*0.20,pt*40.0);
+   double textPrice=NormalizePrice(isBuy?arrowPrice-pad*0.65:arrowPrice+pad*0.65);
    string base=OrbExecutionVisualBase(executedAt,dir);
-   DrawSignalArrow(base+"ARW",executedAt,arrowPrice,isBuy,false);
+   DrawSignalArrow(base+"ARW",visualAt,arrowPrice,isBuy,false);
    ObjectSetInteger(0,base+"ARW",OBJPROP_WIDTH,4);
    string mode=(StringFind(entryDetail,"entry=imb1m")>=0)?"IMB1M":
       ((StringFind(entryDetail,"entry=retest")>=0)?"RETEST":"BREAK");
-   DrawSignalText(base+"TXT",executedAt,textPrice,
+   DrawSignalText(base+"TXT",visualAt,textPrice,
       "EXECUTED "+execDir+" ["+mode+"] C"+IntegerToString(g_orbBridgeChannel),C'255,215,70');
 }
 
@@ -6970,6 +6977,7 @@ bool ResetForNewNyDay()
    int y,m,d;int key=CurrentSessionDayKey(y,m,d);if(key==g_nyDayKey)return false;
    bool firstInit=(g_nyDayKey==0);
    g_nyDayKey=key;g_orbReady=false;g_tradeTaken=false;g_orbHigh=0;g_orbLow=0;g_orbAvgVolume=0;
+   g_orbOperationalCandidateConsumed=false;g_orbOperationalCandidateBar=0;g_orbOperationalCandidateDir="";
    // A continuously running EA is armed for the new ORB day. Only OnInit
    // needs the replay guard because it may start after today's setup fired.
    if(!firstInit)
@@ -6996,23 +7004,31 @@ bool ResetForNewNyDay()
 bool CheckAtrFilter(string &r)
 {
    if(!g_rtFilterAtr)return true;
-   int h=iATR(_Symbol,PERIOD_D1,InpAtrPeriod);if(h==INVALID_HANDLE)return true;
-   double v[];ArraySetAsSeries(v,true);int c=CopyBuffer(h,0,1,1,v);IndicatorRelease(h);
-   if(c!=1||v[0]<=0)return true;
-   double pct=((g_orbHigh-g_orbLow)/v[0])*100;
+   // HistDailyAtr is deliberately the sacred audit's manual closed-D1 ATR.
+   // Sharing it prevents ATR ON from selecting a different live day universe.
+   double atr=HistDailyAtr(g_orbStartServer,InpAtrPeriod);
+   if(atr<=0.0)return true;
+   double pct=((g_orbHigh-g_orbLow)/atr)*100;
    if(pct<InpMinRangeAtrPct){r="ATR_NARROW "+DoubleToString(pct,1)+"%";return false;}
    if(pct>InpMaxRangeAtrPct){r="ATR_WIDE "+DoubleToString(pct,1)+"%";return false;}
    return true;
 }
-bool CheckVolFilter(string &r)
+bool CheckVolFilter(datetime signalBar,string &r)
 {
    if(!g_rtFilterVol)return true;
-   int sh=InpUseClosedBarBreakout?1:0;
+   if(signalBar<=0)return true;
+   int sh=iBarShift(_Symbol,g_rtSignalTf,signalBar,true);
+   if(sh<0)return true;
    long bv=iVolume(_Symbol,g_rtSignalTf,sh);
-   // Rolling average of 20 bars before signal bar (fair baseline)
-   double avgVol=0;int lookback=20;double vs=0;
-   for(int i=sh+1;i<=sh+lookback;i++){long v=iVolume(_Symbol,g_rtSignalTf,i);if(v>0)vs+=(double)v;}
-   avgVol=vs/(double)lookback;
+   // Preserve the strategy-defining sacred history baseline exactly: only
+   // completed post-ORB bars before this candidate participate, capped at 20.
+   // Early candidates therefore use the same shorter sample in live and audit.
+   MqlRates prior[];ArraySetAsSeries(prior,false);
+   int copied=CopyRates(_Symbol,g_rtSignalTf,g_orbEndServer,signalBar-1,prior);
+   int lookback=MathMin(20,MathMax(0,copied));
+   double avgVol=0.0,vs=0.0;
+   for(int i=copied-lookback;i<copied;i++)vs+=(double)prior[i].tick_volume;
+   if(lookback>0)avgVol=vs/(double)lookback;
    if(avgVol<=0)return true;
    double threshold=avgVol*g_rtVolumeMultiplier;
    if((double)bv<threshold){r="VOL_LOW "+IntegerToString(bv)+"<"+DoubleToString(threshold,0);return false;}
@@ -7035,6 +7051,17 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
    bt=iTime(_Symbol,g_rtSignalTf,sh);
    if(bt<=0||bt==g_lastSignalBarTime)return false;
    if(InpUseClosedBarBreakout&&bt==g_lastCheckedSignalBarTime)return false;
+   if(InpUseClosedBarBreakout)
+   {
+      // Use the sacred scanner itself for closed-bar live selection. This
+      // keeps confirmation, margin, delay and entry-window chronology exact
+      // for every Confirm Bars setting rather than only for the default N=1.
+      g_lastCheckedSignalBarTime=bt;
+      double sigH=0.0,sigL=0.0,sigVol=0.0,preAvgVol=0.0;
+      datetime through=MathMin(TimeCurrent(),g_tradeEndServer);
+      return FindHistBreakoutAfter(g_orbEndServer,through,g_orbHigh,g_orbLow,g_lastSignalBarTime,
+         dir,bt,sc,sigH,sigL,sigVol,preAvgVol);
+   }
    datetime availableTime=OrbSignalAvailableTime(bt);
    if(availableTime<effectiveStart)return false; // signal is only known after bar close
    if(!EntryWindowAllowsAt(availableTime))
@@ -7114,17 +7141,20 @@ bool StartupOrbReplayGuardAllows()
    }
 
    string priorDir="";datetime priorBar=0;double priorClose=0.0,priorHigh=0.0,priorLow=0.0;
-   double priorVolume=0.0,priorAverage=0.0;int scanFromIndex=0;
-   bool savedEntryWindow=g_rtEntryWindow;
-   g_rtEntryWindow=false; // A pre-start breakout is stale even if it occurred outside a later entry window.
-   bool priorSignal=FindHistBreakoutAfterRates(probe,copied,g_orbEndServer,startupCutoff,
-      g_orbHigh,g_orbLow,0,scanFromIndex,priorDir,priorBar,priorClose,priorHigh,priorLow,
-      priorVolume,priorAverage);
-   g_rtEntryWindow=savedEntryWindow;
+   double priorVolume=0.0,priorAverage=0.0;
+   bool hadRawCandidate=false;string lastReject="",modernDetail="";
+   // Replay the same sacred operational chain and the same entry-window rule.
+   // A raw VOL/DISP/FVG rejection must not consume a day after restart.
+   bool priorSignal=FindHistOperationalBreakout(g_orbEndServer,startupCutoff,g_orbHigh,g_orbLow,
+      priorDir,priorBar,priorClose,priorHigh,priorLow,priorVolume,priorAverage,
+      hadRawCandidate,lastReject,modernDetail);
    g_startupOrbGuardPending=false;
    if(!priorSignal)return true;
 
    g_startupOrbDayLocked=true;
+   g_orbOperationalCandidateConsumed=true;
+   g_orbOperationalCandidateBar=priorBar;
+   g_orbOperationalCandidateDir=priorDir;
    g_startupOrbPriorSignalBar=priorBar;
    g_startupOrbPriorSignalDir=priorDir;
    g_lastSignalBarTime=priorBar;
@@ -7137,8 +7167,8 @@ bool StartupOrbReplayGuardAllows()
    g_lastFilterReason="STALE ORB "+priorDir+" "+FmtTime(priorBar);
    g_lastExecStatus="STALE_ORB_DAY_LOCKED";
    Audit("startup_stale_orb_locked",priorDir,0,priorClose,0,0,
-      "started="+FmtTime(g_instanceStartedAt)+" prior_signal="+FmtTime(priorBar)
-      +" next_orb_day_required=1");
+      "started="+FmtTime(g_instanceStartedAt)+" prior_operational="+FmtTime(priorBar)
+      +" next_orb_day_required=1 "+modernDetail);
    return false;
 }
 
@@ -7710,7 +7740,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
-          DrawOrbExecutionVisual(execDir,executedAt,entry,entryDetail);
+          DrawOrbExecutionVisual(execDir,executedAt,signalBar,entry,sl,entryDetail);
           g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
       if(g_orbBridgeOnly)
@@ -7737,7 +7767,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       if(g_orbBridgeOnly&&!g_orbNativeWithBridgeOnly)
       {
          if(!bridgeAccepted){g_lastExecStatus="BRIDGE_ONLY_FAIL";return false;}
-          DrawOrbExecutionVisual(execDir,executedAt,entry,entryDetail);
+          DrawOrbExecutionVisual(execDir,executedAt,signalBar,entry,sl,entryDetail);
           g_tradeTaken=true;g_lastExecStatus="BRIDGE_ONLY";ClearRetestState("");ClearImbalanceState("");return true;
       }
       if(g_orbBridgeOnly)
@@ -7759,7 +7789,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    }
    if(opened)
    {
-       DrawOrbExecutionVisual(execDir,TimeCurrent(),entry,entryDetail);
+       DrawOrbExecutionVisual(execDir,TimeCurrent(),signalBar,entry,sl,entryDetail);
        g_tradeTaken=true;g_tradeDir=isBuy?1:-1;g_tradeEntry=entry;g_tradeSl=sl;g_tradeOpenTime=TimeCurrent();g_beMoved=false;g_halfClosed=false;g_tradeRisk=MathAbs(entry-sl);g_tradeBestHigh=entry;g_tradeBestLow=entry;g_tradeLastDynamicExitBar=0;g_lastExecStatus="OPENED";ClearOrbBridgePlan();
       if(nasExitLifecycle)
          StartNasManagedLifecycle(execDir,isBuy?1:-1,g_tradeOpenTime,g_nasManagedBridgePublished);
@@ -8268,16 +8298,29 @@ void TryOpenSignal()
       if(RetestReady(rd))ExecuteOrbEntry(g_retestDir,g_retestSignalBar,g_retestBreakoutClose,rd);
       return;
    }
+   if(g_orbOperationalCandidateConsumed)
+   {
+      g_lastExecStatus="SACRED_CANDIDATE_CONSUMED";
+      return;
+   }
    string dir;datetime bt;double sc;if(!ComputeSignal(dir,bt,sc))return;
    g_lastSignalBarTime=bt;
    string fr="";
-   if(!CheckDayFilter(fr)||!CheckAtrFilter(fr)||!CheckVolFilter(fr))
+   if(!CheckDayFilter(fr)||!CheckAtrFilter(fr)||!CheckVolFilter(bt,fr))
    {HandleFilteredWindowSignal(dir,bt,sc,fr);return;}
    string modernDetail="";
    if(!ModernFilterAllows(g_orbEndServer,g_tradeEndServer,g_rtSignalTf,bt,dir,g_rtDisplacement,g_rtFvgMode,fr,modernDetail))
    {
       HandleFilteredWindowSignal(dir,bt,sc,fr,modernDetail);return;
    }
+   // This is the exact boundary used by the sacred historical audit's
+   // operational snapshot. From this point onward the ORB day is consumed,
+   // even when a later entry/regime/RF/geometry/NAS/risk gate rejects it.
+   g_orbOperationalCandidateConsumed=true;
+   g_orbOperationalCandidateBar=bt;
+   g_orbOperationalCandidateDir=dir;
+   Audit("sacred_operational_candidate_claimed",dir,0,sc,0,0,
+      "candidate_bar="+StringFormat("%I64d",(long)bt)+" "+modernDetail);
    RegimeV3Snapshot liveRegimeSnapshot;
    int liveRegimeBucket=OrbRegimeBucketAt(bt,liveRegimeSnapshot);
    g_lastSignalRegime=liveRegimeBucket;
@@ -8351,9 +8394,13 @@ void TryOpenSignal()
 int OnInit()
 {
    OrbTesterAudit_Init();
+   // Runtime execution markers from an older attachment/configuration are not
+   // comparable with the freshly rebuilt historical audit.
+   if(!IsTesterMode())DeleteExecutionVisuals();
    g_instanceStartedAt=TimeCurrent();
    g_startupOrbGuardPending=!IsTesterMode();
    g_startupOrbDayLocked=false;g_startupOrbPriorSignalBar=0;g_startupOrbPriorSignalDir="";
+   g_orbOperationalCandidateConsumed=false;g_orbOperationalCandidateBar=0;g_orbOperationalCandidateDir="";
    if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)
    {
       ENUM_ACCOUNT_MARGIN_MODE mm=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
