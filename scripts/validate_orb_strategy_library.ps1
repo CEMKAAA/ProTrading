@@ -123,4 +123,35 @@ if ($original.Contains('OrbStrategyPresetLibrary.mqh') -or $original.Contains('A
     throw "Original production ORB was modified with experimental strategy UI"
 }
 
-Write-Output "ORB strategy library passed: 46 unique presets + 46 frozen 1Y metrics, 38 sacred functions unchanged, protected runtimes isolated."
+$backendNames = [regex]::Matches($original, '(?m)^(?:bool|int|double|datetime|string|void|color|ulong|long)\s+(OBT_\w+)\s*\(') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+foreach ($name in $backendNames) {
+    if ((Get-MqlFunctionText $original $name) -cne (Get-MqlFunctionText $strategy $name)) {
+        throw "Hidden Backtest Engine backend changed: $name"
+    }
+}
+$dashboard = Get-MqlFunctionText $strategy 'UpdateDashboard'
+if ($dashboard -match 'Create(?:Button|Edit|Label|Rect)\("(?:BTN_BT|EDIT_BT|DASH_BT)') {
+    throw 'Backtest Engine controls must remain hidden'
+}
+foreach ($name in @('OrbStrategyToggleFavorite', 'OrbStrategyLoadFavorites')) {
+    $body = Get-MqlFunctionText $strategy $name
+    foreach ($forbidden in @('OrbStrategyPresetApply', 'QueueHistoricalRedraw', 'OrbPro', 'OrderSend', 'g_rtRisk', 'g_orbBridge')) {
+        if ($body.Contains($forbidden)) { throw "Favorite operation touches trading/audit state: $name / $forbidden" }
+    }
+}
+$favoritePath = Get-MqlFunctionText $strategy 'OrbStrategyFavoriteFile'
+if (-not $favoritePath.Contains('p.id+".fav"')) { throw 'Favorites must use stable preset IDs' }
+foreach ($id in $ids) {
+    if ($id -notmatch '^[A-Za-z0-9_-]+$') { throw "Unsafe favorite filename ID: $id" }
+}
+$events = Get-MqlFunctionText $strategy 'OnChartEvent'
+$guardPos = $events.IndexOf('OrbStrategyPopupContains(lparam,dparam)')
+$dispatchPos = $events.IndexOf('bool needRedraw=false;')
+if ($guardPos -lt 0 -or $guardPos -gt $dispatchPos) { throw 'Popup must consume covered clicks before underlying control dispatch' }
+foreach ($needle in @('if(popupControl&&!g_strategyPopupOpen)return;', 'BTN_PRESET_FAVORITES', 'BTN_PRESET_STAR_',
+    'if(!g_strategyPopupOpen&&g_strategyPopupDrawn)', 'for(int stale=g_strategyVisibleCount;stale<5;stale++)')) {
+    if (-not $strategy.Contains($needle)) { throw "Missing popup/favorites invariant: $needle" }
+}
+
+Write-Output "ORB strategy library passed: 46 unique presets + 46 frozen 1Y metrics, 38 sacred functions unchanged, protected runtimes isolated; $($backendNames.Count) Backtest functions unchanged; favorites/overlay source invariants passed."

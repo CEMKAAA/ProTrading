@@ -26,6 +26,13 @@ Application is rejected while a native position, bridge lifecycle, NAS-managed l
 
 ## Dashboard Flow
 
+The dashboard uses two columns: trading controls on the left, strategy search
+and favorites on the right. The Backtest Engine UI is hidden; its backend,
+data structures and execution hooks are unchanged. The 704-pixel layout scales to the available
+chart width and height when the chart is resized. Maximize a small chart for
+larger text. The search popup stays directly below the search/filter controls;
+its `X` button closes it without applying or clearing a strategy.
+
 1. Type part of a PNG/strategy name in `STRATEGIES`.
 2. Optionally enter minimum values in `R >=`, `WR >=` and `MC >=`.
 3. Press `APPLY FILTER`; active criteria are combined with `AND`.
@@ -36,6 +43,15 @@ Application is rejected while a native position, bridge lifecycle, NAS-managed l
 8. Verify `CURRENT` and the normal dashboard settings.
 
 Selecting a row alone never changes trading behavior. Only a successful apply does so. Manual changes to a strategy field turn `CURRENT` into `CUSTOM`.
+
+### Favorites
+
+- Click `+` beside a result to save it; `*` means saved. Click `*` to remove it.
+- Switch `ALL STRATEGIES` to `FAVORITES ONLY` to browse saved strategies without typing a name.
+- Switching this view clears the name search but retains the metric filters. Favorites still must match those filters.
+- Favorites survive EA/terminal restarts. Each stable preset ID has its own marker under `Terminal\Common\Files\OrbStrategyLibraryFavorites\`; charts do not overwrite a shared list. Strategy Tester runs do not change these preferences.
+- Favorites only affect browsing. Saving/removing a favorite never applies a strategy, changes risk, or publishes an event.
+- Popup controls now remain allocated during tick/timer refreshes. An overlay click guard also prevents clicks inside the popup from activating covered dashboard controls.
 
 `CLEAR` removes all three metric filters. An empty metric field disables that criterion. `MC >= -3`, for example, keeps strategies whose worst cumulative 1Y result did not fall below `-3R`.
 

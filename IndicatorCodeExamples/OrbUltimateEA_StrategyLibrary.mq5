@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-05.v6.76-preset-metrics-1y"
+#define ORB15_BUILD "2026-09-05.v6.78-preset-favorites"
 
 enum ORB_SESSION_PROFILE
 {
@@ -455,6 +455,9 @@ int    g_strategyPresetIndex = -1;
 int    g_strategyCandidateIndex = -1;
 string g_strategySearch = "";
 bool   g_strategyPopupOpen = false;
+bool   g_strategyPopupDrawn = false;
+bool   g_strategyFavoritesOnly = false;
+bool   g_strategyFavorites[];
 int    g_strategySearchPage = 0;
 int    g_strategyMatches[];
 int    g_strategyVisible[5];
@@ -2576,6 +2579,54 @@ bool OrbStrategyPresetApplyInteractive(const int index)
 
 string OrbStrategyPresetLower(string value){StringToLower(value);return value;}
 
+string OrbStrategyFavoriteFile(const OrbStrategyPreset &p)
+{
+   return "OrbStrategyLibraryFavorites\\"+p.id+".fav";
+}
+
+void OrbStrategyLoadFavorites()
+{
+   ArrayResize(g_strategyFavorites,OrbStrategyPresetCount());
+   for(int i=0;i<ArraySize(g_strategyFavorites);i++)
+   {
+      OrbStrategyPreset p;
+      g_strategyFavorites[i]=!IsTesterMode()&&OrbStrategyPresetLoad(i,p)
+         &&FileIsExist(OrbStrategyFavoriteFile(p),FILE_COMMON);
+   }
+}
+
+bool OrbStrategyIsFavorite(const int index)
+{
+   return index>=0&&index<ArraySize(g_strategyFavorites)&&g_strategyFavorites[index];
+}
+
+bool OrbStrategyToggleFavorite(const int index)
+{
+   OrbStrategyPreset p;
+   if(IsTesterMode()||!OrbStrategyPresetLoad(index,p))return false;
+   string path=OrbStrategyFavoriteFile(p);
+   bool wasFavorite=FileIsExist(path,FILE_COMMON);
+   ResetLastError();
+   if(wasFavorite)
+   {
+      if(!FileDelete(path,FILE_COMMON)&&FileIsExist(path,FILE_COMMON))
+      {g_lastExecStatus="FAVORITE_REMOVE_FAILED_"+IntegerToString(GetLastError());return false;}
+   }
+   else
+   {
+      // One marker per stable ID: independent charts never overwrite a list.
+      int h=FileOpen(path,FILE_WRITE|FILE_BIN|FILE_COMMON);
+      if(h==INVALID_HANDLE)
+      {g_lastExecStatus="FAVORITE_SAVE_FAILED_"+IntegerToString(GetLastError());return false;}
+      FileClose(h);
+   }
+   OrbStrategyLoadFavorites();
+   if(OrbStrategyIsFavorite(index)==wasFavorite)
+   {g_lastExecStatus="FAVORITE_CHANGED_ELSEWHERE_RETRY";return false;}
+   g_lastExecStatus=OrbStrategyIsFavorite(index)?"FAVORITE_ADDED":"FAVORITE_REMOVED";
+   return true;
+}
+
 string OrbStrategyMetricSigned(const double value,const int digits=2)
 {
    return (value>0.00000001?"+":"")+DoubleToString(value,digits);
@@ -2587,7 +2638,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
    string suffix=" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
       +" | WR "+DoubleToString(p.metric1yWr,1)+"%";
-   int maxChars=72;
+   int maxChars=66;
    int nameChars=MathMax(8,maxChars-StringLen(suffix));
    string shortName=p.name;
    if(StringLen(shortName)>nameChars)shortName=StringSubstr(shortName,0,MathMax(5,nameChars-3))+"...";
@@ -2646,12 +2697,14 @@ bool OrbStrategyApplyMetricFilters()
 
 void OrbStrategyPresetBuildMatches(const string query)
 {
+   OrbStrategyLoadFavorites();
    g_strategySearch=query;string needle=OrbStrategyPresetLower(query);
    StringTrimLeft(needle);StringTrimRight(needle);
    ArrayResize(g_strategyMatches,0);
    for(int i=0;i<OrbStrategyPresetCount();i++)
    {
       OrbStrategyPreset p;if(!OrbStrategyPresetLoad(i,p))continue;
+      if(g_strategyFavoritesOnly&&!OrbStrategyIsFavorite(i))continue;
       string hay=OrbStrategyPresetLower(p.name+" "+p.id+" "+p.searchTerms+" "+p.sourceImage);
       if(needle!=""&&StringFind(hay,needle)<0)continue;
       if(!OrbStrategyPresetPassesMetricFilters(p))continue;
@@ -3479,7 +3532,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
    if(!force&&g_histAuditLastUiMs>0&&nowMs-g_histAuditLastUiMs<500)return;
    g_histAuditLastUiMs=nowMs;
    int x=InpDashboardX;
-   int y=InpDashboardY+270;
+   int y=InpDashboardY+268;
    int barW=496,barH=14;
    double barPct=g_histAuditRunning?g_histAuditProgressPct:0.0;
    color barClr=C'38,140,220';
@@ -3499,7 +3552,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
    ChartRedraw(0);
 }
@@ -3748,8 +3801,46 @@ void ClearImbalanceState(string reason="")
    g_imbContext="";
 }
 
+double g_libraryDashScale=1.0;
+int g_libraryDashX=0,g_libraryDashY=0;
+
+void OrbLibraryRefreshLayout()
+{
+   int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS,0);
+   int chartH=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS,0);
+   if(chartW<=0||chartH<=0)return;
+   // Scale the two-column canvas once per dashboard refresh, never per object.
+   g_libraryDashX=MathMax(0,MathMin(InpDashboardX,chartW/10));
+   g_libraryDashY=MathMax(0,MathMin(InpDashboardY,chartH/10));
+   g_libraryDashScale=MathMin(1.0,MathMin(
+      (double)MathMax(1,chartW-g_libraryDashX-8)/1252.0,
+      (double)MathMax(1,chartH-g_libraryDashY-8)/704.0));
+}
+int OrbLibraryX(int x){return g_libraryDashX+(int)MathRound((x-InpDashboardX)*g_libraryDashScale);}
+int OrbLibraryY(int y){return g_libraryDashY+(int)MathRound((y-InpDashboardY)*g_libraryDashScale);}
+int OrbLibrarySize(int value){return MathMax(1,(int)MathRound(value*g_libraryDashScale));}
+
+bool OrbStrategyPopupContains(const long px,const double py)
+{
+   if(!g_strategyPopupOpen)return false;
+   int left=OrbLibraryX(InpDashboardX+644),top=OrbLibraryY(InpDashboardY+142);
+   return px>=left&&px<left+OrbLibrarySize(594)
+      &&py>=top&&py<top+OrbLibrarySize(28+g_strategyVisibleCount*22);
+}
+
+bool OrbStrategyIsPopupControl(const string name)
+{
+   if(name==PREFIX+"BTN_PRESET_PREV"||name==PREFIX+"BTN_PRESET_NEXT"
+      ||name==PREFIX+"BTN_PRESET_CLOSE")return true;
+   for(int i=0;i<5;i++)
+      if(name==PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(i)
+         ||name==PREFIX+"BTN_PRESET_STAR_"+IntegerToString(i))return true;
+   return false;
+}
+
 void CreateRect(const string name,int x,int y,int w,int h,color bg,color brd)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_RECTANGLE_LABEL,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
@@ -3761,6 +3852,7 @@ void CreateRect(const string name,int x,int y,int w,int h,color bg,color brd)
 }
 void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);sz=OrbLibrarySize(sz);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_LABEL,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
@@ -3772,18 +3864,20 @@ void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
 }
 void CreateButton(const string name,int x,int y,int w,int h,string text,color bg)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_BUTTON,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
    ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
    ObjectSetString(0,obj,OBJPROP_TEXT,text);ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);
-   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,OrbLibrarySize(8));
    ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,obj,OBJPROP_STATE,false);
    ObjectSetInteger(0,obj,OBJPROP_BACK,false);ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+2);
 }
 void CreateEdit(const string name,int x,int y,int w,int h,string text)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)
    {
@@ -3804,6 +3898,7 @@ void CreateEdit(const string name,int x,int y,int w,int h,string text)
    ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
    ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+3);
+   ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,OrbLibrarySize(8));
 }
 
 //=========================================================================
@@ -6914,11 +7009,15 @@ void OBT_Stop()
 void DrawDashboard()
 {
    if(!InpShowDashboard){DeleteDash();return;}
+   OrbLibraryRefreshLayout();
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=938;
+   int W=620,H=704;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
+   CreateRect("DASH_LIBRARY_BG",x+632,y,W,346,C'24,30,42',C'90,178,255');
+   DeleteByPrefix(PREFIX+"DASH_BT");DeleteByPrefix(PREFIX+"BTN_BT");DeleteByPrefix(PREFIX+"EDIT_BT");
+   ObjectDelete(0,PREFIX+"DASH_SEP4");
    CreateRect("DASH_TOP",x,y,W,28,C'18,24,36',C'90,178,255');
    CreateRect("DASH_STRIPE",x+6,y+6,W-12,3,C'90,178,255',C'90,178,255');
 
@@ -6931,7 +7030,8 @@ void DrawDashboard()
 void UpdateDashboard()
 {
    if(!InpShowDashboard)return;
-   int x=InpDashboardX,y=InpDashboardY;
+   OrbLibraryRefreshLayout();
+   int x=InpDashboardX+632,y=InpDashboardY;
    int W=620;
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
 
@@ -6954,10 +7054,14 @@ void UpdateDashboard()
    CreateButton("BTN_PRESET_FILTER_CLEAR",x+456,y+54,62,18,"CLEAR",C'80,80,80');
    CreateLabel("DASH_PRESET_FILTER_COUNT",x+526,y+59,IntegerToString(ArraySize(g_strategyMatches))+"/"+IntegerToString(OrbStrategyPresetCount()),
       metricFilterActive?C'80,255,180':C'134,158,182',7);
-   CreateLabel("DASH_PRESET_CURRENT",x+12,y+79,"CURRENT: "+OrbStrategyPresetCurrentName()
-      +" | PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
+   CreateButton("BTN_PRESET_FAVORITES",x+12,y+78,122,20,g_strategyFavoritesOnly?"FAVORITES ONLY":"ALL STRATEGIES",
+      g_strategyFavoritesOnly?C'184,103,22':C'38,101,176');
+   CreateLabel("DASH_PRESET_FAV_HINT",x+146,y+83,"* = saved favorite; click a row's star to toggle",C'184,196,210',7);
+   CreateLabel("DASH_PRESET_CURRENT",x+12,y+106,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
+   CreateLabel("DASH_PRESET_PICK",x+12,y+122,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
 
-   int rootY=y+92;
+   x=InpDashboardX;
+   int rootY=InpDashboardY;
    RegimeV3Update(false);
    int currentRegime=OrbRegimeBucket(g_regimeV3);
    string regimeNow=currentRegime>=0?OrbRegimeName(currentRegime):"WAITING DATA";
@@ -7079,6 +7183,8 @@ void UpdateDashboard()
    CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
    CreateButton("BTN_FTMO",x+526,r2y,46,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
+   int auditY=y;
+   y-=140;
    CreateLabel("DASH_RISK_LABEL",x+12,y+494,"RISK %",acB,8);
    CreateEdit("EDIT_RISK_PCT",x+66,y+490,66,18,DoubleToString(EffRiskPerTradePct(),2));
    bool riskApplied=(g_riskApplyFlashUntil>TimeLocal());
@@ -7109,6 +7215,7 @@ void UpdateDashboard()
    CreateLabel("DASH_BRIDGE_CH",x+424,y+540,"CH",C'134,158,182',8);
    CreateEdit("EDIT_BRIDGE_CH",x+448,y+536,42,18,IntegerToString(g_orbBridgeChannel));
    CreateButton("BTN_BRIDGE_CH_APPLY",x+494,y+536,88,18,"APPLY CH",C'38,101,176');
+   y=auditY;
 
    // Separator
    CreateRect("DASH_SEP2",x+8,y+132,W-16,1,C'65,116,172',C'65,116,172');
@@ -7191,7 +7298,7 @@ void UpdateDashboard()
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
 
    // Separator
@@ -7215,117 +7322,60 @@ void UpdateDashboard()
    string atrCtx=atr>0?"ORB/ATR "+DoubleToString(g_orbReady?((g_orbHigh-g_orbLow)/atr)*100.0:0,1)+"%":"ATR --";
    CreateLabel("DASH_L7",x+12,y+312,atrCtx+" | Range "+DoubleToString(g_orbReady?g_orbHigh-g_orbLow:0,_Digits)+" | "+ExitDebugConfig(),C'134,158,182',7);
 
-   // ─── SECTION: BACKTEST ENGINE ───
-   CreateRect("DASH_SEP4",x+8,y+328,W-16,1,C'65,116,172',C'65,116,172');
-   CreateLabel("DASH_BTITLE",x+12,y+334,"BACKTEST ENGINE",acB,9);
-
-   int btY=y+350;
-   CreateLabel("DASH_BTWLBL",x+12,btY+2,"Weeks:",C'134,158,182',7);
-   string editName=PREFIX+"EDIT_BT_WEEKS";
-   if(ObjectFind(0,editName)<0)
-   {
-      ObjectCreate(0,editName,OBJ_EDIT,0,0,0);
-      ObjectSetInteger(0,editName,OBJPROP_CORNER,CORNER_LEFT_UPPER);
-      ObjectSetString(0,editName,OBJPROP_TEXT,IntegerToString(g_btWeeks));
-      ObjectSetInteger(0,editName,OBJPROP_BGCOLOR,C'38,46,60');
-      ObjectSetInteger(0,editName,OBJPROP_COLOR,clrWhite);
-      ObjectSetInteger(0,editName,OBJPROP_BORDER_COLOR,C'80,100,130');
-      ObjectSetInteger(0,editName,OBJPROP_FONTSIZE,9);
-      ObjectSetString(0,editName,OBJPROP_FONT,"Consolas");
-      ObjectSetInteger(0,editName,OBJPROP_ALIGN,ALIGN_CENTER);
-      ObjectSetInteger(0,editName,OBJPROP_READONLY,false);
-      ObjectSetInteger(0,editName,OBJPROP_SELECTABLE,false);
-      ObjectSetInteger(0,editName,OBJPROP_BACK,false);
-      ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
-   }
-   ObjectSetInteger(0,editName,OBJPROP_XDISTANCE,x+52);
-   ObjectSetInteger(0,editName,OBJPROP_YDISTANCE,btY);
-   ObjectSetInteger(0,editName,OBJPROP_XSIZE,38);
-   ObjectSetInteger(0,editName,OBJPROP_YSIZE,18);
-   ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
-
-   color runBg=g_btRunning?C'80,80,80':C'30,120,70';
-   CreateButton("BTN_BT_RUN",x+96,btY,120,18,g_btRunning?"RUNNING...":"RUN BACKTEST",runBg);
-   CreateButton("BTN_BT_STOP",x+220,btY,60,18,"STOP",g_btRunning?C'178,37,57':C'60,60,68');
-   CreateLabel("DASH_BTCNT",x+286,btY+2,IntegerToString(g_btRunning?g_btTotal:21504)+" combos",C'134,158,182',7);
-
-   int optY=btY+22;
-   CreateLabel("DASH_BTFILL_L",x+12,optY+2,"Fill:",C'134,158,182',7);
-   CreateButton("BTN_BTF_SIGNAL",x+50,optY,58,18,"SIGNAL",g_btFillMode==BT_FILL_SIGNAL_CLOSE?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTF_NEXT",x+112,optY,50,18,"NEXT",g_btFillMode==BT_FILL_NEXT_BAR_OPEN?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTF_CONS",x+166,optY,50,18,"CONS",g_btFillMode==BT_FILL_CONSERVATIVE?C'38,101,176':C'80,80,80');
-   CreateLabel("DASH_BTSAME_L",x+224,optY+2,"Same:",C'134,158,182',7);
-   CreateButton("BTN_BTSB_CONS",x+264,optY,50,18,"CONS",g_btSameBarPolicy==BT_SAMEBAR_CONSERVATIVE?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_NEAR",x+318,optY,50,18,"NEAR",g_btSameBarPolicy==BT_SAMEBAR_NEAREST_OPEN?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_TP",x+372,optY,52,18,"TP1ST",g_btSameBarPolicy==BT_SAMEBAR_TP_FIRST?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_SL",x+428,optY,52,18,"SL1ST",g_btSameBarPolicy==BT_SAMEBAR_SL_FIRST?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTPARITY",x+486,optY,78,18,g_btNativeParity?"PARITY ON":"PARITY",g_btNativeParity?C'30,120,70':C'80,80,80');
-
-   int costY=optY+22;
-   CreateLabel("DASH_BTSP_L",x+12,costY+2,"Spr:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_SPREAD",x+42,costY,45,18,DoubleToString(g_btSpreadPts,1));
-   CreateLabel("DASH_BTSL_L",x+94,costY+2,"Slip:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_SLIP",x+130,costY,45,18,DoubleToString(g_btSlippagePts,1));
-   CreateLabel("DASH_BTCM_L",x+184,costY+2,"Comm/Lot:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_COMM",x+252,costY,58,18,DoubleToString(g_btCommissionPerLot,2));
-   CreateLabel("DASH_BTDEF",x+320,costY+2,g_btNativeParity?"tick replay: bid/ask costs embedded":"0 spread = live spread",C'100,112,130',7);
-
-   // Progress bar
-   int pbY=costY+22;
-   int pbW=W-24,pbH=14;
-   CreateRect("DASH_BTPB_BG",x+12,pbY,pbW,pbH,C'38,46,60',C'60,80,110');
-   if(g_btRunning||g_btStep>0)
-   {
-      double pct=g_btTotal>0?(double)g_btStep/(double)g_btTotal:0;
-      int fw=(int)MathRound(pbW*MathMax(0,MathMin(1,pct)));
-      if(fw>2) CreateRect("DASH_BTPB_FG",x+13,pbY+1,fw-2,pbH-2,C'60,200,120',C'60,200,120');
-      else CreateRect("DASH_BTPB_FG",x+13,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      uint elapsed=g_btRunning?(GetTickCount()-g_btStartMs):g_btElapsedMs;
-      string pTxt=IntegerToString(g_btStep)+"/"+IntegerToString(g_btTotal)
-         +" ("+IntegerToString((int)(pct*100))+"%) "
-         +DoubleToString(elapsed/1000.0,1)+"s";
-      CreateLabel("DASH_BTPROG",x+16,pbY+1,pTxt,clrWhite,8);
-   }
-   else
-   {
-      CreateRect("DASH_BTPB_FG",x+13,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      CreateLabel("DASH_BTPROG",x+16,pbY+1,g_btLastResult!=""?g_btLastResult:"Ready",C'134,158,182',8);
-   }
-   // Last result
-   int lrY=pbY+18;
-   if(g_btLastResult!="")
-      CreateLabel("DASH_BTLAST",x+12,lrY,g_btLastResult,g_btRunning?C'150,200,170':C'134,158,182',7);
-   else
-      CreateLabel("DASH_BTLAST",x+12,lrY,"",C'134,158,182',7);
+   x=InpDashboardX+632;
 
    // Search results are a temporary high-z popup; they never alter settings
    // until a row is selected and APPLY STRATEGY succeeds.
-   for(int stale=0;stale<5;stale++)ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
-   ObjectDelete(0,PREFIX+"DASH_PRESET_POPUP");ObjectDelete(0,PREFIX+"BTN_PRESET_PREV");
-   ObjectDelete(0,PREFIX+"BTN_PRESET_NEXT");ObjectDelete(0,PREFIX+"DASH_PRESET_PAGE");
    OrbStrategyPresetRefreshVisible();
+   if(!g_strategyPopupOpen&&g_strategyPopupDrawn)
+   {
+      for(int stale=0;stale<5;stale++)
+      {
+         ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
+         ObjectDelete(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(stale));
+      }
+      ObjectDelete(0,PREFIX+"DASH_PRESET_POPUP");ObjectDelete(0,PREFIX+"BTN_PRESET_PREV");
+      ObjectDelete(0,PREFIX+"BTN_PRESET_NEXT");ObjectDelete(0,PREFIX+"DASH_PRESET_PAGE");
+      ObjectDelete(0,PREFIX+"BTN_PRESET_CLOSE");
+      g_strategyPopupDrawn=false;
+   }
    if(g_strategyPopupOpen)
    {
-      int popupY=y+78,popupH=28+g_strategyVisibleCount*22;
-      CreateRect("DASH_PRESET_POPUP",x+90,popupY,516,popupH,C'20,27,39',C'90,178,255');
+      // Keep active controls alive across tick/timer refreshes to prevent click-through gaps.
+      g_strategyPopupDrawn=true;
+      for(int stale=g_strategyVisibleCount;stale<5;stale++)
+      {
+         ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
+         ObjectDelete(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(stale));
+      }
+      int popupY=InpDashboardY+142,popupH=28+g_strategyVisibleCount*22;
+      CreateRect("DASH_PRESET_POPUP",x+12,popupY,594,popupH,C'20,27,39',C'90,178,255');
       ObjectSetInteger(0,PREFIX+"DASH_PRESET_POPUP",OBJPROP_ZORDER,DASH_Z+15);
       for(int slot=0;slot<g_strategyVisibleCount;slot++)
       {
          OrbStrategyPreset p;int presetIndex=g_strategyVisible[slot];
          if(!OrbStrategyPresetLoad(presetIndex,p))continue;
          string caption=OrbStrategyPresetMetricCaption(p);
-         CreateButton("BTN_PRESET_RESULT_"+IntegerToString(slot),x+96,popupY+24+slot*22,498,20,caption,
+         bool favorite=OrbStrategyIsFavorite(presetIndex);
+         CreateButton("BTN_PRESET_STAR_"+IntegerToString(slot),x+18,popupY+24+slot*22,32,20,favorite?"*":"+",
+            favorite?C'184,103,22':C'58,66,82');
+         ObjectSetInteger(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(slot),OBJPROP_ZORDER,DASH_Z+17);
+         ObjectSetString(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(slot),OBJPROP_TOOLTIP,
+            (favorite?"Remove favorite: ":"Add favorite: ")+p.name);
+         CreateButton("BTN_PRESET_RESULT_"+IntegerToString(slot),x+56,popupY+24+slot*22,538,20,caption,
             presetIndex==g_strategyCandidateIndex?C'184,103,22':C'38,101,176');
          ObjectSetInteger(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(slot),OBJPROP_ZORDER,DASH_Z+17);
       }
       int matchCount=ArraySize(g_strategyMatches),pageCount=MathMax(1,(matchCount+4)/5);
-      CreateButton("BTN_PRESET_PREV",x+96,popupY+3,50,18,"<",C'80,80,80');
-      CreateLabel("DASH_PRESET_PAGE",x+154,popupY+6,IntegerToString(matchCount)+" MATCH | PAGE "
+      CreateButton("BTN_PRESET_PREV",x+18,popupY+3,44,18,"<",C'80,80,80');
+      CreateLabel("DASH_PRESET_PAGE",x+126,popupY+6,IntegerToString(matchCount)+" MATCH | PAGE "
          +IntegerToString(g_strategySearchPage+1)+"/"+IntegerToString(pageCount),clrWhite,7);
-      CreateButton("BTN_PRESET_NEXT",x+544,popupY+3,50,18,">",C'80,80,80');
+      CreateButton("BTN_PRESET_NEXT",x+68,popupY+3,44,18,">",C'80,80,80');
+      CreateButton("BTN_PRESET_CLOSE",x+550,popupY+3,44,18,"X",C'178,37,57');
       ObjectSetInteger(0,PREFIX+"BTN_PRESET_PREV",OBJPROP_ZORDER,DASH_Z+17);
       ObjectSetInteger(0,PREFIX+"DASH_PRESET_PAGE",OBJPROP_ZORDER,DASH_Z+17);
       ObjectSetInteger(0,PREFIX+"BTN_PRESET_NEXT",OBJPROP_ZORDER,DASH_Z+17);
+      ObjectSetInteger(0,PREFIX+"BTN_PRESET_CLOSE",OBJPROP_ZORDER,DASH_Z+17);
    }
 }
 
@@ -8949,6 +8999,28 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_CHART_CHANGE)
+   {
+      DrawDashboard();ChartRedraw(0);return;
+   }
+   if(id==CHARTEVENT_OBJECT_CLICK)
+   {
+      bool popupControl=OrbStrategyIsPopupControl(sparam);
+      if(popupControl&&!g_strategyPopupOpen)return;
+      // Consume clicks in the overlay even if MT5 reports a covered object.
+      if(OrbStrategyPopupContains(lparam,dparam)&&!popupControl)
+      {
+         if(ObjectFind(0,sparam)>=0&&ObjectGetInteger(0,sparam,OBJPROP_TYPE)==OBJ_BUTTON)
+            ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         return;
+      }
+   }
+   if(id==CHARTEVENT_OBJECT_CLICK&&sparam==PREFIX+"BTN_PRESET_CLOSE")
+   {
+      g_strategyPopupOpen=false;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
    if(id==CHARTEVENT_OBJECT_ENDEDIT&&sparam==PREFIX+"EDIT_PRESET_SEARCH")
    {
       g_strategySearchPage=0;
@@ -8959,6 +9031,17 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
 
    bool needRedraw=false;
+
+   if(sparam==PREFIX+"BTN_PRESET_FAVORITES")
+   {
+      g_strategyFavoritesOnly=!g_strategyFavoritesOnly;
+      g_strategySearchPage=0;
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT,"");
+      OrbStrategyPresetBuildMatches("");
+      g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
 
    if(sparam==PREFIX+"BTN_PRESET_FILTER")
    {
@@ -9012,6 +9095,16 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    for(int presetSlot=0;presetSlot<5;presetSlot++)
    {
+      if(sparam==PREFIX+"BTN_PRESET_STAR_"+IntegerToString(presetSlot))
+      {
+         if(presetSlot<g_strategyVisibleCount&&g_strategyVisible[presetSlot]>=0)
+         {
+            if(OrbStrategyToggleFavorite(g_strategyVisible[presetSlot]))
+               OrbStrategyPresetBuildMatches(g_strategySearch);
+         }
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         UpdateDashboard();ChartRedraw(0);return;
+      }
       if(sparam!=PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(presetSlot))continue;
       if(presetSlot<g_strategyVisibleCount&&g_strategyVisible[presetSlot]>=0)
       {
