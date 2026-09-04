@@ -1,0 +1,18 @@
+{
+  "job_id": "orb_preset_metrics_jp225_1y_20260902",
+  "ea": "OrbUltimateEA_StrategyLibrary",
+  "ea_kind": "orb",
+  "symbol": "JP225m",
+  "timeframe": "M5",
+  "from_date": "2026.09.01",
+  "to_date": "2026.09.03",
+  "run_dir": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1\\20260904_235239",
+  "tester_ini": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1\\20260904_235239\\tester_configs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1.ini",
+  "tester_report": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1\\20260904_235239\\reports\\orb_preset_metrics_jp225_1y_20260902__8851975cd1.xml",
+  "command": [
+    "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\terminal64.exe",
+    "/portable",
+    "/config:C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1\\20260904_235239\\tester_configs\\orb_preset_metrics_jp225_1y_20260902__8851975cd1.ini"
+  ],
+  "dry_run": false
+}

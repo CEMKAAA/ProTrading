@@ -1,0 +1,18 @@
+{
+  "job_id": "orb_preset_metrics_usdjpy_1y_20260902",
+  "ea": "OrbUltimateEA_StrategyLibrary",
+  "ea_kind": "orb",
+  "symbol": "USDJPYm",
+  "timeframe": "M5",
+  "from_date": "2026.09.01",
+  "to_date": "2026.09.03",
+  "run_dir": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2\\20260905_000429",
+  "tester_ini": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2\\20260905_000429\\tester_configs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2.ini",
+  "tester_report": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2\\20260905_000429\\reports\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2.xml",
+  "command": [
+    "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\terminal64.exe",
+    "/portable",
+    "/config:C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\tmp\\orb_strategy_metric_runs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2\\20260905_000429\\tester_configs\\orb_preset_metrics_usdjpy_1y_20260902__9fdbc728e2.ini"
+  ],
+  "dry_run": false
+}
