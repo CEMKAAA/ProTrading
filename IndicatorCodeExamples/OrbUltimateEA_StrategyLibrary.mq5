@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-05.v6.78-preset-favorites"
+#define ORB15_BUILD "2026-09-05.v6.80-dashboard-ml-training"
 
 enum ORB_SESSION_PROFILE
 {
@@ -6152,6 +6152,8 @@ void OrbResetHistoricalStats()
    ResetWeekdayAuditStats();
 }
 
+#include "OrbStrategyMLPipeline.mqh"
+
 void ProcessHistoricalCalcDay(const int back)
 {
       datetime nyDay=g_histRunNyMid-back*86400;MqlDateTime daySt;TimeToStruct(nyDay,daySt);
@@ -6324,6 +6326,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          if(InpHistoricalAuditVerboseLog)Print("ORB15v3 HIST RF blocked ",rfRule," ",regimeDetail," signal=",FmtTime(sigT));
          return;
       }
+      OrbMlCapture(sigT,entryT,dir,hi,lo,oe,sim);
       if(finalOutcome)
       {
          if(sim.outcome=="SL")g_histStopLossExits++;
@@ -6461,6 +6464,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
 
 void CancelHistoricalAuditBuild()
 {
+   if(g_mlExport)OrbMlAbort("EXPORT CANCELLED: AUDIT RESTARTED");
    if(g_histBuildGeneration>0)
       DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
    g_histBuildGeneration=0;
@@ -6528,6 +6532,7 @@ void FinalizeHistoricalAudit()
    ChartRedraw(0);
    g_histAuditRequestedMs=0;
    if(!IsTesterMode())EventSetTimer(5);
+   OrbMlAuditFinished();
 }
 
 void ProcessHistoricalAuditStep()
@@ -7015,7 +7020,7 @@ void DrawDashboard()
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
-   CreateRect("DASH_LIBRARY_BG",x+632,y,W,346,C'24,30,42',C'90,178,255');
+   CreateRect("DASH_LIBRARY_BG",x+632,y,W,596,C'24,30,42',C'90,178,255');
    DeleteByPrefix(PREFIX+"DASH_BT");DeleteByPrefix(PREFIX+"BTN_BT");DeleteByPrefix(PREFIX+"EDIT_BT");
    ObjectDelete(0,PREFIX+"DASH_SEP4");
    CreateRect("DASH_TOP",x,y,W,28,C'18,24,36',C'90,178,255');
@@ -7036,6 +7041,7 @@ void UpdateDashboard()
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
 
    OrbStrategyPresetSyncSelection();
+   OrbMlDraw();
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
@@ -8122,6 +8128,14 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       ClearNewDayReverseRetry("close_complete");
       entryDetail+=(entryDetail==""?"":" ")+"new_day_reverse=1 "+reverseDetail;
    }
+   // ML only vetoes a new entry, after any required reverse-position closure.
+   // No publishing or native order is allowed beyond a rejected gate.
+   if(!OrbMlAllow(rawDir,signalBar))
+   {
+      g_tradeTaken=true;g_lastFilterReason="ML FILTER";g_lastExecStatus=g_mlStatus;
+      ClearRetestState("ml_filter");ClearImbalanceState("ml_filter");
+      return false;
+   }
    bool opened=false;
    double planTp=0.0,planHalf=0.0;
    string lotDetail="";
@@ -8889,6 +8903,7 @@ int OnInit()
    g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
    OrbStrategyPresetRestore();
+   OrbMlInit();
    OrbStrategyPresetBuildMatches("");
    g_lastHistBuild=0;g_histNeedsRedraw=true;
    ResetForNewNyDay();
@@ -8921,6 +8936,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   if(g_mlExport)OrbMlAbort("EXPORT INTERRUPTED: EA STOPPED");
    EventKillTimer();
    if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();}
 }
@@ -8973,6 +8989,8 @@ void OnTimer()
       }
       ProcessQueuedHistoricalRedraw();
       ProcessHistoricalAuditStep();
+      OrbMlExportStep();
+      OrbMlDraw();
       if(g_histAuditRunning||g_histRedrawQueued)RenderHistoricalAuditProgress();
       else if(coreDue)UpdateDashboard();
    }
@@ -9031,6 +9049,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
 
    bool needRedraw=false;
+   if(OrbMlUiEvent(sparam)){UpdateDashboard();ChartRedraw(0);return;}
 
    if(sparam==PREFIX+"BTN_PRESET_FAVORITES")
    {

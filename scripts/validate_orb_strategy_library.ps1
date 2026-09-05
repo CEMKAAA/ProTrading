@@ -1,3 +1,4 @@
+param([string]$OriginalGitRef = "")
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -9,7 +10,13 @@ foreach ($path in @($originalPath, $strategyPath, $libraryPath)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing file: $path" }
 }
 
-$original = [IO.File]::ReadAllText($originalPath)
+if ($OriginalGitRef) {
+    $original = (git -C $root show "${OriginalGitRef}:IndicatorCodeExamples/OrbUltimateEA.mq5") -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read specified original Git reference' }
+    Write-Output "Comparison baseline: $OriginalGitRef (not the user-modified working ORB file)"
+} else {
+    $original = [IO.File]::ReadAllText($originalPath)
+}
 $strategy = [IO.File]::ReadAllText($strategyPath)
 $library = [IO.File]::ReadAllText($libraryPath)
 
@@ -69,7 +76,18 @@ $sacredFunctions = @(
     "ProcessHistoricalCalcDay", "CancelHistoricalAuditBuild", "FinalizeHistoricalAudit", "ProcessHistoricalAuditStep"
 )
 foreach ($name in $sacredFunctions) {
-    if ((Get-MqlFunctionText $original $name) -cne (Get-MqlFunctionText $strategy $name)) {
+    $experimental = Get-MqlFunctionText $strategy $name
+    # Explicit observational hooks only; no simulation or signal expression may differ.
+    $hooks = @{
+        ProcessHistoricalCalcDay = '      OrbMlCapture(sigT,entryT,dir,hi,lo,oe,sim);'
+        CancelHistoricalAuditBuild = '   if(g_mlExport)OrbMlAbort("EXPORT CANCELLED: AUDIT RESTARTED");'
+        FinalizeHistoricalAudit = '   OrbMlAuditFinished();'
+    }
+    if ($hooks.ContainsKey($name)) {
+        if (-not $experimental.Contains($hooks[$name])) { throw "Missing ML observer hook: $name" }
+        $experimental = $experimental.Replace($hooks[$name] + "`n", '')
+    }
+    if ((Get-MqlFunctionText $original $name) -cne $experimental) {
         throw "Strategy library changed sacred ORB function: $name"
     }
 }
@@ -154,4 +172,4 @@ foreach ($needle in @('if(popupControl&&!g_strategyPopupOpen)return;', 'BTN_PRES
     if (-not $strategy.Contains($needle)) { throw "Missing popup/favorites invariant: $needle" }
 }
 
-Write-Output "ORB strategy library passed: 46 unique presets + 46 frozen 1Y metrics, 38 sacred functions unchanged, protected runtimes isolated; $($backendNames.Count) Backtest functions unchanged; favorites/overlay source invariants passed."
+Write-Output "ORB strategy library passed: 46 presets/metrics; 38 signal/audit bodies match production after removing 3 explicit ML observer hooks; protected runtimes isolated; $($backendNames.Count) Backtest functions unchanged; favorites/overlay source invariants passed."

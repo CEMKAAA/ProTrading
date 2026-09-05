@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| 15 Minute ORB MT5 EA – v3.1 (production)                         |
 //| Interactive dashboard with toggleable filters + live sim stats.   |
 //| All filters, signal TF, and confirmation delay dashboard-driven.  |
@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-04.v6.75-sacred-exact-arrow-parity"
+#define ORB15_BUILD "2026-09-05.v6.78-preset-favorites"
 
 enum ORB_SESSION_PROFILE
 {
@@ -117,6 +117,7 @@ enum ORB_ENTRY_MODE { ORB_ENTRY_BREAKOUT=0, ORB_ENTRY_PULLBACK_RETEST=1, ORB_ENT
 enum ORB_TARGET_MODE { ORB_TARGET_R_LEG=0, ORB_TARGET_RANGE_HEIGHT=1, ORB_TARGET_EOD=2, ORB_TARGET_AUTO_STOP_SIZE=3 };
 enum BT_FILL_MODE { BT_FILL_SIGNAL_CLOSE=0, BT_FILL_NEXT_BAR_OPEN=1, BT_FILL_CONSERVATIVE=2 };
 enum BT_SAME_BAR_POLICY { BT_SAMEBAR_CONSERVATIVE=0, BT_SAMEBAR_NEAREST_OPEN=1, BT_SAMEBAR_TP_FIRST=2, BT_SAMEBAR_SL_FIRST=3 };
+#include "OrbStrategyPresetLibrary.mqh"
 input ORB_EXEC_MODE InpExecutionMode = ORB_EXEC_SINGLE;
 input ORB_TARGET_LEG InpTargetTpLeg = ORB_TARGET_R200;
 input ORB_HC_BE_MODE InpHalfBeMode = ORB_HC_BE_OFF;
@@ -447,6 +448,30 @@ bool   g_orbRfEnabled = false;
 bool   g_orbRfBlocked[ORB_RF_COUNT];
 int    g_orbRfWins[ORB_RF_COUNT];
 int    g_orbRfLosses[ORB_RF_COUNT];
+
+// Strategy-library UI state. The applied strategy excludes risk, account
+// guards, bridge publishing mode and bridge channel by design.
+int    g_strategyPresetIndex = -1;
+int    g_strategyCandidateIndex = -1;
+string g_strategySearch = "";
+bool   g_strategyPopupOpen = false;
+bool   g_strategyPopupDrawn = false;
+bool   g_strategyFavoritesOnly = false;
+bool   g_strategyFavorites[];
+int    g_strategySearchPage = 0;
+int    g_strategyMatches[];
+int    g_strategyVisible[5];
+int    g_strategyVisibleCount = 0;
+datetime g_strategyApplyFlashUntil = 0;
+string g_strategyFilterNetText = "";
+string g_strategyFilterWrText = "";
+string g_strategyFilterMinCumText = "";
+bool   g_strategyFilterNetEnabled = false;
+bool   g_strategyFilterWrEnabled = false;
+bool   g_strategyFilterMinCumEnabled = false;
+double g_strategyFilterNet = 0.0;
+double g_strategyFilterWr = 0.0;
+double g_strategyFilterMinCum = 0.0;
 
 //--- Trade management state ---------------------------------------------
 int      g_tradeDir = 0;
@@ -2378,6 +2403,342 @@ bool OrbEntryRegimeFiltersAllowAt(const string direction,datetime signalTime,str
    return rfAllowed;
 }
 
+//=========================================================================
+//  SCREENSHOT STRATEGY LIBRARY
+//=========================================================================
+string OrbStrategyPresetSelectionKey()
+{
+   return "ORB_PRESET."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."
+      +StringFormat("%I64d",ChartID());
+}
+
+bool OrbStrategyPresetFamilyMatches(const int family)
+{
+   if(family==ORB_PRESET_FAMILY_ANY)return true;
+   string symbol=UpperText(_Symbol);
+   if(family==ORB_PRESET_FAMILY_JP225)
+      return StringFind(symbol,"JP225")>=0||StringFind(symbol,"JPN225")>=0
+         ||StringFind(symbol,"NIKKEI")>=0||StringFind(symbol,"NI225")>=0;
+   if(family==ORB_PRESET_FAMILY_USTEC)
+      return StringFind(symbol,"USTEC")>=0||StringFind(symbol,"US100")>=0
+         ||StringFind(symbol,"NAS100")>=0||StringFind(symbol,"NASDAQ")>=0;
+   if(family==ORB_PRESET_FAMILY_USDJPY)
+   {
+      string base="",quote="";
+      return ExtractForexPair(symbol,base,quote)&&base=="USD"&&quote=="JPY";
+   }
+   return false;
+}
+
+string OrbStrategyPresetFamilyText(const int family)
+{
+   if(family==ORB_PRESET_FAMILY_JP225)return "JP225";
+   if(family==ORB_PRESET_FAMILY_USDJPY)return "USDJPY";
+   if(family==ORB_PRESET_FAMILY_USTEC)return "USTEC";
+   return "ANY";
+}
+
+bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
+{
+   reason="";
+   if(p.id==""||p.name==""){reason="EMPTY_PRESET";return false;}
+   if(p.signalTf!=PERIOD_M1&&p.signalTf!=PERIOD_M5&&p.signalTf!=PERIOD_M15){reason="UNSUPPORTED_TF";return false;}
+   if(p.delayMinutes<0||p.delayMinutes>1440){reason="INVALID_DELAY";return false;}
+   if(p.pipSlMode&&(!MathIsValidNumber(p.pipSlPips)||p.pipSlPips<0.1||p.pipSlPips>1000000.0))
+      {reason="INVALID_PIP_SL";return false;}
+   if(!MathIsValidNumber(p.volumeMultiplier)||p.volumeMultiplier<0.05||p.volumeMultiplier>20.0)
+      {reason="INVALID_ORB_VOL_X";return false;}
+   if(p.entryWindowStart<0||p.entryWindowStart>1439||p.entryWindowEnd<0||p.entryWindowEnd>1439)
+      {reason="INVALID_WINDOW";return false;}
+   if(p.nasEntryGate&&p.nasStateGate){reason="DUAL_NAS_ENTRY_GATE";return false;}
+   if(p.nasOppositeExit&&p.nasAdditionalExit){reason="DUAL_NAS_EXIT_MODE";return false;}
+   if(p.nasSensitivity<1||p.nasSensitivity>100||p.nasLookbackMinutes<0||p.nasLookbackMinutes>1440
+      ||p.nasExitWaitMinutes<0||p.nasExitWaitMinutes>5999)
+      {reason="INVALID_NAS_RANGE";return false;}
+   if(!MathIsValidNumber(p.nasStateVolumeMultiplier)||p.nasStateVolumeMultiplier<0.05||p.nasStateVolumeMultiplier>200.0
+      ||!MathIsValidNumber(p.nasFlowVolumeMultiplier)||p.nasFlowVolumeMultiplier<0.05||p.nasFlowVolumeMultiplier>200.0)
+      {reason="INVALID_NAS_VOL_X";return false;}
+   if(InpExecutionMode!=ORB_EXEC_SINGLE){reason="PRESET_REQUIRES_SINGLE_ORDER";return false;}
+   if(p.exitMode!=ORB_EXIT_FIXED_TARGET||p.targetMode!=ORB_TARGET_R_LEG)
+      {reason="PRESET_REQUIRES_FIXED_R";return false;}
+   return true;
+}
+
+void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
+{
+   g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
+   g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;
+   g_rtHalfBeLeg=ClampHalfBeLeg(p.halfBeLeg,g_rtTargetLeg);g_rtBEOnTp1=false;
+   g_rtEntryMode=p.entryMode;g_rtExitMode=p.exitMode;g_rtTargetMode=p.targetMode;
+   g_rtExitTrailStartLeg=0;
+   g_rtPipSlMode=p.pipSlMode;g_rtPipSlPips=ClampPipSlPips(p.pipSlPips);
+   g_rtFilterAtr=p.atrFilter;g_rtFilterVol=p.volumeFilter;g_rtVolumeMultiplier=p.volumeMultiplier;
+   g_rtFilterDay=p.dayFilter;g_rtTimeExit=p.timeExit;g_rtDisplacement=p.displacementFilter;g_rtFvgMode=p.fvgMode;
+   g_rtUtcMidnightSession=p.utc00Mode;
+   g_rtEntryWindow=p.entryWindow;g_rtEntryWindowStartMin=p.entryWindowStart;g_rtEntryWindowEndMin=p.entryWindowEnd;
+   g_rtFilteredWindowReverseExit=p.reverseWindowExit;g_rtPostTradeDispBlockExit=p.postTradeDispExit;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++)g_regimeAllowed[ri]=OrbPresetRegimeAllowed(p,ri);
+   g_orbRfEnabled=p.rfMaster;
+   for(int rf=0;rf<ORB_RF_COUNT;rf++)g_orbRfBlocked[rf]=OrbPresetRfBlocked(p,rf);
+   g_rtNasConfirmation=p.nasEntryGate;g_rtNasStateGate=p.nasStateGate;
+   g_rtNasExitOnOppositeSignal=p.nasOppositeExit;g_rtNasAdditionalExit=p.nasAdditionalExit;
+   g_rtNasSensitivity=p.nasSensitivity;g_rtNasActiveSignalLookbackMinutes=p.nasLookbackMinutes;
+   g_rtNasOppositeExitWaitMinutes=p.nasExitWaitMinutes;
+   g_rtNasVolumeFilter=p.nasStateVolumeFilter;g_rtNasVolumeMultiplier=p.nasStateVolumeMultiplier;
+   g_rtNasFlowVolumeFilter=p.nasFlowVolumeFilter;g_rtNasFlowVolumeMultiplier=p.nasFlowVolumeMultiplier;
+}
+
+bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
+{
+   if(g_rtSignalTf!=p.signalTf||g_rtDelayMin!=p.delayMinutes||g_rtUseDelay!=(p.delayMinutes>0))return false;
+   if(RuntimeTargetLeg()!=ClampTargetLeg(p.targetLeg)||g_rtHalfBeLeg!=ClampHalfBeLeg(p.halfBeLeg,p.targetLeg)||g_rtBEOnTp1)return false;
+   if(g_rtEntryMode!=p.entryMode||g_rtExitMode!=p.exitMode||g_rtTargetMode!=p.targetMode)return false;
+   if(g_rtPipSlMode!=p.pipSlMode||MathAbs(g_rtPipSlPips-p.pipSlPips)>0.00005)return false;
+   if(g_rtFilterAtr!=p.atrFilter||g_rtFilterVol!=p.volumeFilter||MathAbs(g_rtVolumeMultiplier-p.volumeMultiplier)>0.00005)return false;
+   if(g_rtFilterDay!=p.dayFilter||g_rtTimeExit!=p.timeExit||g_rtDisplacement!=p.displacementFilter||g_rtFvgMode!=p.fvgMode)return false;
+   if(g_rtInvertMode!=p.invertMode||g_rtUtcMidnightSession!=p.utc00Mode)return false;
+   if(g_rtEntryWindow!=p.entryWindow||g_rtEntryWindowStartMin!=p.entryWindowStart||g_rtEntryWindowEndMin!=p.entryWindowEnd)return false;
+   if(g_rtFilteredWindowReverseExit!=p.reverseWindowExit||g_rtPostTradeDispBlockExit!=p.postTradeDispExit)return false;
+   for(int ri=0;ri<ORB_REGIME_COUNT;ri++)if(g_regimeAllowed[ri]!=OrbPresetRegimeAllowed(p,ri))return false;
+   if(g_orbRfEnabled!=p.rfMaster)return false;
+   for(int rf=0;rf<ORB_RF_COUNT;rf++)if(g_orbRfBlocked[rf]!=OrbPresetRfBlocked(p,rf))return false;
+   if(g_rtNasConfirmation!=p.nasEntryGate||g_rtNasStateGate!=p.nasStateGate
+      ||g_rtNasExitOnOppositeSignal!=p.nasOppositeExit||g_rtNasAdditionalExit!=p.nasAdditionalExit)return false;
+   if(g_rtNasSensitivity!=p.nasSensitivity||g_rtNasActiveSignalLookbackMinutes!=p.nasLookbackMinutes
+      ||g_rtNasOppositeExitWaitMinutes!=p.nasExitWaitMinutes)return false;
+   if(g_rtNasVolumeFilter!=p.nasStateVolumeFilter||MathAbs(g_rtNasVolumeMultiplier-p.nasStateVolumeMultiplier)>0.00005)return false;
+   if(g_rtNasFlowVolumeFilter!=p.nasFlowVolumeFilter||MathAbs(g_rtNasFlowVolumeMultiplier-p.nasFlowVolumeMultiplier)>0.00005)return false;
+   return true;
+}
+
+void OrbStrategyPresetClearSelection()
+{
+   g_strategyPresetIndex=-1;
+   GlobalVariableDel(OrbStrategyPresetSelectionKey());
+}
+
+void OrbStrategyPresetSyncSelection()
+{
+   if(g_strategyPresetIndex<0)return;
+   OrbStrategyPreset p;
+   if(!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||!OrbStrategyPresetMatchesRuntime(p))
+      OrbStrategyPresetClearSelection();
+}
+
+bool OrbStrategyPresetRestore()
+{
+   string key=OrbStrategyPresetSelectionKey();
+   if(!GlobalVariableCheck(key))return false;
+   int index=(int)MathRound(GlobalVariableGet(key));
+   OrbStrategyPreset p;string reason="";
+   if(!OrbStrategyPresetLoad(index,p)||!OrbStrategyPresetValuesValid(p,reason)||!OrbStrategyPresetFamilyMatches(p.family))
+   {
+      GlobalVariableDel(key);return false;
+   }
+   OrbStrategyPresetApplyValues(p);g_strategyPresetIndex=index;g_strategyCandidateIndex=index;
+   return true;
+}
+
+bool OrbStrategyPresetHasActiveLifecycle()
+{
+   return OwnPositionExists()||g_orbBridgePlanActive||g_nasManagedLifecycle||g_nasManagedClosePending;
+}
+
+bool OrbStrategyPresetApplyInteractive(const int index)
+{
+   OrbStrategyPreset p;string reason="";
+   if(!OrbStrategyPresetLoad(index,p)){g_lastExecStatus="PRESET_NOT_FOUND";return false;}
+   if(!OrbStrategyPresetValuesValid(p,reason)){g_lastExecStatus="PRESET_INVALID_"+reason;return false;}
+   if(!OrbStrategyPresetFamilyMatches(p.family))
+   {
+      g_lastExecStatus="PRESET_SYMBOL_NEEDS_"+OrbStrategyPresetFamilyText(p.family);return false;
+   }
+   if(g_btRunning){g_lastExecStatus="PRESET_BLOCKED_BACKTEST_RUNNING";return false;}
+   if(OrbStrategyPresetHasActiveLifecycle()){g_lastExecStatus="PRESET_BLOCKED_ACTIVE_TRADE";return false;}
+   if(g_orbBridgeEnabled&&p.signalTf!=g_rtSignalTf)
+   {
+      g_lastExecStatus="PRESET_DISABLE_PUB_FOR_TF_CHANGE_"+TfLabel(p.signalTf);return false;
+   }
+   string key=OrbStrategyPresetSelectionKey();
+   if(GlobalVariableSet(key,(double)index)<=0){g_lastExecStatus="PRESET_SAVE_FAIL";return false;}
+
+   OrbStrategyPresetApplyValues(p);
+   ClearRetestState("strategy_preset_changed");ClearImbalanceState("strategy_preset_changed");
+   ClearNasPending("strategy_preset_changed");ClearNewDayReverseRetry("strategy_preset_changed");
+   g_lastNasOverlayClosedBar=0;DeleteLive();DeleteExecutionVisuals();
+   g_instanceStartedAt=TimeCurrent();g_startupOrbGuardPending=!IsTesterMode();g_startupOrbDayLocked=false;
+   g_nyDayKey=0;ResetForNewNyDay();
+   g_strategyPresetIndex=index;g_strategyCandidateIndex=index;g_strategyApplyFlashUntil=TimeLocal()+2;
+   g_lastExecStatus="PRESET_APPLIED_"+p.id;
+   Audit("strategy_preset_applied","",0,0,0,0,"id="+p.id+" source="+p.sourceImage
+      +" risk_channel_publish_preserved=1");
+   if(g_orbBridgeEnabled)OrbProWriteInitMarker();
+   QueueHistoricalRedraw(0);
+   return true;
+}
+
+string OrbStrategyPresetLower(string value){StringToLower(value);return value;}
+
+string OrbStrategyFavoriteFile(const OrbStrategyPreset &p)
+{
+   return "OrbStrategyLibraryFavorites\\"+p.id+".fav";
+}
+
+void OrbStrategyLoadFavorites()
+{
+   ArrayResize(g_strategyFavorites,OrbStrategyPresetCount());
+   for(int i=0;i<ArraySize(g_strategyFavorites);i++)
+   {
+      OrbStrategyPreset p;
+      g_strategyFavorites[i]=!IsTesterMode()&&OrbStrategyPresetLoad(i,p)
+         &&FileIsExist(OrbStrategyFavoriteFile(p),FILE_COMMON);
+   }
+}
+
+bool OrbStrategyIsFavorite(const int index)
+{
+   return index>=0&&index<ArraySize(g_strategyFavorites)&&g_strategyFavorites[index];
+}
+
+bool OrbStrategyToggleFavorite(const int index)
+{
+   OrbStrategyPreset p;
+   if(IsTesterMode()||!OrbStrategyPresetLoad(index,p))return false;
+   string path=OrbStrategyFavoriteFile(p);
+   bool wasFavorite=FileIsExist(path,FILE_COMMON);
+   ResetLastError();
+   if(wasFavorite)
+   {
+      if(!FileDelete(path,FILE_COMMON)&&FileIsExist(path,FILE_COMMON))
+      {g_lastExecStatus="FAVORITE_REMOVE_FAILED_"+IntegerToString(GetLastError());return false;}
+   }
+   else
+   {
+      // One marker per stable ID: independent charts never overwrite a list.
+      int h=FileOpen(path,FILE_WRITE|FILE_BIN|FILE_COMMON);
+      if(h==INVALID_HANDLE)
+      {g_lastExecStatus="FAVORITE_SAVE_FAILED_"+IntegerToString(GetLastError());return false;}
+      FileClose(h);
+   }
+   OrbStrategyLoadFavorites();
+   if(OrbStrategyIsFavorite(index)==wasFavorite)
+   {g_lastExecStatus="FAVORITE_CHANGED_ELSEWHERE_RETRY";return false;}
+   g_lastExecStatus=OrbStrategyIsFavorite(index)?"FAVORITE_ADDED":"FAVORITE_REMOVED";
+   return true;
+}
+
+string OrbStrategyMetricSigned(const double value,const int digits=2)
+{
+   return (value>0.00000001?"+":"")+DoubleToString(value,digits);
+}
+
+string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
+{
+   if(!p.metric1yReady)return p.name+" | 1Y N/A";
+   string suffix=" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
+      +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
+      +" | WR "+DoubleToString(p.metric1yWr,1)+"%";
+   int maxChars=66;
+   int nameChars=MathMax(8,maxChars-StringLen(suffix));
+   string shortName=p.name;
+   if(StringLen(shortName)>nameChars)shortName=StringSubstr(shortName,0,MathMax(5,nameChars-3))+"...";
+   return shortName+suffix;
+}
+
+bool OrbStrategyPresetPassesMetricFilters(const OrbStrategyPreset &p)
+{
+   if(!g_strategyFilterNetEnabled&&!g_strategyFilterWrEnabled&&!g_strategyFilterMinCumEnabled)return true;
+   if(!p.metric1yReady)return false;
+   if(g_strategyFilterNetEnabled&&p.metric1yNetR<g_strategyFilterNet-0.00000001)return false;
+   if(g_strategyFilterWrEnabled&&p.metric1yWr<g_strategyFilterWr-0.00000001)return false;
+   if(g_strategyFilterMinCumEnabled&&p.metric1yMinCumR<g_strategyFilterMinCum-0.00000001)return false;
+   return true;
+}
+
+bool OrbStrategyParseOptionalMetric(string raw,bool &enabled,double &value)
+{
+   StringTrimLeft(raw);StringTrimRight(raw);
+   if(raw==""){enabled=false;value=0.0;return true;}
+   StringReplace(raw,",",".");
+   int dots=0,digits=0;
+   for(int i=0;i<StringLen(raw);i++)
+   {
+      ushort ch=StringGetCharacter(raw,i);
+      if(ch>=48&&ch<=57){digits++;continue;}
+      if(ch==46&&dots==0){dots++;continue;}
+      if((ch==43||ch==45)&&i==0)continue;
+      return false;
+   }
+   if(digits==0)return false;
+   double parsed=StringToDouble(raw);
+   if(!MathIsValidNumber(parsed))return false;
+   enabled=true;value=parsed;return true;
+}
+
+bool OrbStrategyApplyMetricFilters()
+{
+   string netText=ObjectGetString(0,PREFIX+"EDIT_PRESET_NET",OBJPROP_TEXT);
+   string wrText=ObjectGetString(0,PREFIX+"EDIT_PRESET_WR",OBJPROP_TEXT);
+   string mcText=ObjectGetString(0,PREFIX+"EDIT_PRESET_MC",OBJPROP_TEXT);
+   bool netEnabled=false,wrEnabled=false,mcEnabled=false;
+   double net=0.0,wr=0.0,mc=0.0;
+   if(!OrbStrategyParseOptionalMetric(netText,netEnabled,net)
+      ||!OrbStrategyParseOptionalMetric(wrText,wrEnabled,wr)
+      ||!OrbStrategyParseOptionalMetric(mcText,mcEnabled,mc)
+      ||(wrEnabled&&(wr<0.0||wr>100.0)))
+      return false;
+   g_strategyFilterNetText=netEnabled?DoubleToString(net,2):"";
+   g_strategyFilterWrText=wrEnabled?DoubleToString(wr,1):"";
+   g_strategyFilterMinCumText=mcEnabled?DoubleToString(mc,2):"";
+   g_strategyFilterNetEnabled=netEnabled;g_strategyFilterWrEnabled=wrEnabled;g_strategyFilterMinCumEnabled=mcEnabled;
+   g_strategyFilterNet=net;g_strategyFilterWr=wr;g_strategyFilterMinCum=mc;
+   return true;
+}
+
+void OrbStrategyPresetBuildMatches(const string query)
+{
+   OrbStrategyLoadFavorites();
+   g_strategySearch=query;string needle=OrbStrategyPresetLower(query);
+   StringTrimLeft(needle);StringTrimRight(needle);
+   ArrayResize(g_strategyMatches,0);
+   for(int i=0;i<OrbStrategyPresetCount();i++)
+   {
+      OrbStrategyPreset p;if(!OrbStrategyPresetLoad(i,p))continue;
+      if(g_strategyFavoritesOnly&&!OrbStrategyIsFavorite(i))continue;
+      string hay=OrbStrategyPresetLower(p.name+" "+p.id+" "+p.searchTerms+" "+p.sourceImage);
+      if(needle!=""&&StringFind(hay,needle)<0)continue;
+      if(!OrbStrategyPresetPassesMetricFilters(p))continue;
+      int n=ArraySize(g_strategyMatches);ArrayResize(g_strategyMatches,n+1);g_strategyMatches[n]=i;
+   }
+   int maxPage=MathMax(0,(ArraySize(g_strategyMatches)-1)/5);
+   g_strategySearchPage=MathMax(0,MathMin(maxPage,g_strategySearchPage));
+}
+
+void OrbStrategyPresetRefreshVisible()
+{
+   g_strategyVisibleCount=0;
+   for(int i=0;i<5;i++)g_strategyVisible[i]=-1;
+   if(!g_strategyPopupOpen)return;
+   int start=g_strategySearchPage*5;
+   for(int slot=0;slot<5;slot++)
+   {
+      int pos=start+slot;if(pos>=ArraySize(g_strategyMatches))break;
+      g_strategyVisible[slot]=g_strategyMatches[pos];g_strategyVisibleCount++;
+   }
+}
+
+string OrbStrategyPresetCurrentName()
+{
+   OrbStrategyPreset p;
+   return g_strategyPresetIndex>=0&&OrbStrategyPresetLoad(g_strategyPresetIndex,p)?p.name:"CUSTOM";
+}
+
+string OrbStrategyPresetCandidateName()
+{
+   OrbStrategyPreset p;
+   return g_strategyCandidateIndex>=0&&OrbStrategyPresetLoad(g_strategyCandidateIndex,p)?p.name:"SELECT A STRATEGY";
+}
+
 long RuntimeMagic()
 {
    if(g_runtimeMagic!=0)return g_runtimeMagic;
@@ -3171,7 +3532,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
    if(!force&&g_histAuditLastUiMs>0&&nowMs-g_histAuditLastUiMs<500)return;
    g_histAuditLastUiMs=nowMs;
    int x=InpDashboardX;
-   int y=InpDashboardY+246;
+   int y=InpDashboardY+268;
    int barW=496,barH=14;
    double barPct=g_histAuditRunning?g_histAuditProgressPct:0.0;
    color barClr=C'38,140,220';
@@ -3191,7 +3552,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
    ChartRedraw(0);
 }
@@ -3440,8 +3801,46 @@ void ClearImbalanceState(string reason="")
    g_imbContext="";
 }
 
+double g_libraryDashScale=1.0;
+int g_libraryDashX=0,g_libraryDashY=0;
+
+void OrbLibraryRefreshLayout()
+{
+   int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS,0);
+   int chartH=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS,0);
+   if(chartW<=0||chartH<=0)return;
+   // Scale the two-column canvas once per dashboard refresh, never per object.
+   g_libraryDashX=MathMax(0,MathMin(InpDashboardX,chartW/10));
+   g_libraryDashY=MathMax(0,MathMin(InpDashboardY,chartH/10));
+   g_libraryDashScale=MathMin(1.0,MathMin(
+      (double)MathMax(1,chartW-g_libraryDashX-8)/1252.0,
+      (double)MathMax(1,chartH-g_libraryDashY-8)/704.0));
+}
+int OrbLibraryX(int x){return g_libraryDashX+(int)MathRound((x-InpDashboardX)*g_libraryDashScale);}
+int OrbLibraryY(int y){return g_libraryDashY+(int)MathRound((y-InpDashboardY)*g_libraryDashScale);}
+int OrbLibrarySize(int value){return MathMax(1,(int)MathRound(value*g_libraryDashScale));}
+
+bool OrbStrategyPopupContains(const long px,const double py)
+{
+   if(!g_strategyPopupOpen)return false;
+   int left=OrbLibraryX(InpDashboardX+644),top=OrbLibraryY(InpDashboardY+142);
+   return px>=left&&px<left+OrbLibrarySize(594)
+      &&py>=top&&py<top+OrbLibrarySize(28+g_strategyVisibleCount*22);
+}
+
+bool OrbStrategyIsPopupControl(const string name)
+{
+   if(name==PREFIX+"BTN_PRESET_PREV"||name==PREFIX+"BTN_PRESET_NEXT"
+      ||name==PREFIX+"BTN_PRESET_CLOSE")return true;
+   for(int i=0;i<5;i++)
+      if(name==PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(i)
+         ||name==PREFIX+"BTN_PRESET_STAR_"+IntegerToString(i))return true;
+   return false;
+}
+
 void CreateRect(const string name,int x,int y,int w,int h,color bg,color brd)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_RECTANGLE_LABEL,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
@@ -3453,6 +3852,7 @@ void CreateRect(const string name,int x,int y,int w,int h,color bg,color brd)
 }
 void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);sz=OrbLibrarySize(sz);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_LABEL,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
@@ -3464,18 +3864,20 @@ void CreateLabel(const string name,int x,int y,string text,color clr,int sz=9)
 }
 void CreateButton(const string name,int x,int y,int w,int h,string text,color bg)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)ObjectCreate(0,obj,OBJ_BUTTON,0,0,0);
    ObjectSetInteger(0,obj,OBJPROP_CORNER,CORNER_LEFT_UPPER);
    ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
    ObjectSetString(0,obj,OBJPROP_TEXT,text);ObjectSetInteger(0,obj,OBJPROP_BGCOLOR,bg);
-   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,obj,OBJPROP_COLOR,clrWhite);ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,OrbLibrarySize(8));
    ObjectSetString(0,obj,OBJPROP_FONT,"Consolas");ObjectSetInteger(0,obj,OBJPROP_STATE,false);
    ObjectSetInteger(0,obj,OBJPROP_BACK,false);ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+2);
 }
 void CreateEdit(const string name,int x,int y,int w,int h,string text)
 {
+   x=OrbLibraryX(x);y=OrbLibraryY(y);w=OrbLibrarySize(w);h=OrbLibrarySize(h);
    string obj=PREFIX+name;
    if(ObjectFind(0,obj)<0)
    {
@@ -3496,6 +3898,7 @@ void CreateEdit(const string name,int x,int y,int w,int h,string text)
    ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,x);ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,obj,OBJPROP_XSIZE,w);ObjectSetInteger(0,obj,OBJPROP_YSIZE,h);
    ObjectSetInteger(0,obj,OBJPROP_ZORDER,DASH_Z+3);
+   ObjectSetInteger(0,obj,OBJPROP_FONTSIZE,OrbLibrarySize(8));
 }
 
 //=========================================================================
@@ -6606,11 +7009,15 @@ void OBT_Stop()
 void DrawDashboard()
 {
    if(!InpShowDashboard){DeleteDash();return;}
+   OrbLibraryRefreshLayout();
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=846;
+   int W=620,H=704;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
+   CreateRect("DASH_LIBRARY_BG",x+632,y,W,346,C'24,30,42',C'90,178,255');
+   DeleteByPrefix(PREFIX+"DASH_BT");DeleteByPrefix(PREFIX+"BTN_BT");DeleteByPrefix(PREFIX+"EDIT_BT");
+   ObjectDelete(0,PREFIX+"DASH_SEP4");
    CreateRect("DASH_TOP",x,y,W,28,C'18,24,36',C'90,178,255');
    CreateRect("DASH_STRIPE",x+6,y+6,W-12,3,C'90,178,255',C'90,178,255');
 
@@ -6623,11 +7030,38 @@ void DrawDashboard()
 void UpdateDashboard()
 {
    if(!InpShowDashboard)return;
-   int x=InpDashboardX,y=InpDashboardY;
+   OrbLibraryRefreshLayout();
+   int x=InpDashboardX+632,y=InpDashboardY;
    int W=620;
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
 
-   int rootY=y;
+   OrbStrategyPresetSyncSelection();
+   CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
+   CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
+   CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
+   bool presetApplied=(g_strategyApplyFlashUntil>TimeLocal());
+   CreateButton("BTN_PRESET_APPLY",x+468,y+30,138,20,presetApplied?"APPLIED":"APPLY STRATEGY",
+      presetApplied?C'30,150,95':C'184,103,22');
+   CreateLabel("DASH_PRESET_FILTER",x+12,y+59,"1Y FILTER",C'134,158,182',7);
+   CreateLabel("DASH_PRESET_NET_L",x+74,y+59,"R >=",C'134,158,182',7);
+   CreateEdit("EDIT_PRESET_NET",x+104,y+54,52,18,g_strategyFilterNetText);
+   CreateLabel("DASH_PRESET_WR_L",x+164,y+59,"WR >=",C'134,158,182',7);
+   CreateEdit("EDIT_PRESET_WR",x+202,y+54,48,18,g_strategyFilterWrText);
+   CreateLabel("DASH_PRESET_MC_L",x+258,y+59,"MC >=",C'134,158,182',7);
+   CreateEdit("EDIT_PRESET_MC",x+298,y+54,52,18,g_strategyFilterMinCumText);
+   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled;
+   CreateButton("BTN_PRESET_FILTER",x+358,y+54,92,18,"APPLY FILTER",metricFilterActive?C'30,150,95':C'38,101,176');
+   CreateButton("BTN_PRESET_FILTER_CLEAR",x+456,y+54,62,18,"CLEAR",C'80,80,80');
+   CreateLabel("DASH_PRESET_FILTER_COUNT",x+526,y+59,IntegerToString(ArraySize(g_strategyMatches))+"/"+IntegerToString(OrbStrategyPresetCount()),
+      metricFilterActive?C'80,255,180':C'134,158,182',7);
+   CreateButton("BTN_PRESET_FAVORITES",x+12,y+78,122,20,g_strategyFavoritesOnly?"FAVORITES ONLY":"ALL STRATEGIES",
+      g_strategyFavoritesOnly?C'184,103,22':C'38,101,176');
+   CreateLabel("DASH_PRESET_FAV_HINT",x+146,y+83,"* = saved favorite; click a row's star to toggle",C'184,196,210',7);
+   CreateLabel("DASH_PRESET_CURRENT",x+12,y+106,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
+   CreateLabel("DASH_PRESET_PICK",x+12,y+122,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
+
+   x=InpDashboardX;
+   int rootY=InpDashboardY;
    RegimeV3Update(false);
    int currentRegime=OrbRegimeBucket(g_regimeV3);
    string regimeNow=currentRegime>=0?OrbRegimeName(currentRegime):"WAITING DATA";
@@ -6749,6 +7183,8 @@ void UpdateDashboard()
    CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
    CreateButton("BTN_FTMO",x+526,r2y,46,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
+   int auditY=y;
+   y-=140;
    CreateLabel("DASH_RISK_LABEL",x+12,y+494,"RISK %",acB,8);
    CreateEdit("EDIT_RISK_PCT",x+66,y+490,66,18,DoubleToString(EffRiskPerTradePct(),2));
    bool riskApplied=(g_riskApplyFlashUntil>TimeLocal());
@@ -6779,6 +7215,7 @@ void UpdateDashboard()
    CreateLabel("DASH_BRIDGE_CH",x+424,y+540,"CH",C'134,158,182',8);
    CreateEdit("EDIT_BRIDGE_CH",x+448,y+536,42,18,IntegerToString(g_orbBridgeChannel));
    CreateButton("BTN_BRIDGE_CH_APPLY",x+494,y+536,88,18,"APPLY CH",C'38,101,176');
+   y=auditY;
 
    // Separator
    CreateRect("DASH_SEP2",x+8,y+132,W-16,1,C'65,116,172',C'65,116,172');
@@ -6861,7 +7298,7 @@ void UpdateDashboard()
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",x+514,y+238,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
 
    // Separator
@@ -6885,88 +7322,61 @@ void UpdateDashboard()
    string atrCtx=atr>0?"ORB/ATR "+DoubleToString(g_orbReady?((g_orbHigh-g_orbLow)/atr)*100.0:0,1)+"%":"ATR --";
    CreateLabel("DASH_L7",x+12,y+312,atrCtx+" | Range "+DoubleToString(g_orbReady?g_orbHigh-g_orbLow:0,_Digits)+" | "+ExitDebugConfig(),C'134,158,182',7);
 
-   // ─── SECTION: BACKTEST ENGINE ───
-   CreateRect("DASH_SEP4",x+8,y+328,W-16,1,C'65,116,172',C'65,116,172');
-   CreateLabel("DASH_BTITLE",x+12,y+334,"BACKTEST ENGINE",acB,9);
+   x=InpDashboardX+632;
 
-   int btY=y+350;
-   CreateLabel("DASH_BTWLBL",x+12,btY+2,"Weeks:",C'134,158,182',7);
-   string editName=PREFIX+"EDIT_BT_WEEKS";
-   if(ObjectFind(0,editName)<0)
+   // Search results are a temporary high-z popup; they never alter settings
+   // until a row is selected and APPLY STRATEGY succeeds.
+   OrbStrategyPresetRefreshVisible();
+   if(!g_strategyPopupOpen&&g_strategyPopupDrawn)
    {
-      ObjectCreate(0,editName,OBJ_EDIT,0,0,0);
-      ObjectSetInteger(0,editName,OBJPROP_CORNER,CORNER_LEFT_UPPER);
-      ObjectSetString(0,editName,OBJPROP_TEXT,IntegerToString(g_btWeeks));
-      ObjectSetInteger(0,editName,OBJPROP_BGCOLOR,C'38,46,60');
-      ObjectSetInteger(0,editName,OBJPROP_COLOR,clrWhite);
-      ObjectSetInteger(0,editName,OBJPROP_BORDER_COLOR,C'80,100,130');
-      ObjectSetInteger(0,editName,OBJPROP_FONTSIZE,9);
-      ObjectSetString(0,editName,OBJPROP_FONT,"Consolas");
-      ObjectSetInteger(0,editName,OBJPROP_ALIGN,ALIGN_CENTER);
-      ObjectSetInteger(0,editName,OBJPROP_READONLY,false);
-      ObjectSetInteger(0,editName,OBJPROP_SELECTABLE,false);
-      ObjectSetInteger(0,editName,OBJPROP_BACK,false);
-      ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
+      for(int stale=0;stale<5;stale++)
+      {
+         ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
+         ObjectDelete(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(stale));
+      }
+      ObjectDelete(0,PREFIX+"DASH_PRESET_POPUP");ObjectDelete(0,PREFIX+"BTN_PRESET_PREV");
+      ObjectDelete(0,PREFIX+"BTN_PRESET_NEXT");ObjectDelete(0,PREFIX+"DASH_PRESET_PAGE");
+      ObjectDelete(0,PREFIX+"BTN_PRESET_CLOSE");
+      g_strategyPopupDrawn=false;
    }
-   ObjectSetInteger(0,editName,OBJPROP_XDISTANCE,x+52);
-   ObjectSetInteger(0,editName,OBJPROP_YDISTANCE,btY);
-   ObjectSetInteger(0,editName,OBJPROP_XSIZE,38);
-   ObjectSetInteger(0,editName,OBJPROP_YSIZE,18);
-   ObjectSetInteger(0,editName,OBJPROP_ZORDER,DASH_Z+3);
-
-   color runBg=g_btRunning?C'80,80,80':C'30,120,70';
-   CreateButton("BTN_BT_RUN",x+96,btY,120,18,g_btRunning?"RUNNING...":"RUN BACKTEST",runBg);
-   CreateButton("BTN_BT_STOP",x+220,btY,60,18,"STOP",g_btRunning?C'178,37,57':C'60,60,68');
-   CreateLabel("DASH_BTCNT",x+286,btY+2,IntegerToString(g_btRunning?g_btTotal:21504)+" combos",C'134,158,182',7);
-
-   int optY=btY+22;
-   CreateLabel("DASH_BTFILL_L",x+12,optY+2,"Fill:",C'134,158,182',7);
-   CreateButton("BTN_BTF_SIGNAL",x+50,optY,58,18,"SIGNAL",g_btFillMode==BT_FILL_SIGNAL_CLOSE?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTF_NEXT",x+112,optY,50,18,"NEXT",g_btFillMode==BT_FILL_NEXT_BAR_OPEN?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTF_CONS",x+166,optY,50,18,"CONS",g_btFillMode==BT_FILL_CONSERVATIVE?C'38,101,176':C'80,80,80');
-   CreateLabel("DASH_BTSAME_L",x+224,optY+2,"Same:",C'134,158,182',7);
-   CreateButton("BTN_BTSB_CONS",x+264,optY,50,18,"CONS",g_btSameBarPolicy==BT_SAMEBAR_CONSERVATIVE?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_NEAR",x+318,optY,50,18,"NEAR",g_btSameBarPolicy==BT_SAMEBAR_NEAREST_OPEN?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_TP",x+372,optY,52,18,"TP1ST",g_btSameBarPolicy==BT_SAMEBAR_TP_FIRST?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTSB_SL",x+428,optY,52,18,"SL1ST",g_btSameBarPolicy==BT_SAMEBAR_SL_FIRST?C'38,101,176':C'80,80,80');
-   CreateButton("BTN_BTPARITY",x+486,optY,78,18,g_btNativeParity?"PARITY ON":"PARITY",g_btNativeParity?C'30,120,70':C'80,80,80');
-
-   int costY=optY+22;
-   CreateLabel("DASH_BTSP_L",x+12,costY+2,"Spr:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_SPREAD",x+42,costY,45,18,DoubleToString(g_btSpreadPts,1));
-   CreateLabel("DASH_BTSL_L",x+94,costY+2,"Slip:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_SLIP",x+130,costY,45,18,DoubleToString(g_btSlippagePts,1));
-   CreateLabel("DASH_BTCM_L",x+184,costY+2,"Comm/Lot:",C'134,158,182',7);
-   CreateEdit("EDIT_BT_COMM",x+252,costY,58,18,DoubleToString(g_btCommissionPerLot,2));
-   CreateLabel("DASH_BTDEF",x+320,costY+2,g_btNativeParity?"tick replay: bid/ask costs embedded":"0 spread = live spread",C'100,112,130',7);
-
-   // Progress bar
-   int pbY=costY+22;
-   int pbW=W-24,pbH=14;
-   CreateRect("DASH_BTPB_BG",x+12,pbY,pbW,pbH,C'38,46,60',C'60,80,110');
-   if(g_btRunning||g_btStep>0)
+   if(g_strategyPopupOpen)
    {
-      double pct=g_btTotal>0?(double)g_btStep/(double)g_btTotal:0;
-      int fw=(int)MathRound(pbW*MathMax(0,MathMin(1,pct)));
-      if(fw>2) CreateRect("DASH_BTPB_FG",x+13,pbY+1,fw-2,pbH-2,C'60,200,120',C'60,200,120');
-      else CreateRect("DASH_BTPB_FG",x+13,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      uint elapsed=g_btRunning?(GetTickCount()-g_btStartMs):g_btElapsedMs;
-      string pTxt=IntegerToString(g_btStep)+"/"+IntegerToString(g_btTotal)
-         +" ("+IntegerToString((int)(pct*100))+"%) "
-         +DoubleToString(elapsed/1000.0,1)+"s";
-      CreateLabel("DASH_BTPROG",x+16,pbY+1,pTxt,clrWhite,8);
+      // Keep active controls alive across tick/timer refreshes to prevent click-through gaps.
+      g_strategyPopupDrawn=true;
+      for(int stale=g_strategyVisibleCount;stale<5;stale++)
+      {
+         ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
+         ObjectDelete(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(stale));
+      }
+      int popupY=InpDashboardY+142,popupH=28+g_strategyVisibleCount*22;
+      CreateRect("DASH_PRESET_POPUP",x+12,popupY,594,popupH,C'20,27,39',C'90,178,255');
+      ObjectSetInteger(0,PREFIX+"DASH_PRESET_POPUP",OBJPROP_ZORDER,DASH_Z+15);
+      for(int slot=0;slot<g_strategyVisibleCount;slot++)
+      {
+         OrbStrategyPreset p;int presetIndex=g_strategyVisible[slot];
+         if(!OrbStrategyPresetLoad(presetIndex,p))continue;
+         string caption=OrbStrategyPresetMetricCaption(p);
+         bool favorite=OrbStrategyIsFavorite(presetIndex);
+         CreateButton("BTN_PRESET_STAR_"+IntegerToString(slot),x+18,popupY+24+slot*22,32,20,favorite?"*":"+",
+            favorite?C'184,103,22':C'58,66,82');
+         ObjectSetInteger(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(slot),OBJPROP_ZORDER,DASH_Z+17);
+         ObjectSetString(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(slot),OBJPROP_TOOLTIP,
+            (favorite?"Remove favorite: ":"Add favorite: ")+p.name);
+         CreateButton("BTN_PRESET_RESULT_"+IntegerToString(slot),x+56,popupY+24+slot*22,538,20,caption,
+            presetIndex==g_strategyCandidateIndex?C'184,103,22':C'38,101,176');
+         ObjectSetInteger(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(slot),OBJPROP_ZORDER,DASH_Z+17);
+      }
+      int matchCount=ArraySize(g_strategyMatches),pageCount=MathMax(1,(matchCount+4)/5);
+      CreateButton("BTN_PRESET_PREV",x+18,popupY+3,44,18,"<",C'80,80,80');
+      CreateLabel("DASH_PRESET_PAGE",x+126,popupY+6,IntegerToString(matchCount)+" MATCH | PAGE "
+         +IntegerToString(g_strategySearchPage+1)+"/"+IntegerToString(pageCount),clrWhite,7);
+      CreateButton("BTN_PRESET_NEXT",x+68,popupY+3,44,18,">",C'80,80,80');
+      CreateButton("BTN_PRESET_CLOSE",x+550,popupY+3,44,18,"X",C'178,37,57');
+      ObjectSetInteger(0,PREFIX+"BTN_PRESET_PREV",OBJPROP_ZORDER,DASH_Z+17);
+      ObjectSetInteger(0,PREFIX+"DASH_PRESET_PAGE",OBJPROP_ZORDER,DASH_Z+17);
+      ObjectSetInteger(0,PREFIX+"BTN_PRESET_NEXT",OBJPROP_ZORDER,DASH_Z+17);
+      ObjectSetInteger(0,PREFIX+"BTN_PRESET_CLOSE",OBJPROP_ZORDER,DASH_Z+17);
    }
-   else
-   {
-      CreateRect("DASH_BTPB_FG",x+13,pbY+1,1,pbH-2,C'38,46,60',C'38,46,60');
-      CreateLabel("DASH_BTPROG",x+16,pbY+1,g_btLastResult!=""?g_btLastResult:"Ready",C'134,158,182',8);
-   }
-   // Last result
-   int lrY=pbY+18;
-   if(g_btLastResult!="")
-      CreateLabel("DASH_BTLAST",x+12,lrY,g_btLastResult,g_btRunning?C'150,200,170':C'134,158,182',7);
-   else
-      CreateLabel("DASH_BTLAST",x+12,lrY,"",C'134,158,182',7);
 }
 
 //=========================================================================
@@ -8478,6 +8888,8 @@ int OnInit()
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;g_btNativeParity=InpBacktestNativeParity;
    g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
+   OrbStrategyPresetRestore();
+   OrbStrategyPresetBuildMatches("");
    g_lastHistBuild=0;g_histNeedsRedraw=true;
    ResetForNewNyDay();
    RegimeV3Update(true);
@@ -8587,9 +8999,136 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_CHART_CHANGE)
+   {
+      DrawDashboard();ChartRedraw(0);return;
+   }
+   if(id==CHARTEVENT_OBJECT_CLICK)
+   {
+      bool popupControl=OrbStrategyIsPopupControl(sparam);
+      if(popupControl&&!g_strategyPopupOpen)return;
+      // Consume clicks in the overlay even if MT5 reports a covered object.
+      if(OrbStrategyPopupContains(lparam,dparam)&&!popupControl)
+      {
+         if(ObjectFind(0,sparam)>=0&&ObjectGetInteger(0,sparam,OBJPROP_TYPE)==OBJ_BUTTON)
+            ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         return;
+      }
+   }
+   if(id==CHARTEVENT_OBJECT_CLICK&&sparam==PREFIX+"BTN_PRESET_CLOSE")
+   {
+      g_strategyPopupOpen=false;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+   if(id==CHARTEVENT_OBJECT_ENDEDIT&&sparam==PREFIX+"EDIT_PRESET_SEARCH")
+   {
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,sparam,OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      UpdateDashboard();ChartRedraw(0);return;
+   }
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
 
    bool needRedraw=false;
+
+   if(sparam==PREFIX+"BTN_PRESET_FAVORITES")
+   {
+      g_strategyFavoritesOnly=!g_strategyFavoritesOnly;
+      g_strategySearchPage=0;
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT,"");
+      OrbStrategyPresetBuildMatches("");
+      g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+
+   if(sparam==PREFIX+"BTN_PRESET_FILTER")
+   {
+      if(!OrbStrategyApplyMetricFilters())
+      {
+         g_lastExecStatus="PRESET_FILTER_INVALID";
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         UpdateDashboard();ChartRedraw(0);return;
+      }
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_NET",OBJPROP_TEXT,g_strategyFilterNetText);
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_WR",OBJPROP_TEXT,g_strategyFilterWrText);
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_MC",OBJPROP_TEXT,g_strategyFilterMinCumText);
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      g_lastExecStatus="PRESET_FILTER_APPLIED";
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+   if(sparam==PREFIX+"BTN_PRESET_FILTER_CLEAR")
+   {
+      g_strategyFilterNetText="";g_strategyFilterWrText="";g_strategyFilterMinCumText="";
+      g_strategyFilterNetEnabled=false;g_strategyFilterWrEnabled=false;g_strategyFilterMinCumEnabled=false;
+      g_strategyFilterNet=0.0;g_strategyFilterWr=0.0;g_strategyFilterMinCum=0.0;
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_NET",OBJPROP_TEXT,"");
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_WR",OBJPROP_TEXT,"");
+      ObjectSetString(0,PREFIX+"EDIT_PRESET_MC",OBJPROP_TEXT,"");
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      g_lastExecStatus="PRESET_FILTER_CLEARED";
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+
+   if(sparam==PREFIX+"BTN_PRESET_SEARCH")
+   {
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+   if(sparam==PREFIX+"BTN_PRESET_PREV"||sparam==PREFIX+"BTN_PRESET_NEXT")
+   {
+      int pageCount=MathMax(1,(ArraySize(g_strategyMatches)+4)/5);
+      if(sparam==PREFIX+"BTN_PRESET_PREV")g_strategySearchPage=MathMax(0,g_strategySearchPage-1);
+      else g_strategySearchPage=MathMin(pageCount-1,g_strategySearchPage+1);
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+   for(int presetSlot=0;presetSlot<5;presetSlot++)
+   {
+      if(sparam==PREFIX+"BTN_PRESET_STAR_"+IntegerToString(presetSlot))
+      {
+         if(presetSlot<g_strategyVisibleCount&&g_strategyVisible[presetSlot]>=0)
+         {
+            if(OrbStrategyToggleFavorite(g_strategyVisible[presetSlot]))
+               OrbStrategyPresetBuildMatches(g_strategySearch);
+         }
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         UpdateDashboard();ChartRedraw(0);return;
+      }
+      if(sparam!=PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(presetSlot))continue;
+      if(presetSlot<g_strategyVisibleCount&&g_strategyVisible[presetSlot]>=0)
+      {
+         OrbStrategyPreset p;
+         g_strategyCandidateIndex=g_strategyVisible[presetSlot];
+         if(OrbStrategyPresetLoad(g_strategyCandidateIndex,p))
+         {
+            g_strategySearch=p.name;
+            ObjectSetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT,g_strategySearch);
+            g_lastExecStatus="PRESET_SELECTED_"+p.id;
+         }
+      }
+      g_strategyPopupOpen=false;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
+   if(sparam==PREFIX+"BTN_PRESET_APPLY")
+   {
+      if(g_strategyCandidateIndex<0)g_lastExecStatus="PRESET_SELECT_FIRST";
+      else OrbStrategyPresetApplyInteractive(g_strategyCandidateIndex);
+      g_strategyPopupOpen=false;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
 
    for(int ri=0;ri<ORB_REGIME_COUNT;ri++)
    {
