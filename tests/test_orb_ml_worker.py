@@ -120,6 +120,33 @@ def test_interrupted_claim_not_replayed(tmp_path):
     assert not (tmp_path/"Results").exists()
 
 
+def test_uncommitted_queue_recovers_to_failure(tmp_path):
+    setup(tmp_path);path=request(tmp_path);job=worker.read_job(path)
+    worker.write_status(tmp_path,job,"QUEUED",0,"Queued")
+    path.unlink()
+    s=worker.unpack(path.with_suffix(".status"),10,"ORB_ML_STATUS1")
+    s[7]=str(int(time.time())-60);path.with_suffix(".status").write_bytes(worker.pack(s))
+    worker.recover(tmp_path)
+    assert status(tmp_path)[5]=="FAILED"
+
+
+def test_user_strategy_contract_covers_runtime_without_account_controls():
+    root=Path(__file__).resolve().parents[1]
+    contract=(root/"IndicatorCodeExamples/OrbStrategyUserContract.mqh").read_text()
+    library=(root/"IndicatorCodeExamples/OrbStrategyUserLibrary.mqh").read_text()
+    for name in ["g_rtNasOppositeExitWaitMinutes","g_rtNasFlowVolumeMultiplier","g_rtBEOnTp1",
+                 "g_rtInvertMode","g_rtSlDistancePct","g_btCommissionPerLot"]:
+        assert name in contract
+    for name in ["g_rtRiskPerTradePct","g_orbBridgeEnabled","g_runtimeMagic","g_rtEaEnabled"]:
+        assert name not in contract
+    assert 'OrbCustomRuntimeDump()!=g_userStrategies[i].runtime' in library
+    assert 'inputSignature!=OrbCustomInputSignature()' in library
+    assert 'FileMove(temp,FILE_COMMON,path,FILE_COMMON)' in library
+    assert 'OrbUserRemembered' in library and 'CUSTOM_SYMBOL_OR_CHART_TF_MISMATCH' in library
+    assert 'out+=(g_rtBEOnTp1?"1":"0")' in contract
+    assert 'FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON' in library
+
+
 def test_duplicate_claim_not_reexecuted(tmp_path):
     job,_,_=prepare_result(tmp_path)
     worker.process_one(tmp_path,request(tmp_path))

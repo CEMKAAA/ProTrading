@@ -3,7 +3,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $dir = Join-Path $root 'IndicatorCodeExamples'
 $main = [IO.File]::ReadAllText((Join-Path $dir 'OrbUltimateEA_StrategyLibrary.mq5'))
 $files = @('OrbUltimateEA_StrategyLibrary.mq5', 'OrbStrategyMLCore.mqh', 'OrbStrategyMLPipeline.mqh', 'OrbStrategyMLJobs.mqh',
-    'OrbStrategyPresetLibrary.mqh', 'NasUltimate_Core.mqh', 'LiqNarrativeSol_RegimeV3.mqh',
+    'OrbStrategyPresetLibrary.mqh', 'OrbStrategyUserLibrary.mqh', 'OrbStrategyUserContract.mqh', 'NasUltimate_Core.mqh', 'LiqNarrativeSol_RegimeV3.mqh',
     'OrbAdvancedAuditEngine.mqh', 'OrbUltimate_ProfessionalPipeline.mqh')
 $provenance = ($files | ForEach-Object {
     $text = [IO.File]::ReadAllText((Join-Path $dir $_)).Replace("`r`n", "`n")

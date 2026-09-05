@@ -117,7 +117,12 @@ enum ORB_ENTRY_MODE { ORB_ENTRY_BREAKOUT=0, ORB_ENTRY_PULLBACK_RETEST=1, ORB_ENT
 enum ORB_TARGET_MODE { ORB_TARGET_R_LEG=0, ORB_TARGET_RANGE_HEIGHT=1, ORB_TARGET_EOD=2, ORB_TARGET_AUTO_STOP_SIZE=3 };
 enum BT_FILL_MODE { BT_FILL_SIGNAL_CLOSE=0, BT_FILL_NEXT_BAR_OPEN=1, BT_FILL_CONSERVATIVE=2 };
 enum BT_SAME_BAR_POLICY { BT_SAMEBAR_CONSERVATIVE=0, BT_SAMEBAR_NEAREST_OPEN=1, BT_SAMEBAR_TP_FIRST=2, BT_SAMEBAR_SL_FIRST=3 };
+#include "OrbStrategyMLCore.mqh"
+#define OrbStrategyPresetCount OrbBuiltinStrategyPresetCount
+#define OrbStrategyPresetLoad OrbBuiltinStrategyPresetLoad
 #include "OrbStrategyPresetLibrary.mqh"
+#undef OrbStrategyPresetCount
+#undef OrbStrategyPresetLoad
 input ORB_EXEC_MODE InpExecutionMode = ORB_EXEC_SINGLE;
 input ORB_TARGET_LEG InpTargetTpLeg = ORB_TARGET_R200;
 input ORB_HC_BE_MODE InpHalfBeMode = ORB_HC_BE_OFF;
@@ -2438,8 +2443,11 @@ string OrbStrategyPresetFamilyText(const int family)
    return "ANY";
 }
 
+#include "OrbStrategyUserLibrary.mqh"
+
 bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
 {
+   if(OrbUserPreset(p))return OrbUserValidate(p,reason);
    reason="";
    if(p.id==""||p.name==""){reason="EMPTY_PRESET";return false;}
    if(p.signalTf!=PERIOD_M1&&p.signalTf!=PERIOD_M5&&p.signalTf!=PERIOD_M15){reason="UNSUPPORTED_TF";return false;}
@@ -2466,6 +2474,7 @@ bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
 
 void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 {
+   if(OrbUserPreset(p)){OrbUserApply(p);return;}
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
    g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;
    g_rtHalfBeLeg=ClampHalfBeLeg(p.halfBeLeg,g_rtTargetLeg);g_rtBEOnTp1=false;
@@ -2490,6 +2499,7 @@ void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 
 bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
 {
+   if(OrbUserPreset(p))return OrbUserMatches(p);
    if(g_rtSignalTf!=p.signalTf||g_rtDelayMin!=p.delayMinutes||g_rtUseDelay!=(p.delayMinutes>0))return false;
    if(RuntimeTargetLeg()!=ClampTargetLeg(p.targetLeg)||g_rtHalfBeLeg!=ClampHalfBeLeg(p.halfBeLeg,p.targetLeg)||g_rtBEOnTp1)return false;
    if(g_rtEntryMode!=p.entryMode||g_rtExitMode!=p.exitMode||g_rtTargetMode!=p.targetMode)return false;
@@ -2531,7 +2541,7 @@ bool OrbStrategyPresetRestore()
    if(!GlobalVariableCheck(key))return false;
    int index=(int)MathRound(GlobalVariableGet(key));
    OrbStrategyPreset p;string reason="";
-   if(!OrbStrategyPresetLoad(index,p)||!OrbStrategyPresetValuesValid(p,reason)||!OrbStrategyPresetFamilyMatches(p.family))
+   if(!OrbStrategyPresetLoad(index,p)||!OrbStrategyPresetValuesValid(p,reason)||!OrbStrategyPresetFamilyMatches(p.family)||!OrbUserRemembered(p))
    {
       GlobalVariableDel(key);return false;
    }
@@ -2560,6 +2570,7 @@ bool OrbStrategyPresetApplyInteractive(const int index)
       g_lastExecStatus="PRESET_DISABLE_PUB_FOR_TF_CHANGE_"+TfLabel(p.signalTf);return false;
    }
    string key=OrbStrategyPresetSelectionKey();
+   if(!OrbUserRemember(p)){g_lastExecStatus="PRESET_ID_SAVE_FAIL";return false;}
    if(GlobalVariableSet(key,(double)index)<=0){g_lastExecStatus="PRESET_SAVE_FAIL";return false;}
 
    OrbStrategyPresetApplyValues(p);
@@ -7020,7 +7031,7 @@ void DrawDashboard()
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
-   CreateRect("DASH_LIBRARY_BG",x+632,y,W,596,C'24,30,42',C'90,178,255');
+   CreateRect("DASH_LIBRARY_BG",x+632,y,W,670,C'24,30,42',C'90,178,255');
    DeleteByPrefix(PREFIX+"DASH_BT");DeleteByPrefix(PREFIX+"BTN_BT");DeleteByPrefix(PREFIX+"EDIT_BT");
    ObjectDelete(0,PREFIX+"DASH_SEP4");
    CreateRect("DASH_TOP",x,y,W,28,C'18,24,36',C'90,178,255');
@@ -7042,6 +7053,7 @@ void UpdateDashboard()
 
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
+   OrbUserDraw();
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
@@ -9049,6 +9061,11 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
 
    bool needRedraw=false;
+   if(sparam==PREFIX+"BTN_USER_SAVE")
+   {
+      OrbUserSave(ObjectGetString(0,PREFIX+"EDIT_USER_NAME",OBJPROP_TEXT));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    if(OrbMlUiEvent(sparam)){UpdateDashboard();ChartRedraw(0);return;}
 
    if(sparam==PREFIX+"BTN_PRESET_FAVORITES")
@@ -9098,6 +9115,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 
    if(sparam==PREFIX+"BTN_PRESET_SEARCH")
    {
+      OrbUserReload(true);
       g_strategySearchPage=0;
       OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
       g_strategyPopupOpen=true;

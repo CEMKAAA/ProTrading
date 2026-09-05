@@ -162,6 +162,17 @@ def recover(root: Path):
             try: job=read_job(path)
             except (ValueError,OSError): continue
         write_status(root,job,"FAILED",0,"Worker interrupted; no automatic replay. Submit a fresh job.")
+    # EA may stop between its QUEUED status write and request commit.
+    for path in within(root,"Jobs").glob("*.status"):
+        try:
+            v=unpack(path,10,"ORB_ML_STATUS1")
+            if v[5]!="QUEUED" or time.time()-int(v[7])<30: continue
+            if path.with_suffix(".request").exists() or path.with_suffix(".claimed").exists(): continue
+            safe_id(v[1])
+            if v[1]!=path.stem: continue
+            job=dict(job=v[1],config=v[2],dataset=v[3],action=v[4],ref=v[9])
+            write_status(root,job,"FAILED",0,"Request was not committed; submit a fresh job.")
+        except (OSError,ValueError,UnicodeError): continue
 
 
 @contextmanager
@@ -182,18 +193,22 @@ def exclusive_worker(root: Path):
         handle.close()
 
 
-def run(root: Path, once=False):
+def run(root: Path, once=False, idle_exit_seconds=0):
     with exclusive_worker(root):
         within(root,"Jobs").mkdir(parents=True,exist_ok=True)
         recover(root)
+        idle_since=time.monotonic()
         while True:
             heartbeat(root)
+            recover(root)
             for request in sorted(within(root,"Jobs").glob("*.request")):
+                idle_since=time.monotonic()
                 try: process_one(root,request)
                 except (OSError,ValueError,UnicodeError):
                     # Malformed requests cannot escape the queue or execute commands.
                     if request.exists(): request.rename(request.with_suffix(".invalid"))
             if once: break
+            if idle_exit_seconds and time.monotonic()-idle_since>=idle_exit_seconds: break
             time.sleep(1)
 
 
@@ -201,6 +216,8 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",type=Path,required=True,help="Common Files/OrbML")
     parser.add_argument("--once",action="store_true",help="Process current queue and exit (test/maintenance)")
+    parser.add_argument("--idle-exit-seconds",type=int,default=0,help="Test helper: exit after idle interval; 0 keeps service running")
     args=parser.parse_args()
-    try: run(args.root.resolve(),args.once)
+    if args.idle_exit_seconds<0: parser.error("Idle exit must be nonnegative")
+    try: run(args.root.resolve(),args.once,args.idle_exit_seconds)
     except OSError as error: parser.exit(1,f"Worker unavailable or already running: {error}\n")

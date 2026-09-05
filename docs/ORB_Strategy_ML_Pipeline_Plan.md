@@ -20,6 +20,23 @@ protective exit. ML defaults OFF. Model scores are estimates, not guarantees.
 
 ## Verification Record (2026-09-05)
 
+### Dashboard Training and User Strategies (v6.80)
+
+- [x] Strategy/config-scoped completed CSV selector and training-run selector.
+- [x] DLL-free local worker, atomic checksummed requests and single-worker lock.
+- [x] Fixed-budget epoch progress, cancellation, expiry and interrupted-job recovery.
+- [x] Explicit eligible-result publication; no automatic model/filter activation.
+- [x] SAVE STRATEGY name input; immutable user presets separate from the original 46.
+- [x] 58 preset fields plus 46 runtime fields serialized with exact read-back validation.
+- [x] Symbol/chart/input checks and persisted ID prevent wrong-context/restored-slot substitution.
+- [x] Cross-chart save lock, non-overwriting commit and protected account controls.
+- [x] 41 Python regression tests pass (three existing synthetic/dependency warnings).
+- [ ] Final compiled MQL dashboard queue round-trip and final EX5 build.
+
+The original verification below describes v6.79's CLI/export acceptance. See the
+guide for the newer dashboard workflow and the distinction between Adam epoch
+training and the retained optional CLI L-BFGS trainer.
+
 - Usage: `docs/ORB_Strategy_ML_Filter.md`.
 - Final Python regression suite: 22 passed. Three warnings remain: one dependency
   deprecation and two synthetic-fixture convergence warnings. Real-data training

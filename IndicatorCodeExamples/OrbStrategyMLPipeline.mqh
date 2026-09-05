@@ -207,6 +207,7 @@ void OrbMlExportStep()
 }
 
 string OrbMlEnabledKey(){return "ORB_ML_ON."+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"."+(string)ChartID();}
+bool OrbMlIsEnabled(){return g_mlEnabled;}
 bool OrbMlLoad()
 {
    g_mlModel.ready=false;string config=OrbMlConfiguration();
