@@ -31,7 +31,24 @@ protective exit. ML defaults OFF. Model scores are estimates, not guarantees.
 - [x] Symbol/chart/input checks and persisted ID prevent wrong-context/restored-slot substitution.
 - [x] Cross-chart save lock, non-overwriting commit and protected account controls.
 - [x] 41 Python regression tests pass (three existing synthetic/dependency warnings).
-- [ ] Final compiled MQL dashboard queue round-trip and final EX5 build.
+- [x] Final compiled MQL dashboard queue round-trip and final EX5 build.
+
+Final v6.80 acceptance: main EA compiled with 0 errors / 0 warnings (35.212s);
+isolated dashboard probe compiled with 0 errors / 0 warnings (23.806s).
+The real MQL probe saved a custom strategy, mutated and exactly restored its
+runtime, exported 1,204 historical trade rows and rejected cross-strategy CSV
+listing. It submitted training through the dashboard job protocol, observed
+actual epoch progress, published an eligible result, and loaded the portable
+model with ML still OFF. `ORB_ML_DASH_PROBE COMPLETE PASS` was recorded at
+22:47:29 on 2026-09-05. All artifacts used `OrbMLTests/Dashboard`, not production.
+
+The example model's selected test result was +10.41R versus +10.48R baseline:
+protocol acceptance is NOT evidence of financial improvement. Existing quality
+gates permit a positive test result without requiring it to beat baseline.
+Final regression run: 41 passed in 6.52s, with three dependency/synthetic-test
+warnings. Source parity validator passed for 38 signal/audit bodies and eight
+Backtest functions against the pinned original baseline. No live deployment,
+live order test or visual click-through acceptance is claimed.
 
 The original verification below describes v6.79's CLI/export acceptance. See the
 guide for the newer dashboard workflow and the distinction between Adam epoch
