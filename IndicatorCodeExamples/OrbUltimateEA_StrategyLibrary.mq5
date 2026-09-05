@@ -10,7 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
-#define ORB15_BUILD "2026-09-05.v6.80-dashboard-ml-training"
+#define ORB15_BUILD "2026-09-05.v6.81-preset-edit-sync"
 
 enum ORB_SESSION_PROFILE
 {
@@ -2472,9 +2472,29 @@ bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
    return true;
 }
 
+void OrbStrategyPresetSetEdit(const string name,const string value)
+{
+   string object=PREFIX+name;
+   if(ObjectFind(0,object)>=0)ObjectSetString(0,object,OBJPROP_TEXT,value);
+}
+
+void OrbStrategyPresetSyncEdits()
+{
+   // Only an explicit preset apply/restore replaces drafts; routine redraws preserve typing.
+   OrbStrategyPresetSetEdit("EDIT_SL_VALUE",g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
+   OrbStrategyPresetSetEdit("EDIT_VOL_MULT",DoubleToString(g_rtVolumeMultiplier,2));
+   OrbStrategyPresetSetEdit("EDIT_ENTRY_WIN_START",ClockMinutesText(g_rtEntryWindowStartMin));
+   OrbStrategyPresetSetEdit("EDIT_ENTRY_WIN_END",ClockMinutesText(g_rtEntryWindowEndMin));
+   OrbStrategyPresetSetEdit("EDIT_NAS_SENS",IntegerToString(g_rtNasSensitivity));
+   OrbStrategyPresetSetEdit("EDIT_NAS_LOOKBACK",IntegerToString(g_rtNasActiveSignalLookbackMinutes));
+   OrbStrategyPresetSetEdit("EDIT_NAS_EXIT_WAIT",DurationMinutesText(g_rtNasOppositeExitWaitMinutes));
+   OrbStrategyPresetSetEdit("EDIT_NAS_VOL_X",DoubleToString(g_rtNasVolumeMultiplier,2));
+   OrbStrategyPresetSetEdit("EDIT_NAS_FLOW_VOL_X",DoubleToString(g_rtNasFlowVolumeMultiplier,2));
+}
+
 void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 {
-   if(OrbUserPreset(p)){OrbUserApply(p);return;}
+   if(OrbUserPreset(p)){OrbUserApply(p);OrbStrategyPresetSyncEdits();return;}
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
    g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;
    g_rtHalfBeLeg=ClampHalfBeLeg(p.halfBeLeg,g_rtTargetLeg);g_rtBEOnTp1=false;
@@ -2495,6 +2515,7 @@ void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
    g_rtNasOppositeExitWaitMinutes=p.nasExitWaitMinutes;
    g_rtNasVolumeFilter=p.nasStateVolumeFilter;g_rtNasVolumeMultiplier=p.nasStateVolumeMultiplier;
    g_rtNasFlowVolumeFilter=p.nasFlowVolumeFilter;g_rtNasFlowVolumeMultiplier=p.nasFlowVolumeMultiplier;
+   OrbStrategyPresetSyncEdits();
 }
 
 bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)

@@ -176,3 +176,20 @@ def test_mql_browsing_and_actions_are_strategy_scoped():
     assert 's[5]!="READY"' in source
     assert 'OrbStrategyPresetHasActiveLifecycle()' in source
     assert 'ShellExecute' not in source and '#import' not in source
+
+
+def test_preset_apply_syncs_strategy_edits_but_redraw_preserves_drafts():
+    import re
+    source=(Path(__file__).resolve().parents[1]/"IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5").read_text()
+    sync=source.split("void OrbStrategyPresetSyncEdits()",1)[1].split("void OrbStrategyPresetApplyValues",1)[0]
+    expected={"EDIT_SL_VALUE", "EDIT_VOL_MULT", "EDIT_ENTRY_WIN_START", "EDIT_ENTRY_WIN_END",
+              "EDIT_NAS_SENS", "EDIT_NAS_LOOKBACK", "EDIT_NAS_EXIT_WAIT",
+              "EDIT_NAS_VOL_X", "EDIT_NAS_FLOW_VOL_X"}
+    assert set(re.findall(r'OrbStrategyPresetSetEdit\("([^"]+)"',sync))==expected
+    apply=source.split("void OrbStrategyPresetApplyValues",1)[1].split("bool OrbStrategyPresetMatchesRuntime",1)[0]
+    assert 'OrbUserApply(p);OrbStrategyPresetSyncEdits();return;' in apply
+    assert apply.count('OrbStrategyPresetSyncEdits();')==2
+    assert apply.rfind('OrbStrategyPresetSyncEdits();')>apply.rfind('g_rtNasFlowVolumeMultiplier=')
+    edit=source.split('void CreateEdit(',1)[1].split('//  SIGNAL ARROWS',1)[0]
+    assert edit.count('OBJPROP_TEXT,text')==1
+    assert edit.index('if(ObjectFind(0,obj)<0)')<edit.index('OBJPROP_TEXT,text')

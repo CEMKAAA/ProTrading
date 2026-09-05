@@ -2,7 +2,7 @@
 
 ## Scope
 
-EA: `IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5`, build v6.80.
+EA: `IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5`, build v6.81.
 The ordinary ORB, NAS, Sol and listener sources are not modified by this feature.
 The existing setup generator, trade geometry and audit outcome calculations
 remain the baseline. ML can reject a new entry; it cannot generate an entry,
@@ -58,6 +58,14 @@ No validation/test data chooses an epoch count. API reference:
 [scikit-learn MLPClassifier](https://scikit-learn.org/stable/modules/generated/sklearn.neural_network.MLPClassifier.html).
 
 ## Save Your Own Strategy
+
+Preset application explicitly refreshes the strategy edit fields (SL, volume,
+NAS and entry window) from the applied runtime, including saved user presets.
+Ordinary dashboard redraws still preserve unfinished edits. v6.81 fixes stale
+text such as `100` remaining in the SL field after applying an 8,000-pip preset.
+It does not change signal, risk, exit or listener calculations. As with any new
+build, the conservative ML build binding requires fresh exports/models rather
+than silently reusing a model trained for an earlier executable.
 
 1. Apply the desired dashboard parameters first, including APPLY NAS/other
    parameter-specific APPLY buttons. Unapplied text edits are not live settings.
