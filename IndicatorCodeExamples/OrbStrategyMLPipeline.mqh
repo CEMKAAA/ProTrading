@@ -21,6 +21,7 @@ int g_mlFile=INVALID_HANDLE,g_mlWritten=0,g_mlMissing=0;
 string g_mlConfig="",g_mlPreset="",g_mlDataset="",g_mlFilePath="",g_mlStatus="ML OFF";
 datetime g_mlRequestedAt=0,g_mlAsOf=0;
 double g_mlProgress=0;
+#include "OrbStrategyCampaignModels.mqh"
 
 bool OrbMlWriteUtf8(int handle,const string text)
 {
@@ -101,6 +102,8 @@ bool OrbMlFeatures(datetime bar,const string raw,double hi,double lo,datetime or
    reason="OK";return true;
 }
 
+#include "OrbStrategyMLHistory.mqh"
+
 void OrbMlAbort(const string reason)
 {
    if(g_mlFile!=INVALID_HANDLE){FileClose(g_mlFile);g_mlFile=INVALID_HANDLE;}
@@ -141,6 +144,17 @@ void OrbMlAuditFinished()
    if(OrbMlConfiguration()!=g_mlConfig||g_histRunDays!=1820||ArraySize(g_mlTrades)!=g_histTotal)
    {OrbMlAbort("EXPORT CONFIG/ROW MISMATCH");return;}
    g_mlAsOf=g_histRunNow;
+   // Session scans may see bars after the frozen audit cutoff. Keep the
+   // capture-count invariant above, then exclude those not yet available.
+   int kept=0;
+   for(int i=0;i<ArraySize(g_mlTrades);i++)
+   {
+      if(OrbSignalAvailableTime(g_mlTrades[i].signalBar)>g_mlAsOf
+         ||BarCloseTime(RuntimeEntryTf(),g_mlTrades[i].entryBar)>g_mlAsOf)continue;
+      if(kept!=i)g_mlTrades[kept]=g_mlTrades[i];
+      kept++;
+   }
+   ArrayResize(g_mlTrades,kept);
    g_mlFile=FileOpen(g_mlFilePath+".partial",FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(g_mlFile==INVALID_HANDLE){OrbMlAbort("CSV OPEN FAILED");return;}
    string header="schema,source_hash,config_hash,dataset_id,preset_id,symbol,broker,signal_tf_seconds,chart_tf_seconds,"
@@ -175,7 +189,8 @@ void OrbMlExportStep()
       bool valid=OrbMlFeatures(record.signalBar,record.rawDirection,record.orbHigh,record.orbLow,record.orbEnd,x,observed,reason);
       if(!valid)g_mlMissing++;
       datetime available=record.signalBar+PeriodSeconds(g_rtSignalTf);
-      datetime entryTime=OrbSignalAvailableTime(record.entryBar);
+      // IMB1M fills use the M1 close even when the breakout TF is M5/M15.
+      datetime entryTime=BarCloseTime(RuntimeEntryTf(),record.entryBar);
       bool label=result.valid&&result.outcome!="open"&&result.exitTime>=entryTime&&result.exitTime<=g_mlAsOf&&MathIsValidNumber(result.netR);
       string row=ORB_ML_SCHEMA+","+ORB_ML_SOURCE+","+g_mlConfig+","+g_mlDataset+","+g_mlPreset+","+OrbMlCsv(_Symbol)+","+OrbMlCsv(AccountInfoString(ACCOUNT_SERVER))+","
          +(string)PeriodSeconds(g_rtSignalTf)+","+(string)PeriodSeconds(_Period)+","+(string)(long)(g_mlAsOf-1820*86400)+","+(string)(long)g_mlAsOf+","
@@ -203,18 +218,20 @@ void OrbMlExportStep()
    g_mlExport=false;g_mlWriting=false;ArrayResize(g_mlTrades,0);
    g_mlStatus="CSV READY "+(string)total+" trades; missing="+(string)g_mlMissing;
    Print("ORB_ML_CSV_READY ",TerminalInfoString(TERMINAL_COMMONDATA_PATH),"\\Files\\",g_mlFilePath);
-   if(!g_histAuditRunning&&!g_histRedrawQueued)EventSetTimer(5);
+   if(g_mlEnabled)QueueHistoricalRedraw(0);
+   else if(!g_histAuditRunning&&!g_histRedrawQueued)EventSetTimer(5);
 }
 
 string OrbMlEnabledKey(){return "ORB_ML_ON."+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"."+(string)ChartID();}
 bool OrbMlIsEnabled(){return g_mlEnabled;}
+bool OrbMlExportBusy(){return g_mlExport||g_mlWriting;}
 bool OrbMlLoad()
 {
-   g_mlModel.ready=false;string config=OrbMlConfiguration();
+   g_mlModel.ready=false;g_mlUsingCampaign=false;g_campaignReady=false;string config=OrbMlConfiguration();
    if(config==""){g_mlStatus="APPLY A STRATEGY FIRST";return false;}
    string path="OrbML\\Models\\"+config+".model";
    int file=FileOpen(path,FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ);
-   if(file==INVALID_HANDLE){g_mlStatus="MODEL MISSING: "+StringSubstr(config,0,12);return false;}
+   if(file==INVALID_HANDLE)return OrbCampaignLoad();
    ulong size=FileSize(file);uchar bytes[];
    if(size==0||size>1000000){FileClose(file);g_mlStatus="MODEL SIZE INVALID";return false;}
    ArrayResize(bytes,(int)size);uint read=FileReadArray(file,bytes,0,(int)size);FileClose(file);
@@ -222,35 +239,42 @@ bool OrbMlLoad()
    return OrbMlParseModel(CharArrayToString(bytes,0,(int)size,CP_UTF8),config,g_mlModel,g_mlStatus);
 }
 
+void OrbMlOnStrategyApplied()
+{
+   // Resolve only the active configuration's published model. Never promote candidates.
+   bool enabled=g_mlEnabled;
+   bool loaded=OrbMlLoad();
+   if(loaded)g_mlStatus=(enabled?"ML ON / ":"ML OFF / ")+(g_mlUsingCampaign?"PRETRAINED "+g_campaignInfo.kind+" [EXPERIMENTAL]":"APPROVED MODEL READY");
+   // If already enabled, an absent model remains fail-closed in OrbMlAllow.
+}
+
 void OrbMlInit()
 {
    g_mlEnabled=GlobalVariableCheck(OrbMlEnabledKey())&&GlobalVariableGet(OrbMlEnabledKey())>0.5;
-   if(g_mlEnabled)OrbMlLoad();
+   OrbMlOnStrategyApplied();
 }
 
 bool OrbMlAllow(const string raw,datetime bar)
 {
    if(!g_mlEnabled)return true;
-   string config=OrbMlConfiguration();double probability=0,x[],observed[];string reason="";
-   bool ready=g_mlModel.ready&&config!=""&&g_mlModel.config==config;
-   if(!ready)reason="MISSING_OR_MISMATCHED_MODEL";
-   else if(bar+PeriodSeconds(g_rtSignalTf)<=g_mlModel.lastLabelTime)reason="NOT_OUT_OF_SAMPLE";
-   else if(OrbMlFeatures(bar,raw,g_orbHigh,g_orbLow,g_orbEndServer,x,observed,reason))
-   {
-      if(!OrbMlPredict(g_mlModel,x,probability))reason="INFERENCE_ERROR";
-      else reason=probability>=g_mlModel.threshold?"ALLOW":"SCORE_REJECT";
-   }
-   g_mlStatus="ML "+reason+" p="+DoubleToString(probability,3);
-   Audit("ml_filter",EffectiveOrbDirection(raw),0,0,0,0,"bar="+(string)(long)bar+" config="+config
-      +" dataset="+g_mlModel.dataset+" decision="+reason+" score="+DoubleToString(probability,8));
-   return reason=="ALLOW";
+   string reason="";double score=0;
+   bool allowed=OrbMlDecision(raw,bar,g_orbHigh,g_orbLow,g_orbEndServer,true,reason,score);
+   g_mlStatus=(g_mlUsingCampaign?"ML EXP ":"ML ")+reason+" score="+DoubleToString(score,4);
+   Audit("ml_filter",EffectiveOrbDirection(raw),0,0,0,0,"bar="+(string)(long)bar+" config="+OrbMlConfiguration()
+      +" dataset="+(g_mlUsingCampaign?g_campaignInfo.dataset:g_mlModel.dataset)
+      +" experimental="+(g_mlUsingCampaign?"1":"0")+" decision="+reason+" score="+DoubleToString(score,8));
+   return allowed;
 }
 
 #include "OrbStrategyMLJobs.mqh"
 
 bool OrbMlUiEvent(const string object)
 {
-   if(OrbMlJobUiEvent(object)){ObjectSetInteger(0,object,OBJPROP_STATE,false);return true;}
+   if(OrbMlJobUiEvent(object))
+   {
+      if(object==PREFIX+"BTN_ML_USE"&&g_mlEnabled)QueueHistoricalRedraw(0);
+      ObjectSetInteger(0,object,OBJPROP_STATE,false);return true;
+   }
    if(object==PREFIX+"BTN_ML_EXPORT")OrbMlStartExport();
    else if(object==PREFIX+"BTN_ML_CANCEL")OrbMlAbort("EXPORT CANCELLED");
    else if(object==PREFIX+"BTN_ML_LOAD"||object==PREFIX+"BTN_ML_TOGGLE")
@@ -264,12 +288,13 @@ bool OrbMlUiEvent(const string object)
          if(!requested||OrbMlLoad())
          {
             if(GlobalVariableSet(OrbMlEnabledKey(),requested?1:0)>0)
-            {GlobalVariablesFlush();g_mlEnabled=requested;g_mlStatus=requested?"ML FILTER ON":"ML FILTER OFF";}
+            {GlobalVariablesFlush();g_mlEnabled=requested;g_mlStatus=requested?(g_mlUsingCampaign?"ML ON [EXPERIMENTAL] "+g_campaignInfo.kind+(g_campaignActive?"":" / NO VETO"):"ML FILTER ON"):"ML FILTER OFF";}
             else g_mlStatus="ML STATE SAVE FAILED";
          }
       }
    }
    else return false;
+   if(object==PREFIX+"BTN_ML_LOAD"||object==PREFIX+"BTN_ML_TOGGLE")QueueHistoricalRedraw(0);
    ObjectSetInteger(0,object,OBJPROP_STATE,false);return true;
 }
 
@@ -277,15 +302,18 @@ void OrbMlDraw()
 {
    if(!InpShowDashboard)return;
    int x=InpDashboardX+644,y=InpDashboardY+346;
-   CreateLabel("DASH_ML_TITLE",x,y,"STRATEGY ML FILTER | base audit remains unfiltered",C'255,187,92',8);
+   CreateLabel("DASH_ML_TITLE",x,y,"STRATEGY ML FILTER | live + historical entries",C'255,187,92',8);
    CreateButton("BTN_ML_EXPORT",x,y+20,176,22,"CREATE 5Y CSV",C'38,101,176');
    CreateButton("BTN_ML_CANCEL",x+184,y+20,70,22,"CANCEL",C'80,80,80');
-   CreateButton("BTN_ML_LOAD",x+262,y+20,136,22,"LOAD MODEL",C'38,101,176');
-   CreateButton("BTN_ML_TOGGLE",x+406,y+20,186,22,g_mlEnabled?"ML FILTER ON":"ML FILTER OFF",g_mlEnabled?C'184,103,22':C'80,80,80');
+   CreateButton("BTN_ML_LOAD",x+262,y+20,136,22,"LOAD TRAINED",C'38,101,176');
+   CreateButton("BTN_ML_TOGGLE",x+406,y+20,186,22,g_mlEnabled?(g_mlUsingCampaign?"ML ON [EXPERIMENTAL]":"ML FILTER ON"):"ML FILTER OFF",g_mlEnabled?C'184,103,22':C'80,80,80');
+   ObjectSetString(0,PREFIX+"BTN_ML_TOGGLE",OBJPROP_TOOLTIP,"ON filters live entries AND rebuilds historical W/L, R, DD. Historical training-period results are in-sample, not independent validation. CSV exports always remain unfiltered.");
    CreateRect("DASH_ML_TRACK",x,y+49,592,8,C'38,46,60',C'38,46,60');
    CreateRect("DASH_ML_FILL",x,y+49,(int)(592*MathMax(0,MathMin(100,g_mlProgress))/100),8,C'90,178,255',C'90,178,255');
    CreateLabel("DASH_ML_STATUS",x,y+64,g_mlStatus,C'184,196,210',8);
-   CreateLabel("DASH_ML_PATH",x,y+83,"Files/OrbML/Datasets | model keyed to strategy + config",C'134,158,182',7);
+   string history=OrbMlHistorySummary();
+   CreateLabel("DASH_ML_PATH",x,y+83,StringSubstr(history,0,105),g_mlHistoryErrors>0?C'255,95,140':C'134,158,182',7);
+   ObjectSetString(0,PREFIX+"DASH_ML_PATH",OBJPROP_TOOLTIP,history);
    OrbMlDrawJobs(x,y+111);
 }
 #endif

@@ -9,6 +9,12 @@ protective exit. ML defaults OFF. Model scores are estimates, not guarantees.
 
 ## Tasks
 
+Latest verification: workspace build v6.85 includes the export-only entry-clock
+and cutoff correction. The 53-strategy campaign and its publication blockers
+are recorded in [ORB_ML_Campaign_20260909.md](ORB_ML_Campaign_20260909.md).
+Completed implementation tasks below do not imply a statistically validated
+profitable model or completed live deployment acceptance.
+
 - [x] Inspect current audit, strategy presets and NoronAglari reference.
 - [x] Add deterministic closed-bar feature extraction shared by export and inference.
 - [x] Add 5Y CSV export using existing audit results, completion marker and real progress.
@@ -19,6 +25,51 @@ protective exit. ML defaults OFF. Model scores are estimates, not guarantees.
 - [x] Compile, document usage and report verification limits.
 
 ## Verification Record (2026-09-05)
+
+### v6.84 Follow-up Verification (2026-09-09)
+
+- [x] Install current-user, limited-privilege scheduled local training helper.
+- [x] Add three purged expanding folds, chronological early stopping and fixed L2 search.
+- [x] Fit logistic/tree benchmarks and freeze selection before final test evaluation.
+- [x] Add daily block-bootstrap uncertainty, temporal blocks and explicit rejection reasons.
+- [x] Protect Windows atomic commits with bounded sharing retries; do not mark a
+  READY job interrupted merely because recovery cannot temporarily read its file.
+- [x] Separate macro/RF reference-card outcomes from actual filtered portfolio exits.
+- [x] Save/reload custom symbol family and verified 1Y WR/net R/MinCum metadata.
+- [x] Automatically request missing custom 1Y measurements on save/application.
+- [x] Document primary research and unresolved selection/forward-test risks.
+- [x] Run 49 Python tests: all pass, three dependency/synthetic LBFGS warnings.
+- [x] Compile main EA: 0 errors / 0 warnings (43.560s); copy verified EX5 to workspace.
+- [x] Compile extended no-order MT5 probe: 0 errors / 0 warnings (25.819s).
+- [x] Real MT5 probe: exact custom restore, metrics reload, dataset isolation,
+  training progress, research rejection and no automatic model installation.
+- [x] Reference invariance with normal exits AND both optional filtered-window
+  reverse/displacement exits enabled.
+
+Latest isolated MT5 acceptance completed at 19:55:54 on 2026-09-09.
+The custom strategy's 1Y metadata reloaded as 234 trades, 182W/52L,
+10.736333333333R and JP225 family. Macro/RF inversion changed portfolio trades
+from 234 to zero without changing any of the 6 macro/12 RF reference W/L pairs.
+The separate optional-window-exit invariance probe also passed.
+
+Training completed through the MQL queue, with real fold/epoch statuses. The
+example final test was +12.08R versus +11.79R baseline, 78.2% WR and 99.2%
+retention. It was correctly REJECTED: the paired daily uplift confidence interval
+included zero (approximately -0.00361 to +0.00777R per active exit day).
+This is deliberately not presented as an improved deployable strategy.
+Portable prediction max absolute error was 1.11e-16.
+
+Source verification against baseline commit
+`6061c4b536200c60e86e476c956efdeeb35cd1d2` passed: 36 signal/audit function
+bodies match after explicit observer/reset hooks, and 8 hidden Backtest backend
+functions match. Two history orchestration functions intentionally differ to
+create independent reference statistics; they are covered by the runtime
+invariance tests, not described as byte-identical. Normal ORB, NAS, Sol and
+listener sources were not changed by this follow-up.
+
+Tests used `OrbMLTests/Dashboard` and the isolated portable terminal, not live
+orders. The workspace EX5 is current; live trading charts were not restarted.
+The notes below describe older releases and are not the current quality policy.
 
 ### Dashboard Training and User Strategies (v6.80)
 

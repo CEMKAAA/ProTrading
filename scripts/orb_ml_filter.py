@@ -16,6 +16,7 @@ import re
 import tempfile
 import warnings
 import platform
+import time
 
 import numpy as np
 import pandas as pd
@@ -50,7 +51,16 @@ def atomic_write(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # MT5 readers can briefly deny delete sharing on Windows. Retry the
+        # atomic commit, never truncate the last complete destination file.
+        for attempt in range(41):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 40:
+                    raise
+                time.sleep(0.025)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -182,7 +192,7 @@ def portable_predict(data: bytes, x: np.ndarray, expected_config: str) -> np.nda
 
 
 def train(csv_path: Path, out_dir: Path, publish: bool = False, embargo_hours: float = 24,
-          *, epochs: int = 0, progress=None, expected: dict | None = None) -> dict:
+          *, epochs: int = 0, progress=None, expected: dict | None = None, advanced: bool = False) -> dict:
     def notify(percent, message):
         if progress is not None:
             progress(percent, message)  # may raise to cancel before any deployment
@@ -195,17 +205,28 @@ def train(csv_path: Path, out_dir: Path, publish: bool = False, embargo_hours: f
     train_df, val_df, test_df = temporal_split(frame, int(embargo_hours * 3600))
     if len(train_df) < 150 or len(val_df) < 40 or len(test_df) < 40 or train_df.label_win.nunique() != 2:
         raise ValueError("Insufficient purged samples/classes for honest training/validation/test")
+    research = None
+    if advanced:
+        if not 40 <= epochs <= 2000: raise ValueError('Advanced training requires 40-2000 maximum epochs')
+        try:
+            from .orb_ml_research import fit_protocol
+        except ImportError:
+            from orb_ml_research import fit_protocol
+        selected_model, selected_scaler, selected_threshold, selected_validation, selected_test_probability, research = fit_protocol(
+            train_df, val_df, test_df, FEATURES, metrics, int(embargo_hours*3600), epochs, notify)
     scaler = StandardScaler().fit(train_df[FEATURES].to_numpy(float))
     if epochs and not 1 <= epochs <= 2000:
         raise ValueError("Invalid epoch budget")
     model = MLPClassifier(hidden_layer_sizes=(HIDDEN,), activation="relu", solver="adam" if epochs else "lbfgs", alpha=10.0,
                           max_iter=1000, random_state=42, early_stopping=False)
-    notify(5, "Chronological split and train-only scaler complete")
+    if not advanced: notify(5, "Chronological split and train-only scaler complete")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ConvergenceWarning)
         x_train=scaler.transform(train_df[FEATURES].to_numpy(float))
         y_train=train_df.label_win.to_numpy(int)
-        if epochs:
+        if advanced:
+            model,scaler=selected_model,selected_scaler
+        elif epochs:
             for epoch in range(epochs):
                 notify(5+75*epoch/epochs, f"Epoch {epoch}/{epochs}")
                 model.partial_fit(x_train, y_train, classes=np.array([0, 1]))
@@ -213,13 +234,13 @@ def train(csv_path: Path, out_dir: Path, publish: bool = False, embargo_hours: f
         else:
             model.fit(x_train, y_train)
     converged = not any(issubclass(w.category, ConvergenceWarning) for w in caught)
-    if epochs:
+    if epochs and not advanced:
         # Do not call a fixed epoch budget 'converged' just because partial_fit
         # does not emit convergence warnings. This uses training loss only.
         curve=np.asarray(model.loss_curve_, dtype=float)
         converged=bool(len(curve)>=40 and np.isfinite(curve).all()
                        and abs(curve[-20:].mean()-curve[-40:-20].mean())<=1e-3)
-    notify(83, "Selecting threshold on validation only")
+    if not advanced: notify(83, "Selecting threshold on validation only")
     val_probability = model.predict_proba(scaler.transform(val_df[FEATURES].to_numpy(float)))[:, 1]
     candidates = [(threshold, metrics(val_df, val_probability, threshold))
                   for threshold in [0.05, 0.35, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]]
@@ -227,8 +248,9 @@ def train(csv_path: Path, out_dir: Path, publish: bool = False, embargo_hours: f
     if not candidates:
         raise ValueError("No validation threshold retains sufficient trades")
     threshold, validation = max(candidates, key=lambda item: (item[1]["net_r"], item[1]["trades"]))
+    if advanced: threshold,validation=selected_threshold,selected_validation
     # Test is first consulted only after weights/scaler/threshold are frozen.
-    notify(88, "Evaluating frozen model on test partition")
+    if not advanced: notify(88, "Evaluating frozen model on test partition")
     test_probability = model.predict_proba(scaler.transform(test_df[FEATURES].to_numpy(float)))[:, 1]
     test = metrics(test_df, test_probability, threshold)
     baseline_val = metrics(val_df, np.ones(len(val_df)), 0.0)
@@ -243,10 +265,14 @@ def train(csv_path: Path, out_dir: Path, publish: bool = False, embargo_hours: f
     notify(95, "Portable inference parity verified")
     qualified = bool(converged and validation["net_r"] > 0 and validation["net_r"] >= baseline_val["net_r"]
                      and test["trades"] >= 30 and test["retention"] >= 0.4 and test["net_r"] > 0)
+    if advanced: qualified=bool(qualified and research['extra_gates_passed'])
     report = dict(dataset=info, feature_schema=SCHEMA, feature_names=FEATURES, hidden=HIDDEN,
                   versions=dict(python=platform.python_version(), numpy=np.__version__, pandas=pd.__version__, sklearn=sklearn.__version__),
-                  threshold=threshold, seed=42, regularization_alpha=10.0, converged=converged,
-                  solver=model.solver, epochs=epochs, optimizer_steps=int(model.n_iter_),
+                  threshold=threshold, seed=42, regularization_alpha=(research['selected_alpha'] if advanced else 10.0),
+                  converged=(None if advanced else converged),
+                  stopping_rule=('chronological validation checkpoint with patience' if advanced else 'optimizer convergence'),
+                  solver=model.solver, epochs=epochs, optimizer_steps=(research['early_stopping']['epochs_run'] if advanced else epochs or int(model.n_iter_)),
+                  research=research,
                   train_rows=len(train_df), validation_rows=len(val_df), test_rows=len(test_df),
                   purged_rows=len(frame) - len(train_df) - len(val_df) - len(test_df),
                   embargo_hours=embargo_hours, validation=validation, test=test,

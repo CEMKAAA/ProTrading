@@ -12,6 +12,39 @@ from scripts import orb_ml_filter as ml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_atomic_commit_retries_sharing_denial(tmp_path, monkeypatch):
+    path = tmp_path / "state"
+    path.write_bytes(b"old")
+    replace = ml.os.replace
+    attempts = []
+    def denied_twice(src, dst):
+        attempts.append(1)
+        assert path.read_bytes() == b"old"
+        if len(attempts) < 3:
+            raise PermissionError("reader denies delete sharing")
+        replace(src, dst)
+    monkeypatch.setattr(ml.os, "replace", denied_twice)
+    monkeypatch.setattr(ml.time, "sleep", lambda _: None)
+    ml.atomic_write(path, b"new")
+    assert path.read_bytes() == b"new" and len(attempts) == 3
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_atomic_commit_permanent_denial_preserves_old(tmp_path, monkeypatch):
+    path = tmp_path / "state"
+    path.write_bytes(b"old")
+    attempts = []
+    def denied(src, dst):
+        attempts.append(1)
+        raise PermissionError("permanent denial")
+    monkeypatch.setattr(ml.os, "replace", denied)
+    monkeypatch.setattr(ml.time, "sleep", lambda _: None)
+    with pytest.raises(PermissionError):
+        ml.atomic_write(path, b"new")
+    assert path.read_bytes() == b"old" and len(attempts) == 41
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def dataset_frame(n=400):
     rng = np.random.default_rng(21)
     x = rng.normal(size=(n, len(ml.FEATURES)))
@@ -166,8 +199,12 @@ def test_veto_before_both_publishing_and_native_execution():
     pipeline = (ROOT / "IndicatorCodeExamples/OrbStrategyMLPipeline.mqh").read_text()
     allow = pipeline.split("bool OrbMlAllow(", 1)[1].split("\nbool OrbMlUiEvent", 1)[0]
     assert "if(!g_mlEnabled)return true;" in allow
-    assert 'return reason=="ALLOW";' in allow
-    assert "NOT_OUT_OF_SAMPLE" in allow and "MISSING_OR_MISMATCHED_MODEL" in allow
+    assert 'OrbMlDecision(raw,bar,g_orbHigh,g_orbLow,g_orbEndServer,true' in allow
+    assert 'return allowed;' in allow
+    decision = (ROOT / "IndicatorCodeExamples/OrbStrategyMLHistory.mqh").read_text()
+    assert 'return reason=="ALLOW";' in decision
+    assert 'requireOos&&' in decision
+    assert "NOT_OUT_OF_SAMPLE" in decision and "MISSING_OR_MISMATCHED_MODEL" in decision
 
 
 def test_export_captures_base_universe_without_ml_veto():

@@ -2,7 +2,23 @@
 
 ## Scope
 
-EA: `IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5`, build v6.81.
+EA: `IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5`, build v6.87.
+At the user's explicit request, v6.87 adds opt-in use of the already trained
+experimental campaign models (MLP/ridge/HGB). Strategy selection resolves the
+matching model; ML ON/OFF remains manual/preserved. USE RESULT without a local
+training job loads the campaign model directly, without asking for a CSV.
+No weights or thresholds were retrained. See the leaderboard guide for the
+compatibility adapter and statistical limitations.
+The v6.86 UI adds a read-only, two-mode leaderboard and resolves an existing
+published model when applying its exact strategy/config. ML ON/OFF is preserved;
+research candidates are not automatically activated. See
+[ORB_Strategy_Leaderboard.md](ORB_Strategy_Leaderboard.md).
+The v6.85 change fixes IMB1M export entry timestamps and as-of cutoff rows,
+not signal generation or execution. Its source/configuration contract changed;
+do not rename or rebind older datasets/models to bypass compatibility checks.
+The completed 53-strategy research campaign is documented in
+[ORB_ML_Campaign_20260909.md](ORB_ML_Campaign_20260909.md). No campaign model
+passed publication gates or was activated in the live pipeline.
 The ordinary ORB, NAS, Sol and listener sources are not modified by this feature.
 The existing setup generator, trade geometry and audit outcome calculations
 remain the baseline. ML can reject a new entry; it cannot generate an entry,
@@ -13,15 +29,18 @@ or a completed live production acceptance test. Start in demo with ML OFF.
 
 ## Dashboard Workflow
 
-Start the local training worker once per computer session, from the workspace:
+Install the local training service once, from the workspace (already installed
+on this workstation during v6.84 verification):
 
 ```powershell
-.\scripts\Start-OrbMLWorker.ps1
+.\scripts\Install-OrbMLWorker.ps1
 ```
 
 It runs separately from MT5. No DLL imports, network listener, Python inside a
 tick callback or trading API access is required. The dashboard shows WORKER
-ONLINE/OFFLINE. Restart this helper after restarting the PC. It does not change
+ONLINE/OFFLINE. The scheduled task `ORB Strategy ML Worker` starts at login and
+retries unexpected failures. `Start-OrbMLWorker.ps1` remains a manual fallback.
+It does not change
 PUB/NAT or enable ML. An offline worker never silently trains or activates a model.
 
 Then the complete user flow is:
@@ -31,7 +50,7 @@ Then the complete user flow is:
 3. Choose a CSV with the arrows beside **CSV**. Only exports matching the current
    strategy, symbol, TF and configuration appear.
 4. Press **TRAIN MODEL**. The independent worker validates the CSV and trains.
-5. The second progress bar follows completed optimizer epochs plus validation,
+5. The second progress bar follows completed folds/optimizer epochs plus validation,
    test and artifact-write stages. It is work progress, not a promised ETA.
 6. Select a training run with the arrows beside **RUN**. The row shows its state,
    test net R versus base, WR and retained fraction. REJECTED is research-only.
@@ -59,6 +78,26 @@ No validation/test data chooses an epoch count. API reference:
 
 ## Save Your Own Strategy
 
+### Filter the Library by Geometry
+
+The **PAIR: ALL** button cycles **ALL -> USDJPY -> JP225 -> ALL**. Its filter
+applies immediately to the library using each preset's stored symbol family,
+not its name or the current chart symbol. It combines with the applied R/WR/PnL
+filters, search text and favorites. **CLEAR** also resets PAIR to ALL. It never
+applies a strategy, changes the chart, or changes execution/publishing settings.
+
+Enter `0.05`, `0.5` or another positive ratio in **TP/SL R =**, then press
+**APPLY FILTER**. A decimal comma is accepted. This is an equality filter on
+the fixed target/SL ratio after full inversion, not the 1Y net-R result or a
+substring in the strategy name. For example, an inverted 0.5R source setup
+matches 2R. It combines with name, favorites and the other numeric filters.
+Blank disables the geometry restriction; **CLEAR** resets all numeric filters.
+Invalid input leaves the previous filters intact. Non-fixed target modes do
+not match a fixed-R query. A geometry-only query does not require 1Y metrics,
+so newly saved custom strategies remain eligible.
+
+### Save Applied Settings
+
 Preset application explicitly refreshes the strategy edit fields (SL, volume,
 NAS and entry window) from the applied runtime, including saved user presets.
 Ordinary dashboard redraws still preserve unfinished edits. v6.81 fixes stale
@@ -85,7 +124,13 @@ The record covers all captured strategy runtime fields, including NAS wait,
 both NAS volume policies, inversion, SL/TP, HC/BE, session/window, macro/RF,
 and simulation costs. **Account risk, channel, PUB/ONLY/NAT, magic number and
 account safety controls are deliberately not switched by a strategy preset.**
-The audit display window and audit-engine preference also stay independent.
+The audit-engine preference stays independent. When a saved/applied custom
+strategy lacks verified metrics, its measurement requests a 52-week audit;
+the display window therefore switches to 1Y. Completed, valid metrics are saved
+with an as-of date and source/configuration checksum. Symbol family and effective
+TP/SL R are available immediately; measured WR/net R/MinCum filters become usable
+after this audit. Incomplete history does not fabricate metrics. Old custom
+records recover their pair family from their stored symbol.
 
 Immutable EA Inputs cannot be changed programmatically while an EA is running.
 Their signature, exact symbol and chart TF are therefore checked before applying
@@ -155,11 +200,15 @@ comparing all 46 strategies. A classifier score is not a calibrated guarantee.
 
 ## Publish and Enable
 
-1. After reviewing the research report, run the same command with `--publish`.
-2. Publishing requires convergence, positive validation net R no worse than
-   its baseline, and sufficient retained, positive-net-R test trades. Failure
-   leaves an existing active model unchanged. These are minimum safeguards,
-   not proof that the model improves the strategy.
+1. Use dashboard TRAIN MODEL, review the result, then USE RESULT for a READY run.
+   The old standalone CLI remains a legacy research path; it is not equivalent
+   to the v6.84 dashboard's stricter publication policy.
+2. Dashboard training now adds three purged expanding development folds,
+   chronological early stopping, regularization selection, logistic/tree
+   comparisons and a daily block-bootstrap improvement check. It requires
+   stable development uplift and test improvement evidence, in addition to
+   the existing validation/retention safeguards. Rejection leaves the active
+   model unchanged. These checks do not prove future profitability.
 3. On the EA press **LOAD MODEL**, then **ML FILTER ON**. These operations wait
    until the instance has no active/pending lifecycle. Training/publishing alone
    never enables trading or the filter.
@@ -171,16 +220,36 @@ reverse-close handling runs before the ML entry veto. Rejected entries are not
 published to listeners and are not opened natively. Risk/channel configuration
 and listener CSV formats are unchanged.
 
+Research rationale, limitations and primary references:
+[ORB ML Research and Validation](ORB_ML_Research_And_Validation.md).
+Regime/RF reference-card W/L/WR ignore macro/RF allow/block selections; actual
+portfolio totals still obey them. Changing geometry, other entry filters,
+NAS settings, costs, data or date window can correctly change reference results.
+
 ML defaults OFF. Its explicit ON/OFF choice is persisted for the chart/account.
 If ON is restored but the model is missing, corrupt, mismatched or its features
 cannot be built, new entries are blocked. It never silently bypasses an enabled
 filter. Existing exit management continues. Changing strategies does not reuse
 an unrelated model: export/train/load the matching configuration first.
 
-The on-chart historical W/L/PNL remains the **base strategy audit**, not a replay
-of ML-filtered execution. Offline selected-trade metrics are label-subset
-metrics, not a simulation of all changed position-overlap/reversal effects.
-That portfolio-level replay and real forward demo testing are separate checks.
+As of v6.88, ML ON rebuilds the on-chart historical W/L, net R, drawdown,
+weekday totals and trade drawings with the loaded model's entry veto. OFF
+restores the original base audit. USE RESULT / LOAD TRAINED while ON also
+queues a rebuild. There is no separate training or CSV-selection requirement.
+Both live and history use the same feature extractor, model and threshold.
+History keeps the existing lifecycle simulator and reverse-close events;
+an entry veto must not suppress a protective reverse closure.
+
+The selected window may include the model's training/validation period.
+Those results are explicitly marked IN-SAMPLE INCLUDED, not independent
+validation. The ML section separately reports post-cutoff W/L and net R.
+Errors are counted and the audit is marked INCOMPLETE, not silently treated
+as model score rejections. A frozen NO VETO model may legitimately retain
+all trades. Regime reference statistics and saved base-library metrics are
+not overwritten by ML-filtered results. CSV export always uses the base
+universe; after export completion an enabled ML filter rebuilds its view.
+This is historical per-setup simulation, not a guarantee of broker fills,
+account-level position overlap or forward profitability.
 
 ## Data Contract
 

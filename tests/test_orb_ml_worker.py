@@ -41,7 +41,8 @@ def prepare_result(root):
     (out/"binding.json").write_text(json.dumps(job))
     (out/(job["config"]+".candidate.model")).write_bytes(bundle)
     (out/(job["config"]+".report.json")).write_text(json.dumps(dict(
-        dataset=info,deployment_checks_passed=True,model_sha256=ml.sha256(bundle))))
+        dataset=info,deployment_checks_passed=True,model_sha256=ml.sha256(bundle),
+        research=dict(policy='ORB_PURGED_WALK_FORWARD_1',extra_gates_passed=True))))
     worker.write_status(root,job,"READY",100,"Synthetic protocol fixture; not a performance claim")
     return job,out,bundle
 
@@ -94,6 +95,20 @@ def test_publish_requires_explicit_matching_ready_result(tmp_path):
     worker.process_one(tmp_path,request(tmp_path,"PUBLISH","b123_publish",job["job"]))
     assert status(tmp_path,"b123_publish")[5]=="PUBLISHED"
     assert (tmp_path/"Models"/(job["config"]+".model")).read_bytes()==bundle
+
+
+def test_recovery_sharing_error_does_not_destroy_ready_status(tmp_path,monkeypatch):
+    job,_,_=prepare_result(tmp_path)
+    path=tmp_path/"Jobs"/(job["job"]+".status")
+    previous=path.read_bytes()
+    original=worker.unpack
+    def locked(file,count,magic):
+        if file == path:
+            raise PermissionError("temporary reader lock")
+        return original(file,count,magic)
+    monkeypatch.setattr(worker,"unpack",locked)
+    worker.recover(tmp_path)
+    assert path.read_bytes()==previous
 
 
 @pytest.mark.parametrize("damage",["config","dataset","preset","checksum","quality","cancel"])

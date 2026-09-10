@@ -4,7 +4,7 @@ string g_mlBrowseConfig="",g_mlBrowsePreset="",g_mlDatasets[],g_mlJobs[];
 int g_mlDatasetChoice=-1,g_mlJobChoice=-1;
 ulong g_mlBrowseLast=0,g_mlJobPaint=0;
 bool g_mlJobTimer=false;
-string g_mlJobNote="Start scripts/Start-OrbMLWorker.ps1 once",g_mlPublishJob="";
+string g_mlJobNote="Local training service",g_mlPublishJob="";
 
 bool OrbMlReadLines(const string path,string &lines[],int fields,bool checksum)
 {
@@ -130,7 +130,7 @@ bool OrbMlSubmitJob(const string action,const string reference="")
    OrbMlRefreshFiles(true);
    string dataset=OrbMlSelectedDataset(),config=OrbMlConfiguration();
    if(dataset==""||config==""||config!=g_mlBrowseConfig){g_mlJobNote="Select a completed CSV first";return false;}
-   if(!OrbMlWorkerOnline()){g_mlJobNote="WORKER OFFLINE: run scripts/Start-OrbMLWorker.ps1";return false;}
+   if(!OrbMlWorkerOnline()){g_mlJobNote="SERVICE OFFLINE: install/restart ORB Strategy ML Worker";return false;}
    if(action=="TRAIN")
       for(int i=0;i<ArraySize(g_mlJobs);i++)
       {string s[];if(OrbMlJobStatus(g_mlJobs[i],s)&&(s[5]=="QUEUED"||s[5]=="RUNNING"))
@@ -177,7 +177,17 @@ bool OrbMlJobUiEvent(const string object)
       return true;
    }
    if(object==PREFIX+"BTN_ML_TRAIN"){OrbMlSubmitJob("TRAIN");return true;}
-   if(object==PREFIX+"BTN_ML_USE"){OrbMlSubmitJob("PUBLISH",OrbMlSelectedJob());return true;}
+   if(object==PREFIX+"BTN_ML_USE")
+   {
+      string job=OrbMlSelectedJob();
+      if(job=="")
+      {
+         bool loaded=OrbMlUsePretrained();
+         g_mlJobNote=loaded?"PRETRAINED LOADED [EXPERIMENTAL]. Use ML FILTER ON to enable.":g_mlStatus;
+      }
+      else OrbMlSubmitJob("PUBLISH",job);
+      return true;
+   }
    if(object==PREFIX+"BTN_ML_CANCEL_JOB")
    {
       string job=OrbMlSelectedJob(),s[];
@@ -202,7 +212,10 @@ void OrbMlDrawJobs(int x,int y)
    CreateButton("BTN_ML_REFRESH",x+505,y,87,20,"REFRESH",C'55,68,88');
    string dataset=OrbMlSelectedDataset();
    string label=dataset==""?"CSV: none for this exact strategy/config":"CSV "+(string)(g_mlDatasetChoice+1)+"/"+(string)ArraySize(g_mlDatasets)+" "+StringSubstr(dataset,StringLen(g_mlBrowsePreset)+14,30);
+   OrbCampaignInfo campaign;bool campaignAvailable=OrbCampaignSelected(campaign);
+   if(dataset==""&&campaignAvailable)label="CSV: campaign archive / "+StringSubstr(campaign.id,0,34);
    CreateLabel("DASH_ML_DATA",x+64,y+4,label,C'184,196,210',8);
+   ObjectSetString(0,PREFIX+"DASH_ML_DATA",OBJPROP_TOOLTIP,campaignAvailable?TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+campaign.csv:label);
    CreateButton("BTN_ML_JOB_PREV",x,y+25,26,20,"<",C'55,68,88');
    CreateButton("BTN_ML_JOB_NEXT",x+30,y+25,26,20,">",C'55,68,88');
    string status[],job=OrbMlSelectedJob();bool found=OrbMlJobStatus(job,status);
@@ -216,7 +229,7 @@ void OrbMlDrawJobs(int x,int y)
    double pct=found?StringToDouble(status[6]):0;
    CreateRect("DASH_ML_JOB_TRACK",x,y+80,592,8,C'38,46,60',C'38,46,60');
    CreateRect("DASH_ML_JOB_FILL",x,y+80,(int)(592*pct/100),8,C'110,205,146',C'110,205,146');
-   string message=found?status[8]:"Select CSV, then TRAIN MODEL. Training does not enable the filter.";
+   string message=found?status[8]:(campaignAvailable?"Existing campaign model: USE RESULT or LOAD TRAINED, then ML FILTER ON. No training needed.":"Select CSV, then TRAIN MODEL. Training does not enable the filter.");
    CreateLabel("DASH_ML_JOB_DETAIL",x,y+95,StringSubstr(message,0,108),C'184,196,210',7);
    if(g_mlPublishJob!="")
    {string publish[];if(OrbMlJobStatus(g_mlPublishJob,publish))g_mlJobNote=publish[5]+": "+publish[8];}

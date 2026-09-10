@@ -7,6 +7,21 @@ $dest=Join-Path $root '.tmp/orb_jp225_full_worker/MQL5/Scripts/OrbMLDashboardPro
 $source=[IO.File]::ReadAllText((Join-Path $seed 'OrbMLExportProbe.mq5'))
 $source=$source.Substring(0,$source.LastIndexOf('void OnStart()'))
 $source+=@'
+bool ProbeAuditYear()
+{
+   SetHistoricalWeeks(52);QueueHistoricalRedraw(0);
+   ulong started=GetTickCount64();
+   do {ProcessQueuedHistoricalRedraw();ProcessHistoricalAuditStep();Sleep(1);}
+   while((g_histAuditRunning||g_histRedrawQueued||g_histCoveragePending)&&!IsStopped()&&GetTickCount64()-started<180000);
+   return !g_histAuditRunning&&!g_histRedrawQueued&&!g_histCoveragePending&&g_histInvalid==0;
+}
+string ProbeReferenceCounts()
+{
+   string result="";
+   for(int i=0;i<ORB_REGIME_COUNT;i++)result+=(string)g_regimeWins[i]+":"+(string)g_regimeLosses[i]+";";
+   for(int i=0;i<ORB_RF_COUNT;i++)result+=(string)g_orbRfWins[i]+":"+(string)g_orbRfLosses[i]+";";
+   return result;
+}
 void OnStart()
 {
    if(StringFind(TerminalInfoString(TERMINAL_DATA_PATH),"orb_jp225_full_worker")<0)return;
@@ -29,6 +44,29 @@ void OnStart()
    {Print("ORB_ML_DASH_PROBE RESTORE FAILED");return;}
    Print("ORB_ML_DASH_PROBE USER_STRATEGY_EXACT PASS id=",saved.id);
    RegimeV3Update(true);
+   if(!ProbeAuditYear()){Print("ORB_ML_DASH_PROBE 1Y AUDIT FAILED");return;}
+   OrbUserReload(true);OrbStrategyPresetLoad(selected,saved);
+   if(!saved.metric1yReady||saved.metric1yTotal!=g_histTotal||MathAbs(saved.metric1yNetR-g_histNetR)>1e-8||saved.family!=ORB_PRESET_FAMILY_JP225)
+   {Print("ORB_ML_DASH_PROBE METRICS FAILED ",g_userStrategyNote);return;}
+   Print("ORB_ML_DASH_PROBE METRICS_RELOAD PASS ",saved.metric1yTotal," trades ",saved.metric1yNetR,"R family=",saved.family);
+   string reference=ProbeReferenceCounts();int before=g_histTotal;
+   for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=!g_regimeAllowed[r];
+   g_orbRfEnabled=!g_orbRfEnabled;
+   for(int r=0;r<ORB_RF_COUNT;r++)g_orbRfBlocked[r]=!g_orbRfBlocked[r];
+   if(!ProbeAuditYear()||reference!=ProbeReferenceCounts())
+   {Print("ORB_ML_DASH_PROBE REFERENCE FAILED before=",reference," after=",ProbeReferenceCounts());return;}
+   Print("ORB_ML_DASH_PROBE REFERENCE_INVARIANCE PASS portfolio trades ",before," -> ",g_histTotal);
+   OrbStrategyPresetApplyValues(saved);
+   g_rtFilteredWindowReverseExit=true;g_rtPostTradeDispBlockExit=true;
+   if(!ProbeAuditYear()){Print("ORB_ML_DASH_PROBE WINDOW REFERENCE BASE FAILED");return;}
+   reference=ProbeReferenceCounts();
+   for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=!g_regimeAllowed[r];
+   g_orbRfEnabled=!g_orbRfEnabled;
+   for(int r=0;r<ORB_RF_COUNT;r++)g_orbRfBlocked[r]=!g_orbRfBlocked[r];
+   if(!ProbeAuditYear()||reference!=ProbeReferenceCounts())
+   {Print("ORB_ML_DASH_PROBE WINDOW REFERENCE FAILED before=",reference," after=",ProbeReferenceCounts());return;}
+   Print("ORB_ML_DASH_PROBE WINDOW_REFERENCE_INVARIANCE PASS");
+   OrbStrategyPresetApplyValues(saved);g_strategyPresetIndex=selected;
    if(!OrbMlStartExport()){Print("ORB_ML_DASH_PROBE EXPORT START FAILED ",g_mlStatus);return;}
    ulong start=GetTickCount64();
    while(g_mlExport&&!IsStopped()&&GetTickCount64()-start<240000)

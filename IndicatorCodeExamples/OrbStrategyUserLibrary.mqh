@@ -14,6 +14,15 @@ bool g_userLoaded=false;
 int g_userCount=0;
 string g_userStrategyNote="Save applied strategy settings; risk/channel/PUB/NAT stay separate";
 
+int OrbUserSymbolFamily(string symbol)
+{
+   StringToUpper(symbol);
+   if(StringFind(symbol,"USDJPY")>=0)return ORB_PRESET_FAMILY_USDJPY;
+   if(StringFind(symbol,"JP225")>=0||StringFind(symbol,"JPN225")>=0||StringFind(symbol,"NIKKEI")>=0)return ORB_PRESET_FAMILY_JP225;
+   if(StringFind(symbol,"USTEC")>=0||StringFind(symbol,"US100")>=0||StringFind(symbol,"NAS100")>=0)return ORB_PRESET_FAMILY_USTEC;
+   return ORB_PRESET_FAMILY_ANY;
+}
+
 string OrbUserFile(int slot){return "OrbStrategyUserLibrary\\"+(string)slot+".preset";}
 
 void OrbUserReload(bool force=false)
@@ -37,9 +46,11 @@ void OrbUserReload(bool force=false)
       if(!OrbCustomPresetRead(v,6,p)||StringFind(p.id,"user_")!=0||!OrbMlSafeId(p.id))continue;
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
+      if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
       record.inputSignature=v[5];record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
       g_userStrategies[slot]=record;
+      OrbUserLoadMetrics(slot);
    }while(FileFindNext(find,name));
    FileFindClose(find);
 }
@@ -111,6 +122,7 @@ bool OrbUserSaveLocked(string name)
    for(int i=0;i<StringLen(name);i++)if(StringGetCharacter(name,i)<32)
       {g_userStrategyNote="Name cannot contain control characters";return false;}
    if(OrbMlIsEnabled()){g_userStrategyNote="Turn ML FILTER OFF before creating a new strategy identity";return false;}
+   if(OrbMlExportBusy()){g_userStrategyNote="Wait for CSV export or cancel it before saving";return false;}
    OrbUserReload(true);
    for(int i=0;i<OrbStrategyPresetCount();i++)
    {
@@ -119,6 +131,7 @@ bool OrbUserSaveLocked(string name)
       if(a==b){g_userStrategyNote="Name already exists; choose another name";return false;}
    }
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
+   p.family=OrbUserSymbolFamily(_Symbol);
    p.name=name;p.searchTerms=name+" "+_Symbol+" user saved";p.sourceImage="user-saved";
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
    string signature=OrbCustomInputSignature(),runtime=OrbCustomRuntimeDump();
@@ -146,7 +159,8 @@ bool OrbUserSaveLocked(string name)
    {g_userStrategyNote="Saved, but selection could not be persisted. Select from SEARCH.";return false;}
    GlobalVariablesFlush();g_strategyPresetIndex=index;g_strategyCandidateIndex=index;
    OrbStrategyLoadFavorites();OrbStrategyPresetBuildMatches("");
-   g_userStrategyNote="SAVED: "+name+" | exact read-back verified; 1Y metrics not yet measured";
+   g_userStrategyNote="SAVED: "+name+" | computing 1Y metrics";
+   OrbUserEnsureMetrics();
    return true;
 }
 

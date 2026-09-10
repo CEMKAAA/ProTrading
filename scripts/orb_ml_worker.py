@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import time
+import logging
+from logging.handlers import RotatingFileHandler
 
 import numpy as np
 
@@ -17,6 +19,7 @@ except ImportError:
     import orb_ml_filter as ml
 
 TERMINAL = {"READY", "REJECTED", "FAILED", "CANCELLED", "PUBLISHED"}
+LOG = logging.getLogger("orb_ml_worker")
 
 
 def pack(lines: list[str]) -> bytes:
@@ -100,14 +103,14 @@ def execute(root: Path, job: dict):
     cancelled(root,job)
     if job["action"]=="TRAIN":
         out=within(root,"Results",job["config"],job["job"])
-        report=ml.train(dataset,out,epochs=400,progress=progress,expected=expected)
+        report=ml.train(dataset,out,epochs=400,progress=progress,expected=expected,advanced=True)
         cancelled(root,job)
         # Preserve the originating immutable job next to its report/model.
         ml.atomic_write(out/"binding.json",json.dumps(job,sort_keys=True).encode())
         state="READY" if report["deployment_checks_passed"] else "REJECTED"
         message=(f"Test {report['test']['net_r']:+.2f}R / base {report['test_baseline']['net_r']:+.2f}R; "
                  f"WR {report['test']['win_rate']*100:.1f}%; keep {report['test']['retention']*100:.1f}%; "
-                 f"{'eligible; explicit USE RESULT required' if state=='READY' else 'quality checks failed; research only'}")
+                 f"{'eligible; explicit USE RESULT required' if state=='READY' else 'rejected: '+','.join((report.get('research') or {}).get('rejection_reasons',[]) or ['quality_checks'])}")
         write_status(root,job,state,100,message)
         return
 
@@ -124,6 +127,9 @@ def execute(root: Path, job: dict):
     if any(info[k]!=v for k,v in expected.items()) or report["dataset"]!=info:
         raise ValueError("Result no longer matches the immutable CSV")
     if not report["deployment_checks_passed"]: raise ValueError("Result failed quality checks")
+    research=report.get('research') or {}
+    if research.get('policy')!='ORB_PURGED_WALK_FORWARD_1' or not research.get('extra_gates_passed'):
+        raise ValueError('Result predates the current research policy; train a new model')
     bundle=(source/(job["config"]+".candidate.model")).read_bytes()
     if ml.sha256(bundle)!=report["model_sha256"]: raise ValueError("Candidate was modified")
     ml.portable_predict(bundle,np.zeros((1,40)),job["config"])
@@ -149,6 +155,7 @@ def process_one(root: Path, request: Path):
     except Cancelled as error:
         write_status(root,job,"CANCELLED",0,str(error))
     except Exception as error:
+        LOG.exception("Job %s failed", job["job"])
         write_status(root,job,"FAILED",0,f"{type(error).__name__}: {error}")
 
 
@@ -158,7 +165,14 @@ def recover(root: Path):
             job=read_job(path)
             status=unpack(path.with_suffix(".status"),10,"ORB_ML_STATUS1")
             if status[5] in TERMINAL: continue
-        except (ValueError,OSError,KeyError):
+        except FileNotFoundError:
+            try: job=read_job(path)
+            except (ValueError,OSError): continue
+        except OSError:
+            # A reader/sharing fault is not proof that a completed job crashed.
+            # Leave its last committed status intact and inspect next cycle.
+            continue
+        except (ValueError,KeyError):
             try: job=read_job(path)
             except (ValueError,OSError): continue
         write_status(root,job,"FAILED",0,"Worker interrupted; no automatic replay. Submit a fresh job.")
@@ -195,6 +209,10 @@ def exclusive_worker(root: Path):
 
 def run(root: Path, once=False, idle_exit_seconds=0):
     with exclusive_worker(root):
+        handler = RotatingFileHandler(root/"worker.log", maxBytes=1048576, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        LOG.addHandler(handler)
+        LOG.setLevel(logging.INFO)
         within(root,"Jobs").mkdir(parents=True,exist_ok=True)
         recover(root)
         idle_since=time.monotonic()
@@ -205,6 +223,7 @@ def run(root: Path, once=False, idle_exit_seconds=0):
                 idle_since=time.monotonic()
                 try: process_one(root,request)
                 except (OSError,ValueError,UnicodeError):
+                    LOG.exception("Queue request failed: %s", request.name)
                     # Malformed requests cannot escape the queue or execute commands.
                     if request.exists(): request.rename(request.with_suffix(".invalid"))
             if once: break
