@@ -22,6 +22,7 @@ string g_mlConfig="",g_mlPreset="",g_mlDataset="",g_mlFilePath="",g_mlStatus="ML
 datetime g_mlRequestedAt=0,g_mlAsOf=0;
 double g_mlProgress=0;
 #include "OrbStrategyCampaignModels.mqh"
+#include "OrbStrategyR7Runtime.mqh"
 
 bool OrbMlWriteUtf8(int handle,const string text)
 {
@@ -227,6 +228,7 @@ bool OrbMlIsEnabled(){return g_mlEnabled;}
 bool OrbMlExportBusy(){return g_mlExport||g_mlWriting;}
 bool OrbMlLoad()
 {
+   if(g_mlR7){g_mlUsingCampaign=false;g_mlModel.ready=false;return OrbR7Load();}
    g_mlModel.ready=false;g_mlUsingCampaign=false;g_campaignReady=false;string config=OrbMlConfiguration();
    if(config==""){g_mlStatus="APPLY A STRATEGY FIRST";return false;}
    string path="OrbML\\Models\\"+config+".model";
@@ -244,12 +246,13 @@ void OrbMlOnStrategyApplied()
    // Resolve only the active configuration's published model. Never promote candidates.
    bool enabled=g_mlEnabled;
    bool loaded=OrbMlLoad();
-   if(loaded)g_mlStatus=(enabled?"ML ON / ":"ML OFF / ")+(g_mlUsingCampaign?"PRETRAINED "+g_campaignInfo.kind+" [EXPERIMENTAL]":"APPROVED MODEL READY");
+   if(loaded)g_mlStatus=(enabled?"ML ON / ":"ML OFF / ")+(g_mlR7?"R7 SLOT "+OrbR7Identity():(g_mlUsingCampaign?"PRETRAINED "+g_campaignInfo.kind+" [EXPERIMENTAL]":"APPROVED MODEL READY"));
    // If already enabled, an absent model remains fail-closed in OrbMlAllow.
 }
 
 void OrbMlInit()
 {
+   g_mlR7=GlobalVariableCheck(OrbMlGenerationKey())&&GlobalVariableGet(OrbMlGenerationKey())==1;
    g_mlEnabled=GlobalVariableCheck(OrbMlEnabledKey())&&GlobalVariableGet(OrbMlEnabledKey())>0.5;
    OrbMlOnStrategyApplied();
 }
@@ -259,9 +262,9 @@ bool OrbMlAllow(const string raw,datetime bar)
    if(!g_mlEnabled)return true;
    string reason="";double score=0;
    bool allowed=OrbMlDecision(raw,bar,g_orbHigh,g_orbLow,g_orbEndServer,true,reason,score);
-   g_mlStatus=(g_mlUsingCampaign?"ML EXP ":"ML ")+reason+" score="+DoubleToString(score,4);
+   g_mlStatus=(g_mlR7?"R7 ":(g_mlUsingCampaign?"ML EXP ":"ML "))+reason+" score="+DoubleToString(score,4);
    Audit("ml_filter",EffectiveOrbDirection(raw),0,0,0,0,"bar="+(string)(long)bar+" config="+OrbMlConfiguration()
-      +" dataset="+(g_mlUsingCampaign?g_campaignInfo.dataset:g_mlModel.dataset)
+      +" generation="+(g_mlR7?"R7_SLOT/"+OrbR7Identity():"LEGACY")+" dataset="+(g_mlR7?g_r7Info.dataset:(g_mlUsingCampaign?g_campaignInfo.dataset:g_mlModel.dataset))
       +" experimental="+(g_mlUsingCampaign?"1":"0")+" decision="+reason+" score="+DoubleToString(score,8));
    return allowed;
 }
@@ -270,6 +273,18 @@ bool OrbMlAllow(const string raw,datetime bar)
 
 bool OrbMlUiEvent(const string object)
 {
+   if(object==PREFIX+"BTN_ML_GENERATION")
+   {
+      if(g_mlExport||g_mlWriting||OrbStrategyPresetHasActiveLifecycle()||g_nasPending||g_retestPending||g_imbPending||g_newDayReverseRetryPending)
+         g_mlStatus="WAIT: EXPORT OR ACTIVE/PENDING TRADE";
+      else if(GlobalVariableSet(OrbMlGenerationKey(),g_mlR7?0:1)>0)
+      {
+         GlobalVariablesFlush();g_mlR7=!g_mlR7;
+         OrbMlOnStrategyApplied();QueueHistoricalRedraw(0);
+      }
+      else g_mlStatus="MODEL GENERATION SAVE FAILED";
+      ObjectSetInteger(0,object,OBJPROP_STATE,false);return true;
+   }
    if(OrbMlJobUiEvent(object))
    {
       if(object==PREFIX+"BTN_ML_USE"&&g_mlEnabled)QueueHistoricalRedraw(0);
@@ -279,8 +294,8 @@ bool OrbMlUiEvent(const string object)
    else if(object==PREFIX+"BTN_ML_CANCEL")OrbMlAbort("EXPORT CANCELLED");
    else if(object==PREFIX+"BTN_ML_LOAD"||object==PREFIX+"BTN_ML_TOGGLE")
    {
-      if(OrbStrategyPresetHasActiveLifecycle()||g_nasPending||g_retestPending||g_imbPending||g_newDayReverseRetryPending)
-         g_mlStatus="WAIT: ACTIVE/PENDING TRADE";
+      if(g_mlExport||g_mlWriting||OrbStrategyPresetHasActiveLifecycle()||g_nasPending||g_retestPending||g_imbPending||g_newDayReverseRetryPending)
+         g_mlStatus="WAIT: EXPORT OR ACTIVE/PENDING TRADE";
       else if(object==PREFIX+"BTN_ML_LOAD")OrbMlLoad();
       else
       {
@@ -288,7 +303,7 @@ bool OrbMlUiEvent(const string object)
          if(!requested||OrbMlLoad())
          {
             if(GlobalVariableSet(OrbMlEnabledKey(),requested?1:0)>0)
-            {GlobalVariablesFlush();g_mlEnabled=requested;g_mlStatus=requested?(g_mlUsingCampaign?"ML ON [EXPERIMENTAL] "+g_campaignInfo.kind+(g_campaignActive?"":" / NO VETO"):"ML FILTER ON"):"ML FILTER OFF";}
+            {GlobalVariablesFlush();g_mlEnabled=requested;g_mlStatus=requested?(g_mlR7?"ML ON R7 SLOT "+OrbR7Identity():(g_mlUsingCampaign?"ML ON [EXPERIMENTAL] "+g_campaignInfo.kind+(g_campaignActive?"":" / NO VETO"):"ML FILTER ON")):"ML FILTER OFF";}
             else g_mlStatus="ML STATE SAVE FAILED";
          }
       }
@@ -302,7 +317,9 @@ void OrbMlDraw()
 {
    if(!InpShowDashboard)return;
    int x=InpDashboardX+644,y=InpDashboardY+346;
-   CreateLabel("DASH_ML_TITLE",x,y,"STRATEGY ML FILTER | live + historical entries",C'255,187,92',8);
+   CreateLabel("DASH_ML_TITLE",x,y,"STRATEGY ML | live + history",C'255,187,92',8);
+   CreateButton("BTN_ML_GENERATION",x+380,y-3,212,20,g_mlR7?"MODEL: R7 / CHAMPION SLOT":"MODEL: LEGACY",g_mlR7?C'184,103,22':C'55,68,88');
+   ObjectSetString(0,PREFIX+"BTN_ML_GENERATION",OBJPROP_TOOLTIP,"Model generation only; use ML FILTER ON to enable. R7 is a replaceable strategy slot, not automatic best-model selection. LOAD/USE RESULT pins a release. Missing/expired R7 blocks entries when ML is ON. Active/pending trades prevent switching.");
    CreateButton("BTN_ML_EXPORT",x,y+20,176,22,"CREATE 5Y CSV",C'38,101,176');
    CreateButton("BTN_ML_CANCEL",x+184,y+20,70,22,"CANCEL",C'80,80,80');
    CreateButton("BTN_ML_LOAD",x+262,y+20,136,22,"LOAD TRAINED",C'38,101,176');

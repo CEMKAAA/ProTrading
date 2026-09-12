@@ -1,0 +1,12 @@
+bad_0.slot
+bad_1.slot
+bad_2.slot
+bad_3.slot
+bad_4.slot
+bad_5.slot
+bad_6.slot
+bad_7.slot
+bad_8.slot
+bad_9.slot
+bad_10.slot
+bad_11.slot

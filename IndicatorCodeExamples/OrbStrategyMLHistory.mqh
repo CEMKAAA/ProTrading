@@ -12,7 +12,13 @@ bool OrbMlDecision(const string raw,datetime bar,double hi,double lo,datetime or
    bool requireOos,string &reason,double &score)
 {
    string config=OrbMlConfiguration();double x[],observed[];score=0;
-   if(g_mlUsingCampaign)
+   if(g_mlR7)
+   {
+      if(!g_r7Slot.ready||config==""||config!=g_r7RuntimeConfig||!OrbCampaignBinding(g_r7Info))reason="R7 MISSING/MISMATCHED MODEL";
+      else if(OrbMlFeatures(bar,raw,hi,lo,orbEnd,x,observed,reason))
+         OrbSlotScore(g_r7Slot,x,bar+PeriodSeconds(g_rtSignalTf),score,reason);
+   }
+   else if(g_mlUsingCampaign)
    {
       if(!g_campaignReady||config==""||config!=g_campaignRuntimeConfig||!OrbCampaignBinding(g_campaignInfo))
          reason="CAMPAIGN_BINDING_CHANGED";
@@ -50,7 +56,7 @@ bool OrbMlHistoryAllow(datetime bar,const string raw,double hi,double lo,datetim
    string reason="";double score=0;
    bool allowed=OrbMlDecision(raw,bar,hi,lo,orbEnd,false,reason,score);
    datetime cutoff=g_mlUsingCampaign?g_campaignCutoff:g_mlModel.lastLabelTime;
-   bool inSample=bar+PeriodSeconds(g_rtSignalTf)<=cutoff;
+   bool inSample=!g_mlR7&&bar+PeriodSeconds(g_rtSignalTf)<=cutoff;
    if(inSample)g_mlHistoryInSample++;
    if(!allowed)
    {

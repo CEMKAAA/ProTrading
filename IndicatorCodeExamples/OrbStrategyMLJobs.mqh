@@ -176,9 +176,20 @@ bool OrbMlJobUiEvent(const string object)
       if(n>0)g_mlJobChoice=(g_mlJobChoice+n+(object==PREFIX+"BTN_ML_JOB_NEXT"?1:-1))%n;
       return true;
    }
-   if(object==PREFIX+"BTN_ML_TRAIN"){OrbMlSubmitJob("TRAIN");return true;}
+   if(object==PREFIX+"BTN_ML_TRAIN")
+   {
+      if(g_mlR7)g_mlJobNote="TRAIN MODEL is Legacy training. R7 SLOT uses versioned offline packages; LOAD/USE RESULT reloads the assigned release.";
+      else OrbMlSubmitJob("TRAIN");return true;
+   }
    if(object==PREFIX+"BTN_ML_USE")
    {
+      if(g_mlR7)
+      {
+         if(g_mlExport||g_mlWriting||OrbStrategyPresetHasActiveLifecycle()||g_nasPending||g_retestPending||g_imbPending||g_newDayReverseRetryPending)
+            g_mlJobNote="WAIT: EXPORT OR ACTIVE/PENDING TRADE";
+         else {bool loaded=OrbR7Load();g_mlJobNote=loaded?"PINNED "+OrbR7Identity():g_mlStatus;}
+         return true;
+      }
       string job=OrbMlSelectedJob();
       if(job=="")
       {
