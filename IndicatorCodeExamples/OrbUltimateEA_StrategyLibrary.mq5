@@ -5526,6 +5526,97 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    return res;
 }
 
+
+#include "AuditMemoIndex.mqh"
+#include "OrbReplayMemoEpoch.mqh"
+AuditMemoIndex g_orbReplayMemo;
+HistResult g_orbReplayValues[];
+datetime g_orbReplayEnds[];
+long g_orbReplayMemoHits=0,g_orbReplayMemoMisses=0;
+
+HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,double entry,double sl,bool isBuy,
+   double tp1,double tp2,double tp3,int halfBeLeg,datetime &usedEnd,datetime forcedExitTime=0,string forcedExitOutcome="")
+{
+   string epoch=OrbReplayDataEpoch();
+   g_orbReplayMemo.Reset(epoch);
+   string key=(string)entryTime+"|"+(string)sessionEnd+"|"+AuditMemoPrice(entry)+"|"+AuditMemoPrice(sl)
+      +"|"+(string)isBuy+"|"+AuditMemoPrice(tp1)+"|"+AuditMemoPrice(tp2)+"|"+AuditMemoPrice(tp3)
+      +"|"+(string)halfBeLeg+"|"+(string)forcedExitTime+"|"+forcedExitOutcome
+      +"|"+AuditMemoPrice(g_orbHigh)+"|"+AuditMemoPrice(g_orbLow)
+      +"|"+(string)g_orbStartServer+"|"+(string)g_orbEndServer+"|"+(string)g_tradeEndServer
+      +"|"+AuditMemoPrice(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE))
+      +"|"+AuditMemoPrice(g_btCommissionPerLot!=0?SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE):0);
+   key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
+   key+="|g_rtFilterVol="+(string)g_rtFilterVol;
+   key+="|g_rtFilterDay="+(string)g_rtFilterDay;
+   key+="|g_rtFilteredWindowReverseExit="+(string)g_rtFilteredWindowReverseExit;
+   key+="|g_rtPostTradeDispBlockExit="+(string)g_rtPostTradeDispBlockExit;
+   key+="|g_rtEntryWindow="+(string)g_rtEntryWindow;
+   key+="|g_rtEntryWindowStartMin="+(string)g_rtEntryWindowStartMin;
+   key+="|g_rtEntryWindowEndMin="+(string)g_rtEntryWindowEndMin;
+   key+="|g_rtTimeExit="+(string)g_rtTimeExit;
+   key+="|g_rtDisplacement="+(string)g_rtDisplacement;
+   key+="|g_rtFvgMode="+(string)g_rtFvgMode;
+   key+="|g_rtExitMode="+(string)g_rtExitMode;
+   key+="|g_rtEntryMode="+(string)g_rtEntryMode;
+   key+="|g_rtTargetMode="+(string)g_rtTargetMode;
+   key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
+   key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
+   key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
+   key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
+   key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
+   key+="|g_rtNasExitOnOppositeSignal="+(string)g_rtNasExitOnOppositeSignal;
+   key+="|g_rtNasAdditionalExit="+(string)g_rtNasAdditionalExit;
+   key+="|g_rtAdvancedAuditEngine="+(string)g_rtAdvancedAuditEngine;
+   key+="|g_rtNasSensitivity="+(string)g_rtNasSensitivity;
+   key+="|g_rtNasVolumeFilter="+(string)g_rtNasVolumeFilter;
+   key+="|g_rtNasVolumeMultiplier="+AuditMemoPrice(g_rtNasVolumeMultiplier);
+   key+="|g_rtNasFlowVolumeFilter="+(string)g_rtNasFlowVolumeFilter;
+   key+="|g_rtNasFlowVolumeMultiplier="+AuditMemoPrice(g_rtNasFlowVolumeMultiplier);
+   key+="|g_rtNasActiveSignalLookbackMinutes="+(string)g_rtNasActiveSignalLookbackMinutes;
+   key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
+   key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
+   key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
+   key+="|g_rtSignalTf="+(string)g_rtSignalTf;
+   key+="|g_rtDelayMin="+(string)g_rtDelayMin;
+   key+="|g_rtUseDelay="+(string)g_rtUseDelay;
+   key+="|g_rtTargetLeg="+(string)g_rtTargetLeg;
+   key+="|g_rtHalfBeLeg="+(string)g_rtHalfBeLeg;
+   key+="|g_rtExitTrailStartLeg="+(string)g_rtExitTrailStartLeg;
+   key+="|g_rtExitEmaPeriod="+(string)g_rtExitEmaPeriod;
+   key+="|g_rtExitAtrMultiplier="+AuditMemoPrice(g_rtExitAtrMultiplier);
+   key+="|g_rtSlDistancePct="+AuditMemoPrice(g_rtSlDistancePct);
+   key+="|g_rtPipSlMode="+(string)g_rtPipSlMode;
+   key+="|g_rtPipSlPips="+AuditMemoPrice(g_rtPipSlPips);
+   key+="|g_btFillMode="+(string)g_btFillMode;
+   key+="|g_btSameBarPolicy="+(string)g_btSameBarPolicy;
+   key+="|g_btNativeParity="+(string)g_btNativeParity;
+   key+="|g_btSpreadPts="+AuditMemoPrice(g_btSpreadPts);
+   key+="|g_btSlippagePts="+AuditMemoPrice(g_btSlippagePts);
+   key+="|g_btCommissionPerLot="+AuditMemoPrice(g_btCommissionPerLot);
+   int cached=g_orbReplayMemo.Find(key);
+   if(cached>=0&&g_orbReplayValues[cached].exitTime<=now)
+   {usedEnd=g_orbReplayEnds[cached];g_orbReplayMemoHits++;return g_orbReplayValues[cached];}
+   g_orbReplayMemoMisses++;
+   HistResult result=g_rtAdvancedAuditEngine
+      ?SimulateHistoricalLifecycleAdvanced(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,usedEnd,forcedExitTime,forcedExitOutcome)
+      :SimulateHistoricalLifecycle(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,usedEnd,forcedExitTime,forcedExitOutcome);
+   // Do not freeze OPEN, DATA, asynchronous tick requests or this forming minute.
+   if(result.valid&&result.outcome!="open"&&result.invalidReason==""&&result.exitTime>0
+      &&result.exitTime<=now&&result.exitTime<iTime(_Symbol,PERIOD_M1,0)&&epoch==OrbReplayDataEpoch())
+   {
+      int slot=g_orbReplayMemo.Add(key);
+      if(slot>=0)
+      {
+         if(ArraySize(g_orbReplayValues)<=slot)
+         {ArrayResize(g_orbReplayValues,slot+1,512);ArrayResize(g_orbReplayEnds,slot+1,512);}
+         g_orbReplayValues[slot]=result;g_orbReplayEnds[slot]=usedEnd;
+      }
+   }
+   return result;
+}
+
 HistResult SimulateHistoricalLifecycle(datetime entryTime,datetime sessionEnd,datetime now,double entry,double sl,bool isBuy,
                                        double tp1,double tp2,double tp3,int halfBeLeg,datetime &usedEnd,
                                        datetime forcedExitTime=0,string forcedExitOutcome="")
@@ -5884,7 +5975,128 @@ int BuildHistoricalWindowSignals(int days,datetime nyMid,OrbWindowSignal &signal
 
 // Processes exactly one ORB day. Keeping this unit bounded lets OnTimer return
 // between history chunks so chart clicks and live risk management stay active.
+struct OrbPrepMemoValue
+{
+   OrbHistoricalDaySnapshot snapshot;
+   int rejected;
+   OrbWindowSignal a0[];
+   OrbWindowSignal a1[];
+   OrbWindowSignal a2[];
+   OrbWindowSignal a3[];
+   OrbWindowSignal a4[];
+};
+AuditMemoIndex g_orbPrepMemo;
+OrbPrepMemoValue g_orbPrepMemoValues[];
+long g_orbPrepMemoHits=0;
+
 int ProcessHistoricalPrepDay(const int back)
+{
+   if(back<0||back>=ArraySize(g_histDaySnapshots))return ProcessHistoricalPrepDayUncached(back);
+   string epoch=OrbReplayDataEpoch()+"|"+(string)g_histNasCacheClosedBar+"|"+(string)g_histNasCacheFrom
+      +"|"+(string)g_histNasCacheEventFrom+"|"+(string)SeriesInfoInteger(_Symbol,g_rtSignalTf,SERIES_BARS_COUNT)
+      +"|"+(string)SeriesInfoInteger(_Symbol,g_rtSignalTf,SERIES_FIRSTDATE);
+   g_orbPrepMemo.Reset(epoch);
+   string key=(string)(g_histRunNyMid-back*86400)+"|"+(string)g_orbRfEnabled;
+   key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
+   key+="|g_rtFilterVol="+(string)g_rtFilterVol;
+   key+="|g_rtFilterDay="+(string)g_rtFilterDay;
+   key+="|g_rtFilteredWindowReverseExit="+(string)g_rtFilteredWindowReverseExit;
+   key+="|g_rtPostTradeDispBlockExit="+(string)g_rtPostTradeDispBlockExit;
+   key+="|g_rtEntryWindow="+(string)g_rtEntryWindow;
+   key+="|g_rtEntryWindowStartMin="+(string)g_rtEntryWindowStartMin;
+   key+="|g_rtEntryWindowEndMin="+(string)g_rtEntryWindowEndMin;
+   key+="|g_rtTimeExit="+(string)g_rtTimeExit;
+   key+="|g_rtDisplacement="+(string)g_rtDisplacement;
+   key+="|g_rtFvgMode="+(string)g_rtFvgMode;
+   key+="|g_rtExitMode="+(string)g_rtExitMode;
+   key+="|g_rtEntryMode="+(string)g_rtEntryMode;
+   key+="|g_rtTargetMode="+(string)g_rtTargetMode;
+   key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
+   key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
+   key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
+   key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
+   key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
+   key+="|g_rtNasExitOnOppositeSignal="+(string)g_rtNasExitOnOppositeSignal;
+   key+="|g_rtNasAdditionalExit="+(string)g_rtNasAdditionalExit;
+   key+="|g_rtAdvancedAuditEngine="+(string)g_rtAdvancedAuditEngine;
+   key+="|g_rtNasSensitivity="+(string)g_rtNasSensitivity;
+   key+="|g_rtNasVolumeFilter="+(string)g_rtNasVolumeFilter;
+   key+="|g_rtNasVolumeMultiplier="+AuditMemoPrice(g_rtNasVolumeMultiplier);
+   key+="|g_rtNasFlowVolumeFilter="+(string)g_rtNasFlowVolumeFilter;
+   key+="|g_rtNasFlowVolumeMultiplier="+AuditMemoPrice(g_rtNasFlowVolumeMultiplier);
+   key+="|g_rtNasActiveSignalLookbackMinutes="+(string)g_rtNasActiveSignalLookbackMinutes;
+   key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
+   key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
+   key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
+   key+="|g_rtSignalTf="+(string)g_rtSignalTf;
+   key+="|g_rtDelayMin="+(string)g_rtDelayMin;
+   key+="|g_rtUseDelay="+(string)g_rtUseDelay;
+   key+="|g_rtTargetLeg="+(string)g_rtTargetLeg;
+   key+="|g_rtHalfBeLeg="+(string)g_rtHalfBeLeg;
+   key+="|g_rtExitTrailStartLeg="+(string)g_rtExitTrailStartLeg;
+   key+="|g_rtExitEmaPeriod="+(string)g_rtExitEmaPeriod;
+   key+="|g_rtExitAtrMultiplier="+AuditMemoPrice(g_rtExitAtrMultiplier);
+   key+="|g_rtSlDistancePct="+AuditMemoPrice(g_rtSlDistancePct);
+   key+="|g_rtPipSlMode="+(string)g_rtPipSlMode;
+   key+="|g_rtPipSlPips="+AuditMemoPrice(g_rtPipSlPips);
+   for(int r=0;r<ORB_REGIME_COUNT;r++)key+="|macro="+(string)g_regimeAllowed[r];
+   for(int r=0;r<ORB_RF_COUNT;r++)key+="|rf="+(string)g_orbRfBlocked[r];
+   int cached=g_orbPrepMemo.Find(key);
+   if(cached>=0)
+   {
+      g_histDaySnapshots[back]=g_orbPrepMemoValues[cached].snapshot;
+      int base0=ArraySize(g_histWindowSignals),count0=ArraySize(g_orbPrepMemoValues[cached].a0);
+      ArrayResize(g_histWindowSignals,base0+count0,256);
+      for(int j=0;j<count0;j++)g_histWindowSignals[base0+j]=g_orbPrepMemoValues[cached].a0[j];
+      int base1=ArraySize(g_histAcceptedSignals),count1=ArraySize(g_orbPrepMemoValues[cached].a1);
+      ArrayResize(g_histAcceptedSignals,base1+count1,256);
+      for(int j=0;j<count1;j++)g_histAcceptedSignals[base1+j]=g_orbPrepMemoValues[cached].a1[j];
+      int base2=ArraySize(g_histOperationalSignals),count2=ArraySize(g_orbPrepMemoValues[cached].a2);
+      ArrayResize(g_histOperationalSignals,base2+count2,256);
+      for(int j=0;j<count2;j++)g_histOperationalSignals[base2+j]=g_orbPrepMemoValues[cached].a2[j];
+      int base3=ArraySize(g_regimeReferenceSignals),count3=ArraySize(g_orbPrepMemoValues[cached].a3);
+      ArrayResize(g_regimeReferenceSignals,base3+count3,256);
+      for(int j=0;j<count3;j++)g_regimeReferenceSignals[base3+j]=g_orbPrepMemoValues[cached].a3[j];
+      int base4=ArraySize(g_regimeReferenceWindows),count4=ArraySize(g_orbPrepMemoValues[cached].a4);
+      ArrayResize(g_regimeReferenceWindows,base4+count4,256);
+      for(int j=0;j<count4;j++)g_regimeReferenceWindows[base4+j]=g_orbPrepMemoValues[cached].a4[j];
+      g_orbPrepMemoHits++;return g_orbPrepMemoValues[cached].rejected;
+   }
+   int before0=ArraySize(g_histWindowSignals);
+   int before1=ArraySize(g_histAcceptedSignals);
+   int before2=ArraySize(g_histOperationalSignals);
+   int before3=ArraySize(g_regimeReferenceSignals);
+   int before4=ArraySize(g_regimeReferenceWindows);
+   int rejected=ProcessHistoricalPrepDayUncached(back);
+   OrbHistoricalDaySnapshot snapshot=g_histDaySnapshots[back];
+   // Never cache a forming session or a missing-data/invalid day. No-signal
+   // completed sessions are reusable, but their full prepared context is kept.
+   if(snapshot.known&&snapshot.valid&&snapshot.operationalKnown&&snapshot.tradeEnd>0
+      &&snapshot.tradeEnd<iTime(_Symbol,PERIOD_M1,0)
+      &&StringFind(epoch,OrbReplayDataEpoch()+"|")==0)
+   {
+      int slot=g_orbPrepMemo.Add(key);
+      if(slot>=0)
+      {
+         if(ArraySize(g_orbPrepMemoValues)<=slot)ArrayResize(g_orbPrepMemoValues,slot+1,64);
+         g_orbPrepMemoValues[slot].snapshot=snapshot;g_orbPrepMemoValues[slot].rejected=rejected;
+         ArrayResize(g_orbPrepMemoValues[slot].a0,ArraySize(g_histWindowSignals)-before0);
+         for(int j=before0;j<ArraySize(g_histWindowSignals);j++)g_orbPrepMemoValues[slot].a0[j-before0]=g_histWindowSignals[j];
+         ArrayResize(g_orbPrepMemoValues[slot].a1,ArraySize(g_histAcceptedSignals)-before1);
+         for(int j=before1;j<ArraySize(g_histAcceptedSignals);j++)g_orbPrepMemoValues[slot].a1[j-before1]=g_histAcceptedSignals[j];
+         ArrayResize(g_orbPrepMemoValues[slot].a2,ArraySize(g_histOperationalSignals)-before2);
+         for(int j=before2;j<ArraySize(g_histOperationalSignals);j++)g_orbPrepMemoValues[slot].a2[j-before2]=g_histOperationalSignals[j];
+         ArrayResize(g_orbPrepMemoValues[slot].a3,ArraySize(g_regimeReferenceSignals)-before3);
+         for(int j=before3;j<ArraySize(g_regimeReferenceSignals);j++)g_orbPrepMemoValues[slot].a3[j-before3]=g_regimeReferenceSignals[j];
+         ArrayResize(g_orbPrepMemoValues[slot].a4,ArraySize(g_regimeReferenceWindows)-before4);
+         for(int j=before4;j<ArraySize(g_regimeReferenceWindows);j++)g_orbPrepMemoValues[slot].a4[j-before4]=g_regimeReferenceWindows[j];
+      }
+   }
+   return rejected;
+}
+
+int ProcessHistoricalPrepDayUncached(const int back)
 {
    datetime nyDay=g_histRunNyMid-back*86400;MqlDateTime daySt;TimeToStruct(nyDay,daySt);
    if(daySt.day_of_week==0||daySt.day_of_week==6)return 0;
@@ -6385,11 +6597,8 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
       if(newDayReverseExitAt>0&&(forcedExitAt<=0||newDayReverseExitAt<forcedExitAt))
       {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="NEW_DAY_REVERSE_EXIT";}
-      HistResult sim=g_rtAdvancedAuditEngine
-         ?SimulateHistoricalLifecycleAdvanced(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
-            forcedExitAt,forcedExitOutcome)
-         :SimulateHistoricalLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
-         forcedExitAt,forcedExitOutcome);
+      HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
+            forcedExitAt,forcedExitOutcome);
       datetime referenceExit=0;string referenceReason="",referenceOutcome="";
       if(g_rtFilteredWindowReverseExit||g_rtPostTradeDispBlockExit)
          FindFilteredWindowExit(g_regimeReferenceWindows,entryT,execDir,g_rtFilteredWindowReverseExit,g_rtPostTradeDispBlockExit,
@@ -6404,9 +6613,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       if(referenceExit!=forcedExitAt||referenceOutcome!=forcedExitOutcome)
       {
          datetime referenceEnd=te;
-         referenceSim=g_rtAdvancedAuditEngine
-            ?SimulateHistoricalLifecycleAdvanced(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),referenceEnd,referenceExit,referenceOutcome)
-            :SimulateHistoricalLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),referenceEnd,referenceExit,referenceOutcome);
+         referenceSim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),referenceEnd,referenceExit,referenceOutcome);
       }
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
       WriteInternalSimAudit("dashboard_hist",entryT,simEnd,execDir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail+" regime_allowed="+(OrbRegimeAllowed(regimeBucket)?"1":"0")

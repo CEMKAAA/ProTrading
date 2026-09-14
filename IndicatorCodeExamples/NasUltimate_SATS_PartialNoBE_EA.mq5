@@ -5,7 +5,11 @@
 //| Risk source: SuperTrend_SATS_EA TP/SL logic                      |
 //+------------------------------------------------------------------+
 #property strict
+#ifdef NAS_STRATEGY_LIBRARY
+#property version "2.00"
+#else
 #property version "1.59"
+#endif
 
 #include <Trade/Trade.mqh>
 #include "NasUltimate_Core.mqh"
@@ -346,6 +350,9 @@ string PREFIX = "NAS_SATS_NO_BE_EA_";
 uint     g_dashboardDoorStartMs = 0;
 
 #include "NasUltimate_ProfessionalPipeline.mqh"
+#ifdef NAS_STRATEGY_LIBRARY
+#include "NasStrategyWorkbench.mqh"
+#endif
 
 bool IsTesterMode()
 {
@@ -1693,7 +1700,18 @@ SATSSettings BuildRiskSettings()
 
 int OnInit()
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(InpTradeLatestSignalOnAttach || (!InpNasLibraryAllowLive && InpNasBridgeEnabled))
+   {
+      Print("NAS Library: stale attach entries forbidden; research mode requires bridge input OFF.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+#endif
    ENUM_ACCOUNT_MARGIN_MODE marginMode = (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+#ifdef NAS_STRATEGY_LIBRARY
+   // Read-only research has no account execution requirement.
+   if(InpNasLibraryAllowLive)
+#endif
    if(InpExecutionMode != NAS_EXEC_FIXED_1_TO_3R && marginMode != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
       Print("NAS SATS initialization blocked: partial three-leg execution requires a hedging account. margin_mode=",
@@ -1762,6 +1780,9 @@ int OnInit()
    PrintStartupDiagnostics();
    BaselineStartupSignal();
    NasProInit();
+#ifdef NAS_STRATEGY_LIBRARY
+   NasLibraryInit();
+#endif
    if(DailyPnlGuardConfigured() && g_nasBridgeOnlyRuntime && !g_nasNativeWithBridgeOnlyRuntime)
       Print("NAS SATS DAILY PNL GUARD WARNING: bridge-only mode has no native MT5 PnL proxy; "
             "new-signal CSV blocking remains armed, but listener-account PnL cannot be measured by MT5.");
@@ -1804,6 +1825,10 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(g_nasLibraryExport)NasResearchAbort("EA stopped; incomplete export retained without completion marker.");
+   ObjectsDeleteAll(0,NAS_LIB_PREFIX);
+#endif
    EventKillTimer();
    ObjectsDeleteAll(0, PREFIX);
 }
@@ -1812,6 +1837,16 @@ void OnTimer()
 {
    if(IsTesterMode())
       return;
+#ifdef NAS_STRATEGY_LIBRARY
+   NasResearchTick();NasResearchPollJob();
+   if(!InpNasLibraryAllowLive||g_nasLibraryExport)
+   {
+      ProcessPendingHistoryRefresh();UpdateDashboard();
+      if(g_nasLibraryExport && !g_nasResearchWriting && !g_historyRefreshPending && !g_historyAuditRunning)
+         NasResearchAbort("History preparation failed: "+g_historyCoverageDetail);
+      return;
+   }
+#endif
    NasProTimer();
    NasRegimeRetryPendingClose();
    EnforceNasTimedExit();
@@ -1842,6 +1877,9 @@ void OnTimer()
 
 void OnTick()
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(!InpNasLibraryAllowLive||g_nasLibraryExport){if(!g_nasLibraryOpen)UpdateDashboard();return;}
+#endif
    EnforceNasTimedExit();
    EnforceDailyPnlGuard();
    EnforceAccountRiskBreach();
@@ -1881,6 +1919,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(!InpNasLibraryAllowLive)return;
+#endif
    NasProOnTradeTransaction(trans, request, result);
 }
 
@@ -2922,6 +2963,16 @@ void ProcessSignalBar()
       return;
    }
 
+#ifdef NAS_STRATEGY_LIBRARY
+   if(!NasLibraryLiveFilter(rates,p,i,direction))
+   {
+      g_lastSignalTime=rates[i].time;g_lastSignalKeyDirection=direction;
+      MarkDirectionProcessedOnBar(rates[i].time,direction);
+      g_lastExecutionStatus="ML FILTERED";g_lastExecutionBlockReason=g_nasLibraryStatus;
+      NasProAuditWrite("ml_filter_entry_rejected","nas|"+(string)(long)rates[i].time,direction,0,0,0,0,g_nasLibraryStatus);
+      RequestHistoryRefresh();return;
+   }
+#endif
    double effAtr = 0.0;
    if(!CalculateRisk(rates, copied, i, signalDirection, p[i], g_lastEntry, g_lastSl, g_lastTp1, g_lastTp2, g_lastTp3, effAtr))
    {
@@ -4249,6 +4300,9 @@ void DrawRecentSignalHistory()
       if(g_nasRegimeFilterRuntime && StringFind(regimeDetail, "fail_open") >= 0 && inAuditWindow)
          regimeUnclassified++;
 
+#ifdef NAS_STRATEGY_LIBRARY
+      if(!NasLibraryLiveFilter(rates,p,ai,g_invertTradeModeRuntime?-adir:adir,true))continue;
+#endif
       acceptedSignal[ai] = true;
       if(InpCloseExistingOnNewSignal)
          closeSignal[ai] = 2; // Accepted entries replace any existing managed direction before opening.
@@ -4257,6 +4311,9 @@ void DrawRecentSignalHistory()
       if(inAuditWindow)
          acceptedTotal++;
    }
+#ifdef NAS_STRATEGY_LIBRARY
+   NasResearchPrepare(rates,p,closeSignal);
+#endif
    for(int h = 0; h < 3; h++)
       g_historySummary[h] = "-";
    for(int r = 0; r < 7; r++)
@@ -4323,7 +4380,11 @@ void DrawRecentSignalHistory()
       if((liveManagedDirection != 0 || g_liveLevelObjectsActive) && g_lastSignalTime > 0 && rates[i].time == g_lastSignalTime)
       {
          bool sameLiveSignal = (g_invertTradeModeRuntime ? (-signalDirection == g_lastDirection) : (signalDirection == g_lastDirection));
-         if(sameLiveSignal)
+         if(sameLiveSignal
+#ifdef NAS_STRATEGY_LIBRARY
+            && !g_nasLibraryExport
+#endif
+           )
             continue; // Avoid double drawing current live signal: live level objects own that signal until cleanup.
       }
       double entry, sl, tp1, tp2, tp3, atr;
@@ -4356,8 +4417,14 @@ void DrawRecentSignalHistory()
          }
       }
 
+#ifdef NAS_STRATEGY_LIBRARY
+      bool researchEntryResolved=false;
+#endif
       if(ResolveHistoricalExecutionEntry(rates, i, copied - 2, direction, executionEntry, executionSource))
       {
+#ifdef NAS_STRATEGY_LIBRARY
+         researchEntryResolved=true;
+#endif
          if(g_invertTradeModeRuntime)
          {
             if(!BuildInvertedNasGeometry(signalDirection, direction, executionEntry, normalSwapEntryHist, originalSl, originalFinalTp, entry, sl, finalTp, geometryDetail))
@@ -4385,6 +4452,13 @@ void DrawRecentSignalHistory()
       }
 
       double hcPrice = HistoricalHcBePrice(entry, sl, direction, finalTp, finalLeg);
+#ifdef NAS_STRATEGY_LIBRARY
+      if(g_nasLibraryExport)
+      {
+         if(executionAccepted)NasResearchCapture(rates,p,i,direction,entry,sl,finalTp,hcPrice,researchEntryResolved);
+         continue;
+      }
+#endif
 
       string outcome = "";
       int maxTp = 0;
@@ -4396,6 +4470,14 @@ void DrawRecentSignalHistory()
        string simKey = NasHistorySimKey(rates[i].time, direction, entry, sl, finalTp, hcPrice, finalLeg, cacheEndTime)
           + "|fill=" + (useTickReplay ? "tick_m1_bar" : "m1_bar")
           + "|max_hold=" + (NasTimedExitConfigured() ? g_timedExitTimeRuntime : "OFF");
+#ifdef NAS_STRATEGY_LIBRARY
+      if(NasLibraryStrictAudit())
+      {
+         if(!NasLibraryReplayAudit(rates,i,direction,entry,sl,finalTp,researchEntryResolved,executionAccepted,maxTp,outcome,pnlR,closed,won))
+            continue;
+      }
+      else
+#endif
       if(!NasHistorySimCacheGet(simKey, maxTp, outcome, pnlR, closed, won))
       {
          bool simulated = SimulateHistoricalSignalByTicks(rates, p, closeSignal, useTickReplay, i, direction, copied - 2, entry, sl, finalTp, hcPrice, finalLeg, maxTp, outcome, pnlR, closed, won);
@@ -4546,6 +4628,12 @@ void DrawRecentSignalHistory()
       drawn++;
    }
 
+#ifdef NAS_STRATEGY_LIBRARY
+   if(g_nasLibraryExport)
+   {
+      g_historyAuditRunning=false;NasResearchFinishCapture();return;
+   }
+#endif
    double wr = (wins + losses) > 0 ? (double)wins * 100.0 / (double)(wins + losses) : 0.0;
    double profitFactor = lostR > 0.0 ? wonR / lostR : (wonR > 0.0 ? 99.0 : 0.0);
    int closedCount = wins + losses + breakevens + otherWins + otherLosses + otherFlats;
@@ -4565,6 +4653,9 @@ void DrawRecentSignalHistory()
       if(peakDrawdownR < maxPeakDrawdownClosedR)
          maxPeakDrawdownClosedR = peakDrawdownR;
    }
+#ifdef NAS_STRATEGY_LIBRARY
+   if(NasLibraryStrictAudit())NasLibraryAuditCurve(minCumulativeClosedR,maxPeakDrawdownClosedR);
+#endif
    bool auditMoneyAvailable = AccountRiskRuntimeEnabled()
       && AccountRiskInitialBalance() > 0.0
       && g_accountRiskPerTradePctRuntime > 0.0;
@@ -4658,6 +4749,9 @@ void DrawRecentSignalHistory()
                            + (auditMoneyAvailable ? ("/$" + DoubleToString(maxPeakDrawdownClosedMoney, 2)) : "/$N/A")
                            + " | selected window " + NasAuditWindowLabel();
 
+#ifdef NAS_STRATEGY_LIBRARY
+   g_historyAuditRows[5]+=(NasLibraryStrictAudit()?" | M1 DATA excluded "+(string)g_nasLibraryAuditData:" | LEGACY HC/LIVE audit; ML export unavailable");
+#endif
    g_historyAuditRunning = false;
    g_historyAuditProgressPct = 100.0;
    Print("NAS SATS EA history overlay drawn=", drawn,
@@ -8111,6 +8205,12 @@ void ToggleRiskGeometryMode()
 }
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(NasLibraryEvent(id,sparam))return;
+   if(g_nasLibraryExport)return;
+   if(!InpNasLibraryAllowLive && (sparam==PREFIX+"BTN_EA_TOGGLE"||sparam==PREFIX+"BTN_CLOSE_ALL"
+      ||sparam==PREFIX+"BTN_CLOSE_1_3"||sparam==PREFIX+"BTN_BE"||sparam==PREFIX+"BTN_NAS_BRIDGE_PUB"))return;
+#endif
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT)
       return;
 
@@ -8291,6 +8391,9 @@ void UpdateDoorAnimation()
 
 void UpdateDashboard()
 {
+#ifdef NAS_STRATEGY_LIBRARY
+   if(g_nasLibraryOpen)return; // Preserve in-progress edits and modal layering.
+#endif
    if(IsTesterMode())
       return;
    if(g_dashboardCollapsed)
@@ -8532,4 +8635,7 @@ void UpdateDashboard()
    CreateLabel("DASH_H2", 690, 610, UiShort(g_historySummary[1], 42), muted, 7);
    CreateLabel("DASH_H3", 690, 628, UiShort(g_historySummary[2], 42), muted, 7);
    UpdateDoorAnimation();
+#ifdef NAS_STRATEGY_LIBRARY
+   NasLibraryDraw();
+#endif
 }

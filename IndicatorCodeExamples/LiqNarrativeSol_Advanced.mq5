@@ -280,6 +280,10 @@ struct SimCacheEntry
    bool     closed;
    bool     won;
    bool     valid;
+   int      traceDir;
+   double   traceEntry,traceSl,traceTp,traceHalf;
+   datetime traceExitTime;
+   string   traceExitReason;
 };
 
 struct BtCombo
@@ -795,6 +799,14 @@ bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &val
          closed = g_simCache[i].closed;
          won = g_simCache[i].won;
          valid = g_simCache[i].valid;
+         g_lastSimInvalidReason = "";
+         g_lastSimExecDir = g_simCache[i].traceDir;
+         g_lastSimExecEntry = g_simCache[i].traceEntry;
+         g_lastSimExecSl = g_simCache[i].traceSl;
+         g_lastSimExecTp = g_simCache[i].traceTp;
+         g_lastSimExecHalf = g_simCache[i].traceHalf;
+         g_lastSimExitTime = g_simCache[i].traceExitTime;
+         g_lastSimExitReason = g_simCache[i].traceExitReason;
          return true;
       }
    }
@@ -810,6 +822,13 @@ void SimCachePut(const string key, double r, bool closed, bool won, bool valid)
    g_simCache[n].closed = closed;
    g_simCache[n].won = won;
    g_simCache[n].valid = valid;
+   g_simCache[n].traceDir = g_lastSimExecDir;
+   g_simCache[n].traceEntry = g_lastSimExecEntry;
+   g_simCache[n].traceSl = g_lastSimExecSl;
+   g_simCache[n].traceTp = g_lastSimExecTp;
+   g_simCache[n].traceHalf = g_lastSimExecHalf;
+   g_simCache[n].traceExitTime = g_lastSimExitTime;
+   g_simCache[n].traceExitReason = g_lastSimExitReason;
 }
 
 double NormPrice(double price)
@@ -2771,10 +2790,14 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
          SetHistoricalAuditProgress("OUTCOMES", 78.0 + 21.0 * (double)(i + 1) / (double)MathMax(1, ArraySize(g_histSignals)));
       bool closed = false, won = false, valid = false;
       datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
-      // Always run the visible audit row so its effective execution geometry
-      // and exit reason match the lines drawn on chart. Aggregate RF scans may
-      // still use the compact result cache.
-      double r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
+      // Restore the full trace with terminal outcomes; never freeze DATA/OPEN.
+      string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
+      double r = 0.0;
+      if(!SimCacheGet(simKey, r, closed, won, valid))
+      {
+         r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
+      }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
@@ -5632,15 +5655,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_HC_TP3")) { if(g_invertMode || (int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP4")) { if(g_invertMode || (int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_TP5")) { if(g_invertMode || (int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_1Y")) { g_histWeeks = 52; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_2Y")) { g_histWeeks = 104; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_3Y")) { g_histWeeks = 156; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_4Y")) { g_histWeeks = 208; RefreshAfterConfigChange(); return; }
-   if(Clicked(sparam, "BTN_AUD_5Y")) { g_histWeeks = 260; RefreshAfterConfigChange(); return; }
+   if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_20W")) { g_histWeeks = 20; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_1Y")) { g_histWeeks = 52; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_2Y")) { g_histWeeks = 104; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_3Y")) { g_histWeeks = 156; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_4Y")) { g_histWeeks = 208; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_AUD_5Y")) { g_histWeeks = 260; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_ATRBUF_0")) { g_slBufferAtrPct = 0.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "0"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_20")) { g_slBufferAtrPct = 20.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "20"); RefreshAfterConfigChange(); return; }
    if(Clicked(sparam, "BTN_ATRBUF_40")) { g_slBufferAtrPct = 40.0; ObjectSetString(0, PFX + "EDIT_ATRBUF_PCT", OBJPROP_TEXT, "40"); RefreshAfterConfigChange(); return; }
