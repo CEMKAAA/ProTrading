@@ -1,0 +1,155 @@
+﻿{
+    "canonical_root":  "..",
+    "entrypoints":  [
+                        "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                        "NasUltimate_StrategyLibrary.mq5"
+                    ],
+    "files":  [
+                  {
+                      "file":  "AuditMemoIndex.mqh",
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA"
+                  },
+                  {
+                      "file":  "LiqNarrativeMacroRegime.mqh",
+                      "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+                  },
+                  {
+                      "file":  "NasStrategyFeatures.mqh",
+                      "sha256":  "7D62FE84B2993525EE8BE5197B4FC34DDA36D05943205A60CE77C76774597AB0"
+                  },
+                  {
+                      "file":  "NasStrategyInputProfile.mqh",
+                      "sha256":  "45EF3F903ABC424420C61A858F7726D113E4B7C177789C76F54434F4852EB0E9"
+                  },
+                  {
+                      "file":  "NasStrategyLeaderboard.mqh",
+                      "sha256":  "1F0080A9D323F115F7FA2D2ECC5E1C23FF9B8D8F9C080B71ECFA5F4D7BE694C0"
+                  },
+                  {
+                      "file":  "NasStrategyMLCore.mqh",
+                      "sha256":  "2B79A94D7AC93E03CD0D39B5DE464787E07A87A16B46BC2798CEE80C7FC58092"
+                  },
+                  {
+                      "file":  "NasStrategyModelSlot.mqh",
+                      "sha256":  "32CF189FA5D9F4062405DDE66686C228463696CC131E428C4616C50BB6C47F57"
+                  },
+                  {
+                      "file":  "NasStrategyPresets.mqh",
+                      "sha256":  "CC46635DF8E25637AF08141241D968FD30D8BCF62152E0968C178457487578DD"
+                  },
+                  {
+                      "file":  "NasStrategyR7Core.mqh",
+                      "sha256":  "2CF6C39964A1E84A584D9AFDC27833FBD96E44587B3650A62247767A1AF0C000"
+                  },
+                  {
+                      "file":  "NasStrategyResearch.mqh",
+                      "sha256":  "575B16562375B4D878DBC2C4914BFDBC6C499CA5147AEB79548BC579F756FE85"
+                  },
+                  {
+                      "file":  "NasStrategyWorkbench.mqh",
+                      "sha256":  "3C2B09EEBF7B376A11C9F1991876B36070C85660AC4E59DD76BD11DF711BD4D6"
+                  },
+                  {
+                      "file":  "NasUltimate_Core.mqh",
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36"
+                  },
+                  {
+                      "file":  "NasUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "187773FC7FF49F1D63C9080FAE75AC6C3677C9DD52056BB5DFE082F69E1D5B48"
+                  },
+                  {
+                      "file":  "NasUltimate_SATS_PartialNoBE_EA.ex5",
+                      "sha256":  "D4E773317B10CACE774B6A8738C7132B883D1FA3BE8BCF07AA6BA345F2678487"
+                  },
+                  {
+                      "file":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                      "sha256":  "494F48AABDC3AF4D8B581E4CBCF6841B8558B717EE81A04FE348CA3D1E05F466"
+                  },
+                  {
+                      "file":  "NasUltimate_StrategyLibrary.ex5",
+                      "sha256":  "BFC7BE60C43DADEE5D2F4C5C0682C32D78EEA920545E7E222121C933E499A664"
+                  },
+                  {
+                      "file":  "NasUltimate_StrategyLibrary.mq5",
+                      "sha256":  "87DB2D5CD87A1DE0A9766DBA22C13B49D285DF3934BDB15237D33DB6733A037B"
+                  },
+                  {
+                      "file":  "SuperTrend_SATS_Core.mqh",
+                      "sha256":  "8A6CD867077145E08E45281588CF053867A623FED84A1974A52FBF3F922789E4"
+                  }
+              ],
+    "dependencies":  [
+                         {
+                             "parent":  "NasStrategyModelSlot.mqh",
+                             "include":  "NasStrategyR7Core.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyR7Core.mqh",
+                             "include":  "NasStrategyMLCore.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyResearch.mqh",
+                             "include":  "AuditMemoIndex.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyResearch.mqh",
+                             "include":  "NasStrategyFeatures.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyInputProfile.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyLeaderboard.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyMLCore.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyModelSlot.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyPresets.mqh"
+                         },
+                         {
+                             "parent":  "NasStrategyWorkbench.mqh",
+                             "include":  "NasStrategyResearch.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "LiqNarrativeMacroRegime.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "NasStrategyWorkbench.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "NasUltimate_Core.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "NasUltimate_ProfessionalPipeline.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_SATS_PartialNoBE_EA.mq5",
+                             "include":  "SuperTrend_SATS_Core.mqh"
+                         },
+                         {
+                             "parent":  "NasUltimate_StrategyLibrary.mq5",
+                             "include":  "NasUltimate_SATS_PartialNoBE_EA.mq5"
+                         }
+                     ]
+}

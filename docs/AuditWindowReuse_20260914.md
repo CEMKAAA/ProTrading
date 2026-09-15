@@ -37,10 +37,12 @@ and has not received the new ORB memo wrapper. Main ORB's existing channel
 support and listener protocol are unchanged.
 
 ORB/NAS memo indices are instance-local RAM, capped at 65,536 entries with full
-key comparison after hashing. They conservatively expire on a new M1 bar,
-history extension/synchronization or reinitialization. They are not persistent
-cross-restart dataset caches. A broker correction that changes neither history
-metadata nor the current M1 epoch requires a fresh audit/reinitialization.
+key comparison after hashing. NAS conservatively expires on a new M1 bar.
+ORB retains completed replay entries on append-only M1 updates; history
+backfill, reset or synchronization changes invalidate its epoch. PREP also
+checks its NAS data dependencies. These are not persistent cross-restart
+dataset caches. A broker correction that changes no history metadata requires
+a fresh audit/reinitialization.
 
 ## Verification
 
@@ -63,5 +65,23 @@ the initial broker history download; initial cold data hydration previously
 took about 28.5 seconds and changed the count of resolvable labels. Such DATA
 exclusions are not wins/losses and must not be mistaken for stable full coverage.
 
-No active production EA or listener was restarted by these tests. Do not infer
-production deployment merely from successful workspace compilation.
+Final ORB warm/cold comparisons matched in all seven windows. Recorded warm
+times for 5Y, 1Y, 20W, 10W, 5W, 2W, then 5Y again were respectively
+3.562, 2.625, 0.297, 0.157, 0.094, 0.063, 8.969 seconds. The final wider-window
+return had partial cache reuse; this is not a universal instant-window claim.
+
+## Deployment Completed 2026-09-15
+
+All 11 entry points compiled with zero errors and warnings; 19 Python tests
+passed (one dependency deprecation warning). The final ORB dependency hashes
+matched the benchmarked sources. NAS model inference parity passed for 38
+models and 456 vectors; this verifies inference, not predictive profitability.
+
+Installed into `C:\MT5\DEMO\MQL5\Experts`: 60 files changed and all 116 planned
+destination hashes matched. Sources/includes were installed before binaries.
+Backup and installation manifest are under `logs/AuditWindowReuse_20260914`;
+the backup directory is `deployment_backup_20260915_083857`.
+
+No listener settings or model promotion was changed. No explicit chart restart
+was performed; replacing an attached EX5 may cause MT5 to reload it. File
+installation is verified, not the runtime settings of every active chart.

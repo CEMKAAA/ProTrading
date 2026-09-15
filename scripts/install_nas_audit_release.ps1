@@ -1,8 +1,15 @@
-param([switch]$Install)
+param(
+    [switch]$Install,
+    [string]$ExpertsPath='C:\MT5\DEMO\MQL5\Experts'
+)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $src=Join-Path $root 'IndicatorCodeExamples'
-$target=[IO.Path]::GetFullPath('C:\MT5\DEMO\MQL5\Experts')
+$target=[IO.Path]::GetFullPath($ExpertsPath).TrimEnd('\')
+if(!(Test-Path -LiteralPath $target -PathType Container) -or
+   !(($target -replace '/','\').EndsWith('\MQL5\Experts',[StringComparison]::OrdinalIgnoreCase))) {
+    throw 'Target must be an existing MQL5\Experts directory'
+}
 $report=Join-Path $root 'logs/AuditWindowReuse_20260914'
 $entrypoints=@('OrbUltimateEA.mq5','OrbUltimateEA_StrategyLibrary.mq5','NasUltimate_StrategyLibrary.mq5','NasUltimate_SATS_PartialNoBE_EA.mq5','LiquidityNarrative_MT5_EA.mq5','LiquidityNarrative_Invert_MT5_EA.mq5','LiqNarrativeSolVersion.mq5','LiqNarrativeSol_Advanced.mq5','LiquidityNarrative_MT5_EA_Channel.mq5','LiqNarrativeSolVersion_Channel.mq5','LiqNarrativeSol_Advanced_Channel.mq5')
 foreach($entry in $entrypoints) {
@@ -17,6 +24,12 @@ if($nas.Count -ne 7 -or @($nas|Where-Object {!$_.same -or $_.blocked}).Count){th
 if($orb.Count -ne 7 -or @($orb|Where-Object {!$_.same -or !$_.ok}).Count){throw 'ORB parity not passed'}
 $prediction=Get-Content (Join-Path $root 'logs/NasStrategyLibrary_20260912/mql_prediction_parity.json') -Raw|ConvertFrom-Json
 if($prediction.failed -ne 0 -or $prediction.models -ne 38 -or $prediction.vectors -ne 456){throw 'Model inference not passed'}
+# Keep each terminal's deployment evidence separate from validation and DEMO records.
+if($target -ne 'C:\MT5\DEMO\MQL5\Experts') {
+    $terminalName=Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $target))
+    $report=Join-Path $report ('terminal_'+$terminalName)
+    New-Item -ItemType Directory -Path $report -Force|Out-Null
+}
 $map=@{}
 function Add-Source([string]$name,[string]$folder) {
     $dest=[IO.Path]::GetFullPath((Join-Path $folder $name))
