@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property strict
 #ifdef NAS_STRATEGY_LIBRARY
-#property version "2.00"
+#property version "2.01"
 #else
 #property version "1.59"
 #endif
@@ -64,6 +64,15 @@ input int    InpNasSensitivity = 4;
 input int    InpNasRsiLength = 14;
 input int    InpNasAtrRisk = 1;
 input int    InpNasAtrLen = 14;
+#ifdef NAS_STRATEGY_LIBRARY
+input group "NAS Signal Indicator Periods"
+input int InpNasSmaFastPeriod = 8;     // Feature/display SMA, not the entry trigger
+input int InpNasSmaMidPeriod = 9;      // Feature/display SMA, not the entry trigger
+input int InpNasSignalSmaPeriod = 13;  // Price must be above/below this SMA
+input int InpNasSuperTrendAtrPeriod = 11;
+#include "NasStrategyConfigurableCore.mqh"
+#define NAS_Calculate NAS_LibraryCalculate
+#endif
 input double InpPineRiskDistanceMultiplier = 1.125;
 input bool   InpUseStructuralSwingStop = true;
 input int    InpSwingLookbackBars = 80;
@@ -1701,6 +1710,9 @@ SATSSettings BuildRiskSettings()
 int OnInit()
 {
 #ifdef NAS_STRATEGY_LIBRARY
+   if(InpNasSmaFastPeriod<1||InpNasSmaFastPeriod>1000||InpNasSmaMidPeriod<1||InpNasSmaMidPeriod>1000
+      ||InpNasSignalSmaPeriod<1||InpNasSignalSmaPeriod>1000||InpNasSuperTrendAtrPeriod<1||InpNasSuperTrendAtrPeriod>1000)
+   {Print("NAS Library: SMA/ATR periods must be between 1 and 1000.");return INIT_PARAMETERS_INCORRECT;}
    if(InpTradeLatestSignalOnAttach || (!InpNasLibraryAllowLive && InpNasBridgeEnabled))
    {
       Print("NAS Library: stale attach entries forbidden; research mode requires bridge input OFF.");

@@ -1,6 +1,7 @@
 param(
     [switch]$Install,
-    [string]$ExpertsPath='C:\MT5\DEMO\MQL5\Experts'
+    [string]$ExpertsPath='C:\MT5\DEMO\MQL5\Experts',
+    [ValidateSet('all','nas')][string]$Family='all'
 )
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
@@ -12,6 +13,7 @@ if(!(Test-Path -LiteralPath $target -PathType Container) -or
 }
 $report=Join-Path $root 'logs/AuditWindowReuse_20260914'
 $entrypoints=@('OrbUltimateEA.mq5','OrbUltimateEA_StrategyLibrary.mq5','NasUltimate_StrategyLibrary.mq5','NasUltimate_SATS_PartialNoBE_EA.mq5','LiquidityNarrative_MT5_EA.mq5','LiquidityNarrative_Invert_MT5_EA.mq5','LiqNarrativeSolVersion.mq5','LiqNarrativeSol_Advanced.mq5','LiquidityNarrative_MT5_EA_Channel.mq5','LiqNarrativeSolVersion_Channel.mq5','LiqNarrativeSol_Advanced_Channel.mq5')
+if($Family -eq 'nas'){$entrypoints=@('NasUltimate_StrategyLibrary.mq5','NasUltimate_SATS_PartialNoBE_EA.mq5')}
 foreach($entry in $entrypoints) {
     $source=Join-Path $src $entry;$binary=[IO.Path]::ChangeExtension($source,'.ex5')
     $log=Join-Path $report ($entry+'.compile.log')

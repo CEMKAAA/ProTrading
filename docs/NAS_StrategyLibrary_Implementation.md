@@ -50,8 +50,11 @@ is not a guarantee of trading safety or evidence that an ML model has an edge.
    and bridge publication even if a dashboard execution toggle is pressed.
 3. Open `STRATEGIES / ML`. Search, filter by symbol/exact R, favorite a preset,
    or save a named copy of the current configuration.
-4. Apply a preset on its matching symbol and TF. PNG-hidden inputs require the
-   documented baseline confirmation. Account risk/PUB/ONLY/NAT are not imported.
+4. Click a preset on its matching symbol and TF (including leaderboard rows).
+   Research mode applies it immediately and closes the modal. Live-enabled mode
+   still requires PNG baseline confirmation; open positions/PUB/export block
+   switching, with a visible status and `NAS_LIBRARY_APPLY_BLOCKED` log.
+   Account risk/PUB/ONLY/NAT are not imported.
 5. `CREATE 5Y CSV` exports to `Common/Files/NasML/Datasets`. Completed exports
    have checksum/completion markers; interrupted exports cannot enter training.
 6. `TRAIN MODEL` queues work for the NAS-only worker. The task
@@ -89,6 +92,33 @@ The original NAS signal core remains unchanged. The new strict audit applies
 only to the opt-in library's CLOSED single-order HCBE-OFF configuration. Other
 NAS configurations retain the original audit and are not claimed equivalent to
 the strict training labels.
+
+## 2026-09-15 Selection Fix And Indicator Inputs
+
+Research preset selection was blocked by the default-false PNG confirmation
+input, including leaderboard selections. Research clicks now apply without
+that live-only confirmation. An audit-running flag no longer blocks selection;
+the new settings request a fresh audit. Successful selection logs exact applied
+settings and closes the modal. Blocked selection never changes the active ID.
+
+Library Inputs now expose SMA periods 8/9/13 and SuperTrend ATR period 11.
+Only the third SMA and price/SuperTrend crossing control entry signals; the
+first two SMAs serve display/features. `InpNasSensitivity` is already exposed.
+`InpNasRsiLength` exists in the original settings but the original NAS entry
+formula does not use RSI, so changing it is not advertised as changing entries.
+The generated library adapter leaves the shared core unchanged. Default output
+was compared across 1,000 synthetic bars, including every signal and risk level.
+New period inputs are included in configuration identity. Old-source model and
+user-profile compatibility checks remain strict; no automatic model promotion.
+
+Observed DEMO USTEC log on 2026-09-15: 62 trades, 31 TP wins / 31 stops, gross
+0R, assumed commission 28.9366R, net -28.9366R. The 0.08% entry-notional
+round-turn assumption is inherited, not obtained from the broker. It is now
+explicitly marked ASSUMED in the audit cost row and shown in the library.
+It was not removed to manufacture profitable results. Set
+`InpAuditRoundTurnCommissionPct` to the verified account/symbol fee; disabling
+`InpAuditCommissionEnabled` is a gross-results diagnostic, not net performance.
+This finding does not establish that every unfavorable audit result is a bug.
 
 ## Audit Window Reuse
 

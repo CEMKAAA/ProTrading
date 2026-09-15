@@ -1,5 +1,5 @@
 // Generated immutable settings identity.
-#define NAS_LIBRARY_SOURCE_HASH "2fb07c1ffba4943074329c3ffa17efcc30c5f833097fc4daa7cd279acef44b09"
+#define NAS_LIBRARY_SOURCE_HASH "bf9150f2fc64b91764450fe6de77f764412bcd04061430f5a74f6e1a6073decf"
 string NasLibraryInputProfile()
 {
    string s="nas-input-profile-v1|"+NAS_LIBRARY_SOURCE_HASH;
@@ -7,6 +7,10 @@ string NasLibraryInputProfile()
    s+="|InpNasRsiLength="+(string)InpNasRsiLength;
    s+="|InpNasAtrRisk="+(string)InpNasAtrRisk;
    s+="|InpNasAtrLen="+(string)InpNasAtrLen;
+   s+="|InpNasSmaFastPeriod="+(string)InpNasSmaFastPeriod;
+   s+="|InpNasSmaMidPeriod="+(string)InpNasSmaMidPeriod;
+   s+="|InpNasSignalSmaPeriod="+(string)InpNasSignalSmaPeriod;
+   s+="|InpNasSuperTrendAtrPeriod="+(string)InpNasSuperTrendAtrPeriod;
    s+="|InpPineRiskDistanceMultiplier="+DoubleToString(InpPineRiskDistanceMultiplier,16);
    s+="|InpUseStructuralSwingStop="+(string)InpUseStructuralSwingStop;
    s+="|InpSwingLookbackBars="+(string)InpSwingLookbackBars;

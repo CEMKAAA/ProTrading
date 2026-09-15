@@ -56,7 +56,7 @@ def generate():
     # separately by NasLibraryConfig. Audit-window/presentation inputs are not alpha.
     inputs=re.findall(r'^input\s+(\w+)\s+(Inp\w+)\s*=',source,re.M)
     ignored=('InpDashboardAuditWeeks','InpShowDashboard','InpDrawLastSignalsOnStart','InpStartupSignalCount','InpDrawTradeLevels','InpDrawExecutionArrows','InpSignalParityAudit','InpAuditNoSignalEvaluations','InpDrawLastSignalsOnStart')
-    dependencies=('NasUltimate_Core.mqh','SuperTrend_SATS_Core.mqh','NasStrategyWorkbench.mqh',
+    dependencies=('NasUltimate_Core.mqh','NasStrategyConfigurableCore.mqh','SuperTrend_SATS_Core.mqh','NasStrategyWorkbench.mqh',
         'NasStrategyResearch.mqh','NasStrategyFeatures.mqh','NasStrategyMLCore.mqh',
         'NasStrategyR7Core.mqh','NasStrategyModelSlot.mqh','LiqNarrativeSol_RegimeV3.mqh')
     source_hash=hashlib.sha256(source.encode()+b''.join((INC/name).read_bytes() for name in dependencies)).hexdigest()

@@ -85,6 +85,25 @@ def test_modal_stale_edit_and_unsafe_apply_guards():
     assert 'p.profile!=NasLibraryInputProfile()' in code
     assert 'MarkDirectionProcessedOnBar(g_lastSignalTime,1)' in code
     assert 'MarkDirectionProcessedOnBar(g_lastSignalTime,-1)' in code
+    assert '!p.user&&InpNasLibraryAllowLive&&!InpNasLibraryConfirmPngDefaults' in code
+    assert 'if(NasLibraryApply(i))' in code
+    assert 'g_nasLibraryOpen=false;ObjectsDeleteAll(0,NAS_LIB_PREFIX);' in code
+    busy=code[code.index('bool NasLibraryBusy()'):code.index('bool NasLibraryApply(')]
+    assert 'g_historyAuditRunning' not in busy
+
+
+def test_configurable_core_only_changes_explicit_periods():
+    core=(ROOT/'IndicatorCodeExamples/NasUltimate_Core.mqh').read_text()
+    original=core[core.index('int NAS_Calculate('):].strip()
+    adapter=(ROOT/'IndicatorCodeExamples/NasStrategyConfigurableCore.mqh').read_text()
+    adapter=adapter[adapter.index('int NAS_LibraryCalculate('):adapter.rindex('#endif')].strip()
+    adapter=adapter.replace('NAS_LibraryCalculate(', 'NAS_Calculate(')
+    start=adapter.index('   if(InpNasSmaFastPeriod')
+    end=adapter.index('   if(n <= 0)',start)
+    adapter=adapter[:start]+adapter[end:]
+    for name,value in [('InpNasSmaFastPeriod','8'),('InpNasSmaMidPeriod','9'),('InpNasSignalSmaPeriod','13'),('InpNasSuperTrendAtrPeriod','11')]:
+        adapter=adapter.replace(name,value)
+    assert adapter==original
 
 def test_no_hcbe_or_ambiguous_labels_fabricated():
     code=(ROOT/'IndicatorCodeExamples/NasStrategyResearch.mqh').read_text()

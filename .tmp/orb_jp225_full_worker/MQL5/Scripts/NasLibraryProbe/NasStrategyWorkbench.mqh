@@ -19,7 +19,7 @@ int g_nasLibrarySelected=-1,g_nasLibraryPage=0;
 int g_nasLibraryVisible[];
 bool g_nasLibraryOpen=false,g_nasLibraryFavorites=false;
 string g_nasLibrarySearch="",g_nasLibrarySymbol="",g_nasLibraryR="";
-string g_nasLibraryStatus="Research mode. PNG hidden inputs require confirmation.";
+string g_nasLibraryStatus="Click a strategy to apply. PNG-hidden settings use the documented baseline.";
 string g_nasLibraryAppliedConfig="";
 string NAS_LIB_PREFIX="NAS_WORKBENCH_";
 bool g_nasLibraryExport=false,g_nasLibraryMlEnabled=false;
@@ -141,10 +141,10 @@ void NasLibraryAddBuiltin(string id,string name,string symbol,int tf,string star
 
 bool NasLibraryBusy()
 {
-   if(g_historyAuditRunning||g_nasLibraryExport||g_pendingAccountRiskLockRetry
+   if(g_nasLibraryExport||g_pendingAccountRiskLockRetry
       ||g_nasRegimeCloseRetry.active||g_nasTimedExitClose.active||ArraySize(g_nasProBridgePending)>0
       ||g_nasBridgeEnabledRuntime||ManagedPositionDirection()!=0||g_timedExitBridgePlanDirection!=0)
-   {g_nasLibraryStatus="Cannot switch: audit/export, open position or bridge lifecycle. PUB must be OFF.";return true;}
+   {g_nasLibraryStatus="Cannot switch: export, open position or bridge lifecycle. PUB must be OFF.";return true;}
    return false;
 }
 
@@ -156,7 +156,7 @@ bool NasLibraryApply(const int index)
    {g_nasLibraryStatus="Wrong chart: strategy needs "+p.symbol+" M"+(string)p.tf;return false;}
    if(p.user&&p.profile!=NasLibraryInputProfile())
    {g_nasLibraryStatus="Immutable input profile differs. Restore the saved EA inputs first.";return false;}
-   if(!p.user&&!InpNasLibraryConfirmPngDefaults)
+   if(!p.user&&InpNasLibraryAllowLive&&!InpNasLibraryConfirmPngDefaults)
    {g_nasLibraryStatus="Confirm PNG hidden-input defaults in EA Inputs before applying imported strategies.";return false;}
    if(!p.user && (InpNasSensitivity!=4||InpNasRsiLength!=14||InpNasAtrRisk!=1||InpNasAtrLen!=14
       ||InpSignalBarMode!=NAS_SIGNAL_BAR_CLOSED||!InpUseTradingTimeWindow||!InpCloseExistingOnNewSignal
@@ -181,6 +181,7 @@ bool NasLibraryApply(const int index)
    ClearAccountRiskLockRetry();g_lastSignalTime=iTime(_Symbol,_Period,1);
    MarkDirectionProcessedOnBar(g_lastSignalTime,1);MarkDirectionProcessedOnBar(g_lastSignalTime,-1);
    g_lastExecutedDirection=0;g_nasLibraryStatus="Applied "+p.name+"; ML OFF; account/risk/PUB/ONLY/NAT unchanged.";
+   Print("NAS_LIBRARY_APPLIED id=",p.id," settings=",NasLibrarySettings()," config=",g_nasLibraryAppliedConfig);
    // Recreate edit objects so stale text/focus cannot overwrite applied values.
    ClearDashboardObjects();g_dashboardForceNextUpdate=true;RequestHistoryRefresh();UpdateDashboard();
    return true;
@@ -302,7 +303,11 @@ void NasLibraryDraw()
    NasLibraryUi("LBMODE",OBJ_BUTTON,550,307,188,24,"SCORE: "+NasLeaderboardModeName(),C'28,80,112');
    string regime=g_nasLeaderboardRegime<0?"ALL":(g_nasLeaderboardRegime==6?"UNKNOWN":LiqMacroRegimeShortName(g_nasLeaderboardRegime));
    NasLibraryUi("LBREGIME",OBJ_BUTTON,748,307,270,24,"LEADERBOARD REGIME: "+regime,C'28,80,112');
-   NasLibraryUi("STATUS",OBJ_LABEL,36,348,0,0,StringSubstr(g_nasLibraryStatus,0,122));
+   NasLibraryUi("STATUS",OBJ_LABEL,36,338,0,0,StringSubstr(g_nasLibraryStatus,0,122));
+   string active=g_nasLibrarySelected>=0?g_nasLibrary[g_nasLibrarySelected].name:"NONE - current chart settings";
+   NasLibraryUi("ACTIVE",OBJ_LABEL,36,356,0,0,"ACTIVE: "+StringSubstr(active,0,40)
+      +" | SL "+DoubleToString(g_pipSlDistanceRuntime,1)+"p | "+DoubleToString(g_selectedTargetRRuntime,2)+"R"
+      +" | Fee "+(InpAuditCommissionEnabled?DoubleToString(InpAuditRoundTurnCommissionPct,3)+"% notional":"OFF"));
    ObjectSetString(0,NAS_LIB_PREFIX+"STATUS",OBJPROP_TOOLTIP,g_nasLibraryStatus);
    NasLibraryDrawResearch();
    ChartRedraw(0);
@@ -344,7 +349,15 @@ bool NasLibraryEvent(const int id,const string object)
       if(row>=0&&row<6&&at<ArraySize(g_nasLibraryVisible))
       {
          int i=g_nasLibraryVisible[at];
-         if(StringFind(key,"ROW")==0)NasLibraryApply(i);
+         if(StringFind(key,"ROW")==0)
+         {
+            if(NasLibraryApply(i))
+            {
+               g_nasLibraryOpen=false;ObjectsDeleteAll(0,NAS_LIB_PREFIX);
+               NasLibraryDraw();ChartRedraw(0);return true;
+            }
+            Print("NAS_LIBRARY_APPLY_BLOCKED id=",g_nasLibrary[i].id," reason=",g_nasLibraryStatus);
+         }
          else
          {
             bool next=!g_nasLibrary[i].favorite;

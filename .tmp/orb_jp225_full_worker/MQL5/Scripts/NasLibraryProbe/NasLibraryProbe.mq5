@@ -6,6 +6,26 @@
 #define OnChartEvent NasProbeOriginalEvent
 #define OnTradeTransaction NasProbeOriginalTransaction
 #include "NasUltimate_StrategyLibrary.mq5"
+#undef NAS_Calculate
+int CoreParityCases()
+{
+   MqlRates r[];ArrayResize(r,1000);ArraySetAsSeries(r,false);
+   for(int i=0;i<1000;i++)
+   {
+      ZeroMemory(r[i]);r[i].time=600+i*300;
+      r[i].close=1000+25*MathSin(i*.17)+12*MathSin(i*.53);
+      r[i].open=r[i].close+.2;r[i].high=r[i].close+2;r[i].low=r[i].close-2;
+   }
+   NasPoint old[],now[];NasSettings s=BuildNasSettings();
+   int a=NAS_Calculate(r,1000,s,old),b=NAS_LibraryCalculate(r,1000,s,now),failed=0;
+   if(a!=1000||b!=a)return 1;
+   for(int i=0;i<a;i++)
+      if(old[i].buy!=now[i].buy||old[i].sell!=now[i].sell||old[i].superTrend!=now[i].superTrend
+         ||old[i].sma8!=now[i].sma8||old[i].sma9!=now[i].sma9||old[i].sma13!=now[i].sma13
+         ||old[i].nasEntry!=now[i].nasEntry||old[i].nasSl!=now[i].nasSl
+         ||old[i].nasTp1!=now[i].nasTp1||old[i].nasTp2!=now[i].nasTp2||old[i].nasTp3!=now[i].nasTp3)failed++;
+   return failed;
+}
 void Quote(MqlRates &q,datetime at,double open,double high,double low,int spread=1)
 {
    ZeroMemory(q);q.time=at;q.open=open;q.high=high;q.low=low;q.close=open;q.spread=spread;
@@ -55,7 +75,7 @@ int MemoCases()
 void OnStart()
 {
    if(StringFind(TerminalInfoString(TERMINAL_DATA_PATH),"orb_jp225_full_worker")<0)return;
-   int replayFailed=ReplayCases(),memoFailed=MemoCases(),failed=replayFailed+memoFailed,parsed=0;
+   int replayFailed=ReplayCases(),memoFailed=MemoCases(),coreFailed=CoreParityCases(),failed=replayFailed+memoFailed+coreFailed,parsed=0;
    g_eaEnabledRuntime=false;g_nasBridgeEnabledRuntime=false;
    g_tradeStartTimeRuntime=InpTradeStartTime;g_tradeEndTimeRuntime=InpTradeEndTime;
    g_totalLotRuntime=InpTotalLot;g_fixedLotRuntime=InpFixedLot;
@@ -73,6 +93,13 @@ void OnStart()
    int before=ArraySize(g_nasLibrary);
    NasLibraryAddBuiltin("probe_only","No order probe",NasLibrarySymbol(_Symbol),PeriodSeconds(_Period)/60,
       "10:00","17:00",80000,.35,75,true,true,.9);
+   // Exercise the actual visible row-click handler with default PNG confirmation OFF.
+   g_nasLibrary[before].user=false;g_nasLibrarySearch="No order probe";
+   g_nasLibraryOpen=true;NasLibraryDraw();g_historyAuditRunning=true;
+   if(!NasLibraryEvent(CHARTEVENT_OBJECT_CLICK,NAS_LIB_PREFIX+"ROW0")||g_nasLibraryOpen||g_nasLibrarySelected!=before)failed++;
+   g_historyAuditRunning=false;
+   g_nasLeaderboard=true;g_nasLibraryOpen=true;NasLibraryDraw();
+   if(!NasLibraryEvent(CHARTEVENT_OBJECT_CLICK,NAS_LIB_PREFIX+"ROW0")||g_nasLibraryOpen)failed++;
    g_nasLibrary[before].user=true;g_nasLibrary[before].profile=NasLibraryInputProfile();
    double risk=g_accountRiskPerTradePctRuntime;
    if(!NasLibraryApply(before))failed++;
