@@ -72,10 +72,28 @@ must still be built in cTrader before use.
   in reserved blocks. Missing MA data no longer falls back to ORB breakouts.
 
 Match **Signal TF**, not just chart TF, to TradingView when comparing. This
-EA still applies the selected ORB framework's sessions, daily-entry rules,
-execution geometry and filters downstream of the raw Pine candidate stream.
-Therefore accepted/audited trades are not an unfiltered overlay of every
-Pine arrow. Label text is descriptive, not an additional close-order command.
+EA applies execution geometry and explicitly enabled filters downstream of
+the raw Pine candidate stream. All raw candidates remain visible; accepted
+trades alone contribute to trade statistics. Label text is descriptive.
+
+## Event history correction (0.12)
+
+- History preparation and calculation visit every MA event, not one event
+  per ORB day. Same-day, same-direction events have unique timestamp IDs.
+- Persistent source markers survive live-position cleanup, then are replaced
+  by the completed historical snapshot. Rejected candidates remain neutral
+  with their rejection reason; RAW and trade counts are reported separately.
+- MA execution no longer waits for an ORB opening range or enforces one entry
+  per day. ORB range-ATR, opening-delay and UTC-opening controls are detached.
+  Explicit user entry windows, volume/regime/FVG filters and ATR sizing remain.
+- Signal TF defaults to chart TF and is still selectable. Match the listener's
+  Source TF to this value. Pip SL is unchanged; non-pip base stops use the
+  generating candle's high/low instead of an unrelated opening range.
+- Accepted opposite signals can close/reverse within the same day. A new
+  calendar day no longer discards open-position/bridge/HCBE state.
+- The isolated event probe checks 12 same-day candidates and replays real
+  JP225 M5 candles through preparation and trade calculation. This tests
+  OHLC replay, not live fills, bridge delivery or TradingView feed parity.
 
 The comparison requires identical OHLC, session boundaries, indicator inputs,
 and history origin. Different broker feeds need not produce identical signals.

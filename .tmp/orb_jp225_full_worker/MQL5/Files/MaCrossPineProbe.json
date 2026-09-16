@@ -1,1 +1,1 @@
-{"checks":12455,"failed":0,"benchmark":[{"bars":200000,"ms":5.441,"events":2482},{"bars":1000000,"ms":18.747,"events":12414}]}
+{"checks":12455,"failed":0,"benchmark":[{"bars":200000,"ms":7.770,"events":2482},{"bars":1000000,"ms":30.816,"events":12414}]}

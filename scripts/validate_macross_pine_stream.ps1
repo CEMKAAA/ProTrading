@@ -5,7 +5,7 @@ $report=Join-Path $root 'logs/macross_pine_stream'
 New-Item -ItemType Directory -Path $report -Force | Out-Null
 $editor='C:\MT5\DEMO\MetaEditor64.exe'
 $sources=@('IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.mq5',
- 'tests/mql5/MaCrossPineStreamProbe.mq5','tests/mql5/MaCrossMarketTimingProbe.mq5')
+ 'tests/mql5/MaCrossPineStreamProbe.mq5','tests/mql5/MaCrossMarketTimingProbe.mq5','tests/mql5/MaCrossEventHistoryProbe.mq5')
 foreach($relative in $sources){
  $source=Join-Path $root $relative
  $log=Join-Path $report ((Split-Path $source -Leaf)+'.verified.compile.log')
@@ -18,7 +18,7 @@ foreach($relative in $sources){
 }
 $worker=Join-Path $root '.tmp/orb_jp225_full_worker'
 $terminal=Join-Path $worker 'terminal64.exe'
-foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe')){
+foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe','MaCrossEventHistoryProbe')){
  if(@(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" | Where-Object {$_.ExecutablePath -eq $terminal}).Count){throw 'Worker already running; not touching it'}
  Copy-Item -LiteralPath (Join-Path $root "tests/mql5/$name.ex5") -Destination (Join-Path $worker "MQL5/Scripts/$name.ex5")
  $ini=Join-Path $report "$name.ini"
@@ -26,7 +26,7 @@ foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe')){
  $started=Get-Date
  $process=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
  if(!$process.WaitForExit(120000)){throw 'Isolated test timeout; no deployment'}
- $output=if($name -eq 'MaCrossPineStreamProbe'){'MaCrossPineProbe.json'}else{'MaCrossMarketTiming.jsonl'}
+ $output=switch($name){'MaCrossPineStreamProbe'{'MaCrossPineProbe.json'} 'MaCrossMarketTimingProbe'{'MaCrossMarketTiming.jsonl'} default{'MaCrossEventHistoryProbe.json'}}
  $path=Join-Path $worker "MQL5/Files/$output"
  if(!(Test-Path $path) -or (Get-Item $path).LastWriteTime -lt $started){throw "No fresh test result: $output"}
  Copy-Item -LiteralPath $path -Destination (Join-Path $report $output)
@@ -34,6 +34,8 @@ foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe')){
 }
 $probe=Get-Content -LiteralPath (Join-Path $report 'MaCrossPineProbe.json') -Raw | ConvertFrom-Json
 if($probe.failed -ne 0 -or $probe.checks -lt 12000){throw 'MT5 regression failed'}
+$events=Get-Content -LiteralPath (Join-Path $report 'MaCrossEventHistoryProbe.json') -Raw | ConvertFrom-Json
+if($events.failed -ne 0 -or $events.checks -lt 65 -or $events.real_invalid -ne 0 -or $events.real_trades -ne $events.real_raw){throw 'Event history integration failed; no deployment'}
 $comparison=& python (Join-Path $root 'scripts/check_macross_pine_reference.py') (Join-Path $worker 'MQL5/Files/MaCrossPineDirections.txt')
 if($LASTEXITCODE -ne 0){throw 'Independent reference comparison failed'}
 $comparison | Set-Content -LiteralPath (Join-Path $report 'reference.json') -Encoding UTF8
