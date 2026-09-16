@@ -119,7 +119,7 @@ void MaCalculate(const MqlRates &r[],const MaConfig &c,MaSeries &s)
    for(int i=0;i<n;i++)
    {
       s.rsi[i]=MaValid(g[i])&&MaValid(l[i])?(l[i]==0?(g[i]==0?50:100):100-100/(1+g[i]/l[i])):EMPTY_VALUE;
-      s.volume[i]=i>=20?vol/20:EMPTY_VALUE;vol+=r[i].tick_volume;if(i>=20)vol-=r[i-20].tick_volume;
+      s.volume[i]=i>=20?vol/20:EMPTY_VALUE;vol+=(double)r[i].tick_volume;if(i>=20)vol-=(double)r[i-20].tick_volume;
       double a=c.cross==2?s.medium[i]:s.fast[i],b=c.cross==0?s.medium[i]:s.slow[i];s.direction[i]=0;
       if(i>0){double ap=c.cross==2?s.medium[i-1]:s.fast[i-1],bp=c.cross==0?s.medium[i-1]:s.slow[i-1];
          if(MaValid(a)&&MaValid(b)&&MaValid(ap)&&MaValid(bp))s.direction[i]=a>b&&ap<=bp?1:(a<b&&ap>=bp?-1:0);}
@@ -150,7 +150,7 @@ bool MaFilter(const MqlRates &r[],int i,const MaSeries &s,const MaConfig &c,cons
    if(!MaValid(s.atr[i])||s.atr[i]<=0){reason="ATR DATA";return false;}
    if(c.volOn&&(!MaValid(s.volume[i])||s.volume[i]<=0||r[i].tick_volume<s.volume[i]*c.volMult)){reason="VOL";return false;}
    if(c.adxOn&&(!MaValid(s.adx[i])||s.adx[i]<c.adxMin)){reason="ADX";return false;}
-   if(c.divOn&&(dir>0?s.bearDiv[i]:s.bullDiv[i])){reason="RSI DIV";return false;}
+   if(c.divOn&&(dir>0?s.bearDiv[i]:s.bullDiv[i])!=0){reason="RSI DIV";return false;}
    double pct=100*s.atr[i]/r[i].close;
    if(c.atrOn&&(pct<c.atrMin||pct>c.atrMax)){reason="ATR RANGE";return false;}
    if(c.dispOn&&(dir*(r[i].close-r[i].open)<s.atr[i]*c.dispMin)){reason="DISPLACEMENT";return false;}

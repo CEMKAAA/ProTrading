@@ -39,7 +39,7 @@ bool MaReadEdits(MaConfig &c)
 void MaStats(int &wins,int &losses,int &data,double &net,double &minimum,double &dd,int &rw[],int &rl[])
 {
    wins=0;losses=0;data=0;net=0;minimum=0;dd=0;double peak=0;ArrayResize(rw,6);ArrayResize(rl,6);ArrayInitialize(rw,0);ArrayInitialize(rl,0);
-   datetime cutoff=g_asof-(long)g_weeks*7*86400;
+   datetime cutoff=(datetime)(g_asof-(long)g_weeks*7*86400);
    for(int i=0;i<ArraySize(g_results);i++)
    {
       MaTrade t=g_results[i];if(t.at<cutoff)continue;if(t.data){data++;continue;}
@@ -49,8 +49,8 @@ void MaStats(int &wins,int &losses,int &data,double &net,double &minimum,double 
 }
 void MaDraw()
 {
-   MaObject("BG",OBJ_RECTANGLE_LABEL,8,20,1045,560,"",C'17,24,35');
-   MaObject("TITLE",OBJ_LABEL,22,28,0,0,"MA CROSSOVER 1.00 | "+_Symbol+" "+EnumToString(_Period)+" | "+g_activeName);
+   MaObject("BG",OBJ_RECTANGLE_LABEL,8,20,1045,580,"",C'17,24,35');
+   MaObject("TITLE",OBJ_LABEL,22,28,0,0,"MA CROSSOVER 1.01 | "+_Symbol+" "+EnumToString(_Period)+" | "+g_activeName);
    MaButton("EA",825,27,105,g_enabled?"EA ON":"EA OFF",g_enabled);MaButton("LIB",938,27,100,"STRATEGIES");
    MaField("FAST",22,62,65,"Fast EMA",(string)g_cfg.fast);MaField("MEDIUM",99,62,70,"Mid EMA",(string)g_cfg.medium);
    MaField("SLOW",182,62,70,"Slow HMA",(string)g_cfg.slow);MaField("HTFLEN",265,62,80,"HTF HMA",(string)g_cfg.htfLen);
@@ -74,21 +74,22 @@ void MaDraw()
    MaField("PIVOT",365,250,70,"Pivot L/R",(string)g_cfg.pivot);MaField("DIVAGE",448,250,70,"Div age",(string)g_cfg.divAge);
    MaField("ATRMIN",531,250,80,"Min ATR %",DoubleToString(g_cfg.atrMin,2));MaField("ATRMAX",624,250,80,"Max ATR %",DoubleToString(g_cfg.atrMax,2));
    MaField("DISPMIN",720,250,85,"Body/ATR",DoubleToString(g_cfg.dispMin,2));
-   int w,l,data,rw[],rl[];double net,minimum,dd;MaStats(w,l,data,net,minimum,dd);
+   int w,l,data,rw[],rl[];double net,minimum,dd;MaStats(w,l,data,net,minimum,dd,rw,rl);
    for(int i=0;i<6;i++){int count=rw[i]+rl[i];string label=LiqMacroRegimeShortName(i)+" "+(string)rw[i]+"W/"+(string)rl[i]+"L "+(count?DoubleToString(100.0*rw[i]/count,0):"-")+"%";
       MaButton("REG"+(string)i,22+i*169,307,158,label,(g_cfg.mask&(1<<i))!=0);}
    int weeks[]={2,5,10,20,52,104,156,208,260};string labels[]={"2W","5W","10W","20W","1Y","2Y","3Y","4Y","5Y"};
    for(int i=0;i<9;i++)MaButton("W"+(string)i,22+i*79,344,70,labels[i],g_weeks==weeks[i]);
    string days[]={"Su","Mo","Tu","We","Th","Fr","Sa"};for(int i=0;i<7;i++)MaButton("DAY"+(string)i,756+i*40,344,35,days[i],(g_cfg.weekMask&(1<<i))!=0);
-   string stats=(string)w+"W "+(string)l+"L "+(string)data+" DATA | WR "+(w+l>0?DoubleToString(100.0*w/(w+l),1):"-")
+   string stats=(g_ready?"":"BUILDING | ")+(string)w+"W "+(string)l+"L "+(string)(g_hasActive?1:0)+"O "+(string)data+" DATA | WR "+(w+l>0?DoubleToString(100.0*w/(w+l),1):"-")
       +"% | "+DoubleToString(net,2)+"R | MinCum "+DoubleToString(minimum,2)+"R | PeakDD "+DoubleToString(dd,2)+"R";
    MaObject("STATS",OBJ_LABEL,22,383,0,0,stats);ObjectSetInteger(0,g_prefix+"UI_STATS",OBJPROP_COLOR,net>=0?clrLimeGreen:clrTomato);
    MaObject("PROGRESSBG",OBJ_RECTANGLE_LABEL,22,410,1005,13,"",C'40,46,55');
    MaObject("PROGRESS",OBJ_RECTANGLE_LABEL,22,410,MathMax(1,(int)(10.05*g_progress)),13,"",C'28,146,147');
-   MaObject("STATUS",OBJ_LABEL,22,434,0,0,StringSubstr(g_status,0,120));
-   MaObject("NOTES",OBJ_LABEL,22,458,0,0,"Closed HTF / M1 spread estimate / SL+TP same M1 = DATA / initial ATR frozen / no ML or listener publication");
-   MaObject("NOTES2",OBJ_LABEL,22,480,0,0,"Live remains OFF until enabled. Config changes require flat/off. Regime counts = selected execution stream.");
-   MaButton("REFRESH",22,512,150,"REFRESH DATA");MaObject("CACHE",OBJ_LABEL,185,517,0,0,"Window changes slice cached entry cohorts; DATA is excluded, not counted as losses.");
+   MaObject("SETUPS",OBJ_LABEL,22,434,0,0,"RAW CROSS: "+(string)g_rawSetups+" | FILTER PASS: "+(string)g_eligibleSetups+" | Arrows show setups; trade results only where an entry exists.");
+   MaObject("STATUS",OBJ_LABEL,22,458,0,0,StringSubstr(g_status,0,120));
+   MaObject("NOTES",OBJ_LABEL,22,482,0,0,"Gray=blocked; blue=setup/no new position; yellow=open; orange=DATA; green/red=realized trade result.");
+   MaObject("NOTES2",OBJ_LABEL,22,504,0,0,"Closed HTF / frozen initial ATR / M1 spread estimate / no ML or listener publication. Native starts OFF.");
+   MaButton("REFRESH",22,536,150,"REFRESH DATA");MaObject("CACHE",OBJ_LABEL,185,541,0,0,"Windows slice cached entries; uncertain DATA is excluded, never hidden as a loss.");
    if(g_popup)
    {
       MaObject("POPBG",OBJ_RECTANGLE_LABEL,60,70,920,437,"",C'22,34,46');ObjectSetInteger(0,g_prefix+"UI_POPBG",OBJPROP_ZORDER,200);
@@ -113,26 +114,58 @@ void MaLevel(string key,datetime from,datetime to,double price,color c)
 }
 void MaDrawHistory()
 {
-   ObjectsDeleteAll(0,g_prefix+"H_");datetime cutoff=g_asof-(long)g_weeks*7*86400;int drawn=0;
+   ObjectsDeleteAll(0,g_prefix+"H_");datetime cutoff=(datetime)(g_asof-(long)g_weeks*7*86400);int drawn=0;
    for(int i=ArraySize(g_results)-1;i>=0&&drawn<InpMaxDrawTrades;i--)
    {
       MaTrade t=g_results[i];if(t.at<cutoff)break;if(t.data)continue;drawn++;
       datetime end=t.at+20*PeriodSeconds(_Period);if(i+1<ArraySize(g_results))end=MathMin(end,g_results[i+1].at);
       if(g_hasActive&&g_active.at>t.at)end=MathMin(end,g_active.at);
       string id=(string)t.at;MaLevel(id+"E",t.at,end,t.entry,clrWhite);MaLevel(id+"S",t.at,end,t.initialStop,clrTomato);MaLevel(id+"T",t.at,end,t.initialTarget,clrLimeGreen);
-      string name=g_prefix+"H_"+id+"A";ObjectCreate(0,name,OBJ_ARROW,0,t.signal,t.entry);
-      ObjectSetInteger(0,name,OBJPROP_ARROWCODE,t.direction>0?233:234);ObjectSetInteger(0,name,OBJPROP_COLOR,t.net>=0?clrLimeGreen:clrTomato);
-      ObjectSetString(0,name,OBJPROP_TOOLTIP,t.reason+" "+DoubleToString(t.net,3)+"R | entry "+TimeToString(t.at)+" | exit "+TimeToString(t.exitAt));
    }
-   if(g_hasActive){datetime end=g_asof+PeriodSeconds(_Period);MaLevel("ACTIVE_E",g_active.at,end,g_active.entry,clrWhite);MaLevel("ACTIVE_S",g_active.at,end,g_active.stop,clrTomato);MaLevel("ACTIVE_T",g_active.at,end,g_active.target,clrLimeGreen);}
-   if(InpDrawRejectedSignals){int count=0;for(int i=ArraySize(g_rates)-1;i>=0&&count<InpMaxDrawTrades;i--){if(g_rates[i].time<cutoff)break;
-      if(g_ma.direction[i]==0||g_rejects[i]=="")continue;string name=g_prefix+"H_W"+(string)g_rates[i].time;
-      ObjectCreate(0,name,OBJ_ARROW,0,g_rates[i].time,g_ma.direction[i]>0?g_rates[i].low:g_rates[i].high);ObjectSetInteger(0,name,OBJPROP_ARROWCODE,159);
-      ObjectSetInteger(0,name,OBJPROP_COLOR,clrDarkGray);ObjectSetString(0,name,OBJPROP_TOOLTIP,"WINDOW "+g_rejects[i]);count++;}}
+   if(g_hasActive){datetime end=g_active.at+20*PeriodSeconds(_Period);MaLevel("ACTIVE_E",g_active.at,end,g_active.entry,clrWhite);MaLevel("ACTIVE_S",g_active.at,end,g_active.stop,clrTomato);MaLevel("ACTIVE_T",g_active.at,end,g_active.target,clrLimeGreen);}
+   // Pine visualizes ALL crossovers, not only successfully resolved positions.
+   // Keep that signal stream separate from execution and from W/L accounting.
+   g_rawSetups=0;g_eligibleSetups=0;drawn=0;int trade=ArraySize(g_results)-1;
+   for(int i=ArraySize(g_rates)-1;i>=0;i--)
+   {
+      datetime signal=g_rates[i].time;
+      if(signal<cutoff)break;
+      if(signal+PeriodSeconds(_Period)>g_asof||g_ma.direction[i]==0)continue;
+      g_rawSetups++;bool allowed=g_dirs[i]!=0;if(allowed)g_eligibleSetups++;
+      if(drawn>=InpMaxDrawTrades||(!allowed&&!InpDrawRejectedSignals))continue;
+      while(trade>=0&&g_results[trade].signal>signal)trade--;
+      int dir=g_cfg.invert?-g_ma.direction[i]:g_ma.direction[i];
+      string caption=(dir>0?"BUY":"SELL"),detail="";color shade=clrDeepSkyBlue;
+      if(!allowed){caption="WINDOW "+caption;detail=g_rejects[i];shade=clrGray;}
+      else if(g_hasActive&&g_active.signal==signal){caption="OPEN "+caption;detail="Audit position remains open";shade=clrGold;}
+      else if(trade>=0&&g_results[trade].signal==signal)
+      {
+         MaTrade t=g_results[trade];
+         if(t.data){caption="DATA "+caption;detail=t.reason;shade=clrOrange;}
+         else {caption=(t.net>1e-10?"WIN ":(t.net<-1e-10?"LOSS ":"FLAT "))+caption+" "+DoubleToString(t.net,2)+"R";
+            detail=t.reason+" | entry "+TimeToString(t.at)+" | exit "+TimeToString(t.exitAt);shade=t.net>1e-10?clrLimeGreen:(t.net<-1e-10?clrTomato:clrSilver);}
+      }
+      else {caption="SETUP "+caption;detail="Filter pass; no new position (same-direction position / execution eligibility).";}
+      double pad=MathMax(3*_Point,(g_rates[i].high-g_rates[i].low)*.15);
+      double price=dir>0?g_rates[i].low-pad:g_rates[i].high+pad;
+      string name=g_prefix+"H_SIGNAL_"+(string)signal;
+      ObjectCreate(0,name,OBJ_ARROW,0,signal,price);
+      ObjectSetInteger(0,name,OBJPROP_ARROWCODE,dir>0?233:234);
+      ObjectSetInteger(0,name,OBJPROP_ANCHOR,dir>0?ANCHOR_TOP:ANCHOR_BOTTOM);
+      ObjectSetInteger(0,name,OBJPROP_COLOR,shade);ObjectSetInteger(0,name,OBJPROP_WIDTH,2);
+      ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+      ObjectSetString(0,name,OBJPROP_TOOLTIP,caption+" | "+detail+" | confirmed "+TimeToString(signal+PeriodSeconds(_Period)));
+      string label=name+"_TEXT";double labelPrice=dir>0?price-pad*2:price+pad*2;
+      ObjectCreate(0,label,OBJ_TEXT,0,signal,labelPrice);ObjectSetString(0,label,OBJPROP_TEXT,caption);
+      ObjectSetInteger(0,label,OBJPROP_ANCHOR,dir>0?ANCHOR_LEFT_UPPER:ANCHOR_LEFT_LOWER);
+      ObjectSetInteger(0,label,OBJPROP_COLOR,shade);ObjectSetInteger(0,label,OBJPROP_FONTSIZE,7);ObjectSetInteger(0,label,OBJPROP_SELECTABLE,false);
+      drawn++;
+   }
 }
 void MaUiEvent(int id,string name)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
+   if((ENUM_OBJECT)ObjectGetInteger(0,name,OBJPROP_TYPE)!=OBJ_BUTTON)return;
    string prefix=g_prefix+"UI_";if(StringFind(name,prefix)!=0)return;string key=StringSubstr(name,StringLen(prefix));
    if(g_popup&&StringFind(key,"POP")!=0)return;
    if(key=="LIB"){g_popup=true;MaLoadLibrary();MaDraw();return;}

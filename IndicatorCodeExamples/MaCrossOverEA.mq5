@@ -1,7 +1,7 @@
 // MA crossover system derived from MaCrossOver.pine, yigdeli, MPL-2.0.
 // Reuses the existing ORB/Liq regime engine; no ML and no preloaded strategies.
 #property strict
-#property version "1.00"
+#property version "1.01"
 #include <Trade/Trade.mqh>
 #include "MaCrossOver_Core.mqh"
 #include "MaCrossOver_Replay.mqh"
@@ -33,11 +33,12 @@ MaSeries g_ma;
 MqlRates g_rates[],g_higher[],g_minutes[];
 double g_hma[];
 MaTrade g_results[],g_active;
+int g_rawSetups=0,g_eligibleSetups=0;
 int g_dirs[],g_buckets[];
 string g_rejects[];
 bool g_enabled=false,g_ready=false,g_loading=true,g_auditBusy=false,g_hasActive=false,g_popup=false,g_favOnly=false;
 int g_cursor=0,g_eventCursor=0,g_weeks=2,g_page=0,g_drawCursor=0;
-datetime g_armedAfter=0,g_dataBar=0,g_signalBar=0,g_from=0,g_asof=0,g_retry=0;
+datetime g_armedAfter=0,g_dataBar=0,g_signalBar=0,g_from=0,g_asof=0,g_retry=0,g_manageRetry=0;
 string g_status="Loading closed-bar history",g_prefix="",g_configKey="",g_activeName="CUSTOM",g_query="";
 ulong g_started=0,g_lastUi=0;
 double g_progress=0,g_lease=0;
@@ -127,13 +128,15 @@ void MaPrepareSignals()
    MaCalculate(g_rates,g_cfg,g_ma);double close[];ArrayResize(close,ArraySize(g_higher));
    for(int i=0;i<ArraySize(close);i++)close[i]=g_higher[i].close;MaHma(close,g_cfg.htfLen,g_hma);
    int n=ArraySize(g_rates);ArrayResize(g_dirs,n);ArrayResize(g_buckets,n);ArrayResize(g_rejects,n);
-   RegimeV3EnsureTimeline(false);
+   bool regimeReady=InpRegimeV3Observer&&RegimeV3EnsureTimeline(false);
    for(int i=0;i<n;i++)
    {
       g_dirs[i]=0;g_buckets[i]=-1;g_rejects[i]="";if(g_rates[i].time+PeriodSeconds(_Period)>g_asof)continue;
       int d=0;string reason;if(!MaFilter(g_rates,i,g_ma,g_cfg,g_higher,g_hma,PeriodSeconds(_Period),(int)MathRound(InpBrokerGmtOffsetHours*60),d,reason))
       {g_rejects[i]=reason;continue;}
-      RegimeV3Snapshot snapshot;int bucket=LiqMacroRegimeBucketAt(g_rates[i].time+PeriodSeconds(_Period),snapshot);g_buckets[i]=bucket;
+      RegimeV3Snapshot snapshot;int bucket=-1;
+      if(regimeReady&&RegimeV3SnapshotAt(g_rates[i].time+PeriodSeconds(_Period),snapshot))bucket=LiqMacroRegimeBucket(snapshot);
+      g_buckets[i]=bucket;
       if(bucket<0&&g_cfg.mask!=63){g_rejects[i]="REGIME DATA";continue;}
       if(bucket>=0&&!(g_cfg.mask&(1<<bucket))){g_rejects[i]="REGIME "+LiqMacroRegimeShortName(bucket);continue;}
       g_dirs[i]=d;
@@ -142,10 +145,10 @@ void MaPrepareSignals()
 bool MaLoadData()
 {
    int sec=PeriodSeconds(_Period);g_asof=iTime(_Symbol,PERIOD_M1,0);if(g_asof<=0)return false;
-   datetime wanted=g_asof-(long)InpAuditYears*365*86400;
+   datetime wanted=(datetime)(g_asof-(long)InpAuditYears*365*86400);
    int warm=MathMax(2048,MathMax(g_cfg.fast,MathMax(g_cfg.medium,g_cfg.slow))*8);
-   int n=CopyRates(_Symbol,_Period,wanted-(long)warm*sec,g_asof,g_rates);
-   int h=CopyRates(_Symbol,(ENUM_TIMEFRAMES)g_cfg.htf,wanted-(long)(g_cfg.htfLen+100)*PeriodSeconds((ENUM_TIMEFRAMES)g_cfg.htf),g_asof,g_higher);
+   int n=CopyRates(_Symbol,_Period,(datetime)(wanted-(long)warm*sec),g_asof,g_rates);
+   int h=CopyRates(_Symbol,(ENUM_TIMEFRAMES)g_cfg.htf,(datetime)(wanted-(long)(g_cfg.htfLen+100)*PeriodSeconds((ENUM_TIMEFRAMES)g_cfg.htf)),g_asof,g_higher);
    int m=CopyRates(_Symbol,PERIOD_M1,wanted,g_asof-1,g_minutes);
    if(n<warm||m<10||(g_cfg.htfOn&&h<g_cfg.htfLen+20)){g_status="Waiting for broker history; missing data is not a loss";return false;}
    g_from=wanted;g_coverage=g_rates[0].time<=wanted&&g_minutes[0].time<=wanted+7*86400;
@@ -166,7 +169,7 @@ void MaAuditStep()
    {
       MqlRates q=g_minutes[g_cursor];
       if(g_hasActive&&g_cursor>0&&q.time!=g_minutes[g_cursor-1].time+60)
-      {g_active.data=true;g_active.done=true;g_active.reason="DATA: missing M1 interval";g_active.exitAt=q.time;MaRecord();}
+      {g_active.data=true;g_active.uncertainty="missing M1 interval";g_active.reason="OPEN / DATA: missing M1 interval";}
       if(g_hasActive&&q.spread<=0){g_active.data=true;g_active.done=true;g_active.reason="DATA: unknown spread";g_active.exitAt=q.time;MaRecord();}
       if(g_hasActive&&MaAtOpen(g_active,q.open,q.spread*_Point,q.time,InpRoundTurnNotionalFeePct,g_cfg))MaRecord();
       while(g_eventCursor<ArraySize(g_rates)&&g_rates[g_eventCursor].time+sec<=q.time)
@@ -175,7 +178,7 @@ void MaAuditStep()
          if(d==0||at!=q.time||at<g_from)continue;
          if(g_hasActive&&g_active.direction!=d){MaFinish(g_active,q.open+(g_active.direction<0?q.spread*_Point:0),q.time,"REVERSE",InpRoundTurnNotionalFeePct);MaRecord();}
          if(g_hasActive)continue;
-         if(q.spread<=0){MaTrade t;ZeroMemory(t);t.signal=g_rates[i].time;t.at=q.time;t.exitAt=q.time;t.data=true;t.done=true;t.reason="DATA: entry spread";
+         if(q.spread<=0){MaTrade t;ZeroMemory(t);t.signal=g_rates[i].time;t.at=q.time;t.exitAt=q.time;t.direction=d;t.regime=g_buckets[i];t.data=true;t.done=true;t.reason="DATA: entry spread";
             int x=ArraySize(g_results);ArrayResize(g_results,x+1,256);g_results[x]=t;continue;}
          if(InpMaxSpreadPoints>0&&q.spread>InpMaxSpreadPoints)continue;
          if(MaStartTrade(g_active,g_rates[i].time,q.time,d,g_buckets[i],q.open+(d>0?q.spread*_Point:0),g_ma.atr[i],MaPip(),g_cfg))g_hasActive=true;
@@ -199,6 +202,8 @@ void MaAuditStep()
 }
 void MaNativeManage()
 {
+   if(!InpAllowNativeTrading||g_lease<=0||TimeLocal()<g_manageRetry)return;
+   g_manageRetry=TimeLocal()+1;
    MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -206,12 +211,19 @@ void MaNativeManage()
       string key=MaStateKey(ticket);
       if(GlobalVariableCheck(key+".bad")){g_trade.PositionClose(ticket);g_status="Retry closing unverified protection/risk";continue;}
       if(!GlobalVariableCheck(key+".risk")){g_status="Owned position has no recovery state; existing broker protection retained";g_enabled=false;continue;}
+      // Exactly the same closed chart bar drives research and live management.
+      if(g_loading||g_signalBar!=iTime(_Symbol,_Period,0))continue;
+      int k=MaLastClosed(g_rates,tick.time,PeriodSeconds(_Period));
+      if(k<0||k>=ArraySize(g_ma.atr)||g_rates[k].time+PeriodSeconds(_Period)<=PositionGetInteger(POSITION_TIME))continue;
       double entry=PositionGetDouble(POSITION_PRICE_OPEN),risk=GlobalVariableGet(key+".risk"),volume=PositionGetDouble(POSITION_VOLUME);
+      if(risk<=0)continue;
       int dir=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;
-      double px=dir>0?tick.bid:tick.ask,r=dir*(px-entry)/risk;
+      double px=dir>0?tick.bid:tick.ask,closed=g_rates[k].close+(dir<0?g_rates[k].spread*_Point:0),r=dir*(closed-entry)/risk;
       double initial=GlobalVariableGet(key+".vol"),step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+      if(initial<=0||step<=0)continue;
       if(volume<initial-step*.5)GlobalVariableSet(key+".partial",1);
-      if(g_cfg.management>=2&&r>=g_cfg.partialR&&!GlobalVariableCheck(key+".partial"))
+      if(g_cfg.management>=2&&r>=g_cfg.partialR)GlobalVariableSet(key+".partialDue",1);
+      if(g_cfg.management>=2&&GlobalVariableCheck(key+".partialDue")&&!GlobalVariableCheck(key+".partial"))
       {
          double cut=MathFloor(initial*g_cfg.partialPct/100/step)*step;
          if(cut>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)&&volume-cut>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
@@ -221,8 +233,7 @@ void MaNativeManage()
       if(g_cfg.management>=1&&(r>=g_cfg.beR||GlobalVariableCheck(key+".be")))
       {
          GlobalVariableSet(key+".be",1);double stop=entry;
-         int k=MaLastClosed(g_rates,TimeCurrent(),PeriodSeconds(_Period));
-         if(g_cfg.management==3&&k>=0&&MaValid(g_ma.atr[k]))stop=dir>0?MathMax(entry,tick.bid-g_ma.atr[k]*g_cfg.trailMult):MathMin(entry,tick.ask+g_ma.atr[k]*g_cfg.trailMult);
+         if(g_cfg.management==3&&MaValid(g_ma.atr[k]))stop=dir>0?MathMax(entry,closed-g_ma.atr[k]*g_cfg.trailMult):MathMin(entry,closed+g_ma.atr[k]*g_cfg.trailMult);
          double tickSize=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);if(tickSize<=0)tickSize=_Point;
          stop=NormalizeDouble(MathRound(stop/tickSize)*tickSize,_Digits);
          double old=PositionGetDouble(POSITION_SL),tp=PositionGetDouble(POSITION_TP);
@@ -234,6 +245,7 @@ void MaNativeManage()
 void MaNativeSignal(int i)
 {
    if(!g_enabled||!g_ready||i<0||g_rates[i].time+PeriodSeconds(_Period)<=g_armedAfter)return;
+   if(TimeCurrent()-(g_rates[i].time+PeriodSeconds(_Period))>30){g_status="Late signal skipped; waiting for a fresh crossover";return;}
    int d=g_dirs[i];if(d==0)return;MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return;
    if(TimeCurrent()-tick.time>10||MaForeignPosition()){g_status="Native entry blocked: stale quote / foreign net position";return;}
    // Consume once, never re-open a stale signal after a rejected order or restart.
@@ -253,6 +265,7 @@ void MaNativeSignal(int i)
    double vol=MathFloor(MathMin(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),budget/(-loss))/step)*step;
    if(vol<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)){g_status="Minimum volume exceeds risk budget";return;}
    double margin=0;if(!OrderCalcMargin(type,_Symbol,vol,t.entry,margin)||margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)){g_status="Insufficient margin";return;}
+   if(!MaWrite("MaCrossOverStrategies\\runtime_"+MaHash(MaOwner())+".state",MaPack(g_cfg))){g_status="Recovery config write failed; entry blocked";return;}
    bool sent=d>0?g_trade.Buy(vol,_Symbol,0,t.stop,t.target,"MaCrossOver"):g_trade.Sell(vol,_Symbol,0,t.stop,t.target,"MaCrossOver");
    if(!sent||!MaTradeOk()){g_status="Order rejected: "+g_trade.ResultRetcodeDescription();return;}
    for(int p=PositionsTotal()-1;p>=0;p--){ulong ticket=PositionGetTicket(p);if(!ticket||PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=InpMagic)continue;
@@ -268,7 +281,8 @@ int OnInit()
 {
    MaDefaults(g_cfg);g_cfg.fast=InpFastEma;g_cfg.medium=InpMediumEma;g_cfg.slow=InpSlowHma;g_cfg.htf=InpHigherTimeframe;g_cfg.htfLen=InpHtfHma;
    if(!MaConfigValid(g_cfg)||InpRiskPercent<=0||InpRiskPercent>100||InpMagic<=0||InpFixedRiskCapital<0||InpAuditYears<1||InpAuditYears>5
-      ||InpRoundTurnNotionalFeePct<0||InpPipSizeOverride<0||InpMaxSpreadPoints<0)return INIT_PARAMETERS_INCORRECT;
+      ||InpRoundTurnNotionalFeePct<0||InpPipSizeOverride<0||InpMaxSpreadPoints<0||InpSlippagePoints<0||InpMaxDrawTrades<0
+      ||MathAbs(InpBrokerGmtOffsetHours)>24||PeriodSeconds(InpHigherTimeframe)<PeriodSeconds(_Period))return INIT_PARAMETERS_INCORRECT;
    if(InpAllowNativeTrading&&AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {Print("MaCrossOver native execution currently requires a hedging account.");return INIT_PARAMETERS_INCORRECT;}
    g_prefix="MAC_"+(string)ChartID()+"_";g_armedAfter=TimeCurrent();
@@ -282,6 +296,13 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagic);g_trade.SetDeviationInPoints(InpSlippagePoints);g_trade.SetTypeFillingBySymbol(_Symbol);
    FolderCreate("MaCrossOverStrategies",FILE_COMMON);MaLoadLibrary();LiqMacroRegimeInit();
    for(int j=0;j<6;j++)if(!g_macroRegimeAllowed[j])g_cfg.mask&=~(1<<j);
+   if(InpAllowNativeTrading&&MaOwnPosition())
+   {
+      string saved;MaConfig restored;
+      if(!MaRead("MaCrossOverStrategies\\runtime_"+MaHash(MaOwner())+".state",saved)||!MaUnpack(saved,restored))
+      {Print("Owned position recovery config unavailable; refusing to manage it with different settings.");return INIT_FAILED;}
+      g_cfg=restored;
+   }
    EventSetMillisecondTimer(100);MaDraw();return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason)
@@ -292,7 +313,7 @@ void OnDeinit(const int reason)
 void OnTick(){MaNativeManage();}
 void OnTimer()
 {
-   if(g_lease>0){double next=(double)TimeLocal()+60;if(!GlobalVariableSetOnCondition(g_leaseKey,next,g_lease)){g_enabled=false;g_status="Ownership lease lost; native entries disabled";}else g_lease=next;}
+   if(g_lease>0){double next=(double)TimeLocal()+60;if(!GlobalVariableSetOnCondition(g_leaseKey,next,g_lease)){g_enabled=false;g_lease=0;g_status="Ownership lease lost; native execution disabled";}else g_lease=next;}
    if(g_loading&&TimeLocal()>=g_retry){g_retry=TimeLocal()+5;MaLoadData();}
    MaAuditStep();MaNativeManage();
    if(g_ready&&!g_auditBusy&&!g_loading&&iTime(_Symbol,PERIOD_M1,0)>g_dataBar)
@@ -303,8 +324,9 @@ void OnTimer()
       if(signalBar!=g_signalBar)
       {
          int warm=MathMax(2048,MathMax(g_cfg.fast,MathMax(g_cfg.medium,g_cfg.slow))*8);
-         CopyRates(_Symbol,_Period,g_from-(long)warm*PeriodSeconds(_Period),g_asof,g_rates);
-         CopyRates(_Symbol,(ENUM_TIMEFRAMES)g_cfg.htf,g_from-(long)(g_cfg.htfLen+100)*PeriodSeconds((ENUM_TIMEFRAMES)g_cfg.htf),g_asof,g_higher);
+         int copied=CopyRates(_Symbol,_Period,(datetime)(g_from-(long)warm*PeriodSeconds(_Period)),g_asof,g_rates);
+         int higher=CopyRates(_Symbol,(ENUM_TIMEFRAMES)g_cfg.htf,(datetime)(g_from-(long)(g_cfg.htfLen+100)*PeriodSeconds((ENUM_TIMEFRAMES)g_cfg.htf)),g_asof,g_higher);
+         if(copied<2||(g_cfg.htfOn&&higher<g_cfg.htfLen)){g_enabled=false;MaInvalidate();g_status="History reload incomplete; native entries disabled";return;}
          MaPrepareSignals();g_signalBar=signalBar;
          int i=MaLastClosed(g_rates,g_asof,PeriodSeconds(_Period));MaNativeSignal(i);
       }

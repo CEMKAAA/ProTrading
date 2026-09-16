@@ -6,7 +6,7 @@ struct MaTrade
    int direction,regime;
    double entry,initialStop,initialTarget,stop,target,risk,remaining,realized,gross,net,exitPrice;
    bool done,data,be,partial,pendingPartial;
-   string reason;
+   string reason,uncertainty;
 };
 bool MaStartTrade(MaTrade &t,datetime signal,datetime at,int direction,int regime,double entry,double atr,double pip,const MaConfig &c)
 {
@@ -23,7 +23,7 @@ void MaFinish(MaTrade &t,double price,datetime at,string reason,double feePct)
 {
    t.gross=t.realized+t.remaining*t.direction*(price-t.entry)/t.risk;
    t.net=t.gross-t.entry/t.risk*feePct/100;
-   t.exitPrice=price;t.exitAt=at;t.reason=reason;t.done=true;
+   t.exitPrice=price;t.exitAt=at;t.reason=t.data?"DATA: "+t.uncertainty+" | exit="+reason:reason;t.done=true;
 }
 bool MaAtOpen(MaTrade &t,double bid,double spread,datetime at,double feePct,const MaConfig &c)
 {
