@@ -1,0 +1,58 @@
+param([switch]$InstallDemo)
+$ErrorActionPreference='Stop'
+$root=Split-Path -Parent $PSScriptRoot
+$report=Join-Path $root 'logs/macross_pine_stream'
+New-Item -ItemType Directory -Path $report -Force | Out-Null
+$editor='C:\MT5\DEMO\MetaEditor64.exe'
+$sources=@('IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.mq5',
+ 'tests/mql5/MaCrossPineStreamProbe.mq5','tests/mql5/MaCrossMarketTimingProbe.mq5')
+foreach($relative in $sources){
+ $source=Join-Path $root $relative
+ $log=Join-Path $report ((Split-Path $source -Leaf)+'.verified.compile.log')
+ $started=Get-Date
+ $process=Start-Process $editor -ArgumentList ('/compile:"'+$source+'" /log:"'+$log+'"') -WindowStyle Hidden -PassThru
+ if(!$process.WaitForExit(120000)){throw "Compile timeout: $relative"}
+ if(!(Test-Path $log) -or (Get-Item $log).LastWriteTime -lt $started){throw 'Missing fresh compile log'}
+ if(![IO.File]::ReadAllText($log).Contains('Result: 0 errors, 0 warnings')){throw "Compile failed: $log"}
+ Get-Content -LiteralPath $log -Tail 1
+}
+$worker=Join-Path $root '.tmp/orb_jp225_full_worker'
+$terminal=Join-Path $worker 'terminal64.exe'
+foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe')){
+ if(@(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" | Where-Object {$_.ExecutablePath -eq $terminal}).Count){throw 'Worker already running; not touching it'}
+ Copy-Item -LiteralPath (Join-Path $root "tests/mql5/$name.ex5") -Destination (Join-Path $worker "MQL5/Scripts/$name.ex5")
+ $ini=Join-Path $report "$name.ini"
+ @('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]',"Script=$name",'Symbol=JP225m','Period=M5','ShutdownTerminal=1') | Set-Content -LiteralPath $ini -Encoding ASCII
+ $started=Get-Date
+ $process=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
+ if(!$process.WaitForExit(120000)){throw 'Isolated test timeout; no deployment'}
+ $output=if($name -eq 'MaCrossPineStreamProbe'){'MaCrossPineProbe.json'}else{'MaCrossMarketTiming.jsonl'}
+ $path=Join-Path $worker "MQL5/Files/$output"
+ if(!(Test-Path $path) -or (Get-Item $path).LastWriteTime -lt $started){throw "No fresh test result: $output"}
+ Copy-Item -LiteralPath $path -Destination (Join-Path $report $output)
+ Get-Content -LiteralPath $path
+}
+$probe=Get-Content -LiteralPath (Join-Path $report 'MaCrossPineProbe.json') -Raw | ConvertFrom-Json
+if($probe.failed -ne 0 -or $probe.checks -lt 12000){throw 'MT5 regression failed'}
+$comparison=& python (Join-Path $root 'scripts/check_macross_pine_reference.py') (Join-Path $worker 'MQL5/Files/MaCrossPineDirections.txt')
+if($LASTEXITCODE -ne 0){throw 'Independent reference comparison failed'}
+$comparison | Set-Content -LiteralPath (Join-Path $report 'reference.json') -Encoding UTF8
+$comparison
+if(!$InstallDemo){return}
+$sourceDir=Join-Path $root 'IndicatorCodeExamples/macrossover_orb'
+$target='C:\MT5\DEMO\MQL5\Experts\MaCrossOverOrb'
+$backup=Join-Path $report ('demo_backup_'+(Get-Date -Format 'yyyyMMdd_HHmmss'))
+New-Item -ItemType Directory -Path $backup,$target -Force | Out-Null
+$files=@(Get-ChildItem -LiteralPath $sourceDir -File | Where-Object {$_.Extension -eq '.mqh'})
+$files+=@(Get-Item -LiteralPath (Join-Path $sourceDir 'MaCrossOverOrbEA.mq5'),(Join-Path $sourceDir 'MaCrossOverOrbEA.ex5'),(Join-Path $sourceDir 'README.md'))
+$manifest=@()
+foreach($file in $files){
+ $destination=Join-Path $target $file.Name
+ if(Test-Path -LiteralPath $destination){Copy-Item -LiteralPath $destination -Destination (Join-Path $backup $file.Name)}
+ Copy-Item -LiteralPath $file.FullName -Destination $destination
+ $hash=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+ if((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $hash){throw "Hash mismatch: $destination"}
+ $manifest+=@{path=$destination;sha256=$hash}
+}
+$manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $report 'demo_manifest.json') -Encoding UTF8
+Write-Output "Verified $($manifest.Count) DEMO files. No EA attached, restarted, or enabled."

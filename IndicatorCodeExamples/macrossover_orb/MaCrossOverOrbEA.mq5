@@ -12,7 +12,7 @@
 #include "NasUltimate_Core.mqh"
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
-#define ORB15_BUILD "MaCrossORB-0.10-experimental"
+#define ORB15_BUILD "MaCrossORB-0.11-pine-stream"
 
 enum ORB_SESSION_PROFILE
 {
@@ -4262,61 +4262,8 @@ bool FindHistBreakoutAfterRates(const MqlRates &r[],int c,datetime from,datetime
       }
       scanFromIndex=MathMax(0,c);return false;
    }
-   // Apply confirmation delay
-   datetime effectiveFrom = from;
-   if(g_rtUseDelay && g_rtDelayMin > 0)
-      effectiveFrom = from + g_rtDelayMin * 60;
-   if(effectiveFrom >= to) return false;
-
-   if(c<=0){scanFromIndex=0;return false;}
-   double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double mb=MathMax(0.0,InpMinBreakoutPoints)*pt;
-   int bi=-1;string bd="";
-   int baseIndex=-1;
-   for(int i=MathMax(0,scanFromIndex);i<c;i++)
-   {
-      datetime closeTime = BarCloseTime(g_rtSignalTf, r[i].time);
-      if(closeTime<effectiveFrom||closeTime>to)continue;
-      if(!EntryWindowAllowsAt(closeTime))continue;
-      string d="";
-      if(r[i].close>hi+mb)d="BUY";
-      else if(r[i].close<lo-mb)d="SELL";
-      if(d=="")continue;
-      // Confirmation: check that the next N bars also confirm the breakout
-      int confirmIdx = i;
-      if(InpConfirmBars > 1)
-      {
-         bool confirmed = true;
-         if(i + InpConfirmBars - 1 >= c)
-            confirmed = false;
-         for(int cb = 1; cb < InpConfirmBars && i+cb < c; cb++)
-         {
-            if(d=="BUY" && r[i+cb].close <= hi) { confirmed = false; break; }
-            if(d=="SELL" && r[i+cb].close >= lo) { confirmed = false; break; }
-         }
-         if(confirmed)
-         {
-            confirmIdx = i + InpConfirmBars - 1;
-            if(BarCloseTime(g_rtSignalTf, r[confirmIdx].time) > to)
-               confirmed = false;
-         }
-         if(!confirmed) continue;
-      }
-      // A filtered live breakout does not consume the whole session. The live
-      // scanner evaluates the next closed bar, so historical parity must be
-      // able to continue strictly after the rejected confirmation bar.
-      if(afterSignalTime>0 && r[confirmIdx].time<=afterSignalTime)continue;
-      bi=confirmIdx;baseIndex=i;bd=d;break; // first valid confirmed breakout
-   }
-   if(bi<0){scanFromIndex=c;return false;}
-   // Advance by the raw candidate index, not the confirmation index. This
-   // preserves overlapping N-bar confirmations exactly while avoiding a full
-   // rescan and CopyRates call for every rejected candidate.
-   scanFromIndex=baseIndex+1;
-   dir=bd;sigT=r[bi].time;sigC=r[bi].close;sigH=r[bi].high;sigL=r[bi].low;sigVol=(double)r[bi].tick_volume;
-   // Calculate pre-breakout rolling average volume (20 bars before breakout)
-   int lookback=MathMin(20,bi);
-   if(lookback>0){double vs=0;for(int j=bi-lookback;j<bi;j++)vs+=(double)r[j].tick_volume;preBreakoutAvgVol=vs/(double)lookback;}
-   return true;
+   // Missing MA data must never fall back to an unrelated ORB breakout.
+   return false;
 }
 
 bool FindHistBreakoutAfter(datetime from,datetime to,double hi,double lo,datetime afterSignalTime,
@@ -4334,17 +4281,37 @@ string OrbExecutionVisualBase(datetime executedAt,int dir)
    return PREFIX+"EXEC_"+StringFormat("%I64d",(long)executedAt)+"_"+(dir>0?"BUY_":"SELL_");
 }
 
+// Pine markers identify the signal candle. Fill/SL/TP levels remain execution prices.
+double MaCrossChartArrowPrice(datetime signalBar,bool isBuy,double fallback,double risk)
+{
+   if(g_rtMaCrossMode==MA_CROSS_PIVOT_ST)
+   {
+      if(g_mcLastKernelMode==g_rtMaCrossMode&&g_mcLastKernelTf==g_rtSignalTf
+         &&g_mcLastKernelSignal.barTime==signalBar&&g_mcLastKernelSignal.markerPrice>0)
+         return g_mcLastKernelSignal.markerPrice;
+      int i=MaCrossAuditFirstAfter(signalBar-1);
+      if(g_maCrossAuditReady&&i<ArraySize(g_maCrossAuditEvents)&&g_maCrossAuditEvents[i].signalTime==signalBar
+         &&g_maCrossAuditEvents[i].markerPrice>0)return g_maCrossAuditEvents[i].markerPrice;
+   }
+   int shift=iBarShift(_Symbol,g_rtSignalTf,signalBar,true);
+   if(shift>=0)
+   {
+      double hi=iHigh(_Symbol,g_rtSignalTf,shift),lo=iLow(_Symbol,g_rtSignalTf,shift);
+      double pad=MathMax((hi-lo)*0.2,SymbolInfoDouble(_Symbol,SYMBOL_POINT)*4);
+      return isBuy?lo-pad:hi+pad;
+   }
+   return OrbHistoricalArrowPrice(isBuy,fallback,risk);
+}
 void DrawOrbExecutionVisual(string execDir,datetime executedAt,datetime signalBar,double entry,double sl,string entryDetail)
 {
    if(IsTesterMode()||executedAt<=0||entry<=0.0||sl<=0.0)return;
    bool isBuy=(execDir=="BUY");
    int dir=isBuy?1:-1;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
-   // Sacred history owns both chart coordinates. Use its availability time
-   // and entry-risk price formula even when retest/IMB/NAS delays execution.
-   datetime visualAt=signalBar>0?OrbSignalAvailableTime(signalBar):executedAt;
+   // Marker belongs to the generating candle; executedAt still owns fills.
+   datetime visualAt=signalBar>0?signalBar:executedAt;
    double risk=MathAbs(entry-sl);
-   double arrowPrice=OrbHistoricalArrowPrice(isBuy,entry,risk);
+   double arrowPrice=MaCrossChartArrowPrice(signalBar,isBuy,entry,risk);
    double pad=MathMax(MathMax(risk,pt)*0.20,pt*40.0);
    double textPrice=NormalizePrice(isBuy?arrowPrice-pad*0.65:arrowPrice+pad*0.65);
    string base=OrbExecutionVisualBase(executedAt,dir);
@@ -4353,7 +4320,7 @@ void DrawOrbExecutionVisual(string execDir,datetime executedAt,datetime signalBa
    string mode=(StringFind(entryDetail,"entry=imb1m")>=0)?"IMB1M":
       ((StringFind(entryDetail,"entry=retest")>=0)?"RETEST":"BREAK");
    DrawSignalText(base+"TXT",visualAt,textPrice,
-      "EXECUTED "+execDir+" ["+mode+"] C"+IntegerToString(g_orbBridgeChannel),C'255,215,70');
+      "EXECUTED "+MaCrossSignalText(g_rtMaCrossMode,dir)+" ["+mode+"] C"+IntegerToString(g_orbBridgeChannel),C'255,215,70');
 }
 
 void MarkOrbExecutionVisualResolved(datetime executedAt,int dir,bool won)
@@ -5658,7 +5625,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
    key+="|g_rtSignalTf="+(string)g_rtSignalTf;
-   key+="|ma_mode="+(string)g_rtMaCrossMode+"|ma_pair="+(string)g_rtMaCrossPair+"|ma_fast="+(string)InpMaFastLength+"|ma_medium="+(string)InpMaMediumLength+"|ma_slow="+(string)InpMaSlowLength;
+   key+="|ma_kernel="+MC_KERNEL_REVISION+"|ma_h4seed="+(string)McHistorySeed(_Symbol,PERIOD_H4)+"|ma_seed="+(string)McHistorySeed(_Symbol,g_rtSignalTf)+"|ma_mode="+(string)g_rtMaCrossMode+"|ma_pair="+(string)g_rtMaCrossPair+"|ma_fast="+(string)InpMaFastLength+"|ma_medium="+(string)InpMaMediumLength+"|ma_slow="+(string)InpMaSlowLength;
    key+="|g_rtDelayMin="+(string)g_rtDelayMin;
    key+="|g_rtUseDelay="+(string)g_rtUseDelay;
    key+="|g_rtTargetLeg="+(string)g_rtTargetLeg;
@@ -6109,8 +6076,16 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
-   key+="|g_rtSignalTf="+(string)g_rtSignalTf;
-   key+="|g_rtDelayMin="+(string)g_rtDelayMin;
+    key+="|g_rtSignalTf="+(string)g_rtSignalTf;
+    // MA signal mode is part of the candidate stream itself.  Omitting these
+    // fields lets a completed ORB-day memo from one kernel be replayed after
+    // switching to another kernel, producing identical audit results.
+    key+="|ma_kernel="+MC_KERNEL_REVISION+"|ma_h4seed="+(string)McHistorySeed(_Symbol,PERIOD_H4)+"|ma_seed="+(string)McHistorySeed(_Symbol,g_rtSignalTf)+"|ma_mode="+(string)g_rtMaCrossMode;
+    key+="|ma_pair="+(string)g_rtMaCrossPair;
+    key+="|ma_fast="+IntegerToString(MathMax(1,InpMaFastLength));
+    key+="|ma_medium="+IntegerToString(MathMax(1,InpMaMediumLength));
+    key+="|ma_slow="+IntegerToString(MathMax(2,InpMaSlowLength));
+    key+="|g_rtDelayMin="+(string)g_rtDelayMin;
    key+="|g_rtUseDelay="+(string)g_rtUseDelay;
    key+="|g_rtTargetLeg="+(string)g_rtTargetLeg;
    key+="|g_rtHalfBeLeg="+(string)g_rtHalfBeLeg;
@@ -6796,10 +6771,10 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
             " statR=",DoubleToString(statR,2));
 
       // Draw arrow with outcome
-      datetime visualT=OrbSignalAvailableTime(sigT);
+      datetime visualT=sigT;
       double simRisk=MathAbs(sim.simEntry-sim.simSl);
       double pad=MathMax(MathMax(simRisk,g_histRunPoint)*0.20,g_histRunPoint*40.0);
-      double arwP=OrbHistoricalArrowPrice(isBuy,sim.simEntry,simRisk);
+      double arwP=MaCrossChartArrowPrice(sigT,isBuy,sim.simEntry,simRisk);
       string dateKey=IntegerToString(daySt.year)+StringFormat("%02d%02d",daySt.mon,daySt.day);
       string base=HistoricalObjectRoot()+dateKey+"_"+execDir+"_";
       datetime levelStart=MathMax(entryT,visualT);
@@ -6837,7 +6812,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       double simPnl=SimMoneyPnl(statR);
       double grossR=finalOutcome?sim.netR+sim.costR:0.0;
       string verdict=!sim.valid?"DATA":(!finalOutcome?"OPEN":(sim.netR>1e-8?"WIN":(sim.netR<-1e-8?"LOSS":"FLAT")));
-      string txt=verdict+" "+execDir+" "+sim.outcome
+      string txt=verdict+" "+MaCrossSignalText(g_rtMaCrossMode,dir=="BUY"?1:-1)+" "+sim.outcome
          +" hitTP"+IntegerToString(sim.maxTp)+"/T"+IntegerToString(sim.targetLeg)
          +(finalOutcome?" G="+DoubleToString(grossR,2)+"R C="+DoubleToString(sim.costR,2)+"R N="+DoubleToString(statR,2)+"R":"")+" "
          +(simPnl>=0?"+":"")+DoubleToString(simPnl,2)+"$"
@@ -7565,6 +7540,9 @@ void UpdateDashboard()
       bool active=(candidate==g_rtMaCrossMode);
       CreateButton("BTN_MA_MODE_"+IntegerToString(ma),x+100+ma*(maModeWidth+2),rootY+267,maModeWidth,18,
          MaCrossModeText(candidate),active?C'184,103,22':C'80,80,80');
+      ObjectSetString(0,PREFIX+"BTN_MA_MODE_"+IntegerToString(ma),OBJPROP_TOOLTIP,
+         ma==3?"Pine big Close Short/Long Order - Go Long/Short Now labels (Pivot SuperTrend)":
+         (ma==4?"Pine small, frequent Heikin-Ashi Scalping Pullback arrows":MaCrossModeText(candidate)));
    }
    for(int pair=0;pair<=2;pair++)
    {
@@ -8364,16 +8342,16 @@ bool ImbalanceReady(string &detail)
 void DrawAcceptedLiveSignal(string rawDir,datetime bt,double signalClose,string detail)
 {
    string execDir=EffectiveOrbDirection(rawDir);
-   int sh=g_rtNasConfirmation?iBarShift(_Symbol,g_rtSignalTf,bt,true):(InpUseClosedBarBreakout?1:0);
+   int sh=iBarShift(_Symbol,g_rtSignalTf,bt,true);
    double sH=sh>=0?iHigh(_Symbol,g_rtSignalTf,sh):signalClose;
    double sL=sh>=0?iLow(_Symbol,g_rtSignalTf,sh):signalClose;
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
    double pad=MathMax(MathAbs(g_orbHigh-g_orbLow)*0.12,pt*40.0);
-   bool isBuy=execDir=="BUY";double arwP=isBuy?(sL-pad):(sH+pad);
-   datetime visualT=OrbSignalAvailableTime(bt);
+   bool isBuy=execDir=="BUY";double arwP=MaCrossChartArrowPrice(bt,isBuy,signalClose,MathAbs(g_orbHigh-g_orbLow));
+   datetime visualT=bt;
    DrawSignalArrow(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+execDir+"_ARW",visualT,arwP,isBuy,false);
    DrawSignalText(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+execDir+"_TXT",visualT,
-      isBuy?arwP-pad*0.6:arwP+pad*0.6,"ORB LIVE "+execDir+" "+detail,isBuy?clrLime:clrTomato);
+      isBuy?arwP-pad*0.6:arwP+pad*0.6,"MA LIVE "+MaCrossSignalText(g_rtMaCrossMode,rawDir=="BUY"?1:-1)+" "+detail,isBuy?clrLime:clrTomato);
    Audit("signal",execDir,0,signalClose,0,0,"bar="+FmtTime(bt)+" "+RuntimeEntryLabel()+" "+detail);
 }
 
@@ -8985,7 +8963,7 @@ void DrawLiveOrbWindowSignal(string rawDir,datetime signalTime,string reason)
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
    double pad=MathMax(MathMax(pt,high-low)*0.35,pt*40.0);
    double arrowPrice=NormalizePrice(isBuy?low-pad:high+pad);
-   datetime visualTime=OrbSignalAvailableTime(signalTime);
+   datetime visualTime=signalTime;
    string token=StringFormat("%I64d",(long)signalTime)+"_"+execDir;
    string base=PREFIX+"LIVE_WINDOW_"+token+"_";
    if(ObjectFind(0,base+"ARW")<0)ObjectCreate(0,base+"ARW",OBJ_ARROW,0,visualTime,arrowPrice);
@@ -9340,8 +9318,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    ulong nowMs=GetTickCount64();
-   bool auditBusy=(g_histAuditRunning||g_histRedrawQueued);
-   bool coreDue=(!auditBusy||g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
+   bool coreDue=(g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
    bool dc=false;
    if(coreDue)
    {
@@ -9386,9 +9363,8 @@ void OnTick()
    ResetForNewNyDay();TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
    if(!IsTesterMode())
    {
-      OrbProUpdateOpenPositions();DrawOrbLiveTradeLevels();
-      if(g_histAuditRunning||g_histRedrawQueued)RenderHistoricalAuditProgress();
-      else UpdateDashboard();
+      OrbProUpdateOpenPositions();
+      // Keep risk/position management tick-driven; expensive UI work is timer-driven.
    }
 }
 
