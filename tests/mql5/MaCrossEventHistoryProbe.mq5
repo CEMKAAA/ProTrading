@@ -23,6 +23,56 @@ void ClearProbeStreams()
 }
 void OnStart()
 {
+   int seriesDir=0,seriesCount=0,limit=0;
+   Verify(MaParseSeriesLimit("3",limit)&&limit==3,"series limit input");
+   Verify(!MaParseSeriesLimit("3.5",limit)&&!MaParseSeriesLimit("0",limit)
+      &&!MaParseSeriesLimit("-1",limit)&&!MaParseSeriesLimit("1001",limit),"invalid series limits rejected");
+   for(int i=0;i<3;i++){Verify(MaSeriesAllows(1,seriesDir,seriesCount,3),"three buys allowed");seriesCount++;}
+   Verify(!MaSeriesAllows(1,seriesDir,seriesCount,3),"fourth buy rejected");
+   Verify(MaSeriesAllows(-1,seriesDir,seriesCount,3)&&seriesCount==0,"opposite starts new series");
+   seriesCount++;
+   Verify(MaSeriesAllows(1,seriesDir,seriesCount,3)&&seriesCount==0,"return to buy resets");
+   seriesCount=3;
+   Verify(!MaSeriesAllows(1,seriesDir,seriesCount,2),"lowering limit does not create allowance");
+   Verify(MaSeriesAllows(1,seriesDir,seriesCount,4)&&seriesCount==3,"raising limit retains usage");
+   Verify(!MaSeriesAllows(0,seriesDir,seriesCount,4),"invalid direction rejected");
+   seriesDir=1;seriesCount=8;
+   Verify(MaSeriesAllows(-1,seriesDir,seriesCount,12)&&seriesDir==-1&&seriesCount==0,
+      "opposite starts after 8 of 12 without filling the old allowance");
+   Verify(MaIndependentDefiniteRejection(TRADE_RETCODE_MARKET_CLOSED),"definite rejection can release reservation");
+   Verify(!MaIndependentDefiniteRejection(TRADE_RETCODE_TIMEOUT)
+      &&!MaIndependentDefiniteRejection(TRADE_RETCODE_CONNECTION)
+      &&!MaIndependentDefiniteRejection(TRADE_RETCODE_PLACED),"ambiguous outcomes retain reservation");
+   // Independent mode must not route an opposite signal to legacy close-all.
+   g_maIndependent=true;datetime independentExit=123;string independentDetail="";OrbWindowSignal emptySignals[];
+   Verify(!FindNewDayAcceptedReverseExit(emptySignals,1,"BUY",1000,independentExit,independentDetail)
+      &&independentExit==0,"independent history never reverses an older position");
+   Verify(!IsAcceptedNewDayReverseCandidate("SELL",1000,independentDetail),"independent live reverse close disabled");
+   Verify(!ProcessNasOppositeExit(),"independent NAS global close disabled");
+   g_maIndependent=false;
+   long savedMagic=g_runtimeMagic;
+   g_runtimeMagic=9182026000+(long)(GetTickCount64()%1000000);
+   Verify(MaIndependentAcquire(),"isolated series ledger creation");
+   string testState=g_maSeriesFile;
+   g_maSeriesDir=1;g_maSeriesCount=3;g_maSeriesBar=D'2026.09.17 12:00';
+   Verify(MaIndependentWrite(),"atomic series reservation write");
+   MaIndependentRelease();g_maSeriesCount=0;g_maSeriesBar=0;
+   Verify(MaIndependentAcquire()&&g_maSeriesDir==1&&g_maSeriesCount==3
+      &&g_maSeriesBar==D'2026.09.17 12:00',"restart preserves reservation and deduplication timestamp");
+   Verify(!MaSeriesAllows(1,g_maSeriesDir,g_maSeriesCount,3),"restart cannot bypass limit");
+   g_maSeriesUncertain=true;Verify(MaIndependentWrite(),"persist uncertain order intent");
+   MaIndependentRelease();g_maSeriesUncertain=false;
+   Verify(MaIndependentAcquire()&&g_maSeriesUncertain,"crash before broker acknowledgment remains blocked after restart");
+   int secondOwner=FileOpen(testState+".lock",FILE_READ|FILE_WRITE|FILE_BIN);
+   Verify(secondOwner==INVALID_HANDLE,"second owner cannot acquire series scope");
+   if(secondOwner!=INVALID_HANDLE)FileClose(secondOwner);
+   MaIndependentRelease();
+   int corrupt=FileOpen(testState,FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(corrupt!=INVALID_HANDLE){FileWriteString(corrupt,"corrupt");FileClose(corrupt);}
+   Verify(!MaIndependentAcquire(),"corrupted ledger fails closed");
+   FileDelete(testState);FileDelete(testState+".lock");
+   g_maSeriesUncertain=false;
+   g_runtimeMagic=savedMagic;
    // No OnInit, TryOpenSignal or order API is called by this script.
    g_rtSignalTf=PERIOD_M5;g_rtMaCrossMode=MA_CROSS_PIVOT_ST;
    g_rtEntryWindow=false;g_rtFilterAtr=false;g_rtFilterDay=false;g_rtFilterVol=false;
@@ -48,30 +98,42 @@ void OnStart()
    {
       MaCrossAuditEvent e=g_maCrossAuditEvents[i];string key=MaHistoryEventBase(e.signalTime,e.direction>0?"BUY":"SELL")+"ARW";
       if(ObjectFind(0,key)>=0)arrows++;
-      Verify((datetime)ObjectGetInteger(0,key,OBJPROP_TIME)==e.signalTime,"arrow belongs to generating candle");
+      Verify(ObjectFind(0,key)<0,"PREP does not draw provisional candidates");
       Verify(g_histDaySnapshots[i].operationalSignalTime==e.signalTime,"unique snapshot per event");
    }
-   Verify(arrows==count,"unique arrows, no day/direction name collision");
+   Verify(arrows==0,"no candidate arrows before outcome decision");
+   long replayCalls=g_orbReplayMemoHits+g_orbReplayMemoMisses;
+   int filteredBefore=g_histFiltered;
+   g_maIndependent=true;g_maMaxConsecutive=3;g_maHistSeriesDir=1;g_maHistSeriesCount=3;
+   for(int i=0;i<count;i+=2)ProcessHistoricalCalcDay(i);
+   Verify(g_histFiltered==filteredBefore+count/2,"exhausted BUY candidates skipped");
+   Verify(g_orbReplayMemoHits+g_orbReplayMemoMisses==replayCalls,"series-limit skips call neither replay nor memoized replay");
+   g_maIndependent=false;g_maAuditPositionUntil=start+86400;
+   int heldBefore=g_maAuditHeldCandidates;
+   for(int i=0;i<count;i++)ProcessHistoricalCalcDay(i);
+   Verify(g_maAuditHeldCandidates==heldBefore+count,"single-mode occupied candidates skipped");
+   Verify(g_orbReplayMemoHits+g_orbReplayMemoMisses==replayCalls,"single-mode skips do not call replay");
+   g_maAuditPositionUntil=0;
    datetime exit;string detail;
    Verify(FindNewDayAcceptedReverseExit(g_histAcceptedSignals,start,"BUY",start+86400,exit,detail)&&exit==start+600,
       "next same-day reverse exits at its close, not next day");
    DeleteLive();
-   for(int i=0;i<count;i++)Verify(ObjectFind(0,MaHistoryEventBase(g_maCrossAuditEvents[i].signalTime,i%2==0?"BUY":"SELL")+"ARW")>=0,
-      "live cleanup preserves historical source arrow");
+   for(int i=0;i<count;i++)Verify(ObjectFind(0,MaHistoryEventBase(g_maCrossAuditEvents[i].signalTime,i%2==0?"BUY":"SELL")+"ARW")<0,
+      "skipped candidates create no chart objects");
    g_orbBridgePlanActive=true;g_orbBridgePlanDir=1;g_orbBridgePlanTime=start;g_orbBridgePlanEntry=50000;
    g_tradeDir=1;g_tradeOpenTime=start;g_beMoved=true;g_halfClosed=true;g_nyDayKey=0;
    ResetForNewNyDay();
    Verify(g_orbBridgePlanActive&&g_beMoved&&g_halfClosed&&g_tradeDir==1,"date reset cannot forget exposure or HCBE state");
    Verify(IsAcceptedNewDayReverseCandidate("SELL",start+600,detail),"live same-day reverse recognized");
    g_orbBridgePlanActive=false;
-   // Regime rejection must not erase raw source markers.
+   // Retain the raw stream, without drawing rejected candidates.
    ClearProbeStreams();for(int i=0;i<ORB_REGIME_COUNT;i++)g_regimeAllowed[i]=false;
    for(int i=0;i<count;i++)ProcessMaHistoricalPrepEvent(i);
    Verify(ArraySize(g_histAcceptedSignals)==0,"blocked regime does not enter accepted execution stream");
    Verify(ArraySize(g_regimeReferenceSignals)==count,"regime diagnostic universe preserved");
    Verify(ArraySize(g_regimeReferenceWindows)==0,"regime blocks not misclassified as pre-regime exits");
-   for(int i=0;i<count;i++)Verify(ObjectFind(0,MaHistoryEventBase(g_maCrossAuditEvents[i].signalTime,i%2==0?"BUY":"SELL")+"ARW")>=0,
-      "regime rejection keeps raw source arrow");
+   for(int i=0;i<count;i++)Verify(ObjectFind(0,MaHistoryEventBase(g_maCrossAuditEvents[i].signalTime,i%2==0?"BUY":"SELL")+"ARW")<0,
+      "regime rejection does not draw provisional arrow");
    // Actual broker OHLC through the EA's complete preparation + trade replay.
    MqlRates rates[],minutes[];ArraySetAsSeries(rates,false);
    int copied=CopyRates(_Symbol,PERIOD_M5,1,4000,rates);

@@ -41,6 +41,9 @@ input long            InpMagic              = 16092601;
 input ENUM_TIMEFRAMES InpSignalTimeframe    = PERIOD_CURRENT;   // Signal timeframe for every MA mode.
 input MA_CROSS_SIGNAL_MODE InpMaCrossMode   = MA_CROSS_ORIGINAL_MTF;
 input MA_CROSS_PAIR InpMaCrossPair           = MA_CROSS_PAIR_FAST;
+input group "MA independent native entries (hedging, fixed SL/TP only)"
+input bool InpIndependentEntries=false;
+input int InpMaxConsecutiveEntries=1; // 1..1000; same-direction series, not concurrent positions
 input int             InpMaFastLength       = 9;
 input int             InpMaMediumLength     = 27;
 input int             InpMaSlowLength       = 200;
@@ -624,6 +627,7 @@ int             g_btDayCount = 0;
 OrbBtBreakout   g_btBreakouts[];
 
 #include "OrbUltimate_ProfessionalPipeline.mqh"
+#include "MaIndependentEntries.mqh"
 
 //=========================================================================
 //  UTILITY FUNCTIONS
@@ -6343,6 +6347,7 @@ bool FindNewDayAcceptedReverseExit(const OrbWindowSignal &signals[],datetime aft
                                     datetime limitTime,datetime &exitTime,string &exitDetail)
 {
    exitTime=0;exitDetail="";
+   if(g_maIndependent)return false;
    string opposite=(tradeDirection=="BUY"?"SELL":"BUY");
    datetime localEntry=ServerToSessionLocal(afterTime);
    MqlDateTime entryDt;TimeToStruct(localEntry,entryDt);
@@ -6494,6 +6499,7 @@ bool EnsureOrbAuditHistoryCoverage(int days,string &detail,bool &hardBlocked)
 
 void OrbResetHistoricalStats()
 {
+   g_maHistSeriesDir=0;g_maHistSeriesCount=0;
    g_histAuditRunning=false;
    g_histAuditStage="";
    g_histAuditTotalDays=RuntimeHistoricalDays();
@@ -6578,6 +6584,11 @@ void ProcessHistoricalCalcDay(const int back)
          return;
       }
 
+      // Exhausted same-direction candidates cannot become trades. Keep the raw
+      // event stream for reversal detection, but skip entry resolution and replay.
+      if(g_maIndependent&&g_maHistSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
+         &&g_maHistSeriesCount>=g_maMaxConsecutive)
+      {g_histFiltered++;return;}
       datetime entryT=sigT;
       double entryPrice=sigC;
       string entryDetail="";
@@ -6588,10 +6599,9 @@ void ProcessHistoricalCalcDay(const int back)
          return;
       }
 
-      if(OrbSignalAvailableTime(entryT)<g_maAuditPositionUntil)
+      if(!g_maIndependent&&OrbSignalAvailableTime(entryT)<g_maAuditPositionUntil)
       {
          g_maAuditHeldCandidates++;
-         MaDrawHistoryCandidate(g_maCrossAuditEvents[back],"POSITION ALREADY ACTIVE");
          return;
       }
       RegimeV3Snapshot regimeSnapshot;
@@ -6621,6 +6631,17 @@ void ProcessHistoricalCalcDay(const int back)
          return;
       }
       invertDetail+=" "+geometryDetail;
+      if(g_maIndependent&&OrbRegimeAllowed(regimeBucket)&&rfAllowed)
+      {
+         string independentReason="";
+         if(!MaIndependentShape(independentReason)
+            ||!MaSeriesAllows(isBuy?1:-1,g_maHistSeriesDir,g_maHistSeriesCount,g_maMaxConsecutive))
+         {
+            g_lastExecStatus=independentReason;g_histFiltered++;
+            g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
+            return;
+         }
+      }
       double r1v=MathMax(0.1,InpTp1R),r2v=MathMax(0.1,InpTp2R),r3v=MathMax(0.1,InpTp3R);
       double tp1=NormalizePrice(isBuy?entry+risk*r1v:entry-risk*r1v);
       double tp2=NormalizePrice(isBuy?entry+risk*r2v:entry-risk*r2v);
@@ -6701,6 +6722,10 @@ void ProcessHistoricalCalcDay(const int back)
          g_histFiltered++;
          if(InpHistoricalAuditVerboseLog)Print("ORB15v3 HIST RF blocked ",rfRule," ",regimeDetail," signal=",FmtTime(sigT));
          return;
+      }
+      if(g_maIndependent)
+      {
+         if(sim.valid)g_maHistSeriesCount++;
       }
       if(sim.valid)
       {
@@ -7092,6 +7117,7 @@ void DrawHistoricalSignals()
    g_histAuditTotalDays=days;g_histAuditProcessedDays=0;
    SetHistoricalAuditProgress("NAS",0.0,1.0,0,1);
    g_histPrepBack=0;g_histCalcBack=0;g_maAuditPositionUntil=0;g_maAuditHeldCandidates=0;g_histNasOverlayIndex=0;g_histOverlayIndex=0;
+   g_maHistSeriesDir=0;g_maHistSeriesCount=0;
    g_histRejectedWindowRaw=0;g_histDrawnWindowCount=0;g_histDrawnNasSignals=0;
    g_histChecked=0;g_histDrawn=0;g_histFiltered=0;
    OrbResetHistoricalStats();
@@ -7561,6 +7587,10 @@ void UpdateDashboard()
       CreateButton("BTN_MA_PAIR_"+IntegerToString(pair),x+100+pair*68,rootY+287,64,18,
          MaCrossPairText(candidate),active?C'38,101,176':C'80,80,80');
    }
+   CreateButton("BTN_MA_INDEPENDENT",x+310,rootY+287,108,18,g_maIndependent?"INDEPENDENT":"LEGACY",g_maIndependent?C'38,101,176':C'80,80,80');
+   CreateLabel("DASH_MA_MAX",x+424,rootY+291,"MAX SERIES",C'134,158,182',7);
+   CreateEdit("EDIT_MA_MAX",x+493,rootY+287,40,18,IntegerToString(g_maMaxConsecutive));
+   CreateButton("BTN_MA_MAX_APPLY",x+539,rootY+287,65,18,"APPLY",C'38,101,176');
    y=rootY+290;
 
    // Status line
@@ -7873,6 +7903,7 @@ bool ComputeSignal(string &dir,datetime &bt,double &sc)
       MathMax(1,InpMaFastLength),MathMax(1,InpMaMediumLength),MathMax(2,InpMaSlowLength),signal))
       return false;
    if(!signal.valid||signal.barTime<=0||signal.barTime==g_lastSignalBarTime)return false;
+   if(g_maIndependent&&OrbSignalAvailableTime(signal.barTime)<=g_instanceStartedAt)return false;
    bt=signal.barTime;sc=signal.price;dir=signal.direction>0?"BUY":"SELL";
    return EntryWindowAllowsAt(OrbSignalAvailableTime(bt));
 }
@@ -8150,6 +8181,7 @@ void ApplyCloseBasedExit(double bid,double ask)
 //=========================================================================
 void ManagePositions()
 {
+   if(g_maIndependent)return; // Each independent position keeps its own broker SL/TP.
    if(g_tradeDir==0||!OwnPositionExists())
    {
       if(g_tradeDir!=0){g_tradeDir=0;g_tradeOpenTime=0;g_beMoved=false;g_halfClosed=false;}
@@ -8349,6 +8381,9 @@ void DrawAcceptedLiveSignal(string rawDir,datetime bt,double signalClose,string 
 
 void DispatchAcceptedOrbSignal(string dir,datetime bt,double signalClose,string detail,datetime gateAvailable=0)
 {
+   if(g_maIndependent&&g_maSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
+      &&g_maSeriesCount>=g_maMaxConsecutive)
+   {g_lastExecStatus="CONSECUTIVE LIMIT";return;}
    DrawAcceptedLiveSignal(dir,bt,signalClose,detail);
    if(g_rtEntryMode==ORB_ENTRY_PULLBACK_RETEST)
    {
@@ -8462,6 +8497,12 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    double tp4=PriceAtLeg(isBuy,entry,risk,4);
    double tp5=PriceAtLeg(isBuy,entry,risk,5);
    double tp6=PriceAtLeg(isBuy,entry,risk,6);
+   if(g_maIndependent)
+   {
+      double independentTp=0.0,independentR=0.0;string independentDetail="";
+      if(!ResolveTargetPriceAndR(isBuy,entry,risk,independentTp,independentR,independentDetail,sourceReferenceEntry))return false;
+      return MaIndependentOpen(execDir,signalBar,entry,sl,independentTp,entryDetail+" "+independentDetail);
+   }
    if(g_orbBridgeOnly&&!ExitModeUsesFixedTp(g_rtExitMode))
    {
       g_lastExecStatus="BRIDGE_ONLY_UNSUPPORTED_EXIT";
@@ -8618,6 +8659,7 @@ int OrbSessionDayKeyAt(datetime value)
 bool IsAcceptedNewDayReverseCandidate(string execDir,datetime candidateAvailable,string &detail)
 {
    detail="";
+   if(g_maIndependent)return false;
    int candidateDir=(execDir=="BUY"?1:(execDir=="SELL"?-1:0));
    int activeDir=CurrentOrbLifecycleDirection();
    datetime activeSince=CurrentOrbLifecycleStartTime();
@@ -8876,6 +8918,7 @@ bool CloseNasManagedLifecycle()
 
 bool ProcessNasOppositeExit()
 {
+   if(g_maIndependent)return false;
    if(!g_nasManagedLifecycle)return false;
    if(g_nasManagedOppositeAt>0&&g_nasManagedOppositeAt<=g_nasManagedStartAt)
    {
@@ -9043,11 +9086,16 @@ void HandleNasStateGateRejection(string rawDir,datetime signalTime,double signal
 
 void TryOpenSignal()
 {
+   if(g_maIndependent)
+   {
+      string reason="";
+      if(!MaIndependentExecutionAllowed(reason)){g_lastExecStatus=reason;return;}
+   }
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
    // A MA kernel reports only the current closed bar. The ORB-specific
    // restart guard would lock the whole remaining day for a stale one-shot
    // breakout that this EA never replays.
-   if(ProcessNewDayReverseRetry())return;
+   if(!g_maIndependent&&ProcessNewDayReverseRetry())return;
    if(!EntryWindowAllowsAt(TimeCurrent()))
    {
       if(InpUseClosedBarBreakout)
@@ -9125,7 +9173,7 @@ void TryOpenSignal()
    string invertDetail="raw_dir="+dir+" exec_dir="+execDir+" invert="+(g_rtInvertMode?"1":"0");
    modernDetail+=(modernDetail==""?"":" ")+invertDetail;
    g_lastFilterReason="";
-   bool hasActiveLifecycle=(OwnPositionExists()||g_orbBridgePlanActive);
+   bool hasActiveLifecycle=!g_maIndependent&&(OwnPositionExists()||g_orbBridgePlanActive);
    string newDayReverseDetail="";
    bool newDayReverse=hasActiveLifecycle
       &&IsAcceptedNewDayReverseCandidate(execDir,OrbSignalAvailableTime(bt),newDayReverseDetail);
@@ -9261,6 +9309,7 @@ int OnInit()
    ResetForNewNyDay();
    RegimeV3Update(true);
    OrbProInit();
+   if(!MaIndependentInit())return INIT_PARAMETERS_INCORRECT;
    RestoreOrbBridgePlan();
    RestoreNasManagedLifecycle();
    RestoreNasPending();
@@ -9288,6 +9337,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   MaIndependentRelease();
    EventKillTimer();
    if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();DeleteByPrefix(PREFIX+"MA_OBS_");}
 }
@@ -9397,6 +9447,19 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(sparam==PREFIX+"BTN_ATR"||sparam==PREFIX+"BTN_DELAY"||sparam==PREFIX+"BTN_UTC_SESSION")return;
 
    bool needRedraw=false;
+   if(sparam==PREFIX+"BTN_MA_INDEPENDENT"||sparam==PREFIX+"BTN_MA_MAX_APPLY")
+   {
+      int maximum=0;
+      bool enabled=sparam==PREFIX+"BTN_MA_INDEPENDENT"?!g_maIndependent:g_maIndependent;
+      if(!MaParseSeriesLimit(ObjectGetString(0,PREFIX+"EDIT_MA_MAX",OBJPROP_TEXT),maximum))
+         g_lastExecStatus="MAX SERIES: enter integer 1..1000";
+      else if(MaIndependentApply(enabled,maximum))
+      {
+         CancelHistoricalAuditBuild();g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
+         ObjectSetString(0,PREFIX+"EDIT_MA_MAX",OBJPROP_TEXT,(string)g_maMaxConsecutive);
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    for(int ma=0;ma<=4;ma++)
    {
       if(sparam==PREFIX+"BTN_MA_MODE_"+IntegerToString(ma))

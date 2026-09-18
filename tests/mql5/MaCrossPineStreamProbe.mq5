@@ -25,18 +25,20 @@ void OnStart()
    const int n=12000;MqlRates r[],h[];Fixture(r,n);Fixture(h,400,14400);
    int f=FileOpen("MaCrossPineDirections.txt",FILE_WRITE|FILE_TXT|FILE_ANSI,0,CP_UTF8);
    Check(f!=INVALID_HANDLE,"output opened");if(f==INVALID_HANDLE)return;
-   for(int mode=0;mode<5;mode++)
+   for(int mode=0;mode<7;mode++)
    {
-      McPineKernel kernel;kernel.Reset((MA_CROSS_SIGNAL_MODE)mode,MA_CROSS_PAIR_FAST,9,27,200);
+      MA_CROSS_SIGNAL_MODE actual=(MA_CROSS_SIGNAL_MODE)(mode<5?mode:0);
+      MA_CROSS_PAIR pair=(MA_CROSS_PAIR)(mode<5?0:mode-4);
+      McPineKernel kernel;kernel.Reset(actual,pair,9,27,200);
       McRollingHma hh;hh.Reset(200);double hv=0;int hi=0,total=0;
       for(int i=0;i<n;i++)
       {
-         if(mode==0)McFeedHtf(h,hi,r[i].time+300,hh,hv);
+         if(actual==MA_CROSS_ORIGINAL_MTF)McFeedHtf(h,hi,r[i].time+300,hh,hv);
          int d=kernel.Push(r[i],hv);if(d!=0)total++;
          FileWriteString(f,(string)mode+","+(string)i+","+(string)d+"\r\n");
          if(i%997==0)
          {
-            int ref;MaCrossSignalAt(r,i,(MA_CROSS_SIGNAL_MODE)mode,MA_CROSS_PAIR_FAST,9,27,200,h,ref);
+            int ref;MaCrossSignalAt(r,i,actual,pair,9,27,200,h,ref);
             Check(ref==d,"batch/stream mode="+(string)mode+" bar="+(string)i);
          }
       }

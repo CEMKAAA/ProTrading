@@ -34,6 +34,9 @@ foreach($m in [regex]::Matches($main,'(?m)^input\s+(\w+)\s+(Inp\w+)\s*=')){
     $name=$m.Groups[2].Value;if($name -match $excluded){continue}
     $expr=if($m.Groups[1].Value -eq 'double'){'DoubleToString('+$name+',16)'}else{'(string)'+$name}
     $lines.Add('   value+="'+$name+':"+(string)StringLen('+ $expr +')+":"+'+$expr+'+";";')
+    if($name -eq 'InpSignalTimeframe'){
+        $lines.Add('   value+="InpBrokerGmtOffsetHours:"+(string)StringLen(DoubleToString(OrbBrokerOffsetHours(),16))+":"+DoubleToString(OrbBrokerOffsetHours(),16)+";";')
+    }
 }
 $lines.Add('   return OrbMlSha256(value);}')
 $lines.Add('void OrbCustomCapturePreset(OrbStrategyPreset &p){OrbPresetDefaults(p);')

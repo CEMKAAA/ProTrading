@@ -9,19 +9,6 @@ string g_maLastObservedKey="";
 string MaHistoryEventBase(datetime when,string rawDirection)
 {return HistoricalObjectRoot()+"MA_"+(string)(long)when+"_"+rawDirection+"_";}
 
-void MaDrawHistoryCandidate(const MaCrossAuditEvent &event,string disposition)
-{
-   if(IsTesterMode())return;
-   bool buy=event.direction>0;string dir=buy?"BUY":"SELL";
-   string base=MaHistoryEventBase(event.signalTime,dir);
-   double pad=MathMax((event.high-event.low)*0.20,SymbolInfoDouble(_Symbol,SYMBOL_POINT)*4);
-   double price=(g_rtMaCrossMode==MA_CROSS_PIVOT_ST&&event.markerPrice>0)?event.markerPrice:(buy?event.low-pad:event.high+pad);
-   DrawSignalArrow(base+"ARW",event.signalTime,price,buy,false);
-   ObjectSetInteger(0,base+"ARW",OBJPROP_COLOR,clrSilver);
-   DrawSignalText(base+"TXT",event.signalTime,buy?price-pad:price+pad,
-      MaCrossSignalText(g_rtMaCrossMode,event.direction)+" ["+disposition+"]",clrSilver);
-}
-
 void MaObserveClosedSignal()
 {
    if(IsTesterMode())return;
@@ -34,10 +21,6 @@ void MaObserveClosedSignal()
    string key=base+(string)g_rtMaCrossPair;
    if(key==g_maLastObservedKey)return;
    g_maLastObservedKey=key;
-   if(ObjectFind(0,base+"ARW")>=0)return;
-   bool buy=signal.direction>0;double price=MaCrossChartArrowPrice(signal.barTime,buy,signal.price,0);
-   DrawSignalArrow(base+"ARW",signal.barTime,price,buy,false);
-   DrawSignalText(base+"TXT",signal.barTime,price,MaCrossSignalText(g_rtMaCrossMode,signal.direction)+" [SIGNAL]",clrSilver);
    // Reconcile the persistent source signal into a historical snapshot.
    if(g_histAuditRunning)g_maObservedAuditDirty=true;else QueueHistoricalRedraw(0);
 }
@@ -102,11 +85,11 @@ int ProcessMaHistoricalPrepEvent(int index)
    else
    {
       AppendOrbWindowSignal(g_histWindowSignals,event.signalTime,dir,reason,event.close,event.high,event.low);
-      // The source marker below already represents this event; avoid a second arrow.
+      // Retain the event for exit/filter causality, without drawing rejected candidates.
       g_histWindowSignals[ArraySize(g_histWindowSignals)-1].drawOnChart=false;
       if(!beforeRegime)AppendOrbWindowSignal(g_regimeReferenceWindows,event.signalTime,dir,reason,event.close,event.high,event.low);
    }
-   MaDrawHistoryCandidate(event,allowed?"CANDIDATE":reason);
+   // Draw only final audited trades in CALC, never provisional PREP candidates.
    return allowed?0:1;
 }
 #endif

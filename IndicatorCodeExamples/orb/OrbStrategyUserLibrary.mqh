@@ -8,6 +8,7 @@ struct OrbUserRecord
    OrbStrategyPreset preset;
    string symbol,inputSignature,runtime;
    int chartTf;
+   double brokerOffset;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -47,7 +48,16 @@ void OrbUserReload(bool force=false)
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
-      record.inputSignature=v[5];record.runtime="";
+      string clockMeta[];int metaCount=StringSplit(v[5],'|',clockMeta);
+      record.inputSignature=clockMeta[0];record.brokerOffset=0;
+      if(metaCount>1)
+      {
+         double offset=0;
+         if(metaCount!=2||StringFind(clockMeta[1],"TZ=")!=0||!OrbMlNumber(StringSubstr(clockMeta[1],3),offset)
+            ||offset < -12||offset > 14)continue;
+         record.brokerOffset=offset;
+      }
+      record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
       g_userStrategies[slot]=record;
       OrbUserLoadMetrics(slot);
@@ -76,7 +86,9 @@ bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
    reason="CUSTOM_SYMBOL_OR_CHART_TF_MISMATCH";
    if(g_userStrategies[i].symbol!=_Symbol||g_userStrategies[i].chartTf!=(int)_Period)return false;
    reason="CUSTOM_EA_INPUTS_MISMATCH";
-   if(g_userStrategies[i].inputSignature!=OrbCustomInputSignature())return false;
+   double savedClock=g_orbStrategyTimezone;g_orbStrategyTimezone=0;
+   string expectedSignature=OrbCustomInputSignature();g_orbStrategyTimezone=savedClock;
+   if(g_userStrategies[i].inputSignature!=expectedSignature)return false;
    string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);
    reason="CUSTOM_RUNTIME_INVALID";if(!OrbCustomRuntimeRead(v,0,false))return false;
    reason="";return true;
@@ -85,6 +97,7 @@ void OrbUserApply(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return;
    int i=OrbUserSlot(p.id);string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);
+   g_orbStrategyTimezone=g_userStrategies[i].brokerOffset;
    OrbCustomRuntimeRead(v,0,true);
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
    g_orbRfEnabled=p.rfMaster;
@@ -94,6 +107,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);
+   if(MathAbs(OrbBrokerOffsetHours()-g_userStrategies[i].brokerOffset)>0.0000001)return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
@@ -134,7 +148,9 @@ bool OrbUserSaveLocked(string name)
    p.family=OrbUserSymbolFamily(_Symbol);
    p.name=name;p.searchTerms=name+" "+_Symbol+" user saved";p.sourceImage="user-saved";
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
-   string signature=OrbCustomInputSignature(),runtime=OrbCustomRuntimeDump();
+   double offset=OrbBrokerOffsetHours(),savedClock=g_orbStrategyTimezone;g_orbStrategyTimezone=0;
+   string signature=OrbCustomInputSignature()+"|TZ="+DoubleToString(offset,8),runtime=OrbCustomRuntimeDump();
+   g_orbStrategyTimezone=savedClock;
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    int saved=-1;
@@ -175,7 +191,8 @@ bool OrbUserSave(const string name)
 void OrbUserDraw()
 {
    int x=InpDashboardX+644,y=InpDashboardY+600;
-   CreateLabel("DASH_USER_TITLE",x,y,"SAVE CURRENT STRATEGY (APPLY parameter edits first)",C'255,187,92',8);
+   CreateLabel("DASH_USER_TITLE",x,y,"SAVE STRATEGY | GMT "+DoubleToString(OrbBrokerOffsetHours(),2),C'255,187,92',8);
+   CreateButton("BTN_USER_TZ",x+390,y-3,202,18,"USE INPUT TIMEZONE",C'38,101,176');
    CreateEdit("EDIT_USER_NAME",x,y+19,380,22,"");
    CreateButton("BTN_USER_SAVE",x+390,y+19,202,22,"SAVE STRATEGY",C'38,101,176');
    CreateLabel("DASH_USER_NOTE",x,y+48,StringSubstr(g_userStrategyNote,0,105),C'184,196,210',7);

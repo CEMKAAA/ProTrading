@@ -22,6 +22,7 @@ Write-Output ('Campaign reuse compatibility: '+($compatibility|ConvertTo-Json -C
 $lines.Add('string OrbMlConfiguration()')
 $lines.Add('{')
 $lines.Add('   string value=ORB_ML_SOURCE;')
+$lines.Add('   if(OrbBrokerClockKey()!="")OrbMlConfigField(value,"broker_clock",OrbBrokerClockKey());')
 $lines.Add('   OrbMlConfigField(value,"compiled_at",(string)__DATETIME__);')
 $lines.Add('   OrbMlConfigField(value,"symbol",_Symbol);')
 $lines.Add('   OrbMlConfigField(value,"broker",AccountInfoString(ACCOUNT_SERVER));')
@@ -38,6 +39,9 @@ foreach ($m in $inputs) {
     if ($name -match $excluded) { continue }
     $expr = if ($m.Groups[1].Value -eq 'double') { "DoubleToString($name,16)" } else { "(string)$name" }
     $lines.Add('   OrbMlConfigField(value,"' + $name + '",' + $expr + ');')
+    if($name -eq 'InpSignalTimeframe'){
+        $lines.Add('   OrbMlConfigField(value,"InpBrokerGmtOffsetHours",DoubleToString(OrbBrokerOffsetHours(),16));')
+    }
 }
 $runtime = [regex]::Matches($main, '(?m)^(\w+)\s+(g_rt\w+)\s*=')
 foreach ($m in $runtime) {

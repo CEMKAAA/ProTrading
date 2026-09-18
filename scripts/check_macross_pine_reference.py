@@ -66,13 +66,15 @@ def cross(a, b, pa, pb, up):
 
 def reference(n):
     op, hi, lo, cl = fixture(n)
-    outputs = [[0]*n for _ in range(5)]
-    for mode, f, s in [(0, 9, 27), (1, 50, 200)]:
+    outputs = [[0]*n for _ in range(7)]
+    for mode, f, s in [(0, 9, 27), (1, 50, 200), (5, 9, 200), (6, 27, 200)]:
         fast, slow = ema(cl, f), ema(cl, s)
+        if mode in (5, 6):
+            slow = hma(cl, s)
         higher = hma(fixture(400)[3], 200)
         for i in range(1, n):
             d = 1 if cross(fast[i], slow[i], fast[i-1], slow[i-1], True) else -1 if cross(fast[i], slow[i], fast[i-1], slow[i-1], False) else 0
-            if mode == 0:
+            if mode != 1:
                 h = min(399, ((i+1)*300-14400)//14400)
                 value = higher[h] if h >= 0 else None
                 if value is None or (d > 0 and cl[i] <= value) or (d < 0 and cl[i] >= value):
@@ -136,16 +138,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('directions', type=Path)
     args = parser.parse_args()
-    actual = [[0]*12000 for _ in range(5)]
+    actual = [[0]*12000 for _ in range(7)]
     rows = set()
     for line in args.directions.read_text(encoding='utf-8-sig').splitlines():
         mode, i, value = map(int, line.split(','))
         assert (mode, i) not in rows
         rows.add((mode, i))
         actual[mode][i] = value
-    assert len(rows) == 60000, 'Missing output rows'
+    assert len(rows) == 84000, 'Missing output rows'
     expected = reference(12000)
-    mismatches = [(m,i,actual[m][i],expected[m][i]) for m in range(5) for i in range(12000) if actual[m][i] != expected[m][i]]
-    result = dict(compared=60000, mismatches=len(mismatches), first_mismatches=mismatches[:10], signals=[sum(v!=0 for v in row) for row in actual])
+    mismatches = [(m,i,actual[m][i],expected[m][i]) for m in range(7) for i in range(12000) if actual[m][i] != expected[m][i]]
+    result = dict(compared=84000, mismatches=len(mismatches), first_mismatches=mismatches[:10], signals=[sum(v!=0 for v in row) for row in actual])
     print(json.dumps(result, indent=2))
     raise SystemExit(bool(mismatches))

@@ -19,7 +19,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class MaCrossOverCTraderListener : Robot
     {
-        private const string Build = "2026-09-16.macross-orb-clone-channel-isolated-v1";
+        private const string Build = "2026-09-17.macross-accepted-signal-guard-v2";
 
         [Parameter("Executor Enabled", DefaultValue = true)]
         public bool ExecutorEnabled { get; set; }
@@ -335,8 +335,8 @@ namespace cAlgo.Robots
                 var ok = CloseSameDirectionPositions(sig, out var closeOnlyDetail);
                 if (ok)
                     _lastSeenEventId = sig.EventId;
-                else if (PermanentRejectGuard)
-                    _lastRejectedEventId = sig.EventId;
+                else
+                    BlockOrderRetry(sig, "close_failed", "close_only_retry", 10);
                 Audit("close_only_processed", sig, $"caller={caller} {closeOnlyDetail}");
                 return;
             }
@@ -1145,6 +1145,11 @@ namespace cAlgo.Robots
             if (string.IsNullOrWhiteSpace(sig.Source) || !sig.Source.StartsWith(expectedSource, StringComparison.OrdinalIgnoreCase))
             {
                 reason = $"source_filter source={sig.Source} expected_namespace={expectedSource}";
+                return false;
+            }
+            if (!IsCloseOnlySignal(sig) && !ContainsText(sig.Source, "|ACCEPTED1"))
+            {
+                reason = $"acceptance_seal_missing source={sig.Source}";
                 return false;
             }
             return true;

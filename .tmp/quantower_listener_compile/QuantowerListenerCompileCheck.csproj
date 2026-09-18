@@ -6,6 +6,7 @@
     <OutputType>Library</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\..\IndicatorCodeExamples\Quantower\MaCrossOver_Quantower_Listener.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\Quantower\ProductionFileBridgeQuantowerCore.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\Quantower\OrbUltimate_Quantower_Listener.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\Quantower\NasUltimate_Quantower_Listener.cs" />

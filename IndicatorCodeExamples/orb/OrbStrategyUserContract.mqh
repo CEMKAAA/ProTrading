@@ -4,7 +4,7 @@
 #define ORB_CUSTOM_RUNTIME_TOKENS 46
 string OrbCustomInputSignature(){string value="";
    value+="InpSignalTimeframe:"+(string)StringLen((string)InpSignalTimeframe)+":"+(string)InpSignalTimeframe+";";
-   value+="InpBrokerGmtOffsetHours:"+(string)StringLen(DoubleToString(InpBrokerGmtOffsetHours,16))+":"+DoubleToString(InpBrokerGmtOffsetHours,16)+";";
+   value+="InpBrokerGmtOffsetHours:"+(string)StringLen(DoubleToString(OrbBrokerOffsetHours(),16))+":"+DoubleToString(OrbBrokerOffsetHours(),16)+";";
    value+="InpAutoSessionBySymbol:"+(string)StringLen((string)InpAutoSessionBySymbol)+":"+(string)InpAutoSessionBySymbol+";";
    value+="InpSessionProfile:"+(string)StringLen((string)InpSessionProfile)+":"+(string)InpSessionProfile+";";
    value+="InpAutoNewYorkDst:"+(string)StringLen((string)InpAutoNewYorkDst)+":"+(string)InpAutoNewYorkDst+";";

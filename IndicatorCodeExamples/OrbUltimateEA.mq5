@@ -37,7 +37,7 @@ enum ORB_RISK_CAPITAL_MODE
 input bool            InpEaEnabled          = true;
 input long            InpMagic              = 15091503;
 input ENUM_TIMEFRAMES InpSignalTimeframe    = PERIOD_M15;   // M15 default — M1 too noisy for ORB
-input double          InpBrokerGmtOffsetHours = 0.0;
+#include "OrbBrokerTimezone.mqh"
 input bool            InpAutoSessionBySymbol = true;
 input ORB_SESSION_PROFILE InpSessionProfile = ORB_SESSION_AUTO;
 input bool            InpAutoNewYorkDst     = true;
@@ -692,7 +692,7 @@ bool SetRuntimeEntryWindow(bool enabled,int startMin,int endMin)
 }
 int GmtMinuteOfDay(datetime serverTime)
 {
-   datetime utc=serverTime-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+   datetime utc=OrbServerToUtc(serverTime);
    MqlDateTime st;TimeToStruct(utc,st);return st.hour*60+st.min;
 }
 bool EntryWindowAllowsAt(datetime serverTime)
@@ -712,11 +712,11 @@ datetime MakeDateTime(int y,int mo,int d,int h,int mi,int s=0){MqlDateTime st;Ze
 int DayOfWeekForDate(int y,int mo,int d){MqlDateTime st;TimeToStruct(MakeDateTime(y,mo,d,12,0,0),st);return st.day_of_week;}
 int NthSunday(int y,int mo,int nth){int fd=DayOfWeekForDate(y,mo,1);int fs=1+((7-fd)%7);return fs+(nth-1)*7;}
 int LastSunday(int y,int mo){int last=31;if(mo==4||mo==6||mo==9||mo==11)last=30;else if(mo==2)last=((y%4==0&&y%100!=0)||y%400==0)?29:28;for(int d=last;d>=last-6;d--)if(DayOfWeekForDate(y,mo,d)==0)return d;return last;}
-bool IsNewYorkDstDate(int y,int mo,int d){if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
+bool IsNewYorkDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
 int NyUtcOffsetSecondsForDate(int y,int mo,int d){return IsNewYorkDstDate(y,mo,d)?-4*3600:-5*3600;}
-datetime NyLocalToServer(int y,int mo,int d,int minOfDay){int h=minOfDay/60;int mi=minOfDay%60;datetime ny=MakeDateTime(y,mo,d,h,mi,0);datetime utc=ny-NyUtcOffsetSecondsForDate(y,mo,d);return utc+(int)MathRound(InpBrokerGmtOffsetHours*3600.0);}
-datetime ServerToNyLocal(datetime s){datetime utc=s-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);MqlDateTime u;TimeToStruct(utc,u);return utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);}
-int CurrentNyDayKey(int &y,int &mo,int &d){datetime utc=TimeCurrent()-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);MqlDateTime u;TimeToStruct(utc,u);datetime ny=utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);MqlDateTime n;TimeToStruct(ny,n);y=n.year;mo=n.mon;d=n.day;return y*10000+mo*100+d;}
+datetime NyLocalToServer(int y,int mo,int d,int minOfDay){int h=minOfDay/60;int mi=minOfDay%60;datetime ny=MakeDateTime(y,mo,d,h,mi,0);datetime utc=ny-NyUtcOffsetSecondsForDate(y,mo,d);return OrbUtcToServer(utc);}
+datetime ServerToNyLocal(datetime s){datetime utc=OrbServerToUtc(s);MqlDateTime u;TimeToStruct(utc,u);return utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);}
+int CurrentNyDayKey(int &y,int &mo,int &d){datetime utc=OrbServerToUtc(TimeCurrent());MqlDateTime u;TimeToStruct(utc,u);datetime ny=utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);MqlDateTime n;TimeToStruct(ny,n);y=n.year;mo=n.mon;d=n.day;return y*10000+mo*100+d;}
 string UpperText(string s){StringToUpper(s);return s;}
 bool IsForexCurrencyCode(const string code)
 {
@@ -784,9 +784,10 @@ string SessionProfileLabel(ORB_SESSION_PROFILE p)
    if(p==ORB_SESSION_MANUAL_NY)return "MANUAL_NY";
    return "AUTO";
 }
-bool IsEuropeDstDate(int y,int mo,int d){if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
+bool IsEuropeDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
 bool IsSydneyDstDate(int y,int mo,int d)
 {
+   if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;
    if(mo>4&&mo<10)return false;
    if(mo>10||mo<4)return true;
    if(mo==10)return d>=1+((7-DayOfWeekForDate(y,10,1))%7);
@@ -811,22 +812,22 @@ datetime SessionLocalToServer(int y,int mo,int d,int minOfDay)
    if(g_rtUtcMidnightSession)
    {
       datetime utc=MakeDateTime(y,mo,d,minOfDay/60,minOfDay%60,0);
-      return utc+(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+      return OrbUtcToServer(utc);
    }
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
    if(p==ORB_SESSION_MANUAL_NY)return NyLocalToServer(y,mo,d,minOfDay);
    int h=minOfDay/60;int mi=minOfDay%60;
    datetime local=MakeDateTime(y,mo,d,h,mi,0);
    datetime utc=local-SessionUtcOffsetSecondsForDate(p,y,mo,d);
-   return utc+(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+   return OrbUtcToServer(utc);
 }
 datetime ServerToSessionLocal(datetime s)
 {
    if(g_rtUtcMidnightSession)
-      return s-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+      return OrbServerToUtc(s);
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
    if(p==ORB_SESSION_MANUAL_NY)return ServerToNyLocal(s);
-   datetime utc=s-(int)MathRound(InpBrokerGmtOffsetHours*3600.0);
+   datetime utc=OrbServerToUtc(s);
    MqlDateTime u;TimeToStruct(utc,u);
    return utc+SessionUtcOffsetSecondsForDate(p,u.year,u.mon,u.day);
 }
@@ -1942,12 +1943,13 @@ double TickSize(){double ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);if(
 double NormalizeTradePrice(double p){double ts=TickSize();return NormalizePrice(MathRound(p/ts)*ts);}
 double MinStopDistance(){double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)pt=TickSize();long st=SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);long fr=SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL);return MathMax((double)MathMax(st,fr)*pt,TickSize());}
 double ValuePerPriceUnitPerLot(){double ts=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);double tv=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);if(ts<=0)ts=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(ts<=0||tv<=0)return 0;return tv/ts;}
+#include "OrbMoneyRisk.mqh"
 bool ManagedRiskMode(){return g_ftmoMode||g_riskLotOnlyMode;}
-string RuntimeRiskModeLabel(){if(FixedReferenceRiskMode())return "FIXED_REF";if(g_ftmoMode)return "FTMO";if(g_riskLotOnlyMode)return "RISKLOT";return "NORMAL";}
-bool FixedReferenceRiskMode(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE;}
-double RiskSizingCapital(){return FixedReferenceRiskMode()?(InpFixedRiskReferenceCapital>0.0?InpFixedRiskReferenceCapital:0.0):MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));}
-double RiskReferenceCapitalForBridge(){return FixedReferenceRiskMode()?MathMax(0.0,InpFixedRiskReferenceCapital):0.0;}
-string RiskCapitalBasisCode(){return FixedReferenceRiskMode()?"FIXED_REFERENCE":"CURRENT_EQUITY";}
+string RuntimeRiskModeLabel(){if(g_orbMoneyRisk)return "MONEY";if(FixedReferenceRiskMode())return "FIXED_REF";if(g_ftmoMode)return "FTMO";if(g_riskLotOnlyMode)return "RISKLOT";return "NORMAL";}
+bool FixedReferenceRiskMode(){return g_orbMoneyRisk||InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE;}
+double RiskSizingCapital(){if(g_orbMoneyRisk)return MathMax(0.0,AccountInfoDouble(ACCOUNT_BALANCE));return FixedReferenceRiskMode()?(InpFixedRiskReferenceCapital>0.0?InpFixedRiskReferenceCapital:0.0):MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));}
+double RiskReferenceCapitalForBridge(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE?MathMax(0.0,InpFixedRiskReferenceCapital):0.0;}
+string RiskCapitalBasisCode(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE?"FIXED_REFERENCE":"CURRENT_EQUITY";}
 bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
 double ClampRiskPerTradePct(double value){return NormalizeDouble(MathMax(0.01,MathMin(100.0,value)),4);}
 string RuntimeRiskPctKey()
@@ -1969,12 +1971,21 @@ void LoadRuntimeRiskPct()
 }
 bool SetRuntimeRiskPct(double value)
 {
+   if(g_orbMoneyRisk)return OrbSetMoneyAmount(value);
    if(!MathIsValidNumber(value)||value<0.01||value>100.0)return false;
-   g_rtRiskPerTradePct=ClampRiskPerTradePct(value);
-   return GlobalVariableSet(RuntimeRiskPctKey(),g_rtRiskPerTradePct)>0;
+   double next=ClampRiskPerTradePct(value);
+   if(GlobalVariableSet(RuntimeRiskPctKey(),next)<=0)return false;
+   g_rtRiskPerTradePct=next;GlobalVariablesFlush();return true;
 }
-double EffRiskPerTradePct(){return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
-double RiskBudgetMoney(){double capital=RiskSizingCapital();return capital>0.0?capital*MathMax(0.01,EffRiskPerTradePct())/100.0:0.0;}
+double EffRiskPerTradePct(){if(g_orbMoneyRisk){double b=AccountInfoDouble(ACCOUNT_BALANCE);return b>0?OrbMoneyBudget()/b*100.0:0;}return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
+double RiskBudgetMoney(){if(g_orbMoneyRisk)return OrbMoneyBudget();double capital=RiskSizingCapital();return capital>0.0?MathMin(MathMax(0.0,AccountInfoDouble(ACCOUNT_BALANCE)),capital*MathMax(0.01,EffRiskPerTradePct())/100.0):0.0;}
+// Publishing remains percentage-based even when native orders use a money budget.
+double BridgeRiskPerTradePct(){return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
+double BridgeRiskBudgetMoney()
+{
+   double capital=InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE?RiskReferenceCapitalForBridge():MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));
+   return capital*BridgeRiskPerTradePct()/100.0;
+}
 double EffAtrExposurePct(){return ManagedRiskMode()?2.0:InpAtrExposurePct;}
 double EffMaxPortfolioPct(){return g_ftmoMode?4.0:InpMaxPortfolioPct;}
 double EffDailyLossLimitPct(){return g_ftmoMode?5.0:InpDailyLossLimitPct;}
@@ -2051,6 +2062,7 @@ string TargetOutcomeLabel(int leg)
 }
 double SimMoneyPnl(double netR)
 {
+   if(g_orbMoneyRisk)return netR*OrbMoneyBudget();
    double base=FixedReferenceRiskMode()?MathMax(0.01,InpFixedRiskReferenceCapital):(InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE)));
    return netR*base*MathMax(0,EffRiskPerTradePct())/100.0;
 }
@@ -3404,7 +3416,7 @@ double OwnFixedRiskMoney()
 bool ValidateFixedReferencePostFill(string &detail)
 {
    if(!FixedReferenceRiskMode())return true;
-   double budget=RiskBudgetMoney(),actual=OwnFixedRiskMoney(),maximum=budget+MathMax(0.0,InpFixedRiskMaxOvershootMoney);
+   double budget=RiskBudgetMoney(),actual=OwnFixedRiskMoney(),maximum=budget+(g_orbMoneyRisk?0.0:MathMax(0.0,InpFixedRiskMaxOvershootMoney));
    detail="fixed_reference_post_fill actual="+DoubleToString(actual,2)+" budget="+DoubleToString(budget,2)+" maximum="+DoubleToString(maximum,2);
    if(budget>0.0&&actual>=0.0&&actual<=maximum)return true;
    for(int i=PositionsTotal()-1;i>=0;i--){ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)||!IsOwnPosition())continue;trade.PositionClose(ticket);}
@@ -3421,7 +3433,7 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
    double mu=cap>0?AccountInfoDouble(ACCOUNT_MARGIN)/cap*100.0:100.0;
    if(cap<=0||(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf)||(EffMaxMarginUsagePct()>0&&mu>=EffMaxMarginUsagePct()))
-   {detail="risk_block cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2);return InpFailClosed?0:fallback;}
+   {detail="risk_block cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2);return (g_orbMoneyRisk||InpFailClosed)?0:fallback;}
    ENUM_ORDER_TYPE ot=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    bool fixedReference=FixedReferenceRiskMode();
    double slRes=0,atrRes=0,atr=ClosedDailyAtr();
@@ -3429,9 +3441,9 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    bool slCalcOk=OrderCalcProfit(ot,_Symbol,1.0,entry,sl,slRes);
    bool atrCalcOk=fixedReference||((atr>0.0)&&OrderCalcProfit(ot,_Symbol,1.0,entry,atrExit,atrRes));
    if(!slCalcOk||!atrCalcOk)
-   {detail="risk_calc_fail";return InpFailClosed?0:fallback;}
+   {detail="risk_calc_fail";return (g_orbMoneyRisk||InpFailClosed)?0:fallback;}
    double slMpl=MathAbs(slRes),atrMpl=fixedReference?MathAbs(slRes):MathAbs(atrRes);
-   if(slMpl<=0||(!fixedReference&&atrMpl<=0)){detail="risk_zero_mpl";return InpFailClosed?0:fallback;}
+   if(slMpl<=0||(!fixedReference&&atrMpl<=0)){detail="risk_zero_mpl";return (g_orbMoneyRisk||InpFailClosed)?0:fallback;}
    double tradeBudget=RiskBudgetMoney();
    if(FixedReferenceRiskMode()&&tradeBudget<=0.0){detail="fixed_reference_capital_invalid";return 0;}
    double atrBudget=cap*MathMax(0,EffAtrExposurePct())/100.0;
@@ -3441,7 +3453,7 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    double raw=FixedReferenceRiskMode()?tradeBudget/slMpl:MathMin(tradeBudget/slMpl,MathMin(atrBudget/atrMpl,avail/slMpl));
    double vol=NormalizeVolume(raw);
    double projectedRisk=slMpl*vol;
-   if(FixedReferenceRiskMode()&&projectedRisk>tradeBudget+MathMax(0.0,InpFixedRiskMaxOvershootMoney))
+   if(FixedReferenceRiskMode()&&projectedRisk>tradeBudget+(g_orbMoneyRisk?0.0:MathMax(0.0,InpFixedRiskMaxOvershootMoney)))
    {detail="fixed_reference_min_volume_exceeds_budget projected="+DoubleToString(projectedRisk,2)+" budget="+DoubleToString(tradeBudget,2);return 0;}
    double margin=0;bool mc=OrderCalcMargin(ot,_Symbol,vol,entry,margin);
    double proj=cap>0?(AccountInfoDouble(ACCOUNT_MARGIN)+margin)/cap*100.0:100.0;
@@ -5513,6 +5525,8 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
+   key+=OrbBrokerClockKey();
+   key+="|broker_offset="+DoubleToString(OrbBrokerOffsetHours(),8);
    key+="|g_rtSignalTf="+(string)g_rtSignalTf;
    key+="|g_rtDelayMin="+(string)g_rtDelayMin;
    key+="|g_rtUseDelay="+(string)g_rtUseDelay;
@@ -5962,6 +5976,8 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
+   key+=OrbBrokerClockKey();
+   key+="|broker_offset="+DoubleToString(OrbBrokerOffsetHours(),8);
    key+="|g_rtSignalTf="+(string)g_rtSignalTf;
    key+="|g_rtDelayMin="+(string)g_rtDelayMin;
    key+="|g_rtUseDelay="+(string)g_rtUseDelay;
@@ -7341,7 +7357,7 @@ void UpdateDashboard()
    // ORB info
    string delayTxt=g_rtUseDelay?IntegerToString(g_rtDelayMin)+"m delay":"no delay";
    CreateLabel("DASH_L2",x+12,y+50,
-      SessionClockLabel()+" | GMT+"+DoubleToString(InpBrokerGmtOffsetHours,1)
+      SessionClockLabel()+" | "+OrbBrokerClockLabel()
       +" | "+delayTxt+" | "+EntryWindowLabel()+" | Spread "+IntegerToString(CurrentSpreadPoints())+"pt",
       muted,8);
    CreateLabel("DASH_L3",x+12,y+66,
@@ -7380,11 +7396,11 @@ void UpdateDashboard()
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
    int auditY=y;
    y-=140;
-   CreateLabel("DASH_RISK_LABEL",x+12,y+494,"RISK %",acB,8);
-   CreateEdit("EDIT_RISK_PCT",x+66,y+490,66,18,DoubleToString(EffRiskPerTradePct(),2));
+   CreateButton("BTN_RISK_UNIT",x+12,y+490,50,18,g_orbMoneyRisk?"MONEY":"RISK %",C'38,101,176');
+   CreateEdit("EDIT_RISK_PCT",x+66,y+490,66,18,DoubleToString(OrbRiskEditValue(),2));
    bool riskApplied=(g_riskApplyFlashUntil>TimeLocal());
    CreateButton("BTN_APPLY_RISK",x+138,y+490,92,18,riskApplied?"APPLIED":"APPLY RISK",riskApplied?C'30,150,95':C'38,101,176');
-   CreateLabel("DASH_RISK_VALUE",x+236,y+494,DoubleToString(EffRiskPerTradePct(),2)+"%",riskApplied?C'80,255,180':muted,8);
+   CreateLabel("DASH_RISK_VALUE",x+236,y+494,"NAT "+DoubleToString(OrbRiskEditValue(),2)+OrbRiskUnit()+" / PUB "+DoubleToString(BridgeRiskPerTradePct(),2)+"%",riskApplied?C'80,255,180':muted,8);
    CreateButton("BTN_EXIT",x+326,y+490,94,18,RuntimeExitLabel(),g_rtExitMode==ORB_EXIT_FIXED_TARGET?C'80,80,80':C'38,101,176');
    bool volApplied=(g_volApplyFlashUntil>TimeLocal());
    CreateLabel("DASH_VOL_LABEL",x+12,y+517,"VOL X",acB,8);
@@ -8998,6 +9014,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   if(!OrbBrokerClockInputsValid()){Print("Invalid broker clock settings");return INIT_PARAMETERS_INCORRECT;}
    OrbTesterAudit_Init();
    // Runtime execution markers from an older attachment/configuration are not
    // comparable with the freshly rebuilt historical audit.
@@ -9017,7 +9034,7 @@ int OnInit()
    g_rtFilteredWindowReverseExit=InpFilteredWindowReverseExitDefault;
    g_rtPostTradeDispBlockExit=InpExitOnPostTradeSameDirectionDispBlockDefault;
    g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;
-   LoadRuntimeRiskPct();
+   LoadRuntimeRiskPct();OrbLoadMoneyRisk();
    LoadRuntimeInvertMode();
    LoadRuntimeUtcSession();
    g_rtSignalTf=InpSignalTimeframe; // NAS CURRENT must resolve against this instance's configured signal TF.
@@ -9511,24 +9528,29 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       g_riskLotOnlyMode=!g_riskLotOnlyMode;if(g_riskLotOnlyMode)g_ftmoMode=false;g_runtimeMagic=0;g_riskPerfCacheAt=0;g_lastExecStatus=g_riskLotOnlyMode?"RISKLOT_ON":"RISKLOT_OFF";
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
+   else if(sparam==PREFIX+"BTN_RISK_UNIT")
+   {
+      if(OrbToggleMoneyRisk())ObjectSetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT,DoubleToString(OrbRiskEditValue(),2));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    else if(sparam==PREFIX+"BTN_APPLY_RISK")
    {
       string raw=ObjectGetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT);
-      double requested=StringToDouble(raw);
-      if(!SetRuntimeRiskPct(requested))
+      double requested=0;
+      if(!OrbParseRiskInput(raw,requested)||!SetRuntimeRiskPct(requested))
       {
-         g_lastExecStatus="RISK_INVALID_0.01_TO_100";
-         ObjectSetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT,DoubleToString(EffRiskPerTradePct(),2));
+         g_lastExecStatus=g_orbMoneyRisk?"RISK_AMOUNT_EXCEEDS_BALANCE_OR_INVALID":"RISK_INVALID_0.01_TO_100";
+         ObjectSetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT,DoubleToString(OrbRiskEditValue(),2));
       }
       else
       {
          g_riskPerfCacheAt=0;
          g_riskApplyFlashUntil=TimeLocal()+2;
-         g_lastExecStatus="RISK_APPLIED_"+DoubleToString(EffRiskPerTradePct(),2)+"%";
-         ObjectSetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT,DoubleToString(EffRiskPerTradePct(),2));
+         g_lastExecStatus="RISK_APPLIED_"+DoubleToString(OrbRiskEditValue(),2)+OrbRiskUnit();
+         ObjectSetString(0,PREFIX+"EDIT_RISK_PCT",OBJPROP_TEXT,DoubleToString(OrbRiskEditValue(),2));
          Print("ORB15v3 dashboard risk applied pct=",DoubleToString(EffRiskPerTradePct(),4)," key=",RuntimeRiskPctKey());
          Audit("risk_pct_applied","",0,0,0,0,"risk_pct="+DoubleToString(EffRiskPerTradePct(),4));
-         if(g_orbBridgeEnabled)OrbProWriteInitMarker();
+         if(g_orbBridgeEnabled&&!g_orbMoneyRisk)OrbProWriteInitMarker();
       }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }

@@ -38,6 +38,8 @@ bool OrbCampaignSelected(OrbCampaignInfo &r)
 
 bool OrbCampaignBinding(const OrbCampaignInfo &r)
 {
+   // Old campaign manifests do not bind a broker seasonal policy.
+   if(OrbBrokerClockKey()!="")return false;
    OrbStrategyPreset p;
    if(!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||p.id!=r.id||!OrbStrategyPresetMatchesRuntime(p))return false;
    if(_Symbol!=r.symbol||(int)_Period!=r.tf||AccountInfoString(ACCOUNT_SERVER)!=r.broker)return false;

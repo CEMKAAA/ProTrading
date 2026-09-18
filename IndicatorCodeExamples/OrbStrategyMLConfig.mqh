@@ -4,6 +4,7 @@
 string OrbMlConfiguration()
 {
    string value=ORB_ML_SOURCE;
+   if(OrbBrokerClockKey()!="")OrbMlConfigField(value,"broker_clock",OrbBrokerClockKey());
    OrbMlConfigField(value,"compiled_at",(string)__DATETIME__);
    OrbMlConfigField(value,"symbol",_Symbol);
    OrbMlConfigField(value,"broker",AccountInfoString(ACCOUNT_SERVER));
@@ -12,7 +13,7 @@ string OrbMlConfiguration()
    OrbMlConfigField(value,"tick_size",DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),16));
    OrbMlConfigField(value,"digits",(string)_Digits);
    OrbMlConfigField(value,"InpSignalTimeframe",(string)InpSignalTimeframe);
-   OrbMlConfigField(value,"InpBrokerGmtOffsetHours",DoubleToString(InpBrokerGmtOffsetHours,16));
+   OrbMlConfigField(value,"InpBrokerGmtOffsetHours",DoubleToString(OrbBrokerOffsetHours(),16));
    OrbMlConfigField(value,"InpAutoSessionBySymbol",(string)InpAutoSessionBySymbol);
    OrbMlConfigField(value,"InpSessionProfile",(string)InpSessionProfile);
    OrbMlConfigField(value,"InpAutoNewYorkDst",(string)InpAutoNewYorkDst);

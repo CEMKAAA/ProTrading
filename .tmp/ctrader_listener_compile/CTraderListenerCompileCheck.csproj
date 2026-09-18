@@ -6,6 +6,7 @@
     <OutputType>Library</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\..\IndicatorCodeExamples\macrossover_orb\MaCrossOver_cTrader_Listener.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\OrbUltimate_cTrader_Listener.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\OrbUltimate_cTrader_Listener_Channel.cs" />
     <Compile Include="..\..\IndicatorCodeExamples\NasUltimate_cTrader_Listener.cs" />

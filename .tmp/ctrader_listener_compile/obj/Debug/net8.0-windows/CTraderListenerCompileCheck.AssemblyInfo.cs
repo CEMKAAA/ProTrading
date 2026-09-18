@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CTraderListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+479ad5de2c1ebf7423db94d25740dcb3e76e727e")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c538cbe0a8c6747a03dbff47909a1f8830b00b81")]
 [assembly: System.Reflection.AssemblyProductAttribute("CTraderListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CTraderListenerCompileCheck")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -33,6 +33,30 @@ struct OrbAdvTreeNode
    int validQuotes;
 };
 
+// Per-run cache only: never retain a potentially revised history across audits.
+#define ORB_ADV_DAY_CACHE_SLOTS 8
+struct OrbAdvCachedDay
+{
+   int dayKey;
+   string symbol,server;
+   long touched;
+   bool fromDisk;
+   OrbAdvMinuteBlock blocks[];
+   OrbAdvTreeNode tree[];
+};
+OrbAdvCachedDay g_orbAdvDayCache[ORB_ADV_DAY_CACHE_SLOTS];
+long g_orbAdvCacheClock=0,g_orbAdvRamHits=0;
+
+void OrbAdvClearDayCache()
+{
+   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+   {
+      g_orbAdvDayCache[i].dayKey=0;
+      ArrayFree(g_orbAdvDayCache[i].blocks);ArrayFree(g_orbAdvDayCache[i].tree);
+   }
+   g_orbAdvCacheClock=0;g_orbAdvRamHits=0;
+}
+
 OrbAdvMinuteBlock g_orbAdvBlocks[];
 OrbAdvTreeNode g_orbAdvTree[];
 int g_orbAdvLoadedDayKey=0;
@@ -344,7 +368,43 @@ bool OrbAdvLoadDay(const datetime dayStart)
    string server=AccountInfoString(ACCOUNT_SERVER);
    if(g_orbAdvLoadedDayKey==dayKey&&g_orbAdvLoadedSymbol==_Symbol&&g_orbAdvLoadedServer==server
       &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)return true;
+   // Only completed days are cacheable. The currently forming day stays in
+   // the original snapshot path. Cache failures fall back to the disk path.
+   if(g_orbAdvLoadedDayKey>0&&g_orbAdvLoadedDayKey<OrbAdvDayKey(TimeCurrent())
+      &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)
+   {
+      int slot=0;long oldest=LONG_MAX;
+      for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+      {
+         if(g_orbAdvDayCache[i].dayKey==g_orbAdvLoadedDayKey
+            &&g_orbAdvDayCache[i].symbol==g_orbAdvLoadedSymbol&&g_orbAdvDayCache[i].server==g_orbAdvLoadedServer){slot=i;break;}
+         if(g_orbAdvDayCache[i].dayKey==0){slot=i;break;}
+         if(g_orbAdvDayCache[i].touched<oldest){oldest=g_orbAdvDayCache[i].touched;slot=i;}
+      }
+      g_orbAdvDayCache[slot].dayKey=0;
+      int nb=ArraySize(g_orbAdvBlocks),nt=ArraySize(g_orbAdvTree);
+      if(ArrayResize(g_orbAdvDayCache[slot].blocks,nb)==nb&&ArrayResize(g_orbAdvDayCache[slot].tree,nt)==nt
+         &&ArrayCopy(g_orbAdvDayCache[slot].blocks,g_orbAdvBlocks)==nb&&ArrayCopy(g_orbAdvDayCache[slot].tree,g_orbAdvTree)==nt)
+      {
+         g_orbAdvDayCache[slot].dayKey=g_orbAdvLoadedDayKey;
+         g_orbAdvDayCache[slot].symbol=g_orbAdvLoadedSymbol;g_orbAdvDayCache[slot].server=g_orbAdvLoadedServer;
+         g_orbAdvDayCache[slot].fromDisk=g_orbAdvLoadedFromDisk;g_orbAdvDayCache[slot].touched=++g_orbAdvCacheClock;
+      }
+   }
    OrbAdvClearLoadedDay();
+   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+   {
+      if(dayKey>=OrbAdvDayKey(TimeCurrent())||g_orbAdvDayCache[i].dayKey!=dayKey
+         ||g_orbAdvDayCache[i].symbol!=_Symbol||g_orbAdvDayCache[i].server!=server)continue;
+      int nb=ArraySize(g_orbAdvDayCache[i].blocks),nt=ArraySize(g_orbAdvDayCache[i].tree);
+      if(ArrayCopy(g_orbAdvBlocks,g_orbAdvDayCache[i].blocks)==nb&&ArrayCopy(g_orbAdvTree,g_orbAdvDayCache[i].tree)==nt)
+      {
+         g_orbAdvLoadedDayKey=dayKey;g_orbAdvLoadedSymbol=_Symbol;g_orbAdvLoadedServer=server;
+         g_orbAdvLoadedFromDisk=g_orbAdvDayCache[i].fromDisk;g_orbAdvDayCache[i].touched=++g_orbAdvCacheClock;
+         g_orbAdvRamHits++;g_orbAdvLastStatus="INDEX_RAM";return true;
+      }
+      OrbAdvClearLoadedDay();break;
+   }
    ulong started=GetTickCount64();
    bool loaded=OrbAdvReadIndex(dayKey);
    if(loaded){g_orbAdvIndexDiskHits++;g_orbAdvLoadedFromDisk=true;}
@@ -714,12 +774,14 @@ bool OrbAdvancedAuditSetRuntime(const bool enabled)
    string key=OrbAdvancedAuditRuntimeKey();
    if(!GlobalVariableSet(key,enabled?1.0:0.0))return false;
    g_rtAdvancedAuditEngine=enabled;
+   OrbAdvClearDayCache();
    OrbAdvClearLoadedDay();
    return true;
 }
 
 void OrbAdvancedAuditResetRunStats()
 {
+   OrbAdvClearDayCache();
    // Completed shards are reloaded from disk. The active trading day is
    // intentionally rebuilt against the immutable audit snapshot timestamp.
    OrbAdvClearLoadedDay();
