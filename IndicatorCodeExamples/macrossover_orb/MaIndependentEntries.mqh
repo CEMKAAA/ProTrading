@@ -2,6 +2,7 @@
 #define MA_INDEPENDENT_ENTRIES_MQH
 
 bool g_maIndependent=false;
+bool g_maRestoringPreset=false,g_maPresetModeRestored=false;
 int g_maMaxConsecutive=1;
 int g_maSeriesDir=0,g_maSeriesCount=0;
 datetime g_maSeriesBar=0;
@@ -136,9 +137,9 @@ bool MaIndependentAcquire()
 bool MaIndependentInit()
 {
    if(InpMaxConsecutiveEntries<1||InpMaxConsecutiveEntries>1000)return false;
-   g_maIndependent=InpIndependentEntries;g_maMaxConsecutive=InpMaxConsecutiveEntries;
+   if(!g_maPresetModeRestored){g_maIndependent=InpIndependentEntries;g_maMaxConsecutive=InpMaxConsecutiveEntries;}
    string key=MaIndependentSettingsKey();
-   if(GlobalVariableCheck(key))
+   if(!g_maPresetModeRestored&&GlobalVariableCheck(key))
    {
       int packed=(int)GlobalVariableGet(key);
       if(packed<1||packed>1001000||(packed%1000000)<1||(packed%1000000)>1000)return false;

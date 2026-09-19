@@ -27,6 +27,23 @@ input ORB_CLOCK_SEASON InpBrokerClockSeason=ORB_SEASON_AUTO; // BROKER season: A
 input ORB_CLOCK_SEASON InpExchangeClockSeason=ORB_SEASON_AUTO; // EXCHANGE season: Auto / winter / summer
 input group "=== EXISTING SESSION AND STRATEGY SETTINGS ==="
 
+int g_orbClockProfile=-1,g_orbClockBrokerSeason=-1,g_orbClockExchangeSeason=-1;
+int g_orbClockSession=0; // 0: existing symbol rules; 1: BIST cash continuous session
+ORB_BROKER_CLOCK_PROFILE OrbClockProfile(){return g_orbClockProfile<0?InpBrokerClockProfile:(ORB_BROKER_CLOCK_PROFILE)g_orbClockProfile;}
+ORB_CLOCK_SEASON OrbClockBrokerSeason(){return g_orbClockBrokerSeason<0?InpBrokerClockSeason:(ORB_CLOCK_SEASON)g_orbClockBrokerSeason;}
+ORB_CLOCK_SEASON OrbClockExchangeSeason(){return g_orbClockExchangeSeason<0?InpExchangeClockSeason:(ORB_CLOCK_SEASON)g_orbClockExchangeSeason;}
+void OrbClockUseSaved(int profile,int broker,int exchange,int session)
+{g_orbClockProfile=profile;g_orbClockBrokerSeason=broker;g_orbClockExchangeSeason=exchange;g_orbClockSession=session;}
+string OrbClockSavedMeta()
+{return (string)(int)OrbClockProfile()+","+(string)(int)OrbClockBrokerSeason()+","+(string)(int)OrbClockExchangeSeason()+","+(string)g_orbClockSession;}
+bool OrbClockReadMeta(string text,int &profile,int &broker,int &exchange,int &session)
+{
+ string v[];if(StringSplit(text,',',v)!=4)return false;
+ int n[4];for(int i=0;i<4;i++){n[i]=(int)StringToInteger(v[i]);if(v[i]!=(string)n[i])return false;}
+ if(n[0]<0||n[0]>10||n[1]<0||n[1]>2||n[2]<0||n[2]>2||n[3]<0||n[3]>1)return false;
+ profile=n[0];broker=n[1];exchange=n[2];session=n[3];return true;
+}
+
 datetime OrbClockDate(int y,int m,int d,int hour=0,int minute=0)
 {MqlDateTime s;ZeroMemory(s);s.year=y;s.mon=m;s.day=d;s.hour=hour;s.min=minute;return StructToTime(s);}
 int OrbClockSunday(int y,int m,int nth)
@@ -84,13 +101,13 @@ int OrbClockOffsetAtUtc(ORB_BROKER_CLOCK_PROFILE p,ORB_CLOCK_SEASON season,datet
 }
 int OrbBrokerFixedMinutes()
 {
- double hours=InpBrokerClockProfile==ORB_CLOCK_LEGACY?OrbBrokerOffsetHours():OrbOffsetHoursFor(InpBrokerTimezone,InpBrokerGmtOffsetHours);
+ double hours=OrbBrokerOffsetHours();
  return (int)MathRound(hours*60);
 }
 datetime OrbUtcToServer(datetime utc)
 {
- if(InpBrokerClockProfile==ORB_CLOCK_LEGACY)return utc+(int)MathRound(OrbBrokerOffsetHours()*3600.0);
- return utc+OrbClockOffsetAtUtc(InpBrokerClockProfile,InpBrokerClockSeason,utc,OrbBrokerFixedMinutes());
+ if(OrbClockProfile()==ORB_CLOCK_LEGACY)return utc+(int)MathRound(OrbBrokerOffsetHours()*3600.0);
+ return utc+OrbClockOffsetAtUtc(OrbClockProfile(),OrbClockBrokerSeason(),utc,OrbBrokerFixedMinutes());
 }
 // A repeated server timestamp during the autumn fold is inherently ambiguous.
 // Prefer standard time deterministically; nonexistent spring timestamps return 0.
@@ -105,13 +122,14 @@ datetime OrbClockServerToUtc(ORB_BROKER_CLOCK_PROFILE p,ORB_CLOCK_SEASON season,
 }
 datetime OrbServerToUtc(datetime server)
 {
- if(InpBrokerClockProfile==ORB_CLOCK_LEGACY)return server-(int)MathRound(OrbBrokerOffsetHours()*3600.0);
- return OrbClockServerToUtc(InpBrokerClockProfile,InpBrokerClockSeason,server,OrbBrokerFixedMinutes());
+ if(OrbClockProfile()==ORB_CLOCK_LEGACY)return server-(int)MathRound(OrbBrokerOffsetHours()*3600.0);
+ return OrbClockServerToUtc(OrbClockProfile(),OrbClockBrokerSeason(),server,OrbBrokerFixedMinutes());
 }
 string OrbBrokerClockKey()
 {
- if(InpBrokerClockProfile==ORB_CLOCK_LEGACY&&InpBrokerClockSeason==ORB_SEASON_AUTO&&InpExchangeClockSeason==ORB_SEASON_AUTO)return "";
- return "|clock_v1="+(string)(int)InpBrokerClockProfile+","+(string)(int)InpBrokerClockSeason+","+(string)(int)InpExchangeClockSeason+","+(string)OrbBrokerFixedMinutes();
+ if(OrbClockProfile()==ORB_CLOCK_LEGACY&&OrbClockBrokerSeason()==ORB_SEASON_AUTO&&OrbClockExchangeSeason()==ORB_SEASON_AUTO&&g_orbClockSession==0)return "";
+ return "|clock_v1="+(string)(int)OrbClockProfile()+","+(string)(int)OrbClockBrokerSeason()+","+(string)(int)OrbClockExchangeSeason()+","+(string)OrbBrokerFixedMinutes()
+    +(g_orbClockSession!=0?"|session_v1="+(string)g_orbClockSession:"");
 }
 bool OrbBrokerClockInputsValid()
 {
@@ -125,7 +143,7 @@ string OrbBrokerClockLabel()
 {
  datetime server=TimeCurrent(),utc=OrbServerToUtc(server);
  double offset=utc>0?(double)(server-utc)/3600.0:0;
- return "TIMEZONE [F7] UTC"+(offset>=0?"+":"")+DoubleToString(offset,2)
-   +(InpBrokerClockProfile==ORB_CLOCK_LEGACY?" LEGACY":" P"+(string)(int)InpBrokerClockProfile);
+ return "BROKER UTC"+(offset>=0?"+":"")+DoubleToString(offset,2)
+   +(OrbClockProfile()==ORB_CLOCK_LEGACY?" LEGACY":" P"+(string)(int)OrbClockProfile());
 }
 #endif

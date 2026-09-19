@@ -138,6 +138,7 @@ bool OrbUserRemembered(const OrbStrategyPreset &p)
 
 bool OrbUserSaveLocked(string name)
 {
+   int updateSlot=-1;string updateId="";
    StringTrimLeft(name);StringTrimRight(name);
    if(StringLen(name)<1||StringLen(name)>64){g_userStrategyNote="Name must contain 1-64 characters";return false;}
    for(int i=0;i<StringLen(name);i++)if(StringGetCharacter(name,i)<32)
@@ -149,7 +150,7 @@ bool OrbUserSaveLocked(string name)
    {
       OrbStrategyPreset other;if(!OrbStrategyPresetLoad(i,other))continue;
       string a=other.name,b=name;StringToLower(a);StringToLower(b);
-      if(a==b){g_userStrategyNote="Name already exists; choose another name";return false;}
+      if(a==b){if(!OrbUserPreset(other)){g_userStrategyNote="Built-in strategy is read-only; use a new name";return false;} updateSlot=OrbUserSlot(other.id);updateId=other.id;break;}
    }
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
    p.family=OrbUserSymbolFamily(_Symbol);
@@ -160,10 +161,12 @@ bool OrbUserSaveLocked(string name)
    g_orbStrategyTimezone=savedClock;
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
+   if(updateSlot>=0)p.id=updateId;
    int saved=-1;
    for(int slot=0;slot<ORB_CUSTOM_MAX;slot++)
    {
-      string path=OrbUserFile(slot);if(FileIsExist(path,FILE_COMMON))continue;
+      if(updateSlot>=0&&slot!=updateSlot)continue;
+      string path=OrbUserFile(slot);if(updateSlot<0&&FileIsExist(path,FILE_COMMON))continue;
       string payload="ORB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)_Period+"\n"+signature+"\n"
          +OrbCustomPresetDump(p)+runtime;
       string temp="OrbStrategyUserLibrary\\"+p.id+".tmp";
@@ -171,8 +174,8 @@ bool OrbUserSaveLocked(string name)
       if(f==INVALID_HANDLE){g_userStrategyNote="Cannot open strategy file";return false;}
       bool ok=OrbMlWriteUtf8(f,payload+OrbMlSha256(payload)+"\n");FileFlush(f);FileClose(f);
       if(!ok){g_userStrategyNote="Strategy write failed";return false;}
-      // No FILE_REWRITE: simultaneous charts cannot overwrite another record.
-      if(FileMove(temp,FILE_COMMON,path,FILE_COMMON)){saved=slot;break;}
+      // Save lock serializes updates; replacement is committed only after complete temporary write.
+      if(FileMove(temp,FILE_COMMON,path,FILE_COMMON|(updateSlot>=0?FILE_REWRITE:0))){saved=slot;break;}
    }
    if(saved<0){g_userStrategyNote="Library full or save collision; retry";return false;}
    OrbUserReload(true);int index=OrbBuiltinStrategyPresetCount()+saved;OrbStrategyPreset check;

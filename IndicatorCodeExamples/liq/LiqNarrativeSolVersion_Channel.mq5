@@ -3096,8 +3096,11 @@ void DeleteAllLiqNarrativeLiveObjects()
    }
 }
 
+#define LIQ_DASH_LOGICAL_HEIGHT 930
+#include "LiqDashboardFit.mqh"
 void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 {
+   LiqFitBox(x,y,w,h);
    if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
@@ -3115,6 +3118,7 @@ void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 
 void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
 {
+   LiqFitPoint(x,y);fontSize=LiqFitFont(fontSize);
    if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -3132,6 +3136,7 @@ void LabelObj(string id, int x, int y, string text, color clr, int fontSize = 8)
 
 void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
 {
+   LiqFitBox(x,y,w,h);
    if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -3143,7 +3148,7 @@ void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LiqFitFont(8));
    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -3152,6 +3157,7 @@ void ButtonObj(string id, int x, int y, int w, int h, string text, color bg)
 
 void EditObj(string id, int x, int y, int w, int h, string text)
 {
+   LiqFitBox(x,y,w,h);
    if(IsTesterMode()) return;
    string name = PFX + id;
    if(ObjectFind(0, name) < 0)
@@ -3161,7 +3167,7 @@ void EditObj(string id, int x, int y, int w, int h, string text)
       ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'38,46,60');
       ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'90,178,255');
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LiqFitFont(9));
       ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
       ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_CENTER);
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -4841,6 +4847,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
 
    if(id == CHARTEVENT_OBJECT_ENDEDIT)

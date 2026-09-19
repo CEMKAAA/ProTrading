@@ -84,9 +84,15 @@ bool OrbClockUiApply()
  g_orbReady=false;g_nyDayKey=0;ResetForNewNyDay();
  g_instanceStartedAt=TimeCurrent();g_startupOrbGuardPending=!IsTesterMode();g_startupOrbDayLocked=false;
  g_lastNasOverlayClosedBar=0;DeleteLive();DeleteExecutionVisuals();
- g_histNeedsRedraw=true;QueueHistoricalRedraw(0);OrbMlOnStrategyApplied();
+ g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
+#ifdef ORB_CLOCK_USER_LIBRARY
+ OrbMlOnStrategyApplied();
  g_userStrategyNote="Timezone applied. SAVE STRATEGY retains profile + DST + session.";
- g_orbClockUiNote=g_userStrategyNote;return true;
+ g_orbClockUiNote=g_userStrategyNote;
+#else
+ g_orbClockUiNote="Timezone applied; audit queued.";
+#endif
+ return true;
 }
 bool OrbClockUiEvent(int id,string name)
 {

@@ -7,7 +7,7 @@ struct OrbUserRecord
    bool valid;
    OrbStrategyPreset preset;
    string symbol,inputSignature,runtime;
-   int chartTf;
+   int chartTf; bool independent; int maxSeries;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -47,7 +47,18 @@ void OrbUserReload(bool force=false)
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
-      record.inputSignature=v[5];record.runtime="";
+      record.independent=false;record.maxSeries=1;
+      string meta[];int parts=StringSplit(v[5],'|',meta);
+      if(parts<1||parts>2)continue;
+      if(parts==2)
+      {
+         string mode[];
+         if(StringFind(meta[1],"MAENTRY1=")!=0||StringSplit(StringSubstr(meta[1],9),',',mode)!=2)continue;
+         int independent=(int)StringToInteger(mode[0]),maximum=(int)StringToInteger(mode[1]);
+         if(mode[0]!=(string)independent||mode[1]!=(string)maximum||independent<0||independent>1||maximum<1||maximum>1000)continue;
+         record.independent=independent==1;record.maxSeries=maximum;
+      }
+      record.inputSignature=meta[0];record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
       g_userStrategies[slot]=record;
       OrbUserLoadMetrics(slot);
@@ -84,7 +95,11 @@ void OrbUserApply(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return;
    int i=OrbUserSlot(p.id);string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);
+   string oldTokens[];StringSplit(OrbCustomRuntimeDump(),'\n',oldTokens);
    OrbCustomRuntimeRead(v,0,true);
+   if(g_maRestoringPreset){g_maIndependent=g_userStrategies[i].independent;g_maMaxConsecutive=g_userStrategies[i].maxSeries;g_maPresetModeRestored=true;}
+   else if(!MaIndependentApply(g_userStrategies[i].independent,g_userStrategies[i].maxSeries))
+   {OrbCustomRuntimeRead(oldTokens,0,true);return;}
    MaCrossAuditInvalidate();
    g_lastSignalBarTime=0;
    g_lastCheckedSignalBarTime=0;
@@ -97,6 +112,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);
+   if(g_maIndependent!=g_userStrategies[i].independent||g_maMaxConsecutive!=g_userStrategies[i].maxSeries)return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
@@ -120,6 +136,7 @@ bool OrbUserRemembered(const OrbStrategyPreset &p)
 
 bool OrbUserSaveLocked(string name)
 {
+   int updateSlot=-1;string updateId="";
    StringTrimLeft(name);StringTrimRight(name);
    if(StringLen(name)<1||StringLen(name)>64){g_userStrategyNote="Name must contain 1-64 characters";return false;}
    for(int i=0;i<StringLen(name);i++)if(StringGetCharacter(name,i)<32)
@@ -129,19 +146,21 @@ bool OrbUserSaveLocked(string name)
    {
       OrbStrategyPreset other;if(!OrbStrategyPresetLoad(i,other))continue;
       string a=other.name,b=name;StringToLower(a);StringToLower(b);
-      if(a==b){g_userStrategyNote="Name already exists; choose another name";return false;}
+      if(a==b){if(!OrbUserPreset(other)){g_userStrategyNote="Built-in strategy is read-only; use a new name";return false;} updateSlot=OrbUserSlot(other.id);updateId=other.id;break;}
    }
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
    p.family=OrbUserSymbolFamily(_Symbol);
    p.name=name;p.searchTerms=name+" "+_Symbol+" user saved";p.sourceImage="user-saved";
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
-   string signature=OrbCustomInputSignature(),runtime=OrbCustomRuntimeDump();
+   string signature=OrbCustomInputSignature()+"|MAENTRY1="+(g_maIndependent?"1":"0")+","+(string)g_maMaxConsecutive,runtime=OrbCustomRuntimeDump();
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
+   if(updateSlot>=0)p.id=updateId;
    int saved=-1;
    for(int slot=0;slot<ORB_CUSTOM_MAX;slot++)
    {
-      string path=OrbUserFile(slot);if(FileIsExist(path,FILE_COMMON))continue;
+      if(updateSlot>=0&&slot!=updateSlot)continue;
+      string path=OrbUserFile(slot);if(updateSlot<0&&FileIsExist(path,FILE_COMMON))continue;
       string payload="MACROSS_ORB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)_Period+"\n"+signature+"\n"
          +OrbCustomPresetDump(p)+runtime;
       string temp="MaCrossOrbStrategyLibrary\\"+p.id+".tmp";
@@ -149,8 +168,8 @@ bool OrbUserSaveLocked(string name)
       if(f==INVALID_HANDLE){g_userStrategyNote="Cannot open strategy file";return false;}
       bool ok=OrbMlWriteUtf8(f,payload+OrbMlSha256(payload)+"\n");FileFlush(f);FileClose(f);
       if(!ok){g_userStrategyNote="Strategy write failed";return false;}
-      // No FILE_REWRITE: simultaneous charts cannot overwrite another record.
-      if(FileMove(temp,FILE_COMMON,path,FILE_COMMON)){saved=slot;break;}
+      // Save lock serializes updates; replacement is committed only after complete temporary write.
+      if(FileMove(temp,FILE_COMMON,path,FILE_COMMON|(updateSlot>=0?FILE_REWRITE:0))){saved=slot;break;}
    }
    if(saved<0){g_userStrategyNote="Library full or save collision; retry";return false;}
    OrbUserReload(true);int index=saved;OrbStrategyPreset check;

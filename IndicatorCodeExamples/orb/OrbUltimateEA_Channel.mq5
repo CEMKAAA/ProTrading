@@ -404,7 +404,7 @@ datetime MakeDateTime(int y,int mo,int d,int h,int mi,int s=0){MqlDateTime st;Ze
 int DayOfWeekForDate(int y,int mo,int d){MqlDateTime st;TimeToStruct(MakeDateTime(y,mo,d,12,0,0),st);return st.day_of_week;}
 int NthSunday(int y,int mo,int nth){int fd=DayOfWeekForDate(y,mo,1);int fs=1+((7-fd)%7);return fs+(nth-1)*7;}
 int LastSunday(int y,int mo){int last=31;if(mo==4||mo==6||mo==9||mo==11)last=30;else if(mo==2)last=((y%4==0&&y%100!=0)||y%400==0)?29:28;for(int d=last;d>=last-6;d--)if(DayOfWeekForDate(y,mo,d)==0)return d;return last;}
-bool IsNewYorkDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
+bool IsNewYorkDstDate(int y,int mo,int d){if(OrbClockExchangeSeason()!=ORB_SEASON_AUTO)return OrbClockExchangeSeason()==ORB_SEASON_DAYLIGHT;if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
 int NyUtcOffsetSecondsForDate(int y,int mo,int d){return IsNewYorkDstDate(y,mo,d)?-4*3600:-5*3600;}
 datetime NyLocalToServer(int y,int mo,int d,int minOfDay){int h=minOfDay/60;int mi=minOfDay%60;datetime ny=MakeDateTime(y,mo,d,h,mi,0);datetime utc=ny-NyUtcOffsetSecondsForDate(y,mo,d);return OrbUtcToServer(utc);}
 datetime ServerToNyLocal(datetime s){datetime utc=OrbServerToUtc(s);MqlDateTime u;TimeToStruct(utc,u);return utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);}
@@ -432,7 +432,7 @@ string SessionProfileLabel(ORB_SESSION_PROFILE p)
    if(p==ORB_SESSION_MANUAL_NY)return "MANUAL_NY";
    return "AUTO";
 }
-bool IsEuropeDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
+bool IsEuropeDstDate(int y,int mo,int d){if(OrbClockExchangeSeason()!=ORB_SEASON_AUTO)return OrbClockExchangeSeason()==ORB_SEASON_DAYLIGHT;if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
 int SessionUtcOffsetSecondsForDate(ORB_SESSION_PROFILE p,int y,int mo,int d)
 {
    if(p==ORB_SESSION_US||p==ORB_SESSION_MANUAL_NY)return NyUtcOffsetSecondsForDate(y,mo,d);
@@ -444,6 +444,7 @@ int SessionUtcOffsetSecondsForDate(ORB_SESSION_PROFILE p,int y,int mo,int d)
 }
 datetime SessionLocalToServer(int y,int mo,int d,int minOfDay)
 {
+   if(g_orbClockSession==1)return OrbUtcToServer(MakeDateTime(y,mo,d,minOfDay/60,minOfDay%60,0)-10800);
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
    if(p==ORB_SESSION_MANUAL_NY)return NyLocalToServer(y,mo,d,minOfDay);
    int h=minOfDay/60;int mi=minOfDay%60;
@@ -454,6 +455,7 @@ datetime SessionLocalToServer(int y,int mo,int d,int minOfDay)
 datetime ServerToSessionLocal(datetime s)
 {
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
+   if(g_orbClockSession==1)return OrbServerToUtc(s)+10800;
    if(p==ORB_SESSION_MANUAL_NY)return ServerToNyLocal(s);
    datetime utc=OrbServerToUtc(s);
    MqlDateTime u;TimeToStruct(utc,u);
@@ -462,6 +464,7 @@ datetime ServerToSessionLocal(datetime s)
 void SessionClockMinutes(int &sm,int &em,int &tem)
 {
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
+   if(g_orbClockSession==1){sm=600;em=615;tem=1080;return;}
    if(p==ORB_SESSION_US||p==ORB_SESSION_MANUAL_NY){sm=ParseClockMinutes(InpOrbStartNy,570);em=ParseClockMinutes(InpOrbEndNy,585);tem=ParseClockMinutes(InpTradeEndNy,960);return;}
    if(p==ORB_SESSION_EU_CET){sm=9*60;em=9*60+15;tem=17*60+30;return;}
    if(p==ORB_SESSION_UK){sm=8*60;em=8*60+15;tem=16*60+30;return;}
@@ -472,7 +475,7 @@ void SessionClockMinutes(int &sm,int &em,int &tem)
 string SessionClockLabel()
 {
    int sm,em,tem;SessionClockMinutes(sm,em,tem);
-   return SessionProfileLabel(ResolveSessionProfile())+" "+StringFormat("%02d:%02d-%02d:%02d End %02d:%02d",sm/60,sm%60,em/60,em%60,tem/60,tem%60);
+   return (g_orbClockSession==1?"BIST CASH TRT":SessionProfileLabel(ResolveSessionProfile()))+" "+StringFormat("%02d:%02d-%02d:%02d End %02d:%02d",sm/60,sm%60,em/60,em%60,tem/60,tem%60);
 }
 int CurrentSessionDayKey(int &y,int &mo,int &d){datetime loc=ServerToSessionLocal(TimeCurrent());MqlDateTime n;TimeToStruct(loc,n);y=n.year;mo=n.mon;d=n.day;return y*10000+mo*100+d;}
 string FmtTime(datetime t){return t<=0?"-":TimeToString(t,TIME_DATE|TIME_SECONDS);}
@@ -1573,7 +1576,7 @@ void DeleteByPrefix(const string pfx){for(int i=ObjectsTotal(0,0,-1)-1;i>=0;i--)
 void DeleteLevels(){ObjectDelete(0,PREFIX+"ORB_HIGH");ObjectDelete(0,PREFIX+"ORB_LOW");ObjectDelete(0,PREFIX+"ORB_TXT");}
 void DeleteHist(){DeleteByPrefix(PREFIX+"HIST_");}
 void DeleteLive(){DeleteByPrefix(PREFIX+"LIVE_");}
-void DeleteDash(){DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
+void DeleteDash(){DeleteByPrefix(PREFIX+"TZUI_");DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
 
 void DrawOrbHistoricalSegment(string id,datetime t1,datetime t2,double price,color clr,ENUM_LINE_STYLE style=STYLE_SOLID)
 {

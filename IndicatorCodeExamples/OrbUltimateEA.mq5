@@ -606,6 +606,8 @@ int             g_btDayCount = 0;
 OrbBtBreakout   g_btBreakouts[];
 
 #include "OrbUltimate_ProfessionalPipeline.mqh"
+#include "OrbClockDashboard.mqh"
+
 
 //=========================================================================
 //  UTILITY FUNCTIONS
@@ -712,7 +714,7 @@ datetime MakeDateTime(int y,int mo,int d,int h,int mi,int s=0){MqlDateTime st;Ze
 int DayOfWeekForDate(int y,int mo,int d){MqlDateTime st;TimeToStruct(MakeDateTime(y,mo,d,12,0,0),st);return st.day_of_week;}
 int NthSunday(int y,int mo,int nth){int fd=DayOfWeekForDate(y,mo,1);int fs=1+((7-fd)%7);return fs+(nth-1)*7;}
 int LastSunday(int y,int mo){int last=31;if(mo==4||mo==6||mo==9||mo==11)last=30;else if(mo==2)last=((y%4==0&&y%100!=0)||y%400==0)?29:28;for(int d=last;d>=last-6;d--)if(DayOfWeekForDate(y,mo,d)==0)return d;return last;}
-bool IsNewYorkDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
+bool IsNewYorkDstDate(int y,int mo,int d){if(OrbClockExchangeSeason()!=ORB_SEASON_AUTO)return OrbClockExchangeSeason()==ORB_SEASON_DAYLIGHT;if(!InpAutoNewYorkDst)return true;if(mo<3||mo>11)return false;if(mo>3&&mo<11)return true;if(mo==3)return d>=NthSunday(y,3,2);if(mo==11)return d<NthSunday(y,11,1);return false;}
 int NyUtcOffsetSecondsForDate(int y,int mo,int d){return IsNewYorkDstDate(y,mo,d)?-4*3600:-5*3600;}
 datetime NyLocalToServer(int y,int mo,int d,int minOfDay){int h=minOfDay/60;int mi=minOfDay%60;datetime ny=MakeDateTime(y,mo,d,h,mi,0);datetime utc=ny-NyUtcOffsetSecondsForDate(y,mo,d);return OrbUtcToServer(utc);}
 datetime ServerToNyLocal(datetime s){datetime utc=OrbServerToUtc(s);MqlDateTime u;TimeToStruct(utc,u);return utc+NyUtcOffsetSecondsForDate(u.year,u.mon,u.day);}
@@ -784,10 +786,10 @@ string SessionProfileLabel(ORB_SESSION_PROFILE p)
    if(p==ORB_SESSION_MANUAL_NY)return "MANUAL_NY";
    return "AUTO";
 }
-bool IsEuropeDstDate(int y,int mo,int d){if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
+bool IsEuropeDstDate(int y,int mo,int d){if(OrbClockExchangeSeason()!=ORB_SEASON_AUTO)return OrbClockExchangeSeason()==ORB_SEASON_DAYLIGHT;if(mo<3||mo>10)return false;if(mo>3&&mo<10)return true;if(mo==3)return d>=LastSunday(y,3);if(mo==10)return d<LastSunday(y,10);return false;}
 bool IsSydneyDstDate(int y,int mo,int d)
 {
-   if(InpExchangeClockSeason!=ORB_SEASON_AUTO)return InpExchangeClockSeason==ORB_SEASON_DAYLIGHT;
+   if(OrbClockExchangeSeason()!=ORB_SEASON_AUTO)return OrbClockExchangeSeason()==ORB_SEASON_DAYLIGHT;
    if(mo>4&&mo<10)return false;
    if(mo>10||mo<4)return true;
    if(mo==10)return d>=1+((7-DayOfWeekForDate(y,10,1))%7);
@@ -814,6 +816,7 @@ datetime SessionLocalToServer(int y,int mo,int d,int minOfDay)
       datetime utc=MakeDateTime(y,mo,d,minOfDay/60,minOfDay%60,0);
       return OrbUtcToServer(utc);
    }
+   if(g_orbClockSession==1)return OrbUtcToServer(MakeDateTime(y,mo,d,minOfDay/60,minOfDay%60,0)-10800);
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
    if(p==ORB_SESSION_MANUAL_NY)return NyLocalToServer(y,mo,d,minOfDay);
    int h=minOfDay/60;int mi=minOfDay%60;
@@ -826,6 +829,7 @@ datetime ServerToSessionLocal(datetime s)
    if(g_rtUtcMidnightSession)
       return OrbServerToUtc(s);
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
+   if(g_orbClockSession==1)return OrbServerToUtc(s)+10800;
    if(p==ORB_SESSION_MANUAL_NY)return ServerToNyLocal(s);
    datetime utc=OrbServerToUtc(s);
    MqlDateTime u;TimeToStruct(utc,u);
@@ -841,6 +845,7 @@ void SessionClockMinutes(int &sm,int &em,int &tem)
       return;
    }
    ORB_SESSION_PROFILE p=ResolveSessionProfile();
+   if(g_orbClockSession==1){sm=600;em=615;tem=1080;return;}
    if(p==ORB_SESSION_US||p==ORB_SESSION_MANUAL_NY){sm=ParseClockMinutes(InpOrbStartNy,570);em=ParseClockMinutes(InpOrbEndNy,585);tem=ParseClockMinutes(InpTradeEndNy,960);return;}
    if(p==ORB_SESSION_EU_CET){sm=9*60;em=9*60+15;tem=17*60+30;return;}
    if(p==ORB_SESSION_UK){sm=8*60;em=8*60+15;tem=16*60+30;return;}
@@ -863,7 +868,7 @@ bool ValidateUtcSessionInputs()
 string SessionClockLabel()
 {
    int sm,em,tem;SessionClockMinutes(sm,em,tem);
-   return SessionProfileLabel(ResolveSessionProfile())+" "+StringFormat("%02d:%02d-%02d:%02d End %02d:%02d",sm/60,sm%60,em/60,em%60,tem/60,tem%60);
+   return (g_orbClockSession==1&&!g_rtUtcMidnightSession?"BIST CASH TRT":SessionProfileLabel(ResolveSessionProfile()))+" "+StringFormat("%02d:%02d-%02d:%02d End %02d:%02d",sm/60,sm%60,em/60,em%60,tem/60,tem%60);
 }
 int CurrentSessionDayKey(int &y,int &mo,int &d){datetime loc=ServerToSessionLocal(TimeCurrent());MqlDateTime n;TimeToStruct(loc,n);y=n.year;mo=n.mon;d=n.day;return y*10000+mo*100+d;}
 string FmtTime(datetime t){return t<=0?"-":TimeToString(t,TIME_DATE|TIME_SECONDS);}
@@ -3570,7 +3575,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
 }
 void DeleteLive(){DeleteByPrefix(PREFIX+"LIVE_");}
 void DeleteExecutionVisuals(){DeleteByPrefix(PREFIX+"EXEC_");}
-void DeleteDash(){DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
+void DeleteDash(){DeleteByPrefix(PREFIX+"TZUI_");DeleteByPrefix(PREFIX+"DASH_");DeleteByPrefix(PREFIX+"BTN_");DeleteByPrefix(PREFIX+"EDIT_");}
 void MarkOrbExecutionVisualResolved(datetime executedAt,int dir,bool won);
 
 void DrawOrbHistoricalSegment(string id,datetime t1,datetime t2,double price,color clr,ENUM_LINE_STYLE style=STYLE_SOLID)
@@ -4688,6 +4693,7 @@ int g_histDrawn=0;
 int g_histFiltered=0;
 double g_histRunPoint=0.0;
 
+#include "AuditTickReadGuard.mqh"
 #include "OrbAdvancedAuditEngine.mqh"
 
 void WriteInternalSimAudit(string source,datetime sigTime,datetime simEnd,string dir,double plannedEntry,double plannedSl,const HistResult &sim,string detail)
@@ -4844,7 +4850,7 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
          ulong tailFrom=g_histTickReplayCacheToMs<ULONG_MAX?g_histTickReplayCacheToMs+1:g_histTickReplayCacheToMs;
          // Audit decisions only consume Bid/Ask. Trade-only ticks carry no
          // additional executable price state and needlessly multiply replay I/O.
-         loaded=CopyTicksRange(_Symbol,tail,COPY_TICKS_INFO,tailFrom,loadToMs);
+         loaded=AuditCopyTicksRange(_Symbol,tail,COPY_TICKS_INFO,tailFrom,loadToMs);
          if(loaded>0)
          {
             int oldCount=ArraySize(g_histTickReplayCache);
@@ -4856,9 +4862,10 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
       else
       {
          ArrayResize(g_histTickReplayCache,0);
-         loaded=CopyTicksRange(_Symbol,g_histTickReplayCache,COPY_TICKS_INFO,fromMs,loadToMs);
+         loaded=AuditCopyTicksRange(_Symbol,g_histTickReplayCache,COPY_TICKS_INFO,fromMs,loadToMs);
          g_histTickReplayCacheFromMs=fromMs;
       }
+      if(loaded<0){ClearHistoricalTickReplayCache();return false;}
       if(loaded<=0)
       {
          if(!canExtend)
@@ -4959,7 +4966,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
    bool useIndexedCache=PrepareHistoricalTickReplayRange(fromMs,toMs,scanFirst,scanAfter);
    if(!useIndexedCache)
    {
-      int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,fromMs,toMs);
+      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,fromMs,toMs);
       if(copied<=0)return false;
       scanFirst=0;scanAfter=copied;
    }
@@ -5204,6 +5211,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
                              double tp1,double tp2,double tp3,int halfBeLeg,bool scheduledEndReached=true,
                              datetime forcedExitTime=0,string forcedExitOutcome="")
 {
+   ulong tickReadFailures=g_auditTickReadFailures;
    HistResult res;
    res.maxTp=0;res.outcome="open";res.netR=0;res.isWin=false;
    res.simEntry=entry;res.simSl=sl;res.simTarget=0;res.costR=0;
@@ -5241,9 +5249,15 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    if(SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,res,forcedExitTime,forcedExitOutcome))
       return res;
+   if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
+   ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
+   int ratesError=GetLastError();
+   if(ratesError!=0){res.invalidReason="BAR_HISTORY_PENDING";return res;}
    if(c<=1)return res;
+   int signalSeconds=PeriodSeconds(entryTf);if(signalSeconds<=0)signalSeconds=60;
+   if(r[0].time>sigTime||r[0].time+signalSeconds<=sigTime){res.invalidReason="BAR_HISTORY_PREFIX_MISSING";return res;}
    int fillBarIndex=(g_btFillMode==BT_FILL_SIGNAL_CLOSE?0:1);
    double historicalSpreadPts=r[fillBarIndex].spread>0?(double)r[fillBarIndex].spread:g_btSpreadPts;
    if(g_btFillMode==BT_FILL_NEXT_BAR_OPEN && c>1) entry=r[1].open;
@@ -7240,6 +7254,7 @@ void DrawDashboard()
 
 void UpdateDashboard()
 {
+   OrbClockUiDraw();
    if(!InpShowDashboard)return;
    OrbLibraryRefreshLayout();
    int x=InpDashboardX+632,y=InpDashboardY;
@@ -9211,6 +9226,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(OrbClockUiEvent(id,sparam))return;
    if(id==CHARTEVENT_CHART_CHANGE)
    {
       DrawDashboard();ChartRedraw(0);return;

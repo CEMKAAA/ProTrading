@@ -2536,6 +2536,7 @@ void OrbStrategyPresetSetEdit(const string name,const string value)
 
 void OrbStrategyPresetSyncEdits()
 {
+   ObjectSetString(0,PREFIX+"EDIT_MA_MAX",OBJPROP_TEXT,(string)g_maMaxConsecutive);
    // Only an explicit preset apply/restore replaces drafts; routine redraws preserve typing.
    OrbStrategyPresetSetEdit("EDIT_SL_VALUE",g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
    OrbStrategyPresetSetEdit("EDIT_VOL_MULT",DoubleToString(g_rtVolumeMultiplier,2));
@@ -2651,6 +2652,7 @@ bool OrbStrategyPresetApplyInteractive(const int index)
    if(GlobalVariableSet(key,(double)index)<=0){g_lastExecStatus="PRESET_SAVE_FAIL";return false;}
 
    OrbStrategyPresetApplyValues(p);
+   if(OrbUserPreset(p)&&!OrbUserMatches(p)){g_lastExecStatus="PRESET_APPLY_FAILED: "+g_lastExecStatus;return false;}
    ClearRetestState("strategy_preset_changed");ClearImbalanceState("strategy_preset_changed");
    ClearNasPending("strategy_preset_changed");ClearNewDayReverseRetry("strategy_preset_changed");
    g_lastNasOverlayClosedBar=0;DeleteLive();DeleteExecutionVisuals();
@@ -4785,6 +4787,7 @@ int g_histDrawn=0;
 int g_histFiltered=0;
 double g_histRunPoint=0.0;
 
+#include "AuditTickReadGuard.mqh"
 #include "OrbAdvancedAuditEngine.mqh"
 
 void WriteInternalSimAudit(string source,datetime sigTime,datetime simEnd,string dir,double plannedEntry,double plannedSl,const HistResult &sim,string detail)
@@ -4941,7 +4944,7 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
          ulong tailFrom=g_histTickReplayCacheToMs<ULONG_MAX?g_histTickReplayCacheToMs+1:g_histTickReplayCacheToMs;
          // Audit decisions only consume Bid/Ask. Trade-only ticks carry no
          // additional executable price state and needlessly multiply replay I/O.
-         loaded=CopyTicksRange(_Symbol,tail,COPY_TICKS_INFO,tailFrom,loadToMs);
+         loaded=AuditCopyTicksRange(_Symbol,tail,COPY_TICKS_INFO,tailFrom,loadToMs);
          if(loaded>0)
          {
             int oldCount=ArraySize(g_histTickReplayCache);
@@ -4953,9 +4956,10 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
       else
       {
          ArrayResize(g_histTickReplayCache,0);
-         loaded=CopyTicksRange(_Symbol,g_histTickReplayCache,COPY_TICKS_INFO,fromMs,loadToMs);
+         loaded=AuditCopyTicksRange(_Symbol,g_histTickReplayCache,COPY_TICKS_INFO,fromMs,loadToMs);
          g_histTickReplayCacheFromMs=fromMs;
       }
+      if(loaded<0){ClearHistoricalTickReplayCache();return false;}
       if(loaded<=0)
       {
          if(!canExtend)
@@ -5056,7 +5060,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
    bool useIndexedCache=PrepareHistoricalTickReplayRange(fromMs,toMs,scanFirst,scanAfter);
    if(!useIndexedCache)
    {
-      int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,fromMs,toMs);
+      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,fromMs,toMs);
       if(copied<=0)return false;
       scanFirst=0;scanAfter=copied;
    }
@@ -5301,6 +5305,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
                              double tp1,double tp2,double tp3,int halfBeLeg,bool scheduledEndReached=true,
                              datetime forcedExitTime=0,string forcedExitOutcome="")
 {
+   ulong tickReadFailures=g_auditTickReadFailures;
    HistResult res;
    res.maxTp=0;res.outcome="open";res.netR=0;res.isWin=false;
    res.simEntry=entry;res.simSl=sl;res.simTarget=0;res.costR=0;
@@ -5338,9 +5343,15 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    if(SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,res,forcedExitTime,forcedExitOutcome))
       return res;
+   if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
+   ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
+   int ratesError=GetLastError();
+   if(ratesError!=0){res.invalidReason="BAR_HISTORY_PENDING";return res;}
    if(c<=1)return res;
+   int signalSeconds=PeriodSeconds(entryTf);if(signalSeconds<=0)signalSeconds=60;
+   if(r[0].time>sigTime||r[0].time+signalSeconds<=sigTime){res.invalidReason="BAR_HISTORY_PREFIX_MISSING";return res;}
    int fillBarIndex=(g_btFillMode==BT_FILL_SIGNAL_CLOSE?0:1);
    double historicalSpreadPts=r[fillBarIndex].spread>0?(double)r[fillBarIndex].spread:g_btSpreadPts;
    if(g_btFillMode==BT_FILL_NEXT_BAR_OPEN && c>1) entry=r[1].open;
@@ -6824,6 +6835,8 @@ void ProcessHistoricalCalcDay(const int back)
       // later signal/lifecycle boundaries above still prevent overlap.
       string levelId=dateKey+"_"+execDir;
       DrawOrbHistoricalSegment(levelId+"_ENTRY",levelStart,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
+      ObjectSetString(0,HistoricalObjectRoot()+"LVL_"+levelId+"_ENTRY",OBJPROP_TOOLTIP,
+         "SIMULATED FILL (not signal close): "+DoubleToString(sim.simEntry,_Digits)+" | BUY enters ASK; SELL enters BID. Signal bar: "+FmtTime(sigT));
       DrawOrbHistoricalSegment(levelId+"_SL",levelStart,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
       if(sim.simTarget>0.0)
          DrawOrbHistoricalSegment(levelId+"_TP",levelStart,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
@@ -6850,7 +6863,7 @@ void ProcessHistoricalCalcDay(const int back)
          +" hitTP"+IntegerToString(sim.maxTp)+"/T"+IntegerToString(sim.targetLeg)
          +(finalOutcome?" G="+DoubleToString(grossR,2)+"R C="+DoubleToString(sim.costR,2)+"R N="+DoubleToString(statR,2)+"R":"")+" "
          +(simPnl>=0?"+":"")+DoubleToString(simPnl,2)+"$"
-         +" F="+DoubleToString(sim.simEntry,_Digits)
+         +" FILL="+DoubleToString(sim.simEntry,_Digits)
          +(sim.exitTime>0?" X="+FmtTime(sim.exitTime)+"@"+DoubleToString(sim.exitPrice,_Digits):"")+" "
          +sim.exitMode;
       if(modernDetail!="")txt+=" "+modernDetail;
@@ -9303,7 +9316,7 @@ int OnInit()
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;g_btNativeParity=InpBacktestNativeParity;
    g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
-   OrbStrategyPresetRestore();
+   g_maRestoringPreset=true;OrbStrategyPresetRestore();g_maRestoringPreset=false;
    OrbStrategyPresetBuildMatches("");
    g_lastHistBuild=0;g_histNeedsRedraw=true;
    ResetForNewNyDay();

@@ -1,10 +1,11 @@
+#include "AuditTickReadGuard.mqh"
 #ifndef ORB_ADVANCED_AUDIT_ENGINE_MQH
 #define ORB_ADVANCED_AUDIT_ENGINE_MQH
 
 // Exact audit accelerator. The legacy replay engine remains the reference
 // implementation and is used whenever this index cannot prove parity-safe use.
 #define ORB_ADV_INDEX_MAGIC          1329742929
-#define ORB_ADV_INDEX_SCHEMA         1
+#define ORB_ADV_INDEX_SCHEMA         2
 #define ORB_ADV_MINUTE_MS            60000
 #define ORB_ADV_MAX_DAY_BLOCKS       1500
 
@@ -276,7 +277,7 @@ bool OrbAdvBuildDayIndex(const datetime dayStart)
    if(dayEnd<=dayStart)return false;
    MqlTick ticks[];
    ResetLastError();
-   int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)dayStart*1000,(ulong)dayEnd*1000+999);
+   int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)dayStart*1000,(ulong)dayEnd*1000+999);
    if(copied<=0)return false;
    ArrayResize(g_orbAdvBlocks,ORB_ADV_MAX_DAY_BLOCKS);
    int count=0;
@@ -531,7 +532,7 @@ bool OrbAdvFindFirstQuote(const long fromMs,const long toMs,MqlTick &firstTick)
          MqlTick ticks[];
          long blockFrom=MathMax(cursor,block.minuteMs);
          long blockTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-         int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
+         int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
          for(int i=0;i<copied;i++)
          {
             if(ticks[i].time_msc<blockFrom||ticks[i].time_msc>blockTo)continue;
@@ -629,7 +630,7 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
       long exactFrom=MathMax(cursor,block.minuteMs);
       long exactTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
       MqlTick ticks[];
-      int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
+      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
       if(copied<=0)return false;
       g_orbAdvExactMinutes++;
       for(int i=0;i<copied;i++)
@@ -713,10 +714,13 @@ HistResult SimulateHistoricalLifecycleAdvanced(datetime entryTime,datetime sessi
    advanced.exitMode=RuntimeExitLabel();advanced.exitPrice=0;advanced.exitTime=0;
    advanced.valid=false;advanced.invalidReason="NO_MARKET_DATA";
    advanced.targetLeg=RuntimeTargetLeg();advanced.hcLeg=ClampHalfBeLeg(halfBeLeg,advanced.targetLeg);
+   ulong tickReadFailures=g_auditTickReadFailures;
    if(!SimulateTradeTicksAdvanced(entryTime,horizon,entry,sl,isBuy,halfBeLeg,scheduledEndReached,
                                   advanced,forcedExitTime,forcedExitOutcome))
-      return SimulateHistoricalLifecycle(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,
-         usedEnd,forcedExitTime,forcedExitOutcome);
+   {
+      if(g_auditTickReadFailures!=tickReadFailures){advanced.valid=false;advanced.invalidReason="TICK_HISTORY_PENDING";advanced.netR=0;advanced.isWin=false;usedEnd=horizon;return advanced;}
+      return SimulateHistoricalLifecycle(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,usedEnd,forcedExitTime,forcedExitOutcome);
+   }
    usedEnd=horizon;
    if(!InpAdvancedAuditShadowParity)return advanced;
    datetime legacyEnd=sessionEnd;

@@ -13,17 +13,21 @@ string OrbUserMetricKey(const string symbol,int tf,const string inputs,const str
    for(int r=0;r<ORB_RF_COUNT;r++)switches+=OrbPresetRfBlocked(p,r)?"1":"0";
    return OrbMlSha256(ORB_ML_SOURCE+symbol+(string)tf+inputs+runtime+switches);
 }
+string OrbClockMetricMeta(double offset,int profile,int broker,int exchange,int session)
+{if(offset==0&&profile==0&&broker==0&&exchange==0&&session==0)return "";return "|CLOCK="+DoubleToString(offset,8)+","+(string)profile+","+(string)broker+","+(string)exchange+","+(string)session;}
 string OrbUserRuntimeMetricKey()
 {
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
-   return OrbUserMetricKey(_Symbol,(int)_Period,OrbCustomInputSignature(),OrbCustomRuntimeDump(),p);
+   double saved=g_orbStrategyTimezone;g_orbStrategyTimezone=0;string signature=OrbCustomInputSignature();g_orbStrategyTimezone=saved;
+   signature+=OrbClockMetricMeta(OrbBrokerOffsetHours(),(int)OrbClockProfile(),(int)OrbClockBrokerSeason(),(int)OrbClockExchangeSeason(),g_orbClockSession);
+   return OrbUserMetricKey(_Symbol,(int)_Period,signature,OrbCustomRuntimeDump(),p);
 }
 void OrbUserLoadMetrics(int slot)
 {
    if(slot<0||slot>=ArraySize(g_userStrategies))return;
    OrbUserRecord r=g_userStrategies[slot];string v[];
    if(!OrbMlReadLines("OrbStrategyUserLibrary\\"+r.preset.id+".metrics",v,12,true))return;
-   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature,r.runtime,r.preset)||v[4]!="52")return;
+   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession),r.runtime,r.preset)||v[4]!="52")return;
    double n[8];for(int i=3;i<=10;i++)if(!OrbMlNumber(v[i],n[i-3]))return;
    if(n[0]<=0||n[2]<0||n[3]<0||n[4]<0||n[3]+n[4]>n[2]||n[7]<0||n[7]>100)return;
    if(n[2]!=MathFloor(n[2])||n[3]!=MathFloor(n[3])||n[4]!=MathFloor(n[4]))return;
