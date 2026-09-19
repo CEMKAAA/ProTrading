@@ -57,10 +57,10 @@ bool MaIndependentShape(string &reason)
    reason="";
    if(InpExecutionMode!=ORB_EXEC_SINGLE||g_rtExitMode!=ORB_EXIT_FIXED_TARGET
       ||g_rtTargetMode!=ORB_TARGET_R_LEG||RuntimeHalfBeLeg()>0||g_rtBEOnTp1
-      ||g_rtTimeExit||RuntimeNasExitEnabled()||g_rtFilteredWindowReverseExit
+      ||g_rtTimeExit||g_rtFilteredWindowReverseExit
       ||g_rtPostTradeDispBlockExit||g_rtEntryMode!=ORB_ENTRY_BREAKOUT
       ||g_rtNasConfirmation||FixedReferenceRiskMode())
-   {reason="INDEPENDENT: SINGLE + FIXED TP; HCBE/TIME/NAS EXIT/WINDOW EXIT/ENTRY WAIT/FIXED REF must be OFF";return false;}
+   {reason="INDEPENDENT: SINGLE + FIXED TP; HCBE/TIME/WINDOW EXIT/ENTRY WAIT/FIXED REF must be OFF";return false;}
    return true;
 }
 

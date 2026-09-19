@@ -14,15 +14,7 @@
 //=====================================================================
 //  ENUMS
 //=====================================================================
-enum ERL_RR_MODE
-{
-   ERL_RR_TP1 = 0,   // 0.5R
-   ERL_RR_TP2 = 1,   // 1.0R
-   ERL_RR_TP3 = 2,   // 1.5R
-   ERL_RR_TP4 = 3,   // 2.0R
-   ERL_RR_TP5 = 4,   // 2.5R
-   ERL_RR_TP6 = 5    // 3.0R
-};
+#include "LiqROptions.mqh"
 
 enum ERL_HC_MODE
 {
@@ -459,6 +451,7 @@ bool SetRuntimeInvertMode(bool enabled)
 
 string TargetLabel(ERL_RR_MODE rr)
 {
+   if((int)rr>=101) return DoubleToString(TargetR(rr),2)+"R";
    return "TP" + IntegerToString((int)rr + 1) + " " + DoubleToString(TargetR(rr), 1) + "R";
 }
 
@@ -515,6 +508,7 @@ string BtSameLabel(BT_SAME_BAR_POLICY policy)
 
 double TargetR(ERL_RR_MODE rr)
 {
+   if((int)rr>=101 && (int)rr<=200) return ((int)rr-100)*0.05;
    int leg = (int)rr + 1;
    return MathMax(0.5, 0.5 * leg);
 }
@@ -1579,6 +1573,7 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
 
 double SelectedFixedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 {
+   if((int)target>=101 && (int)target<=200) return NormTradePrice(sig.entry+sig.dir*sig.risk*TargetR(target));
    if(target == ERL_RR_TP1) return sig.tp1;
    if(target == ERL_RR_TP2) return sig.tp2;
    if(target == ERL_RR_TP3) return sig.tp3;
@@ -1699,10 +1694,10 @@ void SanitizeHalfMode()
       return;
    }
    if(g_invertMode) return;
-   int targetLeg = (int)g_target + 1;
+   int targetLeg = (int)MathCeil(TargetR(g_target)*2.0-1e-9);
    int hcLeg = (int)g_hc;
    if(targetLeg <= 1) g_hc = ERL_HC_OFF;
-   else if(hcLeg >= targetLeg) g_hc = (ERL_HC_MODE)(targetLeg - 1);
+   else if(hcLeg >= targetLeg) g_hc = (ERL_HC_MODE)MathMin(5,targetLeg - 1);
 }
 
 //=====================================================================
@@ -4216,6 +4211,7 @@ void DrawDashboard()
 
 void UpdateDashboard()
 {
+   if(LiqLibraryDashboard()) return;
    if(IsTesterMode()) return;
    if(!InpShowDashboard) return;
    if(g_dashboardCollapsed)
@@ -4274,11 +4270,11 @@ void UpdateDashboard()
    row += 28;
    LabelObj("DASH_HC_L", x + 16, row + 4, "HC+BE:", muted, 8);
    ButtonObj("BTN_HC_OFF", x + 76, row, 52, bh, "OFF", g_hc == ERL_HC_OFF ? on : off);
-   ButtonObj("BTN_HC_TP1", x + 132, row, 54, bh, "TP1", g_hc == ERL_HC_TP1 ? on : (g_invertMode || (int)g_target + 1 > 1 ? off : C'35,37,44'));
-   ButtonObj("BTN_HC_TP2", x + 190, row, 54, bh, "TP2", g_hc == ERL_HC_TP2 ? on : (g_invertMode || (int)g_target + 1 > 2 ? off : C'35,37,44'));
-   ButtonObj("BTN_HC_TP3", x + 248, row, 54, bh, "TP3", g_hc == ERL_HC_TP3 ? on : (g_invertMode || (int)g_target + 1 > 3 ? off : C'35,37,44'));
-   ButtonObj("BTN_HC_TP4", x + 306, row, 54, bh, "TP4", g_hc == ERL_HC_TP4 ? on : (g_invertMode || (int)g_target + 1 > 4 ? off : C'35,37,44'));
-   ButtonObj("BTN_HC_TP5", x + 364, row, 54, bh, "TP5", g_hc == ERL_HC_TP5 ? on : (g_invertMode || (int)g_target + 1 > 5 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP1", x + 132, row, 54, bh, "TP1", g_hc == ERL_HC_TP1 ? on : (g_invertMode || TargetR(g_target)*2.0 > 1 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP2", x + 190, row, 54, bh, "TP2", g_hc == ERL_HC_TP2 ? on : (g_invertMode || TargetR(g_target)*2.0 > 2 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP3", x + 248, row, 54, bh, "TP3", g_hc == ERL_HC_TP3 ? on : (g_invertMode || TargetR(g_target)*2.0 > 3 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP4", x + 306, row, 54, bh, "TP4", g_hc == ERL_HC_TP4 ? on : (g_invertMode || TargetR(g_target)*2.0 > 4 ? off : C'35,37,44'));
+   ButtonObj("BTN_HC_TP5", x + 364, row, 54, bh, "TP5", g_hc == ERL_HC_TP5 ? on : (g_invertMode || TargetR(g_target)*2.0 > 5 ? off : C'35,37,44'));
    LabelObj("DASH_BIAS_L", x + 430, row + 4, "WEEKLY:", muted, 8);
    ButtonObj("BTN_BIAS", x + 490, row, 68, bh, g_weeklyBias ? "ON" : "OFF", g_weeklyBias ? on : off);
    ButtonObj("BTN_DUP_ENTRY", x + 566, row, 88, bh, g_allowDuplicateEntries ? "DUP ON" : "DUP OFF", g_allowDuplicateEntries ? C'184,103,22' : off);
@@ -4618,6 +4614,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(LiqLibraryEvent(id,sparam)) return;
    if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
 
@@ -4692,11 +4689,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_TP_5")) { g_target = ERL_RR_TP5; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_TP_6")) { g_target = ERL_RR_TP6; g_targetModel = ERL_TARGET_FIXED_R; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_HC_OFF")) { g_hc = ERL_HC_OFF; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP1")) { if(g_invertMode || (int)g_target + 1 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP2")) { if(g_invertMode || (int)g_target + 1 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP3")) { if(g_invertMode || (int)g_target + 1 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP4")) { if(g_invertMode || (int)g_target + 1 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(false); return; }
-   if(Clicked(sparam, "BTN_HC_TP5")) { if(g_invertMode || (int)g_target + 1 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP1")) { if(g_invertMode || TargetR(g_target)*2.0 > 1) g_hc = ERL_HC_TP1; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP2")) { if(g_invertMode || TargetR(g_target)*2.0 > 2) g_hc = ERL_HC_TP2; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP3")) { if(g_invertMode || TargetR(g_target)*2.0 > 3) g_hc = ERL_HC_TP3; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP4")) { if(g_invertMode || TargetR(g_target)*2.0 > 4) g_hc = ERL_HC_TP4; RefreshAfterConfigChange(false); return; }
+   if(Clicked(sparam, "BTN_HC_TP5")) { if(g_invertMode || TargetR(g_target)*2.0 > 5) g_hc = ERL_HC_TP5; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_AUD_2W")) { g_histWeeks = 2; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_AUD_5W")) { g_histWeeks = 5; RefreshAfterConfigChange(false); return; }
    if(Clicked(sparam, "BTN_AUD_10W")) { g_histWeeks = 10; RefreshAfterConfigChange(false); return; }
@@ -4794,3 +4791,144 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_BT_RUN")) { StartBacktest(); UpdateDashboard(); return; }
    if(Clicked(sparam, "BTN_BT_STOP")) { StopBacktest(); UpdateDashboard(); return; }
 }
+
+// Strategy snapshots exclude account risk, transport, channel and live lifecycle state.
+string LiqLibraryFamily(){return "LiquidityNarrative_MT5_EA";}
+string LiqLibraryInputContract(){string s="V1";
+s+="|InpEaEnabled="+(string)InpEaEnabled;
+s+="|InpMagic="+(string)InpMagic;
+s+="|InpDeviationPoints="+(string)InpDeviationPoints;
+s+="|InpCloseOnReverse="+(string)InpCloseOnReverse;
+s+="|InpBlockSameDirection="+(string)InpBlockSameDirection;
+s+="|InpAllowDuplicateEntriesDefault="+(string)InpAllowDuplicateEntriesDefault;
+s+="|InpInvertModeDefault="+(string)InpInvertModeDefault;
+s+="|InpDefaultHtf="+(string)InpDefaultHtf;
+s+="|InpDefaultEntryTf="+(string)InpDefaultEntryTf;
+s+="|InpDefaultSwingLookback="+(string)InpDefaultSwingLookback;
+s+="|InpDefaultTarget="+(string)InpDefaultTarget;
+s+="|InpDefaultHalfBe="+(string)InpDefaultHalfBe;
+s+="|InpDefaultWeeklyBias="+(string)InpDefaultWeeklyBias;
+s+="|InpDefaultEntryModel="+(string)InpDefaultEntryModel;
+s+="|InpDefaultStopModel="+(string)InpDefaultStopModel;
+s+="|InpDefaultTargetModel="+(string)InpDefaultTargetModel;
+s+="|InpDefaultRequireIrlTouch="+(string)InpDefaultRequireIrlTouch;
+s+="|InpDefaultRequireEntrySweep="+(string)InpDefaultRequireEntrySweep;
+s+="|InpDefaultRequireDisplacementFvg="+(string)InpDefaultRequireDisplacementFvg;
+s+="|InpDefaultRequireAsiaLiquidityDraw="+(string)InpDefaultRequireAsiaLiquidityDraw;
+s+="|InpDefaultUseAsiaLiquidityTarget="+(string)InpDefaultUseAsiaLiquidityTarget;
+s+="|InpDefaultRequireSmt="+(string)InpDefaultRequireSmt;
+s+="|InpCalcHtfBars="+(string)InpCalcHtfBars;
+s+="|InpCalcEntryBars="+(string)InpCalcEntryBars;
+s+="|InpMaxSwings="+(string)InpMaxSwings;
+s+="|InpMaxFvgSearchBars="+(string)InpMaxFvgSearchBars;
+s+="|InpEntrySweepLookback="+(string)InpEntrySweepLookback;
+s+="|InpEntrySweepMaxBars="+(string)InpEntrySweepMaxBars;
+s+="|InpEntryFvgMaxWaitBars="+(string)InpEntryFvgMaxWaitBars;
+s+="|InpEntryFvgTapMaxBars="+(string)InpEntryFvgTapMaxBars;
+s+="|InpAtrPeriod="+(string)InpAtrPeriod;
+s+="|InpMinFvgAtrPct="+(string)InpMinFvgAtrPct;
+s+="|InpSlBufferAtrPct="+(string)InpSlBufferAtrPct;
+s+="|InpSlDistancePct="+(string)InpSlDistancePct;
+s+="|InpPipSlModeDefault="+(string)InpPipSlModeDefault;
+s+="|InpPipSlPips="+(string)InpPipSlPips;
+s+="|InpSmallStopThresholdPts="+(string)InpSmallStopThresholdPts;
+s+="|InpSmallStopTarget="+(string)InpSmallStopTarget;
+s+="|InpLargeStopTarget="+(string)InpLargeStopTarget;
+s+="|InpAsiaStartHourGmt="+(string)InpAsiaStartHourGmt;
+s+="|InpAsiaEndHourGmt="+(string)InpAsiaEndHourGmt;
+s+="|InpSmtSymbol="+(string)InpSmtSymbol;
+s+="|InpSmtLookbackBars="+(string)InpSmtLookbackBars;
+s+="|InpHistoricalDays="+(string)InpHistoricalDays;
+s+="|InpHistoricalWeeks="+(string)InpHistoricalWeeks;
+s+="|InpDrawHistoricalSignals="+(string)InpDrawHistoricalSignals;
+s+="|InpDrawFvgZones="+(string)InpDrawFvgZones;
+s+="|InpDrawLiveLevels="+(string)InpDrawLiveLevels;
+s+="|InpFileBridgeEnabled="+(string)InpFileBridgeEnabled;
+s+="|InpFileBridgeOnlyMode="+(string)InpFileBridgeOnlyMode;
+s+="|InpNativeTradeWithBridgeOnlyDefault="+(string)InpNativeTradeWithBridgeOnlyDefault;
+s+="|InpFileBridgeUseCommonFiles="+(string)InpFileBridgeUseCommonFiles;
+s+="|InpFileBridgeLatestFile="+(string)InpFileBridgeLatestFile;
+s+="|InpFileBridgeAuditPrefix="+(string)InpFileBridgeAuditPrefix;
+s+="|InpShowDashboard="+(string)InpShowDashboard;
+s+="|InpDashboardX="+(string)InpDashboardX;
+s+="|InpDashboardY="+(string)InpDashboardY;
+s+="|InpAccountRiskEnabled="+(string)InpAccountRiskEnabled;
+s+="|InpFtmoModeDefault="+(string)InpFtmoModeDefault;
+s+="|InpRiskLotOnlyModeDefault="+(string)InpRiskLotOnlyModeDefault;
+s+="|InpRiskPerTradePct="+(string)InpRiskPerTradePct;
+s+="|InpRiskCapitalMode="+(string)InpRiskCapitalMode;
+s+="|InpFixedRiskReferenceCapital="+(string)InpFixedRiskReferenceCapital;
+s+="|InpFixedRiskMaxOvershootMoney="+(string)InpFixedRiskMaxOvershootMoney;
+s+="|InpMaxPortfolioRiskPct="+(string)InpMaxPortfolioRiskPct;
+s+="|InpDailyLossLimitPct="+(string)InpDailyLossLimitPct;
+s+="|InpMaxDrawdownPct="+(string)InpMaxDrawdownPct;
+s+="|InpInitialBalanceOverride="+(string)InpInitialBalanceOverride;
+s+="|InpFixedLot="+(string)InpFixedLot;
+s+="|InpMaxLot="+(string)InpMaxLot;
+s+="|InpDayResetHourGmt="+(string)InpDayResetHourGmt;
+s+="|InpLiquidateOnBreach="+(string)InpLiquidateOnBreach;
+s+="|InpAuditTradeCsv="+(string)InpAuditTradeCsv;
+s+="|InpAuditPositionProbe="+(string)InpAuditPositionProbe;
+s+="|InpAuditProbeSec="+(string)InpAuditProbeSec;
+s+="|InpAuditProbeOnChangeOnly="+(string)InpAuditProbeOnChangeOnly;
+s+="|InpAuditHistoryScanSec="+(string)InpAuditHistoryScanSec;
+s+="|InpTesterTradeAuditCsv="+(string)InpTesterTradeAuditCsv;
+s+="|InpTesterTradeAuditMaxRows="+(string)InpTesterTradeAuditMaxRows;
+s+="|InpValidationJobId="+(string)InpValidationJobId;
+s+="|InpBacktestWeeks="+(string)InpBacktestWeeks;
+s+="|InpBacktestFillMode="+(string)InpBacktestFillMode;
+s+="|InpBacktestSameBarPolicy="+(string)InpBacktestSameBarPolicy;
+s+="|InpBacktestUseTickReplay="+(string)InpBacktestUseTickReplay;
+s+="|InpBacktestSpreadPts="+(string)InpBacktestSpreadPts;
+s+="|InpBacktestSlippagePts="+(string)InpBacktestSlippagePts;
+s+="|InpBacktestCommissionPerLot="+(string)InpBacktestCommissionPerLot;
+return s;}
+int LiqLibraryCapture(double &v[]){ArrayResize(v,22);
+v[0]=(double)g_htf;
+v[1]=(double)g_entryTf;
+v[2]=(double)g_swingLookback;
+v[3]=(double)g_target;
+v[4]=(double)g_hc;
+v[5]=(double)g_weeklyBias;
+v[6]=(double)g_entryModel;
+v[7]=(double)g_stopModel;
+v[8]=(double)g_targetModel;
+v[9]=(double)g_requireIrlTouch;
+v[10]=(double)g_requireEntrySweep;
+v[11]=(double)g_requireDisplacementFvg;
+v[12]=(double)g_requireAsiaLiquidityDraw;
+v[13]=(double)g_useAsiaLiquidityTarget;
+v[14]=(double)g_requireSmt;
+v[15]=(double)g_allowDuplicateEntries;
+v[16]=(double)g_invertMode;
+v[17]=(double)g_slDistancePct;
+v[18]=(double)g_slBufferAtrPct;
+v[19]=(double)g_pipSlMode;
+v[20]=(double)g_pipSlPips;
+v[21]=(double)g_histWeeks;
+return ArraySize(v);}
+void LiqLibraryAssign(const double &v[]){
+g_htf=(ENUM_TIMEFRAMES)v[0];
+g_entryTf=(ENUM_TIMEFRAMES)v[1];
+g_swingLookback=(int)v[2];
+g_target=(ERL_RR_MODE)v[3];
+g_hc=(ERL_HC_MODE)v[4];
+g_weeklyBias=(bool)v[5];
+g_entryModel=(ERL_ENTRY_MODEL)v[6];
+g_stopModel=(ERL_STOP_MODEL)v[7];
+g_targetModel=(ERL_TARGET_MODEL)v[8];
+g_requireIrlTouch=(bool)v[9];
+g_requireEntrySweep=(bool)v[10];
+g_requireDisplacementFvg=(bool)v[11];
+g_requireAsiaLiquidityDraw=(bool)v[12];
+g_useAsiaLiquidityTarget=(bool)v[13];
+g_requireSmt=(bool)v[14];
+g_allowDuplicateEntries=(bool)v[15];
+g_invertMode=(bool)v[16];
+g_slDistancePct=(double)v[17];
+g_slBufferAtrPct=(double)v[18];
+g_pipSlMode=(bool)v[19];
+g_pipSlPips=(double)v[20];
+g_histWeeks=(int)v[21];
+}
+#include "LiqStrategyLibrary.mqh"

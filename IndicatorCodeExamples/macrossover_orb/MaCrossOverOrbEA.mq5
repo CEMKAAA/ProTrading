@@ -628,6 +628,7 @@ OrbBtBreakout   g_btBreakouts[];
 
 #include "OrbUltimate_ProfessionalPipeline.mqh"
 #include "MaIndependentEntries.mqh"
+#include "MaExitPolicy.mqh"
 
 //=========================================================================
 //  UTILITY FUNCTIONS
@@ -2537,6 +2538,7 @@ void OrbStrategyPresetSetEdit(const string name,const string value)
 void OrbStrategyPresetSyncEdits()
 {
    ObjectSetString(0,PREFIX+"EDIT_MA_MAX",OBJPROP_TEXT,(string)g_maMaxConsecutive);
+   ObjectSetString(0,PREFIX+"EDIT_MA_REV_WAIT",OBJPROP_TEXT,DurationMinutesText(g_maReverseWait));
    // Only an explicit preset apply/restore replaces drafts; routine redraws preserve typing.
    OrbStrategyPresetSetEdit("EDIT_SL_VALUE",g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
    OrbStrategyPresetSetEdit("EDIT_VOL_MULT",DoubleToString(g_rtVolumeMultiplier,2));
@@ -2972,7 +2974,7 @@ bool IsSimMarketExitOutcome(string outcome)
    return outcome=="MID_EXIT"||outcome=="VWAP_EXIT"||outcome=="EMA_EXIT"
       ||outcome=="EOD_EXIT"||outcome=="TIME_EXIT"||outcome=="BROKER_TIME_EXIT"
       ||outcome=="FILTER_REVERSE_EXIT"||outcome=="DISP_BLOCK_EXIT"
-      ||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NAS_ADDITIONAL_EXIT"||outcome=="NEW_DAY_REVERSE_EXIT";
+      ||outcome=="NAS_OPPOSITE_EXIT"||outcome=="NAS_ADDITIONAL_EXIT"||outcome=="MA_REVERSE_EXIT";
 }
 
 bool ResolveSourceTargetPriceAndR(bool sourceIsBuy,double entry,double sourceRisk,double &targetPrice,double &targetR,string &detail)
@@ -3940,7 +3942,7 @@ void OrbLibraryRefreshLayout()
    g_libraryDashY=MathMax(0,MathMin(InpDashboardY,chartH/10));
    g_libraryDashScale=MathMin(1.0,MathMin(
       (double)MathMax(1,chartW-g_libraryDashX-8)/1252.0,
-      (double)MathMax(1,chartH-g_libraryDashY-8)/704.0));
+      (double)MathMax(1,chartH-g_libraryDashY-8)/726.0));
 }
 int OrbLibraryX(int x){return g_libraryDashX+(int)MathRound((x-InpDashboardX)*g_libraryDashScale);}
 int OrbLibraryY(int y){return g_libraryDashY+(int)MathRound((y-InpDashboardY)*g_libraryDashScale);}
@@ -5601,6 +5603,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
       +"|"+(string)g_orbStartServer+"|"+(string)g_orbEndServer+"|"+(string)g_tradeEndServer
       +"|"+AuditMemoPrice(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE))
       +"|"+AuditMemoPrice(g_btCommissionPerLot!=0?SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE):0);
+   key+="|MAEXIT_FILTERED3="+(string)g_maReverseExit+","+(string)g_maReverseWait;
    key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
    key+="|g_rtFilterVol="+(string)g_rtFilterVol;
    key+="|g_rtFilterDay="+(string)g_rtFilterDay;
@@ -6055,6 +6058,7 @@ int ProcessHistoricalPrepDay(const int back)
       +"|"+(string)SeriesInfoInteger(_Symbol,g_rtSignalTf,SERIES_FIRSTDATE);
    g_orbPrepMemo.Reset(epoch);
    string key=(string)(g_histRunNyMid-back*86400)+"|"+(string)g_orbRfEnabled;
+   key+="|MAEXIT_FILTERED3="+(string)g_maReverseExit+","+(string)g_maReverseWait;
    key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
    key+="|g_rtFilterVol="+(string)g_rtFilterVol;
    key+="|g_rtFilterDay="+(string)g_rtFilterDay;
@@ -6358,28 +6362,28 @@ bool FindNewDayAcceptedReverseExit(const OrbWindowSignal &signals[],datetime aft
                                     datetime limitTime,datetime &exitTime,string &exitDetail)
 {
    exitTime=0;exitDetail="";
-   if(g_maIndependent)return false;
-   string opposite=(tradeDirection=="BUY"?"SELL":"BUY");
-   datetime localEntry=ServerToSessionLocal(afterTime);
-   MqlDateTime entryDt;TimeToStruct(localEntry,entryDt);
-   datetime entryDay=MakeDateTime(entryDt.year,entryDt.mon,entryDt.day,0,0,0);
-   for(int i=FirstOrbSignalAfter(signals,afterTime);i<ArraySize(signals);i++)
+   if(!g_maReverseExit)return false;
+   if(g_maIndependent)
+      exitTime=MaKernelExitAt(g_maCrossAuditEvents,OrbSignalAvailableTime(afterTime),tradeDirection=="BUY"?1:-1,
+         limitTime,g_maReverseWait,PeriodSeconds(g_rtSignalTf),g_rtInvertMode);
+   else
    {
-      datetime candidate=signals[i].availableTime;
-      if(candidate>limitTime)break;
-      datetime localCandidate=ServerToSessionLocal(candidate);
-      MqlDateTime candidateDt;TimeToStruct(localCandidate,candidateDt);
-      datetime candidateDay=MakeDateTime(candidateDt.year,candidateDt.mon,candidateDt.day,0,0,0);
-      if(candidate<=OrbSignalAvailableTime(afterTime))continue;
-      if(signals[i].executionDirection!=opposite)continue;
-      exitTime=candidate;
-      exitDetail="raw="+signals[i].rawDirection+" exec="+signals[i].executionDirection
-         +" signal="+FmtTime(signals[i].signalTime)+" available="+FmtTime(candidate);
-      return true;
+      datetime opened=OrbSignalAvailableTime(afterTime),eligible=opened+(datetime)(g_maReverseWait*60);
+      string opposite=tradeDirection=="BUY"?"SELL":"BUY",state="";
+      for(int i=FirstOrbSignalAfter(signals,opened);i<ArraySize(signals);i++)
+      {
+         datetime at=signals[i].availableTime;if(at>limitTime)break;
+         string dir=signals[i].executionDirection;
+         if(at<=eligible){state=dir;continue;}
+         if(state==opposite){exitTime=eligible;break;}
+         if(dir==opposite){exitTime=at;break;}
+         state=dir;
+      }
+      if(exitTime==0&&state==opposite&&eligible<=limitTime)exitTime=eligible;
    }
-   return false;
+   if(exitTime>0)exitDetail="MA_REVERSE wait="+DurationMinutesText(g_maReverseWait);
+   return exitTime>0;
 }
-
 bool FindFilteredWindowExit(const OrbWindowSignal &signals[],datetime afterTime,string tradeDirection,
                             bool allowReverse,bool allowSameDisp,
                             datetime &exitTime,string &exitReason,string &exitOutcome)
@@ -6668,7 +6672,7 @@ void ProcessHistoricalCalcDay(const int back)
             filteredWindowExitAt,filteredWindowExitReason,filteredWindowExitOutcome);
       datetime nasOppositeExitAt=0,nasOppositeBar=0;double nasOppositeClose=0.0;string nasOppositeDetail="";
       bool anyNasExit=RuntimeNasExitEnabled();
-      datetime nasSearchEnd=g_rtNasAdditionalExit?g_histRunNow:te;
+      datetime nasSearchEnd=g_histRunNow;
       if(anyNasExit)
          FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,OrbSignalAvailableTime(entryT),nasSearchEnd,
             nasOppositeBar,nasOppositeExitAt,nasOppositeClose,nasOppositeDetail);
@@ -6681,7 +6685,7 @@ void ProcessHistoricalCalcDay(const int back)
       datetime newDayReverseExitAt=0;string newDayReverseDetail="";
       FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
       if(newDayReverseExitAt>0&&(forcedExitAt<=0||newDayReverseExitAt<forcedExitAt))
-      {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="NEW_DAY_REVERSE_EXIT";}
+      {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="MA_REVERSE_EXIT";}
       HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
             forcedExitAt,forcedExitOutcome);
 #ifdef MA_EVENT_PROBE
@@ -6696,7 +6700,7 @@ void ProcessHistoricalCalcDay(const int back)
       datetime referenceReverse=0;string referenceDetail="";
       FindNewDayAcceptedReverseExit(g_regimeReferenceSignals,entryT,execDir,g_histRunNow,referenceReverse,referenceDetail);
       if(referenceReverse>0&&(referenceExit<=0||referenceReverse<referenceExit))
-      {referenceExit=referenceReverse;referenceOutcome="NEW_DAY_REVERSE_EXIT";}
+      {referenceExit=referenceReverse;referenceOutcome="MA_REVERSE_EXIT";}
       HistResult referenceSim=sim;
       if(referenceExit!=forcedExitAt||referenceOutcome!=forcedExitOutcome)
       {
@@ -6750,7 +6754,7 @@ void ProcessHistoricalCalcDay(const int back)
       {
          if(sim.outcome=="SL")g_histStopLossExits++;
          else if(sim.outcome=="NAS_OPPOSITE_EXIT"||sim.outcome=="NAS_ADDITIONAL_EXIT")g_histNasOppositeExits++;
-         else if(sim.outcome=="NEW_DAY_REVERSE_EXIT")g_histNewDayReverseExits++;
+         else if(sim.outcome=="MA_REVERSE_EXIT")g_histNewDayReverseExits++;
       }
       g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
@@ -7355,7 +7359,7 @@ void OBT_Tick()
       double tp2=NormalizePrice(isBuy?entry+risk*r2v:entry-risk*r2v);
       double tp3=NormalizePrice(isBuy?entry+risk*r3v:entry-risk*r3v);
       datetime nasExitBar=0,nasExitAt=0;double nasExitClose=0.0;string nasExitDetail="";
-      datetime nasSearchEnd=g_rtNasAdditionalExit?TimeCurrent():g_btDays[di].tradeEnd;
+      datetime nasSearchEnd=TimeCurrent();
       if(RuntimeNasExitEnabled())
          FindNasOppositeExitWithGrace(execDir=="BUY"?1:-1,OrbSignalAvailableTime(entryT),nasSearchEnd,
             nasExitBar,nasExitAt,nasExitClose,nasExitDetail);
@@ -7451,7 +7455,7 @@ void DrawDashboard()
    if(!InpShowDashboard){DeleteDash();return;}
    OrbLibraryRefreshLayout();
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=704;
+   int W=620,H=726;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
@@ -7604,7 +7608,11 @@ void UpdateDashboard()
    CreateLabel("DASH_MA_MAX",x+424,rootY+291,"MAX SERIES",C'134,158,182',7);
    CreateEdit("EDIT_MA_MAX",x+493,rootY+287,40,18,IntegerToString(g_maMaxConsecutive));
    CreateButton("BTN_MA_MAX_APPLY",x+539,rootY+287,65,18,"APPLY",C'38,101,176');
-   y=rootY+290;
+   CreateButton("BTN_MA_REV_EXIT",x+12,rootY+309,140,18,g_maReverseExit?"MA REV EXIT ON":"MA REV EXIT OFF",g_maReverseExit?C'30,150,95':C'80,80,80');
+   CreateLabel("DASH_MA_REV_WAIT",x+160,rootY+313,"WAIT HH:MM",C'134,158,182',7);
+   CreateEdit("EDIT_MA_REV_WAIT",x+245,rootY+309,60,18,DurationMinutesText(g_maReverseWait));
+   CreateButton("BTN_MA_REV_APPLY",x+313,rootY+309,90,18,"APPLY EXIT",C'38,101,176');
+   y=rootY+312;
 
    // Status line
    string state=g_rtEaEnabled?"EA ON":"EA OFF";
@@ -7708,7 +7716,7 @@ void UpdateDashboard()
    CreateButton("BTN_AUD_5Y",awx,awy,34,18,"5Y",g_rtHistoricalWeeks==260?C'38,101,176':C'80,80,80');
    CreateButton("BTN_ENTRY",x+412,y+160,102,18,RuntimeEntryLabel(),g_rtEntryMode==ORB_ENTRY_BREAKOUT?C'80,80,80':(g_rtEntryMode==ORB_ENTRY_IMBALANCE_M1?C'38,101,176':C'178,92,37'));
    CreateButton("BTN_AUDIT",x+522,y+160,86,18,g_auditRuntime?"AUDIT":"AUDIT OFF",g_auditRuntime?C'120,88,25':C'80,80,80');
-   string auditStat1=IntegerToString(g_histTotal)+" signals | "+IntegerToString(g_histWins)+" W  "+IntegerToString(g_histLosses)+" L  "+IntegerToString(g_histOpen)+" O  "+IntegerToString(g_histFlat)+" F | WR "+DoubleToString(wr,1)+"% | SL "+IntegerToString(g_histStopLossExits)+"  NAS-X "+IntegerToString(g_histNasOppositeExits)+"  DAY-REV "+IntegerToString(g_histNewDayReverseExits);
+   string auditStat1=IntegerToString(g_histTotal)+" signals | "+IntegerToString(g_histWins)+" W  "+IntegerToString(g_histLosses)+" L  "+IntegerToString(g_histOpen)+" O  "+IntegerToString(g_histFlat)+" F | WR "+DoubleToString(wr,1)+"% | SL "+IntegerToString(g_histStopLossExits)+"  NAS-X "+IntegerToString(g_histNasOppositeExits)+"  MA-REV "+IntegerToString(g_histNewDayReverseExits);
    double pf=g_histLostR>0.0?g_histWonR/g_histLostR:(g_histWonR>0.0?99.0:0.0);
    string auditStat2="Net R: "+DoubleToString(g_histNetR,1)+"R"
       +" | Net $: "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)
@@ -8672,7 +8680,7 @@ int OrbSessionDayKeyAt(datetime value)
 bool IsAcceptedNewDayReverseCandidate(string execDir,datetime candidateAvailable,string &detail)
 {
    detail="";
-   if(g_maIndependent)return false;
+   if(g_maIndependent||!g_maReverseExit||g_maReverseWait>0)return false;
    int candidateDir=(execDir=="BUY"?1:(execDir=="SELL"?-1:0));
    int activeDir=CurrentOrbLifecycleDirection();
    datetime activeSince=CurrentOrbLifecycleStartTime();
@@ -9316,17 +9324,19 @@ int OnInit()
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;g_btNativeParity=InpBacktestNativeParity;
    g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
-   g_maRestoringPreset=true;OrbStrategyPresetRestore();g_maRestoringPreset=false;
+   MaExitLoad();g_maRestoringPreset=true;OrbStrategyPresetRestore();g_maRestoringPreset=false;
    OrbStrategyPresetBuildMatches("");
    g_lastHistBuild=0;g_histNeedsRedraw=true;
    ResetForNewNyDay();
    RegimeV3Update(true);
    OrbProInit();
    if(!MaIndependentInit())return INIT_PARAMETERS_INCORRECT;
+   if(!g_maPresetModeRestored&&!GlobalVariableCheck(MaExitSettingsKey()+".ON"))g_maReverseExit=!g_maIndependent;
    RestoreOrbBridgePlan();
    RestoreNasManagedLifecycle();
    RestoreNasPending();
-   RestoreNewDayReverseRetry();
+   if(g_maReverseExit&&!g_maIndependent&&g_maReverseWait==0)RestoreNewDayReverseRetry();
+   else ClearNewDayReverseRetry("ma_reverse_disabled");
    EnsureNasExitLifecycle();
    // Refresh compliance news before a multi-year history scan can occupy OnInit.
    if(!IsTesterMode())TradeDayCalendarPublisherTick();
@@ -9388,7 +9398,7 @@ void OnTimer()
       else if(!IsTesterMode()&&g_histCoveragePending&&!g_histCoverageHardBlocked
               &&InpAuditHistoryAutoRetry&&TimeLocal()>=g_histCoverageNextRetry)
          QueueHistoricalRedraw(0);
-      MaObserveClosedSignal();TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
+      MaObserveClosedSignal();if(!MaProcessExitManagement())TryOpenSignal();ManagePositions();
    }
    if(!IsTesterMode())
    {
@@ -9417,7 +9427,7 @@ void OnTick()
       return;
    }
    EnforceRiskBreach();
-   ResetForNewNyDay();MaObserveClosedSignal();TryOpenSignal();ManagePositions();ProcessNasOppositeExit();
+   ResetForNewNyDay();MaObserveClosedSignal();if(!MaProcessExitManagement())TryOpenSignal();ManagePositions();
    if(!IsTesterMode())
    {
       OrbProUpdateOpenPositions();
@@ -9459,6 +9469,25 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
    if(sparam==PREFIX+"BTN_ATR"||sparam==PREFIX+"BTN_DELAY"||sparam==PREFIX+"BTN_UTC_SESSION")return;
 
+   if(sparam==PREFIX+"BTN_MA_REV_EXIT"||sparam==PREFIX+"BTN_MA_REV_APPLY")
+   {
+      if(g_newDayReverseRetryPending||g_nasManagedClosePending)
+      {
+         g_lastExecStatus="EXIT CHANGE BLOCKED: close retry pending";
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+      }
+      int minutes=0;
+      if(!ParseStrictDurationMinutes(ObjectGetString(0,PREFIX+"EDIT_MA_REV_WAIT",OBJPROP_TEXT),minutes))
+         g_lastExecStatus="MA EXIT WAIT: HH:MM (00:00..99:59)";
+      else
+      {
+         if(sparam==PREFIX+"BTN_MA_REV_EXIT")g_maReverseExit=!g_maReverseExit;
+         g_maReverseWait=minutes;MaExitSave();
+         CancelHistoricalAuditBuild();g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
+         g_lastExecStatus=g_maReverseExit?"MA_REVERSE_EXIT_ON":"MA_REVERSE_EXIT_OFF";
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    bool needRedraw=false;
    if(sparam==PREFIX+"BTN_MA_INDEPENDENT"||sparam==PREFIX+"BTN_MA_MAX_APPLY")
    {
@@ -9470,6 +9499,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       {
          CancelHistoricalAuditBuild();g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
          ObjectSetString(0,PREFIX+"EDIT_MA_MAX",OBJPROP_TEXT,(string)g_maMaxConsecutive);
+   ObjectSetString(0,PREFIX+"EDIT_MA_REV_WAIT",OBJPROP_TEXT,DurationMinutesText(g_maReverseWait));
       }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }

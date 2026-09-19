@@ -8,6 +8,7 @@ struct OrbUserRecord
    OrbStrategyPreset preset;
    string symbol,inputSignature,runtime;
    int chartTf; bool independent; int maxSeries;
+   bool reverseExit; int reverseWait;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -47,16 +48,27 @@ void OrbUserReload(bool force=false)
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
-      record.independent=false;record.maxSeries=1;
+      record.independent=false;record.maxSeries=1;record.reverseExit=false;record.reverseWait=0;
       string meta[];int parts=StringSplit(v[5],'|',meta);
-      if(parts<1||parts>2)continue;
-      if(parts==2)
+      if(parts<1||parts>3)continue;
+      if(parts>=2)
       {
          string mode[];
          if(StringFind(meta[1],"MAENTRY1=")!=0||StringSplit(StringSubstr(meta[1],9),',',mode)!=2)continue;
          int independent=(int)StringToInteger(mode[0]),maximum=(int)StringToInteger(mode[1]);
          if(mode[0]!=(string)independent||mode[1]!=(string)maximum||independent<0||independent>1||maximum<1||maximum>1000)continue;
          record.independent=independent==1;record.maxSeries=maximum;
+      }
+      // Records predating explicit exit metadata used automatic filtered reverse
+      // in LEGACY and no reverse in INDEPENDENT. Do not infer mode from the name.
+      record.reverseExit=!record.independent;
+      if(parts==3)
+      {
+         string exit[];
+         if(StringFind(meta[2],"MAEXIT2=")!=0||StringSplit(StringSubstr(meta[2],8),',',exit)!=2)continue;
+         int enabled=(int)StringToInteger(exit[0]),wait=(int)StringToInteger(exit[1]);
+         if(exit[0]!=(string)enabled||exit[1]!=(string)wait||enabled<0||enabled>1||wait<0||wait>5999)continue;
+         record.reverseExit=enabled==1;record.reverseWait=wait;
       }
       record.inputSignature=meta[0];record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
@@ -100,6 +112,7 @@ void OrbUserApply(const OrbStrategyPreset &p)
    if(g_maRestoringPreset){g_maIndependent=g_userStrategies[i].independent;g_maMaxConsecutive=g_userStrategies[i].maxSeries;g_maPresetModeRestored=true;}
    else if(!MaIndependentApply(g_userStrategies[i].independent,g_userStrategies[i].maxSeries))
    {OrbCustomRuntimeRead(oldTokens,0,true);return;}
+   g_maReverseExit=g_userStrategies[i].reverseExit;g_maReverseWait=g_userStrategies[i].reverseWait;MaExitSave();
    MaCrossAuditInvalidate();
    g_lastSignalBarTime=0;
    g_lastCheckedSignalBarTime=0;
@@ -113,6 +126,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);
    if(g_maIndependent!=g_userStrategies[i].independent||g_maMaxConsecutive!=g_userStrategies[i].maxSeries)return false;
+   if(g_maReverseExit!=g_userStrategies[i].reverseExit||g_maReverseWait!=g_userStrategies[i].reverseWait)return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
@@ -152,7 +166,8 @@ bool OrbUserSaveLocked(string name)
    p.family=OrbUserSymbolFamily(_Symbol);
    p.name=name;p.searchTerms=name+" "+_Symbol+" user saved";p.sourceImage="user-saved";
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
-   string signature=OrbCustomInputSignature()+"|MAENTRY1="+(g_maIndependent?"1":"0")+","+(string)g_maMaxConsecutive,runtime=OrbCustomRuntimeDump();
+   string signature=OrbCustomInputSignature()+"|MAENTRY1="+(g_maIndependent?"1":"0")+","+(string)g_maMaxConsecutive
+      +"|MAEXIT2="+(g_maReverseExit?"1":"0")+","+(string)g_maReverseWait,runtime=OrbCustomRuntimeDump();
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    if(updateSlot>=0)p.id=updateId;
