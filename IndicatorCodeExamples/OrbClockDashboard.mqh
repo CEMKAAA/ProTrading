@@ -94,9 +94,38 @@ bool OrbClockUiApply()
 #endif
  return true;
 }
-bool OrbClockUiEvent(int id,string name)
+string OrbClockUiHit(int x,int y)
 {
- if(id!=CHARTEVENT_OBJECT_CLICK)return false;
+ string hit="";
+ for(int i=ObjectsTotal(0)-1;i>=0;i--)
+ {
+   string n=ObjectName(0,i);
+   if(StringFind(n,PREFIX+"TZUI_")!=0||ObjectGetInteger(0,n,OBJPROP_TYPE)!=OBJ_BUTTON)continue;
+   int left=(int)ObjectGetInteger(0,n,OBJPROP_XDISTANCE),top=(int)ObjectGetInteger(0,n,OBJPROP_YDISTANCE);
+   if(x>=left&&y>=top&&x<left+ObjectGetInteger(0,n,OBJPROP_XSIZE)&&y<top+ObjectGetInteger(0,n,OBJPROP_YSIZE))
+   {hit=n;break;}
+ }
+ return hit;
+}
+bool OrbClockUiEvent(int id,string name,long px=-1,double py=-1)
+{
+ static ulong lastClick=0;static int lastX=-2,lastY=-2;
+ bool click=id==CHARTEVENT_OBJECT_CLICK||id==CHARTEVENT_CLICK;
+ if(g_orbClockPopup&&id==CHARTEVENT_OBJECT_ENDEDIT)return true;
+ if(!click)return false;
+ if(g_orbClockPopup)
+ {
+   if(id==CHARTEVENT_OBJECT_CLICK&&ObjectFind(0,name)>=0&&ObjectGetInteger(0,name,OBJPROP_TYPE)==OBJ_BUTTON)
+      ObjectSetInteger(0,name,OBJPROP_STATE,false);
+   // Route by screen position, not the covered object's name. Consume blank modal clicks too.
+   string hit=OrbClockUiHit((int)px,(int)py);
+   ulong now=GetTickCount64();
+   if(px==lastX&&(int)py==lastY&&now-lastClick<200)return true;
+   lastClick=now;lastX=(int)px;lastY=(int)py;
+   if(hit=="")return true;
+   name=hit;
+ }
+ else if(id!=CHARTEVENT_OBJECT_CLICK)return false;
  if(name==PREFIX+"TZUI_OPEN"||name==PREFIX+"BTN_USER_TZ")
  {OrbClockUiOpen();return true;}
  if(!g_orbClockPopup)return false;

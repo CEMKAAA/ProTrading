@@ -9226,7 +9226,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
-   if(OrbClockUiEvent(id,sparam))return;
+   if(OrbClockUiEvent(id,sparam,lparam,dparam))return;
    if(id==CHARTEVENT_CHART_CHANGE)
    {
       DrawDashboard();ChartRedraw(0);return;
