@@ -1,0 +1,1 @@
+{"checks":12483,"failed":0,"benchmark":[{"bars":200000,"ms":3.932,"events":2482},{"bars":1000000,"ms":41.820,"events":12414}]}

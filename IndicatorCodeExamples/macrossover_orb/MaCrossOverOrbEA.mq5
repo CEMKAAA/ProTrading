@@ -12,7 +12,8 @@
 #include "NasUltimate_Core.mqh"
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
-#define ORB15_BUILD "MaCrossORB-0.12-event-history"
+#include "MaCrossOrderFlow.mqh"
+#define ORB15_BUILD "MaCrossORB-0.13-OF-preview"
 
 enum ORB_SESSION_PROFILE
 {
@@ -1278,6 +1279,8 @@ long NasPendingConfigSignature()
    for(int i=0;i<ArraySize(g_regimeAllowed);i++)h=(h*131+(g_regimeAllowed[i]?1:0))%9000000000000000;
    h=(h*131+(g_orbRfEnabled?1:0))%9000000000000000;
    for(int i=0;i<ArraySize(g_orbRfBlocked);i++)h=(h*131+(g_orbRfBlocked[i]?1:0))%9000000000000000;
+   string of=McOfIdentity();
+   for(int i=0;i<StringLen(of);i++)h=(h*131+(long)StringGetCharacter(of,i))%9000000000000000;
    return h;
 }
 void PersistNasPending()
@@ -4647,9 +4650,13 @@ bool ModernFilterAllows(datetime from,datetime to,ENUM_TIMEFRAMES tf,datetime si
                         bool requireDisp,ORB_FVG_MODE fvgMode,string &reason,string &detail)
 {
    reason="";detail="";
-   if(!requireDisp&&fvgMode==ORB_FVG_OFF)return true;
+   // Shared gate: both audit and live pass the effective (possibly inverted) direction.
+   string ofDetail="";
+   if(!McOfFilter(_Symbol,tf,sigT,EffectiveOrbDirection(dir)=="BUY"?1:-1,reason,ofDetail)){detail=ofDetail;return false;}
+   if(!requireDisp&&fvgMode==ORB_FVG_OFF){detail=ofDetail;return true;}
    bool hasDisp=false,hasFvg=false;
    AnalyzeModernSetup(from,to,tf,sigT,dir,hasDisp,hasFvg,detail);
+   if(ofDetail!="")detail+=" "+ofDetail;
    if(requireDisp&&!hasDisp){reason="DISP_BLOCK";return false;}
    if(fvgMode==ORB_FVG_REQUIRE&&!hasFvg){reason="FVG_BLOCK";return false;}
    return true;
@@ -5605,6 +5612,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
       +"|"+AuditMemoPrice(g_btCommissionPerLot!=0?SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE):0);
    key+="|MAEXIT_FILTERED3="+(string)g_maReverseExit+","+(string)g_maReverseWait;
    key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
+   key+=McOfIdentity();
    key+="|g_rtFilterVol="+(string)g_rtFilterVol;
    key+="|g_rtFilterDay="+(string)g_rtFilterDay;
    key+="|g_rtFilteredWindowReverseExit="+(string)g_rtFilteredWindowReverseExit;
@@ -5825,6 +5833,7 @@ bool HistCheckDay(int dow,string &reason)
 void AppendOrbWindowSignal(OrbWindowSignal &signals[],datetime sigT,string rawDir,string reason,
                            double sigC,double sigH,double sigL)
 {
+   if(StringFind(reason,"OF_")==0)return;
    int n=ArraySize(signals);
    ArrayResize(signals,n+1,256);
    signals[n].signalTime=sigT;signals[n].availableTime=OrbSignalAvailableTime(sigT);
@@ -6060,6 +6069,7 @@ int ProcessHistoricalPrepDay(const int back)
    string key=(string)(g_histRunNyMid-back*86400)+"|"+(string)g_orbRfEnabled;
    key+="|MAEXIT_FILTERED3="+(string)g_maReverseExit+","+(string)g_maReverseWait;
    key+="|g_rtFilterAtr="+(string)g_rtFilterAtr;
+   key+=McOfIdentity();
    key+="|g_rtFilterVol="+(string)g_rtFilterVol;
    key+="|g_rtFilterDay="+(string)g_rtFilterDay;
    key+="|g_rtFilteredWindowReverseExit="+(string)g_rtFilteredWindowReverseExit;
@@ -6112,7 +6122,7 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtPipSlPips="+AuditMemoPrice(g_rtPipSlPips);
    for(int r=0;r<ORB_REGIME_COUNT;r++)key+="|macro="+(string)g_regimeAllowed[r];
    for(int r=0;r<ORB_RF_COUNT;r++)key+="|rf="+(string)g_orbRfBlocked[r];
-   int cached=g_orbPrepMemo.Find(key);
+   int cached=g_mcOf.mode!=0?-1:g_orbPrepMemo.Find(key);
    if(cached>=0)
    {
       g_histDaySnapshots[back]=g_orbPrepMemoValues[cached].snapshot;
@@ -6142,7 +6152,7 @@ int ProcessHistoricalPrepDay(const int back)
    OrbHistoricalDaySnapshot snapshot=g_histDaySnapshots[back];
    // Never cache a forming session or a missing-data/invalid day. No-signal
    // completed sessions are reusable, but their full prepared context is kept.
-   if(snapshot.known&&snapshot.valid&&snapshot.operationalKnown&&snapshot.tradeEnd>0
+   if(g_mcOf.mode==0&&snapshot.known&&snapshot.valid&&snapshot.operationalKnown&&snapshot.tradeEnd>0
       &&snapshot.tradeEnd<iTime(_Symbol,PERIOD_M1,0)
       &&StringFind(epoch,OrbReplayDataEpoch()+"|")==0)
    {
@@ -6928,7 +6938,7 @@ void FinalizeHistoricalAudit()
    g_histAuditRunning=false;g_histAuditCancelRequested=false;g_histAuditPhase=0;g_histAuditStage="";
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
-   g_histStatLine=IntegerToString(ArraySize(g_maCrossAuditEvents))+" raw / "+IntegerToString(g_histTotal)+" trades | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" MA-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
+   g_histStatLine=(g_mcOf.mode!=0&&g_mcOfDataIncomplete?"INCOMPLETE ORDER FLOW DATA | ":"")+IntegerToString(ArraySize(g_maCrossAuditEvents))+" raw / "+IntegerToString(g_histTotal)+" trades | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" MA-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
    if(g_histFiltered>0)g_histStatLine+=" | "+IntegerToString(g_histFiltered)+" filt";
    if(g_histDrawnWindowCount>0)g_histStatLine+=" | "+IntegerToString(g_histDrawnWindowCount)+" window ("+IntegerToString(g_histRejectedWindowRaw)+" raw)";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn,
@@ -6979,7 +6989,31 @@ void ProcessHistoricalAuditStep()
       {
          if(g_histPrepBack<ArraySize(g_maCrossAuditEvents))
          {
+            MaCrossAuditEvent ofEvent=g_maCrossAuditEvents[g_histPrepBack];
+            MqlDateTime ofDay;TimeToStruct(ServerToSessionLocal(ofEvent.signalTime),ofDay);
+            string ofPreReason="";
+            bool needsFlow=g_mcOf.mode!=0&&EntryWindowAllowsAt(OrbSignalAvailableTime(ofEvent.signalTime))
+               &&HistCheckDay(ofDay.day_of_week,ofPreReason)&&HistCheckVol(ofEvent.volume,ofEvent.priorVolume,ofPreReason);
+            if(needsFlow)
+            {
+               string error="";
+               int ready=McOfPrepare(_Symbol,g_rtSignalTf,ofEvent.signalTime,true,error);
+               if(ready!=1)
+               {
+                  g_mcOfStatus=error;g_histAuditStage="ORDER FLOW DATA";
+                  if(ready<0)
+                  {
+                     g_mcOfDataIncomplete=true;CancelHistoricalAuditBuild();OrbResetHistoricalStats();
+                     g_userCompletedReady=false;g_histStatLine="INCOMPLETE ORDER FLOW: "+error;
+                     g_histNeedsRedraw=false;g_histCoveragePending=false;g_histCoverageHardBlocked=true;
+                     UpdateDashboard();ChartRedraw(0);
+                  }
+                  return; // Keep this candidate; waiting is not a market rejection.
+               }
+            }
+            g_mcOfAuditContext=true;
             g_histRejectedWindowRaw+=ProcessMaHistoricalPrepEvent(g_histPrepBack);
+            g_mcOfAuditContext=false;
             g_histPrepBack++;
             int done=g_histPrepBack;
             g_histAuditProcessedDays=done;
@@ -7123,6 +7157,7 @@ void DrawHistoricalSignals()
       UpdateDashboard();ChartRedraw(0);return;
    }
    OrbUserAuditStarted();
+   g_mcOfDataIncomplete=false;
    InitializeHistoricalTickReplayCoverage();
    g_histRunPoint=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(g_histRunPoint<=0.0)g_histRunPoint=0.0001;
    g_histAuditRunning=true;g_histAuditCancelRequested=false;g_histAuditPhase=1;
@@ -7479,6 +7514,8 @@ void UpdateDashboard()
    int W=620;
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
 
+   CreateButton("BTN_ORDERFLOW",InpDashboardX+460,InpDashboardY+10,146,17,McOfModeName(),g_mcOf.mode==0?C'80,80,80':C'30,120,70');
+   ObjectSetString(0,PREFIX+"BTN_ORDERFLOW",OBJPROP_TOOLTIP,"OFF -> BREAKOUT -> REJECTION -> EITHER. Bid tick proxy, not exchange volume. Parameters: EA Inputs / ORDER FLOW. "+g_mcOfStatus);
    OrbStrategyPresetSyncSelection();
    OrbUserDraw();
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
@@ -9037,6 +9074,7 @@ void DrawLiveOrbWindowSignal(string rawDir,datetime signalTime,string reason)
 
 void HandleFilteredWindowSignal(string rawDir,datetime signalTime,double signalClose,string reason,string detail="")
 {
+   if(StringFind(reason,"OF_")==0){g_lastFilterReason=reason;g_lastExecStatus=reason;Audit("orderflow_reject",rawDir,0,signalClose,0,0,detail);return;}
    string execDir=EffectiveOrbDirection(rawDir);
    string windowKey=execDir+"|"+reason;
    datetime localSignal=ServerToSessionLocal(signalTime);MqlDateTime localSt;TimeToStruct(localSignal,localSt);
@@ -9148,6 +9186,16 @@ void TryOpenSignal()
       return;
    }
    string dir;datetime bt;double sc;if(!ComputeSignal(dir,bt,sc))return;
+   if(g_mcOf.mode!=0)
+   {
+      string error="";int ready=McOfPrepare(_Symbol,g_rtSignalTf,bt,false,error);
+      if(ready!=1)
+      {
+         g_lastExecStatus=error;
+         if(ready<0){g_lastSignalBarTime=bt;Audit("orderflow_unavailable",dir,0,sc,0,0,error);}
+         return; // Never consume a pending candle or resurrect it after the next close.
+      }
+   }
    int maShift=iBarShift(_Symbol,g_rtSignalTf,bt,true);if(maShift<0)return;
    ConfigureMaSignalContext(bt,iHigh(_Symbol,g_rtSignalTf,maShift),iLow(_Symbol,g_rtSignalTf,maShift));
    g_lastSignalBarTime=bt;
@@ -9238,6 +9286,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   if(!McOfInit())return INIT_PARAMETERS_INCORRECT;
    OrbTesterAudit_Init();
    // Runtime execution markers from an older attachment/configuration are not
    // comparable with the freshly rebuilt historical audit.
@@ -9360,6 +9409,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   McOfRelease();
    MaIndependentRelease();
    EventKillTimer();
    if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();DeleteByPrefix(PREFIX+"MA_OBS_");}
@@ -9486,6 +9536,13 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
          CancelHistoricalAuditBuild();g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
          g_lastExecStatus=g_maReverseExit?"MA_REVERSE_EXIT_ON":"MA_REVERSE_EXIT_OFF";
       }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   if(sparam==PREFIX+"BTN_ORDERFLOW")
+   {
+      ClearNasPending("orderflow_changed");ClearRetestState("orderflow_changed");ClearImbalanceState("orderflow_changed");
+      g_mcOf.mode=(g_mcOf.mode+1)%4;McOfReset();CancelHistoricalAuditBuild();
+      g_histNeedsRedraw=true;QueueHistoricalRedraw(0);
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    bool needRedraw=false;

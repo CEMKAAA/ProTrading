@@ -43,6 +43,10 @@ void MaExitSave()
 MaCrossAuditEvent g_maLiveExitEvents[];
 datetime g_maLiveExitClosed=0,g_maLiveExitFrom=0;
 string g_maLiveExitKey="";
+// Preserve already resolved asynchronous exit candidates across polls. This
+// avoids repeatedly replaying/evicting the first 256 flow snapshots on a long hold.
+string g_maExitBuildKey="";
+datetime g_maExitBuildFrom=0,g_maExitBuildClosed=0,g_maExitBuildThrough=0;
 bool MaExitAcceptedEvent(const MqlRates &bar,double priorVolume,datetime now,datetime &available)
 {
    string raw="",reason="",detail="";
@@ -89,7 +93,13 @@ bool MaExitLoadKernel(datetime from)
    }
    McPineKernel kernel;kernel.Reset(g_rtMaCrossMode,g_rtMaCrossPair,InpMaFastLength,InpMaMediumLength,InpMaSlowLength);
    McRollingHma hma;hma.Reset(200);double hv=0,volumeSum=0;int h=0;
-   ArrayResize(g_maLiveExitEvents,0);
+   bool resume=g_mcOf.mode!=0&&!g_maIndependent&&g_maExitBuildKey==key
+      &&g_maExitBuildFrom==from&&g_maExitBuildClosed==closed;
+   if(!resume)
+   {
+      ArrayResize(g_maLiveExitEvents,0);g_maExitBuildThrough=0;
+      g_maExitBuildKey=key;g_maExitBuildFrom=from;g_maExitBuildClosed=closed;
+   }
    for(int i=0;i<n;i++)
    {
       if(g_rtMaCrossMode==MA_CROSS_ORIGINAL_MTF)McFeedHtf(higher,h,rates[i].time+seconds,hma,hv);
@@ -97,11 +107,23 @@ bool MaExitLoadKernel(datetime from)
       double priorVolume=i>0?volumeSum/MathMin(i,20):0;
       volumeSum+=(double)rates[i].tick_volume;if(i>=20)volumeSum-=(double)rates[i-20].tick_volume;
       if(dir==0||rates[i].time+seconds<=from)continue;
+      if(resume&&rates[i].time<=g_maExitBuildThrough)continue;
       int k=ArraySize(g_maLiveExitEvents);ArrayResize(g_maLiveExitEvents,k+1,4096);
       g_maLiveExitEvents[k].signalTime=rates[i].time;g_maLiveExitEvents[k].direction=dir;
       if(!g_maIndependent)
       {
+         if(g_mcOf.mode!=0)
+         {
+            string error="";
+            if(McOfPrepare(_Symbol,g_rtSignalTf,rates[i].time,false,error,2)!=1)
+            {
+               // Missing asynchronous data is not a rejected market event.
+               // Do not seal this exit cache until its required data is ready.
+               ArrayResize(g_maLiveExitEvents,k);g_lastExecStatus=error;return false;
+            }
+         }
          datetime acceptedAt=0;
+         g_maExitBuildThrough=rates[i].time;
          if(!MaExitAcceptedEvent(rates[i],priorVolume,TimeCurrent(),acceptedAt)){ArrayResize(g_maLiveExitEvents,k);continue;}
          g_maLiveExitEvents[k].signalTime=acceptedAt-seconds;
          // Retest/NAS confirmation can change event order; preserve availability order.

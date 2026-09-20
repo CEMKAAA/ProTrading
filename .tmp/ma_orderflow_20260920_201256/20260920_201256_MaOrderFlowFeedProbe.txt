@@ -1,0 +1,4 @@
+symbol=JP225m bars=30
+bar=2026.09.18 20:35:00 allowed=false ms=0 reason=OF_DATA_BARS count=25 last=2026.09.18 20:35:00 requested=2026.09.18 20:35:00 server=2026.09.20 17:12:34 synchronized=0 detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS count=25 last=2026.09.18 20:35:00 requested=2026.09.18 20:35:00 server=2026.09.20 17:12:34 synchronized=0
+bar=2026.09.18 20:40:00 allowed=false ms=0 reason=OF_DATA_BARS count=25 last=2026.09.18 20:40:00 requested=2026.09.18 20:40:00 server=2026.09.20 17:12:34 synchronized=0 detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS count=25 last=2026.09.18 20:40:00 requested=2026.09.18 20:40:00 server=2026.09.20 17:12:34 synchronized=0
+bar=2026.09.18 20:45:00 allowed=false ms=0 reason=OF_DATA_BARS count=25 last=2026.09.18 20:45:00 requested=2026.09.18 20:45:00 server=2026.09.20 17:12:34 synchronized=0 detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS count=25 last=2026.09.18 20:45:00 requested=2026.09.18 20:45:00 server=2026.09.20 17:12:34 synchronized=0

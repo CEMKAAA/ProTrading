@@ -84,9 +84,10 @@ int ProcessMaHistoricalPrepEvent(int index)
    if(allowed)AppendOrbAcceptedSignal(g_histAcceptedSignals,event.signalTime,entryTime,dir,event.close,event.high,event.low);
    else
    {
+      int before=ArraySize(g_histWindowSignals);
       AppendOrbWindowSignal(g_histWindowSignals,event.signalTime,dir,reason,event.close,event.high,event.low);
       // Retain the event for exit/filter causality, without drawing rejected candidates.
-      g_histWindowSignals[ArraySize(g_histWindowSignals)-1].drawOnChart=false;
+      if(ArraySize(g_histWindowSignals)>before)g_histWindowSignals[ArraySize(g_histWindowSignals)-1].drawOnChart=false;
       if(!beforeRegime)AppendOrbWindowSignal(g_regimeReferenceWindows,event.signalTime,dir,reason,event.close,event.high,event.low);
    }
    // Draw only final audited trades in CALC, never provisional PREP candidates.

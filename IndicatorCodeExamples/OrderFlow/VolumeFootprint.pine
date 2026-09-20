@@ -1,0 +1,235 @@
+// This Pine Script(R) code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// (C) ALT_analyst
+
+//@version=6
+indicator("Volume Footprint", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+// ~~ Constants {
+const string GRP_CORE = " [ SYSTEM ] CORE HIGH-PRECISION SCAN"
+const string TITLE_PREM = "Premium Plan or Higher (Allow Seconds TF)"
+const string TT_PREM = "If OFF and a seconds timeframe is specified, it will be forcefully downgraded to a 1-minute (1) minimum timeframe to prevent errors."
+const string TITLE_LB = "Lookback Bars"
+const string TITLE_LTF = "Lower Timeframe (LTF)"
+
+const string GRP_DISP = " [ DISPLAY ] CANDLES & FOOTPRINT"
+const string TITLE_WIDTH = "Profile Width Multiplier"
+const string TITLE_ROW = "Row Size Mode"
+const string TITLE_TICKS = "Ticks per Row (Manual Mode Only)"
+const string TITLE_BORDER = "Show Borders on All Boxes"
+const string TITLE_COL_B = "Border Color"
+
+const string GRP_BG = " [ BACKGROUND ] SYMBOL -> BACKGROUND (3-Step Gradient)"
+const string TITLE_BG_H = "Volume High (Max)"
+const string TITLE_BG_M = "Volume Mid (50%)"
+const string TITLE_BG_L = "Volume Low (Min)"
+
+const string GRP_LBL = " [ LABEL ] SYMBOL -> LABEL"
+const string TITLE_POC_BG = "POC Box Color"
+const string TITLE_POC_TXT = "POC Text Color"
+
+const string GRP_TXT = " [ TEXT ] FOOTPRINT DATA"
+const string TITLE_TXT_SZ = "Text Size"
+const string TITLE_TXT_N = "Text Color (Neutral)"
+const string TITLE_TXT_P = "Text Color (Plus Delta)"
+const string TITLE_TXT_M = "Text Color (Minus Delta)"
+//~~~~~}
+
+// ~~ Inputs {
+bool is_premium = input.bool(false, TITLE_PREM, group=GRP_CORE, tooltip=TT_PREM)
+int lookback_bars = input.int(5, TITLE_LB, minval=1, maxval=10, group=GRP_CORE)
+string ltf_res_input = input.timeframe("1S", TITLE_LTF, group=GRP_CORE)
+
+float width_mult = input.float(1.5, TITLE_WIDTH, minval=0.1, step=0.5, group=GRP_DISP)
+string row_size_mode = input.string("Auto (20 Tiers)", TITLE_ROW, options=["Manual", "Auto (20 Tiers)"], group=GRP_DISP)
+int ticks_per_row = input.int(1, TITLE_TICKS, minval=1, group=GRP_DISP)
+bool show_border = input.bool(true, TITLE_BORDER, group=GRP_DISP)
+color col_border = input.color(color.new(color.gray, 60), TITLE_COL_B, group=GRP_DISP)
+
+color bg_col_high = input.color(color.new(#0D47A1, 0), TITLE_BG_H, group=GRP_BG) 
+color bg_col_mid = input.color(color.new(#1976D2, 20), TITLE_BG_M, group=GRP_BG)
+color bg_col_low = input.color(color.new(#64B5F6, 60), TITLE_BG_L, group=GRP_BG)
+
+color col_poc_bg = input.color(color.white, TITLE_POC_BG, group=GRP_LBL)
+color col_poc_txt = input.color(color.black, TITLE_POC_TXT, group=GRP_LBL)
+
+string txt_sz_fp = input.string(size.auto, TITLE_TXT_SZ, options=[size.auto, size.tiny, size.small, size.normal, size.large], group=GRP_TXT)
+color txt_col_fp = input.color(color.white, TITLE_TXT_N, group=GRP_TXT)
+color txt_col_pos = input.color(color.new(#089981, 0), TITLE_TXT_P, group=GRP_TXT)
+color txt_col_neg = input.color(color.new(#F23645, 0), TITLE_TXT_M, group=GRP_TXT)
+//~~~~~}
+
+// ~~ Helpers {
+f_format_k(float val) =>
+    float abs_val = math.abs(val)
+    string res = ""
+    if abs_val >= 1000000
+        res := str.tostring(val / 1000000, "#.##") + "M"
+    else if abs_val >= 1000
+        res := str.tostring(val / 1000, "#.##") + "K"
+    else
+        res := str.tostring(val, "#.#")
+    res
+//~~~~~}
+
+// ~~ Calculation & Drawing {
+bool is_sec_tf = str.contains(ltf_res_input, "S")
+string actual_ltf = (not is_premium and is_sec_tf) ? "1" : ltf_res_input
+
+[ltf_o, ltf_h, ltf_l, ltf_c, ltf_v] = request.security_lower_tf(syminfo.tickerid, actual_ltf, [open, high, low, close, volume])
+float global_atr = ta.atr(14)
+
+var box[] fp_boxes = array.new_box()
+var label[] fp_labels = array.new_label()
+var line[] fp_lines = array.new_line()
+var table summary_table = table.new(position.bottom_right, 11, 5, bgcolor=color.white, border_width=1, border_color=color.gray)
+
+if barstate.islast
+    while array.size(fp_boxes) > 0
+        box.delete(array.shift(fp_boxes))
+    while array.size(fp_labels) > 0
+        label.delete(array.shift(fp_labels))
+    while array.size(fp_lines) > 0
+        line.delete(array.shift(fp_lines))
+    
+    table.clear(summary_table, 0, 0, 10, 4)
+
+    for b_offset = lookback_bars - 1 to 0
+        if b_offset >= bar_index or array.size(ltf_v) == 0 or array.size(ltf_v) <= b_offset
+            continue
+            
+        float[] ltf_o_arr = ltf_o[b_offset]
+        float[] ltf_h_arr = ltf_h[b_offset]
+        float[] ltf_l_arr = ltf_l[b_offset]
+        float[] ltf_c_arr = ltf_c[b_offset]
+        float[] ltf_v_arr = ltf_v[b_offset]
+        
+        int ltf_size = array.size(ltf_v_arr)
+        
+        float bar_l = low[b_offset]
+        float bar_h = high[b_offset]
+        
+        float current_atr = global_atr[b_offset]
+        if na(current_atr) or current_atr == 0
+            current_atr := close[b_offset] * 0.005 
+            
+        int auto_ticks = math.max(1, math.round((current_atr / 20) / syminfo.mintick))
+        int active_ticks = row_size_mode == "Auto (20 Tiers)" ? auto_ticks : ticks_per_row
+        float step = syminfo.mintick * active_ticks
+        
+        int total_r = math.ceil((bar_h - bar_l) / step) + 1
+        
+        float[] ask_v_arr = array.new_float(total_r, 0.0)
+        float[] bid_v_arr = array.new_float(total_r, 0.0)
+        float[] tot_v_arr = array.new_float(total_r, 0.0)
+        
+        float total_v_bar = 0.0
+        float bought_t = 0.0
+        float sold_t = 0.0
+        float max_r_v = 0.0
+        
+        if ltf_size > 0
+            for i = 0 to ltf_size - 1
+                float c_o = array.get(ltf_o_arr, i)
+                float c_h = array.get(ltf_h_arr, i)
+                float c_l = array.get(ltf_l_arr, i)
+                float c_c = array.get(ltf_c_arr, i)
+                float c_v = array.get(ltf_v_arr, i)
+                    
+                int ticks_1s = math.round((c_h - c_l) / syminfo.mintick) + 1
+                float v_tick = c_v / ticks_1s
+                
+                int s_idx = math.round((c_l - bar_l) / step)
+                int e_idx = math.round((c_h - bar_l) / step)
+                
+                for t_idx = s_idx to e_idx
+                    if t_idx >= 0 and t_idx < total_r
+                        if c_c > c_o
+                            array.set(ask_v_arr, t_idx, array.get(ask_v_arr, t_idx) + v_tick)
+                        else if c_c < c_o
+                            array.set(bid_v_arr, t_idx, array.get(bid_v_arr, t_idx) + v_tick)
+                        else
+                            array.set(ask_v_arr, t_idx, array.get(ask_v_arr, t_idx) + (v_tick / 2))
+                            array.set(bid_v_arr, t_idx, array.get(bid_v_arr, t_idx) + (v_tick / 2))
+
+        for i = 0 to total_r - 1
+            float a_v = array.get(ask_v_arr, i)
+            float b_v = array.get(bid_v_arr, i)
+            float total = a_v + b_v
+            array.set(tot_v_arr, i, total)
+            max_r_v := math.max(max_r_v, total)
+            bought_t += a_v
+            sold_t += b_v
+            total_v_bar += total
+
+        float delta = bought_t - sold_t
+        
+        int poc_idx = -1
+        if max_r_v > 0
+            for i = 0 to total_r - 1
+                if array.get(tot_v_arr, i) == max_r_v
+                    poc_idx := i
+                    break
+        
+        int t_ctr = time[b_offset]
+        int b_t_w = nz(time[b_offset] - time[b_offset + 1], time - time[1])
+        int cell_w_t = math.round(b_t_w * 0.8 * width_mult) 
+        
+        color global_border_c = show_border ? col_border : na
+
+        for i = 0 to total_r - 1
+            float a_v = array.get(ask_v_arr, i)
+            float b_v = array.get(bid_v_arr, i)
+            float total = array.get(tot_v_arr, i)
+            
+            if total == 0
+                continue
+                
+            float price_p = bar_l + (i * step)
+            bool is_poc = (i == poc_idx)
+            
+            string fp_txt = f_format_k(total)
+            
+            int total_w = math.round(cell_w_t * (max_r_v > 0 ? total / max_r_v : 0))
+            int b_left = t_ctr
+            int b_right = t_ctr + total_w
+            
+            float row_delta = a_v - b_v
+            color dynamic_txt_col = is_poc ? col_poc_txt : (row_delta > 0 ? txt_col_pos : (row_delta < 0 ? txt_col_neg : txt_col_fp))
+            
+            float half_max = max_r_v * 0.5
+            color grad_col = total >= half_max ? color.from_gradient(total, half_max, max_r_v, bg_col_mid, bg_col_high) : color.from_gradient(total, 0, half_max, bg_col_low, bg_col_mid)
+            color box_bg = is_poc ? col_poc_bg : grad_col
+            
+            array.push(fp_boxes, box.new(
+                left = b_left, top = price_p + (step/2), right = b_right, bottom = price_p - (step/2),
+                xloc = xloc.bar_time, border_color = global_border_c, bgcolor = box_bg,
+                text = fp_txt, text_color = dynamic_txt_col, text_size = txt_sz_fp, 
+                text_halign = text.align_left, text_valign = text.align_center
+            ))
+            
+            if is_poc
+                array.push(fp_lines, line.new(x1=b_left - (b_t_w * 2), y1=price_p, x2=b_right, y2=price_p, xloc=xloc.bar_time, color=color.black, style=line.style_dotted, width=1))
+
+        if total_v_bar > 0
+            if b_offset == lookback_bars - 1
+                table.cell(summary_table, 0, 0, "Target Bar", text_color=color.black, bgcolor=color.new(color.gray, 90), text_size=size.normal)
+                table.cell(summary_table, 0, 1, "Delta", text_color=color.black, text_size=size.normal, text_halign=text.align_left)
+                table.cell(summary_table, 0, 2, "Total Vol", text_color=color.black, text_size=size.normal, text_halign=text.align_left)
+                table.cell(summary_table, 0, 3, "Total Buy", text_color=color.black, text_size=size.normal, text_halign=text.align_left)
+                table.cell(summary_table, 0, 4, "Total Sell", text_color=color.black, text_size=size.normal, text_halign=text.align_left)
+
+            int col_idx = lookback_bars - b_offset
+            
+            color delta_color = delta > 0 ? color.new(#089981, 0) : color.new(#F23645, 0)
+            string d_txt = (delta > 0 ? "+" : "") + str.tostring(f_format_k(delta)) 
+            string t_txt = str.tostring(f_format_k(total_v_bar))
+            string b_txt = str.tostring(f_format_k(bought_t))
+            string s_txt = str.tostring(f_format_k(sold_t))
+            string bar_label = b_offset == 0 ? "Current" : str.tostring(b_offset) + " Bars Ago"
+            
+            table.cell(summary_table, col_idx, 0, bar_label, text_color=color.black, bgcolor=color.new(color.gray, 95), text_size=size.normal)
+            table.cell(summary_table, col_idx, 1, d_txt, text_color=delta_color, text_size=size.normal, text_halign=text.align_right)
+            table.cell(summary_table, col_idx, 2, t_txt, text_color=color.black, text_size=size.normal, text_halign=text.align_right)
+            table.cell(summary_table, col_idx, 3, b_txt, text_color=color.new(#089981, 0), text_size=size.normal, text_halign=text.align_right)
+            table.cell(summary_table, col_idx, 4, s_txt, text_color=color.new(#F23645, 0), text_size=size.normal, text_halign=text.align_right)
+//~~~~~}

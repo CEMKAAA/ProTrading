@@ -13,7 +13,7 @@ foreach($name in $names){
  foreach($out in @('MaExitPolicyProbe.json','MaStrategySaveProbe.json','MaCrossPineProbe.json','MaCrossPineDirections.txt')){$text=$text.Replace('"'+$out+'"','"'+$tag+'_'+$out+'"')}
  [IO.File]::WriteAllText((Join-Path $tests "$name.mq5"),$text,[Text.UTF8Encoding]::new($false))
 }
-$files=@((Join-Path $src 'MaCrossOverOrbEA.mq5'))+@($names|ForEach-Object {Join-Path $tests "$_.mq5"})
+$files=@((Join-Path $src 'MaCrossOrderFlowWorker.mq5'),(Join-Path $src 'MaCrossOverOrbEA.mq5'))+@($names|ForEach-Object {Join-Path $tests "$_.mq5"})
 foreach($file in $files){
  $log="$file.log"
  $p=Start-Process 'C:\MT5\DEMO\MetaEditor64.exe' -ArgumentList ('/compile:"'+$file+'" /log:"'+$log+'"') -WindowStyle Hidden -PassThru

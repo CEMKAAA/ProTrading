@@ -1,0 +1,4 @@
+symbol=JP225m bars=30
+bar=2026.09.18 20:35:00 allowed=false ms=0 reason=OF_DATA_BARS detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS
+bar=2026.09.18 20:40:00 allowed=false ms=0 reason=OF_DATA_BARS detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS
+bar=2026.09.18 20:45:00 allowed=false ms=0 reason=OF_DATA_BARS detail=ORDERFLOW INCOMPLETE: OF_DATA_BARS

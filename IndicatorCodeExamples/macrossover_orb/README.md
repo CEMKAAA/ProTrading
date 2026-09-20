@@ -6,10 +6,29 @@ execution framework. The production ORB sources are not modified.
 ## Compile targets
 
 - MT5 EA: `MaCrossOverOrbEA.mq5`
+- Optional order-flow worker indicator: `MaCrossOrderFlowWorker.mq5`
 - cTrader cBot: `MaCrossOver_cTrader_Listener.cs`
 
-Compile the MQ5 file only. MQH files are include dependencies and must not be
-compiled independently.
+Compile the worker MQ5 first, then the EA MQ5, keeping both EX5 files in the
+same folder. The worker is loaded automatically by the EA when order-flow is
+enabled; do not attach it as an EA. MQH files are include dependencies and must
+not be compiled independently.
+
+## Order-flow preview (0.13)
+
+Default OFF; existing strategies without OF metadata load OFF. The dashboard
+header `OF` button cycles BREAK / REJECT / EITHER / OFF. Other parameters are
+in Inputs / ORDER FLOW. Saving a strategy saves these settings too.
+
+This is bid-tick quote activity, not real exchange buy/sell volume. The EA waits
+for the private indicator's data response without calling tick-history retrieval
+in its own order-flow path. Missing data blocks entry and prevents a complete
+historical result being reported. No silent OHLC fallback.
+
+This feature is still a preview, not a production deployment. See
+`../OrderFlow/MA_ORDER_FLOW_IMPLEMENTATION.md` for validation evidence and
+remaining release gates. Existing non-MaCross binaries in this folder are not
+order-flow build targets.
 
 ## Signal modes
 

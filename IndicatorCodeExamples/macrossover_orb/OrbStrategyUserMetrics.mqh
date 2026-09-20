@@ -17,14 +17,15 @@ string MaEntryMetricMeta(bool independent,int maximum){return !independent&&maxi
 string OrbUserRuntimeMetricKey()
 {
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
-   return OrbUserMetricKey(_Symbol,(int)_Period,OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait,OrbCustomRuntimeDump(),p);
+   return OrbUserMetricKey(_Symbol,(int)_Period,OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait+McOfIdentity(),OrbCustomRuntimeDump(),p);
 }
 void OrbUserLoadMetrics(int slot)
 {
    if(slot<0||slot>=ArraySize(g_userStrategies))return;
    OrbUserRecord r=g_userStrategies[slot];string v[];
    if(!OrbMlReadLines("MaCrossOrbStrategyLibrary\\"+r.preset.id+".metrics",v,12,true))return;
-   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)+"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait,r.runtime,r.preset)||v[4]!="52")return;
+   string ofKey=r.orderFlow.mode==0?"":"|ORDERFLOW_QUOTE_V1="+McOfConfigText(r.orderFlow);
+   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)+"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+ofKey,r.runtime,r.preset)||v[4]!="52")return;
    double n[8];for(int i=3;i<=10;i++)if(!OrbMlNumber(v[i],n[i-3]))return;
    if(n[0]<=0||n[2]<0||n[3]<0||n[4]<0||n[3]+n[4]>n[2]||n[7]<0||n[7]>100)return;
    if(n[2]!=MathFloor(n[2])||n[3]!=MathFloor(n[3])||n[4]!=MathFloor(n[4]))return;
@@ -39,6 +40,7 @@ void OrbUserLoadMetrics(int slot)
 }
 bool OrbUserPersistCompletedMetrics()
 {
+   if(g_mcOf.mode!=0&&g_mcOfDataIncomplete)return false;
    OrbStrategyPreset p;
    if(!g_userCompletedReady||!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||!OrbUserPreset(p)||!OrbUserMatches(p)
       ||g_userCompletedSettings!=OrbUserRuntimeMetricKey())return false;
