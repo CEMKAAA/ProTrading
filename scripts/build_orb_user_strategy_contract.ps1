@@ -6,7 +6,7 @@ $library=[IO.File]::ReadAllText((Join-Path $dir 'OrbStrategyPresetLibrary.mqh'))
 $struct=[regex]::Match($library,'(?s)struct OrbStrategyPreset\s*\{(.*?)bool metric1yReady').Groups[1].Value
 $fields=@([regex]::Matches($struct,'(?m)^\s+(\w+)\s+(\w+);') | ForEach-Object {@{type=$_.Groups[1].Value;name=$_.Groups[2].Value}})
 if($fields.Count -lt 50){throw 'Preset schema extraction failed'}
-$runtimes=@([regex]::Matches($main,'(?m)^(\w+)\s+(g_rt\w+)\s*=') | Where-Object {$_.Groups[2].Value -notin @('g_rtHistoricalWeeks','g_rtEaEnabled','g_rtRiskPerTradePct','g_rtAdvancedAuditEngine')} | ForEach-Object {@{type=$_.Groups[1].Value;name=$_.Groups[2].Value}})
+$runtimes=@([regex]::Matches($main,'(?m)^(\w+)\s+(g_rt\w+)\s*=') | Where-Object {$_.Groups[2].Value -notin @('g_rtHistoricalWeeks','g_rtEaEnabled','g_rtRiskPerTradePct','g_rtAdvancedAuditEngine','g_rtCustomR')} | ForEach-Object {@{type=$_.Groups[1].Value;name=$_.Groups[2].Value}})
 foreach($name in @('g_btFillMode','g_btSameBarPolicy','g_btNativeParity','g_btSpreadPts','g_btSlippagePts','g_btCommissionPerLot')){
     $m=[regex]::Match($main,'(?m)^(\w+)\s+'+$name+'\s*=');if(!$m.Success){throw 'Missing runtime '+$name}
     $runtimes+=@{type=$m.Groups[1].Value;name=$name}
@@ -51,6 +51,7 @@ foreach($kind in @('Preset','Runtime')){
     $param=if($kind -eq 'Preset'){'const OrbStrategyPreset &p'}else{''}
     $lines.Add('string OrbCustom'+$kind+'Dump('+$param+'){string out="";')
     foreach($v in $vars){$name=if($kind -eq 'Preset'){'p.'+$v.name}else{$v.name};$expr=if($v.type -eq 'double'){'DoubleToString('+$name+',16)'}elseif($v.type -eq 'bool'){'('+$name+'?"1":"0")'}else{'(string)'+$name};$lines.Add('   out+='+$expr+'+"\n";')}
+    if($kind -eq 'Runtime'){$lines.Add('   if(g_rtTargetLeg==(int)ORB_TARGET_CUSTOM)out+=DoubleToString(g_rtCustomR,8)+"\n";')}
     $lines.Add('   return out;}')
     $args=if($kind -eq 'Preset'){'OrbStrategyPreset &p'}else{'bool apply'}
     $lines.Add('bool OrbCustom'+$kind+'Read(const string &v[],int start,'+$args+'){')
@@ -60,7 +61,15 @@ foreach($kind in @('Preset','Runtime')){
         $guard=if($v.type -eq 'bool'){'||(n['+$i+']!=0&&n['+$i+']!=1)'}elseif($v.type -ne 'double'){'||n['+$i+']!=MathFloor(n['+$i+'])||MathAbs(n['+$i+'])>2147483647'}else{''}
         $lines.Add('   if(!OrbMlNumber(v[start+'+$i+'],n['+$i+'])'+$guard+')return false;')
     }
-    if($kind -eq 'Runtime'){$lines.Add('   if(!apply)return true;')}
+    if($kind -eq 'Runtime'){
+        $targetIndex=[array]::FindIndex($vars,[Predicate[object]]{param($v) $v.name -eq 'g_rtTargetLeg'})
+        $lines.Add('   double customR=0.0;')
+        $lines.Add('   if((int)n['+$targetIndex+']==(int)ORB_TARGET_CUSTOM){')
+        $lines.Add('      if(ArraySize(v)<start+'+($vars.Count+1)+'||!OrbMlNumber(v[start+'+$vars.Count+'],customR)||customR<0.00000001||customR>10000.0)return false;')
+        $lines.Add('   }')
+        $lines.Add('   if(!apply)return true;')
+        $lines.Add('   g_rtCustomR=customR;')
+    }
     for($i=0;$i -lt $vars.Count;$i++){
         $v=$vars[$i];$name=if($kind -eq 'Preset'){'p.'+$v.name}else{$v.name}
         $rhs=if($v.type -eq 'string'){'v[start+'+$i+']'}else{'('+$v.type+')n['+$i+']'}

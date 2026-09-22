@@ -34,8 +34,9 @@ void OnStart()
             int nt=CopyTicksRange(_Symbol,tape,COPY_TICKS_INFO,(ulong)context[0].time*1000,(ulong)(context[n-1].time+300)*1000-1);
             int err=GetLastError();McOfSnapshot direct;
             bool valid=err==0&&McOfCalculate(tape,context,300,SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),g_mcOf,direct);
-            int slot=-1;string key=McOfCacheKey(_Symbol,PERIOD_M5,r[count-2].time);
-            for(int j=0;j<256;j++)if(g_mcOfCache[j].key==key){slot=j;break;}
+            string key=McOfCacheKey(_Symbol,PERIOD_M5,r[count-2].time);
+            int slot=McOfCacheSlot(key);
+            if(slot>=0&&g_mcOfCache[slot].key!=key)slot=-1;
             bool same=valid&&slot>=0;
             if(same)
             {
@@ -47,6 +48,11 @@ void OnStart()
             string reason="",detail="";
             bool allowed=McOfFilter(_Symbol,PERIOD_M5,r[count-2].time,1,reason,detail);
             report+="DECISION buy="+(string)allowed+" "+reason+" "+detail+"\n";
+            g_mcOf.mode=MC_OF_PROFILE;McOfReset(false);
+            string cacheError="";ulong warmStart=GetTickCount64();
+            int warm=McOfPrepare(_Symbol,PERIOD_M5,r[count-2].time,true,cacheError);
+            report+="WARM_CACHE state="+(string)warm+" ms="+(string)(GetTickCount64()-warmStart)
+               +" reason="+cacheError+"\n";
          }
       }
    }

@@ -49,6 +49,13 @@ void OnStart()
    bars[2].low=99;bars[2].close=102;
    Check(McOfAllows(c,s,bars[2],1),"VAL rejection");
    bars[2].close=99;Check(!McOfAllows(c,s,bars[2],1),"no reclaim rejected");
+   bars[2].close=102;s.activity=0.5;s.delta=0.05;
+   c.mode=MC_OF_PROFILE;Check(McOfAllows(c,s,bars[2],1),"profile-only does not imply activity or delta");
+   c.mode=MC_OF_ACTIVITY;Check(!McOfAllows(c,s,bars[2],1),"activity-only threshold");
+   c.mode=MC_OF_DELTA;Check(!McOfAllows(c,s,bars[2],1),"delta-only threshold");
+   s.activity=2;s.delta=0.5;
+   c.mode=MC_OF_ACTIVITY;Check(McOfAllows(c,s,bars[2],1),"activity-only pass");
+   c.mode=MC_OF_DELTA;Check(McOfAllows(c,s,bars[2],1),"delta-only pass");
    c.mode=0;s.valid=false;Check(McOfAllows(c,s,bars[2],1),"OFF preserves original decision");
    for(int n=4;n<=128;n++)
    {

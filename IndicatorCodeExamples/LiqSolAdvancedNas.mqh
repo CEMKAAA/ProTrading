@@ -14,6 +14,8 @@ struct LnNasPolicy
 LnNasPolicy g_lnNas,g_lnNasDraft;
 bool g_lnNasPanel=false,g_lnNasReady=false;
 string g_lnNasStatus="";
+string g_lnNasLastAction="";
+ulong g_lnNasLastActionAt=0;
 struct LnNasEvent {datetime at;int dir;bool stateAllowed,flowAllowed;};
 LnNasEvent g_lnNasEvents[];
 datetime g_lnNasBar=0,g_lnNasSeed=0;
@@ -302,9 +304,18 @@ void LnNasWidget(string id,ENUM_OBJECT kind,int x,int y,int width,int height,str
    ObjectSetInteger(0,key,OBJPROP_BGCOLOR,fill);ObjectSetInteger(0,key,OBJPROP_COLOR,clrWhite);
    ObjectSetInteger(0,key,OBJPROP_FONTSIZE,9);ObjectSetInteger(0,key,OBJPROP_ZORDER,DASH_Z+200);
    ObjectSetInteger(0,key,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,key,OBJPROP_BACK,false);
+   ObjectSetInteger(0,key,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,key,OBJPROP_FONT,"Consolas");
+   if(kind==OBJ_BUTTON)ObjectSetInteger(0,key,OBJPROP_STATE,false);
    if(kind!=OBJ_EDIT||fresh)ObjectSetString(0,key,OBJPROP_TEXT,caption);
 }
 string LnNasDuration(int minutes){return StringFormat("%02d:%02d",minutes/60,minutes%60);}
+int LnNasPanelY()
+{
+   return ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)>=1420
+      &&ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS)>=820?460:42;
+}
 bool LnNasParseDigits(string raw,int &value)
 {
    if(raw=="")return false;
@@ -329,18 +340,20 @@ bool LnNasParseDuration(string raw,int &minutes)
 void LnNasDrawPanel()
 {
    if(!g_lnNasPanel)return;
-   int x=8,y=40,w=(int)MathMin(706,MathMax(330,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-16));
+   int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+   int x=chartW>=1420?780:8,y=LnNasPanelY(),w=(int)MathMin(620,MathMax(280,chartW-x-8));
    color off=C'55,64,75',on=C'25,114,91';
-   LnNasWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,330,"",C'23,31,43');
-   LnNasWidget("TITLE",OBJ_LABEL,x+12,y+9,w-60,20,"SOL ADV NAS / POSITIONS",off);
+   LnNasWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,346,"",C'24,30,42');
+   LnNasWidget("TITLE",OBJ_LABEL,x+12,y+9,w-60,20,"NAS FILTERS / POSITION POLICY",C'24,30,42');
    LnNasWidget("CLOSE",OBJ_BUTTON,x+w-40,y+5,30,22,"X",clrMaroon);
    int col=(w-30)/3;
-   LnNasWidget("MODE",OBJ_BUTTON,x+10,y+39,col-5,24,g_lnNasDraft.independent?"INDEPENDENT":"LEGACY",g_lnNasDraft.independent?on:off);
-   LnNasWidget("GATE",OBJ_BUTTON,x+10+col,y+39,col-5,24,g_lnNasDraft.gate==1?"ENTRY GATE":g_lnNasDraft.gate==2?"STATE GATE":"GATE OFF",g_lnNasDraft.gate?on:off);
-   LnNasWidget("EXIT",OBJ_BUTTON,x+10+2*col,y+39,col-5,24,g_lnNasDraft.exitMode==1?"OPP EXIT":g_lnNasDraft.exitMode==2?"ADD EXIT":"NAS EXIT OFF",g_lnNasDraft.exitMode?on:off);
-   LnNasWidget("SV",OBJ_BUTTON,x+10,y+71,col-5,24,g_lnNasDraft.stateVolume?"STATE VOL ON":"STATE VOL OFF",g_lnNasDraft.stateVolume?on:off);
-   LnNasWidget("FV",OBJ_BUTTON,x+10+col,y+71,col-5,24,g_lnNasDraft.flowVolume?"FLOW VOL ON":"FLOW VOL OFF",g_lnNasDraft.flowVolume?on:off);
-   LnNasWidget("REV",OBJ_BUTTON,x+10+2*col,y+71,col-5,24,g_lnNasDraft.reverseExit?"REVERSE ON":"REVERSE OFF",g_lnNasDraft.reverseExit?on:off);
+   LnNasWidget("HINT",OBJ_LABEL,x+12,y+30,w-24,18,"LEGACY OFF keeps the existing execution path. APPLY commits edits.",C'24,30,42');
+   LnNasWidget("MODE",OBJ_BUTTON,x+10,y+55,col-5,24,g_lnNasDraft.independent?"INDEPENDENT":"LEGACY",g_lnNasDraft.independent?on:off);
+   LnNasWidget("GATE",OBJ_BUTTON,x+10+col,y+55,col-5,24,g_lnNasDraft.gate==1?"ENTRY GATE":g_lnNasDraft.gate==2?"STATE GATE":"GATE OFF",g_lnNasDraft.gate?on:off);
+   LnNasWidget("EXIT",OBJ_BUTTON,x+10+2*col,y+55,col-5,24,g_lnNasDraft.exitMode==1?"OPP EXIT":g_lnNasDraft.exitMode==2?"ADD EXIT":"NAS EXIT OFF",g_lnNasDraft.exitMode?on:off);
+   LnNasWidget("SV",OBJ_BUTTON,x+10,y+87,col-5,24,g_lnNasDraft.stateVolume?"STATE VOL ON":"STATE VOL OFF",g_lnNasDraft.stateVolume?on:off);
+   LnNasWidget("FV",OBJ_BUTTON,x+10+col,y+87,col-5,24,g_lnNasDraft.flowVolume?"FLOW VOL ON":"FLOW VOL OFF",g_lnNasDraft.flowVolume?on:off);
+   LnNasWidget("REV",OBJ_BUTTON,x+10+2*col,y+87,col-5,24,g_lnNasDraft.reverseExit?"REVERSE ON":"REVERSE OFF",g_lnNasDraft.reverseExit?on:off);
    string ids[]={"SVM","FVM","SENS","AGE","WAIT","MAX","RWAIT"};
    string labels[]={"State vol x","Flow vol x","Sensitivity","Entry age min","NAS wait HH:MM","MAX same open","Reverse wait HH:MM"};
    string vals[]={DoubleToString(g_lnNasDraft.stateMultiplier,2),DoubleToString(g_lnNasDraft.flowMultiplier,2),
@@ -348,12 +361,12 @@ void LnNasDrawPanel()
       (string)g_lnNasDraft.maxSameOpen,LnNasDuration(g_lnNasDraft.reverseWaitMinutes)};
    for(int i=0;i<7;i++)
    {
-      int xx=x+10+(i%3)*col,yy=y+107+(i/3)*57;
+      int xx=x+10+(i%3)*col,yy=y+119+(i/3)*54;
       LnNasWidget("L"+ids[i],OBJ_LABEL,xx,yy,col-5,20,labels[i],off);
       LnNasWidget(ids[i],OBJ_EDIT,xx,yy+19,col-5,24,vals[i],off);
    }
-   LnNasWidget("APPLY",OBJ_BUTTON,x+10,y+278,w-20,25,"APPLY NAS / POSITION SETTINGS",C'36,99,177');
-   LnNasWidget("STATUS",OBJ_LABEL,x+10,y+308,w-20,18,StringSubstr(g_lnNasStatus,0,95),off);
+   LnNasWidget("APPLY",OBJ_BUTTON,x+10,y+288,w-20,25,"APPLY FILTER / POSITION SETTINGS",C'36,99,177');
+   LnNasWidget("STATUS",OBJ_LABEL,x+10,y+318,w-20,18,StringSubstr(g_lnNasStatus,0,95),C'24,30,42');
 }
 void LnNasDrawNav()
 {
@@ -374,14 +387,45 @@ bool LnNasReadPanel(LnNasPolicy &candidate)
       ||!LnNasParseDuration(ObjectGetString(0,LnNasObject("RWAIT"),OBJPROP_TEXT),candidate.reverseWaitMinutes))return false;
    return LnNasValid(candidate);
 }
-bool LnNasPanelEvent(int id,string object)
+bool LnNasPanelEvent(int id,string object,long mx=0,double my=0)
 {
    if(id==CHARTEVENT_OBJECT_CLICK&&object==LnNasObject("NAV"))
    {g_lnNasDraft=g_lnNas;g_lnNasPanel=true;LnNasDrawPanel();ChartRedraw(0);return true;}
-   if(!g_lnNasPanel)return false;
-   if(id==CHARTEVENT_CHART_CHANGE){LnNasDrawPanel();return true;}
-   if(id!=CHARTEVENT_OBJECT_CLICK)return true;
+   if(!g_lnNasPanel)
+      return id==CHARTEVENT_CLICK&&g_lnNasLastActionAt>0
+         &&GetTickCount64()-g_lnNasLastActionAt<180;
+   if(id==CHARTEVENT_CHART_CHANGE)return false;
+   if(id==CHARTEVENT_OBJECT_ENDEDIT)return StringFind(object,LnNasObject(""))==0;
+   int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+   int x=chartW>=1420?780:8,y=LnNasPanelY(),w=(int)MathMin(620,MathMax(280,chartW-x-8));
+   bool inside=mx>=x&&mx<x+w&&my>=y&&my<y+346;
+   if(id==CHARTEVENT_CLICK&&mx>=202&&mx<342&&my>=8&&my<33)
+   {g_lnNasPanel=false;DeleteByPrefix(PFX+"NAS_");return false;}
+   if(id!=CHARTEVENT_OBJECT_CLICK&&id!=CHARTEVENT_CLICK)return false;
+   if(id==CHARTEVENT_OBJECT_CLICK&&StringFind(object,LnNasObject(""))!=0)return inside;
+   if(id==CHARTEVENT_CLICK)
+   {
+      if(!inside)return false;
+      object="";
+      for(int i=ObjectsTotal(0)-1;i>=0;i--)
+      {
+         string key=ObjectName(0,i);
+         if(StringFind(key,LnNasObject(""))!=0||ObjectGetInteger(0,key,OBJPROP_TYPE)!=OBJ_BUTTON)continue;
+         long bx=ObjectGetInteger(0,key,OBJPROP_XDISTANCE),by=ObjectGetInteger(0,key,OBJPROP_YDISTANCE);
+         if(mx>=bx&&mx<bx+ObjectGetInteger(0,key,OBJPROP_XSIZE)
+            &&my>=by&&my<by+ObjectGetInteger(0,key,OBJPROP_YSIZE)){object=key;break;}
+      }
+      if(object=="")return true;
+   }
+   if(ObjectFind(0,object)>=0&&ObjectGetInteger(0,object,OBJPROP_TYPE)==OBJ_BUTTON)
+      ObjectSetInteger(0,object,OBJPROP_STATE,false);
+   if(object==g_lnNasLastAction&&g_lnNasLastActionAt>0
+      &&GetTickCount64()-g_lnNasLastActionAt<180)return true;
+   g_lnNasLastAction=object;g_lnNasLastActionAt=GetTickCount64();
    if(object==LnNasObject("CLOSE")){g_lnNasPanel=false;DeleteByPrefix(PFX+"NAS_");DrawDashboard();ChartRedraw(0);return true;}
+   if(object!=LnNasObject("MODE")&&object!=LnNasObject("GATE")&&object!=LnNasObject("EXIT")
+      &&object!=LnNasObject("SV")&&object!=LnNasObject("FV")&&object!=LnNasObject("REV")
+      &&object!=LnNasObject("APPLY"))return true;
    LnNasPolicy next;if(!LnNasReadPanel(next)){g_lnNasStatus="Invalid numeric or HH:MM field";LnNasDrawPanel();return true;}
    if(object==LnNasObject("MODE"))next.independent=!next.independent;
    else if(object==LnNasObject("GATE"))next.gate=(next.gate+1)%3;

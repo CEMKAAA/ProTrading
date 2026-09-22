@@ -13,6 +13,7 @@ McOfConfig config;
 datetime request=0;
 ulong started=0,lastAttempt=0;
 bool finished=false;
+MqlTick cachedTicks[];
 bool Alive(){return StringLen(InpMailbox)>0&&GlobalVariableCheck(InpMailbox+"alive");}
 void Publish(int state,int code,const McOfSnapshot &s,const MqlRates &bar)
 {
@@ -47,16 +48,19 @@ void Work()
       if(expected<=0||expected>250000){code=2;ready=false;finished=true;}
       else
       {
-         MqlTick ticks[];ResetLastError();
+         ResetLastError();
          // CopyTicks (unlike relying on CopyTicksRange timing) explicitly
          // guarantees an immediate, partial return in indicator context.
          // The pure core ignores later ticks and verifies exact per-bar mass.
          uint limit=(uint)MathMin(500000,MathMax(1024,expected*4+16));
-         int count=CopyTicks(_Symbol,ticks,COPY_TICKS_INFO,(ulong)bars[0].time*1000,limit);
+         int count=ArraySize(cachedTicks);
+         bool covered=count>0&&cachedTicks[0].time_msc<=(long)bars[0].time*1000
+            &&cachedTicks[count-1].time_msc>=(long)(bars[n-1].time+sec)*1000;
+         if(!covered)count=CopyTicks(_Symbol,cachedTicks,COPY_TICKS_INFO,(ulong)bars[0].time*1000,limit);
          int err=GetLastError();ready=count>0&&err==0;code=err==0?3:err;
          if(ready)
          {
-            ready=McOfCalculate(ticks,bars,sec,SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),config,s);
+            ready=McOfCalculate(cachedTicks,bars,sec,SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),config,s);
             code=ready?0:4;
             if(ready)signal=bars[n-1];
          }

@@ -453,6 +453,7 @@ string OrbCustomRuntimeDump(){string out="";
    out+=DoubleToString(g_btCommissionPerLot,16)+"\n";
    out+=(string)g_rtMaCrossMode+"\n";
    out+=(string)g_rtMaCrossPair+"\n";
+   if(g_rtTargetLeg==(int)ORB_TARGET_CUSTOM)out+=DoubleToString(g_rtCustomR,8)+"\n";
    return out;}
 bool OrbCustomRuntimeRead(const string &v[],int start,bool apply){
    if(ArraySize(v)<start+48)return false;double n[48];
@@ -504,7 +505,14 @@ bool OrbCustomRuntimeRead(const string &v[],int start,bool apply){
    if(!OrbMlNumber(v[start+45],n[45]))return false;
    if(!OrbMlNumber(v[start+46],n[46])||n[46]!=MathFloor(n[46])||n[46]<0||n[46]>5)return false;
    if(!OrbMlNumber(v[start+47],n[47])||n[47]!=MathFloor(n[47])||n[47]<0||n[47]>2)return false;
+   double customR=0.0;
+   if((int)n[32]==(int)ORB_TARGET_CUSTOM)
+   {
+      if(ArraySize(v)<start+49||!OrbMlNumber(v[start+48],customR)
+         ||customR<0.00000001||customR>10000.0)return false;
+   }
    if(!apply)return true;
+   g_rtCustomR=customR;
    g_rtFilterAtr=(bool)n[0];
    g_rtFilterVol=(bool)n[1];
    g_rtFilterDay=(bool)n[2];

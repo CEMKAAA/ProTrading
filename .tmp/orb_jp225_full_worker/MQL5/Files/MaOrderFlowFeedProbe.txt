@@ -1,0 +1,8 @@
+symbol=JP225m bars=30
+bar=2026.09.22 20:40:00 allowed=false ms=0 reason=OF_DATA_PENDING detail=ORDERFLOW: OF_DATA_PENDING
+bar=2026.09.22 20:45:00 allowed=false ms=0 reason=OF_DATA_PENDING detail=ORDERFLOW: OF_DATA_PENDING
+bar=2026.09.22 20:50:00 allowed=false ms=0 reason=OF_DATA_PENDING detail=ORDERFLOW: OF_DATA_PENDING
+ASYNC state=1 polls=21 max_call_ms=16 elapsed_ms=2235 reason=
+WORKER_VS_DIRECT ticks=3224 error=0 valid=true exact_match=true
+DECISION buy=false OF_BLOCK OF_QUOTE_PROXY val=67088.83750000 vah=67189.61875000 poc=67172.82187500 activity=0.4553 delta=-0.0500 direction=1
+WARM_CACHE state=1 ms=0 reason=

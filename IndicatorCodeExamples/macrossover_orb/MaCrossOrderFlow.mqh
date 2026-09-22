@@ -12,7 +12,8 @@ McOfConfig g_mcOf={0,24,32,0.70,1.0,0.10};
 bool g_mcOfDataIncomplete=false;
 string g_mcOfStatus="OFF";
 struct McOfCached {string key;McOfSnapshot snapshot;MqlRates signal;};
-McOfCached g_mcOfCache[256];int g_mcOfNext=0;
+#define MC_OF_CACHE_SLOTS 65536
+McOfCached g_mcOfCache[MC_OF_CACHE_SLOTS];
 int g_mcOfHandles[3]={INVALID_HANDLE,INVALID_HANDLE,INVALID_HANDLE};
 string g_mcOfMail[3],g_mcOfOwners[3];
 datetime g_mcOfRequests[3];ulong g_mcOfRequestedMs[3];
@@ -28,20 +29,41 @@ void McOfRelease()
       g_mcOfHandles[i]=INVALID_HANDLE;g_mcOfMail[i]="";g_mcOfOwners[i]="";g_mcOfRequests[i]=0;
    }
 }
-void McOfReset()
+void McOfReset(bool clearSnapshots=true)
 {
    McOfRelease();
-   for(int i=0;i<256;i++)g_mcOfCache[i].key="";
-   g_mcOfNext=0;g_mcOfDataIncomplete=false;g_mcOfStatus=g_mcOf.mode==0?"OFF":"QUOTE PROXY / WAIT";
+   if(clearSnapshots)for(int i=0;i<MC_OF_CACHE_SLOTS;i++)g_mcOfCache[i].key="";
+   g_mcOfDataIncomplete=false;g_mcOfStatus=g_mcOf.mode==0?"OFF":"QUOTE PROXY / WAIT";
 }
 string McOfCacheKey(string symbol,ENUM_TIMEFRAMES tf,datetime signalTime)
-{return symbol+"/"+(string)tf+"/"+(string)signalTime+McOfIdentity();}
+{return symbol+"/"+(string)tf+"/"+(string)signalTime+"/"+(string)g_mcOf.lookback+"/"
+   +(string)g_mcOf.bins+"/"+DoubleToString(g_mcOf.valueArea,8);}
+int McOfCacheSlot(const string key)
+{
+   uint hash=2166136261;
+   for(int i=0;i<StringLen(key);i++)hash=(hash^(uint)StringGetCharacter(key,i))*16777619;
+   int start=(int)(hash%MC_OF_CACHE_SLOTS);
+   for(int i=0;i<MC_OF_CACHE_SLOTS;i++)
+   {
+      int slot=(start+i)%MC_OF_CACHE_SLOTS;
+      if(g_mcOfCache[slot].key==""||g_mcOfCache[slot].key==key)return slot;
+   }
+   return -1;
+}
 // Returns 1 ready, 0 pending, -1 unavailable. No price-history I/O in the EA.
 int McOfPrepare(string symbol,ENUM_TIMEFRAMES tf,datetime signalTime,bool historical,string &error,int laneOverride=-1)
 {
    error="";if(g_mcOf.mode==0)return 1;
    string key=McOfCacheKey(symbol,tf,signalTime);
-   for(int i=0;i<256;i++)if(g_mcOfCache[i].key==key)return 1;
+   int slot=McOfCacheSlot(key);
+   if(slot>=0&&g_mcOfCache[slot].key==key)return 1;
+   if(slot<0)
+   {
+      // A multi-year M1 audit can exceed the bounded cache. Rotate instead of
+      // failing the data audit or treating a capacity limit as a trade veto.
+      for(int i=0;i<MC_OF_CACHE_SLOTS;i++)g_mcOfCache[i].key="";
+      slot=McOfCacheSlot(key);
+   }
    int lane=laneOverride==2?2:(historical?1:0);
    string owner=symbol+"/"+(string)tf+McOfIdentity();
    if(g_mcOfOwners[lane]!=owner||g_mcOfHandles[lane]==INVALID_HANDLE)
@@ -88,7 +110,7 @@ int McOfPrepare(string symbol,ENUM_TIMEFRAMES tf,datetime signalTime,bool histor
       ||!MathIsValidNumber(result.snapshot.activity)||result.snapshot.activity<0||result.snapshot.val>result.snapshot.vah
       ||result.signal.low>result.signal.close||result.signal.close>result.signal.high)
    {error="OF_DATA_INVALID_RESPONSE";return -1;}
-   g_mcOfCache[g_mcOfNext]=result;g_mcOfNext=(g_mcOfNext+1)%256;return 1;
+   g_mcOfCache[slot]=result;return 1;
 }
 bool McOfInit()
 {
@@ -99,15 +121,20 @@ bool McOfInit()
 string McOfModeName()
 {
    if(g_mcOf.mode==1)return "OF: BREAK";if(g_mcOf.mode==2)return "OF: REJECT";
-   return g_mcOf.mode==3?"OF: EITHER":"OF: OFF";
+   if(g_mcOf.mode==3)return "OF: EITHER";
+   if(g_mcOf.mode==4)return "OF: PROFILE";
+   if(g_mcOf.mode==5)return "OF: ACTIVITY";
+   if(g_mcOf.mode==6)return "OF: DELTA";
+   return "OF: OFF";
 }
 bool McOfFilter(string symbol,ENUM_TIMEFRAMES tf,datetime signalTime,int direction,string &reason,string &detail)
 {
    if(g_mcOf.mode==0)return true;
    string key=McOfCacheKey(symbol,tf,signalTime);
    McOfSnapshot snapshot;MqlRates signal;ZeroMemory(snapshot);ZeroMemory(signal);bool found=false;
-   for(int i=0;i<256;i++)if(g_mcOfCache[i].key==key)
-   {snapshot=g_mcOfCache[i].snapshot;signal=g_mcOfCache[i].signal;found=true;break;}
+   int slot=McOfCacheSlot(key);
+   if(slot>=0&&g_mcOfCache[slot].key==key)
+   {snapshot=g_mcOfCache[slot].snapshot;signal=g_mcOfCache[slot].signal;found=true;}
    if(!found)
    {
       string error="";int state=McOfPrepare(symbol,tf,signalTime,g_mcOfAuditContext,error);
@@ -117,7 +144,9 @@ bool McOfFilter(string symbol,ENUM_TIMEFRAMES tf,datetime signalTime,int directi
          if(g_mcOfAuditContext&&state<0)g_mcOfDataIncomplete=true;
          return false;
       }
-      int slot=(g_mcOfNext+255)%256;snapshot=g_mcOfCache[slot].snapshot;signal=g_mcOfCache[slot].signal;
+      slot=McOfCacheSlot(key);
+      if(slot<0||g_mcOfCache[slot].key!=key){reason="OF_CACHE_MISS";detail="ORDERFLOW: "+reason;return false;}
+      snapshot=g_mcOfCache[slot].snapshot;signal=g_mcOfCache[slot].signal;
    }
    bool allowed=McOfAllows(g_mcOf,snapshot,signal,direction);
    detail="OF_QUOTE_PROXY val="+DoubleToString(snapshot.val,8)+" vah="+DoubleToString(snapshot.vah,8)

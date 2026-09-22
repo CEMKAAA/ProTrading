@@ -45,6 +45,17 @@ void OnStart()
          &&LnNasPack(parsed)==LnNasPack(g_lnNas),"strategy roundtrip has every NAS setting");
       LnNasDefaults(g_lnNas);
       ProbeCheck(LiqLibraryApply(path)&&LnNasPack(g_lnNas)==LnNasPack(parsed),"Apply restores NAS strategy");
+      ERL_RR_MODE targetBefore=g_target;double customBefore=g_customTargetR;
+      g_target=ERL_RR_CUSTOM;g_customTargetR=0.00001;
+      string customName=name+"_CUSTOM",customPath=LiqLibraryPath(customName);
+      ProbeCheck(LiqLibrarySave(customName),"save exact custom R strategy");
+      g_target=ERL_RR_TP4;g_customTargetR=500.0;
+      ProbeCheck(LiqLibraryApply(customPath)&&g_target==ERL_RR_CUSTOM
+         &&MathAbs(TargetR(g_target)-0.00001)<1e-12,"custom R strategy restores exact tiny R");
+      g_customTargetR=500.0;
+      ProbeCheck(MathAbs(TargetR(g_target)-500.0)<1e-10,"large custom R stays exact");
+      g_target=targetBefore;g_customTargetR=customBefore;
+      FileDelete(customPath,FILE_COMMON);FileDelete(customPath+".lock",FILE_COMMON);
       if(existed)LiqLibraryAtomicWrite(runtimePath,runtimeBefore);
       else FileDelete(runtimePath,FILE_COMMON);
       FileDelete(path,FILE_COMMON);FileDelete(path+".lock",FILE_COMMON);

@@ -108,6 +108,7 @@ enum ERL_RR_MODE
    ERL_RR_R097 = 197, // 4.85R
    ERL_RR_R098 = 198, // 4.90R
    ERL_RR_R099 = 199, // 4.95R
-   ERL_RR_R100 = 200 // 5.00R
+   ERL_RR_R100 = 200, // 5.00R
+   ERL_RR_CUSTOM = 1001
 };
 #endif

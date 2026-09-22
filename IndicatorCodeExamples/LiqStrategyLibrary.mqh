@@ -13,6 +13,20 @@ bool LiqLibraryRStepAllowed(int step)
 {
    return step>=1&&step<=100&&(step<=20||step%10==0);
 }
+bool LiqLibraryCustomR(string raw,double &value)
+{
+   StringTrimLeft(raw);StringTrimRight(raw);
+   if(raw=="")return false;
+   int dots=0;
+   for(int i=0;i<StringLen(raw);i++)
+   {
+      ushort c=StringGetCharacter(raw,i);
+      if(c=='.'){if(++dots>1)return false;}
+      else if(c<'0'||c>'9')return false;
+   }
+   value=StringToDouble(raw);
+   return MathIsValidNumber(value)&&value>=0.00000001&&value<=10000.0;
+}
 
 string LiqLibraryHash(string text)
 {
@@ -65,11 +79,19 @@ bool LiqLibraryUnpack(string path,string &name,double &values[],bool checkInputs
    bool oldVersion=(n==6+count&&lines[0]=="LIQ_STRATEGY_V1");
 #ifdef LN_SOL_ADV_NAS_READY
    bool newVersion=(n==7+count&&lines[0]=="LIQ_STRATEGY_NAS_V1");
+   bool customVersion=(n==8+count&&lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_V1");
    if(newVersion){LnNasPolicy parsed;if(!LnNasUnpack(lines[6+count],parsed))return false;}
+   if(customVersion)
+   {
+      LnNasPolicy parsed;double custom=0;
+      if(!LnNasUnpack(lines[6+count],parsed)||!LiqLibraryCustomR(lines[7+count],custom)
+         ||(int)StringToInteger(lines[9])!=(int)ERL_RR_CUSTOM)return false;
+   }
 #else
    bool newVersion=false;
+   bool customVersion=false;
 #endif
-   if((!oldVersion&&!newVersion)||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
+   if((!oldVersion&&!newVersion&&!customVersion)||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
    if(checkInputs&&lines[4]!=LiqLibraryHash(LiqLibraryInputContract()))return false;
    if((int)StringToInteger(lines[5])!=count)return false;
    name=lines[3];ArrayResize(values,count);
@@ -87,13 +109,14 @@ bool LiqLibrarySave(string name)
    double values[];int count=LiqLibraryCapture(values);
    string version="LIQ_STRATEGY_V1";
 #ifdef LN_SOL_ADV_NAS_READY
-   version="LIQ_STRATEGY_NAS_V1";
+   version=g_target==ERL_RR_CUSTOM?"LIQ_STRATEGY_NAS_CUSTOM_R_V1":"LIQ_STRATEGY_NAS_V1";
 #endif
    string payload=version+"\n"+LiqLibraryFamily()+"\n"+_Symbol+"\n"+name+"\n"
       +LiqLibraryHash(LiqLibraryInputContract())+"\n"+(string)count;
    for(int i=0;i<count;i++)payload+="\n"+DoubleToString(values[i],16);
 #ifdef LN_SOL_ADV_NAS_READY
    payload+="\n"+LnNasPack(g_lnNas);
+   if(g_target==ERL_RR_CUSTOM)payload+="\n"+DoubleToString(g_customTargetR,8);
 #endif
    return LiqLibraryAtomicWrite(LiqLibraryPath(name),payload+"\nSHA256="+LiqLibraryHash(payload));
 }
@@ -116,6 +139,7 @@ bool LiqLibraryApply(string path)
    {g_liqLibraryStatus="Not applied: incompatible Inputs or damaged preset";return false;}
 #ifdef LN_SOL_ADV_NAS_READY
    LnNasPolicy policy;LnNasDefaults(policy);
+   double customR=0.0;
    if(StringFind(path,"image://")!=0)
    {
       string record="",lines[];
@@ -127,6 +151,11 @@ bool LiqLibraryApply(string path)
          if(count>0&&lines[0]=="LIQ_STRATEGY_NAS_V1"
             &&!LnNasUnpack(lines[count-1],policy))
          {g_liqLibraryStatus="Damaged filter strategy";return false;}
+         if(count>0&&lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_V1")
+         {
+            if(count<2||!LnNasUnpack(lines[count-2],policy)||!LiqLibraryCustomR(lines[count-1],customR))
+            {g_liqLibraryStatus="Damaged custom R strategy";return false;}
+         }
       }
    }
    if((int)values[8]==(int)ERL_TARGET_OPPOSITE_SIGNAL
@@ -137,7 +166,11 @@ bool LiqLibraryApply(string path)
    if(!LnNasSaveRuntime()){g_lnNas=previous;g_liqLibraryStatus="Filter settings could not be saved";return false;}
    LnNasInvalidate();
 #endif
-   LiqLibraryAssign(values);SanitizeHalfMode();
+   LiqLibraryAssign(values);
+#ifdef LN_SOL_ADV_NAS_READY
+   g_customTargetR=customR;
+#endif
+   SanitizeHalfMode();
    g_liqLibraryName=name;g_liqLibraryStatus="Applied: "+name;
    RefreshAfterConfigChange(true);return true;
 }
@@ -212,7 +245,11 @@ void LiqLibraryDraw()
    if(g_liqLibraryRPicker)
    {
       x=8;w=(int)MathMax(280,MathMin(650,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-16));
+#ifdef LN_SOL_ADV_NAS_READY
+      LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,258,"",bg);
+#else
       LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,210,"",bg);
+#endif
       LiqLibraryWidget("TITLE",OBJ_LABEL,x+12,y+10,w-50,20,"FIXED TARGET / SELECT R",bg);
       LiqLibraryWidget("CLOSE",OBJ_BUTTON,x+w-38,y+5,30,24,"X",clrMaroon);
       int cell=(w-24)/7;
@@ -222,7 +259,15 @@ void LiqLibraryDraw()
          LiqLibraryWidget("RSTEP"+(string)step,OBJ_BUTTON,x+12+(index%7)*cell,y+40+(index/7)*33,
             cell-3,30,DoubleToString(step*0.05,2)+"R",MathAbs(TargetR(g_target)-step*0.05)<1e-8?C'184,103,22':button);
       }
+#ifdef LN_SOL_ADV_NAS_READY
+      LiqLibraryWidget("CUSTOM_LABEL",OBJ_LABEL,x+12,y+176,110,20,"CUSTOM R",bg);
+      LiqLibraryWidget("CUSTOM_VALUE",OBJ_EDIT,x+120,y+170,160,28,
+         g_target==ERL_RR_CUSTOM?DoubleToString(g_customTargetR,8):DoubleToString(TargetR(g_target),2),C'38,46,60');
+      LiqLibraryWidget("CUSTOM_APPLY",OBJ_BUTTON,x+288,y+170,104,28,"APPLY",button);
+      LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+218,w-24,25,StringSubstr(g_liqLibraryStatus,0,75),bg);
+#else
       LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+183,w-24,20,StringSubstr(g_liqLibraryStatus,0,75),bg);
+#endif
       return;
    }
    LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,410,"",bg);
@@ -319,6 +364,17 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
    if(g_liqLibraryRPicker)
    {
       bool close=action=="CLOSE";
+#ifdef LN_SOL_ADV_NAS_READY
+      if(action=="CUSTOM_APPLY")
+      {
+         double custom=0;
+         if(!LiqLibraryCustomR(ObjectGetString(0,LiqLibraryObject("CUSTOM_VALUE"),OBJPROP_TEXT),custom))
+            g_liqLibraryStatus="Enter R from 0.00000001 to 10000 (decimal point)";
+         else if(LiqLibraryCanApply())
+         {g_customTargetR=custom;g_target=ERL_RR_CUSTOM;g_targetModel=ERL_TARGET_FIXED_R;
+          SanitizeHalfMode();RefreshAfterConfigChange(false);close=true;}
+      }
+#endif
       if(StringFind(action,"RSTEP")==0)
       {
          int step=(int)StringToInteger(StringSubstr(action,5));

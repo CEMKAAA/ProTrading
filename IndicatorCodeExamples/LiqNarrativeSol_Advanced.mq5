@@ -320,6 +320,7 @@ ENUM_TIMEFRAMES  g_htf;
 ENUM_TIMEFRAMES  g_entryTf;
 int              g_swingLookback;
 ERL_RR_MODE      g_target;
+double           g_customTargetR = 0.0;
 ERL_HC_MODE      g_hc;
 bool             g_weeklyBias;
 ERL_ENTRY_MODEL  g_entryModel;
@@ -498,6 +499,7 @@ bool SetRuntimeInvertMode(bool enabled)
 
 string TargetLabel(ERL_RR_MODE rr)
 {
+   if(rr==ERL_RR_CUSTOM) return DoubleToString(g_customTargetR,8)+"R";
    if((int)rr>=101) return DoubleToString(TargetR(rr),2)+"R";
    return "TP" + IntegerToString((int)rr + 1) + " " + DoubleToString(TargetR(rr), 1) + "R";
 }
@@ -555,6 +557,7 @@ string BtSameLabel(BT_SAME_BAR_POLICY policy)
 
 double TargetR(ERL_RR_MODE rr)
 {
+   if(rr==ERL_RR_CUSTOM) return g_customTargetR;
    if((int)rr>=101 && (int)rr<=200) return ((int)rr-100)*0.05;
    int leg = (int)rr + 1;
    return MathMax(0.5, 0.5 * leg);
@@ -770,6 +773,7 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
       + "|SL" + DoubleToString(sig.sl, _Digits)
       + "|EXT" + DoubleToString(sig.externalTarget, _Digits)
       + "|TP" + IntegerToString((int)target)
+      + (target==ERL_RR_CUSTOM ? "|CR"+DoubleToString(g_customTargetR,8) : "")
       + "|HC" + IntegerToString((int)hc)
       + "|TM" + IntegerToString((int)targetModel)
       + "|ETF" + TfLabel(entryTf)
@@ -2091,7 +2095,8 @@ int BuildSignals(ENUM_TIMEFRAMES htf, ENUM_TIMEFRAMES entryTf, int swingLookback
 
 double SelectedFixedTarget(const ErlSignal &sig, ERL_RR_MODE target)
 {
-   if((int)target>=101 && (int)target<=200) return NormTradePrice(sig.entry+sig.dir*sig.risk*TargetR(target));
+   if(((int)target>=101 && (int)target<=200)||target==ERL_RR_CUSTOM)
+      return NormTradePrice(sig.entry+sig.dir*sig.risk*TargetR(target));
    if(target == ERL_RR_TP1) return sig.tp1;
    if(target == ERL_RR_TP2) return sig.tp2;
    if(target == ERL_RR_TP3) return sig.tp3;
@@ -2309,6 +2314,13 @@ bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_
    simDir = tradeSig.dir;
    activeSl = reverseExitMode ? 0.0 : tradeSig.sl;
    tp = reverseExitMode ? 0.0 : SelectedTarget(tradeSig, target, targetModel);
+   if(target==ERL_RR_CUSTOM && !reverseExitMode
+      && (tradeSig.dir>0 ? tp-tradeSig.entry : tradeSig.entry-tp)
+         <= MathMax(TickSize()*0.5,MinStopDistance()))
+   {
+      detail="custom_target_below_tradable_distance";
+      return false;
+   }
    simRisk = reverseExitMode ? source.risk : MathAbs(tradeSig.entry - activeSl);
    if(simRisk <= TickSize())
    {
@@ -4526,11 +4538,34 @@ bool OpenSignalAccepted(const ErlSignal &sig)
    }
 
    double tp = SelectedTarget(execSig, g_target);
+   if(g_target==ERL_RR_CUSTOM
+      && (execSig.dir>0 ? tp-execSig.entry : execSig.entry-tp)
+         <= MathMax(TickSize()*0.5,MinStopDistance()))
+   {
+      g_lastBlock="custom_target_below_tradable_distance";
+      AuditWrite("execution_geometry_block",sig.id,execSig.dir,execSig.entry,execSig.sl,tp,0.0,g_lastBlock);
+      return false;
+   }
    double orderSl = reverseExitMode ? 0.0 : execSig.sl;
    double orderTp = reverseExitMode ? 0.0 : tp;
    ERL_HC_MODE effectiveHc = reverseExitMode ? ERL_HC_OFF : EffectiveHalfModeForSignal(execSig, g_hc, g_target, g_targetModel);
    double bridgeHalf = effectiveHc == ERL_HC_OFF ? 0.0 : HalfTrigger(execSig, effectiveHc);
    string bridgeHalfLabel = (effectiveHc == ERL_HC_OFF || bridgeHalf <= 0.0) ? "off" : HcLabel(effectiveHc);
+   bool nativeEntry=!g_fileBridgeOnlyMode||g_nativeTradeWithBridgeOnly;
+   double lot=0.0;
+   string riskReason="";
+   if(nativeEntry)
+   {
+      if(!g_lnNas.independent && !g_allowDuplicateEntries && InpBlockSameDirection
+         && OwnPositionCount(execSig.dir)>0)
+      {g_lastBlock="same_direction_position";return false;}
+      if(!RiskGateAllows(execSig.entry,execSig.sl,lot,riskReason))
+      {g_lastBlock=riskReason;AuditWrite("risk_block",sig.id,execSig.dir,execSig.entry,orderSl,orderTp,lot,riskReason);return false;}
+      if(((!LnNasActive()?InpCloseOnReverse:(g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0))||reverseExitMode)
+         && OwnPositionCount(-execSig.dir)>0
+         && (!CloseOwnPositions(-execSig.dir)||OwnPositionCount(-execSig.dir)>0))
+      {g_lastBlock="reverse_close_failed";return false;}
+   }
    bool bridgeWritten = false;
    if(g_fileBridgeEnabled)
    {
@@ -4562,39 +4597,6 @@ bool OpenSignalAccepted(const ErlSignal &sig)
          AuditWrite("bridge_published_native_continue", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
    }
 
-   if(!g_lnNas.independent && !g_allowDuplicateEntries && InpBlockSameDirection && OwnPositionCount(execSig.dir) > 0)
-   {
-      g_lastBlock = "same_direction_position";
-      AuditWrite("local_same_direction_after_bridge", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, 0.0,
-         execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
-      return false;
-   }
-   if((!LnNasActive() ? InpCloseOnReverse : (g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0))
-      || reverseExitMode)
-      if(OwnPositionCount(-execSig.dir) > 0)
-   {
-      if(!CloseOwnPositions(-execSig.dir) || OwnPositionCount(-execSig.dir) > 0)
-      {
-         g_lastBlock = "reverse_close_failed";
-         AuditWrite("local_reverse_close_failed_after_bridge", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, 0.0,
-            execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
-         Print("LiqNarrativeSol reverse_close_failed dir=", DirLabel(execSig.dir), " id=", sig.id,
-            " bridge_written=", (bridgeWritten ? "1" : "0"));
-         return false;
-      }
-   }
-
-   double lot = 0.0;
-   string riskReason = "";
-   if(!RiskGateAllows(execSig.entry, execSig.sl, lot, riskReason))
-   {
-      g_lastBlock = riskReason;
-      AuditWrite("risk_block", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot, riskReason + " " + execDetail);
-      Print("LiqNarrativeSol risk_block id=", sig.id, " dir=", DirLabel(execSig.dir),
-         " entry=", DoubleToString(execSig.entry, _Digits), " sl=", DoubleToString(execSig.sl, _Digits),
-         " reason=", riskReason);
-      return false;
-   }
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
@@ -4977,6 +4979,17 @@ void DrawDashboard()
       DeleteDashboardObjects();
       return;
    }
+   string overlayKeys[],overlayValues[];
+   for(int i=0;i<ObjectsTotal(0);i++)
+   {
+      string key=ObjectName(0,i);
+      if((StringFind(key,PFX+"NAS_")!=0&&StringFind(key,PFX+"LIB_")!=0)
+         ||ObjectGetInteger(0,key,OBJPROP_TYPE)!=OBJ_EDIT)continue;
+      int n=ArraySize(overlayKeys);ArrayResize(overlayKeys,n+1);ArrayResize(overlayValues,n+1);
+      overlayKeys[n]=key;overlayValues[n]=ObjectGetString(0,key,OBJPROP_TEXT);
+   }
+   DeleteByPrefix(PFX+"NAS_");
+   DeleteByPrefix(PFX+"LIB_");
    DeleteDashboardObjects();
    int x = InpDashboardX;
    int y = InpDashboardY;
@@ -4991,6 +5004,9 @@ void DrawDashboard()
          + " | " + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt),
          g_eaEnabled ? C'80,255,180' : C'255,95,140', 9);
       ButtonObj("BTN_DASH_TOGGLE", x + 674, y + 7, 72, 20, "EXPAND", C'38,101,176');
+      LnNasDrawNav();LiqLibraryDashboard();if(g_lnNasPanel)LnNasDrawPanel();
+      for(int i=0;i<ArraySize(overlayKeys);i++)
+         if(ObjectFind(0,overlayKeys[i])>=0)ObjectSetString(0,overlayKeys[i],OBJPROP_TEXT,overlayValues[i]);
       return;
    }
    int W = 760;
@@ -5001,12 +5017,12 @@ void DrawDashboard()
    LabelObj("DASH_TITLE", x + 14, y + 12, "LIQUIDITY NARRATIVE SOL // " + LN_BUILD, C'225,232,242', 10);
    ButtonObj("BTN_DASH_TOGGLE", x + 674, y + 7, 72, 20, "HIDE", C'70,72,82');
    UpdateDashboard();
+   for(int i=0;i<ArraySize(overlayKeys);i++)
+      if(ObjectFind(0,overlayKeys[i])>=0)ObjectSetString(0,overlayKeys[i],OBJPROP_TEXT,overlayValues[i]);
 }
 
 void UpdateDashboard()
 {
-   LnNasDrawNav();if(g_lnNasPanel){LnNasDrawPanel();return;}
-   if(LiqLibraryDashboard()) return;
    if(IsTesterMode()) return;
    if(!InpShowDashboard) return;
    if(g_dashboardCollapsed)
@@ -5121,7 +5137,7 @@ void UpdateDashboard()
    ButtonObj("BTN_SW_5", x + 126, row, 44, bh, "5", g_swingLookback == 5 ? on : off);
    ButtonObj("BTN_SW_8", x + 176, row, 44, bh, "8", g_swingLookback == 8 ? on : off);
    LabelObj("DASH_TP_L", x + 246, row + 4, "TARGET:", muted, 8);
-   ButtonObj("BTN_R_SELECT", x + 318, row, 332, bh, "TARGET " + DoubleToString(TargetR(g_target),2) + "R  [0.05 - 5.00]", on);
+   ButtonObj("BTN_R_SELECT", x + 318, row, 332, bh, "TARGET " + TargetLabel(g_target) + "  [SELECT / CUSTOM]", on);
    ButtonObj("BTN_CLOSE", x + 660, row, 84, bh, "CLOSE ALL", C'170,45,62');
 
    row += 28;
@@ -5285,6 +5301,9 @@ void UpdateDashboard()
    LabelObj("DASH_BTPB_TXT", x + 22, pbY - 1,
       IntegerToString(g_btStep) + "/" + IntegerToString(g_btTotal) + " " + IntegerToString((int)(pct * 100.0)) + "% | " + g_btLastResult,
       clrWhite, 8);
+   LnNasDrawNav();
+   LiqLibraryDashboard();
+   if(g_lnNasPanel)LnNasDrawPanel();
 }
 
 //=====================================================================
@@ -5446,6 +5465,7 @@ int OnInit()
    g_entryTf = InpDefaultEntryTf;
    g_swingLookback = InpDefaultSwingLookback;
    g_target = InpDefaultTarget;
+   g_customTargetR = 0.0;
    g_hc = InpDefaultHalfBe;
    g_weeklyBias = InpDefaultWeeklyBias;
    g_entryModel = InpDefaultEntryModel;
@@ -5585,7 +5605,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
-   if(LnNasPanelEvent(id,sparam))return;
+   if(LnNasPanelEvent(id,sparam,lparam,dparam))return;
    if(LiqLibraryEvent(id,sparam,lparam,dparam)) return;
    if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;

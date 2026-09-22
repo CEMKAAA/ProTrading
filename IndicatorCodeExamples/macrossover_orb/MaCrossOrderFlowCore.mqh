@@ -1,7 +1,8 @@
 #ifndef MACROSS_ORDER_FLOW_CORE_MQH
 #define MACROSS_ORDER_FLOW_CORE_MQH
 // Original implementation. Quote activity is NOT executed/aggressor volume.
-enum MC_OF_MODE { MC_OF_OFF=0, MC_OF_BREAKOUT=1, MC_OF_REJECTION=2, MC_OF_EITHER=3 };
+enum MC_OF_MODE { MC_OF_OFF=0, MC_OF_BREAKOUT=1, MC_OF_REJECTION=2, MC_OF_EITHER=3,
+   MC_OF_PROFILE=4, MC_OF_ACTIVITY=5, MC_OF_DELTA=6 };
 struct McOfConfig
 {
    int mode,lookback,bins;
@@ -15,7 +16,7 @@ struct McOfSnapshot
 };
 bool McOfConfigValid(const McOfConfig &c)
 {
-   return c.mode>=0&&c.mode<=3&&c.lookback>=2&&c.lookback<=128&&c.bins>=4&&c.bins<=256
+   return c.mode>=0&&c.mode<=6&&c.lookback>=2&&c.lookback<=128&&c.bins>=4&&c.bins<=256
       &&MathIsValidNumber(c.valueArea)&&c.valueArea>=0.1&&c.valueArea<=1
       &&MathIsValidNumber(c.minActivity)&&c.minActivity>=0&&c.minActivity<=100
       &&MathIsValidNumber(c.minDelta)&&c.minDelta>=0&&c.minDelta<=1;
@@ -112,11 +113,14 @@ bool McOfAllows(const McOfConfig &c,const McOfSnapshot &s,const MqlRates &signal
 {
    if(c.mode==MC_OF_OFF)return true;
    if(!McOfConfigValid(c)||!s.valid||(direction!=1&&direction!=-1)
-      ||!MathIsValidNumber(s.activity)||!MathIsValidNumber(s.delta)
-      ||s.activity<c.minActivity||direction*s.delta<c.minDelta)return false;
+      ||!MathIsValidNumber(s.activity)||!MathIsValidNumber(s.delta))return false;
    bool breakout=direction>0?signal.close>s.vah:signal.close<s.val;
    bool rejection=direction>0?(signal.low<s.val&&signal.close>=s.val&&signal.close<=s.vah)
                              :(signal.high>s.vah&&signal.close<=s.vah&&signal.close>=s.val);
+   if(c.mode==MC_OF_PROFILE)return breakout||rejection;
+   if(c.mode==MC_OF_ACTIVITY)return s.activity>=c.minActivity;
+   if(c.mode==MC_OF_DELTA)return direction*s.delta>=c.minDelta;
+   if(s.activity<c.minActivity||direction*s.delta<c.minDelta)return false;
    return c.mode==MC_OF_BREAKOUT?breakout:(c.mode==MC_OF_REJECTION?rejection:breakout||rejection);
 }
 #endif
