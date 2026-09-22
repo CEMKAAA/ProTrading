@@ -1,0 +1,5 @@
+{"kind":"run","symbol":"USOILm"}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1778038500,"dir":"SELL","valid":true,"outcome":"TP020","exit":1778053584,"price":96.4850000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1779660000,"dir":"SELL","valid":true,"outcome":"TP020","exit":1779670185,"price":90.1980000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1783636200,"dir":"BUY","valid":true,"outcome":"NAS_ADDITIONAL_EXIT","exit":1783679700,"price":71.8320000000,"r":0.023800000000,"data":""}
+{"kind":"summary","id":"user_274d6b4e683ed278ada8fa5e","slot":7,"complete":true,"of_incomplete":false,"variant":11,"independent":false,"raw":538,"total":3,"w":3,"l":0,"o":0,"data":0,"r":0.423800000000}

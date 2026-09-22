@@ -1,0 +1,306 @@
+﻿[
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion_Channel.mq5",
+        "sha256":  "15B6B2A2C66182AB3E0C057665A6508EC76AA916DCE91047AADBF85139A847A3"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA.mq5",
+        "sha256":  "2472DCBCEB2D1B858DF9BDDECED9CC4754AE19258E8E27265240A4D2EFF0EB6F"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqStrategyLibrary.mqh",
+        "sha256":  "22D3A1D92DC2BFC53CB77596C6D3589E5DD8181833185BAF42DD4283C72E01D0"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "sha256":  "BE61F76829C81FE2C312C0381737024457881AAB44C9B521CC9EF5D37746D412"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqROptions.mqh",
+        "sha256":  "BB9998D0515F354317C251F60DE1B7233B14C6751F863785224E92F36D3C3BAE"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqDashboardFit.mqh",
+        "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "sha256":  "0B8C1821A7BB88AFD65C0B8118973971DA31B8B2CC7B4C975B5C2C0F8ED628DA"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeMacroRegimeFilter.mqh",
+        "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion.mq5",
+        "sha256":  "A117A6C8AAFEFA6A014DC083EAC3956972837CFCBCB06A04ABE91C777AD340EC"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeMacroRegime.mqh",
+        "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "4B8BCD1770180ADDAB828D902BF16FFC30133608D144DACB04CEF9590651A706"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA.ex5",
+        "sha256":  "CC6F23EFA94BEB68E8CD99E6122483463E41D8FF9ACE736CCB386AC41BF9E15C"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "sha256":  "CA076F2D339AD417A0B89EB3E27784C3FE84D99903984404FDA285EE575FA62A"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion.ex5",
+        "sha256":  "BF5E8AFBD47F094AC7E32E7EF5EB151B41DF733E01772ACA5BC64F7A61A01BDF"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion_Channel.ex5",
+        "sha256":  "C3D97C0E0B0C3A1571F4510775231A4583AA72538645C8361D4EF3DD29523B37"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "09B61E164343677920DB2ECD49C19227D95A70DB138D6C46B6B4F075847DF9D9"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "sha256":  "A15CC9E523C115DEC034842F91F0A1FB9ECD520680ABEAC8E0D40CB1FC470EE5"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion_Channel.mq5",
+        "sha256":  "15B6B2A2C66182AB3E0C057665A6508EC76AA916DCE91047AADBF85139A847A3"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA.mq5",
+        "sha256":  "2472DCBCEB2D1B858DF9BDDECED9CC4754AE19258E8E27265240A4D2EFF0EB6F"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqStrategyLibrary.mqh",
+        "sha256":  "22D3A1D92DC2BFC53CB77596C6D3589E5DD8181833185BAF42DD4283C72E01D0"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "sha256":  "BE61F76829C81FE2C312C0381737024457881AAB44C9B521CC9EF5D37746D412"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqROptions.mqh",
+        "sha256":  "BB9998D0515F354317C251F60DE1B7233B14C6751F863785224E92F36D3C3BAE"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqDashboardFit.mqh",
+        "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "sha256":  "0B8C1821A7BB88AFD65C0B8118973971DA31B8B2CC7B4C975B5C2C0F8ED628DA"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeMacroRegimeFilter.mqh",
+        "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion.mq5",
+        "sha256":  "A117A6C8AAFEFA6A014DC083EAC3956972837CFCBCB06A04ABE91C777AD340EC"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeMacroRegime.mqh",
+        "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "4B8BCD1770180ADDAB828D902BF16FFC30133608D144DACB04CEF9590651A706"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA.ex5",
+        "sha256":  "CC6F23EFA94BEB68E8CD99E6122483463E41D8FF9ACE736CCB386AC41BF9E15C"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "sha256":  "CA076F2D339AD417A0B89EB3E27784C3FE84D99903984404FDA285EE575FA62A"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion.ex5",
+        "sha256":  "BF5E8AFBD47F094AC7E32E7EF5EB151B41DF733E01772ACA5BC64F7A61A01BDF"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion_Channel.ex5",
+        "sha256":  "C3D97C0E0B0C3A1571F4510775231A4583AA72538645C8361D4EF3DD29523B37"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "09B61E164343677920DB2ECD49C19227D95A70DB138D6C46B6B4F075847DF9D9"
+    },
+    {
+        "file":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "sha256":  "A15CC9E523C115DEC034842F91F0A1FB9ECD520680ABEAC8E0D40CB1FC470EE5"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion_Channel.mq5",
+        "sha256":  "15B6B2A2C66182AB3E0C057665A6508EC76AA916DCE91047AADBF85139A847A3"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA.mq5",
+        "sha256":  "2472DCBCEB2D1B858DF9BDDECED9CC4754AE19258E8E27265240A4D2EFF0EB6F"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "sha256":  "22D3A1D92DC2BFC53CB77596C6D3589E5DD8181833185BAF42DD4283C72E01D0"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "sha256":  "BE61F76829C81FE2C312C0381737024457881AAB44C9B521CC9EF5D37746D412"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqROptions.mqh",
+        "sha256":  "BB9998D0515F354317C251F60DE1B7233B14C6751F863785224E92F36D3C3BAE"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqDashboardFit.mqh",
+        "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "sha256":  "0B8C1821A7BB88AFD65C0B8118973971DA31B8B2CC7B4C975B5C2C0F8ED628DA"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh",
+        "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion.mq5",
+        "sha256":  "A117A6C8AAFEFA6A014DC083EAC3956972837CFCBCB06A04ABE91C777AD340EC"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegime.mqh",
+        "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "4B8BCD1770180ADDAB828D902BF16FFC30133608D144DACB04CEF9590651A706"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA.ex5",
+        "sha256":  "CC6F23EFA94BEB68E8CD99E6122483463E41D8FF9ACE736CCB386AC41BF9E15C"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "sha256":  "CA076F2D339AD417A0B89EB3E27784C3FE84D99903984404FDA285EE575FA62A"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion.ex5",
+        "sha256":  "BF5E8AFBD47F094AC7E32E7EF5EB151B41DF733E01772ACA5BC64F7A61A01BDF"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion_Channel.ex5",
+        "sha256":  "C3D97C0E0B0C3A1571F4510775231A4583AA72538645C8361D4EF3DD29523B37"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "09B61E164343677920DB2ECD49C19227D95A70DB138D6C46B6B4F075847DF9D9"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "sha256":  "A15CC9E523C115DEC034842F91F0A1FB9ECD520680ABEAC8E0D40CB1FC470EE5"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion_Channel.mq5",
+        "sha256":  "15B6B2A2C66182AB3E0C057665A6508EC76AA916DCE91047AADBF85139A847A3"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA.mq5",
+        "sha256":  "2472DCBCEB2D1B858DF9BDDECED9CC4754AE19258E8E27265240A4D2EFF0EB6F"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqStrategyLibrary.mqh",
+        "sha256":  "22D3A1D92DC2BFC53CB77596C6D3589E5DD8181833185BAF42DD4283C72E01D0"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "sha256":  "BE61F76829C81FE2C312C0381737024457881AAB44C9B521CC9EF5D37746D412"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqROptions.mqh",
+        "sha256":  "BB9998D0515F354317C251F60DE1B7233B14C6751F863785224E92F36D3C3BAE"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqDashboardFit.mqh",
+        "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "sha256":  "0B8C1821A7BB88AFD65C0B8118973971DA31B8B2CC7B4C975B5C2C0F8ED628DA"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeMacroRegimeFilter.mqh",
+        "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion.mq5",
+        "sha256":  "A117A6C8AAFEFA6A014DC083EAC3956972837CFCBCB06A04ABE91C777AD340EC"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeMacroRegime.mqh",
+        "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "4B8BCD1770180ADDAB828D902BF16FFC30133608D144DACB04CEF9590651A706"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA.ex5",
+        "sha256":  "CC6F23EFA94BEB68E8CD99E6122483463E41D8FF9ACE736CCB386AC41BF9E15C"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "sha256":  "CA076F2D339AD417A0B89EB3E27784C3FE84D99903984404FDA285EE575FA62A"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion.ex5",
+        "sha256":  "BF5E8AFBD47F094AC7E32E7EF5EB151B41DF733E01772ACA5BC64F7A61A01BDF"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion_Channel.ex5",
+        "sha256":  "C3D97C0E0B0C3A1571F4510775231A4583AA72538645C8361D4EF3DD29523B37"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "09B61E164343677920DB2ECD49C19227D95A70DB138D6C46B6B4F075847DF9D9"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "sha256":  "A15CC9E523C115DEC034842F91F0A1FB9ECD520680ABEAC8E0D40CB1FC470EE5"
+    }
+]

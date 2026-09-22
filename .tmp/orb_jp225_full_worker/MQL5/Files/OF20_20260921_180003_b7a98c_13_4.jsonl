@@ -1,0 +1,16 @@
+{"kind":"run","symbol":"XAUUSDm"}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1778666700,"dir":"BUY","valid":true,"outcome":"SL","exit":1778807411,"price":4608.9170000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1779701400,"dir":"BUY","valid":true,"outcome":"SL","exit":1779878388,"price":4465.1560000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1779834600,"dir":"SELL","valid":true,"outcome":"TP025","exit":1779877850,"price":4475.4440000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1780994700,"dir":"SELL","valid":true,"outcome":"TP025","exit":1781015970,"price":4303.3190000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1781032200,"dir":"SELL","valid":true,"outcome":"TP025","exit":1781045504,"price":4233.8200000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1782772200,"dir":"SELL","valid":true,"outcome":"TP025","exit":1782780934,"price":3988.7730000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1782822000,"dir":"SELL","valid":true,"outcome":"TP025","exit":1782867745,"price":3993.1310000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1783054500,"dir":"BUY","valid":true,"outcome":"SL","exit":1783499561,"price":4079.1550000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1784218200,"dir":"SELL","valid":true,"outcome":"TP025","exit":1784292628,"price":3964.6740000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1784584800,"dir":"SELL","valid":true,"outcome":"SL","exit":1784682055,"price":4108.2340000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1784658000,"dir":"BUY","valid":true,"outcome":"TP025","exit":1784682055,"price":4106.2550000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1786315500,"dir":"BUY","valid":true,"outcome":"TP025","exit":1786386679,"price":4368.6540000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1787266200,"dir":"BUY","valid":true,"outcome":"TP025","exit":1787291572,"price":4548.9720000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_b819d37092e7531fbbf87583","signal":1788736800,"dir":"SELL","valid":true,"outcome":"TP025","exit":1788743538,"price":4400.2460000000,"r":0.250000000000,"data":""}
+{"kind":"summary","id":"user_b819d37092e7531fbbf87583","slot":13,"complete":true,"of_incomplete":false,"variant":4,"independent":true,"raw":541,"total":14,"w":10,"l":4,"o":0,"data":0,"r":-1.500000000000}

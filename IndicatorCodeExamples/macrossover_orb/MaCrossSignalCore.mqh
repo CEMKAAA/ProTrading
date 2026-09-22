@@ -9,7 +9,8 @@ enum MA_CROSS_SIGNAL_MODE
    MA_CROSS_EMA_50_200  = 1,
    MA_CROSS_TRENDLINE   = 2,
    MA_CROSS_PIVOT_ST    = 3,
-   MA_CROSS_SCALP_PULLBACK = 4
+   MA_CROSS_SCALP_PULLBACK = 4,
+   MA_CROSS_TRENDER_IQ = 5
 };
 
 // Mirrors MaCrossOver.pine's Cross Mode input. It applies only to MA MTF;
@@ -109,6 +110,7 @@ string MaCrossModeText(const MA_CROSS_SIGNAL_MODE mode)
    if(mode==MA_CROSS_EMA_50_200)return "EMA 50/200";
    if(mode==MA_CROSS_TRENDLINE)return "Trendline";
    if(mode==MA_CROSS_PIVOT_ST)return "Close/Reverse";
+   if(mode==MA_CROSS_TRENDER_IQ)return "Trender IQ";
    return "Scalp arrows";
 }
 

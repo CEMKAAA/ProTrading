@@ -1,0 +1,12 @@
+{"kind":"run","symbol":"USDJPYm"}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1780081500,"dir":"SELL","valid":true,"outcome":"SL","exit":1780502529,"price":160.0170000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1780869300,"dir":"BUY","valid":true,"outcome":"TP010","exit":1780886941,"price":160.3710000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1781290800,"dir":"SELL","valid":true,"outcome":"TP010","exit":1781472271,"price":160.1140000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1783387500,"dir":"SELL","valid":true,"outcome":"TP010","exit":1783387827,"price":161.9410000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1783403100,"dir":"SELL","valid":true,"outcome":"TP010","exit":1783408801,"price":161.7330000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1783636200,"dir":"SELL","valid":true,"outcome":"TP010","exit":1783644310,"price":162.2790000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1784149500,"dir":"SELL","valid":true,"outcome":"SL","exit":1784632878,"price":162.7520000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1785818100,"dir":"SELL","valid":true,"outcome":"TP010","exit":1785844618,"price":157.4440000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1786480200,"dir":"BUY","valid":true,"outcome":"TP010","exit":1786501141,"price":159.4250000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1788813000,"dir":"SELL","valid":true,"outcome":"TP010","exit":1788819867,"price":154.2500000000,"r":0.100000000000,"data":""}
+{"kind":"summary","id":"user_e838c81b417ee45202598948","slot":5,"complete":true,"of_incomplete":false,"variant":11,"independent":true,"raw":600,"total":10,"w":8,"l":2,"o":0,"data":0,"r":-1.200000000000}

@@ -1,0 +1,5 @@
+{"kind":"run","symbol":"XAUUSDm"}
+{"kind":"trade","id":"user_5e237a42d72a6759635af18b","signal":1787876100,"dir":"SELL","valid":true,"outcome":"TP025","exit":1787881195,"price":4580.8560000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_5e237a42d72a6759635af18b","signal":1788823800,"dir":"BUY","valid":true,"outcome":"TP025","exit":1788829992,"price":4430.3510000000,"r":0.250000000000,"data":""}
+{"kind":"trade","id":"user_5e237a42d72a6759635af18b","signal":1789126200,"dir":"SELL","valid":true,"outcome":"TP025","exit":1789129812,"price":4319.0550000000,"r":0.250000000000,"data":""}
+{"kind":"summary","id":"user_5e237a42d72a6759635af18b","slot":10,"complete":true,"of_incomplete":false,"variant":5,"independent":false,"raw":162,"total":3,"w":3,"l":0,"o":0,"data":0,"r":0.750000000000}

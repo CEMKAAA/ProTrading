@@ -13,7 +13,7 @@
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
-#define ORB15_BUILD "MaCrossORB-0.13-OF-preview"
+#define ORB15_BUILD "MaCrossORB-0.14-Trender-preview"
 
 enum ORB_SESSION_PROFILE
 {
@@ -960,7 +960,7 @@ void LoadRuntimeMaCrossMode()
    if(GlobalVariableCheck(key))
    {
       int value=(int)MathRound(GlobalVariableGet(key));
-      if(value>=0&&value<=4)g_rtMaCrossMode=(MA_CROSS_SIGNAL_MODE)value;
+      if(value>=0&&value<=5)g_rtMaCrossMode=(MA_CROSS_SIGNAL_MODE)value;
    }
    string pairKey=RuntimeMaCrossPairKey();
    if(GlobalVariableCheck(pairKey))
@@ -7485,8 +7485,10 @@ void OBT_Stop()
 //=========================================================================
 //  DASHBOARD (Nas-inspired design with toggle buttons + TF selector)
 //=========================================================================
+#include "MaOrderFlowLeaderboard.mqh"
 void DrawDashboard()
 {
+   if(g_maOfRankOpen)return;
    if(!InpShowDashboard){DeleteDash();return;}
    OrbLibraryRefreshLayout();
    int x=InpDashboardX,y=InpDashboardY;
@@ -7508,6 +7510,7 @@ void DrawDashboard()
 
 void UpdateDashboard()
 {
+   if(g_maOfRankOpen)return;
    if(!InpShowDashboard)return;
    OrbLibraryRefreshLayout();
    int x=InpDashboardX+632,y=InpDashboardY;
@@ -7515,6 +7518,7 @@ void UpdateDashboard()
    color acB=C'90,178,255';color muted=C'184,196,210';color steel=C'216,222,230';
 
    CreateButton("BTN_ORDERFLOW",InpDashboardX+460,InpDashboardY+10,146,17,McOfModeName(),g_mcOf.mode==0?C'80,80,80':C'30,120,70');
+   CreateButton("BTN_OF_RESULTS",InpDashboardX+350,InpDashboardY+10,104,17,"OF RESULTS",C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_ORDERFLOW",OBJPROP_TOOLTIP,"OFF -> BREAKOUT -> REJECTION -> EITHER. Bid tick proxy, not exchange volume. Parameters: EA Inputs / ORDER FLOW. "+g_mcOfStatus);
    OrbStrategyPresetSyncSelection();
    OrbUserDraw();
@@ -7623,8 +7627,8 @@ void UpdateDashboard()
    CreateEdit("EDIT_NAS_FLOW_VOL_X",x+170,rootY+245,52,18,DoubleToString(g_rtNasFlowVolumeMultiplier,2));
    CreateLabel("DASH_NAS_FLOW_RULE",x+230,rootY+249,"ENTRY GATE + OPP EXIT + ADD EXIT",C'134,158,182',7);
    CreateLabel("DASH_MA_MODE",x+12,rootY+271,"SIGNAL MODE / PAIR",C'90,178,255',8);
-   const int maModeWidth=100;
-   for(int ma=0;ma<=4;ma++)
+   const int maModeWidth=83;
+   for(int ma=0;ma<=5;ma++)
    {
       MA_CROSS_SIGNAL_MODE candidate=(MA_CROSS_SIGNAL_MODE)ma;
       bool active=(candidate==g_rtMaCrossMode);
@@ -9409,6 +9413,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   ObjectsDeleteAll(0,MaOfRankPrefix());
    McOfRelease();
    MaIndependentRelease();
    EventKillTimer();
@@ -9487,6 +9492,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(MaOfRankEvent(id,lparam,dparam,sparam))return;
    if(id==CHARTEVENT_CHART_CHANGE)
    {
       DrawDashboard();ChartRedraw(0);return;
@@ -9560,7 +9566,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
-   for(int ma=0;ma<=4;ma++)
+   for(int ma=0;ma<=5;ma++)
    {
       if(sparam==PREFIX+"BTN_MA_MODE_"+IntegerToString(ma))
       {

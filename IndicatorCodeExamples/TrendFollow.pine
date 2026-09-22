@@ -1,0 +1,1084 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Trading-IQ
+
+//@version=6
+indicator("Trender [IQ]", "IQ Trender", overlay = true, max_labels_count = 100, max_lines_count = 20, max_polylines_count = 100)
+
+// Trender [IQ] a trend rail that holds flat in a range and ramps in a trend.
+//
+// The rail does one of two things at any moment. While price stays inside a band around the rail, it
+// holds perfectly flat a range. When price breaks out of the band, the rail ramps toward it in a
+// straight line at a steady speed and keeps going the same way until the trend genuinely turns.
+// Colour shows the direction and how strongly the move is committed, and the shaded band marks the
+// flat zone.
+//
+// Underneath, a Kalman trend filter (Särkkä & Svensson, 2nd ed., p.60) tracks price and measures the
+// three things the rail needs: how wide the band should be (from current volatility), when a range
+// has become a trend (from a change-point test), and how convinced it is of the move (from the
+// trend's strength). The band widens and tightens with volatility, staying calm in quiet markets and
+// reacting quickly when price moves.
+//
+// Two controls shape it. Speed sets the overall tempo, from slow and structural (Glacier) to quick
+// and reactive (Scalp). Pursuit sets how a move is chased: Steady ramps at a constant speed, Eased
+// slows as it closes in, Snap commits hard. None of it looks ahead, so the rail never repaints.
+
+
+// HEAD {
+
+
+// enums {
+
+//@enum Overall tempo of the rail couples the slew rate and the hold-band width.
+//@field glacier  Structural higher-timeframe rail.
+//@field slow     Patient swing rail.
+//@field balanced Even hold and tracking (recommended).
+//@field fast     Reactive intraday rail.
+//@field scalp    Tight micro follower.
+enum Speed
+    glacier  = "Glacier structural"
+    slow     = "Slow swing"
+    balanced = "Balanced adaptive"
+    fast     = "Fast reactive"
+    scalp    = "Scalp micro"
+
+//@enum How a committed leg is shaped, without changing the trend evidence.
+//@field steady Constant-speed ramp.
+//@field eased  Motion scales with conviction and feathers into price.
+//@field snap   The most decisive pursuit.
+enum Pursuit
+    steady = "Steady constant ramps"
+    eased  = "Eased soft landing"
+    snap   = "Snap decisive"
+
+//@enum Colour-vision-deficiency correction applied to every mark.
+//@field off          No correction.
+//@field deuteranopia Red-green (deuteranopia).
+//@field protanopia   Red-green (protanopia).
+//@field tritanopia   Blue-yellow (tritanopia).
+enum CvdMode
+    off          = "Off"
+    deuteranopia = "Deuteranopia (red-green)"
+    protanopia   = "Protanopia (red-green)"
+    tritanopia   = "Tritanopia (blue-yellow)"
+
+//@enum Anchor corner for the Trender Radar table.
+enum TablePosition
+    top_right     = "Top Right"
+    top_left      = "Top Left"
+    top_center    = "Top Center"
+    bottom_right  = "Bottom Right"
+    bottom_left   = "Bottom Left"
+    bottom_center = "Bottom Center"
+
+// enums }
+
+
+// types {
+
+//@type The complete user-facing configuration, gathered from the inputs and passed to main().
+//@field speed             Selected Speed preset.
+//@field pursuit           Selected Pursuit preset.
+//@field price_source      Price series the rail pursues.
+//@field log_geometry      Work in log price, so the band and slope read as percentages.
+//@field show_band         Draw the adaptive hold band.
+//@field band_transparency Transparency of the hold-band fill.
+//@field show_glow         Draw the conviction-aware glow around the rail.
+//@field line_width        Width of the solid rail core.
+//@field rising_color      Master colour for rising legs.
+//@field falling_color     Master colour for falling legs.
+//@field holding_color     Neutral colour while the rail is holding.
+//@field hue               Oklab hue rotation applied to all three anchors.
+//@field lightness         Oklab lightness shift applied to the palette.
+//@field vibrancy          Oklab chroma multiplier for the palette.
+//@field conviction_color  How quickly a committed leg reaches full saturation.
+//@field cvd_mode          Colour-vision-deficiency correction.
+//@field auto_contrast     Enforce a minimum WCAG contrast against the chart background.
+//@field contrast          Target contrast ratio.
+//@field show_radar        Show the Trender Radar table.
+//@field radar_position    Radar table corner.
+type Config
+    Speed         speed
+    Pursuit       pursuit
+    float         price_source
+    bool          log_geometry
+    bool          show_band
+    float         band_transparency
+    bool          show_glow
+    int           line_width
+    color         rising_color
+    color         falling_color
+    color         holding_color
+    float         hue
+    float         lightness
+    float         vibrancy
+    float         conviction_color
+    CvdMode       cvd_mode
+    bool          auto_contrast
+    float         contrast
+    bool          show_radar
+    TablePosition radar_position
+
+//@type The Speed and Pursuit choices resolved into the engine's tuning constants.
+//@field pursuit_rate         Base slew rate, as a fraction of the innovation deviation.
+//@field deadband             Hold-band half-width, in innovation deviations.
+//@field process_ratio        Process-to-measurement noise ratio for the Kalman.
+//@field huber_knee           Huber threshold, in standard deviations, for robust updates.
+//@field cusum_drift          Slack term subtracted from each CUSUM step.
+//@field cusum_threshold      CUSUM level that flags a change-point.
+//@field conviction_on        Conviction needed to arm a committed trend.
+//@field conviction_off       Conviction below which a committed trend is released.
+//@field freeze_tolerance     Fraction of the band within which the rail may flatten.
+//@field scale_pursuit        Whether pursuit speed scales with conviction.
+//@field conviction_reference Conviction that maps to the reference pursuit speed.
+type Behavior
+    float pursuit_rate
+    float deadband
+    float process_ratio
+    float huber_knee
+    float cusum_drift
+    float cusum_threshold
+    float conviction_on
+    float conviction_off
+    float freeze_tolerance
+    bool  scale_pursuit
+    float conviction_reference
+
+//@type Persistent local-linear-trend Kalman and change-point state.
+//@field level            Filtered level estimate.
+//@field slope            Filtered slope estimate.
+//@field level_variance   Variance of the level estimate.
+//@field covariance       Level-slope covariance.
+//@field slope_variance   Variance of the slope estimate.
+//@field noise_multiplier Adaptive measurement-noise scale.
+//@field base_noise       Baseline measurement noise, seeded from the first nonzero true range.
+//@field cusum_positive   Upward CUSUM accumulator.
+//@field cusum_negative   Downward CUSUM accumulator.
+//@field change_cooldown  Bars left in the fast-adaptation window after a change-point.
+type Brain
+    float level
+    float slope
+    float level_variance
+    float covariance
+    float slope_variance
+    float noise_multiplier
+    float base_noise
+    float cusum_positive
+    float cusum_negative
+    int   change_cooldown
+
+//@type One bar of evidence produced by the Kalman brain.
+//@field center               Robust Kalman centre for this bar the rail's target.
+//@field innovation_deviation Innovation standard deviation √S, which sets the band width.
+//@field conviction           Slope t-statistic: how strongly the slope differs from zero.
+//@field change_up            True when the CUSUM flags an upward change-point.
+//@field change_down          True when the CUSUM flags a downward change-point.
+type BrainResult
+    float center
+    float innovation_deviation
+    float conviction
+    bool  change_up
+    bool  change_down
+
+//@type Persistent state of the plotted rail. The Kalman centre guides it but is never plotted directly.
+//@field level            Current rail value.
+//@field leg              Active leg direction: +1 up, -1 down, 0 flat.
+//@field latched_velocity Slew velocity fixed at the start of the current leg.
+//@field trend_on         Whether a committed trend is currently armed.
+type Ratchet
+    float level
+    int   leg
+    float latched_velocity
+    bool  trend_on
+
+//@type One bar of rail state produced by the ratchet.
+//@field level Rail value for this bar.
+//@field band  Hold-band half-width for this bar.
+//@field state Leg direction: +1 up, -1 down, 0 holding.
+type RatchetResult
+    float level
+    float band
+    int   state
+
+//@type The accessibility transforms applied to every colour before it reaches the chart.
+//@field cvd_mode      Colour-vision-deficiency correction.
+//@field auto_contrast Whether to enforce the WCAG contrast target.
+//@field contrast      Target contrast ratio.
+type Theme
+    CvdMode cvd_mode
+    bool    auto_contrast
+    float   contrast
+
+//@type A perceptual Oklab colour coordinate.
+//@field L Perceptual lightness.
+//@field a Green-red axis.
+//@field b Blue-yellow axis.
+type Ok
+    float L
+    float a
+    float b
+
+//@type The three colour anchors and the accessibility theme applied to them.
+//@field rising  Rising-leg anchor.
+//@field falling Falling-leg anchor.
+//@field holding Neutral holding anchor.
+//@field theme   Accessibility theme applied on the way to the chart.
+type Palette
+    Ok    rising
+    Ok    falling
+    Ok    holding
+    Theme theme
+
+//@type Fixed colours for the compact state table.
+//@field background Table background.
+//@field row        Row background.
+//@field frame      Border and frame colour.
+//@field label      Label text colour.
+type RadarTheme
+    color background
+    color row
+    color frame
+    color label
+
+//@type Everything BODY's plots, markers, forecast, and alerts read off main().
+//@field rail       Plotted rail value (price).
+//@field band_upper Full upper hold-band edge (price).
+//@field band_lower Full lower hold-band edge (price).
+//@field rail_color Fully-resolved rail colour.
+//@field glow_drive Conviction-aware glow intensity, 0–1 (0 while holding, so the halo fades in ranges).
+//@field glow_rail  Rail value for the glow plots (na when the glow is off).
+//@field rail_level Rail value in the filter's working geometry (log or linear) drives the forecast projection.
+//@field band_half  Hold-band half-width in working geometry sets how the forecast cone widens.
+//@field band_drive Hold-band displayed-width factor, 0–1 full while holding, zero during any committed leg.
+//@field holding    True while the rail is flat (holding).
+//@field flip_rise  True on the bar the rail commits to rising.
+//@field flip_fall  True on the bar the rail commits to falling.
+//@field flip_hold  True on the bar the rail flattens into a hold.
+type Results
+    float rail
+    float band_upper
+    float band_lower
+    color rail_color
+    float glow_drive
+    float glow_rail
+    float rail_level
+    float band_half
+    float band_drive
+    bool  holding
+    bool  flip_rise
+    bool  flip_fall
+    bool  flip_hold
+
+//@type A bounded pool of flip/hold markers; the oldest is removed once the cap is reached.
+//@field marks Live marker labels, newest first.
+type MarkerBook
+    label[] marks
+
+//@type The live forecast ghost forward-projected cone shells plus the comet-head marker.
+//@field shells Cone shells and the centre spine, cleared and rebuilt on the live bar.
+//@field comet  Comet-head glyph at the live rail end.
+type Ghost
+    polyline[] shells
+    label      comet
+
+// types }
+
+
+// functions {
+
+
+// color internals {
+
+//@function Clamp to the unit interval.
+clamp01(float value)=> math.max(0.0, math.min(1.0, value))
+//@function Clamp a value to a [floor, ceiling] range.
+clamp(float value, float floor, float ceiling)=> math.max(floor, math.min(ceiling, value))
+//@function sRGB channel → linear light.
+srgb_to_linear(float channel)=> channel <= 0.04045 ? channel / 12.92 : math.pow((channel + 0.055) / 1.055, 2.4)
+//@function Linear light → sRGB channel.
+linear_to_srgb(float channel)=> channel <= 0.0031308 ? channel * 12.92 : 1.055 * math.pow(channel, 1.0 / 2.4) - 0.055
+
+//@function WCAG relative luminance of a colour.
+rel_luminance(color col)=>
+    float red   = srgb_to_linear(color.r(col) / 255.0)
+    float green = srgb_to_linear(color.g(col) / 255.0)
+    float blue  = srgb_to_linear(color.b(col) / 255.0)
+    0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+//@function WCAG contrast ratio between two luminances.
+contrast_ratio(float a, float b)=> (math.max(a, b) + 0.05) / (math.min(a, b) + 0.05)
+
+//@function Rescale a colour toward a target luminance, preserving hue and alpha.
+set_luminance(color col, float target)=>
+    float red   = srgb_to_linear(color.r(col) / 255.0)
+    float green = srgb_to_linear(color.g(col) / 255.0)
+    float blue  = srgb_to_linear(color.b(col) / 255.0)
+    float luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    float out_red   = red
+    float out_green = green
+    float out_blue  = blue
+    if target < luminance and luminance > 0.000001
+        float scale = clamp01(target / luminance)
+        out_red   := red * scale
+        out_green := green * scale
+        out_blue  := blue * scale
+    else if target > luminance and (1.0 - luminance) > 0.000001
+        float scale = clamp01((target - luminance) / (1.0 - luminance))
+        out_red   := red + (1.0 - red) * scale
+        out_green := green + (1.0 - green) * scale
+        out_blue  := blue + (1.0 - blue) * scale
+    color.rgb(linear_to_srgb(clamp01(out_red)) * 255, linear_to_srgb(clamp01(out_green)) * 255, linear_to_srgb(clamp01(out_blue)) * 255, color.t(col))
+
+//@function Nudge a foreground colour until it meets a target contrast against a background luminance.
+contrast_against(color foreground, float background_luminance, float target)=>
+    float foreground_luminance = rel_luminance(foreground)
+    color result = foreground
+    if contrast_ratio(foreground_luminance, background_luminance) < target
+        float light_target = target * (background_luminance + 0.05) - 0.05
+        float dark_target  = (background_luminance + 0.05) / target - 0.05
+        bool light_valid = light_target <= 1.0
+        bool dark_valid  = dark_target >= 0.0
+        float chosen = background_luminance > 0.5 ? (dark_valid ? dark_target : (light_valid ? light_target : foreground_luminance)) : (light_valid ? light_target : (dark_valid ? dark_target : foreground_luminance))
+        result := set_luminance(foreground, clamp01(chosen))
+    result
+
+//@function Apply auto-contrast against the chart background when enabled.
+auto_background(color col, bool enabled, float target)=> enabled ? contrast_against(col, rel_luminance(chart.bg_color), target) : col
+
+//@function Simulate or correct a colour for the selected colour-vision deficiency.
+cvd(color col, CvdMode mode)=>
+    color result = col
+    if mode != CvdMode.off
+        float red   = color.r(col) / 255.0
+        float green = color.g(col) / 255.0
+        float blue  = color.b(col) / 255.0
+        float long_wave   = 17.8824 * red + 43.5161 * green + 4.11935 * blue
+        float medium_wave = 3.45565 * red + 27.1554 * green + 3.86714 * blue
+        float short_wave  = 0.0299566 * red + 0.184309 * green + 1.46709 * blue
+        float simulated_long   = long_wave
+        float simulated_medium = medium_wave
+        float simulated_short  = short_wave
+        if mode == CvdMode.protanopia
+            simulated_long := 2.02344 * medium_wave - 2.52581 * short_wave
+        else if mode == CvdMode.deuteranopia
+            simulated_medium := 0.494207 * long_wave + 1.24827 * short_wave
+        else
+            simulated_short := -0.395913 * long_wave + 0.801109 * medium_wave
+        float simulated_red   =  0.080944 * simulated_long - 0.130504 * simulated_medium + 0.116721 * simulated_short
+        float simulated_green = -0.010249 * simulated_long + 0.054019 * simulated_medium - 0.113615 * simulated_short
+        float simulated_blue  = -0.000365 * simulated_long - 0.004122 * simulated_medium + 0.693511 * simulated_short
+        float error_red   = red - simulated_red
+        float error_green = green - simulated_green
+        float error_blue  = blue - simulated_blue
+        result := color.rgb(clamp01(red) * 255, clamp01(green + 0.7 * error_red + error_green) * 255, clamp01(blue + 0.7 * error_red + error_blue) * 255, color.t(col))
+    result
+
+//@function Apply the theme's CVD and auto-contrast transforms to a colour.
+method mark(Theme self, color col)=> auto_background(cvd(col, self.cvd_mode), self.auto_contrast, self.contrast)
+//@function Choose black or white text for legibility on a fill colour.
+text_color(color fill)=> rel_luminance(fill) > 0.18 ? color.new(color.black, 0) : color.new(color.white, 0)
+
+//@function Two-argument arctangent (Pine has no built-in atan2).
+atan2(float y, float x)=> x > 0 ? math.atan(y / x) : x < 0 ? (y >= 0 ? math.atan(y / x) + math.pi : math.atan(y / x) - math.pi) : (y > 0 ? math.pi / 2.0 : y < 0 ? -math.pi / 2.0 : 0.0)
+
+//@function Convert an sRGB colour to Oklab.
+to_ok(color col)=>
+    float red   = srgb_to_linear(color.r(col) / 255.0)
+    float green = srgb_to_linear(color.g(col) / 255.0)
+    float blue  = srgb_to_linear(color.b(col) / 255.0)
+    float long_mix   = 0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue
+    float medium_mix = 0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue
+    float short_mix  = 0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue
+    float long_root   = math.sign(long_mix) * math.pow(math.abs(long_mix), 1.0 / 3.0)
+    float medium_root = math.sign(medium_mix) * math.pow(math.abs(medium_mix), 1.0 / 3.0)
+    float short_root  = math.sign(short_mix) * math.pow(math.abs(short_mix), 1.0 / 3.0)
+    Ok.new(0.2104542553 * long_root + 0.7936177850 * medium_root - 0.0040720468 * short_root,
+           1.9779984951 * long_root - 2.4285922050 * medium_root + 0.4505937099 * short_root,
+           0.0259040371 * long_root + 0.7827717662 * medium_root - 0.8086757660 * short_root)
+
+//@function Convert an Oklab colour to linear RGB.
+method linear_rgb(Ok self)=>
+    float long_root   = self.L + 0.3963377774 * self.a + 0.2158037573 * self.b
+    float medium_root = self.L - 0.1055613458 * self.a - 0.0638541728 * self.b
+    float short_root  = self.L - 0.0894841775 * self.a - 1.2914855480 * self.b
+    float long_mix   = long_root * long_root * long_root
+    float medium_mix = medium_root * medium_root * medium_root
+    float short_mix  = short_root * short_root * short_root
+    float red   =  4.0767416621 * long_mix - 3.3077115913 * medium_mix + 0.2309699292 * short_mix
+    float green = -1.2684380046 * long_mix + 2.6097574011 * medium_mix - 0.3413193965 * short_mix
+    float blue  = -0.0041960863 * long_mix - 0.7034186147 * medium_mix + 1.7076147010 * short_mix
+    [red, green, blue]
+
+//@function True when the Oklab colour lands inside the sRGB gamut.
+method in_gamut(Ok self)=>
+    [red, green, blue] = self.linear_rgb()
+    red >= 0.0 and red <= 1.0 and green >= 0.0 and green <= 1.0 and blue >= 0.0 and blue <= 1.0
+
+//@function Convert Oklab to sRGB with hue-preserving chroma compression instead of channel clipping.
+method col(Ok self)=>
+    Ok mapped = self
+    if not self.in_gamut()
+        float floor = 0.0
+        float ceiling = 1.0
+        for iteration = 0 to 11
+            float middle = 0.5 * (floor + ceiling)
+            Ok probe = Ok.new(self.L, self.a * middle, self.b * middle)
+            if probe.in_gamut()
+                floor := middle
+            else
+                ceiling := middle
+        mapped := Ok.new(self.L, self.a * floor, self.b * floor)
+    [red, green, blue] = mapped.linear_rgb()
+    color.rgb(linear_to_srgb(clamp01(red)) * 255, linear_to_srgb(clamp01(green)) * 255, linear_to_srgb(clamp01(blue)) * 255, 0)
+
+//@function Linearly interpolate between two Oklab colours.
+method blend(Ok self, Ok other, float amount)=> Ok.new(self.L + (other.L - self.L) * amount, self.a + (other.a - self.a) * amount, self.b + (other.b - self.b) * amount)
+
+//@function Rotate hue, shift lightness, and scale chroma of an Oklab colour.
+method roll(Ok self, float hue, float lightness, float chroma_multiplier)=>
+    float chroma = math.sqrt(self.a * self.a + self.b * self.b)
+    float angle = atan2(self.b, self.a) + hue * math.pi / 180.0
+    Ok.new(clamp01(self.L + lightness), (chroma * chroma_multiplier) * math.cos(angle), (chroma * chroma_multiplier) * math.sin(angle))
+
+//@function Build the three perceptual anchors and theme from the configuration.
+//@param config User configuration.
+//@returns Palette.
+build_palette(Config config)=>
+    Ok rising  = to_ok(config.rising_color ).roll(config.hue, config.lightness, config.vibrancy)
+    Ok falling = to_ok(config.falling_color).roll(config.hue, config.lightness, config.vibrancy)
+    Ok holding = to_ok(config.holding_color).roll(config.hue, config.lightness, math.min(config.vibrancy, 1.25))
+    Theme theme = Theme.new(config.cvd_mode, config.auto_contrast, config.contrast)
+    Palette.new(rising, falling, holding, theme)
+
+// color internals }
+
+
+// display helpers {
+
+//@function Table-position enum → Pine position.* constant.
+//@param self Selected corner.
+//@returns A position.* constant.
+method to_position(TablePosition self)=>
+    switch self
+        TablePosition.top_right     => position.top_right
+        TablePosition.top_left      => position.top_left
+        TablePosition.top_center    => position.top_center
+        TablePosition.bottom_right  => position.bottom_right
+        TablePosition.bottom_left   => position.bottom_left
+        TablePosition.bottom_center => position.bottom_center
+
+//@function Short label for a Speed preset.
+//@param self Selected preset.
+//@returns Short display string.
+method short(Speed self)=>
+    switch self
+        Speed.glacier  => "Glacier"
+        Speed.slow     => "Slow"
+        Speed.balanced => "Balanced"
+        Speed.fast     => "Fast"
+        =>                "Scalp"
+
+//@function Short label for a Pursuit preset.
+//@param self Selected preset.
+//@returns Short display string.
+method short(Pursuit self)=>
+    switch self
+        Pursuit.steady => "Steady"
+        Pursuit.eased  => "Eased"
+        =>                "Snap"
+
+//@function Fixed colours for the Trender Radar table.
+init_radar_theme()=> RadarTheme.new(#20222C, #181B27, #363843, #AEB6C5)
+
+// display helpers }
+
+
+// behavior {
+
+//@function Hyperbolic tangent, argument-clamped for stability.
+tanh(float value)=>
+    float exponent = math.exp(2.0 * clamp(value, -20.0, 20.0))
+    (exponent - 1.0) / (exponent + 1.0)
+
+//@function Resolve the Speed and Pursuit choices into the engine's tuning constants.
+//@param speed   Selected Speed preset.
+//@param pursuit Selected Pursuit preset.
+//@returns Behavior.
+resolve_behavior(Speed speed, Pursuit pursuit)=>
+    float speed_rate = switch speed
+        Speed.glacier  => 0.06
+        Speed.slow     => 0.11
+        Speed.balanced => 0.20
+        Speed.fast     => 0.32
+        =>                 0.50
+    float speed_deadband = switch speed
+        Speed.glacier  => 2.0
+        Speed.slow     => 1.5
+        Speed.balanced => 1.05
+        Speed.fast     => 0.8
+        =>                 0.6
+    float pursuit_multiplier = switch pursuit
+        Pursuit.steady => 1.0
+        Pursuit.eased  => 0.9
+        =>                1.5
+    float conviction_reference = switch pursuit
+        Pursuit.snap => 1.0
+        =>              2.0
+    Behavior.new(pursuit_rate = speed_rate * pursuit_multiplier,
+                 deadband = speed_deadband,
+                 process_ratio = 0.05,
+                 huber_knee = 2.5,
+                 cusum_drift = 0.5,
+                 cusum_threshold = 6.0,
+                 conviction_on = 1.0,
+                 conviction_off = 0.35,
+                 freeze_tolerance = 0.15,
+                 scale_pursuit = pursuit != Pursuit.steady,
+                 conviction_reference = conviction_reference)
+
+// behavior }
+
+
+// brain {
+
+//@function Seed an empty Brain; the Kalman state initialises on the first bar with a nonzero true range.
+init_brain()=> Brain.new(na, 0.0, na, 0.0, na, 1.0, na, 0.0, 0.0, 0)
+
+//@function Advance the robust local-linear-trend Kalman and its gated CUSUM adaptation by one bar.
+//@param self     The Brain state.
+//@param config   User configuration (price source and geometry).
+//@param behavior Resolved tuning constants.
+//@returns BrainResult for this bar.
+method step(Brain self, Config config, Behavior behavior)=>
+    float source_value = nz(config.price_source, close)
+    float source_safe  = math.max(source_value, syminfo.mintick)
+    float high_safe    = math.max(high, syminfo.mintick)
+    float low_safe     = math.max(low, syminfo.mintick)
+    float observation  = config.log_geometry ? math.log(source_safe) : source_value
+
+    // seed the noise scale from the first bar whose TRUE range is nonzero close-to-close movement counts,
+    // so one-print bars (O=H=L=C: economic series, thin sessions) still hand the filter a real volatility
+    // scale instead of a zero seed that pins the band shut for the rest of the chart.
+    if na(self.base_noise)
+        self.level := observation
+        float previous_close = nz(close[1], open)
+        float previous_safe  = math.max(previous_close, syminfo.mintick)
+        float range_high_low = config.log_geometry ? math.log(high_safe) - math.log(low_safe) : high - low
+        float range_up       = config.log_geometry ? math.abs(math.log(high_safe) - math.log(previous_safe)) : math.abs(high - previous_close)
+        float range_down     = config.log_geometry ? math.abs(math.log(low_safe) - math.log(previous_safe)) : math.abs(low - previous_close)
+        float true_range     = math.max(range_high_low, range_up, range_down)
+        if true_range > 0
+            self.base_noise     := math.max((0.5 * true_range) * (0.5 * true_range), 1e-12)
+            self.level_variance := self.base_noise * 10.0
+            self.slope_variance := self.base_noise * 0.1
+
+    if na(self.base_noise)
+        // price has not moved yet ride the flat print until a true range exists.
+        BrainResult.new(self.level, 0.0, 0.0, false, false)
+    else
+        float measurement_noise = self.base_noise * self.noise_multiplier
+        float process_noise     = behavior.process_ratio * measurement_noise
+        float predicted_level   = self.level + self.slope
+        float predicted_slope   = self.slope
+        float predicted_level_variance = self.level_variance + 2.0 * self.covariance + self.slope_variance + process_noise / 3.0
+        float predicted_covariance     = self.covariance + self.slope_variance + process_noise * 0.5
+        float predicted_slope_variance = self.slope_variance + process_noise
+        float innovation_variance = predicted_level_variance + measurement_noise
+        float innovation = observation - predicted_level
+        float innovation_deviation = math.sqrt(math.max(innovation_variance, 1e-18))
+        float standardized_innovation = innovation / innovation_deviation
+        float huber_weight = math.abs(standardized_innovation) <= behavior.huber_knee ? 1.0 : behavior.huber_knee / math.abs(standardized_innovation)
+        float robust_innovation = innovation * huber_weight
+        float level_gain = predicted_level_variance / innovation_variance
+        float slope_gain = predicted_covariance / innovation_variance
+
+        self.level          := predicted_level + level_gain * robust_innovation
+        self.slope          := predicted_slope + slope_gain * robust_innovation
+        self.level_variance := predicted_level_variance - level_gain * predicted_level_variance
+        self.covariance     := predicted_covariance - level_gain * predicted_covariance
+        self.slope_variance := predicted_slope_variance - slope_gain * predicted_covariance
+
+        self.cusum_positive := math.max(0.0, self.cusum_positive + standardized_innovation - behavior.cusum_drift)
+        self.cusum_negative := math.max(0.0, self.cusum_negative - standardized_innovation - behavior.cusum_drift)
+        bool change_up   = self.cusum_positive > behavior.cusum_threshold
+        bool change_down = self.cusum_negative > behavior.cusum_threshold
+        if change_up or change_down
+            self.change_cooldown := 10
+            self.cusum_positive  := 0.0
+            self.cusum_negative  := 0.0
+
+        float adaptation_gain = self.change_cooldown > 0 ? 0.15 : 0.02
+        self.change_cooldown := math.max(0, self.change_cooldown - 1)
+        if bar_index > 10 and innovation_variance > 0
+            float normalized_innovation = innovation * innovation / innovation_variance
+            self.noise_multiplier := clamp(self.noise_multiplier * math.exp(adaptation_gain * (math.min(normalized_innovation, 9.0) - 1.0)), 0.25, 16.0)
+
+        float conviction = math.abs(self.slope) / math.sqrt(math.max(self.slope_variance, 1e-18))
+        BrainResult.new(self.level, innovation_deviation, conviction, change_up, change_down)
+
+// brain }
+
+
+// ratchet {
+
+//@function Seed an empty Ratchet; the rail level initialises on the first bar.
+init_ratchet()=> Ratchet.new(na, 0, 0.0, false)
+
+//@function Advance the slew-limited, monotone-within-leg rail toward the Kalman centre.
+//@param self     The Ratchet state.
+//@param brain    This bar's Brain evidence.
+//@param behavior Resolved tuning constants.
+//@returns RatchetResult for this bar.
+method step(Ratchet self, BrainResult brain, Behavior behavior)=>
+    if na(self.level)
+        self.level := brain.center
+
+    float band = behavior.deadband * brain.innovation_deviation
+    float freeze_tolerance = behavior.freeze_tolerance * band
+    float error = brain.center - self.level
+
+    if self.trend_on and brain.conviction < behavior.conviction_off
+        self.trend_on := false
+    else if not self.trend_on and brain.conviction > behavior.conviction_on
+        self.trend_on := true
+
+    float conviction_scale = behavior.scale_pursuit ? (0.4 + 1.1 * tanh(brain.conviction / behavior.conviction_reference)) : 1.0
+    float current_velocity = behavior.pursuit_rate * brain.innovation_deviation * conviction_scale
+
+    if self.leg == 0
+        if error > band or (self.trend_on and error > freeze_tolerance)
+            self.leg := 1
+            self.latched_velocity := current_velocity
+        else if error < -band or (self.trend_on and error < -freeze_tolerance)
+            self.leg := -1
+            self.latched_velocity := current_velocity
+
+    if self.leg == 1 and error < -band and brain.change_down
+        self.leg := -1
+        self.latched_velocity := current_velocity
+    else if self.leg == -1 and error > band and brain.change_up
+        self.leg := 1
+        self.latched_velocity := current_velocity
+
+    if self.leg == 1
+        self.level := self.level + math.min(self.latched_velocity, math.max(error, 0.0))
+        if (brain.center - self.level) <= freeze_tolerance and not self.trend_on
+            self.leg := 0
+    else if self.leg == -1
+        self.level := self.level - math.min(self.latched_velocity, math.max(-error, 0.0))
+        if (self.level - brain.center) <= freeze_tolerance and not self.trend_on
+            self.leg := 0
+
+    RatchetResult.new(self.level, band, self.leg)
+
+// ratchet }
+
+
+// drawing {
+
+//@function Per-layer transparency (0–100) for an alpha-aware Gaussian glow overlapping translucent copies
+//          sum to a smooth Gaussian bloom (1 − ∏(1−α) inversion). Layer 1 = outer/faint, layer n = inner/bright.
+//@param k    Layer index, 1..n (1 = widest/faintest).
+//@param n    Layer count.
+//@param peak Peak cumulative opacity, 0–1 (conviction-driven).
+//@param beta Gaussian falloff higher keeps a tighter, brighter core.
+//@returns Transparency 0–100 for this layer.
+glow_alpha(int k, int n, float peak, float beta)=>
+    float rho_k  = (n - k + 1.0) / n
+    float rho_km = (n - k + 2.0) / n
+    float t_k  = peak * math.exp(-beta * rho_k * rho_k)
+    float t_km = k <= 1 ? 0.0 : peak * math.exp(-beta * rho_km * rho_km)
+    float layer_alpha = (1.0 - t_km) > 0.0001 ? clamp01((t_k - t_km) / (1.0 - t_km)) : 0.0
+    clamp01(1.0 - layer_alpha) * 100.0
+
+//@function Colour for one Gaussian-glow layer around the rail: lifts a near-black rail so the halo stays
+//          visible, then applies the layer's bloom transparency. Base is already CVD/contrast-corrected.
+//@param base Resolved rail colour the glow tints.
+//@param k    Layer index, 1..n (1 = widest/faintest).
+//@param n    Layer count.
+//@param peak Peak cumulative opacity, 0–1.
+//@param beta Gaussian falloff higher keeps a tighter, brighter core.
+//@returns The layer colour with its glow transparency.
+glow_col(color base, int k, int n, float peak, float beta)=>
+    color lifted = rel_luminance(base) < 0.12 ? set_luminance(base, 0.12) : base
+    color.new(lifted, glow_alpha(k, n, peak, beta))
+
+//@function Seed an empty marker pool.
+new_marker_book()=> MarkerBook.new(array.new<label>())
+
+//@function Add a transparent-bubble glyph marker and evict the oldest beyond the cap.
+//@param self  The marker pool.
+//@param price Anchor price (ignored while yloc tracks the bar, but required by label.new).
+//@param glyph Marker text.
+//@param below Place below the bar; otherwise above.
+//@param tc    Glyph colour.
+//@param sz    Text size constant.
+//@param tip   Tooltip text.
+//@param maxn  Pool cap.
+//@returns The marker pool.
+method add(MarkerBook self, float price, string glyph, bool below, color tc, string sz, string tip, int maxn)=>
+    label lb = label.new(bar_index, price, glyph, xloc = xloc.bar_index, yloc = below ? yloc.belowbar : yloc.abovebar, style = below ? label.style_label_up : label.style_label_down, color = #00000000, textcolor = tc, size = sz, tooltip = tip)
+    self.marks.unshift(lb)
+    while self.marks.size() > maxn
+        (self.marks.pop()).delete()
+    self
+
+//@function Seed an empty forecast ghost.
+new_ghost()=> Ghost.new(array.new<polyline>(), na)
+
+//@function Delete the ghost's shells and comet head.
+//@param self The ghost.
+//@returns The ghost.
+method clear(Ghost self)=>
+    if not na(self.shells)
+        while self.shells.size() > 0
+            polyline p = self.shells.pop()
+            if not na(p)
+                p.delete()
+    if not na(self.comet)
+        self.comet.delete()
+        self.comet := na
+    self
+
+//@function Rebuild the forecast ghost: project the rail forward as a translucent uncertainty cone that fades
+//          to nothing at the tip, plus a comet head at the live rail. Honest by construction it extends the
+//          rail's own current velocity and makes no hard claim (the far end dissolves).
+//@param self      The ghost.
+//@param lvl       Current rail level in working geometry.
+//@param beta      Per-bar rail velocity in working geometry.
+//@param band      Hold-band half-width in working geometry.
+//@param horizon   Forecast horizon in bars.
+//@param sqrt_grow √h cone growth when true, linear when false.
+//@param is_log    Log geometry (map working level to price with exp()).
+//@param col       Rail colour.
+//@param rail_px   Rail price at the live bar.
+//@returns The ghost.
+method rebuild(Ghost self, float lvl, float beta, float band, int horizon, bool sqrt_grow, bool is_log, color col, float rail_px)=>
+    int   slices = math.min(horizon, 99)                         // one slice per forecast bar (budget-capped)
+    float peak   = 0.6                                            // opacity at the rail, easing to 0 at the tip
+    for h = 0 to slices - 1
+        float ca = lvl + beta * h
+        float cb = lvl + beta * (h + 1)
+        float ga = sqrt_grow ? math.sqrt(h       / (horizon + 0.0)) : h       / (horizon + 0.0)
+        float gb = sqrt_grow ? math.sqrt((h + 1) / (horizon + 0.0)) : (h + 1) / (horizon + 0.0)
+        float wa = band * (0.2 + 0.95 * ga)
+        float wb = band * (0.2 + 0.95 * gb)
+        float upa = is_log ? math.exp(ca + wa) : ca + wa
+        float dna = is_log ? math.exp(ca - wa) : ca - wa
+        float upb = is_log ? math.exp(cb + wb) : cb + wb
+        float dnb = is_log ? math.exp(cb - wb) : cb - wb
+        float frac   = (h + 0.5) / horizon
+        float transp = clamp(100.0 * (1.0 - peak * math.pow(1.0 - frac, 1.2)), 0.0, 100.0)
+        array<chart.point> pts = array.new<chart.point>()
+        pts.push(chart.point.from_index(bar_index + h,     upa))
+        pts.push(chart.point.from_index(bar_index + h + 1, upb))
+        pts.push(chart.point.from_index(bar_index + h + 1, dnb))
+        pts.push(chart.point.from_index(bar_index + h,     dna))
+        self.shells.push(polyline.new(pts, curved = false, closed = true, line_color = color.new(col, 100), fill_color = color.new(col, transp), line_width = 1))
+    float tip_px = is_log ? math.exp(lvl + beta * horizon) : lvl + beta * horizon
+    array<chart.point> spine = array.new<chart.point>()
+    spine.push(chart.point.from_index(bar_index, rail_px))
+    spine.push(chart.point.from_index(bar_index + horizon, tip_px))
+    self.shells.push(polyline.new(spine, curved = false, closed = false, line_color = color.new(col, 55), line_width = 1))
+    self.comet := label.new(bar_index, rail_px, "●", xloc = xloc.bar_index, color = #00000000, textcolor = color.new(col, 15), style = label.style_label_center, size = size.small)
+    self
+
+//@function Resolve the rail colour for the current state and conviction.
+//@param palette    Perceptual palette.
+//@param state      Leg direction: +1 up, -1 down, 0 holding.
+//@param holding    True while the rail is flat.
+//@param conviction Normalised commit strength (0–1).
+//@returns The theme-corrected rail colour.
+resolve_rail_color(Palette palette, int state, bool holding, float conviction)=>
+    float state_mix = holding ? 0.0 : 0.28 + 0.72 * math.pow(conviction, 0.78)
+    Ok state_anchor = state > 0 ? palette.rising : palette.falling
+    Ok state_color = holding ? palette.holding : palette.holding.blend(state_anchor, state_mix)
+    palette.theme.mark(state_color.col())
+
+//@function Draw the Trender Radar table with the current state readout.
+//@param config     User configuration.
+//@param theme      Radar colours.
+//@param holding    True while the rail is flat.
+//@param state      Leg direction: +1 up, -1 down, 0 holding.
+//@param conviction Normalised commit strength (0–1).
+//@param rail_color Resolved rail colour.
+//@param level      Rail value in the filter's working geometry.
+//@param rail       Rail value in price.
+//@param band_upper Upper band edge in price.
+//@param band_lower Lower band edge in price.
+render_radar(Config config, RadarTheme theme, bool holding, int state, float conviction, color rail_color, float level, float rail, float band_upper, float band_lower)=>
+    var table radar = table.new(config.radar_position.to_position(), 2, 6, bgcolor = theme.background, border_color = theme.frame, frame_color = theme.frame, border_width = 1, frame_width = 1)
+    if barstate.isfirst
+        radar.merge_cells(0, 0, 1, 0)
+
+    if config.show_radar and barstate.islast
+        string state_text = holding ? "HOLDING" : (state > 0 ? "RISING ▲" : "FALLING ▼")
+        color state_fill = color.new(rail_color, 10)
+        color state_text_color = text_color(rail_color)
+        float slope_delta = level - nz(level[1], level)
+        float slope_value = config.log_geometry ? (math.exp(slope_delta) - 1.0) * 100.0 : slope_delta
+        float band_percent = (band_upper - band_lower) / math.max(math.abs(rail), syminfo.mintick) * 100.0
+        string slope_text = (slope_value >= 0 ? "+" : "") + str.tostring(slope_value, "#.###") + (config.log_geometry ? "%/bar" : "/bar")
+        string band_text = config.log_geometry ? str.tostring(band_percent, "#.##") + "%" : str.tostring(band_upper - band_lower, format.mintick)
+
+        radar.cell(0, 0, "Trender Radar", text_color = color.white, text_size = size.small, bgcolor = theme.background)
+        radar.cell(0, 1, "State", text_color = theme.label, text_size = size.small, bgcolor = theme.row)
+        radar.cell(1, 1, state_text, text_color = state_text_color, text_size = size.small, bgcolor = state_fill)
+        radar.cell(0, 2, "Conviction", text_color = theme.label, text_size = size.small, bgcolor = theme.background)
+        radar.cell(1, 2, str.tostring(conviction * 100.0, "#") + "%", text_color = rail_color, text_size = size.small, bgcolor = theme.background)
+        radar.cell(0, 3, "Slope", text_color = theme.label, text_size = size.small, bgcolor = theme.row)
+        radar.cell(1, 3, slope_text, text_color = color.white, text_size = size.small, bgcolor = theme.row)
+        radar.cell(0, 4, "Hold Band", text_color = theme.label, text_size = size.small, bgcolor = theme.background)
+        radar.cell(1, 4, band_text, text_color = color.white, text_size = size.small, bgcolor = theme.background)
+        radar.cell(0, 5, "Behavior", text_color = theme.label, text_size = size.small, bgcolor = theme.row)
+        radar.cell(1, 5, config.speed.short() + " / " + config.pursuit.short(), text_color = color.white, text_size = size.small, bgcolor = theme.row)
+    int _void = 0
+
+// drawing }
+
+
+// main {
+
+//@function Hold all persistent state, advance both engines, resolve colours, and return the plotted series.
+//@param config User configuration.
+//@returns Results for BODY's plots and alerts.
+main(Config config)=>
+    var Brain brain = init_brain()
+    var Ratchet ratchet = init_ratchet()
+    var Palette palette = build_palette(config)
+    var RadarTheme radar_theme = init_radar_theme()
+
+    Behavior behavior = resolve_behavior(config.speed, config.pursuit)
+    BrainResult evidence = brain.step(config, behavior)
+    RatchetResult hand = ratchet.step(evidence, behavior)
+
+    int state = hand.state
+    bool holding = state == 0
+    float conviction = holding ? 0.0 : clamp01(tanh(evidence.conviction / 3.0 * config.conviction_color))
+    color rail_color = resolve_rail_color(palette, state, holding, conviction)
+
+    float rail = config.log_geometry ? math.exp(hand.level) : hand.level
+    float band_upper = config.log_geometry ? math.exp(hand.level + hand.band) : hand.level + hand.band
+    float band_lower = config.log_geometry ? math.exp(hand.level - hand.band) : hand.level - hand.band
+    float glow_drive = holding ? 0.0 : 0.35 + 0.65 * conviction
+    // band display width the corridor belongs to the hold and is clutter in a trend, so it is drawn ONLY
+    // while the rail is flat: the moment a leg commits its DRAWN width eases shut onto the rail, and it
+    // eases back open once the rail flattens again. The travel is a short linear ramp (shut in 2 bars, open
+    // in 5) smoothstepped for zero-slope ends, so it opens and closes without a pop or a kink.
+    var float band_ramp = 1.0
+    band_ramp := clamp01(holding ? band_ramp + 1.0 / 5.0 : band_ramp - 1.0 / 2.0)
+    float band_drive = band_ramp * band_ramp * (3.0 - 2.0 * band_ramp)
+
+    bool flip_rise = barstate.isconfirmed and state == 1 and state[1] != 1
+    bool flip_fall = barstate.isconfirmed and state == -1 and state[1] != -1
+    bool flip_hold = barstate.isconfirmed and state == 0 and state[1] != 0
+
+    render_radar(config, radar_theme, holding, state, conviction, rail_color, hand.level, rail, band_upper, band_lower)
+
+    Results.new(rail = rail,
+                band_upper = band_upper,
+                band_lower = band_lower,
+                rail_color = rail_color,
+                glow_drive = glow_drive,
+                glow_rail = config.show_glow ? rail : na,
+                rail_level = hand.level,
+                band_half = hand.band,
+                band_drive = band_drive,
+                holding = holding,
+                flip_rise = flip_rise,
+                flip_fall = flip_fall,
+                flip_hold = flip_hold)
+
+// main }
+
+
+// functions }
+
+
+// HEAD }
+
+
+// BODY {
+
+
+// inputs {
+
+var const string G_BEHAVIOR = "Behavior"
+var const string G_SOURCE   = "Source & Geometry"
+var const string G_STYLE    = "Rail, Band & Glow"
+var const string G_COLORS   = "Colours"
+var const string G_ACCESS   = "Accessibility"
+var const string G_READOUT  = "State Readout"
+var const string G_FORECAST = "Forecast"
+var const string G_MARKERS  = "Markers"
+
+var const string TT_SPEED = "Sets the rail's overall tempo by coupling its hold-band width and pursuit speed.\n"
+ + "Glacier: calm higher-timeframe structure. Slow: patient swing rail. Balanced: even hold and tracking (recommended). Fast: reactive intraday rail. Scalp: tight micro follower."
+var const string TT_PURSUIT = "Shapes a committed leg without changing the trend evidence.\n"
+ + "Steady uses a constant-speed ramp. Eased scales motion with conviction and feathers into price. Snap is the most decisive pursuit; on slower presets it can appear step-like."
+var const string TT_SOURCE = "Price series pursued by the rail. Close is recommended.\n"
+ + "The Kalman center is used as the target, so isolated wicks cannot directly yank the rail."
+var const string TT_LOG = "Use proportional price geometry. The hold band and slope readout behave as percentages across different price levels.\n"
+ + "Recommended for ordinary positive price series; non-positive source values are safely clamped to the symbol's minimum tick."
+var const string TT_BAND = "Show the adaptive hold corridor around the rail.\n"
+ + "Inside this band the rail can stay flat; leaving it supplies evidence to begin or continue a leg. The corridor is drawn only while the rail is holding it eases shut onto the rail the moment a leg commits, since a trending rail has left its range, and eases back open when the rail flattens again."
+var const string TT_BAND_TRANSP = "Transparency of the hold corridor. Higher values are lighter and more see-through.\n"
+ + "The corridor uses a soft two-layer fill so its center reads without hiding candles."
+var const string TT_GLOW = "Add a conviction-aware halo around the rail. The halo swells during committed legs and fades to nothing while the rail holds flat."
+var const string TT_GLOW_I = "Peak brightness of the glow at full conviction. Higher makes committed legs blaze; the halo still fades out while holding."
+var const string TT_GLOW_S = "How tightly the glow hugs the rail. Lower spreads a soft wide bloom; higher keeps a tight, bright core."
+var const string TT_WIDTH = "Width of the solid rail core. The glow expands automatically around this width."
+var const string TT_RISING = "Master color for rising legs. Derived rail shades, band fills, glow, and readout accents remain harmonized with it."
+var const string TT_FALLING = "Master color for falling legs. Derived rail shades, band fills, glow, and readout accents remain harmonized with it."
+var const string TT_HOLDING = "Neutral anchor used while the rail is holding and as the low-conviction end of every transition."
+var const string TT_HUE = "Rotate all three anchors together in perceptual Oklab color space."
+var const string TT_LIGHT = "Shift perceptual lightness for the entire palette before accessibility correction."
+var const string TT_VIB = "Scale Oklab chroma for the entire palette. Out-of-gamut colors are compressed toward neutral while preserving hue and lightness."
+var const string TT_CONVICTION = "Controls how quickly committed legs become fully saturated. Higher values make directional color arrive sooner; it does not change the rail model."
+var const string TT_CVD = "Redistribute color signal for the selected color-vision deficiency so rising and falling remain distinguishable."
+var const string TT_AUTO_CONTRAST = "Adjust final mark luminance until it meets the selected WCAG contrast ratio against the chart background."
+var const string TT_CONTRAST = "Minimum contrast target for the rail and directional readout accents. 3.0 is a strong chart-mark target; 4.5 is stricter."
+var const string TT_READOUT = "Show the compact Trender Radar with state, conviction, slope, adaptive hold-band width, and the active behavior preset."
+var const string TT_LOCATION = "Corner used by the Trender Radar."
+var const string TT_FORECAST = "Project the rail forward along its current slope as a translucent cone that fades out with distance a ghostly read on where the rail is heading if the move holds. It never repaints history and makes no hard price claim."
+var const string TT_FC_H = "How many bars ahead the forecast cone reaches."
+var const string TT_FC_GROW = "How the cone widens with distance. √h is the natural random-walk spread tight near term, flaring gently. Linear widens evenly."
+var const string TT_FC_HOLD = "Also show the forecast while the rail is holding flat. Off by default, since a flat rail is not forecasting a move."
+var const string TT_MARKS = "Mark the bars where the rail commits to a rising or falling leg with a small glyph."
+var const string TT_MARK_HOLD = "Also mark the bars where the rail flattens back into a hold."
+var const string TT_MARK_SZ = "Size of the flip markers."
+
+Speed   i_speed   = input.enum(Speed.balanced, "Speed", tooltip = TT_SPEED, group = G_BEHAVIOR)
+Pursuit i_pursuit = input.enum(Pursuit.steady, "Pursuit", tooltip = TT_PURSUIT, group = G_BEHAVIOR)
+
+float i_src = input.source(close, "Price Source", tooltip = TT_SOURCE, group = G_SOURCE)
+bool  i_log = input.bool(true, "Use Log Geometry", tooltip = TT_LOG, group = G_SOURCE)
+
+bool  i_band  = input.bool(true, "Hold Band", inline = "band", tooltip = TT_BAND, group = G_STYLE)
+float i_bandt = input.float(93.0, "Transparency", minval = 0.0, maxval = 100.0, step = 1.0, inline = "band", active = i_band, tooltip = TT_BAND_TRANSP, group = G_STYLE)
+bool  i_glow  = input.bool(true, "Rail Glow", tooltip = TT_GLOW, group = G_STYLE)
+float i_glowi = input.float(0.82, "Glow Intensity", minval = 0.1, maxval = 1.0, step = 0.05, inline = "glow", active = i_glow, tooltip = TT_GLOW_I, group = G_STYLE)
+float i_glows = input.float(2.8, "Spread", minval = 1.0, maxval = 6.0, step = 0.2, inline = "glow", active = i_glow, tooltip = TT_GLOW_S, group = G_STYLE)
+int   i_linew = input.int(2, "Line Width", minval = 1, maxval = 6, tooltip = TT_WIDTH, group = G_STYLE)
+
+color i_cbull = input.color(#00B900, "Rising", tooltip = TT_RISING, group = G_COLORS)
+color i_cbear = input.color(#AF79F0, "Falling", tooltip = TT_FALLING, group = G_COLORS)
+color i_cneut = input.color(#A0A1A7, "Holding", tooltip = TT_HOLDING, group = G_COLORS)
+float i_hue   = input.float(0.0, "Hue°", minval = -180.0, maxval = 180.0, step = 5.0, inline = "roll", tooltip = TT_HUE, group = G_COLORS)
+float i_light = input.float(0.0, "Light", minval = -0.3, maxval = 0.3, step = 0.02, inline = "roll", tooltip = TT_LIGHT, group = G_COLORS)
+float i_vib   = input.float(1.0, "Vibrancy", minval = 0.4, maxval = 1.8, step = 0.05, inline = "roll", tooltip = TT_VIB, group = G_COLORS)
+float i_conv  = input.float(1.0, "Conviction Color", minval = 0.25, maxval = 3.0, step = 0.05, tooltip = TT_CONVICTION, group = G_COLORS)
+
+CvdMode i_cvd    = input.enum(CvdMode.off, "Colour-Blind Mode", tooltip = TT_CVD, group = G_ACCESS)
+bool    i_autobg = input.bool(true, "Auto Contrast", tooltip = TT_AUTO_CONTRAST, group = G_ACCESS)
+float   i_contr  = input.float(3.0, "Contrast Ratio", minval = 1.0, maxval = 7.0, step = 0.5, active = i_autobg, tooltip = TT_CONTRAST, group = G_ACCESS)
+
+bool          i_table     = input.bool(true, "Show Trender Radar", tooltip = TT_READOUT, group = G_READOUT)
+TablePosition i_table_loc = input.enum(TablePosition.top_right, "Location", active = i_table, tooltip = TT_LOCATION, group = G_READOUT)
+
+bool   i_fc      = input.bool(true, "Ghost Forecast", tooltip = TT_FORECAST, group = G_FORECAST)
+int    i_fc_h    = input.int(24, "Horizon (bars)", minval = 4, maxval = 100, active = i_fc, tooltip = TT_FC_H, group = G_FORECAST)
+string i_fc_grow = input.string("√h", "Cone Growth", options = ["√h", "Linear"], active = i_fc, tooltip = TT_FC_GROW, group = G_FORECAST)
+bool   i_fc_hold = input.bool(true, "Show While Holding", active = i_fc, tooltip = TT_FC_HOLD, group = G_FORECAST)
+
+bool   i_marks      = input.bool(true, "Flip Markers", tooltip = TT_MARKS, group = G_MARKERS)
+bool   i_marks_hold = input.bool(false, "Mark Holds", active = i_marks, tooltip = TT_MARK_HOLD, group = G_MARKERS)
+string i_marks_sz   = input.string("Small", "Marker Size", options = ["Tiny", "Small", "Normal"], active = i_marks, tooltip = TT_MARK_SZ, group = G_MARKERS)
+
+Config config = Config.new(speed = i_speed,
+                           pursuit = i_pursuit,
+                           price_source = i_src,
+                           log_geometry = i_log,
+                           show_band = i_band,
+                           band_transparency = i_bandt,
+                           show_glow = i_glow,
+                           line_width = i_linew,
+                           rising_color = i_cbull,
+                           falling_color = i_cbear,
+                           holding_color = i_cneut,
+                           hue = i_hue,
+                           lightness = i_light,
+                           vibrancy = i_vib,
+                           conviction_color = i_conv,
+                           cvd_mode = i_cvd,
+                           auto_contrast = i_autobg,
+                           contrast = i_contr,
+                           show_radar = i_table,
+                           radar_position = i_table_loc)
+
+// inputs }
+
+
+// calculations {
+
+Results results = main(config)
+
+// calculations }
+
+
+// plots {
+
+bool islog = config.log_geometry
+
+// hold band the adaptive corridor
+float band_w      = results.band_half * results.band_drive
+float band_up_s   = config.show_band ? (islog ? math.exp(results.rail_level + band_w) : results.rail_level + band_w) : na
+float band_dn_s   = config.show_band ? (islog ? math.exp(results.rail_level - band_w) : results.rail_level - band_w) : na
+float band_mid_s  = config.show_band ? results.rail : na
+float band_edge_t = i_bandt > 99.0 ? 100.0 : clamp(i_bandt - 12.0, 0.0, 100.0)
+p_band_up  = plot(band_up_s, "Band Upper", color.new(results.rail_color, band_edge_t), 1, editable = false, display = display.pane)
+p_band_dn  = plot(band_dn_s, "Band Lower", color.new(results.rail_color, band_edge_t), 1, editable = false, display = display.pane)
+p_band_mid = plot(band_mid_s, "Band Mid", #00000000, editable = false, display = display.none)
+fill(p_band_up,  p_band_mid, top_value = band_up_s,  bottom_value = band_mid_s, top_color = color.new(results.rail_color, i_bandt), bottom_color = color.new(results.rail_color, 100), title = "Hold Band Upper")
+fill(p_band_mid, p_band_dn,  top_value = band_mid_s, bottom_value = band_dn_s,  top_color = color.new(results.rail_color, 100), bottom_color = color.new(results.rail_color, i_bandt), title = "Hold Band Lower")
+
+float glow_peak = results.glow_drive * i_glowi
+float glow_series = results.glow_rail
+plot(glow_series, "Rail Glow 1", glow_col(results.rail_color, 1, 6, glow_peak, i_glows), i_linew + 10, editable = false, display = display.pane)
+plot(glow_series, "Rail Glow 2", glow_col(results.rail_color, 2, 6, glow_peak, i_glows), i_linew + 8, editable = false, display = display.pane)
+plot(glow_series, "Rail Glow 3", glow_col(results.rail_color, 3, 6, glow_peak, i_glows), i_linew + 6, editable = false, display = display.pane)
+plot(glow_series, "Rail Glow 4", glow_col(results.rail_color, 4, 6, glow_peak, i_glows), i_linew + 4, editable = false, display = display.pane)
+plot(glow_series, "Rail Glow 5", glow_col(results.rail_color, 5, 6, glow_peak, i_glows), i_linew + 3, editable = false, display = display.pane)
+plot(glow_series, "Rail Glow 6", glow_col(results.rail_color, 6, 6, glow_peak, i_glows), i_linew + 2, editable = false, display = display.pane)
+
+// rail: solid body + a thin brightened core highlight for a crisp centre over the bloom.
+plot(results.rail, "Trender", results.rail_color, i_linew)
+plot(results.rail, "Rail Core", set_luminance(results.rail_color, clamp01(rel_luminance(results.rail_color) + 0.30)), 1, editable = false, display = display.pane)
+
+// plots }
+
+
+// drawings {
+
+// flip & hold markers transparent-bubble glyphs at confirmed state changes, oldest evicted past the cap.
+var MarkerBook book = new_marker_book()
+string mk_sz = i_marks_sz == "Tiny" ? size.tiny : (i_marks_sz == "Normal" ? size.normal : size.small)
+if i_marks and barstate.isconfirmed
+    if results.flip_rise
+        book.add(low,  "▲", true,  results.rail_color, mk_sz, "Committed to a RISING leg", 90)
+    if results.flip_fall
+        book.add(high, "▼", false, results.rail_color, mk_sz, "Committed to a FALLING leg", 90)
+    if i_marks_hold and results.flip_hold
+        book.add(high, "◇", false, results.rail_color, mk_sz, "Flattened into a hold", 90)
+
+// ghost forecast translucent forward projection of the rail, rebuilt only on the live bar (no history repaint).
+var Ghost ghost = new_ghost()
+float fc_lvl  = results.rail_level
+float fc_beta = (fc_lvl - fc_lvl[3]) / 3.0
+if barstate.islast
+    ghost.clear()
+    if i_fc and (i_fc_hold or not results.holding)
+        ghost.rebuild(fc_lvl, fc_beta, results.band_half, i_fc_h, i_fc_grow == "√h", islog, results.rail_color, results.rail)
+
+// drawings }
+
+
+// alerts {
+
+alertcondition(results.flip_rise, "Trender ▲ Rising", "Trender committed to a RISING trend")
+alertcondition(results.flip_fall, "Trender ▼ Falling", "Trender committed to a FALLING trend")
+alertcondition(results.flip_hold, "Trender Holding", "Trender flattened into a hold")
+
+// alerts }
+
+
+// BODY }

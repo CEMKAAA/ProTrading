@@ -1,0 +1,402 @@
+﻿[
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqDashboardFit.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqImagePresets.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeMacroRegime.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeMacroRegimeFilter.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSolVersion_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqNarrativeSol_RegimeV3.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqROptions.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiqStrategyLibrary.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\TradeDayCalendarPublisher.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqDashboardFit.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqImagePresets.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeMacroRegime.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeMacroRegimeFilter.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSolVersion_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqNarrativeSol_RegimeV3.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqROptions.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiqStrategyLibrary.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "verified":  false,
+        "error":  "İstenen işlem, kullanıcıya eşleşmiş bölümü açık olan bir dosyada yürütülemez.\r\n"
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\liq\\TradeDayCalendarPublisher.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqDashboardFit.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqImagePresets.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeMacroRegime.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeMacroRegimeFilter.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSolVersion_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqNarrativeSol_RegimeV3.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqROptions.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiqStrategyLibrary.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\TradeDayCalendarPublisher.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqDashboardFit.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqImagePresets.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegime.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSolVersion_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqROptions.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA_Channel.ex5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiquidityNarrative_MT5_EA_Channel.mq5",
+        "verified":  true,
+        "error":  ""
+    },
+    {
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\TradeDayCalendarPublisher.mqh",
+        "verified":  true,
+        "error":  ""
+    }
+]

@@ -1,0 +1,10 @@
+{"kind":"run","symbol":"BTCUSDm"}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1778424600,"dir":"SELL","valid":true,"outcome":"TP4","exit":1778446145,"price":80475.2500000000,"r":0.479289940828,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1779967500,"dir":"BUY","valid":true,"outcome":"TP4","exit":1780004469,"price":73732.0800000000,"r":0.477250344692,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1780524600,"dir":"BUY","valid":true,"outcome":"SL","exit":1780529827,"price":64246.3400000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1784536500,"dir":"BUY","valid":true,"outcome":"TP4","exit":1784547031,"price":64416.2800000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1786070400,"dir":"SELL","valid":true,"outcome":"SL","exit":1786313662,"price":65365.7600000000,"r":-1.000000000000,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1787733600,"dir":"SELL","valid":true,"outcome":"TP4","exit":1787735844,"price":78494.6300000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1789218600,"dir":"BUY","valid":true,"outcome":"TP4","exit":1789355366,"price":77797.4500000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1789669800,"dir":"BUY","valid":true,"outcome":"TP4","exit":1789701091,"price":77045.8100000000,"r":0.485148514851,"data":""}
+{"kind":"summary","id":"user_1165086dbd7bf9dd4f099614","slot":3,"complete":true,"of_incomplete":false,"variant":3,"independent":false,"raw":852,"total":8,"w":6,"l":2,"o":0,"data":0,"r":0.897134344926}

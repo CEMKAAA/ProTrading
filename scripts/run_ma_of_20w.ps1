@@ -67,6 +67,8 @@ try {
   $p=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
   if(!$p.WaitForExit(3600000)){throw 'Job exceeded one hour; worker left running, campaign stopped'}
   $out="$w/MQL5/Files/$name"
+  $deadline=(Get-Date).AddMinutes(3)
+  while((!(Test-Path $out) -or !(Select-String -LiteralPath $out -Pattern '"kind":"(summary|error)"' -Quiet)) -and (Get-Date) -lt $deadline){Start-Sleep -Seconds 2}
   if(!(Test-Path $out) -or (Get-Item $out).LastWriteTime -lt $started){throw 'Missing fresh result'}
   Copy-Item $out "$run/$name";$done++
   Write-Output "JOB $done slot=$($job.slot) variant=$($job.variant)"

@@ -502,7 +502,7 @@ bool OrbCustomRuntimeRead(const string &v[],int start,bool apply){
    if(!OrbMlNumber(v[start+43],n[43]))return false;
    if(!OrbMlNumber(v[start+44],n[44]))return false;
    if(!OrbMlNumber(v[start+45],n[45]))return false;
-   if(!OrbMlNumber(v[start+46],n[46])||n[46]!=MathFloor(n[46])||n[46]<0||n[46]>4)return false;
+   if(!OrbMlNumber(v[start+46],n[46])||n[46]!=MathFloor(n[46])||n[46]<0||n[46]>5)return false;
    if(!OrbMlNumber(v[start+47],n[47])||n[47]!=MathFloor(n[47])||n[47]<0||n[47]>2)return false;
    if(!apply)return true;
    g_rtFilterAtr=(bool)n[0];

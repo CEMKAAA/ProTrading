@@ -1,7 +1,7 @@
 // Causal streaming primitives shared by live and historical signals.
 #ifndef MA_CROSS_PINE_STREAM_MQH
 #define MA_CROSS_PINE_STREAM_MQH
-#define MC_KERNEL_REVISION "pine-stream-2"
+#define MC_KERNEL_REVISION "pine-stream-3-trender"
 class McRollingWma
 {
    double ring[],sum,weighted;int length,count,head;
@@ -41,8 +41,11 @@ public:
       out=value;return count>=length;
    }
 };
+#include "MaTrendFollowCore.mqh"
 class McPineKernel
 {
+   McTrendFollow trender;
+   double trenderTick;
    MA_CROSS_SIGNAL_MODE mode;MA_CROSS_PAIR pair;
    int count,fastLen,mediumLen,state,lastBelow,lastAbove,trend;
    double fast,medium,prevA,prevB,previousClose,haOpen,haClose,pacC,pacU,pacL;
@@ -65,6 +68,8 @@ class McPineKernel
 public:
    void Reset(MA_CROSS_SIGNAL_MODE m,MA_CROSS_PAIR p,int f,int med,int s)
    {
+      trender.Reset();
+      trenderTick=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
       mode=m;pair=p;fastLen=m==MA_CROSS_EMA_50_200?50:MathMax(1,f);mediumLen=m==MA_CROSS_EMA_50_200?200:MathMax(1,med);
       count=0;state=0;lastBelow=lastAbove=-100000000;trend=1;
       fast=medium=prevA=prevB=previousClose=haOpen=haClose=pacC=pacU=pacL=0;
@@ -75,6 +80,7 @@ public:
    double MarkerPrice(){return mode==MA_CROSS_PIVOT_ST&&haveBands?(trend==1?tUp:tDn):0.0;}
    int Push(const MqlRates &bar,double confirmedHtfHma=0)
    {
+      if(mode==MA_CROSS_TRENDER_IQ)return trender.Push(bar,trenderTick);
       history[count%49]=bar;int direction=0;
       if(mode==MA_CROSS_ORIGINAL_MTF||mode==MA_CROSS_EMA_50_200)
       {

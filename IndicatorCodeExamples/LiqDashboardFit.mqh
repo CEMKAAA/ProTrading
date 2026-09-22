@@ -1,23 +1,30 @@
 #ifndef LIQ_DASHBOARD_FIT_MQH
 #define LIQ_DASHBOARD_FIT_MQH
-double LiqDashboardScale()
+// Navigate the logical canvas instead of shrinking fonts to fit its height.
+int g_liqDashScroll=0,g_liqDashHorizontal=0;
+int LiqViewportHeight(){return (int)MathMax(100,ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS)-54);}
+int LiqViewportWidth(){return (int)MathMax(100,MathMin(760,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-16));}
+double LiqDashboardScale(){return 1.0;}
+void LiqFitClamp()
 {
-   long w=ChartGetInteger(0,CHART_WIDTH_IN_PIXELS),h=ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
-   if(w<=0||h<=0)return 1.0;
-   return MathMax(0.1,MathMin(1.0,MathMin((w-16.0)/760.0,(h-16.0)/LIQ_DASH_LOGICAL_HEIGHT)));
+   g_liqDashScroll=MathMax(0,MathMin(g_liqDashScroll,LIQ_DASH_LOGICAL_HEIGHT-LiqViewportHeight()));
+   g_liqDashHorizontal=MathMax(0,MathMin(g_liqDashHorizontal,760-LiqViewportWidth()));
 }
 void LiqFitPoint(int &x,int &y)
 {
-   double scale=LiqDashboardScale();
-   int left=(int)MathMax(0,MathMin(InpDashboardX,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-760*scale-8));
-   int top=(int)MathMax(0,MathMin(InpDashboardY,ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS)-LIQ_DASH_LOGICAL_HEIGHT*scale-8));
-   x=left+(int)MathRound((x-InpDashboardX)*scale);
-   y=top+(int)MathRound((y-InpDashboardY)*scale);
+   LiqFitClamp();x=8+x-InpDashboardX-g_liqDashHorizontal;y=42+y-InpDashboardY-g_liqDashScroll;
+   if(y<42||y+20>42+LiqViewportHeight()||x<8||x>=8+LiqViewportWidth()){x=30000;y=30000;}
 }
 void LiqFitBox(int &x,int &y,int &w,int &h)
 {
-   LiqFitPoint(x,y);double scale=LiqDashboardScale();
-   w=(int)MathMax(1,MathRound(w*scale));h=(int)MathMax(1,MathRound(h*scale));
+   LiqFitClamp();x=8+x-InpDashboardX-g_liqDashHorizontal;y=42+y-InpDashboardY-g_liqDashScroll;
+   if(h>40)
+   {
+      int right=MathMin(x+w,8+LiqViewportWidth()),bottom=MathMin(y+h,42+LiqViewportHeight());
+      x=MathMax(8,x);y=MathMax(42,y);w=MathMax(1,right-x);h=MathMax(1,bottom-y);
+      if(right<=x||bottom<=y){x=30000;y=30000;}
+   }
+   else if(y<42||y+h>42+LiqViewportHeight()||x<8||x+w>8+LiqViewportWidth()){x=30000;y=30000;}
 }
-int LiqFitFont(int size){return (int)MathMax(5,MathRound(size*LiqDashboardScale()));}
+int LiqFitFont(int size){return MathMax(9,size);}
 #endif

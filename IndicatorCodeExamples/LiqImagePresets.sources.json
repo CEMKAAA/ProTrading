@@ -1,0 +1,47 @@
+﻿[
+    {
+        "name":  "LiqNarrative1.5RUstec",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/LiqNarrative1.5RUstec.png",
+        "sha256":  "94FDD85F2A0015F3D776D4FD6F54D98EA3AABF505DDED209F1FD70D78017D09C"
+    },
+    {
+        "name":  "ustec1RLiqSetup",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/BestUstec/ustec1RLiqSetup.png",
+        "sha256":  "F791DD459A3C12E4BA719ED558036BF251850D0C817F1E137E565DB52E118D97"
+    },
+    {
+        "name":  "US500LIQNarrative",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/US500LIQNarrative.png",
+        "sha256":  "FBF7019E72E6ABD0B3BC6264863DA3337B6655702E017098740B05E5BA4F276A"
+    },
+    {
+        "name":  "US30ReverseWorthTrying",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/US30ReverseWorthTrying.png",
+        "sha256":  "D976D908CF2594C8C83660B51C05567E2AD6CB84D1027CE121E27390CFAC3F82"
+    },
+    {
+        "name":  "SPX5001.5R",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/SPX5001.5R.png",
+        "sha256":  "7C3CCF9F9D8003D684462A14E010ECFA6081FA9BD5F106E9F943AD1AAF5B4A8A"
+    },
+    {
+        "name":  "spx500AdvancedModelLiquidity",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/UsEquities/Liquidity/spx500AdvancedModelLiquidity.png",
+        "sha256":  "69BA8FE5D94395662534CD71BB24C7F348C3A9B5C260C1BECE8C0DC87190D7FB"
+    },
+    {
+        "name":  "btcgoon",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/Crypto/Liquidity/btcgoon.png",
+        "sha256":  "A898925311C4EB2F0350CF70501FEA9292CCC8A9F991BB548A986E7436C90035"
+    },
+    {
+        "name":  "BTCUSDLiqNarrative",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/Crypto/Liquidity/BTCUSDLiqNarrative.png",
+        "sha256":  "6EC9274F4B460E701082D1FD48642B76981E5EFC0252082D6E191DEF86A5A648"
+    },
+    {
+        "name":  "MightBeNewEdge",
+        "source":  "IndicatorCodeExamples/OptimalSettingsForLiqNarrative/Muhteşem4lü/RealDeals/GiveATry/UseThis/ORB0.5/Nikkei/MightBeNewEdge.png",
+        "sha256":  "AA6BE5BCE3245216FBA197E57A80905645850F3EDECA7C5B15523D434276A05F"
+    }
+]

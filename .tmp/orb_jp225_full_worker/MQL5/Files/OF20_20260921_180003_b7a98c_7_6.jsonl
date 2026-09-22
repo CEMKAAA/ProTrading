@@ -1,0 +1,11 @@
+{"kind":"run","symbol":"USOILm"}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1777876500,"dir":"BUY","valid":true,"outcome":"TP020","exit":1777881205,"price":99.9670000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1778129100,"dir":"SELL","valid":true,"outcome":"TP020","exit":1778136215,"price":91.5890000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1779187200,"dir":"BUY","valid":true,"outcome":"TP020","exit":1779216904,"price":104.0800000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1780448400,"dir":"BUY","valid":true,"outcome":"TP020","exit":1780472143,"price":93.9100000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1781122200,"dir":"BUY","valid":true,"outcome":"TP020","exit":1781128967,"price":90.4850000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1781571600,"dir":"SELL","valid":true,"outcome":"TP020","exit":1781594990,"price":78.7080000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1785458400,"dir":"SELL","valid":true,"outcome":"TP020","exit":1785459604,"price":81.3120000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1786406700,"dir":"BUY","valid":true,"outcome":"TP020","exit":1786430053,"price":82.4220000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_274d6b4e683ed278ada8fa5e","signal":1787895000,"dir":"SELL","valid":true,"outcome":"NAS_ADDITIONAL_EXIT","exit":1788138300,"price":84.1780000000,"r":-0.364000000000,"data":""}
+{"kind":"summary","id":"user_274d6b4e683ed278ada8fa5e","slot":7,"complete":true,"of_incomplete":false,"variant":6,"independent":false,"raw":538,"total":9,"w":8,"l":1,"o":0,"data":0,"r":1.236000000000}

@@ -1,0 +1,6 @@
+{"kind":"run","symbol":"BTCUSDm"}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1782935700,"dir":"BUY","valid":true,"outcome":"TP4","exit":1782941177,"price":60470.2400000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1784496600,"dir":"BUY","valid":true,"outcome":"TP4","exit":1784506293,"price":64877.7500000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1786836300,"dir":"BUY","valid":true,"outcome":"TP4","exit":1786944213,"price":63534.9200000000,"r":0.485148514851,"data":""}
+{"kind":"trade","id":"user_1165086dbd7bf9dd4f099614","signal":1789163100,"dir":"BUY","valid":true,"outcome":"TP4","exit":1789355363,"price":77771.1800000000,"r":0.485148514851,"data":""}
+{"kind":"summary","id":"user_1165086dbd7bf9dd4f099614","slot":3,"complete":true,"of_incomplete":false,"variant":10,"independent":false,"raw":852,"total":4,"w":4,"l":0,"o":0,"data":0,"r":1.940594059406}

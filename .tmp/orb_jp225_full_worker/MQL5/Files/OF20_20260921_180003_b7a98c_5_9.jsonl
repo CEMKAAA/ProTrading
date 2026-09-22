@@ -1,0 +1,4 @@
+{"kind":"run","symbol":"USDJPYm"}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1780879800,"dir":"BUY","valid":true,"outcome":"TP010","exit":1781023145,"price":160.4200000000,"r":0.100000000000,"data":""}
+{"kind":"trade","id":"user_e838c81b417ee45202598948","signal":1781290800,"dir":"SELL","valid":true,"outcome":"TP010","exit":1781472271,"price":160.1140000000,"r":0.100000000000,"data":""}
+{"kind":"summary","id":"user_e838c81b417ee45202598948","slot":5,"complete":true,"of_incomplete":false,"variant":9,"independent":true,"raw":600,"total":2,"w":2,"l":0,"o":0,"data":0,"r":0.200000000000}

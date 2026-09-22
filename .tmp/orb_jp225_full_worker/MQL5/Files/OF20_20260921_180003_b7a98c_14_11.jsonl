@@ -1,0 +1,3 @@
+{"kind":"run","symbol":"XAUUSDm"}
+{"kind":"trade","id":"user_62908f9037ce6c93ebc98c5d","signal":1779320100,"dir":"BUY","valid":true,"outcome":"TP025","exit":1779327662,"price":4570.4650000000,"r":0.250000000000,"data":""}
+{"kind":"summary","id":"user_62908f9037ce6c93ebc98c5d","slot":14,"complete":true,"of_incomplete":false,"variant":11,"independent":true,"raw":1269,"total":1,"w":1,"l":0,"o":0,"data":0,"r":0.250000000000}

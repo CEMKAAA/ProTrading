@@ -5121,12 +5121,7 @@ void UpdateDashboard()
    ButtonObj("BTN_SW_5", x + 126, row, 44, bh, "5", g_swingLookback == 5 ? on : off);
    ButtonObj("BTN_SW_8", x + 176, row, 44, bh, "8", g_swingLookback == 8 ? on : off);
    LabelObj("DASH_TP_L", x + 246, row + 4, "TARGET:", muted, 8);
-   ButtonObj("BTN_TP_1", x + 318, row, 52, bh, "TP1", g_target == ERL_RR_TP1 ? on : off);
-   ButtonObj("BTN_TP_2", x + 374, row, 52, bh, "TP2", g_target == ERL_RR_TP2 ? on : off);
-   ButtonObj("BTN_TP_3", x + 430, row, 52, bh, "TP3", g_target == ERL_RR_TP3 ? on : off);
-   ButtonObj("BTN_TP_4", x + 486, row, 52, bh, "TP4", g_target == ERL_RR_TP4 ? on : off);
-   ButtonObj("BTN_TP_5", x + 542, row, 52, bh, "TP5", g_target == ERL_RR_TP5 ? on : off);
-   ButtonObj("BTN_TP_6", x + 598, row, 52, bh, "TP6", g_target == ERL_RR_TP6 ? on : off);
+   ButtonObj("BTN_R_SELECT", x + 318, row, 332, bh, "TARGET " + DoubleToString(TargetR(g_target),2) + "R  [0.05 - 5.00]", on);
    ButtonObj("BTN_CLOSE", x + 660, row, 84, bh, "CLOSE ALL", C'170,45,62');
 
    row += 28;
@@ -5594,7 +5589,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
-   if(LiqLibraryEvent(id,sparam)) return;
+   if(LiqLibraryEvent(id,sparam,lparam,dparam)) return;
    if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
 

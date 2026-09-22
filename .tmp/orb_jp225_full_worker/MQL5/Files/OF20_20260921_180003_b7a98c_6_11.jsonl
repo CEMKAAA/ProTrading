@@ -1,0 +1,6 @@
+{"kind":"run","symbol":"USDJPYm"}
+{"kind":"trade","id":"user_3d59aed3f6fa1b0c3f6b0022","signal":1783387800,"dir":"SELL","valid":true,"outcome":"TP020","exit":1783399221,"price":161.7320000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_3d59aed3f6fa1b0c3f6b0022","signal":1785818400,"dir":"SELL","valid":true,"outcome":"TP020","exit":1785844979,"price":157.3520000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_3d59aed3f6fa1b0c3f6b0022","signal":1786480500,"dir":"BUY","valid":true,"outcome":"TP020","exit":1786556764,"price":159.5200000000,"r":0.200000000000,"data":""}
+{"kind":"trade","id":"user_3d59aed3f6fa1b0c3f6b0022","signal":1788814500,"dir":"SELL","valid":true,"outcome":"TP020","exit":1788822282,"price":154.1130000000,"r":0.200000000000,"data":""}
+{"kind":"summary","id":"user_3d59aed3f6fa1b0c3f6b0022","slot":6,"complete":true,"of_incomplete":false,"variant":11,"independent":false,"raw":600,"total":4,"w":4,"l":0,"o":0,"data":0,"r":0.800000000000}
