@@ -5375,7 +5375,7 @@ void ProcessPendingConfigRefresh()
    g_configRefreshRebuildSignals = false;
    RecalculateHistoricalStats(rebuildSignals);
    // A filter/config change can remove signals. Full reset prevents stale arrows from contradicting execution.
-   if(!IsTesterMode()) DrawHistoricalSignals(true);
+   if(!IsTesterMode()){DrawHistoricalSignals(true);LnNasDrawOverlay(true);}
    g_lastStatus = "CONFIG " + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " " + EntryModelLabel(g_entryModel) + " SIG=" + IntegerToString(g_hist.total);
    UpdateDashboard();
@@ -5534,6 +5534,7 @@ int OnInit()
       BridgeRetryPending();
       DrawDashboard();
       DrawHistoricalSignals();
+      LnNasDrawOverlay(true);
       DrawLiveLevelsForPosition();
    }
    if(!IsTesterMode()) EventSetTimer(1);
@@ -5598,6 +5599,7 @@ void OnTimer()
    {
       if(g_btRunning) BacktestStep();
       UpdateDashboard();
+      LnNasDrawOverlay();
       DrawLiveLevelsForPosition();
       if(g_btRunning) ChartRedraw(0);
    }
@@ -5607,7 +5609,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 {
    if(LnNasPanelEvent(id,sparam,lparam,dparam))return;
    if(LiqLibraryEvent(id,sparam,lparam,dparam)) return;
-   if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
+   if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();LnNasDrawOverlay(true);ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
 
    if(id == CHARTEVENT_OBJECT_ENDEDIT)

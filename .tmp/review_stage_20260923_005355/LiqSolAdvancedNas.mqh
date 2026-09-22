@@ -16,10 +16,13 @@ bool g_lnNasPanel=false,g_lnNasReady=false;
 string g_lnNasStatus="";
 string g_lnNasLastAction="";
 ulong g_lnNasLastActionAt=0;
-struct LnNasEvent {datetime at;int dir;bool stateAllowed,flowAllowed;};
+struct LnNasEvent {datetime at;int dir;bool stateAllowed,flowAllowed;double high,low;};
 LnNasEvent g_lnNasEvents[];
 datetime g_lnNasBar=0,g_lnNasSeed=0;
 string g_lnNasSignature="";
+datetime g_lnNasOverlayBar=0;
+string g_lnNasOverlaySignature="";
+int g_lnNasOverlayFirst=-1,g_lnNasOverlayVisible=-1,g_lnNasOverlayWeeks=-1;
 ErlSignal g_lnNasPendingSignal;
 bool g_lnNasPending=false,g_lnNasAuditData=true;
 string g_lnNasDelayed[];
@@ -82,7 +85,7 @@ bool LnNasCompatible(const LnNasPolicy &p)
       &&AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)return false;
    return true;
 }
-void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_simCache);}
+void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_simCache);}
 bool LnNasDelayed(string id)
 {for(int i=0;i<ArraySize(g_lnNasDelayed);i++)if(g_lnNasDelayed[i]==id)return true;return false;}
 
@@ -114,9 +117,10 @@ bool LnNasBuild(datetime oldest)
       double mean=0;for(int k=i-20;k<i;k++)mean+=(double)rates[k].tick_volume;
       mean/=20.0;double volume=(double)rates[i].tick_volume;
       int n=ArraySize(events);ArrayResize(events,n+1);
-      events[n].at=rates[i+1].time;events[n].dir=points[i].buy?1:-1;
-      events[n].stateAllowed=!g_lnNas.stateVolume||(mean>0&&volume>=mean*g_lnNas.stateMultiplier);
-      events[n].flowAllowed=!g_lnNas.flowVolume||(mean>0&&volume>=mean*g_lnNas.flowMultiplier);
+       events[n].at=rates[i+1].time;events[n].dir=points[i].buy?1:-1;
+       events[n].stateAllowed=!g_lnNas.stateVolume||(mean>0&&volume>=mean*g_lnNas.stateMultiplier);
+       events[n].flowAllowed=!g_lnNas.flowVolume||(mean>0&&volume>=mean*g_lnNas.flowMultiplier);
+       events[n].high=rates[i].high;events[n].low=rates[i].low;
    }
    ArraySwap(g_lnNasEvents,events);g_lnNasBar=closed;g_lnNasSeed=rates[0].time;g_lnNasSignature=signature;
    return true;
@@ -291,6 +295,83 @@ int LnNasOpenCount(int dir)
          &&IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))
          &&(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1)==dir)n++;
    return n;
+}
+
+// 1=gate, 2=exit, 3=both. Visuals use the same eligibility as execution.
+int LnNasVisualClass(const LnNasEvent &e)
+{
+   bool gate=g_lnNas.gate==1?e.flowAllowed:(g_lnNas.gate==2&&e.stateAllowed);
+   bool exit=g_lnNas.exitMode!=0&&e.flowAllowed;
+   return (gate?1:0)+(exit?2:0);
+}
+string LnNasVisualLabel(int visual)
+{
+   return visual==3?"BOTH":visual==1?"GATE":"EXIT";
+}
+color LnNasVisualColor(int visual)
+{
+   return visual==3?C'210,100,255':visual==1?C'35,170,255':C'255,158,46';
+}
+void LnNasDrawOverlay(bool force=false)
+{
+   if(IsTesterMode())return;
+   string root=PFX+"NASMARK_";
+   if(g_lnNas.gate==0&&g_lnNas.exitMode==0)
+   {
+      if(g_lnNasOverlayBar!=0||force)DeleteByPrefix(root);
+      g_lnNasOverlayBar=0;return;
+   }
+   int first=(int)ChartGetInteger(0,CHART_FIRST_VISIBLE_BAR),visible=(int)ChartGetInteger(0,CHART_VISIBLE_BARS);
+   if(first<0||visible<=0)return;
+   datetime oldest=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,first);
+   datetime newest=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,MathMax(0,first-visible+1));
+   if(oldest<=0||newest<=0)return;
+   datetime cutoff=TimeCurrent()-(datetime)((long)HistDays()*86400);
+   oldest=MathMax(oldest,cutoff);
+   int weeks=ClampHistWeeks(g_histWeeks);
+   datetime closed=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,1);
+   string signature=(string)g_lnNas.gate+"|"+(string)g_lnNas.exitMode+"|"+(string)g_lnNas.stateVolume
+      +"|"+(string)g_lnNas.flowVolume+"|"+DoubleToString(g_lnNas.stateMultiplier,8)
+      +"|"+DoubleToString(g_lnNas.flowMultiplier,8)+"|"+(string)g_lnNas.sensitivity;
+   if(!force&&g_lnNasOverlayBar==closed&&g_lnNasOverlaySignature==signature
+      &&g_lnNasOverlayFirst==first&&g_lnNasOverlayVisible==visible&&g_lnNasOverlayWeeks==weeks)return;
+   if(oldest<=newest&&!LnNasBuild(oldest))
+   {
+      DeleteByPrefix(root);g_lnNasOverlayBar=0;return;
+   }
+   DeleteByPrefix(root);
+   if(oldest<=newest)
+   {
+      int lo=0,hi=ArraySize(g_lnNasEvents);
+      while(lo<hi){int mid=(lo+hi)/2;if(g_lnNasEvents[mid].at<oldest)lo=mid+1;else hi=mid;}
+      for(int i=lo;i<ArraySize(g_lnNasEvents)&&g_lnNasEvents[i].at<=newest;i++)
+      {
+         LnNasEvent e=g_lnNasEvents[i];int visual=LnNasVisualClass(e);if(visual==0)continue;
+         double pad=MathMax(MathMax(TickSize(),e.high-e.low)*0.22,TickSize()*24.0);
+         double price=NormalizeDouble(e.dir>0?e.low-pad:e.high+pad,_Digits);
+         string base=root+(string)(long)e.at+"_"+(e.dir>0?"B_":"S_");
+         string arrow=base+"ARW",caption=base+"TXT";
+         color ink=LnNasVisualColor(visual);
+         if(ObjectCreate(0,arrow,OBJ_ARROW,0,e.at,price))
+         {
+            ObjectSetInteger(0,arrow,OBJPROP_ARROWCODE,e.dir>0?241:242);
+            ObjectSetInteger(0,arrow,OBJPROP_COLOR,ink);
+            ObjectSetInteger(0,arrow,OBJPROP_WIDTH,visual==3?3:2);
+            ObjectSetInteger(0,arrow,OBJPROP_SELECTABLE,false);
+         }
+         double textPrice=NormalizeDouble(e.dir>0?price-pad*0.55:price+pad*0.55,_Digits);
+         if(ObjectCreate(0,caption,OBJ_TEXT,0,e.at,textPrice))
+         {
+            ObjectSetString(0,caption,OBJPROP_TEXT,"NAS "+(e.dir>0?"BUY ":"SELL ")+LnNasVisualLabel(visual));
+            ObjectSetInteger(0,caption,OBJPROP_COLOR,ink);
+            ObjectSetInteger(0,caption,OBJPROP_FONTSIZE,8);
+            ObjectSetString(0,caption,OBJPROP_FONT,"Consolas");
+            ObjectSetInteger(0,caption,OBJPROP_SELECTABLE,false);
+         }
+      }
+   }
+   g_lnNasOverlayBar=closed;g_lnNasOverlaySignature=signature;
+   g_lnNasOverlayFirst=first;g_lnNasOverlayVisible=visible;g_lnNasOverlayWeeks=weeks;
 }
 
 string LnNasObject(string id){return PFX+"NAS_"+id;}

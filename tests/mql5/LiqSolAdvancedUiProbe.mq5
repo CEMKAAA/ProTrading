@@ -36,6 +36,35 @@ void OnStart()
       long navX=210;double navY=15;
       ProbeEvent(CHARTEVENT_CLICK,navX,navY,"");
       if(g_lnNasPanel||ObjectFind(0,PFX+"DASH_STATE")<0)failed++;checks++;
+
+      LnNasPolicy saved=g_lnNas;
+      LnNasEvent event;ZeroMemory(event);
+      g_lnNas.gate=1;g_lnNas.exitMode=2;event.flowAllowed=true;
+      if(LnNasVisualClass(event)!=3||LnNasVisualLabel(3)!="BOTH")failed++;checks++;
+      g_lnNas.gate=2;event.stateAllowed=false;
+      if(LnNasVisualClass(event)!=2||LnNasVisualLabel(2)!="EXIT")failed++;checks++;
+      event.stateAllowed=true;event.flowAllowed=false;
+      if(LnNasVisualClass(event)!=1||LnNasVisualLabel(1)!="STATE")failed++;checks++;
+      g_lnNas.gate=1;event.flowAllowed=true;
+      if(LnNasVisualClass(event)!=3)failed++;checks++;
+      event.flowAllowed=false;
+      if(LnNasVisualClass(event)!=0)failed++;checks++;
+
+      g_lnNas.gate=1;g_lnNas.exitMode=0;event.flowAllowed=true;event.dir=1;
+      event.at=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,1);
+      event.high=iHigh(_Symbol,(ENUM_TIMEFRAMES)_Period,2);
+      event.low=iLow(_Symbol,(ENUM_TIMEFRAMES)_Period,2);
+      ArrayResize(g_lnNasEvents,1);g_lnNasEvents[0]=event;
+      g_lnNasBar=event.at;g_lnNasSeed=1;
+      g_lnNasSignature=_Symbol+"|"+(string)_Period+"|"+(string)g_lnNas.sensitivity+"|"
+         +(string)g_lnNas.stateVolume+"|"+DoubleToString(g_lnNas.stateMultiplier,8)+"|"
+         +(string)g_lnNas.flowVolume+"|"+DoubleToString(g_lnNas.flowMultiplier,8);
+      LnNasDrawOverlay(true);
+      string marker=PFX+"NASMARK_"+(string)(long)event.at+"_B_ARW";
+      if(event.at<=0||ObjectFind(0,marker)<0)failed++;checks++;
+      g_lnNas.gate=0;LnNasDrawOverlay(true);
+      if(ObjectFind(0,marker)>=0)failed++;checks++;
+      g_lnNas=saved;
    }
    string result="{\"init\":"+(string)init+",\"checks\":"+(string)checks+",\"failed\":"+(string)failed+"}";
    int f=FileOpen("LiqSolAdvancedUiProbe.json",FILE_WRITE|FILE_TXT|FILE_ANSI);
