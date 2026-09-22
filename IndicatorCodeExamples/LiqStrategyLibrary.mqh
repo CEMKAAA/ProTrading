@@ -62,7 +62,14 @@ bool LiqLibraryUnpack(string path,string &name,double &values[],bool checkInputs
    if(StringSubstr(text,end+8)!=LiqLibraryHash(payload))return false;
    int n=StringSplit(payload,'\n',lines);
    double current[];int count=LiqLibraryCapture(current);
-   if(n!=6+count||lines[0]!="LIQ_STRATEGY_V1"||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
+   bool oldVersion=(n==6+count&&lines[0]=="LIQ_STRATEGY_V1");
+#ifdef LN_SOL_ADV_NAS_READY
+   bool newVersion=(n==7+count&&lines[0]=="LIQ_STRATEGY_NAS_V1");
+   if(newVersion){LnNasPolicy parsed;if(!LnNasUnpack(lines[6+count],parsed))return false;}
+#else
+   bool newVersion=false;
+#endif
+   if((!oldVersion&&!newVersion)||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
    if(checkInputs&&lines[4]!=LiqLibraryHash(LiqLibraryInputContract()))return false;
    if((int)StringToInteger(lines[5])!=count)return false;
    name=lines[3];ArrayResize(values,count);
@@ -78,9 +85,16 @@ bool LiqLibrarySave(string name)
    StringTrimLeft(name);StringTrimRight(name);
    if(StringLen(name)<1||StringLen(name)>80||StringFind(name,"\n")>=0||StringFind(name,"\r")>=0)return false;
    double values[];int count=LiqLibraryCapture(values);
-   string payload="LIQ_STRATEGY_V1\n"+LiqLibraryFamily()+"\n"+_Symbol+"\n"+name+"\n"
+   string version="LIQ_STRATEGY_V1";
+#ifdef LN_SOL_ADV_NAS_READY
+   version="LIQ_STRATEGY_NAS_V1";
+#endif
+   string payload=version+"\n"+LiqLibraryFamily()+"\n"+_Symbol+"\n"+name+"\n"
       +LiqLibraryHash(LiqLibraryInputContract())+"\n"+(string)count;
    for(int i=0;i<count;i++)payload+="\n"+DoubleToString(values[i],16);
+#ifdef LN_SOL_ADV_NAS_READY
+   payload+="\n"+LnNasPack(g_lnNas);
+#endif
    return LiqLibraryAtomicWrite(LiqLibraryPath(name),payload+"\nSHA256="+LiqLibraryHash(payload));
 }
 bool LiqLibraryCanApply()
@@ -100,6 +114,29 @@ bool LiqLibraryApply(string path)
    string name="";double values[];
    if(!LiqLibraryUnpack(path,name,values))
    {g_liqLibraryStatus="Not applied: incompatible Inputs or damaged preset";return false;}
+#ifdef LN_SOL_ADV_NAS_READY
+   LnNasPolicy policy;LnNasDefaults(policy);
+   if(StringFind(path,"image://")!=0)
+   {
+      string record="",lines[];
+      if(LiqLibraryRead(path,record))
+      {
+         int end=StringFind(record,"\nSHA256=");
+         if(end<0){g_liqLibraryStatus="Damaged filter strategy";return false;}
+         int count=StringSplit(StringSubstr(record,0,end),'\n',lines);
+         if(count>0&&lines[0]=="LIQ_STRATEGY_NAS_V1"
+            &&!LnNasUnpack(lines[count-1],policy))
+         {g_liqLibraryStatus="Damaged filter strategy";return false;}
+      }
+   }
+   if((int)values[8]==(int)ERL_TARGET_OPPOSITE_SIGNAL
+      &&(policy.gate!=0||policy.exitMode!=0||policy.independent||policy.reverseExit!=InpCloseOnReverse||policy.reverseWaitMinutes>0))
+   {g_liqLibraryStatus="NAS policy requires fixed target";return false;}
+   if(!LnNasCompatible(policy)){g_liqLibraryStatus="Account does not support these position settings";return false;}
+   LnNasPolicy previous=g_lnNas;g_lnNas=policy;
+   if(!LnNasSaveRuntime()){g_lnNas=previous;g_liqLibraryStatus="Filter settings could not be saved";return false;}
+   LnNasInvalidate();
+#endif
    LiqLibraryAssign(values);SanitizeHalfMode();
    g_liqLibraryName=name;g_liqLibraryStatus="Applied: "+name;
    RefreshAfterConfigChange(true);return true;

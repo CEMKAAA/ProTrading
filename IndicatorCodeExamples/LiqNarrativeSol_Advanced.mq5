@@ -2533,6 +2533,12 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    // Tick coverage was unavailable/incomplete and no terminal event was
    // observed. Restart the deterministic OHLC fallback from its own entry
    // geometry; never carry a partial tick HC/BE state into the bar replay.
+   if(LnNasActive()&&(maxTime>0||LnNasDelayed(sig.id)))
+   {
+      valid=false;closed=false;won=false;
+      g_lastSimInvalidReason="NAS_EXIT_TICKS_MISSING";
+      return 0.0;
+   }
    simEntry = barSimEntry;
    if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
       activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail))
@@ -2764,7 +2770,8 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    CopySignalArray(g_histSignals, regimeRuleStatsSignals);
    CalculateSolRegimeRuleStats(regimeRuleStatsSignals, exitSignals);
    ApplySolRegimeFilter(g_histSignals);
-   if(!g_allowDuplicateEntries) FilterAlternatingSignals(g_histSignals);
+   if(!g_allowDuplicateEntries && !g_lnNas.independent) FilterAlternatingSignals(g_histSignals);
+   LnNasFilterHistorical(g_histSignals,exitSignals);
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
@@ -2785,13 +2792,30 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
          SetHistoricalAuditProgress("OUTCOMES", 78.0 + 21.0 * (double)(i + 1) / (double)MathMax(1, ArraySize(g_histSignals)));
       bool closed = false, won = false, valid = false;
       datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
+      if(LnNasActive())nextSignalTime=LnNasAuditExit(g_histSignals[i],exitSignals,nextSignalTime);
       // Restore the full trace with terminal outcomes; never freeze DATA/OPEN.
       string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
-      if(!SimCacheGet(simKey, r, closed, won, valid))
+      int capped=LnNasAuditCap(i);
+      if(!g_lnNasAuditData)
+      {
+         g_histSignalR[i]=0;g_histSignalClosed[i]=false;g_histSignalWon[i]=false;
+         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]="NAS_DATA";
+         g_histSignalExitTime[i]=0;g_histSignalExitReason[i]="NAS_DATA";
+         g_hist.total++;g_hist.invalid++;continue;
+      }
+      if(capped!=0)
+      {
+         g_histSignalR[i]=0;g_histSignalClosed[i]=false;g_histSignalWon[i]=false;
+         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]=capped>0?"MAX_SAME_OPEN":"MAX_DATA";
+         g_histSignalExitTime[i]=0;g_histSignalExitReason[i]=g_histSignalInvalidReason[i];
+         if(capped<0){g_hist.total++;g_hist.invalid++;}
+         continue;
+      }
+      if(LnNasActive() || !SimCacheGet(simKey, r, closed, won, valid))
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
+         if(valid && closed && !LnNasActive()) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
@@ -4453,6 +4477,12 @@ bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
 }
 bool OpenSignal(const ErlSignal &sig)
 {
+   ErlSignal prepared=sig;
+   if(!LnNasLiveAccept(prepared))return false;
+   return OpenSignalAccepted(prepared);
+}
+bool OpenSignalAccepted(const ErlSignal &sig)
+{
    if(!g_eaEnabled)
    {
       g_lastBlock = "ea_disabled";
@@ -4532,14 +4562,16 @@ bool OpenSignal(const ErlSignal &sig)
          AuditWrite("bridge_published_native_continue", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, 0.0, execDetail);
    }
 
-   if(!g_allowDuplicateEntries && InpBlockSameDirection && OwnPositionCount(execSig.dir) > 0)
+   if(!g_lnNas.independent && !g_allowDuplicateEntries && InpBlockSameDirection && OwnPositionCount(execSig.dir) > 0)
    {
       g_lastBlock = "same_direction_position";
       AuditWrite("local_same_direction_after_bridge", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, 0.0,
          execDetail + " bridge_written=" + (bridgeWritten ? "1" : "0"));
       return false;
    }
-   if((InpCloseOnReverse || reverseExitMode) && OwnPositionCount(-execSig.dir) > 0)
+   if((!LnNasActive() ? InpCloseOnReverse : (g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0))
+      || reverseExitMode)
+      if(OwnPositionCount(-execSig.dir) > 0)
    {
       if(!CloseOwnPositions(-execSig.dir) || OwnPositionCount(-execSig.dir) > 0)
       {
@@ -4661,7 +4693,10 @@ void TryOpenLatestSignal()
    {
       int freshSec = MathMax(entrySec * 2, 180);
       if(now - rawLatest.availableTime <= freshSec)
-         HandleRegimeRejectedSignal(rawLatest, macroRule);
+      {
+         if(LnNasActive())RememberSignalSeen(rawLatest);
+         else HandleRegimeRejectedSignal(rawLatest, macroRule);
+      }
       else
          RememberSignalSeen(rawLatest);
       return;
@@ -4675,12 +4710,15 @@ void TryOpenLatestSignal()
    {
       int freshSec = MathMax(entrySec * 2, 180);
       if(now - rawLatest.availableTime <= freshSec)
-         HandleRegimeRejectedSignal(rawLatest, latestRejectRule);
+      {
+         if(LnNasActive())RememberSignalSeen(rawLatest);
+         else HandleRegimeRejectedSignal(rawLatest, latestRejectRule);
+      }
       else
          RememberSignalSeen(rawLatest);
       return;
    }
-   if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
+   if(!g_allowDuplicateEntries && !g_lnNas.independent) FilterAlternatingSignals(signals);
    count = ArraySize(signals);
    if(count <= 0)
    {
@@ -4707,6 +4745,7 @@ void TryOpenLatestSignal()
 
 void ManagePositions()
 {
+   LnNasManageNative();
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
    for(int i = PositionsTotal() - 1; i >= 0; --i)
@@ -4966,6 +5005,7 @@ void DrawDashboard()
 
 void UpdateDashboard()
 {
+   LnNasDrawNav();if(g_lnNasPanel){LnNasDrawPanel();return;}
    if(LiqLibraryDashboard()) return;
    if(IsTesterMode()) return;
    if(!InpShowDashboard) return;
@@ -5463,6 +5503,7 @@ int OnInit()
    trade.SetExpertMagicNumber(RuntimeMagic());
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
+   if(!LnNasLoadRuntime()||!LnNasCompatible(g_lnNas))return INIT_FAILED;
    if(!IsTesterMode())
    {
       RegimeV3Update(true);
@@ -5513,6 +5554,7 @@ void OnTick()
    if(IsValidationTester()) return;
    g_lastSpreadPts = CurrentSpreadPoints();
    TryOpenLatestSignal();
+   LnNasRetryPending();
    ManagePositions();
    if(!IsTesterMode())DrawLiveLevelsForPosition();
 }
@@ -5526,6 +5568,7 @@ void OnTimer()
    BridgeRetryPending();
    EnforceRiskBreach();
    TryOpenLatestSignal();
+   LnNasRetryPending();
    ManagePositions();
    ProbePositions();
    ScanClosedHistory();
@@ -5542,6 +5585,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(LnNasPanelEvent(id,sparam))return;
    if(LiqLibraryEvent(id,sparam,lparam,dparam)) return;
    if(id==CHARTEVENT_CHART_CHANGE){DrawDashboard();ChartRedraw(0);return;}
    if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_OBJECT_ENDEDIT) return;
@@ -5952,4 +5996,6 @@ g_solRegimeRuleBlocked[9]=(bool)v[38];
 g_solRegimeRuleBlocked[10]=(bool)v[39];
 g_solRegimeRuleBlocked[11]=(bool)v[40];
 }
+#define LN_SOL_ADV_NAS_READY
+#include "LiqSolAdvancedNas.mqh"
 #include "LiqStrategyLibrary.mqh"

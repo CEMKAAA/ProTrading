@@ -34,6 +34,7 @@ void ClickLibrary(string id)
 void OnStart()
 {
    PFX="LIQ_UI_PROBE_";g_eaEnabled=false;g_liqLibraryStarted=true;g_liqLibraryPanel=false;
+   LnNasDefaults(g_lnNas);g_lnNasDraft=g_lnNas;
    string found="";long fh=FileFindFirst(LiqLibraryFolder()+"\\*.lns",found,FILE_COMMON);
    if(fh!=INVALID_HANDLE){do{string nm="";double vv[];Print("LIB_DISCOVERY found=",found," unpack=",LiqLibraryUnpack(LiqLibraryFolder()+"\\"+found,nm,vv,false)," name=",nm);}while(FileFindNext(fh,found));FileFindClose(fh);}
    g_liqLibraryQuery="";g_liqLibraryFavorites=false;LiqLibraryScan();Print("LIB_DISCOVERY count=",ArraySize(g_liqLibraryFiles)," folder=",LiqLibraryFolder());
@@ -92,6 +93,15 @@ void OnStart()
    ClickLibrary("NAV_DOWN");Check(g_liqDashScroll>0,"600px viewport scrolls");
    ClickLibrary("NAV_LIBRARY");Check(g_liqLibraryPanel&&!LiqLibraryWide(),"narrow strategy view");
    Check(ObjectGetInteger(0,LiqLibraryObject("QUERY"),OBJPROP_FONTSIZE)>=9,"narrow font unchanged");
+   g_lnNasPanel=false;LnNasDrawNav();
+   Check(LnNasPanelEvent(CHARTEVENT_OBJECT_CLICK,LnNasObject("NAV"))&&g_lnNasPanel,"NAS panel opens");
+   ENUM_TIMEFRAMES priorTf=g_entryTf;
+   Check(LnNasPanelEvent(CHARTEVENT_OBJECT_CLICK,PFX+"BTN_ENTRY_H1")&&g_entryTf==priorTf,
+      "NAS modal consumes click on underlying dashboard");
+   ObjectSetString(0,LnNasObject("SVM"),OBJPROP_TEXT,"2.50");
+   LnNasDrawPanel();
+   Check(ObjectGetString(0,LnNasObject("SVM"),OBJPROP_TEXT)=="2.50","NAS edit survives redraw");
+   Check(LnNasPanelEvent(CHARTEVENT_OBJECT_CLICK,LnNasObject("CLOSE"))&&!g_lnNasPanel,"NAS panel closes");
    int f=FileOpen("LiqReadableUiProbe.json",FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(f!=INVALID_HANDLE){FileWriteString(f,"{\"checks\":"+(string)checks+",\"failed\":"+(string)failed+"}");FileClose(f);}
    DeleteByPrefix(PFX);

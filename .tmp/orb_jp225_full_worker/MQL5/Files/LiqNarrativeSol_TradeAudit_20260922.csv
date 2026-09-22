@@ -1,0 +1,2 @@
+server_time	gmt_time	symbol	tf	event	id	dir	entry	sl	tp	lot	spread_pts	status	detail
+2026.09.22 19:28:54	2026.09.22 19:28:54	JP225m	M5	bridge_published_only	probe-entry	BUY	67143.5	66743.5	67943.5	0.0000	31	BRIDGE_PUBLISHED	broker_stop_adjusted original_sl=0.0 adjusted_sl=66743.5
