@@ -64,6 +64,36 @@ void OnStart()
       if(event.at<=0||ObjectFind(0,marker)<0)failed++;checks++;
       g_lnNas.gate=0;LnNasDrawOverlay(true);
       if(ObjectFind(0,marker)>=0)failed++;checks++;
+
+      ErlSignal candidate;ZeroMemory(candidate);candidate.valid=true;
+      candidate.id="nas-reject-probe";candidate.dir=1;candidate.availableTime=event.at;
+      ArrayFree(g_lnNasDelayed);g_lnNas.gate=1;g_lnNas.exitMode=0;g_lnNas.reverseWaitMinutes=0;
+      if(LnNasNeedsExactTicks(candidate,event.at+3600))failed++;checks++;
+      g_lnNas.exitMode=2;
+      if(!LnNasNeedsExactTicks(candidate,event.at+3600))failed++;checks++;
+      g_lnNas.exitMode=0;ArrayResize(g_lnNasDelayed,1);g_lnNasDelayed[0]=candidate.id;
+      if(LnNasNeedsExactTicks(candidate,0))failed++;checks++;
+      ArrayFree(g_lnNasDelayed);
+      double labelPad=0.0;
+      double anchored=HistoricalArrowPrice(event.at,1,event.high+100000.0,100000.0,labelPad);
+      double expected=event.low-MathMax((event.high-event.low)*0.20,TickSize()*15.0);
+      if(event.low<=0.0||MathAbs(anchored-expected)>TickSize()*0.01)failed++;checks++;
+
+      g_lnNas.gate=2;g_lnNas.exitMode=0;
+      g_lnNasEvents[0].at=event.at-60;g_lnNasEvents[0].dir=-1;
+      g_lnNasEvents[0].stateAllowed=true;g_lnNasEvents[0].flowAllowed=true;
+      ErlSignal candidates[],raw[];ArrayResize(candidates,1);ArrayResize(raw,1);
+      candidates[0]=candidate;raw[0]=candidate;
+      LnNasFilterHistorical(candidates,raw);
+      if(!g_lnNasAuditData||ArraySize(candidates)!=0||ArraySize(g_lnNasRejected)!=1
+         ||g_lnNasRejected[0].id!=candidate.id)failed++;checks++;
+      DrawHistoricalSignals(false);
+      string rejectMarker=PFX+"HIST_NASREJ_0_"+(string)(long)candidate.availableTime;
+      if(ObjectFind(0,rejectMarker)<0)failed++;checks++;
+      g_lnNas.gate=0;LnNasFilterHistorical(candidates,raw);
+      if(ArraySize(g_lnNasRejected)!=0)failed++;checks++;
+      DrawHistoricalSignals(false);
+      if(ObjectFind(0,rejectMarker)>=0)failed++;checks++;
       g_lnNas=saved;
    }
    string result="{\"init\":"+(string)init+",\"checks\":"+(string)checks+",\"failed\":"+(string)failed+"}";

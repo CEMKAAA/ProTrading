@@ -2379,17 +2379,19 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       return 0.0;
    }
 
-   int tfSeconds = PeriodSeconds(entryTf);
+   bool delayedNasEntry=LnNasDelayed(sig.id);
+   ENUM_TIMEFRAMES replayTf=delayedNasEntry?(ENUM_TIMEFRAMES)_Period:entryTf;
+   int tfSeconds = PeriodSeconds(replayTf);
    if(tfSeconds <= 0) tfSeconds = 60;
-   datetime requiredCutoff = sig.entryTime - tfSeconds * 4;
+   datetime requiredCutoff = (delayedNasEntry?sig.availableTime:sig.entryTime) - tfSeconds * 4;
    if(g_btCutoff > 0 && g_btCutoff < requiredCutoff) requiredCutoff = g_btCutoff;
-   if(!EnsureSimulationSeries(entryTf, requiredCutoff))
+   if(!EnsureSimulationSeries(replayTf, requiredCutoff))
    {
       g_lastSimInvalidReason = "SERIES";
       return 0.0;
    }
-   int setupIdx = FindEntryBarIndex(g_simRates, sig.entryTime);
-   if(setupIdx < 1)
+   int setupIdx = FindEntryBarIndex(g_simRates, delayedNasEntry?sig.availableTime:sig.entryTime);
+   if(setupIdx < (delayedNasEntry?0:1))
    {
       g_lastSimInvalidReason = "ENTRY_BAR";
       return 0.0;
@@ -2399,13 +2401,18 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       g_lastSimInvalidReason = "AVAIL_TIME";
       return 0.0;
    }
-   int entryIdx = setupIdx - 1;
+   int entryIdx = delayedNasEntry?setupIdx:setupIdx-1;
+   if(delayedNasEntry && g_simRates[entryIdx].time!=sig.availableTime)
+   {
+      g_lastSimInvalidReason="NAS_CONFIRM_BAR";
+      return 0.0;
+   }
    int pricingDir = EffectiveTradeDir(sig.dir);
 
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    if(point <= 0.0) point = TickSize();
    double rawEntry = sig.entry;
-   if(g_btFillMode == BT_FILL_NEXT_BAR_OPEN)
+   if(delayedNasEntry||g_btFillMode == BT_FILL_NEXT_BAR_OPEN)
       rawEntry = g_simRates[entryIdx].open;
    else if(g_btFillMode == BT_FILL_CONSERVATIVE)
       rawEntry = pricingDir > 0 ? g_simRates[entryIdx].high : g_simRates[entryIdx].low;
@@ -2545,7 +2552,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    // Tick coverage was unavailable/incomplete and no terminal event was
    // observed. Restart the deterministic OHLC fallback from its own entry
    // geometry; never carry a partial tick HC/BE state into the bar replay.
-   if(LnNasActive()&&(maxTime>0||LnNasDelayed(sig.id)))
+   if(LnNasNeedsExactTicks(sig,maxTime))
    {
       valid=false;closed=false;won=false;
       g_lastSimInvalidReason="NAS_EXIT_TICKS_MISSING";
@@ -2572,6 +2579,18 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          won = pnlR > 0.0;
          CaptureLastSimulationExit("BAR_REVERSE_EXIT", maxTime);
          return pnlR;
+      }
+      if(delayedNasEntry&&!reverseExitMode)
+      {
+         bool hitSl=simDir>0?g_simRates[i].low<=activeSl:g_simRates[i].high>=activeSl;
+         bool hitTp=tp>0.0&&(simDir>0?g_simRates[i].high>=tp:g_simRates[i].low<=tp);
+         bool hitHalf=!halfDone&&half>0.0&&(simDir>0?g_simRates[i].high>=half:g_simRates[i].low<=half);
+         if(hitSl&&(hitTp||hitHalf))
+         {
+            valid=false;closed=false;won=false;
+            g_lastSimInvalidReason="NAS_BAR_AMBIGUOUS";
+            return 0.0;
+         }
       }
       if(!reverseExitMode && !halfDone)
       {
@@ -3728,6 +3747,23 @@ double SignalArrowPrice(datetime t, int dir, double fallbackEntry, double risk)
    return dir > 0 ? fallbackEntry - pad : fallbackEntry + pad;
 }
 
+double HistoricalArrowPrice(datetime t,int dir,double fallbackEntry,double risk,double &pad)
+{
+   int shift=iBarShift(_Symbol,(ENUM_TIMEFRAMES)_Period,t,false);
+   if(shift>=0)
+   {
+      double high=iHigh(_Symbol,(ENUM_TIMEFRAMES)_Period,shift+1);
+      double low=iLow(_Symbol,(ENUM_TIMEFRAMES)_Period,shift+1);
+      if(high>0.0&&low>0.0&&high>=low)
+      {
+         pad=MathMax((high-low)*0.20,TickSize()*15.0);
+         return dir>0?low-pad:high+pad;
+      }
+   }
+   pad=MathMax(TickSize()*30.0,MathAbs(risk)*0.25);
+   return SignalArrowPrice(t,dir,fallbackEntry,risk);
+}
+
 void DrawChartText(string id, datetime t, double price, string text, color clr)
 {
    if(IsTesterMode()) return;
@@ -3830,6 +3866,9 @@ void DrawHistoricalSignals(bool resetObjects = true)
    }
    if(IsTesterMode()) return;
    if(!InpDrawHistoricalSignals) return;
+   // Rejected candidates are visual-only and can change after NAS confirmation.
+   DeleteByPrefix(PFX + "HIST_NASREJ_");
+   DeleteByPrefix(PFX + "HISTTXT_NASREJ_");
    int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
@@ -3862,9 +3901,9 @@ void DrawHistoricalSignals(bool resetObjects = true)
       bool valid = g_histSignalValid[i] && geometryOk;
       double r = g_histSignalR[i];
       color clr = !valid ? C'145,155,170' : (won ? C'60,220,140' : (closed ? C'255,80,110' : C'255,204,82'));
-      double arrowPrice = SignalArrowPrice(displaySig.availableTime, displaySig.dir, displaySig.entry, displaySig.risk);
+      double pad=0.0;
+      double arrowPrice = HistoricalArrowPrice(displaySig.availableTime, displaySig.dir, displaySig.entry, displaySig.risk,pad);
       DrawArrow(id, displaySig.availableTime, arrowPrice, displaySig.dir, clr);
-      double pad = MathMax(MathAbs(displaySig.entry - displaySig.sl) * 0.25, TickSize() * 30.0);
       double targetPrice = hasExecutionGeometry ? g_histSignalExecTp[i] : SelectedTarget(displaySig, g_target, g_targetModel);
       ERL_HC_MODE displayHc = EffectiveHalfModeForSignal(displaySig, g_hc, g_target, g_targetModel);
       double hcPrice = hasExecutionGeometry ? g_histSignalExecHalf[i] : HalfTrigger(displaySig, displayHc);
@@ -3913,6 +3952,22 @@ void DrawHistoricalSignals(bool resetObjects = true)
       DrawChartText(id, displaySig.availableTime, displaySig.dir > 0 ? arrowPrice - pad : arrowPrice + pad, txt, clr);
       DrawFvgBox(id, g_histSignals[i].htfTime, displaySig.availableTime + PeriodSeconds(g_entryTf) * 4,
          g_histSignals[i].fvgLow, g_histSignals[i].fvgHigh, clr);
+   }
+   if(g_lnNasAuditData)
+   {
+      for(int i=0;i<ArraySize(g_lnNasRejected);i++)
+      {
+         ErlSignal candidate=g_lnNasRejected[i];int dir=EffectiveTradeDir(candidate.dir);
+         double pad=0.0;
+         double price=HistoricalArrowPrice(candidate.availableTime,dir,candidate.entry,candidate.risk,pad);
+         string id="NASREJ_"+(string)i+"_"+(string)(long)candidate.availableTime;
+         color muted=C'115,130,145';
+         DrawArrow(id,candidate.availableTime,price,dir,muted);
+         ObjectSetInteger(0,PFX+"HIST_"+id,OBJPROP_ARROWCODE,dir>0?241:242);
+         ObjectSetInteger(0,PFX+"HIST_"+id,OBJPROP_WIDTH,1);
+         DrawChartText(id,candidate.availableTime,dir>0?price-pad:price+pad,
+            "NAS FILTER REJECTED ["+(g_lnNas.gate==2?"STATE GATE":"ENTRY GATE")+"]",muted);
+      }
    }
 }
 

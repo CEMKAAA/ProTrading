@@ -20,6 +20,7 @@ struct LnNasEvent {datetime at;int dir;bool stateAllowed,flowAllowed;double high
 LnNasEvent g_lnNasEvents[];
 datetime g_lnNasBar=0,g_lnNasSeed=0;
 string g_lnNasSignature="";
+ErlSignal g_lnNasRejected[];
 datetime g_lnNasOverlayBar=0;
 datetime g_lnNasOverlayRetryAt=0;
 string g_lnNasOverlaySignature="";
@@ -86,7 +87,7 @@ bool LnNasCompatible(const LnNasPolicy &p)
       &&AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)return false;
    return true;
 }
-void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;g_lnNasOverlayRetryAt=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_simCache);}
+void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;g_lnNasOverlayRetryAt=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_lnNasRejected);ArrayFree(g_simCache);}
 bool LnNasDelayed(string id)
 {for(int i=0;i<ArraySize(g_lnNasDelayed);i++)if(g_lnNasDelayed[i]==id)return true;return false;}
 
@@ -185,10 +186,11 @@ void LnNasFilterHistorical(ErlSignal &signals[],const ErlSignal &raw[])
 {
    g_lnNasAuditData=true;
    ArrayFree(g_lnNasDelayed);
+   ArrayFree(g_lnNasRejected);
    if(!LnNasActive()||g_lnNas.gate==0)return;
    if(ArraySize(signals)>0&&!LnNasBuild(signals[0].availableTime))
    {g_lnNasAuditData=false;return;}
-   ErlSignal kept[];
+   ErlSignal kept[],rejected[];
    for(int i=0;i<ArraySize(signals);i++)
    {
       ErlSignal candidate=signals[i];datetime accepted=0;
@@ -196,13 +198,25 @@ void LnNasFilterHistorical(ErlSignal &signals[],const ErlSignal &raw[])
       datetime through=next>0?next-1:TimeCurrent();
       int decision=LnNasEntryDecision(EffectiveTradeDir(candidate.dir),candidate.availableTime,through,accepted);
       if(decision<0){g_lnNasAuditData=false;break;}
-      if(decision!=1)continue;
+      if(decision!=1)
+      {
+         int n=ArraySize(rejected);ArrayResize(rejected,n+1);rejected[n]=candidate;
+         continue;
+      }
       if(accepted>candidate.availableTime)
       {int d=ArraySize(g_lnNasDelayed);ArrayResize(g_lnNasDelayed,d+1);g_lnNasDelayed[d]=candidate.id;}
       candidate.availableTime=accepted;
       int n=ArraySize(kept);ArrayResize(kept,n+1);kept[n]=candidate;
    }
-   if(g_lnNasAuditData){ArrayResize(signals,ArraySize(kept));for(int i=0;i<ArraySize(kept);i++)signals[i]=kept[i];}
+   if(g_lnNasAuditData)
+   {
+      ArraySwap(g_lnNasRejected,rejected);
+      ArrayResize(signals,ArraySize(kept));for(int i=0;i<ArraySize(kept);i++)signals[i]=kept[i];
+   }
+}
+bool LnNasNeedsExactTicks(const ErlSignal &signal,datetime exitAt)
+{
+   return exitAt>0&&(g_lnNas.exitMode!=0||(g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes>0));
 }
 datetime LnNasAuditExit(const ErlSignal &signal,const ErlSignal &raw[],datetime oldReverse)
 {
@@ -264,7 +278,14 @@ void LnNasRetryPending()
    datetime next=LnNasNextRaw(g_histRawCache,g_lnNasPendingSignal.availableTime);
    if(next>0&&TimeCurrent()>=next){g_lnNasPending=false;return;}
    ErlSignal pending=g_lnNasPendingSignal;
+   datetime accepted=0;
+   bool confirmed=LnNasEntryDecision(EffectiveTradeDir(pending.dir),pending.availableTime,TimeCurrent(),accepted)==1;
    OpenSignal(pending);
+   if(confirmed)
+   {
+      RecalculateHistoricalStats(false);
+      if(!IsTesterMode())DrawHistoricalSignals(false);
+   }
 }
 void LnNasManageNative()
 {
