@@ -20,7 +20,7 @@ def body(text, name):
 
 
 def check(root):
-    src = root/'IndicatorCodeExamples'; snap = root/'logs/OrbMLCampaign_20260909_v3/compiled_sources'
+    src = root/'IndicatorCodeExamples/orb'; snap = root/'logs/OrbMLCampaign_20260909_v3/compiled_sources'
     if not snap.exists():
         return dict(compatible=False, reason='Campaign source snapshot absent')
     mismatches = []

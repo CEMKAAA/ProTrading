@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$sources = Join-Path $root 'IndicatorCodeExamples'
+$sources = Join-Path $root 'IndicatorCodeExamples/orb'
 $destination = Join-Path $root '.tmp/orb_jp225_full_worker/MQL5/Scripts/OrbMLExportProbe'
 [IO.Directory]::CreateDirectory($destination) | Out-Null
 # This generates an isolated script, not a deployable production EA. None of the

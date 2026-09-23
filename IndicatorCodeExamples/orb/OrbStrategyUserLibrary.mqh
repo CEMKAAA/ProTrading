@@ -37,7 +37,8 @@ void OrbUserReload(bool force=false)
    do
    {
       string v[];int count=6+ORB_CUSTOM_PRESET_TOKENS+ORB_CUSTOM_RUNTIME_TOKENS+1;
-      if(!OrbMlReadLines("OrbStrategyUserLibrary\\"+name,v,count,true))continue;
+      bool extended=OrbMlReadLines("OrbStrategyUserLibrary\\"+name,v,count+1,true);
+      if(!extended&&!OrbMlReadLines("OrbStrategyUserLibrary\\"+name,v,count,true))continue;
       double n=0,tf=0;
       if(v[0]!="ORB_USER_STRATEGY1"||v[1]!=ORB_CUSTOM_SCHEMA||!OrbMlNumber(v[2],n)||n!=MathFloor(n)
          ||n<0||n>=ORB_CUSTOM_MAX||!OrbMlNumber(v[4],tf)||tf!=MathFloor(tf))continue;
@@ -46,6 +47,7 @@ void OrbUserReload(bool force=false)
       g_userCount=MathMax(g_userCount,slot+1);
       OrbStrategyPreset p;OrbPresetDefaults(p);
       if(!OrbCustomPresetRead(v,6,p)||StringFind(p.id,"user_")!=0||!OrbMlSafeId(p.id))continue;
+      if((p.targetLeg==(int)ORB_TARGET_CUSTOM)!=extended)continue;
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
@@ -63,6 +65,7 @@ void OrbUserReload(bool force=false)
       }
       record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
+      if(extended)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+ORB_CUSTOM_RUNTIME_TOKENS]+"\n";
       g_userStrategies[slot]=record;
       OrbUserLoadMetrics(slot);
    }while(FileFindNext(find,name));
@@ -84,6 +87,16 @@ int OrbUserSlot(const string id)
    return -1;
 }
 bool OrbUserPreset(const OrbStrategyPreset &p){return StringFind(p.id,"user_")==0;}
+double OrbUserCustomR(const OrbStrategyPreset &p)
+{
+   int slot=OrbUserSlot(p.id);
+   if(slot<0||p.targetLeg!=(int)ORB_TARGET_CUSTOM)return 0.0;
+   string values[];StringSplit(g_userStrategies[slot].runtime,'\n',values);
+   double value=0.0;
+   if(ArraySize(values)<=ORB_CUSTOM_RUNTIME_TOKENS
+      ||!OrbMlNumber(values[ORB_CUSTOM_RUNTIME_TOKENS],value))return 0.0;
+   return value;
+}
 bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
 {
    int i=OrbUserSlot(p.id);reason="CUSTOM_RECORD_MISSING";if(i<0)return false;

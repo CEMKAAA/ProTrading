@@ -23,7 +23,8 @@ def function(source,name):
 
 def test_orb_replay_math_untouched():
     for name in ('OrbUltimateEA.mq5','OrbUltimateEA_StrategyLibrary.mq5'):
-        before=text(BASE/name);after=text(INC/name)
+        current=INC/(Path('orb')/name if name=='OrbUltimateEA_StrategyLibrary.mq5' else Path(name))
+        before=text(BASE/name);after=text(current)
         for func in ('SimulateHistoricalLifecycle','SimulateTrade','BuildSimGeometry'):
             assert function(before,func)==function(after,func),(name,func)
         memo=function(after,'OrbMemoLifecycle')

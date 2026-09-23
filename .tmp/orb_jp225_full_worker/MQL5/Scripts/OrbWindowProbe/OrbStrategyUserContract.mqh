@@ -4,7 +4,7 @@
 #define ORB_CUSTOM_RUNTIME_TOKENS 46
 string OrbCustomInputSignature(){string value="";
    value+="InpSignalTimeframe:"+(string)StringLen((string)InpSignalTimeframe)+":"+(string)InpSignalTimeframe+";";
-   value+="InpBrokerGmtOffsetHours:"+(string)StringLen(DoubleToString(InpBrokerGmtOffsetHours,16))+":"+DoubleToString(InpBrokerGmtOffsetHours,16)+";";
+   value+="InpBrokerGmtOffsetHours:"+(string)StringLen(DoubleToString(OrbBrokerOffsetHours(),16))+":"+DoubleToString(OrbBrokerOffsetHours(),16)+";";
    value+="InpAutoSessionBySymbol:"+(string)StringLen((string)InpAutoSessionBySymbol)+":"+(string)InpAutoSessionBySymbol+";";
    value+="InpSessionProfile:"+(string)StringLen((string)InpSessionProfile)+":"+(string)InpSessionProfile+";";
    value+="InpAutoNewYorkDst:"+(string)StringLen((string)InpAutoNewYorkDst)+":"+(string)InpAutoNewYorkDst+";";
@@ -446,6 +446,7 @@ string OrbCustomRuntimeDump(){string out="";
    out+=DoubleToString(g_btSpreadPts,16)+"\n";
    out+=DoubleToString(g_btSlippagePts,16)+"\n";
    out+=DoubleToString(g_btCommissionPerLot,16)+"\n";
+   if(g_rtTargetLeg==(int)ORB_TARGET_CUSTOM)out+=DoubleToString(g_rtCustomR,8)+"\n";
    return out;}
 bool OrbCustomRuntimeRead(const string &v[],int start,bool apply){
    if(ArraySize(v)<start+46)return false;double n[46];
@@ -495,7 +496,12 @@ bool OrbCustomRuntimeRead(const string &v[],int start,bool apply){
    if(!OrbMlNumber(v[start+43],n[43]))return false;
    if(!OrbMlNumber(v[start+44],n[44]))return false;
    if(!OrbMlNumber(v[start+45],n[45]))return false;
+   double customR=0.0;
+   if((int)n[32]==(int)ORB_TARGET_CUSTOM){
+      if(ArraySize(v)<start+47||!OrbMlNumber(v[start+46],customR)||customR<0.00000001||customR>10000.0)return false;
+   }
    if(!apply)return true;
+   g_rtCustomR=customR;
    g_rtFilterAtr=(bool)n[0];
    g_rtFilterVol=(bool)n[1];
    g_rtFilterDay=(bool)n[2];

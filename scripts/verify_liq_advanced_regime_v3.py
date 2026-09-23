@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STAR = ROOT / "IndicatorCodeExamples" / "LiqNarrativeSolVersion.mq5"
-ADVANCED = ROOT / "IndicatorCodeExamples" / "LiqNarrativeSol_Advanced.mq5"
+ADVANCED = ROOT / "IndicatorCodeExamples" / "SolAdvanced" / "LiqNarrativeSol_Advanced.mq5"
 REGIME = ROOT / "IndicatorCodeExamples" / "LiqNarrativeSol_RegimeV3.mqh"
 LISTENER = ROOT / "IndicatorCodeExamples" / "LiquidityNarrative_cTrader_Listener.cs"
 COMPILE_LOG = ROOT / "logs" / "compile_liq_advanced_regime_filter_5680_exit_only.log"

@@ -1,6 +1,6 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$dir=Join-Path $root 'IndicatorCodeExamples'
+$dir=Join-Path $root 'IndicatorCodeExamples/orb'
 $main=[IO.File]::ReadAllText((Join-Path $dir 'OrbUltimateEA_StrategyLibrary.mq5'))
 $library=[IO.File]::ReadAllText((Join-Path $dir 'OrbStrategyPresetLibrary.mqh'))
 $struct=[regex]::Match($library,'(?s)struct OrbStrategyPreset\s*\{(.*?)bool metric1yReady').Groups[1].Value

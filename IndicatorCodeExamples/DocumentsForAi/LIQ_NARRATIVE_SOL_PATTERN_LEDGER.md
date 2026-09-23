@@ -7,7 +7,7 @@ This file is the durable registry for strong JP225 SolVersion patterns. A patter
 The production source is immutable during research:
 
 - `IndicatorCodeExamples/LiqNarrativeSolVersion.mq5`
-- Research changes belong only in `IndicatorCodeExamples/LiqNarrativeSol_Advanced.mq5`.
+- Research changes belong only in `IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.mq5` (canonical path since the EA family migration).
 
 ## Evidence Levels
 

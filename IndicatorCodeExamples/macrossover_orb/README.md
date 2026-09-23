@@ -1,5 +1,10 @@
 # MA CrossOver ORB Clone
 
+Canonical development source: `MaCrossOverOrbEA.mq5` in this folder. Edit and
+compile this file, not an older root-level MaCross EA. The time-matrix module
+is the local `TradeCalendarMatrix.mqh`; keep it synchronized with the ORB and
+Sol Advanced copies when changing shared calendar logic.
+
 Experimental, isolated MA-signal implementation built from the current ORB
 execution framework. The production ORB sources are not modified.
 

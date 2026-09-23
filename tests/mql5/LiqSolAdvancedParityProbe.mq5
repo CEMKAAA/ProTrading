@@ -5,7 +5,7 @@
 #define OnTimer ProbeTimer
 #define OnChartEvent ProbeEvent
 #define OnTradeTransaction ProbeTransaction
-#include "../../IndicatorCodeExamples/LiqNarrativeSol_Advanced.mq5"
+#include "../../IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.mq5"
 #undef OnInit
 #undef OnDeinit
 #undef OnTick
@@ -22,6 +22,25 @@ void OnStart()
       rows+=g_histSignals[i].id+"|"+(string)g_histSignals[i].dir+"|"
          +(string)g_histSignals[i].availableTime+"|"+DoubleToString(g_histSignalR[i],8)+"|"
          +(string)g_histSignalClosed[i]+"|"+(string)g_histSignalValid[i]+"\n";
+#ifdef TRADE_CALENDAR_MATRIX_MQH
+   if(init==INIT_SUCCEEDED&&ArraySize(g_histSignals)>0)
+   {
+      int originalCount=ArraySize(g_histSignals),originalTotal=g_hist.total;
+      double originalR=g_hist.netR;
+      MqlDateTime sample;TimeToStruct(g_histSignals[0].availableTime,sample);
+      g_tcalDays=127;g_tcalHours=16777215^(1<<sample.hour);g_tcalEnabled=true;
+      RecalculateHistoricalStats(false);
+      bool allAllowed=true;
+      for(int i=0;i<ArraySize(g_histSignals);i++)
+         if(!TCalAllows(g_histSignals[i].availableTime))allAllowed=false;
+      ProbeCheck(allAllowed&&ArraySize(g_histSignals)<originalCount,
+         "calendar audit excludes disallowed entry hours");
+      g_tcalEnabled=false;RecalculateHistoricalStats(false);
+      ProbeCheck(ArraySize(g_histSignals)==originalCount&&g_hist.total==originalTotal
+         &&MathAbs(g_hist.netR-originalR)<1e-8,
+         "calendar OFF restores exact default audit");
+   }
+#endif
 #ifdef LN_SOL_ADV_NAS_READY
    if(init==INIT_SUCCEEDED)
    {

@@ -1,0 +1,11 @@
+ORB_ML_STATUS1
+b123_publish
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+fixture
+PUBLISH
+FAILED
+0
+1790186741
+ValueError: Candidate was modified
+b123_100_job
+20ff595dd555802a777de38ab1e1f7d22330ad2991907fe49e06dd46cab7710b

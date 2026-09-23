@@ -1,0 +1,152 @@
+﻿{
+    "canonical_root":  "..",
+    "entrypoints":  [
+                        "LiquidityNarrative_MT5_EA.mq5",
+                        "LiquidityNarrative_Invert_MT5_EA.mq5",
+                        "LiqNarrativeSolVersion.mq5",
+                        "LiqNarrativeSol_Advanced.mq5",
+                        "LiquidityNarrative_MT5_EA_Channel.mq5",
+                        "LiqNarrativeSolVersion_Channel.mq5",
+                        "LiqNarrativeSol_Advanced_Channel.mq5"
+                    ],
+    "files":  [
+                  {
+                      "file":  "LiqNarrativeMacroRegime.mqh",
+                      "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+                  },
+                  {
+                      "file":  "LiqNarrativeMacroRegimeFilter.mqh",
+                      "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_Advanced.ex5",
+                      "sha256":  "C2E98B62036AA470B25758010C488D30C73B9712E9DF4CEA11817E6E2F440AB2"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_Advanced.mq5",
+                      "sha256":  "A305455F18687FC7A6378D727CC10C1028FC5B5D9EF2287FDD2D43FFDEB1A414"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_Advanced_Channel.ex5",
+                      "sha256":  "51CE152A2C6BF38F9E5E863F0667E45F19AD849E59DC25CAD582D0BC85D08C7D"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_Advanced_Channel.mq5",
+                      "sha256":  "87C274377634A1EF0AC7FEFCD126EA0D75E159AAD69789AB0413EB8E097AE9B8"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+                  },
+                  {
+                      "file":  "LiqNarrativeSolVersion.ex5",
+                      "sha256":  "DCB4764B521E8C85D899CB8C7B1734F2BA6054E587AB0414C8D62E1D9D98F8BF"
+                  },
+                  {
+                      "file":  "LiqNarrativeSolVersion.mq5",
+                      "sha256":  "AABFAB0E00C5EAAFBC9259F6E213277178C5DFFA3723452FFB217F11D638233A"
+                  },
+                  {
+                      "file":  "LiqNarrativeSolVersion_Channel.ex5",
+                      "sha256":  "15BBA4989FF7B4BE94C8353C4BDBD3817F52B253A0C7D4FA07C60DB3CDA890D0"
+                  },
+                  {
+                      "file":  "LiqNarrativeSolVersion_Channel.mq5",
+                      "sha256":  "D0232ED7761AB7811742CBF20352DD32B15D9C675003243B26D5F98C1E58FBDA"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_Invert_MT5_EA.ex5",
+                      "sha256":  "6C92E80849B337A3F409F02A38D8F98D52259A661D62159E38239159A98832CC"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_Invert_MT5_EA.mq5",
+                      "sha256":  "B24863024396E48C16F74837E3D6708E4D520AE263EEE60A2193285E01BA3D8F"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_MT5_EA.ex5",
+                      "sha256":  "F04828F6E35E8FE33AC6ACA5EE1D26346F8973A1826EB90EFEC050D4A3F47D72"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_MT5_EA.mq5",
+                      "sha256":  "58CFA993C5C8A4621BE797759358493B5D7436CF68C334E0EAE4F7C2D645D518"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_MT5_EA_Channel.ex5",
+                      "sha256":  "371735100E3FAF44EA21BAEC6EEDF86012EA038B80B3991D8FABEEB0B86D1784"
+                  },
+                  {
+                      "file":  "LiquidityNarrative_MT5_EA_Channel.mq5",
+                      "sha256":  "D4BD3F32842E152CEBBD4F31856413150BEEBBDEC4736543EFD49C8923677792"
+                  },
+                  {
+                      "file":  "TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+                  }
+              ],
+    "dependencies":  [
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced.mq5",
+                             "include":  "LiqNarrativeMacroRegime.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced.mq5",
+                             "include":  "LiqNarrativeMacroRegimeFilter.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced_Channel.mq5",
+                             "include":  "LiqNarrativeMacroRegime.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced_Channel.mq5",
+                             "include":  "LiqNarrativeMacroRegimeFilter.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced_Channel.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSol_Advanced_Channel.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion.mq5",
+                             "include":  "LiqNarrativeMacroRegime.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion.mq5",
+                             "include":  "LiqNarrativeMacroRegimeFilter.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion_Channel.mq5",
+                             "include":  "LiqNarrativeMacroRegime.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion_Channel.mq5",
+                             "include":  "LiqNarrativeMacroRegimeFilter.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion_Channel.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "LiqNarrativeSolVersion_Channel.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         }
+                     ]
+}

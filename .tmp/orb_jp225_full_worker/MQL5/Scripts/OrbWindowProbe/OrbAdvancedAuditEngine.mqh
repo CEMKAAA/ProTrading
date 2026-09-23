@@ -1,10 +1,11 @@
+#include "AuditTickReadGuard.mqh"
 #ifndef ORB_ADVANCED_AUDIT_ENGINE_MQH
 #define ORB_ADVANCED_AUDIT_ENGINE_MQH
 
 // Exact audit accelerator. The legacy replay engine remains the reference
 // implementation and is used whenever this index cannot prove parity-safe use.
 #define ORB_ADV_INDEX_MAGIC          1329742929
-#define ORB_ADV_INDEX_SCHEMA         1
+#define ORB_ADV_INDEX_SCHEMA         2
 #define ORB_ADV_MINUTE_MS            60000
 #define ORB_ADV_MAX_DAY_BLOCKS       1500
 
@@ -32,6 +33,30 @@ struct OrbAdvTreeNode
    double maxAsk;
    int validQuotes;
 };
+
+// Per-run cache only: never retain a potentially revised history across audits.
+#define ORB_ADV_DAY_CACHE_SLOTS 8
+struct OrbAdvCachedDay
+{
+   int dayKey;
+   string symbol,server;
+   long touched;
+   bool fromDisk;
+   OrbAdvMinuteBlock blocks[];
+   OrbAdvTreeNode tree[];
+};
+OrbAdvCachedDay g_orbAdvDayCache[ORB_ADV_DAY_CACHE_SLOTS];
+long g_orbAdvCacheClock=0,g_orbAdvRamHits=0;
+
+void OrbAdvClearDayCache()
+{
+   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+   {
+      g_orbAdvDayCache[i].dayKey=0;
+      ArrayFree(g_orbAdvDayCache[i].blocks);ArrayFree(g_orbAdvDayCache[i].tree);
+   }
+   g_orbAdvCacheClock=0;g_orbAdvRamHits=0;
+}
 
 OrbAdvMinuteBlock g_orbAdvBlocks[];
 OrbAdvTreeNode g_orbAdvTree[];
@@ -252,7 +277,7 @@ bool OrbAdvBuildDayIndex(const datetime dayStart)
    if(dayEnd<=dayStart)return false;
    MqlTick ticks[];
    ResetLastError();
-   int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)dayStart*1000,(ulong)dayEnd*1000+999);
+   int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)dayStart*1000,(ulong)dayEnd*1000+999);
    if(copied<=0)return false;
    ArrayResize(g_orbAdvBlocks,ORB_ADV_MAX_DAY_BLOCKS);
    int count=0;
@@ -344,7 +369,43 @@ bool OrbAdvLoadDay(const datetime dayStart)
    string server=AccountInfoString(ACCOUNT_SERVER);
    if(g_orbAdvLoadedDayKey==dayKey&&g_orbAdvLoadedSymbol==_Symbol&&g_orbAdvLoadedServer==server
       &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)return true;
+   // Only completed days are cacheable. The currently forming day stays in
+   // the original snapshot path. Cache failures fall back to the disk path.
+   if(g_orbAdvLoadedDayKey>0&&g_orbAdvLoadedDayKey<OrbAdvDayKey(TimeCurrent())
+      &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)
+   {
+      int slot=0;long oldest=LONG_MAX;
+      for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+      {
+         if(g_orbAdvDayCache[i].dayKey==g_orbAdvLoadedDayKey
+            &&g_orbAdvDayCache[i].symbol==g_orbAdvLoadedSymbol&&g_orbAdvDayCache[i].server==g_orbAdvLoadedServer){slot=i;break;}
+         if(g_orbAdvDayCache[i].dayKey==0){slot=i;break;}
+         if(g_orbAdvDayCache[i].touched<oldest){oldest=g_orbAdvDayCache[i].touched;slot=i;}
+      }
+      g_orbAdvDayCache[slot].dayKey=0;
+      int nb=ArraySize(g_orbAdvBlocks),nt=ArraySize(g_orbAdvTree);
+      if(ArrayResize(g_orbAdvDayCache[slot].blocks,nb)==nb&&ArrayResize(g_orbAdvDayCache[slot].tree,nt)==nt
+         &&ArrayCopy(g_orbAdvDayCache[slot].blocks,g_orbAdvBlocks)==nb&&ArrayCopy(g_orbAdvDayCache[slot].tree,g_orbAdvTree)==nt)
+      {
+         g_orbAdvDayCache[slot].dayKey=g_orbAdvLoadedDayKey;
+         g_orbAdvDayCache[slot].symbol=g_orbAdvLoadedSymbol;g_orbAdvDayCache[slot].server=g_orbAdvLoadedServer;
+         g_orbAdvDayCache[slot].fromDisk=g_orbAdvLoadedFromDisk;g_orbAdvDayCache[slot].touched=++g_orbAdvCacheClock;
+      }
+   }
    OrbAdvClearLoadedDay();
+   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
+   {
+      if(dayKey>=OrbAdvDayKey(TimeCurrent())||g_orbAdvDayCache[i].dayKey!=dayKey
+         ||g_orbAdvDayCache[i].symbol!=_Symbol||g_orbAdvDayCache[i].server!=server)continue;
+      int nb=ArraySize(g_orbAdvDayCache[i].blocks),nt=ArraySize(g_orbAdvDayCache[i].tree);
+      if(ArrayCopy(g_orbAdvBlocks,g_orbAdvDayCache[i].blocks)==nb&&ArrayCopy(g_orbAdvTree,g_orbAdvDayCache[i].tree)==nt)
+      {
+         g_orbAdvLoadedDayKey=dayKey;g_orbAdvLoadedSymbol=_Symbol;g_orbAdvLoadedServer=server;
+         g_orbAdvLoadedFromDisk=g_orbAdvDayCache[i].fromDisk;g_orbAdvDayCache[i].touched=++g_orbAdvCacheClock;
+         g_orbAdvRamHits++;g_orbAdvLastStatus="INDEX_RAM";return true;
+      }
+      OrbAdvClearLoadedDay();break;
+   }
    ulong started=GetTickCount64();
    bool loaded=OrbAdvReadIndex(dayKey);
    if(loaded){g_orbAdvIndexDiskHits++;g_orbAdvLoadedFromDisk=true;}
@@ -471,7 +532,7 @@ bool OrbAdvFindFirstQuote(const long fromMs,const long toMs,MqlTick &firstTick)
          MqlTick ticks[];
          long blockFrom=MathMax(cursor,block.minuteMs);
          long blockTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-         int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
+         int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
          for(int i=0;i<copied;i++)
          {
             if(ticks[i].time_msc<blockFrom||ticks[i].time_msc>blockTo)continue;
@@ -569,7 +630,7 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
       long exactFrom=MathMax(cursor,block.minuteMs);
       long exactTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
       MqlTick ticks[];
-      int copied=CopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
+      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
       if(copied<=0)return false;
       g_orbAdvExactMinutes++;
       for(int i=0;i<copied;i++)
@@ -653,10 +714,13 @@ HistResult SimulateHistoricalLifecycleAdvanced(datetime entryTime,datetime sessi
    advanced.exitMode=RuntimeExitLabel();advanced.exitPrice=0;advanced.exitTime=0;
    advanced.valid=false;advanced.invalidReason="NO_MARKET_DATA";
    advanced.targetLeg=RuntimeTargetLeg();advanced.hcLeg=ClampHalfBeLeg(halfBeLeg,advanced.targetLeg);
+   ulong tickReadFailures=g_auditTickReadFailures;
    if(!SimulateTradeTicksAdvanced(entryTime,horizon,entry,sl,isBuy,halfBeLeg,scheduledEndReached,
                                   advanced,forcedExitTime,forcedExitOutcome))
-      return SimulateHistoricalLifecycle(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,
-         usedEnd,forcedExitTime,forcedExitOutcome);
+   {
+      if(g_auditTickReadFailures!=tickReadFailures){advanced.valid=false;advanced.invalidReason="TICK_HISTORY_PENDING";advanced.netR=0;advanced.isWin=false;usedEnd=horizon;return advanced;}
+      return SimulateHistoricalLifecycle(entryTime,sessionEnd,now,entry,sl,isBuy,tp1,tp2,tp3,halfBeLeg,usedEnd,forcedExitTime,forcedExitOutcome);
+   }
    usedEnd=horizon;
    if(!InpAdvancedAuditShadowParity)return advanced;
    datetime legacyEnd=sessionEnd;
@@ -714,12 +778,14 @@ bool OrbAdvancedAuditSetRuntime(const bool enabled)
    string key=OrbAdvancedAuditRuntimeKey();
    if(!GlobalVariableSet(key,enabled?1.0:0.0))return false;
    g_rtAdvancedAuditEngine=enabled;
+   OrbAdvClearDayCache();
    OrbAdvClearLoadedDay();
    return true;
 }
 
 void OrbAdvancedAuditResetRunStats()
 {
+   OrbAdvClearDayCache();
    // Completed shards are reloaded from disk. The active trading day is
    // intentionally rebuilt against the immutable audit snapshot timestamp.
    OrbAdvClearLoadedDay();

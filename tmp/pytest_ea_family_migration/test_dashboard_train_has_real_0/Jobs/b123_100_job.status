@@ -1,0 +1,11 @@
+ORB_ML_STATUS1
+b123_100_job
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+fixture
+TRAIN
+REJECTED
+100
+1790186739
+Test -10.00R / base -10.00R; WR 45.0%; keep 100.0%; rejected: uncertain_test_uplift,below_simple_benchmark
+
+2645d115058b68210244d0c0d022232cb27c05256f6f28982203ac79762f74db

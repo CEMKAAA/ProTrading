@@ -1,0 +1,11 @@
+ORB_ML_STATUS1
+b123_100_job
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+fixture
+TRAIN
+FAILED
+0
+1790186740
+ValueError: Job/CSV strategy binding mismatch
+
+888c7ef94f6c8453964da7ac7bff2eb87c5c4c3875820ee4403998a883e17718

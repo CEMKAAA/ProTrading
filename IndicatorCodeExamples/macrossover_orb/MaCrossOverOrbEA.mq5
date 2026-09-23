@@ -10,6 +10,7 @@
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
+#include "TradeCalendarMatrix.mqh"
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
@@ -6551,6 +6552,7 @@ void OrbResetHistoricalStats()
    for(int ri=0;ri<ORB_REGIME_COUNT;ri++){g_regimeWins[ri]=0;g_regimeLosses[ri]=0;}
    for(int rf=0;rf<ORB_RF_COUNT;rf++){g_orbRfWins[rf]=0;g_orbRfLosses[rf]=0;}
    ResetWeekdayAuditStats();
+   TCalReset();
 }
 
 #include "OrbStrategyMLPipeline.mqh"
@@ -6642,6 +6644,8 @@ void ProcessHistoricalCalcDay(const int back)
          g_maAuditHeldCandidates++;
          return;
       }
+      if(!TCalAllows(ServerToSessionLocal(OrbSignalAvailableTime(entryT))))
+      {g_histFiltered++;return;}
       RegimeV3Snapshot regimeSnapshot;
       int regimeBucket=OrbRegimeBucketAt(sigT,regimeSnapshot);
       string regimeDetail=OrbRegimeDetail(regimeSnapshot,regimeBucket);
@@ -6781,6 +6785,7 @@ void ProcessHistoricalCalcDay(const int back)
       }
       g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
+      if(finalOutcome)TCalRecord(ServerToSessionLocal(OrbSignalAvailableTime(entryT)),sim.netR);
       if(!sim.valid)g_histInvalid++;
       else if(!finalOutcome)g_histOpen++;
       else if(sim.netR>1e-8)
@@ -7935,6 +7940,8 @@ void UpdateDashboard()
    }
    OrbRPickerDraw();
    McOfUiDraw();
+   TCalLauncher(PREFIX,OrbLibraryX(InpDashboardX+644),OrbLibraryY(InpDashboardY+5),
+      InpDashboardX+300,InpDashboardY+34,"SESSION LOCAL TIME");
 }
 
 //=========================================================================
@@ -8549,6 +8556,13 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       g_lastFilterReason="ENTRY WINDOW";g_lastExecStatus="WINDOW_BLOCKED";
       Audit("entry_window_block",dir,0,signalClose,0,0,"window="+EntryWindowLabel()+" "+entryDetail);
       ClearRetestState("entry_window_closed");ClearImbalanceState("entry_window_closed");
+      return false;
+   }
+   if(!TCalAllows(ServerToSessionLocal(TimeCurrent())))
+   {
+      g_lastFilterReason="TIME MATRIX";g_lastExecStatus="TIME_MATRIX_BLOCKED";
+      Audit("time_matrix_block",dir,0,signalClose,0,0,entryDetail);
+      ClearRetestState("time_matrix_block");ClearImbalanceState("time_matrix_block");
       return false;
    }
    string rawDir=dir;
@@ -9327,6 +9341,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   if(!TCalInit()){Print("Invalid or damaged entry time matrix settings");return INIT_PARAMETERS_INCORRECT;}
    if(!McOfInit())return INIT_PARAMETERS_INCORRECT;
    OrbTesterAudit_Init();
    // Runtime execution markers from an older attachment/configuration are not
@@ -9451,6 +9466,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    ObjectsDeleteAll(0,MaOfRankPrefix());
+   TCalDestroy();
    McOfRelease();
    MaIndependentRelease();
    EventKillTimer();
@@ -9529,6 +9545,12 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(TCalEvent(id,lparam,dparam,sparam))
+   {
+      if(g_tcalChanged)
+      {g_tcalChanged=false;CancelHistoricalAuditBuild();QueueHistoricalRedraw(0);UpdateDashboard();}
+      return;
+   }
    if(OrbRPickerEvent(id,sparam))return;
    if(McOfUiEvent(id,sparam,lparam,dparam))return;
    if(MaOfRankEvent(id,lparam,dparam,sparam))return;

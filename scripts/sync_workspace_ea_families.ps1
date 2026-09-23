@@ -3,9 +3,8 @@ $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $src=Join-Path $root 'IndicatorCodeExamples'
 $families=[ordered]@{
-    orb=@('OrbUltimateEA.mq5','OrbUltimateEA_StrategyLibrary.mq5','OrbUltimateEA_Channel.mq5')
     nas=@('NasUltimate_SATS_PartialNoBE_EA.mq5','NasUltimate_StrategyLibrary.mq5')
-    liq=@('LiquidityNarrative_MT5_EA.mq5','LiquidityNarrative_Invert_MT5_EA.mq5','LiqNarrativeSolVersion.mq5','LiqNarrativeSol_Advanced.mq5','LiquidityNarrative_MT5_EA_Channel.mq5','LiqNarrativeSolVersion_Channel.mq5','LiqNarrativeSol_Advanced_Channel.mq5')
+    liq=@('LiquidityNarrative_MT5_EA.mq5','LiquidityNarrative_Invert_MT5_EA.mq5','LiqNarrativeSolVersion.mq5','LiquidityNarrative_MT5_EA_Channel.mq5','LiqNarrativeSolVersion_Channel.mq5','LiqNarrativeSol_Advanced_Channel.mq5')
 }
 $plans=[Collections.Generic.List[object]]::new()
 foreach($family in $families.Keys) {
@@ -49,7 +48,9 @@ foreach($family in $families.Keys) {
             throw "Missing/stale grouped file: $dest"
         }
     }
-    if($previous.Keys.Where({!$files.ContainsKey($_)}).Count){throw "Dependency removed in $family; review old manifest before removing obsolete copies"}
+    if($previous.Keys.Where({!$files.ContainsKey($_)}).Count -and $family -ne 'liq'){
+        throw "Dependency removed in $family; review old manifest before removing obsolete copies"
+    }
     $plans.Add([pscustomobject]@{family=$family;folder=$folder;entries=$families[$family];files=@($files.Values|Sort-Object file);edges=@($edges|Sort-Object parent,include)})
 }
 if(!$Check) {

@@ -25,8 +25,8 @@ $kinds=if($CandidateOnly){@('candidate')}else{@('candidate','baseline')}
 foreach($kind in $kinds){
  $part=Join-Path $stage $kind
  $seen=@{}
- StageSource (Join-Path $source 'LiqNarrativeSol_Advanced.mq5') $part $seen
- $main=Join-Path $part 'IndicatorCodeExamples/LiqNarrativeSol_Advanced.mq5'
+ StageSource (Join-Path $source 'SolAdvanced/LiqNarrativeSol_Advanced.mq5') $part $seen
+ $main=Join-Path $part 'IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.mq5'
  if($kind -eq 'baseline'){
   $baseline='C:\MT5\DEMO\MQL5\Experts\LiqNarrativeSol_Advanced.mq5'
   if(!(Test-Path $baseline)){throw "Missing stable source: $baseline"}

@@ -147,8 +147,8 @@ def test_uncommitted_queue_recovers_to_failure(tmp_path):
 
 def test_user_strategy_contract_covers_runtime_without_account_controls():
     root=Path(__file__).resolve().parents[1]
-    contract=(root/"IndicatorCodeExamples/OrbStrategyUserContract.mqh").read_text()
-    library=(root/"IndicatorCodeExamples/OrbStrategyUserLibrary.mqh").read_text()
+    contract=(root/"IndicatorCodeExamples/orb/OrbStrategyUserContract.mqh").read_text()
+    library=(root/"IndicatorCodeExamples/orb/OrbStrategyUserLibrary.mqh").read_text()
     for name in ["g_rtNasOppositeExitWaitMinutes","g_rtNasFlowVolumeMultiplier","g_rtBEOnTp1",
                  "g_rtInvertMode","g_rtSlDistancePct","g_btCommissionPerLot"]:
         assert name in contract
@@ -185,7 +185,7 @@ def test_two_workers_cannot_claim_simultaneously(tmp_path):
 
 
 def test_mql_browsing_and_actions_are_strategy_scoped():
-    source=(Path(__file__).resolve().parents[1]/"IndicatorCodeExamples/OrbStrategyMLJobs.mqh").read_text()
+    source=(Path(__file__).resolve().parents[1]/"IndicatorCodeExamples/orb/OrbStrategyMLJobs.mqh").read_text()
     assert 'marker[0]!=config' in source and 'lines[2]==g_mlBrowseConfig' in source
     assert 'lines[3]==OrbMlSelectedDataset()' in source
     assert 's[5]!="READY"' in source
@@ -195,7 +195,7 @@ def test_mql_browsing_and_actions_are_strategy_scoped():
 
 def test_preset_apply_syncs_strategy_edits_but_redraw_preserves_drafts():
     import re
-    source=(Path(__file__).resolve().parents[1]/"IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5").read_text()
+    source=(Path(__file__).resolve().parents[1]/"IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5").read_text()
     sync=source.split("void OrbStrategyPresetSyncEdits()",1)[1].split("void OrbStrategyPresetApplyValues",1)[0]
     expected={"EDIT_SL_VALUE", "EDIT_VOL_MULT", "EDIT_ENTRY_WIN_START", "EDIT_ENTRY_WIN_END",
               "EDIT_NAS_SENS", "EDIT_NAS_LOOKBACK", "EDIT_NAS_EXIT_WAIT",

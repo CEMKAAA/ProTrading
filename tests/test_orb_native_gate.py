@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from check_orb_campaign_compatibility import body, check
 
-SOURCE = (ROOT / 'IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5').read_text(encoding='utf8')
+SOURCE = (ROOT / 'IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5').read_text(encoding='utf8')
 
 
 @pytest.mark.parametrize('native', [False, True])

@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $originalPath = Join-Path $root "IndicatorCodeExamples\OrbUltimateEA.mq5"
-$strategyPath = Join-Path $root "IndicatorCodeExamples\OrbUltimateEA_StrategyLibrary.mq5"
-$libraryPath = Join-Path $root "IndicatorCodeExamples\OrbStrategyPresetLibrary.mqh"
+$strategyPath = Join-Path $root "IndicatorCodeExamples\orb\OrbUltimateEA_StrategyLibrary.mq5"
+$libraryPath = Join-Path $root "IndicatorCodeExamples\orb\OrbStrategyPresetLibrary.mqh"
 
 foreach ($path in @($originalPath, $strategyPath, $libraryPath)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing file: $path" }

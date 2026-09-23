@@ -176,11 +176,11 @@ def test_net_r_metrics_not_nominal_target():
 
 
 def test_feature_order_and_causal_guards_match_mql():
-    core = (ROOT / "IndicatorCodeExamples/OrbStrategyMLCore.mqh").read_text()
+    core = (ROOT / "IndicatorCodeExamples/orb/OrbStrategyMLCore.mqh").read_text()
     body = core.split("string OrbMlFeatureNames()", 1)[1].split("\n}", 1)[0]
     names = "".join(re.findall(r'"([^"]*)"', body))
     assert names.split(",") == ml.FEATURES
-    pipeline = (ROOT / "IndicatorCodeExamples/OrbStrategyMLPipeline.mqh").read_text()
+    pipeline = (ROOT / "IndicatorCodeExamples/orb/OrbStrategyMLPipeline.mqh").read_text()
     features = pipeline.split("bool OrbMlFeatures(", 1)[1].split("\nvoid OrbMlAbort", 1)[0]
     assert "rates[i].time+seconds>cutoff" in features
     assert "state.availableTime>cutoff" in features
@@ -190,25 +190,25 @@ def test_feature_order_and_causal_guards_match_mql():
 
 
 def test_veto_before_both_publishing_and_native_execution():
-    source = (ROOT / "IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5").read_text()
+    source = (ROOT / "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5").read_text()
     execute = source.split("bool ExecuteOrbEntry(", 1)[1].split("\nbool ", 1)[0]
     gate = execute.index("if(!OrbMlAllow(rawDir,signalBar))")
     assert execute.index("CloseAcceptedNewDayReverseLifecycle(") < gate
     assert gate < execute.index("StoreOrbBridgePlan(") < execute.index("OrbProPublishSignal(")
     assert gate < execute.index("ExecThreeLegs(")
-    pipeline = (ROOT / "IndicatorCodeExamples/OrbStrategyMLPipeline.mqh").read_text()
+    pipeline = (ROOT / "IndicatorCodeExamples/orb/OrbStrategyMLPipeline.mqh").read_text()
     allow = pipeline.split("bool OrbMlAllow(", 1)[1].split("\nbool OrbMlUiEvent", 1)[0]
     assert "if(!g_mlEnabled)return true;" in allow
     assert 'OrbMlDecision(raw,bar,g_orbHigh,g_orbLow,g_orbEndServer,true' in allow
     assert 'return allowed;' in allow
-    decision = (ROOT / "IndicatorCodeExamples/OrbStrategyMLHistory.mqh").read_text()
+    decision = (ROOT / "IndicatorCodeExamples/orb/OrbStrategyMLHistory.mqh").read_text()
     assert 'return reason=="ALLOW";' in decision
     assert 'requireOos&&' in decision
     assert "NOT_OUT_OF_SAMPLE" in decision and "MISSING_OR_MISMATCHED_MODEL" in decision
 
 
 def test_export_captures_base_universe_without_ml_veto():
-    source = (ROOT / "IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5").read_text()
+    source = (ROOT / "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5").read_text()
     calc = source.split("void ProcessHistoricalCalcDay(", 1)[1].split("void CancelHistoricalAuditBuild", 1)[0]
     assert calc.index("if(!rfAllowed)") < calc.index("OrbMlCapture(") < calc.index("g_histTotal++")
     assert "OrbMlAllow" not in calc
@@ -216,7 +216,7 @@ def test_export_captures_base_universe_without_ml_veto():
 
 
 def test_export_writes_canonical_bytes_not_terminal_text_conversion():
-    pipeline = (ROOT / "IndicatorCodeExamples/OrbStrategyMLPipeline.mqh").read_text()
+    pipeline = (ROOT / "IndicatorCodeExamples/orb/OrbStrategyMLPipeline.mqh").read_text()
     assert "FileWriteArray(handle,bytes,0,size-1)" in pipeline
     assert "FILE_WRITE|FILE_BIN|FILE_COMMON" in pipeline
     assert "FileWriteString" not in pipeline

@@ -13,7 +13,7 @@ from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "reports" / "Algoritmik_Finans_Arastirma_Platformu_TUBITAK_BIST_Teknik_Rapor_TR.docx"
+OUT = ROOT / "reports" / "Algoritmik_Finans_Arastirma_Platformu_TUBITAK_BIST_Teknik_Rapor_TR_Revize.docx"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 FIG = Path(__file__).resolve().parent / "figures"
 FIG.mkdir(parents=True, exist_ok=True)
@@ -33,14 +33,14 @@ sec.different_first_page_header_footer = True
 
 styles = doc.styles
 normal = styles["Normal"]
-normal.font.name = "Arial"
+normal.font.name = "Cambria"
 normal.font.size = Pt(10.5)
 normal.font.color.rgb = RGBColor(25, 25, 25)
 normal.paragraph_format.space_after = Pt(6)
 normal.paragraph_format.line_spacing = 1.12
 for name, size, before, after in [("Title", 26, 0, 12), ("Subtitle", 13, 0, 9), ("Heading 1", 16, 15, 8), ("Heading 2", 11.5, 10, 5)]:
     s = styles[name]
-    s.font.name = "Arial"
+    s.font.name = "Cambria"
     s.font.size = Pt(size)
     s.font.bold = name != "Subtitle"
     s.font.color.rgb = RGBColor(0, 0, 0)
@@ -49,7 +49,7 @@ for name, size, before, after in [("Title", 26, 0, 12), ("Subtitle", 13, 0, 9), 
     s.paragraph_format.keep_with_next = True
 if "Caption" not in styles:
     styles.add_style("Caption", WD_STYLE_TYPE.PARAGRAPH)
-styles["Caption"].font.name = "Arial"
+styles["Caption"].font.name = "Cambria"
 styles["Caption"].font.size = Pt(9)
 styles["Caption"].font.bold = True
 styles["Caption"].font.color.rgb = RGBColor(30, 30, 30)
@@ -79,21 +79,24 @@ def caption(text):
 
 
 def set_cell(cell, value, bold=False):
-    cell.text = str(value)
+    text = str(value)
+    if "IndicatorCodeExamples/" in text or "docs/" in text:
+        text = text.replace("/", "/\u200b")
+    cell.text = text
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     for para in cell.paragraphs:
         para.paragraph_format.space_after = Pt(0)
         para.paragraph_format.line_spacing = 1.04
         for run in para.runs:
-            run.font.name = "Arial"
-            run.font.size = Pt(8.6)
+            run.font.name = "Cambria"
+            run.font.size = Pt(8.8)
             run.font.bold = bold
-            run.font.color.rgb = RGBColor(255, 255, 255) if bold else RGBColor(25, 25, 25)
+            run.font.color.rgb = RGBColor(35, 35, 35) if bold else RGBColor(42, 42, 42)
     tcpr = cell._tc.get_or_add_tcPr()
     mar = OxmlElement("w:tcMar")
     for edge in ("top", "left", "bottom", "right"):
         node = OxmlElement("w:" + edge)
-        node.set(qn("w:w"), "90")
+        node.set(qn("w:w"), "110")
         node.set(qn("w:type"), "dxa")
         mar.append(node)
     tcpr.append(mar)
@@ -104,27 +107,27 @@ def table(headers, rows, widths=None):
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
     t.autofit = False
     if widths:
-        for row in t.rows:
-            for cell, width in zip(row.cells, widths):
-                cell.width = Inches(width)
+        for col, width in zip(t.columns, widths):
+            col.width = Inches(width)
     for i, value in enumerate(headers):
         set_cell(t.rows[0].cells[i], value, True)
     for r, values in enumerate(rows):
         cells = t.add_row().cells
         for i, value in enumerate(values):
             set_cell(cells[i], value)
+    if widths:
+        for row in t.rows:
+            for cell, width in zip(row.cells, widths):
+                cell.width = Inches(width)
     for ri, row in enumerate(t.rows):
         for cell in row.cells:
             tcpr = cell._tc.get_or_add_tcPr()
-            shd = OxmlElement("w:shd")
-            shd.set(qn("w:fill"), "213B58" if ri == 0 else ("F1F5F8" if ri % 2 == 0 else "FFFFFF"))
-            tcpr.append(shd)
             borders = OxmlElement("w:tcBorders")
-            for edge in ("top", "left", "bottom", "right"):
+            for edge in ("top", "bottom") if ri == 0 else ("bottom",):
                 node = OxmlElement("w:" + edge)
                 node.set(qn("w:val"), "single")
-                node.set(qn("w:sz"), "4")
-                node.set(qn("w:color"), "D9D9D9")
+                node.set(qn("w:sz"), "7" if ri == 0 else "3")
+                node.set(qn("w:color"), "55514C" if ri == 0 else "D8D5D0")
                 borders.append(node)
             tcpr.append(borders)
     t.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
@@ -145,6 +148,7 @@ def picture(path, title, note, width=6.45):
     para = doc.add_paragraph()
     para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     para.paragraph_format.keep_together = True
+    para.paragraph_format.keep_with_next = True
     para.add_run().add_picture(str(path), width=Inches(width))
     note_para = add(note)
     note_para.paragraph_format.space_after = Pt(9)
@@ -160,13 +164,12 @@ def architecture_figure():
     ax.set_xlim(0, 12)
     ax.set_ylim(0, 2)
     ax.axis("off")
-    colors = ["#e8f0f6", "#dceaf4", "#d5e6ef", "#bed8e7", "#a9c9dc", "#8fb8d0"]
-    for i, (label, color) in enumerate(zip(labels, colors)):
+    for i, label in enumerate(labels):
         x = 0.12 + i * 2.0
-        ax.add_patch(FancyBboxPatch((x, 0.53), 1.72, 0.94, boxstyle="round,pad=0.04,rounding_size=0.09", linewidth=1, edgecolor="#54728a", facecolor=color))
-        ax.text(x + 0.86, 1, label, ha="center", va="center", fontsize=9, color="#172a38", fontweight="bold")
+        ax.add_patch(FancyBboxPatch((x, 0.53), 1.72, 0.94, boxstyle="square,pad=0.04", linewidth=0.9, edgecolor="#585652", facecolor="white"))
+        ax.text(x + 0.86, 1, label, ha="center", va="center", fontsize=9, color="#252525")
         if i < 5:
-            ax.add_patch(FancyArrowPatch((x + 1.74, 1), (x + 1.96, 1), arrowstyle="-|>", mutation_scale=15, lw=1.2, color="#54728a"))
+            ax.add_patch(FancyArrowPatch((x + 1.74, 1), (x + 1.96, 1), arrowstyle="->", mutation_scale=10, lw=0.9, color="#585652"))
     path = FIG / "architecture.png"
     fig.savefig(path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -181,10 +184,10 @@ def research_figure():
     ax.axis("off")
     for i, label in enumerate(labels):
         x = 0.08 + 2 * i
-        ax.add_patch(FancyBboxPatch((x, .58), 1.68, .84, boxstyle="round,pad=0.04,rounding_size=0.07", facecolor="#f2f5f7" if i % 2 == 0 else "#e0ebf2", edgecolor="#668298"))
-        ax.text(x + .84, 1, label, ha="center", va="center", fontsize=9, color="#1f3443")
+        ax.add_patch(FancyBboxPatch((x, .58), 1.68, .84, boxstyle="square,pad=0.04", facecolor="white", edgecolor="#585652", linewidth=0.9))
+        ax.text(x + .84, 1, label, ha="center", va="center", fontsize=9, color="#252525")
         if i < 4:
-            ax.add_patch(FancyArrowPatch((x + 1.72, 1), (x + 1.95, 1), arrowstyle="-|>", mutation_scale=15, color="#668298"))
+            ax.add_patch(FancyArrowPatch((x + 1.72, 1), (x + 1.95, 1), arrowstyle="->", mutation_scale=10, color="#585652", lw=0.9))
     path = FIG / "research.png"
     fig.savefig(path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -195,8 +198,8 @@ def comparison_figure():
     labels = ["USDJPY\nLojistik", "USDJPY\nHGB", "JP225\nLojistik", "JP225\nHGB"]
     values = [-0.39, -1.39, -1.01, -1.75]
     fig, ax = plt.subplots(figsize=(8.8, 3.1), dpi=175)
-    bars = ax.bar(labels, values, color="#758da1", width=.54)
-    ax.axhline(0, color="#293745", lw=1)
+    bars = ax.bar(labels, values, color="#67645F", width=.54)
+    ax.axhline(0, color="#252525", lw=1)
     ax.set_ylabel("Medyan fark  R")
     ax.set_ylim(-2.1, .35)
     ax.spines[["top", "right"]].set_visible(False)
@@ -246,6 +249,7 @@ page_break()
 heading("1 Yönetici özeti ve proje kararı")
 add("Bu önerinin konusu, yalnızca kârlı sinyal üreten bir bot değildir. Yaklaşık bir yıllık geliştirme ile oluşmuş MT5 tabanlı algoritmik araştırma ortamının; çoklu strateji çekirdeklerini, sürümlenmiş ayar kütüphanelerini, tarihsel audit motorlarını, makine öğrenmesi filtre deneylerini, CSV tabanlı yayın katmanını ve farklı işlem platformlarındaki dinleyicileri aynı deney zincirinde buluşturmasıdır. Araştırma değeri, bir stratejinin neden ve hangi veri kalitesi koşullarında başarılı göründüğünü yeniden üretilebilir biçimde sınayabilmesidir [K01–K11].")
 add("Mevcut prototipte Liquidity Narrative, opening-range breakout (ORB), NAS SATS ve hareketli ortalama kesişimi (MA) aileleri vardır. Risk geometrisi, rejim sınıflaması, sinyal ve emir ayrımı, varlığa özgü seans/oynaklık parametreleri, tarihsel tarama ve bazı uçtan uca listener akışları kod düzeyinde mevcuttur. Ancak bu bileşenlerin bulunması, hepsinin her brokerda eşdeğer veya Borsa İstanbul’da üretim hazır olduğu anlamına gelmez. Raporun önerdiği Ar-Ge, mevcut altyapıyı lisanslı BIST verisi ve kurumca sağlanacak test koşulları üzerinde bağımsız biçimde sınamaktır.")
+add("Strateji performansı da bu altyapının incelenmesi gereken somut çıktısıdır. JP225 için kayıtlı bazı ORB/model kombinasyonları, 9 Eylül 2025–9 Eylül 2026 ortak tarihsel karşılaştırma penceresinde +20R’nin üzerinde net sonuç üretmiştir [K12]. Bu sonuçlar gerçek para hesabı getirisi veya BIST üzerinde doğrulanmış performans değildir; maliyet, veri ve seçim yanlılığı koşullarının bağımsız testte yeniden ölçülmesi gerekir.")
 add("Önerilen 18 aylık ortak çalışma, üç çıktıya odaklanır: (i) veri kaynaklarını ve sinyal kullanılabilirlik zamanını açıkça tanımlayan araştırma veri sözleşmesi; (ii) bar/tick belirsizliğini gizlemeyen, canlı emir kayıtlarıyla olay bazında mutabakat yapabilen audit; (iii) ileriye dönük, maliyet sonrası ve çoklu deneme yanlılığı gözetilmiş strateji/filtre değerlendirme protokolü. Dördüncü çıktı, yalnızca kurum izni ve teknik sertifikasyon süreci uygun olursa, BISTECH test ortamında güvenlik odaklı entegrasyon gösterimidir [1–4].")
 caption("Tablo 1  Mevcut varlık ile araştırmada hedeflenen kanıt düzeyi")
 table(["Alan", "Bugün gözlenen", "Projenin kanıtlayacağı"], [
@@ -255,24 +259,35 @@ table(["Alan", "Bugün gözlenen", "Projenin kanıtlayacağı"], [
     ["Yapay zekâ", "Strateji bazlı filtre, kronolojik ayrım ve reddedilen model kaydı", "Sabit deney protokolü, daha güçlü baz çizgileri, ileri dönem kalibrasyon ve seçim yanlılığı ölçümü"],
 ], [1.1, 2.55, 2.95])
 add("Başvuru kararı: TÜBİTAK 1505 uygun bir ön çerçevedir; program, Türkiye’de yerleşik müşteri kuruluş ile üniversite/araştırma yürütücüsünün ortak başvurusunu ve başvurudan önce iş birliği sözleşmesini öngörür [1]. Borsa İstanbul burada doğrulanmış taraf değil, olası veri, piyasa uzmanlığı ve test ortamı paydaşıdır. Müşteri kuruluş rolü ve veri hakları görüşmede netleşmeden resmî ortaklık beyanı yapılmamalıdır.")
-picture(SHOT_ROOT / "SolAdvanced.png", "Şekil 1  Sol Advanced prototipinde rejim ve audit paneli", "Arşiv ekran görüntüsü  24 Temmuz 2026. Gösterilen istatistikler tarihsel prototip çıktısıdır; BIST verisi veya bağımsız ileri test sonucu değildir.", 5.85)
+picture(SHOT_ROOT / "SolAdvanced.png", "Şekil 1  Sol Advanced prototipinde rejim ve audit paneli", "Arşiv ekran görüntüsü  24 Temmuz 2026. Gösterilen istatistikler tarihsel prototip çıktısıdır; BIST verisi veya bağımsız ileri test sonucu değildir.", 5.4)
 
 heading("2 Mevcut araştırma ortamı ve kanıt sınırları")
 heading("2.1 Çekirdek stratejiler ve konfigürasyon", 2)
 add("Liquidity Narrative ailesi ERL/IRL, sweep, FVG ve rejim temelli kural katmanlarını; ORB ailesi açılış aralığı, seans ve risk geometrisini; NAS ailesi bağımsız sinyal/filtre ve çoklu işlem mantığını; MA ailesi çeşitli kesişim ve trend modlarını içerir [K01–K04]. Bunlar tek bir evrensel alpha modeli değil, aynı araştırma disiplinine bağlanmış farklı hipotez aileleridir. Kullanıcı ayarlarının strateji kimliğiyle saklanması, aynı parametrelerin tekrar çağrılmasına yardımcı olur; modelin tarihsel araştırma sürecinde kaç kez seçildiğini tek başına kayıt altına almaz.")
-picture(SHOT_ROOT / "GiveATry" / "UseThis" / "ORB0.5" / "Nikkei" / "NikkeiHighAccuracy" / "JP2251RSetup.png", "Şekil 2  ORB tarihsel audit ve strateji parametre ekranı", "Arşiv ekran görüntüsü  20 Ağustos 2026. 1Y sinyal, W/L, net R, rejim ve maliyet alanlarını gösterir. Seçilmiş geçmiş performans yeni piyasada genellenemez.", 5.0)
+picture(SHOT_ROOT / "GiveATry" / "UseThis" / "ORB0.5" / "Nikkei" / "NikkeiHighAccuracy" / "JP2251RSetup.png", "Şekil 2  ORB tarihsel audit ve strateji parametre ekranı", "Arşiv ekran görüntüsü  20 Ağustos 2026. 1Y sinyal, W/L, net R, rejim ve maliyet alanlarını gösterir. Seçilmiş geçmiş performans yeni piyasada genellenemez.", 4.7)
 heading("2.2 Hızlı tarama ile sıkı doğrulama ayrımı", 2)
 add("Dashboard audit motorları çok sayıda yapılandırmayı hızlı taramaya yarar. Repo içindeki doğrulama yaklaşımı, bu sonuçların örnek olaylarını MT5 Strategy Tester işlem kayıtlarıyla karşılaştırmayı da tarif eder [K09]. Buna rağmen tüm dönemlerin tick düzeyinde, aynı emir defteri ve aynı komisyon/sürçme koşullarında simüle edildiği söylenemez. MA aile dokümanı M1 Bid OHLC ve kaydedilmiş spread kullandığını, aynı mumdaki SL/TP sırası belirsizse DATA döndürdüğünü açıkça yazar [K08]. NAS strateji kütüphanesi araştırma notu da bazı HCBE yapılandırmalarının sıkı CSV eğitim etiketine alınmadığını belirtir [K10].")
-picture(SHOT_ROOT / "GiveATry" / "UseThis" / "ORB0.5" / "Crypto" / "Nas" / "BTCNAS.png", "Şekil 3  NAS prototipinde audit ve hesap riski kontrolleri", "Arşiv ekran görüntüsü  28 Ağustos 2026. BTC bağlamındaki bu örnek BIST işlem sonucu değildir; platformun kontrol ve raporlama yüzeyini gösterir.", 5.8)
+picture(SHOT_ROOT / "GiveATry" / "UseThis" / "ORB0.5" / "Crypto" / "Nas" / "BTCNAS.png", "Şekil 3  NAS prototipinde audit ve hesap riski kontrolleri", "Arşiv ekran görüntüsü  28 Ağustos 2026. BTC bağlamındaki bu örnek BIST işlem sonucu değildir; platformun kontrol ve raporlama yüzeyini gösterir.", 5.5)
 heading("2.3 Makine öğrenmesi ve başarısız deneylerin değeri", 2)
 add("ORB ML protokolünde satır birimi kapanmış işlemdir; etiket olan çıkış zamanı/net R gelecekten özelliklere sızdırılmaz, eğitim ve test kronolojik ayrılır [K11]. Daha sonraki R7 ve R8 araştırmaları otomatik üstünlük göstermemiştir: 49 kayıtlı stratejinin eşlenik karşılaştırmasında R7’nin tüm ailelerde medyan farkı negatif kalmıştır; R8 çoklu test düzeltmesinden sonra anlamlı üstün aday raporlamamıştır [K12–K13]. Bu negatif sonuçlar, önerinin bilimsel gücünü artırır: platform yalnızca iyi görünen grafikleri değil, reddedilen hipotezleri de arşivleyebilir. R7/R8 raporlarındaki seçilmiş pozitif örnekler, bağımsız BIST performansı değildir.")
 heading("2.4 Çoklu platform sınırı", 2)
 add("Kaynak ağacında cTrader, NinjaTrader ve Quantower dinleyicileri bulunur [K05–K07]. CSV köprüsü ürün ve platform bağlamında pratik bir prototiptir; farklı enstrümanların kontrat büyüklüğü, fiyat kotasyonu ve işlem saatleri birbirinden farklıdır. JP225 CFD’de iyi görünen bir stop/target veya risk yüzdesi BIST payı, VİOP kontratı ya da başka platformda otomatik eşdeğer sayılamaz. Yeni projede sembol, tick değeri, lot/kontrat ve oturum bilgisini referans veriyle doğrulayan ayrı bir adaptör gereklidir.")
+heading("2.5 Strateji başarısına ilişkin ölçülmüş örnekler", 2)
+add("Ortak dönemli iç karşılaştırma, strateji sonuçlarını tek bir ekran görüntüsü yerine aynı tarih aralığında okumaya imkân verir. Aşağıdaki dört JP225 örneği, kayıtlı mevcut ML model filtresiyle 9 Eylül 2025–9 Eylül 2026 arasında hesaplanan net R değerleridir [K12]. R, işlem başına başlangıç riskine göre normalize edilmiş getiridir; bu değerler portföy getirisi olarak toplanamaz. Tablo olumlu örnekleri gösterir, tüm strateji evreninin dağılımını değil.")
+caption("Tablo 2  Kayıtlı JP225 strateji ve model kombinasyonlarından tarihsel örnekler")
+table(["Strateji kimliği", "Net sonuç", "Karşılaştırma notu"], [
+    ["JP2251RSetup", "+21,14R", "Sekiz R7 adayının tamamı daha düşük net R üretti"],
+    ["jp225Use8000pips", "+20,07R", "Sekiz R7 adayının en yükseği +19,87R"],
+    ["jp225VeryHighWRWithGateState", "+9,44R", "İsmi yüksek WR çağrıştırır; burada yalnız net R raporlanır"],
+    ["jp2250.5RHighFrequencyIfYouDontWannaWait", "+28,75R", "Sekiz R7 adayının en yükseği +25,50R"],
+], [2.7, 1.0, 2.9])
+add("Başarı yalnız en yüksek net R değildir. Aynı çalışmada jp2250.5RSetupV2 için seçilmiş R7 filtresi mevcut modelin +9,54R sonucunu +18,91R’ye, kapanmış işlem düşüşünü 7,15R’den 4,00R’ye taşırken işlem sayısı 130’dan 191’e çıkmıştır. Fakat aynı dönemde filtresiz strateji +23,24R üretmiştir; dolayısıyla bu örnek R7’nin mevcut modele göre iyileştiğini, filtresiz tabanı geçtiğini değil, gösterir. Aday sonuç görüldükten sonra seçildiği için bağımsız ileri test kanıtı sayılmaz [K12].")
+add("Bu bulgular, sistemin ekonomik değeri araştırmaya değer strateji hipotezleri üretebildiğini gösterir. Fonlama veya canlı işlem kararı için gereken kanıt düzeyi daha yüksektir: sabitlenmiş konfigürasyon, veri ve ücret sürümü, tüm denenmiş adayların kaydı, dokunulmamış ileri dönem ve hesap düzeyinde emir mutabakatı. BIST için aynı sonuçların elde edileceği ileri sürülmez.")
 
 heading("3 Borsa İstanbul bağlamında araştırma problemi")
 add("Borsa İstanbul verisi lisanslı veri dağıtım kuruluşları, farklı yayın paketleri ve tarihsel DataStore kanalları üzerinden sunulur [2, 3]. Mevcut broker CFD akışlarını BIST işlemi olarak yeniden adlandırmak yöntemsel olarak yanlıştır: referans fiyat, işlem takvimi, likidite, mikro yapı ve kurumca uygulanan işlem maliyetleri farklıdır. Araştırma, veri ürününün kapsamı ve kullanım izni netleşmeden başlamamalıdır.")
 add("Birinci araştırma sorusu, aynı strateji kuralının farklı veri çözünürlüklerinde ve belirsiz işlem sıralarında ne kadar kararlı olduğudur. İkincisi, rejim ve yapay zekâ filtresinin belirli BIST ürünlerinde maliyet sonrası net fayda sağlayıp sağlamadığıdır. Üçüncüsü, prototip CSV/listener hattından üretim benzeri emir olaylarına geçerken tekrar, gecikme, kopma veya yeniden başlatmanın risk sınırlarını aşıp aşmadığıdır. Dördüncüsü, varsayılan piyasa rejimlerinin başka döneme ve ürüne taşınabilir olup olmadığıdır.")
-caption("Tablo 2  BIST pilotu için veri ve izin kapıları")
+caption("Tablo 3  BIST pilotu için veri ve izin kapıları")
 table(["Girdi", "Önerilen kullanımı", "Başlamadan doğrulanacak"], [
     ["Fiyat ve işlem", "Seans içi sinyal ve maliyet çalışması", "Lisans, geçmiş kapsama, düzeltmeler, gecikme, yeniden dağıtım hakkı"],
     ["Emir defteri / olay", "Varsa mikro yapı ve gerçekleşebilirlik analizi", "Seviye derinliği, zaman damgası, üyelik/anonimlik, erişim bedeli"],
@@ -283,7 +298,7 @@ add("BISTECH test ortamlarının erişim yolu ve kullanıcı tahsisi Borsa İsta
 
 heading("4 Uçtan uca hedef mimari")
 picture(architecture_figure(), "Şekil 4  Önerilen araştırma veri ve karar zinciri", "Temsili mimari çizimi. BIST veri adaptörü ve BISTECH test entegrasyonu mevcut çalışan bileşen olarak değil, önerilen iş paketi olarak gösterilmiştir.")
-caption("Tablo 3  Önerilen zincirin veri ve karar sözleşmeleri")
+caption("Tablo 4  Önerilen zincirin veri ve karar sözleşmeleri")
 table(["Aşama", "Sözleşme", "Çıktı"], [
     ["1 Veri kabul", "Lisanslı kaynak, referans veri, UTC ve kaynak zamanı", "Değişmez ham veri + kalite bayrağı"],
     ["2 Normalizasyon", "Ürün, seans, tick, maliyet, kurumsal işlem", "Sürüm numaralı olay akışı"],
@@ -300,7 +315,7 @@ add("Her raporlanan sonuç için kaynak commit/hash, derlenmiş EA sürümü, ve
 
 heading("5 Veri sözleşmesi ve nedensellik")
 add("Araştırma tablosunun temel birimi, karar anında mevcut olan bir aday sinyaldir. Sinyal üretim anı ile işlemin başarı/başarısızlık etiketini belirleyen çıkış anı farklı alanlardır. Özellikler, available_time sonrasında oluşmuş yüksek/düşük, ATR, rejim veya daha sonra kesinleşmiş pivot bilgisini kullanamaz. HTF barı kapanmadan onun nihai değeri alt TF sinyaline taşınamaz.")
-caption("Tablo 4  Asgari olay şeması ve kalite semantiği")
+caption("Tablo 5  Asgari olay şeması ve kalite semantiği")
 table(["Alan grubu", "Asgari içerik", "Kural"], [
     ["Kimlik", "event_id, strategy_id, channel, data_version", "Tekrarlar idempotent işlenir"],
     ["Zaman", "exchange_time, source_time, available_time, ingest_time", "UTC ve DST dönüşümü sürümlenir"],
@@ -313,7 +328,7 @@ add("BIST payları için bölünme, temettü, hak kullanımı ve işlem durdurma
 heading("6 Audit ve işlem simülasyonu")
 add("Audit motoru yalnızca W/L oranı hesaplamamalı; hangi fiyatın bilindiğini, işlemin hangi emirle açıldığını, koruma emrinin ne zaman etkinleştiğini ve hangi olayla kapandığını açıklamalıdır. Aynı zaman dilimindeki hem TP hem SL teması, daha ince veri yoksa belirsizdir. Sonucu kazanan ya da kaybeden olarak atamak yerine DATA / ambiguous intrabar olarak korumak araştırma dürüstlüğüdür. Exact tick de emir kuyruğu, piyasa etkisi ve broker reddi olmadan tam gerçekleşme garantisi vermez.")
 add("Önerilen iki kademeli yöntem: geniş strateji uzayını mevcut hızlı motorla taramak; seçilen tüm adayları dondurulmuş parametrelerle daha sıkı tick/işlem maliyeti ve BIST test ortamı mutabakatına almak. Hızlı tarama sonuçları yayınlanabilir edge kanıtı değil, hipotez eleme aracıdır. Kademeler arasında tekil event_id ve risk geometri karşılaştırması yapılır.")
-caption("Tablo 5  Audit doğrulama senaryoları")
+caption("Tablo 6  Audit doğrulama senaryoları")
 table(["Deney", "Beklenen davranış", "Hata göstergesi"], [
     ["Aynı bar SL ve TP", "Zaman sırası yoksa DATA", "İyimser otomatik TP"],
     ["Ters sinyal çıkışı", "O anki uygulanabilir fiyatla kısmi R", "Tam TP veya tam SL yazılması"],
@@ -341,7 +356,7 @@ add("BISTECH PTRM, borsanın işlem öncesi risk kontrollerine ilişkin ayrı bi
 heading("9 Deney protokolü ve başarı ölçütleri")
 picture(research_figure(), "Şekil 6  Ön kayıtlı araştırma ve doğrulama akışı", "Temsili yöntem şeması. Kilitli son dönem görüldükten sonra yapılan her değişiklik yeni deney kimliği alır.")
 add("Hipotezler ve durdurma kuralları BIST verisini açmadan önce kaydedilir. Önce veri sözleşmesi ve baz çizgiler dondurulur. Sonra geliştirme döneminde parametre seçimi yapılır; doğrulama dönemi eşik seçimi için bir kez kullanılır; son dönem nihai rapor için kilitlenir. Son test görüldükten sonra yapılan değişiklik yeni deney numarası alır. Stratejiler aynı piyasa olaylarını paylaştığı için 50 strateji, 50 bağımsız deney sayılmaz. Gün/hafta bloklu yeniden örnekleme ve ürün bazında eşlenik farklar raporlanır.")
-caption("Tablo 6  Önerilen pilot kabul ölçütleri")
+caption("Tablo 7  Önerilen pilot kabul ölçütleri")
 table(["Ölçüt", "Hedef niteliği", "Kanıt yöntemi"], [
     ["Nedensel veri", "Kritik özelliklerde geleceğe erişim bulunmaması", "Zaman damgası ve sentetik gecikme testleri"],
     ["Replay eşdeğerliği", "Aynı veri/sürümle aynı karar dizisi", "Hash ve olay bazlı karşılaştırma"],
@@ -354,7 +369,7 @@ add("Bu ölçütler bir getiri yüzdesi taahhüdü değildir. Son satırda başa
 
 heading("10 İş paketleri ve ortakların rolleri")
 add("Aşağıdaki 18 aylık plan öneridir. Bütçe, uygun kurum ve veri lisansı müzakeresi tamamlanmadan kesinleşmez.")
-caption("Tablo 7  Önerilen iş paketleri")
+caption("Tablo 8  Önerilen iş paketleri")
 table(["Paket ve dönem", "Teknik teslimat", "Önerilen sorumluluk"], [
     ["İP1  Ay 1–3", "BIST ürün/veri envanteri, haklar, veri sözleşmesi, ön kayıt", "Üniversite yöntem; potansiyel paydaş veri/ürün; geliştirici adaptör"],
     ["İP2  Ay 3–6", "Nedensel sinyal ve bar/tick veri kalite harness’i", "Geliştirici altyapı; üniversite bağımsız test"],
@@ -374,7 +389,7 @@ add("Akademik yayında kod ve veri sürümü, deneme sayısı, maliyet varsayım
 
 heading("12 Başvuru yolu ve karar kapıları")
 add("TÜBİTAK 1505 sayfası başvuruların sürekli açık olduğunu, müşteri kuruluş ile yürütücü kuruluşun birlikte başvurduğunu ve başvuru öncesi iş birliği sözleşmesini açıklar [1]. Bu nedenle ilk resmî adım, uygun üniversite araştırma grubu ile Türkiye’de yerleşik müşteri kuruluş rolünü netleştirmektir. Borsa İstanbul potansiyel paydaş olabilir; müşteri kuruluşun mutlaka Borsa İstanbul olması gerektiği varsayılmamalıdır. 1711 Yapay Zekâ Ekosistem 2026 çağrısında finans teknolojileri öncelikliydi fakat ilan edilen son başvuru 18 Eylül 2026 idi; bu rapor tarihi itibarıyla söz konusu çağrı kapanmıştır [9].")
-caption("Tablo 8  Başvuru öncesi karar kapıları")
+caption("Tablo 9  Başvuru öncesi karar kapıları")
 table(["Kapı", "Gerekli karar", "Karar alınmadan yapılmayacak iddia"], [
     ["K1 Ortaklık", "Üniversite ve müşteri kuruluşun rolü, sözleşme", "Kurumlar proje ortağıdır"],
     ["K2 Veri", "BIST veri paketi, lisans, tarihsel kapsama", "BIST üzerinde 10 yıllık test yapıldı"],
@@ -386,7 +401,7 @@ add("Önerilen ilk görüşme paketi bu rapor, kod kanıt dizini, kısa canlı o
 
 heading("Ek A Kaynak kod kanıt dizini")
 add("Aşağıdaki [Kxx] kayıtları incelenen çalışma alanındaki dosya ve araştırma notlarını gösterir. Konumlar belge tarihi itibarıyla geçerlidir; canlı terminalde etkin sürüm veya tam fonksiyon doğrulaması oldukları iddia edilmez. Bazı README’ler eski kalmış olabilir; deneyde sabitlenmiş commit ve derleme çıktısı kullanılmalıdır.")
-caption("Tablo 9  Teknik iddiaların izlenebilirliği")
+caption("Tablo 10  Teknik iddiaların izlenebilirliği")
 table(["Kod", "Çalışma alanı yolu", "Bu raporda desteklediği kapsam"], [
     ["K01", "IndicatorCodeExamples/LiqNarrativeSol_Advanced.mq5", "Liq strateji, RF/rejim, audit, bridge girişleri"],
     ["K02", "IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5", "ORB seans, NAS filtre, strateji/ML arayüzü"],
@@ -399,7 +414,7 @@ table(["Kod", "Çalışma alanı yolu", "Bu raporda desteklediği kapsam"], [
     ["K09", "docs/MT5_EVENT_VALIDATION_PIPELINE.md", "İç audit ile tester olay karşılaştırma yöntemi"],
     ["K10", "docs/NAS_StrategyLibrary_Implementation.md", "NAS araştırma sınırları ve reddedilen modeller"],
     ["K11", "docs/ORB_ML_Research_And_Validation.md", "Strateji bazlı özellik, ayrım ve yayın kapıları"],
-    ["K12", "docs/ORB_Current_vs_R7_Comparison.md", "49 strateji karşılaştırması ve negatif medyanlar"],
+    ["K12", "docs/ORB_Current_vs_R7_Comparison.md", "Ortak dönem net R örnekleri, 49 strateji karşılaştırması ve negatif medyanlar"],
     ["K13", "docs/ORB_ChampionCalibration_R8_Results.md", "R8 seçilim sınırı ve çoklu test bulgusu"],
 ], [0.55, 3.35, 2.7])
 

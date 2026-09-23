@@ -4,7 +4,7 @@ $root=Split-Path -Parent $PSScriptRoot
 $src=Join-Path $root 'IndicatorCodeExamples'
 $report=Join-Path $root 'logs/orb_timezone'
 New-Item -ItemType Directory -Force $report|Out-Null
-$names=@('OrbUltimateEA.mq5','OrbUltimateEA_Channel.mq5','OrbUltimateEA_StrategyLibrary.mq5')
+$names=@('OrbUltimateEA.mq5','OrbUltimateEA_Channel.mq5','orb/OrbUltimateEA_StrategyLibrary.mq5')
 $compile=@($names|ForEach-Object {Join-Path $src $_})
 $compile+=Join-Path $root 'tests/mql5/OrbBrokerTimezoneProbe.mq5'
 $compile+=Join-Path $root 'tests/mql5/OrbNativeMoneyRiskProbe.mq5'

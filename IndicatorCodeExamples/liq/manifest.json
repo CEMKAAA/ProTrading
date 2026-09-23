@@ -4,7 +4,6 @@
                         "LiquidityNarrative_MT5_EA.mq5",
                         "LiquidityNarrative_Invert_MT5_EA.mq5",
                         "LiqNarrativeSolVersion.mq5",
-                        "LiqNarrativeSol_Advanced.mq5",
                         "LiquidityNarrative_MT5_EA_Channel.mq5",
                         "LiqNarrativeSolVersion_Channel.mq5",
                         "LiqNarrativeSol_Advanced_Channel.mq5"
@@ -17,14 +16,6 @@
                   {
                       "file":  "LiqNarrativeMacroRegimeFilter.mqh",
                       "sha256":  "D767441D07ED9EBD57D969C6CD50493C4C26B7975EE261E5EF93D8CC38BA5941"
-                  },
-                  {
-                      "file":  "LiqNarrativeSol_Advanced.ex5",
-                      "sha256":  "C2E98B62036AA470B25758010C488D30C73B9712E9DF4CEA11817E6E2F440AB2"
-                  },
-                  {
-                      "file":  "LiqNarrativeSol_Advanced.mq5",
-                      "sha256":  "A305455F18687FC7A6378D727CC10C1028FC5B5D9EF2287FDD2D43FFDEB1A414"
                   },
                   {
                       "file":  "LiqNarrativeSol_Advanced_Channel.ex5",
@@ -84,22 +75,6 @@
                   }
               ],
     "dependencies":  [
-                         {
-                             "parent":  "LiqNarrativeSol_Advanced.mq5",
-                             "include":  "LiqNarrativeMacroRegime.mqh"
-                         },
-                         {
-                             "parent":  "LiqNarrativeSol_Advanced.mq5",
-                             "include":  "LiqNarrativeMacroRegimeFilter.mqh"
-                         },
-                         {
-                             "parent":  "LiqNarrativeSol_Advanced.mq5",
-                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
-                         },
-                         {
-                             "parent":  "LiqNarrativeSol_Advanced.mq5",
-                             "include":  "TradeDayCalendarPublisher.mqh"
-                         },
                          {
                              "parent":  "LiqNarrativeSol_Advanced_Channel.mq5",
                              "include":  "LiqNarrativeMacroRegime.mqh"

@@ -7,7 +7,7 @@ from check_orb_campaign_compatibility import body, check
 
 
 def read(name):
-    return (ROOT / 'IndicatorCodeExamples' / name).read_text(encoding='utf8')
+    return (ROOT / 'IndicatorCodeExamples/orb' / name).read_text(encoding='utf8')
 
 
 def test_history_gate_precedes_counts_and_drawing_not_reverse_exits():

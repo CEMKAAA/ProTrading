@@ -18,8 +18,8 @@ function StageSource([string]$absolute){
   StageSource (Join-Path (Split-Path $absolute) $m.Groups[1].Value)
  }
 }
-StageSource (Join-Path $source 'LiqNarrativeSol_Advanced.mq5')
-$file=Join-Path $stage 'LiqNarrativeSol_Advanced.mq5'
+StageSource (Join-Path $source 'SolAdvanced/LiqNarrativeSol_Advanced.mq5')
+$file=Join-Path $stage 'SolAdvanced/LiqNarrativeSol_Advanced.mq5'
 $log=$file+'.log'
 $editor='C:\MT5\DEMO\MetaEditor64.exe'
 $process=Start-Process $editor -ArgumentList ('/compile:"'+$file+'" /log:"'+$log+'"') -WindowStyle Hidden -PassThru

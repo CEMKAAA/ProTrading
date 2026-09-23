@@ -2,7 +2,7 @@
 
 ## Scope
 
-EA: `IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5`, build v6.87.
+EA source: `IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5`, build v6.87 at the time of this historical note.
 At the user's explicit request, v6.87 adds opt-in use of the already trained
 experimental campaign models (MLP/ridge/HGB). Strategy selection resolves the
 matching model; ML ON/OFF remains manual/preserved. USE RESULT without a local

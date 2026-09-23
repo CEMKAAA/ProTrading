@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import shutil
 
-ROOT=Path(__file__).resolve().parents[1];INC=ROOT/'IndicatorCodeExamples'
+ROOT=Path(__file__).resolve().parents[1];INC=ROOT/'IndicatorCodeExamples/orb'
 STAGE=ROOT/'.tmp/orb_jp225_full_worker/MQL5/Scripts/OrbWindowProbe'
 
 def main():
@@ -11,10 +11,12 @@ def main():
     def copy(name):
         if name in seen:return
         seen.add(name);p=INC/name;s=p.read_text(encoding='utf-8-sig')
+        destination=STAGE/name
+        destination.parent.mkdir(parents=True,exist_ok=True)
         if name=='OrbUltimateEA_StrategyLibrary.mq5':
             s=s.replace('void WriteInternalSimAudit(', 'void ProbeOriginalWriteInternalSimAudit(',1)
-            (STAGE/name).write_text(s,encoding='utf-8')
-        else:shutil.copy2(p,STAGE/name)
+            destination.write_text(s,encoding='utf-8')
+        else:shutil.copy2(p,destination)
         for child in re.findall(r'^\s*#include\s+"([^"]+)"',s,re.M):copy(child)
     copy('OrbUltimateEA_StrategyLibrary.mq5')
     code=r'''#property strict

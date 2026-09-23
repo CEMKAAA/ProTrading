@@ -1,0 +1,11 @@
+ORB_ML_STATUS1
+b123_publish
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+fixture
+PUBLISH
+FAILED
+0
+1790186741
+ValueError: Cross-strategy/result binding rejected
+b123_100_job
+6e72e0a4fd7b3bb0dbbcbd851c719d60bcae043fd77c2940e67891419ae8a4be

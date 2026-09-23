@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$dir = Join-Path $root 'IndicatorCodeExamples'
+$dir = Join-Path $root 'IndicatorCodeExamples/orb'
 $main = [IO.File]::ReadAllText((Join-Path $dir 'OrbUltimateEA_StrategyLibrary.mq5'))
 $files = @('OrbUltimateEA_StrategyLibrary.mq5', 'OrbStrategyMLCore.mqh', 'OrbStrategyMLPipeline.mqh', 'OrbStrategyMLHistory.mqh', 'OrbStrategyMLJobs.mqh',
     'OrbStrategyPresetLibrary.mqh', 'OrbStrategyUserLibrary.mqh', 'OrbStrategyUserContract.mqh', 'OrbStrategyUserMetrics.mqh', 'OrbStrategyLeaderboard.mqh', 'OrbStrategyLeaderboardData.mqh', 'OrbStrategyCampaignModels.mqh', 'OrbStrategyCampaignRegistry.mqh', 'NasUltimate_Core.mqh', 'LiqNarrativeSol_RegimeV3.mqh',
