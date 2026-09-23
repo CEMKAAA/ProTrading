@@ -80,18 +80,35 @@ bool LiqLibraryUnpack(string path,string &name,double &values[],bool checkInputs
 #ifdef LN_SOL_ADV_NAS_READY
    bool newVersion=(n==7+count&&lines[0]=="LIQ_STRATEGY_NAS_V1");
    bool customVersion=(n==8+count&&lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_V1");
+   bool timeVersion=(n==8+count&&lines[0]=="LIQ_STRATEGY_NAS_TCAL_V1");
+   bool timeCustomVersion=(n==9+count&&lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_TCAL_V1");
    if(newVersion){LnNasPolicy parsed;if(!LnNasUnpack(lines[6+count],parsed))return false;}
+   if(timeVersion)
+   {
+      LnNasPolicy parsed;bool enabled=false;int hours[];
+      if(!LnNasUnpack(lines[6+count],parsed)||!TCalStrategyRead(lines[7+count],enabled,hours))return false;
+   }
    if(customVersion)
    {
       LnNasPolicy parsed;double custom=0;
       if(!LnNasUnpack(lines[6+count],parsed)||!LiqLibraryCustomR(lines[7+count],custom)
          ||(int)StringToInteger(lines[9])!=(int)ERL_RR_CUSTOM)return false;
    }
+   if(timeCustomVersion)
+   {
+      LnNasPolicy parsed;double custom=0;bool enabled=false;int hours[];
+      if(!LnNasUnpack(lines[6+count],parsed)||!LiqLibraryCustomR(lines[7+count],custom)
+         ||!TCalStrategyRead(lines[8+count],enabled,hours)
+         ||(int)StringToInteger(lines[9])!=(int)ERL_RR_CUSTOM)return false;
+   }
 #else
    bool newVersion=false;
    bool customVersion=false;
+   bool timeVersion=false;
+   bool timeCustomVersion=false;
 #endif
-   if((!oldVersion&&!newVersion&&!customVersion)||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
+   if((!oldVersion&&!newVersion&&!customVersion&&!timeVersion&&!timeCustomVersion)
+      ||lines[1]!=LiqLibraryFamily()||lines[2]!=_Symbol)return false;
    if(checkInputs&&lines[4]!=LiqLibraryHash(LiqLibraryInputContract()))return false;
    if((int)StringToInteger(lines[5])!=count)return false;
    name=lines[3];ArrayResize(values,count);
@@ -109,7 +126,7 @@ bool LiqLibrarySave(string name)
    double values[];int count=LiqLibraryCapture(values);
    string version="LIQ_STRATEGY_V1";
 #ifdef LN_SOL_ADV_NAS_READY
-   version=g_target==ERL_RR_CUSTOM?"LIQ_STRATEGY_NAS_CUSTOM_R_V1":"LIQ_STRATEGY_NAS_V1";
+   version=g_target==ERL_RR_CUSTOM?"LIQ_STRATEGY_NAS_CUSTOM_R_TCAL_V1":"LIQ_STRATEGY_NAS_TCAL_V1";
 #endif
    string payload=version+"\n"+LiqLibraryFamily()+"\n"+_Symbol+"\n"+name+"\n"
       +LiqLibraryHash(LiqLibraryInputContract())+"\n"+(string)count;
@@ -118,6 +135,7 @@ bool LiqLibrarySave(string name)
    payload+="\n"+LnNasPack(g_lnNas);
    if(g_target==ERL_RR_CUSTOM)payload+="\n"+DoubleToString(g_customTargetR,8);
 #endif
+   payload+="\n"+TCalStrategyText();
    return LiqLibraryAtomicWrite(LiqLibraryPath(name),payload+"\nSHA256="+LiqLibraryHash(payload));
 }
 bool LiqLibraryCanApply()
@@ -137,6 +155,7 @@ bool LiqLibraryApply(string path)
    string name="";double values[];
    if(!LiqLibraryUnpack(path,name,values))
    {g_liqLibraryStatus="Not applied: incompatible Inputs or damaged preset";return false;}
+   string timeMatrix=TCalStrategyOffText();
 #ifdef LN_SOL_ADV_NAS_READY
    LnNasPolicy policy;LnNasDefaults(policy);
    double customR=0.0;
@@ -156,15 +175,36 @@ bool LiqLibraryApply(string path)
             if(count<2||!LnNasUnpack(lines[count-2],policy)||!LiqLibraryCustomR(lines[count-1],customR))
             {g_liqLibraryStatus="Damaged custom R strategy";return false;}
          }
+         if(count>0&&(lines[0]=="LIQ_STRATEGY_NAS_TCAL_V1"
+            ||lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_TCAL_V1"))
+         {
+            int policyIndex=6+ArraySize(values);
+            if(!LnNasUnpack(lines[policyIndex],policy))
+            {g_liqLibraryStatus="Damaged filter strategy";return false;}
+            if(lines[0]=="LIQ_STRATEGY_NAS_CUSTOM_R_TCAL_V1"
+               &&!LiqLibraryCustomR(lines[policyIndex+1],customR))
+            {g_liqLibraryStatus="Damaged custom R strategy";return false;}
+            timeMatrix=lines[count-1];
+         }
       }
    }
    if((int)values[8]==(int)ERL_TARGET_OPPOSITE_SIGNAL
       &&(policy.gate!=0||policy.exitMode!=0||policy.independent||policy.reverseExit!=InpCloseOnReverse||policy.reverseWaitMinutes>0))
    {g_liqLibraryStatus="NAS policy requires fixed target";return false;}
    if(!LnNasCompatible(policy)){g_liqLibraryStatus="Account does not support these position settings";return false;}
+   string previousTime=TCalStrategyText();
+   if(!TCalStrategyApplyText(timeMatrix))
+   {g_liqLibraryStatus="Time matrix settings could not be saved";return false;}
    LnNasPolicy previous=g_lnNas;g_lnNas=policy;
-   if(!LnNasSaveRuntime()){g_lnNas=previous;g_liqLibraryStatus="Filter settings could not be saved";return false;}
+   if(!LnNasSaveRuntime())
+   {
+      g_lnNas=previous;TCalStrategyApplyText(previousTime);
+      g_liqLibraryStatus="Filter settings could not be saved";return false;
+   }
    LnNasInvalidate();
+#else
+   if(!TCalStrategyApplyText(timeMatrix))
+   {g_liqLibraryStatus="Time matrix settings could not be saved";return false;}
 #endif
    LiqLibraryAssign(values);
 #ifdef LN_SOL_ADV_NAS_READY
@@ -172,7 +212,7 @@ bool LiqLibraryApply(string path)
 #endif
    SanitizeHalfMode();
    g_liqLibraryName=name;g_liqLibraryStatus="Applied: "+name;
-   RefreshAfterConfigChange(true);return true;
+   RefreshAfterConfigChange(true);g_tcalChanged=false;return true;
 }
 void LiqLibraryScan()
 {

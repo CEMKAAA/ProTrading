@@ -10,6 +10,7 @@ struct OrbUserRecord
    int chartTf; bool independent; int maxSeries;
    bool reverseExit; int reverseWait;
    McOfConfig orderFlow;
+   string timeMatrix;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -53,11 +54,19 @@ void OrbUserReload(bool force=false)
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
       record.independent=false;record.maxSeries=1;record.reverseExit=false;record.reverseWait=0;
       string meta[];int parts=StringSplit(v[5],'|',meta);
-      if(parts<1||parts>4)continue;
+      if(parts<1||parts>5)continue;
+      record.timeMatrix=TCalStrategyOffText();
       McOfConfigRead("0,24,32,0.70000000,1.00000000,0.10000000",record.orderFlow);
       if(parts==4)
       {
          if(StringFind(meta[3],"MAOF1=")!=0||!McOfConfigRead(StringSubstr(meta[3],6),record.orderFlow))continue;
+      }
+      if(parts==5)
+      {
+         bool enabled=false;int hours[];
+         if(StringFind(meta[3],"MAOF1=")!=0||!McOfConfigRead(StringSubstr(meta[3],6),record.orderFlow)
+            ||!TCalStrategyRead(meta[4],enabled,hours))continue;
+         record.timeMatrix=meta[4];
       }
       if(parts>=2)
       {
@@ -122,15 +131,17 @@ bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
    reason="CUSTOM_RUNTIME_INVALID";if(!OrbCustomRuntimeRead(v,0,false))return false;
    reason="";return true;
 }
-void OrbUserApply(const OrbStrategyPreset &p)
+bool OrbUserApply(const OrbStrategyPreset &p)
 {
-   string reason="";if(!OrbUserValidate(p,reason))return;
+   string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);
+   string previousTimeMatrix=TCalStrategyText();
+   if(!TCalStrategyApplyText(g_userStrategies[i].timeMatrix))return false;
    string oldTokens[];StringSplit(OrbCustomRuntimeDump(),'\n',oldTokens);
    OrbCustomRuntimeRead(v,0,true);
    if(g_maRestoringPreset){g_maIndependent=g_userStrategies[i].independent;g_maMaxConsecutive=g_userStrategies[i].maxSeries;g_maPresetModeRestored=true;}
    else if(!MaIndependentApply(g_userStrategies[i].independent,g_userStrategies[i].maxSeries))
-   {OrbCustomRuntimeRead(oldTokens,0,true);return;}
+   {OrbCustomRuntimeRead(oldTokens,0,true);TCalStrategyApplyText(previousTimeMatrix);return false;}
    g_maReverseExit=g_userStrategies[i].reverseExit;g_maReverseWait=g_userStrategies[i].reverseWait;MaExitSave();
    g_mcOf=g_userStrategies[i].orderFlow;McOfReset();
    MaCrossAuditInvalidate();
@@ -140,6 +151,7 @@ void OrbUserApply(const OrbStrategyPreset &p)
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
    g_orbRfEnabled=p.rfMaster;
    for(int r=0;r<ORB_RF_COUNT;r++)g_orbRfBlocked[r]=OrbPresetRfBlocked(p,r);
+   return true;
 }
 bool OrbUserMatches(const OrbStrategyPreset &p)
 {
@@ -149,6 +161,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    if(g_maReverseExit!=g_userStrategies[i].reverseExit||g_maReverseWait!=g_userStrategies[i].reverseWait)return false;
    if(McOfConfigText(g_mcOf)!=McOfConfigText(g_userStrategies[i].orderFlow))return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
+   if(!TCalStrategyMatchesText(g_userStrategies[i].timeMatrix))return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
    return true;
@@ -189,7 +202,7 @@ bool OrbUserSaveLocked(string name)
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
    string signature=OrbCustomInputSignature()+"|MAENTRY1="+(g_maIndependent?"1":"0")+","+(string)g_maMaxConsecutive
       +"|MAEXIT2="+(g_maReverseExit?"1":"0")+","+(string)g_maReverseWait
-      +"|MAOF1="+McOfConfigText(g_mcOf),runtime=OrbCustomRuntimeDump();
+      +"|MAOF1="+McOfConfigText(g_mcOf)+"|"+TCalStrategyText(),runtime=OrbCustomRuntimeDump();
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    if(updateSlot>=0)p.id=updateId;

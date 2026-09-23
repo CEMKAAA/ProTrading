@@ -2520,9 +2520,14 @@ void OrbStrategyPresetSyncEdits()
    OrbStrategyPresetSetEdit("EDIT_NAS_FLOW_VOL_X",DoubleToString(g_rtNasFlowVolumeMultiplier,2));
 }
 
-void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
+bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 {
-   if(OrbUserPreset(p)){OrbUserApply(p);OrbStrategyPresetSyncEdits();return;}
+   if(OrbUserPreset(p))
+   {
+      if(!OrbUserApply(p))return false;
+      OrbStrategyPresetSyncEdits();return true;
+   }
+   if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
    g_rtCustomR=0.0;
    g_orbStrategyTimezone=0; OrbClockUseSaved(0,0,0,0); // Preserve built-in research defaults.
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
@@ -2546,11 +2551,13 @@ void OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
    g_rtNasVolumeFilter=p.nasStateVolumeFilter;g_rtNasVolumeMultiplier=p.nasStateVolumeMultiplier;
    g_rtNasFlowVolumeFilter=p.nasFlowVolumeFilter;g_rtNasFlowVolumeMultiplier=p.nasFlowVolumeMultiplier;
    OrbStrategyPresetSyncEdits();
+   return true;
 }
 
 bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
 {
    if(OrbUserPreset(p))return OrbUserMatches(p);
+   if(!TCalStrategyMatchesText(TCalStrategyOffText()))return false;
    if(MathAbs(OrbBrokerOffsetHours())>0.0000001||OrbBrokerClockKey()!="")return false;
    if(g_rtSignalTf!=p.signalTf||g_rtDelayMin!=p.delayMinutes||g_rtUseDelay!=(p.delayMinutes>0))return false;
    if(RuntimeTargetLeg()!=ClampTargetLeg(p.targetLeg)||g_rtHalfBeLeg!=ClampHalfBeLeg(p.halfBeLeg,p.targetLeg)||g_rtBEOnTp1)return false;
@@ -2597,7 +2604,8 @@ bool OrbStrategyPresetRestore()
    {
       GlobalVariableDel(key);return false;
    }
-   OrbStrategyPresetApplyValues(p);g_strategyPresetIndex=index;g_strategyCandidateIndex=index;
+   if(!OrbStrategyPresetApplyValues(p))return false;
+   g_strategyPresetIndex=index;g_strategyCandidateIndex=index;g_tcalChanged=false;
    return true;
 }
 
@@ -2625,7 +2633,8 @@ bool OrbStrategyPresetApplyInteractive(const int index)
    if(!OrbUserRemember(p)){g_lastExecStatus="PRESET_ID_SAVE_FAIL";return false;}
    if(GlobalVariableSet(key,(double)index)<=0){g_lastExecStatus="PRESET_SAVE_FAIL";return false;}
 
-   OrbStrategyPresetApplyValues(p);
+   if(!OrbStrategyPresetApplyValues(p)){g_lastExecStatus="PRESET_TIME_MATRIX_APPLY_FAIL";return false;}
+   if(OrbUserPreset(p)&&!OrbUserMatches(p)){g_lastExecStatus="PRESET_APPLY_MISMATCH";return false;}
    ClearRetestState("strategy_preset_changed");ClearImbalanceState("strategy_preset_changed");
    ClearNasPending("strategy_preset_changed");ClearNewDayReverseRetry("strategy_preset_changed");
    g_lastNasOverlayClosedBar=0;DeleteLive();DeleteExecutionVisuals();
@@ -2638,6 +2647,7 @@ bool OrbStrategyPresetApplyInteractive(const int index)
       +" risk_channel_publish_preserved=1");
    if(g_orbBridgeEnabled)OrbProWriteInitMarker();
    QueueHistoricalRedraw(0);
+   g_tcalChanged=false;
    if(OrbUserPreset(p)&&!p.metric1yReady)OrbUserEnsureMetrics();
    return true;
 }

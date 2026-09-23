@@ -15,10 +15,13 @@ int checks=0,failed=0;
 void Check(bool yes,string label){checks++;if(!yes){failed++;Print("FAIL ",label," ",g_userStrategyNote);}}
 void OnStart()
 {
+   FolderCreate("MaCrossOrbStrategyLibrary",FILE_COMMON);
    g_runtimeMagic=9192026000+(long)(GetTickCount64()%1000000);
    OrbStrategyPreset defaults;OrbPresetDefaults(defaults);OrbStrategyPresetApplyValues(defaults);
    g_orbBridgeEnabled=false;g_maIndependent=true;g_maMaxConsecutive=20;
    g_mcOf.mode=MC_OF_EITHER;g_mcOf.lookback=36;g_mcOf.bins=48;g_mcOf.minActivity=1.25;
+   string savedTime="TCAL1=1,0,64,8192,0,0,0,0";
+   Check(TCalStrategyApplyText(savedTime),"apply custom time matrix");
    string name="__MA_SAVE_PROBE_"+(string)GetTickCount64();
    Check(OrbUserSave(name),"save independent 20");
    OrbStrategyPreset saved;int index=g_strategyPresetIndex;
@@ -27,10 +30,13 @@ void OnStart()
    if(slot>=0)
    {
       Check(g_userStrategies[slot].independent&&g_userStrategies[slot].maxSeries==20,"metadata readback");
+      Check(g_userStrategies[slot].timeMatrix==savedTime,"time matrix stored in strategy");
       g_maIndependent=false;g_maMaxConsecutive=1;g_maRestoringPreset=true;
       g_mcOf.mode=MC_OF_OFF;g_mcOf.lookback=24;
-      OrbUserApply(saved);g_maRestoringPreset=false;
+      Check(TCalStrategyApplyText(TCalStrategyOffText()),"reset time matrix before load");
+      Check(OrbUserApply(saved),"load user strategy");g_maRestoringPreset=false;
       Check(g_maIndependent&&g_maMaxConsecutive==20&&OrbUserMatches(saved),"startup restores exact mode and series");
+      Check(TCalStrategyMatchesText(savedTime),"restore exact time matrix");
       Check(g_mcOf.mode==MC_OF_EITHER&&g_mcOf.lookback==36&&g_mcOf.bins==48&&g_mcOf.minActivity==1.25,"order flow preset restores exactly");
       g_maIndependent=false;g_maMaxConsecutive=7;
       Check(OrbUserSave(name),"same name update");
@@ -40,6 +46,7 @@ void OnStart()
       FileDelete(OrbUserFile(slot),FILE_COMMON);
       FileDelete("MaCrossOrbStrategyLibrary\\"+identity+".metrics",FILE_COMMON);
    }
+   Check(TCalStrategyApplyText(TCalStrategyOffText()),"reset time matrix for order flow checks");
    Check(!AuditTickReadComplete(50,4403),"positive partial timeout rejected");
    Check(!AuditTickReadComplete(-1,0),"negative count rejected");
    Check(AuditTickReadComplete(50,0)&&AuditTickReadComplete(0,0),"complete and empty valid intervals");

@@ -28,7 +28,8 @@ void OnStart()
       int originalCount=ArraySize(g_histSignals),originalTotal=g_hist.total;
       double originalR=g_hist.netR;
       MqlDateTime sample;TimeToStruct(g_histSignals[0].availableTime,sample);
-      g_tcalDays=127;g_tcalHours=16777215^(1<<sample.hour);g_tcalEnabled=true;
+      for(int day=0;day<7;day++)g_tcalDayHours[day]=16777215^(1<<sample.hour);
+      g_tcalEnabled=true;
       RecalculateHistoricalStats(false);
       bool allAllowed=true;
       for(int i=0;i<ArraySize(g_histSignals);i++)
