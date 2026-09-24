@@ -278,6 +278,9 @@ void LiqLibraryNavigation()
    LiqLibraryWidget("NAV_LEFT",OBJ_BUTTON,132,8,30,25,"<",c);
    LiqLibraryWidget("NAV_RIGHT",OBJ_BUTTON,166,8,30,25,">",c);
    LiqLibraryWidget("NAV_LIBRARY",OBJ_BUTTON,202,8,140,25,"STRATEGIES",c);
+#ifdef LN_SOL_ADV_NAS_READY
+   ResearchLbLauncher(348,8);
+#endif
 }
 void LiqLibraryDraw()
 {

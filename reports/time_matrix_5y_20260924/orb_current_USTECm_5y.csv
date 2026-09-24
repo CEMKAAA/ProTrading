@@ -1,0 +1,3 @@
+slot,strategy_id,name,symbol,weeks,total,wins,losses,open,flat,invalid,net_r,max_peak_dd_r,status
+32,ustec_05_inv,DISPONUsefullFirstTimeUstecOrb0.5R,USTECm,260,323,112,211,0,0,0,-12.253530763601,-34.790200000000,AUDITED
+56,user_33d5e622d6553104af02b1d7,ustec5000reverseMightWork,USTECm,260,1281,639,642,0,0,0,-88.794600000000,-99.455600000000,AUDITED

@@ -7515,6 +7515,29 @@ void OBT_Stop()
 #include "MaOrderFlowLeaderboard.mqh"
 #include "MaOrderFlowSettings.mqh"
 #include "OrbCustomRPicker.mqh"
+#include "ResearchFiveYearData.mqh"
+string ResearchLaunchKey(){return PREFIX+"BTN_FY_RESEARCH";}
+bool ResearchSavedMatrixEnabled(const ResearchFiveYearRow &r)
+{
+   int slot=OrbUserSlot(r.id);
+   if(slot<0)return false;
+   bool enabled=false;int hours[];
+   if(!TCalStrategyRead(g_userStrategies[slot].timeMatrix,enabled,hours)||!enabled)return false;
+   for(int day=0;day<7;day++)if(hours[day]!=0)return true;
+   return false;
+}
+bool ResearchApplyStrategy(const ResearchFiveYearRow &r)
+{
+   if(r.symbol!=_Symbol)return false;
+   for(int i=0;i<OrbStrategyPresetCount();i++)
+   {
+      OrbStrategyPreset p;
+      if(!OrbStrategyPresetLoad(i,p)||p.id!=r.id)continue;
+      return OrbStrategyPresetApplyInteractive(i);
+   }
+   return false;
+}
+#include "../ResearchFiveYearLeaderboard.mqh"
 void DrawDashboard()
 {
    if(g_maOfRankOpen)return;
@@ -7592,6 +7615,7 @@ void UpdateDashboard()
    CreateButton("BTN_PRESET_SYMBOL",x+304,y+78,140,20,"PAIR: "+(g_strategyFilterFamily==ORB_PRESET_FAMILY_ANY?"ALL":OrbStrategyPresetFamilyText(g_strategyFilterFamily)),
       g_strategyFilterFamily==ORB_PRESET_FAMILY_ANY?C'38,101,176':C'30,150,95');
    ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL / USDJPY / JP225. Filters the library only; does not change the chart or strategy.");
+   CreateButton("BTN_FY_RESEARCH",x+454,y+78,152,20,"5Y LEADERBOARD",C'38,101,176');
    ObjectDelete(0,PREFIX+"DASH_PRESET_FAV_HINT");
    CreateLabel("DASH_PRESET_CURRENT",x+12,y+106,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
    CreateLabel("DASH_PRESET_PICK",x+12,y+122,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
@@ -9474,6 +9498,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   ResearchLbShutdown();
    ObjectsDeleteAll(0,MaOfRankPrefix());
    TCalDestroy();
    McOfRelease();
@@ -9554,6 +9579,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(ResearchLbEvent(id,lparam,dparam,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
       if(g_tcalChanged)

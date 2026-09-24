@@ -1,0 +1,2 @@
+slot,strategy_id,name,symbol,weeks,raw,total,wins,losses,open,flat,invalid,net_r,max_peak_dd_r,status,coverage_detail
+7,user_274d6b4e683ed278ada8fa5e,USOILADDEXITONMAMtf0.20R,USOILm,260,6837,1199,711,487,1,0,0,-14.078000000000,-21.592600000000,COVERAGE_SHORT, |  | 6837 raw / 1199 trades | 711W 487L 1O 0F | WR 59.3% | Exit SL=27 NAS-X=376 MA-REV=170 | Net -14.1R | $ -25964.51 | MinCum -20.58R/$-37956.73 | PeakDD -21.59R/$-39823.93 | 4222 filt | OF OFF | 

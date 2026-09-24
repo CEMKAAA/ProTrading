@@ -1,0 +1,2 @@
+slot,strategy_id,name,symbol,weeks,raw,total,wins,losses,open,flat,invalid,net_r,max_peak_dd_r,status,coverage_detail
+11,user_a0416326ff0c2abb259c2748,solfirst,SOLUSDm,260,0,0,0,0,0,0,0,0.000000000000,0.000000000000,DATA_UNAVAILABLE,5Y HISTORY SYNC | H4 need~13421 max=5000000 bars=9355 oldest=syncing | 5Y HISTORY SYNC | H4 need~13421 max=5000000 bars=9355 oldest=syncing | OF OFF | 

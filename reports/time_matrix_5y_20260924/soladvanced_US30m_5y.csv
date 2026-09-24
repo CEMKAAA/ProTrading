@@ -1,0 +1,3 @@
+strategy,path,symbol,weeks,signals,total,wins,losses,open,invalid,net_r,status
+Legacy_US30_H2M15_1R_DUP,LiqStrategies\ab33c7743d55feb9d89f4d02fd6c905e1a008962b2b541d92e3fcb28dcb023f6\image_ef7a075e95536e59345f29468f540b46ca2e24c84499ee6f318df3e17767a090.lns,US30m,260,922,922,353,569,0,0,-40.240000000000,AUDITED
+us30_0.25R,LiqStrategies\ab33c7743d55feb9d89f4d02fd6c905e1a008962b2b541d92e3fcb28dcb023f6\bc5af832b8b3b09a00acaeffc5eb341f90264011ecc5d27ff754000f4cf26a28.lns,US30m,260,453,453,355,98,0,0,-10.628000000000,AUDITED

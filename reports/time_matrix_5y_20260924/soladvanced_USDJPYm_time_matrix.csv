@@ -1,0 +1,1 @@
+strategy,path,symbol,target_r,minimum_wr_percent,minimum_train_samples,training_end_broker,picked_hours,masks_sun_to_sat,train_base_w,train_base_l,five_year_total,five_year_w,five_year_l,five_year_open,five_year_invalid,five_year_net_r,oos_two_year_n,oos_two_year_w,oos_two_year_l,oos_two_year_net_r,status

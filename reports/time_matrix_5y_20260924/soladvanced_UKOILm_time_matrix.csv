@@ -1,0 +1,2 @@
+strategy,path,symbol,target_r,minimum_wr_percent,minimum_train_samples,training_end_broker,picked_hours,masks_sun_to_sat,train_base_w,train_base_l,five_year_total,five_year_w,five_year_l,five_year_open,five_year_invalid,five_year_net_r,oos_two_year_n,oos_two_year_w,oos_two_year_l,oos_two_year_net_r,status
+Legacy_UKOIL_H2H1_1R,LiqStrategies\1c2bdd7a8b77708c26be7ed5e87024144f1d4906a5bf1895f36804b0c2050d68\image_32e640022f9c3deab71ce073341c057a8b96bc377e990cfc41c0f6be1ad86c42.lns,UKOILm,1.50000000,40,10,1727380361,0,0|0|0|0|0|0|0,106,130,0,0,0,0,0,0,0,0,0,0,NO_TRAINING_PICKS

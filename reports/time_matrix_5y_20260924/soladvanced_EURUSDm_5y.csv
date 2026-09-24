@@ -1,0 +1,2 @@
+strategy,path,symbol,weeks,signals,total,wins,losses,open,invalid,net_r,status
+Legacy_EURUSD_H2M30_05R,LiqStrategies\9fec152b55e4e301ec6f9292abd1eb5d53b4e7cdfcbd0263d438394a1de632f6\image_98b254cf78463f597916396baa0300ac153eba63c5d501d0b5882504724105de.lns,EURUSDm,260,442,442,193,249,0,0,-55.889999999998,AUDITED

@@ -12,7 +12,7 @@
 #include "TradeDayCalendarPublisher.mqh"
 #include "TradeCalendarMatrix.mqh"
 
-#define LN_BUILD "2026-08-15.sol-advanced-hk50-audit-v2"
+#define LN_BUILD "2026-09-24.sol-advanced-image-library-ui-v1"
 #define LN_PREFIX "LIQNARRSOL_"
 #define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
 #define LN_H90_SECONDS 5400
@@ -5374,7 +5374,7 @@ void UpdateDashboard()
    LnNasDrawNav();
    LiqLibraryDashboard();
    if(g_lnNasPanel)LnNasDrawPanel();
-   TCalLauncher(PFX,x+542,y+6,x+62,y+38,"BROKER SERVER TIME");
+   TCalLauncher(PFX,x+350,y+6,x+62,y+38,"BROKER SERVER TIME");
 }
 
 //=====================================================================
@@ -5630,6 +5630,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    RunValidationInternalAudit();
+   ResearchLbShutdown();
    EventKillTimer();
    DeleteByPrefix(PFX);
 }
@@ -5679,6 +5680,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(ResearchLbEvent(id,lparam,dparam,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
       if(g_tcalChanged){g_tcalChanged=false;RefreshAfterConfigChange(false);}
@@ -6098,3 +6100,22 @@ g_solRegimeRuleBlocked[11]=(bool)v[40];
 #define LN_SOL_ADV_NAS_READY
 #include "LiqSolAdvancedNas.mqh"
 #include "LiqStrategyLibrary.mqh"
+#include "ResearchFiveYearData.mqh"
+string ResearchLaunchKey(){return PFX+"BTN_FY_RESEARCH";}
+bool ResearchSavedMatrixEnabled(const ResearchFiveYearRow &r)
+{
+   if(StringFind(r.id,"image://")==0)return false;
+   string text="";if(!LiqLibraryRead(r.id,text))return false;
+   int end=StringFind(text,"\nSHA256=");if(end<0)return false;
+   string payload=StringSubstr(text,0,end);
+   int marker=StringFind(payload,"\nTCAL1=");if(marker<0)return false;
+   bool enabled=false;int hours[];
+   if(!TCalStrategyRead(StringSubstr(payload,marker+1),enabled,hours)||!enabled)return false;
+   for(int day=0;day<7;day++)if(hours[day]!=0)return true;
+   return false;
+}
+bool ResearchApplyStrategy(const ResearchFiveYearRow &r)
+{
+   return r.symbol==_Symbol&&LiqLibraryApply(r.id);
+}
+#include "../ResearchFiveYearLeaderboard.mqh"

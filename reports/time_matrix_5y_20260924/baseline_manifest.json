@@ -1,0 +1,370 @@
+{
+  "anchor_date": "2026-09-24",
+  "reports": {
+    "macross_BTCUSDm_5y.csv": {
+      "rows": 4,
+      "sha256": "d908ca49048e92ab1444635c264bd80899114233a414abfd2655e7b659902bad"
+    },
+    "macross_BTCUSDm_time_matrix.csv": {
+      "rows": 4,
+      "sha256": "b132e1cb268d20062e5cd9e9a0763a40e58dc4ddd769ca34ff8f4b9379a01ce2"
+    },
+    "macross_BTCUSDm_trades.csv": {
+      "rows": 15974,
+      "sha256": "19a235b59abc175fb4f6a45ebbc81e2c976c4de3905ce484d3da9010494d2703"
+    },
+    "macross_DE30m_5y.csv": {
+      "rows": 4,
+      "sha256": "80ba36383331bc685e627725c00c10352dc65b89057a891ae205cf6ed7a98a8e"
+    },
+    "macross_DE30m_time_matrix.csv": {
+      "rows": 4,
+      "sha256": "4cef22f3cf97cc09a60fb30cbf546c28cf32f98c3e9f52308333b35ebecdc4bf"
+    },
+    "macross_DE30m_trades.csv": {
+      "rows": 28155,
+      "sha256": "b3eafd5401ea19510de118ba258e4284e25ee3646f9d844beb4544243faec22d"
+    },
+    "macross_GBPJPYm_5y.csv": {
+      "rows": 2,
+      "sha256": "229cb9255296b7d89e20b8f7615d7dd98cf83132b028464224dc2583d3d41728"
+    },
+    "macross_GBPJPYm_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "d4ac6ce8a74625693eb4a2cf5a668a543221cdb8279b541a7ee75a9a85d1b568"
+    },
+    "macross_GBPJPYm_trades.csv": {
+      "rows": 4278,
+      "sha256": "9a0dd731a1dbc5071cc6a58c40cdc3c156d4ccd1e8825dbc51d4d94b40b0e052"
+    },
+    "macross_JP225m_5y.csv": {
+      "rows": 2,
+      "sha256": "7042095cc9aac3f81c716019b9078d49501cd15f2909a0d2a8bc27f932b024d9"
+    },
+    "macross_JP225m_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "a6932ad6b376850dd28d7e62331a4daecc5ea6ffc0dbab17db6a0a92b568f2e6"
+    },
+    "macross_JP225m_trades.csv": {
+      "rows": 7496,
+      "sha256": "88295cdf461b06f0b555737d6ee6e1fb11388d9bf1cd3038e5d4c9a40d3fd68e"
+    },
+    "macross_SOLUSDm_5y.csv": {
+      "rows": 1,
+      "sha256": "5640b809ae7efb4302dfdcb0b344a624da1e1f3ff214c7cdaf84ad89be9bdd62"
+    },
+    "macross_SOLUSDm_time_matrix.csv": {
+      "rows": 0,
+      "sha256": "07bf36d3f9752f3227b6fe5e6bb9380bbcbcf6adacb981dea21c2c743916b7f4"
+    },
+    "macross_SOLUSDm_trades.csv": {
+      "rows": 0,
+      "sha256": "a94160fb974c081724dbcef445be68bd67fa823ce9fe18a7b2e723c01ae615cf"
+    },
+    "macross_US500m_5y.csv": {
+      "rows": 2,
+      "sha256": "c9ec6c0599704f63c22907c4984a3c6d6ab729b25c3dbdfa59a775bec28066ce"
+    },
+    "macross_US500m_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "a4d43283c2516430dc83e6e801b9bc8ac32702b26377e30ddf3e1ddb09eac589"
+    },
+    "macross_US500m_trades.csv": {
+      "rows": 11838,
+      "sha256": "7037682f92019560d1b5fad59e9c0a3ecd6b6ee721bb594ff0089c649d8c1787"
+    },
+    "macross_USDJPYm_5y.csv": {
+      "rows": 4,
+      "sha256": "56eda5b36ebc4bd23f0a0ba716592e38d786e67885acafa9f327c93550bf5e00"
+    },
+    "macross_USDJPYm_time_matrix.csv": {
+      "rows": 0,
+      "sha256": "07bf36d3f9752f3227b6fe5e6bb9380bbcbcf6adacb981dea21c2c743916b7f4"
+    },
+    "macross_USDJPYm_trades.csv": {
+      "rows": 10253,
+      "sha256": "c0d00c68ff33f7568716d2c93cddd3386e24657146fa0b1f49b793942ee773b2"
+    },
+    "macross_USOILm_5y.csv": {
+      "rows": 1,
+      "sha256": "b72d9ea663bfcd4269dce4e5e860fea52e0ada33f1c254c1085d15e058180bd8"
+    },
+    "macross_USOILm_time_matrix.csv": {
+      "rows": 0,
+      "sha256": "07bf36d3f9752f3227b6fe5e6bb9380bbcbcf6adacb981dea21c2c743916b7f4"
+    },
+    "macross_USOILm_trades.csv": {
+      "rows": 1199,
+      "sha256": "50ae9559d53023008845ad615862e08441b47ac1b72f07688630e71d2beb9b97"
+    },
+    "macross_XAUUSDm_5y.csv": {
+      "rows": 16,
+      "sha256": "b13ce95afb5032f4a0d441df1eeb5010859f9ad452fe015cf39350fa8c1f1cea"
+    },
+    "macross_XAUUSDm_time_matrix.csv": {
+      "rows": 16,
+      "sha256": "df4603b84aaa31cebe554fdf190ccbe65974b0fa8ec49f1ab9c8afca9e2ad4e3"
+    },
+    "macross_XAUUSDm_trades.csv": {
+      "rows": 78470,
+      "sha256": "5195a00a6fbd5d1305d4b5279c7d70c9d4b9cfcb564b76f870b40ed17b71df80"
+    },
+    "orb_current_JP225m_5y.csv": {
+      "rows": 30,
+      "sha256": "c0082b31b0563a7fcabbf181320ce7ae1559f076ad2119500f6c8f5227b09f5e"
+    },
+    "orb_current_JP225m_time_matrix.csv": {
+      "rows": 30,
+      "sha256": "6bfad12c5bdbae46c2281288cf136b1b9c1f07417018eb332ee48c5cb02a8122"
+    },
+    "orb_current_JP225m_trades.csv": {
+      "rows": 24329,
+      "sha256": "a881ffb807df0862689a561a5e074f51fe8faede082e3be6e6c244ebba21d57d"
+    },
+    "orb_current_USDJPYm_5y.csv": {
+      "rows": 25,
+      "sha256": "640517d209e1f8d5b65e32c972663b0bb7ae05c517727ad786e3b9d63c191862"
+    },
+    "orb_current_USDJPYm_time_matrix.csv": {
+      "rows": 25,
+      "sha256": "89eb9b36cdadf92d0e3946a7c1fd35de537392f09aea3a6979c79a779b5cca71"
+    },
+    "orb_current_USDJPYm_trades.csv": {
+      "rows": 25786,
+      "sha256": "58641ade2c5c45eb9b37e0fd1f3fd54e5a3a3cf1bae7010df10a1b255333831b"
+    },
+    "orb_current_USTECm_5y.csv": {
+      "rows": 2,
+      "sha256": "e726adf545943c8996dc548e04cca17997243584c9cf521134b2cbf5df576bb4"
+    },
+    "orb_current_USTECm_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "736553ef021914e30caa5c8936a7d7e15bff5a02ce92c5ed8252b6f268197d04"
+    },
+    "orb_current_USTECm_trades.csv": {
+      "rows": 1604,
+      "sha256": "9f6d699d213e85b49f73d3b6c03974afe3819cb7774954a79fa59616d8904d59"
+    },
+    "soladvanced_BTCUSDm_5y.csv": {
+      "rows": 2,
+      "sha256": "e73344aa89e0f0d5c8901ba3e5f892019853378031d8527083a7f6a04c0aaa51"
+    },
+    "soladvanced_BTCUSDm_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "5e1418deddbcf30dca8b63280d5c3b5a97e067f1d00a1fe6f25a89f72721a7c5"
+    },
+    "soladvanced_BTCUSDm_trades.csv": {
+      "rows": 1619,
+      "sha256": "895bb5708b313679d58d985767def392b12a25bc4e7cd7625b13567c6829d38c"
+    },
+    "soladvanced_EURUSDm_5y.csv": {
+      "rows": 1,
+      "sha256": "5f0530c73b29bd543a6848f8169cf5f4ddd73b145598df2ee068521e2e19c67d"
+    },
+    "soladvanced_EURUSDm_time_matrix.csv": {
+      "rows": 1,
+      "sha256": "2d236bf82b7e3e42a29c80c5fbb1219ca64940979e953662dd8ccda90a616f4a"
+    },
+    "soladvanced_EURUSDm_trades.csv": {
+      "rows": 442,
+      "sha256": "61a8b2104998f2a2fd6c5a9ed9ecaa5db1d4ae86be1daf846feef23878bd2f44"
+    },
+    "soladvanced_JP225m_5y.csv": {
+      "rows": 4,
+      "sha256": "71937b49b0e5d276fcabe0f178c954de5a7974d86061429310f2aeaf6c739427"
+    },
+    "soladvanced_JP225m_time_matrix.csv": {
+      "rows": 4,
+      "sha256": "d17df20dacb18baeb3447bd3b5bb75548f45e86d698f302aef8644e4099c2657"
+    },
+    "soladvanced_JP225m_trades.csv": {
+      "rows": 3291,
+      "sha256": "57ab722dbf6a1fe1429605dfc14b48f1c8d8ae616eed44dfa4c8fcb4e55800fd"
+    },
+    "soladvanced_UKOILm_5y.csv": {
+      "rows": 1,
+      "sha256": "c23adb02ae3d5c77f06013e7386fd5179f609e244ecee4182abb58e3622a42b7"
+    },
+    "soladvanced_UKOILm_time_matrix.csv": {
+      "rows": 1,
+      "sha256": "3d3a6322b2a91f831c69bc0ca916b3a68d1c4c71baa0458f3f114fce159aff3c"
+    },
+    "soladvanced_UKOILm_trades.csv": {
+      "rows": 406,
+      "sha256": "28902150f242411b04aa985d8eb649c98b57117ad5af874c05c7eb61b45faba8"
+    },
+    "soladvanced_US30m_5y.csv": {
+      "rows": 2,
+      "sha256": "54668fddf66fb613230d0ac00e2f2bfc895eb1197ae1148d39f379f56b2c73e9"
+    },
+    "soladvanced_US30m_time_matrix.csv": {
+      "rows": 2,
+      "sha256": "c107316937bc06607f7f9dd32fc18b6fd877980dbd0b8140e7eddce2c304345f"
+    },
+    "soladvanced_US30m_trades.csv": {
+      "rows": 1375,
+      "sha256": "975e4d6a5b6476c39ebae331ae6da99c8809c89ce4494fea2c7fd6d6fe1bf94e"
+    },
+    "soladvanced_US500m_5y.csv": {
+      "rows": 7,
+      "sha256": "18e5bdaf722c36b1576e650c2a546ecd834040acb26753d2a6f40fdf6ebd0367"
+    },
+    "soladvanced_US500m_time_matrix.csv": {
+      "rows": 7,
+      "sha256": "42484f14b1ed1cf32918d8f3a2b0e6042979f515fb6ddc0d12843ee0596eb914"
+    },
+    "soladvanced_US500m_trades.csv": {
+      "rows": 5237,
+      "sha256": "8afb8a1f6e350eb821cc79a0176a055a86a63c1ebcd0c0bbc658bafcbeb73856"
+    },
+    "soladvanced_USDJPYm_5y.csv": {
+      "rows": 0,
+      "sha256": "fd04a2605e84d0747dc4e7462aa28ae2037bce788663d0c0135786fc856ce71f"
+    },
+    "soladvanced_USDJPYm_time_matrix.csv": {
+      "rows": 0,
+      "sha256": "a165919bf73c8f854c1fb8a80650814813ec4afaa4c7605ef611f37b8c9aa0a5"
+    },
+    "soladvanced_USDJPYm_trades.csv": {
+      "rows": 0,
+      "sha256": "e407460b4fcb632d1c1cc4618bf620b59081fbde0196c80614fc0b9d3e992eed"
+    },
+    "soladvanced_USTECm_5y.csv": {
+      "rows": 5,
+      "sha256": "7036f521b556eba19bb347c0ec06626e4960de4ef3c0ed003a0a3d4f578cf8bb"
+    },
+    "soladvanced_USTECm_time_matrix.csv": {
+      "rows": 5,
+      "sha256": "cd01129af6f224d4b1a2bc4a2a4b1ffb8442a2234b40f0d9205e96ba60f1e419"
+    },
+    "soladvanced_USTECm_trades.csv": {
+      "rows": 3228,
+      "sha256": "fcb23ebd13baefc658d557b1baf6d4b53a7839a2d78d9cb0623c1f559fe8e6ad"
+    },
+    "soladvanced_jp225_5y.csv": {
+      "rows": 4,
+      "sha256": "3c1415662f22bebe4997d048b84db8a714f1c2a78d46edd7468779845aea856c"
+    },
+    "soladvanced_jp225_time_matrix.csv": {
+      "rows": 4,
+      "sha256": "6f76193dde032315f7f14fad233f4a807e11a752528e98ca8ad82d864e2e65d5"
+    },
+    "soladvanced_jp225_trades.csv": {
+      "rows": 3294,
+      "sha256": "7c77d19e5fbdde557197e87975c5165e35b138a46fb984746eb6b059e9e9ab7b"
+    }
+  },
+  "research_only": true,
+  "schema": 1,
+  "sources": {
+    "macross": {
+      "IndicatorCodeExamples/macrossover_orb/AuditMemoIndex.mqh": "8fb52c93e4b16375324702bce2ad807179460cd4ea3462420bdade541c6319da",
+      "IndicatorCodeExamples/macrossover_orb/AuditTickReadGuard.mqh": "05ec20ade99ffa425c6746cffa7451370dbe0c6cb9a4629c987ac5729f5bc95d",
+      "IndicatorCodeExamples/macrossover_orb/LiqNarrativeSol_RegimeV3.mqh": "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossAuditCache.mqh": "8effb8f29371e6c872f0219e86d8011f8ed5a46d48109704eb7bc315cd2b56e3",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossEventAudit.mqh": "35bacaab0930358d991b6a1b769463451f2ace311391c31ec1c738f8a1a47abf",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossOrderFlow.mqh": "a83d41915c5653527f0924042450586a22d7e1b5d742a066f784a15757461940",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossOrderFlowCore.mqh": "8226a77f2d9b4adcf778b4cb306f903b23cfb2ea5d072d1970c50f349c84465b",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossOrderFlowWorker.mq5": "08571b90ac18c8a20a57ba24ee67564bb1435e6d873e49dc452173408b3dc3a0",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.mq5": "83ce1fc7ba3c0997f584e65cbcc4317fcf01009c943b5ce6e73ab26d6c06f146",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossPineStream.mqh": "ad394e385098d8a3981c3a8fddb6f218cde621c428c06354859ae6a9b67b7b06",
+      "IndicatorCodeExamples/macrossover_orb/MaCrossSignalCore.mqh": "10476a951e7549a267a64215a445ba784228aa456a4bf4bece83939684465f4b",
+      "IndicatorCodeExamples/macrossover_orb/MaExitPolicy.mqh": "a9eb416f9c641331a8c9f456f5d6470a8c81fb134193b5693e4a8ea987caff95",
+      "IndicatorCodeExamples/macrossover_orb/MaIndependentEntries.mqh": "ca075833eb0da9a49f9352d5ce81bb2e885690c9b3b094bd0f97b621b617ab87",
+      "IndicatorCodeExamples/macrossover_orb/MaOrderFlowLeaderboard.mqh": "1bfcd200d39ee44c4171c3a18716e9b83da4a44e9ec788929855c64b6a3c12f0",
+      "IndicatorCodeExamples/macrossover_orb/MaOrderFlowLeaderboardData.mqh": "59c69653aed47a53f757e0146b8f5f72417ff6b661302b5475906e00ce0f0b59",
+      "IndicatorCodeExamples/macrossover_orb/MaOrderFlowSettings.mqh": "ded19e9a34d630cb516b3524dc4173c04ac11d0e0a5bfbbb45cfed6fd7421ac3",
+      "IndicatorCodeExamples/macrossover_orb/MaTrendFollowCore.mqh": "9a357a5fbe9ac8d605b7e05621e2c2c1ec3e7c9c404c18b6bb3485fa5c6db2cb",
+      "IndicatorCodeExamples/macrossover_orb/NasUltimate_Core.mqh": "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36",
+      "IndicatorCodeExamples/macrossover_orb/OrbAdvancedAuditEngine.mqh": "4e0ecbda880ce95693708f471f6254ecd50fb99a7c1838d242d1e3ae4045e9e3",
+      "IndicatorCodeExamples/macrossover_orb/OrbCustomRPicker.mqh": "5727f63d943717f88540867e8ee7b90508cf041453e217e20ee629b780667972",
+      "IndicatorCodeExamples/macrossover_orb/OrbReplayMemoEpoch.mqh": "64ec3a7f9b127f6a18ab8f2082878251d40db62ce51a77a7d68e887307f830ff",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyCampaignModels.mqh": "acf1f11d649e79ab838a9d886b96e4fee78d7c7847bad0f0082348b44e440140",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyCampaignRegistry.mqh": "8d6c35af9e796909f4fde0021828f45fc68af1f04d85a5ba58053e66478b2b31",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyLeaderboard.mqh": "d120fecbcbf3f550270564f332b2eb2aecad99bec6748b825dde5a00c62dc4b6",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyLeaderboardData.mqh": "d28d17b82e769604fe36a4640a2f6677d5754be6a266822573fc68dc3b0d3133",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyLeaderboardFiveYear.mqh": "72a43b364fc328ad7cf30c48efc9653b7b43fabf41291f16393f316e5a6303a8",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyMLConfig.mqh": "aee5555f43b7220a13e33fb1fce3d7eb04f547414c0c13562de7948c8ca78997",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyMLCore.mqh": "d74da4a233cfa0e0cff6927c3ce0d509b0c52381d2e90304f80d667b8c7e167c",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyMLHistory.mqh": "6344ae045ff2a3e117df1b528978f804030c74bb4fdc41d69373ecad13872d28",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyMLJobs.mqh": "1a8f28e2aea161449df33db6ca44ea4e839fec02d493a26667bdb656baecc0d0",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyMLPipeline.mqh": "7cd2570e37f0a9bc43b28d88d56cfe551b1bea72a18ced77f63a560144aa3acd",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyModelSlot.mqh": "b852ed581aa605ea511c8996682b85e1f7630210059111fcaace9b3f4dfcc7b5",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyPresetLibrary.mqh": "da82bfb016c7ddad4f5dc061d6b05d85260aebdd5216afb7c0606117e034d4ea",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyR7Core.mqh": "390b8853673760ee78c75693a6796837d552c3d8a28d80d4922b1d30cff05ce7",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyR7Runtime.mqh": "33bac9efe2ee2476f216c54cc1e461d299716e8412bf2e2482bd5f6dae0ea13e",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyRegimeLeaderboard.mqh": "36efcc535a2b5ce58e83f4c809e8f08d1373c66a6da684d172c68732870cfbf7",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyUserContract.mqh": "9d1df8ce8167fab6bef08a69e7f635bd3738c462344c435777c6231a35e8dbaf",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyUserLibrary.mqh": "6885e9d9407c4849b150171e31a2c95b0b01dd2954a05142135512848710d7fe",
+      "IndicatorCodeExamples/macrossover_orb/OrbStrategyUserMetrics.mqh": "0b46c86e293c053e50fc3c56947e3135159f93368cfd413e724833263d91d1c9",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimateEA.mq5": "b3787be6170655a56e99bfd9cc8175b12a6bce20475dec378c4319994a24acd4",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimateEA_Channel.mq5": "5e5ac3351ab43e6c9b41fd22343ac29581fff9889330681611053f2c103e9637",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimateEA_StrategyLibrary.mq5": "cfb4f6b8b3a257c008f81f403a9f298457c5aff7688333f4d0e4171d3b688106",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimate_ProfessionalPipeline.mqh": "611d9d503c101c36795dfbd058c52a409bd69be7c8f907da9475402b7ddd4e18",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimate_ProfessionalPipeline_Channel.mqh": "f9d901d25f81327a27e6c307d7a699bda43c471aa205dcae906e92d63c4dcbb0",
+      "IndicatorCodeExamples/macrossover_orb/OrbUltimate_RegimeMatrix.mqh": "0ed4cc44cc6dbfc70efd63dc57d7e336fb892f86a3062c596626f7bd3ba95bcf",
+      "IndicatorCodeExamples/macrossover_orb/ResearchFiveYearData.mqh": "4261adfc356d9794bca3498343aba38b94e62196139bbe82d220dc4ed8a9b575",
+      "IndicatorCodeExamples/macrossover_orb/TradeCalendarMatrix.mqh": "cb0504c5945dd0dcf992d0a0828ba0c66acbec3fab76ea272150e08b8c6daed3",
+      "IndicatorCodeExamples/macrossover_orb/TradeDayCalendarPublisher.mqh": "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+    },
+    "orb_current": {
+      "IndicatorCodeExamples/orb/AuditMemoIndex.mqh": "8fb52c93e4b16375324702bce2ad807179460cd4ea3462420bdade541c6319da",
+      "IndicatorCodeExamples/orb/AuditTickReadGuard.mqh": "05ec20ade99ffa425c6746cffa7451370dbe0c6cb9a4629c987ac5729f5bc95d",
+      "IndicatorCodeExamples/orb/LiqNarrativeSol_RegimeV3.mqh": "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af",
+      "IndicatorCodeExamples/orb/NasUltimate_Core.mqh": "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36",
+      "IndicatorCodeExamples/orb/OrbAdvancedAuditEngine.mqh": "1e84f96ea4c3a645389d0e4474701fb52908ffaaabca95150a28fb23a5ffe837",
+      "IndicatorCodeExamples/orb/OrbBrokerClockProfiles.mqh": "617cf3b50d555e6f703f14ba8a34416774a67b7c039d3c1ff4cb6dd7f5f058ce",
+      "IndicatorCodeExamples/orb/OrbBrokerTimezone.mqh": "957a226ac54a2f8a92699c08ce2ed5c46887fc5a5282c1ec41ae589008c63d5d",
+      "IndicatorCodeExamples/orb/OrbClockDashboard.mqh": "3bc455829e2609973cb96f921191c5f1fa17f32fbeb5f0c6cde444b027158992",
+      "IndicatorCodeExamples/orb/OrbCustomRPicker.mqh": "5727f63d943717f88540867e8ee7b90508cf041453e217e20ee629b780667972",
+      "IndicatorCodeExamples/orb/OrbMoneyRisk.mqh": "ed736d13ac6d0e82161d11a237efc625aaece2c22df81ea00d8a05ad9d2e8f4f",
+      "IndicatorCodeExamples/orb/OrbReplayMemoEpoch.mqh": "64ec3a7f9b127f6a18ab8f2082878251d40db62ce51a77a7d68e887307f830ff",
+      "IndicatorCodeExamples/orb/OrbStrategyCampaignModels.mqh": "cb7782df62e25dea1c31218a0794b7f85e577cd9fd0c953ca13cb89e9015a075",
+      "IndicatorCodeExamples/orb/OrbStrategyCampaignRegistry.mqh": "8d6c35af9e796909f4fde0021828f45fc68af1f04d85a5ba58053e66478b2b31",
+      "IndicatorCodeExamples/orb/OrbStrategyLeaderboard.mqh": "4a2150e3d695fdf61c7b15b848dccda18ba9ca8875d78bb2f4c95915b4db41a9",
+      "IndicatorCodeExamples/orb/OrbStrategyLeaderboardData.mqh": "d28d17b82e769604fe36a4640a2f6677d5754be6a266822573fc68dc3b0d3133",
+      "IndicatorCodeExamples/orb/OrbStrategyLeaderboardFiveYear.mqh": "72a43b364fc328ad7cf30c48efc9653b7b43fabf41291f16393f316e5a6303a8",
+      "IndicatorCodeExamples/orb/OrbStrategyMLConfig.mqh": "b47f40fd8f5b706a0f9e9e2c2a955b8aca885fad5f7fb17dd29c7245c978336c",
+      "IndicatorCodeExamples/orb/OrbStrategyMLCore.mqh": "d74da4a233cfa0e0cff6927c3ce0d509b0c52381d2e90304f80d667b8c7e167c",
+      "IndicatorCodeExamples/orb/OrbStrategyMLHistory.mqh": "6344ae045ff2a3e117df1b528978f804030c74bb4fdc41d69373ecad13872d28",
+      "IndicatorCodeExamples/orb/OrbStrategyMLJobs.mqh": "1a8f28e2aea161449df33db6ca44ea4e839fec02d493a26667bdb656baecc0d0",
+      "IndicatorCodeExamples/orb/OrbStrategyMLPipeline.mqh": "7cd2570e37f0a9bc43b28d88d56cfe551b1bea72a18ced77f63a560144aa3acd",
+      "IndicatorCodeExamples/orb/OrbStrategyModelSlot.mqh": "b852ed581aa605ea511c8996682b85e1f7630210059111fcaace9b3f4dfcc7b5",
+      "IndicatorCodeExamples/orb/OrbStrategyPresetLibrary.mqh": "da82bfb016c7ddad4f5dc061d6b05d85260aebdd5216afb7c0606117e034d4ea",
+      "IndicatorCodeExamples/orb/OrbStrategyR7Core.mqh": "390b8853673760ee78c75693a6796837d552c3d8a28d80d4922b1d30cff05ce7",
+      "IndicatorCodeExamples/orb/OrbStrategyR7Runtime.mqh": "33bac9efe2ee2476f216c54cc1e461d299716e8412bf2e2482bd5f6dae0ea13e",
+      "IndicatorCodeExamples/orb/OrbStrategyRegimeLeaderboard.mqh": "36efcc535a2b5ce58e83f4c809e8f08d1373c66a6da684d172c68732870cfbf7",
+      "IndicatorCodeExamples/orb/OrbStrategyUserContract.mqh": "2063ccc636faf060437eb8028da8f47413711a5ab0cb042106f8b62bffb81fac",
+      "IndicatorCodeExamples/orb/OrbStrategyUserLibrary.mqh": "a3f9b8928166b1d8257a22f056eb1cb50beefa2b560495212fc80a6d329dc800",
+      "IndicatorCodeExamples/orb/OrbStrategyUserMetrics.mqh": "4dc732424c23c104f8d034e8a6a0a8c6494b9f01732fc74f0294b3f3af402c09",
+      "IndicatorCodeExamples/orb/OrbUltimateEA.mq5": "eacafc2650b8d9c1a679da2538001161ac3e87500bff9efe5a9bb9a40d7d3e5c",
+      "IndicatorCodeExamples/orb/OrbUltimateEA_Channel.mq5": "5108010cd6c9d48d4eeccf5f2cc2d322e4ff34a175c4fada147d473cf76a4a7d",
+      "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5": "1e36087d944c8ddd67e4ca34ae066da3622ec55ba55b8df7063c5ed599efc1ff",
+      "IndicatorCodeExamples/orb/OrbUltimate_ProfessionalPipeline.mqh": "d48c5e8a7a88b6780305936db17e4367fc56bd93e0e96ace00e0ce0aca299d0c",
+      "IndicatorCodeExamples/orb/OrbUltimate_ProfessionalPipeline_Channel.mqh": "9b71688214cb78c56351cf3fc097aa57fa5ebe4d2f140c76afa07254a60d32b3",
+      "IndicatorCodeExamples/orb/OrbUltimate_RegimeMatrix.mqh": "0ed4cc44cc6dbfc70efd63dc57d7e336fb892f86a3062c596626f7bd3ba95bcf",
+      "IndicatorCodeExamples/orb/ResearchFiveYearData.mqh": "c7821ec77e64d6496b802d8cfbf3a3eb23add4f2f5ed43786e086ff3265a5eb6",
+      "IndicatorCodeExamples/orb/TradeCalendarMatrix.mqh": "cb0504c5945dd0dcf992d0a0828ba0c66acbec3fab76ea272150e08b8c6daed3",
+      "IndicatorCodeExamples/orb/TradeDayCalendarPublisher.mqh": "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+    },
+    "shared": {
+      "IndicatorCodeExamples/ResearchFiveYearLeaderboard.mqh": "7415b9940e3f0b84bc379a5da6a2003de6faaafeb27b95415abf61c7dc0ca40a"
+    },
+    "soladvanced": {
+      "IndicatorCodeExamples/SolAdvanced/LiqDashboardFit.mqh": "26bf8c6a375b56b65ef6297ed7451543f6df0eb89c97d962cf2f3b7dce99301f",
+      "IndicatorCodeExamples/SolAdvanced/LiqImagePresets.mqh": "d1a1549408be5bb08768e49f105f3a45d4bfcbb2da5f887d66790f48191660ae",
+      "IndicatorCodeExamples/SolAdvanced/LiqNarrativeMacroRegime.mqh": "8139f4896a0c37dc0467bb69b78d2b8b588decac82ff953bf25f3c415019d44e",
+      "IndicatorCodeExamples/SolAdvanced/LiqNarrativeMacroRegimeFilter.mqh": "d767441d07ed9ebd57d969c6cd50493c4c26b7975ee261e5ef93d8cc38ba5941",
+      "IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.mq5": "5eb517436834fea597627010d99b08fbee63cba28946abc2f506fa98d7ab0373",
+      "IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_RegimeV3.mqh": "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af",
+      "IndicatorCodeExamples/SolAdvanced/LiqROptions.mqh": "8ad32908d817778510f89e69ec023261aae45fbb1651356ff71755245a070bdf",
+      "IndicatorCodeExamples/SolAdvanced/LiqSolAdvancedNas.mqh": "2075643450dc50b0ce585c061d771228ee79085f6b44f5cff968fb1d1c6d0d61",
+      "IndicatorCodeExamples/SolAdvanced/LiqStrategyLibrary.mqh": "460659f70eed40f9bb0c4e4cf4419964669dc751b4fbd77e42a5959df95f58fb",
+      "IndicatorCodeExamples/SolAdvanced/NasUltimate_Core.mqh": "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36",
+      "IndicatorCodeExamples/SolAdvanced/ResearchFiveYearData.mqh": "64d3cded9d3d73a0568da8dba97c76b10868f328d3cd43e83ca66fab20fe1827",
+      "IndicatorCodeExamples/SolAdvanced/TradeCalendarMatrix.mqh": "cb0504c5945dd0dcf992d0a0828ba0c66acbec3fab76ea272150e08b8c6daed3",
+      "IndicatorCodeExamples/SolAdvanced/TradeDayCalendarPublisher.mqh": "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+    }
+  },
+  "window_days": 1820
+}

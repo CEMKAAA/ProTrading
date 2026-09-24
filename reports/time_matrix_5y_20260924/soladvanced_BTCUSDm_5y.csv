@@ -1,0 +1,3 @@
+strategy,path,symbol,weeks,signals,total,wins,losses,open,invalid,net_r,status
+btcgoon,LiqStrategies\9861792db4dc8fdd69909da6ba8d36c37eda8d96782566dda090900800bfb419\image_34d92855304569554bd4bf528358ee9db9747c11e54edde8ad8ee00787607354.lns,BTCUSDm,260,554,554,271,283,0,0,-10.041366666667,AUDITED
+BTCUSDLiqNarrative,LiqStrategies\9861792db4dc8fdd69909da6ba8d36c37eda8d96782566dda090900800bfb419\image_39e8b3757e4e9ef5fc083095e726877ebdbada76b8807a2841c4bdc62aee1c5a.lns,BTCUSDm,260,1065,1065,365,700,0,0,-163.388150000000,AUDITED
