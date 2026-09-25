@@ -220,6 +220,8 @@ input bool   InpAccountRiskEnabled  = true;
 input bool   InpFtmoModeDefault     = false;
 input bool   InpRiskLotOnlyModeDefault = false;
 input bool   InpInvertModeDefault      = false;
+input bool   InpAdvancedReverseDefault = false; // Spread-compensated broker SL/TP; MT5 native only.
+input double InpAdvancedReverseMaxCostPctDefault = 100.0; // 100 disables the planned inverse-R cost gate.
 input double InpAtrExposurePct      = 2.0;
 input double InpMaxPortfolioPct     = 4.0;
 input double InpDailyLossLimitPct   = 0.0;
@@ -369,6 +371,7 @@ bool     g_histCoveragePending = false;
 bool     g_histCoverageHardBlocked = false;
 datetime g_histCoverageNextRetry = 0;
 int      g_histCoverageAttempts = 0;
+int      g_maCacheFailedAttempts = 0;
 string   g_histCoverageStatus = "";
 string   g_histCoverageDetail = "";
 
@@ -392,6 +395,8 @@ bool            g_rtEaEnabled     = true;
 bool            g_ftmoMode        = false;
 bool            g_riskLotOnlyMode = false;
 bool            g_rtInvertMode    = false;
+bool            g_rtAdvancedReverse = false;
+double          g_rtAdvancedReverseMaxCostPct = 100.0;
 bool            g_rtUtcMidnightSession = false;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasStateGate = false;
@@ -943,6 +948,47 @@ void LoadRuntimeInvertMode()
    g_rtInvertMode=InpInvertModeDefault;
    string key=RuntimeInvertKey();
    if(GlobalVariableCheck(key))g_rtInvertMode=(GlobalVariableGet(key)>0.5);
+}
+string RuntimeAdvancedReverseKey()
+{
+   return "MACROSS_ADV_REV."+StringFormat("%I64d",AccountInfoInteger(ACCOUNT_LOGIN))+"."
+      +StringFormat("%I64d",ChartID());
+}
+string RuntimeAdvancedReverseMaxCostKey(){return RuntimeAdvancedReverseKey()+".max_cost_pct";}
+bool SetRuntimeAdvancedReverseMaxCostPct(double value)
+{
+   if(!MathIsValidNumber(value)||value<0.0||value>100.0)return false;
+   if(GlobalVariableSet(RuntimeAdvancedReverseMaxCostKey(),value)<=0)return false;
+   g_rtAdvancedReverseMaxCostPct=value;
+   return true;
+}
+void LoadRuntimeAdvancedReverse()
+{
+   g_rtAdvancedReverse=InpAdvancedReverseDefault;
+   g_rtAdvancedReverseMaxCostPct=InpAdvancedReverseMaxCostPctDefault;
+   if(!MathIsValidNumber(g_rtAdvancedReverseMaxCostPct)||g_rtAdvancedReverseMaxCostPct<0.0
+      ||g_rtAdvancedReverseMaxCostPct>100.0)g_rtAdvancedReverseMaxCostPct=100.0;
+   string key=RuntimeAdvancedReverseKey();
+   if(GlobalVariableCheck(key))g_rtAdvancedReverse=GlobalVariableGet(key)>0.5;
+   key=RuntimeAdvancedReverseMaxCostKey();
+   if(GlobalVariableCheck(key))
+   {
+      double saved=GlobalVariableGet(key);
+      if(MathIsValidNumber(saved)&&saved>=0.0&&saved<=100.0)g_rtAdvancedReverseMaxCostPct=saved;
+   }
+   if(g_rtAdvancedReverse)g_rtInvertMode=true;
+}
+bool AdvancedReverseShape(string &reason)
+{
+   reason="";
+   if(InpExecutionMode!=ORB_EXEC_SINGLE||g_rtEntryMode!=ORB_ENTRY_BREAKOUT
+      ||g_rtTargetMode!=ORB_TARGET_R_LEG
+      ||!ExitModeUsesFixedTp(g_rtExitMode))reason="SINGLE_FIXED_R_REQUIRED";
+   else if(g_maIndependent||g_maReverseExit||g_rtTimeExit||g_rtFilteredWindowReverseExit
+      ||g_rtPostTradeDispBlockExit||RuntimeNasExitEnabled()||RuntimeHalfBeLeg()>0||g_rtBEOnTp1)
+      reason="OTHER_POSITION_EXITS_ENABLED";
+   else if(g_orbBridgeEnabled||!g_orbNativeWithBridgeOnly)reason="MT5_NATIVE_ONLY_PUB_OFF_NAT_ON";
+   return reason=="";
 }
 bool SetRuntimeInvertMode(bool enabled)
 {
@@ -2249,6 +2295,7 @@ string HistoricalWindowLabel()
 void SetHistoricalWeeks(int weeks)
 {
    g_rtHistoricalWeeks=ClampHistWeeks(weeks);
+   g_maCacheFailedAttempts=0;
    g_lastHistBuild=0;
    g_histNeedsRedraw=true;
    g_histCoveragePending=false;
@@ -2552,6 +2599,7 @@ void OrbStrategyPresetSyncEdits()
    // Only an explicit preset apply/restore replaces drafts; routine redraws preserve typing.
    OrbStrategyPresetSetEdit("EDIT_SL_VALUE",g_rtPipSlMode?DoubleToString(g_rtPipSlPips,1):DoubleToString(g_rtSlDistancePct,0));
    OrbStrategyPresetSetEdit("EDIT_VOL_MULT",DoubleToString(g_rtVolumeMultiplier,2));
+   OrbStrategyPresetSetEdit("EDIT_ADV_COST",DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
    OrbStrategyPresetSetEdit("EDIT_ENTRY_WIN_START",ClockMinutesText(g_rtEntryWindowStartMin));
    OrbStrategyPresetSetEdit("EDIT_ENTRY_WIN_END",ClockMinutesText(g_rtEntryWindowEndMin));
    OrbStrategyPresetSetEdit("EDIT_NAS_SENS",IntegerToString(g_rtNasSensitivity));
@@ -2568,10 +2616,12 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
       if(!OrbUserApply(p))return false;
       OrbStrategyPresetSyncEdits();return true;
    }
+   if(GlobalVariableSet(RuntimeAdvancedReverseKey(),0.0)<=0)return false;
+   if(!SetRuntimeAdvancedReverseMaxCostPct(100.0))return false;
    if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
    g_rtCustomR=0.0;
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
-   g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;
+   g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;g_rtAdvancedReverse=false;
    g_rtHalfBeLeg=ClampHalfBeLeg(p.halfBeLeg,g_rtTargetLeg);g_rtBEOnTp1=false;
    g_rtEntryMode=p.entryMode;g_rtExitMode=p.exitMode;g_rtTargetMode=p.targetMode;
    g_rtExitTrailStartLeg=0;
@@ -2597,6 +2647,8 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
 {
    if(OrbUserPreset(p))return OrbUserMatches(p);
+   if(g_rtAdvancedReverse)return false;
+   if(MathAbs(g_rtAdvancedReverseMaxCostPct-100.0)>0.000001)return false;
    if(!TCalStrategyMatchesText(TCalStrategyOffText()))return false;
    if(g_rtSignalTf!=p.signalTf||g_rtDelayMin!=p.delayMinutes||g_rtUseDelay!=(p.delayMinutes>0))return false;
    if(RuntimeTargetLeg()!=ClampTargetLeg(p.targetLeg)||g_rtHalfBeLeg!=ClampHalfBeLeg(p.halfBeLeg,p.targetLeg)||g_rtBEOnTp1)return false;
@@ -2921,7 +2973,7 @@ bool BtTpFirst(bool isBuy,double openPx,double sl,double tp)
 
 bool BuildSimGeometry(bool isBuy,double fillEntry,double plannedSl,
                       double &simSl,double &risk,double &tp1,double &tp2,double &tp3,double &tp4,double &tp5,double &tp6,
-                      double sourceReferenceEntry=0.0)
+                      double sourceReferenceEntry,string &geometryDetail)
 {
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
    bool sourceIsBuy=g_rtInvertMode?!isBuy:isBuy;
@@ -2931,7 +2983,7 @@ bool BuildSimGeometry(bool isBuy,double fillEntry,double plannedSl,
       double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
       rawSl=sourceIsBuy?(g_orbLow-buffer):(g_orbHigh+buffer);
    }
-   string geometryDetail="";
+   geometryDetail="";
    if(!ResolveExecutionStop(sourceIsBuy,isBuy,fillEntry,rawSl,simSl,risk,geometryDetail,sourceReferenceEntry))return false;
    tp1=NormalizePrice(PriceAtLeg(isBuy,fillEntry,risk,1));
    tp2=NormalizePrice(PriceAtLeg(isBuy,fillEntry,risk,2));
@@ -3054,7 +3106,7 @@ struct OrbPureSwapGeometry
 };
 
 bool ResolvePureSwapGeometry(bool sourceIsBuy,bool execIsBuy,double sourceEntry,double execEntry,double sourceRawSl,
-                             OrbPureSwapGeometry &geometry,string &detail)
+                             OrbPureSwapGeometry &geometry,string &detail,bool enforceCost=false)
 {
    detail="";
    geometry.sourceIsBuy=sourceIsBuy;geometry.execIsBuy=execIsBuy;
@@ -3076,8 +3128,11 @@ bool ResolvePureSwapGeometry(bool sourceIsBuy,bool execIsBuy,double sourceEntry,
 
    // Full inversion is an absolute protection-level swap, never a second R
    // reconstruction around the inverse quote.
-   geometry.execSl=NormalizeTradePrice(geometry.sourceTp);
-   geometry.execTp=NormalizeTradePrice(geometry.sourceSl);
+   // ADV REV aligns broker Ask/Bid stop triggers with the source quote at
+   // the entry spread. It does not assume the exit spread will stay fixed.
+   double quoteShift=g_rtAdvancedReverse?(sourceEntry-execEntry):0.0;
+   geometry.execSl=NormalizeTradePrice(geometry.sourceTp+quoteShift);
+   geometry.execTp=NormalizeTradePrice(geometry.sourceSl+quoteShift);
    geometry.execRisk=MathAbs(execEntry-geometry.execSl);
    if(geometry.execRisk<=tolerance){detail="pure_swap_execution_risk_invalid";return false;}
    double targetDistance=execIsBuy?(geometry.execTp-execEntry):(execEntry-geometry.execTp);
@@ -3086,11 +3141,24 @@ bool ResolvePureSwapGeometry(bool sourceIsBuy,bool execIsBuy,double sourceEntry,
    {detail="pure_swap_stop_wrong_side";return false;}
    if(targetDistance<=tolerance){detail="pure_swap_target_wrong_side";return false;}
    geometry.execTargetR=targetDistance/geometry.execRisk;
+   // Compare the actual planned payout against the frictionless reciprocal R.
+   // Historical preflight has no quote pair; only the first replay tick and
+   // live execution may enforce this admission decision.
+   if(g_rtAdvancedReverse&&enforceCost&&g_rtAdvancedReverseMaxCostPct<100.0)
+   {
+      double requiredR=(1.0-g_rtAdvancedReverseMaxCostPct/100.0)/geometry.sourceTargetR;
+      if(geometry.execTargetR+1e-10<requiredR)
+      {
+         detail="ADV_REVERSE_SPREAD_BLOCK effective_r="+DoubleToString(geometry.execTargetR,6)
+            +" required_r="+DoubleToString(requiredR,6);
+         return false;
+      }
+   }
 
    // These are the defining pure-swap invariants. A rounding drift greater
    // than one tradable tick fails closed instead of publishing mixed geometry.
-   if(MathAbs(geometry.execSl-geometry.sourceTp)>tolerance
-      ||MathAbs(geometry.execTp-geometry.sourceSl)>tolerance)
+   if(MathAbs(geometry.execSl-(geometry.sourceTp+quoteShift))>tolerance
+      ||MathAbs(geometry.execTp-(geometry.sourceSl+quoteShift))>tolerance)
    {detail="pure_swap_absolute_level_mismatch";return false;}
    detail="PURE_SWAP_OK source_entry="+DoubleToString(sourceEntry,_Digits)
       +" exec_entry="+DoubleToString(execEntry,_Digits)
@@ -3119,7 +3187,7 @@ bool ResolveExecutionStop(bool sourceIsBuy,bool execIsBuy,double entry,double so
    }
    if(InpExecutionMode!=ORB_EXEC_SINGLE){detail="pure_swap_requires_single_order";return false;}
    OrbPureSwapGeometry geometry;
-   if(!ResolvePureSwapGeometry(sourceIsBuy,execIsBuy,sourceEntry,entry,sourceRawSl,geometry,detail))return false;
+   if(!ResolvePureSwapGeometry(sourceIsBuy,execIsBuy,sourceEntry,entry,sourceRawSl,geometry,detail,sourceReferenceEntry>0.0))return false;
    executionSl=geometry.execSl;
    executionRisk=geometry.execRisk;
    return true;
@@ -3136,7 +3204,7 @@ bool ResolveTargetPriceAndR(bool isBuy,double entry,double risk,double &targetPr
    double buffer=MathMax(0.0,InpSlBufferPoints)*pt;
    double sourceRawSl=sourceIsBuy?(g_orbLow-buffer):(g_orbHigh+buffer);
    OrbPureSwapGeometry geometry;
-   if(!ResolvePureSwapGeometry(sourceIsBuy,isBuy,sourceEntry,entry,sourceRawSl,geometry,detail))return false;
+   if(!ResolvePureSwapGeometry(sourceIsBuy,isBuy,sourceEntry,entry,sourceRawSl,geometry,detail,sourceReferenceEntry>0.0))return false;
    double tolerance=MathMax(pt*0.51,TickSize()*0.51);
    if(MathAbs(risk-geometry.execRisk)>tolerance)
    {detail="pure_swap_risk_snapshot_mismatch "+detail;return false;}
@@ -3221,6 +3289,21 @@ ulong NewestOwnTicket()
    return best;
 }
 
+ulong FilledOwnTicket(const ulong deal,const ulong order)
+{
+   ulong positionId=0;
+   if(deal>0&&HistoryDealSelect(deal))positionId=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+   if(positionId==0)positionId=order;
+   if(positionId==0)return 0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket>0&&PositionSelectByTicket(ticket)&&IsOwnPosition()
+         &&(ulong)PositionGetInteger(POSITION_IDENTIFIER)==positionId)return ticket;
+   }
+   return 0;
+}
+
 bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string comment,string &detail)
 {
    // NAT controls new native entries independently of bridge routing.
@@ -3228,8 +3311,36 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
    ENUM_ORDER_TYPE type=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    bool ok=trade.PositionOpen(_Symbol,type,lot,entry,sl,tp,comment);
    uint rc=trade.ResultRetcode();
+   if(g_rtAdvancedReverse&&rc==TRADE_RETCODE_PLACED)
+   {
+      ulong order=trade.ResultOrder();
+      bool cancelled=order>0&&trade.OrderDelete(order);
+      detail="advanced_reverse_order_not_filled order="+IntegerToString((long)order)+" cancel="+(cancelled?"1":"0");
+      Audit("advanced_reverse_pending_rejected",dir,lot,entry,sl,tp,detail);
+      return false;
+   }
    if(ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED))
    {
+      if(g_rtAdvancedReverse)
+      {
+         ulong ticket=FilledOwnTicket(trade.ResultDeal(),trade.ResultOrder());
+         bool selected=ticket>0&&PositionSelectByTicket(ticket);
+         double actualEntry=selected?PositionGetDouble(POSITION_PRICE_OPEN):0.0;
+         double actualSl=selected?PositionGetDouble(POSITION_SL):0.0;
+         double actualTp=selected?PositionGetDouble(POSITION_TP):0.0;
+         double tolerance=TickSize()*0.51;
+         if(!selected||MathAbs(actualEntry-entry)>tolerance
+            ||MathAbs(actualSl-sl)>tolerance||MathAbs(actualTp-tp)>tolerance)
+         {
+            bool closed=selected&&trade.PositionClose(ticket);
+            detail="advanced_reverse_fill_mismatch ticket="+IntegerToString((long)ticket)
+               +" entry="+DoubleToString(actualEntry,_Digits)+" sl="+DoubleToString(actualSl,_Digits)
+               +" tp="+DoubleToString(actualTp,_Digits)+" emergency_close="+(closed?"1":"0");
+            Audit("advanced_reverse_fill_mismatch",dir,lot,entry,sl,tp,detail);
+            if(!closed)Print("CRITICAL: Advanced Reverse fill mismatch; emergency close failed. ",detail);
+            return false;
+         }
+      }
       detail="order_ok ret="+IntegerToString((int)rc);
       return true;
    }
@@ -3239,7 +3350,12 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
       return false;
    }
 
-   string firstFail="invalid_stops ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+    string firstFail="invalid_stops ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
+   if(g_rtAdvancedReverse)
+   {
+      detail=firstFail+" advanced_reverse_unprotected_retry_blocked";
+      return false;
+   }
    if(!g_orbNativeWithBridgeOnly){detail=firstFail+" native_off_retry_blocked";return false;}
    bool naked=trade.PositionOpen(_Symbol,type,lot,entry,0,0,comment+"|naked");
    uint nakedRc=trade.ResultRetcode();
@@ -4671,9 +4787,9 @@ bool ModernFilterAllows(datetime from,datetime to,ENUM_TIMEFRAMES tf,datetime si
                         bool requireDisp,ORB_FVG_MODE fvgMode,string &reason,string &detail)
 {
    reason="";detail="";
-   // Shared gate: both audit and live pass the effective (possibly inverted) direction.
+   // Select the source setup before inversion so its signal bar cannot change.
    string ofDetail="";
-   if(!McOfFilter(_Symbol,tf,sigT,EffectiveOrbDirection(dir)=="BUY"?1:-1,reason,ofDetail)){detail=ofDetail;return false;}
+   if(!McOfFilter(_Symbol,tf,sigT,dir=="BUY"?1:-1,reason,ofDetail)){detail=ofDetail;return false;}
    if(!requireDisp&&fvgMode==ORB_FVG_OFF){detail=ofDetail;return true;}
    bool hasDisp=false,hasFvg=false;
    AnalyzeModernSetup(from,to,tf,sigT,dir,hasDisp,hasFvg,detail);
@@ -5144,7 +5260,12 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       double sourceReferenceEntry=NormalizeTradePrice(sourceIsBuy?(firstTick.ask+slip):(firstTick.bid-slip));
       targetLeg=RuntimeTargetLeg();
       hcLeg=ClampHalfBeLeg(halfBeLeg,targetLeg);
-      if(!BuildSimGeometry(isBuy,entry,sl,sl,risk,tp1,tp2,tp3,tp4,tp5,tp6,sourceReferenceEntry))return false;
+      string geometryDetail="";
+      if(!BuildSimGeometry(isBuy,entry,sl,sl,risk,tp1,tp2,tp3,tp4,tp5,tp6,sourceReferenceEntry,geometryDetail))
+      {
+         if(StringFind(geometryDetail,"ADV_REVERSE_SPREAD_BLOCK")==0)res.invalidReason="ADV_REVERSE_SPREAD_BLOCK";
+         return false;
+      }
       string targetDetail="";
       if(!ResolveTargetPriceAndR(isBuy,entry,risk,targetPrice,targetR,targetDetail,sourceReferenceEntry))return false;
       fixedTarget=ExitModeUsesFixedTp(g_rtExitMode)&&targetPrice>0.0;
@@ -5342,7 +5463,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.exitMode=RuntimeExitLabel();res.exitPrice=0;res.exitTime=0;
    res.valid=false;res.invalidReason="NO_MARKET_DATA";
    res.targetLeg=RuntimeTargetLeg();res.hcLeg=ClampHalfBeLeg(halfBeLeg,res.targetLeg);
-   if(g_rtAdvancedAuditEngine)
+   if(g_rtAdvancedAuditEngine&&!g_rtAdvancedReverse)
    {
       HistResult advanced=res;
       if(SimulateTradeTicksAdvanced(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,advanced,forcedExitTime,forcedExitOutcome))
@@ -5373,7 +5494,9 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    if(SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,res,forcedExitTime,forcedExitOutcome))
       return res;
+   if(res.invalidReason=="ADV_REVERSE_SPREAD_BLOCK")return res;
    if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
+   if(g_rtAdvancedReverse){res.valid=false;res.invalidReason="ADV_REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
    ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
@@ -5393,7 +5516,9 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    entry=NormalizeTradePrice(entry);
    double risk=0.0;
    double gt1=0,gt2=0,gt3=0,gt4=0,gt5=0,gt6=0;
-   if(!BuildSimGeometry(isBuy,entry,sl,sl,risk,gt1,gt2,gt3,gt4,gt5,gt6)){res.invalidReason="INVALID_GEOMETRY";return res;}
+   string barGeometryDetail="";
+   if(!BuildSimGeometry(isBuy,entry,sl,sl,risk,gt1,gt2,gt3,gt4,gt5,gt6,0.0,barGeometryDetail))
+   {res.invalidReason="INVALID_GEOMETRY";return res;}
 
    int sec=PeriodSeconds(entryTf);if(sec<=0)sec=60;
    int ctxBars=MathMax(320,MathMax(MathMax(InpExitEmaPeriod*4,InpExitAtrPeriod*4),100));
@@ -5650,6 +5775,8 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
+   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6108,6 +6235,8 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
+   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6486,11 +6615,17 @@ bool OrbAuditProbeSeries(ENUM_TIMEFRAMES tf,datetime cutoff,int warmupBars,strin
    if(synchronized&&seriesFirst>0&&seriesFirst<=(long)requiredFrom+tolerance)
       return true;
 
-   // These calls intentionally request the old edge so MT5 starts history download/build.
-   int available=Bars(_Symbol,tf,requiredFrom,now);
+   // Bars(from, now) can synchronously build millions of M1 candles. Request
+   // only the old edge; SERIES_BARS_COUNT is sufficient for cap diagnostics.
+   int available=(int)SeriesInfoInteger(_Symbol,tf,SERIES_BARS_COUNT);
    MqlRates probe[];
    datetime probeEnd=requiredFrom+(datetime)MathMax(7*86400,sec*10);
+   Print("ORB15v3 HISTORY_PROBE_BEGIN tf=",label," need=",TimeToString(requiredFrom,TIME_DATE|TIME_MINUTES),
+         " first=",seriesFirst>0?TimeToString((datetime)seriesFirst,TIME_DATE|TIME_MINUTES):"none",
+         " bars=",available," max=",maxBars," attempt=",g_histCoverageAttempts);
+   ResetLastError();
    int copied=CopyRates(_Symbol,tf,requiredFrom,probeEnd,probe);
+   Print("ORB15v3 HISTORY_PROBE_END tf=",label," copied=",copied," error=",GetLastError());
    datetime oldest=0;
    for(int i=0;i<copied;i++)if(oldest==0||probe[i].time<oldest)oldest=probe[i].time;
    bool ready=(copied>0&&oldest>0&&(long)oldest<=(long)requiredFrom+tolerance);
@@ -6722,8 +6857,14 @@ void ProcessHistoricalCalcDay(const int back)
       FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
       if(newDayReverseExitAt>0&&(forcedExitAt<=0||newDayReverseExitAt<forcedExitAt))
       {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="MA_REVERSE_EXIT";}
-      HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
+   HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
             forcedExitAt,forcedExitOutcome);
+   if(sim.invalidReason=="ADV_REVERSE_SPREAD_BLOCK")
+   {
+      g_histFiltered++;
+      g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
+      return;
+   }
 #ifdef MA_EVENT_PROBE
       Print("REPLAY ",TimeToString(entryT)," valid=",sim.valid," outcome=",sim.outcome," reason=",sim.invalidReason," exit=",TimeToString(sim.exitTime)," forced=",TimeToString(forcedExitAt));
 #endif
@@ -6742,6 +6883,42 @@ void ProcessHistoricalCalcDay(const int back)
       {
          datetime referenceEnd=te;
          referenceSim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),referenceEnd,referenceExit,referenceOutcome);
+      }
+      // LEGACY selects the same source-signal candles in both directions.
+      // The inverse replay still supplies the actual bid/ask result, while the
+      // uninverted replay alone owns the historical one-position calendar.
+      HistResult selectionSim=sim;
+      datetime selectionForcedAt=forcedExitAt;
+      string selectionForcedOutcome=forcedExitOutcome;
+      if(g_rtInvertMode&&!g_maIndependent)
+      {
+         g_rtInvertMode=false;
+         double sourceSl=0.0,sourceRisk=0.0;string sourceDetail="";
+         if(ResolveExecutionStop(sourceIsBuy,sourceIsBuy,entry,rawSl,sourceSl,sourceRisk,sourceDetail))
+         {
+            datetime sourceNasAt=0,sourceNasBar=0;double sourceNasClose=0.0;string sourceNasDetail="";
+            if(anyNasExit)
+               FindNasOppositeExitWithGrace(sourceIsBuy?1:-1,OrbSignalAvailableTime(entryT),nasSearchEnd,
+                  sourceNasBar,sourceNasAt,sourceNasClose,sourceNasDetail);
+            selectionForcedAt=filteredWindowExitAt;
+            selectionForcedOutcome=filteredWindowExitOutcome;
+            if(sourceNasAt>0&&(selectionForcedAt<=0||sourceNasAt<selectionForcedAt))
+            {selectionForcedAt=sourceNasAt;selectionForcedOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";}
+            if(newDayReverseExitAt>0&&(selectionForcedAt<=0||newDayReverseExitAt<selectionForcedAt))
+            {selectionForcedAt=newDayReverseExitAt;selectionForcedOutcome="MA_REVERSE_EXIT";}
+            double sourceTp1=PriceAtLeg(sourceIsBuy,entry,sourceRisk,1);
+            double sourceTp2=PriceAtLeg(sourceIsBuy,entry,sourceRisk,2);
+            double sourceTp3=PriceAtLeg(sourceIsBuy,entry,sourceRisk,3);
+            datetime selectionEnd=te;
+            selectionSim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sourceSl),sourceIsBuy,
+               sourceTp1,sourceTp2,sourceTp3,RuntimeHalfBeLeg(),selectionEnd,selectionForcedAt,selectionForcedOutcome);
+         }
+         else
+         {
+            selectionSim.valid=false;
+            selectionSim.invalidReason="SOURCE_GEOMETRY_"+sourceDetail;
+         }
+         g_rtInvertMode=true;
       }
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
       WriteInternalSimAudit("dashboard_hist",entryT,simEnd,execDir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail+" regime_allowed="+(OrbRegimeAllowed(regimeBucket)?"1":"0")
@@ -6778,13 +6955,13 @@ void ProcessHistoricalCalcDay(const int back)
       {
          if(sim.valid)g_maHistSeriesCount++;
       }
-      if(sim.valid)
+      if(selectionSim.valid)
       {
-         g_maAuditPositionUntil=sim.outcome=="open"?g_histRunNow+1:sim.exitTime;
+         g_maAuditPositionUntil=selectionSim.outcome=="open"?g_histRunNow+1:selectionSim.exitTime;
          // The opposite candidate itself triggers the close-before-open.
          // First-quote latency must not suppress that same reversal entry.
-         if(forcedExitAt>0&&sim.outcome==forcedExitOutcome)
-            g_maAuditPositionUntil=forcedExitAt;
+         if(selectionForcedAt>0&&selectionSim.outcome==selectionForcedOutcome)
+            g_maAuditPositionUntil=selectionForcedAt;
       }
       if(finalOutcome)
       {
@@ -6966,6 +7143,7 @@ void FinalizeHistoricalAudit()
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
    g_histStatLine=(g_mcOf.mode!=0&&g_mcOfDataIncomplete?"INCOMPLETE ORDER FLOW DATA | ":"")+IntegerToString(ArraySize(g_maCrossAuditEvents))+" raw / "+IntegerToString(g_histTotal)+" trades | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" MA-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
+   if(g_rtInvertMode&&!g_maIndependent)g_histStatLine+=" | PAIRED SOURCE CALENDAR (research; live may block)";
    if(g_histFiltered>0)g_histStatLine+=" | "+IntegerToString(g_histFiltered)+" filt";
    if(g_histDrawnWindowCount>0)g_histStatLine+=" | "+IntegerToString(g_histDrawnWindowCount)+" window ("+IntegerToString(g_histRejectedWindowRaw)+" raw)";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn,
@@ -7174,15 +7352,24 @@ void DrawHistoricalSignals()
    g_histRunNyMid=MakeDateTime(nySt.year,nySt.mon,nySt.day,0,0,0);
    g_histRunNow=currentTime;g_histRunDays=days;
    datetime maAuditFrom=currentTime-(datetime)((long)days*86400L);
+   Print("ORB15v3 MA_CACHE_BEGIN tf=",(int)g_rtSignalTf," from=",TimeToString(maAuditFrom,TIME_DATE|TIME_MINUTES),
+         " seed=",TimeToString(McHistorySeed(_Symbol,g_rtSignalTf),TIME_DATE|TIME_MINUTES),
+         " mode=",(int)g_rtMaCrossMode);
    if(!MaCrossAuditBuild(_Symbol,g_rtSignalTf,maAuditFrom,currentTime,g_rtMaCrossMode,g_rtMaCrossPair,
       MathMax(1,InpMaFastLength),MathMax(1,InpMaMediumLength),MathMax(2,InpMaSlowLength)))
    {
-      g_histStatLine="MA HISTORY CACHE WAITING";
-      g_histNeedsRedraw=true;
+      g_maCacheFailedAttempts++;
+      g_histCoverageHardBlocked=(g_maCacheFailedAttempts>=3);
+      g_histCoverageDetail=g_maCrossAuditFailure;
+      g_histStatLine=(g_histCoverageHardBlocked?"MA HISTORY BLOCKED: ":"MA HISTORY WAIT: ")+g_histCoverageDetail;
+      g_histNeedsRedraw=!g_histCoverageHardBlocked&&InpAuditHistoryAutoRetry;
       g_histCoveragePending=true;
-      g_histCoverageStatus="MA SIGNAL HISTORY SYNC";
+      g_histCoverageStatus=g_histCoverageHardBlocked?"MA HISTORY BLOCKED":"MA SIGNAL HISTORY SYNC";
+      g_histCoverageNextRetry=TimeLocal()+MathMax(2,InpAuditHistoryRetrySec);
+      Print("ORB15v3 ",g_histStatLine);
       UpdateDashboard();ChartRedraw(0);return;
    }
+   g_maCacheFailedAttempts=0;
    OrbUserAuditStarted();
    g_mcOfDataIncomplete=false;
    InitializeHistoricalTickReplayCoverage();
@@ -7782,8 +7969,16 @@ void UpdateDashboard()
    CreateLabel("DASH_VOL_LABEL",x+12,y+517,"VOL X",acB,8);
    CreateEdit("EDIT_VOL_MULT",x+54,y+513,54,18,DoubleToString(g_rtVolumeMultiplier,2));
    CreateButton("BTN_APPLY_VOL",x+114,y+513,92,18,volApplied?"APPLIED":"APPLY VOL",volApplied?C'30,150,95':C'38,101,176');
-   CreateButton("BTN_INVERT",x+222,y+513,98,18,g_rtInvertMode?"FULL INV ON":"FULL INV OFF",g_rtInvertMode?C'184,103,22':C'80,80,80');
-   CreateButton("BTN_CLOSEALL",x+326,y+513,86,18,"CLOSE ALL",C'178,37,57');
+   CreateButton("BTN_INVERT",x+222,y+513,98,18,(g_rtInvertMode&&!g_rtAdvancedReverse)?"FULL INV ON":"FULL INV OFF",
+      (g_rtInvertMode&&!g_rtAdvancedReverse)?C'184,103,22':C'80,80,80');
+   CreateButton("BTN_ADV_REVERSE",x+326,y+513,94,18,g_rtAdvancedReverse?"ADV REV ON":"ADV REV OFF",
+      g_rtAdvancedReverse?C'28,139,124':C'80,80,80');
+   ObjectSetString(0,PREFIX+"BTN_ADV_REVERSE",OBJPROP_TOOLTIP,
+      "Advanced reverse: spread-aware, MT5 native only. Requires single-order fixed 1R and no active position.");
+   CreateButton("BTN_CLOSEALL",x+424,y+513,76,18,"CLOSE ALL",C'178,37,57');
+   CreateLabel("DASH_ADV_COST",x+503,y+517,"MAX%",acB,8);
+   CreateEdit("EDIT_ADV_COST",x+534,y+513,42,18,DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
+   CreateButton("BTN_APPLY_ADV_COST",x+579,y+513,41,18,"SET",C'38,101,176');
    CreateButton("BTN_BRIDGE_PUB",x+424,y+490,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
    CreateButton("BTN_BRIDGE_ONLY",x+486,y+490,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
    CreateButton("BTN_BRIDGE_NATIVE",x+552,y+490,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
@@ -7987,6 +8182,14 @@ bool ResetForNewNyDay()
    Audit("ma_calendar_day","",0,0,0,0,"key="+(string)key);
    return true;
 }
+
+bool BuildSimGeometry(bool isBuy,double fillEntry,double plannedSl,
+                      double &simSl,double &risk,double &tp1,double &tp2,double &tp3,double &tp4,double &tp5,double &tp6,
+                      double sourceReferenceEntry=0.0)
+{
+   string detail="";
+   return BuildSimGeometry(isBuy,fillEntry,plannedSl,simSl,risk,tp1,tp2,tp3,tp4,tp5,tp6,sourceReferenceEntry,detail);
+}
 //=========================================================================
 //  LIVE FILTERS — use g_rtSignalTf for all timeframe operations
 //=========================================================================
@@ -8115,7 +8318,10 @@ bool StartupOrbReplayGuardAllows()
 bool ExecSingle(string dir,double &entry,double &sl,double &tp,double lot)
 {
    entry=NormalizeTradePrice(entry);sl=NormalizeTradePrice(sl);tp=NormalizeTradePrice(tp);
+   double requiredSl=sl,requiredTp=tp;
    string adj="";AdjustOpenStops(dir,entry,sl,tp,adj);
+   if(g_rtAdvancedReverse&&(MathAbs(sl-requiredSl)>TickSize()*0.5||MathAbs(tp-requiredTp)>TickSize()*0.5))
+   {Audit("advanced_reverse_stops_adjustment_block",dir,lot,entry,sl,tp,adj);return false;}
    string vr="";if(!ValidateOpenStops(dir,entry,sl,tp,vr)){Audit("order_skip_stops",dir,lot,entry,sl,tp,vr);return false;}
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
    string detail="";
@@ -8316,6 +8522,7 @@ void ApplyCloseBasedExit(double bid,double ask)
 void ManagePositions()
 {
    if(g_maIndependent)return; // Each independent position keeps its own broker SL/TP.
+   if(g_rtAdvancedReverse)return; // ADV REV uses broker-native spread-adjusted SL/TP only.
    if(g_tradeDir==0||!OwnPositionExists())
    {
       if(g_tradeDir!=0){g_tradeDir=0;g_tradeOpenTime=0;g_beMoved=false;g_halfClosed=false;}
@@ -8515,10 +8722,16 @@ void DrawAcceptedLiveSignal(string rawDir,datetime bt,double signalClose,string 
 
 void DispatchAcceptedOrbSignal(string dir,datetime bt,double signalClose,string detail,datetime gateAvailable=0)
 {
+   if(g_rtAdvancedReverse)
+   {
+      string reason="";
+      if(!AdvancedReverseShape(reason)||OwnPositionExists())
+      {g_lastExecStatus="ADV_REV_SIGNAL_BLOCKED_"+(reason!=""?reason:"ACTIVE_POSITION");return;}
+   }
    if(g_maIndependent&&g_maSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
       &&g_maSeriesCount>=g_maMaxConsecutive)
    {g_lastExecStatus="CONSECUTIVE LIMIT";return;}
-   DrawAcceptedLiveSignal(dir,bt,signalClose,detail);
+   if(!g_rtAdvancedReverse)DrawAcceptedLiveSignal(dir,bt,signalClose,detail);
    if(g_rtEntryMode==ORB_ENTRY_PULLBACK_RETEST)
    {
       SetRetestPending(dir,bt,signalClose,detail,gateAvailable);
@@ -8529,7 +8742,8 @@ void DispatchAcceptedOrbSignal(string dir,datetime bt,double signalClose,string 
       SetImbalancePending(dir,bt,signalClose,detail,gateAvailable);
       return;
    }
-   ExecuteOrbEntry(dir,bt,signalClose,"entry=breakout "+detail);
+   bool opened=ExecuteOrbEntry(dir,bt,signalClose,"entry=breakout "+detail);
+   if(g_rtAdvancedReverse&&opened)DrawAcceptedLiveSignal(dir,bt,signalClose,detail);
 }
 
 bool ProcessNasPending()
@@ -8571,6 +8785,8 @@ bool ProcessNasPending()
 
 bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string entryDetail)
 {
+   if(g_rtAdvancedReverse&&OwnPositionExists())
+   {g_lastExecStatus="ADV_REV_ACTIVE_POSITION";return false;}
    if(!g_orbNativeWithBridgeOnly&&!g_orbBridgeEnabled)
    {
       g_lastExecStatus="NATIVE_OFF_PUB_OFF";
@@ -8617,6 +8833,16 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    entryDetail+=(entryDetail==""?"":" ")+regimeGuardDetail;
    entryDetail+=(entryDetail==""?"":" ")+"raw_dir="+rawDir+" exec_dir="+execDir+" invert="+(g_rtInvertMode?"1":"0");
    if(!SpreadAllowed()){g_lastFilterReason="SPREAD";g_lastExecStatus="FILTERED";Audit("spread_block",execDir,0,signalClose,0,0,entryDetail);return false;}
+   if(g_rtAdvancedReverse)
+   {
+      string advancedReason="";
+      if(!AdvancedReverseShape(advancedReason))
+      {
+         g_lastExecStatus="ADV_REV_BLOCKED_"+advancedReason;
+         Audit("advanced_reverse_shape_block",execDir,0,signalClose,0,0,advancedReason+" "+entryDetail);
+         return false;
+      }
+   }
    MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return false;
    bool isBuy=execDir=="BUY";
    bool sourceIsBuy=rawDir=="BUY";
@@ -8763,7 +8989,8 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       ClearImbalanceState("");
       return true;
    }
-   g_lastExecStatus="FAIL";Audit("order_fail",execDir,0,entry,sl,0,"ret="+IntegerToString((int)trade.ResultRetcode())+" "+entryDetail);
+    g_lastExecStatus=(g_rtAdvancedReverse&&OwnPositionExists())?"ADV_REV_CHECK_POSITION":"FAIL";
+    Audit("order_fail",execDir,0,entry,sl,0,"ret="+IntegerToString((int)trade.ResultRetcode())+" "+entryDetail);
    return false;
 }
 
@@ -9397,6 +9624,7 @@ int OnInit()
    g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;
    LoadRuntimeRiskPct();
    LoadRuntimeInvertMode();
+   LoadRuntimeAdvancedReverse();
    LoadRuntimeMaCrossMode();
    LoadRuntimeUtcSession();
    g_rtSignalTf=InpSignalTimeframe==PERIOD_CURRENT?(ENUM_TIMEFRAMES)_Period:InpSignalTimeframe; // NAS CURRENT must resolve against this instance's configured signal TF.
@@ -9479,7 +9707,12 @@ int OnInit()
    // Refresh compliance news before a multi-year history scan can occupy OnInit.
    if(!IsTesterMode())TradeDayCalendarPublisherTick();
    if(!IsTesterMode())EventSetTimer(5);
-   if(!IsTesterMode()){DrawDashboard();QueueHistoricalRedraw(800);DrawOrbLiveTradeLevels();}
+   if(!IsTesterMode())
+   {
+      Print("ORB15v3 INIT_UI_BEGIN tf=",(int)g_rtSignalTf," weeks=",g_rtHistoricalWeeks);
+      DrawDashboard();QueueHistoricalRedraw(800);DrawOrbLiveTradeLevels();
+      Print("ORB15v3 INIT_UI_END");
+   }
    if(g_auditRuntime && InpLogOnInit)Print("ORB15v3.1 init ",_Symbol," build=",ORB15_BUILD," tf=",TfLabel(g_rtSignalTf)," exec=",EnumToString(InpExecutionMode)," magic=",RuntimeMagic(),
                          " tp=",DoubleToString(InpTp1R,1),"/",DoubleToString(InpTp2R,1),"/",DoubleToString(InpTp3R,1),"/",DoubleToString(InpTp4R,1),"/",DoubleToString(InpTp5R,1),"/",DoubleToString(InpTp6R,1),
                          " delay=",g_rtDelayMin,"min confirm=",InpConfirmBars,"bars invert=",g_rtInvertMode?"ON":"OFF",
@@ -10027,6 +10260,8 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    else if(sparam==PREFIX+"BTN_INVERT")
    {
+      if(g_rtAdvancedReverse&&(OwnPositionExists()||g_orbBridgePlanActive))
+      {g_lastExecStatus="INVERT_BLOCKED_ACTIVE_TRADE";ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();return;}
       bool requested=!g_rtInvertMode;
       if(requested&&(InpExecutionMode!=ORB_EXEC_SINGLE||!ExitModeUsesFixedTp(g_rtExitMode)))
       {
@@ -10037,8 +10272,14 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       {
          g_lastExecStatus="INVERT_SAVE_FAIL";
       }
+      else if(g_rtAdvancedReverse&&GlobalVariableSet(RuntimeAdvancedReverseKey(),0.0)<=0)
+      {
+         SetRuntimeInvertMode(true);
+         g_lastExecStatus="ADV_REV_SAVE_FAIL";
+      }
       else
       {
+          g_rtAdvancedReverse=false;
          // Pending confirmations belong to the direction policy active when
          // they were created. Discard them instead of mutating them in flight.
          ClearRetestState("invert_changed");
@@ -10054,6 +10295,51 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       }
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       QueueHistoricalRedraw();UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_ADV_REVERSE")
+   {
+      string advancedReason="";
+      if(OwnPositionExists()||g_orbBridgePlanActive)
+         g_lastExecStatus="ADV_REV_BLOCKED_ACTIVE_TRADE";
+      else if(!g_rtAdvancedReverse&&!AdvancedReverseShape(advancedReason))
+         g_lastExecStatus="ADV_REV_BLOCKED_"+advancedReason;
+      else
+      {
+         bool requested=!g_rtAdvancedReverse;
+         bool previousInvert=g_rtInvertMode;
+         if(GlobalVariableSet(RuntimeAdvancedReverseKey(),requested?1.0:0.0)>0
+            &&SetRuntimeInvertMode(requested))
+         {
+            g_rtAdvancedReverse=requested;
+            ClearRetestState("advanced_reverse_changed");ClearImbalanceState("advanced_reverse_changed");
+            ClearNasPending("advanced_reverse_changed");DeleteLive();
+            g_lastExecStatus=requested?"ADV_REVERSE_ON":"ADV_REVERSE_OFF";
+            Audit("advanced_reverse_changed","",0,0,0,0,"enabled="+(string)requested+" mt5_native_only=1 spread_compensated=1");
+            QueueHistoricalRedraw();
+         }
+         else
+         {
+            GlobalVariableSet(RuntimeAdvancedReverseKey(),g_rtAdvancedReverse?1.0:0.0);
+            SetRuntimeInvertMode(previousInvert);
+            g_lastExecStatus="ADV_REVERSE_SAVE_FAILED";
+         }
+      }
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
+   else if(sparam==PREFIX+"BTN_APPLY_ADV_COST")
+   {
+      string raw=ObjectGetString(0,PREFIX+"EDIT_ADV_COST",OBJPROP_TEXT);
+      double requested=0.0;
+      if(!OrbMlNumber(raw,requested)||!SetRuntimeAdvancedReverseMaxCostPct(requested))
+         g_lastExecStatus="ADV_COST_INVALID_0_TO_100";
+      else
+      {
+         g_lastExecStatus="ADV_COST_MAX_"+DoubleToString(requested,2)+"PCT";
+         Audit("advanced_reverse_max_cost_changed","",0,0,0,0,"max_cost_pct="+DoubleToString(requested,4));
+         QueueHistoricalRedraw();
+      }
+      ObjectSetString(0,PREFIX+"EDIT_ADV_COST",OBJPROP_TEXT,DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
    else if(sparam==PREFIX+"BTN_UTC_SESSION")
    {

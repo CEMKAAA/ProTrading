@@ -23,6 +23,7 @@ MA_CROSS_PAIR g_maCrossAuditPair=MA_CROSS_PAIR_FAST;
 ENUM_TIMEFRAMES g_maCrossAuditTf=PERIOD_CURRENT;
 int g_maCrossAuditFast=0,g_maCrossAuditMedium=0,g_maCrossAuditSlow=0;
 bool g_maCrossAuditReady=false;
+string g_maCrossAuditFailure="";
 
 void MaCrossAuditInvalidate()
 {
@@ -40,6 +41,7 @@ bool MaCrossAuditBuild(const string symbol,const ENUM_TIMEFRAMES tf,const dateti
                        const MA_CROSS_SIGNAL_MODE mode,const MA_CROSS_PAIR pair,
                        const int fastLen,const int mediumLen,const int slowLen)
 {
+   g_maCrossAuditFailure="";
    datetime seed=McHistorySeed(symbol,tf),closed=iTime(symbol,tf,1);
    datetime hSeed=mode==MA_CROSS_ORIGINAL_MTF?McHistorySeed(symbol,PERIOD_H4):0;
    if(g_maCrossAuditReady&&g_maCrossAuditSymbol==symbol&&g_maCrossAuditFrom<=from&&g_maCrossAuditTo>=to
@@ -47,19 +49,34 @@ bool MaCrossAuditBuild(const string symbol,const ENUM_TIMEFRAMES tf,const dateti
       &&g_maCrossAuditMode==mode&&g_maCrossAuditPair==pair&&g_maCrossAuditTf==tf
       &&g_maCrossAuditFast==fastLen&&g_maCrossAuditMedium==mediumLen&&g_maCrossAuditSlow==slowLen)return true;
    g_maCrossAuditReady=false;
-   if(seed<=0||closed<=0||!SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))return false;
+   if(seed<=0||closed<=0||!SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))
+   {g_maCrossAuditFailure="signal series not synchronized";return false;}
    const int seconds=PeriodSeconds(tf);
    // A historical end time may cut through a candle. That candle is not an event.
    datetime end=MathMin(closed,to-seconds);
    MqlRates rates[],higher[];ArraySetAsSeries(rates,false);ArraySetAsSeries(higher,false);
    ulong started=GetTickCount64();
+   ResetLastError();
    int count=CopyRates(symbol,tf,seed,end,rates);
-   if(count<1||rates[0].time!=seed)return false;
+   int copyError=GetLastError();
+   if(count<1||rates[0].time!=seed)
+   {
+      g_maCrossAuditFailure="signal CopyRates copied="+IntegerToString(count)
+         +" error="+IntegerToString(copyError)
+         +" seed="+TimeToString(seed,TIME_DATE|TIME_MINUTES)
+         +" first="+(count>0?TimeToString(rates[0].time,TIME_DATE|TIME_MINUTES):"none")
+         +" bars="+IntegerToString((int)SeriesInfoInteger(symbol,tf,SERIES_BARS_COUNT))
+         +" max="+IntegerToString((int)TerminalInfoInteger(TERMINAL_MAXBARS));
+      return false;
+   }
    if(mode==MA_CROSS_ORIGINAL_MTF)
    {
-      if(hSeed<=0||!SeriesInfoInteger(symbol,PERIOD_H4,SERIES_SYNCHRONIZED))return false;
+      if(hSeed<=0||!SeriesInfoInteger(symbol,PERIOD_H4,SERIES_SYNCHRONIZED))
+      {g_maCrossAuditFailure="H4 series not synchronized";return false;}
+      ResetLastError();
       int hc=CopyRates(symbol,PERIOD_H4,hSeed,end+seconds-PeriodSeconds(PERIOD_H4),higher);
-      if(hc<1||higher[0].time!=hSeed)return false;
+      if(hc<1||higher[0].time!=hSeed)
+      {g_maCrossAuditFailure="H4 CopyRates copied="+IntegerToString(hc)+" error="+IntegerToString(GetLastError());return false;}
    }
    McPineKernel kernel;kernel.Reset(mode,pair,fastLen,mediumLen,slowLen);
    McRollingHma hma;hma.Reset(200);int h=0;double hv=0,volumeSum=0;

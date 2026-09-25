@@ -27,6 +27,13 @@ void OnStart()
    {
       int originalCount=ArraySize(g_histSignals),originalTotal=g_hist.total;
       double originalR=g_hist.netR;
+      int originalHours[7];
+      for(int day=0;day<7;day++)originalHours[day]=g_tcalDayHours[day];
+#ifdef LN_SOL_ADV_MACRO_AUDIT_ACTIVE
+      int originalMacroResolved=0;
+      for(int bucket=0;bucket<LIQ_MACRO_REGIME_COUNT;bucket++)
+         originalMacroResolved+=g_macroAuditWins[bucket]+g_macroAuditLosses[bucket];
+#endif
       MqlDateTime sample;TimeToStruct(g_histSignals[0].availableTime,sample);
       for(int day=0;day<7;day++)g_tcalDayHours[day]=16777215^(1<<sample.hour);
       g_tcalEnabled=true;
@@ -40,11 +47,49 @@ void OnStart()
       ProbeCheck(ArraySize(g_histSignals)==originalCount&&g_hist.total==originalTotal
          &&MathAbs(g_hist.netR-originalR)<1e-8,
          "calendar OFF restores exact default audit");
+#ifdef LN_SOL_ADV_MACRO_AUDIT_ACTIVE
+      for(int day=0;day<7;day++)g_tcalDayHours[day]=0;
+      g_tcalEnabled=true;RecalculateHistoricalStats(false);
+      int blockedMacroResolved=0;
+      for(int bucket=0;bucket<LIQ_MACRO_REGIME_COUNT;bucket++)
+         blockedMacroResolved+=g_macroAuditWins[bucket]+g_macroAuditLosses[bucket];
+      ProbeCheck(g_hist.total==0&&blockedMacroResolved==0,
+         "macro active W/L clears when all entry hours are blocked");
+      g_tcalEnabled=false;RecalculateHistoricalStats(false);
+      int restoredMacroResolved=0;
+      for(int bucket=0;bucket<LIQ_MACRO_REGIME_COUNT;bucket++)
+         restoredMacroResolved+=g_macroAuditWins[bucket]+g_macroAuditLosses[bucket];
+      ProbeCheck(restoredMacroResolved==originalMacroResolved,
+         "macro active W/L restores with original audit settings");
+#endif
+      for(int day=0;day<7;day++)g_tcalDayHours[day]=originalHours[day];
+#ifdef LN_SOL_ADV_MACRO_AUDIT_ACTIVE
+      ERL_RR_MODE macroTargetBefore=g_target;
+      double macroCustomBefore=g_customTargetR;
+      g_target=ERL_RR_CUSTOM;g_customTargetR=0.25;
+      RecalculateHistoricalStats(false);
+      int geometryMacroResolved=0;
+      for(int bucket=0;bucket<LIQ_MACRO_REGIME_COUNT;bucket++)
+         geometryMacroResolved+=g_macroAuditWins[bucket]+g_macroAuditLosses[bucket];
+      ProbeCheck(geometryMacroResolved==g_hist.wins+g_hist.losses,
+         "macro W/L reflects active custom-R geometry");
+      g_target=macroTargetBefore;g_customTargetR=macroCustomBefore;
+      RecalculateHistoricalStats(false);
+#endif
    }
 #endif
 #ifdef LN_SOL_ADV_NAS_READY
    if(init==INIT_SUCCEEDED)
    {
+#ifdef LN_SOL_ADV_MACRO_AUDIT_ACTIVE
+      g_lnNasPanel=true;g_lnNasDraft=g_lnNas;
+      g_lnNasDraft.stateMultiplier=1.23456789;
+      DeleteByPrefix(PFX+"NAS_");LnNasDrawPanel();
+      LnNasPolicy edited;LnNasDefaults(edited);
+      ProbeCheck(LnNasReadPanel(edited)&&MathAbs(edited.stateMultiplier-1.23456789)<1e-8,
+         "NAS edit field preserves eight-decimal volume multiplier");
+      g_lnNasPanel=false;DeleteByPrefix(PFX+"NAS_");LnNasDrawNav();
+#endif
       LnNasPolicy before=g_lnNas;
       LnNasDefaults(g_lnNas);g_lnNas.gate=2;g_lnNas.sensitivity=7;
       g_lnNas.stateVolume=true;g_lnNas.stateMultiplier=1.50;
@@ -57,14 +102,20 @@ void OnStart()
       ResetLastError();bool saved=LiqLibrarySave(name);
       Print("NAS_PROBE_SAVE saved=",saved," error=",GetLastError()," path=",path);
       ProbeCheck(saved,"save strategy and NAS options");
-      string record="",parts[];LnNasPolicy parsed;
+      string record="",parts[];LnNasPolicy parsed;LnNasDefaults(parsed);
       bool recordOk=LiqLibraryRead(path,record);
       int end=StringFind(record,"\nSHA256=");
       int count=end>=0?StringSplit(StringSubstr(record,0,end),'\n',parts):0;
-      ProbeCheck(recordOk&&count>0&&LnNasUnpack(parts[count-1],parsed)
+      bool foundPolicy=false;
+      for(int line=0;line<count;line++)
+         if(StringFind(parts[line],"LN_NAS_V1|")==0)
+         {foundPolicy=LnNasUnpack(parts[line],parsed);break;}
+      ProbeCheck(recordOk&&foundPolicy
          &&LnNasPack(parsed)==LnNasPack(g_lnNas),"strategy roundtrip has every NAS setting");
       LnNasDefaults(g_lnNas);
-      ProbeCheck(LiqLibraryApply(path)&&LnNasPack(g_lnNas)==LnNasPack(parsed),"Apply restores NAS strategy");
+      bool applied=LiqLibraryApply(path);
+      Print("NAS_PROBE_APPLY applied=",applied," status=",g_liqLibraryStatus," error=",GetLastError());
+      ProbeCheck(applied&&LnNasPack(g_lnNas)==LnNasPack(parsed),"Apply restores NAS strategy");
       ERL_RR_MODE targetBefore=g_target;double customBefore=g_customTargetR;
       g_target=ERL_RR_CUSTOM;g_customTargetR=0.00001;
       string customName=name+"_CUSTOM",customPath=LiqLibraryPath(customName);
@@ -86,13 +137,13 @@ void OnStart()
       g_lnNasSignature=_Symbol+"|"+(string)_Period+"|4|false|1.00000000|false|1.00000000";
       ArrayResize(g_lnNasEvents,1);g_lnNasEvents[0].at=signalAt-300;
       ErlSignal sig;ZeroMemory(sig);sig.valid=true;sig.id="probe-entry";sig.dir=1;sig.availableTime=signalAt;
-      g_lnNasEvents[0].dir=-EffectiveTradeDir(sig.dir);g_lnNasEvents[0].stateAllowed=true;g_lnNasEvents[0].flowAllowed=true;
+      g_lnNasEvents[0].dir=-sig.dir;g_lnNasEvents[0].stateAllowed=true;g_lnNasEvents[0].flowAllowed=true;
       string bridgeBefore=g_lastBridgeStatus;int pendingBefore=ArraySize(g_bridgePending);
       datetime probeAccepted=0;
-      int probeDecision=LnNasEntryDecision(EffectiveTradeDir(sig.dir),sig.availableTime,TimeCurrent(),probeAccepted);
+      int probeDecision=LnNasEntryDecision(sig.dir,sig.availableTime,TimeCurrent(),probeAccepted);
       Print("NAS_PROBE_PRE gate=",g_lnNas.gate," invert=",g_invertMode," decision=",probeDecision,
          " count=",ArraySize(g_lnNasEvents)," key=",g_lnNasSignature," first_dir=",g_lnNasEvents[0].dir,
-         " required=",EffectiveTradeDir(sig.dir)," accepted=",probeAccepted);
+         " required=",sig.dir," accepted=",probeAccepted);
       g_fileBridgeEnabled=true;g_fileBridgeOnlyMode=true;g_nativeTradeWithBridgeOnly=false;
       bool rejected=!OpenSignal(sig);
       Print("NAS_PROBE_TRACE rejected=",rejected," block=",g_lastBlock," bridge_before=",bridgeBefore,
@@ -101,11 +152,11 @@ void OnStart()
          &&g_lastBridgeStatus==bridgeBefore&&ArraySize(g_bridgePending)==pendingBefore,
          "rejected entry never reaches bridge or native order");
       g_fileBridgeEnabled=false;g_fileBridgeOnlyMode=false;
-      g_lnNas.gate=1;g_lnNasEvents[0].dir=-EffectiveTradeDir(sig.dir);
+      g_lnNas.gate=1;g_lnNasEvents[0].dir=-sig.dir;
       ArrayResize(g_lnNasEvents,2);g_lnNasEvents[1]=g_lnNasEvents[0];
-      g_lnNasEvents[1].at=signalAt+120;g_lnNasEvents[1].dir=EffectiveTradeDir(sig.dir);
+      g_lnNasEvents[1].at=signalAt+120;g_lnNasEvents[1].dir=sig.dir;
       datetime accepted=0;
-      ProbeCheck(LnNasEntryDecision(EffectiveTradeDir(sig.dir),signalAt,signalAt+180,accepted)==1&&accepted==signalAt+120,
+      ProbeCheck(LnNasEntryDecision(sig.dir,signalAt,signalAt+180,accepted)==1&&accepted==signalAt+120,
          "ENTRY waits for same direction closed NAS signal");
       g_lnNas.gate=0;g_lnNas.exitMode=2;
       ArrayResize(g_lnNasEvents,2);

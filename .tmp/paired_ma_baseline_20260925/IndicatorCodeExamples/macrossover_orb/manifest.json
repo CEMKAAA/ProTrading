@@ -1,0 +1,312 @@
+﻿{
+    "canonical_root":  "..",
+    "entrypoints":  [
+                        "OrbUltimateEA.mq5",
+                        "OrbUltimateEA_StrategyLibrary.mq5",
+                        "OrbUltimateEA_Channel.mq5"
+                    ],
+    "files":  [
+                  {
+                      "file":  "AuditMemoIndex.mqh",
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA"
+                  },
+                  {
+                      "file":  "LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+                  },
+                  {
+                      "file":  "NasUltimate_Core.mqh",
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36"
+                  },
+                  {
+                      "file":  "OrbAdvancedAuditEngine.mqh",
+                      "sha256":  "AFDB3BEAD9BE331A9FDC4ACE2F83F9342AB306A68D97B3BF81E658F49310E015"
+                  },
+                  {
+                      "file":  "OrbReplayMemoEpoch.mqh",
+                      "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF"
+                  },
+                  {
+                      "file":  "OrbStrategyCampaignModels.mqh",
+                      "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140"
+                  },
+                  {
+                      "file":  "OrbStrategyCampaignRegistry.mqh",
+                      "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31"
+                  },
+                  {
+                      "file":  "OrbStrategyLeaderboard.mqh",
+                      "sha256":  "D120FECBCBF3F550270564F332B2EB2AECAD99BEC6748B825DDE5A00C62DC4B6"
+                  },
+                  {
+                      "file":  "OrbStrategyLeaderboardData.mqh",
+                      "sha256":  "D28D17B82E769604FE36A4640A2F6677D5754BE6A266822573FC68DC3B0D3133"
+                  },
+                  {
+                      "file":  "OrbStrategyLeaderboardFiveYear.mqh",
+                      "sha256":  "72A43B364FC328AD7CF30C48EFC9653B7B43FABF41291F16393F316E5A6303A8"
+                  },
+                  {
+                      "file":  "OrbStrategyMLConfig.mqh",
+                      "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997"
+                  },
+                  {
+                      "file":  "OrbStrategyMLCore.mqh",
+                      "sha256":  "D74DA4A233CFA0E0CFF6927C3CE0D509B0C52381D2E90304F80D667B8C7E167C"
+                  },
+                  {
+                      "file":  "OrbStrategyMLHistory.mqh",
+                      "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28"
+                  },
+                  {
+                      "file":  "OrbStrategyMLJobs.mqh",
+                      "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0"
+                  },
+                  {
+                      "file":  "OrbStrategyMLPipeline.mqh",
+                      "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD"
+                  },
+                  {
+                      "file":  "OrbStrategyModelSlot.mqh",
+                      "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5"
+                  },
+                  {
+                      "file":  "OrbStrategyPresetLibrary.mqh",
+                      "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA"
+                  },
+                  {
+                      "file":  "OrbStrategyR7Core.mqh",
+                      "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7"
+                  },
+                  {
+                      "file":  "OrbStrategyR7Runtime.mqh",
+                      "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E"
+                  },
+                  {
+                      "file":  "OrbStrategyRegimeLeaderboard.mqh",
+                      "sha256":  "36EFCC535A2B5CE58E83F4C809E8F08D1373C66A6DA684D172C68732870CFBF7"
+                  },
+                  {
+                      "file":  "OrbStrategyUserContract.mqh",
+                      "sha256":  "88CB9DEF33B4EF314D8A5AEB40212CE16C06B9D66926EBC73167571CFC20D56E"
+                  },
+                  {
+                      "file":  "OrbStrategyUserLibrary.mqh",
+                      "sha256":  "8FCE2652D90456E7DA174EB3C3F20ED2DD970D984C11063774936B07A35B0002"
+                  },
+                  {
+                      "file":  "OrbStrategyUserMetrics.mqh",
+                      "sha256":  "6FA51406C42FE612C8937D9C1CD2168CFECC19CAC0C9AFC0D66692D4B67B06A9"
+                  },
+                  {
+                      "file":  "OrbUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "06C3CAEA004FFA11A8EAF680E6578E3E94F21903CC651CA67C043E67B1CF64CE"
+                  },
+                  {
+                      "file":  "OrbUltimate_ProfessionalPipeline_Channel.mqh",
+                      "sha256":  "9B71688214CB78C56351CF3FC097AA57FA5EBE4D2F140C76AFA07254A60D32B3"
+                  },
+                  {
+                      "file":  "OrbUltimate_RegimeMatrix.mqh",
+                      "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF"
+                  },
+                  {
+                      "file":  "OrbUltimateEA.ex5",
+                      "sha256":  "92E0C0D6F5A1283F105A40234F36E039C35ED902DBE04F969F3994350DEFEF84"
+                  },
+                  {
+                      "file":  "OrbUltimateEA.mq5",
+                      "sha256":  "B3787BE6170655A56E99BFD9CC8175B12A6BCE20475DEC378C4319994A24ACD4"
+                  },
+                  {
+                      "file":  "OrbUltimateEA_Channel.ex5",
+                      "sha256":  "ACF731B6D25B72B160C187CABCDA89E4EBF7F5C3D214F9A546E92C362272863E"
+                  },
+                  {
+                      "file":  "OrbUltimateEA_Channel.mq5",
+                      "sha256":  "5E5AC3351AB43E6C9B41FD22343AC29581FFF9889330681611053F2C103E9637"
+                  },
+                  {
+                      "file":  "OrbUltimateEA_StrategyLibrary.ex5",
+                      "sha256":  "1293A4E847088E4083091B22B57263836E7C5685690314703789652761993A0E"
+                  },
+                  {
+                      "file":  "OrbUltimateEA_StrategyLibrary.mq5",
+                      "sha256":  "CFB4F6B8B3A257C008F81F403A9F298457C5AFF7688333F4D0E4171D3B688106"
+                  },
+                  {
+                      "file":  "TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+                  }
+              ],
+    "dependencies":  [
+                         {
+                             "parent":  "OrbStrategyCampaignModels.mqh",
+                             "include":  "OrbStrategyCampaignRegistry.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyLeaderboard.mqh",
+                             "include":  "OrbStrategyLeaderboardData.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyLeaderboard.mqh",
+                             "include":  "OrbStrategyLeaderboardFiveYear.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyLeaderboard.mqh",
+                             "include":  "OrbStrategyRegimeLeaderboard.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyCampaignModels.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyMLConfig.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyMLCore.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyMLHistory.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyMLJobs.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyMLPipeline.mqh",
+                             "include":  "OrbStrategyR7Runtime.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyModelSlot.mqh",
+                             "include":  "OrbStrategyR7Core.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyR7Core.mqh",
+                             "include":  "OrbStrategyMLCore.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyR7Runtime.mqh",
+                             "include":  "OrbStrategyModelSlot.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyRegimeLeaderboard.mqh",
+                             "include":  "OrbStrategyModelSlot.mqh"
+                         },
+                         {
+                             "parent":  "OrbStrategyUserLibrary.mqh",
+                             "include":  "OrbStrategyUserContract.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "AuditMemoIndex.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "NasUltimate_Core.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "OrbAdvancedAuditEngine.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "OrbReplayMemoEpoch.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "OrbStrategyPresetLibrary.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "OrbUltimate_ProfessionalPipeline.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "OrbUltimate_RegimeMatrix.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_Channel.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_Channel.mq5",
+                             "include":  "OrbUltimate_ProfessionalPipeline_Channel.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_Channel.mq5",
+                             "include":  "OrbUltimate_RegimeMatrix.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_Channel.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "AuditMemoIndex.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "LiqNarrativeSol_RegimeV3.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "NasUltimate_Core.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbAdvancedAuditEngine.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbReplayMemoEpoch.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyLeaderboard.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyMLCore.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyMLPipeline.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyPresetLibrary.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyUserLibrary.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbStrategyUserMetrics.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbUltimate_ProfessionalPipeline.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "OrbUltimate_RegimeMatrix.mqh"
+                         },
+                         {
+                             "parent":  "OrbUltimateEA_StrategyLibrary.mq5",
+                             "include":  "TradeDayCalendarPublisher.mqh"
+                         }
+                     ]
+}

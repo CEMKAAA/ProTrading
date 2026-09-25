@@ -63,7 +63,7 @@ void OnStart()
    g_mcOfCache[0].signal.close=106;g_mcOfCache[0].signal.high=107;g_mcOfCache[0].signal.low=102;
    Check(ModernFilterAllows(0,0,PERIOD_M5,1000,"BUY",false,ORB_FVG_OFF,reason,detail),"shared gate accepts confirmed buy");
    g_rtInvertMode=true;
-   Check(!ModernFilterAllows(0,0,PERIOD_M5,1000,"BUY",false,ORB_FVG_OFF,reason,detail)&&reason=="OF_BLOCK","filter uses executed inverted direction");
+   Check(ModernFilterAllows(0,0,PERIOD_M5,1000,"BUY",false,ORB_FVG_OFF,reason,detail),"inversion preserves source order-flow eligibility");
    OrbWindowSignal windows[];
    AppendOrbWindowSignal(windows,1000,"BUY","OF_BLOCK",100,101,99);
    AppendOrbWindowSignal(windows,1000,"BUY","OF_DATA_BARS",100,101,99);

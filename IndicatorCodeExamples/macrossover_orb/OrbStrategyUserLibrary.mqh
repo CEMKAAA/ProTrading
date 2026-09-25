@@ -9,6 +9,8 @@ struct OrbUserRecord
    string symbol,inputSignature,runtime;
    int chartTf; bool independent; int maxSeries;
    bool reverseExit; int reverseWait;
+   bool advancedReverse;
+   double advancedReverseMaxCostPct;
    McOfConfig orderFlow;
    string timeMatrix;
 };
@@ -53,15 +55,17 @@ void OrbUserReload(bool force=false)
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
       record.independent=false;record.maxSeries=1;record.reverseExit=false;record.reverseWait=0;
+      record.advancedReverse=false;
+      record.advancedReverseMaxCostPct=100.0;
       string meta[];int parts=StringSplit(v[5],'|',meta);
-      if(parts<1||parts>5)continue;
+      if(parts<1||parts>7)continue;
       record.timeMatrix=TCalStrategyOffText();
       McOfConfigRead("0,24,32,0.70000000,1.00000000,0.10000000",record.orderFlow);
       if(parts==4)
       {
          if(StringFind(meta[3],"MAOF1=")!=0||!McOfConfigRead(StringSubstr(meta[3],6),record.orderFlow))continue;
       }
-      if(parts==5)
+      if(parts>=5)
       {
          bool enabled=false;int hours[];
          if(StringFind(meta[3],"MAOF1=")!=0||!McOfConfigRead(StringSubstr(meta[3],6),record.orderFlow)
@@ -86,6 +90,18 @@ void OrbUserReload(bool force=false)
          int enabled=(int)StringToInteger(exit[0]),wait=(int)StringToInteger(exit[1]);
          if(exit[0]!=(string)enabled||exit[1]!=(string)wait||enabled<0||enabled>1||wait<0||wait>5999)continue;
          record.reverseExit=enabled==1;record.reverseWait=wait;
+      }
+      if(parts>=6)
+      {
+         if(meta[5]!="MAADV1=0"&&meta[5]!="MAADV1=1")continue;
+         record.advancedReverse=(meta[5]=="MAADV1=1");
+      }
+      if(parts==7)
+      {
+         double pct=0.0;
+         if(StringFind(meta[6],"MAADVCOST1=")!=0||!OrbMlNumber(StringSubstr(meta[6],11),pct)
+            ||pct<0.0||pct>100.0)continue;
+         record.advancedReverseMaxCostPct=pct;
       }
       record.inputSignature=meta[0];record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
@@ -135,6 +151,7 @@ bool OrbUserApply(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);
+   if(g_userStrategies[i].advancedReverse&&!p.invertMode)return false;
    string previousTimeMatrix=TCalStrategyText();
    if(!TCalStrategyApplyText(g_userStrategies[i].timeMatrix))return false;
    string oldTokens[];StringSplit(OrbCustomRuntimeDump(),'\n',oldTokens);
@@ -143,6 +160,8 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    else if(!MaIndependentApply(g_userStrategies[i].independent,g_userStrategies[i].maxSeries))
    {OrbCustomRuntimeRead(oldTokens,0,true);TCalStrategyApplyText(previousTimeMatrix);return false;}
    g_maReverseExit=g_userStrategies[i].reverseExit;g_maReverseWait=g_userStrategies[i].reverseWait;MaExitSave();
+   g_rtAdvancedReverse=g_userStrategies[i].advancedReverse;
+   g_rtAdvancedReverseMaxCostPct=g_userStrategies[i].advancedReverseMaxCostPct;
    g_mcOf=g_userStrategies[i].orderFlow;McOfReset();
    MaCrossAuditInvalidate();
    g_lastSignalBarTime=0;
@@ -151,6 +170,8 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
    g_orbRfEnabled=p.rfMaster;
    for(int r=0;r<ORB_RF_COUNT;r++)g_orbRfBlocked[r]=OrbPresetRfBlocked(p,r);
+   if(GlobalVariableSet(RuntimeAdvancedReverseKey(),g_rtAdvancedReverse?1.0:0.0)<=0)return false;
+   if(GlobalVariableSet(RuntimeAdvancedReverseMaxCostKey(),g_rtAdvancedReverseMaxCostPct)<=0)return false;
    return true;
 }
 bool OrbUserMatches(const OrbStrategyPreset &p)
@@ -159,6 +180,8 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    int i=OrbUserSlot(p.id);
    if(g_maIndependent!=g_userStrategies[i].independent||g_maMaxConsecutive!=g_userStrategies[i].maxSeries)return false;
    if(g_maReverseExit!=g_userStrategies[i].reverseExit||g_maReverseWait!=g_userStrategies[i].reverseWait)return false;
+   if(g_rtAdvancedReverse!=g_userStrategies[i].advancedReverse)return false;
+   if(MathAbs(g_rtAdvancedReverseMaxCostPct-g_userStrategies[i].advancedReverseMaxCostPct)>0.000001)return false;
    if(McOfConfigText(g_mcOf)!=McOfConfigText(g_userStrategies[i].orderFlow))return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
    if(!TCalStrategyMatchesText(g_userStrategies[i].timeMatrix))return false;
@@ -185,6 +208,9 @@ bool OrbUserRemembered(const OrbStrategyPreset &p)
 bool OrbUserSaveLocked(string name)
 {
    int updateSlot=-1;string updateId="";
+   string advancedReason="";
+   if(g_rtAdvancedReverse&&(!g_rtInvertMode||!AdvancedReverseShape(advancedReason)))
+   {g_userStrategyNote="ADV REV settings invalid: "+advancedReason;return false;}
    StringTrimLeft(name);StringTrimRight(name);
    if(StringLen(name)<1||StringLen(name)>64){g_userStrategyNote="Name must contain 1-64 characters";return false;}
    for(int i=0;i<StringLen(name);i++)if(StringGetCharacter(name,i)<32)
@@ -202,7 +228,9 @@ bool OrbUserSaveLocked(string name)
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
    string signature=OrbCustomInputSignature()+"|MAENTRY1="+(g_maIndependent?"1":"0")+","+(string)g_maMaxConsecutive
       +"|MAEXIT2="+(g_maReverseExit?"1":"0")+","+(string)g_maReverseWait
-      +"|MAOF1="+McOfConfigText(g_mcOf)+"|"+TCalStrategyText(),runtime=OrbCustomRuntimeDump();
+      +"|MAOF1="+McOfConfigText(g_mcOf)+"|"+TCalStrategyText()
+      +"|MAADV1="+(g_rtAdvancedReverse?"1":"0")
+      +"|MAADVCOST1="+DoubleToString(g_rtAdvancedReverseMaxCostPct,6),runtime=OrbCustomRuntimeDump();
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    if(updateSlot>=0)p.id=updateId;

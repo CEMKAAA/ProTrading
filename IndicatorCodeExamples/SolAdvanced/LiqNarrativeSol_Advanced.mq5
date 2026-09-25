@@ -16,6 +16,8 @@
 #define LN_PREFIX "LIQNARRSOL_"
 #define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
 #define LN_H90_SECONDS 5400
+#define LN_SOL_ADV_MACRO_AUDIT_ACTIVE
+#define LN_MACRO_AUDIT_EVENT 807
 
 //=====================================================================
 //  ENUMS
@@ -340,6 +342,8 @@ int              g_solRegimeFilterUnclassified = 0;
 bool             g_solRegimeRuleBlocked[SOL_ADV_RF_COUNT];
 int              g_solRegimeRuleWins[SOL_ADV_RF_COUNT];
 int              g_solRegimeRuleLosses[SOL_ADV_RF_COUNT];
+int              g_macroAuditWins[LIQ_MACRO_REGIME_COUNT];
+int              g_macroAuditLosses[LIQ_MACRO_REGIME_COUNT];
 bool             g_auditRuntime = false;
 bool             g_ftmoMode = false;
 bool             g_riskLotOnlyMode = false;
@@ -350,6 +354,17 @@ ErlSignal        g_histSignals[];
 ErlSignal        g_histRawCache[];
 string           g_histRawCacheSignature = "";
 int              g_histRawCacheWeeks = 0;
+int              g_histRawCacheEntryBars = 0;
+datetime         g_histRawCacheLastClosedBar = 0;
+ErlSignal        g_auditExitSignals[];
+ErlSignal        g_auditMacroSignals[];
+bool             g_auditMacroPending = false;
+ulong            g_auditMacroLastSliceAt = 0;
+int              g_auditMacroIndex = 0;
+int              g_auditMacroSlices = 0;
+int              g_auditGeneration = 0;
+ulong            g_auditStageStartedMs = 0;
+ulong            g_auditRawMs = 0;
 double           g_histSignalR[];
 bool             g_histSignalClosed[];
 bool             g_histSignalWon[];
@@ -363,6 +378,7 @@ double           g_histSignalExecHalf[];
 datetime         g_histSignalExitTime[];
 string           g_histSignalExitReason[];
 SimCacheEntry    g_simCache[];
+int              g_simCacheSlots[];
 MqlRates         g_simRates[];
 ENUM_TIMEFRAMES  g_simRatesTf = PERIOD_CURRENT;
 datetime         g_simRatesLatestBar = 0;
@@ -429,6 +445,7 @@ bool             g_pipSlMode = false;
 double           g_pipSlPips = 100.0;
 int              g_histWeeks = 2;
 bool             g_histAuditRunning = false;
+ulong            g_histAuditStartedMs = 0;
 double           g_histAuditProgressPct = 0.0;
 string           g_histAuditStage = "READY";
 uint             g_histAuditLastUiMs = 0;
@@ -715,7 +732,7 @@ void SetHistoricalAuditProgress(string stage, double pct, bool force = false)
    g_histAuditStage = stage;
    g_histAuditProgressPct = MathMax(0.0, MathMin(100.0, pct));
    uint now = GetTickCount();
-   if(!force && now - g_histAuditLastUiMs < 125) return;
+   if(!force && now - g_histAuditLastUiMs < 400) return;
    g_histAuditLastUiMs = now;
    if(ObjectFind(0, PFX + "DASH_BG") >= 0)
    {
@@ -728,6 +745,7 @@ void SetHistoricalAuditProgress(string stage, double pct, bool force = false)
 
 void BeginHistoricalAuditProgress()
 {
+   g_histAuditStartedMs = GetTickCount64();
    g_histAuditRunning = !IsTesterMode();
    g_histAuditProgressPct = 0.0;
    g_histAuditStage = "LOAD";
@@ -737,6 +755,10 @@ void BeginHistoricalAuditProgress()
 
 void EndHistoricalAuditProgress()
 {
+   ulong elapsed = GetTickCount64() - g_histAuditStartedMs;
+   if(elapsed >= 1000)
+      Print("SolAdvanced audit ", HistWindowLabel(), " completed in ", elapsed, " ms; trades=", g_hist.total,
+         " cache_entries=", ArraySize(g_simCache));
    SetHistoricalAuditProgress("DONE", 100.0, true);
    g_histAuditRunning = false;
    g_histAuditStage = "READY";
@@ -770,6 +792,9 @@ string HistRawSignature()
 string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel, ENUM_TIMEFRAMES entryTf, datetime maxTime)
 {
    return sig.id
+      + "|AVAILABLE" + IntegerToString((int)sig.availableTime)
+      + "|NASDELAY" + (LnNasDelayed(sig.id) ? "1" : "0")
+      + "|NASEXACT" + (LnNasNeedsExactTicks(sig, maxTime) ? "1" : "0")
       + "|ENTRY" + DoubleToString(sig.entry, _Digits)
       + "|SL" + DoubleToString(sig.sl, _Digits)
       + "|EXT" + DoubleToString(sig.externalTarget, _Digits)
@@ -790,8 +815,16 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
 
 bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &valid)
 {
-   for(int i = 0; i < ArraySize(g_simCache); ++i)
+   int size = ArraySize(g_simCacheSlots);
+   if(size == 0) return false;
+   uint hash = 2166136261;
+   for(int c = 0; c < StringLen(key); ++c)
+      hash = (hash ^ (uint)StringGetCharacter(key, c)) * 16777619;
+   int slot = (int)(hash & (uint)(size - 1));
+   for(int probe = 0; probe < size; ++probe)
    {
+      int i = g_simCacheSlots[slot];
+      if(i < 0) return false;
       if(g_simCache[i].key == key)
       {
          r = g_simCache[i].r;
@@ -808,14 +841,41 @@ bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &val
          g_lastSimExitReason = g_simCache[i].traceExitReason;
          return true;
       }
+      slot = (slot + 1) & (size - 1);
    }
    return false;
+}
+
+void SimCacheIndexInsert(int index)
+{
+   int size = ArraySize(g_simCacheSlots);
+   uint hash = 2166136261;
+   string key = g_simCache[index].key;
+   for(int c = 0; c < StringLen(key); ++c)
+      hash = (hash ^ (uint)StringGetCharacter(key, c)) * 16777619;
+   int slot = (int)(hash & (uint)(size - 1));
+   while(g_simCacheSlots[slot] >= 0) slot = (slot + 1) & (size - 1);
+   g_simCacheSlots[slot] = index;
+}
+
+void SimCacheClear()
+{
+   ArrayFree(g_simCache);
+   ArrayFree(g_simCacheSlots);
 }
 
 void SimCachePut(const string key, double r, bool closed, bool won, bool valid)
 {
    int n = ArraySize(g_simCache);
-   ArrayResize(g_simCache, n + 1);
+   int size = ArraySize(g_simCacheSlots);
+   if(size == 0 || (n + 1) * 2 >= size)
+   {
+      int nextSize = size == 0 ? 1024 : size * 2;
+      ArrayResize(g_simCacheSlots, nextSize);
+      ArrayInitialize(g_simCacheSlots, -1);
+      for(int i = 0; i < n; ++i) SimCacheIndexInsert(i);
+   }
+   ArrayResize(g_simCache, n + 1, 1024);
    g_simCache[n].key = key;
    g_simCache[n].r = r;
    g_simCache[n].closed = closed;
@@ -828,6 +888,7 @@ void SimCachePut(const string key, double r, bool closed, bool won, bool valid)
    g_simCache[n].traceHalf = g_lastSimExecHalf;
    g_simCache[n].traceExitTime = g_lastSimExitTime;
    g_simCache[n].traceExitReason = g_lastSimExitReason;
+   SimCacheIndexInsert(n);
 }
 
 double NormPrice(double price)
@@ -2752,15 +2813,30 @@ void CalculateSolRegimeRuleStats(ErlSignal &signals[], const ErlSignal &exitSign
 
 #include "LiqNarrativeMacroRegimeFilter.mqh"
 
+bool UseAsyncHistoricalAudit()
+{
+#ifdef LN_FORCE_ASYNC_AUDIT
+   return !IsTesterMode();
+#else
+   return !IsTesterMode() && MQLInfoInteger(MQL_PROGRAM_TYPE)==PROGRAM_EXPERT;
+#endif
+}
+
 void RecalculateHistoricalStats(bool rebuildSignals = true)
 {
+   g_auditMacroPending = false;
+   g_auditGeneration++;
    BeginHistoricalAuditProgress();
+   ulong stageStarted = GetTickCount64();
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
    string rawSig = HistRawSignature();
    int weeks = ClampHistWeeks(g_histWeeks);
-   bool cacheUsable = (!rebuildSignals
-      && g_histRawCacheSignature == rawSig
+   int entryBarsNow = Bars(_Symbol, g_entryTf);
+   datetime lastClosedBarNow = iTime(_Symbol, g_entryTf, 1);
+   bool cacheUsable = (g_histRawCacheSignature == rawSig
       && g_histRawCacheWeeks >= weeks
+      && entryBarsNow > 0 && entryBarsNow == g_histRawCacheEntryBars
+      && lastClosedBarNow > 0 && lastClosedBarNow == g_histRawCacheLastClosedBar
       && ArraySize(g_histRawCache) > 0);
 
    if(cacheUsable)
@@ -2784,8 +2860,11 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       for(int i = 0; i < ArraySize(g_histSignals); ++i) g_histRawCache[i] = g_histSignals[i];
       g_histRawCacheSignature = rawSig;
       g_histRawCacheWeeks = weeks;
-      ArrayFree(g_simCache);
+      g_histRawCacheEntryBars = entryBarsNow;
+      g_histRawCacheLastClosedBar = lastClosedBarNow;
+      SimCacheClear();
    }
+   ulong rawMs = GetTickCount64() - stageStarted;
 
    // A rejected setup cannot open a new position, but its opposite direction
    // still closes an existing position. Keep the raw causal stream for exits.
@@ -2794,16 +2873,37 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ErlSignal macroRegimeStatsSignals[];
    CopySignalArray(g_histSignals, macroRegimeStatsSignals);
    SetHistoricalAuditProgress("REGIMES", 56.0, true);
+   if(UseAsyncHistoricalAudit())
+   {
+      CopySignalArray(exitSignals, g_auditExitSignals);
+      CopySignalArray(macroRegimeStatsSignals, g_auditMacroSignals);
+      bool ready = PrepareLiqMacroRegimeStats(g_auditMacroSignals);
+      g_auditMacroIndex = ready ? 0 : ArraySize(g_auditMacroSignals);
+      g_auditMacroSlices = 0;
+      g_auditMacroLastSliceAt = GetTickCount64();
+      g_auditStageStartedMs = stageStarted;
+      g_auditRawMs = rawMs;
+      g_auditMacroPending = true;
+      if(EventChartCustom(0, LN_MACRO_AUDIT_EVENT, g_auditGeneration, 0.0, "")) return;
+      g_auditMacroPending = false;
+   }
    CalculateLiqMacroRegimeStats(macroRegimeStatsSignals, exitSignals);
+   ulong macroMs = GetTickCount64() - stageStarted - rawMs;
+   CompleteHistoricalAuditAfterMacro(exitSignals, stageStarted, rawMs, macroMs);
+}
 
+void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong stageStarted, ulong rawMs, ulong macroMs)
+{
    // Filter precedence is intentional: macro allow-list first, RF01-RF12 second.
    ApplyLiqMacroRegimeFilter(g_histSignals);
    ErlSignal regimeRuleStatsSignals[];
    CopySignalArray(g_histSignals, regimeRuleStatsSignals);
    CalculateSolRegimeRuleStats(regimeRuleStatsSignals, exitSignals);
+   ulong rfMs = GetTickCount64() - stageStarted - rawMs - macroMs;
    ApplySolRegimeFilter(g_histSignals);
    if(!g_allowDuplicateEntries && !g_lnNas.independent) FilterAlternatingSignals(g_histSignals);
    LnNasFilterHistorical(g_histSignals,exitSignals);
+   ulong nasMs = GetTickCount64() - stageStarted - rawMs - macroMs - rfMs;
    if(g_tcalEnabled)
    {
       int accepted=0;
@@ -2823,9 +2923,20 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    ArrayResize(g_histSignalExecHalf, ArraySize(g_histSignals));
    ArrayResize(g_histSignalExitTime, ArraySize(g_histSignals));
    ArrayResize(g_histSignalExitReason, ArraySize(g_histSignals));
+   ArrayResize(g_lnNasSourceValid, ArraySize(g_histSignals));
+   ArrayResize(g_lnNasSourceClosed, ArraySize(g_histSignals));
+   ArrayResize(g_lnNasSourceExitTime, ArraySize(g_histSignals));
+   ArrayInitialize(g_lnNasSourceValid, false);
+   ArrayInitialize(g_lnNasSourceClosed, false);
+   ArrayInitialize(g_lnNasSourceExitTime, 0);
 
    ZeroMemory(g_hist);
    TCalReset();
+   for(int bucket = 0; bucket < LIQ_MACRO_REGIME_COUNT; ++bucket)
+   {
+      g_macroAuditWins[bucket] = 0;
+      g_macroAuditLosses[bucket] = 0;
+   }
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
       if(g_histAuditRunning)
@@ -2852,10 +2963,10 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
          if(capped<0){g_hist.total++;g_hist.invalid++;}
          continue;
       }
-      if(LnNasActive() || !SimCacheGet(simKey, r, closed, won, valid))
+      if(!SimCacheGet(simKey, r, closed, won, valid))
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid && closed && !LnNasActive()) SimCachePut(simKey, r, closed, won, valid);
+         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
       }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
@@ -2869,16 +2980,85 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
       g_histSignalExecHalf[i] = g_lastSimExecHalf;
       g_histSignalExitTime[i] = g_lastSimExitTime;
       g_histSignalExitReason[i] = g_lastSimExitReason;
+      g_lnNasSourceValid[i] = valid;
+      g_lnNasSourceClosed[i] = closed;
+      g_lnNasSourceExitTime[i] = g_lastSimExitTime;
+      if(g_invertMode && g_lnNas.independent && g_lnNas.maxSameOpen > 0)
+      {
+         // Historical capacity follows the uninverted setup calendar. Live
+         // capacity still checks actual native positions and remains fail-closed.
+         g_invertMode = false;
+         datetime sourceExit = NextOppositeSignalTime(exitSignals,
+            g_histSignals[i].availableTime, g_histSignals[i].dir);
+         if(LnNasActive())
+            sourceExit = LnNasAuditExit(g_histSignals[i], exitSignals, sourceExit);
+         bool sourceWon = false;
+         SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel,
+            g_entryTf, sourceExit, g_lnNasSourceClosed[i], sourceWon, g_lnNasSourceValid[i]);
+         g_lnNasSourceExitTime[i] = g_lastSimExitTime;
+         g_invertMode = true;
+      }
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
       if(!closed) { g_hist.open++; continue; }
       TCalRecordOutcome(g_histSignals[i].availableTime,won);
+      RegimeV3Snapshot macroState;
+      int macroBucket = LiqMacroRegimeBucketAt(g_histSignals[i].availableTime, macroState);
+      if(macroBucket >= 0 && macroBucket < LIQ_MACRO_REGIME_COUNT)
+      {
+         if(won) g_macroAuditWins[macroBucket]++;
+         else g_macroAuditLosses[macroBucket]++;
+      }
       if(won) { g_hist.wins++; g_hist.wonR += MathMax(0.0, r); }
       else { g_hist.losses++; g_hist.lostR += MathAbs(MathMin(0.0, r)); }
    }
    g_hist.pf = g_hist.lostR > 0.0 ? g_hist.wonR / g_hist.lostR : (g_hist.wonR > 0.0 ? 99.0 : 0.0);
+   ulong resultMs = GetTickCount64() - stageStarted - rawMs - macroMs - rfMs - nasMs;
+   if(GetTickCount64() - stageStarted >= 1000)
+      Print("SolAdvanced audit stages raw=",rawMs,"ms macro=",macroMs,"ms rf=",rfMs,
+         "ms nas=",nasMs,"ms result=",resultMs,"ms");
    EndHistoricalAuditProgress();
+   if(UseAsyncHistoricalAudit())
+   {
+      DrawHistoricalSignals(true);
+      LnNasDrawOverlay(true);
+      UpdateDashboard();
+      ChartRedraw(0);
+   }
+}
+
+void ContinueHistoricalMacroAudit(int generation, int budgetMs = 35)
+{
+   if(!g_auditMacroPending || generation!=g_auditGeneration) return;
+   g_auditMacroSlices++;
+   ulong sliceStarted = GetTickCount64();
+   g_auditMacroLastSliceAt = sliceStarted;
+   int total = ArraySize(g_auditMacroSignals);
+   while(g_auditMacroIndex < total)
+   {
+      int i = g_auditMacroIndex++;
+      SetHistoricalAuditProgress("REGIMES", 56.0 + 20.0 * (double)(i + 1) / MathMax(1, total));
+      AccumulateLiqMacroRegimeStat(g_auditMacroSignals[i], g_auditExitSignals);
+      if(GetTickCount64() - sliceStarted >= (ulong)budgetMs) break;
+   }
+   if(g_auditMacroIndex < total)
+   {
+      if(EventChartCustom(0, LN_MACRO_AUDIT_EVENT, g_auditGeneration, 0.0, "")) return;
+      Print("SolAdvanced audit event queue unavailable; finishing synchronously");
+      while(g_auditMacroIndex < total)
+      {
+         int i = g_auditMacroIndex++;
+         AccumulateLiqMacroRegimeStat(g_auditMacroSignals[i], g_auditExitSignals);
+      }
+   }
+   g_auditMacroPending = false;
+   ulong macroMs = GetTickCount64() - g_auditStageStartedMs - g_auditRawMs;
+   if(macroMs >= 1000)
+      Print("SolAdvanced macro audit responsive slices=",g_auditMacroSlices," elapsed_ms=",macroMs);
+   CompleteHistoricalAuditAfterMacro(g_auditExitSignals, g_auditStageStartedMs, g_auditRawMs, macroMs);
+   ArrayFree(g_auditMacroSignals);
+   ArrayFree(g_auditExitSignals);
 }
 
 //=====================================================================
@@ -4486,11 +4666,12 @@ void RefreshHistoricalLifecycleFromLiveScan(const ErlSignal &rawSignals[])
    // This keeps a live signal moving DATA/O -> W/L without rebuilding 1Y.
    RecalculateHistoricalStats(false);
    g_lastHistLifecycleRefresh = TimeCurrent();
-   if(!IsTesterMode()) DrawHistoricalSignals(false);
+   if(!IsTesterMode() && !g_auditMacroPending) DrawHistoricalSignals(false);
 }
 
 void RefreshUnresolvedHistoricalLifecycle()
 {
+   if(g_auditMacroPending || g_configRefreshPending) return;
    int count = ArraySize(g_histSignals);
    if(count <= 0) return;
    int last = count - 1;
@@ -4500,7 +4681,7 @@ void RefreshUnresolvedHistoricalLifecycle()
 
    RecalculateHistoricalStats(false);
    g_lastHistLifecycleRefresh = TimeCurrent();
-   if(!IsTesterMode()) DrawHistoricalSignals(false);
+   if(!IsTesterMode() && !g_auditMacroPending) DrawHistoricalSignals(false);
 }
 
 bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
@@ -5170,17 +5351,23 @@ void UpdateDashboard()
 
    int currentMacroRegime = LiqMacroRegimeBucket(g_regimeV3);
    LabelObj("DASH_MACRO_HINT", x + 16, regY + 178,
-      "MACRO REGIMES // exhaustive ORB buckets // independent from RF01-RF12", C'90,178,255', 8);
+      "MACRO REGIMES // W/L = accepted audit trades; REF in tooltip", C'90,178,255', 8);
    int macroW = 236;
    for(int mi = 0; mi < LIQ_MACRO_REGIME_COUNT; ++mi)
    {
       int col = mi % 3;
       int macroRow = mi / 3;
-      string text = (mi == currentMacroRegime ? "> " : "") + LiqMacroRegimeStatsText(mi)
+      int resolved = g_macroAuditWins[mi] + g_macroAuditLosses[mi];
+      double macroWr = resolved > 0 ? 100.0 * g_macroAuditWins[mi] / resolved : 0.0;
+      string text = (mi == currentMacroRegime ? "> " : "") + LiqMacroRegimeShortName(mi)
+         + " " + IntegerToString(g_macroAuditWins[mi]) + "W/" + IntegerToString(g_macroAuditLosses[mi])
+         + "L " + DoubleToString(macroWr, 1) + "%"
          + (g_macroRegimeAllowed[mi] ? " ALLOW" : " BLOCK");
       color bg = g_macroRegimeAllowed[mi] ? C'58,126,178' : C'42,47,57';
       ButtonObj("BTN_MACRO_REG_" + IntegerToString(mi), x + 16 + col * 242, regY + 194 + macroRow * 22,
          macroW, bh, text, bg);
+      ObjectSetString(0, PFX + "BTN_MACRO_REG_" + IntegerToString(mi), OBJPROP_TOOLTIP,
+         "Pre-filter reference: " + LiqMacroRegimeStatsText(mi));
    }
 
    int sec1 = y + 308;
@@ -5426,6 +5613,13 @@ void SelectLegacyEntryModel()
 }
 void RefreshAfterConfigChange(bool rebuildSignals = true)
 {
+   if(g_auditMacroPending)
+   {
+      g_auditMacroPending = false;
+      g_auditGeneration++;
+      g_histAuditRunning = false;
+      g_histAuditStage = "QUEUED";
+   }
    NormalizeEntryModelStrictness();
    SanitizeHalfMode();
    // Coalesce rapid UI clicks; heavy signal generation runs once after input settles.
@@ -5446,8 +5640,9 @@ void ProcessPendingConfigRefresh()
    g_configRefreshRebuildSignals = false;
    RecalculateHistoricalStats(rebuildSignals);
    // A filter/config change can remove signals. Full reset prevents stale arrows from contradicting execution.
-   if(!IsTesterMode()){DrawHistoricalSignals(true);LnNasDrawOverlay(true);}
-   g_lastStatus = "CONFIG " + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
+   if(!g_auditMacroPending && !IsTesterMode()){DrawHistoricalSignals(true);LnNasDrawOverlay(true);}
+   g_lastStatus = g_auditMacroPending ? "AUDIT RUNNING" : "CONFIG "
+      + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " " + EntryModelLabel(g_entryModel) + " SIG=" + IntegerToString(g_hist.total);
    UpdateDashboard();
    ChartRedraw(0);
@@ -5605,7 +5800,7 @@ int OnInit()
       FileBridgeWriteInitMarker();
       BridgeRetryPending();
       DrawDashboard();
-      DrawHistoricalSignals();
+      if(!g_auditMacroPending) DrawHistoricalSignals();
       LnNasDrawOverlay(true);
       DrawLiveLevelsForPosition();
    }
@@ -5656,6 +5851,8 @@ void OnTick()
 void OnTimer()
 {
    if(IsTesterMode()) return;
+   if(g_auditMacroPending && GetTickCount64()-g_auditMacroLastSliceAt >= 1000)
+      ContinueHistoricalMacroAudit(g_auditGeneration, 250);
    TradeDayCalendarPublisherTick();
    g_lastSpreadPts = CurrentSpreadPoints();
    RegimeV3Update(false);
@@ -5680,6 +5877,11 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(id==CHARTEVENT_CUSTOM+LN_MACRO_AUDIT_EVENT)
+   {
+      ContinueHistoricalMacroAudit((int)lparam);
+      return;
+   }
    if(ResearchLbEvent(id,lparam,dparam,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
@@ -5835,7 +6037,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          return;
       }
       if(g_lastSignalDir != 0) g_lastSignalDir = -g_lastSignalDir;
-      ArrayFree(g_simCache);
+      SimCacheClear();
       g_lastStatus = RuntimeInvertLabel();
       g_lastBlock = "";
       AuditWrite("invert_mode_changed", "dashboard", 0, 0, 0, 0, 0,

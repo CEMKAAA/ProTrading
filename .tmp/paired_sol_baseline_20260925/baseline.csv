@@ -1,0 +1,13 @@
+invert,signal_time,source_direction,status
+0,1789448400,1,valid
+0,1789599600,1,valid
+0,1789758000,-1,valid
+0,1790071200,1,valid
+0,1790139600,-1,valid
+SUMMARY,0,5,1.0
+1,1789448400,1,valid
+1,1789599600,1,valid
+1,1789758000,-1,valid
+1,1790071200,1,valid
+1,1790139600,-1,valid
+SUMMARY,1,5,-0.5

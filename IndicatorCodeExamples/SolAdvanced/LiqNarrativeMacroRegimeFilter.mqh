@@ -55,38 +55,48 @@ bool LiqMacroRegimeDecision(const ErlSignal &sig, bool &rejected, string &rule)
    return true;
 }
 
-void CalculateLiqMacroRegimeStats(ErlSignal &signals[], const ErlSignal &exitSignals[])
+bool PrepareLiqMacroRegimeStats(ErlSignal &signals[])
 {
    for(int i = 0; i < LIQ_MACRO_REGIME_COUNT; ++i)
    {
       g_macroRegimeWins[i] = 0;
       g_macroRegimeLosses[i] = 0;
    }
-   if(ArraySize(signals) <= 0) return;
-   if(ArraySize(g_regimeV3Timeline) <= 0 && !RegimeV3EnsureTimeline(true)) return;
+   if(ArraySize(signals) <= 0) return false;
+   if(ArraySize(g_regimeV3Timeline) <= 0 && !RegimeV3EnsureTimeline(true)) return false;
    if(!g_allowDuplicateEntries) FilterAlternatingSignals(signals);
+   return true;
+}
 
+void AccumulateLiqMacroRegimeStat(const ErlSignal &signal, const ErlSignal &exitSignals[])
+{
+   RegimeV3Snapshot state;
+   int bucket = LiqMacroRegimeBucketAt(signal.availableTime, state);
+   if(bucket < 0 || bucket >= LIQ_MACRO_REGIME_COUNT) return;
+
+   bool closed = false, won = false, valid = false;
+   datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signal.availableTime, signal.dir);
+   string simKey = SimCacheKey(signal, g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
+   double r = 0.0;
+   if(!SimCacheGet(simKey, r, closed, won, valid))
+   {
+      r = SimulateSignal(signal, g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
+      if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
+   }
+   if(!valid || !closed) return;
+   if(won) g_macroRegimeWins[bucket]++;
+   else g_macroRegimeLosses[bucket]++;
+}
+
+void CalculateLiqMacroRegimeStats(ErlSignal &signals[], const ErlSignal &exitSignals[])
+{
+   if(!PrepareLiqMacroRegimeStats(signals)) return;
    int total = ArraySize(signals);
    for(int i = 0; i < total; ++i)
    {
       if(g_histAuditRunning)
          SetHistoricalAuditProgress("REGIMES", 56.0 + 20.0 * (double)(i + 1) / (double)MathMax(1, total));
-      RegimeV3Snapshot state;
-      int bucket = LiqMacroRegimeBucketAt(signals[i].availableTime, state);
-      if(bucket < 0 || bucket >= LIQ_MACRO_REGIME_COUNT) continue;
-
-      bool closed = false, won = false, valid = false;
-      datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signals[i].availableTime, signals[i].dir);
-      string simKey = SimCacheKey(signals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
-      double r = 0.0;
-      if(!SimCacheGet(simKey, r, closed, won, valid))
-      {
-         r = SimulateSignal(signals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
-         if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
-      }
-      if(!valid || !closed) continue;
-      if(won) g_macroRegimeWins[bucket]++;
-      else g_macroRegimeLosses[bucket]++;
+      AccumulateLiqMacroRegimeStat(signals[i], exitSignals);
    }
 }
 

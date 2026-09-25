@@ -202,6 +202,13 @@ bool LiqLibraryApply(string path)
       g_liqLibraryStatus="Filter settings could not be saved";return false;
    }
    LnNasInvalidate();
+   g_lnNasDraft=g_lnNas;
+   if(g_lnNasPanel)
+   {
+      DeleteByPrefix(PFX+"NAS_");
+      LnNasDrawNav();
+      LnNasDrawPanel();
+   }
 #else
    if(!TCalStrategyApplyText(timeMatrix))
    {g_liqLibraryStatus="Time matrix settings could not be saved";return false;}

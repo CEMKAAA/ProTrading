@@ -1,4 +1,4 @@
-param([switch]$CandidateOnly)
+param([switch]$CandidateOnly,[string]$BaselineFolder='')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $source=Join-Path $root 'IndicatorCodeExamples'
@@ -28,9 +28,10 @@ foreach($kind in $kinds){
  StageSource (Join-Path $source 'SolAdvanced/LiqNarrativeSol_Advanced.mq5') $part $seen
  $main=Join-Path $part 'IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.mq5'
  if($kind -eq 'baseline'){
-  $baseline='C:\MT5\DEMO\MQL5\Experts\LiqNarrativeSol_Advanced.mq5'
+  $baseline=if($BaselineFolder){Join-Path $BaselineFolder 'LiqNarrativeSol_Advanced.mq5'}else{'C:\MT5\DEMO\MQL5\Experts\LiqNarrativeSol_Advanced.mq5'}
   if(!(Test-Path $baseline)){throw "Missing stable source: $baseline"}
   Copy-Item -LiteralPath $baseline -Destination $main -Force
+  if($BaselineFolder){Copy-Item -Path (Join-Path $BaselineFolder '*.mqh') -Destination (Split-Path $main) -Force}
  }
  $file=Join-Path $part 'tests/mql5/LiqSolAdvancedParityProbe.mq5'
  New-Item -ItemType Directory -Force (Split-Path $file)|Out-Null

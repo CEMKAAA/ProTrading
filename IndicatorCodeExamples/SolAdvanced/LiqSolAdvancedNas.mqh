@@ -28,6 +28,8 @@ int g_lnNasOverlayFirst=-1,g_lnNasOverlayVisible=-1,g_lnNasOverlayWeeks=-1;
 ErlSignal g_lnNasPendingSignal;
 bool g_lnNasPending=false,g_lnNasAuditData=true;
 string g_lnNasDelayed[];
+bool g_lnNasSourceValid[],g_lnNasSourceClosed[];
+datetime g_lnNasSourceExitTime[];
 
 void LnNasDefaults(LnNasPolicy &p)
 {
@@ -87,7 +89,7 @@ bool LnNasCompatible(const LnNasPolicy &p)
       &&AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)return false;
    return true;
 }
-void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;g_lnNasOverlayRetryAt=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_lnNasRejected);ArrayFree(g_simCache);}
+void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;g_lnNasOverlayRetryAt=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_lnNasRejected);}
 bool LnNasDelayed(string id)
 {for(int i=0;i<ArraySize(g_lnNasDelayed);i++)if(g_lnNasDelayed[i]==id)return true;return false;}
 
@@ -196,7 +198,8 @@ void LnNasFilterHistorical(ErlSignal &signals[],const ErlSignal &raw[])
       ErlSignal candidate=signals[i];datetime accepted=0;
       datetime next=LnNasNextRaw(raw,candidate.availableTime);
       datetime through=next>0?next-1:TimeCurrent();
-      int decision=LnNasEntryDecision(EffectiveTradeDir(candidate.dir),candidate.availableTime,through,accepted);
+      // Entry eligibility belongs to the source setup; inversion changes only execution.
+      int decision=LnNasEntryDecision(candidate.dir,candidate.availableTime,through,accepted);
       if(decision<0){g_lnNasAuditData=false;break;}
       if(decision!=1)
       {
@@ -241,8 +244,11 @@ int LnNasAuditCap(int index)
    for(int i=0;i<index;i++)
    {
       if(EffectiveTradeDir(g_histSignals[i].dir)!=direction||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN")continue;
-      if(!g_histSignalValid[i])return -1;
-      if(!g_histSignalClosed[i]||g_histSignalExitTime[i]>=at)count++;
+      bool valid=g_invertMode?g_lnNasSourceValid[i]:g_histSignalValid[i];
+      bool closed=g_invertMode?g_lnNasSourceClosed[i]:g_histSignalClosed[i];
+      datetime exited=g_invertMode?g_lnNasSourceExitTime[i]:g_histSignalExitTime[i];
+      if(!valid)return -1;
+      if(!closed||exited>=at)count++;
    }
    return count>=g_lnNas.maxSameOpen?1:0;
 }
@@ -254,7 +260,7 @@ bool LnNasLiveAccept(ErlSignal &signal)
    int dir=EffectiveTradeDir(signal.dir);datetime accepted=signal.availableTime;
    if(g_lnNas.gate!=0)
    {
-      int decision=LnNasEntryDecision(dir,signal.availableTime,TimeCurrent(),accepted);
+      int decision=LnNasEntryDecision(signal.dir,signal.availableTime,TimeCurrent(),accepted);
       if(decision!=1)
       {
          if(decision==0&&g_lnNas.gate==1){g_lnNasPending=true;g_lnNasPendingSignal=signal;}
@@ -279,7 +285,7 @@ void LnNasRetryPending()
    if(next>0&&TimeCurrent()>=next){g_lnNasPending=false;return;}
    ErlSignal pending=g_lnNasPendingSignal;
    datetime accepted=0;
-   bool confirmed=LnNasEntryDecision(EffectiveTradeDir(pending.dir),pending.availableTime,TimeCurrent(),accepted)==1;
+   bool confirmed=LnNasEntryDecision(pending.dir,pending.availableTime,TimeCurrent(),accepted)==1;
    OpenSignal(pending);
    if(confirmed)
    {
@@ -461,7 +467,7 @@ void LnNasDrawPanel()
    LnNasWidget("REV",OBJ_BUTTON,x+10+2*col,y+87,col-5,24,g_lnNasDraft.reverseExit?"REVERSE ON":"REVERSE OFF",g_lnNasDraft.reverseExit?on:off);
    string ids[]={"SVM","FVM","SENS","AGE","WAIT","MAX","RWAIT"};
    string labels[]={"State vol x","Flow vol x","Sensitivity","Entry age min","NAS wait HH:MM","MAX same open","Reverse wait HH:MM"};
-   string vals[]={DoubleToString(g_lnNasDraft.stateMultiplier,2),DoubleToString(g_lnNasDraft.flowMultiplier,2),
+   string vals[]={DoubleToString(g_lnNasDraft.stateMultiplier,8),DoubleToString(g_lnNasDraft.flowMultiplier,8),
       (string)g_lnNasDraft.sensitivity,(string)g_lnNasDraft.entryAgeMinutes,LnNasDuration(g_lnNasDraft.waitMinutes),
       (string)g_lnNasDraft.maxSameOpen,LnNasDuration(g_lnNasDraft.reverseWaitMinutes)};
    for(int i=0;i<7;i++)
@@ -500,7 +506,14 @@ bool LnNasPanelEvent(int id,string object,long mx=0,double my=0)
       return id==CHARTEVENT_CLICK&&g_lnNasLastActionAt>0
          &&GetTickCount64()-g_lnNasLastActionAt<180;
    if(id==CHARTEVENT_CHART_CHANGE)return false;
-   if(id==CHARTEVENT_OBJECT_ENDEDIT)return StringFind(object,LnNasObject(""))==0;
+   if(id==CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      if(StringFind(object,LnNasObject(""))!=0)return false;
+      LnNasPolicy edited;
+      if(LnNasReadPanel(edited))g_lnNasDraft=edited;
+      else g_lnNasStatus="Invalid numeric or HH:MM field";
+      return true;
+   }
    int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
    int x=chartW>=1420?780:8,y=LnNasPanelY(),w=(int)MathMin(620,MathMax(280,chartW-x-8));
    bool inside=mx>=x&&mx<x+w&&my>=y&&my<y+346;

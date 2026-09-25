@@ -192,6 +192,7 @@ string MaBridgeExitKey()
 // close remains retryable across restarts even if the next signal changes side.
 bool MaProcessExitManagement()
 {
+   if(g_rtAdvancedReverse&&OwnPositionExists())return false;
    static ulong lastAttempt=0;static bool pending=false;
    if(GetTickCount64()-lastAttempt<(ulong)(pending?5000:1000))return pending;
    lastAttempt=GetTickCount64();pending=false;
