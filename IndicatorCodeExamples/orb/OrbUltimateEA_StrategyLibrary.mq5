@@ -3916,7 +3916,7 @@ void OrbLibraryRefreshLayout()
    g_libraryDashY=MathMax(0,MathMin(InpDashboardY,chartH/10));
    g_libraryDashScale=MathMin(1.0,MathMin(
       (double)MathMax(1,chartW-g_libraryDashX-8)/1252.0,
-      (double)MathMax(1,chartH-g_libraryDashY-8)/704.0));
+      (double)MathMax(1,chartH-g_libraryDashY-8)/736.0));
 }
 int OrbLibraryX(int x){return g_libraryDashX+(int)MathRound((x-InpDashboardX)*g_libraryDashScale);}
 int OrbLibraryY(int y){return g_libraryDashY+(int)MathRound((y-InpDashboardY)*g_libraryDashScale);}
@@ -5613,7 +5613,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
-   key+="|entryDirection="+(string)g_entryDirection;
+   key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6070,7 +6070,7 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
-   key+="|entryDirection="+(string)g_entryDirection;
+   key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6602,6 +6602,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          if(InpHistoricalAuditVerboseLog)Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," FILTERED ",entryDetail);
          return;
       }
+      if(!DailyQuotaAuditAllows(OrbSignalAvailableTime(entryT))){g_histFiltered++;return;}
       if(!TCalAllows(ServerToSessionLocal(OrbSignalAvailableTime(entryT))))
       {g_histFiltered++;return;}
 
@@ -6720,7 +6721,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       }
       g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
-      if(finalOutcome)TCalRecord(ServerToSessionLocal(OrbSignalAvailableTime(entryT)),sim.netR);
+      if(finalOutcome){DailyQuotaSchedule(sim.exitTime,sim.netR>1e-8?1:(sim.netR<-1e-8?-1:0));TCalRecord(ServerToSessionLocal(OrbSignalAvailableTime(entryT)),sim.netR);}
       if(!sim.valid)g_histInvalid++;
       else if(!finalOutcome)g_histOpen++;
       else if(sim.netR>1e-8)
@@ -7410,7 +7411,7 @@ void DrawDashboard()
    if(!InpShowDashboard){DeleteDash();return;}
    OrbLibraryRefreshLayout();
    int x=InpDashboardX,y=InpDashboardY;
-   int W=620,H=704;
+   int W=620,H=736;
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
@@ -7589,6 +7590,7 @@ void UpdateDashboard()
    CreateButton("BTN_TMODE",x+388,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
 
    DirectionLauncher(PREFIX,x+12,y+330);
+   DailyQuotaLauncher(PREFIX,OrbLibraryX(InpDashboardX+12),OrbLibraryY(InpDashboardY+706),g_libraryDashScale);
    CreateLabel("DASH_DIRECTION_LOSSES",x+134,y+334,"MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R | "+DirectionLossText(),muted,8);
    CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
    CreateButton("BTN_FTMO",x+526,r2y,46,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
@@ -8479,6 +8481,12 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       Audit("entry_window_block",dir,0,signalClose,0,0,"window="+EntryWindowLabel()+" "+entryDetail);
       ClearRetestState("entry_window_closed");ClearImbalanceState("entry_window_closed");
       return false;
+   }
+   int dailyWins=0,dailyLosses=0;
+   if(DailyQuotaEnabled()&&(!g_orbNativeWithBridgeOnly||!DailyQuotaLiveAllows(RuntimeMagic(),TimeCurrent(),dailyWins,dailyLosses)))
+   {
+      g_lastFilterReason="DAILY CLOSED LIMIT";g_lastExecStatus="DAILY_LIMIT_OR_NATIVE_DATA";
+      ClearRetestState("daily_limit");ClearImbalanceState("daily_limit");return false;
    }
    if(!TCalAllows(ServerToSessionLocal(TimeCurrent())))
    {

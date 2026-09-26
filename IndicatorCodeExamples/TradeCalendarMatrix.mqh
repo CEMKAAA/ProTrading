@@ -1,5 +1,6 @@
 #ifndef TRADE_CALENDAR_MATRIX_MQH
 #define TRADE_CALENDAR_MATRIX_MQH
+#include "DailyTradeQuota.mqh"
 
 enum ENTRY_DIRECTION_MODE { ENTRY_BOTH=0, ENTRY_BUY_ONLY=1, ENTRY_SELL_ONLY=2 };
 input group "Entry Direction"
@@ -26,7 +27,7 @@ int DirectionStrategyMode(string text)
 {
    string parts[];int count=StringSplit(StringSubstr(text,6),',',parts);
    if(count==8)return 0;
-   if(count!=9)return -1;
+   if(count!=9&&count!=11&&count!=12)return -1;
    int mode=(int)StringToInteger(parts[8]);
    return mode>=0&&mode<=2&&parts[8]==(string)mode?mode:-1;
 }
@@ -88,6 +89,9 @@ bool TCalSave()
       if(GlobalVariableSet(TCalStorageKey("h"+(string)slot+"."+(string)day),(double)g_tcalDayHours[day])==0)return false;
    }
    if(GlobalVariableSet(TCalStorageKey("dir"+(string)slot),(double)g_entryDirection)==0)return false;
+   if(GlobalVariableSet(TCalStorageKey("loss"+(string)slot),g_dailyMaxLosses)==0)return false;
+   if(GlobalVariableSet(TCalStorageKey("win"+(string)slot),g_dailyTargetWins)==0)return false;
+   if(GlobalVariableSet(TCalStorageKey("start"+(string)slot),g_dailyStartMinute)==0)return false;
    GlobalVariablesFlush();
    // Publish the new slot only after all seven masks have been written.
    if(GlobalVariableSet(header,(double)(slot+(g_tcalEnabled?2:0)))==0)return false;
@@ -99,14 +103,15 @@ string TCalStrategyText()
 {
    string text="TCAL1="+(g_tcalEnabled?"1":"0");
    for(int day=0;day<7;day++)text+=","+(string)g_tcalDayHours[day];
-   return text+","+(string)g_entryDirection;
+   return text+","+(string)g_entryDirection+","+(string)g_dailyMaxLosses+","+(string)g_dailyTargetWins+","+(string)g_dailyStartMinute;
 }
 bool TCalStrategyRead(string text,bool &enabled,int &hours[])
 {
    if(StringFind(text,"TCAL1=")!=0)return false;
    string parts[];
    int fields=StringSplit(StringSubstr(text,6),',',parts);
-   if((fields!=8&&fields!=9)||DirectionStrategyMode(text)<0)return false;
+   int maxLoss=0,targetWin=0,startMinute=0;
+   if((fields!=8&&fields!=9&&fields!=11&&fields!=12)||DirectionStrategyMode(text)<0||!DailyQuotaReadStrategy(text,maxLoss,targetWin,startMinute))return false;
    if(parts[0]!="0"&&parts[0]!="1")return false;
    enabled=parts[0]=="1";int selected=0;
    ArrayResize(hours,7);
@@ -122,6 +127,8 @@ bool TCalStrategyMatchesText(string text)
 {
    bool enabled=false;int hours[];
    if(!TCalStrategyRead(text,enabled,hours)||g_tcalEnabled!=enabled||g_entryDirection!=DirectionStrategyMode(text))return false;
+   int maxLoss=0,targetWin=0,startMinute=0;
+   if(!DailyQuotaReadStrategy(text,maxLoss,targetWin,startMinute)||g_dailyMaxLosses!=maxLoss||g_dailyTargetWins!=targetWin||g_dailyStartMinute!=startMinute)return false;
    for(int day=0;day<7;day++)if(g_tcalDayHours[day]!=hours[day])return false;
    return true;
 }
@@ -129,24 +136,29 @@ bool TCalStrategyApplyText(string text)
 {
    bool enabled=false;int hours[];
    if(!TCalStrategyRead(text,enabled,hours))return false;
-   if(TCalStrategyMatchesText(text))return true;
+   if(TCalStrategyMatchesText(text)){DailyQuotaDraftReset();return true;}
+   int oldLoss=g_dailyMaxLosses,oldWin=g_dailyTargetWins,oldStart=g_dailyStartMinute;
+   DailyQuotaReadStrategy(text,g_dailyMaxLosses,g_dailyTargetWins,g_dailyStartMinute);
    int oldDirection=g_entryDirection;g_entryDirection=DirectionStrategyMode(text);
    bool oldEnabled=g_tcalEnabled;int oldHours[7];
    for(int day=0;day<7;day++){oldHours[day]=g_tcalDayHours[day];g_tcalDayHours[day]=hours[day];}
    g_tcalEnabled=enabled;
    if(!TCalSave())
    {
-      g_tcalEnabled=oldEnabled;g_entryDirection=oldDirection;
+      g_tcalEnabled=oldEnabled;g_entryDirection=oldDirection;g_dailyMaxLosses=oldLoss;g_dailyTargetWins=oldWin;g_dailyStartMinute=oldStart;
       for(int day=0;day<7;day++)g_tcalDayHours[day]=oldHours[day];
       return false;
    }
    for(int day=0;day<7;day++)g_tcalDraftDayHours[day]=hours[day];
    g_tcalRankPending=false;g_tcalDraftEdited=false;g_tcalRankPickCount=0;
-   g_tcalChanged=true;g_tcalUiDirty=true;
+   DailyQuotaDraftReset();g_tcalChanged=true;g_tcalUiDirty=true;
    return true;
 }
 bool TCalInit()
 {
+   if(!DailyQuotaParseClock(InpDailyStart,g_dailyStartMinute))return false;
+   g_dailyMaxLosses=InpDailyMaxLosses;g_dailyTargetWins=InpDailyTargetWins;
+   if(g_dailyMaxLosses<0||g_dailyTargetWins<0||g_dailyMaxLosses>100000||g_dailyTargetWins>100000)return false;
    g_entryDirection=(int)InpEntryDirection;
    if(g_entryDirection<0||g_entryDirection>2)return false;
    if(!TCalValidMasks(InpTimeMatrixDays,InpTimeMatrixHours))return false;
@@ -155,13 +167,23 @@ bool TCalInit()
    g_tcalEnabled=InpTimeMatrixEnabled;
    string key=TCalStorageKey("cfg"),header=TCalStorageKey("cfg2"),base=TCalStorageKey("base");
    double inputPacked=TCalPack(InpTimeMatrixEnabled,InpTimeMatrixDays,InpTimeMatrixHours)+4294967296.0*g_entryDirection;
-   bool sameInputs=GlobalVariableCheck(base)&&GlobalVariableGet(base)==inputPacked;
+   double dailyBase=g_dailyMaxLosses+100001.0*g_dailyTargetWins+10000200001.0*g_dailyStartMinute;
+   string dailyBaseKey=TCalStorageKey("dailyBase");
+   bool sameInputs=GlobalVariableCheck(base)&&GlobalVariableGet(base)==inputPacked
+      &&(GlobalVariableCheck(dailyBaseKey)?GlobalVariableGet(dailyBaseKey)==dailyBase:dailyBase==0);
    bool loaded=false;
    if(sameInputs&&GlobalVariableCheck(header))
    {
       double value=GlobalVariableGet(header);
       if(!MathIsValidNumber(value)||value<0||value>3||MathFloor(value)!=value)return false;
       int slot=(int)value%2;
+      double lossValue=GlobalVariableCheck(TCalStorageKey("loss"+(string)slot))?GlobalVariableGet(TCalStorageKey("loss"+(string)slot)):0;
+      double winValue=GlobalVariableCheck(TCalStorageKey("win"+(string)slot))?GlobalVariableGet(TCalStorageKey("win"+(string)slot)):0;
+      if(!DailyQuotaValidNumber(lossValue)||!DailyQuotaValidNumber(winValue))return false;
+      double startValue=GlobalVariableCheck(TCalStorageKey("start"+(string)slot))?GlobalVariableGet(TCalStorageKey("start"+(string)slot)):0;
+      if(!DailyQuotaValidNumber(startValue)||startValue>=1440)return false;
+      g_dailyStartMinute=(int)startValue;
+      g_dailyMaxLosses=(int)lossValue;g_dailyTargetWins=(int)winValue;
       string dirKey=TCalStorageKey("dir"+(string)slot);
       if(GlobalVariableCheck(dirKey))
       {
@@ -196,12 +218,13 @@ bool TCalInit()
    if(!loaded)
    {
       // Explicitly changed Inputs outrank an older chart-scoped dashboard choice.
-      if(!TCalSave()&&InpTimeMatrixEnabled)return false;
-      if(GlobalVariableSet(base,inputPacked)==0&&InpTimeMatrixEnabled)return false;
+      if(!TCalSave()&&(InpTimeMatrixEnabled||DailyQuotaEnabled()))return false;
+      if(GlobalVariableSet(base,inputPacked)==0&&(InpTimeMatrixEnabled||DailyQuotaEnabled()))return false;
+      if(GlobalVariableSet(dailyBaseKey,dailyBase)==0&&DailyQuotaEnabled())return false;
    }
    else if(!GlobalVariableCheck(header)&&!TCalSave()&&g_tcalEnabled)return false;
    for(int day=0;day<7;day++)g_tcalDraftDayHours[day]=g_tcalDayHours[day];
-   TCalReset();return true;
+   DailyQuotaDraftReset();TCalReset();return true;
 }
 
 string TCalDayName(int day)
@@ -217,7 +240,7 @@ string TCalId(string suffix){return g_tcalPrefix+suffix;}
 void TCalReset()
 {
    g_tcalUiDirty=true;
-   g_directionBuyLosses=0;g_directionSellLosses=0;g_directionMinCum=0.0;
+   DailyQuotaAuditReset();g_directionBuyLosses=0;g_directionSellLosses=0;g_directionMinCum=0.0;
    for(int day=0;day<7;day++)for(int hour=0;hour<24;hour++)
    {g_tcalWins[day][hour]=0;g_tcalLosses[day][hour]=0;}
 }
@@ -553,9 +576,39 @@ void TCalDraw()
       TCalObj("MOD_PICK_NEXT",OBJ_BUTTON,x+348,y+430,45,24,">",C'43,50,59',clrWhite);
    }
 }
+void DailyQuotaLauncher(string scope,int x,int y,double scale=1.0)
+{
+   g_dailyUiPrefix=scope+"TCAL_";
+   g_tcalPrefix=scope+"TCAL_";
+   TCalObj("DAILY_LOSS_LABEL",OBJ_LABEL,x,y+(int)MathRound(4*scale),0,0,"MAX LOSS",clrBlack,clrWhite,8);
+   TCalObj("DAILY_LOSS",OBJ_EDIT,x+(int)MathRound(68*scale),y, (int)MathRound(55*scale),(int)MathRound(22*scale),(ObjectFind(0,TCalId("DAILY_LOSS"))>=0?ObjectGetString(0,TCalId("DAILY_LOSS"),OBJPROP_TEXT):g_dailyLossDraft),C'26,33,42',clrWhite);
+   TCalObj("DAILY_WIN_LABEL",OBJ_LABEL,x+(int)MathRound(130*scale),y+(int)MathRound(4*scale),0,0,"WIN TARGET",clrBlack,clrWhite,8);
+   TCalObj("DAILY_WIN",OBJ_EDIT,x+(int)MathRound(214*scale),y, (int)MathRound(55*scale),(int)MathRound(22*scale),(ObjectFind(0,TCalId("DAILY_WIN"))>=0?ObjectGetString(0,TCalId("DAILY_WIN"),OBJPROP_TEXT):g_dailyWinDraft),C'26,33,42',clrWhite);
+   TCalObj("DAILY_START_LABEL",OBJ_LABEL,x+(int)MathRound(276*scale),y+(int)MathRound(4*scale),0,0,"START",clrBlack,clrWhite,8);
+   TCalObj("DAILY_START",OBJ_EDIT,x+(int)MathRound(322*scale),y,(int)MathRound(58*scale),(int)MathRound(22*scale),(ObjectFind(0,TCalId("DAILY_START"))>=0?ObjectGetString(0,TCalId("DAILY_START"),OBJPROP_TEXT):g_dailyStartDraft),C'26,33,42',clrWhite);
+   TCalObj("DAILY_APPLY",OBJ_BUTTON,x+(int)MathRound(386*scale),y, (int)MathRound(90*scale),(int)MathRound(22*scale),"APPLY DAY",C'40,72,91',clrWhite);
+   TCalObj("DAILY_HINT",OBJ_LABEL,x+(int)MathRound(484*scale),y+(int)MathRound(4*scale),0,0,"0=OFF",clrBlack,clrSilver,8);
+}
 bool TCalEvent(int id,long lx,double dy,string clicked)
 {
    if(g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT)return true;
+   if(!g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT&&(clicked==TCalId("DAILY_LOSS")||clicked==TCalId("DAILY_WIN")||clicked==TCalId("DAILY_START")))
+   {if(clicked==TCalId("DAILY_LOSS"))g_dailyLossDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);
+    else if(clicked==TCalId("DAILY_WIN"))g_dailyWinDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);
+    else g_dailyStartDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);return true;}
+   if(!g_tcalOpen&&id==CHARTEVENT_OBJECT_CLICK&&clicked==TCalId("DAILY_APPLY"))
+   {
+      g_dailyLossDraft=ObjectGetString(0,TCalId("DAILY_LOSS"),OBJPROP_TEXT);
+      g_dailyWinDraft=ObjectGetString(0,TCalId("DAILY_WIN"),OBJPROP_TEXT);
+      g_dailyStartDraft=ObjectGetString(0,TCalId("DAILY_START"),OBJPROP_TEXT);
+      int loss=0,win=0,startMinute=0;
+      if(!DailyQuotaParse(g_dailyLossDraft,loss)||!DailyQuotaParse(g_dailyWinDraft,win)||!DailyQuotaParseClock(g_dailyStartDraft,startMinute))
+      {Print("Daily limits require whole numbers 0..100000 and START HH:MM 00:00..23:59");ObjectSetInteger(0,clicked,OBJPROP_STATE,false);return true;}
+      int oldLoss=g_dailyMaxLosses,oldWin=g_dailyTargetWins,oldStart=g_dailyStartMinute;g_dailyMaxLosses=loss;g_dailyTargetWins=win;g_dailyStartMinute=startMinute;
+      if(TCalSave()){g_tcalChanged=true;DailyQuotaDraftReset();}
+      else {g_dailyMaxLosses=oldLoss;g_dailyTargetWins=oldWin;g_dailyStartMinute=oldStart;Print("Daily limits not saved; unchanged");}
+      ObjectSetInteger(0,clicked,OBJPROP_STATE,false);return true;
+   }
    if(id!=CHARTEVENT_OBJECT_CLICK)return false;
    if(clicked==TCalId("OPEN"))
    {

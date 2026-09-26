@@ -243,7 +243,7 @@ int LnNasAuditCap(int index)
    datetime at=g_histSignals[index].availableTime;
    for(int i=0;i<index;i++)
    {
-      if(EffectiveTradeDir(g_histSignals[i].dir)!=direction||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN")continue;
+      if(EffectiveTradeDir(g_histSignals[i].dir)!=direction||(g_histSignalInvalidReason[i]=="MAX_SAME_OPEN"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"))continue;
       bool valid=g_invertMode?g_lnNasSourceValid[i]:g_histSignalValid[i];
       bool closed=g_invertMode?g_lnNasSourceClosed[i]:g_histSignalClosed[i];
       datetime exited=g_invertMode?g_lnNasSourceExitTime[i]:g_histSignalExitTime[i];

@@ -49,6 +49,7 @@ if($RunProbe){
  $probeText=[IO.File]::ReadAllText($sourceProbe).Replace('TradeCalendarMatrixProbe.json',$name+'.json')
  [IO.File]::WriteAllText($probe,$probeText,(New-Object Text.UTF8Encoding($false)))
  Copy-Item -LiteralPath (Join-Path $source 'TradeCalendarMatrix.mqh') -Destination (Join-Path $stage 'TradeCalendarMatrix.mqh')
+ Copy-Item -LiteralPath (Join-Path $source 'DailyTradeQuota.mqh') -Destination (Join-Path $stage 'DailyTradeQuota.mqh')
  $log=$probe+'.log'
  $process=Start-Process $Editor -ArgumentList ('/compile:"'+$probe+'" /log:"'+$log+'"') -WindowStyle Hidden -PassThru
  if(!$process.WaitForExit(180000)){throw 'Calendar probe compile timeout'}

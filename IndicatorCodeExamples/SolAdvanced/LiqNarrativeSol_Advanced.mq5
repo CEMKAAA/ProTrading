@@ -2948,6 +2948,12 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       if(g_histAuditRunning)
          SetHistoricalAuditProgress("OUTCOMES", 78.0 + 21.0 * (double)(i + 1) / (double)MathMax(1, ArraySize(g_histSignals)));
       bool closed = false, won = false, valid = false;
+      if(!DailyQuotaAuditAllows(g_histSignals[i].availableTime))
+      {
+         g_histSignalR[i]=0;g_histSignalClosed[i]=false;g_histSignalWon[i]=false;
+         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]="DAILY_QUOTA";
+         g_histSignalExitTime[i]=0;g_histSignalExitReason[i]="DAILY_QUOTA";continue;
+      }
       datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
       if(LnNasActive())nextSignalTime=LnNasAuditExit(g_histSignals[i],exitSignals,nextSignalTime);
       // Restore the full trace with terminal outcomes; never freeze DATA/OPEN.
@@ -3026,6 +3032,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       g_hist.netR += r;
       g_directionMinCum=MathMin(g_directionMinCum,g_hist.netR);
       if(!closed) { g_hist.open++; continue; }
+      DailyQuotaSchedule(g_histSignalExitTime[i],MathAbs(r)<=1e-8?0:(won?1:-1));
       TCalRecordOutcome(g_histSignals[i].availableTime,won);
       RegimeV3Snapshot macroState;
       int macroBucket = LiqMacroRegimeBucketAt(g_histSignals[i].availableTime, macroState);
@@ -3855,7 +3862,7 @@ void DeleteAllLiqNarrativeLiveObjects()
    }
 }
 
-#define LIQ_DASH_LOGICAL_HEIGHT 1090
+#define LIQ_DASH_LOGICAL_HEIGHT 1114
 #include "LiqDashboardFit.mqh"
 void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 {
@@ -4086,6 +4093,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
    int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
+      if(g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
       ErlSignal displaySig = g_histSignals[i];
       string invertDetail = "";
       bool geometryOk = true;
@@ -4765,6 +4773,9 @@ bool OpenSignal(const ErlSignal &sig)
 }
 bool OpenSignalAccepted(const ErlSignal &sig)
 {
+   int dailyWins=0,dailyLosses=0;
+   if(DailyQuotaEnabled()&&((g_fileBridgeOnlyMode&&!g_nativeTradeWithBridgeOnly)||!DailyQuotaLiveAllows(RuntimeMagic(),TimeCurrent(),dailyWins,dailyLosses)))
+   {g_lastBlock="daily_limit_or_native_data";RememberSignalSeen(sig);return false;}
    if(!EntryDirectionAllows(EffectiveTradeDir(sig.dir)))
    {g_lastBlock="entry_direction";RememberSignalSeen(sig);return false;}
    if(!g_eaEnabled)
@@ -5478,7 +5489,7 @@ void UpdateDashboard()
    LabelObj("DASH_ATRBUF_HINT", x + 592, row + 4, "0 = no ATR buffer", C'255,204,82', 8);
 
    int sec2 = sec1 + 236;
-   RectObj("DASH_SEC2", x + 8, sec2, 744, 132, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC2", x + 8, sec2, 744, 156, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
    double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
@@ -5499,7 +5510,12 @@ void UpdateDashboard()
    ButtonObj("BTN_AUD_3Y", awx, awy, 40, bh, "3Y", g_histWeeks == 156 ? C'38,101,176' : off); awx += 44;
    ButtonObj("BTN_AUD_4Y", awx, awy, 40, bh, "4Y", g_histWeeks == 208 ? C'38,101,176' : off); awx += 44;
    ButtonObj("BTN_AUD_5Y", awx, awy, 40, bh, "5Y", g_histWeeks == 260 ? C'38,101,176' : off);
-   DirectionLauncher(PFX,x+530,awy);
+   int directionX=x+530,directionY=awy,directionW=180,directionH=22;
+   LiqFitBox(directionX,directionY,directionW,directionH);
+   DirectionLauncher(PFX,directionX,directionY);
+   int dailyX=x+16,dailyY=sec2+130,dailyW=580,dailyH=22;
+   LiqFitBox(dailyX,dailyY,dailyW,dailyH);
+   DailyQuotaLauncher(PFX,dailyX,dailyY);
 
    double auditBarPct = g_histAuditRunning ? g_histAuditProgressPct : wr;
    color auditBarColor = g_histAuditRunning ? C'38,140,220' : (wr >= 50 ? C'80,220,140' : C'255,95,140');
@@ -5515,7 +5531,7 @@ void UpdateDashboard()
       + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade | MinCum "
       +DoubleToString(g_directionMinCum,2)+"R | "+DirectionLossText(), muted, 8);
 
-   int sec3 = sec2 + 140;
+   int sec3 = sec2 + 164;
    RectObj("DASH_SEC3", x + 8, sec3, 744, 152, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC3_T", x + 16, sec3 + 7, "EXECUTION", ac, 9);
    LabelObj("DASH_EX1", x + 16, sec3 + 30,
@@ -5708,6 +5724,7 @@ void RunValidationInternalAudit()
    if(!InpValidationInternalAuditRows) return;
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
+      if(g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
       string result = !g_histSignalValid[i] ? "INVALID" : (!g_histSignalClosed[i] ? "OPEN" : (g_histSignalWon[i] ? "WIN" : "LOSS"));
       ErlSignal auditSig = g_histSignals[i];
       string invertDetail = "";

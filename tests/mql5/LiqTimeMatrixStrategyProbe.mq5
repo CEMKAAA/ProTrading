@@ -22,7 +22,7 @@ void OnStart()
    if(init==INIT_SUCCEEDED)
    {
       Check(g_directionBuyLosses+g_directionSellLosses==g_hist.losses,"audit loss split equals headline L");
-      string wanted="TCAL1=1,0,64,8192,0,0,0,0,1";
+      string wanted="TCAL1=1,0,64,8192,0,0,0,0,1,3,4,360";
       Check(TCalStrategyApplyText(wanted),"set per-day hours");
       string name="__LIQ_TCAL_PROBE_"+(string)GetTickCount64();
       Check(LiqLibrarySave(name),"save strategy");
