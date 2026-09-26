@@ -1,4 +1,4 @@
-param([switch]$CompileEAs)
+param([switch]$CompileEAs,[string]$ProbeName="DailyQuotaProbe")
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $editor='C:\MT5\DEMO\MetaEditor64.exe'
@@ -23,19 +23,19 @@ if($CompileEAs){foreach($ea in @('orb/OrbUltimateEA_StrategyLibrary','macrossove
   if(!$s.Contains($call)){throw "Missing integration: $call in $ea"}
  }
 }}
-$probe=Join-Path $root 'tests/mql5/DailyQuotaProbe.mq5'
+$probe=Join-Path $root ('tests/mql5/'+$ProbeName+'.mq5')
 Compile $probe ($probe+'.log')
 $worker=Join-Path $root '.tmp/orb_jp225_full_worker'
 $terminal=Join-Path $worker 'terminal64.exe'
 if(Get-Process terminal64 -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $terminal}){throw 'Isolated worker already running'}
-Copy-Item -LiteralPath ([IO.Path]::ChangeExtension($probe,'.ex5')) -Destination (Join-Path $worker 'MQL5/Scripts/DailyQuotaProbe.ex5')
+Copy-Item -LiteralPath ([IO.Path]::ChangeExtension($probe,'.ex5')) -Destination (Join-Path $worker ('MQL5/Scripts/'+$ProbeName+'.ex5'))
 $ini=Join-Path $root '.tmp/daily_quota_probe.ini'
-@('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]','Script=DailyQuotaProbe','Symbol=USDJPYm','Period=M5','ShutdownTerminal=1')|Set-Content $ini -Encoding ASCII
+@('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]',('Script='+$ProbeName),'Symbol=USDJPYm','Period=M5','ShutdownTerminal=1')|Set-Content $ini -Encoding ASCII
 $started=Get-Date
 $p=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
 if(!$p.WaitForExit(180000)){throw 'Probe timeout'}
-$result=Join-Path $worker 'MQL5/Files/DailyQuotaProbe.json'
+$result=Join-Path $worker ('MQL5/Files/'+$ProbeName+'.json')
 if(!(Test-Path $result) -or (Get-Item $result).LastWriteTime -lt $started){throw 'Fresh result missing'}
 $data=Get-Content $result -Raw|ConvertFrom-Json
-Write-Output "DAILY_QUOTA=$($data.checks) checks, $($data.failed) failures"
+Write-Output "${ProbeName}=$($data.checks) checks, $($data.failed) failures"
 if($data.failed -ne 0){throw 'Daily quota contract failed'}

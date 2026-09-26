@@ -7590,6 +7590,7 @@ void UpdateDashboard()
    CreateButton("BTN_TMODE",x+388,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
 
    DirectionLauncher(PREFIX,x+12,y+330);
+   LossHoursLauncher(PREFIX,OrbLibraryX(x+480),OrbLibraryY(y+330),g_libraryDashScale);
    DailyQuotaLauncher(PREFIX,OrbLibraryX(InpDashboardX+12),OrbLibraryY(InpDashboardY+706),g_libraryDashScale);
    CreateLabel("DASH_DIRECTION_LOSSES",x+134,y+334,"MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R | "+DirectionLossText(),muted,8);
    CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
@@ -9465,6 +9466,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(LossHoursEvent(id,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
       if(g_tcalChanged)

@@ -40,6 +40,7 @@ input int InpTimeMatrixHours=16777215; // Bits 0..23: 00:00..23:00.
 int g_tcalWins[7][24],g_tcalLosses[7][24];
 int g_tcalDayHours[7],g_tcalDraftDayHours[7];
 bool g_tcalEnabled=false,g_tcalOpen=false,g_tcalChanged=false,g_tcalUiDirty=true;
+bool g_lossHoursOpen=false,g_lossHoursDirty=true;
 int g_tcalView=0,g_tcalPage=0,g_tcalDay=1;
 int g_tcalRankMode=2; // 0: day, 1: hour, 2: day-hour.
 int g_tcalRankPickCount=0;
@@ -239,6 +240,7 @@ string TCalHourName(int hour)
 string TCalId(string suffix){return g_tcalPrefix+suffix;}
 void TCalReset()
 {
+   g_lossHoursDirty=true;
    g_tcalUiDirty=true;
    DailyQuotaAuditReset();g_directionBuyLosses=0;g_directionSellLosses=0;g_directionMinCum=0.0;
    for(int day=0;day<7;day++)for(int hour=0;hour<24;hour++)
@@ -252,6 +254,7 @@ void TCalRecord(datetime openedAt,double netR)
    if(netR>0)g_tcalWins[stamp.day_of_week][stamp.hour]++;
    else g_tcalLosses[stamp.day_of_week][stamp.hour]++;
    g_tcalUiDirty=true;
+   g_lossHoursDirty=true;
 }
 void TCalRecordOutcome(datetime openedAt,bool won)
 {
@@ -261,6 +264,7 @@ void TCalRecordOutcome(datetime openedAt,bool won)
    if(won)g_tcalWins[stamp.day_of_week][stamp.hour]++;
    else g_tcalLosses[stamp.day_of_week][stamp.hour]++;
    g_tcalUiDirty=true;
+   g_lossHoursDirty=true;
 }
 bool TCalAllows(datetime openedAt)
 {
@@ -300,6 +304,7 @@ void TCalObj(string suffix,ENUM_OBJECT kind,int x,int y,int w,int h,string label
    ObjectSetInteger(0,name,OBJPROP_BACK,false);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    long z=suffix=="MOD_BG"?2000000:(suffix=="OPEN"?2000001:2000002);
+   if(StringFind(suffix,"LOSSMOD_")==0)z=suffix=="LOSSMOD_BG"?3000000:3000001;
    ObjectSetInteger(0,name,OBJPROP_ZORDER,z);
 }
 void TCalClearModal()
@@ -318,7 +323,7 @@ void TCalDestroy()
       string name=ObjectName(0,i);
       if(StringFind(name,g_tcalPrefix)==0)ObjectDelete(0,name);
    }
-   g_tcalOpen=false;
+   g_tcalOpen=false;g_lossHoursOpen=false;
 }
 void TCalOpen(int x,int y)
 {
@@ -447,6 +452,63 @@ void DirectionLauncher(string scope,int x,int y)
 {
    if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
    TCalObj("DIRECTION",OBJ_BUTTON,x,y,116,20,"ENTRY: "+EntryDirectionLabel(),C'43,93,105',clrWhite,8);
+}
+int LossHoursCount(int hour)
+{
+   if(hour<0||hour>23)return 0;
+   int count=0;for(int day=0;day<7;day++)count+=g_tcalLosses[day][hour];
+   return count;
+}
+void LossHoursClear()
+{
+   for(int i=ObjectsTotal(0)-1;i>=0;i--)
+   {
+      string name=ObjectName(0,i);
+      if(StringFind(name,TCalId("LOSSMOD_"))==0)ObjectDelete(0,name);
+   }
+}
+void LossHoursDraw()
+{
+   if(!g_lossHoursOpen)return;
+   int chartW=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS),chartH=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
+   int width=MathMin(570,MathMax(240,chartW-20)),height=310;
+   int x=MathMax(0,(chartW-width)/2),y=MathMax(0,(chartH-height)/2);
+   int total=0;for(int hour=0;hour<24;hour++)total+=LossHoursCount(hour);
+   TCalObj("LOSSMOD_BG",OBJ_RECTANGLE_LABEL,x,y,width,height,"",C'20,26,33',clrSilver);
+   TCalObj("LOSSMOD_TITLE",OBJ_LABEL,x+14,y+12,0,0,"HOURLY LOSSES | TOTAL "+(string)total,clrBlack,clrWhite,11);
+   TCalObj("LOSSMOD_CLOSE",OBJ_BUTTON,x+width-38,y+8,28,24,"X",C'70,75,82',clrWhite);
+   TCalObj("LOSSMOD_CLOCK",OBJ_LABEL,x+14,y+38,0,0,"ENTRY HOUR | "+g_tcalClockLabel,clrBlack,clrSilver,8);
+   int columnWidth=(width-28)/3;
+   for(int hour=0;hour<24;hour++)
+   {
+      int count=LossHoursCount(hour),column=hour/8,row=hour%8;
+      string text=StringFormat("%02d-%02d  :  %d L",hour,hour+1,count);
+      TCalObj("LOSSMOD_H_"+(string)hour,OBJ_LABEL,x+14+column*columnWidth,y+65+row*25,0,0,text,clrBlack,count>0?C'255,160,140':clrSilver,9);
+   }
+   TCalObj("LOSSMOD_NOTE",OBJ_LABEL,x+14,y+280,0,0,"Selected audit window. Counts only, not a WR / risk ranking.",clrBlack,clrSilver,8);
+   g_lossHoursDirty=false;
+}
+void LossHoursLauncher(string scope,int x,int y,double scale=1.0)
+{
+   if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
+   TCalObj("LOSS_HOURS",OBJ_BUTTON,x,y,(int)MathRound(124*scale),(int)MathRound(20*scale),"HOURLY LOSSES",C'72,66,91',clrWhite,8);
+   if(g_lossHoursOpen&&g_lossHoursDirty)LossHoursDraw();
+}
+bool LossHoursEvent(int id,string clicked)
+{
+   if(g_lossHoursOpen&&id==CHARTEVENT_CHART_CHANGE){LossHoursDraw();return true;}
+   if(g_lossHoursOpen&&(id==CHARTEVENT_OBJECT_ENDEDIT||id==CHARTEVENT_CLICK))return true;
+   if(id!=CHARTEVENT_OBJECT_CLICK)return false;
+   if(g_lossHoursOpen)
+   {
+      if(ObjectFind(0,clicked)>=0&&ObjectGetInteger(0,clicked,OBJPROP_TYPE)==OBJ_BUTTON)ObjectSetInteger(0,clicked,OBJPROP_STATE,false);
+      if(clicked==TCalId("LOSSMOD_CLOSE")||clicked==TCalId("LOSS_HOURS"))
+      {g_lossHoursOpen=false;LossHoursClear();ChartRedraw(0);}
+      return true;
+   }
+   if(clicked!=TCalId("LOSS_HOURS")||g_tcalOpen)return false;
+   ObjectSetInteger(0,clicked,OBJPROP_STATE,false);
+   g_lossHoursOpen=true;LossHoursDraw();ChartRedraw(0);return true;
 }
 void TCalDraw()
 {
@@ -591,6 +653,7 @@ void DailyQuotaLauncher(string scope,int x,int y,double scale=1.0)
 }
 bool TCalEvent(int id,long lx,double dy,string clicked)
 {
+   if(LossHoursEvent(id,clicked))return true;
    if(g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT)return true;
    if(!g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT&&(clicked==TCalId("DAILY_LOSS")||clicked==TCalId("DAILY_WIN")||clicked==TCalId("DAILY_START")))
    {if(clicked==TCalId("DAILY_LOSS"))g_dailyLossDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);

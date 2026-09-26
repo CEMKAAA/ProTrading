@@ -3862,7 +3862,7 @@ void DeleteAllLiqNarrativeLiveObjects()
    }
 }
 
-#define LIQ_DASH_LOGICAL_HEIGHT 1114
+#define LIQ_DASH_LOGICAL_HEIGHT 1138
 #include "LiqDashboardFit.mqh"
 void RectObj(string id, int x, int y, int w, int h, color bg, color border)
 {
@@ -5489,7 +5489,7 @@ void UpdateDashboard()
    LabelObj("DASH_ATRBUF_HINT", x + 592, row + 4, "0 = no ATR buffer", C'255,204,82', 8);
 
    int sec2 = sec1 + 236;
-   RectObj("DASH_SEC2", x + 8, sec2, 744, 156, C'24,31,45', C'60,110,170');
+   RectObj("DASH_SEC2", x + 8, sec2, 744, 180, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC2_T", x + 16, sec2 + 7, "SIGNAL AUDIT", ac, 9);
    double resolved = g_hist.wins + g_hist.losses;
    double wr = resolved > 0.0 ? (double)g_hist.wins / resolved * 100.0 : 0.0;
@@ -5513,7 +5513,7 @@ void UpdateDashboard()
    int directionX=x+530,directionY=awy,directionW=180,directionH=22;
    LiqFitBox(directionX,directionY,directionW,directionH);
    DirectionLauncher(PFX,directionX,directionY);
-   int dailyX=x+16,dailyY=sec2+130,dailyW=580,dailyH=22;
+   int dailyX=x+16,dailyY=sec2+154,dailyW=580,dailyH=22;
    LiqFitBox(dailyX,dailyY,dailyW,dailyH);
    DailyQuotaLauncher(PFX,dailyX,dailyY);
 
@@ -5528,10 +5528,12 @@ void UpdateDashboard()
       C'90,178,255', 7);
    LabelObj("DASH_AUD2", x + 16, sec2 + 106,
       "Won +" + DoubleToString(g_hist.wonR, 2) + "R | Lost -" + DoubleToString(g_hist.lostR, 2) + "R | Avg "
-      + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade | MinCum "
-      +DoubleToString(g_directionMinCum,2)+"R | "+DirectionLossText(), muted, 8);
+      + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade", muted, 8);
+   LabelObj("DASH_DIRECTION_LOSSES",x+16,sec2+130,"MinCum "+DoubleToString(g_directionMinCum,2)+"R | "+DirectionLossText(),muted,8);
+   int lossX=x+480,lossY=sec2+128,lossW=124,lossH=20;
+   LiqFitBox(lossX,lossY,lossW,lossH);LossHoursLauncher(PFX,lossX,lossY);
 
-   int sec3 = sec2 + 164;
+   int sec3 = sec2 + 188;
    RectObj("DASH_SEC3", x + 8, sec3, 744, 152, C'24,31,45', C'60,110,170');
    LabelObj("DASH_SEC3_T", x + 16, sec3 + 7, "EXECUTION", ac, 9);
    LabelObj("DASH_EX1", x + 16, sec3 + 30,
@@ -5927,7 +5929,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       ContinueHistoricalMacroAudit((int)lparam);
       return;
    }
+   if(g_lossHoursOpen&&LossHoursEvent(id,sparam))return;
    if(ResearchLbEvent(id,lparam,dparam,sparam))return;
+   if(LossHoursEvent(id,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
       if(g_tcalChanged){g_tcalChanged=false;RefreshAfterConfigChange(false);}
