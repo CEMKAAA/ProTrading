@@ -2512,101 +2512,107 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       if(tickEnd > tickStart)
       {
          MqlTick ticks[];
-         int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, (ulong)tickStart * 1000, (ulong)tickEnd * 1000);
-         if(copied > 0)
+         // Read chronologically and stop at the first terminal event. Loading
+         // the whole lifespan first can copy months of unused ticks per trade.
+         ulong tickLimit = (ulong)tickEnd * 1000;
+         bool tickInitialized = false;
+         datetime lastTickAt = 0;
+         double lastClosePx = 0.0;
+         for(ulong cursor = (ulong)tickStart * 1000; cursor <= tickLimit;)
          {
+            ulong chunkEnd = cursor + 3600000 - 1;
+            if(chunkEnd > tickLimit) chunkEnd = tickLimit;
+            int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, cursor, chunkEnd);
+            if(copied < 0) break;
+            cursor = chunkEnd + 1;
+            if(copied == 0)
+            {
+               if(!tickInitialized && chunkEnd >= (ulong)(tickStart + tfSeconds) * 1000) break;
+               continue;
+            }
             int first = -1;
             for(int k = 0; k < copied; ++k)
             {
                if(ticks[k].bid > 0.0 && ticks[k].ask > 0.0) { first = k; break; }
             }
-            int last = -1;
-            for(int k = copied - 1; k >= 0; --k)
+            if(first < 0)
             {
-               if(ticks[k].bid > 0.0 && ticks[k].ask > 0.0) { last = k; break; }
+               if(!tickInitialized && chunkEnd >= (ulong)(tickStart + tfSeconds) * 1000) break;
+               continue;
             }
-            bool entryTickCoverage = (first >= 0 && last >= first
-               && (datetime)ticks[first].time <= tickStart + tfSeconds);
-            bool completeTickWindow = (entryTickCoverage
-               && (maxTime <= 0 || (datetime)ticks[last].time >= maxTime));
             // A terminal TP/SL observed in an early tick chunk is final. Do
             // not discard that causal ordering merely because ticks after
             // the exit do not cover the later reverse-signal boundary.
-            if(entryTickCoverage)
+            if(!tickInitialized)
             {
+               if((datetime)ticks[first].time > tickStart + tfSeconds) break;
                double slip = MathMax(0.0, g_btSlippagePts) * point;
                simEntry = NormTradePrice(simDir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
-                if(ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
-                   activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail))
-                {
-                   CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
-                  halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
-                  pnlR = 0.0;
-                  for(int k = first; k < copied; ++k)
-                  {
-                     double bid = ticks[k].bid;
-                     double ask = ticks[k].ask;
-                     if(bid <= 0.0 || ask <= 0.0) continue;
-                     double closePx = simDir > 0 ? bid : ask;
-
-                     if(!reverseExitMode && !halfDone)
-                     {
-                        bool hitHalf = simDir > 0 ? closePx >= half : closePx <= half;
-                        if(hitHalf)
-                        {
-                           double halfR = MathAbs(half - simEntry) / simRisk;
-                           pnlR += halfR * 0.5;
-                           activeSl = simEntry;
-                           halfDone = true;
-                        }
-                     }
-
-                     bool hitSl = !reverseExitMode && (simDir > 0 ? closePx <= activeSl : closePx >= activeSl);
-                     if(hitSl)
-                     {
-                        double slR = MathAbs(simEntry - activeSl) / simRisk;
-                        pnlR -= halfDone && activeHc != ERL_HC_OFF ? slR * 0.5 : slR;
-                        pnlR -= commissionR;
-                        closed = true;
-                        won = pnlR > 0.0;
-                        CaptureLastSimulationExit("TICK_SL", (datetime)ticks[k].time);
-                        return pnlR;
-                     }
-
-                     bool hitTp = !reverseExitMode && tp > 0.0 && (simDir > 0 ? closePx >= tp : closePx <= tp);
-                     if(hitTp)
-                     {
-                        double targetR = MathAbs(tp - simEntry) / simRisk;
-                        pnlR += halfDone && activeHc != ERL_HC_OFF ? targetR * 0.5 : targetR;
-                        pnlR -= commissionR;
-                        closed = true;
-                        won = pnlR > 0.0;
-                        CaptureLastSimulationExit("TICK_TP", (datetime)ticks[k].time);
-                        return pnlR;
-                     }
-                  }
-
-                  if(maxTime > 0 && completeTickWindow)
-                  {
-                     for(int k = last; k >= first; --k)
-                     {
-                        if(ticks[k].bid <= 0.0 || ticks[k].ask <= 0.0) continue;
-                        if((datetime)ticks[k].time < maxTime) break;
-                        double exitPx = simDir > 0 ? ticks[k].bid : ticks[k].ask;
-                        pnlR = ApplyForcedSignalExit(simDir, exitPx, simEntry, simRisk, halfDone, activeHc, pnlR, commissionR);
-                        closed = true;
-                        won = pnlR > 0.0;
-                        CaptureLastSimulationExit("TICK_REVERSE_EXIT", maxTime);
-                        return pnlR;
-                     }
-                  }
-                  else if(maxTime <= 0 && (datetime)ticks[last].time >= tickEnd - tfSeconds)
-                  {
-                     CaptureLastSimulationExit("TICK_OPEN", (datetime)ticks[last].time);
-                     return pnlR;
-                  }
-                }
+               if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
+                  activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail)) break;
+               CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
+               halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
+               pnlR = 0.0;
+               tickInitialized = true;
             }
+            for(int k = first; k < copied; ++k)
+            {
+               double bid = ticks[k].bid;
+               double ask = ticks[k].ask;
+               if(bid <= 0.0 || ask <= 0.0) continue;
+               double closePx = simDir > 0 ? bid : ask;
+               lastTickAt = (datetime)ticks[k].time;
+               lastClosePx = closePx;
+
+               if(!reverseExitMode && !halfDone)
+               {
+                  bool hitHalf = simDir > 0 ? closePx >= half : closePx <= half;
+                  if(hitHalf)
+                  {
+                     double halfR = MathAbs(half - simEntry) / simRisk;
+                     pnlR += halfR * 0.5;
+                     activeSl = simEntry;
+                     halfDone = true;
+                  }
+               }
+
+               bool hitSl = !reverseExitMode && (simDir > 0 ? closePx <= activeSl : closePx >= activeSl);
+               if(hitSl)
+               {
+                  double slR = MathAbs(simEntry - activeSl) / simRisk;
+                  pnlR -= halfDone && activeHc != ERL_HC_OFF ? slR * 0.5 : slR;
+                  pnlR -= commissionR;
+                  closed = true;
+                  won = pnlR > 0.0;
+                  CaptureLastSimulationExit("TICK_SL", (datetime)ticks[k].time);
+                  return pnlR;
+               }
+
+               bool hitTp = !reverseExitMode && tp > 0.0 && (simDir > 0 ? closePx >= tp : closePx <= tp);
+               if(hitTp)
+               {
+                  double targetR = MathAbs(tp - simEntry) / simRisk;
+                  pnlR += halfDone && activeHc != ERL_HC_OFF ? targetR * 0.5 : targetR;
+                  pnlR -= commissionR;
+                  closed = true;
+                  won = pnlR > 0.0;
+                  CaptureLastSimulationExit("TICK_TP", (datetime)ticks[k].time);
+                  return pnlR;
+               }
+            }
+         }
+         if(tickInitialized && maxTime > 0 && lastTickAt >= maxTime)
+         {
+            pnlR = ApplyForcedSignalExit(simDir, lastClosePx, simEntry, simRisk, halfDone, activeHc, pnlR, commissionR);
+            closed = true;
+            won = pnlR > 0.0;
+            CaptureLastSimulationExit("TICK_REVERSE_EXIT", maxTime);
+            return pnlR;
+         }
+         else if(tickInitialized && maxTime <= 0 && lastTickAt >= tickEnd - tfSeconds)
+         {
+            CaptureLastSimulationExit("TICK_OPEN", lastTickAt);
+            return pnlR;
          }
       }
    }
@@ -2963,7 +2969,24 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
          if(capped<0){g_hist.total++;g_hist.invalid++;}
          continue;
       }
-      if(!SimCacheGet(simKey, r, closed, won, valid))
+      bool cachedOutcome = SimCacheGet(simKey, r, closed, won, valid);
+      if(!cachedOutcome && LnNasActive())
+      {
+         datetime referenceBoundary = NextOppositeSignalTime(exitSignals,
+            g_histSignals[i].availableTime, g_histSignals[i].dir);
+         string referenceKey = SimCacheKey(g_histSignals[i], g_target, g_hc,
+            g_targetModel, g_entryTf, referenceBoundary);
+         if(referenceBoundary != nextSignalTime && SimCacheGet(referenceKey, r, closed, won, valid))
+         {
+            // A tick-confirmed terminal exit before either boundary is invariant
+            // to the later reverse/NAS cutoff. Never reuse OHLC or forced exits.
+            cachedOutcome = valid && closed && g_lastSimExitTime > 0
+               && (g_lastSimExitReason=="TICK_TP" || g_lastSimExitReason=="TICK_SL")
+               && (nextSignalTime<=0 || g_lastSimExitTime<nextSignalTime);
+            if(cachedOutcome) SimCachePut(simKey, r, closed, won, valid);
+         }
+      }
+      if(!cachedOutcome)
       {
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
          if(valid && closed) SimCachePut(simKey, r, closed, won, valid);

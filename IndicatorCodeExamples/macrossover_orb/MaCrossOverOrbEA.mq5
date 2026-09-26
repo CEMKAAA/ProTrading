@@ -5775,6 +5775,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|entryDirection="+(string)g_entryDirection;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
    key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
@@ -5946,6 +5947,8 @@ bool FindHistOperationalBreakout(datetime from,datetime to,double hi,double lo,
          return false;
       hadRawCandidate=true;
       afterSignalTime=sigT;
+      if(!EntryDirectionAllows(EffectiveOrbDirection(dir)=="BUY"?1:-1))
+      {lastReject="ENTRY_DIRECTION";continue;}
 
       string reason="";
       if(!HistCheckVol(sigVol,preBreakoutAvgVol,reason))
@@ -6235,6 +6238,7 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   key+="|entryDirection="+(string)g_entryDirection;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
    key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
@@ -6773,6 +6777,7 @@ void ProcessHistoricalCalcDay(const int back)
       if(g_maIndependent&&g_maHistSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
          &&g_maHistSeriesCount>=g_maMaxConsecutive)
       {g_histFiltered++;return;}
+      if(!EntryDirectionAllows(EffectiveOrbDirection(dir)=="BUY"?1:-1)){g_histFiltered++;return;}
       datetime entryT=sigT;
       double entryPrice=sigC;
       string entryDetail="";
@@ -6981,7 +6986,7 @@ void ProcessHistoricalCalcDay(const int back)
       }
       else if(sim.netR<-1e-8)
       {
-         g_histLosses++;g_histLostR+=MathAbs(sim.netR);
+         g_histLosses++;g_histLostR+=MathAbs(sim.netR);DirectionRecordLoss(isBuy?1:-1);
          if(daySt.day_of_week>=1&&daySt.day_of_week<=5)g_weekdayLosses[daySt.day_of_week]++;
       }
       else g_histFlat++;
@@ -7954,6 +7959,8 @@ void UpdateDashboard()
    CreateButton("BTN_TP",x+302,r2y,82,18,"FIX "+TargetLabel(),C'38,101,176');
    CreateButton("BTN_TMODE",x+388,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
 
+   DirectionLauncher(PREFIX,x+12,y+330);
+   CreateLabel("DASH_DIRECTION_LOSSES",x+134,y+334,"MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R | "+DirectionLossText(),muted,8);
    CreateButton("BTN_EA",x+468,r2y,54,18,g_rtEaEnabled?"EA ON":"EA OFF",g_rtEaEnabled?C'30,150,95':C'178,37,57');
    CreateButton("BTN_FTMO",x+526,r2y,46,18,g_ftmoMode?"FTMO":"FTMO",g_ftmoMode?C'30,150,95':C'80,80,80');
    CreateButton("BTN_RISKLOT",x+576,r2y,42,18,g_riskLotOnlyMode?"RISK":"RISK",g_riskLotOnlyMode?C'30,150,95':C'80,80,80');
@@ -8722,6 +8729,8 @@ void DrawAcceptedLiveSignal(string rawDir,datetime bt,double signalClose,string 
 
 void DispatchAcceptedOrbSignal(string dir,datetime bt,double signalClose,string detail,datetime gateAvailable=0)
 {
+   if(!EntryDirectionAllows(EffectiveOrbDirection(dir)=="BUY"?1:-1))
+   {g_lastFilterReason="ENTRY DIRECTION";g_lastExecStatus="DIRECTION_BLOCKED";return;}
    if(g_rtAdvancedReverse)
    {
       string reason="";
@@ -8816,6 +8825,11 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    }
    string rawDir=dir;
    string execDir=EffectiveOrbDirection(rawDir);
+   if(!EntryDirectionAllows(execDir=="BUY"?1:-1))
+   {
+      g_lastFilterReason="ENTRY DIRECTION";g_lastExecStatus="DIRECTION_BLOCKED";
+      ClearRetestState("direction_block");ClearImbalanceState("direction_block");return false;
+   }
    bool nasExitLifecycle=RuntimeNasExitEnabled();
    // Re-check at the final execution boundary so a retest/imbalance pending
    // before a dashboard toggle cannot bypass the current macro/RF policy.

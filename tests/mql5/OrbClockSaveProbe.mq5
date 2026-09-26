@@ -4,7 +4,7 @@
 #define OnTimer UnusedTimer
 #define OnChartEvent UnusedChartEvent
 #define OnTradeTransaction UnusedTransaction
-#include "../../IndicatorCodeExamples/OrbUltimateEA_StrategyLibrary.mq5"
+#include "../../IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5"
 #undef OnInit
 #undef OnDeinit
 #undef OnTick
@@ -26,7 +26,7 @@ void OnStart()
    Check(SessionLocalToServer(2026,9,18,600)==D'2026.09.18 07:00',"BIST GMT0 conversion");
    g_orbStrategyTimezone=2;
    Check(SessionLocalToServer(2026,9,18,600)==D'2026.09.18 09:00',"same BIST instant GMT2");
-   string savedTime="TCAL1=1,0,64,8192,0,0,0,0";
+   string savedTime="TCAL1=1,0,64,8192,0,0,0,0,2";
    Check(TCalStrategyApplyText(savedTime),"apply custom time matrix");
    int sm,em,tem;SessionClockMinutes(sm,em,tem);Check(sm==600&&em==615&&tem==1080,"BIST cash window");
    string name="__ORB_CLOCK_PROBE_"+(string)GetTickCount64();

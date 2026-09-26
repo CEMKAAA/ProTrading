@@ -20,7 +20,7 @@ void OnStart()
    g_runtimeMagic=9192026000+(long)(GetTickCount64()%1000000);
    OrbStrategyPreset defaults;OrbPresetDefaults(defaults);
    Check(OrbStrategyPresetApplyValues(defaults),"default preset applies");
-   string wanted="TCAL1=1,0,64,8192,0,0,0,0";
+   string wanted="TCAL1=1,0,64,8192,0,0,0,0,1";
    Check(TCalStrategyApplyText(wanted),"set per-day hours");
    string name="__MA_TCAL_PROBE_"+(string)GetTickCount64();
    Check(OrbUserSave(name),"save strategy");

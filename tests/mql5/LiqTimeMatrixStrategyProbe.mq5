@@ -21,7 +21,8 @@ void OnStart()
    Check(init==INIT_SUCCEEDED,"EA initialization");
    if(init==INIT_SUCCEEDED)
    {
-      string wanted="TCAL1=1,0,64,8192,0,0,0,0";
+      Check(g_directionBuyLosses+g_directionSellLosses==g_hist.losses,"audit loss split equals headline L");
+      string wanted="TCAL1=1,0,64,8192,0,0,0,0,1";
       Check(TCalStrategyApplyText(wanted),"set per-day hours");
       string name="__LIQ_TCAL_PROBE_"+(string)GetTickCount64();
       Check(LiqLibrarySave(name),"save strategy");
@@ -31,7 +32,14 @@ void OnStart()
       Check(LiqLibraryRead(path,fileText)&&StringFind(fileText,wanted)>=0,"file contains time matrix");
       Check(TCalStrategyApplyText(TCalStrategyOffText()),"clear current filter");
       Check(LiqLibraryApply(path),"apply saved strategy");
+      // UI applies coalesce audit work until its timer; a script has no EA timer.
+      RecalculateHistoricalStats(false);
       Check(TCalStrategyMatchesText(wanted),"restore exact schedule");
+      bool directions=true;
+      for(int i=0;i<ArraySize(g_histSignals);i++)
+         if(EffectiveTradeDir(g_histSignals[i].dir)!=1)directions=false;
+      Check(directions,"BUY-only audit excludes SELL entries");
+      Check(g_directionBuyLosses+g_directionSellLosses==g_hist.losses,"filtered audit loss split equals L");
       FileDelete(path,FILE_COMMON);
       ProbeDeinit(0);
    }

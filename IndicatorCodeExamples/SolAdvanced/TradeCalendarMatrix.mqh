@@ -1,6 +1,36 @@
 #ifndef TRADE_CALENDAR_MATRIX_MQH
 #define TRADE_CALENDAR_MATRIX_MQH
 
+enum ENTRY_DIRECTION_MODE { ENTRY_BOTH=0, ENTRY_BUY_ONLY=1, ENTRY_SELL_ONLY=2 };
+input group "Entry Direction"
+input ENTRY_DIRECTION_MODE InpEntryDirection=ENTRY_BOTH;
+int g_entryDirection=0,g_directionBuyLosses=0,g_directionSellLosses=0;
+double g_directionMinCum=0.0;
+bool EntryDirectionAllows(int effectiveDirection)
+{
+   return (effectiveDirection==1||effectiveDirection==-1)
+      &&(g_entryDirection==0||(g_entryDirection==1&&effectiveDirection==1)
+         ||(g_entryDirection==2&&effectiveDirection==-1));
+}
+string EntryDirectionLabel()
+{return g_entryDirection==1?"BUY ONLY":(g_entryDirection==2?"SELL ONLY":"BOTH");}
+string DirectionLossText()
+{return "Loss BUY:"+(string)g_directionBuyLosses+" SELL:"+(string)g_directionSellLosses;}
+void DirectionRecordLoss(int effectiveDirection)
+{
+   if(effectiveDirection==1)g_directionBuyLosses++;
+   else if(effectiveDirection==-1)g_directionSellLosses++;
+}
+// Missing field in an older strategy means BOTH, never the previous selection.
+int DirectionStrategyMode(string text)
+{
+   string parts[];int count=StringSplit(StringSubstr(text,6),',',parts);
+   if(count==8)return 0;
+   if(count!=9)return -1;
+   int mode=(int)StringToInteger(parts[8]);
+   return mode>=0&&mode<=2&&parts[8]==(string)mode?mode:-1;
+}
+
 // Calendar statistics use completed audit trades only; the EA supplies its displayed clock.
 input group "Entry Time Matrix"
 input bool InpTimeMatrixEnabled=false;
@@ -57,6 +87,7 @@ bool TCalSave()
       if(g_tcalDayHours[day]<0||g_tcalDayHours[day]>16777215)return false;
       if(GlobalVariableSet(TCalStorageKey("h"+(string)slot+"."+(string)day),(double)g_tcalDayHours[day])==0)return false;
    }
+   if(GlobalVariableSet(TCalStorageKey("dir"+(string)slot),(double)g_entryDirection)==0)return false;
    GlobalVariablesFlush();
    // Publish the new slot only after all seven masks have been written.
    if(GlobalVariableSet(header,(double)(slot+(g_tcalEnabled?2:0)))==0)return false;
@@ -68,13 +99,14 @@ string TCalStrategyText()
 {
    string text="TCAL1="+(g_tcalEnabled?"1":"0");
    for(int day=0;day<7;day++)text+=","+(string)g_tcalDayHours[day];
-   return text;
+   return text+","+(string)g_entryDirection;
 }
 bool TCalStrategyRead(string text,bool &enabled,int &hours[])
 {
    if(StringFind(text,"TCAL1=")!=0)return false;
    string parts[];
-   if(StringSplit(StringSubstr(text,6),',',parts)!=8)return false;
+   int fields=StringSplit(StringSubstr(text,6),',',parts);
+   if((fields!=8&&fields!=9)||DirectionStrategyMode(text)<0)return false;
    if(parts[0]!="0"&&parts[0]!="1")return false;
    enabled=parts[0]=="1";int selected=0;
    ArrayResize(hours,7);
@@ -89,7 +121,7 @@ bool TCalStrategyRead(string text,bool &enabled,int &hours[])
 bool TCalStrategyMatchesText(string text)
 {
    bool enabled=false;int hours[];
-   if(!TCalStrategyRead(text,enabled,hours)||g_tcalEnabled!=enabled)return false;
+   if(!TCalStrategyRead(text,enabled,hours)||g_tcalEnabled!=enabled||g_entryDirection!=DirectionStrategyMode(text))return false;
    for(int day=0;day<7;day++)if(g_tcalDayHours[day]!=hours[day])return false;
    return true;
 }
@@ -98,12 +130,13 @@ bool TCalStrategyApplyText(string text)
    bool enabled=false;int hours[];
    if(!TCalStrategyRead(text,enabled,hours))return false;
    if(TCalStrategyMatchesText(text))return true;
+   int oldDirection=g_entryDirection;g_entryDirection=DirectionStrategyMode(text);
    bool oldEnabled=g_tcalEnabled;int oldHours[7];
    for(int day=0;day<7;day++){oldHours[day]=g_tcalDayHours[day];g_tcalDayHours[day]=hours[day];}
    g_tcalEnabled=enabled;
    if(!TCalSave())
    {
-      g_tcalEnabled=oldEnabled;
+      g_tcalEnabled=oldEnabled;g_entryDirection=oldDirection;
       for(int day=0;day<7;day++)g_tcalDayHours[day]=oldHours[day];
       return false;
    }
@@ -114,12 +147,14 @@ bool TCalStrategyApplyText(string text)
 }
 bool TCalInit()
 {
+   g_entryDirection=(int)InpEntryDirection;
+   if(g_entryDirection<0||g_entryDirection>2)return false;
    if(!TCalValidMasks(InpTimeMatrixDays,InpTimeMatrixHours))return false;
    for(int day=0;day<7;day++)
       g_tcalDayHours[day]=(InpTimeMatrixDays&(1<<day))!=0?InpTimeMatrixHours:0;
    g_tcalEnabled=InpTimeMatrixEnabled;
    string key=TCalStorageKey("cfg"),header=TCalStorageKey("cfg2"),base=TCalStorageKey("base");
-   double inputPacked=TCalPack(InpTimeMatrixEnabled,InpTimeMatrixDays,InpTimeMatrixHours);
+   double inputPacked=TCalPack(InpTimeMatrixEnabled,InpTimeMatrixDays,InpTimeMatrixHours)+4294967296.0*g_entryDirection;
    bool sameInputs=GlobalVariableCheck(base)&&GlobalVariableGet(base)==inputPacked;
    bool loaded=false;
    if(sameInputs&&GlobalVariableCheck(header))
@@ -127,6 +162,13 @@ bool TCalInit()
       double value=GlobalVariableGet(header);
       if(!MathIsValidNumber(value)||value<0||value>3||MathFloor(value)!=value)return false;
       int slot=(int)value%2;
+      string dirKey=TCalStorageKey("dir"+(string)slot);
+      if(GlobalVariableCheck(dirKey))
+      {
+         double direction=GlobalVariableGet(dirKey);
+         if(!MathIsValidNumber(direction)||direction<0||direction>2||direction!=MathFloor(direction))return false;
+         g_entryDirection=(int)direction;
+      }
       for(int day=0;day<7;day++)
       {
          string hourKey=TCalStorageKey("h"+(string)slot+"."+(string)day);
@@ -175,6 +217,7 @@ string TCalId(string suffix){return g_tcalPrefix+suffix;}
 void TCalReset()
 {
    g_tcalUiDirty=true;
+   g_directionBuyLosses=0;g_directionSellLosses=0;g_directionMinCum=0.0;
    for(int day=0;day<7;day++)for(int hour=0;hour<24;hour++)
    {g_tcalWins[day][hour]=0;g_tcalLosses[day][hour]=0;}
 }
@@ -377,6 +420,11 @@ void TCalLauncher(string scope,int x,int y,int modalX,int modalY,string clockLab
    TCalObj("OPEN",OBJ_BUTTON,x,y,116,20,"TIME MATRIX",C'43,93,105',clrWhite,8);
    if(g_tcalOpen&&g_tcalUiDirty)TCalDraw();
 }
+void DirectionLauncher(string scope,int x,int y)
+{
+   if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
+   TCalObj("DIRECTION",OBJ_BUTTON,x,y,116,20,"ENTRY: "+EntryDirectionLabel(),C'43,93,105',clrWhite,8);
+}
 void TCalDraw()
 {
    if(!g_tcalOpen)return;
@@ -514,6 +562,15 @@ bool TCalEvent(int id,long lx,double dy,string clicked)
       if(g_tcalOpen){g_tcalOpen=false;TCalClearModal();}
       else TCalOpen(g_tcalX,g_tcalY);
       ObjectSetInteger(0,clicked,OBJPROP_STATE,false);TCalDraw();ChartRedraw(0);return true;
+   }
+   if(!g_tcalOpen&&clicked==TCalId("DIRECTION"))
+   {
+      int old=g_entryDirection;g_entryDirection=(old+1)%3;
+      if(TCalSave())g_tcalChanged=true;
+      else {g_entryDirection=old;Print("Entry direction could not persist; unchanged");}
+      ObjectSetInteger(0,clicked,OBJPROP_STATE,false);
+      ObjectSetString(0,clicked,OBJPROP_TEXT,"ENTRY: "+EntryDirectionLabel());
+      return true;
    }
    if(!g_tcalOpen)return false;
    // A modal consumes underlying dashboard object clicks, including click-through.
