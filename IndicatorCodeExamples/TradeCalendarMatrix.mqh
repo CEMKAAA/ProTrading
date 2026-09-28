@@ -350,6 +350,34 @@ bool TCalApplyDraft()
    g_tcalEnabled=oldEnabled;
    return false;
 }
+bool TCalApplyHourAllDays(int hour)
+{
+   if(hour<0||hour>23)return false;
+   int bit=1<<hour,oldHours[7];bool oldEnabled=g_tcalEnabled,changed=!oldEnabled;
+   for(int day=0;day<7;day++)
+   {
+      oldHours[day]=g_tcalDayHours[day];g_tcalDayHours[day]|=bit;
+      if(oldHours[day]!=g_tcalDayHours[day])changed=true;
+   }
+   g_tcalEnabled=true;
+   if(changed&&!TCalSave())
+   {
+      for(int day=0;day<7;day++)g_tcalDayHours[day]=oldHours[day];
+      g_tcalEnabled=oldEnabled;return false;
+   }
+   // Do not apply unrelated staged edits; keep this applied hour in the draft too.
+   for(int day=0;day<7;day++)
+      if(g_tcalDraftEdited||g_tcalRankPending)g_tcalDraftDayHours[day]|=bit;
+      else g_tcalDraftDayHours[day]=g_tcalDayHours[day];
+   if(changed)g_tcalChanged=true;
+   g_tcalUiDirty=true;return true;
+}
+bool TCalHourAllDaysActive(int hour)
+{
+   if(!g_tcalEnabled||hour<0||hour>23)return false;
+   for(int day=0;day<7;day++)if((g_tcalDayHours[day]&(1<<hour))==0)return false;
+   return true;
+}
 int TCalRankCount(){return g_tcalRankMode==0?7:(g_tcalRankMode==1?24:168);}
 int TCalRankWins(int mode,int key)
 {
@@ -520,8 +548,9 @@ void TCalDraw()
    TCalObj("MOD_TITLE",OBJ_LABEL,x+16,y+12,0,0,"ENTRY TIME MATRIX  |  "+g_tcalClockLabel,C'20,26,33',C'239,243,245',11);
    TCalObj("MOD_CLOSE",OBJ_BUTTON,x+590,y+8,30,23,"X",C'70,75,82',clrWhite);
    TCalObj("MOD_NOTE",OBJ_LABEL,x+16,y+39,0,0,
-      g_tcalView==3?"Pick multiple rows first; APPLY PICKS changes the active filter and audit together.":
-      "Selected audit window; closed trades only. Adjust leaderboard sample floor below.",
+      g_tcalView==1?"UYGULA: enable this hour on all days now; other hours unchanged.":
+      (g_tcalView==3?"Pick multiple rows first; APPLY PICKS changes the active filter and audit together.":
+      "Selected audit window; closed trades only. Adjust leaderboard sample floor below."),
       C'20,26,33',C'158,172,180',8);
    string tabs[5]={"DAYS WR","HOURS WR","DAY x HOUR","LEADERBOARD","SELECT TIME"};
    for(int i=0;i<5;i++)
@@ -553,6 +582,9 @@ void TCalDraw()
          else for(int day=0;day<7;day++){wins+=g_tcalWins[day][hour];losses+=g_tcalLosses[day][hour];}
          TCalObj("MOD_ROW_"+(string)row,OBJ_LABEL,x+30,y+132+row*34,0,0,
             TCalHourName(hour)+"     "+TCalStats(wins,losses),C'20,26,33',C'225,231,234',9);
+         if(g_tcalView==1)
+            TCalObj("MOD_HOUR_APPLY_"+(string)hour,OBJ_BUTTON,x+508,y+128+row*34,100,24,
+               "UYGULA",TCalHourAllDaysActive(hour)?C'41,118,107':C'43,93,105',clrWhite,8);
       }
    }
    else if(g_tcalView==3)
@@ -698,6 +730,15 @@ bool TCalEvent(int id,long lx,double dy,string clicked)
    }
    ObjectSetInteger(0,clicked,OBJPROP_STATE,false);
    if(clicked==TCalId("MOD_CLOSE")){g_tcalOpen=false;TCalClearModal();ChartRedraw(0);return true;}
+   string applyHourTag=TCalId("MOD_HOUR_APPLY_");
+   if(StringFind(clicked,applyHourTag)==0)
+   {
+      string suffix=StringSubstr(clicked,StringLen(applyHourTag));
+      int hour=(int)StringToInteger(suffix);
+      if(g_tcalView==1&&suffix==(string)hour&&hour>=0&&hour<24&&hour/8==g_tcalPage)
+         if(!TCalApplyHourAllDays(hour))Print("Hour could not persist; schedule unchanged");
+      TCalDraw();ChartRedraw(0);return true;
+   }
    g_tcalUiDirty=true;
    for(int i=0;i<5;i++)if(clicked==TCalId("MOD_TAB_"+(string)i)){g_tcalView=i;g_tcalPage=0;TCalDraw();ChartRedraw(0);return true;}
    for(int mode=0;mode<3;mode++)if(clicked==TCalId("MOD_RANK_MODE_"+(string)mode))
