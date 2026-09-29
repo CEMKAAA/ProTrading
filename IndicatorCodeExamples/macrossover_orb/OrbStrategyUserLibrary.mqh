@@ -139,8 +139,9 @@ double OrbUserCustomR(const OrbStrategyPreset &p)
 bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
 {
    int i=OrbUserSlot(p.id);reason="CUSTOM_RECORD_MISSING";if(i<0)return false;
-   reason="CUSTOM_SYMBOL_OR_CHART_TF_MISMATCH";
-   if(g_userStrategies[i].symbol!=_Symbol||g_userStrategies[i].chartTf!=(int)_Period)return false;
+   reason="CUSTOM_SYMBOL_MISMATCH";
+   // Saved chart TF is provenance, not a strategy application restriction.
+   if(g_userStrategies[i].symbol!=_Symbol)return false;
    reason="CUSTOM_EA_INPUTS_MISMATCH";
    if(g_userStrategies[i].inputSignature!=OrbCustomInputSignature())return false;
    string v[];StringSplit(g_userStrategies[i].runtime,'\n',v);

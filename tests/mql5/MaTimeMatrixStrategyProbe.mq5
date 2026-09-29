@@ -36,6 +36,20 @@ void OnStart()
       g_maRestoringPreset=false;
       Check(TCalStrategyMatchesText(wanted),"restore exact schedule");
       Check(OrbUserMatches(saved),"strategy runtime matches");
+      int recordedTf=g_userStrategies[slot].chartTf;
+      g_userStrategies[slot].chartTf=((int)_Period==(int)PERIOD_M1?(int)PERIOD_H1:(int)PERIOD_M1);
+      string reason="";
+      Check(OrbUserValidate(saved,reason),"same symbol accepts another recorded chart TF");
+      g_maRestoringPreset=true;
+      g_rtSignalTf=PERIOD_M5;
+      Check(OrbUserApply(saved),"cross chart TF strategy applies");
+      g_maRestoringPreset=false;
+      Check(OrbUserMatches(saved),"cross chart TF runtime restored exactly");
+      string recordedSymbol=g_userStrategies[slot].symbol;
+      g_userStrategies[slot].symbol="__OTHER_SYMBOL__";
+      Check(!OrbUserValidate(saved,reason)&&reason=="CUSTOM_SYMBOL_MISMATCH","another symbol still rejected");
+      g_userStrategies[slot].symbol=recordedSymbol;
+      g_userStrategies[slot].chartTf=recordedTf;
       FileDelete(OrbUserFile(slot),FILE_COMMON);
       FileDelete("MaCrossOrbStrategyLibrary\\"+saved.id+".metrics",FILE_COMMON);
    }

@@ -43,6 +43,18 @@ void OnStart()
       Check(OrbBrokerOffsetHours()==2&&OrbClockProfile()==ORB_CLOCK_FIXED&&g_orbClockSession==1,"restore clock and session");
       Check(TCalStrategyMatchesText(savedTime),"restore exact time matrix");
       Check(OrbUserMatches(saved),"exact saved match");
+      int recordedTf=g_userStrategies[slot].chartTf;
+      g_userStrategies[slot].chartTf=((int)_Period==(int)PERIOD_M1?(int)PERIOD_H1:(int)PERIOD_M1);
+      string reason="";
+      Check(OrbUserValidate(saved,reason),"same symbol accepts another recorded chart TF");
+      g_rtSignalTf=PERIOD_M5;
+      Check(OrbUserApply(saved),"cross chart TF strategy applies");
+      Check(OrbUserMatches(saved),"cross chart TF runtime restored exactly");
+      string recordedSymbol=g_userStrategies[slot].symbol;
+      g_userStrategies[slot].symbol="__OTHER_SYMBOL__";
+      Check(!OrbUserValidate(saved,reason)&&reason=="CUSTOM_SYMBOL_MISMATCH","another symbol still rejected");
+      g_userStrategies[slot].symbol=recordedSymbol;
+      g_userStrategies[slot].chartTf=recordedTf;
       g_orbStrategyTimezone=3;Check(OrbUserSave(name),"update same name");
       Check(g_userCount==oldCount&&g_strategyPresetIndex==index,"one strategy identity");
       Check(g_userStrategies[slot].brokerOffset==3,"updated offset");
