@@ -614,7 +614,8 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
    datetime fillTime=(datetime)firstTick.time;
    datetime brokerExitAt=(g_rtExitMode==ORB_EXIT_BROKER_TIME?BrokerTimeExitFor(fillTime):0);
    res.targetLeg=targetLeg;res.hcLeg=hcLeg;res.valid=true;res.invalidReason="";
-   res.simEntry=entry;res.simSl=sl;res.simTarget=fixedTarget?targetPrice:0.0;
+   res.entrySpreadPoints=(firstTick.ask-firstTick.bid)/point;
+   res.simEntry=entry;res.entryTime=fillTime;res.simSl=sl;res.simTarget=fixedTarget?targetPrice:0.0;
    double tps[6];tps[0]=tp1;tps[1]=tp2;tps[2]=tp3;tps[3]=tp4;tps[4]=tp5;tps[5]=tp6;
 
    long cursor=MathMax(fromMs,(long)firstTick.time_msc);
@@ -710,7 +711,7 @@ HistResult SimulateHistoricalLifecycleAdvanced(datetime entryTime,datetime sessi
    bool scheduledEndReached=(!sessionBound||now>=sessionEnd);
    HistResult advanced;
    advanced.maxTp=0;advanced.outcome="open";advanced.netR=0;advanced.isWin=false;
-   advanced.simEntry=entry;advanced.simSl=sl;advanced.simTarget=0;advanced.costR=0;
+   advanced.simEntry=entry;advanced.entryTime=0;advanced.entrySpreadPoints=EMPTY_VALUE;advanced.simSl=sl;advanced.simTarget=0;advanced.costR=0;
    advanced.exitMode=RuntimeExitLabel();advanced.exitPrice=0;advanced.exitTime=0;
    advanced.valid=false;advanced.invalidReason="NO_MARKET_DATA";
    advanced.targetLeg=RuntimeTargetLeg();advanced.hcLeg=ClampHalfBeLeg(halfBeLeg,advanced.targetLeg);

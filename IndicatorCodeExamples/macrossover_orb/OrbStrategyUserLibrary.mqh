@@ -94,7 +94,8 @@ void OrbUserReload(bool force=false)
       if(parts>=6)
       {
          if(meta[5]!="MAADV1=0"&&meta[5]!="MAADV1=1")continue;
-         record.advancedReverse=(meta[5]=="MAADV1=1");
+         if(meta[5]=="MAADV1=1")record.preset.invertMode=true;
+         record.advancedReverse=false;
       }
       if(parts==7)
       {

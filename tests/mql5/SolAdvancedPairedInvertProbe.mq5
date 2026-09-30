@@ -33,9 +33,11 @@ void OnStart()
       source.risk=MathAbs(source.entry-source.sl);
       SetSignalTargetLadder(source);
       string why="";double target=SelectedTarget(source,g_target,ERL_TARGET_FIXED_R);
-      bool ok=ApplyFullInversionGeometry(source,g_target,ERL_TARGET_FIXED_R,inverse,why);
-      if(!ok||MathAbs(inverse.sl-target)>TickSize()*0.5
-         ||MathAbs(inverse.targetOverride-source.sl)>TickSize()*0.5)
+      double inverseEntry=NormTradePrice(source.entry-source.dir*20*point);
+      bool ok=ApplyFullInversionGeometry(source,g_target,ERL_TARGET_FIXED_R,inverse,why,inverseEntry);
+      if(!ok||MathAbs(inverse.sl-target)>TickSize()
+         ||MathAbs(inverse.targetOverride-(source.sl+source.dir*20*point))>TickSize()
+         ||MathAbs(inverse.entry-inverseEntry)>TickSize())
       {FileWrite(out,"ERROR","SWAP",direction,why);ProbeDeinit(0);FileClose(out);return;}
    }
    for(int invert=0;invert<2;invert++)

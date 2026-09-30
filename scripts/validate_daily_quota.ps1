@@ -1,4 +1,4 @@
-param([switch]$CompileEAs,[string]$ProbeName="DailyQuotaProbe")
+param([switch]$CompileEAs,[string]$ProbeName="DailyQuotaProbe",[string]$ProbeSymbol="USDJPYm")
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $editor='C:\MT5\DEMO\MetaEditor64.exe'
@@ -30,7 +30,7 @@ $terminal=Join-Path $worker 'terminal64.exe'
 if(Get-Process terminal64 -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $terminal}){throw 'Isolated worker already running'}
 Copy-Item -LiteralPath ([IO.Path]::ChangeExtension($probe,'.ex5')) -Destination (Join-Path $worker ('MQL5/Scripts/'+$ProbeName+'.ex5'))
 $ini=Join-Path $root '.tmp/daily_quota_probe.ini'
-@('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]',('Script='+$ProbeName),'Symbol=USDJPYm','Period=M5','ShutdownTerminal=1')|Set-Content $ini -Encoding ASCII
+@('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]',('Script='+$ProbeName),('Symbol='+$ProbeSymbol),'Period=M5','ShutdownTerminal=1')|Set-Content $ini -Encoding ASCII
 $started=Get-Date
 $p=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
 if(!$p.WaitForExit(180000)){throw 'Probe timeout'}

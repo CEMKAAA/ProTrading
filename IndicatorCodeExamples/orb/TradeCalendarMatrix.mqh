@@ -2,6 +2,10 @@
 #define TRADE_CALENDAR_MATRIX_MQH
 #include "DailyTradeQuota.mqh"
 
+bool g_tcalCsvRequested=false;
+string g_tcalCsvStatus="Current audit, one row per trade";
+double g_tcalCsvProgress=0;
+
 enum ENTRY_DIRECTION_MODE { ENTRY_BOTH=0, ENTRY_BUY_ONLY=1, ENTRY_SELL_ONLY=2 };
 input group "Entry Direction"
 input ENTRY_DIRECTION_MODE InpEntryDirection=ENTRY_BOTH;
@@ -46,6 +50,7 @@ int g_tcalRankMode=2; // 0: day, 1: hour, 2: day-hour.
 int g_tcalRankPickCount=0;
 bool g_tcalRankPending=false,g_tcalDraftEdited=false;
 int g_tcalMinSample=10;
+string g_tcalSmartWrText="96",g_tcalActionNote="";
 int g_tcalX=0,g_tcalY=0;
 string g_tcalPrefix="";
 string g_tcalClockLabel="BROKER SERVER TIME";
@@ -331,6 +336,7 @@ void TCalOpen(int x,int y)
    for(int day=0;day<7;day++)g_tcalDraftDayHours[day]=g_tcalDayHours[day];
    g_tcalRankPending=false;g_tcalDraftEdited=false;g_tcalRankPickCount=0;
    g_tcalView=0;g_tcalPage=0;g_tcalUiDirty=true;
+   g_tcalActionNote="";
 }
 bool TCalApplyDraft()
 {
@@ -350,13 +356,26 @@ bool TCalApplyDraft()
    g_tcalEnabled=oldEnabled;
    return false;
 }
-bool TCalApplyHourAllDays(int hour)
+bool TCalBucketValid(int mode,int key)
 {
-   if(hour<0||hour>23)return false;
-   int bit=1<<hour,oldHours[7];bool oldEnabled=g_tcalEnabled,changed=!oldEnabled;
+   return (mode==0&&key>=0&&key<7)||(mode==1&&key>=0&&key<24)||(mode==2&&key>=0&&key<168);
+}
+int TCalBucketMask(int mode,int key,int day)
+{
+   if(mode==0)return day==key?16777215:0;
+   if(mode==1)return 1<<key;
+   return day==key/24?1<<(key%24):0;
+}
+bool TCalSetBucket(int mode,int key,bool enabled)
+{
+   if(!TCalBucketValid(mode,key))return false;
+   int oldHours[7];bool oldEnabled=g_tcalEnabled,changed=!oldEnabled;
    for(int day=0;day<7;day++)
    {
-      oldHours[day]=g_tcalDayHours[day];g_tcalDayHours[day]|=bit;
+      oldHours[day]=g_tcalDayHours[day];
+      int mask=TCalBucketMask(mode,key,day);
+      if(enabled)g_tcalDayHours[day]|=mask;
+      else g_tcalDayHours[day]&=~mask;
       if(oldHours[day]!=g_tcalDayHours[day])changed=true;
    }
    g_tcalEnabled=true;
@@ -365,12 +384,28 @@ bool TCalApplyHourAllDays(int hour)
       for(int day=0;day<7;day++)g_tcalDayHours[day]=oldHours[day];
       g_tcalEnabled=oldEnabled;return false;
    }
-   // Do not apply unrelated staged edits; keep this applied hour in the draft too.
+   // Apply only this bucket; unrelated leaderboard/selector edits stay staged.
    for(int day=0;day<7;day++)
-      if(g_tcalDraftEdited||g_tcalRankPending)g_tcalDraftDayHours[day]|=bit;
+      if(g_tcalDraftEdited||g_tcalRankPending)
+      {
+         int mask=TCalBucketMask(mode,key,day);
+         if(enabled)g_tcalDraftDayHours[day]|=mask;
+         else g_tcalDraftDayHours[day]&=~mask;
+      }
       else g_tcalDraftDayHours[day]=g_tcalDayHours[day];
    if(changed)g_tcalChanged=true;
    g_tcalUiDirty=true;return true;
+}
+bool TCalApplyHourAllDays(int hour){return TCalSetBucket(1,hour,true);}
+bool TCalBucketActive(int mode,int key)
+{
+   if(!g_tcalEnabled||!TCalBucketValid(mode,key))return false;
+   for(int day=0;day<7;day++)
+   {
+      int mask=TCalBucketMask(mode,key,day);
+      if((g_tcalDayHours[day]&mask)!=mask)return false;
+   }
+   return true;
 }
 bool TCalHourAllDaysActive(int hour)
 {
@@ -468,6 +503,38 @@ int TCalStageRankedPage()
    }
    return added;
 }
+bool TCalParseWr(string text,double &value)
+{
+   StringTrimLeft(text);StringTrimRight(text);StringReplace(text,",",".");
+   int dots=0,digits=0;
+   for(int i=0;i<StringLen(text);i++)
+   {
+      ushort c=StringGetCharacter(text,i);
+      if(c=='.'){if(++dots>1)return false;}
+      else if(c>='0'&&c<='9')digits++;
+      else return false;
+   }
+   if(digits==0)return false;
+   value=StringToDouble(text);
+   return MathIsValidNumber(value)&&value>=0.0&&value<=100.0;
+}
+int TCalStageSmartWr(double threshold)
+{
+   if(!MathIsValidNumber(threshold)||threshold<0.0||threshold>100.0)return -1;
+   int selected[7];ArrayInitialize(selected,0);int count=0;
+   for(int day=0;day<7;day++)for(int hour=0;hour<24;hour++)
+   {
+      int wins=g_tcalWins[day][hour],losses=g_tcalLosses[day][hour],n=wins+losses;
+      if(n>0&&n>=g_tcalMinSample&&TCalWr(wins,losses)+1e-10>=threshold)
+      {selected[day]|=1<<hour;count++;}
+   }
+   if(count==0)return 0;
+   // Replace the draft so a previous lower-WR pick cannot survive smart selection.
+   for(int day=0;day<7;day++)g_tcalDraftDayHours[day]=selected[day];
+   g_tcalRankMode=2;g_tcalPage=0;g_tcalRankPending=true;g_tcalDraftEdited=true;
+   g_tcalRankPickCount=count;g_tcalUiDirty=true;
+   return count;
+}
 void TCalLauncher(string scope,int x,int y,int modalX,int modalY,string clockLabel)
 {
    if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
@@ -542,13 +609,15 @@ void TCalDraw()
 {
    if(!g_tcalOpen)return;
    g_tcalUiDirty=false;
+   if(ObjectFind(0,TCalId("MOD_SMART_WR"))>=0)
+      g_tcalSmartWrText=ObjectGetString(0,TCalId("MOD_SMART_WR"),OBJPROP_TEXT);
    TCalClearModal();
    int x=g_tcalX,y=g_tcalY;
    TCalObj("MOD_BG",OBJ_RECTANGLE_LABEL,x,y,636,478,"",C'20,26,33',clrWhite);
    TCalObj("MOD_TITLE",OBJ_LABEL,x+16,y+12,0,0,"ENTRY TIME MATRIX  |  "+g_tcalClockLabel,C'20,26,33',C'239,243,245',11);
    TCalObj("MOD_CLOSE",OBJ_BUTTON,x+590,y+8,30,23,"X",C'70,75,82',clrWhite);
    TCalObj("MOD_NOTE",OBJ_LABEL,x+16,y+39,0,0,
-      g_tcalView==1?"UYGULA: enable this hour on all days now; other hours unchanged.":
+      g_tcalView<3?"UYGULA opens the row; IPTAL ET removes it. Other selections stay unchanged.":
       (g_tcalView==3?"Pick multiple rows first; APPLY PICKS changes the active filter and audit together.":
       "Selected audit window; closed trades only. Adjust leaderboard sample floor below."),
       C'20,26,33',C'158,172,180',8);
@@ -564,6 +633,9 @@ void TCalDraw()
          for(int hour=0;hour<24;hour++){wins+=g_tcalWins[day][hour];losses+=g_tcalLosses[day][hour];}
          TCalObj("MOD_ROW_"+(string)day,OBJ_LABEL,x+30,y+101+day*38,0,0,
             TCalDayName(day)+"     "+TCalStats(wins,losses),C'20,26,33',C'225,231,234',9);
+         TCalObj("MOD_DAY_APPLY_"+(string)day,OBJ_BUTTON,x+428,y+97+day*38,80,24,"UYGULA",
+            TCalBucketActive(0,day)?C'41,118,107':C'43,93,105',clrWhite,8);
+         TCalObj("MOD_DAY_CANCEL_"+(string)day,OBJ_BUTTON,x+516,y+97+day*38,92,24,"IPTAL ET",C'80,68,65',clrWhite,8);
       }
    }
    else if(g_tcalView==1||g_tcalView==2)
@@ -582,9 +654,12 @@ void TCalDraw()
          else for(int day=0;day<7;day++){wins+=g_tcalWins[day][hour];losses+=g_tcalLosses[day][hour];}
          TCalObj("MOD_ROW_"+(string)row,OBJ_LABEL,x+30,y+132+row*34,0,0,
             TCalHourName(hour)+"     "+TCalStats(wins,losses),C'20,26,33',C'225,231,234',9);
-         if(g_tcalView==1)
-            TCalObj("MOD_HOUR_APPLY_"+(string)hour,OBJ_BUTTON,x+508,y+128+row*34,100,24,
-               "UYGULA",TCalHourAllDaysActive(hour)?C'41,118,107':C'43,93,105',clrWhite,8);
+         int mode=g_tcalView==1?1:2,key=mode==1?hour:g_tcalDay*24+hour;
+         string tag=mode==1?"MOD_HOUR_":"MOD_CELL_";
+         TCalObj(tag+"APPLY_"+(string)key,OBJ_BUTTON,x+428,y+128+row*34,80,24,
+            "UYGULA",TCalBucketActive(mode,key)?C'41,118,107':C'43,93,105',clrWhite,8);
+         TCalObj(tag+"CANCEL_"+(string)key,OBJ_BUTTON,x+516,y+128+row*34,92,24,
+            "IPTAL ET",C'80,68,65',clrWhite,8);
       }
    }
    else if(g_tcalView==3)
@@ -607,16 +682,20 @@ void TCalDraw()
             if(row==0)TCalObj("MOD_ROW_0",OBJ_LABEL,x+30,y+137,0,0,"No row reaches min N = "+(string)g_tcalMinSample,C'20,26,33',C'225,231,234');
             break;
          }
-         TCalObj("MOD_ROW_"+(string)row,OBJ_LABEL,x+30,y+132+row*34,0,0,
+         TCalObj("MOD_ROW_"+(string)row,OBJ_LABEL,x+30,y+132+row*30,0,0,
             (string)(rank+1)+".  "+TCalRankLabel(g_tcalRankMode,key)+"     "+TCalStats(wins,losses),
             C'20,26,33',C'225,231,234',9);
          bool picked=g_tcalRankPending&&TCalRankBucketSelected(g_tcalRankMode,key);
-         TCalObj("MOD_RANK_ADD_"+(string)key,OBJ_BUTTON,x+508,y+128+row*34,100,24,
+         TCalObj("MOD_RANK_ADD_"+(string)key,OBJ_BUTTON,x+508,y+128+row*30,100,24,
             picked?"PICKED":"+ PICK",picked?C'41,118,107':C'43,93,105',clrWhite,8);
       }
+      TCalObj("MOD_SMART_LABEL",OBJ_LABEL,x+30,y+378,0,0,"WR >=",C'20,26,33',clrWhite,9);
+      TCalObj("MOD_SMART_WR",OBJ_EDIT,x+91,y+372,72,24,g_tcalSmartWrText,C'26,33,42',clrWhite,9);
+      TCalObj("MOD_SMART_PICK",OBJ_BUTTON,x+173,y+372,130,24,"AKILLI SEC",C'43,93,105',clrWhite,8);
+      TCalObj("MOD_SMART_HINT",OBJ_LABEL,x+316,y+378,0,0,"DAY x HOUR | ALL PAGES | MIN N",C'20,26,33',C'158,172,180',8);
       TCalObj("MOD_PICK_STATUS",OBJ_LABEL,x+30,y+405,0,0,
-         g_tcalRankPending?"STAGED: "+(string)g_tcalRankPickCount+" new rows | audit unchanged until APPLY":
-         "Pick rows across pages or categories, then apply together.",
+         g_tcalActionNote!=""?g_tcalActionNote:(g_tcalRankPending?"STAGED: "+(string)g_tcalRankPickCount+" rows | audit unchanged until APPLY":
+         "Pick rows across pages or categories, then apply together."),
          C'20,26,33',C'188,200,207',8);
       TCalObj("MOD_RANK_PAGE",OBJ_BUTTON,x+24,y+427,160,28,"PICK PAGE",
          C'43,93,105',clrWhite,8);
@@ -656,6 +735,8 @@ void TCalDraw()
       TCalObj("MOD_DISABLE",OBJ_BUTTON,x+196,y+304,160,28,"FILTER OFF",C'80,68,65',clrWhite,9);
       TCalObj("MOD_HINT",OBJ_LABEL,x+24,y+353,0,0,"Each day has its own hours. APPLY requires at least one selected hour.",C'20,26,33',C'158,172,180',8);
    }
+   if(g_tcalView<3&&g_tcalActionNote!="")
+      TCalObj("MOD_ACTION_NOTE",OBJ_LABEL,x+24,y+405,0,0,g_tcalActionNote,C'20,26,33',C'188,200,207',8);
    if(g_tcalView==1||g_tcalView==2||g_tcalView==3)
    {
       TCalObj("MOD_PREV",OBJ_BUTTON,x+222,y+430,45,24,"<",C'43,50,59',clrWhite);
@@ -663,6 +744,10 @@ void TCalDraw()
       TCalObj("MOD_PAGE",OBJ_LABEL,x+280,y+436,0,0,"PAGE "+(string)(g_tcalPage+1)+"/"+(string)pages,C'20,26,33',clrWhite,8);
       TCalObj("MOD_NEXT",OBJ_BUTTON,x+348,y+430,45,24,">",C'43,50,59',clrWhite);
    }
+   TCalObj("MOD_CSV_PROGRESS_BG",OBJ_RECTANGLE_LABEL,x+205,y+455,403,2,"",C'43,50,59',clrSilver,8);
+   TCalObj("MOD_CSV_PROGRESS",OBJ_RECTANGLE_LABEL,x+205,y+455,MathMax(1,(int)(403*g_tcalCsvProgress/100)),2,"",C'88,224,177',clrSilver,8);
+   TCalObj("MOD_CSV",OBJ_BUTTON,x+16,y+457,178,18,"EXPORT AUDIT CSV",C'43,93,105',clrWhite,8);
+   TCalObj("MOD_CSV_STATUS",OBJ_LABEL,x+205,y+459,0,0,StringSubstr(g_tcalCsvStatus,0,65),clrBlack,clrSilver,8);
    if(g_tcalView==4&&g_tcalPage>0)
    {
       TCalObj("MOD_PICK_PREV",OBJ_BUTTON,x+222,y+430,45,24,"<",C'43,50,59',clrWhite);
@@ -686,7 +771,11 @@ void DailyQuotaLauncher(string scope,int x,int y,double scale=1.0)
 bool TCalEvent(int id,long lx,double dy,string clicked)
 {
    if(LossHoursEvent(id,clicked))return true;
-   if(g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT)return true;
+   if(g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      if(clicked==TCalId("MOD_SMART_WR"))g_tcalSmartWrText=ObjectGetString(0,clicked,OBJPROP_TEXT);
+      return true;
+   }
    if(!g_tcalOpen&&id==CHARTEVENT_OBJECT_ENDEDIT&&(clicked==TCalId("DAILY_LOSS")||clicked==TCalId("DAILY_WIN")||clicked==TCalId("DAILY_START")))
    {if(clicked==TCalId("DAILY_LOSS"))g_dailyLossDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);
     else if(clicked==TCalId("DAILY_WIN"))g_dailyWinDraft=ObjectGetString(0,clicked,OBJPROP_TEXT);
@@ -730,17 +819,39 @@ bool TCalEvent(int id,long lx,double dy,string clicked)
    }
    ObjectSetInteger(0,clicked,OBJPROP_STATE,false);
    if(clicked==TCalId("MOD_CLOSE")){g_tcalOpen=false;TCalClearModal();ChartRedraw(0);return true;}
-   string applyHourTag=TCalId("MOD_HOUR_APPLY_");
-   if(StringFind(clicked,applyHourTag)==0)
+   if(clicked==TCalId("MOD_CSV")){g_tcalCsvRequested=true;return true;}
+   string rowTags[6]={"MOD_DAY_APPLY_","MOD_DAY_CANCEL_","MOD_HOUR_APPLY_","MOD_HOUR_CANCEL_","MOD_CELL_APPLY_","MOD_CELL_CANCEL_"};
+   for(int action=0;action<6;action++)
    {
-      string suffix=StringSubstr(clicked,StringLen(applyHourTag));
-      int hour=(int)StringToInteger(suffix);
-      if(g_tcalView==1&&suffix==(string)hour&&hour>=0&&hour<24&&hour/8==g_tcalPage)
-         if(!TCalApplyHourAllDays(hour))Print("Hour could not persist; schedule unchanged");
+      string tag=TCalId(rowTags[action]);
+      if(StringFind(clicked,tag)!=0)continue;
+      string suffix=StringSubstr(clicked,StringLen(tag));int key=(int)StringToInteger(suffix),mode=action/2;
+      bool visible=g_tcalView==mode&&suffix==(string)key&&TCalBucketValid(mode,key);
+      if(mode==1)visible=visible&&key/8==g_tcalPage;
+      if(mode==2)visible=visible&&key/24==g_tcalDay&&(key%24)/8==g_tcalPage;
+      if(visible)
+      {
+         bool enabled=action%2==0;
+         if(TCalSetBucket(mode,key,enabled))g_tcalActionNote=TCalRankLabel(mode,key)+(enabled?" enabled":" removed");
+         else g_tcalActionNote="Not applied: keep at least one hour selected; save must succeed.";
+      }
+      TCalDraw();ChartRedraw(0);return true;
+   }
+   if(clicked==TCalId("MOD_SMART_PICK")&&g_tcalView==3)
+   {
+      g_tcalSmartWrText=ObjectGetString(0,TCalId("MOD_SMART_WR"),OBJPROP_TEXT);
+      double threshold=0.0;
+      if(!TCalParseWr(g_tcalSmartWrText,threshold))g_tcalActionNote="WR must be a number from 0 to 100. Selection unchanged.";
+      else
+      {
+         int picked=TCalStageSmartWr(threshold);
+         g_tcalActionNote=picked>0?(string)picked+" day-hour rows staged. Press APPLY PICKS.":
+            "No row meets WR and MIN N. Selection unchanged.";
+      }
       TCalDraw();ChartRedraw(0);return true;
    }
    g_tcalUiDirty=true;
-   for(int i=0;i<5;i++)if(clicked==TCalId("MOD_TAB_"+(string)i)){g_tcalView=i;g_tcalPage=0;TCalDraw();ChartRedraw(0);return true;}
+   for(int i=0;i<5;i++)if(clicked==TCalId("MOD_TAB_"+(string)i)){g_tcalView=i;g_tcalPage=0;g_tcalActionNote="";TCalDraw();ChartRedraw(0);return true;}
    for(int mode=0;mode<3;mode++)if(clicked==TCalId("MOD_RANK_MODE_"+(string)mode))
    {g_tcalRankMode=mode;g_tcalPage=0;TCalDraw();ChartRedraw(0);return true;}
    string rankTag=TCalId("MOD_RANK_ADD_");
@@ -752,8 +863,8 @@ bool TCalEvent(int id,long lx,double dy,string clicked)
    }
    if(clicked==TCalId("MOD_RANK_APPLY"))
    {
-      if(g_tcalRankPending&&g_tcalRankPickCount>0&&!TCalApplyDraft())
-         Print("Time matrix leaderboard picks could not persist; active filter unchanged");
+      if(g_tcalRankPending&&g_tcalRankPickCount>0)
+         g_tcalActionNote=TCalApplyDraft()?"Picks applied to the active filter.":"Picks not saved; active filter unchanged.";
       TCalDraw();ChartRedraw(0);return true;
    }
    if(clicked==TCalId("MOD_RANK_PAGE"))

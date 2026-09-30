@@ -1,0 +1,311 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © lucidreamer15, Youtube -> lucidreamer Crypto 
+//Special Thanks To;
+//@Kivanc Ozbilgic for Supertrend
+//@LonesomeTheBlue for Pivot Point Supertrend
+//@everget for Jurik RSX
+
+//@version=4
+
+study("SuperTrendS", overlay = true, format=format.price, precision=2)
+
+//RSX
+length = input(title="RSX Length", type=input.integer, defval=14, group='RSX')
+src1 = input(title="RSX Source", type=input.source, defval=hlc3, group='RSX')
+obLevel = input(title="RSX OB Level", type=input.integer, defval=70, group='RSX')
+osLevel = input(title="RSX OS Level", type=input.integer, defval=30, group='RSX')
+
+f8 = 100 * src1
+f10 = nz(f8[1])
+v8 = f8 - f10
+
+f18 = 3 / (length + 2)
+f20 = 1 - f18
+
+f28 = 0.0
+f28 := f20 * nz(f28[1]) + f18 * v8
+
+f30 = 0.0
+f30 := f18 * f28 + f20 * nz(f30[1])
+vC = f28 * 1.5 - f30 * 0.5
+
+f38 = 0.0
+f38 := f20 * nz(f38[1]) + f18 * vC
+
+f40 = 0.0
+f40 := f18 * f38 + f20 * nz(f40[1])
+v10 = f38 * 1.5 - f40 * 0.5
+
+f48 = 0.0
+f48 := f20 * nz(f48[1]) + f18 * v10
+
+f50 = 0.0
+f50 := f18 * f48 + f20 * nz(f50[1])
+v14 = f48 * 1.5 - f50 * 0.5
+
+f58 = 0.0
+f58 := f20 * nz(f58[1]) + f18 * abs(v8)
+
+f60 = 0.0
+f60 := f18 * f58 + f20 * nz(f60[1])
+v18 = f58 * 1.5 - f60 * 0.5
+
+f68 = 0.0
+f68 := f20 * nz(f68[1]) + f18 * v18
+
+f70 = 0.0
+f70 := f18 * f68 + f20 * nz(f70[1])
+v1C = f68 * 1.5 - f70 * 0.5
+
+f78 = 0.0
+f78 := f20 * nz(f78[1]) + f18 * v1C
+
+f80 = 0.0
+f80 := f18 * f78 + f20 * nz(f80[1])
+v20 = f78 * 1.5 - f80 * 0.5
+
+f88_ = 0.0
+f90_ = 0.0
+
+f88 = 0.0
+f90_ := nz(f90_[1]) == 0 ? 1 : nz(f88[1]) <= nz(f90_[1]) ? nz(f88[1]) + 1 : nz(f90_[1]) + 1
+f88 := nz(f90_[1]) == 0 and (length - 1 >= 5) ? length - 1 : 5
+
+f0 = f88 >= f90_ and f8 != f10 ? 1 : 0
+f90 = f88 == f90_ and f0 == 0 ? 0 : f90_
+
+v4_ = f88 < f90 and v20 > 0 ? (v14 / v20 + 1) * 50 : 50
+rsx = v4_ > 100 ? 100 : v4_ < 0 ? 0 : v4_
+
+rsxob = rsx > obLevel
+rsxos = rsx < osLevel
+rsxobos = (rsx > obLevel or rsx < osLevel)
+
+regularst = input(title='Use Regular ST?', defval=true,group='ST Preference')
+ppst= input(title='Use Pivot Point ST?', defval=false,group='ST Preference')
+zigzagst = input(title='Use ZigZag ST?', defval=false,group='ST Preference')
+
+//Regular ST 
+Periods = input(title="ATR Period", type=input.integer, defval=10,group='Regular SuperTrend')
+src = input(hl2, title="Source",group='Regular SuperTrend')
+Multiplier = input(title="ATR Multiplier", type=input.float, step=0.1, defval=3.0 ,group='Regular SuperTrend')
+changeATR= input(title="Change ATR Calculation Method ?", type=input.bool, defval=true,group='Regular SuperTrend')
+atr2 = sma(tr, Periods)
+atr= changeATR ? atr(Periods) : atr2
+up=src-(Multiplier*atr)
+up1 = nz(up[1],up)
+up := close[1] > up1 ? max(up,up1) : up
+dn=src+(Multiplier*atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? min(dn, dn1) : dn
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+upPlot = plot(trend == 1 ? up : na, title="ST Up Trend", style=plot.style_linebr, linewidth=2, color= rsx < osLevel ? color.orange : color.lime ,transp=regularst ? 0 : 100)
+buySignal = trend == 1 and trend[1] == -1
+plotshape(buySignal ? up : na, title="ST UpTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=color.green, transp=regularst ? 0 : 100)
+dnPlot = plot(trend == 1 ? na : dn, title="ST Down Trend", style=plot.style_linebr, linewidth=2, color= rsx> obLevel ? color.fuchsia : color.red, transp=regularst ? 0 : 100)
+sellSignal = trend == -1 and trend[1] == 1
+plotshape(sellSignal ? dn : na, title="ST DownTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=color.red, transp=regularst ? 0 : 100)
+mPlot = plot(ohlc4, title="", style=plot.style_circles, linewidth=0)
+
+changeCond = trend != trend[1]
+alertcondition(changeCond, title="Regular SuperTrend Direction Change", message="Regular SuperTrend has changed direction!")
+
+//Pivot Point Supertrend 
+prd = input(defval = 2, title="Pivot Point Period", minval = 1, maxval = 50,group='Pivot Point SuperTrend')
+Factor=input(defval = 3, title = "ATR Factor", minval = 1, step = 0.1,group='Pivot Point SuperTrend')
+Pd=input(defval = 10, title = "ATR Period", minval=1,group='Pivot Point SuperTrend')
+showpivot = input(defval = false, title="Show Pivot Points",group='Pivot Point SuperTrend')
+showlabel = input(defval = true, title="Show Buy/Sell Labels",group='Pivot Point SuperTrend')
+showcl = input(defval = false, title="Show PP Center Line",group='Pivot Point SuperTrend')
+showsr = input(defval = false, title="Show Support/Resistance",group='Pivot Point SuperTrend')
+
+// get Pivot High/Low
+float ph = pivothigh(prd, prd)
+float pl = pivotlow(prd, prd)
+
+// drawl Pivot Points if "showpivot" is enabled
+plotshape(ph and showpivot, text="H",  style=shape.labeldown, color=na, textcolor=color.red, location=location.abovebar, transp=0, offset = -prd)
+plotshape(pl and showpivot, text="L",  style=shape.labeldown, color=na, textcolor=color.lime, location=location.belowbar, transp=0, offset = -prd)
+
+// calculate the Center line using pivot points
+var float center = na
+float lastpp = ph ? ph : pl ? pl : na
+if lastpp
+    if na(center)
+        center := lastpp
+    else
+        //weighted calculation
+        center := (center * 2 + lastpp) / 3
+
+// upper/lower bands calculation
+Up = center - (Factor * atr(Pd))
+Dn = center + (Factor * atr(Pd))
+
+// get the trend
+float TUp = na
+float TDown = na
+Trend = 0
+TUp := close[1] > TUp[1] ? max(Up, TUp[1]) : Up
+TDown := close[1] < TDown[1] ? min(Dn, TDown[1]) : Dn
+Trend := close > TDown[1] ? 1: close < TUp[1]? -1: nz(Trend[1], 1)
+Trailingsl = Trend == 1 ? TUp : TDown
+
+// plot the trend
+linecolor = Trend == 1 and nz(Trend[1]) == 1 ? color.lime : Trend == -1 and nz(Trend[1]) == -1 ? color.red : na
+
+
+plot(Trend == 1 ? TUp :na, color= rsx < osLevel ? color.orange : color.lime , style=plot.style_linebr,  linewidth = 2, title = "PPST UpTrend",transp=ppst ? 0 : 100)
+plot(Trend == -1 ? TDown :na, color= rsx> obLevel ? color.fuchsia : color.red , style=plot.style_linebr,  linewidth = 2, title = "PPST DownTrend",transp=ppst ? 0 : 100)
+ 
+plot(showcl ? center : na, color = showcl ? center < hl2 ? color.blue : color.red : na, transp=regularst ? 100 : 0)
+
+// check and plot the signals
+bsignal = Trend == 1 and Trend[1] == -1
+ssignal = Trend == -1 and Trend[1] == 1
+plotshape(bsignal and showlabel ? Trailingsl : na, title="Buy", text="Buy", location = location.absolute, style = shape.labelup, size = size.tiny, color = color.lime, textcolor = color.black, transp=ppst ? 0 : 100)
+plotshape(ssignal and showlabel ? Trailingsl : na, title="Sell", text="Sell", location = location.absolute, style = shape.labeldown, size = size.tiny, color = color.red, textcolor = color.white, transp=ppst ? 0 : 100)
+
+//get S/R levels using Pivot Points
+float resistance = na
+float support = na
+support := pl ? pl : support[1]
+resistance := ph ? ph : resistance[1]
+
+// if enabled then show S/R levels
+plot(showsr and support ? support : na, color = showsr and support ? color.lime : na, style = plot.style_circles, offset = -prd,transp=ppst ? 0 : 100)
+plot(showsr and resistance ? resistance : na, color = showsr and resistance ? color.red : na, style = plot.style_circles, offset = -prd,transp=ppst ? 0 : 100)
+
+// alerts
+alertcondition(Trend == 1 and Trend[1] == -1, title='PPST Buy Signal', message='PPST Buy Signal')
+alertcondition(Trend == -1 and Trend[1] == 1, title='PPST Sell Signal', message='PPST Sell Signal')
+alertcondition(change(Trend), title='PPST Trend Changed', message='PPST Trend Changed')
+
+
+
+//ZIGZAG 
+source=input(close,group='ZigZag SuperTrend')
+Length = input(5, minval=0, step=5,group='ZigZag SuperTrend')
+DeviationThreshold = 0
+history = input(2, step=1, minval=2,group='ZigZag SuperTrend')
+waitForConfirmation = input(true,group='ZigZag SuperTrend')
+waitForClose = input(true,group='ZigZag SuperTrend')
+
+atrPeriods = input(22, step=5,group='ZigZag SuperTrend')
+atrMult = input(1, step=0.5,group='ZigZag SuperTrend')
+var zigzaglines = array.new_line(0)
+var zigzagpivots = array.new_float(0)
+int max_array_size = history
+
+pivots(length, highSource, lowSource)=>
+    float ph = highestbars(highSource, length) == 0 ? highSource : na
+    float pl = lowestbars(lowSource, length) == 0 ? lowSource : na
+    dir = 0
+    dir := iff(ph and na(pl), 1, iff(pl and na(ph), -1, dir[1]))
+    [dir, ph, pl]
+
+get_edir(dir, y2)=>
+    eDir = dir
+    if(array.size(zigzaglines) > 0)
+        lastLine = array.get(zigzaglines, 0)
+        lastPivot = line.get_y1(lastLine)
+        eDir := (dir*y2 > dir*lastPivot? 2 : 1) * dir
+    eDir
+
+add_to_zigzaglines(x1, y1 , x2, y2, dir)=>
+    eDir = get_edir(dir, y2)
+    zgColor = color.new(#FFFFFF, 100)
+    zline = line.new(x1=x1, y1=y1, 
+         x2 = x2, y2=y2,
+         color=zgColor, width=2, style=line.style_solid)
+    array.unshift(zigzaglines, zline)
+
+add_to_zigzag(dir, dirchanged, ph, pl, index, highSource, lowSource)=>
+    value = (dir == 1? ph : pl)
+    
+    lowestVal = lowest(lowSource, Length)
+    highestVal = highest(highSource, Length)
+    lowestBar = lowestbars(lowSource, Length)
+    highestBar = highestbars(highSource,Length)
+    y1= dir == 1? lowestVal : highestVal
+    x1 = bar_index + (dir == 1? lowestBar : highestBar)
+    x2 = index
+    y2 = value
+    skip = false
+    if(array.size(zigzaglines) > 0)
+        lastLine = array.get(zigzaglines, 0)
+        lastValue = line.get_y2(lastLine)
+        lastIndex = line.get_x2(lastLine)
+        
+        if(not dirchanged)
+            if(dir == 1 and value < lastValue) or (dir == -1 and value > lastValue)
+                skip := true
+            else
+                line.delete(array.shift(zigzaglines))
+                skip := false
+                
+        if(array.size(zigzaglines) > 0)
+            lastLine := array.get(zigzaglines, 0)
+            lastValue := line.get_y2(lastLine)
+            lastIndex := line.get_x2(lastLine)
+            x1 := lastIndex
+            y1 := lastValue
+
+    outsideDeviationThreshold = ((abs(y1-y2)*100/y1) > DeviationThreshold)
+    if(outsideDeviationThreshold and not skip)
+        add_to_zigzaglines(x1, y1 , x2, y2, dir)
+    if array.size(zigzaglines) > max_array_size
+        line.delete(array.pop(zigzaglines))
+
+zigzag(length, DeviationThreshold, highSource, lowSource)=>
+    [dir, ph, pl] = pivots(length, highSource, lowSource)
+    dirchanged = change(dir)
+    if(ph or pl)
+        add_to_zigzag(dir, dirchanged, ph, pl, bar_index, highSource, lowSource)
+
+get_high_low()=>
+    array.clear(zigzagpivots)
+    startIndex = waitForConfirmation? 1 : 0
+    if(array.size(zigzaglines) > startIndex)
+        for i=startIndex to array.size(zigzaglines)-1
+            zgLine = array.get(zigzaglines, i)
+            y1 = line.get_y1(zgLine)
+            y2 = line.get_y2(zgLine)
+            array.unshift(zigzagpivots,y1)
+            array.unshift(zigzagpivots,y2)
+        
+    top = array.max(zigzagpivots)
+    bottom = array.min(zigzagpivots)
+    [top, bottom]
+
+supertrend_zg(top, bottom)=>
+    dir = 1
+    prevDir = nz(dir[1], dir)
+    
+    atrDiff = atr(atrPeriods) * atrMult
+    buyStop = bottom - atrDiff
+    buyStopPrev = nz(buyStop[1], buyStop)
+    sellStop = top + atrDiff
+    sellStopPrev = nz(sellStop[1], sellStop)
+    
+    buyStop := prevDir == 1? max(buyStop, buyStopPrev) : buyStop
+    sellStop := prevDir == -1? min(sellStop, sellStopPrev) : sellStop
+    
+    bullishCrossover = crossover(waitForClose? close : high, sellStopPrev)
+    bearishCrossunder = crossunder(waitForClose? close : low, buyStopPrev)
+    dir := (prevDir == 1 and bearishCrossunder)? -1 :
+                 (prevDir == -1 and bullishCrossover)? 1:
+                 prevDir
+    [dir, buyStop, sellStop]
+    
+highSource = source == close? high : source
+lowSource = source == close? low : source
+
+zigzag(Length, DeviationThreshold, highSource, lowSource)
+[top, bottom] = get_high_low()
+[dir, buyStop, sellStop] = supertrend_zg(top, bottom)
+
+plot(dir == 1? buyStop : na, color= rsx < osLevel ? color.orange : color.lime , title="BuyStop",linewidth=2, style=plot.style_linebr,transp=zigzagst ? 0 : 100)
+plot(dir == -1? sellStop : na, color= rsx> obLevel ? color.fuchsia : color.red , title="SellStop",linewidth=2, style=plot.style_linebr,transp=zigzagst ? 0 : 100)
+alertcondition(dir != dir[1], "ZigZag Supertrend direction update", "ZigZag Supertrend direction reversal observed")

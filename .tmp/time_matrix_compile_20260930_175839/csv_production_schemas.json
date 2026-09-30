@@ -1,0 +1,26 @@
+﻿[
+    {
+        "net_r":  "0.970000000000",
+        "compile":  "0 errors, 0 warnings",
+        "columns":  1292,
+        "settings":  263,
+        "ea":  "Orb",
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\MQL5\\Files\\CsvProductionOrbProbe.txt"
+    },
+    {
+        "net_r":  "0.970000000000",
+        "compile":  "0 errors, 0 warnings",
+        "columns":  1308,
+        "settings":  279,
+        "ea":  "Ma",
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\MQL5\\Files\\CsvProductionMaProbe.txt"
+    },
+    {
+        "net_r":  "0.970000000000",
+        "compile":  "0 errors, 0 warnings",
+        "columns":  1200,
+        "settings":  171,
+        "ea":  "Sol",
+        "path":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\.tmp\\orb_jp225_full_worker\\MQL5\\Files\\CsvProductionSolProbe.txt"
+    }
+]

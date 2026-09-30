@@ -1,0 +1,3 @@
+﻿success=true waited=true injected=true events=17 rows=64 reason=CSV saved: 64 rows | missing rows core=0 rolling=0 MTF=0 Kivanc=0
+csv=C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AuditExports\CsvRecoveryProbe_AXCSV_19494828_1790791734_61451820910524_19510546.csv
+

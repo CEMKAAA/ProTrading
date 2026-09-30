@@ -11,6 +11,7 @@
 #include "LiqNarrativeMacroRegime.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "TradeCalendarMatrix.mqh"
+#include "AuditTradeCsv.mqh"
 
 #define LN_BUILD "2026-09-24.sol-advanced-image-library-ui-v1"
 #define LN_PREFIX "LIQNARRSOL_"
@@ -80,6 +81,7 @@ input bool            InpCloseOnReverse         = true;
 input bool            InpBlockSameDirection     = true;
 input bool            InpAllowDuplicateEntriesDefault = true;
 input bool            InpInvertModeDefault      = false;
+input double          InpInverseMaxGapPctDefault = 10.0; // 100 disables the inverse quote-gap guard.
 
 input ENUM_TIMEFRAMES InpDefaultHtf             = PERIOD_H2;
 input ENUM_TIMEFRAMES InpDefaultEntryTf         = PERIOD_H1;
@@ -277,6 +279,9 @@ struct SimCacheEntry
    bool     valid;
    int      traceDir;
    double   traceEntry,traceSl,traceTp,traceHalf;
+   datetime traceEntryTime;
+   double traceEntrySpread;
+   string traceEntryBasis;
    datetime traceExitTime;
    string   traceExitReason;
 };
@@ -404,6 +409,7 @@ bool             g_fileBridgeOnlyMode = false;
 bool             g_nativeTradeWithBridgeOnly = false;
 bool             g_allowDuplicateEntries = false;
 bool             g_invertMode = false;
+double           g_inverseMaxGapPct = 10.0;
 double           g_riskPerTradePct = 1.0;
 
 datetime         g_lastAuditProbe = 0;
@@ -416,6 +422,12 @@ datetime         g_lastLiveScanAttempt = 0;
 datetime         g_lastHistLifecycleRefresh = 0;
 string           g_lastSimInvalidReason = "";
 int              g_lastSimExecDir = 0;
+datetime g_lastSimEntryTime=0;
+double g_lastSimEntrySpread=EMPTY_VALUE;
+string g_lastSimEntryBasis="UNKNOWN";
+datetime g_histSignalEntryTime[];
+double g_histSignalEntrySpread[];
+string g_histSignalEntryBasis[];
 double           g_lastSimExecEntry = 0.0;
 double           g_lastSimExecSl = 0.0;
 double           g_lastSimExecTp = 0.0;
@@ -513,6 +525,41 @@ bool SetRuntimeInvertMode(bool enabled)
    if(GlobalVariableSet(RuntimeInvertKey(), enabled ? 1.0 : 0.0) <= 0.0) return false;
    g_invertMode = enabled;
    return true;
+}
+
+string RuntimeInverseGapKey(){return RuntimeInvertKey()+".max_gap_pct";}
+bool SetRuntimeInverseGap(double value)
+{
+   if(!MathIsValidNumber(value)||value<0.0||value>100.0)return false;
+   if(GlobalVariableSet(RuntimeInverseGapKey(),value)<=0.0)return false;
+   g_inverseMaxGapPct=value;
+   return true;
+}
+void LoadRuntimeInverseGap()
+{
+   g_inverseMaxGapPct=InpInverseMaxGapPctDefault;
+   if(!MathIsValidNumber(g_inverseMaxGapPct)||g_inverseMaxGapPct<0.0||g_inverseMaxGapPct>100.0)
+      g_inverseMaxGapPct=10.0;
+   string key=RuntimeInverseGapKey();
+   if(GlobalVariableCheck(key))
+   {
+      double saved=GlobalVariableGet(key);
+      if(MathIsValidNumber(saved)&&saved>=0.0&&saved<=100.0)g_inverseMaxGapPct=saved;
+   }
+}
+bool ParseInverseGap(string raw,double &value)
+{
+   StringTrimLeft(raw);StringTrimRight(raw);
+   if(StringLen(raw)<1)return false;
+   bool dot=false;
+   for(int i=0;i<StringLen(raw);i++)
+   {
+      int ch=StringGetCharacter(raw,i);
+      if(ch=='.'&&!dot){dot=true;continue;}
+      if(ch<'0'||ch>'9')return false;
+   }
+   value=StringToDouble(raw);
+   return MathIsValidNumber(value)&&value>=0.0&&value<=100.0;
 }
 
 string TargetLabel(ERL_RR_MODE rr)
@@ -745,6 +792,7 @@ void SetHistoricalAuditProgress(string stage, double pct, bool force = false)
 
 void BeginHistoricalAuditProgress()
 {
+   AxReset();
    g_histAuditStartedMs = GetTickCount64();
    g_histAuditRunning = !IsTesterMode();
    g_histAuditProgressPct = 0.0;
@@ -810,7 +858,7 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
       + "|SP" + DoubleToString(g_btSpreadPts, 2)
       + "|SLIP" + DoubleToString(g_btSlippagePts, 2)
       + "|COMM" + DoubleToString(g_btCommissionPerLot, 4)
-      + "|INV" + (g_invertMode ? "1" : "0");
+      + "|INV" + (g_invertMode ? "LEVEL_SWAP_1" : "0") + "|INV_GAP" + DoubleToString(g_inverseMaxGapPct,4);
 }
 
 bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &valid)
@@ -833,6 +881,7 @@ bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &val
          valid = g_simCache[i].valid;
          g_lastSimInvalidReason = "";
          g_lastSimExecDir = g_simCache[i].traceDir;
+         g_lastSimEntryTime=g_simCache[i].traceEntryTime;g_lastSimEntrySpread=g_simCache[i].traceEntrySpread;g_lastSimEntryBasis=g_simCache[i].traceEntryBasis;
          g_lastSimExecEntry = g_simCache[i].traceEntry;
          g_lastSimExecSl = g_simCache[i].traceSl;
          g_lastSimExecTp = g_simCache[i].traceTp;
@@ -882,6 +931,7 @@ void SimCachePut(const string key, double r, bool closed, bool won, bool valid)
    g_simCache[n].won = won;
    g_simCache[n].valid = valid;
    g_simCache[n].traceDir = g_lastSimExecDir;
+   g_simCache[n].traceEntryTime=g_lastSimEntryTime;g_simCache[n].traceEntrySpread=g_lastSimEntrySpread;g_simCache[n].traceEntryBasis=g_lastSimEntryBasis;
    g_simCache[n].traceEntry = g_lastSimExecEntry;
    g_simCache[n].traceSl = g_lastSimExecSl;
    g_simCache[n].traceTp = g_lastSimExecTp;
@@ -2209,7 +2259,7 @@ void SetSignalTargetLadder(ErlSignal &sig)
 }
 
 bool ApplyFullInversionGeometry(const ErlSignal &source, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel,
-   ErlSignal &inverted, string &detail)
+   ErlSignal &inverted, string &detail, double inverseEntry=0.0, bool enforceGap=true)
 {
    detail = "";
    if(targetModel == ERL_TARGET_OPPOSITE_SIGNAL)
@@ -2219,19 +2269,32 @@ bool ApplyFullInversionGeometry(const ErlSignal &source, ERL_RR_MODE target, ERL
    }
    double sourceRisk = MathAbs(source.entry - source.sl);
    double sourceTarget = SelectedTarget(source, target, targetModel);
-   double sourceTargetDistance = MathAbs(sourceTarget - source.entry);
-   if(sourceRisk <= TickSize() || sourceTarget <= 0.0 || sourceTargetDistance <= TickSize())
+   if(sourceRisk <= TickSize() || sourceTarget <= 0.0 || MathAbs(sourceTarget - source.entry) <= TickSize())
    {
       detail = "full_invert_invalid_source_geometry";
       return false;
    }
 
+   if(enforceGap && inverseEntry>0.0 && g_inverseMaxGapPct<100.0)
+   {
+      double gapPct=100.0*MathAbs(inverseEntry-source.entry)/MathAbs(sourceTarget-source.entry);
+      if(gapPct>g_inverseMaxGapPct+1e-8)
+      {
+         detail="INVERSE_GAP_BLOCK quote_gap_pct="+DoubleToString(gapPct,4)
+            +" max_pct="+DoubleToString(g_inverseMaxGapPct,4);
+         return false;
+      }
+   }
    inverted = source;
    inverted.invertedGeometry = true;
    inverted.dir = -source.dir;
+   inverted.entry = NormTradePrice(inverseEntry > 0.0 ? inverseEntry : source.entry);
    inverted.sl = NormTradePrice(sourceTarget);
    inverted.risk = MathAbs(inverted.entry - inverted.sl);
-   inverted.targetOverride = NormTradePrice(source.sl);
+   // The inverse TP exits on the opposite quote from the source SL.
+   // Use the entry quote gap when available, including historical bar spread.
+   double askBuffer = inverseEntry > 0.0 ? MathAbs(inverseEntry-source.entry) : 0.0;
+   inverted.targetOverride = NormTradePrice(source.sl + inverted.dir * -askBuffer);
    inverted.externalTarget = 0.0;
    inverted.externalTime = 0;
    if(inverted.risk <= TickSize())
@@ -2246,15 +2309,31 @@ bool ApplyFullInversionGeometry(const ErlSignal &source, ERL_RR_MODE target, ERL
       detail = "full_invert_invalid_swapped_sides";
       return false;
    }
-   SetSignalTargetLadder(inverted);
+   if(inverseEntry > 0.0
+      && MathAbs(inverted.targetOverride-inverted.entry) <= MinStopDistance()+askBuffer)
+   {
+      detail = "INVERSE_GAP_BLOCK broker_min_target";
+      return false;
+   }
    double effectiveR = MathAbs(inverted.targetOverride - inverted.entry) / inverted.risk;
-   detail = "pure_swap=1 source_dir=" + DirLabel(source.dir)
+   double sourceTargetR = MathAbs(sourceTarget-source.entry)/sourceRisk;
+   if(enforceGap&&inverseEntry>0.0&&g_inverseMaxGapPct<100.0
+      &&MathAbs(sourceTargetR-1.0)<=0.01
+      &&effectiveR+1e-6<1.0-g_inverseMaxGapPct/100.0)
+   {
+      detail="INVERSE_GAP_BLOCK r_floor effective_r="+DoubleToString(effectiveR,4)
+         +" min_r="+DoubleToString(1.0-g_inverseMaxGapPct/100.0,4);
+      return false;
+   }
+   SetSignalTargetLadder(inverted);
+   detail = "level_swap_inverse=1 source_dir=" + DirLabel(source.dir)
       + " exec_dir=" + DirLabel(inverted.dir)
       + " source_sl=" + DoubleToString(source.sl, _Digits)
       + " source_tp=" + DoubleToString(sourceTarget, _Digits)
       + " inv_sl=" + DoubleToString(inverted.sl, _Digits)
       + " inv_tp=" + DoubleToString(inverted.targetOverride, _Digits)
-      + " effective_r=" + DoubleToString(effectiveR, 4);
+      + " effective_r=" + DoubleToString(effectiveR, 4)
+      + " ask_buffer=" + DoubleToString(askBuffer, _Digits);
    return true;
 }
 
@@ -2341,13 +2420,13 @@ double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TA
 }
 
 bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE requestedHc,
-   ERL_TARGET_MODEL targetModel, double simEntry, bool reverseExitMode, int &simDir,
+   ERL_TARGET_MODEL targetModel, double simEntry, double sourceReferenceEntry, bool reverseExitMode, int &simDir,
    double &activeSl, double &tp, double &half, double &simRisk, ERL_HC_MODE &activeHc,
-   double &commissionR, string &detail)
+   double &commissionR, string &detail, bool enforceGap=true)
 {
    detail = "";
    ErlSignal source = sig;
-   source.entry = NormTradePrice(simEntry);
+   source.entry = NormTradePrice(g_invertMode ? sourceReferenceEntry : simEntry);
    // Match BuildExecutableSignal: fixed-pip and percentage SL geometry is
    // anchored to the actual simulated fill, not the earlier signal price.
    source.sl = ApplyRuntimeSlDistance(source.dir, source.entry, source.sl);
@@ -2369,7 +2448,7 @@ bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_
          detail = "full_invert_unsupported_reverse_target";
          return false;
       }
-      if(!ApplyFullInversionGeometry(source, target, targetModel, tradeSig, detail))
+      if(!ApplyFullInversionGeometry(source, target, targetModel, tradeSig, detail, simEntry, enforceGap))
          return false;
    }
 
@@ -2401,6 +2480,7 @@ bool ConfigureSimulationLevels(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_
 
 void ResetLastSimulationTrace()
 {
+   g_lastSimEntryTime=0;g_lastSimEntrySpread=EMPTY_VALUE;g_lastSimEntryBasis="UNKNOWN";
    g_lastSimExecDir = 0;
    g_lastSimExecEntry = 0.0;
    g_lastSimExecSl = 0.0;
@@ -2487,20 +2567,27 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       && g_simRates[entryIdx].spread > 0)
       effectiveSpreadPts = (double)g_simRates[entryIdx].spread;
    double executionCost = MathMax(0.0, effectiveSpreadPts + g_btSlippagePts) * point;
+   double spreadCost = MathMax(0.0, effectiveSpreadPts) * point;
+   double slipCost = MathMax(0.0, g_btSlippagePts) * point;
    double simEntry = NormTradePrice(rawEntry + pricingDir * executionCost);
+   if(g_invertMode)
+      simEntry = NormTradePrice(rawEntry + (pricingDir > 0 ? spreadCost + slipCost : -slipCost));
    double barSimEntry = simEntry;
+   double barSourceEntry = NormTradePrice(rawEntry + (g_invertMode
+      ? (sig.dir > 0 ? spreadCost + slipCost : -slipCost) : sig.dir * executionCost));
    int simDir = pricingDir;
    double activeSl = 0.0, tp = 0.0, half = 0.0, simRisk = 0.0, commissionR = 0.0;
    ERL_HC_MODE activeHc = ERL_HC_OFF;
    string geometryDetail = "";
-   if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
-      activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail))
+   if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, barSourceEntry, reverseExitMode, simDir,
+      activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail, false))
    {
       g_lastSimInvalidReason = "GEOMETRY";
       return 0.0;
    }
 
    valid = true;
+   g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
    CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
    bool halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
    double pnlR = 0.0;
@@ -2548,9 +2635,17 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                if((datetime)ticks[first].time > tickStart + tfSeconds) break;
                double slip = MathMax(0.0, g_btSlippagePts) * point;
                simEntry = NormTradePrice(simDir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
-               if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
-                  activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail)) break;
-               CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
+               double sourceTickEntry = NormTradePrice(sig.dir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
+               if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, sourceTickEntry, reverseExitMode, simDir,
+                  activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail, true))
+               {
+                  g_lastSimInvalidReason=StringFind(geometryDetail,"INVERSE_GAP_BLOCK")==0 ? "INVERSE_GAP_BLOCK" : "GEOMETRY";
+                  valid=false;
+                  return 0.0;
+               }
+               g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
+   CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
+               g_lastSimEntryTime=(datetime)ticks[first].time;g_lastSimEntrySpread=(ticks[first].ask-ticks[first].bid)/point;g_lastSimEntryBasis="ENTRY_BID_ASK_QUOTE";
                halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
                pnlR = 0.0;
                tickInitialized = true;
@@ -2620,20 +2715,21 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    // Tick coverage was unavailable/incomplete and no terminal event was
    // observed. Restart the deterministic OHLC fallback from its own entry
    // geometry; never carry a partial tick HC/BE state into the bar replay.
-   if(LnNasNeedsExactTicks(sig,maxTime))
+   if(g_invertMode || LnNasNeedsExactTicks(sig,maxTime))
    {
       valid=false;closed=false;won=false;
-      g_lastSimInvalidReason="NAS_EXIT_TICKS_MISSING";
+      g_lastSimInvalidReason=g_invertMode ? "INVERSE_TICKS_REQUIRED" : "NAS_EXIT_TICKS_MISSING";
       return 0.0;
    }
    simEntry = barSimEntry;
-   if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, reverseExitMode, simDir,
-      activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail))
+   if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, barSourceEntry, reverseExitMode, simDir,
+      activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail, false))
    {
       valid = false;
       g_lastSimInvalidReason = "GEOMETRY_FALLBACK";
       return 0.0;
    }
+   g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
    CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
    halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
    pnlR = 0.0;
@@ -2910,13 +3006,14 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
    if(!g_allowDuplicateEntries && !g_lnNas.independent) FilterAlternatingSignals(g_histSignals);
    LnNasFilterHistorical(g_histSignals,exitSignals);
    ulong nasMs = GetTickCount64() - stageStarted - rawMs - macroMs - rfMs;
-   if(g_tcalEnabled||g_entryDirection!=0)
+   if(g_entryDirection!=0)
    {
       int accepted=0;
       for(int i=0;i<ArraySize(g_histSignals);i++)
-         if(TCalAllows(g_histSignals[i].availableTime)&&EntryDirectionAllows(EffectiveTradeDir(g_histSignals[i].dir)))g_histSignals[accepted++]=g_histSignals[i];
+         if(EntryDirectionAllows(EffectiveTradeDir(g_histSignals[i].dir)))g_histSignals[accepted++]=g_histSignals[i];
       ArrayResize(g_histSignals,accepted);
    }
+   ArrayResize(g_histSignalEntryTime,ArraySize(g_histSignals));ArrayResize(g_histSignalEntrySpread,ArraySize(g_histSignals));ArrayResize(g_histSignalEntryBasis,ArraySize(g_histSignals));
    ArrayResize(g_histSignalR, ArraySize(g_histSignals));
    ArrayResize(g_histSignalClosed, ArraySize(g_histSignals));
    ArrayResize(g_histSignalWon, ArraySize(g_histSignals));
@@ -2997,12 +3094,19 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
          r = SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime, closed, won, valid);
          if(valid && closed) SimCachePut(simKey, r, closed, won, valid);
       }
+      if(!TCalAllows(AxEntryAt(g_lastSimEntryTime,g_histSignals[i].availableTime)))
+      {
+         g_histSignalR[i]=0;g_histSignalClosed[i]=false;g_histSignalWon[i]=false;
+         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]="TIME_MATRIX";
+         g_histSignalExitTime[i]=0;g_histSignalExitReason[i]="TIME_MATRIX";continue;
+      }
       g_histSignalR[i] = r;
       g_histSignalClosed[i] = closed;
       g_histSignalWon[i] = won;
       g_histSignalValid[i] = valid;
       g_histSignalInvalidReason[i] = valid ? "" : g_lastSimInvalidReason;
       g_histSignalExecDir[i] = g_lastSimExecDir;
+      g_histSignalEntryTime[i]=g_lastSimEntryTime;g_histSignalEntrySpread[i]=g_lastSimEntrySpread;g_histSignalEntryBasis[i]=g_lastSimEntryBasis;
       g_histSignalExecEntry[i] = g_lastSimExecEntry;
       g_histSignalExecSl[i] = g_lastSimExecSl;
       g_histSignalExecTp[i] = g_lastSimExecTp;
@@ -3027,13 +3131,14 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
          g_lnNasSourceExitTime[i] = g_lastSimExitTime;
          g_invertMode = true;
       }
+      if(!valid && g_lastSimInvalidReason=="INVERSE_GAP_BLOCK")continue;
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
       g_directionMinCum=MathMin(g_directionMinCum,g_hist.netR);
       if(!closed) { g_hist.open++; continue; }
       DailyQuotaSchedule(g_histSignalExitTime[i],MathAbs(r)<=1e-8?0:(won?1:-1));
-      TCalRecordOutcome(g_histSignals[i].availableTime,won);
+      TCalRecordOutcome(AxEntryAt(g_histSignalEntryTime[i],g_histSignals[i].availableTime),won);
       RegimeV3Snapshot macroState;
       int macroBucket = LiqMacroRegimeBucketAt(g_histSignals[i].availableTime, macroState);
       if(macroBucket >= 0 && macroBucket < LIQ_MACRO_REGIME_COUNT)
@@ -3049,6 +3154,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
    if(GetTickCount64() - stageStarted >= 1000)
       Print("SolAdvanced audit stages raw=",rawMs,"ms macro=",macroMs,"ms rf=",rfMs,
          "ms nas=",nasMs,"ms result=",resultMs,"ms");
+   AxCollectSol();AxSealCurrent();
    EndHistoricalAuditProgress();
    if(UseAsyncHistoricalAudit())
    {
@@ -3310,7 +3416,7 @@ string FileBridgeSource()
 {
    string src = "LiqNarrativeSolAdvanced|" + EntryModelLabel(g_entryModel) + "|" + StopModelLabel(g_stopModel) + "|" + TargetModelLabel(g_targetModel);
    if(g_pipSlMode) src += "|pipSL";
-   if(g_invertMode) src += "|fullINV|pureSwap";
+   if(g_invertMode) src += "|fullINV|levelSwap";
    return src;
 }
 
@@ -4093,7 +4199,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
    int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
-      if(g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
+      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK")continue;
       ErlSignal displaySig = g_histSignals[i];
       string invertDetail = "";
       bool geometryOk = true;
@@ -4514,6 +4620,25 @@ ulong FindNewestOwnPosition()
    return best;
 }
 
+ulong FindFilledOwnPosition(const ulong deal, const ulong order)
+{
+   ulong positionId = 0;
+   if(deal > 0 && HistoryDealSelect(deal))
+      positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+   if(positionId == 0) positionId = order;
+   if(positionId == 0) return 0;
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionSelectByTicket(ticket)
+         && PositionGetString(POSITION_SYMBOL) == _Symbol
+         && IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))
+         && (ulong)PositionGetInteger(POSITION_IDENTIFIER) == positionId)
+         return ticket;
+   }
+   return 0;
+}
+
 int OwnPositionCount(int dirFilter = 0)
 {
    int count = 0;
@@ -4569,7 +4694,7 @@ string ExecutionGeometryDetail(const ErlSignal &sig, double orderSl, double orde
    return "target_model=" + TargetModelLabel(g_targetModel)
       + " target=" + TargetLabel(g_target)
       + " invert=" + (g_invertMode ? "ON" : "OFF")
-      + " pure_swap=" + (sig.invertedGeometry ? "1" : "0")
+      + " level_swap_inverse=" + (sig.invertedGeometry ? "1" : "0")
       + " pip_sl=" + (g_pipSlMode ? "ON" : "OFF")
       + " pip_sl_pips=" + DoubleToString(g_pipSlPips, 2)
       + " pip_size=" + DoubleToString(pip, _Digits)
@@ -4577,12 +4702,12 @@ string ExecutionGeometryDetail(const ErlSignal &sig, double orderSl, double orde
       + " tp_pips=" + DoubleToString(tpPips, 2)
       + " rr=" + DoubleToString(rr, 2);
 }
-bool BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &execSig, string &detail)
+bool BuildExecutableSignal(const ErlSignal &raw, double liveEntry, double sourceReferenceEntry, ErlSignal &execSig, string &detail)
 {
    execSig = raw;
    detail = "";
    double minStop = MinStopDistance() * 1.20;
-   execSig.entry = NormTradePrice(liveEntry);
+   execSig.entry = NormTradePrice(g_invertMode ? sourceReferenceEntry : liveEntry);
    execSig.sl = NormTradePrice(raw.sl);
    execSig.targetOverride = 0.0;
    execSig.invertedGeometry = false;
@@ -4616,7 +4741,7 @@ bool BuildExecutableSignal(const ErlSignal &raw, double liveEntry, ErlSignal &ex
    {
       ErlSignal inverted;
       string invertDetail = "";
-      if(!ApplyFullInversionGeometry(execSig, g_target, g_targetModel, inverted, invertDetail))
+      if(!ApplyFullInversionGeometry(execSig, g_target, g_targetModel, inverted, invertDetail, liveEntry))
       {
          AppendDetail(detail, invertDetail);
          return false;
@@ -4811,7 +4936,8 @@ bool OpenSignalAccepted(const ErlSignal &sig)
    double liveEntry = requestedDir > 0 ? tick.ask : tick.bid;
    ErlSignal execSig;
    string execDetail = "";
-   if(!BuildExecutableSignal(sig, liveEntry, execSig, execDetail))
+   double sourceReferenceEntry = sig.dir > 0 ? tick.ask : tick.bid;
+   if(!BuildExecutableSignal(sig, liveEntry, sourceReferenceEntry, execSig, execDetail))
    {
       g_lastStatus = "INV GEOMETRY BLOCK";
       g_lastBlock = execDetail;
@@ -4886,6 +5012,16 @@ bool OpenSignalAccepted(const ErlSignal &sig)
 
    bool ok = trade.PositionOpen(_Symbol, execSig.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, lot,
       execSig.entry, orderSl, orderTp, "LiqNarrativeSol " + DirLabel(execSig.dir));
+   uint orderRetcode = trade.ResultRetcode();
+   if(g_invertMode && orderRetcode == TRADE_RETCODE_PLACED)
+   {
+      ulong order = trade.ResultOrder();
+      bool cancelled = order > 0 && trade.OrderDelete(order);
+      g_lastStatus = "INVERSE_PENDING_REJECTED";
+      g_lastBlock = "order=" + IntegerToString((long)order) + " cancel=" + (cancelled ? "1" : "0");
+      AuditWrite("inverse_pending_rejected", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot, g_lastBlock);
+      return false;
+   }
    if(!ok)
    {
       string detail = "ret=" + IntegerToString((int)trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription();
@@ -4897,7 +5033,30 @@ bool OpenSignalAccepted(const ErlSignal &sig)
       return false;
    }
 
-   ulong posTicket = FindNewestOwnPosition();
+   ulong posTicket = g_invertMode
+      ? FindFilledOwnPosition(trade.ResultDeal(), trade.ResultOrder()) : FindNewestOwnPosition();
+   if(g_invertMode)
+   {
+      bool selected = posTicket > 0 && PositionSelectByTicket(posTicket);
+      double actualEntry = selected ? PositionGetDouble(POSITION_PRICE_OPEN) : 0.0;
+      double actualSl = selected ? PositionGetDouble(POSITION_SL) : 0.0;
+      double actualTp = selected ? PositionGetDouble(POSITION_TP) : 0.0;
+      double tolerance = TickSize() * 0.51;
+      if(!selected || MathAbs(actualEntry - execSig.entry) > tolerance
+         || MathAbs(actualSl - orderSl) > tolerance || MathAbs(actualTp - orderTp) > tolerance)
+      {
+         bool closed = selected && trade.PositionClose(posTicket);
+         g_lastStatus = "INVERSE_FILL_MISMATCH";
+         g_lastBlock = "ticket=" + IntegerToString((long)posTicket)
+            + " entry=" + DoubleToString(actualEntry, _Digits)
+            + " sl=" + DoubleToString(actualSl, _Digits)
+            + " tp=" + DoubleToString(actualTp, _Digits)
+            + " emergency_close=" + (closed ? "1" : "0");
+         AuditWrite("inverse_fill_mismatch", sig.id, execSig.dir, execSig.entry, orderSl, orderTp, lot, g_lastBlock);
+         if(!closed) Print("CRITICAL: Inverse fill mismatch; emergency close unconfirmed. ", g_lastBlock);
+         return false;
+      }
+   }
    if(posTicket > 0)
    {
       if(!reverseExitMode && PositionSelectByTicket(posTicket))
@@ -5472,8 +5631,13 @@ void UpdateDashboard()
    ButtonObj("BTN_REQ_ASIA", x + 112, row, 96, bh, g_requireAsiaLiquidityDraw ? "ASIA: ON" : "ASIA: OFF", g_requireAsiaLiquidityDraw ? on : off);
    ButtonObj("BTN_ASIA_TGT", x + 216, row, 96, bh, g_useAsiaLiquidityTarget ? "TGT: ON" : "TGT: OFF", g_useAsiaLiquidityTarget ? on : off);
    ButtonObj("BTN_REQ_SMT", x + 320, row, 88, bh, g_requireSmt ? "SMT: ON" : "SMT: OFF", g_requireSmt ? on : off);
-   LabelObj("DASH_NARR_HINT", x + 424, row + 4, "Narrative gates", C'255,204,82', 8);
-   ButtonObj("BTN_INV", x + 640, row, 104, bh, g_invertMode ? "FULL INV ON" : "FULL INV OFF", g_invertMode ? C'184,103,22' : off);
+   LabelObj("DASH_NARR_HINT", x + 420, row + 4, "Gates", C'255,204,82', 8);
+   ButtonObj("BTN_INV", x + 510, row, 104, bh, g_invertMode ? "FULL INV ON" : "FULL INV OFF", g_invertMode ? C'184,103,22' : off);
+   LabelObj("DASH_INV_GAP", x + 618, row + 4, "GAP%", muted, 8);
+   EditObj("EDIT_INV_GAP", x + 654, row, 42, bh, DoubleToString(g_inverseMaxGapPct,2));
+   ObjectSetString(0,PFX+"EDIT_INV_GAP",OBJPROP_TOOLTIP,
+      "Max inverse quote gap and 1R TP erosion in percent; 10 requires at least 0.90R gross TP. 100 disables.");
+   ButtonObj("BTN_INV_GAP_APPLY", x + 700, row, 44, bh, "SET", C'38,101,176');
 
    row += 28;
    LabelObj("DASH_ATRBUF_L", x + 16, row + 4, "ATR BUF%:", muted, 8);
@@ -5659,6 +5823,7 @@ void SelectLegacyEntryModel()
 }
 void RefreshAfterConfigChange(bool rebuildSignals = true)
 {
+   AxAbort("CSV cancelled: settings changed");g_axReady=false;
    if(g_auditMacroPending)
    {
       g_auditMacroPending = false;
@@ -5726,7 +5891,7 @@ void RunValidationInternalAudit()
    if(!InpValidationInternalAuditRows) return;
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
-      if(g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
+      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK")continue;
       string result = !g_histSignalValid[i] ? "INVALID" : (!g_histSignalClosed[i] ? "OPEN" : (g_histSignalWon[i] ? "WIN" : "LOSS"));
       ErlSignal auditSig = g_histSignals[i];
       string invertDetail = "";
@@ -5786,6 +5951,7 @@ int OnInit()
    g_stopModel = InpDefaultStopModel;
    g_targetModel = InpDefaultTargetModel;
    LoadRuntimeInvertMode();
+   LoadRuntimeInverseGap();
    g_requireIrlTouch = InpDefaultRequireIrlTouch;
    g_requireEntrySweep = InpDefaultRequireEntrySweep;
    g_requireDisplacementFvg = InpDefaultRequireDisplacementFvg;
@@ -5857,7 +6023,7 @@ int OnInit()
       + " swing=" + IntegerToString(g_swingLookback) + " target=" + TargetLabel(g_target) + " hc=" + HcLabel(g_hc)
       + " entry_model=" + EntryModelLabel(g_entryModel) + " stop_model=" + StopModelLabel(g_stopModel)
       + " target_model=" + TargetModelLabel(g_targetModel)
-      + " full_invert=" + (g_invertMode ? "ON" : "OFF") + " pure_swap=1"
+      + " full_invert=" + (g_invertMode ? "ON" : "OFF") + " level_swap_inverse=1"
       + " strictness=" + StrictnessLabel(g_requireIrlTouch, g_requireEntrySweep, g_requireDisplacementFvg)
       + " narrative=" + NarrativeLabel(g_requireAsiaLiquidityDraw, g_useAsiaLiquidityTarget, g_requireSmt)
       + " regime_filter=" + (g_solRegimeFilterEnabled ? "ON" : "OFF"));
@@ -5871,6 +6037,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   AxAbort("EA detached");
    RunValidationInternalAudit();
    ResearchLbShutdown();
    EventKillTimer();
@@ -5897,6 +6064,7 @@ void OnTick()
 
 void OnTimer()
 {
+   AxTimer();
    if(IsTesterMode()) return;
    if(g_auditMacroPending && GetTickCount64()-g_auditMacroLastSliceAt >= 1000)
       ContinueHistoricalMacroAudit(g_auditGeneration, 250);
@@ -5924,6 +6092,7 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   if(AxEvent(id,lparam))return;
    if(id==CHARTEVENT_CUSTOM+LN_MACRO_AUDIT_EVENT)
    {
       ContinueHistoricalMacroAudit((int)lparam);
@@ -5934,6 +6103,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(LossHoursEvent(id,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
+      if(g_tcalCsvRequested){g_tcalCsvRequested=false;AxStart();}
       if(g_tcalChanged){g_tcalChanged=false;RefreshAfterConfigChange(false);}
       return;
    }
@@ -6073,6 +6243,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(Clicked(sparam, "BTN_BRIDGE_ONLY")) { g_fileBridgeOnlyMode = !g_fileBridgeOnlyMode; if(g_fileBridgeOnlyMode && !g_fileBridgeEnabled) g_fileBridgeEnabled = true; if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_BRIDGE_NATIVE")) { g_nativeTradeWithBridgeOnly = !g_nativeTradeWithBridgeOnly; UpdateDashboard(); ChartRedraw(0); return; }
    if(Clicked(sparam, "BTN_RISK_APPLY")) { g_riskPerTradePct = ClampRiskPerTradePct(StringToDouble(ObjectGetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT))); ObjectSetString(0, PFX + "EDIT_RISK_PCT", OBJPROP_TEXT, DoubleToString(g_riskPerTradePct, 2)); if(g_fileBridgeEnabled) FileBridgeWriteInitMarker(); UpdateDashboard(); ChartRedraw(0); return; }
+   if(Clicked(sparam, "BTN_INV_GAP_APPLY"))
+   {
+      double requested=0.0;
+      string raw=ObjectGetString(0,PFX+"EDIT_INV_GAP",OBJPROP_TEXT);
+      if(!ParseInverseGap(raw,requested)||!SetRuntimeInverseGap(requested))
+      {
+         g_lastStatus="GAP% must be 0..100";
+         UpdateDashboard();ChartRedraw(0);return;
+      }
+      ObjectSetString(0,PFX+"EDIT_INV_GAP",OBJPROP_TEXT,DoubleToString(g_inverseMaxGapPct,2));
+      SimCacheClear();RefreshAfterConfigChange(false);return;
+   }
    if(Clicked(sparam, "BTN_INV"))
    {
       bool requested = !g_invertMode;
@@ -6090,7 +6272,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       g_lastStatus = RuntimeInvertLabel();
       g_lastBlock = "";
       AuditWrite("invert_mode_changed", "dashboard", 0, 0, 0, 0, 0,
-         "enabled=" + (g_invertMode ? "1" : "0") + " pure_swap=1 existing_positions_unchanged=1");
+         "enabled=" + (g_invertMode ? "1" : "0") + " level_swap_inverse=1 existing_positions_unchanged=1");
       if(g_fileBridgeEnabled) FileBridgeWriteInitMarker();
       RefreshAfterConfigChange(false);
       return;
@@ -6262,7 +6444,7 @@ s+="|InpBacktestSpreadPts="+(string)InpBacktestSpreadPts;
 s+="|InpBacktestSlippagePts="+(string)InpBacktestSlippagePts;
 s+="|InpBacktestCommissionPerLot="+(string)InpBacktestCommissionPerLot;
 return s;}
-int LiqLibraryCapture(double &v[]){ArrayResize(v,41);
+int LiqLibraryCapture(double &v[]){ArrayResize(v,42);
 v[0]=(double)g_htf;
 v[1]=(double)g_entryTf;
 v[2]=(double)g_swingLookback;
@@ -6304,6 +6486,7 @@ v[37]=(double)g_solRegimeRuleBlocked[8];
 v[38]=(double)g_solRegimeRuleBlocked[9];
 v[39]=(double)g_solRegimeRuleBlocked[10];
 v[40]=(double)g_solRegimeRuleBlocked[11];
+v[41]=g_inverseMaxGapPct;
 return ArraySize(v);}
 void LiqLibraryAssign(const double &v[]){
 g_htf=(ENUM_TIMEFRAMES)v[0];
@@ -6347,6 +6530,7 @@ g_solRegimeRuleBlocked[8]=(bool)v[37];
 g_solRegimeRuleBlocked[9]=(bool)v[38];
 g_solRegimeRuleBlocked[10]=(bool)v[39];
 g_solRegimeRuleBlocked[11]=(bool)v[40];
+g_inverseMaxGapPct=ArraySize(v)>41 ? v[41] : 100.0;
 }
 #define LN_SOL_ADV_NAS_READY
 #include "LiqSolAdvancedNas.mqh"
@@ -6370,3 +6554,5 @@ bool ResearchApplyStrategy(const ResearchFiveYearRow &r)
    return r.symbol==_Symbol&&LiqLibraryApply(r.id);
 }
 #include "../ResearchFiveYearLeaderboard.mqh"
+
+#include "AuditTradeCsvAdapter.mqh"

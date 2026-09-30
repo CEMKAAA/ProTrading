@@ -11,7 +11,7 @@ string OrbUserMetricKey(const string symbol,int tf,const string inputs,const str
    string switches=(p.rfMaster?"1":"0");
    for(int r=0;r<ORB_REGIME_COUNT;r++)switches+=OrbPresetRegimeAllowed(p,r)?"1":"0";
    for(int r=0;r<ORB_RF_COUNT;r++)switches+=OrbPresetRfBlocked(p,r)?"1":"0";
-   return OrbMlSha256(ORB_ML_SOURCE+symbol+(string)tf+inputs+runtime+switches);
+   return OrbMlSha256(ORB_ML_SOURCE+symbol+(string)tf+inputs+runtime+switches+(p.invertMode?"|INV_ASK_PROOF_2":""));
 }
 string OrbClockMetricMeta(double offset,int profile,int broker,int exchange,int session)
 {if(offset==0&&profile==0&&broker==0&&exchange==0&&session==0)return "";return "|CLOCK="+DoubleToString(offset,8)+","+(string)profile+","+(string)broker+","+(string)exchange+","+(string)session;}

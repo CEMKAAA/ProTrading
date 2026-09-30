@@ -86,9 +86,11 @@ must still be built in cTrader before use.
   H4 candles. The prior historical implementation could read the final close
   of the still-open containing H4 candle. No current forming signal bar is
   included in an audit.
-- Signal arrows are anchored on the generating candle, not the next candle.
-  Pivot ST markers use the trailing-band coordinate. Fill/SL/TP prices and
-  execution timestamps are not changed to the marker's time or price.
+- Audited trade arrows and executed-trade arrows use the fill candle on the
+  displayed chart, with BUY below its low and SELL above its high. Entry lines
+  start at the fill timestamp. Tooltips retain the source signal timeframe and
+  bar timestamp, so an M15 signal shown on M1 cannot imply an early entry.
+  Raw signal generation, fill prices, SL/TP and audit outcomes are unchanged.
 - Live indicator state advances on new closed bars. Repeated ticks reuse the
   previous result, including negative results. Dashboard rebuilding is
   timer-throttled; risk and position management remain tick-driven.
@@ -147,3 +149,12 @@ to `C:\MT5\DEMO\MQL5\Experts\MaCrossOverOrb`, then verifies SHA-256 equality.
 It does not attach, enable or restart an EA or touch production ORB sources.
 End-to-end GUI/bridge execution and a same-feed TradingView comparison remain
 required before treating this experimental clone as validated for real money.
+
+## Audit CSV
+
+Open TIME MATRIX and click EXPORT AUDIT CSV after the audit completes.
+The exporter uses entry-time closed-bar data, never future candle values.
+Feature extraction runs only on export, not during normal audit. One accepted
+audit trade produces one row; OPEN and DATA remain explicit, not fake losses.
+MT5 shows the full Common/Files/AuditExports output path when finished.
+Source mapping and validation: `../../research/kivanc/README.md`.

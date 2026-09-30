@@ -43,6 +43,22 @@ void OnStart()
       Check(OrbBrokerOffsetHours()==2&&OrbClockProfile()==ORB_CLOCK_FIXED&&g_orbClockSession==1,"restore clock and session");
       Check(TCalStrategyMatchesText(savedTime),"restore exact time matrix");
       Check(OrbUserMatches(saved),"exact saved match");
+      string savedSymbol=g_userStrategies[slot].symbol;
+      int savedFamily=g_userStrategies[slot].preset.family;
+      g_userStrategies[slot].symbol="EURUSDm";
+      g_userStrategies[slot].preset.family=ORB_PRESET_FAMILY_ANY;
+      OrbStrategyPreset exotic=saved;exotic.family=ORB_PRESET_FAMILY_ANY;
+      g_strategyFilterPair="EURUSDm";
+      Check(OrbStrategyPresetPassesMetricFilters(exotic),"saved exotic pair passes its own filter");
+      g_strategyFilterPair="USDJPY";
+      Check(!OrbStrategyPresetPassesMetricFilters(exotic),"other pair excluded");
+      g_strategyFilterPair="";
+      bool exoticFound=false;
+      for(int k=0;k<8;k++){OrbStrategyCyclePairFilter();if(g_strategyFilterPair=="EURUSDm"){exoticFound=true;break;}}
+      Check(exoticFound,"PAIR cycle includes saved EURUSDm");
+      g_strategyFilterPair="";
+      g_userStrategies[slot].symbol=savedSymbol;
+      g_userStrategies[slot].preset.family=savedFamily;
       int recordedTf=g_userStrategies[slot].chartTf;
       g_userStrategies[slot].chartTf=((int)_Period==(int)PERIOD_M1?(int)PERIOD_H1:(int)PERIOD_M1);
       string reason="";

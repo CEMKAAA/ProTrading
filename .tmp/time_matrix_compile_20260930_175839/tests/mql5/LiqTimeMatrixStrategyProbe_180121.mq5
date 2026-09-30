@@ -1,0 +1,50 @@
+#property strict
+#define OnInit ProbeInit
+#define OnDeinit ProbeDeinit
+#define OnTick ProbeTick
+#define OnTimer ProbeTimer
+#define OnChartEvent ProbeEvent
+#define OnTradeTransaction ProbeTransaction
+#include "../../SolAdvanced/LiqNarrativeSol_Advanced.mq5"
+#undef OnInit
+#undef OnDeinit
+#undef OnTick
+#undef OnTimer
+#undef OnChartEvent
+#undef OnTradeTransaction
+
+int checks=0,failed=0;
+void Check(bool ok,string label){checks++;if(!ok){failed++;Print("FAIL ",label," ",g_liqLibraryStatus);}}
+void OnStart()
+{
+   int init=ProbeInit();
+   Check(init==INIT_SUCCEEDED,"EA initialization");
+   if(init==INIT_SUCCEEDED)
+   {
+      Check(g_directionBuyLosses+g_directionSellLosses==g_hist.losses,"audit loss split equals headline L");
+      string wanted="TCAL1=1,0,64,8192,0,0,0,0,1,3,4,360";
+      Check(TCalStrategyApplyText(wanted),"set per-day hours");
+      string name="__LIQ_TCAL_PROBE_"+(string)GetTickCount64();
+      Check(LiqLibrarySave(name),"save strategy");
+      string path=LiqLibraryPath(name),readName="";double values[];
+      Check(LiqLibraryUnpack(path,readName,values)&&readName==name,"read saved strategy");
+      string fileText="";
+      Check(LiqLibraryRead(path,fileText)&&StringFind(fileText,wanted)>=0,"file contains time matrix");
+      Check(TCalStrategyApplyText(TCalStrategyOffText()),"clear current filter");
+      Check(LiqLibraryApply(path),"apply saved strategy");
+      // UI applies coalesce audit work until its timer; a script has no EA timer.
+      RecalculateHistoricalStats(false);
+      Check(TCalStrategyMatchesText(wanted),"restore exact schedule");
+      bool directions=true;
+      for(int i=0;i<ArraySize(g_histSignals);i++)
+         if(EffectiveTradeDir(g_histSignals[i].dir)!=1)directions=false;
+      Check(directions,"BUY-only audit excludes SELL entries");
+      Check(g_directionBuyLosses+g_directionSellLosses==g_hist.losses,"filtered audit loss split equals L");
+      FileDelete(path,FILE_COMMON);
+      ProbeDeinit(0);
+   }
+   string payload=StringFormat("{\"checks\":%d,\"failed\":%d}",checks,failed);
+   int file=FileOpen("LiqTimeMatrixStrategyProbe_180121.json",FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(file!=INVALID_HANDLE){FileWriteString(file,payload);FileClose(file);}
+   Print(payload);
+}

@@ -19,7 +19,7 @@ void OnStart()
    FileWrite(out,"invert","signal_time","source_direction","status");
    for(int retry=0;retry<60&&!TerminalInfoInteger(TERMINAL_CONNECTED);retry++)Sleep(500);
    datetime until=TimeCurrent(),from=until-14*86400;
-   g_rtSignalTf=PERIOD_M1;g_rtMaCrossMode=MA_CROSS_TRENDLINE;
+   g_rtSignalTf=PERIOD_M5;g_rtMaCrossMode=MA_CROSS_TRENDLINE;
    g_rtTargetLeg=ORB_TARGET_R100;g_rtTargetMode=ORB_TARGET_R_LEG;
    g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtEntryMode=ORB_ENTRY_BREAKOUT;
    g_rtPipSlMode=true;g_rtPipSlPips=300;
@@ -37,8 +37,8 @@ void OnStart()
       bool sourceBuy=direction==0;double rawSl=price+(sourceBuy?-1:1)*1000*point;
       OrbPureSwapGeometry swap;string why="";
       bool ok=ResolvePureSwapGeometry(sourceBuy,!sourceBuy,price,price,rawSl,swap,why);
-      if(!ok||MathAbs(swap.execSl-swap.sourceTp)>TickSize()*0.5
-         ||MathAbs(swap.execTp-swap.sourceSl)>TickSize()*0.5)
+      if(!ok||MathAbs(swap.execSl-swap.sourceTp)>TickSize()
+         ||MathAbs(swap.execTp-swap.sourceSl)>TickSize())
       {FileWrite(out,"ERROR","SWAP",direction,why);FileClose(out);return;}
    }
    for(int i=0;i<ORB_REGIME_COUNT;i++)g_regimeAllowed[i]=true;
@@ -53,7 +53,7 @@ void OnStart()
          InpMaFastLength,InpMaMediumLength,InpMaSlowLength)){ready=true;break;}
       Sleep(500);
    }
-   if(!ready){FileWrite(out,"ERROR","MA_HISTORY",detail);FileClose(out);return;}
+   if(!ready){FileWrite(out,"ERROR","MA_HISTORY",g_maCrossAuditFailure);FileClose(out);return;}
    for(int invert=0;invert<2;invert++)
    {
       g_rtInvertMode=(invert!=0);

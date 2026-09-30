@@ -1,0 +1,39 @@
+{
+  "date": "2026-09-30",
+  "reviewed_local_pine_files": 24,
+  "source_manifest": "source_manifest.json",
+  "compile_stage": ".tmp/time_matrix_compile_20260930_162213",
+  "production_compiles": {
+    "orb/OrbUltimateEA_StrategyLibrary.mq5": {"errors": 0, "warnings": 0},
+    "macrossover_orb/MaCrossOverOrbEA.mq5": {"errors": 0, "warnings": 0},
+    "SolAdvanced/LiqNarrativeSol_Advanced.mq5": {"errors": 0, "warnings": 0}
+  },
+  "calendar_strategy_tests": {"checks": 343, "failures": 0, "stage": ".tmp/time_matrix_compile_20260930_160905"},
+  "csv_mql_fixture": {"checks": 48, "failures": 0, "columns_in_fixture": 990},
+  "independent_source_equation_reference": {"calculations": 30, "bars": 700, "comparisons": 21000, "failures": 0},
+  "real_chart_event_csv_fixture": {
+    "rows": 64,
+    "columns": 990,
+    "label_net_r_sum": 20,
+    "missing_standard_feature_rows": 0,
+    "all_cutoffs_equal_entry_time": true,
+    "all_standard_and_pine_bars_closed_before_entry": true,
+    "input_trade_times_permuted": true
+  },
+  "marker_timing_regression": {"checks": 28, "failures": 0},
+  "verified_contracts": [
+    "audit record capture and seal do not call feature extraction",
+    "earlier source-state snapshots cannot be affected by later bars",
+    "OPEN and DATA do not acquire invented win/loss labels",
+    "empty completed audit exports a header with zero trade rows",
+    "cancel deletes partial output and invalidates stale audit records"
+  ],
+  "limitations": [
+    "Equation tests use synthetic same-input series, not TradingView broker-feed parity.",
+    "Independent numerical reference covers 30 calculations, not every exported intermediate and event variant.",
+    "The real chart event probe uses synthetic trade records over broker bar history; it is not a full strategy-market audit parity proof.",
+    "Recursive seeds depend on locally available history; seed time and warmup status are exported.",
+    "Measured real execution slippage cannot be inferred from a historical simulation.",
+    "Unavailable cached NAS/OF observations or indicator history remain explicitly missing."
+  ]
+}

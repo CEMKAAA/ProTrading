@@ -37,8 +37,8 @@ void OnStart()
       bool sourceBuy=direction==0;double rawSl=price+(sourceBuy?-1:1)*1000*point;
       OrbPureSwapGeometry swap;string why="";
       bool ok=ResolvePureSwapGeometry(sourceBuy,!sourceBuy,price,price,rawSl,swap,why);
-      if(!ok||MathAbs(swap.execSl-swap.sourceTp)>TickSize()*0.5
-         ||MathAbs(swap.execTp-swap.sourceSl)>TickSize()*0.5)
+      if(!ok||MathAbs(swap.execRisk-swap.sourceRisk)>TickSize()
+         ||MathAbs(swap.execTargetR-swap.sourceTargetR)>0.001)
       {FileWrite(out,"ERROR","SWAP",direction,why);FileClose(out);return;}
    }
    for(int i=0;i<ORB_REGIME_COUNT;i++)g_regimeAllowed[i]=true;

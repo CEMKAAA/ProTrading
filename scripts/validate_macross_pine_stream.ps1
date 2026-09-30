@@ -10,6 +10,7 @@ $build=Join-Path $root ('.tmp/ma_build_'+[guid]::NewGuid().ToString('N').Substri
 $runId=[guid]::NewGuid().ToString('N').Substring(0,8)
 $outputs=@('MaCrossPineProbe.json','MaCrossMarketTiming.jsonl','MaCrossEventHistoryProbe.json','MaCrossPineDirections.txt')
 New-Item -ItemType Directory -Path (Join-Path $build 'IndicatorCodeExamples/macrossover_orb'),(Join-Path $build 'tests/mql5') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'IndicatorCodeExamples/ResearchFiveYearLeaderboard.mqh') -Destination (Join-Path $build 'IndicatorCodeExamples/ResearchFiveYearLeaderboard.mqh')
 Get-ChildItem -LiteralPath (Join-Path $root 'IndicatorCodeExamples/macrossover_orb') -Filter '*.mqh' | ForEach-Object {
  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $build 'IndicatorCodeExamples/macrossover_orb')
 }
@@ -33,7 +34,7 @@ foreach($relative in $sources){
 $worker=Join-Path $root '.tmp/orb_jp225_full_worker'
 $terminal=Join-Path $worker 'terminal64.exe'
 foreach($name in @('MaCrossPineStreamProbe','MaCrossMarketTimingProbe','MaCrossEventHistoryProbe')){
- if(@(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" | Where-Object {$_.ExecutablePath -eq $terminal}).Count){throw 'Worker already running; not touching it'}
+ if(@(Get-Process terminal64 -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $terminal}).Count){throw 'Worker already running; not touching it'}
  $runName=$name+'_'+[guid]::NewGuid().ToString('N').Substring(0,8)
  Copy-Item -LiteralPath (Join-Path $build "tests/mql5/$name.ex5") -Destination (Join-Path $worker "MQL5/Scripts/$runName.ex5")
  $ini=Join-Path $report "$name.ini"

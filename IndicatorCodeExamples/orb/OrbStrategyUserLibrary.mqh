@@ -11,6 +11,7 @@ struct OrbUserRecord
    double brokerOffset;
    int clockProfile,brokerSeason,exchangeSeason,clockSession;
    string timeMatrix;
+   double inverseMaxGapPct;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -56,20 +57,28 @@ void OrbUserReload(bool force=false)
       record.inputSignature=clockMeta[0];record.brokerOffset=0;
       record.clockProfile=0;record.brokerSeason=0;record.exchangeSeason=0;record.clockSession=0;
       record.timeMatrix=TCalStrategyOffText();
+      record.inverseMaxGapPct=100.0;
       if(metaCount>1)
       {
          double offset=0;
-         if((metaCount!=2&&metaCount!=3&&metaCount!=4)||StringFind(clockMeta[1],"TZ=")!=0||!OrbMlNumber(StringSubstr(clockMeta[1],3),offset)
+         if((metaCount!=2&&metaCount!=3&&metaCount!=4&&metaCount!=5)||StringFind(clockMeta[1],"TZ=")!=0||!OrbMlNumber(StringSubstr(clockMeta[1],3),offset)
             ||offset < -12||offset > 14)continue;
          record.brokerOffset=offset;
          if(metaCount>=3&&(StringFind(clockMeta[2],"CLK1=")!=0
             ||!OrbClockReadMeta(StringSubstr(clockMeta[2],5),record.clockProfile,record.brokerSeason,record.exchangeSeason,record.clockSession)))continue;
       }
-      if(metaCount==4)
+      if(metaCount>=4)
       {
          bool enabled=false;int hours[];
          if(!TCalStrategyRead(clockMeta[3],enabled,hours))continue;
          record.timeMatrix=clockMeta[3];
+      }
+      if(metaCount==5)
+      {
+         double gap=0.0;
+         if(StringFind(clockMeta[4],"GAP1=")!=0||!OrbMlNumber(StringSubstr(clockMeta[4],5),gap)
+            ||gap<0.0||gap>100.0)continue;
+         record.inverseMaxGapPct=gap;
       }
       record.runtime="";
       for(int i=0;i<ORB_CUSTOM_RUNTIME_TOKENS;i++)record.runtime+=v[6+ORB_CUSTOM_PRESET_TOKENS+i]+"\n";
@@ -127,6 +136,7 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    g_orbStrategyTimezone=g_userStrategies[i].brokerOffset;
    OrbClockUseSaved(g_userStrategies[i].clockProfile,g_userStrategies[i].brokerSeason,g_userStrategies[i].exchangeSeason,g_userStrategies[i].clockSession);
    OrbCustomRuntimeRead(v,0,true);
+   if(!SetRuntimeInverseMaxGapPct(g_userStrategies[i].inverseMaxGapPct))return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
    g_orbRfEnabled=p.rfMaster;
    for(int r=0;r<ORB_RF_COUNT;r++)g_orbRfBlocked[r]=OrbPresetRfBlocked(p,r);
@@ -140,6 +150,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    if((int)OrbClockProfile()!=g_userStrategies[i].clockProfile||(int)OrbClockBrokerSeason()!=g_userStrategies[i].brokerSeason
       ||(int)OrbClockExchangeSeason()!=g_userStrategies[i].exchangeSeason||g_orbClockSession!=g_userStrategies[i].clockSession)return false;
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
+   if(MathAbs(g_rtInverseMaxGapPct-g_userStrategies[i].inverseMaxGapPct)>0.000001)return false;
    if(!TCalStrategyMatchesText(g_userStrategies[i].timeMatrix))return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
@@ -183,7 +194,7 @@ bool OrbUserSaveLocked(string name)
    p.id="user_"+StringSubstr(OrbMlSha256(name+(string)ChartID()+(string)TimeGMT()+(string)GetTickCount64()+OrbCustomRuntimeDump()),0,24);
    double offset=OrbBrokerOffsetHours(),savedClock=g_orbStrategyTimezone;g_orbStrategyTimezone=0;
    string signature=OrbCustomInputSignature()+"|TZ="+DoubleToString(offset,8)+"|CLK1="+OrbClockSavedMeta()
-      +"|"+TCalStrategyText(),runtime=OrbCustomRuntimeDump();
+      +"|"+TCalStrategyText()+"|GAP1="+DoubleToString(g_rtInverseMaxGapPct,6),runtime=OrbCustomRuntimeDump();
    g_orbStrategyTimezone=savedClock;
    string tokens[];StringSplit(runtime,'\n',tokens);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}

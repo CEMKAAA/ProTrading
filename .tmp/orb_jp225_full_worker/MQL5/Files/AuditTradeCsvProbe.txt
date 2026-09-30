@@ -1,0 +1,2 @@
+checks=52 failed=0 columns=990
+csv=C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AuditExports\CsvProbe_JP225m_1790791334_61447889713654_19110843.csv

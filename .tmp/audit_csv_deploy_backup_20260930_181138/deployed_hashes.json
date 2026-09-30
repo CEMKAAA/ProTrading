@@ -1,0 +1,458 @@
+﻿[
+    {
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\DailyTradeQuota.mqh"
+    },
+    {
+        "sha256":  "7415B9940E3F0B84BC379A5DA6A2003DE6FAAAFEB27B95415ABF61C7DC0CA40A",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\ResearchFiveYearLeaderboard.mqh"
+    },
+    {
+        "sha256":  "07C7F16C10525030754B49C93E6A125ABC1B522413415468BF345C51D35F3BD7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\TradeCalendarMatrix.mqh"
+    },
+    {
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditKivancExport.mqh"
+    },
+    {
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditKivancFeatures.mqh"
+    },
+    {
+        "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditMemoIndex.mqh"
+    },
+    {
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditQuantFeatures.mqh"
+    },
+    {
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditSignalFeatures.mqh"
+    },
+    {
+        "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTickReadGuard.mqh"
+    },
+    {
+        "sha256":  "A39C10C59A06B32582185F18BA59F3C3C27030173E83518D2C2F8A65C57C9712",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTradeCsv.mqh"
+    },
+    {
+        "sha256":  "43D3B6CFE14AA91BF0A2201BDAB05678E6D18BC177BAAD43569FBDDBBD0405EA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTradeCsvAdapter.mqh"
+    },
+    {
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\DailyTradeQuota.mqh"
+    },
+    {
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\LiqNarrativeSol_RegimeV3.mqh"
+    },
+    {
+        "sha256":  "C9A00752287E93F9E013045B366420CFEF0C95D22BAFD1CB7B9EA425186E0A6A",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossAuditCache.mqh"
+    },
+    {
+        "sha256":  "35BACAAB0930358D991B6A1B769463451F2ACE311391C31EC1C738F8A1A47ABF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossEventAudit.mqh"
+    },
+    {
+        "sha256":  "A83D41915C5653527F0924042450586A22D7E1B5D742A066F784A15757461940",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOrderFlow.mqh"
+    },
+    {
+        "sha256":  "8226A77F2D9B4ADCF778B4CB306F903B23CFB2EA5D072D1970C50F349C84465B",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOrderFlowCore.mqh"
+    },
+    {
+        "sha256":  "4B2B0B0BDEAF438F1D40E8DA29F6B42FCDEA48977669572270A414661B4D4640",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5"
+    },
+    {
+        "sha256":  "AD394E385098D8A3981C3A8FDDB6F218CDE621C428C06354859AE6A9B67B7B06",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossPineStream.mqh"
+    },
+    {
+        "sha256":  "10476A951E7549A267A64215A445BA784228AA456A4BF4BECE83939684465F4B",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossSignalCore.mqh"
+    },
+    {
+        "sha256":  "2021367C1F71FA9AEBD9688F93ACAEDF6378BF7779CBAFCA06898E9D179F90AD",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaExitPolicy.mqh"
+    },
+    {
+        "sha256":  "CA075833EB0DA9A49F9352D5CE81BB2E885690C9B3B094BD0F97B621B617AB87",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaIndependentEntries.mqh"
+    },
+    {
+        "sha256":  "1BFCD200D39EE44C4171C3A18716E9B83DA4A44E9EC788929855C64B6A3C12F0",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowLeaderboard.mqh"
+    },
+    {
+        "sha256":  "59C69653AED47A53F757E0146B8F5F72417FF6B661302B5475906E00CE0F0B59",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowLeaderboardData.mqh"
+    },
+    {
+        "sha256":  "DED19E9A34D630CB516B3524DC4173C04AC11D0E0A5BFBBB45CFED6FD7421AC3",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowSettings.mqh"
+    },
+    {
+        "sha256":  "9A357A5FBE9AC8D605B7E05621E2C2C1EC3E7C9C404C18B6BB3485FA5C6DB2CB",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaTrendFollowCore.mqh"
+    },
+    {
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\NasUltimate_Core.mqh"
+    },
+    {
+        "sha256":  "BD7A8214477F5FB7137FE0A99785678961EAE20419A22816B88AFAFC19C0D0B9",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbAdvancedAuditEngine.mqh"
+    },
+    {
+        "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbCustomRPicker.mqh"
+    },
+    {
+        "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbReplayMemoEpoch.mqh"
+    },
+    {
+        "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyCampaignModels.mqh"
+    },
+    {
+        "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyCampaignRegistry.mqh"
+    },
+    {
+        "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLConfig.mqh"
+    },
+    {
+        "sha256":  "D74DA4A233CFA0E0CFF6927C3CE0D509B0C52381D2E90304F80D667B8C7E167C",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLCore.mqh"
+    },
+    {
+        "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLHistory.mqh"
+    },
+    {
+        "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLJobs.mqh"
+    },
+    {
+        "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLPipeline.mqh"
+    },
+    {
+        "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyModelSlot.mqh"
+    },
+    {
+        "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyPresetLibrary.mqh"
+    },
+    {
+        "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyR7Core.mqh"
+    },
+    {
+        "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyR7Runtime.mqh"
+    },
+    {
+        "sha256":  "9D1DF8CE8167FAB6BEF08A69E7F635BD3738C462344C435777C6231A35E8DBAF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserContract.mqh"
+    },
+    {
+        "sha256":  "1D57AE08F5AC76F621DF7F7E77ACC17009B7880D2C468A557E2592B144D297E6",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserLibrary.mqh"
+    },
+    {
+        "sha256":  "3EFF125C6B71B8E703E0509880FD8F276731D6EDCC7D10E7AA3577AEEAEC6C2B",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserMetrics.mqh"
+    },
+    {
+        "sha256":  "611D9D503C101C36795DFBD058C52A409BD69BE7C8F907DA9475402B7DDD4E18",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbUltimate_ProfessionalPipeline.mqh"
+    },
+    {
+        "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbUltimate_RegimeMatrix.mqh"
+    },
+    {
+        "sha256":  "4261ADFC356D9794BCA3498343ABA38B94E62196139BBE82D220DC4ED8A9B575",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\ResearchFiveYearData.mqh"
+    },
+    {
+        "sha256":  "07C7F16C10525030754B49C93E6A125ABC1B522413415468BF345C51D35F3BD7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\TradeCalendarMatrix.mqh"
+    },
+    {
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\TradeDayCalendarPublisher.mqh"
+    },
+    {
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditKivancExport.mqh"
+    },
+    {
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditKivancFeatures.mqh"
+    },
+    {
+        "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditMemoIndex.mqh"
+    },
+    {
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditQuantFeatures.mqh"
+    },
+    {
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditSignalFeatures.mqh"
+    },
+    {
+        "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTickReadGuard.mqh"
+    },
+    {
+        "sha256":  "A39C10C59A06B32582185F18BA59F3C3C27030173E83518D2C2F8A65C57C9712",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTradeCsv.mqh"
+    },
+    {
+        "sha256":  "18E1FF15E5CB9B29D09CA3EA82C8D6125D296A1B35AAC3261F79609F3E553F4B",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTradeCsvAdapter.mqh"
+    },
+    {
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\DailyTradeQuota.mqh"
+    },
+    {
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\LiqNarrativeSol_RegimeV3.mqh"
+    },
+    {
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\NasUltimate_Core.mqh"
+    },
+    {
+        "sha256":  "64723BE0117886AA83E355586795D3899C8AEF6306D61E080C5354E0C8BFF078",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbAdvancedAuditEngine.mqh"
+    },
+    {
+        "sha256":  "617CF3B50D555E6F703F14BA8A34416774A67B7C039D3C1FF4CB6DD7F5F058CE",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbBrokerClockProfiles.mqh"
+    },
+    {
+        "sha256":  "957A226AC54A2F8A92699C08CE2ED5C46887FC5A5282C1EC41AE589008C63D5D",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbBrokerTimezone.mqh"
+    },
+    {
+        "sha256":  "3BC455829E2609973CB96F921191C5F1FA17F32FBEB5F0C6CDE444B027158992",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbClockDashboard.mqh"
+    },
+    {
+        "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbCustomRPicker.mqh"
+    },
+    {
+        "sha256":  "ED736D13AC6D0E82161D11A237EFC625AAECE2C22DF81EA00D8A05AD9D2E8F4F",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbMoneyRisk.mqh"
+    },
+    {
+        "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbReplayMemoEpoch.mqh"
+    },
+    {
+        "sha256":  "CB7782DF62E25DEA1C31218A0794B7F85E577CD9FD0C953CA13CB89E9015A075",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyCampaignModels.mqh"
+    },
+    {
+        "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyCampaignRegistry.mqh"
+    },
+    {
+        "sha256":  "4A2150E3D695FDF61C7B15B848DCCDA18BA9CA8875D78BB2F4C95915B4DB41A9",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboard.mqh"
+    },
+    {
+        "sha256":  "D28D17B82E769604FE36A4640A2F6677D5754BE6A266822573FC68DC3B0D3133",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboardData.mqh"
+    },
+    {
+        "sha256":  "72A43B364FC328AD7CF30C48EFC9653B7B43FABF41291F16393F316E5A6303A8",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboardFiveYear.mqh"
+    },
+    {
+        "sha256":  "B47F40FD8F5B706A0F9E9E2C2A955B8ACA885FAD5F7FB17DD29C7245C978336C",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLConfig.mqh"
+    },
+    {
+        "sha256":  "D74DA4A233CFA0E0CFF6927C3CE0D509B0C52381D2E90304F80D667B8C7E167C",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLCore.mqh"
+    },
+    {
+        "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLHistory.mqh"
+    },
+    {
+        "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLJobs.mqh"
+    },
+    {
+        "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLPipeline.mqh"
+    },
+    {
+        "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyModelSlot.mqh"
+    },
+    {
+        "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyPresetLibrary.mqh"
+    },
+    {
+        "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyR7Core.mqh"
+    },
+    {
+        "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyR7Runtime.mqh"
+    },
+    {
+        "sha256":  "36EFCC535A2B5CE58E83F4C809E8F08D1373C66A6DA684D172C68732870CFBF7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyRegimeLeaderboard.mqh"
+    },
+    {
+        "sha256":  "2063CCC636FAF060437EB8028DA8F47413711A5AB0CB042106F8B62BFFB81FAC",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserContract.mqh"
+    },
+    {
+        "sha256":  "41B76887824EB5ADB02463C8DBA81748D85F00919E17F5EC8D20F908A46BA643",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserLibrary.mqh"
+    },
+    {
+        "sha256":  "45A285F2E76F29FC438A9CBD8C97D9E81CEBFFD86A90F3FC70FBAEB3BED18819",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserMetrics.mqh"
+    },
+    {
+        "sha256":  "9419157F38C71EEC65BEFDBBA0C564D0E006A133301BEB2289D8DB352EA05638",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5"
+    },
+    {
+        "sha256":  "D48C5E8A7A88B6780305936DB17E4367FC56BD93E0E96ACE00E0CE0ACA299D0C",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimate_ProfessionalPipeline.mqh"
+    },
+    {
+        "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimate_RegimeMatrix.mqh"
+    },
+    {
+        "sha256":  "C7821EC77E64D6496B802D8CFBF3A3EB23ADD4F2F5ED43786E086FF3265A5EB6",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\ResearchFiveYearData.mqh"
+    },
+    {
+        "sha256":  "07C7F16C10525030754B49C93E6A125ABC1B522413415468BF345C51D35F3BD7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\TradeCalendarMatrix.mqh"
+    },
+    {
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\TradeDayCalendarPublisher.mqh"
+    },
+    {
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditKivancExport.mqh"
+    },
+    {
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditKivancFeatures.mqh"
+    },
+    {
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditQuantFeatures.mqh"
+    },
+    {
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditSignalFeatures.mqh"
+    },
+    {
+        "sha256":  "A39C10C59A06B32582185F18BA59F3C3C27030173E83518D2C2F8A65C57C9712",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditTradeCsv.mqh"
+    },
+    {
+        "sha256":  "79F45404FBB49BFB6535A2F6567457FA1442F5C31794F562FB48877ECEAAC662",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditTradeCsvAdapter.mqh"
+    },
+    {
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\DailyTradeQuota.mqh"
+    },
+    {
+        "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqDashboardFit.mqh"
+    },
+    {
+        "sha256":  "8AFC1D468129F6F67B00B4BE3C44ABCB5F92EC3CB34A66C2BEEE504923E3B4A7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqImagePresets.mqh"
+    },
+    {
+        "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegime.mqh"
+    },
+    {
+        "sha256":  "FC4656C522B991A367ADD4F401BC90E47F845ECE0C70AB47F37951449B81386B",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh"
+    },
+    {
+        "sha256":  "B307E2435BE71B9574A07671AC43AFD3C624E396D16F6D1E43A8A59F7632D8B5",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5"
+    },
+    {
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh"
+    },
+    {
+        "sha256":  "8AD32908D817778510F89E69EC023261AAE45FBB1651356FF71755245A070BDF",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqROptions.mqh"
+    },
+    {
+        "sha256":  "985CF95656175B3B9DDC974168886110095F84A0DB067922C25073385DC459BA",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqSolAdvancedNas.mqh"
+    },
+    {
+        "sha256":  "485CBC03F83CB044DF35716D08B71C279550C74169C8B2865D66FEEDCED85914",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh"
+    },
+    {
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\NasUltimate_Core.mqh"
+    },
+    {
+        "sha256":  "64D3CDED9D3D73A0568DA8DBA97C76B10868F328D3CD43E83CA66FAB20FE1827",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\ResearchFiveYearData.mqh"
+    },
+    {
+        "sha256":  "07C7F16C10525030754B49C93E6A125ABC1B522413415468BF345C51D35F3BD7",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\TradeCalendarMatrix.mqh"
+    },
+    {
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\TradeDayCalendarPublisher.mqh"
+    },
+    {
+        "sha256":  "E4B27B9500407A0C9E1FF72D2490F83E107E1FB67371625724080BD31DF52210",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5"
+    },
+    {
+        "sha256":  "1A9A0616E1C60E41E39C15CF221538203110A3868E6D847875D420B1C8C45B10",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5"
+    },
+    {
+        "sha256":  "7A75F7B243EED2A0D3E9C493DFD7FE6D39749DAB9BB37D84F959A3CCE9080BC0",
+        "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5"
+    }
+]

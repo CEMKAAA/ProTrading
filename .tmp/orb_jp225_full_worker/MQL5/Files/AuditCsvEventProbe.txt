@@ -1,0 +1,2 @@
+success=true events=2 rows=64 reason=CSV saved: 64 rows | missing rows core=64 rolling=64 MTF=64 Kivanc=64
+csv=C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AuditExports\CsvEventProbe_EURUSDm_1790791357_61448048015566_19133171.csv

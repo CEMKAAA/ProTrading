@@ -11,6 +11,7 @@
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
 #include "TradeCalendarMatrix.mqh"
+#include "AuditTradeCsv.mqh"
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
@@ -221,7 +222,7 @@ input bool   InpFtmoModeDefault     = false;
 input bool   InpRiskLotOnlyModeDefault = false;
 input bool   InpInvertModeDefault      = false;
 input bool   InpAdvancedReverseDefault = false; // Spread-compensated broker SL/TP; MT5 native only.
-input double InpAdvancedReverseMaxCostPctDefault = 100.0; // 100 disables the planned inverse-R cost gate.
+input double InpAdvancedReverseMaxCostPctDefault = 10.0; // Max inverse quote gap as % of source TP distance; 100 disables.
 input double InpAtrExposurePct      = 2.0;
 input double InpMaxPortfolioPct     = 4.0;
 input double InpDailyLossLimitPct   = 0.0;
@@ -396,7 +397,7 @@ bool            g_ftmoMode        = false;
 bool            g_riskLotOnlyMode = false;
 bool            g_rtInvertMode    = false;
 bool            g_rtAdvancedReverse = false;
-double          g_rtAdvancedReverseMaxCostPct = 100.0;
+double          g_rtAdvancedReverseMaxCostPct = 10.0;
 bool            g_rtUtcMidnightSession = false;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasStateGate = false;
@@ -490,7 +491,7 @@ int    g_strategyVisible[5];
 int    g_strategyVisibleCount = 0;
 datetime g_strategyApplyFlashUntil = 0;
 string g_strategyFilterNetText = "";
-int g_strategyFilterFamily = ORB_PRESET_FAMILY_ANY;
+string g_strategyFilterPair = "";
 string g_strategyFilterGeometryText = "";
 bool   g_strategyFilterGeometryEnabled = false;
 double g_strategyFilterGeometry = 0.0;
@@ -560,6 +561,7 @@ double g_histPeakCumulativeR = 0.0;
 double g_histMaxPeakDrawdownR = 0.0;
 double g_histMaxPeakDrawdownMoney = 0.0;
 string g_histStatLine = "-";
+string g_histFirstInvalidReason = "";
 int    g_weekdayWins[7];
 int    g_weekdayLosses[7];
 //--- Audit engine state -------------------------------------------------
@@ -977,6 +979,7 @@ void LoadRuntimeAdvancedReverse()
       if(MathIsValidNumber(saved)&&saved>=0.0&&saved<=100.0)g_rtAdvancedReverseMaxCostPct=saved;
    }
    if(g_rtAdvancedReverse)g_rtInvertMode=true;
+   g_rtAdvancedReverse=false; // Retired UI mode; inverse geometry is now unified.
 }
 bool AdvancedReverseShape(string &reason)
 {
@@ -987,7 +990,7 @@ bool AdvancedReverseShape(string &reason)
    else if(g_maIndependent||g_maReverseExit||g_rtTimeExit||g_rtFilteredWindowReverseExit
       ||g_rtPostTradeDispBlockExit||RuntimeNasExitEnabled()||RuntimeHalfBeLeg()>0||g_rtBEOnTp1)
       reason="OTHER_POSITION_EXITS_ENABLED";
-   else if(g_orbBridgeEnabled||!g_orbNativeWithBridgeOnly)reason="MT5_NATIVE_ONLY_PUB_OFF_NAT_ON";
+   else if(g_orbBridgeEnabled)reason="MT5_NATIVE_ONLY_PUB_OFF";
    return reason=="";
 }
 bool SetRuntimeInvertMode(bool enabled)
@@ -2180,7 +2183,7 @@ string TargetLabel()
    string source=DoubleToString(sourceR,sourceDigits)+"R";
    if(!g_rtInvertMode)return source;
    double effective=RuntimeEffectiveTargetR();
-   return effective>0.0?("INV "+DoubleToString(effective,2)+"R<-"+source):("INV "+source);
+   return effective>0.0?("INV LEVELS <-"+source):("INV "+source);
 }
 string HalfBeLabel(){int h=RuntimeHalfBeLeg();return h<=0?"HC:OFF":"HC:TP"+IntegerToString(h);}
 string FvgModeLabel()
@@ -2307,6 +2310,7 @@ void SetHistoricalWeeks(int weeks)
 }
 void QueueHistoricalRedraw(const uint debounceMs=120)
 {
+   AxAbort("CSV cancelled: settings changed");g_axReady=false;
    ulong queuedAtMs=GetTickCount64();
    g_histAuditRequestedMs=queuedAtMs;
    g_lastHistBuild=0;
@@ -2558,6 +2562,36 @@ string OrbStrategyPresetFamilyText(const int family)
 }
 
 #include "OrbStrategyUserLibrary.mqh"
+
+string OrbStrategyPresetPair(const OrbStrategyPreset &p)
+{
+   if(p.family!=ORB_PRESET_FAMILY_ANY)return OrbStrategyPresetFamilyText(p.family);
+   if(OrbUserPreset(p))
+   {
+      int slot=OrbUserSlot(p.id);
+      if(slot>=0)return g_userStrategies[slot].symbol;
+   }
+   return "ANY";
+}
+
+void OrbStrategyCyclePairFilter()
+{
+   string pairs[];int count=0;
+   for(int i=0;i<OrbStrategyPresetCount();i++)
+   {
+      OrbStrategyPreset p;if(!OrbStrategyPresetLoad(i,p))continue;
+      string pair=OrbStrategyPresetPair(p);
+      if(pair=="ANY"||pair=="")continue;
+      bool exists=false;
+      for(int j=0;j<count;j++)if(pairs[j]==pair){exists=true;break;}
+      if(exists)continue;
+      ArrayResize(pairs,count+1);pairs[count++]=pair;
+   }
+   if(g_strategyFilterPair==""){g_strategyFilterPair=count>0?pairs[0]:"";return;}
+   for(int i=0;i<count;i++)if(pairs[i]==g_strategyFilterPair)
+   {g_strategyFilterPair=i+1<count?pairs[i+1]:"";return;}
+   g_strategyFilterPair="";
+}
 
 bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
 {
@@ -2813,7 +2847,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
 
 bool OrbStrategyPresetPassesMetricFilters(const OrbStrategyPreset &p)
 {
-   if(g_strategyFilterFamily!=ORB_PRESET_FAMILY_ANY&&p.family!=g_strategyFilterFamily)return false;
+   if(g_strategyFilterPair!=""&&OrbStrategyPresetPair(p)!=g_strategyFilterPair)return false;
    if(g_strategyFilterGeometryEnabled)
    {
       // Geometry, not realized net R; non-fixed targets have no single preset ratio.
@@ -3126,48 +3160,54 @@ bool ResolvePureSwapGeometry(bool sourceIsBuy,bool execIsBuy,double sourceEntry,
       ||geometry.sourceTp<=0.0||geometry.sourceTargetR<=0.0)
    {detail="pure_swap_requires_fixed_target "+sourceDetail;return false;}
 
-   // Full inversion is an absolute protection-level swap, never a second R
-   // reconstruction around the inverse quote.
-   // ADV REV aligns broker Ask/Bid stop triggers with the source quote at
-   // the entry spread. It does not assume the exit spread will stay fixed.
-   double quoteShift=g_rtAdvancedReverse?(sourceEntry-execEntry):0.0;
-   geometry.execSl=NormalizeTradePrice(geometry.sourceTp+quoteShift);
-   geometry.execTp=NormalizeTradePrice(geometry.sourceSl+quoteShift);
+   if(enforceCost&&g_rtAdvancedReverseMaxCostPct<100.0)
+   {
+      double sourceTargetDistance=geometry.sourceRisk*geometry.sourceTargetR;
+      double quoteGapPct=100.0*MathAbs(sourceEntry-execEntry)/sourceTargetDistance;
+      if(quoteGapPct>g_rtAdvancedReverseMaxCostPct+1e-8)
+      {
+         detail="INVERSE_GAP_BLOCK quote_gap_pct="+DoubleToString(quoteGapPct,4)
+            +" max_pct="+DoubleToString(g_rtAdvancedReverseMaxCostPct,4);
+         return false;
+      }
+   }
+
+   // Inverse SL keeps the source TP; inverse TP reserves the entry quote gap.
+   geometry.execSl=geometry.sourceTp;
    geometry.execRisk=MathAbs(execEntry-geometry.execSl);
    if(geometry.execRisk<=tolerance){detail="pure_swap_execution_risk_invalid";return false;}
+   // A reversed TP is closed on the opposite quote from the source SL.
+   // Reserve the observed entry quote gap; replay and live orders use this
+   // same executable price, while preflight without quotes remains unshifted.
+   double askBuffer=enforceCost?MathAbs(sourceEntry-execEntry):0.0;
+   geometry.execTp=NormalizeTradePrice(geometry.sourceSl+(execIsBuy?-askBuffer:askBuffer));
    double targetDistance=execIsBuy?(geometry.execTp-execEntry):(execEntry-geometry.execTp);
    if((execIsBuy&&geometry.execSl>=execEntry-tolerance)
       ||(!execIsBuy&&geometry.execSl<=execEntry+tolerance))
    {detail="pure_swap_stop_wrong_side";return false;}
    if(targetDistance<=tolerance){detail="pure_swap_target_wrong_side";return false;}
+   if(enforceCost&&targetDistance<=MinStopDistance()+askBuffer)
+   {detail="INVERSE_GAP_BLOCK broker_min_target";return false;}
    geometry.execTargetR=targetDistance/geometry.execRisk;
-   // Compare the actual planned payout against the frictionless reciprocal R.
-   // Historical preflight has no quote pair; only the first replay tick and
-   // live execution may enforce this admission decision.
-   if(g_rtAdvancedReverse&&enforceCost&&g_rtAdvancedReverseMaxCostPct<100.0)
+   // A 1R target must not silently become a tiny TP after quote conversion.
+   if(enforceCost&&g_rtAdvancedReverseMaxCostPct<100.0
+      &&MathAbs(geometry.sourceTargetR-1.0)<=0.01
+      &&geometry.execTargetR+1e-6<1.0-g_rtAdvancedReverseMaxCostPct/100.0)
    {
-      double requiredR=(1.0-g_rtAdvancedReverseMaxCostPct/100.0)/geometry.sourceTargetR;
-      if(geometry.execTargetR+1e-10<requiredR)
-      {
-         detail="ADV_REVERSE_SPREAD_BLOCK effective_r="+DoubleToString(geometry.execTargetR,6)
-            +" required_r="+DoubleToString(requiredR,6);
-         return false;
-      }
+      detail="INVERSE_GAP_BLOCK r_floor effective_r="+DoubleToString(geometry.execTargetR,4)
+         +" min_r="+DoubleToString(1.0-g_rtAdvancedReverseMaxCostPct/100.0,4);
+      return false;
    }
 
-   // These are the defining pure-swap invariants. A rounding drift greater
-   // than one tradable tick fails closed instead of publishing mixed geometry.
-   if(MathAbs(geometry.execSl-(geometry.sourceTp+quoteShift))>tolerance
-      ||MathAbs(geometry.execTp-(geometry.sourceSl+quoteShift))>tolerance)
-   {detail="pure_swap_absolute_level_mismatch";return false;}
-   detail="PURE_SWAP_OK source_entry="+DoubleToString(sourceEntry,_Digits)
+   detail="LEVEL_SWAP_INVERSE_OK source_entry="+DoubleToString(sourceEntry,_Digits)
       +" exec_entry="+DoubleToString(execEntry,_Digits)
       +" source_sl="+DoubleToString(geometry.sourceSl,_Digits)
       +" source_tp="+DoubleToString(geometry.sourceTp,_Digits)
       +" exec_sl="+DoubleToString(geometry.execSl,_Digits)
       +" exec_tp="+DoubleToString(geometry.execTp,_Digits)
       +" source_r="+DoubleToString(geometry.sourceTargetR,4)
-      +" effective_r="+DoubleToString(geometry.execTargetR,4);
+      +" effective_r="+DoubleToString(geometry.execTargetR,4)
+      +" ask_buffer="+DoubleToString(askBuffer,_Digits);
    return true;
 }
 
@@ -3311,7 +3351,7 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
    ENUM_ORDER_TYPE type=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    bool ok=trade.PositionOpen(_Symbol,type,lot,entry,sl,tp,comment);
    uint rc=trade.ResultRetcode();
-   if(g_rtAdvancedReverse&&rc==TRADE_RETCODE_PLACED)
+   if(g_rtInvertMode&&rc==TRADE_RETCODE_PLACED)
    {
       ulong order=trade.ResultOrder();
       bool cancelled=order>0&&trade.OrderDelete(order);
@@ -3321,7 +3361,7 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
    }
    if(ok&&(rc==TRADE_RETCODE_DONE||rc==TRADE_RETCODE_DONE_PARTIAL||rc==TRADE_RETCODE_PLACED))
    {
-      if(g_rtAdvancedReverse)
+      if(g_rtInvertMode)
       {
          ulong ticket=FilledOwnTicket(trade.ResultDeal(),trade.ResultOrder());
          bool selected=ticket>0&&PositionSelectByTicket(ticket);
@@ -3351,7 +3391,7 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
    }
 
     string firstFail="invalid_stops ret="+IntegerToString((int)rc)+" "+trade.ResultRetcodeDescription();
-   if(g_rtAdvancedReverse)
+   if(g_rtInvertMode)
    {
       detail=firstFail+" advanced_reverse_unprotected_retry_blocked";
       return false;
@@ -4423,42 +4463,75 @@ string OrbExecutionVisualBase(datetime executedAt,int dir)
    return PREFIX+"EXEC_"+StringFormat("%I64d",(long)executedAt)+"_"+(dir>0?"BUY_":"SELL_");
 }
 
-// Pine markers identify the signal candle. Fill/SL/TP levels remain execution prices.
+// Keep signal markers adjacent to their generating candle, never to SL distance.
+double MaCrossCandleArrowPrice(bool isBuy,double high,double low)
+{
+   double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   if(point<=0.0)point=0.00001;
+   double pad=MathMax((high-low)*0.20,point*4.0);
+   return NormalizePrice(isBuy?low-pad:high+pad);
+}
+
 double MaCrossChartArrowPrice(datetime signalBar,bool isBuy,double fallback,double risk)
 {
-   if(g_rtMaCrossMode==MA_CROSS_PIVOT_ST)
-   {
-      if(g_mcLastKernelMode==g_rtMaCrossMode&&g_mcLastKernelTf==g_rtSignalTf
-         &&g_mcLastKernelSignal.barTime==signalBar&&g_mcLastKernelSignal.markerPrice>0)
-         return g_mcLastKernelSignal.markerPrice;
-      int i=MaCrossAuditFirstAfter(signalBar-1);
-      if(g_maCrossAuditReady&&i<ArraySize(g_maCrossAuditEvents)&&g_maCrossAuditEvents[i].signalTime==signalBar
-         &&g_maCrossAuditEvents[i].markerPrice>0)return g_maCrossAuditEvents[i].markerPrice;
-   }
    int shift=iBarShift(_Symbol,g_rtSignalTf,signalBar,true);
    if(shift>=0)
    {
       double hi=iHigh(_Symbol,g_rtSignalTf,shift),lo=iLow(_Symbol,g_rtSignalTf,shift);
-      double pad=MathMax((hi-lo)*0.2,SymbolInfoDouble(_Symbol,SYMBOL_POINT)*4);
-      return isBuy?lo-pad:hi+pad;
+      if(hi>=lo&&lo>0.0)return MaCrossCandleArrowPrice(isBuy,hi,lo);
    }
-   return OrbHistoricalArrowPrice(isBuy,fallback,risk);
+   int i=MaCrossAuditFirstAfter(signalBar-1);
+   if(g_maCrossAuditReady&&i<ArraySize(g_maCrossAuditEvents)
+      &&g_maCrossAuditEvents[i].signalTime==signalBar)
+      return MaCrossCandleArrowPrice(isBuy,g_maCrossAuditEvents[i].high,g_maCrossAuditEvents[i].low);
+   double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   if(point<=0.0)point=0.00001;
+   return NormalizePrice(fallback+(isBuy?-1.0:1.0)*point*4.0);
 }
+
+// A trade marker belongs to its fill candle on the displayed chart. Source
+// signal candles can be a different timeframe and remain in the tooltip.
+void MaCrossTradeMarker(datetime fillTime,bool isBuy,double fillPrice,
+                       datetime &chartBar,double &arrowPrice,double &pad)
+{
+   double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   if(point<=0.0)point=0.00001;
+   chartBar=fillTime;pad=point*4.0;
+   arrowPrice=NormalizePrice(fillPrice+(isBuy?-pad:pad));
+   MqlRates bar[1];
+   ENUM_TIMEFRAMES chartTf=(ENUM_TIMEFRAMES)_Period;
+   int seconds=PeriodSeconds(chartTf);
+   if(fillTime>0&&CopyRates(_Symbol,chartTf,fillTime,1,bar)==1
+      &&bar[0].time<=fillTime&&seconds>0&&fillTime<bar[0].time+seconds
+      &&bar[0].low>0.0&&bar[0].high>=bar[0].low)
+   {
+      chartBar=bar[0].time;
+      pad=MathMax((bar[0].high-bar[0].low)*0.20,point*4.0);
+      arrowPrice=MaCrossCandleArrowPrice(isBuy,bar[0].high,bar[0].low);
+   }
+}
+
+string MaCrossTradeMarkerTooltip(datetime signalBar,datetime fillTime)
+{
+   return "Signal "+EnumToString(g_rtSignalTf)+" bar: "+FmtTime(signalBar)
+      +" | closed: "+FmtTime(BarCloseTime(g_rtSignalTf,signalBar))
+      +" | fill: "+(fillTime>0?FmtTime(fillTime):"unavailable")
+      +" | marker candle: "+EnumToString((ENUM_TIMEFRAMES)_Period);
+}
+
 void DrawOrbExecutionVisual(string execDir,datetime executedAt,datetime signalBar,double entry,double sl,string entryDetail)
 {
    if(IsTesterMode()||executedAt<=0||entry<=0.0||sl<=0.0)return;
    bool isBuy=(execDir=="BUY");
    int dir=isBuy?1:-1;
-   double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
-   // Marker belongs to the generating candle; executedAt still owns fills.
-   datetime visualAt=signalBar>0?signalBar:executedAt;
-   double risk=MathAbs(entry-sl);
-   double arrowPrice=MaCrossChartArrowPrice(signalBar,isBuy,entry,risk);
-   double pad=MathMax(MathMax(risk,pt)*0.20,pt*40.0);
+   datetime visualAt=0;double arrowPrice=0.0,pad=0.0;
+   MaCrossTradeMarker(executedAt,isBuy,entry,visualAt,arrowPrice,pad);
    double textPrice=NormalizePrice(isBuy?arrowPrice-pad*0.65:arrowPrice+pad*0.65);
    string base=OrbExecutionVisualBase(executedAt,dir);
    DrawSignalArrow(base+"ARW",visualAt,arrowPrice,isBuy,false);
    ObjectSetInteger(0,base+"ARW",OBJPROP_WIDTH,4);
+   ObjectSetInteger(0,base+"ARW",OBJPROP_ANCHOR,isBuy?ANCHOR_TOP:ANCHOR_BOTTOM);
+   ObjectSetString(0,base+"ARW",OBJPROP_TOOLTIP,MaCrossTradeMarkerTooltip(signalBar,executedAt));
    string mode=(StringFind(entryDetail,"entry=imb1m")>=0)?"IMB1M":
       ((StringFind(entryDetail,"entry=retest")>=0)?"RETEST":"BREAK");
    DrawSignalText(base+"TXT",visualAt,textPrice,
@@ -4808,7 +4881,9 @@ struct HistResult
    string outcome;  // "TP1".."TP6","SL","BE","open","timeout"
    double netR;     // net R-multiple
    bool isWin;      // netR > 0 after configured target/HC/cost model
+   double entrySpreadPoints; // observed entry quote, EMPTY_VALUE if unavailable
    double simEntry;  // actual simulated fill entry
+   datetime entryTime; // first executable quote, separate from the source bar
    double simSl;     // simulated effective initial SL
    double simTarget; // selected final target price
    double costR;     // spread/slippage/commission cost in R
@@ -4913,6 +4988,7 @@ struct OrbHistoricalTickResumeState
    int maxTp;
    double effectiveSl;
    bool beApplied;
+   double tickEntrySpreadPoints;
    datetime fillTime;
    datetime brokerExitAt;
 };
@@ -5236,6 +5312,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       res.maxTp=g_histTickResume.maxTp;
       effSl=g_histTickResume.effectiveSl;beApplied=g_histTickResume.beApplied;
       fillTime=g_histTickResume.fillTime;brokerExitAt=g_histTickResume.brokerExitAt;
+      res.entrySpreadPoints=g_histTickResume.tickEntrySpreadPoints;
    }
    else
    {
@@ -5263,7 +5340,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       string geometryDetail="";
       if(!BuildSimGeometry(isBuy,entry,sl,sl,risk,tp1,tp2,tp3,tp4,tp5,tp6,sourceReferenceEntry,geometryDetail))
       {
-         if(StringFind(geometryDetail,"ADV_REVERSE_SPREAD_BLOCK")==0)res.invalidReason="ADV_REVERSE_SPREAD_BLOCK";
+         if(StringFind(geometryDetail,"INVERSE_GAP_BLOCK")==0)res.invalidReason="INVERSE_GAP_BLOCK";
          return false;
       }
       string targetDetail="";
@@ -5272,6 +5349,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       effSl=sl;
       beApplied=false;
       fillTime=(datetime)firstTick.time;
+      res.entrySpreadPoints=(firstTick.ask-firstTick.bid)/pt;
       brokerExitAt=(g_rtExitMode==ORB_EXIT_BROKER_TIME?BrokerTimeExitFor(fillTime):0);
    }
    res.targetLeg=targetLeg;
@@ -5279,6 +5357,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
    res.valid=true;
    res.invalidReason="";
    res.simEntry=entry;
+   res.entryTime=fillTime;
    res.simSl=sl;
    res.simTarget=fixedTarget?targetPrice:0.0;
    double tps[6];tps[0]=tp1;tps[1]=tp2;tps[2]=tp3;tps[3]=tp4;tps[4]=tp5;tps[5]=tp6;
@@ -5413,6 +5492,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
       g_histTickResume.maxTp=res.maxTp;
       g_histTickResume.effectiveSl=effSl;g_histTickResume.beApplied=beApplied;
       g_histTickResume.fillTime=fillTime;g_histTickResume.brokerExitAt=brokerExitAt;
+      g_histTickResume.tickEntrySpreadPoints=res.entrySpreadPoints;
    }
    else if(g_histTickResumeAllowed)
       ClearHistoricalTickResume();
@@ -5459,7 +5539,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    ulong tickReadFailures=g_auditTickReadFailures;
    HistResult res;
    res.maxTp=0;res.outcome="open";res.netR=0;res.isWin=false;
-   res.simEntry=entry;res.simSl=sl;res.simTarget=0;res.costR=0;
+   res.simEntry=entry;res.entryTime=0;res.entrySpreadPoints=EMPTY_VALUE;res.simSl=sl;res.simTarget=0;res.costR=0;
    res.exitMode=RuntimeExitLabel();res.exitPrice=0;res.exitTime=0;
    res.valid=false;res.invalidReason="NO_MARKET_DATA";
    res.targetLeg=RuntimeTargetLeg();res.hcLeg=ClampHalfBeLeg(halfBeLeg,res.targetLeg);
@@ -5494,9 +5574,9 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    if(SimulateTradeTicks(sigTime,tradeEnd,entry,sl,isBuy,halfBeLeg,scheduledEndReached,res,forcedExitTime,forcedExitOutcome))
       return res;
-   if(res.invalidReason=="ADV_REVERSE_SPREAD_BLOCK")return res;
+   if(res.invalidReason=="INVERSE_GAP_BLOCK")return res;
    if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
-   if(g_rtAdvancedReverse){res.valid=false;res.invalidReason="ADV_REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
+   if(g_rtInvertMode){res.valid=false;res.invalidReason="INVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
    ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
@@ -5536,6 +5616,8 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.invalidReason="";
    bool fixedTarget=ExitModeUsesFixedTp(g_rtExitMode)&&targetPrice>0.0;
    res.simEntry=NormalizePrice(entry);
+   res.entryTime=(g_btFillMode==BT_FILL_SIGNAL_CLOSE?BarCloseTime(entryTf,r[0].time):r[1].time);
+   res.entrySpreadPoints=EMPTY_VALUE; // Bar fallback has no observed entry quote.
    res.simSl=NormalizePrice(sl);
    res.simTarget=fixedTarget?targetPrice:0.0;
 
@@ -5775,6 +5857,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   if(g_rtInvertMode)key+="|INV_LEVEL_SWAP_1";
    key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
    key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
@@ -6238,6 +6321,7 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtBEOnTp1="+(string)g_rtBEOnTp1;
    key+="|g_rtEaEnabled="+(string)g_rtEaEnabled;
    key+="|g_rtInvertMode="+(string)g_rtInvertMode;
+   if(g_rtInvertMode)key+="|INV_LEVEL_SWAP_1";
    key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
    key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
@@ -6686,6 +6770,7 @@ bool EnsureOrbAuditHistoryCoverage(int days,string &detail,bool &hardBlocked)
 
 void OrbResetHistoricalStats()
 {
+   AxReset();
    g_maHistSeriesDir=0;g_maHistSeriesCount=0;
    g_histAuditRunning=false;
    g_histAuditStage="";
@@ -6693,6 +6778,7 @@ void OrbResetHistoricalStats()
    g_histAuditProcessedDays=0;
    g_histAuditProgressPct=0.0;
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histOpen=0;g_histFlat=0;g_histInvalid=0;
+   g_histFirstInvalidReason="";
    g_histStopLossExits=0;g_histNasOppositeExits=0;g_histNewDayReverseExits=0;
    g_histNetR=0.0;g_histWonR=0.0;g_histLostR=0.0;g_histNetMoney=0.0;
    g_histMinCumulativeR=0.0;g_histMinCumulativeMoney=0.0;
@@ -6707,6 +6793,15 @@ void OrbResetHistoricalStats()
 #include "OrbStrategyUserMetrics.mqh"
 
 #include "MaCrossEventAudit.mqh"
+datetime MaLegacyAuditPositionUntil(const HistResult &sim,datetime runNow,
+                                    datetime forcedAt,string forcedOutcome)
+{
+   if(!sim.valid||sim.outcome=="open")return runNow+1;
+   // A reverse signal closes the previous position before its own entry.
+   if(forcedAt>0&&sim.outcome==forcedOutcome)return forcedAt;
+   return sim.exitTime>0?sim.exitTime:runNow+1;
+}
+
 void ProcessHistoricalCalcDay(const int back)
 {
       if(back<0||back>=ArraySize(g_histDaySnapshots))return;
@@ -6794,8 +6889,6 @@ void ProcessHistoricalCalcDay(const int back)
          return;
       }
       if(!DailyQuotaAuditAllows(OrbSignalAvailableTime(entryT))){g_histFiltered++;return;}
-      if(!TCalAllows(ServerToSessionLocal(OrbSignalAvailableTime(entryT))))
-      {g_histFiltered++;return;}
       RegimeV3Snapshot regimeSnapshot;
       int regimeBucket=OrbRegimeBucketAt(sigT,regimeSnapshot);
       string regimeDetail=OrbRegimeDetail(regimeSnapshot,regimeBucket);
@@ -6865,7 +6958,13 @@ void ProcessHistoricalCalcDay(const int back)
       {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="MA_REVERSE_EXIT";}
    HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
             forcedExitAt,forcedExitOutcome);
-   if(sim.invalidReason=="ADV_REVERSE_SPREAD_BLOCK")
+      if(!TCalAllows(ServerToSessionLocal(AxEntryAt(sim.entryTime,OrbSignalAvailableTime(entryT)))))
+      {
+         g_histFiltered++;
+         g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
+         return;
+      }
+   if(sim.invalidReason=="INVERSE_GAP_BLOCK")
    {
       g_histFiltered++;
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
@@ -6889,42 +6988,6 @@ void ProcessHistoricalCalcDay(const int back)
       {
          datetime referenceEnd=te;
          referenceSim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),referenceEnd,referenceExit,referenceOutcome);
-      }
-      // LEGACY selects the same source-signal candles in both directions.
-      // The inverse replay still supplies the actual bid/ask result, while the
-      // uninverted replay alone owns the historical one-position calendar.
-      HistResult selectionSim=sim;
-      datetime selectionForcedAt=forcedExitAt;
-      string selectionForcedOutcome=forcedExitOutcome;
-      if(g_rtInvertMode&&!g_maIndependent)
-      {
-         g_rtInvertMode=false;
-         double sourceSl=0.0,sourceRisk=0.0;string sourceDetail="";
-         if(ResolveExecutionStop(sourceIsBuy,sourceIsBuy,entry,rawSl,sourceSl,sourceRisk,sourceDetail))
-         {
-            datetime sourceNasAt=0,sourceNasBar=0;double sourceNasClose=0.0;string sourceNasDetail="";
-            if(anyNasExit)
-               FindNasOppositeExitWithGrace(sourceIsBuy?1:-1,OrbSignalAvailableTime(entryT),nasSearchEnd,
-                  sourceNasBar,sourceNasAt,sourceNasClose,sourceNasDetail);
-            selectionForcedAt=filteredWindowExitAt;
-            selectionForcedOutcome=filteredWindowExitOutcome;
-            if(sourceNasAt>0&&(selectionForcedAt<=0||sourceNasAt<selectionForcedAt))
-            {selectionForcedAt=sourceNasAt;selectionForcedOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";}
-            if(newDayReverseExitAt>0&&(selectionForcedAt<=0||newDayReverseExitAt<selectionForcedAt))
-            {selectionForcedAt=newDayReverseExitAt;selectionForcedOutcome="MA_REVERSE_EXIT";}
-            double sourceTp1=PriceAtLeg(sourceIsBuy,entry,sourceRisk,1);
-            double sourceTp2=PriceAtLeg(sourceIsBuy,entry,sourceRisk,2);
-            double sourceTp3=PriceAtLeg(sourceIsBuy,entry,sourceRisk,3);
-            datetime selectionEnd=te;
-            selectionSim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sourceSl),sourceIsBuy,
-               sourceTp1,sourceTp2,sourceTp3,RuntimeHalfBeLeg(),selectionEnd,selectionForcedAt,selectionForcedOutcome);
-         }
-         else
-         {
-            selectionSim.valid=false;
-            selectionSim.invalidReason="SOURCE_GEOMETRY_"+sourceDetail;
-         }
-         g_rtInvertMode=true;
       }
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
       WriteInternalSimAudit("dashboard_hist",entryT,simEnd,execDir,entry,NormalizePrice(sl),sim,modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail+" regime_allowed="+(OrbRegimeAllowed(regimeBucket)?"1":"0")
@@ -6961,24 +7024,35 @@ void ProcessHistoricalCalcDay(const int back)
       {
          if(sim.valid)g_maHistSeriesCount++;
       }
-      if(selectionSim.valid)
-      {
-         g_maAuditPositionUntil=selectionSim.outcome=="open"?g_histRunNow+1:selectionSim.exitTime;
-         // The opposite candidate itself triggers the close-before-open.
-         // First-quote latency must not suppress that same reversal entry.
-         if(selectionForcedAt>0&&selectionSim.outcome==selectionForcedOutcome)
-            g_maAuditPositionUntil=selectionForcedAt;
-      }
+      if(!g_maIndependent)
+         g_maAuditPositionUntil=MaLegacyAuditPositionUntil(sim,g_histRunNow,forcedExitAt,forcedExitOutcome);
       if(finalOutcome)
       {
          if(sim.outcome=="SL")g_histStopLossExits++;
          else if(sim.outcome=="NAS_OPPOSITE_EXIT"||sim.outcome=="NAS_ADDITIONAL_EXIT")g_histNasOppositeExits++;
          else if(sim.outcome=="MA_REVERSE_EXIT")g_histNewDayReverseExits++;
       }
+      AxTrade csv;ZeroMemory(csv);
+      csv.signalTime=sigT;csv.availableTime=OrbSignalAvailableTime(entryT);
+      csv.entryTime=sim.entryTime;csv.entryClock=AxEntryClock(sim.entryTime,sim.entrySpreadPoints);
+      csv.exitTime=sim.exitTime;csv.localTime=ServerToSessionLocal(csv.entryTime>0?csv.entryTime:csv.availableTime);
+      csv.rawDirection=dir=="BUY"?1:-1;csv.direction=isBuy?1:-1;
+      csv.valid=sim.valid;csv.closed=finalOutcome;csv.won=sim.netR>1e-8;
+      csv.entrySpreadPoints=sim.entrySpreadPoints;csv.spreadBasis=sim.entrySpreadPoints!=EMPTY_VALUE?"ENTRY_BID_ASK_QUOTE":"NOT_CAPTURED_BAR_MODEL";
+      csv.entry=sim.simEntry;csv.sl=sim.simSl;csv.tp=sim.simTarget;csv.exitPrice=sim.exitPrice;
+      csv.netR=sim.netR;csv.costR=sim.costR;csv.outcome=sim.outcome;csv.reason=AxExitReason(sim.valid,finalOutcome,sim.invalidReason,sim.outcome);
+      csv.plannedEntry=entry;csv.plannedSl=sl;csv.plannedTp=tp1;
+      csv.regionHigh=hi;csv.regionLow=lo;csv.regime=regimeBucket;csv.rf=rfIndex;
+      csv.context=modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail;
+      AxCapture(csv);
       g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
-      if(finalOutcome){DailyQuotaSchedule(sim.exitTime,sim.netR>1e-8?1:(sim.netR<-1e-8?-1:0));TCalRecord(ServerToSessionLocal(OrbSignalAvailableTime(entryT)),sim.netR);}
-      if(!sim.valid)g_histInvalid++;
+      if(finalOutcome){DailyQuotaSchedule(sim.exitTime,sim.netR>1e-8?1:(sim.netR<-1e-8?-1:0));TCalRecord(csv.localTime,sim.netR);}
+      if(!sim.valid)
+      {
+         g_histInvalid++;
+         if(g_histFirstInvalidReason=="")g_histFirstInvalidReason=sim.invalidReason;
+      }
       else if(!finalOutcome)g_histOpen++;
       else if(sim.netR>1e-8)
       {
@@ -7040,13 +7114,14 @@ void ProcessHistoricalCalcDay(const int back)
             " statR=",DoubleToString(statR,2));
 
       // Draw arrow with outcome
-      datetime visualT=sigT;
+      datetime fillAt=sim.entryTime>0?sim.entryTime:BarCloseTime(RuntimeEntryTf(),entryT);
+      datetime visualT=0;
       double simRisk=MathAbs(sim.simEntry-sim.simSl);
-      double pad=MathMax(MathMax(simRisk,g_histRunPoint)*0.20,g_histRunPoint*40.0);
-      double arwP=MaCrossChartArrowPrice(sigT,isBuy,sim.simEntry,simRisk);
+      double pad=0.0,arwP=0.0;
+      MaCrossTradeMarker(fillAt,isBuy,sim.simEntry,visualT,arwP,pad);
       string dateKey=(string)(long)sigT;
       string base=MaHistoryEventBase(sigT,dir);
-      datetime levelStart=MathMax(entryT,visualT);
+      datetime levelStart=fillAt;
       datetime levelEnd=levelStart+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
       datetime nextSig=0;
       FindNextHistoricalSignalAfter(sigT,levelEnd,nextSig);
@@ -7060,7 +7135,7 @@ void ProcessHistoricalCalcDay(const int back)
       string levelId=dateKey+"_"+execDir;
       DrawOrbHistoricalSegment(levelId+"_ENTRY",levelStart,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
       ObjectSetString(0,HistoricalObjectRoot()+"LVL_"+levelId+"_ENTRY",OBJPROP_TOOLTIP,
-         "SIMULATED FILL (not signal close): "+DoubleToString(sim.simEntry,_Digits)+" | BUY enters ASK; SELL enters BID. Signal bar: "+FmtTime(sigT));
+         "SIMULATED FILL: "+DoubleToString(sim.simEntry,_Digits)+" | "+MaCrossTradeMarkerTooltip(sigT,sim.entryTime));
       DrawOrbHistoricalSegment(levelId+"_SL",levelStart,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
       if(sim.simTarget>0.0)
          DrawOrbHistoricalSegment(levelId+"_TP",levelStart,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
@@ -7074,6 +7149,8 @@ void ProcessHistoricalCalcDay(const int back)
       ObjectSetInteger(0,arrowName,OBJPROP_ARROWCODE,arwCode);
       ObjectSetInteger(0,arrowName,OBJPROP_COLOR,arwClr);
       ObjectSetInteger(0,arrowName,OBJPROP_WIDTH,2);
+      ObjectSetInteger(0,arrowName,OBJPROP_ANCHOR,isBuy?ANCHOR_TOP:ANCHOR_BOTTOM);
+      ObjectSetString(0,arrowName,OBJPROP_TOOLTIP,MaCrossTradeMarkerTooltip(sigT,sim.entryTime));
       ObjectSetInteger(0,arrowName,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,arrowName,OBJPROP_HIDDEN,false);
 
       if(finalOutcome&&sim.exitTime>0&&sim.exitPrice>0.0)
@@ -7109,6 +7186,7 @@ void ProcessHistoricalCalcDay(const int back)
 
 void CancelHistoricalAuditBuild()
 {
+   AxAbort("CSV cancelled: audit restarted");g_axReady=false;
    if(g_histBuildGeneration>0)
       DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
    g_histBuildGeneration=0;
@@ -7131,6 +7209,7 @@ void CancelHistoricalAuditBuild()
 
 void FinalizeHistoricalAudit()
 {
+   AxSealCurrent();
    g_histAuditProcessedDays=g_histRunDays;
    SetHistoricalAuditProgress("COMPLETE",100.0,0.0,1,1);
    ulong calcCompletedMs=GetTickCount64();
@@ -7149,7 +7228,6 @@ void FinalizeHistoricalAudit()
    int resolved=g_histWins+g_histLosses;
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
    g_histStatLine=(g_mcOf.mode!=0&&g_mcOfDataIncomplete?"INCOMPLETE ORDER FLOW DATA | ":"")+IntegerToString(ArraySize(g_maCrossAuditEvents))+" raw / "+IntegerToString(g_histTotal)+" trades | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" MA-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
-   if(g_rtInvertMode&&!g_maIndependent)g_histStatLine+=" | PAIRED SOURCE CALENDAR (research; live may block)";
    if(g_histFiltered>0)g_histStatLine+=" | "+IntegerToString(g_histFiltered)+" filt";
    if(g_histDrawnWindowCount>0)g_histStatLine+=" | "+IntegerToString(g_histDrawnWindowCount)+" window ("+IntegerToString(g_histRejectedWindowRaw)+" raw)";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn,
@@ -7795,7 +7873,7 @@ void UpdateDashboard()
    CreateEdit("EDIT_PRESET_WR",x+202,y+54,48,18,g_strategyFilterWrText);
    CreateLabel("DASH_PRESET_MC_L",x+258,y+59,"MC >=",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_MC",x+298,y+54,52,18,g_strategyFilterMinCumText);
-   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterFamily!=ORB_PRESET_FAMILY_ANY;
+   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterPair!="";
    CreateButton("BTN_PRESET_FILTER",x+358,y+54,92,18,"APPLY FILTER",metricFilterActive?C'30,150,95':C'38,101,176');
    CreateButton("BTN_PRESET_FILTER_CLEAR",x+456,y+54,62,18,"CLEAR",C'80,80,80');
    CreateLabel("DASH_PRESET_FILTER_COUNT",x+526,y+59,IntegerToString(ArraySize(g_strategyMatches))+"/"+IntegerToString(OrbStrategyPresetCount()),
@@ -7805,9 +7883,9 @@ void UpdateDashboard()
    CreateLabel("DASH_PRESET_GEOMETRY_L",x+146,y+83,"TP/SL R =",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_GEOMETRY",x+218,y+78,76,20,g_strategyFilterGeometryText);
    ObjectSetString(0,PREFIX+"EDIT_PRESET_GEOMETRY",OBJPROP_TOOLTIP,"Exact target/SL ratio after inversion; blank = all. Use APPLY FILTER.");
-   CreateButton("BTN_PRESET_SYMBOL",x+304,y+78,140,20,"PAIR: "+(g_strategyFilterFamily==ORB_PRESET_FAMILY_ANY?"ALL":OrbStrategyPresetFamilyText(g_strategyFilterFamily)),
-      g_strategyFilterFamily==ORB_PRESET_FAMILY_ANY?C'38,101,176':C'30,150,95');
-   ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL / USDJPY / JP225. Filters the library only; does not change the chart or strategy.");
+   CreateButton("BTN_PRESET_SYMBOL",x+304,y+78,140,20,"PAIR: "+(g_strategyFilterPair==""?"ALL":g_strategyFilterPair),
+      g_strategyFilterPair==""?C'38,101,176':C'30,150,95');
+   ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL and every pair present in saved and built-in strategies. Library filter only.");
    CreateButton("BTN_FY_RESEARCH",x+454,y+78,152,20,"5Y LEADERBOARD",C'38,101,176');
    ObjectDelete(0,PREFIX+"DASH_PRESET_FAV_HINT");
    CreateLabel("DASH_PRESET_CURRENT",x+12,y+106,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
@@ -7979,16 +8057,15 @@ void UpdateDashboard()
    CreateLabel("DASH_VOL_LABEL",x+12,y+517,"VOL X",acB,8);
    CreateEdit("EDIT_VOL_MULT",x+54,y+513,54,18,DoubleToString(g_rtVolumeMultiplier,2));
    CreateButton("BTN_APPLY_VOL",x+114,y+513,92,18,volApplied?"APPLIED":"APPLY VOL",volApplied?C'30,150,95':C'38,101,176');
-   CreateButton("BTN_INVERT",x+222,y+513,98,18,(g_rtInvertMode&&!g_rtAdvancedReverse)?"FULL INV ON":"FULL INV OFF",
-      (g_rtInvertMode&&!g_rtAdvancedReverse)?C'184,103,22':C'80,80,80');
-   CreateButton("BTN_ADV_REVERSE",x+326,y+513,94,18,g_rtAdvancedReverse?"ADV REV ON":"ADV REV OFF",
-      g_rtAdvancedReverse?C'28,139,124':C'80,80,80');
-   ObjectSetString(0,PREFIX+"BTN_ADV_REVERSE",OBJPROP_TOOLTIP,
-      "Advanced reverse: spread-aware, MT5 native only. Requires single-order fixed 1R and no active position.");
-   CreateButton("BTN_CLOSEALL",x+424,y+513,76,18,"CLOSE ALL",C'178,37,57');
-   CreateLabel("DASH_ADV_COST",x+503,y+517,"MAX%",acB,8);
-   CreateEdit("EDIT_ADV_COST",x+534,y+513,42,18,DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
-   CreateButton("BTN_APPLY_ADV_COST",x+579,y+513,41,18,"SET",C'38,101,176');
+   CreateButton("BTN_INVERT",x+222,y+513,98,18,g_rtInvertMode?"INV ON":"INV OFF",
+      g_rtInvertMode?C'184,103,22':C'80,80,80');
+   ObjectDelete(0,PREFIX+"BTN_ADV_REVERSE");
+   CreateLabel("DASH_ADV_COST",x+326,y+517,"GAP%",acB,8);
+   CreateEdit("EDIT_ADV_COST",x+360,y+513,42,18,DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
+   ObjectSetString(0,PREFIX+"EDIT_ADV_COST",OBJPROP_TOOLTIP,
+      "Max inverse quote gap and 1R TP erosion in percent; 10 requires at least 0.90R gross TP. 100 disables.");
+   CreateButton("BTN_APPLY_ADV_COST",x+406,y+513,41,18,"SET",C'38,101,176');
+   CreateButton("BTN_CLOSEALL",x+454,y+513,76,18,"CLOSE ALL",C'178,37,57');
    CreateButton("BTN_BRIDGE_PUB",x+424,y+490,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
    CreateButton("BTN_BRIDGE_ONLY",x+486,y+490,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
    CreateButton("BTN_BRIDGE_NATIVE",x+552,y+490,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
@@ -8046,6 +8123,13 @@ void UpdateDashboard()
          ?"Set Tools > Options > Charts > Max bars, restart MT5, then reselect audit window."
          :"Downloading/building history; automatic retry is active.";
       auditStatColor=g_histCoverageHardBlocked?C'255,80,110':C'255,204,82';
+   }
+   else if(g_rtInvertMode&&g_histInvalid>0&&g_histWins+g_histLosses+g_histOpen+g_histFlat==0)
+   {
+      auditStat1="INVERSE AUDIT INCOMPLETE: TICK DATA";
+      auditStat2="No W/L verdict | "+g_histFirstInvalidReason
+         +" | source bars alone cannot prove the Bid/Ask exit order.";
+      auditStatColor=C'255,204,82';
    }
    CreateLabel("DASH_STAT1",x+12,y+156,auditStat1,auditStatColor,9);
    auditStat2="RAW "+IntegerToString(ArraySize(g_maCrossAuditEvents))+" | HELD "+IntegerToString(g_maAuditHeldCandidates)+" | "+auditStat2;
@@ -8330,7 +8414,7 @@ bool ExecSingle(string dir,double &entry,double &sl,double &tp,double lot)
    entry=NormalizeTradePrice(entry);sl=NormalizeTradePrice(sl);tp=NormalizeTradePrice(tp);
    double requiredSl=sl,requiredTp=tp;
    string adj="";AdjustOpenStops(dir,entry,sl,tp,adj);
-   if(g_rtAdvancedReverse&&(MathAbs(sl-requiredSl)>TickSize()*0.5||MathAbs(tp-requiredTp)>TickSize()*0.5))
+   if(g_rtInvertMode&&(MathAbs(sl-requiredSl)>TickSize()*0.5||MathAbs(tp-requiredTp)>TickSize()*0.5))
    {Audit("advanced_reverse_stops_adjustment_block",dir,lot,entry,sl,tp,adj);return false;}
    string vr="";if(!ValidateOpenStops(dir,entry,sl,tp,vr)){Audit("order_skip_stops",dir,lot,entry,sl,tp,vr);return false;}
    trade.SetExpertMagicNumber(RuntimeMagic());trade.SetDeviationInPoints(InpDeviationPoints);trade.SetTypeFillingBySymbol(_Symbol);
@@ -8677,7 +8761,13 @@ bool RetestReady(string &detail)
       g_lastExecStatus="RETEST_EXPIRED";
       return false;
    }
-   MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return false;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol,tick)||tick.bid<=0.0||tick.ask<=tick.bid||tick.time_msc<=0)
+   {
+      g_lastExecStatus="INVALID_ENTRY_QUOTE";
+      Audit("entry_quote_invalid",g_retestDir,0,0,0,0,"retest quote unavailable");
+      return false;
+   }
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
    double tol=MathMax(0.0,InpRetestTolerancePoints)*pt;
    double resume=MathMax(0.0,InpRetestResumePoints)*pt;
@@ -8717,14 +8807,13 @@ bool ImbalanceReady(string &detail)
 void DrawAcceptedLiveSignal(string rawDir,datetime bt,double signalClose,string detail)
 {
    string execDir=EffectiveOrbDirection(rawDir);
-   int sh=iBarShift(_Symbol,g_rtSignalTf,bt,true);
-   double sH=sh>=0?iHigh(_Symbol,g_rtSignalTf,sh):signalClose;
-   double sL=sh>=0?iLow(_Symbol,g_rtSignalTf,sh):signalClose;
-   double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0.0)pt=0.00001;
-   double pad=MathMax(MathAbs(g_orbHigh-g_orbLow)*0.12,pt*40.0);
-   bool isBuy=execDir=="BUY";double arwP=MaCrossChartArrowPrice(bt,isBuy,signalClose,MathAbs(g_orbHigh-g_orbLow));
-   datetime visualT=bt;
-   DrawSignalArrow(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+execDir+"_ARW",visualT,arwP,isBuy,false);
+   bool isBuy=execDir=="BUY";double arwP=0.0,pad=0.0;datetime visualT=0;
+   datetime availableAt=OrbSignalAvailableTime(bt);
+   MaCrossTradeMarker(availableAt,isBuy,signalClose,visualT,arwP,pad);
+   string arrowName=PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+execDir+"_ARW";
+   DrawSignalArrow(arrowName,visualT,arwP,isBuy,false);
+   ObjectSetInteger(0,arrowName,OBJPROP_ANCHOR,isBuy?ANCHOR_TOP:ANCHOR_BOTTOM);
+   ObjectSetString(0,arrowName,OBJPROP_TOOLTIP,"Accepted setup at "+FmtTime(availableAt)+" | source bar "+FmtTime(bt));
    DrawSignalText(PREFIX+"LIVE_"+IntegerToString((int)bt)+"_"+execDir+"_TXT",visualT,
       isBuy?arwP-pad*0.6:arwP+pad*0.6,"MA LIVE "+MaCrossSignalText(g_rtMaCrossMode,rawDir=="BUY"?1:-1)+" "+detail,isBuy?clrLime:clrTomato);
    Audit("signal",execDir,0,signalClose,0,0,"bar="+FmtTime(bt)+" "+RuntimeEntryLabel()+" "+detail);
@@ -8866,7 +8955,13 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
          return false;
       }
    }
-   MqlTick tick;if(!SymbolInfoTick(_Symbol,tick))return false;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol,tick)||tick.bid<=0.0||tick.ask<=tick.bid||tick.time_msc<=0)
+   {
+      g_lastExecStatus="INVALID_ENTRY_QUOTE";
+      Audit("entry_quote_invalid",execDir,0,0,0,0,entryDetail);
+      return false;
+   }
    bool isBuy=execDir=="BUY";
    bool sourceIsBuy=rawDir=="BUY";
    double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);double buf=MathMax(0,InpSlBufferPoints)*pt;
@@ -8876,7 +8971,8 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    double sl=0.0,risk=0.0;string geometryDetail="";
    if(!ResolveExecutionStop(sourceIsBuy,isBuy,entry,rawSl,sl,risk,geometryDetail,sourceReferenceEntry))
    {
-      g_lastExecStatus="GEOMETRY_BLOCKED";g_lastFilterReason=geometryDetail;
+      g_lastExecStatus=StringFind(geometryDetail,"INVERSE_GAP_BLOCK")==0?"INVERSE_GAP_BLOCK":"GEOMETRY_BLOCKED";
+      g_lastFilterReason=geometryDetail;
       Audit("geometry_block",execDir,0,entry,0,0,geometryDetail+" "+entryDetail);
       return false;
    }
@@ -9754,6 +9850,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   AxAbort("EA detached");
    ResearchLbShutdown();
    ObjectsDeleteAll(0,MaOfRankPrefix());
    TCalDestroy();
@@ -9782,6 +9879,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
 void OnTimer()
 {
+   AxTimer();
    ulong nowMs=GetTickCount64();
    bool coreDue=(g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
    bool dc=false;
@@ -9835,10 +9933,12 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(AxEvent(id,lparam))return;
    if(ResearchLbEvent(id,lparam,dparam,sparam))return;
    if(LossHoursEvent(id,sparam))return;
    if(TCalEvent(id,lparam,dparam,sparam))
    {
+      if(g_tcalCsvRequested){g_tcalCsvRequested=false;AxStart();}
       if(g_tcalChanged)
       {g_tcalChanged=false;CancelHistoricalAuditBuild();QueueHistoricalRedraw(0);UpdateDashboard();}
       return;
@@ -9963,9 +10063,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 
    if(sparam==PREFIX+"BTN_PRESET_SYMBOL")
    {
-      if(g_strategyFilterFamily==ORB_PRESET_FAMILY_ANY)g_strategyFilterFamily=ORB_PRESET_FAMILY_USDJPY;
-      else if(g_strategyFilterFamily==ORB_PRESET_FAMILY_USDJPY)g_strategyFilterFamily=ORB_PRESET_FAMILY_JP225;
-      else g_strategyFilterFamily=ORB_PRESET_FAMILY_ANY;
+      OrbStrategyCyclePairFilter();
       g_strategySearchPage=0;
       OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
       g_strategyPopupOpen=true;g_lastExecStatus="PRESET_SYMBOL_FILTER_CHANGED";
@@ -10004,7 +10102,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    if(sparam==PREFIX+"BTN_PRESET_FILTER_CLEAR")
    {
-      g_strategyFilterFamily=ORB_PRESET_FAMILY_ANY;
+      g_strategyFilterPair="";
       g_strategyFilterNetText="";g_strategyFilterWrText="";g_strategyFilterMinCumText="";
       g_strategyFilterGeometryText="";g_strategyFilterGeometryEnabled=false;g_strategyFilterGeometry=0.0;
       g_strategyFilterNetEnabled=false;g_strategyFilterWrEnabled=false;g_strategyFilterMinCumEnabled=false;
@@ -10313,7 +10411,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
          DrawOrbLiveTradeLevels();
          g_lastExecStatus=g_rtInvertMode?"INVERT_ON":"INVERT_OFF";
          Audit("invert_mode_changed","",0,0,0,0,
-            "invert="+(g_rtInvertMode?"1":"0")+" pure_swap=1 existing_positions_unchanged=1 pending_cleared=1");
+            "invert="+(g_rtInvertMode?"1":"0")+" level_swap_inverse=1 existing_positions_unchanged=1 pending_cleared=1");
          Print("ORB15v3 dashboard invert mode=",g_rtInvertMode?"ON":"OFF"," key=",RuntimeInvertKey(),
             " existing positions remain under original geometry");
       }
@@ -10322,33 +10420,8 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    else if(sparam==PREFIX+"BTN_ADV_REVERSE")
    {
-      string advancedReason="";
-      if(OwnPositionExists()||g_orbBridgePlanActive)
-         g_lastExecStatus="ADV_REV_BLOCKED_ACTIVE_TRADE";
-      else if(!g_rtAdvancedReverse&&!AdvancedReverseShape(advancedReason))
-         g_lastExecStatus="ADV_REV_BLOCKED_"+advancedReason;
-      else
-      {
-         bool requested=!g_rtAdvancedReverse;
-         bool previousInvert=g_rtInvertMode;
-         if(GlobalVariableSet(RuntimeAdvancedReverseKey(),requested?1.0:0.0)>0
-            &&SetRuntimeInvertMode(requested))
-         {
-            g_rtAdvancedReverse=requested;
-            ClearRetestState("advanced_reverse_changed");ClearImbalanceState("advanced_reverse_changed");
-            ClearNasPending("advanced_reverse_changed");DeleteLive();
-            g_lastExecStatus=requested?"ADV_REVERSE_ON":"ADV_REVERSE_OFF";
-            Audit("advanced_reverse_changed","",0,0,0,0,"enabled="+(string)requested+" mt5_native_only=1 spread_compensated=1");
-            QueueHistoricalRedraw();
-         }
-         else
-         {
-            GlobalVariableSet(RuntimeAdvancedReverseKey(),g_rtAdvancedReverse?1.0:0.0);
-            SetRuntimeInvertMode(previousInvert);
-            g_lastExecStatus="ADV_REVERSE_SAVE_FAILED";
-         }
-      }
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+      // Ignore stale chart-object clicks from builds with a second reverse mode.
+      ObjectDelete(0,sparam);return;
    }
    else if(sparam==PREFIX+"BTN_APPLY_ADV_COST")
    {
@@ -10358,8 +10431,8 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
          g_lastExecStatus="ADV_COST_INVALID_0_TO_100";
       else
       {
-         g_lastExecStatus="ADV_COST_MAX_"+DoubleToString(requested,2)+"PCT";
-         Audit("advanced_reverse_max_cost_changed","",0,0,0,0,"max_cost_pct="+DoubleToString(requested,4));
+         g_lastExecStatus="INVERSE_MAX_GAP_"+DoubleToString(requested,2)+"PCT";
+         Audit("inverse_max_quote_gap_changed","",0,0,0,0,"max_gap_pct="+DoubleToString(requested,4));
          QueueHistoricalRedraw();
       }
       ObjectSetString(0,PREFIX+"EDIT_ADV_COST",OBJPROP_TEXT,DoubleToString(g_rtAdvancedReverseMaxCostPct,2));
@@ -10673,3 +10746,5 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
 }
 //+------------------------------------------------------------------+
+
+#include "AuditTradeCsvAdapter.mqh"

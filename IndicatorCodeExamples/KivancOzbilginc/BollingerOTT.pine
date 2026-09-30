@@ -1,0 +1,93 @@
+//@version=5
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//developer: ANIL ÖZEKŞİ
+//author: @kivancozbilgic
+
+indicator('Bollinger OTT Spread','BOOTS', overlay=true)
+src = input(close, title='Source')
+lengthb = input.int(2,'Bollinger Bands MA Period', minval=1)
+length = input.int(2, 'OTT Period', minval=1)
+percent = input.float(10, 'OTT Percent', step=0.1, minval=0)
+mav = input.string(title='Moving Average Type', defval='VAR', options=['SMA', 'EMA', 'WMA', 'TMA', 'VAR', 'WWMA', 'ZLEMA', 'TSF'])
+showsupport = input(title="Show MOVING AVERAGE?", defval=false)
+mult = 2
+Var_Func(src, length) =>
+    valpha = 2 / (length + 1)
+    vud1 = src > src[1] ? src - src[1] : 0
+    vdd1 = src < src[1] ? src[1] - src : 0
+    vUD = math.sum(vud1, 9)
+    vDD = math.sum(vdd1, 9)
+    vCMO = nz((vUD - vDD) / (vUD + vDD))
+    VAR = 0.0
+    VAR := nz(valpha * math.abs(vCMO) * src) + (1 - valpha * math.abs(vCMO)) * nz(VAR[1])
+    VAR
+VAR = Var_Func(src, length)
+Wwma_Func(src, length) =>
+    wwalpha = 1 / length
+    WWMA = 0.0
+    WWMA := wwalpha * src + (1 - wwalpha) * nz(WWMA[1])
+    WWMA
+WWMA = Wwma_Func(src, length)
+Zlema_Func(src, length) =>
+    zxLag = length / 2 == math.round(length / 2) ? length / 2 : (length - 1) / 2
+    zxEMAData = src + src - src[zxLag]
+    ZLEMA = ta.ema(zxEMAData, length)
+    ZLEMA
+ZLEMA = Zlema_Func(src, length)
+Tsf_Func(src, length) =>
+    lrc = ta.linreg(src, length, 0)
+    lrc1 = ta.linreg(src, length, 1)
+    lrs = lrc - lrc1
+    TSF = ta.linreg(src, length, 0) + lrs
+    TSF
+TSF = Tsf_Func(src, length)
+
+ma(source, length, _type) =>
+    switch _type
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "WMA" => ta.wma(source, length)
+        "TMA" => ta.sma(ta.sma(source, math.ceil(length / 2)), math.floor(length / 2) + 1)
+        "VAR" => Var_Func(source, length)
+        "VWMA" => ta.vwma(source, length)
+        "ZLEMA" => Zlema_Func(source, length)
+        "TSF" => Tsf_Func(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+
+basis = ma(src, lengthb, mav)
+dev = mult * ta.stdev(src, lengthb)
+upper = basis + dev
+lower = basis - dev
+MAvg =  ma(upper, length, mav)
+fark = MAvg * percent * 0.01
+longStop = MAvg - fark
+longStopPrev = nz(longStop[1], longStop)
+longStop := MAvg > longStopPrev ? math.max(longStop, longStopPrev) : longStop
+shortStop = MAvg + fark
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := MAvg < shortStopPrev ? math.min(shortStop, shortStopPrev) : shortStop
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and MAvg > shortStopPrev ? 1 : dir == 1 and MAvg < longStopPrev ? -1 : dir
+MT = dir == 1 ? longStop : shortStop
+OTT = MAvg > MT ? MT * (200 + percent) / 200 : MT * (200 - percent) / 200
+MAvgl =  ma(lower, length, mav)
+farkl = MAvgl * percent * 0.01
+longStopl = MAvgl - farkl
+longStopPrevl = nz(longStopl[1], longStopl)
+longStopl := MAvgl > longStopPrevl ? math.max(longStopl, longStopPrevl) : longStopl
+shortStopl = MAvgl + farkl
+shortStopPrevl = nz(shortStopl[1], shortStopl)
+shortStopl := MAvgl < shortStopPrevl ? math.min(shortStopl, shortStopPrevl) : shortStopl
+dirl = 1
+dirl := nz(dirl[1], dirl)
+dirl := dirl == -1 and MAvgl > shortStopPrevl ? 1 : dirl == 1 and MAvgl < longStopPrevl ? -1 : dirl
+MTl = dirl == 1 ? longStopl : shortStopl
+OTTl = MAvgl > MTl ? MTl * (200 + percent) / 200 : MTl * (200 - percent) / 200
+
+
+plot(OTTl[2], "BOOTSlow", color=color.rgb(199, 56, 224), linewidth=2)
+plot(OTT[2], "BOOTShigh", color=color.rgb(33, 170, 243), linewidth=2)
+plot(showsupport ? basis : na, color=color.new(#051be1, 0), linewidth=2, title="MOV")

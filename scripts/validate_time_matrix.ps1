@@ -65,7 +65,7 @@ if($RunProbe){
  $data=Get-Content $result -Raw|ConvertFrom-Json
  Write-Output "MQL_PROBE=$($data.checks) checks, $($data.failed) failures"
  if($data.checks -lt 7 -or $data.failed -ne 0){throw 'Calendar probe failed'}
- foreach($probeName in @('OrbClockSaveProbe','MaTimeMatrixStrategyProbe','LiqTimeMatrixStrategyProbe')){
+ foreach($probeName in @('OrbClockSaveProbe','MaTimeMatrixStrategyProbe','LiqTimeMatrixStrategyProbe','HoursApplyProbe','TimeMatrixActionsProbe')){
   $sourceText=[IO.File]::ReadAllText((Join-Path $root ('tests/mql5/'+$probeName+'.mq5')))
   $sourceText=$sourceText.Replace('../../IndicatorCodeExamples/','../../')
   $sourceText=$sourceText.Replace('../../OrbUltimateEA_StrategyLibrary.mq5','../../orb/OrbUltimateEA_StrategyLibrary.mq5')

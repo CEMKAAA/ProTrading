@@ -49,19 +49,20 @@ bool LiqImageRead(string path,string &name,double &v[])
    for(int i=0;i<ArraySize(g_liqImagePresets);i++)
    {
       if(!LiqImageCompatible(i)||path!=LiqImagePath(i))continue;
-      int count=LiqLibraryCapture(v);if(count!=22&&count!=41)return false;
+      int count=LiqLibraryCapture(v);if(count!=22&&count!=41&&count!=42)return false;
       ArrayInitialize(v,0);LiqImagePreset p=g_liqImagePresets[i];
       name=p.name;v[0]=p.htf;v[1]=p.entry;v[2]=5;v[3]=p.target;
       v[7]=1;v[13]=1;v[15]=p.duplicate;v[16]=p.invert;
       v[17]=100;v[18]=10;v[19]=1;v[20]=p.pips;v[21]=p.weeks;
       // All photographed Advanced presets: RF master OFF, macro ALLOW, RF rules BLOCK.
-      if(count==41)
+      if(count>=41)
       {
          for(int j=23;j<41;j++)v[j]=1;
          v[22]=p.regimeFilter;
          for(int j=0;j<6;j++)if((p.macroBlockedMask&(1<<j))!=0)v[23+j]=0;
          for(int j=0;j<12;j++)if((p.rfAllowedMask&(1<<j))!=0)v[29+j]=0;
       }
+      if(count>=42)v[41]=100.0;
       return true;
    }
    return false;

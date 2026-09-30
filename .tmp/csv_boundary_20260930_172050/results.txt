@@ -1,0 +1,4 @@
+﻿checks=104 failed=0
+orb_ma_exit_reason_empty=true
+available_hour_wins=1 fill_hour_wins=0 csv_entry_hour=10
+
