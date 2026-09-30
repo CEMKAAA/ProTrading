@@ -1,0 +1,2 @@
+checks=130 failed=1
+available_hour_wins=0 fill_hour_wins=1 csv_entry_hour=10

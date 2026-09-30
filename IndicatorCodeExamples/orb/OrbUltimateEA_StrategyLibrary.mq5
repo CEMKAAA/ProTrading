@@ -7612,6 +7612,7 @@ void UpdateDashboard()
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
    OrbUserDraw(); OrbClockUiDraw();
+   TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');

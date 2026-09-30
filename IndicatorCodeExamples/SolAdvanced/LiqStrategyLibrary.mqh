@@ -294,6 +294,8 @@ void LiqLibraryNavigation()
 void LiqLibraryDraw()
 {
    int x=LiqLibraryLeft(),y=42,w=LiqLibraryWidth();color bg=C'24,30,42',button=C'38,101,176';
+   if(g_liqLibraryRPicker||g_liqLibraryOpen)
+   {ObjectDelete(0,TCalId("CSV_RIGHT"));ObjectDelete(0,TCalId("CSV_FOLDER_ROOT"));ObjectDelete(0,TCalId("CSV_FOLDER_SUFFIX"));}
    if(g_liqLibraryRPicker)
    {
       x=8;w=(int)MathMax(280,MathMin(650,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-16));
@@ -330,6 +332,7 @@ void LiqLibraryDraw()
    LiqLibraryWidget("APPLY",OBJ_BUTTON,x+w-158,y+38,146,24,"APPLY STRATEGY",C'184,103,22');
    LiqLibraryWidget("FAV",OBJ_BUTTON,x+12,y+70,130,24,g_liqLibraryFavorites?"FAVORITES ON":"FAVORITES OFF",button);
    LiqLibraryWidget("SELECTED",OBJ_LABEL,x+12,y+106,w-24,20,"Selected: "+StringSubstr(g_liqLibraryName,0,50),bg);
+   if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+138,1.0,DASH_Z+60,true);
    LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
    LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330,w-190,24,g_liqLibraryName,C'38,46,60');
    LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330,158,24,"SAVE STRATEGY",button);
@@ -378,6 +381,7 @@ bool LiqLibraryDashboard()
    if(!g_liqLibraryStarted){g_liqLibraryPanel=LiqLibraryWide();g_liqLibraryStarted=true;}
    LiqLibraryNavigation();
    if(g_liqLibraryPanel||g_liqLibraryRPicker)LiqLibraryDraw();
+   else {ObjectDelete(0,TCalId("CSV_RIGHT"));ObjectDelete(0,TCalId("CSV_FOLDER_ROOT"));ObjectDelete(0,TCalId("CSV_FOLDER_SUFFIX"));}
    return g_liqLibraryRPicker||g_liqLibraryOpen||(g_liqLibraryPanel&&!LiqLibraryWide());
 }
 bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)

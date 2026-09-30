@@ -8264,6 +8264,7 @@ void UpdateDashboard()
    McOfUiDraw();
    TCalLauncher(PREFIX,OrbLibraryX(InpDashboardX+644),OrbLibraryY(InpDashboardY+5),
       InpDashboardX+300,InpDashboardY+34,"SESSION LOCAL TIME");
+   TCalCsvLauncher(PREFIX,OrbLibraryX(InpDashboardX+772),OrbLibraryY(InpDashboardY+5),g_libraryDashScale,DASH_Z+3);
 }
 
 //=========================================================================

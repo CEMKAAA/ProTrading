@@ -1,2 +1,2 @@
 checks=52 failed=0 columns=990
-csv=C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AuditExports\CsvProbe_JP225m_1790791334_61447889713654_19110843.csv
+csv=C:\Users\Cem\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AuditExports\CsvProbe_JP225m_PERIOD_M5_SIGNAL_strategy,_name__1790794783_61482375256243_22559687.csv

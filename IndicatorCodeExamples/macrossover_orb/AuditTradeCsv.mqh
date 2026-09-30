@@ -16,6 +16,7 @@ bool g_axReady=false,g_axBusy=false;
 int g_axFile=INVALID_HANDLE,g_axIndex=0,g_axMissing=0;
 int g_axMissingRolling=0,g_axMissingMtf=0,g_axMissingKiv=0;
 string g_axPath="",g_axSettingsHead="",g_axSettingsRow="",g_axStrategy="",g_axEa="";
+string g_axSignalMode="SIGNAL";
 datetime g_axAsOf=0;
 ENUM_TIMEFRAMES g_axTf=PERIOD_CURRENT;
 int g_axHandles[],g_axBuffers[];
@@ -59,6 +60,11 @@ bool AxWrite(string value)
 void AxStatus(string text)
 {
    g_tcalCsvStatus=text;g_tcalUiDirty=true;
+   if(ObjectFind(0,TCalId("CSV_RIGHT"))>=0)
+   {
+      ObjectSetString(0,TCalId("CSV_RIGHT"),OBJPROP_TEXT,g_axBusy?"CSV "+DoubleToString(g_tcalCsvProgress,0)+"%":"EXPORT AUDIT CSV");
+      ObjectSetString(0,TCalId("CSV_RIGHT"),OBJPROP_TOOLTIP,TCalCsvDirectory()+"\n"+text);
+   }
    if(g_tcalOpen&&(!g_axBusy||GetTickCount64()-g_axUiAt>=200))
    {g_axUiAt=GetTickCount64();TCalDraw();ChartRedraw(0);}
 }
@@ -87,10 +93,30 @@ void AxCapture(const AxTrade &record)
 {
    int n=ArraySize(g_axTrades);if(ArrayResize(g_axTrades,n+1,512)==n+1)g_axTrades[n]=record;
 }
-void AxSeal(string ea,string strategy,ENUM_TIMEFRAMES tf,datetime asOf,string settingsHead,string settingsRow)
+void AxSeal(string ea,string strategy,ENUM_TIMEFRAMES tf,datetime asOf,string settingsHead,string settingsRow,string signalMode="SIGNAL")
 {
    g_axEa=ea;g_axStrategy=strategy;g_axTf=tf;g_axAsOf=asOf;
+   g_axSignalMode=signalMode;
    g_axSettingsHead=settingsHead;g_axSettingsRow=settingsRow;g_axReady=true;
+}
+string AxFilePart(string value,int limit)
+{
+   string out="";
+   for(int i=0;i<StringLen(value)&&StringLen(out)<limit;i++)
+   {
+      ushort c=StringGetCharacter(value,i);
+      out+=(c<=32||StringFind("<>:\"/\\|?*",ShortToString(c))>=0)?"_":ShortToString(c);
+   }
+   while(StringLen(out)>0&&StringGetCharacter(out,StringLen(out)-1)=='.')out=StringSubstr(out,0,StringLen(out)-1);
+   return StringLen(out)>0?out:"CUSTOM";
+}
+string AxFileName()
+{
+   string suffix="_"+(string)(long)TimeLocal()+"_"+(string)ChartID()+"_"+(string)GetTickCount64()+".csv";
+   string prefix=AxFilePart(g_axEa,16)+"_"+AxFilePart(_Symbol,16)+"_"+AxFilePart(EnumToString(g_axTf),12)
+      +"_"+AxFilePart(g_axSignalMode,28)+"_";
+   int room=240-StringLen(TCalCsvDirectory())-1-StringLen(prefix)-StringLen(suffix);
+   return prefix+AxFilePart(g_axStrategy,MathMax(1,MathMin(48,room)))+suffix;
 }
 void AxIndicator(string name,int handle,int buffer=0)
 {
@@ -271,8 +297,7 @@ bool AxStart()
    if(g_axBusy)return false;
    if(!g_axReady){AxStatus("Complete an audit first");return false;}
    FolderCreate("AuditExports",FILE_COMMON);
-   string symbol=_Symbol;StringReplace(symbol,"/","_");StringReplace(symbol,"\\","_");StringReplace(symbol,":","_");
-   g_axPath="AuditExports\\"+g_axEa+"_"+symbol+"_"+(string)(long)TimeLocal()+"_"+(string)ChartID()+"_"+(string)GetTickCount64()+".csv";
+   g_axPath="AuditExports\\"+AxFileName();
    g_axFile=FileOpen(g_axPath+".partial",FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(g_axFile==INVALID_HANDLE){AxStatus("CSV file could not be opened");return false;}
    g_axBusy=true;g_axIndex=0;g_axMissing=0;g_axMissingRolling=0;g_axMissingMtf=0;g_axMissingKiv=0;

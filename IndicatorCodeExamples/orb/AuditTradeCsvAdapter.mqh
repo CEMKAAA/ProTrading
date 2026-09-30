@@ -252,6 +252,6 @@ void AxSealCurrent()
    AxSetting(h,r,"daily_max_losses",(string)g_dailyMaxLosses);
    AxSetting(h,r,"daily_target_wins",(string)g_dailyTargetWins);
    AxSetting(h,r,"daily_start_minute",(string)g_dailyStartMinute);
-   AxSeal("orb",OrbStrategyPresetCurrentName(),g_rtSignalTf,g_histRunNow,h,r);
+   AxSeal("orb",OrbStrategyPresetCurrentName(),g_rtSignalTf,g_histRunNow,h,r,"ORB-"+RuntimeEntryLabel());
    if(ArraySize(g_axTrades)!=g_histTotal){g_axReady=false;AxStatus("CSV unavailable: audit row count mismatch");}
 }

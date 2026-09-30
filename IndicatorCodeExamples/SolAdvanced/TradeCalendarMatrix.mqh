@@ -4,6 +4,8 @@
 
 bool g_tcalCsvRequested=false;
 string g_tcalCsvStatus="Current audit, one row per trade";
+string TCalCsvDirectory()
+{return TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\AuditExports";}
 double g_tcalCsvProgress=0;
 
 enum ENTRY_DIRECTION_MODE { ENTRY_BOTH=0, ENTRY_BUY_ONLY=1, ENTRY_SELL_ONLY=2 };
@@ -543,6 +545,22 @@ void TCalLauncher(string scope,int x,int y,int modalX,int modalY,string clockLab
    TCalObj("OPEN",OBJ_BUTTON,x,y,116,20,"TIME MATRIX",C'43,93,105',clrWhite,8);
    if(g_tcalOpen&&g_tcalUiDirty)TCalDraw();
 }
+void TCalCsvLauncher(string scope,int x,int y,double scale=1.0,long z=1000003,bool stacked=false)
+{
+   if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
+   TCalObj("CSV_RIGHT",OBJ_BUTTON,x,y,(int)MathRound(178*scale),(int)MathRound(20*scale),
+      "EXPORT AUDIT CSV",C'43,93,105',clrWhite,(int)MathMax(7,MathRound(8*scale)));
+   ObjectSetInteger(0,TCalId("CSV_RIGHT"),OBJPROP_ZORDER,z);
+   ObjectSetString(0,TCalId("CSV_RIGHT"),OBJPROP_TOOLTIP,TCalCsvDirectory()+"\n"+g_tcalCsvStatus);
+   int labelX=stacked?x:x+(int)MathRound(188*scale),labelY=stacked?y+(int)MathRound(24*scale):y;
+   int font=(int)MathMax(7,MathRound(7*scale));
+   TCalObj("CSV_FOLDER_ROOT",OBJ_LABEL,labelX,labelY,0,0,TerminalInfoString(TERMINAL_COMMONDATA_PATH),clrBlack,clrSilver,font);
+   TCalObj("CSV_FOLDER_SUFFIX",OBJ_LABEL,labelX,labelY+(int)MathRound(10*scale),0,0,"\\Files\\AuditExports",clrBlack,clrSilver,font);
+   ObjectSetInteger(0,TCalId("CSV_FOLDER_ROOT"),OBJPROP_ZORDER,z);
+   ObjectSetInteger(0,TCalId("CSV_FOLDER_SUFFIX"),OBJPROP_ZORDER,z);
+   ObjectSetString(0,TCalId("CSV_FOLDER_ROOT"),OBJPROP_TOOLTIP,TCalCsvDirectory());
+   ObjectSetString(0,TCalId("CSV_FOLDER_SUFFIX"),OBJPROP_TOOLTIP,TCalCsvDirectory());
+}
 void DirectionLauncher(string scope,int x,int y)
 {
    if(g_tcalPrefix=="")g_tcalPrefix=scope+"TCAL_";
@@ -613,7 +631,7 @@ void TCalDraw()
       g_tcalSmartWrText=ObjectGetString(0,TCalId("MOD_SMART_WR"),OBJPROP_TEXT);
    TCalClearModal();
    int x=g_tcalX,y=g_tcalY;
-   TCalObj("MOD_BG",OBJ_RECTANGLE_LABEL,x,y,636,478,"",C'20,26,33',clrWhite);
+   TCalObj("MOD_BG",OBJ_RECTANGLE_LABEL,x,y,636,501,"",C'20,26,33',clrWhite);
    TCalObj("MOD_TITLE",OBJ_LABEL,x+16,y+12,0,0,"ENTRY TIME MATRIX  |  "+g_tcalClockLabel,C'20,26,33',C'239,243,245',11);
    TCalObj("MOD_CLOSE",OBJ_BUTTON,x+590,y+8,30,23,"X",C'70,75,82',clrWhite);
    TCalObj("MOD_NOTE",OBJ_LABEL,x+16,y+39,0,0,
@@ -748,6 +766,11 @@ void TCalDraw()
    TCalObj("MOD_CSV_PROGRESS",OBJ_RECTANGLE_LABEL,x+205,y+455,MathMax(1,(int)(403*g_tcalCsvProgress/100)),2,"",C'88,224,177',clrSilver,8);
    TCalObj("MOD_CSV",OBJ_BUTTON,x+16,y+457,178,18,"EXPORT AUDIT CSV",C'43,93,105',clrWhite,8);
    TCalObj("MOD_CSV_STATUS",OBJ_LABEL,x+205,y+459,0,0,StringSubstr(g_tcalCsvStatus,0,65),clrBlack,clrSilver,8);
+   TCalObj("MOD_CSV_FOLDER",OBJ_LABEL,x+16,y+479,0,0,TerminalInfoString(TERMINAL_COMMONDATA_PATH),clrBlack,C'188,200,207',8);
+   TCalObj("MOD_CSV_SUFFIX",OBJ_LABEL,x+16,y+490,0,0,"\\Files\\AuditExports",clrBlack,C'188,200,207',8);
+   ObjectSetString(0,TCalId("MOD_CSV_FOLDER"),OBJPROP_TOOLTIP,TCalCsvDirectory());
+   ObjectSetString(0,TCalId("MOD_CSV_SUFFIX"),OBJPROP_TOOLTIP,TCalCsvDirectory());
+   ObjectSetString(0,TCalId("MOD_CSV"),OBJPROP_TOOLTIP,TCalCsvDirectory());
    if(g_tcalView==4&&g_tcalPage>0)
    {
       TCalObj("MOD_PICK_PREV",OBJ_BUTTON,x+222,y+430,45,24,"<",C'43,50,59',clrWhite);
@@ -794,6 +817,8 @@ bool TCalEvent(int id,long lx,double dy,string clicked)
       ObjectSetInteger(0,clicked,OBJPROP_STATE,false);return true;
    }
    if(id!=CHARTEVENT_OBJECT_CLICK)return false;
+   if(!g_tcalOpen&&clicked==TCalId("CSV_RIGHT"))
+   {g_tcalCsvRequested=true;ObjectSetInteger(0,clicked,OBJPROP_STATE,false);return true;}
    if(clicked==TCalId("OPEN"))
    {
       if(g_tcalOpen){g_tcalOpen=false;TCalClearModal();}

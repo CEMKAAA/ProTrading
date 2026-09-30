@@ -175,7 +175,7 @@ void AxSealCurrent()
    AxSetting(h,r,"daily_max_losses",(string)g_dailyMaxLosses);
    AxSetting(h,r,"daily_target_wins",(string)g_dailyTargetWins);
    AxSetting(h,r,"daily_start_minute",(string)g_dailyStartMinute);
-   AxSeal("SolAdvanced",g_liqLibraryName,g_entryTf,TimeCurrent(),h,r);
+   AxSeal("SolAdvanced",g_liqLibraryName,g_entryTf,TimeCurrent(),h,r,"LIQ-"+EntryModelLabel(g_entryModel));
    if(ArraySize(g_axTrades)!=g_hist.total){g_axReady=false;AxStatus("CSV unavailable: audit row count mismatch");}
 }
 void AxCollectSol()

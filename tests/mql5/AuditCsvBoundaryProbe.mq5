@@ -25,6 +25,23 @@ void OnStart()
 {
    g_axNotify=false;g_axSchedule=false;g_tcalPrefix="BOUNDARY_TEST_";
    g_tcalClockLabel="BROKER UTC0";
+   Check(AxFilePart("a/b:c*?<>|\"z",48)=="a_b_c______z","filename forbids Windows special characters");
+   Check(AxFilePart("",48)=="CUSTOM","unnamed strategy has explicit fallback");
+   Check(AxFilePart("abcdefghijkl",5)=="abcde","filename component length bounded");
+   g_axEa="MaCross";g_axStrategy="MyStrategy";g_axSignalMode="Close/Reverse";g_axTf=PERIOD_M5;
+   string filename=AxFileName();
+   Check(StringFind(filename,"MaCross_" )==0&&StringFind(filename,"PERIOD_M5_Close_Reverse_MyStrategy_")>0,"filename contains strategy and signal mode");
+   Check(StringLen(TCalCsvDirectory()+"\\"+filename)<256,"filename fits Windows path budget");
+   TCalCsvLauncher("TEST_",650,20);
+   Check(ObjectGetInteger(0,TCalId("CSV_RIGHT"),OBJPROP_XDISTANCE)==650,"CSV shortcut is on right panel");
+   Check(ObjectGetString(0,TCalId("CSV_FOLDER_ROOT"),OBJPROP_TEXT)+ObjectGetString(0,TCalId("CSV_FOLDER_SUFFIX"),OBJPROP_TEXT)==TCalCsvDirectory(),"visible directory labels form full path");
+   TCalEvent(CHARTEVENT_OBJECT_CLICK,0,0,TCalId("CSV_RIGHT"));
+   Check(g_tcalCsvRequested&&!g_tcalOpen,"right shortcut requests export without time filter changes");
+   g_tcalCsvRequested=false;TCalOpen(20,20);TCalDraw();
+   Check(ObjectGetString(0,TCalId("MOD_CSV_FOLDER"),OBJPROP_TEXT)+ObjectGetString(0,TCalId("MOD_CSV_SUFFIX"),OBJPROP_TEXT)==TCalCsvDirectory(),"modal displays complete output directory");
+   TCalEvent(CHARTEVENT_OBJECT_CLICK,0,0,TCalId("CSV_RIGHT"));
+   Check(!g_tcalCsvRequested,"time modal consumes clicks on underlying CSV shortcut");
+   g_tcalOpen=false;TCalClearModal();
    string names[],values[];Cells(AxRollingNames(),names);
    MqlRates r[];ArrayResize(r,121);ArraySetAsSeries(r,true);
    for(int series=0;series<3;series++)
