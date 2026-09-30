@@ -1,0 +1,1 @@
+broad=true warm=true cold=true same=true large_ms=7438 warm_ms=875 cold_ms=2859 warm_hits=7144 warm_misses=28 epoch_changes=0 trades=5814 data=0 ui_cleanup=true visual_same=true visual_hits=5799 visual_misses=15 history_source=BROKER_SYNCHRONIZED

@@ -27,13 +27,30 @@ void MaObserveClosedSignal()
 
 void MaPruneObservedSignals(datetime coveredThrough)
 {
-   for(int i=ObjectsTotal(0)-1;i>=0;i--)
+   static bool collected=false;static string observed[];
+   // Current live code queues reconciliation; it never creates MA_OBS objects.
+   // Collect only the legacy leftovers once, not every historical chart object
+   // on each window switch. Retain future-dated leftovers until their cutoff.
+   if(!collected)
    {
-      string name=ObjectName(0,i);
-      if(StringFind(name,PREFIX+"MA_OBS_")!=0)continue;
-      datetime t=(datetime)ObjectGetInteger(0,name,OBJPROP_TIME);
-      if(t<=coveredThrough)ObjectDelete(0,name);
+      int total=ObjectsTotal(0);
+      for(int i=total-1;i>=0;i--)
+      {
+         string name=ObjectName(0,i);
+         if(StringFind(name,PREFIX+"MA_OBS_")!=0)continue;
+         int n=ArraySize(observed);ArrayResize(observed,n+1);observed[n]=name;
+      }
+      collected=true;
    }
+   int keep=0;
+   for(int i=0;i<ArraySize(observed);i++)
+   {
+      string name=observed[i];
+      if(ObjectFind(0,name)<0)continue;
+      datetime t=(datetime)ObjectGetInteger(0,name,OBJPROP_TIME);
+      if(t<=coveredThrough)ObjectDelete(0,name);else observed[keep++]=name;
+   }
+   ArrayResize(observed,keep);
 }
 
 int ProcessMaHistoricalPrepEvent(int index)

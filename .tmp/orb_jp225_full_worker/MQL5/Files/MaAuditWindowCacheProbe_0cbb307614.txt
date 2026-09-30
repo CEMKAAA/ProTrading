@@ -1,0 +1,1 @@
+checks=3710 failed=0 warm_ms=15 cold_ms=63

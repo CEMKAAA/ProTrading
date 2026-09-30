@@ -1,0 +1,1 @@
+broad=true warm=true cold=true same=true large_ms=7625 warm_ms=3532 cold_ms=3218 warm_hits=941 warm_misses=33 epoch_changes=0 trades=772 data=0

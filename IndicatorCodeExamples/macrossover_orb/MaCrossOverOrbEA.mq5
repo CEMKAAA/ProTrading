@@ -3769,7 +3769,9 @@ void EnforceRiskBreach()
 //=========================================================================
 //  CHART OBJECTS
 //=========================================================================
-void DeleteByPrefix(const string pfx){for(int i=ObjectsTotal(0,0,-1)-1;i>=0;i--){string n=ObjectName(0,i,0,-1);if(StringFind(n,pfx)==0)ObjectDelete(0,n);}}
+#include "MaHistoricalVisualCache.mqh"
+bool g_maInitialHistoryCleared=false;
+void DeleteByPrefix(const string pfx){ObjectsDeleteAll(0,pfx,0,-1);}
 void DeleteLevels(){ObjectDelete(0,PREFIX+"ORB_HIGH");ObjectDelete(0,PREFIX+"ORB_LOW");ObjectDelete(0,PREFIX+"ORB_TXT");}
 string HistoricalGenerationRoot(int generation)
 {
@@ -3778,35 +3780,59 @@ string HistoricalGenerationRoot(int generation)
 }
 string HistoricalObjectRoot()
 {
+   if(g_maPlotRoot!="")return g_maPlotRoot;
    int generation=g_histBuildGeneration>0?g_histBuildGeneration:g_histActiveGeneration;
    return HistoricalGenerationRoot(generation);
 }
 bool IsFreshHistoricalBuildObject(const string name)
 {
+   if(g_maPlotRoot!=""&&StringFind(name,g_maPlotRoot)==0)return true;
    return g_histBuildGeneration>0
       &&StringFind(name,HistoricalGenerationRoot(g_histBuildGeneration))==0;
 }
 void BeginHistoricalSnapshot()
 {
+   if(g_histActiveGeneration==0)
+   {
+      DeleteByPrefix(PREFIX+"HIST_");MaVisualReset();g_maInitialHistoryCleared=true;
+   }
    g_histBuildGeneration=(g_histActiveGeneration==1?2:1);
    DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
 }
 void CommitHistoricalSnapshot()
 {
    if(g_histBuildGeneration<=0)return;
+   if(g_histActiveGeneration==0&&g_maInitialHistoryCleared)
+   {g_histActiveGeneration=g_histBuildGeneration;g_histBuildGeneration=0;return;}
+   if(g_histActiveGeneration>0&&g_histActiveGeneration!=g_histBuildGeneration)
+   {
+      // Both snapshots have known prefixes after the first commit. Avoid
+      // enumerating tens of thousands of old and new chart objects by index.
+      DeleteByPrefix(HistoricalGenerationRoot(g_histActiveGeneration));
+      g_histActiveGeneration=g_histBuildGeneration;
+      g_histBuildGeneration=0;
+      return;
+   }
    string histRoot=PREFIX+"HIST_";
    string keepRoot=HistoricalGenerationRoot(g_histBuildGeneration);
-   for(int i=ObjectsTotal(0,0,-1)-1;i>=0;i--)
+   string obsolete[];int total=ObjectsTotal(0,0,-1),count=0;
+   ArrayResize(obsolete,total);
+   // ObjectName is synchronous: collect first, then enqueue all deletions.
+   // Interleaving it with ObjectDelete drains the chart queue once per object.
+   for(int i=total-1;i>=0;i--)
    {
       string name=ObjectName(0,i,0,-1);
-      if(StringFind(name,histRoot)==0&&StringFind(name,keepRoot)!=0)ObjectDelete(0,name);
+      if(StringFind(name,histRoot)==0&&StringFind(name,keepRoot)!=0
+         &&(g_maVisualPrefix==""||StringFind(name,g_maVisualPrefix)!=0))obsolete[count++]=name;
    }
+   for(int i=0;i<count;i++)ObjectDelete(0,obsolete[i]);
    g_histActiveGeneration=g_histBuildGeneration;
    g_histBuildGeneration=0;
 }
 void DeleteHist()
 {
    DeleteByPrefix(PREFIX+"HIST_");
+   MaVisualReset();g_maInitialHistoryCleared=false;
    g_histActiveGeneration=0;
    g_histBuildGeneration=0;
 }
@@ -7120,7 +7146,6 @@ void ProcessHistoricalCalcDay(const int back)
       double pad=0.0,arwP=0.0;
       MaCrossTradeMarker(fillAt,isBuy,sim.simEntry,visualT,arwP,pad);
       string dateKey=(string)(long)sigT;
-      string base=MaHistoryEventBase(sigT,dir);
       datetime levelStart=fillAt;
       datetime levelEnd=levelStart+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
       datetime nextSig=0;
@@ -7133,28 +7158,8 @@ void ProcessHistoricalCalcDay(const int back)
       // must not collapse the three reference lines to one or two candles;
       // later signal/lifecycle boundaries above still prevent overlap.
       string levelId=dateKey+"_"+execDir;
-      DrawOrbHistoricalSegment(levelId+"_ENTRY",levelStart,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
-      ObjectSetString(0,HistoricalObjectRoot()+"LVL_"+levelId+"_ENTRY",OBJPROP_TOOLTIP,
-         "SIMULATED FILL: "+DoubleToString(sim.simEntry,_Digits)+" | "+MaCrossTradeMarkerTooltip(sigT,sim.entryTime));
-      DrawOrbHistoricalSegment(levelId+"_SL",levelStart,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
-      if(sim.simTarget>0.0)
-         DrawOrbHistoricalSegment(levelId+"_TP",levelStart,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
-
       color arwClr=!sim.valid?C'145,155,170':(!finalOutcome?clrGold:(sim.netR>1e-8?clrLime:(sim.netR<-1e-8?clrTomato:clrLightSteelBlue)));
       int arwCode=isBuy?233:234;
-      string arrowName=base+"ARW";
-      if(IsFreshHistoricalBuildObject(arrowName))ObjectCreate(0,arrowName,OBJ_ARROW,0,visualT,arwP);
-      else if(ObjectFind(0,arrowName)<0)ObjectCreate(0,arrowName,OBJ_ARROW,0,visualT,arwP);
-      else ObjectMove(0,arrowName,0,visualT,arwP);
-      ObjectSetInteger(0,arrowName,OBJPROP_ARROWCODE,arwCode);
-      ObjectSetInteger(0,arrowName,OBJPROP_COLOR,arwClr);
-      ObjectSetInteger(0,arrowName,OBJPROP_WIDTH,2);
-      ObjectSetInteger(0,arrowName,OBJPROP_ANCHOR,isBuy?ANCHOR_TOP:ANCHOR_BOTTOM);
-      ObjectSetString(0,arrowName,OBJPROP_TOOLTIP,MaCrossTradeMarkerTooltip(sigT,sim.entryTime));
-      ObjectSetInteger(0,arrowName,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,arrowName,OBJPROP_HIDDEN,false);
-
-      if(finalOutcome&&sim.exitTime>0&&sim.exitPrice>0.0)
-         DrawSignalText(base+"EXIT",sim.exitTime,sim.exitPrice,"X "+sim.outcome,arwClr);
 
       // Result text with detail
       double simPnl=SimMoneyPnl(statR);
@@ -7172,20 +7177,51 @@ void ProcessHistoricalCalcDay(const int back)
       if(!sim.valid&&sim.invalidReason!="")txt+=" "+sim.invalidReason;
       color txtClr=!sim.valid?C'170,180,195':(!finalOutcome?clrKhaki:(sim.netR>1e-8?clrPaleGreen:(sim.netR<-1e-8?clrLightSalmon:clrLightSteelBlue)));
       double txtP=isBuy?arwP-pad*0.65:arwP+pad*0.65;
-      DrawSignalText(base+"TXT",visualT,txtP,txt,txtClr);
 
       string hcTxt=sim.hcLeg>0?DoubleToString(PriceAtLeg(isBuy,sim.simEntry,simRisk,sim.hcLeg),_Digits):"OFF";
       string lvlTxt="SL="+DoubleToString(sim.simSl,_Digits)
          +" TP="+DoubleToString(sim.simTarget,_Digits)
          +" HC="+hcTxt;
       double lvlP=isBuy?txtP-pad*0.55:txtP+pad*0.55;
+      string markerTip=MaCrossTradeMarkerTooltip(sigT,sim.entryTime);
+      bool showExit=finalOutcome&&sim.exitTime>0&&sim.exitPrice>0.0;
+      bool levels=InpDrawTradeLevelSegments&&levelEnd>levelStart;
+      string visualKey=(string)sigT+"|"+dir+"|"+execDir+"|"+(string)visualT+"|"+(string)levelStart+"|"+(string)levelEnd
+         +"|"+AuditMemoPrice(arwP)+"|"+AuditMemoPrice(txtP)+"|"+AuditMemoPrice(lvlP)
+         +"|"+AuditMemoPrice(sim.simEntry)+"|"+AuditMemoPrice(sim.simSl)+"|"+AuditMemoPrice(sim.simTarget)
+         +"|"+(string)sim.exitTime+"|"+AuditMemoPrice(sim.exitPrice)+"|"+(string)showExit+"|"+(string)levels
+         +"|"+(string)arwCode+"|"+(string)arwClr+"|"+(string)txtClr+"|"+sim.outcome+"|"+txt+"|"+lvlTxt+"|"+markerTip;
+      bool reused=false;int visualSlot=MaVisualBeginPlot(visualKey,reused);
+      if(reused){g_histDrawn++;return;}
+      string base=MaHistoryEventBase(sigT,dir);
+      DrawOrbHistoricalSegment(levelId+"_ENTRY",levelStart,levelEnd,sim.simEntry,C'230,230,230',STYLE_SOLID);
+      ObjectSetString(0,HistoricalObjectRoot()+"LVL_"+levelId+"_ENTRY",OBJPROP_TOOLTIP,
+         "SIMULATED FILL: "+DoubleToString(sim.simEntry,_Digits)+" | "+markerTip);
+      DrawOrbHistoricalSegment(levelId+"_SL",levelStart,levelEnd,sim.simSl,C'255,80,110',STYLE_SOLID);
+      if(sim.simTarget>0.0)
+         DrawOrbHistoricalSegment(levelId+"_TP",levelStart,levelEnd,sim.simTarget,C'80,255,180',STYLE_SOLID);
+      string arrowName=base+"ARW";
+      if(IsFreshHistoricalBuildObject(arrowName))ObjectCreate(0,arrowName,OBJ_ARROW,0,visualT,arwP);
+      else if(ObjectFind(0,arrowName)<0)ObjectCreate(0,arrowName,OBJ_ARROW,0,visualT,arwP);
+      else ObjectMove(0,arrowName,0,visualT,arwP);
+      ObjectSetInteger(0,arrowName,OBJPROP_ARROWCODE,arwCode);
+      ObjectSetInteger(0,arrowName,OBJPROP_COLOR,arwClr);
+      ObjectSetInteger(0,arrowName,OBJPROP_WIDTH,2);
+      ObjectSetInteger(0,arrowName,OBJPROP_ANCHOR,isBuy?ANCHOR_TOP:ANCHOR_BOTTOM);
+      ObjectSetString(0,arrowName,OBJPROP_TOOLTIP,markerTip);
+      ObjectSetInteger(0,arrowName,OBJPROP_SELECTABLE,false);ObjectSetInteger(0,arrowName,OBJPROP_HIDDEN,false);
+      if(showExit)DrawSignalText(base+"EXIT",sim.exitTime,sim.exitPrice,"X "+sim.outcome,arwClr);
+      DrawSignalText(base+"TXT",visualT,txtP,txt,txtClr);
       DrawSignalText(base+"LVLTXT",visualT,lvlP,lvlTxt,txtClr);
+      int levelMask=(sim.simEntry>0.0?1:0)|(sim.simSl>0.0?2:0)|(sim.simTarget>0.0?4:0);
+      MaVisualEndPlot(visualSlot,"MA_"+dateKey+"_"+dir+"_",levelId,levels&&sim.simTarget>0.0,showExit,levels,levelMask);
       g_histDrawn++;
   
 }
 
 void CancelHistoricalAuditBuild()
 {
+   MaVisualAbort();
    AxAbort("CSV cancelled: audit restarted");g_axReady=false;
    if(g_histBuildGeneration>0)
       DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
@@ -7216,6 +7252,7 @@ void FinalizeHistoricalAudit()
    if(g_histAuditStageStartedMs>0)
       g_histAuditCalcSec=(double)(calcCompletedMs-g_histAuditStageStartedMs)/1000.0;
    ulong commitStartedMs=GetTickCount64();
+   MaVisualCommit();
    CommitHistoricalSnapshot();
    ulong completedMs=GetTickCount64();
    g_histAuditCommitSec=(double)(completedMs-commitStartedMs)/1000.0;
@@ -7242,6 +7279,7 @@ void FinalizeHistoricalAudit()
    Print("ORB15v3 HIST_TICK_INDEX visited=",g_histTickTicksVisited,
       " skipped_ticks=",g_histTickTicksSkipped,
       " skipped_blocks=",g_histTickBlocksSkipped);
+   Print("MA_VISUAL_CACHE hits=",g_maVisualHits," misses=",g_maVisualMisses);
    if(g_rtAdvancedAuditEngine)
       Print("ORB15v3 ADV_EXACT_INDEX disk_hits=",g_orbAdvIndexDiskHits,
          " cold_builds=",g_orbAdvIndexColdBuilds," invalid=",g_orbAdvIndexInvalid,
@@ -7431,6 +7469,8 @@ void DrawHistoricalSignals()
    g_histCoverageAttempts=0;g_histCoverageStatus="";g_histCoverageDetail="";
    g_lastHistBuild=currentTime;g_histNeedsRedraw=false;
    BeginHistoricalSnapshot();
+   MaVisualBeginAudit(PREFIX+"HIST_POOL_",OrbUserRuntimeMetricKey()+"|"+TCalStrategyText()
+      +"|risk="+AuditMemoPrice(g_rtRiskPerTradePct)+"|money="+AuditMemoPrice(SimMoneyPnl(1.0)));
 
    datetime nyNow=ServerToSessionLocal(currentTime);MqlDateTime nySt;TimeToStruct(nyNow,nySt);
    g_histRunNyMid=MakeDateTime(nySt.year,nySt.mon,nySt.day,0,0,0);
@@ -7442,6 +7482,7 @@ void DrawHistoricalSignals()
    if(!MaCrossAuditBuild(_Symbol,g_rtSignalTf,maAuditFrom,currentTime,g_rtMaCrossMode,g_rtMaCrossPair,
       MathMax(1,InpMaFastLength),MathMax(1,InpMaMediumLength),MathMax(2,InpMaSlowLength)))
    {
+      MaVisualAbort();
       g_maCacheFailedAttempts++;
       g_histCoverageHardBlocked=(g_maCacheFailedAttempts>=3);
       g_histCoverageDetail=g_maCrossAuditFailure;
@@ -7497,6 +7538,7 @@ void DrawHistoricalSignals()
    Print("ORB15v3 ",nasCacheDetail);
    if(!nasCacheOk)
    {
+      MaVisualAbort();
       if(g_histBuildGeneration>0)DeleteByPrefix(HistoricalGenerationRoot(g_histBuildGeneration));
       g_histBuildGeneration=0;
       g_histAuditRunning=false;g_histAuditPhase=0;g_histNasCacheActive=false;
@@ -9829,6 +9871,7 @@ int OnInit()
    if(!IsTesterMode())EventSetTimer(5);
    if(!IsTesterMode())
    {
+      MaVisualTrackDeletes();
       Print("ORB15v3 INIT_UI_BEGIN tf=",(int)g_rtSignalTf," weeks=",g_rtHistoricalWeeks);
       DrawDashboard();QueueHistoricalRedraw(800);DrawOrbLiveTradeLevels();
       Print("ORB15v3 INIT_UI_END");
@@ -9851,6 +9894,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   MaVisualStopTrackingDeletes();
    AxAbort("EA detached");
    ResearchLbShutdown();
    ObjectsDeleteAll(0,MaOfRankPrefix());
@@ -9934,6 +9978,7 @@ void OnTick()
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_OBJECT_DELETE){MaVisualObjectDeleted(sparam);return;}
    if(AxEvent(id,lparam))return;
    if(ResearchLbEvent(id,lparam,dparam,sparam))return;
    if(LossHoursEvent(id,sparam))return;

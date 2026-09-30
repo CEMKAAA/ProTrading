@@ -1,0 +1,1 @@
+checks=3714 failed=0 fixture_warm_ms=0 fixture_cold_ms=45 real_ready=true real_cold5y_ms=78 real_warm3y_ms=0 real_cold3y_ms=78

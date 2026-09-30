@@ -1,0 +1,2 @@
+broad=false warm=false cold=false same=true large_ms=235 warm_ms=15 cold_ms=16 warm_hits=0 warm_misses=0 epoch_changes=0 trades=0 data=0 ui_cleanup=true
+
